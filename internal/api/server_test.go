@@ -520,3 +520,16 @@ func TestInferSchemaSamplesAllowNulls(t *testing.T) {
 		t.Fatalf("null-only key must survive inference as a field, got %v", data["fields"])
 	}
 }
+
+func TestInferSchemaNullSampleEntryRejected(t *testing.T) {
+	srv := newTestServer(t)
+	res, err := http.Post(srv.URL+"/v1/infer_schema", "application/json",
+		strings.NewReader(`{"samples":[null]}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("null sample entries must 400, not masquerade as empty inference, got %d", res.StatusCode)
+	}
+}
