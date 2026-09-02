@@ -196,3 +196,48 @@ func TestMalformedCallParamsUseInvalidParamsCode(t *testing.T) {
 		t.Fatalf("malformed params must use -32602 (Invalid params), not the parse-error code, got %v", errObj["code"])
 	}
 }
+
+func TestMalformedTransportInputHTTP400(t *testing.T) {
+	srv := newMCPServer(t)
+	res, err := http.Post(srv.URL, "application/json", strings.NewReader(`{"jsonrpc":`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid JSON must be HTTP 400, got %d", res.StatusCode)
+	}
+	for _, body := range []string{`[]`, `42`} {
+		res, err := http.Post(srv.URL, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("post %s: %v", body, err)
+		}
+		var decoded map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&decoded)
+		res.Body.Close()
+		if res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("valid non-object JSON %s must be HTTP 400, got %d", body, res.StatusCode)
+		}
+		errObj, ok := decoded["error"].(map[string]any)
+		if !ok || errObj["code"].(float64) != -32600 {
+			t.Fatalf("non-object JSON %s must be -32600 (Invalid Request), got %v", body, decoded)
+		}
+	}
+}
+
+func TestMalformedInitializeParamsRejected(t *testing.T) {
+	srv := newMCPServer(t)
+	code, res := rpc(t, srv.URL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      3,
+		"method":  "initialize",
+		"params":  []any{"not", "an", "object"},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("unexpected http status: %d", code)
+	}
+	errObj, ok := res["error"].(map[string]any)
+	if !ok || errObj["code"].(float64) != -32602 {
+		t.Fatalf("malformed initialize params must be -32602, got %v", res)
+	}
+}

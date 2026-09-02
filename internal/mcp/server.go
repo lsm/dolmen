@@ -48,9 +48,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeRPCError(w, nil, jsonRPCParseError, "cannot read request body")
 		return
 	}
+	var probe any
+	if err := json.Unmarshal(body, &probe); err != nil {
+		writeRPCError(w, nil, jsonRPCParseError, "invalid JSON")
+		return
+	}
 	var msg rpcMessage
 	if err := json.Unmarshal(body, &msg); err != nil {
-		writeRPCError(w, nil, jsonRPCParseError, "invalid JSON")
+		writeRPCError(w, nil, jsonRPCInvalidReq, "expected a JSON-RPC 2.0 request object")
 		return
 	}
 	if msg.JSONRPC != "2.0" || msg.Method == "" {
@@ -86,7 +91,9 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		var params struct {
 			ProtocolVersion string `json:"protocolVersion"`
 		}
-		_ = json.Unmarshal(msg.Params, &params)
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "invalid initialize params"}
+		}
 		pv := protocolVersion
 		if params.ProtocolVersion == protocolVersion {
 			pv = params.ProtocolVersion
@@ -160,7 +167,11 @@ func writeRPCError(w http.ResponseWriter, id json.RawMessage, code int, message 
 		"error":   map[string]any{"code": code, "message": message},
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	if code == jsonRPCParseError || code == jsonRPCInvalidReq {
+		w.WriteHeader(http.StatusBadRequest)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(resp)
