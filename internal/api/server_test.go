@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -219,6 +220,20 @@ func TestCreateTableDimSchemaIsInteger(t *testing.T) {
 	dim := items["properties"].(map[string]any)["dim"].(map[string]any)
 	if dim["type"] != "integer" {
 		t.Fatalf(`"dim" must be declared integer (it decodes into an int field), got %v`, dim["type"])
+	}
+	if dim["minimum"] != 1 || dim["maximum"] != schema.MaxVectorDim {
+		t.Fatalf(`"dim" must declare the accepted 1..%d range, got %v`, schema.MaxVectorDim, dim)
+	}
+}
+
+func TestInferSchemaSampleBoundsDeclared(t *testing.T) {
+	def, ok := Ops["infer_schema"]
+	if !ok {
+		t.Fatal("infer_schema op missing")
+	}
+	samples := def.InputSchema["properties"].(map[string]any)["samples"].(map[string]any)
+	if samples["minItems"] != 1 || samples["maxItems"] != 50 {
+		t.Fatalf(`"samples" must declare minItems 1 / maxItems 50 to match dispatch, got %v`, samples)
 	}
 }
 
