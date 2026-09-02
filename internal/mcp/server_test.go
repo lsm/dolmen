@@ -323,6 +323,41 @@ func TestToolsCallNonObjectArgumentsRejected(t *testing.T) {
 	if !ok || errObj["code"].(float64) != -32602 {
 		t.Fatalf("non-object arguments must be -32602, got %v", res)
 	}
+	code, res = rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 14, "method": "tools/call",
+		"params": map[string]any{"name": "list_tables", "arguments": nil},
+	})
+	errObj, ok = res["error"].(map[string]any)
+	if code != 200 || !ok || errObj["code"].(float64) != -32602 {
+		t.Fatalf("explicit null arguments must be -32602, got %d %v", code, res)
+	}
+}
+
+func TestToolsListParamsValidated(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	code, res := rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 15, "method": "tools/list",
+		"params": []any{"not", "an", "object"},
+	})
+	errObj, ok := res["error"].(map[string]any)
+	if code != 200 || !ok || errObj["code"].(float64) != -32602 {
+		t.Fatalf("array tools/list params must be -32602, got %d %v", code, res)
+	}
+	code, res = rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 16, "method": "tools/list",
+		"params": map[string]any{"cursor": 1},
+	})
+	errObj, ok = res["error"].(map[string]any)
+	if code != 200 || !ok || errObj["code"].(float64) != -32602 {
+		t.Fatalf("non-string cursor must be -32602, got %d %v", code, res)
+	}
+	code, res = rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 17, "method": "tools/list",
+		"params": map[string]any{"cursor": "page-2"},
+	})
+	if code != 200 || res["result"] == nil {
+		t.Fatalf("string cursor must pass (registry is unpaginated), got %d %v", code, res)
+	}
 }
 
 func TestInvalidRequestIDRejected(t *testing.T) {

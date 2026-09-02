@@ -137,6 +137,14 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 	case "ping":
 		return map[string]any{}, nil
 	case "tools/list":
+		if len(bytes.TrimSpace(msg.Params)) > 0 && !bytes.Equal(bytes.TrimSpace(msg.Params), []byte("null")) {
+			var params struct {
+				Cursor *string `json:"cursor"`
+			}
+			if err := json.Unmarshal(msg.Params, &params); err != nil {
+				return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "invalid tools/list params"}
+			}
+		}
 		tools := make([]map[string]any, 0)
 		for _, name := range api.OpNames() {
 			def := api.Ops[name]
@@ -163,7 +171,7 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 			args = json.RawMessage("{}")
 		} else {
 			var argProbe map[string]any
-			if err := json.Unmarshal(args, &argProbe); err != nil {
+			if err := json.Unmarshal(args, &argProbe); err != nil || argProbe == nil {
 				return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "tools/call arguments must be an object"}
 			}
 		}
