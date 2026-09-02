@@ -207,12 +207,12 @@ func InferFields(samples []map[string]any) []Field {
 	kinds := map[string]map[string]bool{}
 	for _, s := range samples {
 		for k, v := range s {
-			if v == nil {
-				continue
-			}
 			lk := strings.ToLower(k)
 			if kinds[lk] == nil {
 				kinds[lk] = map[string]bool{}
+			}
+			if v == nil {
+				continue
 			}
 			kinds[lk][goKind(v)] = true
 		}

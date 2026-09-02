@@ -758,12 +758,22 @@ func checkRowValue(col string, v any) error {
 func approxSize(v any) int {
 	switch t := v.(type) {
 	case string:
-		return len(t)
+		return encodedSize(t)
 	case []byte:
 		return len(t)
 	default:
 		return 16
 	}
+}
+
+func encodedSize(s string) int {
+	n := len(s)
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == '"' || s[i] == '\\' {
+			n += 5
+		}
+	}
+	return n
 }
 
 func normalizeVal(v any) any {
@@ -790,7 +800,7 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 			q(ftsTable(table)), ftsTable(table)),
 		query, limit)
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	defer rows.Close()
 	var ids []int64
@@ -802,7 +812,7 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	out, complete, err := fetchByIDs(ctx, n.rw, table, ids)
 	if err != nil {
@@ -892,31 +902,9 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 	if err != nil {
 		return nil, false, err
 	}
-	if column == "" {
-		if vf := sc.VectorizeField(); vf != nil {
-			column = "_embedding"
-		} else if vfs := sc.VectorFields(); len(vfs) > 0 {
-			column = vfs[0].Name
-		} else {
-			return nil, false, invalidf("table %s has no vector data (no vectorize field, no vector fields)", table)
-		}
-	}
-	var dim int
-	switch {
-	case column == "_embedding":
-		if sc.VectorizeField() == nil {
-			return nil, false, invalidf("table %s has no vectorize field for _embedding", table)
-		}
-	case sc.Field(column) != nil && sc.Field(column).Type == schema.Vector:
-		dim = sc.Field(column).Dim
-	default:
-		return nil, false, invalidf("column %q is not a vector column", column)
-	}
-	if column == "_embedding" && sc.EmbedSpace != "" && embedModel != "" && sc.EmbedSpace != embedModel {
-		return nil, false, invalidf("embedding model changed: table rows are embedded with %q but the provider now serves %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedSpace, embedModel)
-	}
-	if column == "_embedding" {
-		dim = sc.EmbedDim
+	column, dim, err := resolveVectorColumn(sc, table, column, embedModel)
+	if err != nil {
+		return nil, false, err
 	}
 	if dim > 0 && len(vec) != dim {
 		return nil, false, invalidf("query vector has %d entries, column %s expects dim %d", len(vec), column, dim)
@@ -985,6 +973,49 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 		}
 	}
 	return out, !complete, nil
+}
+
+func resolveVectorColumn(sc *schema.TableSchema, table, column, embedModel string) (string, int, error) {
+	if column == "" {
+		if vf := sc.VectorizeField(); vf != nil {
+			column = "_embedding"
+		} else if vfs := sc.VectorFields(); len(vfs) > 0 {
+			column = vfs[0].Name
+		} else {
+			return "", 0, invalidf("table %s has no vector data (no vectorize field, no vector fields)", table)
+		}
+	}
+	var dim int
+	switch {
+	case column == "_embedding":
+		if sc.VectorizeField() == nil {
+			return "", 0, invalidf("table %s has no vectorize field for _embedding", table)
+		}
+	case sc.Field(column) != nil && sc.Field(column).Type == schema.Vector:
+		dim = sc.Field(column).Dim
+	default:
+		return "", 0, invalidf("column %q is not a vector column", column)
+	}
+	if column == "_embedding" {
+		if sc.EmbedSpace != "" && embedModel != "" && sc.EmbedSpace != embedModel {
+			return "", 0, invalidf("embedding model changed: table rows are embedded with %q but the provider now serves %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedSpace, embedModel)
+		}
+		dim = sc.EmbedDim
+	}
+	return column, dim, nil
+}
+
+func (s *Store) ValidateVectorSearch(ctx context.Context, nsName, table, column, embedIdentity string) error {
+	n, err := s.ns(nsName)
+	if err != nil {
+		return err
+	}
+	sc, err := loadSchema(ctx, n.rw, nsName, table)
+	if err != nil {
+		return err
+	}
+	_, _, err = resolveVectorColumn(sc, table, column, embedIdentity)
+	return err
 }
 
 func cosine(a, b []float32) float64 {

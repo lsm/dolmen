@@ -298,6 +298,10 @@ var Ops = map[string]OpDef{
 			var vec []float32
 			switch {
 			case req.Text != "":
+				if err := s.st.ValidateVectorSearch(ctx, normNS(req.Namespace), normTable(req.Table),
+					strings.ToLower(strings.TrimSpace(req.Column)), s.emb.Identity()); err != nil {
+					return nil, wrapStoreErr(err)
+				}
 				vecs, err := s.emb.Embed(ctx, []string{req.Text})
 				if err != nil {
 					return nil, wrapStoreErr(err)
@@ -593,5 +597,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func writeJSONStatus(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(v)
 }

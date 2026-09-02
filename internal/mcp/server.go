@@ -118,11 +118,14 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		if err != nil {
 			return toolResult(fmt.Sprintf("error: %s", err.Error()), true), nil
 		}
-		encoded, mErr := json.MarshalIndent(res, "", "  ")
-		if mErr != nil {
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		enc.SetIndent("", "  ")
+		if mErr := enc.Encode(res); mErr != nil {
 			return toolResult(fmt.Sprintf("error: cannot encode result: %s", mErr.Error()), true), nil
 		}
-		return toolResult(string(encoded), false), nil
+		return toolResult(buf.String(), false), nil
 	default:
 		return nil, &rpcErr{Code: jsonRPCMethodError, Message: fmt.Sprintf("unknown method %q", msg.Method)}
 	}

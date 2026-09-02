@@ -143,3 +143,19 @@ func TestInferSkipsNulls(t *testing.T) {
 		t.Fatalf("nullable string field should infer string, got %+v", fields)
 	}
 }
+
+func TestInferAllNullKeyRetained(t *testing.T) {
+	fields := InferFields([]map[string]any{
+		{"name": nil, "x": 1},
+	})
+	byName := map[string]Field{}
+	for _, f := range fields {
+		byName[f.Name] = f
+	}
+	if _, ok := byName["name"]; !ok {
+		t.Fatalf("all-null key must be retained, got %+v", fields)
+	}
+	if byName["name"].Type != JSON {
+		t.Fatalf("all-null key should infer nullable json, got %s", byName["name"].Type)
+	}
+}

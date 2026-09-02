@@ -1124,3 +1124,48 @@ func TestMalformedQueryIsInvalidRequest(t *testing.T) {
 		t.Fatalf("expected wrong arg count to classify as invalid request, got %v", err)
 	}
 }
+
+func TestEscapeHeavyStringsBudgeted(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "esc", []schema.Field{
+		{Name: "v", Type: schema.Text},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	control := strings.Repeat("\x01", 7<<20)
+	if _, err := st.Insert(ctx, "test", "esc", []map[string]any{{"v": control}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if _, _, err := st.Query(ctx, "test", "SELECT v FROM esc", nil); err == nil {
+		t.Fatal("expected escape-heavy row to exceed the response budget")
+	}
+}
+
+func TestMalformedFTSQueryIsInvalidRequest(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	if _, _, err := st.SearchFulltext(ctx, "test", "notes", "\"unterminated", 10); err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected malformed FTS syntax to classify as invalid request, got %v", err)
+	}
+}
+
+func TestValidateVectorSearchBeforeEmbedding(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if err := st.ValidateVectorSearch(ctx, "test", "missing", "", "fake-space"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected not-found for missing table, got %v", err)
+	}
+	if _, err := st.CreateTable(ctx, "test", "vv", []schema.Field{
+		{Name: "s", Type: schema.String, Vectorize: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "vv", []map[string]any{{"s": "hello"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := st.ValidateVectorSearch(ctx, "test", "vv", "", "other-space"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected identity mismatch to be caught before embedding, got %v", err)
+	}
+}
