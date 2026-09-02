@@ -370,11 +370,8 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 	if sqlP["minLength"] != 1 {
 		t.Fatalf("sql must declare minLength 1, got %v", sqlP)
 	}
-	if sqlP["pattern"] != `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b` {
-		t.Fatalf("sql must declare the read-only prefix pattern, got %v", sqlP["pattern"])
-	}
-	if _, ok := sqlP["not"].(map[string]any)["pattern"]; !ok {
-		t.Fatalf("sql must exclude non-trailing semicolons, got %v", sqlP)
+	if sqlP["pattern"] != `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b[^;]*;*\s*$` {
+		t.Fatalf("sql must declare the read-only prefix with a pure trailing-semicolon suffix, got %v", sqlP["pattern"])
 	}
 	if props["args"].(map[string]any)["maxItems"] != 100 {
 		t.Fatalf("args must declare maxItems 100, got %v", props["args"])

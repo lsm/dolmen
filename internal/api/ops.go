@@ -187,8 +187,7 @@ var Ops = map[string]OpDef{
 					"type":        "string",
 					"description": "Read-only SQL (SELECT/WITH)",
 					"minLength":   1,
-					"pattern":     `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b`,
-					"not":         map[string]any{"pattern": `;[^;]*\S`},
+					"pattern":     `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b[^;]*;*\s*$`,
 				},
 				"args": map[string]any{
 					"type":        "array",
