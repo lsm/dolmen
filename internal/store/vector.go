@@ -139,7 +139,7 @@ func (s *Store) ValidateVectorSearch(ctx context.Context, nsName, table, column,
 	if err != nil {
 		return err
 	}
-	sc, err := loadSchema(ctx, n.rw, nsName, table)
+	sc, err := loadSchema(ctx, n.ro, nsName, table)
 	if err != nil {
 		return err
 	}
