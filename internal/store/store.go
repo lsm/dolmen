@@ -52,9 +52,10 @@ func Open(dir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(abs, 0o755); err != nil {
+	if err := os.MkdirAll(abs, 0o700); err != nil {
 		return nil, err
 	}
+	_ = os.Chmod(abs, 0o700)
 	return &Store{dir: abs, nss: map[string]*nsDB{}}, nil
 }
 
@@ -95,6 +96,9 @@ func (s *Store) ns(name string) (*nsDB, error) {
 			return nil, fmt.Errorf("init namespace %s: %w", name, err)
 		}
 	}
+	_ = os.Chmod(path, 0o600)
+	_ = os.Chmod(path+"-wal", 0o600)
+	_ = os.Chmod(path+"-shm", 0o600)
 	ro, err := sql.Open("sqlite", dsn(path, true))
 	if err != nil {
 		rw.Close()
@@ -144,7 +148,11 @@ func ftsTable(table string) string {
 	return table + "__fts"
 }
 
-func loadSchema(ctx context.Context, db *sql.DB, nsName, table string) (*schema.TableSchema, error) {
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func loadSchema(ctx context.Context, db rowQuerier, nsName, table string) (*schema.TableSchema, error) {
 	if !schema.ValidIdent(table) {
 		return nil, invalidf("invalid table name %q", table)
 	}
@@ -223,8 +231,8 @@ func (s *Store) DescribeTable(ctx context.Context, nsName, table string) (*schem
 }
 
 func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []schema.Field) (*schema.TableSchema, error) {
-	if !schema.ValidIdent(table) {
-		return nil, invalidf("invalid table name %q: must match ^[a-z][a-z0-9_]{0,63}$ and not be reserved", table)
+	if !schema.ValidTableName(table) {
+		return nil, invalidf("invalid table name %q: must match ^[a-z][a-z0-9_]{0,63}$, not be reserved, and not end with __fts (reserved for search indexes)", table)
 	}
 	fields = schema.Normalize(fields)
 	if err := schema.Validate(fields); err != nil {
@@ -830,46 +838,21 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	}
 	defer tx.Rollback()
 
-	rows, err := tx.QueryContext(ctx,
-		fmt.Sprintf(`SELECT id FROM %s WHERE %s`, q(table), where), args...)
-	if err != nil {
-		return 0, fmt.Errorf("filter error: %w", err)
-	}
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return 0, err
+	if len(sc.FTSFields()) > 0 {
+		if _, err := tx.ExecContext(ctx,
+			fmt.Sprintf(`DELETE FROM %s WHERE rowid IN (SELECT id FROM %s WHERE %s)`,
+				q(ftsTable(table)), q(table), where), args...); err != nil {
+			return 0, fmt.Errorf("filter error: %w", err)
 		}
-		ids = append(ids, id)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
-	if len(ids) == 0 {
-		return 0, tx.Commit()
-	}
-	ph := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
-	idArgs := make([]any, len(ids))
-	for i, id := range ids {
-		idArgs[i] = id
 	}
 	res, err := tx.ExecContext(ctx,
-		fmt.Sprintf(`DELETE FROM %s WHERE id IN (%s)`, q(table), ph), idArgs...)
+		fmt.Sprintf(`DELETE FROM %s WHERE %s`, q(table), where), args...)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("filter error: %w", err)
 	}
 	deleted, err := res.RowsAffected()
 	if err != nil {
 		return 0, err
-	}
-	if len(sc.FTSFields()) > 0 {
-		if _, err := tx.ExecContext(ctx,
-			fmt.Sprintf(`DELETE FROM %s WHERE rowid IN (%s)`, q(ftsTable(table)), ph), idArgs...); err != nil {
-			return 0, err
-		}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
@@ -885,7 +868,13 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 	if err != nil {
 		return nil, err
 	}
-	old, err := loadSchema(ctx, n.rw, nsName, table)
+	tx, err := n.rw.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	old, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
 		return nil, err
 	}
@@ -1019,12 +1008,6 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 	}
 	_ = droppedFTSChange
 
-	tx, err := n.rw.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
 	for _, st := range steps {
 		if err := st(ctx, tx); err != nil {
 			return nil, fmt.Errorf("migration step failed: %w", err)
@@ -1045,6 +1028,12 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 	if vectorizeChanged {
 		newVec := vectorizeField(cur.Fields)
 		if newVec != nil {
+			if oldVec := old.VectorizeField(); oldVec != nil && oldVec.Name != newVec.Name {
+				if _, err := tx.ExecContext(ctx,
+					fmt.Sprintf(`UPDATE %s SET "_embedding" = NULL`, q(table))); err != nil {
+					return nil, err
+				}
+			}
 			if _, err := tx.ExecContext(ctx,
 				fmt.Sprintf(`ALTER TABLE %s ADD COLUMN "_embedding" BLOB`, q(table))); err != nil {
 				if !strings.Contains(err.Error(), "duplicate column") {

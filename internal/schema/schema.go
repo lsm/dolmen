@@ -64,10 +64,15 @@ var reserved = map[string]bool{
 	"_embedding": true,
 	"_score":     true,
 	"_rank":      true,
+	"rowid":      true,
 }
 
 func ValidIdent(s string) bool {
 	return identRe.MatchString(s) && !reserved[s]
+}
+
+func ValidTableName(s string) bool {
+	return ValidIdent(s) && !strings.HasSuffix(s, "__fts")
 }
 
 func Normalize(fields []Field) []Field {
@@ -102,6 +107,9 @@ func Validate(fields []Field) error {
 		}
 		if f.Fulltext && f.Type != String && f.Type != Text {
 			return fmt.Errorf("field %q: fulltext is only allowed on string or text fields", f.Name)
+		}
+		if f.Fulltext && f.Name == "rank" {
+			return fmt.Errorf("field %q: rank cannot be a fulltext field (reserved by the FTS5 index)", f.Name)
 		}
 		if f.Vectorize {
 			if f.Type != String && f.Type != Text {

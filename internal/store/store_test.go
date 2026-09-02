@@ -2,6 +2,9 @@ package store
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -333,5 +336,141 @@ func TestTableAndNamespaceValidation(t *testing.T) {
 	}
 	if _, _, err := st.DescribeTable(ctx, "test", "missing"); err == nil {
 		t.Fatal("expected missing table to 404")
+	}
+}
+
+func TestFTSSuffixAndReservedNames(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+
+	if _, err := st.CreateTable(ctx, "test", "notes__fts", noteFields()); err == nil {
+		t.Fatal("expected __fts-suffixed table name to be rejected")
+	}
+	if _, err := st.CreateTable(ctx, "test", "ranked", []schema.Field{
+		{Name: "rank", Type: schema.String, Fulltext: true},
+	}); err == nil {
+		t.Fatal("expected fulltext field named rank to be rejected")
+	}
+	if _, err := st.CreateTable(ctx, "test", "ranked", []schema.Field{
+		{Name: "rank", Type: schema.String},
+		{Name: "rowid_like", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("non-fulltext rank field should be allowed: %v", err)
+	}
+	if _, err := st.CreateTable(ctx, "test", "shadowed", []schema.Field{
+		{Name: "rowid", Type: schema.String},
+	}); err == nil {
+		t.Fatal("expected rowid field name to be rejected")
+	}
+}
+
+func TestMigrateVectorizeSwitch(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+
+	if _, err := st.CreateTable(ctx, "test", "switch", []schema.Field{
+		{Name: "a", Type: schema.String, Fulltext: true, Vectorize: true},
+		{Name: "b", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "switch", []map[string]any{
+		{"a": "alpha content here", "b": "beta content here"},
+		{"a": "gamma content here", "b": "delta content here"},
+	}, fakeEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	if _, err := st.Migrate(ctx, "test", "switch", []schema.Change{
+		{Op: schema.OpSetVectorize, Name: "a", Value: false},
+		{Op: schema.OpSetVectorize, Name: "b", Value: true},
+	}, fakeEmbed); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	qv, _ := fakeEmbed(ctx, []string{"delta content here"})
+	rows, err := st.SearchVector(ctx, "test", "switch", "", qv[0], 2)
+	if err != nil {
+		t.Fatalf("vector search after switch: %v", err)
+	}
+	if len(rows) == 0 {
+		t.Fatal("no rows found after vectorize switch")
+	}
+	if rows[0]["b"] != "delta content here" {
+		t.Fatalf("stale embeddings from field a: top hit was %v", rows[0])
+	}
+	if score := rows[0]["_score"].(float64); score < 0.99 {
+		t.Fatalf("expected cosine ~1 for exact text, got %f", score)
+	}
+}
+
+func TestLargeDeleteUsesNoInParameterLists(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+
+	if _, err := st.CreateTable(ctx, "test", "big", []schema.Field{
+		{Name: "title", Type: schema.String, Fulltext: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	for batch := 0; batch < 2; batch++ {
+		records := make([]map[string]any, 0, 600)
+		for i := 0; i < 600; i++ {
+			records = append(records, map[string]any{"title": fmt.Sprintf("row %d-%d", batch, i)})
+		}
+		if _, err := st.Insert(ctx, "test", "big", records, fakeEmbed); err != nil {
+			t.Fatalf("insert batch %d: %v", batch, err)
+		}
+	}
+
+	deleted, err := st.Delete(ctx, "test", "big", "1=1", nil)
+	if err != nil {
+		t.Fatalf("large delete: %v", err)
+	}
+	if deleted != 1200 {
+		t.Fatalf("expected 1200 deleted, got %d", deleted)
+	}
+	rows, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM big", nil)
+	if err != nil {
+		t.Fatalf("count after delete: %v", err)
+	}
+	if got := rows[0]["n"].(int64); got != 0 {
+		t.Fatalf("expected 0 rows after delete, got %d", got)
+	}
+	fts, err := st.SearchFulltext(ctx, "test", "big", "row", 10)
+	if err != nil {
+		t.Fatalf("fts after delete: %v", err)
+	}
+	if len(fts) != 0 {
+		t.Fatalf("expected fts empty after delete, got %d rows", len(fts))
+	}
+}
+
+func TestStoragePermissions(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "sec", "t", []schema.Field{
+		{Name: "x", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("expected data dir 0700, got %o", info.Mode().Perm())
+	}
+	dbInfo, err := os.Stat(filepath.Join(dir, "sec.db"))
+	if err != nil {
+		t.Fatalf("stat db: %v", err)
+	}
+	if dbInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("expected db file 0600, got %o", dbInfo.Mode().Perm())
 	}
 }
