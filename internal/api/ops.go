@@ -183,11 +183,17 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace to query"),
-				"sql":       prop("string", "Read-only SQL (SELECT/WITH)"),
+				"sql": map[string]any{
+					"type":        "string",
+					"description": "Read-only SQL (SELECT/WITH)",
+					"minLength":   1,
+					"pattern":     `(?i)^\s*(select|with)\b`,
+				},
 				"args": map[string]any{
 					"type":        "array",
 					"description": "Optional bind parameters for ? placeholders",
 					"items":       map[string]any{},
+					"maxItems":    100,
 				},
 			},
 			"required": []string{"namespace", "sql"},
@@ -218,7 +224,12 @@ var Ops = map[string]OpDef{
 					"description": "FTS5 MATCH expression",
 					"minLength":   1,
 				},
-				"limit": prop("integer", "Max results (default 10, max 200)"),
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Max results (default 10, max 200)",
+					"minimum":     1,
+					"maximum":     200,
+				},
 			},
 			"required": []string{"namespace", "table", "query"},
 		},
@@ -259,7 +270,12 @@ var Ops = map[string]OpDef{
 					"minItems":    1,
 				},
 				"column": prop("string", "Vector column to search (optional)"),
-				"limit":  prop("integer", "Max results (default 10, max 200)"),
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Max results (default 10, max 200)",
+					"minimum":     1,
+					"maximum":     200,
+				},
 			},
 			"required": []string{"namespace", "table"},
 			"oneOf": []any{
@@ -328,7 +344,11 @@ var Ops = map[string]OpDef{
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
 				"table":     tableProp("Table name"),
-				"filter":    prop("string", "SQL WHERE expression selecting rows to delete"),
+				"filter": map[string]any{
+					"type":        "string",
+					"description": "SQL WHERE expression selecting rows to delete",
+					"pattern":     `\S`,
+				},
 				"args": map[string]any{
 					"type":        "array",
 					"description": "Optional bind parameters for ? placeholders",
@@ -373,9 +393,9 @@ var Ops = map[string]OpDef{
 								"enum":        []string{"add_field", "rename_field", "drop_field", "set_fulltext", "set_vectorize"},
 							},
 							"field": fieldItemSchema("Field definition for add_field"),
-							"from":  prop("string", "Current name (rename_field)"),
-							"to":    prop("string", "New name (rename_field)"),
-							"name":  prop("string", "Field name (drop_field, set_fulltext, set_vectorize)"),
+							"from":  fieldNameProp("Current name (rename_field)"),
+							"to":    fieldNameProp("New name (rename_field)"),
+							"name":  fieldNameProp("Field name (drop_field, set_fulltext, set_vectorize)"),
 							"value": prop("boolean", "Flag value (set_fulltext, set_vectorize)"),
 						},
 						"required": []string{"op"},

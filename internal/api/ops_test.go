@@ -359,3 +359,54 @@ func TestSearchVectorEmptyEmbedResultRejected(t *testing.T) {
 		t.Fatalf("empty provider result must 400, not panic the handler, got %d %v", code, res)
 	}
 }
+
+func TestQueryAndDeleteSchemaParity(t *testing.T) {
+	q, ok := Ops["query"]
+	if !ok {
+		t.Fatal("query op missing")
+	}
+	props := q.InputSchema["properties"].(map[string]any)
+	sqlP := props["sql"].(map[string]any)
+	if sqlP["minLength"] != 1 {
+		t.Fatalf("sql must declare minLength 1, got %v", sqlP)
+	}
+	if sqlP["pattern"] != `(?i)^\s*(select|with)\b` {
+		t.Fatalf("sql must declare the read-only prefix pattern, got %v", sqlP["pattern"])
+	}
+	if props["args"].(map[string]any)["maxItems"] != 100 {
+		t.Fatalf("args must declare maxItems 100, got %v", props["args"])
+	}
+	d, ok := Ops["delete"]
+	if !ok {
+		t.Fatal("delete op missing")
+	}
+	filter := d.InputSchema["properties"].(map[string]any)["filter"].(map[string]any)
+	if filter["pattern"] != `\S` {
+		t.Fatalf("filter must require a non-whitespace character, got %v", filter)
+	}
+	for _, name := range []string{"search_fulltext", "search_vector"} {
+		def, ok := Ops[name]
+		if !ok {
+			t.Fatalf("%s op missing", name)
+		}
+		limitP := def.InputSchema["properties"].(map[string]any)["limit"].(map[string]any)
+		if limitP["minimum"] != 1 || limitP["maximum"] != 200 {
+			t.Fatalf("%s limit must declare 1..200 (no silent clamping), got %v", name, limitP)
+		}
+	}
+	m, ok := Ops["migrate"]
+	if !ok {
+		t.Fatal("migrate op missing")
+	}
+	items := m.InputSchema["properties"].(map[string]any)["changes"].(map[string]any)["items"].(map[string]any)
+	mp := items["properties"].(map[string]any)
+	for _, key := range []string{"from", "to", "name"} {
+		p := mp[key].(map[string]any)
+		if p["pattern"] != `^[a-z][a-z0-9_]{0,63}$` {
+			t.Fatalf("migrate %s must carry the field-name pattern, got %v", key, p)
+		}
+		if _, ok := p["not"].(map[string]any)["enum"]; !ok {
+			t.Fatalf("migrate %s must exclude reserved identifiers, got %v", key, p)
+		}
+	}
+}

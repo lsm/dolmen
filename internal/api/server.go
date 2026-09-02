@@ -74,6 +74,17 @@ func prop(typ, desc string) map[string]any {
 	return map[string]any{"type": typ, "description": desc}
 }
 
+func fieldNameProp(desc string) map[string]any {
+	return map[string]any{
+		"type":        "string",
+		"description": desc,
+		"pattern":     `^[a-z][a-z0-9_]{0,63}$`,
+		"not": map[string]any{
+			"enum": []string{"id", "created_at", "_embedding", "_score", "_rank", "rowid"},
+		},
+	}
+}
+
 func fieldItemSchema(desc string) map[string]any {
 	return map[string]any{
 		"description":          desc,
