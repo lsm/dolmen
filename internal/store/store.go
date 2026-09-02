@@ -707,6 +707,9 @@ func rowsToMaps(rows *sql.Rows) ([]map[string]any, bool, error) {
 		m := make(map[string]any, len(cols))
 		rowBytes := 0
 		for i, c := range cols {
+			if err := checkRowValue(c, vals[i]); err != nil {
+				return nil, false, err
+			}
 			v := normalizeVal(vals[i])
 			m[c] = v
 			rowBytes += approxSize(v)
@@ -724,6 +727,20 @@ func rowsToMaps(rows *sql.Rows) ([]map[string]any, bool, error) {
 		out = append(out, m)
 	}
 	return out, false, rows.Err()
+}
+
+func checkRowValue(col string, v any) error {
+	switch t := v.(type) {
+	case []byte:
+		if len(t) > MaxQueryBytes {
+			return invalidf("column %q exceeds the %d MiB response budget; select fewer or smaller columns", col, MaxQueryBytes>>20)
+		}
+	case float64:
+		if math.IsInf(t, 0) || math.IsNaN(t) {
+			return invalidf("column %q produced a non-finite value", col)
+		}
+	}
+	return nil
 }
 
 func approxSize(v any) int {
@@ -820,6 +837,9 @@ scan:
 		var id int64
 		rowBytes := 0
 		for i, c := range cols {
+			if err := checkRowValue(c, vals[i]); err != nil {
+				return nil, false, err
+			}
 			if c == "id" {
 				if v, ok := vals[i].(int64); ok {
 					id = v
@@ -991,20 +1011,29 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 		return 0, err
 	}
 
+	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS temp._dolmen_delete_ids`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf(`CREATE TEMP TABLE _dolmen_delete_ids AS SELECT id FROM %s WHERE %s`, q(table), where), args...); err != nil {
+		return 0, fmt.Errorf("filter error: %w", err)
+	}
 	if len(sc.FTSFields()) > 0 {
 		if _, err := tx.ExecContext(ctx,
-			fmt.Sprintf(`DELETE FROM %s WHERE rowid IN (SELECT id FROM %s WHERE %s)`,
-				q(ftsTable(table)), q(table), where), args...); err != nil {
-			return 0, fmt.Errorf("filter error: %w", err)
+			fmt.Sprintf(`DELETE FROM %s WHERE rowid IN (SELECT id FROM _dolmen_delete_ids)`, q(ftsTable(table)))); err != nil {
+			return 0, err
 		}
 	}
 	res, err := tx.ExecContext(ctx,
-		fmt.Sprintf(`DELETE FROM %s WHERE %s`, q(table), where), args...)
+		fmt.Sprintf(`DELETE FROM %s WHERE id IN (SELECT id FROM _dolmen_delete_ids)`, q(table)))
 	if err != nil {
-		return 0, fmt.Errorf("filter error: %w", err)
+		return 0, err
 	}
 	deleted, err := res.RowsAffected()
 	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE _dolmen_delete_ids`); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {

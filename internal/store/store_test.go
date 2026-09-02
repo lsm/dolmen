@@ -1028,3 +1028,45 @@ func TestOversizedFirstQueryRowRejected(t *testing.T) {
 		t.Fatal("expected oversized first row to be rejected")
 	}
 }
+
+func TestNonFiniteQueryValueRejected(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "nf", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, _, err := st.Query(ctx, "test", "SELECT 1e999 AS x", nil); err == nil {
+		t.Fatal("expected non-finite query value to be rejected")
+	}
+}
+
+func TestDeleteFilterEvaluatedOnce(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	mustInsertNotes(t, st)
+
+	deleted, err := st.Delete(ctx, "test", "notes", "EXISTS (SELECT 1 FROM notes__fts)", nil)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if deleted != 3 {
+		t.Fatalf("filter must be evaluated once: expected 3 deleted, got %d", deleted)
+	}
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if rows[0]["n"].(int64) != 0 {
+		t.Fatalf("base rows must be deleted alongside the index: %v", rows)
+	}
+	fts, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 10)
+	if err != nil {
+		t.Fatalf("search after delete: %v", err)
+	}
+	if len(fts) != 0 {
+		t.Fatalf("expected empty search results, got %v", fts)
+	}
+}
