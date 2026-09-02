@@ -476,3 +476,40 @@ func TestUnknownToolIsProtocolError(t *testing.T) {
 		t.Fatalf("unknown tool must be a -32602 protocol error, not a tool-reported failure, got %d %v", code, res)
 	}
 }
+
+func TestTrailingGarbageIsParseError(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	res, err := http.Post(url, "application/json",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"} junk`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	var decoded map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&decoded)
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("trailing garbage must be HTTP 400, got %d", res.StatusCode)
+	}
+	errObj, ok := decoded["error"].(map[string]any)
+	if !ok || errObj["code"].(float64) != -32700 {
+		t.Fatalf("trailing garbage must be -32700 (invalid JSON), got %v", decoded)
+	}
+}
+
+func TestInitializeLargeCapabilityNumbersAccepted(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	res, err := http.Post(url, "application/json",
+		strings.NewReader(`{"jsonrpc":"2.0","id":40,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"vendor":{"limit":1e1000}}},"clientInfo":{"name":"c","version":"1"}}}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	var decoded map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&decoded)
+	res.Body.Close()
+	if decoded["error"] != nil {
+		t.Fatalf("large capability numbers are valid JSON, got error %v", decoded["error"])
+	}
+	if decoded["result"] == nil {
+		t.Fatalf("expected an initialize result, got %v", decoded)
+	}
+}

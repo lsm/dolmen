@@ -61,6 +61,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeRPCError(w, nil, jsonRPCParseError, "invalid JSON")
 		return
 	}
+	if err := probeDec.Decode(&struct{}{}); err != io.EOF {
+		writeRPCError(w, nil, jsonRPCParseError, "trailing content after JSON body")
+		return
+	}
 	var msg rpcMessage
 	if err := json.Unmarshal(body, &msg); err != nil {
 		writeRPCError(w, nil, jsonRPCInvalidReq, "expected a JSON-RPC 2.0 request object")
@@ -108,7 +112,9 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 				Version string `json:"version"`
 			} `json:"clientInfo"`
 		}
-		if err := json.Unmarshal(msg.Params, &params); err != nil {
+		initDec := json.NewDecoder(bytes.NewReader(msg.Params))
+		initDec.UseNumber()
+		if err := initDec.Decode(&params); err != nil {
 			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "invalid initialize params"}
 		}
 		if params.ProtocolVersion == "" {
