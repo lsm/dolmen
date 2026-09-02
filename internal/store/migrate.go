@@ -173,6 +173,9 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize)", ch.Op)
 		}
 	}
+	if len(cur.Fields) > MaxFieldsPerTable {
+		return nil, invalidf("migration would leave %d fields (max %d)", len(cur.Fields), MaxFieldsPerTable)
+	}
 	if err := schema.Validate(cur.Fields); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}

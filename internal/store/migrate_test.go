@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -547,5 +548,23 @@ func TestBackfillRequiresEmbedIdentity(t *testing.T) {
 	}
 	if sc.EmbedSpace != "" {
 		t.Fatalf("rolled-back migration must not persist an embed space: %+v", sc)
+	}
+}
+
+func TestMigrateEnforcesFieldCap(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	fields := make([]schema.Field, MaxFieldsPerTable)
+	for i := range fields {
+		fields[i] = schema.Field{Name: fmt.Sprintf("f%d", i), Type: schema.String}
+	}
+	if _, err := st.CreateTable(ctx, "test", "capped", fields); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	_, err := st.Migrate(ctx, "test", "capped", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "one_more", Type: schema.String}},
+	}, testEmbed)
+	if err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("migration past the field cap must be rejected with ErrInvalid, got %v", err)
 	}
 }
