@@ -45,9 +45,6 @@ func (o *OpenAI) Identity() string {
 }
 
 func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	if o.APIKey == "" {
-		return nil, fmt.Errorf("embedding API key missing: set DOLMEN_EMBED_API_KEY or OPENAI_API_KEY")
-	}
 	client := o.Client
 	if client == nil {
 		client = &http.Client{Timeout: 60 * time.Second}
@@ -69,7 +66,9 @@ func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float32, error)
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+o.APIKey)
+		if o.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+o.APIKey)
+		}
 		res, err := client.Do(req)
 		if err != nil {
 			return nil, err

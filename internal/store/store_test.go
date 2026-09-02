@@ -894,3 +894,77 @@ func TestMigrateReDerivesEmbedDimAfterDisable(t *testing.T) {
 		t.Fatalf("text-space search after dim change must work: %v", err)
 	}
 }
+
+func TestTruncationFlagAccuracy(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "exact", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	records := make([]map[string]any, 0, 1000)
+	for i := 0; i < 1000; i++ {
+		records = append(records, map[string]any{"v": "x"})
+	}
+	if _, err := st.Insert(ctx, "test", "exact", records, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, truncated, err := st.Query(ctx, "test", "SELECT * FROM exact", nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 1000 || truncated {
+		t.Fatalf("exactly 1000 rows must not be marked truncated: %d %v", len(rows), truncated)
+	}
+}
+
+func TestQueryByteBudget(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "bigvals", []schema.Field{
+		{Name: "v", Type: schema.Text},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	chunk := strings.Repeat("y", 12<<20)
+	for i := 0; i < 4; i++ {
+		if _, err := st.Insert(ctx, "test", "bigvals", []map[string]any{{"v": chunk}}, testEmbed); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+	rows, truncated, err := st.Query(ctx, "test", "SELECT v FROM bigvals", nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 3 || !truncated {
+		t.Fatalf("byte budget should cap at 3 of 4 12MiB rows (36MiB > 32MiB budget): %d truncated=%v", len(rows), truncated)
+	}
+}
+
+func TestBackfillSkipsEmptyStrings(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "empt", []schema.Field{
+		{Name: "s", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "empt", []map[string]any{
+		{"s": ""}, {"s": "real content"},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if _, err := st.Migrate(ctx, "test", "empt", []schema.Change{
+		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+	}, testEmbed); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM empt WHERE _embedding IS NULL", nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if rows[0]["n"].(int64) != 1 {
+		t.Fatalf("empty-string row must stay un-embedded: %v", rows)
+	}
+}

@@ -671,12 +671,15 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]
 
 const MaxQueryRows = 1000
 
+const MaxQueryBytes = 32 << 20
+
 func rowsToMaps(rows *sql.Rows) ([]map[string]any, bool, error) {
 	cols, err := rows.Columns()
 	if err != nil {
 		return nil, false, err
 	}
 	out := []map[string]any{}
+	total := 0
 	for rows.Next() {
 		vals := make([]any, len(cols))
 		ptrs := make([]any, len(cols))
@@ -686,16 +689,31 @@ func rowsToMaps(rows *sql.Rows) ([]map[string]any, bool, error) {
 		if err := rows.Scan(ptrs...); err != nil {
 			return nil, false, err
 		}
-		m := make(map[string]any, len(cols))
-		for i, c := range cols {
-			m[c] = normalizeVal(vals[i])
-		}
-		out = append(out, m)
-		if len(out) >= MaxQueryRows {
+		if len(out) >= MaxQueryRows || total >= MaxQueryBytes {
 			return out, true, rows.Err()
 		}
+		m := make(map[string]any, len(cols))
+		rowBytes := 0
+		for i, c := range cols {
+			v := normalizeVal(vals[i])
+			m[c] = v
+			rowBytes += approxSize(v)
+		}
+		total += rowBytes
+		out = append(out, m)
 	}
 	return out, false, rows.Err()
+}
+
+func approxSize(v any) int {
+	switch t := v.(type) {
+	case string:
+		return len(t)
+	case []byte:
+		return len(t)
+	default:
+		return 16
+	}
 }
 
 func normalizeVal(v any) any {
@@ -1148,8 +1166,8 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 			}
 			for {
 				rows, err := tx.QueryContext(ctx,
-					fmt.Sprintf(`SELECT id, %s FROM %s WHERE "_embedding" IS NULL AND %s IS NOT NULL ORDER BY id LIMIT 128`,
-						q(newVec.Name), q(table), q(newVec.Name)))
+					fmt.Sprintf(`SELECT id, %s FROM %s WHERE "_embedding" IS NULL AND %s IS NOT NULL AND %s != '' ORDER BY id LIMIT 128`,
+						q(newVec.Name), q(table), q(newVec.Name), q(newVec.Name)))
 				if err != nil {
 					return nil, err
 				}
