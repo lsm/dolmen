@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -76,8 +77,12 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 						return invalidf("cannot add required field %q to a table with %d existing rows (no backfill value can be supplied); add it nullable instead", f.Name, n)
 					}
 				}
+				ddl := schema.SQLType(f)
+				if f.Required {
+					ddl += ` NOT NULL`
+				}
 				_, err := tx.ExecContext(ctx,
-					fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, q(table), q(f.Name), schema.SQLType(f)))
+					fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, q(table), q(f.Name), ddl))
 				return err
 			})
 		case schema.OpRenameField:
@@ -211,6 +216,9 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 			if emb.Embed == nil {
 				return nil, invalidf("vectorize requires an embedding provider (set DOLMEN_EMBED_PROVIDER)")
 			}
+			if emb.Identity == "" {
+				return nil, invalidf("vectorize requires an embedding provider with a reported identity so backfilled rows are attributable to an embedding space")
+			}
 			for {
 				rows, err := tx.QueryContext(ctx,
 					fmt.Sprintf(`SELECT id, %s FROM %s WHERE "_embedding" IS NULL AND %s IS NOT NULL AND %s != '' ORDER BY id LIMIT 128`,
@@ -246,7 +254,18 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 				if err != nil {
 					return nil, fmt.Errorf("backfill embedding failed: %w", err)
 				}
+				if len(vecs) != len(texts) {
+					return nil, fmt.Errorf("backfill: embedding provider returned %d vectors for %d texts", len(vecs), len(texts))
+				}
 				for _, v := range vecs {
+					if len(v) == 0 {
+						return nil, invalidf("backfill: embedding provider returned a zero-dimensional vector for table %s", table)
+					}
+					for _, x := range v {
+						if math.IsNaN(float64(x)) || math.IsInf(float64(x), 0) {
+							return nil, invalidf("backfill: embedding provider returned a non-finite vector component for table %s", table)
+						}
+					}
 					if cur.EmbedDim == 0 {
 						cur.EmbedDim = len(v)
 					} else if len(v) != cur.EmbedDim {
@@ -261,9 +280,7 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 					}
 				}
 			}
-			if emb.Identity != "" {
-				cur.EmbedSpace = emb.Identity
-			}
+			cur.EmbedSpace = emb.Identity
 			if cur.EmbedDim == 0 {
 				var dim int
 				if err := tx.QueryRowContext(ctx,

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 
@@ -405,5 +406,118 @@ func TestRequiredFieldAdditionOnPopulatedTableRejected(t *testing.T) {
 		{Op: schema.OpAddField, Field: &schema.Field{Name: "opt", Type: schema.String}},
 	}, testEmbed); err != nil {
 		t.Fatalf("nullable addition must still work: %v", err)
+	}
+}
+
+func TestRequiredFieldAdditionCarriesNotNull(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "reqempty", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Migrate(ctx, "test", "reqempty", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "must", Type: schema.String, Required: true}},
+	}, testEmbed); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	rows, _, err := st.Query(ctx, "test", `SELECT "notnull" AS nn FROM pragma_table_info('reqempty') WHERE name = 'must'`, nil)
+	if err != nil {
+		t.Fatalf("pragma: %v", err)
+	}
+	if len(rows) != 1 || rows[0]["nn"].(int64) != 1 {
+		t.Fatalf("added required field must carry NOT NULL: %v", rows)
+	}
+}
+
+func TestBackfillRejectsShortProviderResponse(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "shortresp", []schema.Field{
+		{Name: "s", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "shortresp", []map[string]any{{"s": "a"}, {"s": "b"}, {"s": "c"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	short := Embedder{Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+		return fakeEmbed(ctx, texts[:1])
+	}, Identity: "fake-space"}
+	_, err := st.Migrate(ctx, "test", "shortresp", []schema.Change{
+		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+	}, short)
+	if err == nil || !strings.Contains(err.Error(), "3 texts") {
+		t.Fatalf("expected cardinality error, got %v", err)
+	}
+}
+
+func TestBackfillRejectsInvalidVectors(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "badvec", []schema.Field{
+		{Name: "s", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "badvec", []map[string]any{{"s": "a"}, {"s": "b"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	nan := float32(math.NaN())
+	cases := []struct {
+		name string
+		emb  Embedder
+	}{
+		{"zero-dim", Embedder{Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+			return make([][]float32, len(texts)), nil
+		}, Identity: "fake-space"}},
+		{"non-finite", Embedder{Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+			out := make([][]float32, len(texts))
+			for i := range out {
+				out[i] = []float32{1, nan, 0, 0, 0, 0, 0, 0}
+			}
+			return out, nil
+		}, Identity: "fake-space"}},
+	}
+	for _, tc := range cases {
+		if _, err := st.Migrate(ctx, "test", "badvec", []schema.Change{
+			{Op: schema.OpSetVectorize, Name: "s", Value: true},
+		}, tc.emb); err == nil {
+			t.Fatalf("%s: expected rejection", tc.name)
+		}
+	}
+	sc, _, err := st.DescribeTable(ctx, "test", "badvec")
+	if err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	if sc.Field("s").Vectorize {
+		t.Fatalf("rolled-back migration must not persist vectorize: %+v", sc)
+	}
+}
+
+func TestBackfillRequiresEmbedIdentity(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "noid", []schema.Field{
+		{Name: "s", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "noid", []map[string]any{{"s": "hello"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	noIdentity := Embedder{Embed: fakeEmbed}
+	if _, err := st.Migrate(ctx, "test", "noid", []schema.Change{
+		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+	}, noIdentity); err == nil {
+		t.Fatal("expected identity-less provider to be rejected for backfill")
+	}
+	sc, _, err := st.DescribeTable(ctx, "test", "noid")
+	if err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	if sc.EmbedSpace != "" {
+		t.Fatalf("rolled-back migration must not persist an embed space: %+v", sc)
 	}
 }
