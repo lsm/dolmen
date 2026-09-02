@@ -95,13 +95,24 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 	switch msg.Method {
 	case "initialize":
 		var params struct {
-			ProtocolVersion string `json:"protocolVersion"`
+			ProtocolVersion string         `json:"protocolVersion"`
+			Capabilities    map[string]any `json:"capabilities"`
+			ClientInfo      struct {
+				Name    string `json:"name"`
+				Version string `json:"version"`
+			} `json:"clientInfo"`
 		}
 		if err := json.Unmarshal(msg.Params, &params); err != nil {
 			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "invalid initialize params"}
 		}
 		if params.ProtocolVersion == "" {
 			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "initialize params must carry the client protocolVersion"}
+		}
+		if params.Capabilities == nil {
+			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "initialize params must carry the client capabilities object"}
+		}
+		if params.ClientInfo.Name == "" || params.ClientInfo.Version == "" {
+			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "initialize params must carry clientInfo with name and version"}
 		}
 		pv := protocolVersion
 		if params.ProtocolVersion == protocolVersion {
@@ -132,6 +143,9 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		}
 		if err := json.Unmarshal(msg.Params, &params); err != nil {
 			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "invalid tools/call params"}
+		}
+		if params.Name == "" {
+			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "tools/call params must carry the tool name"}
 		}
 		args := params.Arguments
 		if len(bytes.TrimSpace(args)) == 0 {

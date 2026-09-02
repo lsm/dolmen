@@ -69,7 +69,11 @@ func TestMCPProtocol(t *testing.T) {
 
 	code, res := rpc(t, url, map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "initialize",
-		"params": map[string]any{"protocolVersion": "2025-06-18"},
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "test-client", "version": "1.0"},
+		},
 	})
 	if code != 200 {
 		t.Fatalf("initialize status %d", code)
@@ -141,7 +145,11 @@ func TestInitializeUnsupportedVersionFallsBack(t *testing.T) {
 	url := newMCPServer(t).URL + "/mcp"
 	code, res := rpc(t, url, map[string]any{
 		"jsonrpc": "2.0", "id": 9, "method": "initialize",
-		"params": map[string]any{"protocolVersion": "1999-01-01"},
+		"params": map[string]any{
+			"protocolVersion": "1999-01-01",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "test-client", "version": "1.0"},
+		},
 	})
 	if code != 200 {
 		t.Fatalf("initialize status %d", code)
@@ -269,5 +277,35 @@ func TestMCPOversizedBodyReturns413(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized MCP body must 413, got %d", res.StatusCode)
+	}
+}
+
+func TestInitializeRequiresClientInfoAndCapabilities(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	code, res := rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 11, "method": "initialize",
+		"params": map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}},
+	})
+	if code != 200 {
+		t.Fatalf("unexpected status: %d", code)
+	}
+	errObj, ok := res["error"].(map[string]any)
+	if !ok || errObj["code"].(float64) != -32602 {
+		t.Fatalf("initialize without clientInfo must be -32602, got %v", res)
+	}
+}
+
+func TestToolsCallRequiresName(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	code, res := rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 12, "method": "tools/call",
+		"params": map[string]any{"arguments": map[string]any{"namespace": "x"}},
+	})
+	if code != 200 {
+		t.Fatalf("unexpected status: %d", code)
+	}
+	errObj, ok := res["error"].(map[string]any)
+	if !ok || errObj["code"].(float64) != -32602 {
+		t.Fatalf("tools/call without a name must be -32602 (malformed request, not a tool error), got %v", res)
 	}
 }
