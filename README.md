@@ -39,7 +39,7 @@ curl -s localhost:8790/v1/create_table -H 'Content-Type: application/json' -d '{
   "namespace": "myapp", "table": "events",
   "fields": [
     {"name": "title", "type": "string", "fulltext": true},
-    {"name": "detail", "type": "text", "vectorize": true},
+    {"name": "detail", "type": "text"},
     {"name": "score", "type": "number"}
   ]
 }'
@@ -53,6 +53,8 @@ curl -s localhost:8790/v1/search_fulltext -H 'Content-Type: application/json' -d
   "namespace": "myapp", "table": "events", "query": "bug"
 }'
 
+# text search needs a vectorize field on the table plus a provider (see below);
+# with plain fields, pass "vector": [0.1, ...] instead of "text"
 curl -s localhost:8790/v1/search_vector -H 'Content-Type: application/json' -d '{
   "namespace": "myapp", "table": "events", "text": "token expiry problems"
 }'
@@ -94,7 +96,8 @@ The MCP server exposes the same ten operations as tools (`tools/list` shows them
   millions of rows, zero index infrastructure. (This is the deliberate MVP trade.)
 - **Read-only SQL** runs on a `mode=ro` connection with a SELECT/WITH allowlist — defense in depth.
 - **Embeddings** are pluggable: `none` (caller supplies vectors) or any OpenAI-compatible endpoint.
-- Namespaces and tables are created implicitly on first use; no management surface to operate.
+- Namespaces are created implicitly on first use (one file per name); tables are not — call
+  `create_table` before inserting. No other management surface to operate.
 
 Storage sits behind the store layer, so engines like DuckDB-over-Parquet or Iceberg-over-S3 can be
 added as adapters without touching the API or MCP surface.

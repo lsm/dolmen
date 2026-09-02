@@ -12,7 +12,7 @@ pick one namespace per project or user and stay in it.
 
 The server endpoint comes from the environment: `DOLMEN_URL` (default `http://127.0.0.1:8790`).
 If the `dolmen` MCP tools are not connected, do not improvise — ask the user to run
-`claude mcp add --transport http dolmen $DOLMEN_URL/mcp`.
+`claude mcp add --transport http dolmen ${DOLMEN_URL:-http://127.0.0.1:8790}/mcp`.
 
 ## Working rules
 
@@ -31,7 +31,8 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
 
 ## Quick reference
 
-- Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`, `vector(dim)`.
+- Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`,
+  and `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field).
 - Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field —
   enables `search_vector` with `text`), `required: true`.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
@@ -44,15 +45,15 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
 Store session findings:
 
 ```
-describe_table(ns="research", table="findings")   → missing →
-infer_schema(samples=[{...one finding...}])       → review proposal →
-create_table(ns="research", table="findings", fields=[...])
-insert(ns="research", table="findings", records=[{...}])
+describe_table(namespace="research", table="findings")   → missing →
+infer_schema(samples=[{...one finding...}])               → review proposal →
+create_table(namespace="research", table="findings", fields=[...])
+insert(namespace="research", table="findings", records=[{...}])
 ```
 
 Recall in a later session:
 
 ```
-search_vector(ns="research", table="findings", text="what did we conclude about auth?")
-query(ns="research", sql="SELECT * FROM findings WHERE created_at >= ? ORDER BY created_at DESC", args=["2026-09-01"])
+search_vector(namespace="research", table="findings", text="what did we conclude about auth?")
+query(namespace="research", sql="SELECT * FROM findings WHERE created_at >= ? ORDER BY created_at DESC", args=["2026-09-01"])
 ```
