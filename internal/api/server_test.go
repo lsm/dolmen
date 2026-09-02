@@ -277,6 +277,9 @@ func TestCreateTableNameAndDimConstraintsDeclared(t *testing.T) {
 		t.Fatal("create_table op missing")
 	}
 	fields := def.InputSchema["properties"].(map[string]any)["fields"].(map[string]any)
+	if fields["uniqueItems"] != true {
+		t.Fatalf(`"fields" must declare uniqueItems to match duplicate-name rejection, got %v`, fields["uniqueItems"])
+	}
 	items := fields["items"].(map[string]any)
 	name := items["properties"].(map[string]any)["name"].(map[string]any)
 	if name["pattern"] != `^[a-z][a-z0-9_]{0,63}$` {

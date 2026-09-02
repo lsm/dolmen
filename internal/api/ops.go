@@ -65,6 +65,7 @@ var Ops = map[string]OpDef{
 					"type":        "array",
 					"description": "Field definitions",
 					"minItems":    1,
+					"uniqueItems": true,
 					"not": map[string]any{
 						"contains": map[string]any{
 							"properties": map[string]any{"vectorize": map[string]any{"const": true}},
