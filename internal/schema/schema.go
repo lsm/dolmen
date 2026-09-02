@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 type FieldType string
@@ -204,6 +205,26 @@ func DecodeVector(b []byte) ([]float32, error) {
 
 var isoRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}([Tt ][0-9:.+\-Zz]+)?$`)
 
+var timestampLayouts = []string{
+	time.RFC3339,
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04:05",
+	"2006-01-02",
+}
+
+func looksLikeTimestamp(s string) bool {
+	s = strings.TrimSpace(s)
+	if !isoRe.MatchString(s) {
+		return false
+	}
+	for _, layout := range timestampLayouts {
+		if _, err := time.Parse(layout, s); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func InferFields(samples []map[string]any) []Field {
 	kinds := map[string]map[string]bool{}
 	for _, s := range samples {
@@ -245,9 +266,7 @@ func InferFields(samples []map[string]any) []Field {
 			f.Type = JSON
 		case ks["string"]:
 			f.Type = String
-			if allStringsMatch(samples, k, func(s string) bool {
-				return isoRe.MatchString(strings.TrimSpace(s))
-			}) {
+			if allStringsMatch(samples, k, looksLikeTimestamp) {
 				f.Type = Timestamp
 			} else if allStringsMatch(samples, k, func(s string) bool {
 				return len(s) > 200 || strings.ContainsAny(s, "\n")

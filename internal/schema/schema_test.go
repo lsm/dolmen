@@ -159,3 +159,27 @@ func TestInferAllNullKeyRetained(t *testing.T) {
 		t.Fatalf("all-null key should infer nullable json, got %s", byName["name"].Type)
 	}
 }
+
+func TestInferInvalidTimestampsStayString(t *testing.T) {
+	for _, bad := range []string{"2026-99-99", "2026-01-01T++++", "2026-02-30"} {
+		fields := InferFields([]map[string]any{{"when": bad}})
+		if len(fields) != 1 || fields[0].Type != String {
+			t.Fatalf("date-shaped but invalid %q must infer string, got %+v", bad, fields)
+		}
+	}
+}
+
+func TestInferValidTimestampVariants(t *testing.T) {
+	for _, good := range []string{
+		"2026-09-01",
+		"2026-09-01T10:00:00Z",
+		"2026-09-01T10:00:00.5+02:00",
+		"2026-09-01 10:00:00",
+		"2026-09-01T10:00:05",
+	} {
+		fields := InferFields([]map[string]any{{"when": good}})
+		if len(fields) != 1 || fields[0].Type != Timestamp {
+			t.Fatalf("valid timestamp %q must infer timestamp, got %+v", good, fields)
+		}
+	}
+}
