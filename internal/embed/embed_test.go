@@ -83,3 +83,44 @@ func TestOpenAIOutOfRangeEmbeddingRejected(t *testing.T) {
 		t.Fatal("expected out-of-float32-range embedding value to be rejected")
 	}
 }
+
+func TestOpenAIRaggedBatchRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"index": 0, "embedding": []float64{0.1, 0.2, 0.3}},
+				{"index": 1, "embedding": []float64{0.4, 0.5}},
+			},
+		})
+	}))
+	defer srv.Close()
+	p := &OpenAI{BaseURL: srv.URL, Model: "m", APIKey: ""}
+	if _, err := p.Embed(context.Background(), []string{"a", "b"}); err == nil {
+		t.Fatal("expected ragged batch to be rejected")
+	}
+}
+
+func TestOpenAIRaggedAcrossBatchesRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Input []string `json:"input"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		data := make([]map[string]any, len(req.Input))
+		dims := []int{2, 2, 3}
+		for i := range req.Input {
+			vec := make([]float64, dims[i%len(dims)])
+			for j := range vec {
+				vec[j] = 0.1
+			}
+			data[i] = map[string]any{"index": i, "embedding": vec}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	defer srv.Close()
+	p := &OpenAI{BaseURL: srv.URL, Model: "m", APIKey: ""}
+	texts := make([]string, openAIBatch+1)
+	if _, err := p.Embed(context.Background(), texts); err == nil {
+		t.Fatal("expected ragged vectors across HTTP batches to be rejected")
+	}
+}

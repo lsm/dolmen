@@ -51,6 +51,7 @@ func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float32, error)
 		client = &http.Client{Timeout: 60 * time.Second}
 	}
 	out := make([][]float32, len(texts))
+	dim := 0
 	for start := 0; start < len(texts); start += openAIBatch {
 		end := start + openAIBatch
 		if end > len(texts) {
@@ -107,6 +108,11 @@ func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float32, error)
 			}
 			if len(d.Embedding) == 0 {
 				return nil, fmt.Errorf("embeddings API returned an empty embedding for input %d", start+i)
+			}
+			if dim == 0 {
+				dim = len(d.Embedding)
+			} else if len(d.Embedding) != dim {
+				return nil, fmt.Errorf("embeddings API returned a %d-dimensional vector for input %d after a %d-dimensional one", len(d.Embedding), start+i, dim)
 			}
 			vec := make([]float32, len(d.Embedding))
 			for j, e := range d.Embedding {
