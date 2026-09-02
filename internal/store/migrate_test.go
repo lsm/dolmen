@@ -496,6 +496,34 @@ func TestBackfillRejectsInvalidVectors(t *testing.T) {
 	}
 }
 
+func TestMigrateRejectsInjectedFieldName(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "victim", []schema.Field{
+		{Name: "keep", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "victim", []map[string]any{{"keep": "data"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	injected := `x"; DELETE FROM victim; --`
+	_, err := st.Migrate(ctx, "test", "victim", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: injected, Type: schema.String}},
+		{Op: schema.OpDropField, Name: injected},
+	}, testEmbed)
+	if err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected injected field name to be rejected at add time, got %v", err)
+	}
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM victim", nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if rows[0]["n"].(int64) != 1 {
+		t.Fatalf("victim table must be intact: %v", rows)
+	}
+}
+
 func TestBackfillRequiresEmbedIdentity(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()

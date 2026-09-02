@@ -54,6 +54,9 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 				return nil, invalidf("add_field needs a field object")
 			}
 			f := schema.Normalize([]schema.Field{*ch.Field})[0]
+			if !schema.ValidIdent(f.Name) {
+				return nil, invalidf("invalid field name %q", f.Name)
+			}
 			for _, ef := range cur.Fields {
 				if ef.Name == f.Name {
 					return nil, invalidf("field %q already exists", f.Name)
