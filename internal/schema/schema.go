@@ -278,13 +278,14 @@ func goKind(v any) string {
 
 func allStringsMatch(samples []map[string]any, key string, pred func(string) bool) bool {
 	for _, s := range samples {
-		v, ok := s[key]
-		if !ok {
-			continue
-		}
-		str, ok := v.(string)
-		if !ok || !pred(str) {
-			return false
+		for k, v := range s {
+			if strings.ToLower(k) != key {
+				continue
+			}
+			str, ok := v.(string)
+			if !ok || !pred(str) {
+				return false
+			}
 		}
 	}
 	return true

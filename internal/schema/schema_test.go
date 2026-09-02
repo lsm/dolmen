@@ -124,3 +124,12 @@ func TestInferCaseVariantKeysMerge(t *testing.T) {
 		t.Fatalf("merged same-kind variants should keep the kind, got %s", fields[0].Type)
 	}
 }
+
+func TestInferUppercaseKeyStringNotTimestamp(t *testing.T) {
+	fields := InferFields([]map[string]any{
+		{"Name": "Alice"},
+	})
+	if len(fields) != 1 || fields[0].Name != "name" || fields[0].Type != String {
+		t.Fatalf("plain name should infer string, got %+v", fields)
+	}
+}

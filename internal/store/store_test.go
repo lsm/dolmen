@@ -720,3 +720,32 @@ func TestRawVectorDimMismatchOnAutoEmbedding(t *testing.T) {
 		t.Fatal("expected wrong-length raw vector against auto-embeddings to be rejected")
 	}
 }
+
+func TestUnrelatedMigrationPreservesEmbedDim(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "dimkeep", []schema.Field{
+		{Name: "s", Type: schema.String, Vectorize: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "dimkeep", []map[string]any{{"s": "hello"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	sc, _, err := st.DescribeTable(ctx, "test", "dimkeep")
+	if err != nil || sc.EmbedDim != 8 {
+		t.Fatalf("expected embed_dim 8 before migrate, got %+v err=%v", sc, err)
+	}
+	if _, err := st.Migrate(ctx, "test", "dimkeep", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "extra", Type: schema.String}},
+	}, testEmbed); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	sc, _, err = st.DescribeTable(ctx, "test", "dimkeep")
+	if err != nil || sc.EmbedDim != 8 {
+		t.Fatalf("unrelated migration must preserve embed_dim, got %+v err=%v", sc, err)
+	}
+	if _, err := st.SearchVector(ctx, "test", "dimkeep", "", []float32{1, 0, 0, 0}, "", 5); err == nil {
+		t.Fatal("dim guard must survive unrelated migrations")
+	}
+}

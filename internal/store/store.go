@@ -959,7 +959,7 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 
 	fields := make([]schema.Field, len(old.Fields))
 	copy(fields, old.Fields)
-	cur := &schema.TableSchema{Namespace: nsName, Name: table, Version: old.Version, Fields: fields, EmbedSpace: old.EmbedSpace}
+	cur := &schema.TableSchema{Namespace: nsName, Name: table, Version: old.Version, Fields: fields, EmbedSpace: old.EmbedSpace, EmbedDim: old.EmbedDim}
 
 	type step func(ctx context.Context, tx *sql.Tx) error
 	var steps []step
@@ -1115,6 +1115,7 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 					fmt.Sprintf(`UPDATE %s SET "_embedding" = NULL`, q(table))); err != nil {
 					return nil, err
 				}
+				cur.EmbedDim = 0
 			}
 			if _, err := tx.ExecContext(ctx,
 				fmt.Sprintf(`ALTER TABLE %s ADD COLUMN "_embedding" BLOB`, q(table))); err != nil {
