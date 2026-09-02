@@ -30,6 +30,12 @@ DOLMEN_EMBED_PROVIDER=openai \
 DOLMEN_EMBED_API_KEY=sk-... \
 DOLMEN_EMBED_MODEL=text-embedding-3-small \
 ./dolmen
+
+# OpenAI-compatible local endpoints (Ollama, vLLM) need the base URL:
+DOLMEN_EMBED_PROVIDER=openai \
+DOLMEN_EMBED_BASE_URL=http://localhost:11434/v1 \
+DOLMEN_EMBED_MODEL=nomic-embed-text \
+./dolmen
 ```
 
 ### HTTP API
@@ -40,23 +46,24 @@ curl -s localhost:8790/v1/create_table -H 'Content-Type: application/json' -d '{
   "fields": [
     {"name": "title", "type": "string", "fulltext": true},
     {"name": "detail", "type": "text"},
-    {"name": "score", "type": "number"}
+    {"name": "score", "type": "number"},
+    {"name": "embedding", "type": "vector", "dim": 4}
   ]
 }'
 
 curl -s localhost:8790/v1/insert -H 'Content-Type: application/json' -d '{
   "namespace": "myapp", "table": "events",
-  "records": [{"title": "first bug", "detail": "token expiry not checked", "score": 0.9}]
+  "records": [{"title": "first bug", "detail": "token expiry not checked", "score": 0.9, "embedding": [0.1, 0.2, 0.3, 0.4]}]
 }'
 
 curl -s localhost:8790/v1/search_fulltext -H 'Content-Type: application/json' -d '{
   "namespace": "myapp", "table": "events", "query": "bug"
 }'
 
-# text search needs a vectorize field on the table plus a provider (see below);
-# with plain fields, pass "vector": [0.1, ...] instead of "text"
+# raw-vector search on the caller-supplied embedding column (no provider needed;
+# "text" queries instead require a vectorize field plus a provider — see below)
 curl -s localhost:8790/v1/search_vector -H 'Content-Type: application/json' -d '{
-  "namespace": "myapp", "table": "events", "text": "token expiry problems"
+  "namespace": "myapp", "table": "events", "vector": [0.1, 0.2, 0.3, 0.4]
 }'
 
 curl -s localhost:8790/v1/query -H 'Content-Type: application/json' -d '{

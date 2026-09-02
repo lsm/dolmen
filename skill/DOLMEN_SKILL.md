@@ -19,7 +19,10 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
 1. **Check before creating.** Call `list_tables` first; reuse an existing table when one fits.
    Only create tables for genuinely new kinds of data.
 2. **Prefer `infer_schema` → review → `create_table`.** Never invent a schema blind when sample
-   records exist. Keep tables small and purposeful — a sprawl of near-duplicate tables is a failure mode.
+   records exist. Note: inference proposes plain types only — during review, mark the main text
+   field `vectorize: true` yourself if you want semantic recall (requires an embedding provider
+   on the server). Keep tables small and purposeful — a sprawl of near-duplicate tables is a
+   failure mode.
 3. **Record as you go.** After finishing a meaningful unit of work, `insert` a record summarizing it
    (what/where/outcome). Future sessions recall it via search.
 4. **Read with the cheapest tool that answers the question:** `describe_table` → exact lookups via
@@ -54,6 +57,8 @@ insert(namespace="research", table="findings", records=[{...}])
 Recall in a later session:
 
 ```
-search_vector(namespace="research", table="findings", text="what did we conclude about auth?")
+search_fulltext(namespace="research", table="findings", query="auth")   # or search_vector with text
+                                                                       # when the table has a vectorize
+                                                                       # field and a provider is configured
 query(namespace="research", sql="SELECT * FROM findings WHERE created_at >= ? ORDER BY created_at DESC", args=["2026-09-01"])
 ```
