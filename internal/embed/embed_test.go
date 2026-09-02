@@ -124,3 +124,45 @@ func TestOpenAIRaggedAcrossBatchesRejected(t *testing.T) {
 		t.Fatal("expected ragged vectors across HTTP batches to be rejected")
 	}
 }
+
+func TestOpenAIMissingIndexRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"embedding": []float64{0.1, 0.2}}},
+		})
+	}))
+	defer srv.Close()
+	p := &OpenAI{BaseURL: srv.URL, Model: "m", APIKey: ""}
+	if _, err := p.Embed(context.Background(), []string{"a"}); err == nil {
+		t.Fatal("expected an embedding without an index to be rejected")
+	}
+}
+
+func TestFromEnvExplicitEmptyKeyOverridesFallback(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "secret")
+	t.Setenv("DOLMEN_EMBED_PROVIDER", "openai")
+	t.Setenv("DOLMEN_EMBED_MODEL", "m")
+	authSeen := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authSeen = r.Header.Get("Authorization")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"index": 0, "embedding": []float64{0.1, 0.2}}},
+		})
+	}))
+	defer srv.Close()
+	t.Setenv("DOLMEN_EMBED_BASE_URL", srv.URL)
+	t.Setenv("DOLMEN_EMBED_API_KEY", "")
+	p, ok := FromEnv().(*OpenAI)
+	if !ok {
+		t.Fatalf("expected *OpenAI from FromEnv, got %T", FromEnv())
+	}
+	if p.APIKey != "" {
+		t.Fatalf("explicit empty DOLMEN_EMBED_API_KEY must suppress the OPENAI_API_KEY fallback, got %q", p.APIKey)
+	}
+	if _, err := p.Embed(context.Background(), []string{"a"}); err != nil {
+		t.Fatalf("embed: %v", err)
+	}
+	if authSeen != "" {
+		t.Fatalf("no Authorization header expected, got %q", authSeen)
+	}
+}

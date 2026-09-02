@@ -85,7 +85,7 @@ func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float32, error)
 		}
 		var decoded struct {
 			Data []struct {
-				Index     int        `json:"index"`
+				Index     *int       `json:"index"`
 				Embedding []*float64 `json:"embedding"`
 			} `json:"data"`
 			Error *struct {
@@ -101,9 +101,14 @@ func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float32, error)
 		if len(decoded.Data) != len(batch) {
 			return nil, fmt.Errorf("embeddings API returned %d vectors for %d texts", len(decoded.Data), len(batch))
 		}
-		sort.SliceStable(decoded.Data, func(i, j int) bool { return decoded.Data[i].Index < decoded.Data[j].Index })
+		for i := range decoded.Data {
+			if decoded.Data[i].Index == nil {
+				return nil, fmt.Errorf("embeddings API returned an embedding without an index (position %d)", i)
+			}
+		}
+		sort.SliceStable(decoded.Data, func(i, j int) bool { return *decoded.Data[i].Index < *decoded.Data[j].Index })
 		for i, d := range decoded.Data {
-			if d.Index != i {
+			if *d.Index != i {
 				return nil, fmt.Errorf("embeddings API returned inconsistent indices (expected 0..%d)", len(batch)-1)
 			}
 			if len(d.Embedding) == 0 {
@@ -145,7 +150,7 @@ func FromEnv() Provider {
 		return &OpenAI{
 			BaseURL: envOr("DOLMEN_EMBED_BASE_URL", "https://api.openai.com/v1"),
 			Model:   envOr("DOLMEN_EMBED_MODEL", "text-embedding-3-small"),
-			APIKey:  envOr("DOLMEN_EMBED_API_KEY", os.Getenv("OPENAI_API_KEY")),
+			APIKey:  envOverride("DOLMEN_EMBED_API_KEY", os.Getenv("OPENAI_API_KEY")),
 		}
 	default:
 		return None{}
@@ -154,6 +159,13 @@ func FromEnv() Provider {
 
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func envOverride(key, fallback string) string {
+	if v, ok := os.LookupEnv(key); ok {
 		return v
 	}
 	return fallback
