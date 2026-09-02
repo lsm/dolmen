@@ -253,3 +253,33 @@ func TestOversizedBodyReturns413(t *testing.T) {
 		t.Fatalf("oversized body must return 413, got %d", res.StatusCode)
 	}
 }
+
+func TestContentTypeParsedExactly(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	srv := httptest.NewServer(OriginGuard(New(st, fakeEmb{}).Handler(), nil))
+	t.Cleanup(srv.Close)
+	for _, ct := range []string{"application/json", "application/json; charset=utf-8", "APPLICATION/JSON"} {
+		res, err := http.Post(srv.URL+"/v1/list_tables", ct, strings.NewReader(`{"namespace":"x"}`))
+		if err != nil {
+			t.Fatalf("post %s: %v", ct, err)
+		}
+		res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("valid media type %q must be accepted, got %d", ct, res.StatusCode)
+		}
+	}
+	for _, ct := range []string{"application/jsonp", "application/json-foo", "text/plain"} {
+		res, err := http.Post(srv.URL+"/v1/list_tables", ct, strings.NewReader(`{"namespace":"x"}`))
+		if err != nil {
+			t.Fatalf("post %s: %v", ct, err)
+		}
+		res.Body.Close()
+		if res.StatusCode != http.StatusUnsupportedMediaType {
+			t.Fatalf("invalid media type %q must be rejected with 415, got %d", ct, res.StatusCode)
+		}
+	}
+}

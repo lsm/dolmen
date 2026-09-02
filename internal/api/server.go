@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/url"
 	"sort"
@@ -180,8 +181,8 @@ func OriginGuard(next http.Handler, extraOrigins []string) http.Handler {
 			}
 		}
 		if r.Method == http.MethodPost {
-			ct := r.Header.Get("Content-Type")
-			if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)), "application/json") {
+			mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if err != nil || strings.ToLower(mt) != "application/json" {
 				writeJSONStatus(w, http.StatusUnsupportedMediaType, map[string]any{"ok": false, "error": "content-type must be application/json"})
 				return
 			}
