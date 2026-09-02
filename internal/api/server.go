@@ -476,6 +476,9 @@ func decode(body []byte, v any) error {
 	if err := dec.Decode(v); err != nil {
 		return badRequest("invalid JSON: %v", err)
 	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return badRequest("unexpected trailing content after JSON body")
+	}
 	return nil
 }
 

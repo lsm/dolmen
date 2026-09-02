@@ -666,7 +666,7 @@ func coerceValue(f schema.Field, v any) (any, error) {
 				return nil, fmt.Errorf("field %q: cannot marshal JSON: %w", f.Name, err)
 			}
 			return string(b), nil
-		case map[string]any, []any, bool, float64, int, int64:
+		case map[string]any, []any, bool, float64, int, int64, json.Number:
 			b, err := json.Marshal(j)
 			if err != nil {
 				return nil, fmt.Errorf("field %q: cannot marshal JSON: %w", f.Name, err)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/store"
@@ -258,5 +259,18 @@ func TestCORSPreflight(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusForbidden {
 		t.Fatalf("preflight for disallowed origin must be 403, got %d", res.StatusCode)
+	}
+}
+
+func TestTrailingContentRejected(t *testing.T) {
+	srv := newTestServer(t)
+	res, err := http.Post(srv.URL+"/v1/list_tables", "application/json",
+		strings.NewReader(`{"namespace":"x"} {"namespace":"y"}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for trailing content, got %d", res.StatusCode)
 	}
 }

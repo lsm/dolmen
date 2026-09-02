@@ -1217,3 +1217,25 @@ func TestQueryStepErrorsAreInvalidRequests(t *testing.T) {
 		t.Fatalf("expected step-time SQL error to classify as invalid request, got %v", err)
 	}
 }
+
+func TestJSONFieldAcceptsJSONNumbers(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "jn", []schema.Field{
+		{Name: "payload", Type: schema.JSON},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "jn", []map[string]any{
+		{"payload": json.Number("123")},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, _, err := st.Query(ctx, "test", "SELECT json_extract(payload, '$') AS v FROM jn", nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if rows[0]["v"].(int64) != 123 {
+		t.Fatalf("numeric json scalar lost: %v", rows[0]["v"])
+	}
+}
