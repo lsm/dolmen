@@ -241,3 +241,33 @@ func TestMalformedInitializeParamsRejected(t *testing.T) {
 		t.Fatalf("malformed initialize params must be -32602, got %v", res)
 	}
 }
+
+func TestInitializeRequiresProtocolVersion(t *testing.T) {
+	srv := newMCPServer(t)
+	code, res := rpc(t, srv.URL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      4,
+		"method":  "initialize",
+		"params":  map[string]any{},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("unexpected http status: %d", code)
+	}
+	errObj, ok := res["error"].(map[string]any)
+	if !ok || errObj["code"].(float64) != -32602 {
+		t.Fatalf("initialize without protocolVersion must be -32602, got %v", res)
+	}
+}
+
+func TestMCPOversizedBodyReturns413(t *testing.T) {
+	srv := newMCPServer(t)
+	big := bytes.Repeat([]byte("a"), 33<<20)
+	res, err := http.Post(srv.URL, "application/json", bytes.NewReader(big))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized MCP body must 413, got %d", res.StatusCode)
+	}
+}

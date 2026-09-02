@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -45,6 +46,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20))
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body exceeds the 32 MiB limit", http.StatusRequestEntityTooLarge)
+			return
+		}
 		writeRPCError(w, nil, jsonRPCParseError, "cannot read request body")
 		return
 	}
@@ -93,6 +99,9 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		}
 		if err := json.Unmarshal(msg.Params, &params); err != nil {
 			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "invalid initialize params"}
+		}
+		if params.ProtocolVersion == "" {
+			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "initialize params must carry the client protocolVersion"}
 		}
 		pv := protocolVersion
 		if params.ProtocolVersion == protocolVersion {
