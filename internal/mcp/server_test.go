@@ -521,7 +521,6 @@ func TestCapabilityShapesValidated(t *testing.T) {
 		`{"sampling":1}`,
 		`{"elicitation":"no"}`,
 		`{"experimental":"x"}`,
-		`{"logging":[]}`,
 		`{"roots":true}`,
 	} {
 		body := `{"jsonrpc":"2.0","id":50,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":` + caps + `,"clientInfo":{"name":"c","version":"1"}}}`
@@ -543,6 +542,7 @@ func TestCapabilityShapesValidated(t *testing.T) {
 		`{"elicitation":{}}`,
 		`{"experimental":{"vendor":{"limit":1e1000}}}`,
 		`{"customFuture":{"anything":[1,2]}}`,
+		`{"logging":[]}`,
 	} {
 		body := `{"jsonrpc":"2.0","id":51,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":` + caps + `,"clientInfo":{"name":"c","version":"1"}}}`
 		res, err := http.Post(url, "application/json", strings.NewReader(body))

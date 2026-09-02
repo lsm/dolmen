@@ -240,7 +240,7 @@ func validateCapabilityShapes(caps map[string]any) *rpcErr {
 			}
 		}
 	}
-	for _, key := range []string{"sampling", "elicitation", "experimental", "logging"} {
+	for _, key := range []string{"sampling", "elicitation", "experimental"} {
 		if v, ok := caps[key]; ok {
 			m, isObj := v.(map[string]any)
 			if !isObj {
