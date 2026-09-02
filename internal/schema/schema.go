@@ -76,7 +76,7 @@ func ValidIdent(s string) bool {
 }
 
 func ValidTableName(s string) bool {
-	return ValidIdent(s) && !strings.Contains(s, "__fts")
+	return ValidIdent(s) && !strings.Contains(s, "__fts") && !strings.HasPrefix(s, "sqlite_")
 }
 
 func Normalize(fields []Field) []Field {

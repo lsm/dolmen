@@ -229,3 +229,14 @@ func TestInferLowercaseRFC3339Separators(t *testing.T) {
 		}
 	}
 }
+
+func TestSQLiteReservedTableNamesRejected(t *testing.T) {
+	for _, name := range []string{"sqlite_master", "sqlite_sequence", "sqlite_foo"} {
+		if ValidTableName(name) {
+			t.Fatalf("sqlite_-prefixed name %q must be rejected", name)
+		}
+	}
+	if !ValidTableName("sqlitey_table") {
+		t.Fatal("names that merely start with the letters sqlite must stay valid")
+	}
+}
