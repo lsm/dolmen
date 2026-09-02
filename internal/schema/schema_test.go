@@ -279,3 +279,17 @@ func TestInferNamedStringTimestampDetection(t *testing.T) {
 		t.Fatalf("named string timestamp should infer timestamp, got %+v", fields)
 	}
 }
+
+func TestInferUintptrSamplesAreNumbers(t *testing.T) {
+	type handle uintptr
+	fields := InferFields([]map[string]any{{"p": uintptr(4), "h": handle(8)}})
+	byName := map[string]Field{}
+	for _, f := range fields {
+		byName[f.Name] = f
+	}
+	for _, name := range []string{"p", "h"} {
+		if byName[name].Type != Number {
+			t.Fatalf("uintptr sample %q should infer number, got %s", name, byName[name].Type)
+		}
+	}
+}

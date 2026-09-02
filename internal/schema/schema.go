@@ -312,7 +312,7 @@ func goKind(v any) string {
 	switch v.(type) {
 	case bool:
 		return "bool"
-	case float32, float64, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, json.Number:
+	case float32, float64, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, uintptr, json.Number:
 		return "number"
 	case string:
 		return "string"
@@ -323,7 +323,7 @@ func goKind(v any) string {
 	default:
 		switch reflect.TypeOf(v).Kind() {
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
 			reflect.Float32, reflect.Float64:
 			return "number"
 		case reflect.String:
