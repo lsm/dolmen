@@ -117,7 +117,11 @@ var Ops = map[string]OpDef{
 			if len(req.Samples) > 50 {
 				return nil, badRequest("too many samples: %d > 50", len(req.Samples))
 			}
-			return map[string]any{"fields": schema.InferFields(req.Samples)}, nil
+			fields := schema.InferFields(req.Samples)
+			if fields == nil {
+				fields = []schema.Field{}
+			}
+			return map[string]any{"fields": fields}, nil
 		},
 	},
 }

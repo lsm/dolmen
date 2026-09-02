@@ -221,3 +221,22 @@ func TestCreateTableDimSchemaIsInteger(t *testing.T) {
 		t.Fatalf(`"dim" must be declared integer (it decodes into an int field), got %v`, dim["type"])
 	}
 }
+
+func TestInferSchemaEmptyObjectsReturnArray(t *testing.T) {
+	srv := newTestServer(t)
+	code, body := post(t, srv.URL, "infer_schema", map[string]any{"samples": []map[string]any{{}}})
+	if code != http.StatusOK {
+		t.Fatalf("infer_schema with empty objects: %d %v", code, body)
+	}
+	data, ok := body["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected data object, got %v", body)
+	}
+	fields, ok := data["fields"].([]any)
+	if !ok {
+		t.Fatalf(`"fields" must serialize as an array, got %T (%v)`, data["fields"], data["fields"])
+	}
+	if len(fields) != 0 {
+		t.Fatalf("empty samples must infer zero fields, got %v", fields)
+	}
+}
