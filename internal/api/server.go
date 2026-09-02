@@ -207,6 +207,11 @@ func (s *Server) Handler() http.Handler {
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20))
 		if err != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				writeError(w, &Error{Status: http.StatusRequestEntityTooLarge, Message: "request body exceeds the 32 MiB limit"})
+				return
+			}
 			writeError(w, badRequest("cannot read body: %v", err))
 			return
 		}

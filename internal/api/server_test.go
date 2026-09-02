@@ -240,3 +240,16 @@ func TestInferSchemaEmptyObjectsReturnArray(t *testing.T) {
 		t.Fatalf("empty samples must infer zero fields, got %v", fields)
 	}
 }
+
+func TestOversizedBodyReturns413(t *testing.T) {
+	srv := newTestServer(t)
+	big := bytes.Repeat([]byte("a"), 33<<20)
+	res, err := http.Post(srv.URL+"/v1/list_tables", "application/json", bytes.NewReader(big))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized body must return 413, got %d", res.StatusCode)
+	}
+}
