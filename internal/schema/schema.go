@@ -312,8 +312,15 @@ func isNilValue(v any) bool {
 	if v == nil {
 		return true
 	}
-	switch rv := reflect.ValueOf(v); rv.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice, reflect.UnsafePointer:
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return true
+		}
+		rv = rv.Elem()
+	}
+	switch rv.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Slice, reflect.UnsafePointer:
 		return rv.IsNil()
 	}
 	return false
@@ -321,6 +328,9 @@ func isNilValue(v any) bool {
 
 func goKind(v any) string {
 	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return "other"
+		}
 		return goKind(rv.Elem().Interface())
 	}
 	switch v.(type) {

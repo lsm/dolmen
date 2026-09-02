@@ -334,3 +334,14 @@ func TestInferTypedNilTimestampStaysTimestamp(t *testing.T) {
 		t.Fatalf("typed nil must not downgrade a timestamp field, got %+v", fields)
 	}
 }
+
+func TestInferPointerChainToNilSkipped(t *testing.T) {
+	var p *string
+	fields := InferFields([]map[string]any{
+		{"name": &p},
+		{"name": "Alice"},
+	})
+	if len(fields) != 1 || fields[0].Type != String {
+		t.Fatalf("pointer chain ending in nil must be skipped, got %+v", fields)
+	}
+}
