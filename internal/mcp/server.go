@@ -112,6 +112,9 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 				Version string `json:"version"`
 			} `json:"clientInfo"`
 		}
+		if _, e := ensureObjectParams(msg.Params, "initialize"); e != nil {
+			return nil, e
+		}
 		initDec := json.NewDecoder(bytes.NewReader(msg.Params))
 		initDec.UseNumber()
 		if err := initDec.Decode(&params); err != nil {

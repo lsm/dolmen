@@ -629,3 +629,21 @@ func TestToolsCallMetaValidated(t *testing.T) {
 		t.Fatalf("object _meta with numeric progressToken must pass, got %d %v", code, res)
 	}
 }
+
+func TestInitializeMetaValidated(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	for _, meta := range []string{`1`, `{"progressToken":true}`} {
+		body := `{"jsonrpc":"2.0","id":80,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"c","version":"1"},"_meta":` + meta + `}}`
+		res, err := http.Post(url, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("post %s: %v", meta, err)
+		}
+		var decoded map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&decoded)
+		res.Body.Close()
+		errObj, ok := decoded["error"].(map[string]any)
+		if !ok || errObj["code"].(float64) != -32602 {
+			t.Fatalf("malformed initialize _meta %s must be -32602, got %v", meta, decoded)
+		}
+	}
+}
