@@ -65,6 +65,13 @@ var Ops = map[string]OpDef{
 					"type":        "array",
 					"description": "Field definitions",
 					"minItems":    1,
+					"not": map[string]any{
+						"contains": map[string]any{
+							"properties": map[string]any{"vectorize": map[string]any{"const": true}},
+							"required":   []string{"vectorize"},
+						},
+						"minContains": 2,
+					},
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
@@ -95,12 +102,39 @@ var Ops = map[string]OpDef{
 							"required": prop("boolean", "Reject inserts that omit this field"),
 						},
 						"required": []string{"name"},
-						"if": map[string]any{
-							"properties": map[string]any{"type": map[string]any{"const": string(schema.Vector)}},
-							"required":   []string{"type"},
+						"allOf": []any{
+							map[string]any{
+								"if": map[string]any{
+									"properties": map[string]any{"type": map[string]any{"const": string(schema.Vector)}},
+									"required":   []string{"type"},
+								},
+								"then": map[string]any{"required": []string{"dim"}},
+								"else": map[string]any{"not": map[string]any{"required": []string{"dim"}}},
+							},
+							map[string]any{
+								"if": map[string]any{
+									"properties": map[string]any{"fulltext": map[string]any{"const": true}},
+									"required":   []string{"fulltext"},
+								},
+								"then": map[string]any{
+									"properties": map[string]any{
+										"type": map[string]any{"enum": []schema.FieldType{schema.String, schema.Text}},
+										"name": map[string]any{"not": map[string]any{"const": "rank"}},
+									},
+								},
+							},
+							map[string]any{
+								"if": map[string]any{
+									"properties": map[string]any{"vectorize": map[string]any{"const": true}},
+									"required":   []string{"vectorize"},
+								},
+								"then": map[string]any{
+									"properties": map[string]any{
+										"type": map[string]any{"enum": []schema.FieldType{schema.String, schema.Text}},
+									},
+								},
+							},
 						},
-						"then": map[string]any{"required": []string{"dim"}},
-						"else": map[string]any{"not": map[string]any{"required": []string{"dim"}}},
 					},
 				},
 			},

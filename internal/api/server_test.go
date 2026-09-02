@@ -286,13 +286,54 @@ func TestCreateTableNameAndDimConstraintsDeclared(t *testing.T) {
 	if !ok || len(notEnum) != 6 {
 		t.Fatalf(`"name" must exclude the six reserved identifiers, got %v`, name["not"])
 	}
-	then, ok := items["then"].(map[string]any)["required"].([]string)
-	if !ok || len(then) != 1 || then[0] != "dim" {
-		t.Fatalf("vector fields must require dim via if/then, got %v", items["then"])
+	allOf, ok := items["allOf"].([]any)
+	if !ok || len(allOf) != 3 {
+		t.Fatalf("expected three conditional constraints (dim, fulltext, vectorize), got %v", items["allOf"])
 	}
-	elseNot, ok := items["else"].(map[string]any)["not"].(map[string]any)["required"].([]string)
+	dimRule := allOf[0].(map[string]any)
+	then, ok := dimRule["then"].(map[string]any)["required"].([]string)
+	if !ok || len(then) != 1 || then[0] != "dim" {
+		t.Fatalf("vector fields must require dim via if/then, got %v", dimRule["then"])
+	}
+	elseNot, ok := dimRule["else"].(map[string]any)["not"].(map[string]any)["required"].([]string)
 	if !ok || len(elseNot) != 1 || elseNot[0] != "dim" {
-		t.Fatalf("non-vector fields must reject dim via if/else, got %v", items["else"])
+		t.Fatalf("non-vector fields must reject dim via if/else, got %v", dimRule["else"])
+	}
+}
+
+func TestCreateTableFulltextAndVectorizeConstraintsDeclared(t *testing.T) {
+	def, ok := Ops["create_table"]
+	if !ok {
+		t.Fatal("create_table op missing")
+	}
+	fields := def.InputSchema["properties"].(map[string]any)["fields"].(map[string]any)
+	items := fields["items"].(map[string]any)
+	allOf, ok := items["allOf"].([]any)
+	if !ok || len(allOf) != 3 {
+		t.Fatalf("expected three conditional constraints, got %v", items["allOf"])
+	}
+	fulltextThen := allOf[1].(map[string]any)["then"].(map[string]any)["properties"].(map[string]any)
+	ftTypes, ok := fulltextThen["type"].(map[string]any)["enum"].([]schema.FieldType)
+	if !ok || len(ftTypes) != 2 || ftTypes[0] != schema.String || ftTypes[1] != schema.Text {
+		t.Fatalf("fulltext must be restricted to string/text, got %v", fulltextThen["type"])
+	}
+	if _, ok := fulltextThen["name"].(map[string]any)["not"].(map[string]any)["const"]; !ok {
+		t.Fatalf("fulltext fields must exclude the FTS5-reserved name rank, got %v", fulltextThen["name"])
+	}
+	vectorizeThen := allOf[2].(map[string]any)["then"].(map[string]any)["properties"].(map[string]any)
+	vzTypes, ok := vectorizeThen["type"].(map[string]any)["enum"].([]schema.FieldType)
+	if !ok || len(vzTypes) != 2 || vzTypes[0] != schema.String || vzTypes[1] != schema.Text {
+		t.Fatalf("vectorize must be restricted to string/text, got %v", vectorizeThen["type"])
+	}
+	notContains, ok := fields["not"].(map[string]any)
+	if !ok {
+		t.Fatalf("fields array must cap vectorize at one field, got %v", fields["not"])
+	}
+	if notContains["minContains"] != 2 {
+		t.Fatalf("vectorize cap must use not/contains/minContains 2, got %v", notContains)
+	}
+	if _, ok := notContains["contains"].(map[string]any)["properties"].(map[string]any)["vectorize"]; !ok {
+		t.Fatalf("vectorize cap must target the vectorize property, got %v", notContains["contains"])
 	}
 }
 
