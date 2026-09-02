@@ -11,9 +11,10 @@ var Ops = map[string]OpDef{
 	"list_tables": {
 		Description: "List tables in a namespace.",
 		InputSchema: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{"namespace": nsProp("Namespace to list tables in")},
-			"required":   []string{"namespace"},
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{"namespace": nsProp("Namespace to list tables in")},
+			"required":             []string{"namespace"},
 		},
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req nsReq
@@ -33,7 +34,8 @@ var Ops = map[string]OpDef{
 	"describe_table": {
 		Description: "Get the schema, version, and row count of a table.",
 		InputSchema: map[string]any{
-			"type": "object",
+			"type":                 "object",
+			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
 				"table":     tableProp("Table name"),
@@ -58,7 +60,8 @@ var Ops = map[string]OpDef{
 			"embeddings (dim required); vectorize=true on a string/text field makes the server embed that field automatically " +
 			"for vector search. Consider infer_schema first when starting from sample records.",
 		InputSchema: map[string]any{
-			"type": "object",
+			"type":                 "object",
+			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace to create the table in"),
 				"table":     tableProp("Table name (lowercase [a-z0-9_]; no sqlite_ prefix or __fts)"),
@@ -160,7 +163,8 @@ var Ops = map[string]OpDef{
 		Description: "Propose table fields from sample JSON records (types, fulltext and timestamp detection). " +
 			"Review the proposal, adjust, then call create_table. Nothing is created by this call.",
 		InputSchema: map[string]any{
-			"type": "object",
+			"type":                 "object",
+			"additionalProperties": false,
 			"properties": map[string]any{
 				"samples": map[string]any{
 					"type":        "array",

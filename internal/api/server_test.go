@@ -237,6 +237,17 @@ func TestInferSchemaSampleBoundsDeclared(t *testing.T) {
 	}
 }
 
+func TestAllOpSchemasClosedToUnknownProperties(t *testing.T) {
+	if len(Ops) != 4 {
+		t.Fatalf("expected the four metadata ops, got %d", len(Ops))
+	}
+	for name, def := range Ops {
+		if def.InputSchema["additionalProperties"] != false {
+			t.Fatalf("%s: top-level schema must reject unknown properties", name)
+		}
+	}
+}
+
 func TestCreateTableFieldsMinItemsDeclared(t *testing.T) {
 	def, ok := Ops["create_table"]
 	if !ok {
