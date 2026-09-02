@@ -1015,3 +1015,16 @@ func TestValidationRunsBeforeEmbedding(t *testing.T) {
 		t.Fatalf("embedding provider must not be called for invalid records: %d calls", calls)
 	}
 }
+
+func TestOversizedFirstQueryRowRejected(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "any", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, _, err := st.Query(ctx, "test", "SELECT zeroblob(34000000) AS b", nil); err == nil {
+		t.Fatal("expected oversized first row to be rejected")
+	}
+}

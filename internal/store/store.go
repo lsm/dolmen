@@ -392,6 +392,8 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 		return nil, true, err
 	}
 	persistMeta := sc.EmbedSpace == "" || sc.EmbedDim == 0
+	origEmbedSpace := sc.EmbedSpace
+	origEmbedDim := sc.EmbedDim
 	for _, rec := range records {
 		for k := range rec {
 			if sc.Field(k) == nil {
@@ -481,7 +483,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	if err != nil {
 		return nil, true, err
 	}
-	if scTx.Version != sc.Version || scTx.EmbedSpace != sc.EmbedSpace {
+	if scTx.Version != sc.Version || scTx.EmbedSpace != origEmbedSpace || scTx.EmbedDim != origEmbedDim {
 		return nil, false, nil
 	}
 
@@ -709,7 +711,13 @@ func rowsToMaps(rows *sql.Rows) ([]map[string]any, bool, error) {
 			m[c] = v
 			rowBytes += approxSize(v)
 		}
-		if len(out) > 0 && (len(out) >= MaxQueryRows || total+rowBytes > MaxQueryBytes) {
+		if len(out) >= MaxQueryRows {
+			return out, true, rows.Err()
+		}
+		if total+rowBytes > MaxQueryBytes {
+			if len(out) == 0 {
+				return nil, false, invalidf("query result exceeds the %d MiB response budget on its first row; select fewer or smaller columns", MaxQueryBytes>>20)
+			}
 			return out, true, rows.Err()
 		}
 		total += rowBytes
@@ -821,7 +829,10 @@ scan:
 			m[c] = v
 			rowBytes += approxSize(v)
 		}
-		if len(byID) > 0 && total+rowBytes > MaxQueryBytes {
+		if total+rowBytes > MaxQueryBytes {
+			if len(byID) == 0 {
+				return nil, false, invalidf("search result exceeds the %d MiB response budget on its first row", MaxQueryBytes>>20)
+			}
 			complete = false
 			break scan
 		}
