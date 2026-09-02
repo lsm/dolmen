@@ -326,6 +326,10 @@ func goKind(v any) string {
 			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
 			reflect.Float32, reflect.Float64:
 			return "number"
+		case reflect.String:
+			return "string"
+		case reflect.Bool:
+			return "bool"
 		}
 		return "other"
 	}
@@ -337,8 +341,8 @@ func allStringsMatch(samples []map[string]any, key string, pred func(string) boo
 			if strings.ToLower(k) != key || v == nil {
 				continue
 			}
-			str, ok := v.(string)
-			if !ok || !pred(str) {
+			rv := reflect.ValueOf(v)
+			if rv.Kind() != reflect.String || !pred(rv.String()) {
 				return false
 			}
 		}

@@ -255,3 +255,27 @@ func TestInferDefinedNumericTypesAreNumbers(t *testing.T) {
 		}
 	}
 }
+
+func TestInferDefinedStringAndBoolTypes(t *testing.T) {
+	type label string
+	type flag bool
+	fields := InferFields([]map[string]any{{"l": label("hello"), "f": flag(true)}})
+	byName := map[string]Field{}
+	for _, f := range fields {
+		byName[f.Name] = f
+	}
+	if byName["l"].Type != String {
+		t.Fatalf("defined string type should infer string, got %s", byName["l"].Type)
+	}
+	if byName["f"].Type != Boolean {
+		t.Fatalf("defined bool type should infer boolean, got %s", byName["f"].Type)
+	}
+}
+
+func TestInferNamedStringTimestampDetection(t *testing.T) {
+	type when string
+	fields := InferFields([]map[string]any{{"w": when("2026-09-01T10:00:00Z")}})
+	if len(fields) != 1 || fields[0].Type != Timestamp {
+		t.Fatalf("named string timestamp should infer timestamp, got %+v", fields)
+	}
+}
