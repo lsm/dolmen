@@ -385,6 +385,33 @@ func TestInvalidRequestIDRejected(t *testing.T) {
 	}
 }
 
+func TestEnvelopeErrorWithInvalidIDUsesNullID(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	res, err := http.Post(url, "application/json", strings.NewReader(`{"jsonrpc":"1.0","id":true,"method":"ping"}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	var decoded map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&decoded)
+	res.Body.Close()
+	if _, hasID := decoded["id"]; !hasID || decoded["id"] != nil {
+		t.Fatalf("envelope error for invalid id must carry a null id, got %v", decoded["id"])
+	}
+}
+
+func TestNullParamsRejected(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	for _, method := range []string{"ping", "tools/list"} {
+		code, res := rpc(t, url, map[string]any{
+			"jsonrpc": "2.0", "id": 21, "method": method, "params": nil,
+		})
+		errObj, ok := res["error"].(map[string]any)
+		if code != 200 || !ok || errObj["code"].(float64) != -32602 {
+			t.Fatalf("%s with explicit null params must be -32602, got %d %v", method, code, res)
+		}
+	}
+}
+
 func TestPingParamsValidated(t *testing.T) {
 	url := newMCPServer(t).URL + "/mcp"
 	for _, params := range []any{[]any{"x"}, 1} {

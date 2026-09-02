@@ -65,7 +65,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if msg.JSONRPC != "2.0" || msg.Method == "" {
-		writeRPCError(w, msg.ID, jsonRPCInvalidReq, "expected a JSON-RPC 2.0 request")
+		writeRPCError(w, validID(msg.ID), jsonRPCInvalidReq, "expected a JSON-RPC 2.0 request")
 		return
 	}
 	if msg.Method != "initialize" {
@@ -74,16 +74,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if len(msg.ID) > 0 {
-		var idProbe any
-		if err := json.Unmarshal(msg.ID, &idProbe); err == nil {
-			switch idProbe.(type) {
-			case string, float64:
-			default:
-				writeRPCError(w, nil, jsonRPCInvalidReq, "request id must be a string or number")
-				return
-			}
-		}
+	if len(msg.ID) > 0 && validID(msg.ID) == nil {
+		writeRPCError(w, nil, jsonRPCInvalidReq, "request id must be a string or number")
+		return
 	}
 	if len(msg.ID) == 0 {
 		w.WriteHeader(http.StatusAccepted)
@@ -195,9 +188,24 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 	}
 }
 
+func validID(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var probe any
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return nil
+	}
+	switch probe.(type) {
+	case string, float64:
+		return raw
+	}
+	return nil
+}
+
 func ensureObjectParams(raw []byte, what string) (map[string]any, *rpcErr) {
 	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+	if len(trimmed) == 0 {
 		return nil, nil
 	}
 	var probe map[string]any
