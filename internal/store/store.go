@@ -753,6 +753,12 @@ func rowsToMaps(rows *sql.Rows) ([]map[string]any, bool, error) {
 			if err := checkRowValue(c, vals[i]); err != nil {
 				return nil, false, err
 			}
+			if total+rowBytes+rawValSize(vals[i]) > MaxQueryBytes {
+				if len(out) == 0 {
+					return nil, false, invalidf("query result exceeds the %d MiB response budget on its first row; select fewer or smaller columns", MaxQueryBytes>>20)
+				}
+				return out, true, wrapStepErr(rows.Err())
+			}
 			v := normalizeVal(vals[i])
 			m[c] = v
 			rowBytes += approxSize(v)
@@ -791,6 +797,17 @@ func checkRowValue(col string, v any) error {
 		}
 	}
 	return nil
+}
+
+func rawValSize(v any) int {
+	switch t := v.(type) {
+	case []byte:
+		return len(t)
+	case string:
+		return len(t)
+	default:
+		return 16
+	}
 }
 
 func approxSize(v any) int {
@@ -915,16 +932,16 @@ scan:
 					id = v
 				}
 			}
+			if total+rowBytes+rawValSize(vals[i]) > MaxQueryBytes {
+				if len(byID) == 0 {
+					return nil, false, invalidf("search result exceeds the %d MiB response budget on its first row", MaxQueryBytes>>20)
+				}
+				complete = false
+				break scan
+			}
 			v := normalizeVal(vals[i])
 			m[c] = v
 			rowBytes += approxSize(v)
-		}
-		if total+rowBytes > MaxQueryBytes {
-			if len(byID) == 0 {
-				return nil, false, invalidf("search result exceeds the %d MiB response budget on its first row", MaxQueryBytes>>20)
-			}
-			complete = false
-			break scan
 		}
 		total += rowBytes
 		byID[id] = m

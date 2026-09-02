@@ -1264,3 +1264,16 @@ func TestLabelBytesEscapeAware(t *testing.T) {
 		t.Fatalf("escape-heavy labels must count against the response budget: %d truncated=%v", len(rows), truncated)
 	}
 }
+
+func TestCumulativeBudgetBeforeNormalization(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "cum", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, _, err := st.Query(ctx, "test", "SELECT zeroblob(30000000) AS a, zeroblob(30000000) AS b", nil); err == nil {
+		t.Fatal("expected cumulative oversized row to be rejected before normalization")
+	}
+}
