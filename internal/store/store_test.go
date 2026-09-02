@@ -1197,8 +1197,8 @@ func TestEncodedSizeCoversMandatoryEscapes(t *testing.T) {
 	if got := encodedSize(" "); got < 6 {
 		t.Fatalf("U+2028 should be charged at encoded size, got %d", got)
 	}
-	if got := encodedSize("\x80"); got < 3 {
-		t.Fatalf("invalid UTF-8 should be charged at replacement size, got %d", got)
+	if got := encodedSize("\x80"); got < 6 {
+		t.Fatalf("invalid UTF-8 should be charged at the \\ufffd escape size, got %d", got)
 	}
 	if got := encodedSize("plain"); got != 5 {
 		t.Fatalf("plain ascii miscounted: %d", got)

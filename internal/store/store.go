@@ -834,7 +834,7 @@ func encodedSize(s string) int {
 	if !utf8.ValidString(s) {
 		for _, r := range s {
 			if r == utf8.RuneError {
-				n += 2
+				n += 6
 			}
 		}
 	}
