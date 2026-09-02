@@ -7,22 +7,37 @@ import (
 	"strings"
 )
 
+func boundedLimit(n int) int {
+	if n <= 0 {
+		return 10
+	}
+	if n > 200 {
+		return 200
+	}
+	return n
+}
+
 func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string, limit int) ([]map[string]any, bool, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
 		return nil, false, err
 	}
-	sc, err := loadSchema(ctx, n.rw, nsName, table)
+	tx, err := n.ro.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback()
+	sc, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
 		return nil, false, err
 	}
 	if len(sc.FTSFields()) == 0 {
 		return nil, false, invalidf("table %s has no fulltext fields", table)
 	}
-	rows, err := n.rw.QueryContext(ctx,
+	rows, err := tx.QueryContext(ctx,
 		fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? ORDER BY rank LIMIT ?`,
 			q(ftsTable(table)), ftsTable(table)),
-		query, limit)
+		query, boundedLimit(limit))
 	if err != nil {
 		return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
@@ -38,14 +53,18 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 	if err := rows.Err(); err != nil {
 		return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	out, complete, err := fetchByIDs(ctx, n.rw, table, ids, nil)
+	out, complete, err := fetchByIDs(ctx, tx, table, ids, nil)
 	if err != nil {
 		return nil, false, err
 	}
 	return out, !complete, nil
 }
 
-func fetchByIDs(ctx context.Context, db *sql.DB, table string, ids []int64, vectorCols map[string]int) ([]map[string]any, bool, error) {
+type dbQueryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func fetchByIDs(ctx context.Context, db dbQueryer, table string, ids []int64, vectorCols map[string]int) ([]map[string]any, bool, error) {
 	if len(ids) == 0 {
 		return []map[string]any{}, true, nil
 	}

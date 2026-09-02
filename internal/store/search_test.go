@@ -163,7 +163,7 @@ func TestSearchLabelBudget(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
 	needle := strings.Repeat("f", 64)
-	fields := []schema.Field{{Name: needle, Type: schema.String, Fulltext: true}}
+	fields := []schema.Field{{Name: needle, Type: schema.String, Fulltext: true}, {Name: "payload", Type: schema.Text}}
 	long := strings.Repeat("c", 60)
 
 	for i := 0; i < 1500; i++ {
@@ -172,9 +172,10 @@ func TestSearchLabelBudget(t *testing.T) {
 	if _, err := st.CreateTable(ctx, "test", "wide", fields); err != nil {
 		t.Fatalf("create: %v", err)
 	}
+	big := strings.Repeat("p", 160<<10)
 	records := make([]map[string]any, 0, 250)
 	for i := 0; i < 250; i++ {
-		records = append(records, map[string]any{needle: "target"})
+		records = append(records, map[string]any{needle: "target", "payload": big})
 	}
 	if _, err := st.Insert(ctx, "test", "wide", records, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
@@ -183,7 +184,7 @@ func TestSearchLabelBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
-	if len(rows) >= 250 || !truncated {
+	if len(rows) >= 200 || !truncated {
 		t.Fatalf("wide-table labels must count against the budget: %d truncated=%v", len(rows), truncated)
 	}
 }
