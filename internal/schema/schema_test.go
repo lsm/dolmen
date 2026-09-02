@@ -84,3 +84,20 @@ func TestValidateAccepts(t *testing.T) {
 		t.Fatalf("unexpected rejection: %v", err)
 	}
 }
+
+func TestInferMixedScalarKindsFallbackToJSON(t *testing.T) {
+	fields := InferFields([]map[string]any{
+		{"v": true, "n": 1},
+		{"v": "unknown", "n": "2"},
+	})
+	byName := map[string]Field{}
+	for _, f := range fields {
+		byName[f.Name] = f
+	}
+	if byName["v"].Type != JSON {
+		t.Errorf("v: got %s, want json", byName["v"].Type)
+	}
+	if byName["n"].Type != JSON {
+		t.Errorf("n: got %s, want json", byName["n"].Type)
+	}
+}

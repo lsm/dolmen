@@ -24,6 +24,11 @@ import (
 
 type EmbedFn func(ctx context.Context, texts []string) ([][]float32, error)
 
+type Embedder struct {
+	Embed EmbedFn
+	Model string
+}
+
 var ErrNotFound = errors.New("not found")
 
 var ErrInvalid = errors.New("invalid request")
@@ -335,7 +340,7 @@ func dropFTS(ctx context.Context, tx *sql.Tx, table string) error {
 	return err
 }
 
-func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[string]any, embed EmbedFn) ([]int64, error) {
+func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[string]any, emb Embedder) ([]int64, error) {
 	if len(records) == 0 {
 		return nil, invalidf("no records given")
 	}
@@ -389,10 +394,13 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 			}
 		}
 		if len(texts) > 0 {
-			if embed == nil {
+			if emb.Embed == nil {
 				return nil, invalidf("table %s uses vectorize but no embedding provider is configured", table)
 			}
-			vecs, err := embed(ctx, texts)
+			if sc.EmbedModel != "" && emb.Model != "" && sc.EmbedModel != emb.Model {
+				return nil, invalidf("embedding model changed: table rows are embedded with %q but the provider now serves %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedModel, emb.Model)
+			}
+			vecs, err := emb.Embed(ctx, texts)
 			if err != nil {
 				return nil, fmt.Errorf("embedding failed: %w", err)
 			}
@@ -432,8 +440,13 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 			cols = append(cols, `"_embedding"`)
 			vals = append(vals, schema.EncodeVector(ev))
 		}
-		ph := strings.TrimSuffix(strings.Repeat("?,", len(cols)), ",")
-		stmt := fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s)`, q(table), strings.Join(cols, ", "), ph)
+		var stmt string
+		if len(cols) == 0 {
+			stmt = fmt.Sprintf(`INSERT INTO %s DEFAULT VALUES`, q(table))
+		} else {
+			ph := strings.TrimSuffix(strings.Repeat("?,", len(cols)), ",")
+			stmt = fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s)`, q(table), strings.Join(cols, ", "), ph)
+		}
 		res, err := tx.ExecContext(ctx, stmt, vals...)
 		if err != nil {
 			return nil, fmt.Errorf("insert into %s: %w", table, err)
@@ -458,6 +471,17 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 			if _, err := tx.ExecContext(ctx, fstmt, fvals...); err != nil {
 				return nil, fmt.Errorf("update search index for %s: %w", table, err)
 			}
+		}
+	}
+	if len(embFor) > 0 && sc.EmbedModel == "" && emb.Model != "" {
+		sc.EmbedModel = emb.Model
+		raw, err := json.Marshal(sc)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE _dolmen_tables SET schema_json = ? WHERE name = ?`, string(raw), table); err != nil {
+			return nil, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -709,7 +733,7 @@ func fetchByIDs(ctx context.Context, db *sql.DB, table string, ids []int64) ([]m
 	return out, nil
 }
 
-func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, vec []float32, limit int) ([]map[string]any, error) {
+func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, vec []float32, embedModel string, limit int) ([]map[string]any, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
 		return nil, err
@@ -737,6 +761,9 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 		dim = sc.Field(column).Dim
 	default:
 		return nil, invalidf("column %q is not a vector column", column)
+	}
+	if column == "_embedding" && sc.EmbedModel != "" && embedModel != "" && sc.EmbedModel != embedModel {
+		return nil, invalidf("embedding model changed: table rows are embedded with %q but the provider now serves %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedModel, embedModel)
 	}
 	if dim > 0 && len(vec) != dim {
 		return nil, invalidf("query vector has %d entries, column %s expects dim %d", len(vec), column, dim)
@@ -860,7 +887,7 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	return deleted, nil
 }
 
-func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []schema.Change, embed EmbedFn) (*schema.TableSchema, error) {
+func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder) (*schema.TableSchema, error) {
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
 	}
@@ -881,7 +908,7 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 
 	fields := make([]schema.Field, len(old.Fields))
 	copy(fields, old.Fields)
-	cur := &schema.TableSchema{Namespace: nsName, Name: table, Version: old.Version, Fields: fields}
+	cur := &schema.TableSchema{Namespace: nsName, Name: table, Version: old.Version, Fields: fields, EmbedModel: old.EmbedModel}
 
 	type step func(ctx context.Context, tx *sql.Tx) error
 	var steps []step
@@ -904,8 +931,10 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 				return nil, invalidf("add_field needs a field object")
 			}
 			f := schema.Normalize([]schema.Field{*ch.Field})[0]
-			if err := schema.Validate(append(append([]schema.Field{}, cur.Fields...), f)); err != nil {
-				return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+			for _, ef := range cur.Fields {
+				if ef.Name == f.Name {
+					return nil, invalidf("field %q already exists", f.Name)
+				}
 			}
 			cur.Fields = append(cur.Fields, f)
 			if f.Fulltext {
@@ -928,10 +957,14 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 				return nil, err
 			}
 			oldName := f.Name
-			f.Name = ch.To
-			if err := schema.Validate(cur.Fields); err != nil {
-				return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+			if ch.To != ch.From {
+				for _, ef := range cur.Fields {
+					if ef.Name == ch.To {
+						return nil, invalidf("field %q already exists", ch.To)
+					}
+				}
 			}
+			f.Name = ch.To
 			if f.Fulltext {
 				rebuildFTSNeeded = true
 			}
@@ -960,9 +993,6 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 				}
 			}
 			cur.Fields = append(cur.Fields[:idx], cur.Fields[idx+1:]...)
-			if err := schema.Validate(cur.Fields); err != nil {
-				return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
-			}
 			steps = append(steps, func(ctx context.Context, tx *sql.Tx) error {
 				_, err := tx.ExecContext(ctx,
 					fmt.Sprintf(`ALTER TABLE %s DROP COLUMN %s`, q(table), q(ch.Name)))
@@ -1028,7 +1058,8 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 	if vectorizeChanged {
 		newVec := vectorizeField(cur.Fields)
 		if newVec != nil {
-			if oldVec := old.VectorizeField(); oldVec != nil && oldVec.Name != newVec.Name {
+			modelChanged := cur.EmbedModel != "" && emb.Model != "" && cur.EmbedModel != emb.Model
+			if old.VectorizeField() != nil || modelChanged {
 				if _, err := tx.ExecContext(ctx,
 					fmt.Sprintf(`UPDATE %s SET "_embedding" = NULL`, q(table))); err != nil {
 					return nil, err
@@ -1040,38 +1071,41 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 					return nil, fmt.Errorf("add _embedding column: %w", err)
 				}
 			}
-			if embed == nil {
+			if emb.Embed == nil {
 				return nil, invalidf("vectorize requires an embedding provider (set DOLMEN_EMBED_PROVIDER)")
 			}
-			rows, err := tx.QueryContext(ctx,
-				fmt.Sprintf(`SELECT id, %s FROM %s WHERE "_embedding" IS NULL AND %s IS NOT NULL`,
-					q(newVec.Name), q(table), q(newVec.Name)))
-			if err != nil {
-				return nil, err
-			}
-			type pending struct {
-				id   int64
-				text string
-			}
-			var batch []pending
-			for rows.Next() {
-				var p pending
-				if err := rows.Scan(&p.id, &p.text); err != nil {
-					rows.Close()
+			for {
+				rows, err := tx.QueryContext(ctx,
+					fmt.Sprintf(`SELECT id, %s FROM %s WHERE "_embedding" IS NULL AND %s IS NOT NULL ORDER BY id LIMIT 128`,
+						q(newVec.Name), q(table), q(newVec.Name)))
+				if err != nil {
 					return nil, err
 				}
-				batch = append(batch, p)
-			}
-			rows.Close()
-			if err := rows.Err(); err != nil {
-				return nil, err
-			}
-			if len(batch) > 0 {
+				type pending struct {
+					id   int64
+					text string
+				}
+				var batch []pending
+				for rows.Next() {
+					var p pending
+					if err := rows.Scan(&p.id, &p.text); err != nil {
+						rows.Close()
+						return nil, err
+					}
+					batch = append(batch, p)
+				}
+				rows.Close()
+				if err := rows.Err(); err != nil {
+					return nil, err
+				}
+				if len(batch) == 0 {
+					break
+				}
 				texts := make([]string, len(batch))
 				for i, p := range batch {
 					texts[i] = p.text
 				}
-				vecs, err := embed(ctx, texts)
+				vecs, err := emb.Embed(ctx, texts)
 				if err != nil {
 					return nil, fmt.Errorf("backfill embedding failed: %w", err)
 				}
@@ -1082,6 +1116,9 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 						return nil, err
 					}
 				}
+			}
+			if emb.Model != "" {
+				cur.EmbedModel = emb.Model
 			}
 		} else if old.VectorizeField() != nil {
 			if _, err := tx.ExecContext(ctx,

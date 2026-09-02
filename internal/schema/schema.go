@@ -33,10 +33,11 @@ type Field struct {
 }
 
 type TableSchema struct {
-	Namespace string  `json:"namespace"`
-	Name      string  `json:"name"`
-	Version   int     `json:"version"`
-	Fields    []Field `json:"fields"`
+	Namespace  string  `json:"namespace"`
+	Name       string  `json:"name"`
+	Version    int     `json:"version"`
+	Fields     []Field `json:"fields"`
+	EmbedModel string  `json:"embed_model,omitempty"`
 }
 
 type Change struct {
@@ -72,7 +73,7 @@ func ValidIdent(s string) bool {
 }
 
 func ValidTableName(s string) bool {
-	return ValidIdent(s) && !strings.HasSuffix(s, "__fts")
+	return ValidIdent(s) && !strings.Contains(s, "__fts")
 }
 
 func Normalize(fields []Field) []Field {
@@ -221,7 +222,15 @@ func InferFields(samples []map[string]any) []Field {
 	for _, k := range keys {
 		f := Field{Name: strings.ToLower(k)}
 		ks := kinds[k]
+		scalars := 0
+		for _, kind := range []string{"bool", "number", "string"} {
+			if ks[kind] {
+				scalars++
+			}
+		}
 		switch {
+		case scalars > 1:
+			f.Type = JSON
 		case ks["bool"]:
 			f.Type = Boolean
 		case ks["number"]:

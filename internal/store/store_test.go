@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -21,6 +22,8 @@ func fakeEmbed(ctx context.Context, texts []string) ([][]float32, error) {
 	}
 	return out, nil
 }
+
+var testEmbed = Embedder{Embed: fakeEmbed, Model: "fake-model"}
 
 func openStore(t *testing.T) *Store {
 	t.Helper()
@@ -56,7 +59,7 @@ func mustInsertNotes(t *testing.T, st *Store) []int64 {
 		{"title": "first note", "body": "the dolmen stores stone tables", "score": 5, "done": true, "tags": []any{"a", "b"}, "emb": []any{1.0, 0, 0, 0}},
 		{"title": "second note", "body": "agents keep their memory here", "score": 3, "done": false, "emb": []any{0, 1.0, 0, 0}},
 		{"title": "third note", "body": "migration and schema evolution", "score": 1, "done": false, "emb": []any{0.9, 0.1, 0, 0}},
-	}, fakeEmbed)
+	}, testEmbed)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -114,7 +117,7 @@ func TestInsertValidation(t *testing.T) {
 
 	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{
 		{"title": "x", "bogus": 1},
-	}, fakeEmbed); err == nil {
+	}, testEmbed); err == nil {
 		t.Fatal("expected unknown field to be rejected")
 	}
 
@@ -125,19 +128,19 @@ func TestInsertValidation(t *testing.T) {
 	}
 	if _, err := st.Insert(ctx, "test", "req", []map[string]any{
 		{"title": "x"},
-	}, fakeEmbed); err == nil {
+	}, testEmbed); err == nil {
 		t.Fatal("expected missing required field to be rejected")
 	}
 
 	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{
 		{"title": "x", "emb": []any{1.0, 0, 0}},
-	}, fakeEmbed); err == nil {
+	}, testEmbed); err == nil {
 		t.Fatal("expected wrong vector dim to be rejected")
 	}
 
 	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{
 		{"title": "x", "score": "high"},
-	}, fakeEmbed); err == nil {
+	}, testEmbed); err == nil {
 		t.Fatal("expected wrong scalar type to be rejected")
 	}
 }
@@ -186,7 +189,7 @@ func TestVectorSearch(t *testing.T) {
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
 
-	rows, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0, 0, 0}, 2)
+	rows, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0, 0, 0}, "", 2)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
@@ -197,12 +200,12 @@ func TestVectorSearch(t *testing.T) {
 		t.Fatalf("expected cosine ~1, got %f", score)
 	}
 
-	if _, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0}, 2); err == nil {
+	if _, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0}, "", 2); err == nil {
 		t.Fatal("expected dim mismatch to be rejected")
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"the dolmen stores stone tables"})
-	rows, err = st.SearchVector(ctx, "test", "notes", "", qv[0], 1)
+	rows, err = st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-model", 1)
 	if err != nil {
 		t.Fatalf("vectorize search: %v", err)
 	}
@@ -220,7 +223,7 @@ func TestMigrate(t *testing.T) {
 	sc, err := st.Migrate(ctx, "test", "notes", []schema.Change{
 		{Op: schema.OpAddField, Field: &schema.Field{Name: "priority", Type: schema.Number}},
 		{Op: schema.OpRenameField, From: "title", To: "heading"},
-	}, fakeEmbed)
+	}, testEmbed)
 	if err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -230,7 +233,7 @@ func TestMigrate(t *testing.T) {
 
 	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{
 		{"heading": "fourth note", "body": "new row after migration", "priority": 7, "emb": []any{0, 0, 1.0, 0}},
-	}, fakeEmbed); err != nil {
+	}, testEmbed); err != nil {
 		t.Fatalf("insert after migrate: %v", err)
 	}
 
@@ -263,18 +266,18 @@ func TestMigrateVectorizeBackfill(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "plain", []map[string]any{
 		{"note": "hello world"},
 		{"note": "goodbye world"},
-	}, fakeEmbed); err != nil {
+	}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 
 	if _, err := st.Migrate(ctx, "test", "plain", []schema.Change{
 		{Op: schema.OpSetVectorize, Name: "note", Value: true},
-	}, fakeEmbed); err != nil {
+	}, testEmbed); err != nil {
 		t.Fatalf("migrate vectorize: %v", err)
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"hello world"})
-	rows, err := st.SearchVector(ctx, "test", "plain", "", qv[0], 1)
+	rows, err := st.SearchVector(ctx, "test", "plain", "", qv[0], "fake-model", 1)
 	if err != nil {
 		t.Fatalf("vector search after backfill: %v", err)
 	}
@@ -291,7 +294,7 @@ func TestDropFieldAndVersioning(t *testing.T) {
 
 	sc, err := st.Migrate(ctx, "test", "notes", []schema.Change{
 		{Op: schema.OpDropField, Name: "tags"},
-	}, fakeEmbed)
+	}, testEmbed)
 	if err != nil {
 		t.Fatalf("drop: %v", err)
 	}
@@ -309,7 +312,7 @@ func TestDropFieldAndVersioning(t *testing.T) {
 
 	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{
 		{"title": "x", "tags": []any{"nope"}},
-	}, fakeEmbed); err == nil {
+	}, testEmbed); err == nil {
 		t.Fatal("expected dropped field to be rejected on insert")
 	}
 }
@@ -377,19 +380,19 @@ func TestMigrateVectorizeSwitch(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "switch", []map[string]any{
 		{"a": "alpha content here", "b": "beta content here"},
 		{"a": "gamma content here", "b": "delta content here"},
-	}, fakeEmbed); err != nil {
+	}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 
 	if _, err := st.Migrate(ctx, "test", "switch", []schema.Change{
 		{Op: schema.OpSetVectorize, Name: "a", Value: false},
 		{Op: schema.OpSetVectorize, Name: "b", Value: true},
-	}, fakeEmbed); err != nil {
+	}, testEmbed); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"delta content here"})
-	rows, err := st.SearchVector(ctx, "test", "switch", "", qv[0], 2)
+	rows, err := st.SearchVector(ctx, "test", "switch", "", qv[0], "fake-model", 2)
 	if err != nil {
 		t.Fatalf("vector search after switch: %v", err)
 	}
@@ -418,7 +421,7 @@ func TestLargeDeleteUsesNoInParameterLists(t *testing.T) {
 		for i := 0; i < 600; i++ {
 			records = append(records, map[string]any{"title": fmt.Sprintf("row %d-%d", batch, i)})
 		}
-		if _, err := st.Insert(ctx, "test", "big", records, fakeEmbed); err != nil {
+		if _, err := st.Insert(ctx, "test", "big", records, testEmbed); err != nil {
 			t.Fatalf("insert batch %d: %v", batch, err)
 		}
 	}
@@ -472,5 +475,146 @@ func TestStoragePermissions(t *testing.T) {
 	}
 	if dbInfo.Mode().Perm() != 0o600 {
 		t.Fatalf("expected db file 0600, got %o", dbInfo.Mode().Perm())
+	}
+}
+
+func TestInsertEmptyRecordDefaultValues(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "opts", []schema.Field{
+		{Name: "x", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	ids, err := st.Insert(ctx, "test", "opts", []map[string]any{{}}, testEmbed)
+	if err != nil {
+		t.Fatalf("insert empty record: %v", err)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 id, got %v", ids)
+	}
+	rows, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM opts", nil)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if got := rows[0]["n"].(int64); got != 1 {
+		t.Fatalf("expected 1 row, got %d", got)
+	}
+}
+
+func TestDropAndReAddVectorizeField(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "recyc", []schema.Field{
+		{Name: "a", Type: schema.String, Vectorize: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "recyc", []map[string]any{
+		{"a": "old one"}, {"a": "old two"},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	if _, err := st.Migrate(ctx, "test", "recyc", []schema.Change{
+		{Op: schema.OpDropField, Name: "a"},
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "a", Type: schema.String, Vectorize: true}},
+	}, testEmbed); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	if _, err := st.Insert(ctx, "test", "recyc", []map[string]any{
+		{"a": "fresh row"},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert after re-add: %v", err)
+	}
+
+	qv, _ := fakeEmbed(ctx, []string{"fresh row"})
+	rows, err := st.SearchVector(ctx, "test", "recyc", "", qv[0], "fake-model", 5)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(rows) != 1 || rows[0]["a"] != "fresh row" {
+		t.Fatalf("stale embeddings survived drop+re-add: %v", rows)
+	}
+}
+
+func TestEmbedModelMismatchGuard(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "mm", []schema.Field{
+		{Name: "s", Type: schema.String, Vectorize: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "mm", []map[string]any{{"s": "hello"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	other := Embedder{Embed: fakeEmbed, Model: "other-model"}
+	if _, err := st.Insert(ctx, "test", "mm", []map[string]any{{"s": "more"}}, other); err == nil {
+		t.Fatal("expected insert with changed model to be rejected")
+	}
+
+	qv, _ := fakeEmbed(ctx, []string{"hello"})
+	if _, err := st.SearchVector(ctx, "test", "mm", "", qv[0], "other-model", 5); err == nil {
+		t.Fatal("expected search with changed model to be rejected")
+	}
+
+	if _, err := st.Migrate(ctx, "test", "mm", []schema.Change{
+		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+	}, other); err != nil {
+		t.Fatalf("migrate should re-baseline to the new model: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "mm", []map[string]any{{"s": "more"}}, other); err != nil {
+		t.Fatalf("insert after re-baseline: %v", err)
+	}
+}
+
+func TestFTSShadowTableNamesRejected(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	for _, name := range []string{"notes__fts", "notes__fts_data", "notes__fts_idx", "notes__fts_content"} {
+		if _, err := st.CreateTable(ctx, "test", name, noteFields()); err == nil {
+			t.Fatalf("expected shadow-table name %q to be rejected", name)
+		}
+	}
+	for _, name := range []string{"fts_notes", "myfts", "notes_fts"} {
+		if _, err := st.CreateTable(ctx, "test", name, noteFields()); err != nil {
+			t.Fatalf("expected ordinary name %q to be accepted: %v", name, err)
+		}
+	}
+}
+
+func TestChunkedVectorizeBackfill(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "chunky", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	records := make([]map[string]any, 0, 300)
+	for i := 0; i < 300; i++ {
+		records = append(records, map[string]any{"v": strings.Repeat("a", i+1) + strings.Repeat("b", 300-i)})
+	}
+	if _, err := st.Insert(ctx, "test", "chunky", records, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if _, err := st.Migrate(ctx, "test", "chunky", []schema.Change{
+		{Op: schema.OpSetVectorize, Name: "v", Value: true},
+	}, testEmbed); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	qv, _ := fakeEmbed(ctx, []string{strings.Repeat("a", 300) + "b"})
+	rows, err := st.SearchVector(ctx, "test", "chunky", "", qv[0], "fake-model", 1)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(rows) != 1 || rows[0]["v"] != strings.Repeat("a", 300)+"b" {
+		t.Fatalf("chunked backfill missed rows: %v", rows)
+	}
+	if score := rows[0]["_score"].(float64); score < 0.99 {
+		t.Fatalf("expected cosine ~1, got %f", score)
 	}
 }

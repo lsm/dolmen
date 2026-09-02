@@ -204,7 +204,7 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
-			ids, err := s.st.Insert(ctx, normNS(req.Namespace), normTable(req.Table), req.Records, s.embedFn())
+			ids, err := s.st.Insert(ctx, normNS(req.Namespace), normTable(req.Table), req.Records, s.embedder())
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -310,7 +310,7 @@ var Ops = map[string]OpDef{
 				return nil, badRequest("pass either text or vector")
 			}
 			results, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table),
-				strings.ToLower(strings.TrimSpace(req.Column)), vec, limit(req.Limit))
+				strings.ToLower(strings.TrimSpace(req.Column)), vec, s.emb.ModelName(), limit(req.Limit))
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -379,7 +379,7 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
-			sc, err := s.st.Migrate(ctx, normNS(req.Namespace), normTable(req.Table), req.Changes, s.embedFn())
+			sc, err := s.st.Migrate(ctx, normNS(req.Namespace), normTable(req.Table), req.Changes, s.embedder())
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -388,9 +388,12 @@ var Ops = map[string]OpDef{
 	},
 }
 
-func (s *Server) embedFn() store.EmbedFn {
-	return func(ctx context.Context, texts []string) ([][]float32, error) {
-		return s.emb.Embed(ctx, texts)
+func (s *Server) embedder() store.Embedder {
+	return store.Embedder{
+		Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+			return s.emb.Embed(ctx, texts)
+		},
+		Model: s.emb.ModelName(),
 	}
 }
 
