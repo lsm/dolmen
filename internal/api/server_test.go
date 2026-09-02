@@ -227,3 +227,36 @@ func TestOriginGuard(t *testing.T) {
 		t.Fatalf("GET healthz must pass guard, got %d", res.StatusCode)
 	}
 }
+
+func TestCORSPreflight(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	srv := httptest.NewServer(OriginGuard(New(st, fakeEmb{}).Handler(), []string{"https://app.example.com"}))
+	t.Cleanup(srv.Close)
+
+	req, _ := http.NewRequest(http.MethodOptions, srv.URL+"/v1/insert", nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusNoContent || res.Header.Get("Access-Control-Allow-Origin") != "https://app.example.com" {
+		t.Fatalf("preflight for allowed origin failed: %d %q", res.StatusCode, res.Header.Get("Access-Control-Allow-Origin"))
+	}
+
+	req, _ = http.NewRequest(http.MethodOptions, srv.URL+"/v1/insert", nil)
+	req.Header.Set("Origin", "http://evil.example")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("preflight for disallowed origin must be 403, got %d", res.StatusCode)
+	}
+}

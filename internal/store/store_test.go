@@ -76,7 +76,7 @@ func TestCreateInsertQuery(t *testing.T) {
 		t.Fatalf("expected 3 ids, got %d", len(ids))
 	}
 
-	rows, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
 	if err != nil {
 		t.Fatalf("query count: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestCreateInsertQuery(t *testing.T) {
 		t.Fatalf("expected 3 rows, got %d", got)
 	}
 
-	rows, err = st.Query(ctx, "test", "SELECT title FROM notes WHERE score > ? ORDER BY score DESC", []any{2})
+	rows, _, err = st.Query(ctx, "test", "SELECT title FROM notes WHERE score > ? ORDER BY score DESC", []any{2})
 	if err != nil {
 		t.Fatalf("query filter: %v", err)
 	}
@@ -92,13 +92,13 @@ func TestCreateInsertQuery(t *testing.T) {
 		t.Fatalf("unexpected rows: %v", rows)
 	}
 
-	if _, err := st.Query(ctx, "test", "DELETE FROM notes", nil); err == nil {
+	if _, _, err := st.Query(ctx, "test", "DELETE FROM notes", nil); err == nil {
 		t.Fatal("expected DELETE via query to be rejected")
 	}
-	if _, err := st.Query(ctx, "test", "INSERT INTO notes(title) VALUES('x')", nil); err == nil {
+	if _, _, err := st.Query(ctx, "test", "INSERT INTO notes(title) VALUES('x')", nil); err == nil {
 		t.Fatal("expected INSERT via query to be rejected")
 	}
-	if _, err := st.Query(ctx, "test", "SELECT 1; DROP TABLE notes", nil); err == nil {
+	if _, _, err := st.Query(ctx, "test", "SELECT 1; DROP TABLE notes", nil); err == nil {
 		t.Fatal("expected multi-statement to be rejected")
 	}
 
@@ -246,7 +246,7 @@ func TestMigrate(t *testing.T) {
 		t.Fatalf("fts not rebuilt after rename: %v", rows)
 	}
 
-	rows, err = st.Query(ctx, "test", "SELECT priority FROM notes WHERE heading = 'fourth note'", nil)
+	rows, _, err = st.Query(ctx, "test", "SELECT priority FROM notes WHERE heading = 'fourth note'", nil)
 	if err != nil {
 		t.Fatalf("query new column: %v", err)
 	}
@@ -434,7 +434,7 @@ func TestLargeDeleteUsesNoInParameterLists(t *testing.T) {
 	if deleted != 1200 {
 		t.Fatalf("expected 1200 deleted, got %d", deleted)
 	}
-	rows, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM big", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM big", nil)
 	if err != nil {
 		t.Fatalf("count after delete: %v", err)
 	}
@@ -494,7 +494,7 @@ func TestInsertEmptyRecordDefaultValues(t *testing.T) {
 	if len(ids) != 1 {
 		t.Fatalf("expected 1 id, got %v", ids)
 	}
-	rows, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM opts", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM opts", nil)
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
@@ -563,6 +563,7 @@ func TestEmbedModelMismatchGuard(t *testing.T) {
 	}
 
 	if _, err := st.Migrate(ctx, "test", "mm", []schema.Change{
+		{Op: schema.OpSetVectorize, Name: "s", Value: false},
 		{Op: schema.OpSetVectorize, Name: "s", Value: true},
 	}, other); err != nil {
 		t.Fatalf("migrate should re-baseline to the new model: %v", err)
@@ -634,7 +635,7 @@ func TestInferCreateInsertRoundTrip(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "mixed", samples, testEmbed); err != nil {
 		t.Fatalf("inserting the same samples must work: %v", err)
 	}
-	rows, err := st.Query(ctx, "test", "SELECT flag, note FROM mixed ORDER BY id", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT flag, note FROM mixed ORDER BY id", nil)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -657,7 +658,7 @@ func TestJSONFieldStringScalarsAreValidJSON(t *testing.T) {
 	}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	rows, err := st.Query(ctx, "test", "SELECT json_extract(v, '$') AS decoded FROM jf ORDER BY id", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT json_extract(v, '$') AS decoded FROM jf ORDER BY id", nil)
 	if err != nil {
 		t.Fatalf("json_extract over json field: %v", err)
 	}
@@ -686,7 +687,7 @@ func TestZeroVectorBlobAlwaysBase64InQuery(t *testing.T) {
 	}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	rows, err := st.Query(ctx, "test", "SELECT emb FROM notes WHERE title = 'zero'", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT emb FROM notes WHERE title = 'zero'", nil)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -784,5 +785,112 @@ func TestVectorFloat32OverflowRejected(t *testing.T) {
 	}
 	if _, err := st.Insert(ctx, "test", "of", []map[string]any{{"v": []any{1e300}}}, testEmbed); err == nil {
 		t.Fatal("expected out-of-float32-range vector entry to be rejected")
+	}
+}
+
+func TestQueryResultCap(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "cap", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	for b := 0; b < 2; b++ {
+		records := make([]map[string]any, 0, 600)
+		for i := 0; i < 600; i++ {
+			records = append(records, map[string]any{"v": "x"})
+		}
+		if _, err := st.Insert(ctx, "test", "cap", records, testEmbed); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	rows, truncated, err := st.Query(ctx, "test", "SELECT * FROM cap", nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 1000 || !truncated {
+		t.Fatalf("expected capped 1000 rows with truncated=true, got %d truncated=%v", len(rows), truncated)
+	}
+	rows, truncated, err = st.Query(ctx, "test", "SELECT count(*) AS n FROM cap", nil)
+	if err != nil || truncated {
+		t.Fatalf("small query must not be truncated: %v %v", err, truncated)
+	}
+	if rows[0]["n"].(int64) != 1200 {
+		t.Fatalf("expected 1200 total, got %v", rows[0]["n"])
+	}
+}
+
+func TestNoOpVectorizeMigrationSkipsReembed(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	calls := 0
+	counting := Embedder{Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+		calls++
+		return fakeEmbed(ctx, texts)
+	}, Identity: "fake-space"}
+	if _, err := st.CreateTable(ctx, "test", "noop", []schema.Field{
+		{Name: "s", Type: schema.String, Vectorize: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "noop", []map[string]any{{"s": "hello world"}}, counting); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	before := calls
+	if _, err := st.Migrate(ctx, "test", "noop", []schema.Change{
+		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+	}, counting); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if calls != before {
+		t.Fatalf("no-op migration re-embedded: %d -> %d", before, calls)
+	}
+	qv, _ := fakeEmbed(ctx, []string{"hello world"})
+	rows, err := st.SearchVector(ctx, "test", "noop", "", qv[0], "fake-space", 1)
+	if err != nil || len(rows) != 1 || rows[0]["s"] != "hello world" {
+		t.Fatalf("embeddings must survive no-op migration: %v %v", err, rows)
+	}
+}
+
+func TestMigrateReDerivesEmbedDimAfterDisable(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "redim", []schema.Field{
+		{Name: "s", Type: schema.String, Vectorize: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "redim", []map[string]any{{"s": "hello"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if _, err := st.Migrate(ctx, "test", "redim", []schema.Change{
+		{Op: schema.OpSetVectorize, Name: "s", Value: false},
+	}, testEmbed); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	shortEmbed := func(ctx context.Context, texts []string) ([][]float32, error) {
+		out := make([][]float32, len(texts))
+		for i := range texts {
+			out[i] = make([]float32, 4)
+			for j := range out[i] {
+				out[i][j] = 1
+			}
+		}
+		return out, nil
+	}
+	shifted := Embedder{Embed: shortEmbed, Identity: "fake-space"}
+	if _, err := st.Migrate(ctx, "test", "redim", []schema.Change{
+		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+	}, shifted); err != nil {
+		t.Fatalf("re-enable: %v", err)
+	}
+	sc, _, err := st.DescribeTable(ctx, "test", "redim")
+	if err != nil || sc.EmbedDim != 4 {
+		t.Fatalf("expected re-derived embed_dim 4, got %+v err=%v", sc, err)
+	}
+	qv, _ := shortEmbed(ctx, []string{"anything"})
+	if _, err := st.SearchVector(ctx, "test", "redim", "", qv[0], "fake-space", 5); err != nil {
+		t.Fatalf("text-space search after dim change must work: %v", err)
 	}
 }

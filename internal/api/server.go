@@ -235,11 +235,11 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
-			rows, err := s.st.Query(ctx, normNS(req.Namespace), req.SQL, req.Args)
+			rows, truncated, err := s.st.Query(ctx, normNS(req.Namespace), req.SQL, req.Args)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"rows": rows, "row_count": len(rows)}, nil
+			return map[string]any{"rows": rows, "row_count": len(rows), "truncated": truncated}, nil
 		},
 	},
 	"search_fulltext": {
@@ -523,6 +523,15 @@ func OriginGuard(next http.Handler, extraOrigins []string) http.Handler {
 			}
 			if !allowed {
 				writeJSONStatus(w, http.StatusForbidden, map[string]any{"ok": false, "error": "origin not allowed"})
+				return
+			}
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			if r.Method == http.MethodOptions {
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id")
+				w.Header().Set("Access-Control-Max-Age", "86400")
+				w.WriteHeader(http.StatusNoContent)
 				return
 			}
 		}

@@ -643,36 +643,38 @@ func coerceValue(f schema.Field, v any) (any, error) {
 
 var queryStartRe = regexp.MustCompile(`(?i)\A\s*(select|with)\b`)
 
-func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]map[string]any, error) {
+func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]map[string]any, bool, error) {
 	trimmed := strings.TrimRight(strings.TrimSpace(query), ";")
 	if !queryStartRe.MatchString(strings.TrimSpace(query)) {
-		return nil, invalidf("only read-only SELECT/WITH statements are allowed")
+		return nil, false, invalidf("only read-only SELECT/WITH statements are allowed")
 	}
 	if strings.Contains(trimmed, ";") {
-		return nil, invalidf("multiple statements are not allowed")
+		return nil, false, invalidf("multiple statements are not allowed")
 	}
 	if len(args) > 100 {
-		return nil, invalidf("too many query parameters")
+		return nil, false, invalidf("too many query parameters")
 	}
 	n, err := s.ns(nsName)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	rows, err := n.ro.QueryContext(ctx, trimmed, args...)
 	if err != nil && strings.Contains(err.Error(), "no such table") {
-		return nil, fmt.Errorf("%w: %w", ErrNotFound, err)
+		return nil, false, fmt.Errorf("%w: %w", ErrNotFound, err)
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
 	return rowsToMaps(rows)
 }
 
-func rowsToMaps(rows *sql.Rows) ([]map[string]any, error) {
+const MaxQueryRows = 1000
+
+func rowsToMaps(rows *sql.Rows) ([]map[string]any, bool, error) {
 	cols, err := rows.Columns()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	out := []map[string]any{}
 	for rows.Next() {
@@ -682,15 +684,18 @@ func rowsToMaps(rows *sql.Rows) ([]map[string]any, error) {
 			ptrs[i] = &vals[i]
 		}
 		if err := rows.Scan(ptrs...); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		m := make(map[string]any, len(cols))
 		for i, c := range cols {
 			m[c] = normalizeVal(vals[i])
 		}
 		out = append(out, m)
+		if len(out) >= MaxQueryRows {
+			return out, true, rows.Err()
+		}
 	}
-	return out, rows.Err()
+	return out, false, rows.Err()
 }
 
 func normalizeVal(v any) any {
@@ -1068,8 +1073,10 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 			if ch.Value && f.Type != schema.String && f.Type != schema.Text {
 				return nil, invalidf("field %q: fulltext is only allowed on string or text fields", f.Name)
 			}
-			f.Fulltext = ch.Value
-			rebuildFTSNeeded = true
+			if f.Fulltext != ch.Value {
+				f.Fulltext = ch.Value
+				rebuildFTSNeeded = true
+			}
 		case schema.OpSetVectorize:
 			f, err := findField(ch.Name)
 			if err != nil {
@@ -1085,8 +1092,10 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 					}
 				}
 			}
-			f.Vectorize = ch.Value
-			vectorizeChanged = true
+			if f.Vectorize != ch.Value {
+				f.Vectorize = ch.Value
+				vectorizeChanged = true
+			}
 		default:
 			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize)", ch.Op)
 		}
@@ -1126,8 +1135,8 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 					fmt.Sprintf(`UPDATE %s SET "_embedding" = NULL`, q(table))); err != nil {
 					return nil, err
 				}
-				cur.EmbedDim = 0
 			}
+			cur.EmbedDim = 0
 			if _, err := tx.ExecContext(ctx,
 				fmt.Sprintf(`ALTER TABLE %s ADD COLUMN "_embedding" BLOB`, q(table))); err != nil {
 				if !strings.Contains(err.Error(), "duplicate column") {
@@ -1171,6 +1180,13 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 				vecs, err := emb.Embed(ctx, texts)
 				if err != nil {
 					return nil, fmt.Errorf("backfill embedding failed: %w", err)
+				}
+				for _, v := range vecs {
+					if cur.EmbedDim == 0 {
+						cur.EmbedDim = len(v)
+					} else if len(v) != cur.EmbedDim {
+						return nil, invalidf("embedding provider returned %d-dimensional vectors mid-backfill (expected %d)", len(v), cur.EmbedDim)
+					}
 				}
 				for i, p := range batch {
 					if _, err := tx.ExecContext(ctx,
