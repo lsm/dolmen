@@ -136,3 +136,17 @@ func TestMCPProtocol(t *testing.T) {
 		t.Fatalf("expected 405 on GET, got %d", res2.StatusCode)
 	}
 }
+
+func TestInitializeUnsupportedVersionFallsBack(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	code, res := rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 9, "method": "initialize",
+		"params": map[string]any{"protocolVersion": "1999-01-01"},
+	})
+	if code != 200 {
+		t.Fatalf("initialize status %d", code)
+	}
+	if got := res["result"].(map[string]any)["protocolVersion"]; got != "2025-06-18" {
+		t.Fatalf("unsupported requested version must fall back to server version, got %v", got)
+	}
+}

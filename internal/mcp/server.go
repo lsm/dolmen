@@ -81,7 +81,7 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		}
 		_ = json.Unmarshal(msg.Params, &params)
 		pv := protocolVersion
-		if params.ProtocolVersion != "" {
+		if params.ProtocolVersion == protocolVersion {
 			pv = params.ProtocolVersion
 		}
 		return map[string]any{
