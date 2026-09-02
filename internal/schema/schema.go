@@ -320,6 +320,9 @@ func isNilValue(v any) bool {
 }
 
 func goKind(v any) string {
+	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer {
+		return goKind(rv.Elem().Interface())
+	}
 	switch v.(type) {
 	case bool:
 		return "bool"
@@ -349,14 +352,25 @@ func goKind(v any) string {
 func allStringsMatch(samples []map[string]any, key string, pred func(string) bool) bool {
 	for _, s := range samples {
 		for k, v := range s {
-			if strings.ToLower(k) != key || v == nil {
+			if strings.ToLower(k) != key || isNilValue(v) {
 				continue
 			}
-			rv := reflect.ValueOf(v)
-			if rv.Kind() != reflect.String || !pred(rv.String()) {
+			str, ok := underlyingString(v)
+			if !ok || !pred(str) {
 				return false
 			}
 		}
 	}
 	return true
+}
+
+func underlyingString(v any) (string, bool) {
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Pointer {
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.String {
+		return "", false
+	}
+	return rv.String(), true
 }

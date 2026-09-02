@@ -304,3 +304,33 @@ func TestInferTypedNilValuesSkipped(t *testing.T) {
 		t.Fatalf("typed nil must not turn a string field into json, got %+v", fields)
 	}
 }
+
+func TestInferPointerSamplesDereference(t *testing.T) {
+	name := "hello"
+	when := "2026-09-01T10:00:00Z"
+	fields := InferFields([]map[string]any{
+		{"s": &name, "w": &when},
+		{"s": "plain", "w": "2026-09-02T10:00:00Z"},
+	})
+	byName := map[string]Field{}
+	for _, f := range fields {
+		byName[f.Name] = f
+	}
+	if byName["s"].Type != String {
+		t.Fatalf("pointer string sample should infer string, got %s", byName["s"].Type)
+	}
+	if byName["w"].Type != Timestamp {
+		t.Fatalf("pointer timestamp sample should infer timestamp, got %s", byName["w"].Type)
+	}
+}
+
+func TestInferTypedNilTimestampStaysTimestamp(t *testing.T) {
+	var missing *string
+	fields := InferFields([]map[string]any{
+		{"when": "2026-09-01T10:00:00Z"},
+		{"when": missing},
+	})
+	if len(fields) != 1 || fields[0].Type != Timestamp {
+		t.Fatalf("typed nil must not downgrade a timestamp field, got %+v", fields)
+	}
+}
