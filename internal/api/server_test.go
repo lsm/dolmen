@@ -337,6 +337,31 @@ func TestCreateTableFulltextAndVectorizeConstraintsDeclared(t *testing.T) {
 	}
 }
 
+func TestNamespaceAndTablePatternsDeclared(t *testing.T) {
+	for _, op := range []string{"list_tables", "describe_table", "create_table"} {
+		def, ok := Ops[op]
+		if !ok {
+			t.Fatalf("%s op missing", op)
+		}
+		props := def.InputSchema["properties"].(map[string]any)
+		ns := props["namespace"].(map[string]any)
+		if ns["pattern"] != `^[a-z0-9][a-z0-9_-]{0,63}$` {
+			t.Fatalf("%s: namespace must carry the store ns pattern, got %v", op, ns["pattern"])
+		}
+		if op == "list_tables" {
+			continue
+		}
+		table := props["table"].(map[string]any)
+		if table["pattern"] != `^[a-z][a-z0-9_]{0,63}$` {
+			t.Fatalf("%s: table must carry the ValidIdent pattern, got %v", op, table["pattern"])
+		}
+		notAnyOf, ok := table["not"].(map[string]any)["anyOf"].([]any)
+		if !ok || len(notAnyOf) != 2 {
+			t.Fatalf("%s: table must exclude __fts and sqlite_ names, got %v", op, table["not"])
+		}
+	}
+}
+
 func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 	srv := newTestServer(t)
 	res, err := http.Get(srv.URL + "/v1/list_tables")

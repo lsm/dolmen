@@ -74,6 +74,28 @@ func prop(typ, desc string) map[string]any {
 	return map[string]any{"type": typ, "description": desc}
 }
 
+func nsProp(desc string) map[string]any {
+	return map[string]any{
+		"type":        "string",
+		"description": desc,
+		"pattern":     `^[a-z0-9][a-z0-9_-]{0,63}$`,
+	}
+}
+
+func tableProp(desc string) map[string]any {
+	return map[string]any{
+		"type":        "string",
+		"description": desc,
+		"pattern":     `^[a-z][a-z0-9_]{0,63}$`,
+		"not": map[string]any{
+			"anyOf": []any{
+				map[string]any{"pattern": "__fts"},
+				map[string]any{"pattern": "^sqlite_"},
+			},
+		},
+	}
+}
+
 func (s *Server) embedder() store.Embedder {
 	return store.Embedder{
 		Embed: func(ctx context.Context, texts []string) ([][]float32, error) {

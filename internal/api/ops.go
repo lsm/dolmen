@@ -11,7 +11,7 @@ var Ops = map[string]OpDef{
 		Description: "List tables in a namespace.",
 		InputSchema: map[string]any{
 			"type":       "object",
-			"properties": map[string]any{"namespace": prop("string", "Namespace to list tables in")},
+			"properties": map[string]any{"namespace": nsProp("Namespace to list tables in")},
 			"required":   []string{"namespace"},
 		},
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
@@ -34,8 +34,8 @@ var Ops = map[string]OpDef{
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"namespace": prop("string", "Namespace of the table"),
-				"table":     prop("string", "Table name"),
+				"namespace": nsProp("Namespace of the table"),
+				"table":     tableProp("Table name"),
 			},
 			"required": []string{"namespace", "table"},
 		},
@@ -59,8 +59,8 @@ var Ops = map[string]OpDef{
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"namespace": prop("string", "Namespace to create the table in"),
-				"table":     prop("string", "Table name (lowercase, [a-z0-9_])"),
+				"namespace": nsProp("Namespace to create the table in"),
+				"table":     tableProp("Table name (lowercase [a-z0-9_]; no sqlite_ prefix or __fts)"),
 				"fields": map[string]any{
 					"type":        "array",
 					"description": "Field definitions",
