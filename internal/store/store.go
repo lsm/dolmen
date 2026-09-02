@@ -734,7 +734,7 @@ func rowsToMaps(rows *sql.Rows) ([]map[string]any, bool, error) {
 			return nil, false, invalidf("column label exceeds 4096 bytes; use a shorter AS alias")
 		}
 		seen[c] = true
-		labelBytes += len(c) + 16
+		labelBytes += encodedSize(c) + 16
 	}
 	out := []map[string]any{}
 	total := 0

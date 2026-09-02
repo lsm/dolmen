@@ -1239,3 +1239,28 @@ func TestJSONFieldAcceptsJSONNumbers(t *testing.T) {
 		t.Fatalf("numeric json scalar lost: %v", rows[0]["v"])
 	}
 }
+
+func TestLabelBytesEscapeAware(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "lbl2", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	records := make([]map[string]any, 0, 60)
+	for i := 0; i < 60; i++ {
+		records = append(records, map[string]any{"v": strings.Repeat("\x01", 600000)})
+	}
+	if _, err := st.Insert(ctx, "test", "lbl2", records, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	alias := strings.Repeat("\x01", 4000)
+	rows, truncated, err := st.Query(ctx, "test", "SELECT v AS \""+alias+"\" FROM lbl2", nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) >= 60 || !truncated {
+		t.Fatalf("escape-heavy labels must count against the response budget: %d truncated=%v", len(rows), truncated)
+	}
+}
