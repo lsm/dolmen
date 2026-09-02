@@ -414,6 +414,21 @@ func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 	}
 }
 
+func TestUnknownOperationIs404ForAnyMethod(t *testing.T) {
+	srv := newTestServer(t)
+	res, err := http.Get(srv.URL + "/v1/no_such_op")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown operation must 404 regardless of method, got %d", res.StatusCode)
+	}
+	if res.Header.Get("Allow") != "" {
+		t.Fatalf("404 must not advertise Allow, got %q", res.Header.Get("Allow"))
+	}
+}
+
 func TestInferSchemaEmptyObjectsReturnArray(t *testing.T) {
 	srv := newTestServer(t)
 	code, body := post(t, srv.URL, "infer_schema", map[string]any{"samples": []map[string]any{{}}})

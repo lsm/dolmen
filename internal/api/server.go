@@ -226,6 +226,10 @@ func (s *Server) Handler() http.Handler {
 			writeError(w, notFound("unknown operation"))
 			return
 		}
+		if _, ok := Ops[op]; !ok {
+			writeError(w, notFound("unknown operation"))
+			return
+		}
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
 			writeError(w, &Error{Status: http.StatusMethodNotAllowed, Message: "use POST"})
