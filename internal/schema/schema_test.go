@@ -111,3 +111,16 @@ func TestInferStructuredMixedKindsFallbackToJSON(t *testing.T) {
 		t.Fatalf("scalar+object mix: got %s, want json", fields[0].Type)
 	}
 }
+
+func TestInferCaseVariantKeysMerge(t *testing.T) {
+	fields := InferFields([]map[string]any{
+		{"Name": "a"},
+		{"name": "b"},
+	})
+	if len(fields) != 1 || fields[0].Name != "name" {
+		t.Fatalf("case variants should merge into one field: %+v", fields)
+	}
+	if fields[0].Type != String {
+		t.Fatalf("merged same-kind variants should keep the kind, got %s", fields[0].Type)
+	}
+}

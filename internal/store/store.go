@@ -15,7 +15,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"unicode/utf8"
 
 	"github.com/lsm/dolmen/internal/schema"
 
@@ -507,8 +506,16 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			}
 		}
 	}
-	if len(embFor) > 0 && sc.EmbedSpace == "" && emb.Identity != "" {
-		sc.EmbedSpace = emb.Identity
+	if len(embFor) > 0 && (sc.EmbedSpace == "" || sc.EmbedDim == 0) {
+		if sc.EmbedSpace == "" && emb.Identity != "" {
+			sc.EmbedSpace = emb.Identity
+		}
+		if sc.EmbedDim == 0 {
+			for _, v := range embFor {
+				sc.EmbedDim = len(v)
+				break
+			}
+		}
 		raw, err := json.Marshal(sc)
 		if err != nil {
 			return nil, true, err
@@ -676,15 +683,10 @@ func rowsToMaps(rows *sql.Rows) ([]map[string]any, error) {
 }
 
 func normalizeVal(v any) any {
-	switch b := v.(type) {
-	case []byte:
-		if utf8.Valid(b) {
-			return string(b)
-		}
+	if b, ok := v.([]byte); ok {
 		return base64.StdEncoding.EncodeToString(b)
-	default:
-		return v
 	}
+	return v
 }
 
 func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string, limit int) ([]map[string]any, error) {
@@ -805,6 +807,9 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 	}
 	if column == "_embedding" && sc.EmbedSpace != "" && embedModel != "" && sc.EmbedSpace != embedModel {
 		return nil, invalidf("embedding model changed: table rows are embedded with %q but the provider now serves %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedSpace, embedModel)
+	}
+	if column == "_embedding" {
+		dim = sc.EmbedDim
 	}
 	if dim > 0 && len(vec) != dim {
 		return nil, invalidf("query vector has %d entries, column %s expects dim %d", len(vec), column, dim)
@@ -1165,6 +1170,13 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 			}
 			if emb.Identity != "" {
 				cur.EmbedSpace = emb.Identity
+			}
+			if cur.EmbedDim == 0 {
+				var dim int
+				if err := tx.QueryRowContext(ctx,
+					fmt.Sprintf(`SELECT length("_embedding") / 4 FROM %s WHERE "_embedding" IS NOT NULL LIMIT 1`, q(table))).Scan(&dim); err == nil && dim > 0 {
+					cur.EmbedDim = dim
+				}
 			}
 		} else if old.VectorizeField() != nil {
 			if _, err := tx.ExecContext(ctx,

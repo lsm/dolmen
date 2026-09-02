@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -673,5 +674,49 @@ func TestCaseVariantKeyCollisionRejected(t *testing.T) {
 		{"Title": "Alice", "title": "Bob"},
 	}, testEmbed); err == nil {
 		t.Fatal("expected case-variant key collision to be rejected")
+	}
+}
+
+func TestZeroVectorBlobAlwaysBase64InQuery(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{
+		{"title": "zero", "emb": []any{0, 0, 0, 0}},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, err := st.Query(ctx, "test", "SELECT emb FROM notes WHERE title = 'zero'", nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	b64, ok := rows[0]["emb"].(string)
+	if !ok {
+		t.Fatalf("expected string, got %T", rows[0]["emb"])
+	}
+	decoded, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil || len(decoded) != 16 {
+		t.Fatalf("expected base64 of a 16-byte zero vector, got %q", b64)
+	}
+	for _, b := range decoded {
+		if b != 0 {
+			t.Fatalf("expected zero bytes, got %q", b64)
+		}
+	}
+}
+
+func TestRawVectorDimMismatchOnAutoEmbedding(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "auto", []schema.Field{
+		{Name: "s", Type: schema.String, Vectorize: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "auto", []map[string]any{{"s": "hello"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if _, err := st.SearchVector(ctx, "test", "auto", "", []float32{1, 0, 0, 0}, "", 5); err == nil {
+		t.Fatal("expected wrong-length raw vector against auto-embeddings to be rejected")
 	}
 }
