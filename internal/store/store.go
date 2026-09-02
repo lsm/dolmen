@@ -821,17 +821,20 @@ func approxSize(v any) int {
 func encodedSize(s string) int {
 	n := len(s)
 	for i := 0; i < len(s); i++ {
-		if s[i] < 0x20 || s[i] == '"' || s[i] == '\\' {
-			n += 5
+		switch {
+		case s[i] < 0x20:
+			n += 6
+		case s[i] == '"' || s[i] == '\\':
+			n += 3
 		}
 	}
 	if strings.Contains(s, "\u2028") || strings.Contains(s, "\u2029") {
-		n += 3 * (strings.Count(s, "\u2028") + strings.Count(s, "\u2029"))
+		n += 4 * (strings.Count(s, "\u2028") + strings.Count(s, "\u2029"))
 	}
 	if !utf8.ValidString(s) {
 		for _, r := range s {
 			if r == utf8.RuneError {
-				n += 5
+				n += 2
 			}
 		}
 	}
@@ -883,7 +886,7 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 	return out, !complete, nil
 }
 
-func fetchByIDs(ctx context.Context, db *sql.DB, table string, ids []int64, vectorCols map[string]bool) ([]map[string]any, bool, error) {
+func fetchByIDs(ctx context.Context, db *sql.DB, table string, ids []int64, vectorCols map[string]int) ([]map[string]any, bool, error) {
 	if len(ids) == 0 {
 		return []map[string]any{}, true, nil
 	}
@@ -943,8 +946,12 @@ scan:
 			v := normalizeVal(vals[i])
 			m[c] = v
 			sz := approxSize(v)
-			if vectorCols[c] {
-				sz = sz * 9 / 2
+			if d, ok := vectorCols[c]; ok {
+				if d > 0 {
+					sz = d*27 + 8
+				} else {
+					sz = sz * 9 / 2
+				}
 			}
 			rowBytes += sz
 			if total+rowBytes+labelBytes > MaxQueryBytes {
@@ -1029,7 +1036,7 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 		ids[i] = h.id
 		scoreByID[h.id] = h.score
 	}
-	vectorCols := map[string]bool{column: true}
+	vectorCols := map[string]int{column: dim}
 	out, complete, err := fetchByIDs(ctx, n.rw, table, ids, vectorCols)
 	if err != nil {
 		return nil, false, err
