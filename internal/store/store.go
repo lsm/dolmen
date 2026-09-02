@@ -943,6 +943,13 @@ scan:
 				sz = sz * 9 / 2
 			}
 			rowBytes += sz
+			if total+rowBytes > MaxQueryBytes {
+				if len(byID) == 0 {
+					return nil, false, invalidf("search result exceeds the %d MiB response budget on its first row", MaxQueryBytes>>20)
+				}
+				complete = false
+				break scan
+			}
 		}
 		total += rowBytes
 		byID[id] = m
@@ -1212,6 +1219,16 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 				vectorizeChanged = true
 			}
 			steps = append(steps, func(ctx context.Context, tx *sql.Tx) error {
+				if f.Required {
+					var n int64
+					if err := tx.QueryRowContext(ctx,
+						fmt.Sprintf(`SELECT count(*) FROM %s`, q(table))).Scan(&n); err != nil {
+						return err
+					}
+					if n > 0 {
+						return invalidf("cannot add required field %q to a table with %d existing rows (no backfill value can be supplied); add it nullable instead", f.Name, n)
+					}
+				}
 				_, err := tx.ExecContext(ctx,
 					fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, q(table), q(f.Name), schema.SQLType(f)))
 				return err

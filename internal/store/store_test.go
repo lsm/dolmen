@@ -1333,3 +1333,27 @@ func TestVectorDecorationBudgeted(t *testing.T) {
 		t.Fatalf("decorated vectors must count against the budget: %d rows truncated=%v", len(rows), truncated)
 	}
 }
+
+func TestRequiredFieldAdditionOnPopulatedTableRejected(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "reqadd", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "reqadd", []map[string]any{{"v": "x"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	_, err := st.Migrate(ctx, "test", "reqadd", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "must", Type: schema.String, Required: true}},
+	}, testEmbed)
+	if err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected required-field addition on populated table to be rejected, got %v", err)
+	}
+	if _, err := st.Migrate(ctx, "test", "reqadd", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "opt", Type: schema.String}},
+	}, testEmbed); err != nil {
+		t.Fatalf("nullable addition must still work: %v", err)
+	}
+}
