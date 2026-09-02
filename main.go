@@ -9,8 +9,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
+
+	"github.com/lsm/dolmen/internal/api"
+	"github.com/lsm/dolmen/internal/embed"
+	"github.com/lsm/dolmen/internal/mcp"
+	"github.com/lsm/dolmen/internal/store"
 )
 
 const version = "0.1.0"
@@ -34,15 +40,30 @@ func run() error {
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
+	st, err := store.Open(*dataDir)
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer st.Close()
+
+	emb := embed.FromEnv()
+	apiSrv := api.New(st, emb)
+	mcpSrv := mcp.New(apiSrv)
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
+	mux.Handle("/mcp", mcpSrv)
+	mux.Handle("/", apiSrv.Handler())
+
+	var allowedOrigins []string
+	for _, o := range strings.Split(os.Getenv("DOLMEN_ALLOWED_ORIGINS"), ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			allowedOrigins = append(allowedOrigins, o)
+		}
+	}
 
 	httpSrv := &http.Server{
 		Addr:              *addr,
-		Handler:           mux,
+		Handler:           api.OriginGuard(mux, allowedOrigins),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -51,7 +72,8 @@ func run() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("dolmen listening", "addr", *addr, "data", *dataDir, "version", version)
+		slog.Info("dolmen listening", "addr", *addr, "data", *dataDir, "embed", emb.Name(), "version", version)
+		slog.Info("endpoints", "mcp", "http://"+*addr+"/mcp", "api", "http://"+*addr+"/v1/{op}", "health", "http://"+*addr+"/healthz")
 		slog.Warn("no authentication: keep this bound to a private interface")
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
