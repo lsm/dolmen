@@ -271,6 +271,31 @@ func TestCreateTableFieldTypeEnumDeclared(t *testing.T) {
 	}
 }
 
+func TestCreateTableNameAndDimConstraintsDeclared(t *testing.T) {
+	def, ok := Ops["create_table"]
+	if !ok {
+		t.Fatal("create_table op missing")
+	}
+	fields := def.InputSchema["properties"].(map[string]any)["fields"].(map[string]any)
+	items := fields["items"].(map[string]any)
+	name := items["properties"].(map[string]any)["name"].(map[string]any)
+	if name["pattern"] != `^[a-z][a-z0-9_]{0,63}$` {
+		t.Fatalf(`"name" must carry the ValidIdent pattern, got %v`, name["pattern"])
+	}
+	notEnum, ok := name["not"].(map[string]any)["enum"].([]string)
+	if !ok || len(notEnum) != 6 {
+		t.Fatalf(`"name" must exclude the six reserved identifiers, got %v`, name["not"])
+	}
+	then, ok := items["then"].(map[string]any)["required"].([]string)
+	if !ok || len(then) != 1 || then[0] != "dim" {
+		t.Fatalf("vector fields must require dim via if/then, got %v", items["then"])
+	}
+	elseNot, ok := items["else"].(map[string]any)["not"].(map[string]any)["required"].([]string)
+	if !ok || len(elseNot) != 1 || elseNot[0] != "dim" {
+		t.Fatalf("non-vector fields must reject dim via if/else, got %v", items["else"])
+	}
+}
+
 func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 	srv := newTestServer(t)
 	res, err := http.Get(srv.URL + "/v1/list_tables")

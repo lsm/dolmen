@@ -68,7 +68,14 @@ var Ops = map[string]OpDef{
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"name": prop("string", "Field name (lowercase, [a-z0-9_])"),
+							"name": map[string]any{
+								"type":        "string",
+								"description": "Field name (lowercase, [a-z0-9_], max 64 chars)",
+								"pattern":     `^[a-z][a-z0-9_]{0,63}$`,
+								"not": map[string]any{
+									"enum": []string{"id", "created_at", "_embedding", "_score", "_rank", "rowid"},
+								},
+							},
 							"type": map[string]any{
 								"type":        "string",
 								"description": "One of: string, text, number, boolean, timestamp, json, vector (omit to default to string)",
@@ -88,6 +95,12 @@ var Ops = map[string]OpDef{
 							"required": prop("boolean", "Reject inserts that omit this field"),
 						},
 						"required": []string{"name"},
+						"if": map[string]any{
+							"properties": map[string]any{"type": map[string]any{"const": string(schema.Vector)}},
+							"required":   []string{"type"},
+						},
+						"then": map[string]any{"required": []string{"dim"}},
+						"else": map[string]any{"not": map[string]any{"required": []string{"dim"}}},
 					},
 				},
 			},
