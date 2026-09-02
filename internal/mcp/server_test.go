@@ -445,3 +445,34 @@ func TestHugeNumericIDPreserved(t *testing.T) {
 		t.Fatalf("expected a result, got %v", decoded)
 	}
 }
+
+func TestLargeNumbersInArgumentsAccepted(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	res, err := http.Post(url, "application/json",
+		strings.NewReader(`{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"infer_schema","arguments":{"samples":[{"score":1e1000}]}}}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	var decoded map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&decoded)
+	res.Body.Close()
+	errObj, _ := decoded["error"].(map[string]any)
+	if errObj != nil && strings.Contains(errObj["message"].(string), "arguments must be an object") {
+		t.Fatalf("large numbers in arguments must not fail the object probe, got %v", errObj)
+	}
+	if decoded["result"] == nil {
+		t.Fatalf("expected a tool result, got %v", decoded)
+	}
+}
+
+func TestUnknownToolIsProtocolError(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	code, res := rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 31, "method": "tools/call",
+		"params": map[string]any{"name": "explode"},
+	})
+	errObj, ok := res["error"].(map[string]any)
+	if code != 200 || !ok || errObj["code"].(float64) != -32602 {
+		t.Fatalf("unknown tool must be a -32602 protocol error, not a tool-reported failure, got %d %v", code, res)
+	}
+}

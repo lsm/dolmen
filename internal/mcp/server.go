@@ -169,10 +169,15 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		if len(bytes.TrimSpace(args)) == 0 {
 			args = json.RawMessage("{}")
 		} else {
+			argDec := json.NewDecoder(bytes.NewReader(args))
+			argDec.UseNumber()
 			var argProbe map[string]any
-			if err := json.Unmarshal(args, &argProbe); err != nil || argProbe == nil {
+			if err := argDec.Decode(&argProbe); err != nil || argProbe == nil {
 				return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "tools/call arguments must be an object"}
 			}
+		}
+		if _, known := api.Ops[params.Name]; !known {
+			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: fmt.Sprintf("unknown tool %q", params.Name)}
 		}
 		res, err := s.api.Dispatch(ctx, params.Name, args)
 		if err != nil {
@@ -212,8 +217,10 @@ func ensureObjectParams(raw []byte, what string) (map[string]any, *rpcErr) {
 	if len(trimmed) == 0 {
 		return nil, nil
 	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
 	var probe map[string]any
-	if err := json.Unmarshal(trimmed, &probe); err != nil || probe == nil {
+	if err := dec.Decode(&probe); err != nil || probe == nil {
 		return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: fmt.Sprintf("invalid %s params", what)}
 	}
 	return probe, nil
