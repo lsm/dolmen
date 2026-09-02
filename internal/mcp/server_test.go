@@ -513,3 +513,46 @@ func TestInitializeLargeCapabilityNumbersAccepted(t *testing.T) {
 		t.Fatalf("expected an initialize result, got %v", decoded)
 	}
 }
+
+func TestCapabilityShapesValidated(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	for _, caps := range []string{
+		`{"roots":{"listChanged":"yes"}}`,
+		`{"sampling":1}`,
+		`{"elicitation":"no"}`,
+		`{"experimental":"x"}`,
+		`{"logging":[]}`,
+		`{"roots":true}`,
+	} {
+		body := `{"jsonrpc":"2.0","id":50,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":` + caps + `,"clientInfo":{"name":"c","version":"1"}}}`
+		res, err := http.Post(url, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("post %s: %v", caps, err)
+		}
+		var decoded map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&decoded)
+		res.Body.Close()
+		errObj, ok := decoded["error"].(map[string]any)
+		if !ok || errObj["code"].(float64) != -32602 {
+			t.Fatalf("malformed capabilities %s must be -32602, got %v", caps, decoded)
+		}
+	}
+	for _, caps := range []string{
+		`{"roots":{"listChanged":true}}`,
+		`{"sampling":false}`,
+		`{"experimental":{"vendor":{"limit":1e1000}}}`,
+		`{"customFuture":{"anything":[1,2]}}`,
+	} {
+		body := `{"jsonrpc":"2.0","id":51,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":` + caps + `,"clientInfo":{"name":"c","version":"1"}}}`
+		res, err := http.Post(url, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("post %s: %v", caps, err)
+		}
+		var decoded map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&decoded)
+		res.Body.Close()
+		if decoded["error"] != nil {
+			t.Fatalf("well-formed capabilities %s must pass, got %v", caps, decoded["error"])
+		}
+	}
+}

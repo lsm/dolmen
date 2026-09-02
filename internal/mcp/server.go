@@ -123,6 +123,9 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		if params.Capabilities == nil {
 			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "initialize params must carry the client capabilities object"}
 		}
+		if rpcErr := validateCapabilityShapes(params.Capabilities); rpcErr != nil {
+			return nil, rpcErr
+		}
 		if params.ClientInfo.Name == "" || params.ClientInfo.Version == "" {
 			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "initialize params must carry clientInfo with name and version"}
 		}
@@ -214,6 +217,36 @@ func validID(raw json.RawMessage) json.RawMessage {
 	switch probe.(type) {
 	case string, json.Number:
 		return raw
+	}
+	return nil
+}
+
+func validateCapabilityShapes(caps map[string]any) *rpcErr {
+	badShape := &rpcErr{Code: jsonRPCInvalidParam, Message: "malformed capability declaration"}
+	if v, ok := caps["roots"]; ok {
+		m, isObj := v.(map[string]any)
+		if !isObj {
+			return badShape
+		}
+		if lc, ok := m["listChanged"]; ok {
+			if _, isBool := lc.(bool); !isBool {
+				return badShape
+			}
+		}
+	}
+	for _, key := range []string{"sampling", "elicitation"} {
+		if v, ok := caps[key]; ok {
+			if _, isBool := v.(bool); !isBool {
+				return badShape
+			}
+		}
+	}
+	for _, key := range []string{"experimental", "logging"} {
+		if v, ok := caps[key]; ok {
+			if _, isObj := v.(map[string]any); !isObj {
+				return badShape
+			}
+		}
 	}
 	return nil
 }
