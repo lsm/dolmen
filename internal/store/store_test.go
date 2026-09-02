@@ -23,7 +23,7 @@ func fakeEmbed(ctx context.Context, texts []string) ([][]float32, error) {
 	return out, nil
 }
 
-var testEmbed = Embedder{Embed: fakeEmbed, Model: "fake-model"}
+var testEmbed = Embedder{Embed: fakeEmbed, Identity: "fake-space"}
 
 func openStore(t *testing.T) *Store {
 	t.Helper()
@@ -205,7 +205,7 @@ func TestVectorSearch(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"the dolmen stores stone tables"})
-	rows, err = st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-model", 1)
+	rows, err = st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 1)
 	if err != nil {
 		t.Fatalf("vectorize search: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestMigrateVectorizeBackfill(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"hello world"})
-	rows, err := st.SearchVector(ctx, "test", "plain", "", qv[0], "fake-model", 1)
+	rows, err := st.SearchVector(ctx, "test", "plain", "", qv[0], "fake-space", 1)
 	if err != nil {
 		t.Fatalf("vector search after backfill: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestMigrateVectorizeSwitch(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"delta content here"})
-	rows, err := st.SearchVector(ctx, "test", "switch", "", qv[0], "fake-model", 2)
+	rows, err := st.SearchVector(ctx, "test", "switch", "", qv[0], "fake-space", 2)
 	if err != nil {
 		t.Fatalf("vector search after switch: %v", err)
 	}
@@ -530,7 +530,7 @@ func TestDropAndReAddVectorizeField(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"fresh row"})
-	rows, err := st.SearchVector(ctx, "test", "recyc", "", qv[0], "fake-model", 5)
+	rows, err := st.SearchVector(ctx, "test", "recyc", "", qv[0], "fake-space", 5)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -551,13 +551,13 @@ func TestEmbedModelMismatchGuard(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	other := Embedder{Embed: fakeEmbed, Model: "other-model"}
+	other := Embedder{Embed: fakeEmbed, Identity: "other-space"}
 	if _, err := st.Insert(ctx, "test", "mm", []map[string]any{{"s": "more"}}, other); err == nil {
 		t.Fatal("expected insert with changed model to be rejected")
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"hello"})
-	if _, err := st.SearchVector(ctx, "test", "mm", "", qv[0], "other-model", 5); err == nil {
+	if _, err := st.SearchVector(ctx, "test", "mm", "", qv[0], "other-space", 5); err == nil {
 		t.Fatal("expected search with changed model to be rejected")
 	}
 
@@ -607,7 +607,7 @@ func TestChunkedVectorizeBackfill(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	qv, _ := fakeEmbed(ctx, []string{strings.Repeat("a", 300) + "b"})
-	rows, err := st.SearchVector(ctx, "test", "chunky", "", qv[0], "fake-model", 1)
+	rows, err := st.SearchVector(ctx, "test", "chunky", "", qv[0], "fake-space", 1)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -616,5 +616,28 @@ func TestChunkedVectorizeBackfill(t *testing.T) {
 	}
 	if score := rows[0]["_score"].(float64); score < 0.99 {
 		t.Fatalf("expected cosine ~1, got %f", score)
+	}
+}
+
+func TestInferCreateInsertRoundTrip(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	samples := []map[string]any{
+		{"flag": true, "note": "unknown"},
+		{"flag": "maybe", "note": "2"},
+	}
+	fields := schema.InferFields(samples)
+	if _, err := st.CreateTable(ctx, "test", "mixed", fields); err != nil {
+		t.Fatalf("create from inferred schema: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "mixed", samples, testEmbed); err != nil {
+		t.Fatalf("inserting the same samples must work: %v", err)
+	}
+	rows, err := st.Query(ctx, "test", "SELECT flag, note FROM mixed ORDER BY id", nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 2 || rows[0]["flag"] != "true" || rows[0]["note"] != "unknown" {
+		t.Fatalf("unexpected rows: %v", rows)
 	}
 }

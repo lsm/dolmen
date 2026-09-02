@@ -16,7 +16,7 @@ type fakeEmb struct{}
 
 func (fakeEmb) Name() string { return "fake" }
 
-func (fakeEmb) ModelName() string { return "fake-model" }
+func (fakeEmb) Identity() string { return "fake-space" }
 
 func (fakeEmb) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	out := make([][]float32, len(texts))

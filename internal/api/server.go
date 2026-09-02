@@ -310,7 +310,7 @@ var Ops = map[string]OpDef{
 				return nil, badRequest("pass either text or vector")
 			}
 			results, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table),
-				strings.ToLower(strings.TrimSpace(req.Column)), vec, s.emb.ModelName(), limit(req.Limit))
+				strings.ToLower(strings.TrimSpace(req.Column)), vec, s.emb.Identity(), limit(req.Limit))
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -393,7 +393,7 @@ func (s *Server) embedder() store.Embedder {
 		Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
 			return s.emb.Embed(ctx, texts)
 		},
-		Model: s.emb.ModelName(),
+		Identity: s.emb.Identity(),
 	}
 }
 

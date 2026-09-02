@@ -37,7 +37,7 @@ type TableSchema struct {
 	Name       string  `json:"name"`
 	Version    int     `json:"version"`
 	Fields     []Field `json:"fields"`
-	EmbedModel string  `json:"embed_model,omitempty"`
+	EmbedSpace string  `json:"embed_model,omitempty"`
 }
 
 type Change struct {
@@ -222,14 +222,14 @@ func InferFields(samples []map[string]any) []Field {
 	for _, k := range keys {
 		f := Field{Name: strings.ToLower(k)}
 		ks := kinds[k]
-		scalars := 0
-		for _, kind := range []string{"bool", "number", "string"} {
-			if ks[kind] {
-				scalars++
+		distinct := 0
+		for _, present := range ks {
+			if present {
+				distinct++
 			}
 		}
 		switch {
-		case scalars > 1:
+		case distinct > 1:
 			f.Type = JSON
 		case ks["bool"]:
 			f.Type = Boolean

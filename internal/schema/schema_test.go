@@ -101,3 +101,13 @@ func TestInferMixedScalarKindsFallbackToJSON(t *testing.T) {
 		t.Errorf("n: got %s, want json", byName["n"].Type)
 	}
 }
+
+func TestInferStructuredMixedKindsFallbackToJSON(t *testing.T) {
+	fields := InferFields([]map[string]any{
+		{"v": true},
+		{"v": map[string]any{"state": "unknown"}},
+	})
+	if fields[0].Type != JSON {
+		t.Fatalf("scalar+object mix: got %s, want json", fields[0].Type)
+	}
+}

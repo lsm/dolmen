@@ -25,8 +25,8 @@ import (
 type EmbedFn func(ctx context.Context, texts []string) ([][]float32, error)
 
 type Embedder struct {
-	Embed EmbedFn
-	Model string
+	Embed    EmbedFn
+	Identity string
 }
 
 var ErrNotFound = errors.New("not found")
@@ -247,11 +247,6 @@ func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []
 	if err != nil {
 		return nil, err
 	}
-	if _, err := loadSchema(ctx, n.rw, nsName, table); err == nil {
-		return nil, invalidf("table %s.%s already exists", nsName, table)
-	} else if !errors.Is(err, ErrNotFound) {
-		return nil, err
-	}
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf(`CREATE TABLE %s (id INTEGER PRIMARY KEY, created_at TEXT NOT NULL DEFAULT (strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ','now'))`, q(table)))
@@ -268,6 +263,11 @@ func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []
 		return nil, err
 	}
 	defer tx.Rollback()
+	if _, err := loadSchema(ctx, tx, nsName, table); err == nil {
+		return nil, invalidf("table %s.%s already exists", nsName, table)
+	} else if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
 	if _, err := tx.ExecContext(ctx, sb.String()); err != nil {
 		return nil, err
 	}
@@ -351,11 +351,6 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 	if err != nil {
 		return nil, err
 	}
-	sc, err := loadSchema(ctx, n.rw, nsName, table)
-	if err != nil {
-		return nil, err
-	}
-
 	normalized := make([]map[string]any, len(records))
 	for i, rec := range records {
 		nr := make(map[string]any, len(rec))
@@ -366,10 +361,26 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 	}
 	records = normalized
 
+	for attempt := 0; ; attempt++ {
+		if attempt >= 3 {
+			return nil, invalidf("table schema changed concurrently; retry the insert")
+		}
+		ids, done, err := s.insertAttempt(ctx, n, nsName, table, records, emb)
+		if done {
+			return ids, err
+		}
+	}
+}
+
+func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder) (ids []int64, done bool, err error) {
+	sc, err := loadSchema(ctx, n.rw, nsName, table)
+	if err != nil {
+		return nil, true, err
+	}
 	for _, rec := range records {
 		for k := range rec {
 			if sc.Field(k) == nil {
-				return nil, invalidf("unknown field %q on table %s (see describe_table)", k, table)
+				return nil, true, invalidf("unknown field %q on table %s (see describe_table)", k, table)
 			}
 		}
 		for _, f := range sc.Fields {
@@ -378,7 +389,7 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 				continue
 			}
 			if f.Required && (!present || v == nil) {
-				return nil, invalidf("field %q is required", f.Name)
+				return nil, true, invalidf("field %q is required", f.Name)
 			}
 		}
 	}
@@ -395,17 +406,17 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 		}
 		if len(texts) > 0 {
 			if emb.Embed == nil {
-				return nil, invalidf("table %s uses vectorize but no embedding provider is configured", table)
+				return nil, true, invalidf("table %s uses vectorize but no embedding provider is configured", table)
 			}
-			if sc.EmbedModel != "" && emb.Model != "" && sc.EmbedModel != emb.Model {
-				return nil, invalidf("embedding model changed: table rows are embedded with %q but the provider now serves %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedModel, emb.Model)
+			if sc.EmbedSpace != "" && emb.Identity != "" && sc.EmbedSpace != emb.Identity {
+				return nil, true, invalidf("embedding provider changed: table rows were embedded by %q but the active provider is %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedSpace, emb.Identity)
 			}
 			vecs, err := emb.Embed(ctx, texts)
 			if err != nil {
-				return nil, fmt.Errorf("embedding failed: %w", err)
+				return nil, true, fmt.Errorf("embedding failed: %w", err)
 			}
 			if len(vecs) != len(texts) {
-				return nil, fmt.Errorf("embedding provider returned %d vectors for %d texts", len(vecs), len(texts))
+				return nil, true, fmt.Errorf("embedding provider returned %d vectors for %d texts", len(vecs), len(texts))
 			}
 			for k, i := range idx {
 				embFor[i] = vecs[k]
@@ -416,11 +427,19 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 	fts := sc.FTSFields()
 	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	defer tx.Rollback()
 
-	ids := make([]int64, 0, len(records))
+	scTx, err := loadSchema(ctx, tx, nsName, table)
+	if err != nil {
+		return nil, true, err
+	}
+	if scTx.Version != sc.Version || scTx.EmbedSpace != sc.EmbedSpace {
+		return nil, false, nil
+	}
+
+	ids = make([]int64, 0, len(records))
 	for i, rec := range records {
 		var cols []string
 		var vals []any
@@ -431,7 +450,7 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 			}
 			cv, err := coerceValue(f, v)
 			if err != nil {
-				return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+				return nil, true, fmt.Errorf("%w: %w", ErrInvalid, err)
 			}
 			cols = append(cols, q(f.Name))
 			vals = append(vals, cv)
@@ -449,11 +468,11 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 		}
 		res, err := tx.ExecContext(ctx, stmt, vals...)
 		if err != nil {
-			return nil, fmt.Errorf("insert into %s: %w", table, err)
+			return nil, true, fmt.Errorf("insert into %s: %w", table, err)
 		}
 		id, err := res.LastInsertId()
 		if err != nil {
-			return nil, err
+			return nil, true, err
 		}
 		ids = append(ids, id)
 
@@ -469,25 +488,25 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 			fstmt := fmt.Sprintf(`INSERT INTO %s (rowid, %s) VALUES (%s)`,
 				q(ftsTable(table)), strings.Join(fcols, ", "), fph)
 			if _, err := tx.ExecContext(ctx, fstmt, fvals...); err != nil {
-				return nil, fmt.Errorf("update search index for %s: %w", table, err)
+				return nil, true, fmt.Errorf("update search index for %s: %w", table, err)
 			}
 		}
 	}
-	if len(embFor) > 0 && sc.EmbedModel == "" && emb.Model != "" {
-		sc.EmbedModel = emb.Model
+	if len(embFor) > 0 && sc.EmbedSpace == "" && emb.Identity != "" {
+		sc.EmbedSpace = emb.Identity
 		raw, err := json.Marshal(sc)
 		if err != nil {
-			return nil, err
+			return nil, true, err
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE _dolmen_tables SET schema_json = ? WHERE name = ?`, string(raw), table); err != nil {
-			return nil, err
+			return nil, true, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, err
+		return nil, true, err
 	}
-	return ids, nil
+	return ids, true, nil
 }
 
 func ftsText(v any) any {
@@ -564,14 +583,14 @@ func coerceValue(f schema.Field, v any) (any, error) {
 		switch j := v.(type) {
 		case string:
 			return j, nil
-		case map[string]any, []any:
+		case map[string]any, []any, bool, float64, int, int64:
 			b, err := json.Marshal(j)
 			if err != nil {
 				return nil, fmt.Errorf("field %q: cannot marshal JSON: %w", f.Name, err)
 			}
 			return string(b), nil
 		default:
-			return nil, fmt.Errorf("field %q: expected an object, array, or JSON string", f.Name)
+			return nil, fmt.Errorf("field %q: expected a JSON value", f.Name)
 		}
 	default:
 		s, ok := v.(string)
@@ -762,8 +781,8 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 	default:
 		return nil, invalidf("column %q is not a vector column", column)
 	}
-	if column == "_embedding" && sc.EmbedModel != "" && embedModel != "" && sc.EmbedModel != embedModel {
-		return nil, invalidf("embedding model changed: table rows are embedded with %q but the provider now serves %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedModel, embedModel)
+	if column == "_embedding" && sc.EmbedSpace != "" && embedModel != "" && sc.EmbedSpace != embedModel {
+		return nil, invalidf("embedding model changed: table rows are embedded with %q but the provider now serves %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedSpace, embedModel)
 	}
 	if dim > 0 && len(vec) != dim {
 		return nil, invalidf("query vector has %d entries, column %s expects dim %d", len(vec), column, dim)
@@ -855,15 +874,16 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	if err != nil {
 		return 0, err
 	}
-	sc, err := loadSchema(ctx, n.rw, nsName, table)
-	if err != nil {
-		return 0, err
-	}
 	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
+
+	sc, err := loadSchema(ctx, tx, nsName, table)
+	if err != nil {
+		return 0, err
+	}
 
 	if len(sc.FTSFields()) > 0 {
 		if _, err := tx.ExecContext(ctx,
@@ -908,7 +928,7 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 
 	fields := make([]schema.Field, len(old.Fields))
 	copy(fields, old.Fields)
-	cur := &schema.TableSchema{Namespace: nsName, Name: table, Version: old.Version, Fields: fields, EmbedModel: old.EmbedModel}
+	cur := &schema.TableSchema{Namespace: nsName, Name: table, Version: old.Version, Fields: fields, EmbedSpace: old.EmbedSpace}
 
 	type step func(ctx context.Context, tx *sql.Tx) error
 	var steps []step
@@ -1058,7 +1078,7 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 	if vectorizeChanged {
 		newVec := vectorizeField(cur.Fields)
 		if newVec != nil {
-			modelChanged := cur.EmbedModel != "" && emb.Model != "" && cur.EmbedModel != emb.Model
+			modelChanged := cur.EmbedSpace != "" && emb.Identity != "" && cur.EmbedSpace != emb.Identity
 			if old.VectorizeField() != nil || modelChanged {
 				if _, err := tx.ExecContext(ctx,
 					fmt.Sprintf(`UPDATE %s SET "_embedding" = NULL`, q(table))); err != nil {
@@ -1117,8 +1137,8 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 					}
 				}
 			}
-			if emb.Model != "" {
-				cur.EmbedModel = emb.Model
+			if emb.Identity != "" {
+				cur.EmbedSpace = emb.Identity
 			}
 		} else if old.VectorizeField() != nil {
 			if _, err := tx.ExecContext(ctx,
