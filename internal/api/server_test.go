@@ -186,3 +186,38 @@ func TestTrailingContentRejected(t *testing.T) {
 		t.Fatalf("expected 400 for trailing content, got %d", res.StatusCode)
 	}
 }
+
+func TestListTablesEmptyNamespaceReturnsArray(t *testing.T) {
+	srv := newTestServer(t)
+	code, body := post(t, srv.URL, "list_tables", map[string]any{"namespace": "fresh"})
+	if code != http.StatusOK {
+		t.Fatalf("list_tables on fresh namespace: %d %v", code, body)
+	}
+	data, ok := body["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected data object, got %v", body)
+	}
+	tables, ok := data["tables"].([]any)
+	if !ok {
+		t.Fatalf(`"tables" must serialize as an array, got %T (%v)`, data["tables"], data["tables"])
+	}
+	if len(tables) != 0 {
+		t.Fatalf("fresh namespace must list zero tables, got %v", tables)
+	}
+}
+
+func TestCreateTableDimSchemaIsInteger(t *testing.T) {
+	def, ok := Ops["create_table"]
+	if !ok {
+		t.Fatal("create_table op missing")
+	}
+	fields, ok := def.InputSchema["properties"].(map[string]any)["fields"].(map[string]any)
+	if !ok {
+		t.Fatal("fields property missing")
+	}
+	items := fields["items"].(map[string]any)
+	dim := items["properties"].(map[string]any)["dim"].(map[string]any)
+	if dim["type"] != "integer" {
+		t.Fatalf(`"dim" must be declared integer (it decodes into an int field), got %v`, dim["type"])
+	}
+}

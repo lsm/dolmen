@@ -23,6 +23,9 @@ var Ops = map[string]OpDef{
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
+			if tables == nil {
+				tables = []string{}
+			}
 			return map[string]any{"tables": tables}, nil
 		},
 	},
@@ -68,7 +71,7 @@ var Ops = map[string]OpDef{
 							"type":      prop("string", "One of: string, text, number, boolean, timestamp, json, vector"),
 							"fulltext":  prop("boolean", "Index this field for full-text search (string/text only)"),
 							"vectorize": prop("boolean", "Server embeds this text field automatically (string/text only, one per table)"),
-							"dim":       prop("number", "Dimension for vector fields"),
+							"dim":       prop("integer", "Dimension for vector fields"),
 							"required":  prop("boolean", "Reject inserts that omit this field"),
 						},
 						"required": []string{"name"},
