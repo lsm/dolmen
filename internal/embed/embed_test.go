@@ -44,3 +44,16 @@ func TestOpenAIInconsistentIndicesRejected(t *testing.T) {
 		t.Fatal("expected inconsistent indices to be rejected")
 	}
 }
+
+func TestOpenAIEmptyEmbeddingRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"index": 0, "embedding": []float64{}}},
+		})
+	}))
+	defer srv.Close()
+	p := &OpenAI{BaseURL: srv.URL, Model: "m", APIKey: ""}
+	if _, err := p.Embed(context.Background(), []string{"a"}); err == nil {
+		t.Fatal("expected empty embedding to be rejected")
+	}
+}

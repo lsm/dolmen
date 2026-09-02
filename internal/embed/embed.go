@@ -104,6 +104,9 @@ func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float32, error)
 			if d.Index != i {
 				return nil, fmt.Errorf("embeddings API returned inconsistent indices (expected 0..%d)", len(batch)-1)
 			}
+			if len(d.Embedding) == 0 {
+				return nil, fmt.Errorf("embeddings API returned an empty embedding for input %d", start+i)
+			}
 			out[start+i] = d.Embedding
 		}
 	}
