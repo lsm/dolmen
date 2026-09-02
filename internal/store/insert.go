@@ -7,6 +7,7 @@ import (
 	"math"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/lsm/dolmen/internal/schema"
 )
@@ -119,8 +120,8 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			if emb.Embed == nil {
 				return nil, true, invalidf("table %s uses vectorize but no embedding provider is configured", table)
 			}
-			if sc.EmbedSpace != "" && emb.Identity == "" {
-				return nil, true, invalidf("table %s was embedded by %q but the active embedding provider reports no identity; configure the provider to continue inserting", table, sc.EmbedSpace)
+			if emb.Identity == "" {
+				return nil, true, invalidf("table %s uses vectorize but the active embedding provider reports no identity; configure the provider before inserting so rows are attributable to an embedding space", table)
 			}
 			if sc.EmbedSpace != "" && sc.EmbedSpace != emb.Identity {
 				return nil, true, invalidf("embedding provider changed: table rows were embedded by %q but the active provider is %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedSpace, emb.Identity)
@@ -135,6 +136,11 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			for _, v := range vecs {
 				if len(v) == 0 {
 					return nil, true, invalidf("embedding provider returned a zero-dimensional vector for table %s", table)
+				}
+				for _, x := range v {
+					if math.IsNaN(float64(x)) || math.IsInf(float64(x), 0) {
+						return nil, true, invalidf("embedding provider returned a non-finite vector component for table %s", table)
+					}
 				}
 				if sc.EmbedDim == 0 {
 					sc.EmbedDim = len(v)
@@ -307,7 +313,11 @@ func coerceValue(f schema.Field, v any) (any, error) {
 	case schema.Boolean:
 		b, ok := v.(bool)
 		if !ok {
-			return nil, fmt.Errorf("field %q: expected a boolean", f.Name)
+			rv := reflect.ValueOf(v)
+			if rv.Kind() != reflect.Bool {
+				return nil, fmt.Errorf("field %q: expected a boolean", f.Name)
+			}
+			b = rv.Bool()
 		}
 		if b {
 			return int64(1), nil
@@ -358,27 +368,44 @@ func coerceValue(f schema.Field, v any) (any, error) {
 		}
 		return schema.EncodeVector(out), nil
 	case schema.JSON:
-		switch j := v.(type) {
-		case string:
-			b, err := json.Marshal(j)
-			if err != nil {
-				return nil, fmt.Errorf("field %q: cannot marshal JSON: %w", f.Name, err)
-			}
-			return string(b), nil
-		case map[string]any, []any, bool, float64, int, int64, json.Number:
-			b, err := json.Marshal(j)
-			if err != nil {
-				return nil, fmt.Errorf("field %q: cannot marshal JSON: %w", f.Name, err)
-			}
-			return string(b), nil
-		default:
-			return nil, fmt.Errorf("field %q: expected a JSON value", f.Name)
+		b, err := json.Marshal(v)
+		if err != nil {
+			return nil, fmt.Errorf("field %q: cannot marshal JSON: %w", f.Name, err)
 		}
+		return string(b), nil
 	default:
-		s, ok := v.(string)
+		s, ok := storedString(v)
 		if !ok {
 			return nil, fmt.Errorf("field %q: expected a string", f.Name)
 		}
 		return s, nil
 	}
+}
+
+func storedString(v any) (string, bool) {
+	rv := reflect.ValueOf(v)
+	seen := map[uintptr]bool{}
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return "", false
+		}
+		if rv.Kind() == reflect.Pointer {
+			ptr := rv.Pointer()
+			if seen[ptr] {
+				return "", false
+			}
+			seen[ptr] = true
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() == reflect.Struct {
+		if t, ok := rv.Interface().(time.Time); ok {
+			return t.Format(time.RFC3339Nano), true
+		}
+		return "", false
+	}
+	if rv.Kind() != reflect.String {
+		return "", false
+	}
+	return rv.String(), true
 }

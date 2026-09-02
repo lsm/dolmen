@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/lsm/dolmen/internal/schema"
 )
@@ -199,5 +200,83 @@ func TestInsertAcceptsInferredNumericKinds(t *testing.T) {
 		{"u": uint64(math.MaxUint64)},
 	}, testEmbed); err == nil {
 		t.Fatal("expected uint64 overflow of int64 to be rejected")
+	}
+}
+
+func TestInsertRequiresIdentityForFirstEmbedding(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "firstid", []schema.Field{
+		{Name: "s", Type: schema.String, Vectorize: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	faceless := Embedder{Embed: fakeEmbed, Identity: ""}
+	if _, err := st.Insert(ctx, "test", "firstid", []map[string]any{{"s": "hello"}}, faceless); err == nil {
+		t.Fatal("expected the first vectorized insert to require a provider identity")
+	}
+}
+
+func TestInsertRejectsNonFiniteProviderVectors(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "nfv", []schema.Field{
+		{Name: "s", Type: schema.String, Vectorize: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	nan := Embedder{Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+		return [][]float32{{0, 1, float32(math.NaN()), 0, 0, 0, 0, 0}}, nil
+	}, Identity: "nan-space"}
+	if _, err := st.Insert(ctx, "test", "nfv", []map[string]any{{"s": "hello"}}, nan); err == nil {
+		t.Fatal("expected NaN embedding component to be rejected")
+	}
+	inf := Embedder{Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+		return [][]float32{{0, 1, float32(math.Inf(1)), 0, 0, 0, 0, 0}}, nil
+	}, Identity: "inf-space"}
+	if _, err := st.Insert(ctx, "test", "nfv", []map[string]any{{"s": "hello"}}, inf); err == nil {
+		t.Fatal("expected infinite embedding component to be rejected")
+	}
+}
+
+func TestInsertAcceptsInferredStringRepresentations(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	type label string
+	type flag bool
+	ptr := "pointed"
+	samples := []map[string]any{
+		{"l": label("named"), "p": &ptr, "w": time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC), "f": flag(true)},
+	}
+	fields := schema.InferFields(samples)
+	if _, err := st.CreateTable(ctx, "test", "strs", fields); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "strs", samples, testEmbed); err != nil {
+		t.Fatalf("inserting the representations inference accepted must work: %v", err)
+	}
+}
+
+func TestInsertAcceptsMarshalableJSONValues(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	samples := []map[string]any{
+		{"tags": []string{"a", "b"}, "meta": map[string]string{"k": "v"}, "st": struct{ N int }{N: 3}},
+	}
+	fields := schema.InferFields(samples)
+	byName := map[string]schema.Field{}
+	for _, f := range fields {
+		byName[f.Name] = f
+	}
+	for _, name := range []string{"tags", "meta", "st"} {
+		if byName[name].Type != schema.JSON {
+			t.Fatalf("field %q should infer json, got %s", name, byName[name].Type)
+		}
+	}
+	if _, err := st.CreateTable(ctx, "test", "jsv", fields); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "jsv", samples, testEmbed); err != nil {
+		t.Fatalf("inserting marshalable json values must work: %v", err)
 	}
 }
