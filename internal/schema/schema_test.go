@@ -390,3 +390,15 @@ func TestInferSelfReferentialSampleTerminates(t *testing.T) {
 		t.Fatal("inference did not terminate on a self-referential sample")
 	}
 }
+
+func TestInferDeepPointerChainClassifies(t *testing.T) {
+	var v any = "hello"
+	for i := 0; i < 100; i++ {
+		boxed := v
+		v = &boxed
+	}
+	fields := InferFields([]map[string]any{{"x": v}})
+	if len(fields) != 1 || fields[0].Type != String {
+		t.Fatalf("deep acyclic pointer chain should still classify as string, got %+v", fields)
+	}
+}

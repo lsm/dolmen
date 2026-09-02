@@ -308,16 +308,19 @@ func InferFields(samples []map[string]any) []Field {
 	return fields
 }
 
-const maxUnwrapDepth = 32
-
 func unwrapValue(v any) (rv reflect.Value, nilFound, cycled bool) {
 	rv = reflect.ValueOf(v)
-	for depth := 0; rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface; depth++ {
+	seen := map[uintptr]bool{}
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
 		if rv.IsNil() {
 			return rv, true, false
 		}
-		if depth >= maxUnwrapDepth {
-			return rv, false, true
+		if rv.Kind() == reflect.Pointer {
+			ptr := rv.Pointer()
+			if seen[ptr] {
+				return rv, false, true
+			}
+			seen[ptr] = true
 		}
 		rv = rv.Elem()
 	}
