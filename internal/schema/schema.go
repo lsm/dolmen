@@ -219,10 +219,24 @@ func looksLikeTimestamp(s string) bool {
 	}
 	for _, layout := range timestampLayouts {
 		if _, err := time.Parse(layout, s); err == nil {
-			return true
+			return validRFC3339Offset(s)
 		}
 	}
 	return false
+}
+
+var offsetRe = regexp.MustCompile(`(?:[Zz]|[+-]\d{2}:\d{2})$`)
+
+func validRFC3339Offset(s string) bool {
+	m := offsetRe.FindStringSubmatch(s)
+	if m == nil || m[0] == "Z" || m[0] == "z" {
+		return true
+	}
+	var h, min int
+	if _, err := fmt.Sscanf(m[0][1:], "%2d:%2d", &h, &min); err != nil {
+		return true
+	}
+	return h <= 23 && min <= 59
 }
 
 func InferFields(samples []map[string]any) []Field {

@@ -183,3 +183,18 @@ func TestInferValidTimestampVariants(t *testing.T) {
 		}
 	}
 }
+
+func TestInferOutOfRangeTimestampOffsetsStayString(t *testing.T) {
+	for _, bad := range []string{"2026-01-01T00:00:00+24:00", "2026-01-01T00:00:00+23:60", "2026-01-01T00:00:00-25:00"} {
+		fields := InferFields([]map[string]any{{"when": bad}})
+		if len(fields) != 1 || fields[0].Type != String {
+			t.Fatalf("out-of-range offset %q must infer string, got %+v", bad, fields)
+		}
+	}
+	for _, good := range []string{"2026-01-01T00:00:00+23:59", "2026-01-01T00:00:00-05:30", "2026-01-01T00:00:00Z"} {
+		fields := InferFields([]map[string]any{{"when": good}})
+		if len(fields) != 1 || fields[0].Type != Timestamp {
+			t.Fatalf("in-range offset %q must infer timestamp, got %+v", good, fields)
+		}
+	}
+}
