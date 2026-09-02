@@ -1,0 +1,337 @@
+package store
+
+import (
+	"context"
+	"testing"
+
+	"github.com/lsm/dolmen/internal/schema"
+)
+
+func fakeEmbed(ctx context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, t := range texts {
+		v := make([]float32, 8)
+		for _, r := range []byte(t) {
+			v[r%8] += 1
+		}
+		out[i] = v
+	}
+	return out, nil
+}
+
+func openStore(t *testing.T) *Store {
+	t.Helper()
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return st
+}
+
+func noteFields() []schema.Field {
+	return []schema.Field{
+		{Name: "title", Type: schema.String, Fulltext: true},
+		{Name: "body", Type: schema.Text, Fulltext: true, Vectorize: true},
+		{Name: "score", Type: schema.Number},
+		{Name: "done", Type: schema.Boolean},
+		{Name: "tags", Type: schema.JSON},
+		{Name: "emb", Type: schema.Vector, Dim: 4},
+	}
+}
+
+func mustCreateNotes(t *testing.T, st *Store) {
+	t.Helper()
+	if _, err := st.CreateTable(context.Background(), "test", "notes", noteFields()); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+}
+
+func mustInsertNotes(t *testing.T, st *Store) []int64 {
+	t.Helper()
+	ids, err := st.Insert(context.Background(), "test", "notes", []map[string]any{
+		{"title": "first note", "body": "the dolmen stores stone tables", "score": 5, "done": true, "tags": []any{"a", "b"}, "emb": []any{1.0, 0, 0, 0}},
+		{"title": "second note", "body": "agents keep their memory here", "score": 3, "done": false, "emb": []any{0, 1.0, 0, 0}},
+		{"title": "third note", "body": "migration and schema evolution", "score": 1, "done": false, "emb": []any{0.9, 0.1, 0, 0}},
+	}, fakeEmbed)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	return ids
+}
+
+func TestCreateInsertQuery(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	ids := mustInsertNotes(t, st)
+	if len(ids) != 3 {
+		t.Fatalf("expected 3 ids, got %d", len(ids))
+	}
+
+	rows, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
+	if err != nil {
+		t.Fatalf("query count: %v", err)
+	}
+	if got := rows[0]["n"].(int64); got != 3 {
+		t.Fatalf("expected 3 rows, got %d", got)
+	}
+
+	rows, err = st.Query(ctx, "test", "SELECT title FROM notes WHERE score > ? ORDER BY score DESC", []any{2})
+	if err != nil {
+		t.Fatalf("query filter: %v", err)
+	}
+	if len(rows) != 2 || rows[0]["title"] != "first note" || rows[1]["title"] != "second note" {
+		t.Fatalf("unexpected rows: %v", rows)
+	}
+
+	if _, err := st.Query(ctx, "test", "DELETE FROM notes", nil); err == nil {
+		t.Fatal("expected DELETE via query to be rejected")
+	}
+	if _, err := st.Query(ctx, "test", "INSERT INTO notes(title) VALUES('x')", nil); err == nil {
+		t.Fatal("expected INSERT via query to be rejected")
+	}
+	if _, err := st.Query(ctx, "test", "SELECT 1; DROP TABLE notes", nil); err == nil {
+		t.Fatal("expected multi-statement to be rejected")
+	}
+
+	sc, count, err := st.DescribeTable(ctx, "test", "notes")
+	if err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	if sc.Version != 1 || count != 3 || len(sc.Fields) != 6 {
+		t.Fatalf("unexpected describe: v%d rows=%d fields=%d", sc.Version, count, len(sc.Fields))
+	}
+}
+
+func TestInsertValidation(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+
+	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{
+		{"title": "x", "bogus": 1},
+	}, fakeEmbed); err == nil {
+		t.Fatal("expected unknown field to be rejected")
+	}
+
+	fields := noteFields()
+	fields[2].Required = true
+	if _, err := st.CreateTable(ctx, "test", "req", fields); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "req", []map[string]any{
+		{"title": "x"},
+	}, fakeEmbed); err == nil {
+		t.Fatal("expected missing required field to be rejected")
+	}
+
+	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{
+		{"title": "x", "emb": []any{1.0, 0, 0}},
+	}, fakeEmbed); err == nil {
+		t.Fatal("expected wrong vector dim to be rejected")
+	}
+
+	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{
+		{"title": "x", "score": "high"},
+	}, fakeEmbed); err == nil {
+		t.Fatal("expected wrong scalar type to be rejected")
+	}
+}
+
+func TestFulltextSearchAndDeleteCascade(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	mustInsertNotes(t, st)
+
+	rows, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 10)
+	if err != nil {
+		t.Fatalf("fts: %v", err)
+	}
+	if len(rows) != 1 || rows[0]["title"] != "first note" {
+		t.Fatalf("unexpected fts results: %v", rows)
+	}
+
+	deleted, err := st.Delete(ctx, "test", "notes", "done = 1", nil)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("expected 1 deleted, got %d", deleted)
+	}
+
+	rows, err = st.SearchFulltext(ctx, "test", "notes", "dolmen", 10)
+	if err != nil {
+		t.Fatalf("fts after delete: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("expected deleted row gone from fts, got %v", rows)
+	}
+	rows, err = st.SearchFulltext(ctx, "test", "notes", "memory", 10)
+	if err != nil {
+		t.Fatalf("fts survivor: %v", err)
+	}
+	if len(rows) != 1 || rows[0]["title"] != "second note" {
+		t.Fatalf("unexpected survivor: %v", rows)
+	}
+}
+
+func TestVectorSearch(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	mustInsertNotes(t, st)
+
+	rows, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0, 0, 0}, 2)
+	if err != nil {
+		t.Fatalf("vector search: %v", err)
+	}
+	if len(rows) != 2 || rows[0]["title"] != "first note" {
+		t.Fatalf("unexpected vector results: %v", rows)
+	}
+	if score := rows[0]["_score"].(float64); score < 0.99 {
+		t.Fatalf("expected cosine ~1, got %f", score)
+	}
+
+	if _, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0}, 2); err == nil {
+		t.Fatal("expected dim mismatch to be rejected")
+	}
+
+	qv, _ := fakeEmbed(ctx, []string{"the dolmen stores stone tables"})
+	rows, err = st.SearchVector(ctx, "test", "notes", "", qv[0], 1)
+	if err != nil {
+		t.Fatalf("vectorize search: %v", err)
+	}
+	if len(rows) != 1 || rows[0]["title"] != "first note" {
+		t.Fatalf("unexpected vectorize results: %v", rows)
+	}
+}
+
+func TestMigrate(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	mustInsertNotes(t, st)
+
+	sc, err := st.Migrate(ctx, "test", "notes", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "priority", Type: schema.Number}},
+		{Op: schema.OpRenameField, From: "title", To: "heading"},
+	}, fakeEmbed)
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if sc.Version != 2 {
+		t.Fatalf("expected version 2, got %d", sc.Version)
+	}
+
+	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{
+		{"heading": "fourth note", "body": "new row after migration", "priority": 7, "emb": []any{0, 0, 1.0, 0}},
+	}, fakeEmbed); err != nil {
+		t.Fatalf("insert after migrate: %v", err)
+	}
+
+	rows, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 10)
+	if err != nil {
+		t.Fatalf("fts after rename: %v", err)
+	}
+	if len(rows) != 1 || rows[0]["heading"] != "first note" {
+		t.Fatalf("fts not rebuilt after rename: %v", rows)
+	}
+
+	rows, err = st.Query(ctx, "test", "SELECT priority FROM notes WHERE heading = 'fourth note'", nil)
+	if err != nil {
+		t.Fatalf("query new column: %v", err)
+	}
+	if got := rows[0]["priority"].(int64); got != 7 {
+		t.Fatalf("expected priority 7, got %v", got)
+	}
+}
+
+func TestMigrateVectorizeBackfill(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+
+	if _, err := st.CreateTable(ctx, "test", "plain", []schema.Field{
+		{Name: "note", Type: schema.String, Fulltext: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "plain", []map[string]any{
+		{"note": "hello world"},
+		{"note": "goodbye world"},
+	}, fakeEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	if _, err := st.Migrate(ctx, "test", "plain", []schema.Change{
+		{Op: schema.OpSetVectorize, Name: "note", Value: true},
+	}, fakeEmbed); err != nil {
+		t.Fatalf("migrate vectorize: %v", err)
+	}
+
+	qv, _ := fakeEmbed(ctx, []string{"hello world"})
+	rows, err := st.SearchVector(ctx, "test", "plain", "", qv[0], 1)
+	if err != nil {
+		t.Fatalf("vector search after backfill: %v", err)
+	}
+	if len(rows) != 1 || rows[0]["note"] != "hello world" {
+		t.Fatalf("unexpected backfill results: %v", rows)
+	}
+}
+
+func TestDropFieldAndVersioning(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	mustInsertNotes(t, st)
+
+	sc, err := st.Migrate(ctx, "test", "notes", []schema.Change{
+		{Op: schema.OpDropField, Name: "tags"},
+	}, fakeEmbed)
+	if err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	if sc.Version != 2 || sc.Field("tags") != nil {
+		t.Fatalf("drop did not apply: %+v", sc)
+	}
+
+	names, err := st.ListTables(ctx, "test")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(names) != 1 || names[0] != "notes" {
+		t.Fatalf("unexpected tables: %v", names)
+	}
+
+	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{
+		{"title": "x", "tags": []any{"nope"}},
+	}, fakeEmbed); err == nil {
+		t.Fatal("expected dropped field to be rejected on insert")
+	}
+}
+
+func TestTableAndNamespaceValidation(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+
+	if _, err := st.CreateTable(ctx, "test", "BadName", noteFields()); err == nil {
+		t.Fatal("expected invalid table name to be rejected")
+	}
+	if _, err := st.CreateTable(ctx, "../escape", "notes", noteFields()); err == nil {
+		t.Fatal("expected invalid namespace to be rejected")
+	}
+	if _, err := st.CreateTable(ctx, "test", "notes", []schema.Field{
+		{Name: "title", Type: "bogus"},
+	}); err == nil {
+		t.Fatal("expected invalid type to be rejected")
+	}
+	if _, err := st.CreateTable(ctx, "test", "notes", []schema.Field{
+		{Name: "a", Type: schema.Vector},
+	}); err == nil {
+		t.Fatal("expected vector without dim to be rejected")
+	}
+	if _, _, err := st.DescribeTable(ctx, "test", "missing"); err == nil {
+		t.Fatal("expected missing table to 404")
+	}
+}
