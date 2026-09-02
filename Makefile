@@ -1,7 +1,7 @@
 .PHONY: build test run clean
 
 build:
-	go build -o dolmen .
+	CGO_ENABLED=0 go build -o dolmen .
 
 test:
 	go vet ./... && go test ./...
