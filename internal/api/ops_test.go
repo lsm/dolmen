@@ -370,7 +370,7 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 	if sqlP["minLength"] != 1 {
 		t.Fatalf("sql must declare minLength 1, got %v", sqlP)
 	}
-	if sqlP["pattern"] != `(?i)^\s*(select|with)\b` {
+	if sqlP["pattern"] != `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b` {
 		t.Fatalf("sql must declare the read-only prefix pattern, got %v", sqlP["pattern"])
 	}
 	if props["args"].(map[string]any)["maxItems"] != 100 {

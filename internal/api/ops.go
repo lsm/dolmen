@@ -187,13 +187,20 @@ var Ops = map[string]OpDef{
 					"type":        "string",
 					"description": "Read-only SQL (SELECT/WITH)",
 					"minLength":   1,
-					"pattern":     `(?i)^\s*(select|with)\b`,
+					"pattern":     `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b`,
 				},
 				"args": map[string]any{
 					"type":        "array",
 					"description": "Optional bind parameters for ? placeholders",
-					"items":       map[string]any{},
-					"maxItems":    100,
+					"items": map[string]any{
+						"anyOf": []any{
+							map[string]any{"type": "string"},
+							map[string]any{"type": "number"},
+							map[string]any{"type": "boolean"},
+							map[string]any{"type": "null"},
+						},
+					},
+					"maxItems": 100,
 				},
 			},
 			"required": []string{"namespace", "sql"},
@@ -223,6 +230,7 @@ var Ops = map[string]OpDef{
 					"type":        "string",
 					"description": "FTS5 MATCH expression",
 					"minLength":   1,
+					"pattern":     `\S`,
 				},
 				"limit": map[string]any{
 					"type":        "integer",
@@ -352,7 +360,14 @@ var Ops = map[string]OpDef{
 				"args": map[string]any{
 					"type":        "array",
 					"description": "Optional bind parameters for ? placeholders",
-					"items":       map[string]any{},
+					"items": map[string]any{
+						"anyOf": []any{
+							map[string]any{"type": "string"},
+							map[string]any{"type": "number"},
+							map[string]any{"type": "boolean"},
+							map[string]any{"type": "null"},
+						},
+					},
 				},
 			},
 			"required": []string{"namespace", "table", "filter"},
