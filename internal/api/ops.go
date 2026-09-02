@@ -68,8 +68,15 @@ var Ops = map[string]OpDef{
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"name":      prop("string", "Field name (lowercase, [a-z0-9_])"),
-							"type":      prop("string", "One of: string, text, number, boolean, timestamp, json, vector"),
+							"name": prop("string", "Field name (lowercase, [a-z0-9_])"),
+							"type": map[string]any{
+								"type":        "string",
+								"description": "One of: string, text, number, boolean, timestamp, json, vector (omit to default to string)",
+								"enum": []schema.FieldType{
+									schema.String, schema.Text, schema.Number, schema.Boolean,
+									schema.Timestamp, schema.JSON, schema.Vector,
+								},
+							},
 							"fulltext":  prop("boolean", "Index this field for full-text search (string/text only)"),
 							"vectorize": prop("boolean", "Server embeds this text field automatically (string/text only, one per table)"),
 							"dim": map[string]any{

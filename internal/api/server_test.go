@@ -248,6 +248,44 @@ func TestCreateTableFieldsMinItemsDeclared(t *testing.T) {
 	}
 }
 
+func TestCreateTableFieldTypeEnumDeclared(t *testing.T) {
+	def, ok := Ops["create_table"]
+	if !ok {
+		t.Fatal("create_table op missing")
+	}
+	fields := def.InputSchema["properties"].(map[string]any)["fields"].(map[string]any)
+	items := fields["items"].(map[string]any)
+	typ := items["properties"].(map[string]any)["type"].(map[string]any)
+	enum, ok := typ["enum"].([]schema.FieldType)
+	if !ok || len(enum) != 7 {
+		t.Fatalf(`field "type" must enumerate the seven supported types, got %v`, typ["enum"])
+	}
+	raw, err := json.Marshal(enum)
+	if err != nil {
+		t.Fatalf("marshal enum: %v", err)
+	}
+	for _, want := range []schema.FieldType{schema.String, schema.Text, schema.Number, schema.Boolean, schema.Timestamp, schema.JSON, schema.Vector} {
+		if !strings.Contains(string(raw), string(want)) {
+			t.Fatalf("enum must contain %q: %s", want, raw)
+		}
+	}
+}
+
+func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
+	srv := newTestServer(t)
+	res, err := http.Get(srv.URL + "/v1/list_tables")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", res.StatusCode)
+	}
+	if res.Header.Get("Allow") != http.MethodPost {
+		t.Fatalf(`405 must carry "Allow: POST", got %q`, res.Header.Get("Allow"))
+	}
+}
+
 func TestInferSchemaEmptyObjectsReturnArray(t *testing.T) {
 	srv := newTestServer(t)
 	code, body := post(t, srv.URL, "infer_schema", map[string]any{"samples": []map[string]any{{}}})

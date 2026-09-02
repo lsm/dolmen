@@ -203,6 +203,7 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
 			writeError(w, &Error{Status: http.StatusMethodNotAllowed, Message: "use POST"})
 			return
 		}
