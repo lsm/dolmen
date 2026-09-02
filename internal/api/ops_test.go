@@ -410,6 +410,11 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 		t.Fatal("migrate op missing")
 	}
 	items := m.InputSchema["properties"].(map[string]any)["changes"].(map[string]any)["items"].(map[string]any)
+	allOf := items["allOf"].([]any)
+	rankGuard, ok := allOf[len(allOf)-1].(map[string]any)["then"].(map[string]any)["properties"].(map[string]any)["name"].(map[string]any)
+	if !ok || rankGuard["not"].(map[string]any)["const"] != "rank" {
+		t.Fatalf("set_fulltext true must exclude the FTS5-reserved name rank, got %v", allOf[len(allOf)-1])
+	}
 	mp := items["properties"].(map[string]any)
 	for _, key := range []string{"from", "to", "name"} {
 		p := mp[key].(map[string]any)

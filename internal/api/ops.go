@@ -440,6 +440,20 @@ var Ops = map[string]OpDef{
 								"if":   map[string]any{"properties": map[string]any{"op": map[string]any{"const": "set_vectorize"}}},
 								"then": map[string]any{"required": []string{"name", "value"}},
 							},
+							map[string]any{
+								"if": map[string]any{
+									"properties": map[string]any{
+										"op":    map[string]any{"const": "set_fulltext"},
+										"value": map[string]any{"const": true},
+									},
+									"required": []string{"op", "value"},
+								},
+								"then": map[string]any{
+									"properties": map[string]any{
+										"name": map[string]any{"not": map[string]any{"const": "rank"}},
+									},
+								},
+							},
 						},
 					},
 				},
