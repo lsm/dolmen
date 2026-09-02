@@ -246,6 +246,9 @@ func TestCreateTableFieldsMinItemsDeclared(t *testing.T) {
 	if fields["minItems"] != 1 {
 		t.Fatalf(`"fields" must declare minItems 1 to match schema.Validate, got %v`, fields)
 	}
+	if fields["maxItems"] != store.MaxFieldsPerTable {
+		t.Fatalf(`"fields" must declare maxItems %d to match the store bound, got %v`, store.MaxFieldsPerTable, fields["maxItems"])
+	}
 	items := fields["items"].(map[string]any)
 	if items["additionalProperties"] != false {
 		t.Fatalf("field items must reject unknown properties, got %v", items["additionalProperties"])

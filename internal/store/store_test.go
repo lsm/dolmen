@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -141,5 +143,17 @@ func TestRequiredFieldsEmitNotNull(t *testing.T) {
 	ddl = tableDDL("notes", fields)
 	if !strings.Contains(ddl, `"score" NUMERIC NOT NULL`) {
 		t.Fatalf("required field must emit NOT NULL, got: %s", ddl)
+	}
+}
+
+func TestCreateTableTooManyFieldsRejected(t *testing.T) {
+	st := openStore(t)
+	fields := make([]schema.Field, MaxFieldsPerTable+1)
+	for i := range fields {
+		fields[i] = schema.Field{Name: fmt.Sprintf("f%d", i), Type: schema.String}
+	}
+	_, err := st.CreateTable(context.Background(), "test", "toomany", fields)
+	if err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected field-count bound to reject with ErrInvalid, got %v", err)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/lsm/dolmen/internal/schema"
+	"github.com/lsm/dolmen/internal/store"
 )
 
 var Ops = map[string]OpDef{
@@ -65,6 +66,7 @@ var Ops = map[string]OpDef{
 					"type":        "array",
 					"description": "Field definitions",
 					"minItems":    1,
+					"maxItems":    store.MaxFieldsPerTable,
 					"uniqueItems": true,
 					"not": map[string]any{
 						"contains": map[string]any{

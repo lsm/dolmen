@@ -166,7 +166,7 @@ func TestSearchLabelBudget(t *testing.T) {
 	fields := []schema.Field{{Name: needle, Type: schema.String, Fulltext: true}, {Name: "payload", Type: schema.Text}}
 	long := strings.Repeat("c", 60)
 
-	for i := 0; i < 1500; i++ {
+	for i := 0; i < MaxFieldsPerTable-2; i++ {
 		fields = append(fields, schema.Field{Name: long + fmt.Sprint(i), Type: schema.String})
 	}
 	if _, err := st.CreateTable(ctx, "test", "wide", fields); err != nil {
