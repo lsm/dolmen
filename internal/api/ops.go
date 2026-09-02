@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"math"
+	"strings"
 
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
@@ -78,71 +80,7 @@ var Ops = map[string]OpDef{
 						},
 						"minContains": 2,
 					},
-					"items": map[string]any{
-						"type":                 "object",
-						"additionalProperties": false,
-						"properties": map[string]any{
-							"name": map[string]any{
-								"type":        "string",
-								"description": "Field name (lowercase, [a-z0-9_], max 64 chars)",
-								"pattern":     `^[a-z][a-z0-9_]{0,63}$`,
-								"not": map[string]any{
-									"enum": []string{"id", "created_at", "_embedding", "_score", "_rank", "rowid"},
-								},
-							},
-							"type": map[string]any{
-								"type":        "string",
-								"description": "One of: string, text, number, boolean, timestamp, json, vector (omit to default to string)",
-								"enum": []schema.FieldType{
-									schema.String, schema.Text, schema.Number, schema.Boolean,
-									schema.Timestamp, schema.JSON, schema.Vector,
-								},
-							},
-							"fulltext":  prop("boolean", "Index this field for full-text search (string/text only)"),
-							"vectorize": prop("boolean", "Server embeds this text field automatically (string/text only, one per table)"),
-							"dim": map[string]any{
-								"type":        "integer",
-								"description": "Dimension for vector fields",
-								"minimum":     1,
-								"maximum":     schema.MaxVectorDim,
-							},
-							"required": prop("boolean", "Reject inserts that omit this field"),
-						},
-						"required": []string{"name"},
-						"allOf": []any{
-							map[string]any{
-								"if": map[string]any{
-									"properties": map[string]any{"type": map[string]any{"const": string(schema.Vector)}},
-									"required":   []string{"type"},
-								},
-								"then": map[string]any{"required": []string{"dim"}},
-								"else": map[string]any{"not": map[string]any{"required": []string{"dim"}}},
-							},
-							map[string]any{
-								"if": map[string]any{
-									"properties": map[string]any{"fulltext": map[string]any{"const": true}},
-									"required":   []string{"fulltext"},
-								},
-								"then": map[string]any{
-									"properties": map[string]any{
-										"type": map[string]any{"enum": []schema.FieldType{schema.String, schema.Text}},
-										"name": map[string]any{"not": map[string]any{"const": "rank"}},
-									},
-								},
-							},
-							map[string]any{
-								"if": map[string]any{
-									"properties": map[string]any{"vectorize": map[string]any{"const": true}},
-									"required":   []string{"vectorize"},
-								},
-								"then": map[string]any{
-									"properties": map[string]any{
-										"type": map[string]any{"enum": []schema.FieldType{schema.String, schema.Text}},
-									},
-								},
-							},
-						},
-					},
+					"items": fieldItemSchema("Field definition"),
 				},
 			},
 			"required": []string{"namespace", "table", "fields"},
@@ -199,4 +137,396 @@ var Ops = map[string]OpDef{
 			return map[string]any{"fields": fields}, nil
 		},
 	},
+	"insert": {
+		Description: "Insert one or more records (JSON objects) into a table. Unknown keys are rejected; " +
+			"missing required fields are rejected. Full-text and vector indexes update automatically; " +
+			"vectorized fields are embedded by the server.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace of the table"),
+				"table":     tableProp("Table name"),
+				"records": map[string]any{
+					"type":        "array",
+					"description": "Records to insert (JSON objects keyed by field name)",
+					"items":       map[string]any{"type": "object"},
+					"minItems":    1,
+					"maxItems":    store.MaxRecordsPerInsert,
+				},
+			},
+			"required": []string{"namespace", "table", "records"},
+		},
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req insertReq
+			if err := decodeData(body, &req); err != nil {
+				return nil, err
+			}
+			for i, r := range req.Records {
+				if r == nil {
+					return nil, badRequest("records[%d] must be an object, not null", i)
+				}
+			}
+			ids, err := s.st.Insert(ctx, normNS(req.Namespace), normTable(req.Table), req.Records, s.embedder())
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"ids": ids, "inserted": len(ids)}, nil
+		},
+	},
+	"query": {
+		Description: "Run a read-only SQL statement (SELECT or WITH only) against one namespace. " +
+			"Use table and column names from list_tables/describe_table. Bind parameters with ? and pass args. " +
+			"Vector columns come back as base64 strings; id and created_at are included in SELECT *.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace to query"),
+				"sql": map[string]any{
+					"type":        "string",
+					"description": "Read-only SQL (SELECT/WITH)",
+					"minLength":   1,
+					"pattern":     `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b[^;]*;*\s*$`,
+				},
+				"args": map[string]any{
+					"type":        "array",
+					"description": "Optional bind parameters for ? placeholders",
+					"items": map[string]any{
+						"anyOf": []any{
+							map[string]any{"type": "string"},
+							map[string]any{"type": "number"},
+							map[string]any{"type": "boolean"},
+							map[string]any{"type": "null"},
+						},
+					},
+					"maxItems": 100,
+				},
+			},
+			"required": []string{"namespace", "sql"},
+		},
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req queryReq
+			if err := decodeData(body, &req); err != nil {
+				return nil, err
+			}
+			rows, truncated, err := s.st.Query(ctx, normNS(req.Namespace), req.SQL, req.Args)
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"rows": rows, "row_count": len(rows), "truncated": truncated}, nil
+		},
+	},
+	"search_fulltext": {
+		Description: "Full-text search over fields marked fulltext, using SQLite FTS5 MATCH syntax " +
+			"(e.g. \"payment\", \"'credit refund'\", \"status:ok AND retry\"). Returns matching records ordered by relevance.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace of the table"),
+				"table":     tableProp("Table name"),
+				"query": map[string]any{
+					"type":        "string",
+					"description": "FTS5 MATCH expression",
+					"minLength":   1,
+					"pattern":     `\S`,
+				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Max results (default 10, max 200)",
+					"minimum":     1,
+					"maximum":     200,
+				},
+			},
+			"required": []string{"namespace", "table", "query"},
+		},
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req ftsReq
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			if req.Query == "" {
+				return nil, badRequest("query must not be empty")
+			}
+			results, truncated, err := s.st.SearchFulltext(ctx, normNS(req.Namespace), normTable(req.Table), req.Query, limit(req.Limit))
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"results": results, "truncated": truncated}, nil
+		},
+	},
+	"search_vector": {
+		Description: "Nearest-neighbor vector search. Pass text (the server embeds it) or a raw vector. " +
+			"column is optional: defaults to the auto-embedding of a vectorized field, else the first vector field. " +
+			"Results carry _score (cosine similarity, higher is closer).",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace of the table"),
+				"table":     tableProp("Table name"),
+				"text": map[string]any{
+					"type":        "string",
+					"description": "Query text; the server embeds it (requires an embedding provider)",
+					"minLength":   1,
+				},
+				"vector": map[string]any{
+					"type":        "array",
+					"description": "Raw query vector",
+					"items": map[string]any{
+						"type":    "number",
+						"minimum": -3.4028234663852886e+38,
+						"maximum": 3.4028234663852886e+38,
+					},
+					"minItems": 1,
+				},
+				"column": prop("string", "Vector column to search (optional)"),
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Max results (default 10, max 200)",
+					"minimum":     1,
+					"maximum":     200,
+				},
+			},
+			"required": []string{"namespace", "table"},
+			"oneOf": []any{
+				map[string]any{"required": []string{"text"}},
+				map[string]any{"required": []string{"vector"}},
+			},
+		},
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req vecReq
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			if req.Text != "" && len(req.Vector) > 0 {
+				return nil, badRequest("pass either text or vector, not both")
+			}
+			var vec []float32
+			switch {
+			case req.Text != "":
+				if s.emb.Identity() == "" {
+					return nil, badRequest("text search requires an embedding provider with a reported identity so queries are attributable to an embedding space")
+				}
+				if err := s.st.ValidateVectorSearch(ctx, normNS(req.Namespace), normTable(req.Table),
+					strings.ToLower(strings.TrimSpace(req.Column)), s.emb.Identity()); err != nil {
+					return nil, wrapStoreErr(err)
+				}
+				vecs, err := s.emb.Embed(ctx, []string{req.Text})
+				if err != nil {
+					return nil, wrapStoreErr(err)
+				}
+				if len(vecs) != 1 {
+					return nil, badRequest("embedding provider returned %d vectors for one query text", len(vecs))
+				}
+				if len(vecs[0]) == 0 {
+					return nil, badRequest("embedding provider returned a zero-dimensional vector for the query text")
+				}
+				vec = vecs[0]
+			case len(req.Vector) > 0:
+				vec = make([]float32, len(req.Vector))
+				for i, x := range req.Vector {
+					if math.IsNaN(x) || math.Abs(x) > math.MaxFloat32 {
+						return nil, badRequest("vector entry %d is outside the float32 range", i)
+					}
+					vec[i] = float32(x)
+				}
+			default:
+				return nil, badRequest("pass either text or vector")
+			}
+			queryIdentity := ""
+			if req.Text != "" {
+				queryIdentity = s.emb.Identity()
+			}
+			results, truncated, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table),
+				strings.ToLower(strings.TrimSpace(req.Column)), vec, queryIdentity, limit(req.Limit))
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"results": results, "truncated": truncated}, nil
+		},
+	},
+	"delete": {
+		Description: "Delete rows matching a SQL WHERE expression (e.g. \"status = 'done'\" or \"id IN (3, 7)\"). " +
+			"Rows are also removed from search indexes. The filter is required; pass \"1=1\" to empty the table.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace of the table"),
+				"table":     tableProp("Table name"),
+				"filter": map[string]any{
+					"type":        "string",
+					"description": "SQL WHERE expression selecting rows to delete",
+					"pattern":     `\S`,
+					"not":         map[string]any{"pattern": ";"},
+				},
+				"args": map[string]any{
+					"type":        "array",
+					"description": "Optional bind parameters for ? placeholders",
+					"items": map[string]any{
+						"anyOf": []any{
+							map[string]any{"type": "string"},
+							map[string]any{"type": "number"},
+							map[string]any{"type": "boolean"},
+							map[string]any{"type": "null"},
+						},
+					},
+				},
+			},
+			"required": []string{"namespace", "table", "filter"},
+		},
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req deleteReq
+			if err := decodeData(body, &req); err != nil {
+				return nil, err
+			}
+			deleted, err := s.st.Delete(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args)
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"deleted": deleted}, nil
+		},
+	},
+	"migrate": {
+		Description: "Evolve a table schema: add_field, rename_field, drop_field, set_fulltext, set_vectorize. " +
+			"Bumps the schema version and records the change. Adding fulltext rebuilds the search index; " +
+			"enabling vectorize backfills embeddings for existing rows.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace of the table"),
+				"table":     tableProp("Table name"),
+				"changes": map[string]any{
+					"type":        "array",
+					"description": "Ordered list of changes",
+					"minItems":    1,
+					"items": map[string]any{
+						"type":                 "object",
+						"additionalProperties": false,
+						"properties": map[string]any{
+							"op": map[string]any{
+								"type":        "string",
+								"description": "add_field | rename_field | drop_field | set_fulltext | set_vectorize",
+								"enum":        []string{"add_field", "rename_field", "drop_field", "set_fulltext", "set_vectorize"},
+							},
+							"field": fieldItemSchema("Field definition for add_field"),
+							"from":  fieldNameProp("Current name (rename_field)"),
+							"to":    fieldNameProp("New name (rename_field)"),
+							"name":  fieldNameProp("Field name (drop_field, set_fulltext, set_vectorize)"),
+							"value": prop("boolean", "Flag value (set_fulltext, set_vectorize)"),
+						},
+						"required": []string{"op"},
+						"allOf": []any{
+							map[string]any{
+								"if":   map[string]any{"properties": map[string]any{"op": map[string]any{"const": "add_field"}}},
+								"then": map[string]any{"required": []string{"field"}},
+							},
+							map[string]any{
+								"if":   map[string]any{"properties": map[string]any{"op": map[string]any{"const": "rename_field"}}},
+								"then": map[string]any{"required": []string{"from", "to"}},
+							},
+							map[string]any{
+								"if":   map[string]any{"properties": map[string]any{"op": map[string]any{"const": "drop_field"}}},
+								"then": map[string]any{"required": []string{"name"}},
+							},
+							map[string]any{
+								"if":   map[string]any{"properties": map[string]any{"op": map[string]any{"const": "set_fulltext"}}},
+								"then": map[string]any{"required": []string{"name", "value"}},
+							},
+							map[string]any{
+								"if":   map[string]any{"properties": map[string]any{"op": map[string]any{"const": "set_vectorize"}}},
+								"then": map[string]any{"required": []string{"name", "value"}},
+							},
+							map[string]any{
+								"if": map[string]any{
+									"properties": map[string]any{
+										"op":    map[string]any{"const": "set_fulltext"},
+										"value": map[string]any{"const": true},
+									},
+									"required": []string{"op", "value"},
+								},
+								"then": map[string]any{
+									"properties": map[string]any{
+										"name": map[string]any{"not": map[string]any{"const": "rank"}},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"required": []string{"namespace", "table", "changes"},
+		},
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req migrateReq
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			var shadow struct {
+				Namespace string           `json:"namespace"`
+				Table     string           `json:"table"`
+				Changes   []map[string]any `json:"changes"`
+			}
+			if err := decodeData(body, &shadow); err != nil {
+				return nil, err
+			}
+			for i, ch := range shadow.Changes {
+				op, _ := ch["op"].(string)
+				if op == "set_fulltext" || op == "set_vectorize" {
+					if _, ok := ch["value"]; !ok {
+						return nil, badRequest("changes[%d]: %s requires an explicit value (true or false); an omitted value would silently disable the feature and clear its index", i, op)
+					}
+				}
+			}
+			sc, err := s.st.Migrate(ctx, normNS(req.Namespace), normTable(req.Table), req.Changes, s.embedder())
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"table": sc}, nil
+		},
+	},
+}
+
+type insertReq struct {
+	Namespace string           `json:"namespace"`
+	Table     string           `json:"table"`
+	Records   []map[string]any `json:"records"`
+}
+
+type queryReq struct {
+	Namespace string `json:"namespace"`
+	SQL       string `json:"sql"`
+	Args      []any  `json:"args"`
+}
+
+type ftsReq struct {
+	Namespace string `json:"namespace"`
+	Table     string `json:"table"`
+	Query     string `json:"query"`
+	Limit     int    `json:"limit"`
+}
+
+type vecReq struct {
+	Namespace string    `json:"namespace"`
+	Table     string    `json:"table"`
+	Column    string    `json:"column"`
+	Text      string    `json:"text"`
+	Vector    []float64 `json:"vector"`
+	Limit     int       `json:"limit"`
+}
+
+type deleteReq struct {
+	Namespace string `json:"namespace"`
+	Table     string `json:"table"`
+	Filter    string `json:"filter"`
+	Args      []any  `json:"args"`
+}
+
+type migrateReq struct {
+	Namespace string          `json:"namespace"`
+	Table     string          `json:"table"`
+	Changes   []schema.Change `json:"changes"`
 }
