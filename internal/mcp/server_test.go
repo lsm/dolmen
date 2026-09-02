@@ -557,3 +557,46 @@ func TestCapabilityShapesValidated(t *testing.T) {
 		}
 	}
 }
+
+func TestExperimentalCapabilityValuesValidated(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	for _, caps := range []string{`{"experimental":{"vendor":1}}`, `{"experimental":{"vendor":null}}`} {
+		body := `{"jsonrpc":"2.0","id":60,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":` + caps + `,"clientInfo":{"name":"c","version":"1"}}}`
+		res, err := http.Post(url, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("post %s: %v", caps, err)
+		}
+		var decoded map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&decoded)
+		res.Body.Close()
+		errObj, ok := decoded["error"].(map[string]any)
+		if !ok || errObj["code"].(float64) != -32602 {
+			t.Fatalf("scalar experimental capability %s must be -32602, got %v", caps, decoded)
+		}
+	}
+}
+
+func TestMetaParamsValidated(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	for _, params := range []string{`{"_meta":1}`, `{"_meta":{"progressToken":true}}`} {
+		body := `{"jsonrpc":"2.0","id":61,"method":"ping","params":` + params + `}`
+		res, err := http.Post(url, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("post %s: %v", params, err)
+		}
+		var decoded map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&decoded)
+		res.Body.Close()
+		errObj, ok := decoded["error"].(map[string]any)
+		if !ok || errObj["code"].(float64) != -32602 {
+			t.Fatalf("malformed _meta %s must be -32602, got %v", params, decoded)
+		}
+	}
+	code, res := rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 62, "method": "ping",
+		"params": map[string]any{"_meta": map[string]any{"progressToken": "tok-1"}},
+	})
+	if code != 200 || res["result"] == nil {
+		t.Fatalf("object _meta with string progressToken must pass, got %d %v", code, res)
+	}
+}

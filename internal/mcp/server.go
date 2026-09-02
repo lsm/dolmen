@@ -236,8 +236,16 @@ func validateCapabilityShapes(caps map[string]any) *rpcErr {
 	}
 	for _, key := range []string{"sampling", "elicitation", "experimental", "logging"} {
 		if v, ok := caps[key]; ok {
-			if _, isObj := v.(map[string]any); !isObj {
+			m, isObj := v.(map[string]any)
+			if !isObj {
 				return badShape
+			}
+			if key == "experimental" {
+				for _, ev := range m {
+					if _, isObj := ev.(map[string]any); !isObj {
+						return badShape
+					}
+				}
 			}
 		}
 	}
@@ -254,6 +262,19 @@ func ensureObjectParams(raw []byte, what string) (map[string]any, *rpcErr) {
 	var probe map[string]any
 	if err := dec.Decode(&probe); err != nil || probe == nil {
 		return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: fmt.Sprintf("invalid %s params", what)}
+	}
+	if meta, ok := probe["_meta"]; ok {
+		m, isObj := meta.(map[string]any)
+		if !isObj {
+			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: fmt.Sprintf("invalid %s _meta", what)}
+		}
+		if pt, ok := m["progressToken"]; ok {
+			switch pt.(type) {
+			case string, json.Number:
+			default:
+				return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "_meta progressToken must be a string or number"}
+			}
+		}
 	}
 	return probe, nil
 }
