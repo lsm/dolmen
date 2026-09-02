@@ -309,3 +309,40 @@ func TestToolsCallRequiresName(t *testing.T) {
 		t.Fatalf("tools/call without a name must be -32602 (malformed request, not a tool error), got %v", res)
 	}
 }
+
+func TestToolsCallNonObjectArgumentsRejected(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	code, res := rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 13, "method": "tools/call",
+		"params": map[string]any{"name": "list_tables", "arguments": []any{"not", "an", "object"}},
+	})
+	if code != 200 {
+		t.Fatalf("unexpected status: %d", code)
+	}
+	errObj, ok := res["error"].(map[string]any)
+	if !ok || errObj["code"].(float64) != -32602 {
+		t.Fatalf("non-object arguments must be -32602, got %v", res)
+	}
+}
+
+func TestInvalidRequestIDRejected(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	for _, id := range []any{true, map[string]any{}, []any{}, nil} {
+		body := map[string]any{"jsonrpc": "2.0", "id": id, "method": "ping"}
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		res, err := http.Post(url, "application/json", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		var decoded map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&decoded)
+		res.Body.Close()
+		errObj, ok := decoded["error"].(map[string]any)
+		if !ok || errObj["code"].(float64) != -32600 {
+			t.Fatalf("id %v must be rejected with -32600 before dispatch, got %v", id, decoded)
+		}
+	}
+}

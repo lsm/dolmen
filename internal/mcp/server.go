@@ -74,6 +74,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if len(msg.ID) > 0 {
+		var idProbe any
+		if err := json.Unmarshal(msg.ID, &idProbe); err == nil {
+			switch idProbe.(type) {
+			case string, float64:
+			default:
+				writeRPCError(w, msg.ID, jsonRPCInvalidReq, "request id must be a string or number")
+				return
+			}
+		}
+	}
 	if len(msg.ID) == 0 {
 		w.WriteHeader(http.StatusAccepted)
 		return
@@ -150,6 +161,11 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		args := params.Arguments
 		if len(bytes.TrimSpace(args)) == 0 {
 			args = json.RawMessage("{}")
+		} else {
+			var argProbe map[string]any
+			if err := json.Unmarshal(args, &argProbe); err != nil {
+				return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "tools/call arguments must be an object"}
+			}
 		}
 		res, err := s.api.Dispatch(ctx, params.Name, args)
 		if err != nil {
