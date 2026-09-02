@@ -64,6 +64,7 @@ var Ops = map[string]OpDef{
 				"fields": map[string]any{
 					"type":        "array",
 					"description": "Field definitions",
+					"minItems":    1,
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{

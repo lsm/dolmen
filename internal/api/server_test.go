@@ -237,6 +237,17 @@ func TestInferSchemaSampleBoundsDeclared(t *testing.T) {
 	}
 }
 
+func TestCreateTableFieldsMinItemsDeclared(t *testing.T) {
+	def, ok := Ops["create_table"]
+	if !ok {
+		t.Fatal("create_table op missing")
+	}
+	fields := def.InputSchema["properties"].(map[string]any)["fields"].(map[string]any)
+	if fields["minItems"] != 1 {
+		t.Fatalf(`"fields" must declare minItems 1 to match schema.Validate, got %v`, fields)
+	}
+}
+
 func TestInferSchemaEmptyObjectsReturnArray(t *testing.T) {
 	srv := newTestServer(t)
 	code, body := post(t, srv.URL, "infer_schema", map[string]any{"samples": []map[string]any{{}}})
