@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -118,7 +119,10 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			if emb.Embed == nil {
 				return nil, true, invalidf("table %s uses vectorize but no embedding provider is configured", table)
 			}
-			if sc.EmbedSpace != "" && emb.Identity != "" && sc.EmbedSpace != emb.Identity {
+			if sc.EmbedSpace != "" && emb.Identity == "" {
+				return nil, true, invalidf("table %s was embedded by %q but the active embedding provider reports no identity; configure the provider to continue inserting", table, sc.EmbedSpace)
+			}
+			if sc.EmbedSpace != "" && sc.EmbedSpace != emb.Identity {
 				return nil, true, invalidf("embedding provider changed: table rows were embedded by %q but the active provider is %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedSpace, emb.Identity)
 			}
 			vecs, err := emb.Embed(ctx, texts)
@@ -129,6 +133,9 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 				return nil, true, fmt.Errorf("embedding provider returned %d vectors for %d texts", len(vecs), len(texts))
 			}
 			for _, v := range vecs {
+				if len(v) == 0 {
+					return nil, true, invalidf("embedding provider returned a zero-dimensional vector for table %s", table)
+				}
 				if sc.EmbedDim == 0 {
 					sc.EmbedDim = len(v)
 				} else if len(v) != sc.EmbedDim {
@@ -242,10 +249,35 @@ func coerceValue(f schema.Field, v any) (any, error) {
 		switch n := v.(type) {
 		case float64:
 			return n, nil
+		case float32:
+			return float64(n), nil
 		case int:
+			return int64(n), nil
+		case int8:
+			return int64(n), nil
+		case int16:
+			return int64(n), nil
+		case int32:
 			return int64(n), nil
 		case int64:
 			return n, nil
+		case uint:
+			if uint64(n) > math.MaxInt64 {
+				return nil, fmt.Errorf("field %q: number overflows int64", f.Name)
+			}
+			return int64(n), nil
+		case uint8:
+			return int64(n), nil
+		case uint16:
+			return int64(n), nil
+		case uint32:
+			return int64(n), nil
+		case uint64, uintptr:
+			u := reflect.ValueOf(v).Uint()
+			if u > math.MaxInt64 {
+				return nil, fmt.Errorf("field %q: number overflows int64", f.Name)
+			}
+			return int64(u), nil
 		case json.Number:
 			if i, err := n.Int64(); err == nil {
 				return i, nil
@@ -257,6 +289,19 @@ func coerceValue(f schema.Field, v any) (any, error) {
 			}
 			return f, nil
 		default:
+			rv := reflect.ValueOf(v)
+			switch rv.Kind() {
+			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+				return rv.Int(), nil
+			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+				u := rv.Uint()
+				if u > math.MaxInt64 {
+					return nil, fmt.Errorf("field %q: number overflows int64", f.Name)
+				}
+				return int64(u), nil
+			case reflect.Float32, reflect.Float64:
+				return rv.Float(), nil
+			}
 			return nil, fmt.Errorf("field %q: expected a number", f.Name)
 		}
 	case schema.Boolean:

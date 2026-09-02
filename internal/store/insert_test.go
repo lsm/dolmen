@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -134,5 +135,69 @@ func TestValidationRunsBeforeEmbedding(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("embedding provider must not be called for invalid records: %d calls", calls)
+	}
+}
+
+func TestInsertRejectsEmptyIdentityAgainstRecordedSpace(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "anon", []schema.Field{
+		{Name: "s", Type: schema.String, Vectorize: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "anon", []map[string]any{{"s": "hello"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	faceless := Embedder{Embed: fakeEmbed, Identity: ""}
+	if _, err := st.Insert(ctx, "test", "anon", []map[string]any{{"s": "more"}}, faceless); err == nil {
+		t.Fatal("expected empty identity against a recorded embedding space to be rejected")
+	}
+}
+
+func TestInsertRejectsZeroDimEmbeddings(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "zero", []schema.Field{
+		{Name: "s", Type: schema.String, Vectorize: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	empty := Embedder{Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+		out := make([][]float32, len(texts))
+		for i := range out {
+			out[i] = []float32{}
+		}
+		return out, nil
+	}, Identity: "empty-space"}
+	if _, err := st.Insert(ctx, "test", "zero", []map[string]any{{"s": "a"}}, empty); err == nil {
+		t.Fatal("expected all-empty embedding response to be rejected")
+	}
+	mixed := Embedder{Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+		return [][]float32{{}, {1, 2, 3, 4, 5, 6, 7, 8}}, nil
+	}, Identity: "mixed-space"}
+	if _, err := st.Insert(ctx, "test", "zero", []map[string]any{{"s": "a"}, {"s": "b"}}, mixed); err == nil {
+		t.Fatal("expected empty vector followed by a non-empty one to be rejected")
+	}
+}
+
+func TestInsertAcceptsInferredNumericKinds(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	type score int32
+	samples := []map[string]any{
+		{"n": int32(7), "u": uint64(9), "f": float32(1.5), "d": score(3)},
+	}
+	fields := schema.InferFields(samples)
+	if _, err := st.CreateTable(ctx, "test", "kinds", fields); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "kinds", samples, testEmbed); err != nil {
+		t.Fatalf("inserting the same records inference accepted must work: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "kinds", []map[string]any{
+		{"u": uint64(math.MaxUint64)},
+	}, testEmbed); err == nil {
+		t.Fatal("expected uint64 overflow of int64 to be rejected")
 	}
 }
