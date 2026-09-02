@@ -80,7 +80,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			switch idProbe.(type) {
 			case string, float64:
 			default:
-				writeRPCError(w, msg.ID, jsonRPCInvalidReq, "request id must be a string or number")
+				writeRPCError(w, nil, jsonRPCInvalidReq, "request id must be a string or number")
 				return
 			}
 		}
@@ -135,14 +135,18 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 			"serverInfo":      map[string]any{"name": serverName, "version": serverVersion},
 		}, nil
 	case "ping":
+		if _, e := ensureObjectParams(msg.Params, "ping"); e != nil {
+			return nil, e
+		}
 		return map[string]any{}, nil
 	case "tools/list":
-		if len(bytes.TrimSpace(msg.Params)) > 0 && !bytes.Equal(bytes.TrimSpace(msg.Params), []byte("null")) {
-			var params struct {
-				Cursor *string `json:"cursor"`
-			}
-			if err := json.Unmarshal(msg.Params, &params); err != nil {
-				return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "invalid tools/list params"}
+		probe, e := ensureObjectParams(msg.Params, "tools/list")
+		if e != nil {
+			return nil, e
+		}
+		if c, ok := probe["cursor"]; ok {
+			if _, isStr := c.(string); !isStr {
+				return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "tools/list cursor must be a string"}
 			}
 		}
 		tools := make([]map[string]any, 0)
@@ -189,6 +193,18 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 	default:
 		return nil, &rpcErr{Code: jsonRPCMethodError, Message: fmt.Sprintf("unknown method %q", msg.Method)}
 	}
+}
+
+func ensureObjectParams(raw []byte, what string) (map[string]any, *rpcErr) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil
+	}
+	var probe map[string]any
+	if err := json.Unmarshal(trimmed, &probe); err != nil || probe == nil {
+		return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: fmt.Sprintf("invalid %s params", what)}
+	}
+	return probe, nil
 }
 
 func toolResult(text string, isErr bool) map[string]any {
