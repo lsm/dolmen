@@ -7,7 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/lsm/dolmen/internal/api"
 )
@@ -39,6 +42,26 @@ type rpcMessage struct {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("MCP-Protocol-Version", protocolVersion)
+	if origin := r.Header.Get("Origin"); origin != "" {
+		allowed := false
+		if u, err := url.Parse(origin); err == nil {
+			switch strings.ToLower(u.Hostname()) {
+			case "localhost", "127.0.0.1", "::1":
+				allowed = true
+			}
+		}
+		if !allowed {
+			http.Error(w, "origin not allowed", http.StatusForbidden)
+			return
+		}
+	}
+	if r.Method == http.MethodPost {
+		mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil || mt != "application/json" {
+			http.Error(w, "content-type must be application/json", http.StatusUnsupportedMediaType)
+			return
+		}
+	}
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

@@ -676,3 +676,35 @@ func TestClientInfoTitleValidated(t *testing.T) {
 		t.Fatalf("string title must pass, got %v", decoded["error"])
 	}
 }
+
+func TestMCPOriginAndContentTypeGuard(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	body := `{"jsonrpc":"2.0","id":1,"method":"ping"}`
+	post := func(origin, ct string) int {
+		req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if ct != "" {
+			req.Header.Set("Content-Type", ct)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("do: %v", err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	if code := post("http://evil.example", "application/json"); code != http.StatusForbidden {
+		t.Fatalf("hostile origin must be 403, got %d", code)
+	}
+	if code := post("", "text/plain"); code != http.StatusUnsupportedMediaType {
+		t.Fatalf("non-JSON content type must be 415 (no preflight-free CSRF), got %d", code)
+	}
+	if code := post("http://localhost:5173", "application/json"); code != http.StatusOK {
+		t.Fatalf("localhost origin with JSON must pass, got %d", code)
+	}
+	if code := post("", "application/json"); code != http.StatusOK {
+		t.Fatalf("no-origin server-to-server call must pass, got %d", code)
+	}
+}
