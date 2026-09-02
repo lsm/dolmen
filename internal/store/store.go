@@ -702,15 +702,15 @@ func rowsToMaps(rows *sql.Rows) ([]map[string]any, bool, error) {
 		if err := rows.Scan(ptrs...); err != nil {
 			return nil, false, err
 		}
-		if len(out) >= MaxQueryRows || total >= MaxQueryBytes {
-			return out, true, rows.Err()
-		}
 		m := make(map[string]any, len(cols))
 		rowBytes := 0
 		for i, c := range cols {
 			v := normalizeVal(vals[i])
 			m[c] = v
 			rowBytes += approxSize(v)
+		}
+		if len(out) > 0 && (len(out) >= MaxQueryRows || total+rowBytes > MaxQueryBytes) {
+			return out, true, rows.Err()
 		}
 		total += rowBytes
 		out = append(out, m)
@@ -778,13 +778,15 @@ func fetchByIDs(ctx context.Context, db *sql.DB, table string, ids []int64) ([]m
 	if len(ids) == 0 {
 		return []map[string]any{}, true, nil
 	}
-	ph := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
-	args := make([]any, len(ids))
+	values := make([]string, len(ids))
+	args := make([]any, 0, len(ids)*2)
 	for i, id := range ids {
-		args[i] = id
+		values[i] = "(?, ?)"
+		args = append(args, i, id)
 	}
 	rows, err := db.QueryContext(ctx,
-		fmt.Sprintf(`SELECT * FROM %s WHERE id IN (%s)`, q(table), ph), args...)
+		fmt.Sprintf(`WITH _ranked(pos, id) AS (VALUES %s) SELECT t.* FROM _ranked JOIN %s t ON t.id = _ranked.id ORDER BY _ranked.pos`,
+			strings.Join(values, ", "), q(table)), args...)
 	if err != nil {
 		return nil, false, err
 	}
@@ -806,10 +808,6 @@ scan:
 		if err := rows.Scan(ptrs...); err != nil {
 			return nil, false, err
 		}
-		if total >= MaxQueryBytes {
-			complete = false
-			break scan
-		}
 		m := make(map[string]any, len(cols))
 		var id int64
 		rowBytes := 0
@@ -822,6 +820,10 @@ scan:
 			v := normalizeVal(vals[i])
 			m[c] = v
 			rowBytes += approxSize(v)
+		}
+		if len(byID) > 0 && total+rowBytes > MaxQueryBytes {
+			complete = false
+			break scan
 		}
 		total += rowBytes
 		byID[id] = m
@@ -923,9 +925,6 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 	if err != nil {
 		return nil, false, err
 	}
-	if !complete {
-		return out, true, nil
-	}
 	for _, row := range out {
 		if id, ok := row["id"].(int64); ok {
 			row["_score"] = scoreByID[id]
@@ -942,7 +941,7 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 			}
 		}
 	}
-	return out, false, nil
+	return out, !complete, nil
 }
 
 func cosine(a, b []float32) float64 {

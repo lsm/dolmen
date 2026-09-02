@@ -937,8 +937,8 @@ func TestQueryByteBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if len(rows) != 3 || !truncated {
-		t.Fatalf("byte budget should cap at 3 of 4 12MiB rows (36MiB > 32MiB budget): %d truncated=%v", len(rows), truncated)
+	if len(rows) != 2 || !truncated {
+		t.Fatalf("byte budget should cap at 2 of 4 12MiB rows (3rd would exceed 32MiB): %d truncated=%v", len(rows), truncated)
 	}
 }
 
@@ -987,8 +987,8 @@ func TestSearchByteBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
-	if len(rows) != 3 || !truncated {
-		t.Fatalf("search byte budget should cap at 3 of 4 12MiB rows: %d truncated=%v", len(rows), truncated)
+	if len(rows) != 2 || !truncated {
+		t.Fatalf("search byte budget should cap at 2 of 4 12MiB rows: %d truncated=%v", len(rows), truncated)
 	}
 }
 
