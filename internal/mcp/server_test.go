@@ -539,7 +539,8 @@ func TestCapabilityShapesValidated(t *testing.T) {
 	}
 	for _, caps := range []string{
 		`{"roots":{"listChanged":true}}`,
-		`{"sampling":false}`,
+		`{"sampling":{}}`,
+		`{"elicitation":{}}`,
 		`{"experimental":{"vendor":{"limit":1e1000}}}`,
 		`{"customFuture":{"anything":[1,2]}}`,
 	} {
