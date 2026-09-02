@@ -138,6 +138,13 @@ func decode(body []byte, v any) error {
 	if err := rejectNulls("", probe); err != nil {
 		return err
 	}
+	return decodeData(body, v)
+}
+
+func decodeData(body []byte, v any) error {
+	if len(body) == 0 {
+		return badRequest("empty request body")
+	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	dec.DisallowUnknownFields()

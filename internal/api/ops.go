@@ -178,7 +178,7 @@ var Ops = map[string]OpDef{
 		},
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req inferReq
-			if err := decode(body, &req); err != nil {
+			if err := decodeData(body, &req); err != nil {
 				return nil, err
 			}
 			if len(req.Samples) == 0 {

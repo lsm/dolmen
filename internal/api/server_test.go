@@ -503,3 +503,20 @@ func TestNullOptionValuesRejected(t *testing.T) {
 		t.Fatalf("null option values must 400 (they otherwise silently apply defaults), got %d", res.StatusCode)
 	}
 }
+
+func TestInferSchemaSamplesAllowNulls(t *testing.T) {
+	srv := newTestServer(t)
+	code, body := post(t, srv.URL, "infer_schema", map[string]any{
+		"samples": []map[string]any{{"name": "Alice"}, {"name": nil}},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("null observations inside samples are legitimate inference input: %d %v", code, body)
+	}
+	data, ok := body["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected data object, got %v", body)
+	}
+	if fields, ok := data["fields"].([]any); !ok || len(fields) != 1 {
+		t.Fatalf("null-only key must survive inference as a field, got %v", data["fields"])
+	}
+}
