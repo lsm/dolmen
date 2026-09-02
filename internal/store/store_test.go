@@ -152,7 +152,7 @@ func TestFulltextSearchAndDeleteCascade(t *testing.T) {
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
 
-	rows, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 10)
+	rows, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 10)
 	if err != nil {
 		t.Fatalf("fts: %v", err)
 	}
@@ -168,14 +168,14 @@ func TestFulltextSearchAndDeleteCascade(t *testing.T) {
 		t.Fatalf("expected 1 deleted, got %d", deleted)
 	}
 
-	rows, err = st.SearchFulltext(ctx, "test", "notes", "dolmen", 10)
+	rows, _, err = st.SearchFulltext(ctx, "test", "notes", "dolmen", 10)
 	if err != nil {
 		t.Fatalf("fts after delete: %v", err)
 	}
 	if len(rows) != 0 {
 		t.Fatalf("expected deleted row gone from fts, got %v", rows)
 	}
-	rows, err = st.SearchFulltext(ctx, "test", "notes", "memory", 10)
+	rows, _, err = st.SearchFulltext(ctx, "test", "notes", "memory", 10)
 	if err != nil {
 		t.Fatalf("fts survivor: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestVectorSearch(t *testing.T) {
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
 
-	rows, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0, 0, 0}, "", 2)
+	rows, _, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0, 0, 0}, "", 2)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
@@ -201,12 +201,12 @@ func TestVectorSearch(t *testing.T) {
 		t.Fatalf("expected cosine ~1, got %f", score)
 	}
 
-	if _, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0}, "", 2); err == nil {
+	if _, _, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0}, "", 2); err == nil {
 		t.Fatal("expected dim mismatch to be rejected")
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"the dolmen stores stone tables"})
-	rows, err = st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 1)
+	rows, _, err = st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 1)
 	if err != nil {
 		t.Fatalf("vectorize search: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestMigrate(t *testing.T) {
 		t.Fatalf("insert after migrate: %v", err)
 	}
 
-	rows, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 10)
+	rows, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 10)
 	if err != nil {
 		t.Fatalf("fts after rename: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestMigrateVectorizeBackfill(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"hello world"})
-	rows, err := st.SearchVector(ctx, "test", "plain", "", qv[0], "fake-space", 1)
+	rows, _, err := st.SearchVector(ctx, "test", "plain", "", qv[0], "fake-space", 1)
 	if err != nil {
 		t.Fatalf("vector search after backfill: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestMigrateVectorizeSwitch(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"delta content here"})
-	rows, err := st.SearchVector(ctx, "test", "switch", "", qv[0], "fake-space", 2)
+	rows, _, err := st.SearchVector(ctx, "test", "switch", "", qv[0], "fake-space", 2)
 	if err != nil {
 		t.Fatalf("vector search after switch: %v", err)
 	}
@@ -441,7 +441,7 @@ func TestLargeDeleteUsesNoInParameterLists(t *testing.T) {
 	if got := rows[0]["n"].(int64); got != 0 {
 		t.Fatalf("expected 0 rows after delete, got %d", got)
 	}
-	fts, err := st.SearchFulltext(ctx, "test", "big", "row", 10)
+	fts, _, err := st.SearchFulltext(ctx, "test", "big", "row", 10)
 	if err != nil {
 		t.Fatalf("fts after delete: %v", err)
 	}
@@ -531,7 +531,7 @@ func TestDropAndReAddVectorizeField(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"fresh row"})
-	rows, err := st.SearchVector(ctx, "test", "recyc", "", qv[0], "fake-space", 5)
+	rows, _, err := st.SearchVector(ctx, "test", "recyc", "", qv[0], "fake-space", 5)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -558,7 +558,7 @@ func TestEmbedModelMismatchGuard(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"hello"})
-	if _, err := st.SearchVector(ctx, "test", "mm", "", qv[0], "other-space", 5); err == nil {
+	if _, _, err := st.SearchVector(ctx, "test", "mm", "", qv[0], "other-space", 5); err == nil {
 		t.Fatal("expected search with changed model to be rejected")
 	}
 
@@ -609,7 +609,7 @@ func TestChunkedVectorizeBackfill(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	qv, _ := fakeEmbed(ctx, []string{strings.Repeat("a", 300) + "b"})
-	rows, err := st.SearchVector(ctx, "test", "chunky", "", qv[0], "fake-space", 1)
+	rows, _, err := st.SearchVector(ctx, "test", "chunky", "", qv[0], "fake-space", 1)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -717,7 +717,7 @@ func TestRawVectorDimMismatchOnAutoEmbedding(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "auto", []map[string]any{{"s": "hello"}}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if _, err := st.SearchVector(ctx, "test", "auto", "", []float32{1, 0, 0, 0}, "", 5); err == nil {
+	if _, _, err := st.SearchVector(ctx, "test", "auto", "", []float32{1, 0, 0, 0}, "", 5); err == nil {
 		t.Fatal("expected wrong-length raw vector against auto-embeddings to be rejected")
 	}
 }
@@ -746,7 +746,7 @@ func TestUnrelatedMigrationPreservesEmbedDim(t *testing.T) {
 	if err != nil || sc.EmbedDim != 8 {
 		t.Fatalf("unrelated migration must preserve embed_dim, got %+v err=%v", sc, err)
 	}
-	if _, err := st.SearchVector(ctx, "test", "dimkeep", "", []float32{1, 0, 0, 0}, "", 5); err == nil {
+	if _, _, err := st.SearchVector(ctx, "test", "dimkeep", "", []float32{1, 0, 0, 0}, "", 5); err == nil {
 		t.Fatal("dim guard must survive unrelated migrations")
 	}
 }
@@ -847,7 +847,7 @@ func TestNoOpVectorizeMigrationSkipsReembed(t *testing.T) {
 		t.Fatalf("no-op migration re-embedded: %d -> %d", before, calls)
 	}
 	qv, _ := fakeEmbed(ctx, []string{"hello world"})
-	rows, err := st.SearchVector(ctx, "test", "noop", "", qv[0], "fake-space", 1)
+	rows, _, err := st.SearchVector(ctx, "test", "noop", "", qv[0], "fake-space", 1)
 	if err != nil || len(rows) != 1 || rows[0]["s"] != "hello world" {
 		t.Fatalf("embeddings must survive no-op migration: %v %v", err, rows)
 	}
@@ -890,7 +890,7 @@ func TestMigrateReDerivesEmbedDimAfterDisable(t *testing.T) {
 		t.Fatalf("expected re-derived embed_dim 4, got %+v err=%v", sc, err)
 	}
 	qv, _ := shortEmbed(ctx, []string{"anything"})
-	if _, err := st.SearchVector(ctx, "test", "redim", "", qv[0], "fake-space", 5); err != nil {
+	if _, _, err := st.SearchVector(ctx, "test", "redim", "", qv[0], "fake-space", 5); err != nil {
 		t.Fatalf("text-space search after dim change must work: %v", err)
 	}
 }
@@ -966,5 +966,52 @@ func TestBackfillSkipsEmptyStrings(t *testing.T) {
 	}
 	if rows[0]["n"].(int64) != 1 {
 		t.Fatalf("empty-string row must stay un-embedded: %v", rows)
+	}
+}
+
+func TestSearchByteBudget(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "bigsearch", []schema.Field{
+		{Name: "v", Type: schema.Text, Fulltext: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	chunk := strings.Repeat("needle ", (12<<20)/7)
+	for i := 0; i < 4; i++ {
+		if _, err := st.Insert(ctx, "test", "bigsearch", []map[string]any{{"v": chunk}}, testEmbed); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+	rows, truncated, err := st.SearchFulltext(ctx, "test", "bigsearch", "needle", 200)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(rows) != 3 || !truncated {
+		t.Fatalf("search byte budget should cap at 3 of 4 12MiB rows: %d truncated=%v", len(rows), truncated)
+	}
+}
+
+func TestValidationRunsBeforeEmbedding(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	calls := 0
+	counting := Embedder{Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+		calls++
+		return fakeEmbed(ctx, texts)
+	}, Identity: "fake-space"}
+	if _, err := st.CreateTable(ctx, "test", "pree", []schema.Field{
+		{Name: "s", Type: schema.String, Vectorize: true},
+		{Name: "n", Type: schema.Number},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "pree", []map[string]any{
+		{"s": "valid text", "n": "not a number"},
+	}, counting); err == nil {
+		t.Fatal("expected invalid record to be rejected")
+	}
+	if calls != 0 {
+		t.Fatalf("embedding provider must not be called for invalid records: %d calls", calls)
 	}
 }

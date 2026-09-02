@@ -263,11 +263,11 @@ var Ops = map[string]OpDef{
 			if req.Query == "" {
 				return nil, badRequest("query must not be empty")
 			}
-			results, err := s.st.SearchFulltext(ctx, normNS(req.Namespace), normTable(req.Table), req.Query, limit(req.Limit))
+			results, truncated, err := s.st.SearchFulltext(ctx, normNS(req.Namespace), normTable(req.Table), req.Query, limit(req.Limit))
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"results": results}, nil
+			return map[string]any{"results": results, "truncated": truncated}, nil
 		},
 	},
 	"search_vector": {
@@ -314,7 +314,7 @@ var Ops = map[string]OpDef{
 			default:
 				return nil, badRequest("pass either text or vector")
 			}
-			results, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table),
+			results, _, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table),
 				strings.ToLower(strings.TrimSpace(req.Column)), vec, s.emb.Identity(), limit(req.Limit))
 			if err != nil {
 				return nil, wrapStoreErr(err)

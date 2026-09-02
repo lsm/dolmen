@@ -409,6 +409,30 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 		}
 	}
 
+	type coercedRow struct {
+		cols []string
+		vals []any
+		rec  map[string]any
+	}
+	coercedRows := make([]coercedRow, len(records))
+	for i, rec := range records {
+		var cols []string
+		var vals []any
+		for _, f := range sc.Fields {
+			v, present := rec[f.Name]
+			if !present {
+				continue
+			}
+			cv, err := coerceValue(f, v)
+			if err != nil {
+				return nil, true, fmt.Errorf("%w: %w", ErrInvalid, err)
+			}
+			cols = append(cols, q(f.Name))
+			vals = append(vals, cv)
+		}
+		coercedRows[i] = coercedRow{cols: cols, vals: vals, rec: rec}
+	}
+
 	embFor := map[int][]float32{}
 	if vf := sc.VectorizeField(); vf != nil {
 		var texts []string
@@ -462,21 +486,10 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	}
 
 	ids = make([]int64, 0, len(records))
-	for i, rec := range records {
-		var cols []string
-		var vals []any
-		for _, f := range sc.Fields {
-			v, present := rec[f.Name]
-			if !present {
-				continue
-			}
-			cv, err := coerceValue(f, v)
-			if err != nil {
-				return nil, true, fmt.Errorf("%w: %w", ErrInvalid, err)
-			}
-			cols = append(cols, q(f.Name))
-			vals = append(vals, cv)
-		}
+	for i, row := range coercedRows {
+		rec := row.rec
+		cols := row.cols
+		vals := row.vals
 		if ev, ok := embFor[i]; ok {
 			cols = append(cols, `"_embedding"`)
 			vals = append(vals, schema.EncodeVector(ev))
@@ -723,43 +736,47 @@ func normalizeVal(v any) any {
 	return v
 }
 
-func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string, limit int) ([]map[string]any, error) {
+func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string, limit int) ([]map[string]any, bool, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	sc, err := loadSchema(ctx, n.rw, nsName, table)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if len(sc.FTSFields()) == 0 {
-		return nil, invalidf("table %s has no fulltext fields", table)
+		return nil, false, invalidf("table %s has no fulltext fields", table)
 	}
 	rows, err := n.rw.QueryContext(ctx,
 		fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? ORDER BY rank LIMIT ?`,
 			q(ftsTable(table)), ftsTable(table)),
 		query, limit)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
 	var ids []int64
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return fetchByIDs(ctx, n.rw, table, ids)
+	out, complete, err := fetchByIDs(ctx, n.rw, table, ids)
+	if err != nil {
+		return nil, false, err
+	}
+	return out, !complete, nil
 }
 
-func fetchByIDs(ctx context.Context, db *sql.DB, table string, ids []int64) ([]map[string]any, error) {
+func fetchByIDs(ctx context.Context, db *sql.DB, table string, ids []int64) ([]map[string]any, bool, error) {
 	if len(ids) == 0 {
-		return []map[string]any{}, nil
+		return []map[string]any{}, true, nil
 	}
 	ph := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
 	args := make([]any, len(ids))
@@ -769,14 +786,17 @@ func fetchByIDs(ctx context.Context, db *sql.DB, table string, ids []int64) ([]m
 	rows, err := db.QueryContext(ctx,
 		fmt.Sprintf(`SELECT * FROM %s WHERE id IN (%s)`, q(table), ph), args...)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
 	cols, err := rows.Columns()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	byID := map[int64]map[string]any{}
+	total := 0
+	complete := true
+scan:
 	for rows.Next() {
 		vals := make([]any, len(cols))
 		ptrs := make([]any, len(vals))
@@ -784,22 +804,30 @@ func fetchByIDs(ctx context.Context, db *sql.DB, table string, ids []int64) ([]m
 			ptrs[i] = &vals[i]
 		}
 		if err := rows.Scan(ptrs...); err != nil {
-			return nil, err
+			return nil, false, err
+		}
+		if total >= MaxQueryBytes {
+			complete = false
+			break scan
 		}
 		m := make(map[string]any, len(cols))
 		var id int64
+		rowBytes := 0
 		for i, c := range cols {
 			if c == "id" {
 				if v, ok := vals[i].(int64); ok {
 					id = v
 				}
 			}
-			m[c] = normalizeVal(vals[i])
+			v := normalizeVal(vals[i])
+			m[c] = v
+			rowBytes += approxSize(v)
 		}
+		total += rowBytes
 		byID[id] = m
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	out := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
@@ -807,17 +835,17 @@ func fetchByIDs(ctx context.Context, db *sql.DB, table string, ids []int64) ([]m
 			out = append(out, m)
 		}
 	}
-	return out, nil
+	return out, complete, nil
 }
 
-func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, vec []float32, embedModel string, limit int) ([]map[string]any, error) {
+func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, vec []float32, embedModel string, limit int) ([]map[string]any, bool, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	sc, err := loadSchema(ctx, n.rw, nsName, table)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if column == "" {
 		if vf := sc.VectorizeField(); vf != nil {
@@ -825,34 +853,34 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 		} else if vfs := sc.VectorFields(); len(vfs) > 0 {
 			column = vfs[0].Name
 		} else {
-			return nil, invalidf("table %s has no vector data (no vectorize field, no vector fields)", table)
+			return nil, false, invalidf("table %s has no vector data (no vectorize field, no vector fields)", table)
 		}
 	}
 	var dim int
 	switch {
 	case column == "_embedding":
 		if sc.VectorizeField() == nil {
-			return nil, invalidf("table %s has no vectorize field for _embedding", table)
+			return nil, false, invalidf("table %s has no vectorize field for _embedding", table)
 		}
 	case sc.Field(column) != nil && sc.Field(column).Type == schema.Vector:
 		dim = sc.Field(column).Dim
 	default:
-		return nil, invalidf("column %q is not a vector column", column)
+		return nil, false, invalidf("column %q is not a vector column", column)
 	}
 	if column == "_embedding" && sc.EmbedSpace != "" && embedModel != "" && sc.EmbedSpace != embedModel {
-		return nil, invalidf("embedding model changed: table rows are embedded with %q but the provider now serves %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedSpace, embedModel)
+		return nil, false, invalidf("embedding model changed: table rows are embedded with %q but the provider now serves %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedSpace, embedModel)
 	}
 	if column == "_embedding" {
 		dim = sc.EmbedDim
 	}
 	if dim > 0 && len(vec) != dim {
-		return nil, invalidf("query vector has %d entries, column %s expects dim %d", len(vec), column, dim)
+		return nil, false, invalidf("query vector has %d entries, column %s expects dim %d", len(vec), column, dim)
 	}
 
 	rows, err := n.rw.QueryContext(ctx,
 		fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s IS NOT NULL`, q(column), q(table), q(column)))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
 
@@ -865,7 +893,7 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 		var id int64
 		var blob []byte
 		if err := rows.Scan(&id, &blob); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		stored, err := schema.DecodeVector(blob)
 		if err != nil || len(stored) != len(vec) {
@@ -874,7 +902,7 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 		hits = append(hits, hit{id: id, score: cosine(vec, stored)})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	sort.SliceStable(hits, func(i, j int) bool {
 		if hits[i].score == hits[j].score {
@@ -891,9 +919,12 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 		ids[i] = h.id
 		scoreByID[h.id] = h.score
 	}
-	out, err := fetchByIDs(ctx, n.rw, table, ids)
+	out, complete, err := fetchByIDs(ctx, n.rw, table, ids)
 	if err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	if !complete {
+		return out, true, nil
 	}
 	for _, row := range out {
 		if id, ok := row["id"].(int64); ok {
@@ -911,7 +942,7 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 			}
 		}
 	}
-	return out, nil
+	return out, false, nil
 }
 
 func cosine(a, b []float32) float64 {
