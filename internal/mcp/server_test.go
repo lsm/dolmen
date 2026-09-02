@@ -150,3 +150,49 @@ func TestInitializeUnsupportedVersionFallsBack(t *testing.T) {
 		t.Fatalf("unsupported requested version must fall back to server version, got %v", got)
 	}
 }
+
+func TestUnsupportedProtocolVersionHeaderRejected(t *testing.T) {
+	srv := newMCPServer(t)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("MCP-Protocol-Version", "1999-01-01")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unsupported protocol version must 400, got %d", res.StatusCode)
+	}
+	req, _ = http.NewRequest(http.MethodPost, srv.URL, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("MCP-Protocol-Version", protocolVersion)
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("supported protocol version must pass, got %d", res.StatusCode)
+	}
+}
+
+func TestMalformedCallParamsUseInvalidParamsCode(t *testing.T) {
+	srv := newMCPServer(t)
+	code, res := rpc(t, srv.URL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      7,
+		"method":  "tools/call",
+		"params":  []any{"not", "an", "object"},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("unexpected http status: %d", code)
+	}
+	errObj, ok := res["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected an error object, got %v", res)
+	}
+	if errObj["code"].(float64) != -32602 {
+		t.Fatalf("malformed params must use -32602 (Invalid params), not the parse-error code, got %v", errObj["code"])
+	}
+}

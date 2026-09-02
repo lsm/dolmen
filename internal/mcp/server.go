@@ -12,12 +12,13 @@ import (
 )
 
 const (
-	protocolVersion    = "2025-06-18"
-	serverName         = "dolmen"
-	serverVersion      = "0.1.0"
-	jsonRPCParseError  = -32700
-	jsonRPCMethodError = -32601
-	jsonRPCInvalidReq  = -32600
+	protocolVersion     = "2025-06-18"
+	serverName          = "dolmen"
+	serverVersion       = "0.1.0"
+	jsonRPCParseError   = -32700
+	jsonRPCMethodError  = -32601
+	jsonRPCInvalidReq   = -32600
+	jsonRPCInvalidParam = -32602
 )
 
 type Server struct {
@@ -55,6 +56,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if msg.JSONRPC != "2.0" || msg.Method == "" {
 		writeRPCError(w, msg.ID, jsonRPCInvalidReq, "expected a JSON-RPC 2.0 request")
 		return
+	}
+	if msg.Method != "initialize" {
+		if pv := r.Header.Get("MCP-Protocol-Version"); pv != "" && pv != protocolVersion {
+			http.Error(w, "unsupported MCP-Protocol-Version", http.StatusBadRequest)
+			return
+		}
 	}
 	if len(msg.ID) == 0 {
 		w.WriteHeader(http.StatusAccepted)
@@ -108,7 +115,7 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 			Arguments json.RawMessage `json:"arguments"`
 		}
 		if err := json.Unmarshal(msg.Params, &params); err != nil {
-			return nil, &rpcErr{Code: jsonRPCParseError, Message: "invalid tools/call params"}
+			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "invalid tools/call params"}
 		}
 		args := params.Arguments
 		if len(bytes.TrimSpace(args)) == 0 {
