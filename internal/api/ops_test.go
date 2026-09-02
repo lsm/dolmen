@@ -134,6 +134,22 @@ func TestSearchVectorBothFormsRejected(t *testing.T) {
 	if code != 400 {
 		t.Fatalf("supplying neither text nor vector must 400, got %d %v", code, res)
 	}
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "x",
+		"table":     "t",
+		"text":      "",
+	})
+	if code != 400 {
+		t.Fatalf("empty text must 400, got %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "x",
+		"table":     "t",
+		"vector":    []float64{},
+	})
+	if code != 400 {
+		t.Fatalf("empty vector must 400, got %d %v", code, res)
+	}
 	def, ok := Ops["search_vector"]
 	if !ok {
 		t.Fatal("search_vector op missing")
@@ -177,6 +193,49 @@ func TestSearchVectorRawVectorIgnoresProviderIdentity(t *testing.T) {
 	})
 	if code != 200 {
 		t.Fatalf("raw-vector search must not be bound to the active provider identity (table is space-a, server is fake-space), got %d %v", code, res)
+	}
+}
+
+type multiEmb struct{}
+
+func (multiEmb) Name() string     { return "multi" }
+func (multiEmb) Identity() string { return "multi-space" }
+func (multiEmb) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	return make([][]float32, 2), nil
+}
+
+func TestSearchVectorMultiEmbedResultRejected(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	srv := httptest.NewServer(New(st, multiEmb{}).Handler())
+	t.Cleanup(srv.Close)
+	code, _ := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "mt",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "s", "type": "text", "vectorize": true}},
+	})
+	if code != 200 {
+		t.Fatal("create failed")
+	}
+	code, res := post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "mt", "table": "t", "text": "anything",
+	})
+	if code != 400 {
+		t.Fatalf("multi-vector provider result must 400, got %d %v", code, res)
+	}
+}
+
+func TestInsertBatchBoundsDeclared(t *testing.T) {
+	def, ok := Ops["insert"]
+	if !ok {
+		t.Fatal("insert op missing")
+	}
+	records := def.InputSchema["properties"].(map[string]any)["records"].(map[string]any)
+	if records["minItems"] != 1 || records["maxItems"] != store.MaxRecordsPerInsert {
+		t.Fatalf("records must declare the store batch bounds 1..%d, got %v", store.MaxRecordsPerInsert, records)
 	}
 }
 

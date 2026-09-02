@@ -215,6 +215,8 @@ var Ops = map[string]OpDef{
 					"type":        "array",
 					"description": "Records to insert (JSON objects keyed by field name)",
 					"items":       map[string]any{"type": "object"},
+					"minItems":    1,
+					"maxItems":    store.MaxRecordsPerInsert,
 				},
 			},
 			"required": []string{"namespace", "table", "records"},
@@ -305,11 +307,16 @@ var Ops = map[string]OpDef{
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
 				"table":     tableProp("Table name"),
-				"text":      prop("string", "Query text; the server embeds it (requires an embedding provider)"),
+				"text": map[string]any{
+					"type":        "string",
+					"description": "Query text; the server embeds it (requires an embedding provider)",
+					"minLength":   1,
+				},
 				"vector": map[string]any{
 					"type":        "array",
 					"description": "Raw query vector",
 					"items":       map[string]any{"type": "number"},
+					"minItems":    1,
 				},
 				"column": prop("string", "Vector column to search (optional)"),
 				"limit":  prop("integer", "Max results (default 10, max 200)"),
@@ -339,8 +346,8 @@ var Ops = map[string]OpDef{
 				if err != nil {
 					return nil, wrapStoreErr(err)
 				}
-				if len(vecs) == 0 {
-					return nil, badRequest("embedding provider returned no vector for the query text")
+				if len(vecs) != 1 {
+					return nil, badRequest("embedding provider returned %d vectors for one query text", len(vecs))
 				}
 				vec = vecs[0]
 			case len(req.Vector) > 0:
