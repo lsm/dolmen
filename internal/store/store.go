@@ -905,6 +905,10 @@ func fetchByIDs(ctx context.Context, db *sql.DB, table string, ids []int64, vect
 		return nil, false, err
 	}
 	byID := map[int64]map[string]any{}
+	labelBytes := 0
+	for _, c := range cols {
+		labelBytes += encodedSize(c) + 16
+	}
 	total := 0
 	complete := true
 scan:
@@ -943,7 +947,7 @@ scan:
 				sz = sz * 9 / 2
 			}
 			rowBytes += sz
-			if total+rowBytes > MaxQueryBytes {
+			if total+rowBytes+labelBytes > MaxQueryBytes {
 				if len(byID) == 0 {
 					return nil, false, invalidf("search result exceeds the %d MiB response budget on its first row", MaxQueryBytes>>20)
 				}
@@ -951,7 +955,7 @@ scan:
 				break scan
 			}
 		}
-		total += rowBytes
+		total += rowBytes + labelBytes
 		byID[id] = m
 	}
 	if err := rows.Err(); err != nil {

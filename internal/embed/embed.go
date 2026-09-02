@@ -101,6 +101,9 @@ func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float32, error)
 		}
 		sort.SliceStable(decoded.Data, func(i, j int) bool { return decoded.Data[i].Index < decoded.Data[j].Index })
 		for i, d := range decoded.Data {
+			if d.Index != i {
+				return nil, fmt.Errorf("embeddings API returned inconsistent indices (expected 0..%d)", len(batch)-1)
+			}
 			out[start+i] = d.Embedding
 		}
 	}

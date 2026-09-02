@@ -1357,3 +1357,32 @@ func TestRequiredFieldAdditionOnPopulatedTableRejected(t *testing.T) {
 		t.Fatalf("nullable addition must still work: %v", err)
 	}
 }
+
+func TestSearchLabelBudget(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	needle := strings.Repeat("f", 64)
+	fields := []schema.Field{{Name: needle, Type: schema.String, Fulltext: true}}
+	long := strings.Repeat("c", 60)
+
+	for i := 0; i < 1500; i++ {
+		fields = append(fields, schema.Field{Name: long + fmt.Sprint(i), Type: schema.String})
+	}
+	if _, err := st.CreateTable(ctx, "test", "wide", fields); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	records := make([]map[string]any, 0, 250)
+	for i := 0; i < 250; i++ {
+		records = append(records, map[string]any{needle: "target"})
+	}
+	if _, err := st.Insert(ctx, "test", "wide", records, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, truncated, err := st.SearchFulltext(ctx, "test", "wide", "target", 250)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(rows) >= 250 || !truncated {
+		t.Fatalf("wide-table labels must count against the budget: %d truncated=%v", len(rows), truncated)
+	}
+}

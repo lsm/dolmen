@@ -28,3 +28,19 @@ func TestOpenAIEmptyKeyAllowed(t *testing.T) {
 		t.Fatalf("unexpected vectors: %v", vecs)
 	}
 }
+
+func TestOpenAIInconsistentIndicesRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"index": 0, "embedding": []float64{0.1}},
+				{"index": 2, "embedding": []float64{0.2}},
+			},
+		})
+	}))
+	defer srv.Close()
+	p := &OpenAI{BaseURL: srv.URL, Model: "m", APIKey: ""}
+	if _, err := p.Embed(context.Background(), []string{"a", "b"}); err == nil {
+		t.Fatal("expected inconsistent indices to be rejected")
+	}
+}
