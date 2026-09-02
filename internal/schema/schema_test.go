@@ -240,3 +240,18 @@ func TestSQLiteReservedTableNamesRejected(t *testing.T) {
 		t.Fatal("names that merely start with the letters sqlite must stay valid")
 	}
 }
+
+func TestInferDefinedNumericTypesAreNumbers(t *testing.T) {
+	type score int64
+	type ratio float32
+	fields := InferFields([]map[string]any{{"s": score(3), "r": ratio(0.5)}})
+	byName := map[string]Field{}
+	for _, f := range fields {
+		byName[f.Name] = f
+	}
+	for _, name := range []string{"s", "r"} {
+		if byName[name].Type != Number {
+			t.Fatalf("defined numeric %q should infer number, got %s", name, byName[name].Type)
+		}
+	}
+}
