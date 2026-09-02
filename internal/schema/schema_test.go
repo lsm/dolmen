@@ -345,3 +345,24 @@ func TestInferPointerChainToNilSkipped(t *testing.T) {
 		t.Fatalf("pointer chain ending in nil must be skipped, got %+v", fields)
 	}
 }
+
+func TestInferBoxedInterfaceChains(t *testing.T) {
+	var p *string
+	boxedNil := any(p)
+	str := "2026-09-01T10:00:00Z"
+	boxedStr := any(str)
+	fields := InferFields([]map[string]any{
+		{"a": &boxedNil, "b": &boxedStr},
+		{"a": "x", "b": "2026-09-02T10:00:00Z"},
+	})
+	byName := map[string]Field{}
+	for _, f := range fields {
+		byName[f.Name] = f
+	}
+	if byName["a"].Type != String {
+		t.Fatalf("boxed typed nil behind a pointer must be skipped, got %s", byName["a"].Type)
+	}
+	if byName["b"].Type != Timestamp {
+		t.Fatalf("boxed string behind a pointer must feed subtype inference, got %s", byName["b"].Type)
+	}
+}

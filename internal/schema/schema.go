@@ -313,14 +313,14 @@ func isNilValue(v any) bool {
 		return true
 	}
 	rv := reflect.ValueOf(v)
-	for rv.Kind() == reflect.Pointer {
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
 		if rv.IsNil() {
 			return true
 		}
 		rv = rv.Elem()
 	}
 	switch rv.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Slice, reflect.UnsafePointer:
+	case reflect.Chan, reflect.Func, reflect.Map, reflect.Slice, reflect.UnsafePointer:
 		return rv.IsNil()
 	}
 	return false
@@ -376,7 +376,7 @@ func allStringsMatch(samples []map[string]any, key string, pred func(string) boo
 
 func underlyingString(v any) (string, bool) {
 	rv := reflect.ValueOf(v)
-	for rv.Kind() == reflect.Pointer {
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
 		rv = rv.Elem()
 	}
 	if rv.Kind() != reflect.String {
