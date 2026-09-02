@@ -338,7 +338,7 @@ func goKind(v any) string {
 		return "bool"
 	case float32, float64, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, uintptr, json.Number:
 		return "number"
-	case string:
+	case string, time.Time:
 		return "string"
 	case map[string]any:
 		return "object"
@@ -378,6 +378,12 @@ func underlyingString(v any) (string, bool) {
 	rv := reflect.ValueOf(v)
 	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
 		rv = rv.Elem()
+	}
+	if rv.Kind() == reflect.Struct {
+		if t, ok := rv.Interface().(time.Time); ok {
+			return t.Format(time.RFC3339Nano), true
+		}
+		return "", false
 	}
 	if rv.Kind() != reflect.String {
 		return "", false

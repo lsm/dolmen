@@ -3,6 +3,7 @@ package schema
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestInferFields(t *testing.T) {
@@ -364,5 +365,13 @@ func TestInferBoxedInterfaceChains(t *testing.T) {
 	}
 	if byName["b"].Type != Timestamp {
 		t.Fatalf("boxed string behind a pointer must feed subtype inference, got %s", byName["b"].Type)
+	}
+}
+
+func TestInferTimeTimeSamplesAreTimestamps(t *testing.T) {
+	ts := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	fields := InferFields([]map[string]any{{"t": ts}, {"t": &ts}})
+	if len(fields) != 1 || fields[0].Type != Timestamp {
+		t.Fatalf("time.Time samples should infer timestamp, got %+v", fields)
 	}
 }
