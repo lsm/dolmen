@@ -246,6 +246,22 @@ func TestCreateTableFieldsMinItemsDeclared(t *testing.T) {
 	if fields["minItems"] != 1 {
 		t.Fatalf(`"fields" must declare minItems 1 to match schema.Validate, got %v`, fields)
 	}
+	items := fields["items"].(map[string]any)
+	if items["additionalProperties"] != false {
+		t.Fatalf("field items must reject unknown properties, got %v", items["additionalProperties"])
+	}
+}
+
+func TestUnknownRequestFieldsRejected(t *testing.T) {
+	srv := newTestServer(t)
+	code, body := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "x",
+		"table":     "typo",
+		"fields":    []map[string]any{{"name": "title", "requred": true}},
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("misspelled field option must 400, got %d %v", code, body)
+	}
 }
 
 func TestCreateTableFieldTypeEnumDeclared(t *testing.T) {

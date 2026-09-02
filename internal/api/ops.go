@@ -74,7 +74,8 @@ var Ops = map[string]OpDef{
 						"minContains": 2,
 					},
 					"items": map[string]any{
-						"type": "object",
+						"type":                 "object",
+						"additionalProperties": false,
 						"properties": map[string]any{
 							"name": map[string]any{
 								"type":        "string",

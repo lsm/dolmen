@@ -131,6 +131,7 @@ func decode(body []byte, v any) error {
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		return badRequest("invalid JSON: %v", err)
 	}
