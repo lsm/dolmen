@@ -658,9 +658,6 @@ func coerceValue(f schema.Field, v any) (any, error) {
 	case schema.JSON:
 		switch j := v.(type) {
 		case string:
-			if json.Valid([]byte(j)) {
-				return j, nil
-			}
 			b, err := json.Marshal(j)
 			if err != nil {
 				return nil, fmt.Errorf("field %q: cannot marshal JSON: %w", f.Name, err)
@@ -879,14 +876,14 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 	if err := rows.Err(); err != nil {
 		return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	out, complete, err := fetchByIDs(ctx, n.rw, table, ids)
+	out, complete, err := fetchByIDs(ctx, n.rw, table, ids, nil)
 	if err != nil {
 		return nil, false, err
 	}
 	return out, !complete, nil
 }
 
-func fetchByIDs(ctx context.Context, db *sql.DB, table string, ids []int64) ([]map[string]any, bool, error) {
+func fetchByIDs(ctx context.Context, db *sql.DB, table string, ids []int64, vectorCols map[string]bool) ([]map[string]any, bool, error) {
 	if len(ids) == 0 {
 		return []map[string]any{}, true, nil
 	}
@@ -941,7 +938,11 @@ scan:
 			}
 			v := normalizeVal(vals[i])
 			m[c] = v
-			rowBytes += approxSize(v)
+			sz := approxSize(v)
+			if vectorCols[c] {
+				sz = sz * 9 / 2
+			}
+			rowBytes += sz
 		}
 		total += rowBytes
 		byID[id] = m
@@ -1017,7 +1018,8 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 		ids[i] = h.id
 		scoreByID[h.id] = h.score
 	}
-	out, complete, err := fetchByIDs(ctx, n.rw, table, ids)
+	vectorCols := map[string]bool{column: true}
+	out, complete, err := fetchByIDs(ctx, n.rw, table, ids, vectorCols)
 	if err != nil {
 		return nil, false, err
 	}

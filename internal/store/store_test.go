@@ -1277,3 +1277,59 @@ func TestCumulativeBudgetBeforeNormalization(t *testing.T) {
 		t.Fatal("expected cumulative oversized row to be rejected before normalization")
 	}
 }
+
+func TestJSONStringScalarsKeepType(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "js", []schema.Field{
+		{Name: "v", Type: schema.JSON},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "js", []map[string]any{
+		{"v": "true"}, {"v": "123"}, {"v": "null"},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, _, err := st.Query(ctx, "test", "SELECT json_extract(v, '$') AS val, typeof(json_extract(v, '$')) AS kind FROM js ORDER BY id", nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	for i, want := range []string{"true", "123", "null"} {
+		if rows[i]["val"] != want || rows[i]["kind"] != "text" {
+			t.Fatalf("row %d: string scalar changed type: %v", i, rows[i])
+		}
+	}
+}
+
+func TestVectorDecorationBudgeted(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "vecbud", []schema.Field{
+		{Name: "t", Type: schema.Text},
+		{Name: "emb", Type: schema.Vector, Dim: 4096},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	bigVec := make([]any, 4096)
+	for i := range bigVec {
+		bigVec[i] = float64(1)
+	}
+	chunk := strings.Repeat("z", 160<<10)
+	for b := 0; b < 2; b++ {
+		records := make([]map[string]any, 0, 100)
+		for i := 0; i < 100; i++ {
+			records = append(records, map[string]any{"t": chunk, "emb": bigVec})
+		}
+		if _, err := st.Insert(ctx, "test", "vecbud", records, testEmbed); err != nil {
+			t.Fatalf("insert %d: %v", b, err)
+		}
+	}
+	rows, truncated, err := st.SearchVector(ctx, "test", "vecbud", "emb", make([]float32, 4096), "", 200)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if !truncated || len(rows) >= 150 {
+		t.Fatalf("decorated vectors must count against the budget: %d rows truncated=%v", len(rows), truncated)
+	}
+}
