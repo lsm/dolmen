@@ -321,6 +321,9 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
+			if req.Text != "" && len(req.Vector) > 0 {
+				return nil, badRequest("pass either text or vector, not both")
+			}
 			var vec []float32
 			switch {
 			case req.Text != "":
@@ -331,6 +334,9 @@ var Ops = map[string]OpDef{
 				vecs, err := s.emb.Embed(ctx, []string{req.Text})
 				if err != nil {
 					return nil, wrapStoreErr(err)
+				}
+				if len(vecs) == 0 {
+					return nil, badRequest("embedding provider returned no vector for the query text")
 				}
 				vec = vecs[0]
 			case len(req.Vector) > 0:
@@ -398,7 +404,11 @@ var Ops = map[string]OpDef{
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"op":    prop("string", "add_field | rename_field | drop_field | set_fulltext | set_vectorize"),
+							"op": map[string]any{
+								"type":        "string",
+								"description": "add_field | rename_field | drop_field | set_fulltext | set_vectorize",
+								"enum":        []string{"add_field", "rename_field", "drop_field", "set_fulltext", "set_vectorize"},
+							},
 							"field": map[string]any{"type": "object", "description": "Field definition for add_field"},
 							"from":  prop("string", "Current name (rename_field)"),
 							"to":    prop("string", "New name (rename_field)"),
@@ -406,6 +416,28 @@ var Ops = map[string]OpDef{
 							"value": prop("boolean", "Flag value (set_fulltext, set_vectorize)"),
 						},
 						"required": []string{"op"},
+						"allOf": []any{
+							map[string]any{
+								"if":   map[string]any{"properties": map[string]any{"op": map[string]any{"const": "add_field"}}},
+								"then": map[string]any{"required": []string{"field"}},
+							},
+							map[string]any{
+								"if":   map[string]any{"properties": map[string]any{"op": map[string]any{"const": "rename_field"}}},
+								"then": map[string]any{"required": []string{"from", "to"}},
+							},
+							map[string]any{
+								"if":   map[string]any{"properties": map[string]any{"op": map[string]any{"const": "drop_field"}}},
+								"then": map[string]any{"required": []string{"name"}},
+							},
+							map[string]any{
+								"if":   map[string]any{"properties": map[string]any{"op": map[string]any{"const": "set_fulltext"}}},
+								"then": map[string]any{"required": []string{"name", "value"}},
+							},
+							map[string]any{
+								"if":   map[string]any{"properties": map[string]any{"op": map[string]any{"const": "set_vectorize"}}},
+								"then": map[string]any{"required": []string{"name", "value"}},
+							},
+						},
 					},
 				},
 			},
@@ -415,6 +447,22 @@ var Ops = map[string]OpDef{
 			var req migrateReq
 			if err := decode(body, &req); err != nil {
 				return nil, err
+			}
+			var shadow struct {
+				Namespace string           `json:"namespace"`
+				Table     string           `json:"table"`
+				Changes   []map[string]any `json:"changes"`
+			}
+			if err := decodeData(body, &shadow); err != nil {
+				return nil, err
+			}
+			for i, ch := range shadow.Changes {
+				op, _ := ch["op"].(string)
+				if op == "set_fulltext" || op == "set_vectorize" {
+					if _, ok := ch["value"]; !ok {
+						return nil, badRequest("changes[%d]: %s requires an explicit value (true or false); an omitted value would silently disable the feature and clear its index", i, op)
+					}
+				}
 			}
 			sc, err := s.st.Migrate(ctx, normNS(req.Namespace), normTable(req.Table), req.Changes, s.embedder())
 			if err != nil {

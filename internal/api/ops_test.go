@@ -1,7 +1,11 @@
 package api
 
 import (
+	"context"
+	"net/http/httptest"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/store"
 )
 
 func TestEndToEndHTTP(t *testing.T) {
@@ -80,5 +84,78 @@ func TestEndToEndHTTP(t *testing.T) {
 	code, _ = post(t, srv.URL, "explode", map[string]any{})
 	if code != 404 {
 		t.Fatalf("expected 404 for unknown op, got %d", code)
+	}
+}
+
+func TestMigrateSetValueRequiredOverHTTP(t *testing.T) {
+	srv := newTestServer(t)
+	code, _ := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "m",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "detail", "type": "text", "vectorize": true}},
+	})
+	if code != 200 {
+		t.Fatal("create failed")
+	}
+	code, res := post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "m",
+		"table":     "t",
+		"changes":   []map[string]any{{"op": "set_vectorize", "name": "detail"}},
+	})
+	if code != 400 {
+		t.Fatalf("omitted set_vectorize value must 400 (it would silently disable and clear embeddings), got %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "m",
+		"table":     "t",
+		"changes":   []map[string]any{{"op": "set_vectorize", "name": "detail", "value": true}},
+	})
+	if code != 200 {
+		t.Fatalf("explicit value must pass, got %d %v", code, res)
+	}
+}
+
+func TestSearchVectorBothFormsRejected(t *testing.T) {
+	srv := newTestServer(t)
+	code, res := post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "x",
+		"table":     "t",
+		"text":      "hello",
+		"vector":    []float64{1, 0, 0, 0},
+	})
+	if code != 400 {
+		t.Fatalf("supplying both text and vector must 400 (the vector would be silently ignored), got %d %v", code, res)
+	}
+}
+
+type emptyEmb struct{}
+
+func (emptyEmb) Name() string     { return "empty" }
+func (emptyEmb) Identity() string { return "empty-space" }
+func (emptyEmb) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	return [][]float32{}, nil
+}
+
+func TestSearchVectorEmptyEmbedResultRejected(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	srv := httptest.NewServer(New(st, emptyEmb{}).Handler())
+	t.Cleanup(srv.Close)
+	code, _ := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "e",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "s", "type": "text", "vectorize": true}},
+	})
+	if code != 200 {
+		t.Fatal("create failed")
+	}
+	code, res := post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "e", "table": "t", "text": "anything",
+	})
+	if code != 400 {
+		t.Fatalf("empty provider result must 400, not panic the handler, got %d %v", code, res)
 	}
 }
