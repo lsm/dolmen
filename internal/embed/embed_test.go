@@ -57,3 +57,16 @@ func TestOpenAIEmptyEmbeddingRejected(t *testing.T) {
 		t.Fatal("expected empty embedding to be rejected")
 	}
 }
+
+func TestOpenAINullEmbeddingEntryRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"index": 0, "embedding": []any{1, nil, 2}}},
+		})
+	}))
+	defer srv.Close()
+	p := &OpenAI{BaseURL: srv.URL, Model: "m", APIKey: ""}
+	if _, err := p.Embed(context.Background(), []string{"a"}); err == nil {
+		t.Fatal("expected null embedding entry to be rejected")
+	}
+}

@@ -83,8 +83,8 @@ func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float32, error)
 		}
 		var decoded struct {
 			Data []struct {
-				Index     int       `json:"index"`
-				Embedding []float32 `json:"embedding"`
+				Index     int        `json:"index"`
+				Embedding []*float64 `json:"embedding"`
 			} `json:"data"`
 			Error *struct {
 				Message string `json:"message"`
@@ -107,7 +107,14 @@ func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float32, error)
 			if len(d.Embedding) == 0 {
 				return nil, fmt.Errorf("embeddings API returned an empty embedding for input %d", start+i)
 			}
-			out[start+i] = d.Embedding
+			vec := make([]float32, len(d.Embedding))
+			for j, e := range d.Embedding {
+				if e == nil {
+					return nil, fmt.Errorf("embeddings API returned a null entry in the embedding for input %d", start+i)
+				}
+				vec[j] = float32(*e)
+			}
+			out[start+i] = vec
 		}
 	}
 	return out, nil
