@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"sort"
@@ -111,6 +112,9 @@ func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float32, error)
 			for j, e := range d.Embedding {
 				if e == nil {
 					return nil, fmt.Errorf("embeddings API returned a null entry in the embedding for input %d", start+i)
+				}
+				if *e > math.MaxFloat32 || *e < -math.MaxFloat32 {
+					return nil, fmt.Errorf("embeddings API returned a value outside the float32 range for input %d", start+i)
 				}
 				vec[j] = float32(*e)
 			}

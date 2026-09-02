@@ -70,3 +70,16 @@ func TestOpenAINullEmbeddingEntryRejected(t *testing.T) {
 		t.Fatal("expected null embedding entry to be rejected")
 	}
 }
+
+func TestOpenAIOutOfRangeEmbeddingRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"index": 0, "embedding": []any{3.5e38}}},
+		})
+	}))
+	defer srv.Close()
+	p := &OpenAI{BaseURL: srv.URL, Model: "m", APIKey: ""}
+	if _, err := p.Embed(context.Background(), []string{"a"}); err == nil {
+		t.Fatal("expected out-of-float32-range embedding value to be rejected")
+	}
+}
