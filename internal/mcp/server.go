@@ -112,8 +112,16 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 				Version string `json:"version"`
 			} `json:"clientInfo"`
 		}
-		if _, e := ensureObjectParams(msg.Params, "initialize"); e != nil {
+		initProbe, e := ensureObjectParams(msg.Params, "initialize")
+		if e != nil {
 			return nil, e
+		}
+		if ci, ok := initProbe["clientInfo"].(map[string]any); ok {
+			if title, ok := ci["title"]; ok {
+				if _, isStr := title.(string); !isStr {
+					return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "clientInfo title must be a string"}
+				}
+			}
 		}
 		initDec := json.NewDecoder(bytes.NewReader(msg.Params))
 		initDec.UseNumber()

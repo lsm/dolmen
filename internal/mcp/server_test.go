@@ -647,3 +647,32 @@ func TestInitializeMetaValidated(t *testing.T) {
 		}
 	}
 }
+
+func TestClientInfoTitleValidated(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	for _, title := range []string{`1`, `null`, `true`} {
+		body := `{"jsonrpc":"2.0","id":90,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"c","version":"1","title":` + title + `}}}`
+		res, err := http.Post(url, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("post %s: %v", title, err)
+		}
+		var decoded map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&decoded)
+		res.Body.Close()
+		errObj, ok := decoded["error"].(map[string]any)
+		if !ok || errObj["code"].(float64) != -32602 {
+			t.Fatalf("non-string clientInfo title %s must be -32602, got %v", title, decoded)
+		}
+	}
+	body := `{"jsonrpc":"2.0","id":91,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"c","version":"1","title":"Console"}}}`
+	res, err := http.Post(url, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	var decoded map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&decoded)
+	res.Body.Close()
+	if decoded["error"] != nil {
+		t.Fatalf("string title must pass, got %v", decoded["error"])
+	}
+}
