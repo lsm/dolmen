@@ -142,7 +142,9 @@ func writeRPCResult(w http.ResponseWriter, id json.RawMessage, result any) {
 	resp := map[string]any{"jsonrpc": "2.0", "id": id, "result": result}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(resp)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(resp)
 }
 
 func writeRPCError(w http.ResponseWriter, id json.RawMessage, code int, message string) {
@@ -153,5 +155,7 @@ func writeRPCError(w http.ResponseWriter, id json.RawMessage, code int, message 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(resp)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(resp)
 }
