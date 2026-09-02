@@ -200,7 +200,7 @@ func (s *Store) ListTables(ctx context.Context, nsName string) ([]string, error)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := n.rw.QueryContext(ctx, `SELECT name FROM _dolmen_tables ORDER BY name`)
+	rows, err := n.ro.QueryContext(ctx, `SELECT name FROM _dolmen_tables ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -221,12 +221,12 @@ func (s *Store) DescribeTable(ctx context.Context, nsName, table string) (*schem
 	if err != nil {
 		return nil, 0, err
 	}
-	sc, err := loadSchema(ctx, n.rw, nsName, table)
+	sc, err := loadSchema(ctx, n.ro, nsName, table)
 	if err != nil {
 		return nil, 0, err
 	}
 	var count int64
-	if err := n.rw.QueryRowContext(ctx,
+	if err := n.ro.QueryRowContext(ctx,
 		fmt.Sprintf(`SELECT count(*) FROM %s`, q(table))).Scan(&count); err != nil {
 		return nil, 0, err
 	}
@@ -246,16 +246,6 @@ func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []
 		return nil, err
 	}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf(`CREATE TABLE %s (id INTEGER PRIMARY KEY, created_at TEXT NOT NULL DEFAULT (strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ','now'))`, q(table)))
-	for _, f := range fields {
-		sb.WriteString(fmt.Sprintf(`, %s %s`, q(f.Name), schema.SQLType(f)))
-	}
-	if vecField := vectorizeField(fields); vecField != nil {
-		sb.WriteString(`, "_embedding" BLOB`)
-	}
-	sb.WriteString(`)`)
-
 	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -266,7 +256,7 @@ func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []
 	} else if !errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, sb.String()); err != nil {
+	if _, err := tx.ExecContext(ctx, tableDDL(table, fields)); err != nil {
 		return nil, err
 	}
 	if fts := ftsFields(fields); len(fts) > 0 {
@@ -285,6 +275,22 @@ func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []
 		return nil, err
 	}
 	return sc, nil
+}
+
+func tableDDL(table string, fields []schema.Field) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf(`CREATE TABLE %s (id INTEGER PRIMARY KEY, created_at TEXT NOT NULL DEFAULT (strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ','now'))`, q(table)))
+	for _, f := range fields {
+		sb.WriteString(fmt.Sprintf(`, %s %s`, q(f.Name), schema.SQLType(f)))
+		if f.Required {
+			sb.WriteString(` NOT NULL`)
+		}
+	}
+	if vecField := vectorizeField(fields); vecField != nil {
+		sb.WriteString(`, "_embedding" BLOB`)
+	}
+	sb.WriteString(`)`)
+	return sb.String()
 }
 
 func ftsFields(fields []schema.Field) []schema.Field {

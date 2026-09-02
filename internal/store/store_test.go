@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -127,5 +128,18 @@ func TestStoragePermissions(t *testing.T) {
 	}
 	if dbInfo.Mode().Perm() != 0o600 {
 		t.Fatalf("expected db file 0600, got %o", dbInfo.Mode().Perm())
+	}
+}
+
+func TestRequiredFieldsEmitNotNull(t *testing.T) {
+	ddl := tableDDL("notes", noteFields())
+	if !strings.Contains(ddl, `"score" NUMERIC`) || strings.Contains(ddl, `"score" NUMERIC NOT NULL`) {
+		t.Fatalf("optional field must stay nullable, got: %s", ddl)
+	}
+	fields := noteFields()
+	fields[2].Required = true
+	ddl = tableDDL("notes", fields)
+	if !strings.Contains(ddl, `"score" NUMERIC NOT NULL`) {
+		t.Fatalf("required field must emit NOT NULL, got: %s", ddl)
 	}
 }
