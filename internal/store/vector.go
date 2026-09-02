@@ -31,6 +31,11 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 	if dim > 0 && len(vec) != dim {
 		return nil, false, invalidf("query vector has %d entries, column %s expects dim %d", len(vec), column, dim)
 	}
+	for _, x := range vec {
+		if math.IsNaN(float64(x)) || math.IsInf(float64(x), 0) {
+			return nil, false, invalidf("query vector contains a non-finite component")
+		}
+	}
 	limit = boundedLimit(limit)
 
 	rows, err := tx.QueryContext(ctx,

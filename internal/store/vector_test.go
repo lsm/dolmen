@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 
@@ -128,5 +129,23 @@ func TestSearchVectorLimitBounded(t *testing.T) {
 	}
 	if len(rows) > 200 {
 		t.Fatalf("negative limit must clamp to 200, got %d rows", len(rows))
+	}
+}
+
+func TestSearchVectorRejectsNonFiniteQuery(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "nfq", []schema.Field{
+		{Name: "emb", Type: schema.Vector, Dim: 3},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "nfq", []map[string]any{{"emb": []any{1, 2, 3}}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	for _, bad := range [][]float32{{1, 2, float32(math.NaN())}, {1, 2, float32(math.Inf(-1))}} {
+		if _, _, err := st.SearchVector(ctx, "test", "nfq", "emb", bad, "", 5); err == nil {
+			t.Fatalf("expected non-finite query vector to be rejected: %v", bad)
+		}
 	}
 }
