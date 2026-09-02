@@ -174,6 +174,9 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		if params.Name == "" {
 			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "tools/call params must carry the tool name"}
 		}
+		if _, e := ensureObjectParams(msg.Params, "tools/call"); e != nil {
+			return nil, e
+		}
 		args := params.Arguments
 		if len(bytes.TrimSpace(args)) == 0 {
 			args = json.RawMessage("{}")

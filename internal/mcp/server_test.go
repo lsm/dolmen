@@ -600,3 +600,32 @@ func TestMetaParamsValidated(t *testing.T) {
 		t.Fatalf("object _meta with string progressToken must pass, got %d %v", code, res)
 	}
 }
+
+func TestToolsCallMetaValidated(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	for _, params := range []string{`{"name":"ping","_meta":1}`, `{"name":"list_tables","_meta":{"progressToken":true}}`} {
+		body := `{"jsonrpc":"2.0","id":70,"method":"tools/call","params":` + params + `}`
+		res, err := http.Post(url, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("post %s: %v", params, err)
+		}
+		var decoded map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&decoded)
+		res.Body.Close()
+		errObj, ok := decoded["error"].(map[string]any)
+		if !ok || errObj["code"].(float64) != -32602 {
+			t.Fatalf("malformed tools/call _meta %s must be -32602 before dispatch, got %v", params, decoded)
+		}
+	}
+	code, res := rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 71, "method": "tools/call",
+		"params": map[string]any{
+			"name":  "list_tables",
+			"_meta": map[string]any{"progressToken": 5},
+		},
+		"arguments": map[string]any{"namespace": "x"},
+	})
+	if code != 200 || res["result"] == nil {
+		t.Fatalf("object _meta with numeric progressToken must pass, got %d %v", code, res)
+	}
+}
