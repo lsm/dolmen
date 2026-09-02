@@ -38,7 +38,7 @@ func newMCPServer(t *testing.T) *httptest.Server {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	srv := httptest.NewServer(New(api.New(st, fakeEmb{})))
+	srv := httptest.NewServer(New(api.New(st, fakeEmb{}), nil))
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -706,5 +706,37 @@ func TestMCPOriginAndContentTypeGuard(t *testing.T) {
 	}
 	if code := post("", "application/json"); code != http.StatusOK {
 		t.Fatalf("no-origin server-to-server call must pass, got %d", code)
+	}
+}
+
+func TestMCPConfiguredOriginsAllowed(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	srv := httptest.NewServer(New(api.New(st, fakeEmb{}), []string{"https://app.example.com"}))
+	t.Cleanup(srv.Close)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://app.example.com")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("configured origin must pass the inner guard, got %d", res.StatusCode)
+	}
+	req, _ = http.NewRequest(http.MethodPost, srv.URL, strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://evil.example")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("unlisted origin must still be 403, got %d", res.StatusCode)
 	}
 }

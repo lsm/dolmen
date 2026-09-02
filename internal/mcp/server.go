@@ -26,11 +26,16 @@ const (
 )
 
 type Server struct {
-	api *api.Server
+	api     *api.Server
+	origins map[string]bool
 }
 
-func New(a *api.Server) *Server {
-	return &Server{api: a}
+func New(a *api.Server, extraOrigins []string) *Server {
+	origins := map[string]bool{}
+	for _, o := range extraOrigins {
+		origins[strings.ToLower(strings.TrimRight(strings.TrimSpace(o), "/"))] = true
+	}
+	return &Server{api: a, origins: origins}
 }
 
 type rpcMessage struct {
@@ -43,11 +48,13 @@ type rpcMessage struct {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("MCP-Protocol-Version", protocolVersion)
 	if origin := r.Header.Get("Origin"); origin != "" {
-		allowed := false
-		if u, err := url.Parse(origin); err == nil {
-			switch strings.ToLower(u.Hostname()) {
-			case "localhost", "127.0.0.1", "::1":
-				allowed = true
+		allowed := s.origins[strings.ToLower(strings.TrimRight(origin, "/"))]
+		if !allowed {
+			if u, err := url.Parse(origin); err == nil {
+				switch strings.ToLower(u.Hostname()) {
+				case "localhost", "127.0.0.1", "::1":
+					allowed = true
+				}
 			}
 		}
 		if !allowed {

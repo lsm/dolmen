@@ -46,20 +46,20 @@ func run() error {
 	}
 	defer st.Close()
 
-	emb := embed.FromEnv()
-	apiSrv := api.New(st, emb)
-	mcpSrv := mcp.New(apiSrv)
-
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcpSrv)
-	mux.Handle("/", apiSrv.Handler())
-
 	var allowedOrigins []string
 	for _, o := range strings.Split(os.Getenv("DOLMEN_ALLOWED_ORIGINS"), ",") {
 		if o = strings.TrimSpace(o); o != "" {
 			allowedOrigins = append(allowedOrigins, o)
 		}
 	}
+
+	emb := embed.FromEnv()
+	apiSrv := api.New(st, emb)
+	mcpSrv := mcp.New(apiSrv, allowedOrigins)
+
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", mcpSrv)
+	mux.Handle("/", apiSrv.Handler())
 
 	httpSrv := &http.Server{
 		Addr:              *addr,
