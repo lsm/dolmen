@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/lsm/dolmen/internal/schema"
 
@@ -153,6 +154,17 @@ func dsn(path string, readonly bool) string {
 	}
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+func normalizeArg(v any) any {
+	if n, ok := v.(json.Number); ok {
+		if i, err := n.Int64(); err == nil {
+			return i
+		}
+		f, _ := n.Float64()
+		return f
+	}
+	return v
 }
 
 func q(name string) string {
@@ -577,6 +589,16 @@ func coerceValue(f schema.Field, v any) (any, error) {
 			return int64(n), nil
 		case int64:
 			return n, nil
+		case json.Number:
+			if i, err := n.Int64(); err == nil {
+				return i, nil
+			}
+			fErrName := f.Name
+			f, err := n.Float64()
+			if err != nil {
+				return nil, fmt.Errorf("field %q: expected a number", fErrName)
+			}
+			return f, nil
 		default:
 			return nil, fmt.Errorf("field %q: expected a number", f.Name)
 		}
@@ -602,6 +624,12 @@ func coerceValue(f schema.Field, v any) (any, error) {
 					floats[i] = float64(n)
 				case int64:
 					floats[i] = float64(n)
+				case json.Number:
+					fv, err := n.Float64()
+					if err != nil {
+						return nil, fmt.Errorf("field %q: vector entries must be numbers", f.Name)
+					}
+					floats[i] = fv
 				default:
 					return nil, fmt.Errorf("field %q: vector entries must be numbers", f.Name)
 				}
@@ -669,6 +697,9 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]
 	if len(args) > 100 {
 		return nil, false, invalidf("too many query parameters")
 	}
+	for i, a := range args {
+		args[i] = normalizeArg(a)
+	}
 	n, err := s.ns(nsName)
 	if err != nil {
 		return nil, false, err
@@ -727,18 +758,25 @@ func rowsToMaps(rows *sql.Rows) ([]map[string]any, bool, error) {
 			rowBytes += approxSize(v)
 		}
 		if len(out) >= MaxQueryRows {
-			return out, true, rows.Err()
+			return out, true, wrapStepErr(rows.Err())
 		}
 		if total+rowBytes+labelBytes > MaxQueryBytes {
 			if len(out) == 0 {
 				return nil, false, invalidf("query result exceeds the %d MiB response budget on its first row; select fewer or smaller columns", MaxQueryBytes>>20)
 			}
-			return out, true, rows.Err()
+			return out, true, wrapStepErr(rows.Err())
 		}
 		total += rowBytes + labelBytes
 		out = append(out, m)
 	}
-	return out, false, rows.Err()
+	return out, false, wrapStepErr(rows.Err())
+}
+
+func wrapStepErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %w", ErrInvalid, err)
 }
 
 func checkRowValue(col string, v any) error {
@@ -771,6 +809,16 @@ func encodedSize(s string) int {
 	for i := 0; i < len(s); i++ {
 		if s[i] < 0x20 || s[i] == '"' || s[i] == '\\' {
 			n += 5
+		}
+	}
+	if strings.Contains(s, "\u2028") || strings.Contains(s, "\u2029") {
+		n += 3 * (strings.Count(s, "\u2028") + strings.Count(s, "\u2029"))
+	}
+	if !utf8.ValidString(s) {
+		for _, r := range s {
+			if r == utf8.RuneError {
+				n += 5
+			}
 		}
 	}
 	return n
@@ -1038,6 +1086,9 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	}
 	if strings.Contains(where, ";") {
 		return 0, invalidf("multiple statements are not allowed in filter")
+	}
+	for i, a := range args {
+		args[i] = normalizeArg(a)
 	}
 	n, err := s.ns(nsName)
 	if err != nil {

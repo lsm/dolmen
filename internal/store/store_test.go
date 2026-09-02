@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1167,5 +1168,52 @@ func TestValidateVectorSearchBeforeEmbedding(t *testing.T) {
 	}
 	if err := st.ValidateVectorSearch(ctx, "test", "vv", "", "other-space"); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected identity mismatch to be caught before embedding, got %v", err)
+	}
+}
+
+func TestIntegerPrecisionPreserved(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "prec", []schema.Field{
+		{Name: "n", Type: schema.Number},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "prec", []map[string]any{
+		{"n": json.Number("9007199254740993")},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, _, err := st.Query(ctx, "test", "SELECT n FROM prec", nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if rows[0]["n"].(int64) != 9007199254740993 {
+		t.Fatalf("integer precision lost: %v", rows[0]["n"])
+	}
+}
+
+func TestEncodedSizeCoversMandatoryEscapes(t *testing.T) {
+	if got := encodedSize(" "); got < 6 {
+		t.Fatalf("U+2028 should be charged at encoded size, got %d", got)
+	}
+	if got := encodedSize("\x80"); got < 6 {
+		t.Fatalf("invalid UTF-8 should be charged at replacement size, got %d", got)
+	}
+	if got := encodedSize("plain"); got != 5 {
+		t.Fatalf("plain ascii miscounted: %d", got)
+	}
+}
+
+func TestQueryStepErrorsAreInvalidRequests(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "step", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, _, err := st.Query(ctx, "test", "SELECT json_extract('x', '$') AS v", nil); err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected step-time SQL error to classify as invalid request, got %v", err)
 	}
 }

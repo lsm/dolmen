@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -470,7 +471,9 @@ func decode(body []byte, v any) error {
 	if len(body) == 0 {
 		return badRequest("empty request body")
 	}
-	if err := json.Unmarshal(body, v); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	if err := dec.Decode(v); err != nil {
 		return badRequest("invalid JSON: %v", err)
 	}
 	return nil

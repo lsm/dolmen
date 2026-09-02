@@ -2,6 +2,7 @@ package schema
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
@@ -266,7 +267,7 @@ func goKind(v any) string {
 	switch v.(type) {
 	case bool:
 		return "bool"
-	case float64, int, int64:
+	case float64, int, int64, json.Number:
 		return "number"
 	case string:
 		return "string"
