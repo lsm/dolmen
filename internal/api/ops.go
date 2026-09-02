@@ -188,6 +188,7 @@ var Ops = map[string]OpDef{
 					"description": "Read-only SQL (SELECT/WITH)",
 					"minLength":   1,
 					"pattern":     `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b`,
+					"not":         map[string]any{"pattern": `;[^;]*\S`},
 				},
 				"args": map[string]any{
 					"type":        "array",
@@ -274,8 +275,12 @@ var Ops = map[string]OpDef{
 				"vector": map[string]any{
 					"type":        "array",
 					"description": "Raw query vector",
-					"items":       map[string]any{"type": "number"},
-					"minItems":    1,
+					"items": map[string]any{
+						"type":    "number",
+						"minimum": -3.4028234663852886e+38,
+						"maximum": 3.4028234663852886e+38,
+					},
+					"minItems": 1,
 				},
 				"column": prop("string", "Vector column to search (optional)"),
 				"limit": map[string]any{
@@ -356,6 +361,7 @@ var Ops = map[string]OpDef{
 					"type":        "string",
 					"description": "SQL WHERE expression selecting rows to delete",
 					"pattern":     `\S`,
+					"not":         map[string]any{"pattern": ";"},
 				},
 				"args": map[string]any{
 					"type":        "array",

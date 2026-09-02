@@ -373,6 +373,9 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 	if sqlP["pattern"] != `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b` {
 		t.Fatalf("sql must declare the read-only prefix pattern, got %v", sqlP["pattern"])
 	}
+	if _, ok := sqlP["not"].(map[string]any)["pattern"]; !ok {
+		t.Fatalf("sql must exclude non-trailing semicolons, got %v", sqlP)
+	}
 	if props["args"].(map[string]any)["maxItems"] != 100 {
 		t.Fatalf("args must declare maxItems 100, got %v", props["args"])
 	}
@@ -383,6 +386,17 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 	filter := d.InputSchema["properties"].(map[string]any)["filter"].(map[string]any)
 	if filter["pattern"] != `\S` {
 		t.Fatalf("filter must require a non-whitespace character, got %v", filter)
+	}
+	if _, ok := filter["not"].(map[string]any)["pattern"]; !ok {
+		t.Fatalf("filter must exclude all semicolons, got %v", filter)
+	}
+	sv, ok := Ops["search_vector"]
+	if !ok {
+		t.Fatal("search_vector op missing")
+	}
+	vecItems := sv.InputSchema["properties"].(map[string]any)["vector"].(map[string]any)["items"].(map[string]any)
+	if vecItems["maximum"].(float64) != 3.4028234663852886e+38 || vecItems["minimum"].(float64) != -3.4028234663852886e+38 {
+		t.Fatalf("vector items must declare the float32 range, got %v", vecItems)
 	}
 	for _, name := range []string{"search_fulltext", "search_vector"} {
 		def, ok := Ops[name]
