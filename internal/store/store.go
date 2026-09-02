@@ -582,7 +582,14 @@ func coerceValue(f schema.Field, v any) (any, error) {
 	case schema.JSON:
 		switch j := v.(type) {
 		case string:
-			return j, nil
+			if json.Valid([]byte(j)) {
+				return j, nil
+			}
+			b, err := json.Marshal(j)
+			if err != nil {
+				return nil, fmt.Errorf("field %q: cannot marshal JSON: %w", f.Name, err)
+			}
+			return string(b), nil
 		case map[string]any, []any, bool, float64, int, int64:
 			b, err := json.Marshal(j)
 			if err != nil {
@@ -825,15 +832,19 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 		hits = hits[:limit]
 	}
 	ids := make([]int64, len(hits))
+	scoreByID := make(map[int64]float64, len(hits))
 	for i, h := range hits {
 		ids[i] = h.id
+		scoreByID[h.id] = h.score
 	}
 	out, err := fetchByIDs(ctx, n.rw, table, ids)
 	if err != nil {
 		return nil, err
 	}
-	for i, row := range out {
-		row["_score"] = hits[i].score
+	for _, row := range out {
+		if id, ok := row["id"].(int64); ok {
+			row["_score"] = scoreByID[id]
+		}
 		if str, ok := row[column].(string); ok {
 			if raw, err := base64.StdEncoding.DecodeString(str); err == nil {
 				if fv, err := schema.DecodeVector(raw); err == nil {

@@ -641,3 +641,26 @@ func TestInferCreateInsertRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected rows: %v", rows)
 	}
 }
+
+func TestJSONFieldStringScalarsAreValidJSON(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "jf", []schema.Field{
+		{Name: "v", Type: schema.JSON},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "jf", []map[string]any{
+		{"v": "unknown"},
+		{"v": map[string]any{"state": "ok"}},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, err := st.Query(ctx, "test", "SELECT json_extract(v, '$') AS decoded FROM jf ORDER BY id", nil)
+	if err != nil {
+		t.Fatalf("json_extract over json field: %v", err)
+	}
+	if rows[0]["decoded"] != "unknown" || rows[1]["decoded"] != `{"state":"ok"}` {
+		t.Fatalf("json_extract results wrong: %v", rows)
+	}
+}
