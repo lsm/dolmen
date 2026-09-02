@@ -18,7 +18,7 @@ tables plus search plus an agent-native interface.
 ## Quickstart
 
 ```bash
-go build -o dolmen .
+CGO_ENABLED=0 go build -o dolmen .
 ./dolmen -addr 127.0.0.1:8790 -data ./data
 ```
 
