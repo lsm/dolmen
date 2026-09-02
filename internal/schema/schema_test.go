@@ -133,3 +133,13 @@ func TestInferUppercaseKeyStringNotTimestamp(t *testing.T) {
 		t.Fatalf("plain name should infer string, got %+v", fields)
 	}
 }
+
+func TestInferSkipsNulls(t *testing.T) {
+	fields := InferFields([]map[string]any{
+		{"name": "Alice"},
+		{"name": nil},
+	})
+	if len(fields) != 1 || fields[0].Name != "name" || fields[0].Type != String {
+		t.Fatalf("nullable string field should infer string, got %+v", fields)
+	}
+}

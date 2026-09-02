@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1068,5 +1069,28 @@ func TestDeleteFilterEvaluatedOnce(t *testing.T) {
 	}
 	if len(fts) != 0 {
 		t.Fatalf("expected empty search results, got %v", fts)
+	}
+}
+
+func TestDuplicateColumnLabelsRejected(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "dup", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, _, err := st.Query(ctx, "test", "SELECT 1 AS a, 2 AS a", nil); err == nil {
+		t.Fatal("expected duplicate column labels to be rejected")
+	}
+}
+
+func TestMalformedDeleteFilterIsInvalidRequest(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	_, err := st.Delete(ctx, "test", "notes", "id =", nil)
+	if err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected malformed filter to classify as invalid request, got %v", err)
 	}
 }

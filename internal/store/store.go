@@ -693,6 +693,13 @@ func rowsToMaps(rows *sql.Rows) ([]map[string]any, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
+	seen := map[string]bool{}
+	for _, c := range cols {
+		if seen[c] {
+			return nil, false, invalidf("duplicate column label %q in query result; use AS aliases", c)
+		}
+		seen[c] = true
+	}
 	out := []map[string]any{}
 	total := 0
 	for rows.Next() {
@@ -1016,7 +1023,7 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	}
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`CREATE TEMP TABLE _dolmen_delete_ids AS SELECT id FROM %s WHERE %s`, q(table), where), args...); err != nil {
-		return 0, fmt.Errorf("filter error: %w", err)
+		return 0, fmt.Errorf("%w: filter error: %w", ErrInvalid, err)
 	}
 	if len(sc.FTSFields()) > 0 {
 		if _, err := tx.ExecContext(ctx,

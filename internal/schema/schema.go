@@ -207,6 +207,9 @@ func InferFields(samples []map[string]any) []Field {
 	kinds := map[string]map[string]bool{}
 	for _, s := range samples {
 		for k, v := range s {
+			if v == nil {
+				continue
+			}
 			lk := strings.ToLower(k)
 			if kinds[lk] == nil {
 				kinds[lk] = map[string]bool{}
@@ -279,7 +282,7 @@ func goKind(v any) string {
 func allStringsMatch(samples []map[string]any, key string, pred func(string) bool) bool {
 	for _, s := range samples {
 		for k, v := range s {
-			if strings.ToLower(k) != key {
+			if strings.ToLower(k) != key || v == nil {
 				continue
 			}
 			str, ok := v.(string)
