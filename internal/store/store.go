@@ -60,7 +60,9 @@ func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(abs, 0o700); err != nil {
 		return nil, err
 	}
-	_ = os.Chmod(abs, 0o700)
+	if err := os.Chmod(abs, 0o700); err != nil {
+		return nil, fmt.Errorf("cannot secure data directory %s (owner-only permissions): %w", abs, err)
+	}
 	return &Store{dir: abs, nss: map[string]*nsDB{}}, nil
 }
 
@@ -101,9 +103,18 @@ func (s *Store) ns(name string) (*nsDB, error) {
 			return nil, fmt.Errorf("init namespace %s: %w", name, err)
 		}
 	}
-	_ = os.Chmod(path, 0o600)
-	_ = os.Chmod(path+"-wal", 0o600)
-	_ = os.Chmod(path+"-shm", 0o600)
+	if err := os.Chmod(path, 0o600); err != nil {
+		rw.Close()
+		return nil, fmt.Errorf("cannot secure namespace db %s (owner-only permissions): %w", path, err)
+	}
+	for _, side := range []string{path + "-wal", path + "-shm"} {
+		if _, statErr := os.Stat(side); statErr == nil {
+			if err := os.Chmod(side, 0o600); err != nil {
+				rw.Close()
+				return nil, fmt.Errorf("cannot secure %s (owner-only permissions): %w", side, err)
+			}
+		}
+	}
 	ro, err := sql.Open("sqlite", dsn(path, true))
 	if err != nil {
 		rw.Close()
@@ -355,7 +366,11 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 	for i, rec := range records {
 		nr := make(map[string]any, len(rec))
 		for k, v := range rec {
-			nr[strings.ToLower(k)] = v
+			lk := strings.ToLower(k)
+			if _, exists := nr[lk]; exists {
+				return nil, invalidf("record %d: fields %q and its case variant collapse to %q; use one spelling", i, k, lk)
+			}
+			nr[lk] = v
 		}
 		normalized[i] = nr
 	}

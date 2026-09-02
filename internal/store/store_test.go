@@ -664,3 +664,14 @@ func TestJSONFieldStringScalarsAreValidJSON(t *testing.T) {
 		t.Fatalf("json_extract results wrong: %v", rows)
 	}
 }
+
+func TestCaseVariantKeyCollisionRejected(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{
+		{"Title": "Alice", "title": "Bob"},
+	}, testEmbed); err == nil {
+		t.Fatal("expected case-variant key collision to be rejected")
+	}
+}
