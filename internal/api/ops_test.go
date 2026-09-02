@@ -239,6 +239,95 @@ func TestInsertBatchBoundsDeclared(t *testing.T) {
 	}
 }
 
+type blankIdentityEmb struct{}
+
+func (blankIdentityEmb) Name() string     { return "blank" }
+func (blankIdentityEmb) Identity() string { return "" }
+func (blankIdentityEmb) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i := range out {
+		out[i] = make([]float32, 8)
+	}
+	return out, nil
+}
+
+type zeroVecEmb struct{}
+
+func (zeroVecEmb) Name() string     { return "zero" }
+func (zeroVecEmb) Identity() string { return "zero-space" }
+func (zeroVecEmb) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	return [][]float32{{}}, nil
+}
+
+func vectorSearchWithProvider(t *testing.T, p interface {
+	Name() string
+	Identity() string
+	Embed(ctx context.Context, texts []string) ([][]float32, error)
+}) int {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	srv := httptest.NewServer(New(st, p).Handler())
+	t.Cleanup(srv.Close)
+	code, _ := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "p",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "s", "type": "text", "vectorize": true}},
+	})
+	if code != 200 {
+		t.Fatal("create failed")
+	}
+	code, _ = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "p", "table": "t", "text": "anything",
+	})
+	return code
+}
+
+func TestSearchVectorBlankIdentityRejected(t *testing.T) {
+	if code := vectorSearchWithProvider(t, blankIdentityEmb{}); code != 400 {
+		t.Fatalf("text search with a blank-identity provider must 400, got %d", code)
+	}
+}
+
+func TestSearchVectorZeroDimEmbedRejected(t *testing.T) {
+	if code := vectorSearchWithProvider(t, zeroVecEmb{}); code != 400 {
+		t.Fatalf("zero-dimensional query embedding must 400, got %d", code)
+	}
+}
+
+func TestMigrateSchemaParity(t *testing.T) {
+	def, ok := Ops["migrate"]
+	if !ok {
+		t.Fatal("migrate op missing")
+	}
+	props := def.InputSchema["properties"].(map[string]any)
+	changes := props["changes"].(map[string]any)
+	if changes["minItems"] != 1 {
+		t.Fatalf("changes must declare minItems 1, got %v", changes)
+	}
+	items := changes["items"].(map[string]any)
+	if items["additionalProperties"] != false {
+		t.Fatalf("change items must reject unknown properties, got %v", items)
+	}
+	field := items["properties"].(map[string]any)["field"].(map[string]any)
+	if field["additionalProperties"] != false {
+		t.Fatalf("add_field definition must reuse the closed field schema, got %v", field)
+	}
+	if _, ok := field["properties"].(map[string]any)["name"]; !ok {
+		t.Fatal("add_field definition must declare the required name property")
+	}
+	fts, ok := Ops["search_fulltext"]
+	if !ok {
+		t.Fatal("search_fulltext op missing")
+	}
+	query := fts.InputSchema["properties"].(map[string]any)["query"].(map[string]any)
+	if query["minLength"] != 1 {
+		t.Fatalf("fulltext query must declare minLength 1, got %v", query)
+	}
+}
+
 type emptyEmb struct{}
 
 func (emptyEmb) Name() string     { return "empty" }

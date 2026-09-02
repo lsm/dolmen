@@ -80,71 +80,7 @@ var Ops = map[string]OpDef{
 						},
 						"minContains": 2,
 					},
-					"items": map[string]any{
-						"type":                 "object",
-						"additionalProperties": false,
-						"properties": map[string]any{
-							"name": map[string]any{
-								"type":        "string",
-								"description": "Field name (lowercase, [a-z0-9_], max 64 chars)",
-								"pattern":     `^[a-z][a-z0-9_]{0,63}$`,
-								"not": map[string]any{
-									"enum": []string{"id", "created_at", "_embedding", "_score", "_rank", "rowid"},
-								},
-							},
-							"type": map[string]any{
-								"type":        "string",
-								"description": "One of: string, text, number, boolean, timestamp, json, vector (omit to default to string)",
-								"enum": []schema.FieldType{
-									schema.String, schema.Text, schema.Number, schema.Boolean,
-									schema.Timestamp, schema.JSON, schema.Vector,
-								},
-							},
-							"fulltext":  prop("boolean", "Index this field for full-text search (string/text only)"),
-							"vectorize": prop("boolean", "Server embeds this text field automatically (string/text only, one per table)"),
-							"dim": map[string]any{
-								"type":        "integer",
-								"description": "Dimension for vector fields",
-								"minimum":     1,
-								"maximum":     schema.MaxVectorDim,
-							},
-							"required": prop("boolean", "Reject inserts that omit this field"),
-						},
-						"required": []string{"name"},
-						"allOf": []any{
-							map[string]any{
-								"if": map[string]any{
-									"properties": map[string]any{"type": map[string]any{"const": string(schema.Vector)}},
-									"required":   []string{"type"},
-								},
-								"then": map[string]any{"required": []string{"dim"}},
-								"else": map[string]any{"not": map[string]any{"required": []string{"dim"}}},
-							},
-							map[string]any{
-								"if": map[string]any{
-									"properties": map[string]any{"fulltext": map[string]any{"const": true}},
-									"required":   []string{"fulltext"},
-								},
-								"then": map[string]any{
-									"properties": map[string]any{
-										"type": map[string]any{"enum": []schema.FieldType{schema.String, schema.Text}},
-										"name": map[string]any{"not": map[string]any{"const": "rank"}},
-									},
-								},
-							},
-							map[string]any{
-								"if": map[string]any{
-									"properties": map[string]any{"vectorize": map[string]any{"const": true}},
-									"required":   []string{"vectorize"},
-								},
-								"then": map[string]any{
-									"properties": map[string]any{
-										"type": map[string]any{"enum": []schema.FieldType{schema.String, schema.Text}},
-									},
-								},
-							},
-						},
-					},
+					"items": fieldItemSchema("Field definition"),
 				},
 			},
 			"required": []string{"namespace", "table", "fields"},
@@ -277,8 +213,12 @@ var Ops = map[string]OpDef{
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
 				"table":     tableProp("Table name"),
-				"query":     prop("string", "FTS5 MATCH expression"),
-				"limit":     prop("integer", "Max results (default 10, max 200)"),
+				"query": map[string]any{
+					"type":        "string",
+					"description": "FTS5 MATCH expression",
+					"minLength":   1,
+				},
+				"limit": prop("integer", "Max results (default 10, max 200)"),
 			},
 			"required": []string{"namespace", "table", "query"},
 		},
@@ -338,6 +278,9 @@ var Ops = map[string]OpDef{
 			var vec []float32
 			switch {
 			case req.Text != "":
+				if s.emb.Identity() == "" {
+					return nil, badRequest("text search requires an embedding provider with a reported identity so queries are attributable to an embedding space")
+				}
 				if err := s.st.ValidateVectorSearch(ctx, normNS(req.Namespace), normTable(req.Table),
 					strings.ToLower(strings.TrimSpace(req.Column)), s.emb.Identity()); err != nil {
 					return nil, wrapStoreErr(err)
@@ -348,6 +291,9 @@ var Ops = map[string]OpDef{
 				}
 				if len(vecs) != 1 {
 					return nil, badRequest("embedding provider returned %d vectors for one query text", len(vecs))
+				}
+				if len(vecs[0]) == 0 {
+					return nil, badRequest("embedding provider returned a zero-dimensional vector for the query text")
 				}
 				vec = vecs[0]
 			case len(req.Vector) > 0:
@@ -416,15 +362,17 @@ var Ops = map[string]OpDef{
 				"changes": map[string]any{
 					"type":        "array",
 					"description": "Ordered list of changes",
+					"minItems":    1,
 					"items": map[string]any{
-						"type": "object",
+						"type":                 "object",
+						"additionalProperties": false,
 						"properties": map[string]any{
 							"op": map[string]any{
 								"type":        "string",
 								"description": "add_field | rename_field | drop_field | set_fulltext | set_vectorize",
 								"enum":        []string{"add_field", "rename_field", "drop_field", "set_fulltext", "set_vectorize"},
 							},
-							"field": map[string]any{"type": "object", "description": "Field definition for add_field"},
+							"field": fieldItemSchema("Field definition for add_field"),
 							"from":  prop("string", "Current name (rename_field)"),
 							"to":    prop("string", "New name (rename_field)"),
 							"name":  prop("string", "Field name (drop_field, set_fulltext, set_vectorize)"),
