@@ -35,7 +35,7 @@ DOLMEN_EMBED_MODEL=text-embedding-3-small \
 ### HTTP API
 
 ```bash
-curl -s localhost:8790/v1/create_table -d '{
+curl -s localhost:8790/v1/create_table -H 'Content-Type: application/json' -d '{
   "namespace": "myapp", "table": "events",
   "fields": [
     {"name": "title", "type": "string", "fulltext": true},
@@ -44,20 +44,20 @@ curl -s localhost:8790/v1/create_table -d '{
   ]
 }'
 
-curl -s localhost:8790/v1/insert -d '{
+curl -s localhost:8790/v1/insert -H 'Content-Type: application/json' -d '{
   "namespace": "myapp", "table": "events",
   "records": [{"title": "first bug", "detail": "token expiry not checked", "score": 0.9}]
 }'
 
-curl -s localhost:8790/v1/search_fulltext -d '{
+curl -s localhost:8790/v1/search_fulltext -H 'Content-Type: application/json' -d '{
   "namespace": "myapp", "table": "events", "query": "bug"
 }'
 
-curl -s localhost:8790/v1/search_vector -d '{
+curl -s localhost:8790/v1/search_vector -H 'Content-Type: application/json' -d '{
   "namespace": "myapp", "table": "events", "text": "token expiry problems"
 }'
 
-curl -s localhost:8790/v1/query -d '{
+curl -s localhost:8790/v1/query -H 'Content-Type: application/json' -d '{
   "namespace": "myapp", "sql": "SELECT title, score FROM events WHERE score > ?", "args": [0.5]
 }'
 ```

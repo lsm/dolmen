@@ -749,3 +749,40 @@ func TestUnrelatedMigrationPreservesEmbedDim(t *testing.T) {
 		t.Fatal("dim guard must survive unrelated migrations")
 	}
 }
+
+func TestProviderDimChangeRejected(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "dims", []schema.Field{
+		{Name: "s", Type: schema.String, Vectorize: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "dims", []map[string]any{{"s": "hello"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	shortEmbed := func(ctx context.Context, texts []string) ([][]float32, error) {
+		out := make([][]float32, len(texts))
+		for i := range texts {
+			out[i] = make([]float32, 4)
+		}
+		return out, nil
+	}
+	shifted := Embedder{Embed: shortEmbed, Identity: "fake-space"}
+	if _, err := st.Insert(ctx, "test", "dims", []map[string]any{{"s": "world"}}, shifted); err == nil {
+		t.Fatal("expected same-identity dim change to be rejected")
+	}
+}
+
+func TestVectorFloat32OverflowRejected(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "of", []schema.Field{
+		{Name: "v", Type: schema.Vector, Dim: 1},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "of", []map[string]any{{"v": []any{1e300}}}, testEmbed); err == nil {
+		t.Fatal("expected out-of-float32-range vector entry to be rejected")
+	}
+}

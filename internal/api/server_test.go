@@ -176,3 +176,54 @@ func TestInferSchemaEndpoint(t *testing.T) {
 		t.Fatalf("long text should be text+fulltext: %v", byName["detail"])
 	}
 }
+
+func TestOriginGuard(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	srv := httptest.NewServer(OriginGuard(New(st, fakeEmb{}).Handler(), []string{"https://app.example.com"}))
+	t.Cleanup(srv.Close)
+
+	do := func(origin, contentType string) int {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/list_tables", bytes.NewReader([]byte(`{"namespace":"x"}`)))
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("do: %v", err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+
+	if code := do("http://evil.example", "application/json"); code != http.StatusForbidden {
+		t.Fatalf("cross-origin mutation must be rejected, got %d", code)
+	}
+	if code := do("http://localhost:5173", "application/json"); code != http.StatusOK {
+		t.Fatalf("localhost origin must pass, got %d", code)
+	}
+	if code := do("", "application/json"); code != http.StatusOK {
+		t.Fatalf("no-origin (curl/server) must pass, got %d", code)
+	}
+	if code := do("https://app.example.com", "application/json"); code != http.StatusOK {
+		t.Fatalf("allowlisted origin must pass, got %d", code)
+	}
+	if code := do("", "text/plain"); code != http.StatusUnsupportedMediaType {
+		t.Fatalf("non-JSON content type must be rejected, got %d", code)
+	}
+
+	res, err := http.Get(srv.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("healthz: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET healthz must pass guard, got %d", res.StatusCode)
+	}
+}

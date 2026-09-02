@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -53,9 +54,16 @@ func run() error {
 	mux.Handle("/mcp", mcpSrv)
 	mux.Handle("/", apiSrv.Handler())
 
+	var allowedOrigins []string
+	for _, o := range strings.Split(os.Getenv("DOLMEN_ALLOWED_ORIGINS"), ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			allowedOrigins = append(allowedOrigins, o)
+		}
+	}
+
 	httpSrv := &http.Server{
 		Addr:              *addr,
-		Handler:           mux,
+		Handler:           api.OriginGuard(mux, allowedOrigins),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -304,6 +306,9 @@ var Ops = map[string]OpDef{
 			case len(req.Vector) > 0:
 				vec = make([]float32, len(req.Vector))
 				for i, x := range req.Vector {
+					if math.IsNaN(x) || math.Abs(x) > math.MaxFloat32 {
+						return nil, badRequest("vector entry %d is outside the float32 range", i)
+					}
 					vec[i] = float32(x)
 				}
 			default:
@@ -500,6 +505,36 @@ func (s *Server) Dispatch(ctx context.Context, op string, body []byte) (any, err
 		return nil, notFound("unknown operation %q", op)
 	}
 	return def.Func(ctx, s, body)
+}
+
+func OriginGuard(next http.Handler, extraOrigins []string) http.Handler {
+	localHosts := map[string]bool{"localhost": true, "127.0.0.1": true, "[::1]": true, "::1": true}
+	exact := map[string]bool{}
+	for _, o := range extraOrigins {
+		exact[strings.ToLower(strings.TrimRight(o, "/"))] = true
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin := r.Header.Get("Origin"); origin != "" {
+			allowed := exact[strings.ToLower(strings.TrimRight(origin, "/"))]
+			if !allowed {
+				if u, err := url.Parse(origin); err == nil && localHosts[strings.ToLower(u.Hostname())] {
+					allowed = true
+				}
+			}
+			if !allowed {
+				writeJSONStatus(w, http.StatusForbidden, map[string]any{"ok": false, "error": "origin not allowed"})
+				return
+			}
+		}
+		if r.Method == http.MethodPost {
+			ct := r.Header.Get("Content-Type")
+			if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)), "application/json") {
+				writeJSONStatus(w, http.StatusUnsupportedMediaType, map[string]any{"ok": false, "error": "content-type must be application/json"})
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) Handler() http.Handler {

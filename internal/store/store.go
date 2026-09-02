@@ -391,6 +391,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	if err != nil {
 		return nil, true, err
 	}
+	persistMeta := sc.EmbedSpace == "" || sc.EmbedDim == 0
 	for _, rec := range records {
 		for k := range rec {
 			if sc.Field(k) == nil {
@@ -431,6 +432,13 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			}
 			if len(vecs) != len(texts) {
 				return nil, true, fmt.Errorf("embedding provider returned %d vectors for %d texts", len(vecs), len(texts))
+			}
+			for _, v := range vecs {
+				if sc.EmbedDim == 0 {
+					sc.EmbedDim = len(v)
+				} else if len(v) != sc.EmbedDim {
+					return nil, true, invalidf("embedding provider returned %d-dimensional vectors but table %s stores %d-dimensional embeddings; re-embed via migrate (set_vectorize off, then on) if the provider changed", len(v), table, sc.EmbedDim)
+				}
 			}
 			for k, i := range idx {
 				embFor[i] = vecs[k]
@@ -506,7 +514,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			}
 		}
 	}
-	if len(embFor) > 0 && (sc.EmbedSpace == "" || sc.EmbedDim == 0) {
+	if len(embFor) > 0 && persistMeta {
 		if sc.EmbedSpace == "" && emb.Identity != "" {
 			sc.EmbedSpace = emb.Identity
 		}
@@ -598,6 +606,9 @@ func coerceValue(f schema.Field, v any) (any, error) {
 		}
 		out := make([]float32, len(floats))
 		for i, x := range floats {
+			if math.IsNaN(x) || math.Abs(x) > math.MaxFloat32 {
+				return nil, fmt.Errorf("field %q: vector entry %d is outside the float32 range", f.Name, i)
+			}
 			out[i] = float32(x)
 		}
 		return schema.EncodeVector(out), nil
