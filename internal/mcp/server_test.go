@@ -428,3 +428,20 @@ func TestPingParamsValidated(t *testing.T) {
 		t.Fatalf("bare ping must succeed, got %d %v", code, res)
 	}
 }
+
+func TestHugeNumericIDPreserved(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	res, err := http.Post(url, "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1e1000,"method":"ping"}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	var decoded map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&decoded)
+	res.Body.Close()
+	if decoded["error"] != nil {
+		t.Fatalf("1e1000 is a valid numeric id, got error %v", decoded["error"])
+	}
+	if _, ok := decoded["result"]; !ok {
+		t.Fatalf("expected a result, got %v", decoded)
+	}
+}

@@ -55,7 +55,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var probe any
-	if err := json.Unmarshal(body, &probe); err != nil {
+	probeDec := json.NewDecoder(bytes.NewReader(body))
+	probeDec.UseNumber()
+	if err := probeDec.Decode(&probe); err != nil {
 		writeRPCError(w, nil, jsonRPCParseError, "invalid JSON")
 		return
 	}
@@ -192,12 +194,14 @@ func validID(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
 		return nil
 	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
 	var probe any
-	if err := json.Unmarshal(raw, &probe); err != nil {
+	if err := dec.Decode(&probe); err != nil {
 		return nil
 	}
 	switch probe.(type) {
-	case string, float64:
+	case string, json.Number:
 		return raw
 	}
 	return nil
