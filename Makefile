@@ -11,4 +11,3 @@ run:
 
 clean:
 	rm -f dolmen
-	rm -rf data
