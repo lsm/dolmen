@@ -315,6 +315,10 @@ var Ops = map[string]OpDef{
 				"limit":  prop("integer", "Max results (default 10, max 200)"),
 			},
 			"required": []string{"namespace", "table"},
+			"oneOf": []any{
+				map[string]any{"required": []string{"text"}},
+				map[string]any{"required": []string{"vector"}},
+			},
 		},
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req vecReq
@@ -350,8 +354,12 @@ var Ops = map[string]OpDef{
 			default:
 				return nil, badRequest("pass either text or vector")
 			}
+			queryIdentity := ""
+			if req.Text != "" {
+				queryIdentity = s.emb.Identity()
+			}
 			results, truncated, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table),
-				strings.ToLower(strings.TrimSpace(req.Column)), vec, s.emb.Identity(), limit(req.Limit))
+				strings.ToLower(strings.TrimSpace(req.Column)), vec, queryIdentity, limit(req.Limit))
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}

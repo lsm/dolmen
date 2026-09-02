@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -125,6 +126,57 @@ func TestSearchVectorBothFormsRejected(t *testing.T) {
 	})
 	if code != 400 {
 		t.Fatalf("supplying both text and vector must 400 (the vector would be silently ignored), got %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "x",
+		"table":     "t",
+	})
+	if code != 400 {
+		t.Fatalf("supplying neither text nor vector must 400, got %d %v", code, res)
+	}
+	def, ok := Ops["search_vector"]
+	if !ok {
+		t.Fatal("search_vector op missing")
+	}
+	oneOf, ok := def.InputSchema["oneOf"].([]any)
+	if !ok || len(oneOf) != 2 {
+		t.Fatalf("schema must require exactly one query form via oneOf, got %v", def.InputSchema["oneOf"])
+	}
+}
+
+func TestSearchVectorRawVectorIgnoresProviderIdentity(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	spaceA := store.Embedder{
+		Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+			out := make([][]float32, len(texts))
+			for i := range out {
+				out[i] = []float32{1, 0, 0, 0, 0, 0, 0, 0}
+			}
+			return out, nil
+		},
+		Identity: "space-a",
+	}
+	if _, err := st.CreateTable(context.Background(), "mix", "t", []schema.Field{
+		{Name: "s", Type: schema.Text, Vectorize: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(context.Background(), "mix", "t", []map[string]any{{"s": "hello"}}, spaceA); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	srv := httptest.NewServer(New(st, fakeEmb{}).Handler())
+	t.Cleanup(srv.Close)
+	code, res := post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "mix",
+		"table":     "t",
+		"vector":    []float64{1, 0, 0, 0, 0, 0, 0, 0},
+	})
+	if code != 200 {
+		t.Fatalf("raw-vector search must not be bound to the active provider identity (table is space-a, server is fake-space), got %d %v", code, res)
 	}
 }
 
