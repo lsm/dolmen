@@ -674,11 +674,11 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]
 		return nil, false, err
 	}
 	rows, err := n.ro.QueryContext(ctx, trimmed, args...)
-	if err != nil && strings.Contains(err.Error(), "no such table") {
-		return nil, false, fmt.Errorf("%w: %w", ErrNotFound, err)
-	}
 	if err != nil {
-		return nil, false, err
+		if strings.Contains(err.Error(), "no such table") {
+			return nil, false, fmt.Errorf("%w: %w", ErrNotFound, err)
+		}
+		return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	defer rows.Close()
 	return rowsToMaps(rows)
@@ -694,11 +694,16 @@ func rowsToMaps(rows *sql.Rows) ([]map[string]any, bool, error) {
 		return nil, false, err
 	}
 	seen := map[string]bool{}
+	labelBytes := 0
 	for _, c := range cols {
 		if seen[c] {
 			return nil, false, invalidf("duplicate column label %q in query result; use AS aliases", c)
 		}
+		if len(c) > 4096 {
+			return nil, false, invalidf("column label exceeds 4096 bytes; use a shorter AS alias")
+		}
 		seen[c] = true
+		labelBytes += len(c) + 16
 	}
 	out := []map[string]any{}
 	total := 0
@@ -724,13 +729,13 @@ func rowsToMaps(rows *sql.Rows) ([]map[string]any, bool, error) {
 		if len(out) >= MaxQueryRows {
 			return out, true, rows.Err()
 		}
-		if total+rowBytes > MaxQueryBytes {
+		if total+rowBytes+labelBytes > MaxQueryBytes {
 			if len(out) == 0 {
 				return nil, false, invalidf("query result exceeds the %d MiB response budget on its first row; select fewer or smaller columns", MaxQueryBytes>>20)
 			}
 			return out, true, rows.Err()
 		}
-		total += rowBytes
+		total += rowBytes + labelBytes
 		out = append(out, m)
 	}
 	return out, false, rows.Err()

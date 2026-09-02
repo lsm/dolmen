@@ -1094,3 +1094,33 @@ func TestMalformedDeleteFilterIsInvalidRequest(t *testing.T) {
 		t.Fatalf("expected malformed filter to classify as invalid request, got %v", err)
 	}
 }
+
+func TestOversizedColumnLabelRejected(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "lbl", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	longAlias := strings.Repeat("x", 5000)
+	if _, _, err := st.Query(ctx, "test", "SELECT 1 AS \""+longAlias+"\"", nil); err == nil {
+		t.Fatal("expected oversized column label to be rejected")
+	}
+}
+
+func TestMalformedQueryIsInvalidRequest(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "mq", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, _, err := st.Query(ctx, "test", "SELECT (", nil); err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected malformed SQL to classify as invalid request, got %v", err)
+	}
+	if _, _, err := st.Query(ctx, "test", "SELECT 1 WHERE 1=?", nil); err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected wrong arg count to classify as invalid request, got %v", err)
+	}
+}
