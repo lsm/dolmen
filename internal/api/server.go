@@ -129,6 +129,15 @@ func decode(body []byte, v any) error {
 	if len(body) == 0 {
 		return badRequest("empty request body")
 	}
+	var probe any
+	probeDec := json.NewDecoder(bytes.NewReader(body))
+	probeDec.UseNumber()
+	if err := probeDec.Decode(&probe); err != nil {
+		return badRequest("invalid JSON: %v", err)
+	}
+	if err := rejectNulls("", probe); err != nil {
+		return err
+	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	dec.DisallowUnknownFields()
@@ -137,6 +146,35 @@ func decode(body []byte, v any) error {
 	}
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
 		return badRequest("unexpected trailing content after JSON body")
+	}
+	return nil
+}
+
+func rejectNulls(path string, v any) error {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			p := k
+			if path != "" {
+				p = path + "." + k
+			}
+			if val == nil {
+				return badRequest("null is not allowed for %q", p)
+			}
+			if err := rejectNulls(p, val); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for i, val := range t {
+			p := fmt.Sprintf("%s[%d]", path, i)
+			if val == nil {
+				return badRequest("null is not allowed for %q", p)
+			}
+			if err := rejectNulls(p, val); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

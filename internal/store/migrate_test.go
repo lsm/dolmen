@@ -568,3 +568,26 @@ func TestMigrateEnforcesFieldCap(t *testing.T) {
 		t.Fatalf("migration past the field cap must be rejected with ErrInvalid, got %v", err)
 	}
 }
+
+func TestMigrateAddDropOrderCannotExceedCap(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	fields := make([]schema.Field, MaxFieldsPerTable-1)
+	for i := range fields {
+		fields[i] = schema.Field{Name: fmt.Sprintf("f%d", i), Type: schema.String}
+	}
+	if _, err := st.CreateTable(ctx, "test", "almost", fields); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	changes := []schema.Change{{Op: schema.OpDropField, Name: "f0"}}
+	for i := 0; i < 3; i++ {
+		changes = append(changes, schema.Change{
+			Op:    schema.OpAddField,
+			Field: &schema.Field{Name: fmt.Sprintf("extra%d", i), Type: schema.String},
+		})
+	}
+	_, err := st.Migrate(ctx, "test", "almost", changes, testEmbed)
+	if err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("adds beyond the cap must be rejected even when a later drop reduces the final count, got %v", err)
+	}
+}

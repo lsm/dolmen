@@ -62,6 +62,9 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 					return nil, invalidf("field %q already exists", f.Name)
 				}
 			}
+			if len(cur.Fields) >= MaxFieldsPerTable {
+				return nil, invalidf("migration would leave %d fields (max %d; ALTERs run in request order, so adds cannot exceed the cap even when later drops reduce the final count)", len(cur.Fields)+1, MaxFieldsPerTable)
+			}
 			cur.Fields = append(cur.Fields, f)
 			if f.Fulltext {
 				rebuildFTSNeeded = true
@@ -172,9 +175,6 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 		default:
 			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize)", ch.Op)
 		}
-	}
-	if len(cur.Fields) > MaxFieldsPerTable {
-		return nil, invalidf("migration would leave %d fields (max %d)", len(cur.Fields), MaxFieldsPerTable)
 	}
 	if err := schema.Validate(cur.Fields); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)

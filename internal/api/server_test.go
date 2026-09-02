@@ -490,3 +490,16 @@ func TestContentTypeParsedExactly(t *testing.T) {
 		}
 	}
 }
+
+func TestNullOptionValuesRejected(t *testing.T) {
+	srv := newTestServer(t)
+	res, err := http.Post(srv.URL+"/v1/create_table", "application/json",
+		strings.NewReader(`{"namespace":"x","table":"nully","fields":[{"name":"title","type":null,"required":null}]}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("null option values must 400 (they otherwise silently apply defaults), got %d", res.StatusCode)
+	}
+}
