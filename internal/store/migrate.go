@@ -62,6 +62,9 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 					return nil, invalidf("field %q already exists", f.Name)
 				}
 			}
+			if len(cur.Fields) >= MaxFieldsPerTable {
+				return nil, invalidf("migration would leave %d fields (max %d; ALTERs run in request order, so adds cannot exceed the cap even when later drops reduce the final count)", len(cur.Fields)+1, MaxFieldsPerTable)
+			}
 			cur.Fields = append(cur.Fields, f)
 			if f.Fulltext {
 				rebuildFTSNeeded = true

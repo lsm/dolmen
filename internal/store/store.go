@@ -233,9 +233,14 @@ func (s *Store) DescribeTable(ctx context.Context, nsName, table string) (*schem
 	return sc, count, nil
 }
 
+const MaxFieldsPerTable = 100
+
 func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []schema.Field) (*schema.TableSchema, error) {
 	if !schema.ValidTableName(table) {
 		return nil, invalidf("invalid table name %q: must match ^[a-z][a-z0-9_]{0,63}$, not be reserved, and not end with __fts (reserved for search indexes)", table)
+	}
+	if len(fields) > MaxFieldsPerTable {
+		return nil, invalidf("too many fields: %d (max %d; SQLite caps tables at 2000 columns including the implicit id, created_at, and _embedding)", len(fields), MaxFieldsPerTable)
 	}
 	fields = schema.Normalize(fields)
 	if err := schema.Validate(fields); err != nil {
