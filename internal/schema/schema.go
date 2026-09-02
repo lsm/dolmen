@@ -128,6 +128,8 @@ func Validate(fields []Field) error {
 			if f.Dim < 1 || f.Dim > MaxVectorDim {
 				return fmt.Errorf("field %q: vector fields need dim between 1 and %d", f.Name, MaxVectorDim)
 			}
+		} else if f.Dim != 0 {
+			return fmt.Errorf("field %q: dim is only allowed on vector fields", f.Name)
 		}
 	}
 	return nil
@@ -300,7 +302,7 @@ func goKind(v any) string {
 	switch v.(type) {
 	case bool:
 		return "bool"
-	case float64, int, int64, json.Number:
+	case float32, float64, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, json.Number:
 		return "number"
 	case string:
 		return "string"

@@ -198,3 +198,25 @@ func TestInferOutOfRangeTimestampOffsetsStayString(t *testing.T) {
 		}
 	}
 }
+
+func TestInferGoNumericTypesAreNumbers(t *testing.T) {
+	fields := InferFields([]map[string]any{
+		{"n": float32(1.5), "m": int32(7), "u": uint64(9)},
+	})
+	byName := map[string]Field{}
+	for _, f := range fields {
+		byName[f.Name] = f
+	}
+	for _, name := range []string{"n", "m", "u"} {
+		if byName[name].Type != Number {
+			t.Fatalf("go numeric %q should infer number, got %s", name, byName[name].Type)
+		}
+	}
+}
+
+func TestValidateRejectsDimOnNonVectorField(t *testing.T) {
+	err := Validate([]Field{{Name: "s", Type: String, Dim: 4}})
+	if err == nil {
+		t.Fatal("expected dim on a non-vector field to be rejected")
+	}
+}
