@@ -97,7 +97,9 @@ The MCP server exposes the same ten operations as tools (`tools/list` shows them
 ## Model
 
 - **Namespace = one SQLite file** (`data/<ns>.db`, WAL). Isolation is physical; drop a namespace by
-  deleting a file. A small registry inside each file holds table schemas, versions, and a migration log.
+  shutting the server down cleanly first, then deleting the file (the server caches open connections
+  and WAL sidecars, so deleting under a live server is unreliable). A small registry inside each file
+  holds table schemas, versions, and a migration log.
 - **Full-text** via SQLite FTS5 shadow tables, maintained on insert/delete/migrate.
 - **Vectors** stored as float32 blobs; KNN is a brute-force cosine scan in Go — fine into the low
   millions of rows, zero index infrastructure. (This is the deliberate MVP trade.)

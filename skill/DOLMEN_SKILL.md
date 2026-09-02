@@ -57,8 +57,8 @@ insert(namespace="research", table="findings", records=[{...}])
 Recall in a later session:
 
 ```
-search_fulltext(namespace="research", table="findings", query="auth")   # or search_vector with text
-                                                                       # when the table has a vectorize
-                                                                       # field and a provider is configured
+search_fulltext(namespace="research", table="findings", query="auth")   # needs a fulltext field;
+                                                                       # search_vector with text needs a
+                                                                       # vectorize field plus a provider
 query(namespace="research", sql="SELECT * FROM findings WHERE created_at >= ? ORDER BY created_at DESC", args=["2026-09-01"])
 ```
