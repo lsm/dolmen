@@ -308,16 +308,29 @@ func InferFields(samples []map[string]any) []Field {
 	return fields
 }
 
+const maxUnwrapDepth = 32
+
+func unwrapValue(v any) (rv reflect.Value, nilFound, cycled bool) {
+	rv = reflect.ValueOf(v)
+	for depth := 0; rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface; depth++ {
+		if rv.IsNil() {
+			return rv, true, false
+		}
+		if depth >= maxUnwrapDepth {
+			return rv, false, true
+		}
+		rv = rv.Elem()
+	}
+	return rv, false, false
+}
+
 func isNilValue(v any) bool {
 	if v == nil {
 		return true
 	}
-	rv := reflect.ValueOf(v)
-	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
-		if rv.IsNil() {
-			return true
-		}
-		rv = rv.Elem()
+	rv, nilFound, cycled := unwrapValue(v)
+	if nilFound || cycled || !rv.IsValid() {
+		return true
 	}
 	switch rv.Kind() {
 	case reflect.Chan, reflect.Func, reflect.Map, reflect.Slice, reflect.UnsafePointer:
@@ -327,12 +340,11 @@ func isNilValue(v any) bool {
 }
 
 func goKind(v any) string {
-	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer {
-		if rv.IsNil() {
-			return "other"
-		}
-		return goKind(rv.Elem().Interface())
+	rv, _, cycled := unwrapValue(v)
+	if cycled || !rv.IsValid() {
+		return "other"
 	}
+	v = rv.Interface()
 	switch v.(type) {
 	case bool:
 		return "bool"
@@ -375,9 +387,9 @@ func allStringsMatch(samples []map[string]any, key string, pred func(string) boo
 }
 
 func underlyingString(v any) (string, bool) {
-	rv := reflect.ValueOf(v)
-	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
-		rv = rv.Elem()
+	rv, _, cycled := unwrapValue(v)
+	if cycled || !rv.IsValid() {
+		return "", false
 	}
 	if rv.Kind() == reflect.Struct {
 		if t, ok := rv.Interface().(time.Time); ok {

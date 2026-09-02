@@ -375,3 +375,18 @@ func TestInferTimeTimeSamplesAreTimestamps(t *testing.T) {
 		t.Fatalf("time.Time samples should infer timestamp, got %+v", fields)
 	}
 }
+
+func TestInferSelfReferentialSampleTerminates(t *testing.T) {
+	var v any
+	v = &v
+	done := make(chan []Field, 1)
+	go func() { done <- InferFields([]map[string]any{{"x": v}, {"x": "hello"}}) }()
+	select {
+	case fields := <-done:
+		if len(fields) != 1 || fields[0].Type != String {
+			t.Fatalf("cyclic value is skipped like nil, so the string sample should infer string, got %+v", fields)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("inference did not terminate on a self-referential sample")
+	}
+}
