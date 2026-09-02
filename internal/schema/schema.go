@@ -219,8 +219,17 @@ func looksLikeTimestamp(s string) bool {
 	if !isoRe.MatchString(s) {
 		return false
 	}
+	norm := s
+	if len(norm) >= 11 && norm[10] == 't' {
+		b := []byte(norm)
+		b[10] = 'T'
+		norm = string(b)
+	}
+	if strings.HasSuffix(norm, "z") {
+		norm = norm[:len(norm)-1] + "Z"
+	}
 	for _, layout := range timestampLayouts {
-		if _, err := time.Parse(layout, s); err == nil {
+		if _, err := time.Parse(layout, norm); err == nil {
 			return validRFC3339Offset(s)
 		}
 	}

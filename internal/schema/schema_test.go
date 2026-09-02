@@ -220,3 +220,12 @@ func TestValidateRejectsDimOnNonVectorField(t *testing.T) {
 		t.Fatal("expected dim on a non-vector field to be rejected")
 	}
 }
+
+func TestInferLowercaseRFC3339Separators(t *testing.T) {
+	for _, good := range []string{"2026-09-01t10:00:00z", "2026-09-01T10:00:00z"} {
+		fields := InferFields([]map[string]any{{"when": good}})
+		if len(fields) != 1 || fields[0].Type != Timestamp {
+			t.Fatalf("lowercase rfc3339 %q must infer timestamp, got %+v", good, fields)
+		}
+	}
+}
