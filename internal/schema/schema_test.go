@@ -293,3 +293,14 @@ func TestInferUintptrSamplesAreNumbers(t *testing.T) {
 		}
 	}
 }
+
+func TestInferTypedNilValuesSkipped(t *testing.T) {
+	var missing *string
+	fields := InferFields([]map[string]any{
+		{"name": "Alice"},
+		{"name": missing},
+	})
+	if len(fields) != 1 || fields[0].Type != String {
+		t.Fatalf("typed nil must not turn a string field into json, got %+v", fields)
+	}
+}

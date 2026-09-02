@@ -259,7 +259,7 @@ func InferFields(samples []map[string]any) []Field {
 			if kinds[lk] == nil {
 				kinds[lk] = map[string]bool{}
 			}
-			if v == nil {
+			if isNilValue(v) {
 				continue
 			}
 			kinds[lk][goKind(v)] = true
@@ -306,6 +306,17 @@ func InferFields(samples []map[string]any) []Field {
 		fields = append(fields, f)
 	}
 	return fields
+}
+
+func isNilValue(v any) bool {
+	if v == nil {
+		return true
+	}
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice, reflect.UnsafePointer:
+		return rv.IsNil()
+	}
+	return false
 }
 
 func goKind(v any) string {
