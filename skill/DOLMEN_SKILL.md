@@ -54,6 +54,12 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
   reference it in the SQL (outside string literals and comments) or pass `include_hidden: true` to a
   search when you really need it.
 - Vector search results carry `_score` (cosine similarity; higher is closer).
+- `search_vector` has two query forms with different reach: `text` (server embeds it) searches only
+  the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`; `vector`
+  (raw numbers) searches any `vector` column, and only you know which embedding space produced both
+  the stored and the query vectors, so keep them from the same model.
+- `skipped_vectors` in a `search_vector` response counts stored vectors that were corrupt or
+  dimension-mismatched and could not be scored; nonzero means those rows are missing from results.
 
 ## Agent-critical caveats
 
@@ -99,13 +105,14 @@ negative — value and are returned first. The rank value itself is not returned
 - `vectorize: true` on a string/text field stores one embedding per non-empty row in `_embedding`.
   Only one field per table can be vectorized; rows with `null`, empty string, or missing values have
   `_embedding` NULL and are excluded from vector search.
-- `search_vector(text=...)` embeds the query `text` with the configured provider and compares it
-  against the resolved `column`. `search_vector(vector=[...])` supplies a query vector directly; `column`
-  still selects the searched stored vectors.
-- `column` defaults to `_embedding` (if a vectorized field exists) or the first declared `vector` field.
-  The query and stored vectors must come from the same embedding space. For `_embedding` (from
-  `vectorize`) this means the same provider/identity; for caller-supplied `vector` fields it means the
-  same model used for the stored and query vectors.
+- `search_vector(text=...)` embeds the query `text` with the configured provider and searches only
+  the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`.
+  `search_vector(vector=[...])` supplies a query vector directly and may search any vector column.
+- `column` applies to `vector` queries: it names the stored-vectors column and defaults to
+  `_embedding` (if a vectorized field exists) or the first declared `vector` field. The query and
+  stored vectors must come from the same embedding space. For `_embedding` (from `vectorize`) this
+  means the same provider/identity; for caller-supplied `vector` fields it means the same model used
+  for the stored and query vectors.
 - Each result has `_score`: cosine similarity, higher is closer, typically `0`–`1` for positive
   embeddings (mathematically `-1`–`1`).
 - `_embedding` is hidden from `SELECT *` and search results unless referenced explicitly or

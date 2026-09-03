@@ -541,12 +541,16 @@ var Ops = map[string]OpDef{
 	},
 	"search_vector": {
 		Description: "Nearest-neighbor vector search. Pass text (the server embeds it) or a raw vector. " +
-			"column is optional: defaults to the auto-embedding of a vectorized field, else the first vector field. " +
+			"column is optional for raw vectors: defaults to the auto-embedding of a vectorized field, else the first vector field. " +
+			"Text queries always target the server-managed vectorize (_embedding) space and are rejected for caller-provided " +
+			"vector columns — their embedding space is unknown, so cosine against a freshly embedded query would be meaningless; " +
+			"search those with a raw vector from the same embedding space that produced the stored vectors. " +
 			"Optional filter and args restrict rows with a SQL WHERE expression (like delete's filter) " +
 			"before scoring; optional min_score drops lower-similarity results before the ranking/limit. " +
 			"Results carry _score (cosine similarity, higher is closer), honor declared field types " +
 			"(boolean -> true/false, json -> decoded value, vector -> number array), and omit the hidden " +
-			"_embedding column unless include_hidden is true.",
+			"_embedding column unless include_hidden is true. skipped_vectors counts rows whose stored vector " +
+			"was corrupt or dimension-mismatched and could not be scored; a nonzero count means those rows are missing from results.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -568,7 +572,7 @@ var Ops = map[string]OpDef{
 					},
 					"minItems": 1,
 				},
-				"column": prop("string", "Vector column to search (optional)"),
+				"column": prop("string", "Vector column to search (raw-vector queries only; text queries always search the vectorize _embedding space)"),
 				"limit": map[string]any{
 					"type":        "integer",
 					"description": "Max results (default 10, max 200)",
@@ -621,8 +625,9 @@ var Ops = map[string]OpDef{
 					},
 				},
 			},
-			"truncated": prop("boolean", "True when the result hit the response budget and was cut short"),
-		}, "results", "truncated"),
+			"truncated":       prop("boolean", "True when the result hit the response budget and was cut short"),
+			"skipped_vectors": prop("integer", "Rows whose stored vector was corrupt or dimension-mismatched and could not be scored; nonzero means those rows are missing from results"),
+		}, "results", "truncated", "skipped_vectors"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req vecReq
 			if err := decodeAllowNullArgs(body, &req); err != nil {
@@ -667,13 +672,13 @@ var Ops = map[string]OpDef{
 			if req.Text != "" {
 				queryIdentity = s.emb.Identity()
 			}
-			results, truncated, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table),
+			res, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table),
 				strings.ToLower(strings.TrimSpace(req.Column)), vec, queryIdentity, limit(req.Limit), req.IncludeHidden,
 				req.Filter, req.Args, req.MinScore)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"results": results, "truncated": truncated}, nil
+			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "skipped_vectors": res.Skipped}, nil
 		},
 	},
 	"delete": {

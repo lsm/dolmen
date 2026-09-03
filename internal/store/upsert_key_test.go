@@ -323,12 +323,12 @@ func TestUpsertByKeyReEmbedsVectorizedField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
-	results, _, err := st.SearchVector(ctx, "test", "vec", "", qvecs[0], testEmbed.Identity, 10, false, "", nil, nil)
+	results, err := st.SearchVector(ctx, "test", "vec", "", qvecs[0], testEmbed.Identity, 10, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
-	if len(results) != 1 || results[0]["k"] != "a" {
-		t.Fatalf("vector search should find the re-embedded row: %v", results)
+	if len(results.Rows) != 1 || results.Rows[0]["k"] != "a" {
+		t.Fatalf("vector search should find the re-embedded row: %v", results.Rows)
 	}
 }
 

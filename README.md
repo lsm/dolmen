@@ -114,7 +114,7 @@ The MCP server exposes the same fourteen operations as tools (`tools/list` shows
 | `upsert_by_key` | Insert-or-update keyed by natural field(s) (`on`); converges instead of duplicating on retry |
 | `query` | Read-only SQL (SELECT/WITH), parameter binding via `args`, typed results |
 | `search_fulltext` | FTS5 MATCH over `fulltext` fields, relevance-ordered, typed results |
-| `search_vector` | Cosine KNN over embeddings; pass `text` (server embeds) or `vector`; results carry `_score` |
+| `search_vector` | Cosine KNN; `text` (server embeds; searches only the vectorize `_embedding` space) or raw `vector` (any vector column, caller owns the space); results carry `_score` and `skipped_vectors` |
 | `delete` | WHERE-filtered delete, cascades to search indexes |
 | `update` | WHERE-filtered field update; reindexes full-text rows and re-embeds changed vectorized fields |
 | `upsert` | Update matching rows, or insert one record when the filter matches nothing |
@@ -135,6 +135,12 @@ The MCP server exposes the same fourteen operations as tools (`tools/list` shows
   when nothing matches.
 - **Vectors** stored as float32 blobs; KNN is a brute-force cosine scan in Go — fine into the low
   millions of rows, zero index infrastructure. (This is the deliberate MVP trade.)
+- **Vector-search spaces** are kept honest: `text` queries are embedded by the active provider and
+  only search the server-managed `vectorize` (`_embedding`) space, whose model identity is pinned
+  per table — a provider change is rejected until the table is re-embedded. Caller-provided `vector`
+  columns are searchable only with a raw `vector` query, because only the caller knows which embedding
+  space produced them. Stored vectors that are corrupt, dimension-mismatched, or non-finite are
+  skipped from scoring and reported as `skipped_vectors`, so a search never silently drops rows.
 - **Read-only SQL** runs on a `mode=ro` connection with a SELECT/WITH allowlist — defense in depth.
 - **Typed reads** across `query`, `search_fulltext`, and `search_vector`: results honor declared field
   types — `boolean` → `true`/`false`, `json` → the decoded value, `vector` → a number array, `number` →
@@ -205,12 +211,14 @@ negative — `rank` value and are returned first. The rank value itself is not i
   `_embedding` column. Only one field per table can be vectorized; only non-empty values are embedded,
   so rows with `null`, empty strings, or missing values have `_embedding` NULL and are excluded from
   vector search.
-- `search_vector` with `text` embeds the query `text` with the configured provider and compares it
-  against the resolved `column`. With `vector` you supply the query vector directly.
-- `column` is optional and defaults to `_embedding` if a vectorized field exists, otherwise the first
-  declared `vector` field. The query and stored vectors must come from the same embedding space. For
-  `_embedding` (from `vectorize`) this means the same provider/identity; for caller-supplied `vector`
-  fields it means the same model used to produce the stored and query vectors.
+- `search_vector` with `text` embeds the query `text` with the configured provider and searches only
+  the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`. With
+  `vector` you supply the query vector directly and may search any vector column.
+- `column` is optional for `vector` queries: it names the stored-vectors column and defaults to
+  `_embedding` if a vectorized field exists, otherwise the first declared `vector` field. The query
+  and stored vectors must come from the same embedding space. For `_embedding` (from `vectorize`)
+  this means the same provider/identity; for caller-supplied `vector` fields it means the same model
+  used to produce the stored and query vectors.
 - Every vector result carries `_score`: cosine similarity, where higher is closer. For typical
   positive embeddings it ranges `0`–`1`; mathematically it ranges `-1`–`1`.
 - `_embedding` is hidden from `SELECT *` and search results unless you reference it explicitly in the
