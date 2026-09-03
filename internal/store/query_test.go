@@ -585,6 +585,9 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"join", "SELECT * FROM notes JOIN _dolmen_tables d ON notes.id = d.rowid"},
 		{"compound", "SELECT * FROM notes EXCEPT SELECT * FROM sqlite_master"},
 		{"quoted reserved", `SELECT * FROM "_dolmen_tables"`},
+		// A quoted identifier containing a dot is one name; without a matching
+		// CTE its reserved-looking tail still rejects.
+		{"dotted quoted reserved", `SELECT * FROM "c._dolmen_tables"`},
 		{"bracketed reserved", "SELECT * FROM [sqlite_master]"},
 		{"parenthesized reserved", "SELECT * FROM (_dolmen_tables)"},
 		{"parenthesized join list reserved", "SELECT * FROM (notes JOIN _dolmen_tables ON notes.id = _dolmen_tables.rowid)"},
@@ -730,6 +733,9 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		// Identifier folding is ASCII-only too: a CTE named with İ keeps that
 		// spelling and references to it resolve to the CTE.
 		"WITH _dolmen_İdempotency(x) AS (VALUES(1)) SELECT * FROM _dolmen_İdempotency",
+		// A quoted name containing a dot is one identifier, so the whole name
+		// is matched against the CTE scope before any schema split.
+		`WITH "c._dolmen_tables"(x) AS (VALUES(1)) SELECT * FROM "c._dolmen_tables"`,
 		// Form feed is SQLite whitespace, so it separates tokens like a space.
 		"WITH\fc(x) AS (VALUES(1)) SELECT * FROM c",
 		"WITH c AS\f(VALUES(1)) SELECT * FROM c",

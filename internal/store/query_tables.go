@@ -1190,15 +1190,16 @@ func (s *queryScanner) checkTableName(schema, rawName string) error {
 		// turn a reserved table into a normal one.
 		name = unquoteIdent(schema) + "." + name
 	}
-	base := name
-	if i := strings.LastIndex(base, "."); i >= 0 {
-		base = base[i+1:]
-	}
-	base = asciiLower(base)
+	base := asciiLower(name)
 	// A CTE name (possibly shadowing a reserved table) is not a physical table
-	// reference, so allow it.
+	// reference, so allow it. A quoted identifier may contain dots
+	// ("c._dolmen_tables" is one name), so check the complete name against the
+	// CTE scope before treating a dot as a schema separator.
 	if schema == "" && s.isCteName(base) {
 		return nil
+	}
+	if i := strings.LastIndex(base, "."); i >= 0 {
+		base = base[i+1:]
 	}
 	if !isUserTable(base) {
 		return invalidf("query references reserved table %q", base)
