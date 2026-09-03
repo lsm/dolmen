@@ -126,7 +126,7 @@ func TestTypedReadRoundTripSearchVector(t *testing.T) {
 	mustCreateTyped(t, st)
 	mustInsertTyped(t, st)
 
-	rows, _, err := st.SearchVector(ctx, "test", "typed", "vec", []float32{1, 0, 0, 0}, "", 0, 10, false)
+	rows, _, err := st.SearchVector(ctx, "test", "typed", "vec", []float32{1, 0, 0, 0}, "", 0, 10, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestSearchHidesEmbeddingByDefault(t *testing.T) {
 		t.Fatalf("declared vector column must still come back typed, got %T %v", fts[0]["emb"], fts[0]["emb"])
 	}
 
-	vec, _, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 0, 1, false)
+	vec, _, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 0, 1, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestSearchHidesEmbeddingByDefault(t *testing.T) {
 		t.Fatalf("include_hidden must return _embedding typed, got %T %v", fts[0]["_embedding"], fts[0]["_embedding"])
 	}
 
-	vec, _, err = st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 0, 1, true)
+	vec, _, err = st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 0, 1, true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search include_hidden: %v", err)
 	}

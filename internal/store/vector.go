@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, vec []float32, embedModel string, offset, limit int, includeHidden bool) ([]map[string]any, bool, error) {
+func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, vec []float32, embedModel string, offset, limit int, includeHidden bool, filter string, args []any, minScore *float64) ([]map[string]any, bool, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
 		return nil, false, err
@@ -39,13 +40,36 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 	if offset < 0 {
 		return nil, false, invalidf("offset must be non-negative")
 	}
+	filter = strings.TrimSpace(filter)
+	if filter != "" {
+		if strings.Contains(filter, ";") {
+			return nil, false, invalidf("multiple statements are not allowed in filter")
+		}
+		if len(args) > 100 {
+			return nil, false, invalidf("too many filter arguments")
+		}
+		for i, a := range args {
+			args[i] = normalizeArg(a)
+		}
+	}
 
-	rows, err := tx.QueryContext(ctx,
-		fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s IS NOT NULL`, q(column), q(table), q(column)))
+	query := fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s IS NOT NULL`, q(column), q(table), q(column))
+	var qargs []any
+	if filter != "" {
+		query = fmt.Sprintf(`%s AND (%s)`, query, filter)
+		qargs = args
+	}
+
+	rows, err := tx.QueryContext(ctx, query, qargs...)
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("%w: filter error: %w", ErrInvalid, err)
 	}
 	defer rows.Close()
+
+	threshold := math.Inf(-1)
+	if minScore != nil {
+		threshold = *minScore
+	}
 
 	type hit struct {
 		id    int64
@@ -62,7 +86,11 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 		if err != nil || len(stored) != len(vec) {
 			continue
 		}
-		hits = append(hits, hit{id: id, score: cosine(vec, stored)})
+		score := cosine(vec, stored)
+		if score < threshold {
+			continue
+		}
+		hits = append(hits, hit{id: id, score: score})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, false, err

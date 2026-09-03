@@ -189,6 +189,18 @@ func TestInferCreateInsertRoundTrip(t *testing.T) {
 	}
 }
 
+func TestInferCreateAcceptsSanitizedNames(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	samples := []map[string]any{
+		{"1st": "one", "my-field": "two", "ID": "three", "created_at": "four", "Name": "Alice", "name": "Bob"},
+	}
+	fields := schema.InferFields(samples)
+	if _, err := st.CreateTable(ctx, "test", "sanitized", fields); err != nil {
+		t.Fatalf("create from sanitized inferred schema: %v", err)
+	}
+}
+
 func TestJSONFieldStringScalarsAreValidJSON(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
