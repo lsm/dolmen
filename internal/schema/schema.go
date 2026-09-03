@@ -202,7 +202,7 @@ func ReservedTableNames() []string {
 // cleanName transforms an arbitrary map key into a valid Dolmen field
 // identifier. It lowercases, replaces non-identifier characters with
 // underscores, ensures the result starts with a letter, and rewrites
-// reserved names by appending an underscore.
+// reserved names and SQLite/SQL keywords by appending an underscore.
 func cleanName(raw string) string {
 	var runes []rune
 	for _, r := range strings.ToLower(raw) {
@@ -231,7 +231,7 @@ func cleanName(raw string) string {
 		}
 	}
 
-	if reserved[string(runes)] {
+	if forbidden[string(runes)] {
 		if len(runes) < 64 {
 			runes = append(runes, '_')
 		} else {
@@ -536,10 +536,14 @@ func InferSchema(samples []map[string]any) Inference {
 				fmt.Sprintf("keys %s are variants that collapse to %q; they were merged into field %q", quotedList(g.raws), final, final))
 		} else if g.raws[0] != final {
 			raw := g.raws[0]
-			if reserved[strings.ToLower(raw)] {
+			switch {
+			case reserved[strings.ToLower(raw)]:
 				result.Warnings = append(result.Warnings,
 					fmt.Sprintf("reserved key %q was renamed to %q", raw, final))
-			} else {
+			case sqlKeywords[strings.ToLower(raw)]:
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("SQL keyword key %q was renamed to %q", raw, final))
+			default:
 				result.Warnings = append(result.Warnings,
 					fmt.Sprintf("key %q was sanitized to %q", raw, final))
 			}

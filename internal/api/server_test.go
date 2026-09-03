@@ -69,7 +69,7 @@ func TestInferSchemaEndpoint(t *testing.T) {
 
 	code, res := post(t, srv.URL, "infer_schema", map[string]any{
 		"samples": []map[string]any{
-			{"title": "bug", "score": 3.5, "ok": true, "when": "2026-09-01T10:00:00Z", "detail": long, "tags": []any{"a"}},
+			{"title": "bug", "score": 3.5, "ok": true, "at_time": "2026-09-01T10:00:00Z", "detail": long, "tags": []any{"a"}},
 		},
 	})
 	if code != 200 {
@@ -83,7 +83,7 @@ func TestInferSchemaEndpoint(t *testing.T) {
 	}
 	if byName["score"]["type"] != "number" ||
 		byName["ok"]["type"] != "boolean" ||
-		byName["when"]["type"] != "timestamp" ||
+		byName["at_time"]["type"] != "timestamp" ||
 		byName["tags"]["type"] != "json" {
 		t.Fatalf("inferred types wrong: %v", byName)
 	}
