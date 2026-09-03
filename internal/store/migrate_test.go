@@ -76,7 +76,7 @@ func TestMigrateVectorizeBackfill(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"hello world"})
-	rows, _, err := st.SearchVector(ctx, "test", "plain", "", qv[0], "fake-space", 1, false)
+	rows, _, err := st.SearchVector(ctx, "test", "plain", "", qv[0], "fake-space", 1, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search after backfill: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestMigrateVectorizeSwitch(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"delta content here"})
-	rows, _, err := st.SearchVector(ctx, "test", "switch", "", qv[0], "fake-space", 2, false)
+	rows, _, err := st.SearchVector(ctx, "test", "switch", "", qv[0], "fake-space", 2, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search after switch: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestDropAndReAddVectorizeField(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"fresh row"})
-	rows, _, err := st.SearchVector(ctx, "test", "recyc", "", qv[0], "fake-space", 5, false)
+	rows, _, err := st.SearchVector(ctx, "test", "recyc", "", qv[0], "fake-space", 5, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestEmbedModelMismatchGuard(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"hello"})
-	if _, _, err := st.SearchVector(ctx, "test", "mm", "", qv[0], "other-space", 5, false); err == nil {
+	if _, _, err := st.SearchVector(ctx, "test", "mm", "", qv[0], "other-space", 5, false, "", nil, nil); err == nil {
 		t.Fatal("expected search with changed model to be rejected")
 	}
 
@@ -247,7 +247,7 @@ func TestChunkedVectorizeBackfill(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	qv, _ := fakeEmbed(ctx, []string{strings.Repeat("a", 300) + "b"})
-	rows, _, err := st.SearchVector(ctx, "test", "chunky", "", qv[0], "fake-space", 1, false)
+	rows, _, err := st.SearchVector(ctx, "test", "chunky", "", qv[0], "fake-space", 1, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestUnrelatedMigrationPreservesEmbedDim(t *testing.T) {
 	if err != nil || sc.EmbedDim != 8 {
 		t.Fatalf("unrelated migration must preserve embed_dim, got %+v err=%v", sc, err)
 	}
-	if _, _, err := st.SearchVector(ctx, "test", "dimkeep", "", []float32{1, 0, 0, 0}, "", 5, false); err == nil {
+	if _, _, err := st.SearchVector(ctx, "test", "dimkeep", "", []float32{1, 0, 0, 0}, "", 5, false, "", nil, nil); err == nil {
 		t.Fatal("dim guard must survive unrelated migrations")
 	}
 }
@@ -313,7 +313,7 @@ func TestNoOpVectorizeMigrationSkipsReembed(t *testing.T) {
 		t.Fatalf("no-op migration re-embedded: %d -> %d", before, calls)
 	}
 	qv, _ := fakeEmbed(context.Background(), []string{"hello world"})
-	rows, _, err := st.SearchVector(context.Background(), "test", "noop", "", qv[0], "fake-space", 1, false)
+	rows, _, err := st.SearchVector(context.Background(), "test", "noop", "", qv[0], "fake-space", 1, false, "", nil, nil)
 	if err != nil || len(rows) != 1 || rows[0]["s"] != "hello world" {
 		t.Fatalf("embeddings must survive no-op migration: %v %v", err, rows)
 	}
@@ -356,7 +356,7 @@ func TestMigrateReDerivesEmbedDimAfterDisable(t *testing.T) {
 		t.Fatalf("expected re-derived embed_dim 4, got %+v err=%v", sc, err)
 	}
 	qv, _ := shortEmbed(ctx, []string{"anything"})
-	if _, _, err := st.SearchVector(ctx, "test", "redim", "", qv[0], "fake-space", 5, false); err != nil {
+	if _, _, err := st.SearchVector(ctx, "test", "redim", "", qv[0], "fake-space", 5, false, "", nil, nil); err != nil {
 		t.Fatalf("text-space search after dim change must work: %v", err)
 	}
 }
@@ -1029,7 +1029,7 @@ func TestPlanEstimatesUsePreMigrationNamesForRenamedVectorField(t *testing.T) {
 		t.Fatalf("apply after rename must address the old column at plan time: %v", err)
 	}
 	qv, _ := fakeEmbed(ctx, []string{"two"})
-	rows, _, err := st.SearchVector(ctx, "test", "renvec", "", qv[0], "fake-space", 5, false)
+	rows, _, err := st.SearchVector(ctx, "test", "renvec", "", qv[0], "fake-space", 5, false, "", nil, nil)
 	if err != nil || len(rows) < 1 || rows[0]["b"] != "two" {
 		t.Fatalf("vectorize after rename must rank the exact text first: %v err=%v", rows, err)
 	}
@@ -1143,7 +1143,7 @@ func TestRenameCycleEstimateTerminates(t *testing.T) {
 		t.Fatalf("apply over a rename cycle: %v", err)
 	}
 	qv, _ := fakeEmbed(ctx, []string{"one"})
-	rows, _, err := st.SearchVector(ctx, "test", "cycle", "", qv[0], "fake-space", 5, false)
+	rows, _, err := st.SearchVector(ctx, "test", "cycle", "", qv[0], "fake-space", 5, false, "", nil, nil)
 	if err != nil || len(rows) < 1 || rows[0]["a"] != "one" {
 		t.Fatalf("vectorize after rename cycle must be searchable: %v err=%v", rows, err)
 	}
@@ -1178,7 +1178,7 @@ func TestVacatedNameReuseEstimateTracksFieldIdentity(t *testing.T) {
 		t.Fatalf("apply: %v", err)
 	}
 	qv, _ := fakeEmbed(ctx, []string{"two"})
-	rows, _, err := st.SearchVector(ctx, "test", "vacate", "", qv[0], "fake-space", 5, false)
+	rows, _, err := st.SearchVector(ctx, "test", "vacate", "", qv[0], "fake-space", 5, false, "", nil, nil)
 	if err != nil || len(rows) < 1 || rows[0]["b"] != "two" {
 		t.Fatalf("vector search must hit the renamed column's values: %v err=%v", rows, err)
 	}
