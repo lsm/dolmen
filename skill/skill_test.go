@@ -116,17 +116,21 @@ func TestMCPInstructionsContainsSkillsURL(t *testing.T) {
 }
 
 func TestETagIsVersionDerivedAndStable(t *testing.T) {
-	etag := ETag("dolmen", "v0.2.0")
+	body := []byte("skill body")
+	etag := ETag("dolmen", "v0.2.0", body)
 	if etag == "" || etag == `W/""` {
 		t.Fatalf("ETag must not be empty")
 	}
-	if etag != ETag("dolmen", "v0.2.0") {
+	if etag != ETag("dolmen", "v0.2.0", body) {
 		t.Fatal("ETag must be deterministic")
 	}
-	if ETag("dolmen", "v0.2.0") == ETag("dolmen-admin", "v0.2.0") {
+	if ETag("dolmen", "v0.2.0", body) == ETag("dolmen-admin", "v0.2.0", body) {
 		t.Fatal("ETag must differ by resource name")
 	}
-	if ETag("dolmen", "v0.2.0") == ETag("dolmen", "v0.3.0") {
+	if ETag("dolmen", "v0.2.0", body) == ETag("dolmen", "v0.3.0", body) {
 		t.Fatal("ETag must differ by version")
+	}
+	if ETag("dolmen", "v0.2.0", body) == ETag("dolmen", "v0.2.0", []byte("different")) {
+		t.Fatal("ETag must differ by body")
 	}
 }

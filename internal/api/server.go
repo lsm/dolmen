@@ -490,7 +490,7 @@ func (s *Server) handleSkill(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveSkillBytes(w http.ResponseWriter, r *http.Request, body []byte, name, contentType string) {
-	etag := skill.ETag(name, version.Version)
+	etag := skill.ETag(name, version.Version, body)
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Content-Type", contentType)
 	if etagMatch(r, etag) {

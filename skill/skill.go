@@ -143,10 +143,14 @@ func MCPInstructions(ctx Context) string {
 	return s
 }
 
-// ETag returns a version-derived strong ETag for a named resource.
-func ETag(name, version string) string {
-	h := sha256.Sum256([]byte(version + "\n" + name))
-	return "\"" + hex.EncodeToString(h[:16]) + "\""
+// ETag returns a strong ETag for a named resource. It is derived from the
+// version and the rendered body so that configuration changes (base URL,
+// namespace hint) as well as version upgrades invalidate cached responses.
+func ETag(name, version string, body []byte) string {
+	h := sha256.New()
+	_, _ = h.Write([]byte(version + "\n" + name + "\n"))
+	_, _ = h.Write(body)
+	return "\"" + hex.EncodeToString(h.Sum(nil)[:16]) + "\""
 }
 
 // BaseURLFor resolves the public base URL from the configured value, falling

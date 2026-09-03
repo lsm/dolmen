@@ -32,24 +32,28 @@ func get(t *testing.T, base, path string, headers map[string]string) *http.Respo
 func TestSkillsManifest(t *testing.T) {
 	srv := newTestServer(t)
 	res := get(t, srv.URL, "/skills", nil)
-	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("GET /skills: got %d", res.StatusCode)
 	}
 	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
 		t.Fatalf("manifest content-type: got %q", ct)
 	}
+	manifestBody, err := io.ReadAll(res.Body)
+	res.Body.Close()
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
 	etag := res.Header.Get("ETag")
 	if etag == "" {
 		t.Fatal("manifest must carry an ETag")
 	}
-	wantETag := skill.ETag("manifest", version.Version)
+	wantETag := skill.ETag("manifest", version.Version, manifestBody)
 	if etag != wantETag {
 		t.Fatalf("ETag: got %q, want %q", etag, wantETag)
 	}
 
 	var m skill.Manifest
-	if err := json.NewDecoder(res.Body).Decode(&m); err != nil {
+	if err := json.Unmarshal(manifestBody, &m); err != nil {
 		t.Fatalf("decode manifest: %v", err)
 	}
 	if m.Name != "dolmen" {
@@ -63,6 +67,9 @@ func TestSkillsManifest(t *testing.T) {
 	}
 	if m.MCPURL != srv.URL+"/mcp" {
 		t.Fatalf("manifest mcp_url: got %q, want %q", m.MCPURL, srv.URL+"/mcp")
+	}
+	if m.LayerPicker == "" {
+		t.Fatal("manifest layer_picker must not be empty")
 	}
 	if len(m.Skills) != 2 {
 		t.Fatalf("expected 2 skills, got %d", len(m.Skills))
@@ -83,22 +90,23 @@ func TestSkillsManifest(t *testing.T) {
 func TestSkillMarkdown(t *testing.T) {
 	srv := newTestServer(t)
 	res := get(t, srv.URL, "/skills/dolmen", nil)
-	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("GET /skills/dolmen: got %d", res.StatusCode)
 	}
 	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "text/markdown") {
 		t.Fatalf("skill content-type: got %q", ct)
 	}
-	wantETag := skill.ETag("dolmen", version.Version)
+
+	body, err := io.ReadAll(res.Body)
+	res.Body.Close()
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	wantETag := skill.ETag("dolmen", version.Version, body)
 	if got := res.Header.Get("ETag"); got != wantETag {
 		t.Fatalf("skill ETag: got %q, want %q", got, wantETag)
 	}
 
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
-	}
 	if !strings.Contains(string(body), srv.URL+"/mcp") {
 		t.Fatalf("rendered skill missing MCP URL")
 	}
