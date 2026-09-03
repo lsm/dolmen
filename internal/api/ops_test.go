@@ -953,3 +953,65 @@ func TestMigrateDefaultRejectedForWrongTypeOverHTTP(t *testing.T) {
 		t.Fatalf("wrong-type default must 400 with the coercion error, got %d %v", code, res)
 	}
 }
+
+func TestMigrateJSONDefaultAllowsNestedNulls(t *testing.T) {
+	srv := newTestServer(t)
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "jn",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "v", "type": "string"}},
+	})
+	if code != 200 {
+		t.Fatalf("create failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "jn", "table": "t", "records": []map[string]any{{"v": "x"}},
+	})
+	if code != 200 {
+		t.Fatalf("insert failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "jn", "table": "t",
+		"changes": []map[string]any{
+			{"op": "add_field", "field": map[string]any{"name": "meta", "type": "json", "required": true},
+				"default": map[string]any{"deleted_at": nil, "tags": []any{1, nil, "x"}}},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("nested nulls inside a json default are data and must be accepted, got %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "query", map[string]any{
+		"namespace": "jn", "sql": "SELECT meta FROM t",
+	})
+	if code != 200 {
+		t.Fatalf("query failed: %d %v", code, res)
+	}
+	meta := res["data"].(map[string]any)["rows"].([]any)[0].(map[string]any)["meta"].(map[string]any)
+	if meta["deleted_at"] != nil {
+		t.Fatalf("nested null must round-trip as null: %v", meta)
+	}
+	tags, ok := meta["tags"].([]any)
+	if !ok || len(tags) != 3 || tags[1] != nil || tags[0] != float64(1) {
+		t.Fatalf("nulls inside default arrays must round-trip: %v", meta)
+	}
+	// A direct null default is still meaningless (indistinguishable from absent) and stays rejected.
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "jn", "table": "t",
+		"changes": []map[string]any{
+			{"op": "add_field", "field": map[string]any{"name": "other", "type": "json"}, "default": nil},
+		},
+	})
+	if code != 400 {
+		t.Fatalf("a literal null default must still 400, got %d %v", code, res)
+	}
+	// Null control fields elsewhere in the request stay rejected.
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "jn", "table": "t",
+		"changes": []map[string]any{
+			{"op": "add_field", "field": nil},
+		},
+	})
+	if code != 400 {
+		t.Fatalf("null migration-control fields must stay rejected, got %d %v", code, res)
+	}
+}
