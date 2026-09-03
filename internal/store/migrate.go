@@ -344,6 +344,12 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				if err != nil {
 					return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 				}
+				// Non-finite floats survive coercion but cannot render as a
+				// SQL literal (dry-run would pass and apply would fail) and
+				// have no honest backfill meaning — reject them outright.
+				if fv, isFloat := cv.(float64); isFloat && (math.IsNaN(fv) || math.IsInf(fv, 0)) {
+					return nil, invalidf("field %q: default must be a finite number", f.Name)
+				}
 				defVal = cv
 				if f.Required {
 					defSQL, err = sqlLiteral(cv)
@@ -523,7 +529,10 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 	_ = droppedFTSChange
 
 	plan.RebuildFulltext = rebuildFTSNeeded
-	if rebuildFTSNeeded {
+	if rebuildFTSNeeded && len(ftsFields(cur.Fields)) > 0 {
+		// Dropping the last fulltext field tears the index down without
+		// reindexing anything, so rows are only at stake while indexed
+		// fields remain in the prospective schema.
 		n, err := countRows(ctx, db, table)
 		if err != nil {
 			return nil, err

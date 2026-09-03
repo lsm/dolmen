@@ -1288,3 +1288,71 @@ func TestPlanMigrationSeesOneSnapshotUnderConcurrentMigrations(t *testing.T) {
 	}
 	<-done
 }
+
+func TestPlanLastFulltextRemovalReportsZeroReindexRows(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "lastfts", []schema.Field{
+		{Name: "body", Type: schema.Text, Fulltext: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "lastfts", []map[string]any{
+		{"body": "one"}, {"body": "two"}, {"body": "three"},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	plan, err := st.PlanMigration(ctx, "test", "lastfts", []schema.Change{
+		{Op: schema.OpSetFulltext, Name: "body", Value: false},
+	}, testEmbed, 1)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if !plan.RebuildFulltext || plan.FulltextReindexRows != 0 {
+		t.Fatalf("removing the last fulltext field tears the index down without reindexing, got %+v", plan)
+	}
+	// A rebuild that keeps indexed fields reports the rows it will reindex.
+	if _, err := st.Migrate(ctx, "test", "lastfts", []schema.Change{
+		{Op: schema.OpSetFulltext, Name: "body", Value: true},
+	}, testEmbed, 1); err != nil {
+		t.Fatalf("re-enable: %v", err)
+	}
+	plan, err = st.PlanMigration(ctx, "test", "lastfts", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "title", Type: schema.String, Fulltext: true}},
+	}, testEmbed, 2)
+	if err != nil {
+		t.Fatalf("plan add fts: %v", err)
+	}
+	if !plan.RebuildFulltext || plan.FulltextReindexRows != 3 {
+		t.Fatalf("a rebuild over remaining indexed fields must report the row count, got %+v", plan)
+	}
+}
+
+func TestNonFiniteNumericDefaultsRejected(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "finit", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "finit", []map[string]any{{"v": "x"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	for name, val := range map[string]float64{"+Inf": math.Inf(1), "-Inf": math.Inf(-1), "NaN": math.NaN()} {
+		for _, required := range []bool{true, false} {
+			changes := []schema.Change{{Op: schema.OpAddField, Field: &schema.Field{Name: "n", Type: schema.Number, Required: required}, Default: val}}
+			_, err := st.PlanMigration(ctx, "test", "finit", changes, testEmbed, 1)
+			if err == nil || !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "finite") {
+				t.Fatalf("%s default (required=%t) must be rejected at plan time (dry-run must not pass a literal apply cannot render), got %v", name, required, err)
+			}
+			if _, err := st.Migrate(ctx, "test", "finit", changes, testEmbed, 1); err == nil {
+				t.Fatalf("%s default (required=%t) must be rejected at apply time too", name, required)
+			}
+		}
+	}
+	sc, _, err := st.DescribeTable(ctx, "test", "finit")
+	if err != nil || sc.Version != 1 || sc.Field("n") != nil {
+		t.Fatalf("rejected defaults must leave the schema untouched: %+v err=%v", sc, err)
+	}
+}
