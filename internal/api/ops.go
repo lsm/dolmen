@@ -36,6 +36,118 @@ var Ops = map[string]OpDef{
 			return map[string]any{"tables": tables}, nil
 		},
 	},
+	"list_namespaces": {
+		Description: "List the namespaces on this server (one isolated SQLite file per namespace). " +
+			"Use it to see which namespaces already exist before creating or reusing one.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{},
+		},
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req struct{}
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			nss, err := s.st.ListNamespaces()
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			if nss == nil {
+				nss = []string{}
+			}
+			return map[string]any{"namespaces": nss}, nil
+		},
+	},
+	"create_namespace": {
+		Description: "Create an empty namespace. Namespaces are also created implicitly on first use, " +
+			"so this is only needed to reserve a name up front or to fail loudly when the name is taken. " +
+			"Creates no tables — follow with create_table.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{"namespace": nsProp("Namespace to create")},
+			"required":             []string{"namespace"},
+		},
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req nsReq
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			ns := normNS(req.Namespace)
+			if err := s.st.CreateNamespace(ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"namespace": ns}, nil
+		},
+	},
+	"drop_namespace": {
+		Description: "Drop a namespace and every table in it, deleting its SQLite file and WAL sidecars. " +
+			"Irreversible. confirm must repeat the exact namespace name — a guard against dropping the wrong one. " +
+			"In-flight requests on the namespace finish first (or fail); any later use of the same name recreates " +
+			"the namespace empty. The server closes its own connections before deleting, but other processes " +
+			"holding the file open (a second dolmen, a backup tool) are not detected — coordinate drops within one server.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace to drop"),
+				"confirm": map[string]any{
+					"type":        "string",
+					"description": "Safety guard: repeat the exact namespace name here to confirm the irreversible drop",
+					"minLength":   1,
+				},
+			},
+			"required": []string{"namespace", "confirm"},
+		},
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req dropNamespaceReq
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			ns := normNS(req.Namespace)
+			if normNS(req.Confirm) != ns {
+				return nil, badRequest("confirm must repeat the exact namespace name %q to drop it", ns)
+			}
+			if err := s.st.DropNamespace(ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"dropped": ns}, nil
+		},
+	},
+	"drop_table": {
+		Description: "Drop a table: its rows, its full-text index, its schema and migration history, and its " +
+			"idempotency keys. Irreversible. confirm must repeat the exact table name — a guard against dropping " +
+			"the wrong one. A table recreated under the same name starts fresh (version 1, empty, no history).",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace of the table"),
+				"table":     tableProp("Table name"),
+				"confirm": map[string]any{
+					"type":        "string",
+					"description": "Safety guard: repeat the exact table name here to confirm the irreversible drop",
+					"minLength":   1,
+				},
+			},
+			"required": []string{"namespace", "table", "confirm"},
+		},
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req dropTableReq
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			table := normTable(req.Table)
+			if normTable(req.Confirm) != table {
+				return nil, badRequest("confirm must repeat the exact table name %q to drop it", table)
+			}
+			if err := s.st.DropTable(ctx, normNS(req.Namespace), table); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"dropped": table}, nil
+		},
+	},
 	"describe_table": {
 		Description: "Get the schema, version, and row count of a table.",
 		InputSchema: map[string]any{
@@ -698,6 +810,17 @@ type insertReq struct {
 	Table          string           `json:"table"`
 	Records        []map[string]any `json:"records"`
 	IdempotencyKey json.RawMessage  `json:"idempotency_key"`
+}
+
+type dropNamespaceReq struct {
+	Namespace string `json:"namespace"`
+	Confirm   string `json:"confirm"`
+}
+
+type dropTableReq struct {
+	Namespace string `json:"namespace"`
+	Table     string `json:"table"`
+	Confirm   string `json:"confirm"`
 }
 
 type upsertReq struct {

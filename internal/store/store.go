@@ -70,15 +70,15 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) ns(name string) (*nsDB, error) {
-	if !nsRe.MatchString(name) {
-		return nil, invalidf("invalid namespace %q: must match ^[a-z0-9][a-z0-9_-]{0,63}$", name)
+	if err := validateNS(name); err != nil {
+		return nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if n, ok := s.nss[name]; ok {
 		return n, nil
 	}
-	path := filepath.Join(s.dir, name+".db")
+	path := s.nsPath(name)
 	rw, err := sql.Open("sqlite", dsn(path, false))
 	if err != nil {
 		return nil, err
