@@ -25,8 +25,89 @@ func normalizeArg(v any) any {
 
 var queryStartRe = regexp.MustCompile(`(?i)\A\s*(select|with)\b`)
 
+// stripUnterminatedBlockComment removes a trailing /* block comment that is
+// not closed before end-of-input. SQLite allows unterminated block comments to
+// run to EOF, so appending pagination after one would place the LIMIT clause
+// inside the comment. We strip the comment (which does not affect query
+// semantics) and trim trailing whitespace so the pagination clause is appended
+// to a complete statement. Strings and identifiers are skipped so a literal
+// `/*` inside a quoted value is not treated as a comment.
+func stripUnterminatedBlockComment(s string) string {
+	var (
+		inString, inLineComment, inBlockComment bool
+		inIdent                                 bool
+		identClose                              byte
+		blockStart                              int
+	)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			if c == '\'' {
+				if i+1 < len(s) && s[i+1] == '\'' {
+					i++
+					continue
+				}
+				inString = false
+			}
+			continue
+		}
+		if inIdent {
+			if c == identClose {
+				if i+1 < len(s) && s[i+1] == identClose {
+					i++
+					continue
+				}
+				inIdent = false
+			}
+			continue
+		}
+		if inLineComment {
+			if c == '\n' {
+				inLineComment = false
+			}
+			continue
+		}
+		if inBlockComment {
+			if c == '*' && i+1 < len(s) && s[i+1] == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		}
+		switch c {
+		case '\'':
+			inString = true
+		case '"':
+			inIdent = true
+			identClose = '"'
+		case '`':
+			inIdent = true
+			identClose = '`'
+		case '[':
+			inIdent = true
+			identClose = ']'
+		case '-':
+			if i+1 < len(s) && s[i+1] == '-' {
+				inLineComment = true
+				i++
+			}
+		case '/':
+			if i+1 < len(s) && s[i+1] == '*' {
+				inBlockComment = true
+				blockStart = i
+				i++
+			}
+		}
+	}
+	if inBlockComment {
+		return strings.TrimRight(s[:blockStart], " \t\r\n")
+	}
+	return s
+}
+
 func (s *Store) Query(ctx context.Context, nsName, query string, args []any, offset, limit int) ([]map[string]any, bool, error) {
 	trimmed := strings.TrimRight(strings.TrimSpace(query), ";")
+	trimmed = stripUnterminatedBlockComment(trimmed)
 	if !queryStartRe.MatchString(strings.TrimSpace(query)) {
 		return nil, false, invalidf("only read-only SELECT/WITH statements are allowed")
 	}

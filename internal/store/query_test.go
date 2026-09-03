@@ -571,3 +571,27 @@ func TestQueryValuesStatement(t *testing.T) {
 		t.Fatalf("page 1 should return 1 row with truncated=false: %d %v", len(rows), truncated)
 	}
 }
+
+func TestQueryUnterminatedBlockComment(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	rows, truncated, err := st.Query(ctx, "test", "SELECT 1 AS n /* unterminated block comment", nil, 0, 1)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 1 || truncated || rows[0]["n"].(int64) != 1 {
+		t.Fatalf("unterminated block comment must not break pagination: %v %v", rows, truncated)
+	}
+}
+
+func TestQueryBlockCommentInsideQuotedIdentifier(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	rows, _, err := st.Query(ctx, "test", "SELECT 42 AS \"/*literal\"", nil, 0, 1)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 1 || rows[0]["/*literal"].(int64) != 42 {
+		t.Fatalf("/* inside a quoted identifier must not be treated as a comment: %v", rows)
+	}
+}
