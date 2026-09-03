@@ -51,6 +51,10 @@ type Change struct {
 	To    string `json:"to,omitempty"`
 	Name  string `json:"name,omitempty"`
 	Value bool   `json:"value,omitempty"`
+	// Default is add_field's backfill value for existing rows: added required
+	// fields need one when the table has rows. Coerced by the field's type and
+	// applied as the column's literal default, so old rows read it immediately.
+	Default any `json:"default,omitempty"`
 }
 
 const (

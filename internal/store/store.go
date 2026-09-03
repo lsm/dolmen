@@ -249,6 +249,47 @@ func (s *Store) DescribeTable(ctx context.Context, nsName, table string) (*schem
 	return sc, count, nil
 }
 
+// Migration is one recorded schema transition from _dolmen_migrations.
+type Migration struct {
+	ID          int64           `json:"id"`
+	FromVersion int             `json:"from_version"`
+	ToVersion   int             `json:"to_version"`
+	Changes     []schema.Change `json:"changes"`
+	At          string          `json:"at"`
+}
+
+// ListMigrations returns a table's migration history, newest first, with each
+// transition's recorded changes decoded. Creating the table is version 1 and is
+// not part of the log, so the newest entry's to_version is the current version.
+func (s *Store) ListMigrations(ctx context.Context, nsName, table string) ([]Migration, error) {
+	n, err := s.ns(nsName)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := loadSchema(ctx, n.ro, nsName, table); err != nil {
+		return nil, err
+	}
+	rows, err := n.ro.QueryContext(ctx,
+		`SELECT id, from_version, to_version, changes_json, at FROM _dolmen_migrations WHERE table_name = ? ORDER BY id DESC`, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Migration{}
+	for rows.Next() {
+		var m Migration
+		var cj string
+		if err := rows.Scan(&m.ID, &m.FromVersion, &m.ToVersion, &cj, &m.At); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(cj), &m.Changes); err != nil {
+			return nil, fmt.Errorf("corrupt migration record %d for %s.%s: %w", m.ID, nsName, table, err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 const MaxFieldsPerTable = 100
 
 func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []schema.Field) (*schema.TableSchema, error) {

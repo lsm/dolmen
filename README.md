@@ -83,7 +83,7 @@ curl -s localhost:8790/v1/update -H 'Content-Type: application/json' -d '{
 claude mcp add --transport http dolmen http://127.0.0.1:8790/mcp
 ```
 
-The MCP server exposes the same thirteen operations as tools (`tools/list` shows them with full schemas).
+The MCP server exposes the same fourteen operations as tools (`tools/list` shows them with full schemas).
 
 ## Tools
 
@@ -101,14 +101,15 @@ The MCP server exposes the same thirteen operations as tools (`tools/list` shows
 | `delete` | WHERE-filtered delete, cascades to search indexes |
 | `update` | WHERE-filtered field update; reindexes full-text rows and re-embeds changed vectorized fields |
 | `upsert` | Update matching rows, or insert one record when the filter matches nothing |
-| `migrate` | `add_field`, `rename_field`, `drop_field`, `set_fulltext`, `set_vectorize`; versioned + logged |
+| `migrate` | `add_field` (optional `default` backfills existing rows, so required fields can land on populated tables), `rename_field`, `drop_field`, `set_fulltext`, `set_vectorize`; `expected_version` asserts the schema being migrated (required for rename/drop, conflicts surface as 409), `dry_run` previews the plan without side effects; versioned + logged |
+| `list_migrations` | A table's migration history, newest first, with the exact recorded changes |
 
 ## Model
 
 - **Namespace = one SQLite file** (`data/<ns>.db`, WAL). Isolation is physical; drop a namespace by
   shutting the server down cleanly first, then deleting the file (the server caches open connections
   and WAL sidecars, so deleting under a live server is unreliable). A small registry inside each file
-  holds table schemas, versions, and a migration log.
+  holds table schemas, versions, and a migration log (surfaced by `list_migrations`).
 - **Full-text** via SQLite FTS5 shadow tables, maintained on insert/update/delete/migrate.
 - **Idempotent writes** for agent retries: `insert` accepts an `idempotency_key` (client-chosen,
   durably recorded with its ids in a side table, so a retry — even after a restart — returns the

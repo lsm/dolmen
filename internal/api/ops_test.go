@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -775,5 +777,179 @@ func TestTypedReadContractHTTP(t *testing.T) {
 		if _, ok := def.InputSchema["properties"].(map[string]any)["include_hidden"]; !ok {
 			t.Fatalf("%s must declare include_hidden", name)
 		}
+	}
+}
+
+func TestMigrateDryRunAndVersionContractOverHTTP(t *testing.T) {
+	srv := newTestServer(t)
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "mg",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "v", "type": "string"}},
+	})
+	if code != 200 {
+		t.Fatalf("create failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "mg", "table": "t",
+		"records": []map[string]any{{"v": "one"}, {"v": "two"}},
+	})
+	if code != 200 {
+		t.Fatalf("insert failed: %d %v", code, res)
+	}
+
+	// Destructive changes without expected_version are rejected up front.
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "mg", "table": "t",
+		"changes": []map[string]any{{"op": "drop_field", "name": "v"}},
+	})
+	if code != 400 || !strings.Contains(fmt.Sprint(res["error"]), "expected_version") {
+		t.Fatalf("destructive change without expected_version must 400 naming expected_version, got %d %v", code, res)
+	}
+
+	// Dry-run previews without applying.
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "mg", "table": "t", "expected_version": 1, "dry_run": true,
+		"changes": []map[string]any{
+			{"op": "add_field", "field": map[string]any{"name": "status", "type": "string", "required": true}, "default": "active"},
+			{"op": "drop_field", "name": "v"},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("dry_run failed: %d %v", code, res)
+	}
+	data := res["data"].(map[string]any)
+	if data["dry_run"] != true {
+		t.Fatalf("response must be marked dry_run: %v", data)
+	}
+	plan := data["plan"].(map[string]any)
+	if plan["dry_run"] != true || plan["from_version"].(float64) != 1 || plan["to_version"].(float64) != 2 {
+		t.Fatalf("plan must carry the prospective version: %v", plan)
+	}
+	if plan["backfill_rows"].(float64) != 2 {
+		t.Fatalf("backfill_rows must report the populated rows: %v", plan["backfill_rows"])
+	}
+	if len(plan["operations"].([]any)) != 2 || len(plan["destructive"].([]any)) != 1 {
+		t.Fatalf("plan must enumerate operations and destructive changes: %v", plan)
+	}
+
+	code, res = post(t, srv.URL, "describe_table", map[string]any{"namespace": "mg", "table": "t"})
+	if code != 200 {
+		t.Fatalf("describe failed: %d %v", code, res)
+	}
+	table := res["data"].(map[string]any)["table"].(map[string]any)
+	if table["version"].(float64) != 1 {
+		t.Fatalf("dry-run must not bump the version, got %v", table["version"])
+	}
+
+	// A stale expected_version conflicts (409), for apply and dry-run alike.
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "mg", "table": "t", "expected_version": 9,
+		"changes": []map[string]any{{"op": "add_field", "field": map[string]any{"name": "status", "type": "string"}}},
+	})
+	if code != 409 || !strings.Contains(fmt.Sprint(res["error"]), "version conflict") {
+		t.Fatalf("stale expected_version must 409 with a version conflict, got %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "mg", "table": "t", "expected_version": 9, "dry_run": true,
+		"changes": []map[string]any{{"op": "add_field", "field": map[string]any{"name": "status", "type": "string"}}},
+	})
+	if code != 409 {
+		t.Fatalf("dry-run with stale expected_version must 409 too, got %d %v", code, res)
+	}
+
+	// The apply lands and is recorded in history.
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "mg", "table": "t", "expected_version": 1,
+		"changes": []map[string]any{
+			{"op": "add_field", "field": map[string]any{"name": "status", "type": "string", "required": true}, "default": "active"},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("apply failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "query", map[string]any{
+		"namespace": "mg", "sql": "SELECT status FROM t ORDER BY id",
+	})
+	if code != 200 {
+		t.Fatalf("query failed: %d %v", code, res)
+	}
+	rows := res["data"].(map[string]any)["rows"].([]any)
+	if len(rows) != 2 || rows[0].(map[string]any)["status"] != "active" {
+		t.Fatalf("backfilled rows must read the default: %v", rows)
+	}
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "mg", "table": "t", "records": []map[string]any{{"v": "x"}},
+	})
+	if code != 400 {
+		t.Fatalf("insert omitting a required field (with default) must still 400, got %d %v", code, res)
+	}
+}
+
+func TestListMigrationsOverHTTP(t *testing.T) {
+	srv := newTestServer(t)
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "hist",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "v", "type": "string"}},
+	})
+	if code != 200 {
+		t.Fatalf("create failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "hist", "table": "t", "expected_version": 1,
+		"changes": []map[string]any{
+			{"op": "add_field", "field": map[string]any{"name": "rank", "type": "number", "required": true}, "default": 7},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("migrate failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "list_migrations", map[string]any{"namespace": "hist", "table": "t"})
+	if code != 200 {
+		t.Fatalf("list_migrations failed: %d %v", code, res)
+	}
+	ms := res["data"].(map[string]any)["migrations"].([]any)
+	if len(ms) != 1 {
+		t.Fatalf("expected one recorded migration, got %v", ms)
+	}
+	m := ms[0].(map[string]any)
+	if m["from_version"].(float64) != 1 || m["to_version"].(float64) != 2 || m["at"] == "" {
+		t.Fatalf("migration entry must carry the transition and timestamp: %v", m)
+	}
+	ch := m["changes"].([]any)[0].(map[string]any)
+	if ch["op"] != "add_field" || ch["default"].(float64) != 7 {
+		t.Fatalf("history must record the exact change including its default: %v", ch)
+	}
+	code, res = post(t, srv.URL, "list_migrations", map[string]any{"namespace": "hist", "table": "nope"})
+	if code != 404 {
+		t.Fatalf("unknown table must 404, got %d %v", code, res)
+	}
+}
+
+func TestMigrateDefaultRejectedForWrongTypeOverHTTP(t *testing.T) {
+	srv := newTestServer(t)
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "co",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "v", "type": "string"}},
+	})
+	if code != 200 {
+		t.Fatalf("create failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "co", "table": "t", "records": []map[string]any{{"v": "x"}},
+	})
+	if code != 200 {
+		t.Fatalf("insert failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "co", "table": "t",
+		"changes": []map[string]any{
+			{"op": "add_field", "field": map[string]any{"name": "n", "type": "number", "required": true}, "default": "not a number"},
+		},
+	})
+	if code != 400 || !strings.Contains(fmt.Sprint(res["error"]), "expected a number") {
+		t.Fatalf("wrong-type default must 400 with the coercion error, got %d %v", code, res)
 	}
 }

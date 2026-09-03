@@ -595,7 +595,14 @@ var Ops = map[string]OpDef{
 	"migrate": {
 		Description: "Evolve a table schema: add_field, rename_field, drop_field, set_fulltext, set_vectorize. " +
 			"Bumps the schema version and records the change. Adding fulltext rebuilds the search index; " +
-			"enabling vectorize backfills embeddings for existing rows.",
+			"enabling vectorize backfills embeddings for existing rows. add_field accepts a default that is " +
+			"coerced to the field's type and backfilled into existing rows (required for adding a required " +
+			"field to a populated table; the insert contract is unchanged — required fields must still be " +
+			"present in each record). Pass expected_version (from describe_table) to assert the schema the " +
+			"changes were planned against: a mismatch fails with a conflict instead of running a stale plan " +
+			"(required for the destructive rename_field and drop_field). Pass dry_run=true to validate and " +
+			"preview — prospective schema and version, destructive changes, backfill rows, index rebuild, " +
+			"and embedding workload — with nothing applied and no provider calls.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -620,6 +627,9 @@ var Ops = map[string]OpDef{
 							"to":    fieldNameProp("New name (rename_field)"),
 							"name":  fieldNameProp("Field name (drop_field, set_fulltext, set_vectorize)"),
 							"value": prop("boolean", "Flag value (set_fulltext, set_vectorize)"),
+							"default": map[string]any{
+								"description": "Backfill value for existing rows (add_field only); coerced to the field's type — a string for string/text/timestamp/json, number, boolean, or a number array of the field's dim for vector",
+							},
 						},
 						"required": []string{"op"},
 						"allOf": []any{
@@ -646,6 +656,15 @@ var Ops = map[string]OpDef{
 							map[string]any{
 								"if": map[string]any{
 									"properties": map[string]any{
+										"op": map[string]any{"not": map[string]any{"const": "add_field"}},
+									},
+									"required": []string{"op"},
+								},
+								"then": map[string]any{"not": map[string]any{"required": []string{"default"}}},
+							},
+							map[string]any{
+								"if": map[string]any{
+									"properties": map[string]any{
 										"op":    map[string]any{"const": "set_fulltext"},
 										"value": map[string]any{"const": true},
 									},
@@ -660,6 +679,12 @@ var Ops = map[string]OpDef{
 						},
 					},
 				},
+				"expected_version": map[string]any{
+					"type":        "integer",
+					"description": "Schema version the changes were planned against (from describe_table); the migration aborts with a conflict if the table has moved past it. Required for rename_field and drop_field.",
+					"minimum":     1,
+				},
+				"dry_run": prop("boolean", "Validate and preview the migration without applying anything (no writes, no embedding calls)"),
 			},
 			"required": []string{"namespace", "table", "changes"},
 		},
@@ -669,9 +694,11 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			var shadow struct {
-				Namespace string           `json:"namespace"`
-				Table     string           `json:"table"`
-				Changes   []map[string]any `json:"changes"`
+				Namespace       string           `json:"namespace"`
+				Table           string           `json:"table"`
+				Changes         []map[string]any `json:"changes"`
+				ExpectedVersion *int             `json:"expected_version"`
+				DryRun          bool             `json:"dry_run"`
 			}
 			if err := decodeData(body, &shadow); err != nil {
 				return nil, err
@@ -684,11 +711,50 @@ var Ops = map[string]OpDef{
 					}
 				}
 			}
-			sc, err := s.st.Migrate(ctx, normNS(req.Namespace), normTable(req.Table), req.Changes, s.embedder())
+			ver := 0
+			if req.ExpectedVersion != nil {
+				if *req.ExpectedVersion < 1 {
+					return nil, badRequest("expected_version must be >= 1")
+				}
+				ver = *req.ExpectedVersion
+			}
+			if req.DryRun {
+				plan, err := s.st.PlanMigration(ctx, normNS(req.Namespace), normTable(req.Table), req.Changes, s.embedder(), ver)
+				if err != nil {
+					return nil, wrapStoreErr(err)
+				}
+				return map[string]any{"dry_run": true, "plan": plan}, nil
+			}
+			sc, err := s.st.Migrate(ctx, normNS(req.Namespace), normTable(req.Table), req.Changes, s.embedder(), ver)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			return map[string]any{"table": sc}, nil
+		},
+	},
+	"list_migrations": {
+		Description: "List a table's migration history, newest first: version transitions with the exact " +
+			"recorded changes and timestamps. Read-only audit of schema evolution; the newest entry's " +
+			"to_version is the current schema version (creating the table is version 1 and predates the log).",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace of the table"),
+				"table":     tableProp("Table name"),
+			},
+			"required": []string{"namespace", "table"},
+		},
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req tableReq
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			ms, err := s.st.ListMigrations(ctx, normNS(req.Namespace), normTable(req.Table))
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"migrations": ms}, nil
 		},
 	},
 }
@@ -747,7 +813,9 @@ type updateReq struct {
 }
 
 type migrateReq struct {
-	Namespace string          `json:"namespace"`
-	Table     string          `json:"table"`
-	Changes   []schema.Change `json:"changes"`
+	Namespace       string          `json:"namespace"`
+	Table           string          `json:"table"`
+	Changes         []schema.Change `json:"changes"`
+	ExpectedVersion *int            `json:"expected_version"`
+	DryRun          bool            `json:"dry_run"`
 }

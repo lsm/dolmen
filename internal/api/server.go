@@ -58,6 +58,10 @@ func wrapStoreErr(err error) error {
 	if errors.Is(err, store.ErrNotFound) {
 		return &Error{Status: http.StatusNotFound, Message: err.Error()}
 	}
+	var conflict *store.VersionConflictError
+	if errors.As(err, &conflict) {
+		return &Error{Status: http.StatusConflict, Message: err.Error()}
+	}
 	if errors.Is(err, store.ErrInvalid) {
 		return &Error{Status: http.StatusBadRequest, Message: err.Error()}
 	}
