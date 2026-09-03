@@ -54,6 +54,12 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
   reference it in the SQL (outside string literals) or pass `include_hidden: true` to a search when
   you really need it.
 - Vector search results carry `_score` (cosine similarity; higher is closer).
+- `search_vector` has two query forms with different reach: `text` (server embeds it) searches only
+  the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`; `vector`
+  (raw numbers) searches any `vector` column, and only you know which embedding space produced both
+  the stored and the query vectors, so keep them from the same model.
+- `skipped_vectors` in a `search_vector` response counts stored vectors that were corrupt or
+  dimension-mismatched and could not be scored; nonzero means those rows are missing from results.
 
 ## Typical flows
 

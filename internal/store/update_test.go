@@ -172,12 +172,12 @@ func TestUpdateReEmbedsVectorizedField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
-	hits, _, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10, false)
+	hits, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10, false)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
-	if len(hits) != 3 || hits[0]["id"].(int64) != ids[0] {
-		t.Fatalf("re-embedded row must be the top hit for its new text, got %v", hits)
+	if len(hits.Rows) != 3 || hits.Rows[0]["id"].(int64) != ids[0] {
+		t.Fatalf("re-embedded row must be the top hit for its new text, got %v", hits.Rows)
 	}
 }
 
@@ -198,17 +198,17 @@ func TestUpdateClearsEmbeddingWhenVectorizedFieldCleared(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
-	hits, _, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10, false)
+	vres, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10, false)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
-	if len(hits) != 1 {
-		t.Fatalf("cleared rows must lose their embeddings, got %d hits: %v", len(hits), hits)
+	if len(vres.Rows) != 1 {
+		t.Fatalf("cleared rows must lose their embeddings, got %d hits: %v", len(vres.Rows), vres.Rows)
 	}
 
 	// body is a fulltext field: cleared text must leave the index, and the
 	// untouched row (done = 1) must keep matching its own body text
-	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "memory", 10, false)
+	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "memory", 10, false)
 	if err != nil {
 		t.Fatalf("fts cleared: %v", err)
 	}
@@ -348,12 +348,12 @@ func TestUpsertInsertsWhenNoMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
-	vhits, _, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10, false)
+	vhits, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10, false)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
-	if len(vhits) != 4 || vhits[0]["id"].(int64) != res.ID {
-		t.Fatalf("inserted row must be embedded and rank first for its text, got %v", vhits)
+	if len(vhits.Rows) != 4 || vhits.Rows[0]["id"].(int64) != res.ID {
+		t.Fatalf("inserted row must be embedded and rank first for its text, got %v", vhits.Rows)
 	}
 }
 

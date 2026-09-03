@@ -97,7 +97,7 @@ The MCP server exposes the same thirteen operations as tools (`tools/list` shows
 | `upsert_by_key` | Insert-or-update keyed by natural field(s) (`on`); converges instead of duplicating on retry |
 | `query` | Read-only SQL (SELECT/WITH), parameter binding via `args`, typed results |
 | `search_fulltext` | FTS5 MATCH over `fulltext` fields, relevance-ordered, typed results |
-| `search_vector` | Cosine KNN over embeddings; pass `text` (server embeds) or `vector`; results carry `_score` |
+| `search_vector` | Cosine KNN; `text` (server embeds; searches only the vectorize `_embedding` space) or raw `vector` (any vector column, caller owns the space); results carry `_score` and `skipped_vectors` |
 | `delete` | WHERE-filtered delete, cascades to search indexes |
 | `update` | WHERE-filtered field update; reindexes full-text rows and re-embeds changed vectorized fields |
 | `upsert` | Update matching rows, or insert one record when the filter matches nothing |
@@ -117,6 +117,12 @@ The MCP server exposes the same thirteen operations as tools (`tools/list` shows
   when nothing matches.
 - **Vectors** stored as float32 blobs; KNN is a brute-force cosine scan in Go — fine into the low
   millions of rows, zero index infrastructure. (This is the deliberate MVP trade.)
+- **Vector-search spaces** are kept honest: `text` queries are embedded by the active provider and
+  only search the server-managed `vectorize` (`_embedding`) space, whose model identity is pinned
+  per table — a provider change is rejected until the table is re-embedded. Caller-provided `vector`
+  columns are searchable only with a raw `vector` query, because only the caller knows which embedding
+  space produced them. Stored vectors that are corrupt, dimension-mismatched, or non-finite are
+  skipped from scoring and reported as `skipped_vectors`, so a search never silently drops rows.
 - **Read-only SQL** runs on a `mode=ro` connection with a SELECT/WITH allowlist — defense in depth.
 - **Typed reads** across `query`, `search_fulltext`, and `search_vector`: results honor declared field
   types — `boolean` → `true`/`false`, `json` → the decoded value, `vector` → a number array, `number` →
