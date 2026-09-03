@@ -345,6 +345,19 @@ func (s *queryScanner) parsePragmaArgs(schema, rawName string) error {
 	if arg.typ != "string" {
 		return invalidf("pragma argument must be a single string literal")
 	}
+	// Table-valued PRAGMAs accept an optional second literal that selects the
+	// schema (e.g. pragma_table_info('notes', 'main')). It does not change the
+	// table name being inspected.
+	if t, _ := s.peek(); t.val == "," {
+		s.next()
+		schemaArg, err := s.next()
+		if err != nil {
+			return err
+		}
+		if schemaArg.typ != "string" {
+			return invalidf("pragma schema argument must be a string literal")
+		}
+	}
 	if err := s.expect(")"); err != nil {
 		return err
 	}
@@ -988,7 +1001,7 @@ func (s *queryScanner) skipOptionalAlias() error {
 		if err != nil {
 			return err
 		}
-		if t.typ != "ident" {
+		if t.typ != "ident" && t.typ != "string" {
 			return invalidf("expected alias after AS, got %q", t.val)
 		}
 		return nil

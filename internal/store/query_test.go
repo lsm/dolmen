@@ -567,6 +567,7 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		"WITH c AS (VALUES(1) UNION ALL SELECT id FROM notes) SELECT * FROM c",
 		"SELECT * FROM (VALUES (1, 2)) AS t",
 		"SELECT * FROM pragma_table_info('notes')",
+		"SELECT * FROM pragma_table_info('notes', 'main')",
 		"WITH c AS MATERIALIZED (SELECT * FROM notes) SELECT * FROM c",
 		"WITH c AS NOT MATERIALIZED (SELECT * FROM notes) SELECT * FROM c",
 		"SELECT sum(score) OVER win FROM notes WINDOW win AS (ORDER BY id)",
@@ -583,6 +584,8 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		"SELECT * FROM (((notes)))",
 		"SELECT * FROM 'notes'",
 		"SELECT * FROM main.'notes'",
+		"SELECT * FROM notes AS 'n'",
+		"SELECT * FROM (VALUES (1)) AS 'v'",
 	}
 
 	for _, q := range ok {
