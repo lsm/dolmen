@@ -24,12 +24,12 @@ func TestFulltextSearchAndDeleteCascade(t *testing.T) {
 		t.Fatalf("unexpected fts results: %v", rows)
 	}
 
-	deleted, err := st.Delete(ctx, "test", "notes", "done = 1", nil)
+	res, err := st.Delete(ctx, "test", "notes", "done = 1", nil, DeleteOptions{})
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if deleted != 1 {
-		t.Fatalf("expected 1 deleted, got %d", deleted)
+	if res.Deleted != 1 {
+		t.Fatalf("expected 1 deleted, got %d", res.Deleted)
 	}
 
 	rows, _, err = st.SearchFulltext(ctx, "test", "notes", "dolmen", 10, false)
@@ -67,12 +67,12 @@ func TestLargeDeleteUsesNoInParameterLists(t *testing.T) {
 		}
 	}
 
-	deleted, err := st.Delete(ctx, "test", "big", "1=1", nil)
+	res, err := st.Delete(ctx, "test", "big", "1=1", nil, DeleteOptions{Confirm: true})
 	if err != nil {
 		t.Fatalf("large delete: %v", err)
 	}
-	if deleted != 1200 {
-		t.Fatalf("expected 1200 deleted, got %d", deleted)
+	if res.Deleted != 1200 {
+		t.Fatalf("expected 1200 deleted, got %d", res.Deleted)
 	}
 	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM big", nil)
 	if err != nil {
@@ -96,12 +96,12 @@ func TestDeleteFilterEvaluatedOnce(t *testing.T) {
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
 
-	deleted, err := st.Delete(ctx, "test", "notes", "EXISTS (SELECT 1 FROM notes__fts)", nil)
+	res, err := st.Delete(ctx, "test", "notes", "EXISTS (SELECT 1 FROM notes__fts)", nil, DeleteOptions{})
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if deleted != 3 {
-		t.Fatalf("filter must be evaluated once: expected 3 deleted, got %d", deleted)
+	if res.Deleted != 3 {
+		t.Fatalf("filter must be evaluated once: expected 3 deleted, got %d", res.Deleted)
 	}
 	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
 	if err != nil {
@@ -122,7 +122,7 @@ func TestDeleteFilterEvaluatedOnce(t *testing.T) {
 func TestMalformedDeleteFilterIsInvalidRequest(t *testing.T) {
 	st := openStore(t)
 	mustCreateNotes(t, st)
-	_, err := st.Delete(context.Background(), "test", "notes", "id =", nil)
+	_, err := st.Delete(context.Background(), "test", "notes", "id =", nil, DeleteOptions{})
 	if err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected malformed filter to classify as invalid request, got %v", err)
 	}
@@ -139,12 +139,12 @@ func TestDeleteFilterSemicolonInsideQuotesAllowed(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	deleted, err := st.Delete(ctx, "test", "notes", "title = 'a;b'", nil)
+	res, err := st.Delete(ctx, "test", "notes", "title = 'a;b'", nil, DeleteOptions{})
 	if err != nil {
 		t.Fatalf("delete with semicolon in literal: %v", err)
 	}
-	if deleted != 1 {
-		t.Fatalf("expected 1 deleted, got %d", deleted)
+	if res.Deleted != 1 {
+		t.Fatalf("expected 1 deleted, got %d", res.Deleted)
 	}
 	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
 	if err != nil {
@@ -159,7 +159,7 @@ func TestDeleteFilterMultipleStatementsRejected(t *testing.T) {
 	st := openStore(t)
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
-	_, err := st.Delete(context.Background(), "test", "notes", "title = 'a;b'; DROP TABLE notes", nil)
+	_, err := st.Delete(context.Background(), "test", "notes", "title = 'a;b'; DROP TABLE notes", nil, DeleteOptions{})
 	if err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected multi-statement filter to be rejected, got %v", err)
 	}

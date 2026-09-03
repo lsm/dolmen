@@ -576,7 +576,8 @@ var Ops = map[string]OpDef{
 	},
 	"delete": {
 		Description: "Delete rows matching a SQL WHERE expression (e.g. \"status = 'done'\" or \"id IN (3, 7)\"). " +
-			"Rows are also removed from search indexes. The filter is required; pass \"1=1\" to empty the table.",
+			"Rows are also removed from search indexes. Use dry_run to preview the matched count, limit to set a safe threshold, " +
+			"and confirm: true to delete beyond the threshold. Without an explicit limit, deletes beyond " + fmt.Sprintf("%d", store.DefaultDeleteLimit) + " matching rows require confirm: true.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -600,22 +601,34 @@ var Ops = map[string]OpDef{
 						},
 					},
 				},
+				"dry_run": prop("boolean", "If true, only count matching rows and do not delete; returns matched with deleted: 0"),
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Maximum number of matching rows that can be deleted without confirmation; if more rows match, confirm: true is required",
+					"minimum":     1,
+				},
+				"confirm": prop("boolean", "If true, allow the delete to proceed when the number of matching rows exceeds the limit (or the default limit if no limit is set)"),
 			},
 			"required": []string{"namespace", "table", "filter"},
 		},
 		OutputSchema: outSchema(map[string]any{
-			"deleted": prop("integer", "Number of rows deleted"),
-		}, "deleted"),
+			"matched": prop("integer", "Number of rows matching the filter"),
+			"deleted": prop("integer", "Number of rows actually deleted (0 when dry_run is true)"),
+		}, "matched", "deleted"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req deleteReq
 			if err := decodeData(body, &req); err != nil {
 				return nil, err
 			}
-			deleted, err := s.st.Delete(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args)
+			res, err := s.st.Delete(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args, store.DeleteOptions{
+				DryRun:  req.DryRun,
+				Limit:   req.Limit,
+				Confirm: req.Confirm,
+			})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"deleted": deleted}, nil
+			return map[string]any{"matched": res.Matched, "deleted": res.Deleted}, nil
 		},
 	},
 	"update": {
@@ -876,6 +889,9 @@ type deleteReq struct {
 	Table     string `json:"table"`
 	Filter    string `json:"filter"`
 	Args      []any  `json:"args"`
+	DryRun    bool   `json:"dry_run"`
+	Limit     int    `json:"limit"`
+	Confirm   bool   `json:"confirm"`
 }
 
 type updateReq struct {

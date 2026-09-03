@@ -155,59 +155,107 @@ scan:
 	return out, complete, nil
 }
 
-func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []any) (int64, error) {
+// DefaultDeleteLimit is the maximum number of matching rows a delete can
+// remove without an explicit limit or confirm: true.
+const DefaultDeleteLimit = 1000
+
+// DeleteOptions controls how Delete behaves: dry-run preview, a user-supplied
+// limit (threshold), and an explicit confirmation to delete beyond the limit.
+type DeleteOptions struct {
+	DryRun  bool
+	Limit   int
+	Confirm bool
+}
+
+// DeleteResult reports how many rows matched the filter and how many were
+// actually deleted (zero when DryRun is true).
+type DeleteResult struct {
+	Matched int64
+	Deleted int64
+}
+
+func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []any, opts DeleteOptions) (DeleteResult, error) {
 	where = strings.TrimSpace(where)
 	if where == "" {
-		return 0, invalidf("filter is required (pass \"1=1\" to delete everything)")
+		return DeleteResult{}, invalidf("filter is required (pass \"1=1\" to delete everything)")
 	}
 	if hasStatementSeparator(where) {
-		return 0, invalidf("multiple statements are not allowed in filter")
+		return DeleteResult{}, invalidf("multiple statements are not allowed in filter")
 	}
 	for i, a := range args {
 		args[i] = normalizeArg(a)
 	}
 	n, err := s.ns(nsName)
 	if err != nil {
-		return 0, err
+		return DeleteResult{}, err
 	}
+
+	// Dry-run is a pure count: use the read-only connection, validate the
+	// table and filter, and return the matched rows without modifying data.
+	if opts.DryRun {
+		if _, err := loadSchema(ctx, n.ro, nsName, table); err != nil {
+			return DeleteResult{}, err
+		}
+		var matched int64
+		if err := n.ro.QueryRowContext(ctx,
+			fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s`, q(table), where), args...).Scan(&matched); err != nil {
+			return DeleteResult{}, fmt.Errorf("%w: filter error: %w", ErrInvalid, err)
+		}
+		return DeleteResult{Matched: matched, Deleted: 0}, nil
+	}
+
 	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return DeleteResult{}, err
 	}
 	defer tx.Rollback()
 
 	sc, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
-		return 0, err
+		return DeleteResult{}, err
 	}
 
 	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS temp._dolmen_delete_ids`); err != nil {
-		return 0, err
+		return DeleteResult{}, err
 	}
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`CREATE TEMP TABLE _dolmen_delete_ids AS SELECT id FROM %s WHERE %s`, q(table), where), args...); err != nil {
-		return 0, fmt.Errorf("%w: filter error: %w", ErrInvalid, err)
+		return DeleteResult{}, fmt.Errorf("%w: filter error: %w", ErrInvalid, err)
 	}
+
+	var matched int64
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM _dolmen_delete_ids`).Scan(&matched); err != nil {
+		return DeleteResult{}, err
+	}
+
+	limit := int64(DefaultDeleteLimit)
+	if opts.Limit > 0 {
+		limit = int64(opts.Limit)
+	}
+	if matched > limit && !opts.Confirm {
+		return DeleteResult{}, invalidf("filter matched %d rows, exceeding the delete limit of %d; pass confirm: true to proceed or dry_run: true to preview", matched, limit)
+	}
+
 	if len(sc.FTSFields()) > 0 {
 		if _, err := tx.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE rowid IN (SELECT id FROM _dolmen_delete_ids)`, q(ftsTable(table)))); err != nil {
-			return 0, err
+			return DeleteResult{}, err
 		}
 	}
 	res, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`DELETE FROM %s WHERE id IN (SELECT id FROM _dolmen_delete_ids)`, q(table)))
 	if err != nil {
-		return 0, err
+		return DeleteResult{}, err
 	}
 	deleted, err := res.RowsAffected()
 	if err != nil {
-		return 0, err
+		return DeleteResult{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `DROP TABLE _dolmen_delete_ids`); err != nil {
-		return 0, err
+		return DeleteResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, err
+		return DeleteResult{}, err
 	}
-	return deleted, nil
+	return DeleteResult{Matched: matched, Deleted: deleted}, nil
 }

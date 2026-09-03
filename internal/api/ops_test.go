@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -675,7 +676,7 @@ func TestSemicolonInsideQuotesAllowedAtAPI(t *testing.T) {
 	code, res = post(t, srv.URL, "delete", map[string]any{
 		"namespace": "ns", "table": "findings", "filter": "title = 'a;b'",
 	})
-	if code != 200 || res["data"].(map[string]any)["deleted"].(float64) != 1 {
+	if code != 200 || res["data"].(map[string]any)["deleted"].(float64) != 1 || res["data"].(map[string]any)["matched"].(float64) != 1 {
 		t.Fatalf("delete with semicolon filter failed: %d %v", code, res)
 	}
 	code, _ = post(t, srv.URL, "delete", map[string]any{
@@ -683,6 +684,121 @@ func TestSemicolonInsideQuotesAllowedAtAPI(t *testing.T) {
 	})
 	if code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for multi-statement filter, got %d", code)
+	}
+}
+
+func TestDeleteSafetyHTTP(t *testing.T) {
+	srv := newTestServer(t)
+
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "safety",
+		"table":     "items",
+		"fields":    []map[string]any{{"name": "title", "type": "string"}},
+	})
+	if code != 200 {
+		t.Fatalf("create_table failed: %d %v", code, res)
+	}
+
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "safety",
+		"table":     "items",
+		"records": []map[string]any{
+			{"title": "a"},
+			{"title": "b"},
+			{"title": "c"},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("insert failed: %d %v", code, res)
+	}
+
+	// dry_run returns matched count without deleting.
+	code, res = post(t, srv.URL, "delete", map[string]any{
+		"namespace": "safety",
+		"table":     "items",
+		"filter":    "1=1",
+		"dry_run":   true,
+	})
+	if code != 200 {
+		t.Fatalf("dry_run failed: %d %v", code, res)
+	}
+	data := res["data"].(map[string]any)
+	if data["matched"].(float64) != 3 || data["deleted"].(float64) != 0 {
+		t.Fatalf("dry_run expected matched=3 deleted=0, got %v", data)
+	}
+
+	// limit below match count without confirm is rejected.
+	code, res = post(t, srv.URL, "delete", map[string]any{
+		"namespace": "safety",
+		"table":     "items",
+		"filter":    "1=1",
+		"limit":     1,
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for delete beyond limit without confirm, got %d %v", code, res)
+	}
+
+	// confirm allows deletion beyond the explicit limit.
+	code, res = post(t, srv.URL, "delete", map[string]any{
+		"namespace": "safety",
+		"table":     "items",
+		"filter":    "1=1",
+		"limit":     1,
+		"confirm":   true,
+	})
+	if code != 200 {
+		t.Fatalf("confirm delete failed: %d %v", code, res)
+	}
+	data = res["data"].(map[string]any)
+	if data["matched"].(float64) != 3 || data["deleted"].(float64) != 3 {
+		t.Fatalf("expected matched=3 deleted=3, got %v", data)
+	}
+
+	// A fresh table for the default-limit guard.
+	code, res = post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "safety2",
+		"table":     "big",
+		"fields":    []map[string]any{{"name": "title", "type": "string"}},
+	})
+	if code != 200 {
+		t.Fatalf("create_table big failed: %d %v", code, res)
+	}
+	for batch := 0; batch < 2; batch++ {
+		records := make([]map[string]any, 0, 600)
+		for i := 0; i < 600; i++ {
+			records = append(records, map[string]any{"title": fmt.Sprintf("row %d-%d", batch, i)})
+		}
+		code, res = post(t, srv.URL, "insert", map[string]any{
+			"namespace": "safety2",
+			"table":     "big",
+			"records":   records,
+		})
+		if code != 200 {
+			t.Fatalf("insert big batch %d failed: %d %v", batch, code, res)
+		}
+	}
+
+	code, res = post(t, srv.URL, "delete", map[string]any{
+		"namespace": "safety2",
+		"table":     "big",
+		"filter":    "1=1",
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for delete beyond default limit, got %d %v", code, res)
+	}
+
+	code, res = post(t, srv.URL, "delete", map[string]any{
+		"namespace": "safety2",
+		"table":     "big",
+		"filter":    "1=1",
+		"confirm":   true,
+	})
+	if code != 200 {
+		t.Fatalf("confirm delete big failed: %d %v", code, res)
+	}
+	data = res["data"].(map[string]any)
+	if data["matched"].(float64) != 1200 || data["deleted"].(float64) != 1200 {
+		t.Fatalf("expected matched=1200 deleted=1200, got %v", data)
 	}
 }
 
