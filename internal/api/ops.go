@@ -44,7 +44,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 			},
 			"required": []string{"namespace", "table"},
 		},
@@ -152,7 +152,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 				"records": map[string]any{
 					"type":        "array",
 					"description": "Records to insert (JSON objects keyed by field name)",
@@ -225,7 +225,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 				"on": map[string]any{
 					"type":        "array",
 					"description": "Natural key: field name(s) whose values identify a row for update-vs-insert",
@@ -327,7 +327,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 				"query": map[string]any{
 					"type":        "string",
 					"description": "FTS5 MATCH expression",
@@ -370,7 +370,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 				"text": map[string]any{
 					"type":        "string",
 					"description": "Query text; the server embeds it (requires an embedding provider)",
@@ -461,7 +461,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 				"filter": map[string]any{
 					"type":        "string",
 					"description": "SQL WHERE expression selecting rows to delete. A semicolon inside a quoted literal or comment is fine; the store rejects genuine multi-statement filters.",
@@ -505,7 +505,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 				"filter": map[string]any{
 					"type":        "string",
 					"description": "SQL WHERE expression selecting rows to update",
@@ -554,7 +554,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 				"filter": map[string]any{
 					"type":        "string",
 					"description": "SQL WHERE expression selecting the row(s) to update; insert when it matches nothing",
@@ -606,7 +606,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 				"changes": map[string]any{
 					"type":        "array",
 					"description": "Ordered list of changes",

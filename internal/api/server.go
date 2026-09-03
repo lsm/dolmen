@@ -178,6 +178,25 @@ func tableProp(desc string) map[string]any {
 	}
 }
 
+// existingTableProp describes a table name for operations that reference an
+// existing table. Namespaces created before pragma_*/dbstat were reserved may
+// hold grandfathered tables with those names, so only never-creatable patterns
+// are excluded here; create_table keeps the stricter tableProp.
+func existingTableProp(desc string) map[string]any {
+	return map[string]any{
+		"type":        "string",
+		"description": desc,
+		"pattern":     `^[a-z][a-z0-9_]{0,63}$`,
+		"not": map[string]any{
+			"anyOf": []any{
+				map[string]any{"pattern": "__fts"},
+				map[string]any{"pattern": "^sqlite_"},
+				map[string]any{"enum": []string{"id", "created_at", "rowid"}},
+			},
+		},
+	}
+}
+
 func (s *Server) embedder() store.Embedder {
 	return store.Embedder{
 		Embed: func(ctx context.Context, texts []string) ([][]float32, error) {

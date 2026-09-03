@@ -389,8 +389,15 @@ func TestNamespaceAndTablePatternsDeclared(t *testing.T) {
 			t.Fatalf("%s: table must carry the ValidIdent pattern, got %v", op, table["pattern"])
 		}
 		notAnyOf, ok := table["not"].(map[string]any)["anyOf"].([]any)
-		if !ok || len(notAnyOf) != 4 {
-			t.Fatalf("%s: table must exclude __fts, sqlite_, pragma_, dbstat and reserved identifier names, got %v", op, table["not"])
+		// create_table keeps the full reservation list; ops that reference an
+		// existing table allow grandfathered pragma_*/dbstat names, so they
+		// exclude only the never-creatable patterns.
+		wantLen := 3
+		if op == "create_table" {
+			wantLen = 4
+		}
+		if !ok || len(notAnyOf) != wantLen {
+			t.Fatalf("%s: table exclusions must have %d entries, got %v", op, wantLen, table["not"])
 		}
 		if notAnyOf[0].(map[string]any)["pattern"] != "__fts" {
 			t.Fatalf("%s: first exclusion must be __fts, got %v", op, notAnyOf[0])
@@ -398,12 +405,19 @@ func TestNamespaceAndTablePatternsDeclared(t *testing.T) {
 		if notAnyOf[1].(map[string]any)["pattern"] != "^sqlite_" {
 			t.Fatalf("%s: second exclusion must be ^sqlite_, got %v", op, notAnyOf[1])
 		}
-		if notAnyOf[2].(map[string]any)["pattern"] != "^pragma_" {
-			t.Fatalf("%s: third exclusion must be ^pragma_, got %v", op, notAnyOf[2])
-		}
-		reservedEnum, ok := notAnyOf[3].(map[string]any)["enum"].([]string)
-		if !ok || len(reservedEnum) != 4 || reservedEnum[0] != "id" || reservedEnum[1] != "created_at" || reservedEnum[2] != "rowid" || reservedEnum[3] != "dbstat" {
-			t.Fatalf("%s: reserved table-name exclusions must cover id/created_at/rowid/dbstat, got %v", op, notAnyOf[3])
+		if op == "create_table" {
+			if notAnyOf[2].(map[string]any)["pattern"] != "^pragma_" {
+				t.Fatalf("%s: third exclusion must be ^pragma_, got %v", op, notAnyOf[2])
+			}
+			reservedEnum, ok := notAnyOf[3].(map[string]any)["enum"].([]string)
+			if !ok || len(reservedEnum) != 4 || reservedEnum[0] != "id" || reservedEnum[1] != "created_at" || reservedEnum[2] != "rowid" || reservedEnum[3] != "dbstat" {
+				t.Fatalf("%s: reserved table-name exclusions must cover id/created_at/rowid/dbstat, got %v", op, notAnyOf[3])
+			}
+		} else {
+			reservedEnum, ok := notAnyOf[2].(map[string]any)["enum"].([]string)
+			if !ok || len(reservedEnum) != 3 || reservedEnum[0] != "id" || reservedEnum[1] != "created_at" || reservedEnum[2] != "rowid" {
+				t.Fatalf("%s: reserved table-name exclusions must cover id/created_at/rowid (pragma_*/dbstat stay allowed for grandfathered tables), got %v", op, notAnyOf[2])
+			}
 		}
 	}
 }
