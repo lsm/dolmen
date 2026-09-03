@@ -37,7 +37,9 @@ type Server struct {
 // until that changes; infer_schema is pure and does. Ops that can send text to
 // a configured remote embedding provider (insert on vectorized fields,
 // search_vector by text, migrate when enabling vectorize) are open-world: the
-// client cannot know whether the deployment embeds locally.
+// client cannot know whether the deployment embeds locally. Text vector
+// searches reach the provider on every call, so search_vector is not
+// idempotent either.
 var toolAnnotations = map[string]map[string]any{
 	"list_tables":     {"title": "List tables", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"describe_table":  {"title": "Describe table", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
@@ -46,7 +48,7 @@ var toolAnnotations = map[string]map[string]any{
 	"insert":          {"title": "Insert records", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
 	"query":           {"title": "Query", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"search_fulltext": {"title": "Full-text search", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
-	"search_vector":   {"title": "Vector search", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true},
+	"search_vector":   {"title": "Vector search", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
 	"delete":          {"title": "Delete rows", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false},
 	"migrate":         {"title": "Migrate table", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
 }
