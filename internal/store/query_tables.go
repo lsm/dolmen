@@ -337,9 +337,10 @@ func (s *queryScanner) readIdent() string {
 // readParam consumes a named variable token (:name, @name, $name) as one
 // unit, mirroring SQLite so keywords inside parameter names stay inert. The
 // name may carry Tcl-style :: suffixes and one final parenthesized suffix:
-// $x::ns::y, $x(a,from), and $x::y(a.b) are each a single parameter. The
-// parenthesized suffix is opaque punctuation — whitespace, '(', and ':'
-// terminate it early, and such parameters are rejected by SQLite itself.
+// $x::ns::y, $x(a,from), and $x(a(b) are each a single parameter. The
+// parenthesized suffix is opaque through its closing ')' — colons and nested
+// '(' are content — and only whitespace ends it early, which SQLite rejects
+// as an unrecognized token.
 func (s *queryScanner) readParam() string {
 	start := s.i
 	s.i++ // prefix character
@@ -360,7 +361,7 @@ func (s *queryScanner) readParam() string {
 				s.i++
 				break
 			}
-			if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '(' || c == ':' {
+			if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' {
 				break
 			}
 			s.i++
