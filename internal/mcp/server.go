@@ -41,7 +41,7 @@ var toolAnnotations = map[string]map[string]any{
 	"query":           {"title": "Query", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"search_fulltext": {"title": "Full-text search", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"search_vector":   {"title": "Vector search", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
-	"delete":          {"title": "Delete rows", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
+	"delete":          {"title": "Delete rows", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false},
 	"migrate":         {"title": "Migrate table", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false},
 }
 
