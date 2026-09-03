@@ -7,17 +7,22 @@ import (
 	"strings"
 )
 
-func boundedLimit(n int) int {
+const (
+	DefaultSearchLimit = 10
+	MaxSearchLimit     = 200
+)
+
+func searchLimit(n int) int {
 	if n <= 0 {
-		return 10
+		return DefaultSearchLimit
 	}
-	if n > 200 {
-		return 200
+	if n > MaxSearchLimit {
+		return MaxSearchLimit
 	}
 	return n
 }
 
-func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string, limit int, includeHidden bool) ([]map[string]any, bool, error) {
+func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string, offset, limit int, includeHidden bool) ([]map[string]any, bool, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
 		return nil, false, err
@@ -34,10 +39,16 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 	if len(sc.FTSFields()) == 0 {
 		return nil, false, invalidf("table %s has no fulltext fields", table)
 	}
+	limit = searchLimit(limit)
+	if offset < 0 {
+		return nil, false, invalidf("offset must be non-negative")
+	}
+
+	// Fetch limit+1 ids so we can tell the caller whether more results exist.
 	rows, err := tx.QueryContext(ctx,
-		fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? ORDER BY rank LIMIT ?`,
+		fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? ORDER BY rank, rowid LIMIT ? OFFSET ?`,
 			q(ftsTable(table)), ftsTable(table)),
-		query, boundedLimit(limit))
+		query, limit+1, offset)
 	if err != nil {
 		return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
@@ -53,11 +64,18 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 	if err := rows.Err(); err != nil {
 		return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
+	// The (limit+1)th id is only a look-ahead for truncated — never fetch it,
+	// or an invalid value in that row would fail the whole page instead of
+	// returning the valid rows with truncated=true.
+	hasMore := len(ids) > limit
+	if hasMore {
+		ids = ids[:limit]
+	}
 	out, complete, err := fetchByIDs(ctx, tx, table, ids, projectionFromSchema(sc, includeHidden))
 	if err != nil {
 		return nil, false, err
 	}
-	return out, !complete, nil
+	return out, hasMore || !complete, nil
 }
 
 type dbQueryer interface {
@@ -65,7 +83,9 @@ type dbQueryer interface {
 }
 
 // fetchByIDs reads the full rows for ids (in that order) through proj, the
-// shared typed-read projection.
+// shared typed-read projection. It returns complete=true when every row fit
+// within the response budget, or false when a row was skipped because it would
+// have exceeded the budget.
 func fetchByIDs(ctx context.Context, db dbQueryer, table string, ids []int64, proj *projection) ([]map[string]any, bool, error) {
 	if len(ids) == 0 {
 		return []map[string]any{}, true, nil

@@ -564,7 +564,9 @@ var Ops = map[string]OpDef{
 			"number reads integer or float. Labels that match no declared field, or that different tables " +
 			"declare with different types, fall back to raw values (blobs as base64). " +
 			"id and created_at are included in SELECT *; the hidden _embedding column is stripped from SELECT * — " +
-			"reference _embedding in the statement (outside string literals/comments) to include it.",
+			"reference _embedding in the statement (outside string literals/comments) to include it. " +
+			"Do not put LIMIT or OFFSET in the SQL; use the offset and limit parameters. " +
+			"For stable pagination, include an explicit ORDER BY clause.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -593,6 +595,18 @@ var Ops = map[string]OpDef{
 					},
 					"maxItems": 100,
 				},
+				"offset": map[string]any{
+					"type":        "integer",
+					"description": "Rows to skip (default 0)",
+					"minimum":     0,
+					"maximum":     1000000000,
+				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Max rows to return (default 1000, max 1000)",
+					"minimum":     1,
+					"maximum":     1000,
+				},
 			},
 			"required": []string{"namespace", "sql"},
 		},
@@ -603,14 +617,14 @@ var Ops = map[string]OpDef{
 				"items":       map[string]any{"type": "object", "description": "Row keyed by column name"},
 			},
 			"row_count": prop("integer", "Number of rows returned"),
-			"truncated": prop("boolean", "True when the result hit the response budget and was cut short"),
+			"truncated": prop("boolean", "True when more results are available beyond the returned page (because the limit was reached or the response budget was hit)"),
 		}, "rows", "row_count", "truncated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req queryReq
 			if err := decodeData(body, &req); err != nil {
 				return nil, err
 			}
-			rows, truncated, err := s.st.Query(ctx, normNS(req.Namespace), req.SQL, req.Args)
+			rows, truncated, err := s.st.Query(ctx, normNS(req.Namespace), req.SQL, req.Args, req.Offset, req.Limit)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -619,7 +633,7 @@ var Ops = map[string]OpDef{
 	},
 	"search_fulltext": {
 		Description: "Full-text search over fields marked fulltext, using SQLite FTS5 MATCH syntax " +
-			"(e.g. \"payment\", \"credit refund\", \"status:ok AND retry\"). Returns matching records ordered by relevance. " +
+			"(e.g. \"payment\", \"credit refund\", \"status:ok AND retry\"). Returns matching records ordered by relevance (stable rowid tie-breaking). " +
 			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array) " +
 			"and omit the hidden _embedding column unless include_hidden is true.",
 		InputSchema: map[string]any{
@@ -640,6 +654,12 @@ var Ops = map[string]OpDef{
 					"minimum":     1,
 					"maximum":     200,
 				},
+				"offset": map[string]any{
+					"type":        "integer",
+					"description": "Results to skip (default 0)",
+					"minimum":     0,
+					"maximum":     1000000000,
+				},
 				"include_hidden": prop("boolean", "Also return hidden internal columns (currently _embedding) in results"),
 			},
 			"required": []string{"namespace", "table", "query"},
@@ -650,7 +670,7 @@ var Ops = map[string]OpDef{
 				"description": "Matching records ordered by relevance (id, created_at, and table fields)",
 				"items":       map[string]any{"type": "object", "description": "Matching record"},
 			},
-			"truncated": prop("boolean", "True when the result hit the response budget and was cut short"),
+			"truncated": prop("boolean", "True when more results are available beyond the returned page (because the limit was reached or the response budget was hit)"),
 		}, "results", "truncated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req ftsReq
@@ -660,7 +680,7 @@ var Ops = map[string]OpDef{
 			if req.Query == "" {
 				return nil, badRequest("query must not be empty")
 			}
-			results, truncated, err := s.st.SearchFulltext(ctx, normNS(req.Namespace), normTable(req.Table), req.Query, limit(req.Limit), req.IncludeHidden)
+			results, truncated, err := s.st.SearchFulltext(ctx, normNS(req.Namespace), normTable(req.Table), req.Query, req.Offset, limit(req.Limit), req.IncludeHidden)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -675,7 +695,7 @@ var Ops = map[string]OpDef{
 			"search those with a raw vector from the same embedding space that produced the stored vectors. " +
 			"Optional filter and args restrict rows with a SQL WHERE expression (like delete's filter) " +
 			"before scoring; optional min_score drops lower-similarity results before the ranking/limit. " +
-			"Results carry _score (cosine similarity, higher is closer), honor declared field types " +
+			"Results carry _score (cosine similarity, higher is closer), ordered by score with stable id tie-breaking, honor declared field types " +
 			"(boolean -> true/false, json -> decoded value, vector -> number array), and omit the hidden " +
 			"_embedding column unless include_hidden is true. skipped_vectors counts rows whose stored vector " +
 			"was corrupt or dimension-mismatched and could not be scored; a nonzero count means those rows are missing from results.",
@@ -706,6 +726,12 @@ var Ops = map[string]OpDef{
 					"description": "Max results (default 10, max 200)",
 					"minimum":     1,
 					"maximum":     200,
+				},
+				"offset": map[string]any{
+					"type":        "integer",
+					"description": "Results to skip (default 0)",
+					"minimum":     0,
+					"maximum":     1000000000,
 				},
 				"include_hidden": prop("boolean", "Also return hidden internal columns (currently _embedding) in results"),
 				"filter": map[string]any{
@@ -753,7 +779,7 @@ var Ops = map[string]OpDef{
 					},
 				},
 			},
-			"truncated":       prop("boolean", "True when the result hit the response budget and was cut short"),
+			"truncated":       prop("boolean", "True when more results are available beyond the returned page (because the limit was reached or the response budget was hit)"),
 			"skipped_vectors": prop("integer", "Rows whose stored vector was corrupt or dimension-mismatched and could not be scored; nonzero means those rows are missing from results"),
 		}, "results", "truncated", "skipped_vectors"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
@@ -801,7 +827,7 @@ var Ops = map[string]OpDef{
 				queryIdentity = s.emb.Identity()
 			}
 			res, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table),
-				strings.ToLower(strings.TrimSpace(req.Column)), vec, queryIdentity, limit(req.Limit), req.IncludeHidden,
+				strings.ToLower(strings.TrimSpace(req.Column)), vec, queryIdentity, req.Offset, limit(req.Limit), req.IncludeHidden,
 				req.Filter, req.Args, req.MinScore)
 			if err != nil {
 				return nil, wrapStoreErr(err)
@@ -1215,12 +1241,15 @@ type queryReq struct {
 	Namespace string `json:"namespace"`
 	SQL       string `json:"sql"`
 	Args      []any  `json:"args"`
+	Offset    int    `json:"offset"`
+	Limit     int    `json:"limit"`
 }
 
 type ftsReq struct {
 	Namespace     string `json:"namespace"`
 	Table         string `json:"table"`
 	Query         string `json:"query"`
+	Offset        int    `json:"offset"`
 	Limit         int    `json:"limit"`
 	IncludeHidden bool   `json:"include_hidden"`
 }
@@ -1231,6 +1260,7 @@ type vecReq struct {
 	Column        string    `json:"column"`
 	Text          string    `json:"text"`
 	Vector        []float64 `json:"vector"`
+	Offset        int       `json:"offset"`
 	Limit         int       `json:"limit"`
 	IncludeHidden bool      `json:"include_hidden"`
 	Filter        string    `json:"filter"`

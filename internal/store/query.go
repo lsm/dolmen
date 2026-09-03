@@ -24,6 +24,86 @@ func normalizeArg(v any) any {
 
 var queryStartRe = regexp.MustCompile(`(?i)\A\s*(select|with)\b`)
 
+// stripUnterminatedBlockComment removes a trailing /* block comment that is
+// not closed before end-of-input. SQLite allows unterminated block comments to
+// run to EOF, so appending pagination after one would place the LIMIT clause
+// inside the comment. We strip the comment (which does not affect query
+// semantics) and trim trailing whitespace so the pagination clause is appended
+// to a complete statement. Strings and identifiers are skipped so a literal
+// `/*` inside a quoted value is not treated as a comment.
+func stripUnterminatedBlockComment(s string) string {
+	var (
+		inString, inLineComment, inBlockComment bool
+		inIdent                                 bool
+		identClose                              byte
+		blockStart                              int
+	)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			if c == '\'' {
+				if i+1 < len(s) && s[i+1] == '\'' {
+					i++
+					continue
+				}
+				inString = false
+			}
+			continue
+		}
+		if inIdent {
+			if c == identClose {
+				if i+1 < len(s) && s[i+1] == identClose {
+					i++
+					continue
+				}
+				inIdent = false
+			}
+			continue
+		}
+		if inLineComment {
+			if c == '\n' {
+				inLineComment = false
+			}
+			continue
+		}
+		if inBlockComment {
+			if c == '*' && i+1 < len(s) && s[i+1] == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		}
+		switch c {
+		case '\'':
+			inString = true
+		case '"':
+			inIdent = true
+			identClose = '"'
+		case '`':
+			inIdent = true
+			identClose = '`'
+		case '[':
+			inIdent = true
+			identClose = ']'
+		case '-':
+			if i+1 < len(s) && s[i+1] == '-' {
+				inLineComment = true
+				i++
+			}
+		case '/':
+			if i+1 < len(s) && s[i+1] == '*' {
+				inBlockComment = true
+				blockStart = i
+				i++
+			}
+		}
+	}
+	if inBlockComment {
+		return strings.TrimRight(s[:blockStart], " \t\r\n")
+	}
+	return s
+}
+
 // hasStatementSeparator reports whether sql contains a semicolon outside
 // string literals, quoted identifiers, and comments — the only semicolons
 // SQLite treats as statement terminators. Quoted or commented ones are
@@ -68,8 +148,9 @@ func hasStatementSeparator(sql string) bool {
 	return false
 }
 
-func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]map[string]any, bool, error) {
+func (s *Store) Query(ctx context.Context, nsName, query string, args []any, offset, limit int) ([]map[string]any, bool, error) {
 	trimmed := strings.TrimRight(strings.TrimSpace(query), ";")
+	trimmed = stripUnterminatedBlockComment(trimmed)
 	if !queryStartRe.MatchString(strings.TrimSpace(query)) {
 		return nil, false, invalidf("only read-only SELECT/WITH statements are allowed")
 	}
@@ -79,6 +160,10 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]
 	if len(args) > 100 {
 		return nil, false, invalidf("too many query parameters")
 	}
+	limit = queryLimit(limit)
+	if offset < 0 {
+		return nil, false, invalidf("offset must be non-negative")
+	}
 	for i, a := range args {
 		args[i] = normalizeArg(a)
 	}
@@ -86,23 +171,88 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]
 	if err != nil {
 		return nil, false, err
 	}
-	proj, err := s.nsProjection(ctx, n, trimmed)
+	paginated := trimmed + "\nLIMIT ? OFFSET ?"
+	args = append(args, limit+1, offset)
+
+	// Most SELECT/WITH statements accept a trailing LIMIT on a fresh line.
+	// Put the LIMIT on its own line so a trailing `--` line comment does not
+	// swallow the placeholders. Statements that still reject LIMIT (e.g.
+	// VALUES, some compound statements) are transparently wrapped in a
+	// subquery on a retry, preserving the original labels and duplicate
+	// detection for plain SELECTs.
+	rows, err := n.ro.QueryContext(ctx, paginated, args...)
+	if err != nil {
+		// A missing table fails the wrapped form the same way, so only retry
+		// statements that reject a trailing LIMIT (VALUES, some compounds) in
+		// a subquery. When the retry also fails the statement is invalid on
+		// its own — a statement that merely rejects a trailing LIMIT succeeds
+		// via the retry — so re-classify against the caller's statement as
+		// written: it fails at prepare time, before any rows are read.
+		first := err
+		userArgs := args[:len(args)-2]
+		if !strings.Contains(first.Error(), "no such table") {
+			wrapped := "SELECT * FROM (\n" + trimmed + "\n)\nLIMIT ? OFFSET ?"
+			rows, err = n.ro.QueryContext(ctx, wrapped, args...)
+			if err == nil {
+				// SQLite disambiguates duplicate labels in a subquery (a, a:1),
+				// which would silently rename keys the unwrapped form rejects
+				// as duplicates. Validate the caller's own labels — prepare-time
+				// metadata, no rows are read — so the duplicate-label contract
+				// survives the retry.
+				if probe, perr := n.ro.QueryContext(ctx, trimmed, userArgs...); perr == nil {
+					if cols, cerr := probe.Columns(); cerr == nil {
+						seen := make(map[string]bool, len(cols))
+						for _, c := range cols {
+							if seen[c] {
+								probe.Close()
+								return nil, false, invalidf("duplicate column label %q in query result; use AS aliases", c)
+							}
+							seen[c] = true
+						}
+					}
+					probe.Close()
+				}
+				paginated = wrapped
+			} else {
+				if probe, bareErr := n.ro.QueryContext(ctx, trimmed, userArgs...); bareErr != nil {
+					err = bareErr
+				} else {
+					probe.Close()
+					err = first
+				}
+			}
+		}
+		if err != nil {
+			return nil, false, NewQueryError(trimmed, err)
+		}
+	}
+	defer rows.Close()
+
+	proj, err := s.nsProjection(ctx, n, paginated)
 	if err != nil {
 		return nil, false, err
 	}
-	rows, err := n.ro.QueryContext(ctx, trimmed, args...)
-	if err != nil {
-		return nil, false, NewQueryError(trimmed, err)
-	}
-	defer rows.Close()
-	return rowsToMaps(rows, proj)
+	return rowsToMaps(rows, proj, limit)
 }
 
-const MaxQueryRows = 1000
+const (
+	DefaultPageLimit = 1000
+	MaxPageLimit     = 1000
+)
 
 const MaxQueryBytes = 32 << 20
 
-func rowsToMaps(rows *sql.Rows, proj *projection) ([]map[string]any, bool, error) {
+func queryLimit(n int) int {
+	if n <= 0 {
+		return DefaultPageLimit
+	}
+	if n > MaxPageLimit {
+		return MaxPageLimit
+	}
+	return n
+}
+
+func rowsToMaps(rows *sql.Rows, proj *projection, pageLimit int) ([]map[string]any, bool, error) {
 	cols, err := rows.Columns()
 	if err != nil {
 		return nil, false, err
@@ -124,47 +274,56 @@ func rowsToMaps(rows *sql.Rows, proj *projection) ([]map[string]any, bool, error
 	}
 	out := []map[string]any{}
 	total := 0
-	for rows.Next() {
+	hasMore := false
+scan:
+	for i := 0; i <= pageLimit; i++ {
+		if !rows.Next() {
+			break
+		}
+		if i == pageLimit {
+			// We fetched the (limit+1)th row, so there are more rows available.
+			hasMore = true
+			break
+		}
 		vals := make([]any, len(cols))
 		ptrs := make([]any, len(cols))
-		for i := range vals {
-			ptrs[i] = &vals[i]
+		for j := range vals {
+			ptrs[j] = &vals[j]
 		}
 		if err := rows.Scan(ptrs...); err != nil {
 			return nil, false, err
 		}
 		m := make(map[string]any, len(cols))
 		rowBytes := 0
-		for i, c := range cols {
+		for j, c := range cols {
 			if proj.isHidden(c) {
 				continue
 			}
-			if err := checkRowValue(c, vals[i]); err != nil {
+			if err := checkRowValue(c, vals[j]); err != nil {
 				return nil, false, err
 			}
-			if total+rowBytes+rawValSize(vals[i]) > MaxQueryBytes {
+			if total+rowBytes+rawValSize(vals[j]) > MaxQueryBytes {
 				if len(out) == 0 {
 					return nil, false, invalidf("query result exceeds the %d MiB response budget on its first row; select fewer or smaller columns", MaxQueryBytes>>20)
 				}
-				return out, true, wrapStepErr(rows.Err())
+				hasMore = true
+				break scan
 			}
-			v := proj.decodeColumn(c, vals[i])
+			v := proj.decodeColumn(c, vals[j])
 			m[c] = v
-			rowBytes += proj.presentedSize(c, vals[i], v)
-		}
-		if len(out) >= MaxQueryRows {
-			return out, true, wrapStepErr(rows.Err())
-		}
-		if total+rowBytes+labelBytes > MaxQueryBytes {
-			if len(out) == 0 {
-				return nil, false, invalidf("query result exceeds the %d MiB response budget on its first row; select fewer or smaller columns", MaxQueryBytes>>20)
+			rowBytes += proj.presentedSize(c, vals[j], v)
+			if total+rowBytes+labelBytes > MaxQueryBytes {
+				if len(out) == 0 {
+					return nil, false, invalidf("query result exceeds the %d MiB response budget on its first row; select fewer or smaller columns", MaxQueryBytes>>20)
+				}
+				hasMore = true
+				break scan
 			}
-			return out, true, wrapStepErr(rows.Err())
 		}
 		total += rowBytes + labelBytes
 		out = append(out, m)
 	}
-	return out, false, wrapStepErr(rows.Err())
+	return out, hasMore, wrapStepErr(rows.Err())
 }
 
 func wrapStepErr(err error) error {
@@ -220,8 +379,8 @@ func encodedSize(s string) int {
 			n += 3
 		}
 	}
-	if strings.Contains(s, "\u2028") || strings.Contains(s, "\u2029") {
-		n += 4 * (strings.Count(s, "\u2028") + strings.Count(s, "\u2029"))
+	if strings.Contains(s, " ") || strings.Contains(s, " ") {
+		n += 4 * (strings.Count(s, " ") + strings.Count(s, " "))
 	}
 	if !utf8.ValidString(s) {
 		for _, r := range s {

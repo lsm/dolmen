@@ -309,6 +309,10 @@ supports project skills, place a copy at `.claude/skills/dolmen/SKILL.md`.
   conflicting types, fall back to raw values (blobs as base64). The hidden `_embedding` column (from
   `vectorize`) is stripped from `SELECT *` and search results — reference it in the SQL (outside string
   literals and comments) or pass `include_hidden: true` to a search to include it.
+- **Pagination** on `query`, `search_fulltext`, and `search_vector` via `offset` and `limit` parameters.
+  Do not put `LIMIT`/`OFFSET` in raw SQL; use the parameters. `search_fulltext` and `search_vector`
+  have stable, deterministic ordering. The response includes `truncated: true` when more results are
+  available beyond the returned page.
 - **Embeddings** are pluggable: `none` (caller supplies vectors) or any OpenAI-compatible endpoint.
 - Namespaces are created implicitly on first use (one file per name; `create_namespace` just reserves
   the name up front); tables are not — call `create_table` before inserting, `drop_table` (confirm-guarded)

@@ -33,7 +33,7 @@ func TestInsertIdempotentReplayReturnsOriginalIDs(t *testing.T) {
 		t.Fatalf("retry must return the original ids, got %v want %v", ids2, ids1)
 	}
 
-	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestInsertIdempotentSurvivesRestart(t *testing.T) {
 	if len(ids2) != 1 || ids2[0] != ids1[0] {
 		t.Fatalf("retry after restart must return the original ids, got %v want %v", ids2, ids1)
 	}
-	rows, _, err := st2.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
+	rows, _, err := st2.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestInsertIdempotentPayloadMismatchRejected(t *testing.T) {
 	if !strings.Contains(err.Error(), "different insert") {
 		t.Fatalf("error should tell the writer keys are single-use, got: %v", err)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT title FROM notes", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT title FROM notes", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestInsertIdempotentConcurrentWritersReplay(t *testing.T) {
 		t.Fatalf("exactly one writer should insert, got %d", inserted)
 	}
 
-	rows, _, err := st1.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
+	rows, _, err := st1.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}

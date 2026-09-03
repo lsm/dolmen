@@ -35,7 +35,7 @@ func TestUpdateRewritesRowsAndSearchIndex(t *testing.T) {
 	if updated != 2 {
 		t.Fatalf("expected 2 updated, got %d", updated)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT id, title FROM notes ORDER BY id", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT id, title FROM notes ORDER BY id", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -48,14 +48,14 @@ func TestUpdateRewritesRowsAndSearchIndex(t *testing.T) {
 		t.Fatalf("update must not renumber ids: %v", rows[0])
 	}
 
-	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "renamed", 10, false)
+	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "renamed", 0, 10, false)
 	if err != nil {
 		t.Fatalf("fts after update: %v", err)
 	}
 	if len(hits) != 2 {
 		t.Fatalf("expected 2 fts hits for the new title, got %v", hits)
 	}
-	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "second", 10, false)
+	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "second", 0, 10, false)
 	if err != nil {
 		t.Fatalf("fts old title: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestUpdateWithoutIndexChangesLeavesSearchIntact(t *testing.T) {
 	if updated != 3 {
 		t.Fatalf("expected 3 updated, got %d", updated)
 	}
-	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 10, false)
+	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 0, 10, false)
 	if err != nil {
 		t.Fatalf("fts: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestUpdateCoercesValues(t *testing.T) {
 	if updated != 1 {
 		t.Fatalf("expected 1 updated, got %d", updated)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT score, done, tags FROM notes WHERE id = ?", []any{ids[1]})
+	rows, _, err := st.Query(ctx, "test", "SELECT score, done, tags FROM notes WHERE id = ?", []any{ids[1]}, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestUpdateNullClearsOptionalButNotRequired(t *testing.T) {
 	if _, err := st.Update(ctx, "test", "req", "1=1", nil, map[string]any{"tags": nil}, testEmbed); err != nil {
 		t.Fatalf("clearing an optional field must work: %v", err)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT tags FROM req", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT tags FROM req", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestUpdateReEmbedsVectorizedField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
-	hits, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10, false, "", nil, nil)
+	hits, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 0, 10, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestUpdateClearsEmbeddingWhenVectorizedFieldCleared(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
-	vres, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10, false, "", nil, nil)
+	vres, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 0, 10, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
@@ -208,14 +208,14 @@ func TestUpdateClearsEmbeddingWhenVectorizedFieldCleared(t *testing.T) {
 
 	// body is a fulltext field: cleared text must leave the index, and the
 	// untouched row (done = 1) must keep matching its own body text
-	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "memory", 10, false)
+	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "memory", 0, 10, false)
 	if err != nil {
 		t.Fatalf("fts cleared: %v", err)
 	}
 	if len(hits) != 0 {
 		t.Fatalf("cleared body must not match anymore, got %v", hits)
 	}
-	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "dolmen", 10, false)
+	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "dolmen", 0, 10, false)
 	if err != nil {
 		t.Fatalf("fts survivor: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestUpdateNoMatchTouchesNothing(t *testing.T) {
 	if sc.EmbedSpace != "fake-space" || sc.EmbedDim != 8 {
 		t.Fatalf("no-match update must not rewrite embedding metadata, got space=%q dim=%d", sc.EmbedSpace, sc.EmbedDim)
 	}
-	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "ghost", 10, false)
+	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "ghost", 0, 10, false)
 	if err != nil {
 		t.Fatalf("fts: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestUpsertUpdatesWhenMatched(t *testing.T) {
 	if res.Inserted || res.ID != 0 || res.Updated != 1 {
 		t.Fatalf("expected matched upsert to update exactly one row, got %+v", res)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes WHERE score = 42", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes WHERE score = 42", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -330,14 +330,14 @@ func TestUpsertInsertsWhenNoMatch(t *testing.T) {
 		t.Fatalf("expected unmatched upsert to insert, got %+v", res)
 	}
 
-	rows, _, err := st.Query(ctx, "test", "SELECT title, score FROM notes WHERE id = ?", []any{res.ID})
+	rows, _, err := st.Query(ctx, "test", "SELECT title, score FROM notes WHERE id = ?", []any{res.ID}, 0, 0)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("query inserted row: %v %v", rows, err)
 	}
 	if rows[0]["title"] != "ghost note" || rows[0]["score"].(int64) != 7 {
 		t.Fatalf("inserted row wrong: %v", rows[0])
 	}
-	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "haunting", 10, false)
+	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "haunting", 0, 10, false)
 	if err != nil {
 		t.Fatalf("fts: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestUpsertInsertsWhenNoMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
-	vhits, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10, false, "", nil, nil)
+	vhits, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 0, 10, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestUpsertInsertEnforcesRequiredFields(t *testing.T) {
 	if err == nil || !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `"score" is required`) {
 		t.Fatalf("expected the required-field error before any embedding, got %v", err)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM req", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM req", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestUpdatePlainTableWithoutIndexes(t *testing.T) {
 	if updated != 1 {
 		t.Fatalf("expected 1 updated, got %d", updated)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT a, n FROM plain ORDER BY id", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT a, n FROM plain ORDER BY id", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}

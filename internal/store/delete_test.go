@@ -26,7 +26,7 @@ func TestDeleteDryRunCountsWithoutDeleting(t *testing.T) {
 		t.Fatalf("expected deleted 0 in dry-run, got %d", res.Deleted)
 	}
 
-	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("count after dry-run: %v", err)
 	}

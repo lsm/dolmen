@@ -267,13 +267,13 @@ func TestDropTableRemovesSearch(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{{"title": "findme"}}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if _, _, err := st.SearchFulltext(ctx, "test", "notes", "findme", 10, false); err != nil {
+	if _, _, err := st.SearchFulltext(ctx, "test", "notes", "findme", 0, 10, false); err != nil {
 		t.Fatalf("search before drop: %v", err)
 	}
 	if err := st.DropTable(ctx, "test", "notes"); err != nil {
 		t.Fatalf("drop: %v", err)
 	}
-	if _, _, err := st.SearchFulltext(ctx, "test", "notes", "findme", 10, false); !errors.Is(err, ErrNotFound) {
+	if _, _, err := st.SearchFulltext(ctx, "test", "notes", "findme", 0, 10, false); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("search on dropped table must 404, got %v", err)
 	}
 }
@@ -345,7 +345,7 @@ func TestDropTableDuringInsertEmbedPause(t *testing.T) {
 	if !errors.Is(out.err, ErrInvalid) {
 		t.Fatalf("expected ErrInvalid from re-validation against the recreated table, got %v", out.err)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
@@ -387,7 +387,7 @@ func TestDropTableDuringUpsertByKeyEmbedPause(t *testing.T) {
 	if err := <-done; err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("stale upsert must re-validate and fail against the recreated table, got %v", err)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
@@ -437,7 +437,7 @@ func TestDropTableBySecondStoreInstanceDuringEmbedPause(t *testing.T) {
 	if err := <-done; err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("stale insert on A must re-validate and fail against B's recreated table, got %v", err)
 	}
-	rows, _, err := stB.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
+	rows, _, err := stB.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("count via B: %v", err)
 	}
