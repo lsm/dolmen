@@ -336,35 +336,35 @@ func (s *queryScanner) readIdent() string {
 
 // readParam consumes a named variable token (:name, @name, $name) as one
 // unit, mirroring SQLite so keywords inside parameter names stay inert. The
-// name may carry Tcl-style :: suffixes and a parenthesized suffix:
-// $x::ns::y, $x(with), and $x::y(with) are each a single parameter.
+// name may carry Tcl-style :: suffixes and one final parenthesized suffix:
+// $x::ns::y, $x(a,from), and $x::y(a.b) are each a single parameter. The
+// parenthesized suffix is opaque punctuation — whitespace, '(', and ':'
+// terminate it early, and such parameters are rejected by SQLite itself.
 func (s *queryScanner) readParam() string {
 	start := s.i
 	s.i++ // prefix character
 	for s.i < len(s.s) && isIdentCont(s.s[s.i]) {
 		s.i++
 	}
-	for {
-		if s.atTclSuffix(s.i) {
-			s.i += 2 // '::'
-			for s.i < len(s.s) && isIdentCont(s.s[s.i]) {
-				s.i++
-			}
-			continue
+	for s.atTclSuffix(s.i) {
+		s.i += 2 // '::'
+		for s.i < len(s.s) && isIdentCont(s.s[s.i]) {
+			s.i++
 		}
-		if s.i < len(s.s) && s.s[s.i] == '(' {
-			// Parenthesized suffix: a flat group of identifier characters,
-			// no nesting ($x(a(b)) is a syntax error in SQLite).
-			s.i++ // '('
-			for s.i < len(s.s) && isIdentCont(s.s[s.i]) {
+	}
+	if s.i < len(s.s) && s.s[s.i] == '(' {
+		s.i++ // '('
+		for s.i < len(s.s) {
+			c := s.s[s.i]
+			if c == ')' {
 				s.i++
+				break
 			}
-			if s.i < len(s.s) && s.s[s.i] == ')' {
-				s.i++
+			if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '(' || c == ':' {
+				break
 			}
-			continue
+			s.i++
 		}
-		break
 	}
 	return s.s[start:s.i]
 }
