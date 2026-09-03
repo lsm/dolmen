@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -446,6 +447,26 @@ func TestJSONStringScalarsKeepType(t *testing.T) {
 	}
 }
 
+func TestQueryAllowsKeywordTableNames(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	for _, name := range []string{"left", "right", "full", "inner", "cross", "outer", "natural"} {
+		if _, err := st.CreateTable(ctx, "test", name, []schema.Field{{Name: "v", Type: schema.String}}); err != nil {
+			t.Fatalf("create %q: %v", name, err)
+		}
+		if _, _, err := st.Query(ctx, "test", fmt.Sprintf("SELECT v FROM %s", name), nil); err != nil {
+			t.Fatalf("query %q: %v", name, err)
+		}
+	}
+	// Keyword table names can also appear after commas and in cross joins.
+	if _, _, err := st.Query(ctx, "test", "SELECT left.v AS lv, right.v AS rv FROM left, right", nil); err != nil {
+		t.Fatalf("comma-separated keyword tables: %v", err)
+	}
+	if _, _, err := st.Query(ctx, "test", "SELECT left.v FROM left CROSS JOIN right", nil); err != nil {
+		t.Fatalf("cross join with keyword table: %v", err)
+	}
+}
+
 func TestQueryRejectsReservedTables(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
@@ -492,6 +513,7 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"cte scope leak", "SELECT (WITH _dolmen_tables(x) AS (VALUES(1)) SELECT x FROM _dolmen_tables), name FROM _dolmen_tables"},
 		{"pragma arg reserved", "SELECT * FROM pragma_table_info('pragma_table_list')"},
 		{"dbstat", "SELECT * FROM dbstat"},
+		{"nested expression bypass", "SELECT coalesce((SELECT 1), 0), schema_json FROM _dolmen_tables"},
 	}
 
 	for _, tc := range cases {

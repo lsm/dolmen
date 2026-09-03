@@ -744,15 +744,15 @@ func (s *queryScanner) scanParenthesized() error {
 				return err
 			}
 			if isKeyword(t2, "select") || isKeyword(t2, "with") || isKeyword(t2, "values") {
+				// A statement subquery inside this expression group. parseStatement
+				// consumes the statement and expect(")") closes the '(' we just
+				// consumed; do not change depth because it is a balanced group of
+				// its own.
 				if err := s.parseStatement(); err != nil {
 					return err
 				}
 				if err := s.expect(")"); err != nil {
 					return err
-				}
-				depth--
-				if depth == 0 {
-					return nil
 				}
 				continue
 			}
@@ -767,6 +767,11 @@ func (s *queryScanner) scanParenthesized() error {
 }
 
 func (s *queryScanner) parseTableList() error {
+	// At the start of a table list (or after a comma or join operator) we expect
+	// a table factor. Contextual join keywords such as LEFT, RIGHT, INNER, JOIN,
+	// etc. can be valid table names in that position, so only treat them as join
+	// operators when a table factor has already been parsed.
+	sawTable := false
 	for {
 		t, err := s.peek()
 		if err != nil {
@@ -776,13 +781,29 @@ func (s *queryScanner) parseTableList() error {
 		switch {
 		case t.val == ",":
 			s.next()
+			sawTable = false
 			continue
 		case isJoinOp(t):
+			if !sawTable {
+				if err := s.parseTableFactor(); err != nil {
+					return err
+				}
+				sawTable = true
+				continue
+			}
 			if err := s.consumeJoinOp(); err != nil {
 				return err
 			}
+			sawTable = false
 			continue
 		case isKeyword(t, "on") || isKeyword(t, "using"):
+			if !sawTable {
+				if err := s.parseTableFactor(); err != nil {
+					return err
+				}
+				sawTable = true
+				continue
+			}
 			if _, err := s.scanUntil(joinConditionStop); err != nil {
 				return err
 			}
@@ -795,6 +816,7 @@ func (s *queryScanner) parseTableList() error {
 			if err := s.parseTableFactor(); err != nil {
 				return err
 			}
+			sawTable = true
 		}
 	}
 }
