@@ -137,8 +137,10 @@ added as adapters without touching the API or MCP surface.
 ### SQL `query` quoting
 
 - `query` is read-only: only `SELECT` or `WITH` statements are allowed, and only one statement at a time.
-- Bind all values with `?` placeholders and the `args` array. Do not interpolate values, identifiers,
-  or table names into the SQL string — `query` rejects that by design.
+- Bind all **values** with `?` placeholders and the `args` array. Identifiers and table names cannot be
+  bound with `?`, so write them directly from `list_tables`/`describe_table` and never let untrusted
+  input choose them. `query` only checks that the statement is read-only, not that the identifiers are
+  safe.
 - SQL string literals use single quotes (`'value'`). Escape a single quote by doubling it
   (`'can''t'`), or better, use a `?` placeholder.
 - Double quotes are for SQL identifiers, not string values.
@@ -166,7 +168,9 @@ Common syntax:
 - `"foo-bar"` — double-quote any term that contains spaces or punctuation (hyphens, dots, slashes,
   apostrophes). Bare `foo-bar` is parsed as multiple terms and usually errors.
 - `pay*` — prefix match.
-- `payment NEAR(refund)` — proximity search (default near span).
+- `NEAR(payment refund)` — proximity search (default near span). The group form
+  `NEAR(term1 term2 ...)` enforces proximity; writing `term1 NEAR(term2)` instead parses as an
+  implicit `AND` and does **not** enforce proximity.
 
 Terms containing an apostrophe, such as `"can't"`, must be inside a double-quoted phrase. Bare
 single quotes in an FTS5 query are a syntax error.
@@ -180,10 +184,12 @@ negative — `rank` value and are returned first. The rank value itself is not i
   stores them as float32 blobs and returns them as `[]float64` in reads.
 - `vectorize: true` on one string/text field makes the server embed that field into the hidden
   `_embedding` column. Only one field per table can be vectorized.
-- `search_vector` with `text` embeds the text server-side and searches `_embedding`; it requires the
-  same embedding provider/identity as the stored rows. With `vector` you supply the array directly.
+- `search_vector` with `text` embeds the query text and compares it against the resolved vector
+  column. With `vector` you supply the array directly.
 - `column` is optional and defaults to `_embedding` if a vectorized field exists, otherwise the first
-  declared `vector` field.
+  declared `vector` field. For `_embedding` (from `vectorize`), the embedding provider/identity must
+  match the stored rows; for caller-supplied `vector` fields, `column` simply selects the target
+  vectors.
 - Every vector result carries `_score`: cosine similarity, where higher is closer. For typical
   positive embeddings it ranges `0`–`1`; mathematically it ranges `-1`–`1`.
 - `_embedding` is hidden from `SELECT *` and search results unless you reference it explicitly in the
@@ -195,7 +201,7 @@ Every row has two implicit columns:
 
 - `id` — `INTEGER PRIMARY KEY AUTOINCREMENT`. It is assigned on insert, cannot be supplied or set,
   and is never reused after rows are deleted. Ids are safe to reference across sessions.
-- `created_at` — a UTC microsecond timestamp in ISO/RFC3339 form, e.g. `2026-09-03T12:34:56.123456Z`.
+- `created_at` — a UTC millisecond timestamp in ISO/RFC3339 form, e.g. `2026-09-03T12:34:56.123Z`.
   It is set on insert and cannot be supplied or set. Use string comparisons or SQLite date/time
   functions on it.
 

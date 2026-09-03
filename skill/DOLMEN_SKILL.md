@@ -60,7 +60,9 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
 ### Quoting and placeholders
 
 - `query` only accepts read-only `SELECT`/`WITH` statements. Bind all values with `?` and pass them in
-  `args`; never interpolate anything into the SQL string.
+  `args`. Identifiers and table names cannot be bound with `?`; write them directly from
+  `list_tables`/`describe_table` and never let untrusted input choose them. `query` only checks that
+  the statement is read-only, not that the identifiers are safe.
 - SQL string literals use single quotes (`'value'`), escaped by doubling (`'can''t'`). Prefer `?`.
 - Double quotes are for SQL identifiers, not string values.
 - `search_fulltext` takes a raw FTS5 `MATCH` expression in `query`; it is **not** SQL, so do not wrap
@@ -82,7 +84,9 @@ boundary.
 - `"foo-bar"` — double-quote terms that contain spaces or punctuation; bare `foo-bar` is parsed as
   multiple terms and usually errors.
 - `pay*` — prefix match.
-- `payment NEAR(refund)` — proximity search (default near span).
+- `NEAR(payment refund)` — proximity search (default near span). Use the group form
+  `NEAR(term1 term2 ...)`; `term1 NEAR(term2)` is parsed as an implicit `AND` and does not enforce
+  proximity.
 - Terms like `"can't"` must be in double quotes; bare single quotes are a syntax error.
 
 Results are ordered by FTS5 `rank` (BM25 by default): more relevant rows have a lower — more
@@ -94,10 +98,11 @@ negative — value and are returned first. The rank value itself is not returned
   as `[]float64`.
 - `vectorize: true` on a string/text field stores one embedding per row in `_embedding`. Only one
   field per table can be vectorized.
-- `search_vector(text=...)` embeds `text` server-side and searches `_embedding`; it must use the same
-  embedding provider/identity as the stored rows. `search_vector(vector=[...])` searches a caller-
-  supplied vector column.
+- `search_vector(text=...)` embeds the query `text` and compares it against the resolved vector
+  column. `search_vector(vector=[...])` searches a caller-supplied vector column.
 - `column` defaults to `_embedding` (if a vectorized field exists) or the first declared `vector` field.
+  For `_embedding` (from `vectorize`), the embedding provider/identity must match the stored rows; for
+  caller-supplied `vector` fields, `column` simply selects the target vectors.
 - Each result has `_score`: cosine similarity, higher is closer, typically `0`–`1` for positive
   embeddings (mathematically `-1`–`1`).
 - `_embedding` is hidden from `SELECT *` and search results unless referenced explicitly or
@@ -109,7 +114,7 @@ negative — value and are returned first. The rank value itself is not returned
   returned in reads.
 - `id` is `AUTOINCREMENT` — monotonically increasing and never reused after deletes — so it is safe
   to key off across sessions.
-- `created_at` is a UTC microsecond ISO string, e.g. `2026-09-03T12:34:56.123456Z`. Use string
+- `created_at` is a UTC millisecond ISO string, e.g. `2026-09-03T12:34:56.123Z`. Use string
   comparisons or SQLite date/time functions.
 
 ### Limits and performance
