@@ -356,6 +356,8 @@ var Ops = map[string]OpDef{
 	"search_vector": {
 		Description: "Nearest-neighbor vector search. Pass text (the server embeds it) or a raw vector. " +
 			"column is optional: defaults to the auto-embedding of a vectorized field, else the first vector field. " +
+			"Optional filter and args restrict rows with a SQL WHERE expression (like delete's filter) " +
+			"before scoring; optional min_score drops lower-similarity results before the ranking/limit. " +
 			"Results carry _score (cosine similarity, higher is closer), honor declared field types " +
 			"(boolean -> true/false, json -> decoded value, vector -> number array), and omit the hidden " +
 			"_embedding column unless include_hidden is true.",
@@ -388,6 +390,29 @@ var Ops = map[string]OpDef{
 					"maximum":     200,
 				},
 				"include_hidden": prop("boolean", "Also return hidden internal columns (currently _embedding) in results"),
+				"filter": map[string]any{
+					"type":        "string",
+					"description": "Optional SQL WHERE expression filtering rows before vector scoring (like delete's filter)",
+					"pattern":     `\S`,
+					"not":         map[string]any{"pattern": ";"},
+				},
+				"args": map[string]any{
+					"type":        "array",
+					"description": "Optional bind parameters for ? placeholders in filter",
+					"items": map[string]any{
+						"anyOf": []any{
+							map[string]any{"type": "string"},
+							map[string]any{"type": "number"},
+							map[string]any{"type": "boolean"},
+							map[string]any{"type": "null"},
+						},
+					},
+					"maxItems": 100,
+				},
+				"min_score": map[string]any{
+					"type":        "number",
+					"description": "Optional minimum cosine-similarity score (inclusive); results below this are dropped before ranking and limit",
+				},
 			},
 			"required": []string{"namespace", "table"},
 			"oneOf": []any{
@@ -440,7 +465,8 @@ var Ops = map[string]OpDef{
 				queryIdentity = s.emb.Identity()
 			}
 			results, truncated, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table),
-				strings.ToLower(strings.TrimSpace(req.Column)), vec, queryIdentity, limit(req.Limit), req.IncludeHidden)
+				strings.ToLower(strings.TrimSpace(req.Column)), vec, queryIdentity, limit(req.Limit), req.IncludeHidden,
+				req.Filter, req.Args, req.MinScore)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -722,13 +748,16 @@ type ftsReq struct {
 }
 
 type vecReq struct {
-	Namespace     string    `json:"namespace"`
-	Table         string    `json:"table"`
-	Column        string    `json:"column"`
-	Text          string    `json:"text"`
-	Vector        []float64 `json:"vector"`
-	Limit         int       `json:"limit"`
-	IncludeHidden bool      `json:"include_hidden"`
+	Namespace     string     `json:"namespace"`
+	Table         string     `json:"table"`
+	Column        string     `json:"column"`
+	Text          string     `json:"text"`
+	Vector        []float64  `json:"vector"`
+	Limit         int        `json:"limit"`
+	IncludeHidden bool       `json:"include_hidden"`
+	Filter        string     `json:"filter"`
+	Args          []any      `json:"args"`
+	MinScore      *float64   `json:"min_score"`
 }
 
 type deleteReq struct {
