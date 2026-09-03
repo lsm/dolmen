@@ -199,7 +199,7 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 		var matched int64
 		if err := n.ro.QueryRowContext(ctx,
 			fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s`, q(table), where), args...).Scan(&matched); err != nil {
-			return DeleteResult{}, fmt.Errorf("%w: filter error: %w", ErrInvalid, err)
+			return DeleteResult{}, NewFilterError(where, err)
 		}
 		return DeleteResult{Matched: matched, Deleted: 0}, nil
 	}
@@ -220,7 +220,7 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	}
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`CREATE TEMP TABLE _dolmen_delete_ids AS SELECT id FROM %s WHERE %s`, q(table), where), args...); err != nil {
-		return DeleteResult{}, fmt.Errorf("%w: filter error: %w", ErrInvalid, err)
+		return DeleteResult{}, NewFilterError(where, err)
 	}
 
 	var matched int64

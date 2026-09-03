@@ -56,7 +56,9 @@ func TestNamespaceLifecycleOverHTTP(t *testing.T) {
 	if code != 400 {
 		t.Fatalf("drop_namespace with wrong confirm must 400, got %d", code)
 	}
-	if msg, _ := res["error"].(string); !strings.Contains(msg, `"myapp"`) {
+	errEnv, _ := res["error"].(map[string]any)
+	msg, _ := errEnv["message"].(string)
+	if !strings.Contains(msg, `"myapp"`) {
 		t.Fatalf("confirm error must name the required namespace, got: %v", res["error"])
 	}
 

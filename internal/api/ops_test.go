@@ -339,7 +339,9 @@ func TestSearchVectorTextRejectedForCallerProvidedVectors(t *testing.T) {
 		if code != 400 {
 			t.Fatalf("text query %v against a caller-provided vector column must 400, got %d %v", extra, code, res)
 		}
-		if msg, _ := res["error"].(string); !strings.Contains(msg, "vectorize") {
+		errEnv, _ := res["error"].(map[string]any)
+		msg, _ := errEnv["message"].(string)
+		if !strings.Contains(msg, "vectorize") {
 			t.Fatalf("rejection should point at the vectorize path or a raw-vector retry, got %q", msg)
 		}
 	}

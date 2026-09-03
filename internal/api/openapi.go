@@ -36,10 +36,20 @@ func init() {
 	}
 }
 
+// errorCodeEnum mirrors the api.Error codes every failure response carries.
+var errorCodeEnum = []string{
+	string(ErrCodeInvalid),
+	string(ErrCodeNotFound),
+	string(ErrCodeQuery),
+	string(ErrCodeConflict),
+	string(ErrCodeForbidden),
+	string(ErrCodeInternal),
+}
+
 func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
-		writeError(w, &Error{Status: http.StatusMethodNotAllowed, Message: "use GET"})
+		writeError(w, r, &Error{Status: http.StatusMethodNotAllowed, Code: ErrCodeInvalid, Message: "use GET"})
 		return
 	}
 	writeJSON(w, http.StatusOK, s.OpenAPIDoc())
@@ -88,8 +98,12 @@ func components() map[string]any {
 	return map[string]any{
 		"schemas": map[string]any{
 			"ErrorEnvelope": objectSchema(false, map[string]any{
-				"ok":    map[string]any{"const": false},
-				"error": stringProp(""),
+				"ok": map[string]any{"const": false},
+				"error": objectSchema(false, map[string]any{
+					"code":       map[string]any{"type": "string", "enum": errorCodeEnum},
+					"message":    stringProp(""),
+					"request_id": stringProp(""),
+				}, []string{"code", "message"}),
 			}, []string{"ok", "error"}),
 			"Field": objectSchema(false, map[string]any{
 				"name":      stringProp(`^[a-z][a-z0-9_]{0,63}$`),

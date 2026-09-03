@@ -753,6 +753,66 @@ func TestMCPOriginAndContentTypeGuard(t *testing.T) {
 	}
 }
 
+func TestMCPToolErrorReturnsStableEnvelope(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+
+	body := map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{
+			"name":      "query",
+			"arguments": map[string]any{"namespace": "x", "sql": "SELECT * FROOOM notes"},
+		},
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-Id", "mcp-req-1")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.Header.Get("X-Request-Id") != "mcp-req-1" {
+		t.Fatalf("expected X-Request-Id header echoed, got %q", res.Header.Get("X-Request-Id"))
+	}
+
+	var decoded map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded["error"] != nil {
+		t.Fatalf("expected a tool result, got JSON-RPC error: %v", decoded["error"])
+	}
+	result, ok := decoded["result"].(map[string]any)
+	if !ok || result["isError"] != true {
+		t.Fatalf("expected isError tool result, got %v", decoded)
+	}
+	content := result["content"].([]any)[0].(map[string]any)
+	text := content["text"].(string)
+
+	var env map[string]any
+	if err := json.Unmarshal([]byte(text), &env); err != nil {
+		t.Fatalf("tool error content is not JSON: %v\ntext: %s", err, text)
+	}
+	if env["code"] != "query_error" {
+		t.Fatalf("expected query_error code, got %v", env["code"])
+	}
+	if env["request_id"] != "mcp-req-1" {
+		t.Fatalf("expected request_id echoed, got %v", env["request_id"])
+	}
+	msg, _ := env["message"].(string)
+	if !strings.Contains(msg, "FROOOM") || !strings.Contains(msg, "SELECT or WITH") {
+		t.Fatalf("expected self-correctable query error with offending token, got %q", msg)
+	}
+	if strings.Contains(msg, "SQL logic error") {
+		t.Fatalf("raw SQLite leaked into MCP tool error: %q", msg)
+	}
+}
+
 func TestMCPConfiguredOriginsAllowed(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -771,6 +831,12 @@ func TestMCPConfiguredOriginsAllowed(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("configured origin must pass the inner guard, got %d", res.StatusCode)
+	}
+	if res.Header.Get("Access-Control-Allow-Origin") != "https://app.example.com" {
+		t.Fatalf("allowed origin must be echoed, got %q", res.Header.Get("Access-Control-Allow-Origin"))
+	}
+	if res.Header.Get("Access-Control-Expose-Headers") != "X-Request-Id" {
+		t.Fatalf("X-Request-Id must be exposed, got %q", res.Header.Get("Access-Control-Expose-Headers"))
 	}
 	req, _ = http.NewRequest(http.MethodPost, srv.URL, strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"ping"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1046,8 +1112,19 @@ func TestToolsCallErrorOmitsStructuredContent(t *testing.T) {
 		t.Fatalf("error results must not carry structuredContent, got %v", callRes)
 	}
 	text := callRes["content"].([]any)[0].(map[string]any)["text"].(string)
-	if !strings.HasPrefix(text, "error:") {
-		t.Fatalf("error text must describe the failure, got %q", text)
+	var env map[string]any
+	if err := json.Unmarshal([]byte(text), &env); err != nil {
+		t.Fatalf("error content is not a valid JSON envelope: %v\ntext: %s", err, text)
+	}
+	if env["code"] != "not_found" {
+		t.Fatalf("error envelope must carry not_found code, got %v", env)
+	}
+	msg, _ := env["message"].(string)
+	if !strings.Contains(msg, "missing") {
+		t.Fatalf("error message should describe the failure, got %q", msg)
+	}
+	if strings.Contains(msg, "SQL logic error") {
+		t.Fatalf("raw SQLite leaked into MCP tool error: %q", msg)
 	}
 }
 

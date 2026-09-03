@@ -68,7 +68,7 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 
 	rows, err := tx.QueryContext(ctx, query, qargs...)
 	if err != nil {
-		return VectorSearchResult{}, fmt.Errorf("%w: filter error: %w", ErrInvalid, err)
+		return VectorSearchResult{}, NewFilterError(filter, err)
 	}
 	defer rows.Close()
 

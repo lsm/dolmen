@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
@@ -84,6 +85,10 @@ type rpcMessage struct {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("MCP-Protocol-Version", protocolVersion)
+	r = r.WithContext(api.WithRequestID(r.Context(), r.Header.Get("X-Request-Id")))
+	if reqID := api.RequestIDFrom(r.Context()); reqID != "" {
+		w.Header().Set("X-Request-Id", reqID)
+	}
 	if origin := r.Header.Get("Origin"); origin != "" {
 		allowed := s.origins[strings.ToLower(strings.TrimRight(origin, "/"))]
 		if !allowed {
@@ -98,6 +103,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "origin not allowed", http.StatusForbidden)
 			return
 		}
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
+		w.Header().Set("Vary", "Origin")
 	}
 	if r.Method == http.MethodPost {
 		mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -278,9 +286,29 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		}
 		res, err := s.api.Dispatch(ctx, params.Name, args)
 		if err != nil {
-			return toolError(fmt.Sprintf("error: %s", err.Error())), nil
+			apiErr := api.WrapError(err)
+			reqID := api.RequestIDFrom(ctx)
+			if apiErr.Code == api.ErrCodeInternal {
+				slog.Error("mcp tool error", "op", params.Name, "code", apiErr.Code, "request_id", reqID, "cause", apiErr.Cause)
+			} else {
+				slog.Debug("mcp tool error", "op", params.Name, "code", apiErr.Code, "request_id", reqID, "cause", apiErr.Cause)
+			}
+			env := apiErr.Public(reqID)
+			text, _ := json.Marshal(env)
+			return toolError(string(text)), nil
 		}
-		return toolResult(res), nil
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		if mErr := enc.Encode(res); mErr != nil {
+			apiErr := api.WrapError(mErr)
+			reqID := api.RequestIDFrom(ctx)
+			slog.Error("mcp tool result marshal error", "op", params.Name, "code", apiErr.Code, "request_id", reqID, "cause", apiErr.Cause)
+			env := apiErr.Public(reqID)
+			text, _ := json.Marshal(env)
+			return toolError(string(text)), nil
+		}
+		return toolResult(json.RawMessage(strings.TrimSuffix(buf.String(), "\n"))), nil
 	default:
 		return nil, &rpcErr{Code: jsonRPCMethodError, Message: fmt.Sprintf("unknown method %q", msg.Method)}
 	}

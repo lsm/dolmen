@@ -98,11 +98,12 @@ func matchByKey(ctx context.Context, tx *sql.Tx, table string, keyFields []strin
 	for j, kd := range keyDefs {
 		where[j] = fmt.Sprintf(`%s = ?`, q(kd.Name))
 	}
+	whereSQL := strings.Join(where, ` AND `)
 	rows, err := tx.QueryContext(ctx,
-		fmt.Sprintf(`SELECT id FROM %s WHERE %s LIMIT 2`, q(table), strings.Join(where, ` AND `)),
+		fmt.Sprintf(`SELECT id FROM %s WHERE %s LIMIT 2`, q(table), whereSQL),
 		keyVals...)
 	if err != nil {
-		return 0, fmt.Errorf("%w: key match error: %w", ErrInvalid, err)
+		return 0, NewFilterError(whereSQL, err)
 	}
 	var matchIDs []int64
 	for rows.Next() {

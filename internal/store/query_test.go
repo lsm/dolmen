@@ -542,3 +542,169 @@ func TestJSONStringScalarsKeepType(t *testing.T) {
 		}
 	}
 }
+
+func TestQueryErrorsAreSanitizedAndSelfCorrectable(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+
+	cases := []struct {
+		sql       string
+		args      []any
+		wantErr   string
+		wantToken string
+	}{
+		{"SELECT (", nil, "incomplete SQL statement", ""},
+		{"SELECT * FROOOM notes", nil, "SQL syntax error near", "FROOOM"},
+		{"SELECT * FROM notes WHERE badcol = 1", nil, "column \"badcol\" not found", ""},
+		{"SELECT 1 WHERE 1=?", nil, "missing value for query parameter ?1", ""},
+		{"SELECT * FROM missing", nil, "table \"missing\" not found", ""},
+	}
+
+	for _, tc := range cases {
+		_, _, err := st.Query(ctx, "test", tc.sql, tc.args)
+		if err == nil {
+			t.Fatalf("%s: expected an error", tc.sql)
+		}
+		msg := err.Error()
+		if strings.Contains(msg, "SQL logic error") || strings.Contains(msg, "(1)") {
+			t.Fatalf("%s: raw SQLite internals leaked: %q", tc.sql, msg)
+		}
+		if !strings.Contains(msg, tc.wantErr) {
+			t.Fatalf("%s: expected message to contain %q, got %q", tc.sql, tc.wantErr, msg)
+		}
+		if tc.wantToken != "" && !strings.Contains(msg, tc.wantToken) {
+			t.Fatalf("%s: expected offending token %q in message, got %q", tc.sql, tc.wantToken, msg)
+		}
+	}
+
+	// Missing table is a not-found error with a query-safe message.
+	_, _, err := st.Query(ctx, "test", "SELECT * FROM missing", nil)
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing table should be ErrNotFound, got %v", err)
+	}
+
+	// Syntax errors are invalid requests.
+	_, _, err = st.Query(ctx, "test", "SELECT * FROOOM notes", nil)
+	if err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("syntax error should be ErrInvalid, got %v", err)
+	}
+
+	// The sanitized public message must not leak raw SQLite, but the original
+	// error should still be available for server-side diagnostics.
+	_, _, err = st.Query(ctx, "test", "SELECT * FROOOM notes", nil)
+	var qe *QueryError
+	if !errors.As(err, &qe) {
+		t.Fatalf("expected a QueryError, got %T", err)
+	}
+	if qe.Cause() == nil {
+		t.Fatalf("QueryError must preserve the original SQLite cause")
+	}
+	if !strings.Contains(qe.Cause().Error(), "SQL logic error") && !strings.Contains(qe.Cause().Error(), "(1)") {
+		t.Fatalf("cause should be the raw SQLite error, got %q", qe.Cause().Error())
+	}
+
+	// Unwrap must expose both the original cause and the sentinel for errors.As/Is.
+	unwrapped := qe.Unwrap()
+	if len(unwrapped) != 2 {
+		t.Fatalf("expected Unwrap to return 2 errors, got %d", len(unwrapped))
+	}
+	if unwrapped[0] != qe.Cause() {
+		t.Fatalf("first unwrapped error should be the cause, got %v", unwrapped[0])
+	}
+	if !errors.Is(unwrapped[1], ErrInvalid) {
+		t.Fatalf("second unwrapped error should be ErrInvalid, got %v", unwrapped[1])
+	}
+}
+
+func TestOperationalFailuresAreNotQueryErrors(t *testing.T) {
+	// Recognized input failures become sanitized QueryErrors.
+	syntax := errors.New(`SQL logic error: near "FROOOM": syntax error (1)`)
+	err := NewQueryError("SELECT 1", syntax)
+	var qe *QueryError
+	if !errors.As(err, &qe) {
+		t.Fatalf("recognized syntax error should be a QueryError, got %T", err)
+	}
+
+	// Generic SQL-layer errors (primary result code 1) name the problem in the
+	// message and are client-correctable even without a specific pattern.
+	ambiguous := errors.New(`SQL logic error: ambiguous column name: id (1)`)
+	err = NewQueryError("SELECT 1", ambiguous)
+	if !errors.As(err, &qe) {
+		t.Fatalf("generic SQL logic error should be a QueryError, got %T", err)
+	}
+	if !strings.Contains(err.Error(), "ambiguous column name") {
+		t.Fatalf("generic SQL message should be preserved, got %q", err.Error())
+	}
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("generic SQL logic error should classify as ErrInvalid, got %v", err)
+	}
+
+	// Operational failures the client cannot correct (I/O, corruption, busy
+	// timeouts) must stay internal: the original error is returned unwrapped
+	// so it maps to internal_error, never a 400 query_error with a syntax hint.
+	for _, raw := range []string{
+		"database disk image is malformed",
+		"database is locked (5) (SQLITE_BUSY)",
+		"disk I/O error (10) (SQLITE_IOERR)",
+		"context canceled",
+	} {
+		operational := errors.New(raw)
+		err = NewQueryError("SELECT 1", operational)
+		if errors.As(err, &qe) {
+			t.Fatalf("operational failure %q must not classify as a QueryError, got %v", raw, err)
+		}
+		if !errors.Is(err, operational) {
+			t.Fatalf("operational failure %q should return the original error, got %v", raw, err)
+		}
+		if errors.Is(err, ErrInvalid) {
+			t.Fatalf("operational failure %q must not carry ErrInvalid, got %v", raw, err)
+		}
+	}
+}
+
+func TestAmbiguousColumnQueryIsInvalidRequest(t *testing.T) {
+	st := openStore(t)
+	mustCreateNotes(t, st)
+	// A client-correctable error outside the specific pattern list must still
+	// classify as an invalid request, not an internal error.
+	_, _, err := st.Query(context.Background(), "test",
+		"SELECT id FROM notes a JOIN notes b ON 1=1", nil)
+	if err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("ambiguous column should classify as invalid request, got %v", err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "ambiguous column name") {
+		t.Fatalf("expected the SQLite message preserved, got %q", msg)
+	}
+	if strings.Contains(msg, "SQL logic error") || strings.Contains(msg, "(1)") {
+		t.Fatalf("raw SQLite framing leaked: %q", msg)
+	}
+}
+
+func TestFilterErrorsUseFilterGuidance(t *testing.T) {
+	st := openStore(t)
+	mustCreateNotes(t, st)
+
+	// Filter callers get WHERE-expression guidance, not SELECT/WITH guidance.
+	_, err := st.Update(context.Background(), "test", "notes", "id =", nil,
+		map[string]any{"title": "x"}, testEmbed)
+	if err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("malformed filter should classify as invalid request, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "WHERE expression") {
+		t.Fatalf("filter guidance should mention WHERE expressions, got %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "SELECT or WITH") {
+		t.Fatalf("filter guidance must not point at SELECT/WITH statements, got %q", err.Error())
+	}
+
+	// Query callers keep statement-oriented guidance.
+	_, _, qerr := st.Query(context.Background(), "test", "SELECT (", nil)
+	if qerr == nil || !errors.Is(qerr, ErrInvalid) {
+		t.Fatalf("incomplete query should classify as invalid request, got %v", qerr)
+	}
+	if !strings.Contains(qerr.Error(), "SELECT or WITH") {
+		t.Fatalf("query guidance should mention SELECT/WITH statements, got %q", qerr.Error())
+	}
+}
