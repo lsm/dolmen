@@ -38,9 +38,9 @@ const (
 )
 
 type queryScanner struct {
-	s       string
-	i       int
-	buf     *token
+	s   string
+	i   int
+	buf *token
 	// registered holds the namespace's recorded user table names; a reference
 	// to one is user data even when its name collides with a now-reserved one.
 	registered map[string]bool
@@ -783,7 +783,7 @@ func (s *queryScanner) skipParenthesized() error {
 			return err
 		}
 		if t.typ == "eof" {
-			return invalidf("unterminated parenthesized group")
+			return invalidf("incomplete SQL statement: unterminated parenthesized group")
 		}
 		if t.val == "(" {
 			depth++
@@ -989,7 +989,7 @@ func (s *queryScanner) scanParenthesized() error {
 			return err
 		}
 		if t.typ == "eof" {
-			return invalidf("unterminated parenthesized group")
+			return invalidf("incomplete SQL statement: unterminated parenthesized group")
 		}
 		// Bare-table IN applies inside expression groups too.
 		if isKeyword(t, "in") {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
+	"github.com/lsm/dolmen/internal/version"
 )
 
 type fakeEmb struct{}
@@ -162,6 +163,10 @@ func TestCORSPreflight(t *testing.T) {
 	if res.StatusCode != http.StatusNoContent || res.Header.Get("Access-Control-Allow-Origin") != "https://app.example.com" {
 		t.Fatalf("preflight for allowed origin failed: %d %q", res.StatusCode, res.Header.Get("Access-Control-Allow-Origin"))
 	}
+	allowed := res.Header.Get("Access-Control-Allow-Headers")
+	if !strings.Contains(allowed, "X-Request-Id") {
+		t.Fatalf("preflight must allow X-Request-Id header, got %q", allowed)
+	}
 
 	req, _ = http.NewRequest(http.MethodOptions, srv.URL+"/v1/insert", nil)
 	req.Header.Set("Origin", "http://evil.example")
@@ -172,6 +177,30 @@ func TestCORSPreflight(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusForbidden {
 		t.Fatalf("preflight for disallowed origin must be 403, got %d", res.StatusCode)
+	}
+
+	// Actual cross-origin POST must expose the echoed X-Request-Id.
+	raw, _ := json.Marshal(map[string]any{"namespace": "cors"})
+	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/v1/list_tables", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://app.example.com")
+	req.Header.Set("X-Request-Id", "cors-req-1")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("cross-origin post: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("cross-origin post must 200, got %d", res.StatusCode)
+	}
+	if res.Header.Get("Access-Control-Allow-Origin") != "https://app.example.com" {
+		t.Fatalf("allowed origin must be echoed, got %q", res.Header.Get("Access-Control-Allow-Origin"))
+	}
+	if res.Header.Get("Access-Control-Expose-Headers") != "X-Request-Id" {
+		t.Fatalf("X-Request-Id must be exposed, got %q", res.Header.Get("Access-Control-Expose-Headers"))
+	}
+	if res.Header.Get("X-Request-Id") != "cors-req-1" {
+		t.Fatalf("X-Request-Id must be echoed, got %q", res.Header.Get("X-Request-Id"))
 	}
 }
 
@@ -238,8 +267,8 @@ func TestInferSchemaSampleBoundsDeclared(t *testing.T) {
 }
 
 func TestAllOpSchemasClosedToUnknownProperties(t *testing.T) {
-	if len(Ops) != 13 {
-		t.Fatalf("expected the thirteen ops, got %d", len(Ops))
+	if len(Ops) != 18 {
+		t.Fatalf("expected the eighteen ops, got %d", len(Ops))
 	}
 	for name, def := range Ops {
 		if def.InputSchema["additionalProperties"] != false {
@@ -437,6 +466,25 @@ func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 	}
 }
 
+func TestRequestIdEchoedOnSuccess(t *testing.T) {
+	srv := newTestServer(t)
+	raw, _ := json.Marshal(map[string]any{"namespace": "x"})
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/list_tables", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-Id", "req-success-1")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", res.StatusCode)
+	}
+	if res.Header.Get("X-Request-Id") != "req-success-1" {
+		t.Fatalf("expected X-Request-Id echoed on success, got %q", res.Header.Get("X-Request-Id"))
+	}
+}
+
 func TestUnknownOperationIs404ForAnyMethod(t *testing.T) {
 	srv := newTestServer(t)
 	res, err := http.Get(srv.URL + "/v1/no_such_op")
@@ -554,5 +602,26 @@ func TestInferSchemaNullSampleEntryRejected(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("null sample entries must 400, not masquerade as empty inference, got %d", res.StatusCode)
+	}
+}
+
+func TestVersionEndpoint(t *testing.T) {
+	res, err := http.Get(newTestServer(t).URL + "/version")
+	if err != nil {
+		t.Fatalf("get /version: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /version: got %d", res.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatalf("decode /version: %v", err)
+	}
+	if body["version"] != version.Version {
+		t.Fatalf("/version must report the injected version %q, got %v", version.Version, body["version"])
+	}
+	if body["name"] != "dolmen" {
+		t.Fatalf("/version must report the server name, got %v", body["name"])
 	}
 }

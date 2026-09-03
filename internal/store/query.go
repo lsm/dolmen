@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"math"
 	"regexp"
 	"strings"
@@ -100,10 +99,7 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]
 	}
 	rows, err := n.ro.QueryContext(ctx, trimmed, args...)
 	if err != nil {
-		if strings.Contains(err.Error(), "no such table") {
-			return nil, false, fmt.Errorf("%w: %w", ErrNotFound, err)
-		}
-		return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
+		return nil, false, NewQueryError(trimmed, err)
 	}
 	defer rows.Close()
 	return rowsToMaps(rows, proj)
@@ -182,7 +178,7 @@ func wrapStepErr(err error) error {
 	if err == nil {
 		return nil
 	}
-	return fmt.Errorf("%w: %w", ErrInvalid, err)
+	return NewQueryError("", err)
 }
 
 func checkRowValue(col string, v any) error {

@@ -70,15 +70,15 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) ns(name string) (*nsDB, error) {
-	if !nsRe.MatchString(name) {
-		return nil, invalidf("invalid namespace %q: must match ^[a-z0-9][a-z0-9_-]{0,63}$", name)
+	if err := validateNS(name); err != nil {
+		return nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if n, ok := s.nss[name]; ok {
 		return n, nil
 	}
-	path := filepath.Join(s.dir, name+".db")
+	path := s.nsPath(name)
 	rw, err := sql.Open("sqlite", dsn(path, false))
 	if err != nil {
 		return nil, err
@@ -134,6 +134,15 @@ var registryDDL = []string{
 		ids_json TEXT NOT NULL,
 		at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
 		PRIMARY KEY(table_name, key)
+	)`,
+	// _dolmen_drop_gen counts drops per table name and survives recreation:
+	// writers compare it around their embedding pause so a write validated
+	// against a dropped table cannot commit into a same-named successor
+	// (whose version-1 schema the version compare alone cannot distinguish
+	// from the original's). See tableGen and DropTable.
+	`CREATE TABLE IF NOT EXISTS _dolmen_drop_gen(
+		table_name TEXT PRIMARY KEY,
+		gen INTEGER NOT NULL
 	)`,
 }
 
@@ -268,6 +277,52 @@ func (s *Store) DescribeTable(ctx context.Context, nsName, table string) (*schem
 		return nil, 0, err
 	}
 	return sc, count, nil
+}
+
+// Migration is one recorded schema transition from _dolmen_migrations.
+type Migration struct {
+	ID          int64           `json:"id"`
+	FromVersion int             `json:"from_version"`
+	ToVersion   int             `json:"to_version"`
+	Changes     []schema.Change `json:"changes"`
+	At          string          `json:"at"`
+}
+
+// ListMigrations returns a table's migration history, newest first, with each
+// transition's recorded changes decoded. Creating the table is version 1 and is
+// not part of the log, so the newest entry's to_version is the current version.
+func (s *Store) ListMigrations(ctx context.Context, nsName, table string) ([]Migration, error) {
+	n, err := s.ns(nsName)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := loadSchema(ctx, n.ro, nsName, table); err != nil {
+		return nil, err
+	}
+	rows, err := n.ro.QueryContext(ctx,
+		`SELECT id, from_version, to_version, changes_json, at FROM _dolmen_migrations WHERE table_name = ? ORDER BY id DESC`, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Migration{}
+	for rows.Next() {
+		var m Migration
+		var cj string
+		if err := rows.Scan(&m.ID, &m.FromVersion, &m.ToVersion, &cj, &m.At); err != nil {
+			return nil, err
+		}
+		// UseNumber keeps recorded numeric defaults exact: a default above
+		// JSON's safe-integer range must survive the audit round-trip, not
+		// collapse to the nearest float64.
+		dec := json.NewDecoder(strings.NewReader(cj))
+		dec.UseNumber()
+		if err := dec.Decode(&m.Changes); err != nil {
+			return nil, fmt.Errorf("corrupt migration record %d for %s.%s: %w", m.ID, nsName, table, err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 const MaxFieldsPerTable = 100

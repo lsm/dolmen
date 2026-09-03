@@ -127,7 +127,7 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 	}
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`CREATE TEMP TABLE _dolmen_update_ids AS SELECT id FROM %s WHERE %s`, q(table), where), args...); err != nil {
-		return UpdateResult{}, fmt.Errorf("%w: filter error: %w", ErrInvalid, err)
+		return UpdateResult{}, NewFilterError(where, err)
 	}
 	var matched int64
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM _dolmen_update_ids`).Scan(&matched); err != nil {

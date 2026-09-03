@@ -191,6 +191,18 @@ func TestInferCreateInsertRoundTrip(t *testing.T) {
 	}
 }
 
+func TestInferCreateAcceptsSanitizedNames(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	samples := []map[string]any{
+		{"1st": "one", "my-field": "two", "ID": "three", "created_at": "four", "Name": "Alice", "name": "Bob"},
+	}
+	fields := schema.InferFields(samples)
+	if _, err := st.CreateTable(ctx, "test", "sanitized", fields); err != nil {
+		t.Fatalf("create from sanitized inferred schema: %v", err)
+	}
+}
+
 func TestJSONFieldStringScalarsAreValidJSON(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
@@ -854,5 +866,79 @@ func TestQueryAllowsGrandfatheredReservedNames(t *testing.T) {
 	// creatable, so they stay rejected.
 	if _, _, err := st.Query(ctx, "test", "SELECT * FROM _dolmen_tables", nil); err == nil {
 		t.Fatal("expected internal registry to stay rejected")
+	}
+}
+
+func TestQueryErrorsAreSanitizedAndSelfCorrectable(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+
+	cases := []struct {
+		sql       string
+		args      []any
+		wantErr   string
+		wantToken string
+	}{
+		{"SELECT (", nil, "incomplete SQL statement", ""},
+		{"SELECT * FROOOM notes", nil, "SQL syntax error near", "FROOOM"},
+		{"SELECT * FROM notes WHERE badcol = 1", nil, "column \"badcol\" not found", ""},
+		{"SELECT 1 WHERE 1=?", nil, "missing value for query parameter ?1", ""},
+		{"SELECT * FROM missing", nil, "table \"missing\" not found", ""},
+	}
+
+	for _, tc := range cases {
+		_, _, err := st.Query(ctx, "test", tc.sql, tc.args)
+		if err == nil {
+			t.Fatalf("%s: expected an error", tc.sql)
+		}
+		msg := err.Error()
+		if strings.Contains(msg, "SQL logic error") || strings.Contains(msg, "(1)") {
+			t.Fatalf("%s: raw SQLite internals leaked: %q", tc.sql, msg)
+		}
+		if !strings.Contains(msg, tc.wantErr) {
+			t.Fatalf("%s: expected message to contain %q, got %q", tc.sql, tc.wantErr, msg)
+		}
+		if tc.wantToken != "" && !strings.Contains(msg, tc.wantToken) {
+			t.Fatalf("%s: expected offending token %q in message, got %q", tc.sql, tc.wantToken, msg)
+		}
+	}
+
+	// Missing table is a not-found error with a query-safe message.
+	_, _, err := st.Query(ctx, "test", "SELECT * FROM missing", nil)
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing table should be ErrNotFound, got %v", err)
+	}
+
+	// Syntax errors are invalid requests.
+	_, _, err = st.Query(ctx, "test", "SELECT * FROOOM notes", nil)
+	if err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("syntax error should be ErrInvalid, got %v", err)
+	}
+
+	// The sanitized public message must not leak raw SQLite, but the original
+	// error should still be available for server-side diagnostics.
+	_, _, err = st.Query(ctx, "test", "SELECT * FROOOM notes", nil)
+	var qe *QueryError
+	if !errors.As(err, &qe) {
+		t.Fatalf("expected a QueryError, got %T", err)
+	}
+	if qe.Cause() == nil {
+		t.Fatalf("QueryError must preserve the original SQLite cause")
+	}
+	if !strings.Contains(qe.Cause().Error(), "SQL logic error") && !strings.Contains(qe.Cause().Error(), "(1)") {
+		t.Fatalf("cause should be the raw SQLite error, got %q", qe.Cause().Error())
+	}
+
+	// Unwrap must expose both the original cause and the sentinel for errors.As/Is.
+	unwrapped := qe.Unwrap()
+	if len(unwrapped) != 2 {
+		t.Fatalf("expected Unwrap to return 2 errors, got %d", len(unwrapped))
+	}
+	if unwrapped[0] != qe.Cause() {
+		t.Fatalf("first unwrapped error should be the cause, got %v", unwrapped[0])
+	}
+	if !errors.Is(unwrapped[1], ErrInvalid) {
+		t.Fatalf("second unwrapped error should be ErrInvalid, got %v", unwrapped[1])
 	}
 }
