@@ -242,10 +242,11 @@ func decodeData(body []byte, v any) error {
 	return nil
 }
 
-// jsonDefaultPathRe matches paths inside a migrate change's default value
-// (changes[0].default.…). Nested nulls there are JSON data the store coerces
+// jsonDefaultPathRe matches paths inside a migrate change's default value,
+// whether object-shaped (changes[0].default.… ) or array-shaped
+// (changes[0].default[…]). Nested nulls there are JSON data the store coerces
 // and serializes as-is; everywhere else null remains a request error.
-var jsonDefaultPathRe = regexp.MustCompile(`^changes\[\d+\]\.default\.`)
+var jsonDefaultPathRe = regexp.MustCompile(`^changes\[\d+\]\.default(?:\.|\[)`)
 
 func rejectNulls(path string, v any) error {
 	switch t := v.(type) {

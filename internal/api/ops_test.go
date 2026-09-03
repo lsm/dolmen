@@ -1015,3 +1015,74 @@ func TestMigrateJSONDefaultAllowsNestedNulls(t *testing.T) {
 		t.Fatalf("null migration-control fields must stay rejected, got %d %v", code, res)
 	}
 }
+
+func TestMigrateJSONDefaultAllowsRootArrayNulls(t *testing.T) {
+	srv := newTestServer(t)
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "ran",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "v", "type": "string"}},
+	})
+	if code != 200 {
+		t.Fatalf("create failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "ran", "table": "t", "records": []map[string]any{{"v": "x"}},
+	})
+	if code != 200 {
+		t.Fatalf("insert failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "ran", "table": "t",
+		"changes": []map[string]any{
+			{"op": "add_field", "field": map[string]any{"name": "tags", "type": "json", "required": true},
+				"default": []any{1, nil, "x"}},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("nulls in a root-array json default are data and must be accepted, got %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "query", map[string]any{"namespace": "ran", "sql": "SELECT tags FROM t"})
+	if code != 200 {
+		t.Fatalf("query failed: %d %v", code, res)
+	}
+	tags, ok := res["data"].(map[string]any)["rows"].([]any)[0].(map[string]any)["tags"].([]any)
+	if !ok || len(tags) != 3 || tags[1] != nil || tags[0] != float64(1) || tags[2] != "x" {
+		t.Fatalf("root-array default must round-trip with its null: %v", tags)
+	}
+}
+
+func TestListMigrationsRecordsExplicitFalseValues(t *testing.T) {
+	srv := newTestServer(t)
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "vf",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "body", "type": "text", "fulltext": true}},
+	})
+	if code != 200 {
+		t.Fatalf("create failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "vf", "table": "t", "expected_version": 1,
+		"changes": []map[string]any{{"op": "set_fulltext", "name": "body", "value": false}},
+	})
+	if code != 200 {
+		t.Fatalf("disable migrate failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "list_migrations", map[string]any{"namespace": "vf", "table": "t"})
+	if code != 200 {
+		t.Fatalf("list_migrations failed: %d %v", code, res)
+	}
+	ch := res["data"].(map[string]any)["migrations"].([]any)[0].(map[string]any)["changes"].([]any)[0].(map[string]any)
+	v, present := ch["value"]
+	if !present || v != false {
+		t.Fatalf("history must carry an explicit value:false for disable ops (replayable through migrate), got %v (present=%v)", v, present)
+	}
+	// The recorded change replays through the migrate endpoint as-is.
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "vf", "table": "t", "expected_version": 2, "changes": []any{ch},
+	})
+	if code != 200 {
+		t.Fatalf("recorded change must replay through migrate, got %d %v", code, res)
+	}
+}
