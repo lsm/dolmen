@@ -98,9 +98,10 @@ func forbidden(format string, args ...any) *Error {
 
 var (
 	// filePathRe matches Unix/Windows-style absolute paths that may leak in
-	// internal errors. It is conservative enough to avoid matching table names
-	// (which contain no slashes).
-	filePathRe = regexp.MustCompile(`(?:[A-Za-z]:)?(?:[\\/]+[A-Za-z0-9_.\-]+)+[\\/]*`)
+	// internal errors. It preserves the leading separator so it does not match
+	// URL paths (://) or slash-bearing provider/model identifiers in
+	// "provider|<url>|<model>" strings.
+	filePathRe = regexp.MustCompile(`(^|[^A-Za-z0-9:|\\/.\-_])(?:[A-Za-z]:)?(?:[\\/]+[A-Za-z0-9_.\-]+)+[\\/]*`)
 )
 
 // redactStoreMsg removes internal paths and raw SQLite internals from a store
@@ -114,7 +115,7 @@ func redactStoreMsg(msg string) string {
 		strings.Contains(msg, "misuse at line") {
 		return store.RedactSQLMessage(msg)
 	}
-	msg = filePathRe.ReplaceAllString(msg, "<path>")
+	msg = filePathRe.ReplaceAllString(msg, "${1}<path>")
 	return strings.TrimSpace(msg)
 }
 

@@ -3,9 +3,12 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/store"
 )
 
 func errorBody(t *testing.T, body map[string]any) map[string]any {
@@ -160,6 +163,36 @@ func TestErrorEnvelopeSanitizesBodyReadErrors(t *testing.T) {
 	errObj := errorBody(t, body)
 	if errObj["code"] != "invalid_request" {
 		t.Fatalf("expected invalid_request code for oversized body, got %v", errObj["code"])
+	}
+}
+
+func TestRedactStoreMsgRedactsFilePaths(t *testing.T) {
+	err := fmt.Errorf("%w: open /tmp/secret: no such file", store.ErrInvalid)
+	apiErr := wrapStoreErr(err)
+	if apiErr == nil {
+		t.Fatal("expected wrapped error")
+	}
+	if !strings.Contains(apiErr.Message, "<path>") {
+		t.Fatalf("expected path redaction, got %q", apiErr.Message)
+	}
+	if strings.Contains(apiErr.Message, "/tmp/secret") {
+		t.Fatalf("path leaked: %q", apiErr.Message)
+	}
+}
+
+func TestRedactStoreMsgPreservesProviderIdentity(t *testing.T) {
+	a := "openai|https://api.openai.com/v1|text-embedding-3-small"
+	b := "openai|https://proxy.example.com/v1|text-embedding-3-small"
+	err := fmt.Errorf("%w: embedding provider changed: table rows were embedded by %q but the active provider is %q", store.ErrInvalid, a, b)
+	apiErr := wrapStoreErr(err)
+	if apiErr == nil {
+		t.Fatal("expected wrapped error")
+	}
+	if strings.Contains(apiErr.Message, "<path>") {
+		t.Fatalf("redaction collapsed provider identities: %q", apiErr.Message)
+	}
+	if !strings.Contains(apiErr.Message, "https://api.openai.com/v1") || !strings.Contains(apiErr.Message, "https://proxy.example.com/v1") {
+		t.Fatalf("provider URLs must remain distinguishable: %q", apiErr.Message)
 	}
 }
 
