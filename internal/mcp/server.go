@@ -47,6 +47,10 @@ type rpcMessage struct {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("MCP-Protocol-Version", protocolVersion)
+	r = r.WithContext(api.WithRequestID(r.Context(), r.Header.Get("X-Request-Id")))
+	if reqID := api.RequestIDFrom(r.Context()); reqID != "" {
+		w.Header().Set("X-Request-Id", reqID)
+	}
 	if origin := r.Header.Get("Origin"); origin != "" {
 		allowed := s.origins[strings.ToLower(strings.TrimRight(origin, "/"))]
 		if !allowed {
@@ -234,13 +238,19 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		}
 		res, err := s.api.Dispatch(ctx, params.Name, args)
 		if err != nil {
-			return toolResult(fmt.Sprintf("error: %s", err.Error()), true), nil
+			apiErr := api.WrapError(err)
+			env := apiErr.Public(api.RequestIDFrom(ctx))
+			text, _ := json.Marshal(env)
+			return toolResult(string(text), true), nil
 		}
 		var buf bytes.Buffer
 		enc := json.NewEncoder(&buf)
 		enc.SetEscapeHTML(false)
 		if mErr := enc.Encode(res); mErr != nil {
-			return toolResult(fmt.Sprintf("error: cannot encode result: %s", mErr.Error()), true), nil
+			apiErr := api.WrapError(mErr)
+			env := apiErr.Public(api.RequestIDFrom(ctx))
+			text, _ := json.Marshal(env)
+			return toolResult(string(text), true), nil
 		}
 		return toolResult(buf.String(), false), nil
 	default:
