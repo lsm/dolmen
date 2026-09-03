@@ -261,9 +261,10 @@ describe_table(namespace="research", table="findings")
     insert(namespace="research", table="findings", records=[{...}])
   → exists but wrong shape:
     use migrate for the supported changes (add_field/rename_field/drop_field/set_fulltext/
-    set_vectorize) — do not create a v2 table. If the mismatch is outside those operations
-    (e.g., changing a field type or adding a required field to a populated table), stop and ask
-    the user before rebuilding or backfilling.
+    set_vectorize) — do not create a v2 table. add_field with a `default` can add a required
+    field to a populated table (backfilled as NOT NULL DEFAULT). If the mismatch is outside those
+    operations (e.g., changing a field type, or adding a required field with no suitable default),
+    stop and ask the user before rebuilding or backfilling.
   → exists and fits:
     insert(namespace="research", table="findings", records=[{...}])
 ```
