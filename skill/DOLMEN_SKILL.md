@@ -51,8 +51,8 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
   `null`. In `query`, coercion is by result-column label (aliases count as their label); labels that
   match no declared field fall back to raw values (blobs as base64).
 - The hidden `_embedding` column (from `vectorize`) is excluded from `SELECT *` and search results;
-  reference it in the SQL (outside string literals) or pass `include_hidden: true` to a search when
-  you really need it.
+  reference it in the SQL (outside string literals and comments) or pass `include_hidden: true` to a
+  search when you really need it.
 - Vector search results carry `_score` (cosine similarity; higher is closer).
 
 ## Agent-critical caveats
