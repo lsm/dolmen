@@ -515,6 +515,10 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"pragma arg reserved", "SELECT * FROM pragma_table_info('pragma_table_list')"},
 		{"dbstat", "SELECT * FROM dbstat"},
 		{"nested expression bypass", "SELECT coalesce((SELECT 1), 0), schema_json FROM _dolmen_tables"},
+		// Non-ASCII names cannot be created as tables, and without a matching
+		// CTE they resolve to nothing, so they are rejected like any other
+		// non-user table.
+		{"non-ascii table", "SELECT * FROM 日本語"},
 		{"excessive table paren nesting", "SELECT * FROM " + strings.Repeat("(", maxTableParens+1) + "notes" + strings.Repeat(")", maxTableParens+1)},
 		{"excessive statement nesting", "SELECT * FROM " + strings.Repeat("(SELECT * FROM ", maxStmtDepth+1) + "notes" + strings.Repeat(")", maxStmtDepth+1)},
 		{"excessive query length", "SELECT * FROM notes WHERE x = '" + strings.Repeat("x", MaxQueryRunes) + "'"},
@@ -591,6 +595,12 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		"SELECT * FROM (VALUES (1)) AS 'v'",
 		`SELECT "my alias".id FROM notes 'my alias'`,
 		"WITH 'c'(x) AS (VALUES(1)) SELECT * FROM 'c'",
+		// SQLite treats non-ASCII characters as identifier characters, so
+		// Unicode CTE names and aliases must tokenize as identifiers.
+		"WITH 日本語(x) AS (VALUES(1)) SELECT * FROM 日本語",
+		"WITH résumé AS (SELECT id FROM notes) SELECT * FROM résumé",
+		"SELECT * FROM notes AS 日本語",
+		"SELECT 日本語.id FROM notes 日本語",
 		// MaxQueryRunes counts characters, matching JSON Schema maxLength, so a
 		// query whose UTF-8 encoding is larger than the limit in bytes but within
 		// it in characters is accepted.

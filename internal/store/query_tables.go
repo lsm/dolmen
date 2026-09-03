@@ -289,8 +289,12 @@ func (s *queryScanner) readBracketed() (string, error) {
 	return "", invalidf("unterminated bracketed identifier at %d", start)
 }
 
+// isIdentStart reports whether c can begin an unquoted identifier. Like
+// SQLite's tokenizer, every byte above ASCII counts as an identifier
+// character, so non-ASCII CTE and alias names (e.g. 日本語) tokenize as
+// identifiers instead of a run of operator bytes.
 func isIdentStart(c byte) bool {
-	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= utf8.RuneSelf
 }
 
 func isIdentCont(c byte) bool {
