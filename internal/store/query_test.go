@@ -548,9 +548,22 @@ func TestJSONStringScalarsKeepType(t *testing.T) {
 func TestQueryAllowsKeywordTableNames(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
+	// SQL keyword table names predate the keyword reservation, so simulate the
+	// legacy tables through the namespace connection like the grandfathering
+	// test; the guard must keep serving them.
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
 	for _, name := range []string{"left", "right", "full", "inner", "cross", "outer", "natural"} {
-		if _, err := st.CreateTable(ctx, "test", name, []schema.Field{{Name: "v", Type: schema.String}}); err != nil {
+		sc := fmt.Sprintf(`{"name":%q,"version":1,"fields":[{"name":"v","type":"string"}]}`, name)
+		if _, err := n.rw.ExecContext(ctx,
+			`CREATE TABLE `+q(name)+` (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)`); err != nil {
 			t.Fatalf("create %q: %v", name, err)
+		}
+		if _, err := n.rw.ExecContext(ctx,
+			`INSERT INTO _dolmen_tables(name, version, schema_json) VALUES(?,?,?)`, name, 1, sc); err != nil {
+			t.Fatalf("register %q: %v", name, err)
 		}
 		if _, _, err := st.Query(ctx, "test", fmt.Sprintf("SELECT v FROM %s", name), nil); err != nil {
 			t.Fatalf("query %q: %v", name, err)
@@ -680,8 +693,8 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		t.Fatalf("create users: %v", err)
 	}
 	if _, err := st.CreateTable(ctx, "test", "sides", []schema.Field{
-		{Name: "left", Type: schema.Number},
-		{Name: "right", Type: schema.Number},
+		{Name: "leg_a", Type: schema.Number},
+		{Name: "leg_b", Type: schema.Number},
 	}); err != nil {
 		t.Fatalf("create sides: %v", err)
 	}
@@ -713,7 +726,7 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		"SELECT sum(score) OVER 'win' FROM notes WINDOW 'win' AS (ORDER BY id)",
 		"WITH sqlite_master(x) AS (VALUES(1)) SELECT x FROM sqlite_master",
 		"WITH _dolmen_tables(x) AS (VALUES(1)) SELECT x FROM _dolmen_tables",
-		"SELECT n.id FROM notes n JOIN sides s ON n.id = s.left",
+		"SELECT n.id FROM notes n JOIN sides s ON n.id = s.leg_a",
 		"WITH RECURSIVE c(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM c WHERE x < 3) SELECT * FROM c",
 		"SELECT (VALUES(1) UNION ALL SELECT id FROM notes LIMIT 1) FROM notes",
 		"WITH a AS (SELECT x FROM _dolmen_tables), _dolmen_tables(x) AS (VALUES(7)) SELECT * FROM a",

@@ -251,7 +251,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 				"confirm": map[string]any{
 					"type":        "string",
 					"description": "Safety guard: repeat the exact table name here to confirm the irreversible drop",
@@ -315,7 +315,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace to create the table in"),
-				"table":     tableProp("Table name (lowercase [a-z0-9_]; no sqlite_/pragma_ prefix, __fts, or dbstat)"),
+				"table":     tableProp("Table name (lowercase [a-z0-9_]; no sqlite_/pragma_ prefix, __fts, or dbstat; not a SQLite/SQL keyword or reserved name)"),
 				"fields": map[string]any{
 					"type":        "array",
 					"description": "Field definitions",
@@ -513,7 +513,7 @@ var Ops = map[string]OpDef{
 				"on": map[string]any{
 					"type":        "array",
 					"description": "Natural key: field name(s) whose values identify a row for update-vs-insert",
-					"items":       fieldNameProp("Key field name"),
+					"items":       existingFieldNameProp("Key field name"),
 					"minItems":    1,
 					"maxItems":    store.MaxKeyFields,
 					"uniqueItems": true,
@@ -1024,9 +1024,9 @@ var Ops = map[string]OpDef{
 								"enum":        []string{"add_field", "rename_field", "drop_field", "set_fulltext", "set_vectorize"},
 							},
 							"field": fieldItemSchema("Field definition for add_field"),
-							"from":  fieldNameProp("Current name (rename_field)"),
+							"from":  existingFieldNameProp("Current name (rename_field)"),
 							"to":    fieldNameProp("New name (rename_field)"),
-							"name":  fieldNameProp("Field name (drop_field, set_fulltext, set_vectorize)"),
+							"name":  existingFieldNameProp("Field name (drop_field, set_fulltext, set_vectorize)"),
 							"value": prop("boolean", "Flag value (set_fulltext, set_vectorize)"),
 							"default": map[string]any{
 								"description": "Backfill value for existing rows (add_field only); coerced to the field's type — a string for string/text/timestamp/json, number, boolean, or a number array of the field's dim for vector",
@@ -1147,7 +1147,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 			},
 			"required": []string{"namespace", "table"},
 		},

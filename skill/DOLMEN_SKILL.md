@@ -10,26 +10,95 @@ pick one namespace per project or user and stay in it.
 
 ## Setup
 
-The server endpoint comes from the environment: `DOLMEN_URL` (default `http://127.0.0.1:8790`).
-If the `dolmen` MCP tools are not connected, do not improvise — ask the user to run
-`claude mcp add --transport http dolmen ${DOLMEN_URL:-http://127.0.0.1:8790}/mcp`.
+### Run a server
+
+The binary is at `github.com/lsm/dolmen`. Build and start it from a Dolmen checkout:
+
+```bash
+git clone https://github.com/lsm/dolmen.git
+cd dolmen
+CGO_ENABLED=0 go build -o dolmen .
+./dolmen -addr 127.0.0.1:8790 -data ./data
+```
+
+On Windows (PowerShell):
+
+```powershell
+git clone https://github.com/lsm/dolmen.git
+cd dolmen
+$env:CGO_ENABLED = 0
+go build -o dolmen.exe .
+.\dolmen.exe -addr 127.0.0.1:8790 -data ./data
+```
+
+By default it listens on `127.0.0.1:8790` with no authentication, so keep it on a private
+interface. On Unix the data directory is opened with owner-only permissions (`0700` for the
+ directory, `0600` for files); on Windows use NTFS ACLs for owner-only isolation.
+
+### Health check
+
+Bash (honors `DOLMEN_URL` when set; a trailing slash is trimmed):
+
+```bash
+base="${DOLMEN_URL:-http://127.0.0.1:8790}"
+curl -s "${base%/}/healthz"
+```
+
+Windows PowerShell (use `curl.exe` because `curl` is an alias for `Invoke-WebRequest`):
+
+```powershell
+$base = if ($env:DOLMEN_URL) { $env:DOLMEN_URL } else { "http://127.0.0.1:8790" }
+curl.exe -s "$($base.TrimEnd('/'))/healthz"
+```
+
+Should return `{"status":"ok"}`. If the server is not running, do not improvise — start it first.
+
+### Connect the skill
+
+Add the MCP server to Claude:
+
+Bash:
+
+```bash
+base="${DOLMEN_URL:-http://127.0.0.1:8790}"
+claude mcp add --transport http dolmen "${base%/}/mcp"
+```
+
+Windows PowerShell:
+
+```powershell
+$base = if ($env:DOLMEN_URL) { $env:DOLMEN_URL } else { "http://127.0.0.1:8790" }
+claude mcp add --transport http dolmen "$($base.TrimEnd('/'))/mcp"
+```
+
+The `dolmen` tools then appear in `tools/list` with full input schemas. The endpoint can also be
+read from the environment: `DOLMEN_URL` (default `http://127.0.0.1:8790`).
+
+If your workspace supports project skills, copy this file to `.claude/skills/dolmen/SKILL.md`.
+
+If the `dolmen` MCP tools are not connected, do not improvise — ask the user to re-run the
+connection command above.
 
 ## Working rules
 
 1. **Check before creating.** Call `list_namespaces` then `list_tables` first; reuse an existing
    namespace or table when one fits. Only create tables for genuinely new kinds of data.
-2. **Prefer `infer_schema` → review → `create_table`.** Never invent a schema blind when sample
+2. **Inspect when the schema is unknown or may have changed.** Call `describe_table` to get its
+   schema, version, and row count. Use that to build correct `query` / `search_fulltext` /
+   `search_vector` calls and to avoid inventing field names. Avoid calling it before every read or
+   write on large tables — it runs a full `count(*)`, so cache the schema for the session.
+3. **Prefer `infer_schema` → review → `create_table`.** Never invent a schema blind when sample
    records exist. Note: inference proposes plain types only — during review, mark the main text
    field `vectorize: true` yourself if you want semantic recall (requires an embedding provider
    on the server). Keep tables small and purposeful — a sprawl of near-duplicate tables is a
    failure mode.
-3. **Record as you go.** After finishing a meaningful unit of work, `insert` a record summarizing it
+4. **Record as you go.** After finishing a meaningful unit of work, `insert` a record summarizing it
    (what/where/outcome). Future sessions recall it via search.
-4. **Read with the cheapest tool that answers the question:** `describe_table` → exact lookups via
+5. **Read with the cheapest tool that answers the question:** `describe_table` → exact lookups via
    `query` (SQL, read-only) → `search_fulltext` for keyword recall → `search_vector` for
    meaning-based recall.
-5. **Never write SQL that mutates.** `query` rejects it by design; use `insert`/`upsert_by_key`/`update`/`upsert`/`delete`/`migrate`.
-6. **Evolve, don't fork.** When a table is missing a field, use `migrate` (add_field, rename_field,
+6. **Never write SQL that mutates.** `query` rejects it by design; use `insert`/`upsert_by_key`/`update`/`upsert`/`delete`/`migrate`.
+7. **Evolve, don't fork.** When a table is missing a field, use `migrate` (add_field, rename_field,
    set_fulltext, set_vectorize) — do not create a parallel v2 table.
 
 ## Quick reference
@@ -44,9 +113,13 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
   both require `confirm` to repeat the exact name being dropped. Prefer `delete` unless the table or
   namespace itself must go.
 - `update`/`upsert` take the same `filter` plus a `set` object of field values; all matched rows get
-  the same values, and `set` to `null` clears a field. Indexes and embeddings stay consistent
-  automatically. `upsert` inserts `set` as one new record when the filter matches nothing (it must
-  then satisfy required fields) — the idempotent way to keep one row per key.
+  the same values, and `set` to `null` clears an optional field. Matched updates accept partial `set`
+  maps (missing required fields are not required), but `set` to `null` for a required field is
+  rejected. Only the insert branch of `upsert` (or `upsert_by_key` for an unmatched record) enforces
+  all required fields. Indexes and embeddings stay consistent automatically. `upsert` inserts `set`
+  as one new record when the filter matches nothing — but it is not retry-safe when `set` changes the
+  fields the filter matches on (a retry then matches nothing and inserts a duplicate); for
+  converging retries use `upsert_by_key` or an `idempotency_key`.
 - Every table has implicit `id` and `created_at` columns; `SELECT *` includes them.
 - Retried writes must not duplicate rows: pass `idempotency_key` (any unique string) to `insert`, or use `upsert_by_key` with `"on": [field, ...]` naming the record's natural key (e.g. email, url) when the data identifies itself.
 - Results honor declared field types in every read (`query`, `search_fulltext`, `search_vector`):
@@ -87,7 +160,7 @@ characters may not normalize), no stemming. Most punctuation (including hyphens)
 - `payment gateway` — implicit `AND`.
 - `payment OR gateway`.
 - `payment NOT gateway`.
-- `title:payment` — only the `title` fulltext field.
+- `title:payment` — only in the `title` fulltext field.
 - `{title body}:payment` — any of those fields.
 - `"foo bar"` — phrase (adjacent tokens). Phrases match token adjacency, not literal punctuation.
 - `"foo-bar"` — double-quote terms that contain spaces or punctuation; bare `foo-bar` is parsed as
@@ -130,28 +203,76 @@ negative — value and are returned first. The rank value itself is not returned
 - `created_at` is a UTC millisecond ISO string, e.g. `2026-09-03T12:34:56.123Z`. Use string
   comparisons or SQLite date/time functions.
 
-### Limits and performance
+### Limits and guardrails
 
-- `query` caps at 1000 rows and 32 MiB; `truncated: true` if more rows exist.
-- `search_fulltext` and `search_vector` default to 10, max 200, 32 MiB budget.
-- `insert` up to 1000 records per call; chunk larger batches.
-- `create_table` up to 100 user fields.
-- Vector search is brute-force; fine for low millions. FTS5 uses an index and is fast.
+| Resource | Limit | Behavior |
+|---|---|---|
+| Namespace name | `^[a-z0-9][a-z0-9_-]{0,63}$` (max 64 chars) | rejected |
+| Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
+| Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
+| Records per `insert` / `upsert_by_key` | 1,000 | rejected |
+| Natural key fields per `upsert_by_key` | 8 | rejected |
+| Idempotency key length | 1–256 bytes; use printable ASCII; omit the field for a non-idempotent insert | empty and over-256-byte keys are rejected; the JSON Schema enforces non-empty printable ASCII for schema-validating clients |
+| Vector dimension (declared `vector` fields) | 1–4096 | rejected |
+| Search `limit` | default 10, max 200 | omit `limit` for the default of 10; the tool schema enforces 1–200 for schema-validating clients, and the server clamps values above 200 to 200 (0 or negative selects the default on direct `/v1` calls) |
+| `query` result rows | 1,000 | truncated with `truncated: true` |
+| `query` / search result size | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
+| Request body | 32 MiB | rejected |
+| `query` `args` | 100 | rejected |
+| `infer_schema` samples | 1–50 | rejected |
+
+Vector search is brute-force (fine into the low millions of rows); FTS5 uses an inverted index and
+is much faster.
+
+Validation notes:
+
+- `number` becomes `int64` or `float64`: integral values within the int64 range become `int64`;
+  unsigned Go values > `MaxInt64` are rejected, and integral JSON numbers outside the int64 range
+  become `float64` (precision loss).
+- `timestamp` must be a parseable ISO/RFC3339 string.
+- `vector` must be a number array of exactly the declared `dim`; `NaN`/`Inf` are rejected. The
+  4096-dimension cap applies only to declared `vector` fields; `vectorize` records the provider's
+  returned dimension.
+- Unknown field keys are rejected. Missing or `null` required fields are rejected on `insert` and on
+  the insert branch of `upsert`/`upsert_by_key`.
+- Namespace and table names are trimmed and lowercased before validation on direct `/v1` requests,
+  so `"namespace":" Production "` operates on `production`. The MCP tool schemas require
+  already-canonical names — always send trimmed lowercase names.
+- `query` accepts only `SELECT`/`WITH`, rejects embedded semicolons (trailing semicolons are accepted),
+  and binds at most 100 `args`.
+- `search_vector` with `text` requires a provider and searches only the server-managed `_embedding`
+  column produced by a `vectorize: true` field — the provider identity must match the one that
+  embedded the table, and a `text` query naming a declared `vector` column is rejected. Searches
+  with a caller-supplied `vector` need no provider and are not checked against any embedding
+  space — only you know which model produced the stored and query vectors.
+- `insert` with an `idempotency_key`: the same key + same records replays the original ids; the same
+  key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes.
 
 ## Typical flows
 
 Store session findings:
 
 ```
-describe_table(namespace="research", table="findings")   → missing →
-infer_schema(samples=[{...one finding...}])               → review proposal →
-create_table(namespace="research", table="findings", fields=[...])
-insert(namespace="research", table="findings", records=[{...}])
+list_tables(namespace="research")                       → review names →
+describe_table(namespace="research", table="findings")
+  → missing:
+    infer_schema(samples=[{...one finding...}])         → review proposal →
+    create_table(namespace="research", table="findings", fields=[...])
+    insert(namespace="research", table="findings", records=[{...}])
+  → exists but wrong shape:
+    use migrate for the supported changes (add_field/rename_field/drop_field/set_fulltext/
+    set_vectorize) — do not create a v2 table. add_field with a `default` can add a required
+    field to a populated table (backfilled as NOT NULL DEFAULT). If the mismatch is outside those
+    operations (e.g., changing a field type, or adding a required field with no suitable default),
+    stop and ask the user before rebuilding or backfilling.
+  → exists and fits:
+    insert(namespace="research", table="findings", records=[{...}])
 ```
 
 Recall in a later session:
 
 ```
+describe_table(namespace="research", table="findings")                  # confirm fields
 search_fulltext(namespace="research", table="findings", query="auth")   # needs a fulltext field;
                                                                        # search_vector with text needs a
                                                                        # vectorize field plus a provider

@@ -318,8 +318,8 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				return nil, invalidf("add_field needs a field object")
 			}
 			f := schema.Normalize([]schema.Field{*ch.Field})[0]
-			if !schema.ValidIdent(f.Name) {
-				return nil, invalidf("invalid field name %q", f.Name)
+			if err := schema.ValidateIdent(f.Name, "field name"); err != nil {
+				return nil, invalidf("%s", err)
 			}
 			for _, ef := range cur.Fields {
 				if ef.Name == f.Name {
@@ -426,8 +426,8 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				})
 			}
 		case schema.OpRenameField:
-			if !schema.ValidIdent(ch.To) {
-				return nil, invalidf("invalid new field name %q", ch.To)
+			if err := schema.ValidateIdent(ch.To, "new field name"); err != nil {
+				return nil, invalidf("%s", err)
 			}
 			f, err := findField(ch.From)
 			if err != nil {
@@ -529,7 +529,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 	if len(plan.Destructive) > 0 && expectedVersion == 0 {
 		return nil, invalidf("destructive changes require expected_version (from describe_table) so a stale plan cannot run against a schema that moved on: %s", strings.Join(plan.Destructive, "; "))
 	}
-	if err := schema.Validate(cur.Fields); err != nil {
+	if err := schema.ValidateForMigration(cur.Fields, old.Fields); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	if len(ftsFields(cur.Fields)) == 0 && len(ftsFields(old.Fields)) > 0 {

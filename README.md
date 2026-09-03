@@ -17,13 +17,186 @@ tables plus search plus an agent-native interface.
 
 ## Quickstart
 
+### Prerequisites
+
+- [Go 1.26.5+](https://go.dev/dl/) (only to build; the binary is otherwise standalone).
+- Git.
+- Optional: an OpenAI-compatible embedding endpoint if you want `vectorize` fields or text queries
+  in `search_vector` — OpenAI, Ollama, vLLM, or any compatible local server.
+
+### Build and run
+
 ```bash
+git clone https://github.com/lsm/dolmen.git
+cd dolmen
 CGO_ENABLED=0 go build -o dolmen .
 ./dolmen -addr 127.0.0.1:8790 -data ./data
 ```
 
-Optional embedding provider (enables `vectorize` fields and text queries in `search_vector`;
-any OpenAI-compatible endpoint works — OpenAI, Ollama, vLLM):
+On Windows (PowerShell):
+
+```powershell
+git clone https://github.com/lsm/dolmen.git
+cd dolmen
+$env:CGO_ENABLED = 0
+go build -o dolmen.exe .
+.\dolmen.exe -addr 127.0.0.1:8790 -data ./data
+```
+
+The first run creates the data directory (`./data` by default). On Unix it is opened with
+owner-only permissions (`0700` for the directory, `0600` for files); on Windows the permission bits
+only toggle the read-only attribute, so use NTFS ACLs for owner-only isolation. By default the server
+binds to `127.0.0.1:8790` and does **not** authenticate, so keep it on a private interface.
+
+### Health check
+
+Bash:
+
+```bash
+curl -s http://127.0.0.1:8790/healthz
+```
+
+Windows PowerShell:
+
+```powershell
+curl.exe -s http://127.0.0.1:8790/healthz
+```
+
+Expected output:
+
+```json
+{"status":"ok"}
+```
+
+All successful `/v1/{operation}` POSTs return `{"ok":true,"data":{...}}`; errors return
+`{"ok":false,"error":{"code":"...","message":"..."}}` — plus `request_id` inside `error` when the
+request carried an `X-Request-Id` — with a matching 4xx/5xx status. Error codes are stable for
+branching: `invalid_request`, `not_found`, `query_error`, `conflict`, `forbidden`, `internal_error`.
+The one exception is `GET /v1/openapi.json`, which serves the raw OpenAPI document.
+`/healthz` returns `{"status":"ok"}` and `/mcp` returns JSON-RPC responses.
+
+### First API calls
+
+These examples are shown with Bash `curl`. Windows PowerShell variants follow each command; use
+`curl.exe` (PowerShell's `curl` is an alias for `Invoke-WebRequest`), double quotes around the `-H`
+value, and single quotes around the one-line JSON payload with each inner `"` escaped as `\"` —
+Windows PowerShell 5.1 strips unescaped inner quotes when invoking native commands, which corrupts
+the JSON. Expected outputs are identical.
+
+Create a table:
+
+```bash
+curl -s localhost:8790/v1/create_table -H 'Content-Type: application/json' -d '{
+  "namespace": "myapp", "table": "events",
+  "fields": [
+    {"name": "title", "type": "string", "fulltext": true},
+    {"name": "detail", "type": "text"},
+    {"name": "score", "type": "number"},
+    {"name": "embedding", "type": "vector", "dim": 4}
+  ]
+}'
+```
+
+Windows PowerShell:
+
+```powershell
+curl.exe -s http://127.0.0.1:8790/v1/create_table -H "Content-Type: application/json" -d '{\"namespace\":\"myapp\",\"table\":\"events\",\"fields\":[{\"name\":\"title\",\"type\":\"string\",\"fulltext\":true},{\"name\":\"detail\",\"type\":\"text\"},{\"name\":\"score\",\"type\":\"number\"},{\"name\":\"embedding\",\"type\":\"vector\",\"dim\":4}]}'
+```
+
+Expected output (schema summary, `version` starts at `1`):
+
+```json
+{"ok":true,"data":{"table":{"namespace":"myapp","name":"events","version":1,"fields":[{"name":"title","type":"string","fulltext":true},{"name":"detail","type":"text"},{"name":"score","type":"number"},{"name":"embedding","type":"vector","dim":4}]}}}
+```
+
+Insert a record:
+
+```bash
+curl -s localhost:8790/v1/insert -H 'Content-Type: application/json' -d '{
+  "namespace": "myapp", "table": "events",
+  "records": [{"title": "first bug", "detail": "token expiry not checked", "score": 0.75, "embedding": [0.5, 0.25, -0.5, 0.0]}]
+}'
+```
+
+Windows PowerShell:
+
+```powershell
+curl.exe -s http://127.0.0.1:8790/v1/insert -H "Content-Type: application/json" -d '{\"namespace\":\"myapp\",\"table\":\"events\",\"records\":[{\"title\":\"first bug\",\"detail\":\"token expiry not checked\",\"score\":0.75,\"embedding\":[0.5,0.25,-0.5,0.0]}]}'
+```
+
+Expected output:
+
+```json
+{"ok":true,"data":{"ids":[1],"inserted":1}}
+```
+
+Search full text:
+
+```bash
+curl -s localhost:8790/v1/search_fulltext -H 'Content-Type: application/json' -d '{
+  "namespace": "myapp", "table": "events", "query": "bug"
+}'
+```
+
+Windows PowerShell:
+
+```powershell
+curl.exe -s http://127.0.0.1:8790/v1/search_fulltext -H "Content-Type: application/json" -d '{\"namespace\":\"myapp\",\"table\":\"events\",\"query\":\"bug\"}'
+```
+
+Expected output:
+
+```json
+{"ok":true,"data":{"results":[{"id":1,"created_at":"...","title":"first bug","detail":"token expiry not checked","score":0.75,"embedding":[0.5,0.25,-0.5,0.0]}],"truncated":false}}
+```
+
+Raw vector search on a caller-supplied embedding column (no provider needed; `text` queries instead
+require a `vectorize` field plus a provider):
+
+```bash
+curl -s localhost:8790/v1/search_vector -H 'Content-Type: application/json' -d '{
+  "namespace": "myapp", "table": "events", "vector": [0.5, 0.25, -0.5, 0.0]
+}'
+```
+
+Windows PowerShell:
+
+```powershell
+curl.exe -s http://127.0.0.1:8790/v1/search_vector -H "Content-Type: application/json" -d '{\"namespace\":\"myapp\",\"table\":\"events\",\"vector\":[0.5,0.25,-0.5,0.0]}'
+```
+
+Run read-only SQL:
+
+```bash
+curl -s localhost:8790/v1/query -H 'Content-Type: application/json' -d '{
+  "namespace": "myapp", "sql": "SELECT title, score FROM events WHERE score > ?", "args": [0.5]
+}'
+```
+
+Windows PowerShell:
+
+```powershell
+curl.exe -s http://127.0.0.1:8790/v1/query -H "Content-Type: application/json" -d '{\"namespace\":\"myapp\",\"sql\":\"SELECT title, score FROM events WHERE score > ?\",\"args\":[0.5]}'
+```
+
+Update rows matching a WHERE filter (and `upsert` inserts when nothing matches):
+
+```bash
+curl -s localhost:8790/v1/update -H 'Content-Type: application/json' -d '{
+  "namespace": "myapp", "table": "events", "filter": "score > ?", "args": [0.5],
+  "set": {"score": 0.5, "title": "triaged bug"}
+}'
+```
+
+Windows PowerShell:
+
+```powershell
+curl.exe -s http://127.0.0.1:8790/v1/update -H "Content-Type: application/json" -d '{\"namespace\":\"myapp\",\"table\":\"events\",\"filter\":\"score > ?\",\"args\":[0.5],\"set\":{\"score\":0.5,\"title\":\"triaged bug\"}}'
+```
+
+### Optional: embeddings
+
+Bash:
 
 ```bash
 DOLMEN_EMBED_PROVIDER=openai \
@@ -36,6 +209,21 @@ DOLMEN_EMBED_PROVIDER=openai \
 DOLMEN_EMBED_BASE_URL=http://localhost:11434/v1 \
 DOLMEN_EMBED_MODEL=nomic-embed-text \
 ./dolmen
+```
+
+Windows PowerShell:
+
+```powershell
+$env:DOLMEN_EMBED_PROVIDER = "openai"
+$env:DOLMEN_EMBED_API_KEY = "sk-..."
+$env:DOLMEN_EMBED_MODEL = "text-embedding-3-small"
+.\dolmen.exe
+
+# OpenAI-compatible local endpoints (Ollama, vLLM):
+$env:DOLMEN_EMBED_PROVIDER = "openai"
+$env:DOLMEN_EMBED_BASE_URL = "http://localhost:11434/v1"
+$env:DOLMEN_EMBED_MODEL = "nomic-embed-text"
+.\dolmen.exe
 ```
 
 ## Configuration
@@ -55,52 +243,16 @@ variables. Unknown flags and positional arguments are rejected with an error.
 | — | `DOLMEN_EMBED_API_KEY` | — | API key for an OpenAI-compatible provider. If set (even to `""`), it takes precedence over `OPENAI_API_KEY` |
 | — | `OPENAI_API_KEY` | — | Fallback API key when `DOLMEN_EMBED_API_KEY` is unset |
 
-### HTTP API
-
-```bash
-curl -s localhost:8790/v1/create_table -H 'Content-Type: application/json' -d '{
-  "namespace": "myapp", "table": "events",
-  "fields": [
-    {"name": "title", "type": "string", "fulltext": true},
-    {"name": "detail", "type": "text"},
-    {"name": "score", "type": "number"},
-    {"name": "embedding", "type": "vector", "dim": 4}
-  ]
-}'
-
-curl -s localhost:8790/v1/insert -H 'Content-Type: application/json' -d '{
-  "namespace": "myapp", "table": "events",
-  "records": [{"title": "first bug", "detail": "token expiry not checked", "score": 0.9, "embedding": [0.1, 0.2, 0.3, 0.4]}]
-}'
-
-curl -s localhost:8790/v1/search_fulltext -H 'Content-Type: application/json' -d '{
-  "namespace": "myapp", "table": "events", "query": "bug"
-}'
-
-# raw-vector search on the caller-supplied embedding column (no provider needed;
-# "text" queries instead require a vectorize field plus a provider — see below)
-curl -s localhost:8790/v1/search_vector -H 'Content-Type: application/json' -d '{
-  "namespace": "myapp", "table": "events", "vector": [0.1, 0.2, 0.3, 0.4]
-}'
-
-curl -s localhost:8790/v1/query -H 'Content-Type: application/json' -d '{
-  "namespace": "myapp", "sql": "SELECT title, score FROM events WHERE score > ?", "args": [0.5]
-}'
-
-# update rows matching a WHERE filter (upsert inserts when nothing matches)
-curl -s localhost:8790/v1/update -H 'Content-Type: application/json' -d '{
-  "namespace": "myapp", "table": "events", "filter": "score < ?", "args": [0.5],
-  "set": {"score": 0.5, "title": "triaged bug"}
-}'
-```
-
-### MCP (agents)
+## MCP (agents)
 
 ```bash
 claude mcp add --transport http dolmen http://127.0.0.1:8790/mcp
 ```
 
 The MCP server exposes the same eighteen operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
+
+The file `skill/DOLMEN_SKILL.md` is the reference prompt for the dolmen skill; if your workspace
+supports project skills, place a copy at `.claude/skills/dolmen/SKILL.md`.
 
 ## Tools
 
@@ -245,14 +397,72 @@ Every row has two implicit columns:
 
 `SELECT *` includes both columns.
 
-### Limits and performance
+## Limits and guardrails
 
-- `query` returns at most 1000 rows and 32 MiB; `truncated: true` when more rows exist.
-- `search_fulltext` and `search_vector` default to 10 results, max 200, and share the 32 MiB budget.
-- `insert` accepts up to 1000 records per call; chunk larger batches.
-- `create_table` allows up to 100 user fields per table.
-- Vector search is a brute-force cosine scan in Go: fine into the low millions of rows, but it has no
-  approximate index. FTS5 uses an inverted index and is much faster.
+| Resource | Limit | Behavior when exceeded |
+|---|---|---|
+| Namespace name | `^[a-z0-9][a-z0-9_-]{0,63}$` (max 64 chars) | rejected |
+| Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
+| Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
+| Records per `insert` / `upsert_by_key` | 1,000 | rejected |
+| Natural key fields per `upsert_by_key` | 8 | rejected |
+| Idempotency key length | 1–256 bytes; use printable ASCII (`[ -~]`); omit the field for a non-idempotent insert | empty and over-256-byte keys are rejected; the JSON Schema enforces non-empty printable ASCII for schema-validating clients |
+| Vector dimension (declared `vector` fields) | 1–4096 | rejected |
+| Search `limit` (`search_fulltext`, `search_vector`) | default 10, hard max 200 | omit `limit` for the default of 10; the tool schema enforces 1–200 for schema-validating clients, and the server clamps values above 200 to 200 (0 or negative selects the default on direct `/v1` calls) |
+| `query` result rows | 1,000 | truncated; `truncated` is `true` in the response |
+| `query` / search result bytes | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
+| Request body size | 32 MiB | rejected with `413 Request Entity Too Large` |
+| `query` `args` | 100 | rejected |
+| `infer_schema` samples | 1–50 | rejected |
+| Column label in `query` | 4096 bytes | rejected |
+
+Coercion and validation rules:
+
+- `number`: JSON numbers and Go numeric types become `int64` when integral and within the int64
+  range, otherwise `float64`. Unsigned Go integer values larger than `math.MaxInt64` are rejected;
+  integral JSON numbers outside the int64 range are stored as `float64` (precision loss).
+- `boolean`: stored as `0` or `1`; returned as `true`/`false`.
+- `timestamp`: stored as RFC3339/ISO strings with minimal canonicalization (whitespace trimmed,
+  lowercase `t`/`z` uppercased; offsets and date-only/space-separated forms are preserved as
+  given). Accepted forms include `YYYY-MM-DD`, `YYYY-MM-DD HH:MM:SS`, and
+  `YYYY-MM-DDTHH:MM:SS[±HH:MM|Z]`; offsets must be ≤ `±23:59`. Mixed-offset values do not sort
+  chronologically as strings — normalize to UTC before storing if you order by this field.
+- `json`: stored as JSON text; returned as the decoded value.
+- `vector`: stored as a float32 blob. Input must be a number array of exactly the declared dimension;
+  `NaN`, `Inf`, and out-of-range values are rejected. The 4096-dimension cap in the table above
+  applies only to manually declared `vector` fields; `vectorize: true` records the provider's
+  returned dimension.
+- `string` / `text`: stored as TEXT.
+- Unknown field keys are rejected. Required fields missing or `null` are rejected on `insert` and on
+  the insert branch of `upsert`/`upsert_by_key`; `update` and matched `upsert`/`upsert_by_key` accept
+  partial `set` maps and only reject setting a required field to `null`.
+- `query` only accepts `SELECT` or `WITH` statements, rejects embedded semicolons (no multiple
+  statements), and binds at most 100 `args`.
+- On direct `/v1` requests, namespace and table names are trimmed and lowercased before validation,
+  so `namespace: " Production "` silently operates on `production`. The MCP tool schemas require
+  already-canonical names, so schema-validating clients must send trimmed lowercase names.
+- `insert` with an `idempotency_key`: the same key and the same records replay the original ids; the
+  same key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes.
+- `search_vector` with `text` requires a provider and searches only the server-managed `_embedding`
+  column produced by a `vectorize: true` field — the provider identity must match the one that
+  embedded the table, and a `text` query naming a declared `vector` column is rejected. Searches
+  with a caller-supplied `vector` need no provider and are not checked against any embedding
+  space — only you know which model produced the stored and query vectors.
+
+## Platform and filesystem support
+
+Dolmen uses [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite), a pure-Go SQLite driver, so
+no CGO is required.
+
+| Concern | Policy |
+|---|---|
+| Operating systems | Linux, macOS, and Windows are supported. |
+| Filesystem | Local filesystems (ext4, APFS, NTFS, etc.) are required. SQLite WAL uses shared-memory coordination that does not work reliably over network or shared filesystems (NFS, SMB); these are unsupported and the first namespace open may fail or operate without WAL locking guarantees. |
+| WAL | Enabled per namespace (`journal_mode=WAL`, `synchronous=NORMAL`). Expect `<ns>.db`, `<ns>.db-wal`, and `<ns>.db-shm` files. |
+| Permissions | On Unix the data directory is created `0700` and namespace `.db`/`-wal`/`-shm` files are set `0600` (owner only); on Windows `os.Chmod` only toggles the read-only attribute, so use NTFS ACLs for owner-only isolation. Permission failures surface when a namespace is first opened, not necessarily at server startup, so `/healthz` can succeed before that point. |
+| Locking | Each namespace has one writer connection (`MaxOpenConns=1`) with `BEGIN IMMEDIATE` locking, plus a separate read-only connection pool. WAL mode allows multiple concurrent readers, but only one writer per file at a time. |
+| Multi-process | SQLite's file locking makes concurrent processes safe in principle, but running two dolmen servers against the same data directory can cause `database is locked` errors and is not recommended. |
+| Deleting a namespace | Prefer `drop_namespace` (confirm-guarded, closes the server's own connections first). Manually: stop the dolmen process, then delete the three `<ns>.db*` files. |
 
 ## Not yet (deliberately)
 

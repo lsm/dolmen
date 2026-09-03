@@ -71,8 +71,11 @@ func normalizeKeyFields(keyFields []string) ([]string, error) {
 	seen := map[string]bool{}
 	for i, k := range keyFields {
 		lk := strings.ToLower(strings.TrimSpace(k))
-		if !schema.ValidIdent(lk) {
-			return nil, invalidf("invalid key field %q: must match ^[a-z][a-z0-9_]{0,63}$ and not be reserved", k)
+		// Syntax only: key fields reference existing table fields, which may
+		// predate the SQL-keyword restriction. The schema lookup in
+		// upsertKeyAttempt verifies the field actually exists.
+		if !schema.ValidIdentSyntax(lk) {
+			return nil, invalidf("invalid key field %q: must match ^[a-z][a-z0-9_]{0,63}$", k)
 		}
 		if seen[lk] {
 			return nil, invalidf("duplicate key field %q", lk)

@@ -45,10 +45,22 @@ func fieldNameProp(desc string) map[string]any {
 	return map[string]any{
 		"type":        "string",
 		"description": desc,
-		"pattern":     `^[a-z][a-z0-9_]{0,63}$`,
+		"pattern":     schema.IdentPattern(),
 		"not": map[string]any{
-			"enum": []string{"id", "created_at", "_embedding", "_score", "_rank", "rowid"},
+			"enum": schema.ReservedFieldNames(),
 		},
+	}
+}
+
+// existingFieldNameProp matches any syntactically valid field name, including
+// legacy keyword or reserved names that existed before the stricter rules. It
+// is used for migration references (from, name) so clients can rename or drop
+// fields created under the old validation.
+func existingFieldNameProp(desc string) map[string]any {
+	return map[string]any{
+		"type":        "string",
+		"description": desc,
+		"pattern":     `^[a-z][a-z0-9_]{0,63}$`,
 	}
 }
 
@@ -60,10 +72,10 @@ func fieldItemSchema(desc string) map[string]any {
 		"properties": map[string]any{
 			"name": map[string]any{
 				"type":        "string",
-				"description": "Field name (lowercase, [a-z0-9_], max 64 chars)",
-				"pattern":     `^[a-z][a-z0-9_]{0,63}$`,
+				"description": "Field name (lowercase [a-z0-9_], max 64 chars; not a SQLite/SQL keyword or reserved name)",
+				"pattern":     schema.IdentPattern(),
 				"not": map[string]any{
-					"enum": []string{"id", "created_at", "_embedding", "_score", "_rank", "rowid"},
+					"enum": schema.ReservedFieldNames(),
 				},
 			},
 			"type": map[string]any{
@@ -133,22 +145,21 @@ func tableProp(desc string) map[string]any {
 	return map[string]any{
 		"type":        "string",
 		"description": desc,
-		"pattern":     `^[a-z][a-z0-9_]{0,63}$`,
+		"pattern":     schema.IdentPattern(),
 		"not": map[string]any{
 			"anyOf": []any{
 				map[string]any{"pattern": "__fts"},
 				map[string]any{"pattern": "^sqlite_"},
 				map[string]any{"pattern": "^pragma_"},
-				map[string]any{"enum": []string{"id", "created_at", "rowid", "dbstat"}},
+				map[string]any{"enum": schema.ReservedTableNames()},
 			},
 		},
 	}
 }
 
-// existingTableProp describes a table name for operations that reference an
-// existing table. Namespaces created before pragma_*/dbstat were reserved may
-// hold grandfathered tables with those names, so only never-creatable patterns
-// are excluded here; create_table keeps the stricter tableProp.
+// existingTableProp matches any syntactically valid table name, including
+// legacy keyword or reserved names that were accepted by earlier releases. It
+// keeps the __fts and sqlite_ guards because those are never valid user tables.
 func existingTableProp(desc string) map[string]any {
 	return map[string]any{
 		"type":        "string",
@@ -158,7 +169,6 @@ func existingTableProp(desc string) map[string]any {
 			"anyOf": []any{
 				map[string]any{"pattern": "__fts"},
 				map[string]any{"pattern": "^sqlite_"},
-				map[string]any{"enum": []string{"id", "created_at", "rowid"}},
 			},
 		},
 	}
