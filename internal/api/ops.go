@@ -678,7 +678,8 @@ var Ops = map[string]OpDef{
 	},
 	"delete": {
 		Description: "Delete rows matching a SQL WHERE expression (e.g. \"status = 'done'\" or \"id IN (3, 7)\"). " +
-			"Rows are also removed from search indexes. The filter is required; pass \"1=1\" to empty the table.",
+			"Rows are also removed from search indexes. Use dry_run to preview the matched count, limit to set a safe threshold, " +
+			"and confirm: true to delete beyond the threshold. Without an explicit limit, deletes beyond " + fmt.Sprintf("%d", store.DefaultDeleteLimit) + " matching rows require confirm: true.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -702,22 +703,46 @@ var Ops = map[string]OpDef{
 						},
 					},
 				},
+				"dry_run": prop("boolean", "If true, only count matching rows and do not delete; returns matched with deleted: 0"),
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Maximum number of matching rows that can be deleted without confirmation; if more rows match, confirm: true is required",
+					"minimum":     1,
+				},
+				"confirm": prop("boolean", "If true, allow the delete to proceed when the number of matching rows exceeds the limit (or the default limit if no limit is set)"),
 			},
 			"required": []string{"namespace", "table", "filter"},
 		},
 		OutputSchema: outSchema(map[string]any{
-			"deleted": prop("integer", "Number of rows deleted"),
-		}, "deleted"),
+			"matched": prop("integer", "Number of rows matching the filter"),
+			"deleted": prop("integer", "Number of rows actually deleted (0 when dry_run is true)"),
+		}, "matched", "deleted"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req deleteReq
 			if err := decodeData(body, &req); err != nil {
 				return nil, err
 			}
-			deleted, err := s.st.Delete(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args)
+			dryRun, err := parseOptBool(req.DryRun, "dry_run")
+			if err != nil {
+				return nil, err
+			}
+			limit, err := parseOptPosInt(req.Limit, "limit")
+			if err != nil {
+				return nil, err
+			}
+			confirm, err := parseOptBool(req.Confirm, "confirm")
+			if err != nil {
+				return nil, err
+			}
+			res, err := s.st.Delete(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args, store.DeleteOptions{
+				DryRun:  dryRun,
+				Limit:   limit,
+				Confirm: confirm,
+			})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"deleted": deleted}, nil
+			return map[string]any{"matched": res.Matched, "deleted": res.Deleted}, nil
 		},
 	},
 	"update": {
@@ -1070,10 +1095,44 @@ type vecReq struct {
 }
 
 type deleteReq struct {
-	Namespace string `json:"namespace"`
-	Table     string `json:"table"`
-	Filter    string `json:"filter"`
-	Args      []any  `json:"args"`
+	Namespace string          `json:"namespace"`
+	Table     string          `json:"table"`
+	Filter    string          `json:"filter"`
+	Args      []any           `json:"args"`
+	DryRun    json.RawMessage `json:"dry_run,omitempty"`
+	Limit     json.RawMessage `json:"limit,omitempty"`
+	Confirm   json.RawMessage `json:"confirm,omitempty"`
+}
+
+func parseOptBool(raw json.RawMessage, what string) (bool, error) {
+	if len(raw) == 0 {
+		return false, nil
+	}
+	if string(bytes.TrimSpace(raw)) == "null" {
+		return false, badRequest("%s must be a boolean", what)
+	}
+	var v bool
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return false, badRequest("%s must be a boolean", what)
+	}
+	return v, nil
+}
+
+func parseOptPosInt(raw json.RawMessage, what string) (int, error) {
+	if len(raw) == 0 {
+		return 0, nil
+	}
+	if string(bytes.TrimSpace(raw)) == "null" {
+		return 0, badRequest("%s must be an integer", what)
+	}
+	var v int
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return 0, badRequest("%s must be an integer", what)
+	}
+	if v < 1 {
+		return 0, badRequest("%s must be at least 1", what)
+	}
+	return v, nil
 }
 
 type updateReq struct {
