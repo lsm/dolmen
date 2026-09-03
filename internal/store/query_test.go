@@ -479,6 +479,11 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"compound", "SELECT * FROM notes EXCEPT SELECT * FROM sqlite_master"},
 		{"quoted reserved", `SELECT * FROM "_dolmen_tables"`},
 		{"bracketed reserved", "SELECT * FROM [sqlite_master]"},
+		{"parenthesized reserved", "SELECT * FROM (_dolmen_tables)"},
+		{"parenthesized join list reserved", "SELECT * FROM (notes JOIN _dolmen_tables ON notes.id = _dolmen_tables.rowid)"},
+		{"pragma table list", "SELECT * FROM pragma_table_list()"},
+		{"pragma table info reserved", "SELECT * FROM pragma_table_info('_dolmen_tables')"},
+		{"pragma table xinfo reserved", "SELECT * FROM pragma_table_xinfo('sqlite_master')"},
 	}
 
 	for _, tc := range cases {
@@ -517,6 +522,11 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		"SELECT * FROM notes /* _dolmen_tables */",
 		"SELECT * FROM notes WHERE title = '-- _dolmen_tables'",
 		"SELECT count(*) FROM (SELECT * FROM notes)",
+		"SELECT * FROM (notes)",
+		"SELECT n.id FROM (notes n JOIN users u ON n.id = u.id)",
+		"WITH cte AS (VALUES (1, 'x')) SELECT * FROM cte",
+		"SELECT * FROM (VALUES (1, 2)) AS t",
+		"SELECT * FROM pragma_table_info('notes')",
 	}
 
 	for _, q := range ok {

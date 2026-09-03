@@ -310,6 +310,72 @@ func isKeyword(t token, kw string) bool {
 	return t.typ == "ident" && !isQuotedIdent(t.val) && strings.EqualFold(t.val, kw)
 }
 
+func unquoteString(v string) string {
+	if len(v) >= 2 && v[0] == '\'' && v[len(v)-1] == '\'' {
+		return strings.ReplaceAll(v[1:len(v)-1], "''", "'")
+	}
+	return v
+}
+
+func (s *queryScanner) collectStringArgs() ([]string, error) {
+	var out []string
+	depth := 0
+	for {
+		t, err := s.next()
+		if err != nil {
+			return nil, err
+		}
+		if t.typ == "eof" {
+			return nil, invalidf("unterminated pragma argument list")
+		}
+		if t.val == "(" {
+			depth++
+			continue
+		}
+		if t.val == ")" {
+			if depth == 0 {
+				return out, nil
+			}
+			depth--
+			continue
+		}
+		if t.typ == "string" {
+			out = append(out, unquoteString(t.val))
+		}
+	}
+}
+
+func isPragmaFunction(rawName string) bool {
+	return strings.HasPrefix(strings.ToLower(unquoteIdent(rawName)), "pragma_")
+}
+
+func (s *queryScanner) parsePragmaArgs(schema, rawName string) error {
+	if err := s.expect("("); err != nil {
+		return err
+	}
+	args, err := s.collectStringArgs()
+	if err != nil {
+		return err
+	}
+	name := unquoteIdent(rawName)
+	if schema != "" {
+		name = unquoteIdent(schema) + "." + name
+	}
+	if len(args) == 0 {
+		return invalidf("query references reserved pragma %q", name)
+	}
+	for _, arg := range args {
+		base := arg
+		if i := strings.LastIndex(base, "."); i >= 0 {
+			base = base[i+1:]
+		}
+		if !isUserTable(base) {
+			return invalidf("query references reserved table %q via %s", base, name)
+		}
+	}
+	return nil
+}
+
 var selectStop = map[string]bool{
 	")":         true,
 	"union":     true,
@@ -399,6 +465,13 @@ func (s *queryScanner) parseStatement() error {
 		if err := s.parseWith(); err != nil {
 			return err
 		}
+	} else if isKeyword(t, "values") {
+		// CTE bodies may be VALUES lists; they contain no table references, but
+		// we still scan them so nested subqueries are inspected.
+		if _, err := s.scanUntil(map[string]bool{")": true}); err != nil {
+			return err
+		}
+		return nil
 	} else if !isKeyword(t, "select") {
 		return invalidf("only SELECT/WITH statements are allowed")
 	}
@@ -593,10 +666,38 @@ func (s *queryScanner) parseTableFactor() error {
 	}
 
 	if t.val == "(" {
-		if err := s.scanParenthesized(); err != nil {
-			return err
+		s.next() // consume (
+
+		t2, _ := s.peek()
+		switch {
+		case isKeyword(t2, "select") || isKeyword(t2, "with"):
+			if err := s.parseStatement(); err != nil {
+				return err
+			}
+			if err := s.expect(")"); err != nil {
+				return err
+			}
+			return s.skipOptionalAlias()
+		case isKeyword(t2, "values"):
+			// VALUES table expressions contain no table references; skip to the
+			// matching ) while still inspecting any nested subqueries.
+			if _, err := s.scanUntil(map[string]bool{")": true}); err != nil {
+				return err
+			}
+			if err := s.expect(")"); err != nil {
+				return err
+			}
+			return s.skipOptionalAlias()
+		default:
+			// Parenthesized table or join list: (notes), (a, b), (a JOIN b).
+			if err := s.parseTableList(); err != nil {
+				return err
+			}
+			if err := s.expect(")"); err != nil {
+				return err
+			}
+			return s.skipOptionalAlias()
 		}
-		return s.skipOptionalAlias()
 	}
 
 	if t.typ != "ident" {
@@ -623,9 +724,19 @@ func (s *queryScanner) parseTableFactor() error {
 	// by an argument list. The function name itself is not a table reference,
 	// but we still need to skip the argument list.
 	if t2, _ := s.peek(); t2.val == "(" {
-		if err := s.scanParenthesized(); err != nil {
-			return err
+		if isPragmaFunction(name) {
+			if err := s.parsePragmaArgs(schema, name); err != nil {
+				return err
+			}
+		} else {
+			if err := s.scanParenthesized(); err != nil {
+				return err
+			}
 		}
+	} else if isPragmaFunction(name) {
+		// Pragma virtual tables with no argument list (e.g. pragma_table_list)
+		// can enumerate internal tables; reject them outright.
+		return invalidf("query references reserved pragma %q", unquoteIdent(name))
 	}
 
 	if err := s.checkTableName(schema, name); err != nil {
