@@ -281,6 +281,7 @@ var Ops = map[string]OpDef{
 					"type":        "string",
 					"description": "Read-only SQL (SELECT/WITH)",
 					"minLength":   1,
+					"maxLength":   store.MaxQueryLen,
 					"pattern":     `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b[^;]*;*\s*$`,
 				},
 				"args": map[string]any{

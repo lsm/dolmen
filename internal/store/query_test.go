@@ -516,7 +516,7 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"nested expression bypass", "SELECT coalesce((SELECT 1), 0), schema_json FROM _dolmen_tables"},
 		{"excessive table paren nesting", "SELECT * FROM " + strings.Repeat("(", maxTableParens+1) + "notes" + strings.Repeat(")", maxTableParens+1)},
 		{"excessive statement nesting", "SELECT * FROM " + strings.Repeat("(SELECT * FROM ", maxStmtDepth+1) + "notes" + strings.Repeat(")", maxStmtDepth+1)},
-		{"excessive query length", "SELECT * FROM notes WHERE x = '" + strings.Repeat("x", maxQueryLen) + "'"},
+		{"excessive query length", "SELECT * FROM notes WHERE x = '" + strings.Repeat("x", MaxQueryLen) + "'"},
 	}
 
 	for _, tc := range cases {
@@ -572,6 +572,7 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		"WITH c AS MATERIALIZED (SELECT * FROM notes) SELECT * FROM c",
 		"WITH c AS NOT MATERIALIZED (SELECT * FROM notes) SELECT * FROM c",
 		"SELECT sum(score) OVER win FROM notes WINDOW win AS (ORDER BY id)",
+		"SELECT sum(score) OVER 'win' FROM notes WINDOW 'win' AS (ORDER BY id)",
 		"WITH sqlite_master(x) AS (VALUES(1)) SELECT x FROM sqlite_master",
 		"WITH _dolmen_tables(x) AS (VALUES(1)) SELECT x FROM _dolmen_tables",
 		"SELECT n.id FROM notes n JOIN sides s ON n.id = s.left",

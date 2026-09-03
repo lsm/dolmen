@@ -11,7 +11,7 @@ import (
 // reference internal or reserved tables. It walks the statement without
 // executing it, so it cannot be bypassed by quoting or string literals.
 func validateQueryTables(stmt string) error {
-	if len(stmt) > maxQueryLen {
+	if len(stmt) > MaxQueryLen {
 		return invalidf("query exceeds maximum length")
 	}
 	s := newQueryScanner(stmt)
@@ -26,7 +26,9 @@ func validateQueryTables(stmt string) error {
 const (
 	maxTableParens = 50
 	maxStmtDepth   = 20
-	maxQueryLen    = 1 << 20 // 1 MiB
+	// MaxQueryLen is the maximum size, in bytes, of a SQL statement accepted by
+	// the query validator.
+	MaxQueryLen = 1 << 20 // 1 MiB
 )
 
 type queryScanner struct {
@@ -455,7 +457,7 @@ func (s *queryScanner) isWindowClause() bool {
 		return false
 	}
 	name, err := s.next()
-	if err != nil || name.typ != "ident" {
+	if err != nil || (name.typ != "ident" && name.typ != "string") {
 		s.i, s.buf = start, startBuf
 		return false
 	}
