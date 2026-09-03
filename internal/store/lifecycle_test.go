@@ -156,7 +156,11 @@ func TestDropNamespaceWithConcurrentWriters(t *testing.T) {
 
 	// The namespace is either gone or — when a racing writer recreated the
 	// name after the drop — exists again but fresh: the old table must not
-	// survive in either case.
+	// survive in either case, and the post-drop namespace must be fully
+	// usable. A straggler connection from the evicted pools closing after the
+	// namespace's recreation deletes its WAL sidecars by path, leaving the
+	// new pools poisoned (read-only opens then fail with disk I/O errors) —
+	// evict drains precisely to prevent that.
 	tables, err := st.ListTables(ctx, "test")
 	if err != nil {
 		t.Fatalf("post-drop state must be queryable: %v", err)
@@ -165,6 +169,11 @@ func TestDropNamespaceWithConcurrentWriters(t *testing.T) {
 		if tb == "notes" {
 			t.Fatal("dropped table must not survive a concurrent recreate")
 		}
+	}
+	if _, err := st.CreateTable(ctx, "test", "fresh", []schema.Field{
+		{Name: "x", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("post-drop namespace must accept writes: %v", err)
 	}
 }
 

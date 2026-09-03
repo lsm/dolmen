@@ -138,31 +138,29 @@ func TestOpenAIMissingIndexRejected(t *testing.T) {
 	}
 }
 
-func TestFromEnvExplicitEmptyKeyOverridesFallback(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "secret")
-	t.Setenv("DOLMEN_EMBED_PROVIDER", "openai")
-	t.Setenv("DOLMEN_EMBED_MODEL", "m")
-	authSeen := ""
+func TestNewProviderOpenAIEmptyKey(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authSeen = r.Header.Get("Authorization")
+		if r.Header.Get("Authorization") != "" {
+			t.Errorf("no Authorization header expected for empty key")
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"data": []map[string]any{{"index": 0, "embedding": []float64{0.1, 0.2}}},
 		})
 	}))
 	defer srv.Close()
-	t.Setenv("DOLMEN_EMBED_BASE_URL", srv.URL)
-	t.Setenv("DOLMEN_EMBED_API_KEY", "")
-	p, ok := FromEnv().(*OpenAI)
+
+	p, err := NewProvider("openai", srv.URL, "m", "")
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	pAI, ok := p.(*OpenAI)
 	if !ok {
-		t.Fatalf("expected *OpenAI from FromEnv, got %T", FromEnv())
+		t.Fatalf("expected *OpenAI, got %T", p)
 	}
-	if p.APIKey != "" {
-		t.Fatalf("explicit empty DOLMEN_EMBED_API_KEY must suppress the OPENAI_API_KEY fallback, got %q", p.APIKey)
+	if pAI.APIKey != "" {
+		t.Fatalf("explicit empty API key must be preserved, got %q", pAI.APIKey)
 	}
-	if _, err := p.Embed(context.Background(), []string{"a"}); err != nil {
+	if _, err := pAI.Embed(context.Background(), []string{"a"}); err != nil {
 		t.Fatalf("embed: %v", err)
-	}
-	if authSeen != "" {
-		t.Fatalf("no Authorization header expected, got %q", authSeen)
 	}
 }
