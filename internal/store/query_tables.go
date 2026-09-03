@@ -211,9 +211,11 @@ func (s *queryScanner) scanToken() (token, error) {
 }
 
 func (s *queryScanner) skipWhitespace() {
+	// SQLite's whitespace set: space, tab, linefeed, carriage return, and
+	// form feed (vertical tab is not whitespace and errors in SQLite).
 	for s.i < len(s.s) {
 		c := s.s[s.i]
-		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' {
 			s.i++
 			continue
 		}

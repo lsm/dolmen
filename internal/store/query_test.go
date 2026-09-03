@@ -703,6 +703,10 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		// Keyword matching is ASCII-only: ſrom is a plain alias to SQLite,
 		// never the FROM keyword.
 		"SELECT 1 AS ſrom FROM notes",
+		// Form feed is SQLite whitespace, so it separates tokens like a space.
+		"WITH\fc(x) AS (VALUES(1)) SELECT * FROM c",
+		"WITH c AS\f(VALUES(1)) SELECT * FROM c",
+		"SELECT\fcount(*) AS n FROM notes",
 		// MaxQueryRunes counts characters, matching JSON Schema maxLength, so a
 		// query whose UTF-8 encoding is larger than the limit in bytes but within
 		// it in characters is accepted.
