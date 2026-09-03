@@ -406,7 +406,7 @@ Every row has two implicit columns:
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
 | Records per `insert` / `upsert_by_key` | 1,000 | rejected |
 | Natural key fields per `upsert_by_key` | 8 | rejected |
-| Idempotency key length | up to 256 bytes; use printable ASCII (`[ -~]`) | keys over 256 bytes are rejected; the JSON Schema enforces printable ASCII for schema-validating clients |
+| Idempotency key length | 1–256 bytes; use printable ASCII (`[ -~]`); omit the field for a non-idempotent insert | empty and over-256-byte keys are rejected; the JSON Schema enforces non-empty printable ASCII for schema-validating clients |
 | Vector dimension (declared `vector` fields) | 1–4096 | rejected |
 | Search `limit` (`search_fulltext`, `search_vector`) | default 10, hard max 200 | omit `limit` for the default of 10; the tool schema enforces 1–200 for schema-validating clients, and the server clamps values above 200 to 200 (0 or negative selects the default on direct `/v1` calls) |
 | `query` result rows | 1,000 | truncated; `truncated` is `true` in the response |
