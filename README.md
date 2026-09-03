@@ -182,7 +182,7 @@ Update rows matching a WHERE filter (and `upsert` inserts when nothing matches):
 
 ```bash
 curl -s localhost:8790/v1/update -H 'Content-Type: application/json' -d '{
-  "namespace": "myapp", "table": "events", "filter": "score < ?", "args": [0.5],
+  "namespace": "myapp", "table": "events", "filter": "score > ?", "args": [0.5],
   "set": {"score": 0.5, "title": "triaged bug"}
 }'
 ```
@@ -190,7 +190,7 @@ curl -s localhost:8790/v1/update -H 'Content-Type: application/json' -d '{
 Windows PowerShell:
 
 ```powershell
-curl.exe -s http://127.0.0.1:8790/v1/update -H "Content-Type: application/json" -d '{\"namespace\":\"myapp\",\"table\":\"events\",\"filter\":\"score < ?\",\"args\":[0.5],\"set\":{\"score\":0.5,\"title\":\"triaged bug\"}}'
+curl.exe -s http://127.0.0.1:8790/v1/update -H "Content-Type: application/json" -d '{\"namespace\":\"myapp\",\"table\":\"events\",\"filter\":\"score > ?\",\"args\":[0.5],\"set\":{\"score\":0.5,\"title\":\"triaged bug\"}}'
 ```
 
 ### Optional: embeddings
@@ -401,7 +401,7 @@ Every row has two implicit columns:
 | Resource | Limit | Behavior when exceeded |
 |---|---|---|
 | Namespace name | `^[a-z0-9][a-z0-9_-]{0,63}$` (max 64 chars) | rejected |
-| Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); table also cannot contain `__fts` or start with `sqlite_` | rejected |
+| Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected; table also cannot contain `__fts` or start with `sqlite_` | rejected |
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
 | Records per `insert` / `upsert_by_key` | 1,000 | rejected |
 | Natural key fields per `upsert_by_key` | 8 | rejected |
@@ -438,11 +438,11 @@ Coercion and validation rules:
   as `namespace: " Production "` silently operates on `production`.
 - `insert` with an `idempotency_key`: the same key and the same records replay the original ids; the
   same key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes.
-- Searches with a caller-supplied `vector` need no provider and are not checked against any
-  embedding space. `search_vector` with `text` requires a provider to embed the query; provider-identity
-  checks apply only to the `_embedding` column produced by a `vectorize: true` field. Manually declared
-  `vector` columns (searched with `text` against an explicit `column`) have no recorded embedding space,
-  so the provider identity is not compared, but a provider is still required to embed the query.
+- `search_vector` with `text` requires a provider and searches only the server-managed `_embedding`
+  column produced by a `vectorize: true` field — the provider identity must match the one that
+  embedded the table, and a `text` query naming a declared `vector` column is rejected. Searches
+  with a caller-supplied `vector` need no provider and are not checked against any embedding
+  space — only you know which model produced the stored and query vectors.
 
 ## Platform and filesystem support
 
