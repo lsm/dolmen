@@ -5,7 +5,7 @@ description: Persistent structured storage for this agent — tables with schema
 
 # Dolmen — durable agent data
 
-A Dolmen server exposes twelve tools over MCP. Everything lives in namespaces (isolated databases);
+A Dolmen server exposes thirteen tools over MCP. Everything lives in namespaces (isolated databases);
 pick one namespace per project or user and stay in it.
 
 ## Setup

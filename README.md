@@ -83,7 +83,7 @@ curl -s localhost:8790/v1/update -H 'Content-Type: application/json' -d '{
 claude mcp add --transport http dolmen http://127.0.0.1:8790/mcp
 ```
 
-The MCP server exposes the same twelve operations as tools (`tools/list` shows them with full schemas).
+The MCP server exposes the same thirteen operations as tools (`tools/list` shows them with full schemas).
 
 ## Tools
 
