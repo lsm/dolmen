@@ -620,10 +620,22 @@ var Ops = map[string]OpDef{
 			if err := decodeData(body, &req); err != nil {
 				return nil, err
 			}
+			dryRun, err := parseOptBool(req.DryRun, "dry_run")
+			if err != nil {
+				return nil, err
+			}
+			limit, err := parseOptPosInt(req.Limit, "limit")
+			if err != nil {
+				return nil, err
+			}
+			confirm, err := parseOptBool(req.Confirm, "confirm")
+			if err != nil {
+				return nil, err
+			}
 			res, err := s.st.Delete(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args, store.DeleteOptions{
-				DryRun:  req.DryRun,
-				Limit:   req.Limit,
-				Confirm: req.Confirm,
+				DryRun:  dryRun,
+				Limit:   limit,
+				Confirm: confirm,
 			})
 			if err != nil {
 				return nil, wrapStoreErr(err)
@@ -885,13 +897,44 @@ type vecReq struct {
 }
 
 type deleteReq struct {
-	Namespace string `json:"namespace"`
-	Table     string `json:"table"`
-	Filter    string `json:"filter"`
-	Args      []any  `json:"args"`
-	DryRun    bool   `json:"dry_run"`
-	Limit     int    `json:"limit"`
-	Confirm   bool   `json:"confirm"`
+	Namespace string          `json:"namespace"`
+	Table     string          `json:"table"`
+	Filter    string          `json:"filter"`
+	Args      []any           `json:"args"`
+	DryRun    json.RawMessage `json:"dry_run,omitempty"`
+	Limit     json.RawMessage `json:"limit,omitempty"`
+	Confirm   json.RawMessage `json:"confirm,omitempty"`
+}
+
+func parseOptBool(raw json.RawMessage, what string) (bool, error) {
+	if len(raw) == 0 {
+		return false, nil
+	}
+	if string(bytes.TrimSpace(raw)) == "null" {
+		return false, badRequest("%s must be a boolean", what)
+	}
+	var v bool
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return false, badRequest("%s must be a boolean", what)
+	}
+	return v, nil
+}
+
+func parseOptPosInt(raw json.RawMessage, what string) (int, error) {
+	if len(raw) == 0 {
+		return 0, nil
+	}
+	if string(bytes.TrimSpace(raw)) == "null" {
+		return 0, badRequest("%s must be an integer", what)
+	}
+	var v int
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return 0, badRequest("%s must be an integer", what)
+	}
+	if v < 1 {
+		return 0, badRequest("%s must be at least 1", what)
+	}
+	return v, nil
 }
 
 type updateReq struct {

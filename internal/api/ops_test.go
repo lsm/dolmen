@@ -727,6 +727,20 @@ func TestDeleteSafetyHTTP(t *testing.T) {
 		t.Fatalf("dry_run expected matched=3 deleted=0, got %v", data)
 	}
 
+	// Null or out-of-range safety options are rejected at runtime.
+	for _, bad := range []map[string]any{
+		{"namespace": "safety", "table": "items", "filter": "1=1", "dry_run": nil},
+		{"namespace": "safety", "table": "items", "filter": "1=1", "confirm": nil},
+		{"namespace": "safety", "table": "items", "filter": "1=1", "limit": nil},
+		{"namespace": "safety", "table": "items", "filter": "1=1", "limit": 0},
+		{"namespace": "safety", "table": "items", "filter": "1=1", "limit": -1},
+	} {
+		code, _ = post(t, srv.URL, "delete", bad)
+		if code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for invalid option %v, got %d", bad, code)
+		}
+	}
+
 	// limit below match count without confirm is rejected.
 	code, res = post(t, srv.URL, "delete", map[string]any{
 		"namespace": "safety",
