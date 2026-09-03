@@ -158,7 +158,7 @@ func TestRowIdsNotReusedAfterDeleteAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if _, err := st.Delete(ctx, "test", "notes", "1=1", nil); err != nil {
+	if _, err := st.Delete(ctx, "test", "notes", "1=1", nil, DeleteOptions{}); err != nil {
 		t.Fatalf("delete all: %v", err)
 	}
 	second, err := st.Insert(ctx, "test", "notes", []map[string]any{
