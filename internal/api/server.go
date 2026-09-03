@@ -287,7 +287,7 @@ func OriginGuard(next http.Handler, extraOrigins []string) http.Handler {
 			w.Header().Set("Vary", "Origin")
 			if r.Method == http.MethodOptions {
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id, X-Request-Id")
 				w.Header().Set("Access-Control-Max-Age", "86400")
 				w.WriteHeader(http.StatusNoContent)
 				return
@@ -335,6 +335,9 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		r = r.WithContext(WithRequestID(r.Context(), requestIDFromHeader(r)))
+		if reqID := RequestIDFrom(r.Context()); reqID != "" {
+			w.Header().Set("X-Request-Id", reqID)
+		}
 		res, err := s.Dispatch(r.Context(), op, body)
 		if err != nil {
 			slog.Debug("op failed", "op", op, "err", err)

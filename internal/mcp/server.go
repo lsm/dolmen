@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
@@ -239,7 +240,13 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		res, err := s.api.Dispatch(ctx, params.Name, args)
 		if err != nil {
 			apiErr := api.WrapError(err)
-			env := apiErr.Public(api.RequestIDFrom(ctx))
+			reqID := api.RequestIDFrom(ctx)
+			if apiErr.Code == api.ErrCodeInternal {
+				slog.Error("mcp tool error", "op", params.Name, "code", apiErr.Code, "request_id", reqID, "cause", apiErr.Cause)
+			} else {
+				slog.Debug("mcp tool error", "op", params.Name, "code", apiErr.Code, "request_id", reqID, "cause", apiErr.Cause)
+			}
+			env := apiErr.Public(reqID)
 			text, _ := json.Marshal(env)
 			return toolResult(string(text), true), nil
 		}
@@ -248,7 +255,9 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		enc.SetEscapeHTML(false)
 		if mErr := enc.Encode(res); mErr != nil {
 			apiErr := api.WrapError(mErr)
-			env := apiErr.Public(api.RequestIDFrom(ctx))
+			reqID := api.RequestIDFrom(ctx)
+			slog.Error("mcp tool result marshal error", "op", params.Name, "code", apiErr.Code, "request_id", reqID, "cause", apiErr.Cause)
+			env := apiErr.Public(reqID)
 			text, _ := json.Marshal(env)
 			return toolResult(string(text), true), nil
 		}

@@ -162,6 +162,10 @@ func TestCORSPreflight(t *testing.T) {
 	if res.StatusCode != http.StatusNoContent || res.Header.Get("Access-Control-Allow-Origin") != "https://app.example.com" {
 		t.Fatalf("preflight for allowed origin failed: %d %q", res.StatusCode, res.Header.Get("Access-Control-Allow-Origin"))
 	}
+	allowed := res.Header.Get("Access-Control-Allow-Headers")
+	if !strings.Contains(allowed, "X-Request-Id") {
+		t.Fatalf("preflight must allow X-Request-Id header, got %q", allowed)
+	}
 
 	req, _ = http.NewRequest(http.MethodOptions, srv.URL+"/v1/insert", nil)
 	req.Header.Set("Origin", "http://evil.example")
@@ -411,6 +415,25 @@ func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 	}
 	if res.Header.Get("Allow") != http.MethodPost {
 		t.Fatalf(`405 must carry "Allow: POST", got %q`, res.Header.Get("Allow"))
+	}
+}
+
+func TestRequestIdEchoedOnSuccess(t *testing.T) {
+	srv := newTestServer(t)
+	raw, _ := json.Marshal(map[string]any{"namespace": "x"})
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/list_tables", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-Id", "req-success-1")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", res.StatusCode)
+	}
+	if res.Header.Get("X-Request-Id") != "req-success-1" {
+		t.Fatalf("expected X-Request-Id echoed on success, got %q", res.Header.Get("X-Request-Id"))
 	}
 }
 
