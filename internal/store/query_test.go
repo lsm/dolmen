@@ -385,6 +385,12 @@ func TestDuplicateColumnLabelsRejected(t *testing.T) {
 	if _, _, err := st.Query(ctx, "test", "SELECT 1 AS a, 2 AS a", nil, 0, 0); err == nil {
 		t.Fatal("expected duplicate column labels to be rejected")
 	}
+	// A statement with its own LIMIT takes the wrapped-subquery fallback,
+	// where SQLite would rename the duplicate (a, a:1) instead of letting
+	// rowsToMaps reject it; the fallback must preserve the rejection.
+	if _, _, err := st.Query(ctx, "test", "SELECT 1 AS a, 2 AS a LIMIT 1", nil, 0, 0); err == nil {
+		t.Fatal("expected duplicate column labels to be rejected through the wrapped fallback")
+	}
 }
 
 func TestOversizedColumnLabelRejected(t *testing.T) {

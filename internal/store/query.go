@@ -189,13 +189,31 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, off
 		// via the retry — so re-classify against the caller's statement as
 		// written: it fails at prepare time, before any rows are read.
 		first := err
+		userArgs := args[:len(args)-2]
 		if !strings.Contains(first.Error(), "no such table") {
 			wrapped := "SELECT * FROM (\n" + trimmed + "\n)\nLIMIT ? OFFSET ?"
 			rows, err = n.ro.QueryContext(ctx, wrapped, args...)
 			if err == nil {
+				// SQLite disambiguates duplicate labels in a subquery (a, a:1),
+				// which would silently rename keys the unwrapped form rejects
+				// as duplicates. Validate the caller's own labels — prepare-time
+				// metadata, no rows are read — so the duplicate-label contract
+				// survives the retry.
+				if probe, perr := n.ro.QueryContext(ctx, trimmed, userArgs...); perr == nil {
+					if cols, cerr := probe.Columns(); cerr == nil {
+						seen := make(map[string]bool, len(cols))
+						for _, c := range cols {
+							if seen[c] {
+								probe.Close()
+								return nil, false, invalidf("duplicate column label %q in query result; use AS aliases", c)
+							}
+							seen[c] = true
+						}
+					}
+					probe.Close()
+				}
 				paginated = wrapped
 			} else {
-				userArgs := args[:len(args)-2]
 				if probe, bareErr := n.ro.QueryContext(ctx, trimmed, userArgs...); bareErr != nil {
 					err = bareErr
 				} else {
