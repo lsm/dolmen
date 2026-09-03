@@ -88,9 +88,9 @@ The MCP server exposes the same ten operations as tools (`tools/list` shows them
 | `create_table` | Typed fields with `fulltext` / `vector` / `vectorize` annotations |
 | `infer_schema` | Propose fields from sample records (creates nothing) |
 | `insert` | Validated records; indexes and embeddings update automatically |
-| `query` | Read-only SQL (SELECT/WITH), parameter binding via `args` |
-| `search_fulltext` | FTS5 MATCH over `fulltext` fields, relevance-ordered |
-| `search_vector` | Cosine KNN over embeddings; pass `text` (server embeds) or `vector` |
+| `query` | Read-only SQL (SELECT/WITH), parameter binding via `args`, typed results |
+| `search_fulltext` | FTS5 MATCH over `fulltext` fields, relevance-ordered, typed results |
+| `search_vector` | Cosine KNN over embeddings; pass `text` (server embeds) or `vector`; results carry `_score` |
 | `delete` | WHERE-filtered delete, cascades to search indexes |
 | `migrate` | `add_field`, `rename_field`, `drop_field`, `set_fulltext`, `set_vectorize`; versioned + logged |
 
@@ -104,6 +104,13 @@ The MCP server exposes the same ten operations as tools (`tools/list` shows them
 - **Vectors** stored as float32 blobs; KNN is a brute-force cosine scan in Go — fine into the low
   millions of rows, zero index infrastructure. (This is the deliberate MVP trade.)
 - **Read-only SQL** runs on a `mode=ro` connection with a SELECT/WITH allowlist — defense in depth.
+- **Typed reads** across `query`, `search_fulltext`, and `search_vector`: results honor declared field
+  types — `boolean` → `true`/`false`, `json` → the decoded value, `vector` → a number array, `number` →
+  integer or float, SQL `NULL` → `null`. In raw SQL, coercion is by result-column label (aliases count
+  as their label); labels that match no declared field, or that different tables declare with
+  conflicting types, fall back to raw values (blobs as base64). The hidden `_embedding` column (from
+  `vectorize`) is stripped from `SELECT *` and search results — reference it in the SQL (outside string
+  literals and comments) or pass `include_hidden: true` to a search to include it.
 - **Embeddings** are pluggable: `none` (caller supplies vectors) or any OpenAI-compatible endpoint.
 - Namespaces are created implicitly on first use (one file per name); tables are not — call
   `create_table` before inserting. No other management surface to operate.
