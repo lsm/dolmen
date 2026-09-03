@@ -3,6 +3,7 @@ package store
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/lsm/dolmen/internal/schema"
 )
@@ -11,7 +12,7 @@ import (
 // reference internal or reserved tables. It walks the statement without
 // executing it, so it cannot be bypassed by quoting or string literals.
 func validateQueryTables(stmt string) error {
-	if len(stmt) > MaxQueryLen {
+	if utf8.RuneCountInString(stmt) > MaxQueryRunes {
 		return invalidf("query exceeds maximum length")
 	}
 	s := newQueryScanner(stmt)
@@ -26,16 +27,20 @@ func validateQueryTables(stmt string) error {
 const (
 	maxTableParens = 50
 	maxStmtDepth   = 20
-	// MaxQueryLen is the maximum size, in bytes, of a SQL statement accepted by
-	// the query validator.
-	MaxQueryLen = 1 << 20 // 1 MiB
+	// MaxQueryRunes is the maximum number of Unicode characters in a SQL
+	// statement accepted by the query validator. This matches JSON Schema's
+	// maxLength semantics.
+	MaxQueryRunes = 1 << 20 // 1 M characters
 )
 
 type queryScanner struct {
 	s       string
 	i       int
 	buf     *token
-	cteNames map[string]bool
+	// cteScope is a stack of CTE name scopes. The top scope is the current
+	// statement; lookups fall through to enclosing scopes so CTEs defined in an
+	// outer WITH are visible inside their bodies, while inner CTEs do not leak.
+	cteScope []map[string]bool
 	// tableParens tracks the current depth of parenthesized table factors so
 	// that a query with millions of nested parentheses cannot overflow the Go
 	// stack or pin CPU before SQLite rejects it.
@@ -51,7 +56,33 @@ type token struct {
 }
 
 func newQueryScanner(stmt string) *queryScanner {
-	return &queryScanner{s: stmt, cteNames: make(map[string]bool)}
+	return &queryScanner{s: stmt}
+}
+
+func (s *queryScanner) pushCteScope() {
+	s.cteScope = append(s.cteScope, make(map[string]bool))
+}
+
+func (s *queryScanner) popCteScope() {
+	if n := len(s.cteScope); n > 0 {
+		s.cteScope = s.cteScope[:n-1]
+	}
+}
+
+func (s *queryScanner) addCteName(name string) {
+	if n := len(s.cteScope); n == 0 {
+		s.pushCteScope()
+	}
+	s.cteScope[len(s.cteScope)-1][name] = true
+}
+
+func (s *queryScanner) isCteName(name string) bool {
+	for i := len(s.cteScope) - 1; i >= 0; i-- {
+		if s.cteScope[i][name] {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *queryScanner) next() (token, error) {
@@ -488,14 +519,10 @@ func (s *queryScanner) parseStatement() error {
 	s.stmtDepth++
 	defer func() { s.stmtDepth-- }()
 
-	// Snapshot the CTE scope so names introduced here do not leak outside this
+	// Push a fresh CTE scope so names introduced here do not leak outside this
 	// statement (e.g. out of a scalar subquery).
-	saved := s.cteNames
-	s.cteNames = make(map[string]bool, len(saved))
-	for k, v := range saved {
-		s.cteNames[k] = v
-	}
-	defer func() { s.cteNames = saved }()
+	s.pushCteScope()
+	defer s.popCteScope()
 
 	t, err := s.peek()
 	if err != nil {
@@ -520,13 +547,12 @@ func (s *queryScanner) parseWith() error {
 	// earlier one.
 	fwd := *s
 	fwd.buf = nil
-	fwd.cteNames = nil
 	names, err := fwd.collectCteNames()
 	if err != nil {
 		return err
 	}
-	for k, v := range names {
-		s.cteNames[k] = v
+	for k := range names {
+		s.addCteName(k)
 	}
 
 	if t, _ := s.peek(); isKeyword(t, "recursive") {
@@ -544,7 +570,7 @@ func (s *queryScanner) parseWith() error {
 		if t.typ == "string" {
 			name = unquoteString(t.val)
 		}
-		s.cteNames[strings.ToLower(name)] = true
+		s.addCteName(strings.ToLower(name))
 		if t2, _ := s.peek(); t2.val == "(" {
 			if err := s.scanParenthesized(); err != nil {
 				return err
@@ -953,7 +979,7 @@ func (s *queryScanner) parseTableFactor() error {
 	// but we still need to skip the argument list.
 	// A CTE may shadow a pragma_* name, so check the CTE scope before treating
 	// the identifier as a reserved pragma virtual table.
-	isCTE := schema == "" && s.cteNames[strings.ToLower(unquoteIdent(name))]
+	isCTE := schema == "" && s.isCteName(strings.ToLower(unquoteIdent(name)))
 	if t2, _ := s.peek(); t2.val == "(" {
 		if !isCTE && isPragmaFunction(name) {
 			if err := s.parsePragmaArgs(schema, name); err != nil {
@@ -991,7 +1017,7 @@ func (s *queryScanner) checkTableName(schema, rawName string) error {
 	base = strings.ToLower(base)
 	// A CTE name (possibly shadowing a reserved table) is not a physical table
 	// reference, so allow it.
-	if schema == "" && s.cteNames[base] {
+	if schema == "" && s.isCteName(base) {
 		return nil
 	}
 	if !isUserTable(base) {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -279,9 +280,9 @@ var Ops = map[string]OpDef{
 				"namespace": nsProp("Namespace to query"),
 				"sql": map[string]any{
 					"type":        "string",
-					"description": "Read-only SQL (SELECT/WITH)",
+					"description": "Read-only SQL (SELECT/WITH), at most " + strconv.Itoa(store.MaxQueryRunes) + " characters",
 					"minLength":   1,
-					"maxLength":   store.MaxQueryLen,
+					"maxLength":   store.MaxQueryRunes,
 					"pattern":     `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b[^;]*;*\s*$`,
 				},
 				"args": map[string]any{

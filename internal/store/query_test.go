@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lsm/dolmen/internal/schema"
 )
@@ -516,7 +517,7 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"nested expression bypass", "SELECT coalesce((SELECT 1), 0), schema_json FROM _dolmen_tables"},
 		{"excessive table paren nesting", "SELECT * FROM " + strings.Repeat("(", maxTableParens+1) + "notes" + strings.Repeat(")", maxTableParens+1)},
 		{"excessive statement nesting", "SELECT * FROM " + strings.Repeat("(SELECT * FROM ", maxStmtDepth+1) + "notes" + strings.Repeat(")", maxStmtDepth+1)},
-		{"excessive query length", "SELECT * FROM notes WHERE x = '" + strings.Repeat("x", MaxQueryLen) + "'"},
+		{"excessive query length", "SELECT * FROM notes WHERE x = '" + strings.Repeat("x", MaxQueryRunes) + "'"},
 	}
 
 	for _, tc := range cases {
@@ -590,6 +591,10 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		"SELECT * FROM (VALUES (1)) AS 'v'",
 		`SELECT "my alias".id FROM notes 'my alias'`,
 		"WITH 'c'(x) AS (VALUES(1)) SELECT * FROM 'c'",
+		// MaxQueryRunes counts characters, matching JSON Schema maxLength, so a
+		// query whose UTF-8 encoding is larger than the limit in bytes but within
+		// it in characters is accepted.
+		"SELECT * FROM notes WHERE title = '" + strings.Repeat("é", MaxQueryRunes-100) + "' LIMIT 0",
 	}
 
 	for _, q := range ok {
@@ -598,5 +603,29 @@ func TestQueryAllowsUserTables(t *testing.T) {
 				t.Fatalf("expected query to be allowed: %v", err)
 			}
 		})
+	}
+}
+
+// TestQueryValidatorCTEScale guards the validator against quadratic behavior on
+// long sequential CTE lists: each CTE body must not re-copy the names of its
+// siblings. A list this size validates in well under a second when linear, but
+// takes minutes when each body clones the forward-name map.
+func TestQueryValidatorCTEScale(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("WITH ")
+	for i := 0; i < 30000; i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "c%d AS (VALUES(1))", i)
+	}
+	b.WriteString(" SELECT * FROM notes LIMIT 0")
+
+	start := time.Now()
+	if err := validateQueryTables(b.String()); err != nil {
+		t.Fatalf("expected sequential CTEs to validate: %v", err)
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Fatalf("sequential CTE validation should stay linear, took %v", d)
 	}
 }
