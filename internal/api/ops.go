@@ -40,7 +40,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 			},
 			"required": []string{"namespace", "table"},
 		},
@@ -146,7 +146,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 				"records": map[string]any{
 					"type":        "array",
 					"description": "Records to insert (JSON objects keyed by field name)",
@@ -232,7 +232,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 				"query": map[string]any{
 					"type":        "string",
 					"description": "FTS5 MATCH expression",
@@ -275,7 +275,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 				"text": map[string]any{
 					"type":        "string",
 					"description": "Query text; the server embeds it (requires an embedding provider)",
@@ -366,7 +366,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 				"filter": map[string]any{
 					"type":        "string",
 					"description": "SQL WHERE expression selecting rows to delete",
@@ -411,7 +411,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 				"filter": map[string]any{
 					"type":        "string",
 					"description": "SQL WHERE expression selecting rows to update",
@@ -460,7 +460,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 				"filter": map[string]any{
 					"type":        "string",
 					"description": "SQL WHERE expression selecting the row(s) to update; insert when it matches nothing",
@@ -512,7 +512,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace of the table"),
-				"table":     tableProp("Table name"),
+				"table":     existingTableProp("Table name"),
 				"changes": map[string]any{
 					"type":        "array",
 					"description": "Ordered list of changes",
@@ -527,9 +527,9 @@ var Ops = map[string]OpDef{
 								"enum":        []string{"add_field", "rename_field", "drop_field", "set_fulltext", "set_vectorize"},
 							},
 							"field": fieldItemSchema("Field definition for add_field"),
-							"from":  fieldNameProp("Current name (rename_field)"),
+							"from":  existingFieldNameProp("Current name (rename_field)"),
 							"to":    fieldNameProp("New name (rename_field)"),
-							"name":  fieldNameProp("Field name (drop_field, set_fulltext, set_vectorize)"),
+							"name":  existingFieldNameProp("Field name (drop_field, set_fulltext, set_vectorize)"),
 							"value": prop("boolean", "Flag value (set_fulltext, set_vectorize)"),
 						},
 						"required": []string{"op"},

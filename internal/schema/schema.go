@@ -194,15 +194,36 @@ func Normalize(fields []Field) []Field {
 	return out
 }
 
+// Validate checks a complete field list for a new table. All field names must
+// be valid Dolmen identifiers and must not be SQLite/SQL keywords or reserved
+// internal names.
 func Validate(fields []Field) error {
+	return validate(fields, nil)
+}
+
+// ValidateForMigration checks a field list produced by a migration, allowing
+// field names that already existed in the previous schema to be grandfathered
+// (for example, a field named with an older-release SQLite/SQL keyword). New
+// or renamed-to field names must still pass the strict identifier rules.
+func ValidateForMigration(fields, existing []Field) error {
+	legacy := make(map[string]bool, len(existing))
+	for _, f := range existing {
+		legacy[f.Name] = true
+	}
+	return validate(fields, legacy)
+}
+
+func validate(fields []Field, legacy map[string]bool) error {
 	if len(fields) == 0 {
 		return fmt.Errorf("table needs at least one field")
 	}
 	seen := map[string]bool{}
 	vectorizeCount := 0
 	for _, f := range fields {
-		if err := ValidateIdent(f.Name, "field name"); err != nil {
-			return err
+		if !legacy[f.Name] {
+			if err := ValidateIdent(f.Name, "field name"); err != nil {
+				return err
+			}
 		}
 		if seen[f.Name] {
 			return fmt.Errorf("duplicate field name %q", f.Name)

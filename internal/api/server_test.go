@@ -385,17 +385,30 @@ func TestNamespaceAndTablePatternsDeclared(t *testing.T) {
 			continue
 		}
 		table := props["table"].(map[string]any)
-		if table["pattern"] != schema.IdentPattern() {
-			t.Fatalf("%s: table must carry the ValidIdent pattern, got %v", op, table["pattern"])
-		}
 		notAnyOf, ok := table["not"].(map[string]any)["anyOf"].([]any)
-		if !ok || len(notAnyOf) != 3 {
-			t.Fatalf("%s: table must exclude __fts, sqlite_, and reserved identifier names, got %v", op, table["not"])
+		if !ok {
+			t.Fatalf("%s: table must declare exclusions, got %v", op, table["not"])
 		}
-		reservedEnum, ok := notAnyOf[2].(map[string]any)["enum"].([]string)
-		wantReserved := schema.ReservedTableNames()
-		if !ok || len(reservedEnum) != len(wantReserved) {
-			t.Fatalf("%s: reserved table-name exclusions must cover %v, got %v", op, wantReserved, notAnyOf[2])
+		if op == "create_table" {
+			if table["pattern"] != schema.IdentPattern() {
+				t.Fatalf("%s: table must carry the ValidIdent pattern, got %v", op, table["pattern"])
+			}
+			if len(notAnyOf) != 3 {
+				t.Fatalf("%s: table must exclude __fts, sqlite_, and reserved identifier names, got %v", op, table["not"])
+			}
+			reservedEnum, ok := notAnyOf[2].(map[string]any)["enum"].([]string)
+			wantReserved := schema.ReservedTableNames()
+			if !ok || len(reservedEnum) != len(wantReserved) {
+				t.Fatalf("%s: reserved table-name exclusions must cover %v, got %v", op, wantReserved, notAnyOf[2])
+			}
+			continue
+		}
+		// describe_table and other existing-table ops allow legacy keyword/reserved names.
+		if table["pattern"] != `^[a-z][a-z0-9_]{0,63}$` {
+			t.Fatalf("%s: table must carry the base identifier pattern for legacy names, got %v", op, table["pattern"])
+		}
+		if len(notAnyOf) != 2 {
+			t.Fatalf("%s: table must exclude only __fts and sqlite_, got %v", op, table["not"])
 		}
 	}
 }

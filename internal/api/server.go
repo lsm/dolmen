@@ -85,6 +85,18 @@ func fieldNameProp(desc string) map[string]any {
 	}
 }
 
+// existingFieldNameProp matches any syntactically valid field name, including
+// legacy keyword or reserved names that existed before the stricter rules. It
+// is used for migration references (from, name) so clients can rename or drop
+// fields created under the old validation.
+func existingFieldNameProp(desc string) map[string]any {
+	return map[string]any{
+		"type":        "string",
+		"description": desc,
+		"pattern":     `^[a-z][a-z0-9_]{0,63}$`,
+	}
+}
+
 func fieldItemSchema(desc string) map[string]any {
 	return map[string]any{
 		"description":          desc,
@@ -172,6 +184,23 @@ func tableProp(desc string) map[string]any {
 				map[string]any{"pattern": "__fts"},
 				map[string]any{"pattern": "^sqlite_"},
 				map[string]any{"enum": schema.ReservedTableNames()},
+			},
+		},
+	}
+}
+
+// existingTableProp matches any syntactically valid table name, including
+// legacy keyword or reserved names that were accepted by earlier releases. It
+// keeps the __fts and sqlite_ guards because those are never valid user tables.
+func existingTableProp(desc string) map[string]any {
+	return map[string]any{
+		"type":        "string",
+		"description": desc,
+		"pattern":     `^[a-z][a-z0-9_]{0,63}$`,
+		"not": map[string]any{
+			"anyOf": []any{
+				map[string]any{"pattern": "__fts"},
+				map[string]any{"pattern": "^sqlite_"},
 			},
 		},
 	}

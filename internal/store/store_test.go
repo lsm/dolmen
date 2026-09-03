@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -111,6 +112,106 @@ func TestSQLKeywordNamesRejected(t *testing.T) {
 		{Name: "order_id", Type: schema.String},
 	}); err != nil {
 		t.Fatalf("suggested non-keyword name should be accepted: %v", err)
+	}
+}
+
+func TestLegacyKeywordTableRemainsAccessible(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("open namespace: %v", err)
+	}
+	legacyTable := "select"
+	legacyFields := []schema.Field{{Name: "order", Type: schema.String}}
+
+	// Simulate a table created before keyword restrictions: create the SQLite
+	// table directly and register it in _dolmen_tables.
+	if _, err := n.rw.ExecContext(ctx, tableDDL(legacyTable, legacyFields)); err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	sc := schema.TableSchema{Namespace: "test", Name: legacyTable, Version: 1, Fields: legacyFields}
+	raw, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatalf("marshal schema: %v", err)
+	}
+	if _, err := n.rw.ExecContext(ctx,
+		`INSERT INTO _dolmen_tables(name, version, schema_json) VALUES(?,?,?)`,
+		legacyTable, 1, string(raw)); err != nil {
+		t.Fatalf("register legacy table: %v", err)
+	}
+
+	// Operations that load the schema must succeed for the legacy table.
+	if _, _, err := st.DescribeTable(ctx, "test", legacyTable); err != nil {
+		t.Fatalf("describe legacy keyword table: %v", err)
+	}
+	ids, err := st.Insert(ctx, "test", legacyTable, []map[string]any{{"order": "value"}}, testEmbed)
+	if err != nil {
+		t.Fatalf("insert into legacy keyword table: %v", err)
+	}
+	rows, _, err := st.Query(ctx, "test", `SELECT * FROM "select" WHERE id = ?`, []any{ids[0]})
+	if err != nil || len(rows) != 1 || rows[0]["order"] != "value" {
+		t.Fatalf("query legacy keyword table: %v %v", err, rows)
+	}
+	// New tables with keyword names must still be rejected.
+	if _, err := st.CreateTable(ctx, "test", "group", []schema.Field{{Name: "x", Type: schema.String}}); err == nil {
+		t.Fatal("expected new keyword table name to be rejected")
+	}
+}
+
+func TestLegacyKeywordFieldMigration(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("open namespace: %v", err)
+	}
+	legacyTable := "orders"
+	legacyFields := []schema.Field{{Name: "order", Type: schema.String}}
+	if _, err := n.rw.ExecContext(ctx, tableDDL(legacyTable, legacyFields)); err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	sc := schema.TableSchema{Namespace: "test", Name: legacyTable, Version: 1, Fields: legacyFields}
+	raw, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatalf("marshal schema: %v", err)
+	}
+	if _, err := n.rw.ExecContext(ctx,
+		`INSERT INTO _dolmen_tables(name, version, schema_json) VALUES(?,?,?)`,
+		legacyTable, 1, string(raw)); err != nil {
+		t.Fatalf("register legacy table: %v", err)
+	}
+
+	// Migrate should allow a keyword field to be renamed away, and should allow
+	// unrelated changes to a table that contains a keyword field.
+	if _, err := st.Migrate(ctx, "test", legacyTable, []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "priority", Type: schema.Number}},
+		{Op: schema.OpRenameField, From: "order", To: "my_order"},
+	}, testEmbed); err != nil {
+		t.Fatalf("migrate legacy keyword field: %v", err)
+	}
+	newSc, _, err := st.DescribeTable(ctx, "test", legacyTable)
+	if err != nil {
+		t.Fatalf("describe after migrate: %v", err)
+	}
+	if newSc.Field("order") != nil || newSc.Field("my_order") == nil || newSc.Field("priority") == nil {
+		t.Fatalf("unexpected fields after migration: %+v", newSc.Fields)
+	}
+
+	// Rename to a keyword must still fail.
+	if _, err := st.Migrate(ctx, "test", legacyTable, []schema.Change{
+		{Op: schema.OpRenameField, From: "my_order", To: "group"},
+	}, testEmbed); err == nil {
+		t.Fatal("expected rename to a keyword to fail")
+	}
+
+	// Drop the legacy keyword field should also work (uses its current name).
+	if _, err := st.Migrate(ctx, "test", legacyTable, []schema.Change{
+		{Op: schema.OpDropField, Name: "my_order"},
+	}, testEmbed); err != nil {
+		t.Fatalf("drop legacy renamed field: %v", err)
 	}
 }
 

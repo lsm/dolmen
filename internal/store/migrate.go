@@ -176,7 +176,7 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize)", ch.Op)
 		}
 	}
-	if err := schema.Validate(cur.Fields); err != nil {
+	if err := schema.ValidateForMigration(cur.Fields, old.Fields); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	if len(ftsFields(cur.Fields)) == 0 && len(ftsFields(old.Fields)) > 0 {

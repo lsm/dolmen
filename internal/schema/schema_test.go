@@ -297,6 +297,24 @@ func TestSuggestIdent(t *testing.T) {
 	}
 }
 
+func TestValidateForMigrationGrandfathersLegacyFields(t *testing.T) {
+	old := []Field{{Name: "order", Type: String}, {Name: "body", Type: Text}}
+	// Adding an unrelated field must succeed even though the table has a keyword field.
+	if err := ValidateForMigration(append(old, Field{Name: "priority", Type: Number}), old); err != nil {
+		t.Fatalf("expected migration to allow legacy keyword field, got %v", err)
+	}
+	// Renaming a legacy field to a non-keyword name must succeed.
+	renamed := []Field{{Name: "my_order", Type: String}, {Name: "body", Type: Text}}
+	if err := ValidateForMigration(renamed, old); err != nil {
+		t.Fatalf("expected rename away from keyword to succeed, got %v", err)
+	}
+	// Renaming an unrelated field to a keyword must still fail.
+	bad := []Field{{Name: "order", Type: String}}
+	if err := ValidateForMigration(bad, nil); err == nil {
+		t.Fatal("expected new keyword field to be rejected")
+	}
+}
+
 func TestIdentPattern(t *testing.T) {
 	pat := IdentPattern()
 	if !strings.HasPrefix(pat, "^(?!") {

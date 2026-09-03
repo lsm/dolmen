@@ -156,9 +156,10 @@ type rowQuerier interface {
 }
 
 func loadSchema(ctx context.Context, db rowQuerier, nsName, table string) (*schema.TableSchema, error) {
-	if err := schema.ValidateIdent(table, "table name"); err != nil {
-		return nil, invalidf("%s", err)
-	}
+	// Do not validate the table name here. Existing tables created before the
+	// keyword restriction (or with legacy names) must remain loadable so that
+	// describe, insert, search, update, delete, and migrate keep working.
+	// CreateTable still enforces ValidateTableName for new tables.
 	var raw string
 	err := db.QueryRowContext(ctx,
 		`SELECT schema_json FROM _dolmen_tables WHERE name = ?`, table).Scan(&raw)

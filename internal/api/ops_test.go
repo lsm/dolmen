@@ -618,11 +618,22 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 	mp := items["properties"].(map[string]any)
 	for _, key := range []string{"from", "to", "name"} {
 		p := mp[key].(map[string]any)
-		if p["pattern"] != schema.IdentPattern() {
-			t.Fatalf("migrate %s must carry the field-name pattern, got %v", key, p)
+		wantPattern := `^[a-z][a-z0-9_]{0,63}$`
+		if key == "to" {
+			wantPattern = schema.IdentPattern()
 		}
-		if _, ok := p["not"].(map[string]any)["enum"]; !ok {
+		if p["pattern"] != wantPattern {
+			t.Fatalf("migrate %s must carry pattern %q, got %v", key, wantPattern, p)
+		}
+		hasNotEnum := false
+		if not, ok := p["not"].(map[string]any); ok {
+			_, hasNotEnum = not["enum"].([]string)
+		}
+		if key == "to" && !hasNotEnum {
 			t.Fatalf("migrate %s must exclude reserved identifiers, got %v", key, p)
+		}
+		if key != "to" && hasNotEnum {
+			t.Fatalf("migrate %s must not exclude reserved identifiers (legacy fields may be reserved), got %v", key, p)
 		}
 	}
 }
