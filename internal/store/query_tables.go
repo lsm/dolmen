@@ -111,7 +111,9 @@ func (s *queryScanner) expect(kw string) error {
 	if err != nil {
 		return err
 	}
-	if strings.EqualFold(t.val, kw) {
+	// ASCII case-insensitive like isKeyword; ToLower is the identity on the
+	// punctuation values expect is called with.
+	if strings.ToLower(t.val) == kw {
 		return nil
 	}
 	return invalidf("unexpected token %q, expected %q", t.val, kw)
@@ -309,10 +311,6 @@ func (s *queryScanner) readBracketed() (string, error) {
 // SQLite's tokenizer, every byte above ASCII counts as an identifier
 // character, so non-ASCII CTE and alias names (e.g. 日本語) tokenize as
 // identifiers instead of a run of operator bytes.
-// isIdentStart reports whether c can begin an unquoted identifier. Like
-// SQLite's tokenizer, every byte above ASCII counts as an identifier
-// character, so non-ASCII CTE and alias names (e.g. 日本語) tokenize as
-// identifiers instead of a run of operator bytes.
 func isIdentStart(c byte) bool {
 	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= utf8.RuneSelf
 }
@@ -404,8 +402,12 @@ func unquoteIdent(v string) string {
 	return v
 }
 
+// isKeyword reports whether token t is the given lowercase ASCII keyword.
+// SQLite compares keywords ASCII-case-insensitively, so compare lowercased
+// values rather than strings.EqualFold, whose Unicode fold orbits would make
+// "ſrom" equal "from".
 func isKeyword(t token, kw string) bool {
-	return t.typ == "ident" && !isQuotedIdent(t.val) && strings.EqualFold(t.val, kw)
+	return t.typ == "ident" && !isQuotedIdent(t.val) && strings.ToLower(t.val) == kw
 }
 
 func unquoteString(v string) string {

@@ -606,6 +606,9 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"dollar alias bypass", "SELECT schema_json, 1 AS x$from FROM _dolmen_tables"},
 		{"colon param bypass", "SELECT 1 AS x:from FROM _dolmen_tables"},
 		{"at param bypass", "SELECT 1 AS x@from FROM _dolmen_tables"},
+		// The long-s fold orbit (ſ equals s under Unicode simple folding)
+		// must not make the alias ſrom act as the FROM keyword.
+		{"long-s alias fold", "SELECT 1 AS ſrom FROM _dolmen_tables"},
 		// Non-ASCII names cannot be created as tables, and without a matching
 		// CTE they resolve to nothing, so they are rejected like any other
 		// non-user table.
@@ -697,6 +700,9 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		"SELECT 1 AS x$from FROM notes",
 		"WITH c$1 AS (SELECT id FROM notes) SELECT * FROM c$1",
 		"SELECT n$x.id FROM notes n$x",
+		// Keyword matching is ASCII-only: ſrom is a plain alias to SQLite,
+		// never the FROM keyword.
+		"SELECT 1 AS ſrom FROM notes",
 		// MaxQueryRunes counts characters, matching JSON Schema maxLength, so a
 		// query whose UTF-8 encoding is larger than the limit in bytes but within
 		// it in characters is accepted.
