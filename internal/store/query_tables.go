@@ -11,6 +11,9 @@ import (
 // reference internal or reserved tables. It walks the statement without
 // executing it, so it cannot be bypassed by quoting or string literals.
 func validateQueryTables(stmt string) error {
+	if len(stmt) > maxQueryLen {
+		return invalidf("query exceeds maximum length")
+	}
 	s := newQueryScanner(stmt)
 	if err := s.parseStatement(); err != nil {
 		return err
@@ -22,7 +25,8 @@ func validateQueryTables(stmt string) error {
 // references in SELECT/WITH statements.
 const (
 	maxTableParens = 50
-	maxStmtDepth   = 50
+	maxStmtDepth   = 20
+	maxQueryLen    = 1 << 20 // 1 MiB
 )
 
 type queryScanner struct {
@@ -531,10 +535,14 @@ func (s *queryScanner) parseWith() error {
 		if err != nil {
 			return err
 		}
-		if t.typ != "ident" {
+		if t.typ != "ident" && t.typ != "string" {
 			return invalidf("expected CTE name, got %q", t.val)
 		}
-		s.cteNames[strings.ToLower(unquoteIdent(t.val))] = true
+		name := unquoteIdent(t.val)
+		if t.typ == "string" {
+			name = unquoteString(t.val)
+		}
+		s.cteNames[strings.ToLower(name)] = true
 		if t2, _ := s.peek(); t2.val == "(" {
 			if err := s.scanParenthesized(); err != nil {
 				return err
@@ -581,10 +589,14 @@ func (s *queryScanner) collectCteNames() (map[string]bool, error) {
 		if err != nil {
 			return nil, err
 		}
-		if t.typ != "ident" {
+		if t.typ != "ident" && t.typ != "string" {
 			return nil, invalidf("expected CTE name, got %q", t.val)
 		}
-		names[strings.ToLower(unquoteIdent(t.val))] = true
+		name := unquoteIdent(t.val)
+		if t.typ == "string" {
+			name = unquoteString(t.val)
+		}
+		names[strings.ToLower(name)] = true
 		if t2, _ := s.peek(); t2.val == "(" {
 			if err := s.skipParenthesized(); err != nil {
 				return nil, err
@@ -1007,12 +1019,14 @@ func (s *queryScanner) skipOptionalAlias() error {
 		return nil
 	}
 
-	if t.typ != "ident" {
+	if t.typ != "ident" && t.typ != "string" {
 		return nil
 	}
 
-	// Quoted identifiers can only be aliases, not keywords or clause ends.
-	if !isQuotedIdent(t.val) {
+	// Quoted identifiers and single-quoted strings can be aliases. Unquoted
+	// identifiers need keyword disambiguation because they may introduce a join
+	// operator or clause end.
+	if t.typ == "ident" && !isQuotedIdent(t.val) {
 		kw := strings.ToLower(t.val)
 		if isJoinOp(t) || isClauseEnd(t) || kw == "on" || kw == "using" || t.val == ")" || t.val == "," {
 			return nil

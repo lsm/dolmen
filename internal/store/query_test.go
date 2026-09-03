@@ -516,6 +516,7 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"nested expression bypass", "SELECT coalesce((SELECT 1), 0), schema_json FROM _dolmen_tables"},
 		{"excessive table paren nesting", "SELECT * FROM " + strings.Repeat("(", maxTableParens+1) + "notes" + strings.Repeat(")", maxTableParens+1)},
 		{"excessive statement nesting", "SELECT * FROM " + strings.Repeat("(SELECT * FROM ", maxStmtDepth+1) + "notes" + strings.Repeat(")", maxStmtDepth+1)},
+		{"excessive query length", "SELECT * FROM notes WHERE x = '" + strings.Repeat("x", maxQueryLen) + "'"},
 	}
 
 	for _, tc := range cases {
@@ -586,6 +587,8 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		"SELECT * FROM main.'notes'",
 		"SELECT * FROM notes AS 'n'",
 		"SELECT * FROM (VALUES (1)) AS 'v'",
+		`SELECT "my alias".id FROM notes 'my alias'`,
+		"WITH 'c'(x) AS (VALUES(1)) SELECT * FROM 'c'",
 	}
 
 	for _, q := range ok {
