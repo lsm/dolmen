@@ -90,7 +90,7 @@ type ManifestSkill struct {
 
 var (
 	layerPickerTpl = template.Must(template.New("layer-picker").Parse(
-		`Use the "dolmen" skill ({{.BaseURL}}/skills/dolmen) when you only query, insert, full-text/vector search, describe, list, or delete records against tables that already exist. Use the "dolmen-admin" skill ({{.BaseURL}}/skills/dolmen-admin) when you also design schemas, infer them from samples, create tables, or migrate them. Start every session by fetching the skill markdown, then connect to {{.MCPURL}}.`))
+		`Use the "dolmen" skill ({{.BaseURL}}/skills/dolmen) when you only query, insert, full-text/vector search, describe, list, or delete records in tables that already exist. Use the "dolmen-admin" skill ({{.BaseURL}}/skills/dolmen-admin) when you also design schemas, infer them from samples, create tables, migrate them, or perform other admin-only writes such as update, upsert, and upsert_by_key. Start every session by fetching the skill markdown, then connect to {{.MCPURL}}.`))
 
 	mcpInstructionsTpl = template.Must(template.New("mcp-instructions").Parse(
 		`Pick the right skill for this client from {{.BaseURL}}/skills, then connect to {{.MCPURL}} and begin by listing and describing tables. {{.NamespaceHint}}`))
