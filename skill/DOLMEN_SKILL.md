@@ -5,7 +5,7 @@ description: Persistent structured storage for this agent — tables with schema
 
 # Dolmen — durable agent data
 
-A Dolmen server exposes thirteen tools over MCP. Everything lives in namespaces (isolated databases);
+A Dolmen server exposes eighteen tools over MCP. Everything lives in namespaces (isolated databases);
 pick one namespace per project or user and stay in it.
 
 ## Setup
@@ -16,8 +16,8 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
 
 ## Working rules
 
-1. **Check before creating.** Call `list_tables` first; reuse an existing table when one fits.
-   Only create tables for genuinely new kinds of data.
+1. **Check before creating.** Call `list_namespaces` then `list_tables` first; reuse an existing
+   namespace or table when one fits. Only create tables for genuinely new kinds of data.
 2. **Prefer `infer_schema` → review → `create_table`.** Never invent a schema blind when sample
    records exist. Note: inference proposes plain types only — during review, mark the main text
    field `vectorize: true` yourself if you want semantic recall (requires an embedding provider
@@ -40,6 +40,9 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
   enables `search_vector` with `text`), `required: true`.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
+- `drop_table` / `drop_namespace` are irreversible deletions (rows, search indexes, schema, history);
+  both require `confirm` to repeat the exact name being dropped. Prefer `delete` unless the table or
+  namespace itself must go.
 - `update`/`upsert` take the same `filter` plus a `set` object of field values; all matched rows get
   the same values, and `set` to `null` clears a field. Indexes and embeddings stay consistent
   automatically. `upsert` inserts `set` as one new record when the filter matches nothing (it must
@@ -54,6 +57,12 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
   reference it in the SQL (outside string literals and comments) or pass `include_hidden: true` to a
   search when you really need it.
 - Vector search results carry `_score` (cosine similarity; higher is closer).
+- `search_vector` has two query forms with different reach: `text` (server embeds it) searches only
+  the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`; `vector`
+  (raw numbers) searches any `vector` column, and only you know which embedding space produced both
+  the stored and the query vectors, so keep them from the same model.
+- `skipped_vectors` in a `search_vector` response counts stored vectors that were corrupt or
+  dimension-mismatched and could not be scored; nonzero means those rows are missing from results.
 
 ## Agent-critical caveats
 
@@ -99,13 +108,14 @@ negative — value and are returned first. The rank value itself is not returned
 - `vectorize: true` on a string/text field stores one embedding per non-empty row in `_embedding`.
   Only one field per table can be vectorized; rows with `null`, empty string, or missing values have
   `_embedding` NULL and are excluded from vector search.
-- `search_vector(text=...)` embeds the query `text` with the configured provider and compares it
-  against the resolved `column`. `search_vector(vector=[...])` supplies a query vector directly; `column`
-  still selects the searched stored vectors.
-- `column` defaults to `_embedding` (if a vectorized field exists) or the first declared `vector` field.
-  The query and stored vectors must come from the same embedding space. For `_embedding` (from
-  `vectorize`) this means the same provider/identity; for caller-supplied `vector` fields it means the
-  same model used for the stored and query vectors.
+- `search_vector(text=...)` embeds the query `text` with the configured provider and searches only
+  the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`.
+  `search_vector(vector=[...])` supplies a query vector directly and may search any vector column.
+- `column` applies to `vector` queries: it names the stored-vectors column and defaults to
+  `_embedding` (if a vectorized field exists) or the first declared `vector` field. The query and
+  stored vectors must come from the same embedding space. For `_embedding` (from `vectorize`) this
+  means the same provider/identity; for caller-supplied `vector` fields it means the same model used
+  for the stored and query vectors.
 - Each result has `_score`: cosine similarity, higher is closer, typically `0`–`1` for positive
   embeddings (mathematically `-1`–`1`).
 - `_embedding` is hidden from `SELECT *` and search results unless referenced explicitly or

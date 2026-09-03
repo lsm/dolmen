@@ -2,14 +2,18 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestEndToEndHTTP(t *testing.T) {
@@ -297,6 +301,124 @@ func TestSearchVectorBlankIdentityRejected(t *testing.T) {
 func TestSearchVectorZeroDimEmbedRejected(t *testing.T) {
 	if code := vectorSearchWithProvider(t, zeroVecEmb{}); code != 400 {
 		t.Fatalf("zero-dimensional query embedding must 400, got %d", code)
+	}
+}
+
+func TestSearchVectorTextRejectedForCallerProvidedVectors(t *testing.T) {
+	srv := newTestServer(t)
+	code, _ := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "rv",
+		"table":     "t",
+		"fields": []map[string]any{
+			{"name": "s", "type": "string"},
+			{"name": "emb", "type": "vector", "dim": 4},
+		},
+	})
+	if code != 200 {
+		t.Fatal("create failed")
+	}
+	code, _ = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "rv",
+		"table":     "t",
+		"records":   []map[string]any{{"s": "hello", "emb": []float64{1, 0, 0, 0}}},
+	})
+	if code != 200 {
+		t.Fatal("insert failed")
+	}
+	// Text queries must not silently compare a server embedding against
+	// caller-provided vectors from an unrelated space — with or without column.
+	for _, extra := range []map[string]any{
+		{"text": "hello"},
+		{"text": "hello", "column": "emb"},
+	} {
+		body := map[string]any{"namespace": "rv", "table": "t"}
+		for k, v := range extra {
+			body[k] = v
+		}
+		code, res := post(t, srv.URL, "search_vector", body)
+		if code != 400 {
+			t.Fatalf("text query %v against a caller-provided vector column must 400, got %d %v", extra, code, res)
+		}
+		errEnv, _ := res["error"].(map[string]any)
+		msg, _ := errEnv["message"].(string)
+		if !strings.Contains(msg, "vectorize") {
+			t.Fatalf("rejection should point at the vectorize path or a raw-vector retry, got %q", msg)
+		}
+	}
+	// Raw vectors from the caller's own space keep working, column or not.
+	for _, extra := range []map[string]any{
+		{"vector": []float64{1, 0, 0, 0}},
+		{"vector": []float64{1, 0, 0, 0}, "column": "emb"},
+	} {
+		body := map[string]any{"namespace": "rv", "table": "t"}
+		for k, v := range extra {
+			body[k] = v
+		}
+		code, res := post(t, srv.URL, "search_vector", body)
+		if code != 200 {
+			t.Fatalf("raw-vector query %v must stay searchable, got %d %v", extra, code, res)
+		}
+		results := res["data"].(map[string]any)["results"].([]any)
+		if len(results) != 1 {
+			t.Fatalf("expected 1 hit, got %v", results)
+		}
+	}
+}
+
+func TestSearchVectorReportsSkippedVectors(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	srv := httptest.NewServer(New(st, fakeEmb{}).Handler())
+	t.Cleanup(srv.Close)
+	code, _ := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "sk",
+		"table":     "t",
+		"fields": []map[string]any{
+			{"name": "s", "type": "string"},
+			{"name": "emb", "type": "vector", "dim": 3},
+		},
+	})
+	if code != 200 {
+		t.Fatal("create failed")
+	}
+	code, _ = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "sk",
+		"table":     "t",
+		"records": []map[string]any{
+			{"s": "good", "emb": []float64{1, 0, 0}},
+			{"s": "bad", "emb": []float64{0, 1, 0}},
+		},
+	})
+	if code != 200 {
+		t.Fatal("insert failed")
+	}
+	// Corrupt one row the way only an out-of-band SQLite writer could.
+	raw, err := sql.Open("sqlite", filepath.Join(dir, "sk.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { raw.Close() })
+	if _, err := raw.Exec(`UPDATE t SET emb = X'0102' WHERE s = 'bad'`); err != nil {
+		t.Fatalf("corrupt row: %v", err)
+	}
+
+	code, res := post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "sk", "table": "t", "vector": []float64{1, 0, 0},
+	})
+	if code != 200 {
+		t.Fatalf("search over partially corrupt data must succeed, got %d %v", code, res)
+	}
+	data := res["data"].(map[string]any)
+	results := data["results"].([]any)
+	if len(results) != 1 || results[0].(map[string]any)["s"] != "good" {
+		t.Fatalf("expected only the intact row, got %v", results)
+	}
+	if skipped, _ := data["skipped_vectors"].(float64); skipped != 1 {
+		t.Fatalf("response must report skipped_vectors=1 so callers see results are incomplete, got %v", data["skipped_vectors"])
 	}
 }
 
@@ -704,7 +826,7 @@ func TestSemicolonInsideQuotesAllowedAtAPI(t *testing.T) {
 	code, res = post(t, srv.URL, "delete", map[string]any{
 		"namespace": "ns", "table": "findings", "filter": "title = 'a;b'",
 	})
-	if code != 200 || res["data"].(map[string]any)["deleted"].(float64) != 1 {
+	if code != 200 || res["data"].(map[string]any)["deleted"].(float64) != 1 || res["data"].(map[string]any)["matched"].(float64) != 1 {
 		t.Fatalf("delete with semicolon filter failed: %d %v", code, res)
 	}
 	code, _ = post(t, srv.URL, "delete", map[string]any{
@@ -712,6 +834,135 @@ func TestSemicolonInsideQuotesAllowedAtAPI(t *testing.T) {
 	})
 	if code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for multi-statement filter, got %d", code)
+	}
+}
+
+func TestDeleteSafetyHTTP(t *testing.T) {
+	srv := newTestServer(t)
+
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "safety",
+		"table":     "items",
+		"fields":    []map[string]any{{"name": "title", "type": "string"}},
+	})
+	if code != 200 {
+		t.Fatalf("create_table failed: %d %v", code, res)
+	}
+
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "safety",
+		"table":     "items",
+		"records": []map[string]any{
+			{"title": "a"},
+			{"title": "b"},
+			{"title": "c"},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("insert failed: %d %v", code, res)
+	}
+
+	// dry_run returns matched count without deleting.
+	code, res = post(t, srv.URL, "delete", map[string]any{
+		"namespace": "safety",
+		"table":     "items",
+		"filter":    "1=1",
+		"dry_run":   true,
+	})
+	if code != 200 {
+		t.Fatalf("dry_run failed: %d %v", code, res)
+	}
+	data := res["data"].(map[string]any)
+	if data["matched"].(float64) != 3 || data["deleted"].(float64) != 0 {
+		t.Fatalf("dry_run expected matched=3 deleted=0, got %v", data)
+	}
+
+	// Null or out-of-range safety options are rejected at runtime.
+	for _, bad := range []map[string]any{
+		{"namespace": "safety", "table": "items", "filter": "1=1", "dry_run": nil},
+		{"namespace": "safety", "table": "items", "filter": "1=1", "confirm": nil},
+		{"namespace": "safety", "table": "items", "filter": "1=1", "limit": nil},
+		{"namespace": "safety", "table": "items", "filter": "1=1", "limit": 0},
+		{"namespace": "safety", "table": "items", "filter": "1=1", "limit": -1},
+	} {
+		code, _ = post(t, srv.URL, "delete", bad)
+		if code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for invalid option %v, got %d", bad, code)
+		}
+	}
+
+	// limit below match count without confirm is rejected.
+	code, res = post(t, srv.URL, "delete", map[string]any{
+		"namespace": "safety",
+		"table":     "items",
+		"filter":    "1=1",
+		"limit":     1,
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for delete beyond limit without confirm, got %d %v", code, res)
+	}
+
+	// confirm allows deletion beyond the explicit limit.
+	code, res = post(t, srv.URL, "delete", map[string]any{
+		"namespace": "safety",
+		"table":     "items",
+		"filter":    "1=1",
+		"limit":     1,
+		"confirm":   true,
+	})
+	if code != 200 {
+		t.Fatalf("confirm delete failed: %d %v", code, res)
+	}
+	data = res["data"].(map[string]any)
+	if data["matched"].(float64) != 3 || data["deleted"].(float64) != 3 {
+		t.Fatalf("expected matched=3 deleted=3, got %v", data)
+	}
+
+	// A fresh table for the default-limit guard.
+	code, res = post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "safety2",
+		"table":     "big",
+		"fields":    []map[string]any{{"name": "title", "type": "string"}},
+	})
+	if code != 200 {
+		t.Fatalf("create_table big failed: %d %v", code, res)
+	}
+	for batch := 0; batch < 2; batch++ {
+		records := make([]map[string]any, 0, 600)
+		for i := 0; i < 600; i++ {
+			records = append(records, map[string]any{"title": fmt.Sprintf("row %d-%d", batch, i)})
+		}
+		code, res = post(t, srv.URL, "insert", map[string]any{
+			"namespace": "safety2",
+			"table":     "big",
+			"records":   records,
+		})
+		if code != 200 {
+			t.Fatalf("insert big batch %d failed: %d %v", batch, code, res)
+		}
+	}
+
+	code, res = post(t, srv.URL, "delete", map[string]any{
+		"namespace": "safety2",
+		"table":     "big",
+		"filter":    "1=1",
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for delete beyond default limit, got %d %v", code, res)
+	}
+
+	code, res = post(t, srv.URL, "delete", map[string]any{
+		"namespace": "safety2",
+		"table":     "big",
+		"filter":    "1=1",
+		"confirm":   true,
+	})
+	if code != 200 {
+		t.Fatalf("confirm delete big failed: %d %v", code, res)
+	}
+	data = res["data"].(map[string]any)
+	if data["matched"].(float64) != 1200 || data["deleted"].(float64) != 1200 {
+		t.Fatalf("expected matched=1200 deleted=1200, got %v", data)
 	}
 }
 
@@ -844,6 +1095,9 @@ func TestTypedReadContractHTTP(t *testing.T) {
 	assertTypedHTTPRow(t, hit, false)
 	if _, ok := hit["_score"].(float64); !ok {
 		t.Fatalf("search_vector must attach _score, got %T %v", hit["_score"], hit["_score"])
+	}
+	if skipped, _ := res["data"].(map[string]any)["skipped_vectors"].(float64); skipped != 0 {
+		t.Fatalf("healthy table must report skipped_vectors=0, got %v", res["data"].(map[string]any)["skipped_vectors"])
 	}
 
 	code, res = post(t, srv.URL, "search_vector", map[string]any{

@@ -187,7 +187,9 @@ func TestInsertIdempotencyKeySchemaParity(t *testing.T) {
 	if code != 400 {
 		t.Fatalf("multi-byte key exceeding the byte budget must 400, got %d %v", code, res)
 	}
-	if msg, _ := res["error"].(string); !strings.Contains(msg, "bytes") {
+	errEnv, _ := res["error"].(map[string]any)
+	msg, _ := errEnv["message"].(string)
+	if !strings.Contains(msg, "bytes") {
 		t.Fatalf("rejection should state the byte budget, got %v", res["error"])
 	}
 }
@@ -244,7 +246,9 @@ func TestUpsertByKeyValidationOverHTTP(t *testing.T) {
 		if code != 400 {
 			t.Fatalf("%s: expected 400, got %d %v", tc.name, code, res)
 		}
-		if msg, _ := res["error"].(string); !strings.Contains(msg, tc.want) {
+		errEnv, _ := res["error"].(map[string]any)
+		msg, _ := errEnv["message"].(string)
+		if !strings.Contains(msg, tc.want) {
 			t.Fatalf("%s: error should mention %q, got %v", tc.name, tc.want, res["error"])
 		}
 	}

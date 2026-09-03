@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"math"
 	"regexp"
 	"strings"
@@ -183,18 +182,31 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, off
 	// detection for plain SELECTs.
 	rows, err := n.ro.QueryContext(ctx, paginated, args...)
 	if err != nil {
-		if strings.Contains(err.Error(), "no such table") {
-			return nil, false, fmt.Errorf("%w: %w", ErrNotFound, err)
-		}
-		wrapped := "SELECT * FROM (\n" + trimmed + "\n)\nLIMIT ? OFFSET ?"
-		rows, err = n.ro.QueryContext(ctx, wrapped, args...)
-		if err != nil {
-			if strings.Contains(err.Error(), "no such table") {
-				return nil, false, fmt.Errorf("%w: %w", ErrNotFound, err)
+		// A missing table fails the wrapped form the same way, so only retry
+		// statements that reject a trailing LIMIT (VALUES, some compounds) in
+		// a subquery. When the retry also fails the statement is invalid on
+		// its own — a statement that merely rejects a trailing LIMIT succeeds
+		// via the retry — so re-classify against the caller's statement as
+		// written: it fails at prepare time, before any rows are read.
+		first := err
+		if !strings.Contains(first.Error(), "no such table") {
+			wrapped := "SELECT * FROM (\n" + trimmed + "\n)\nLIMIT ? OFFSET ?"
+			rows, err = n.ro.QueryContext(ctx, wrapped, args...)
+			if err == nil {
+				paginated = wrapped
+			} else {
+				userArgs := args[:len(args)-2]
+				if probe, bareErr := n.ro.QueryContext(ctx, trimmed, userArgs...); bareErr != nil {
+					err = bareErr
+				} else {
+					probe.Close()
+					err = first
+				}
 			}
-			return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 		}
-		paginated = wrapped
+		if err != nil {
+			return nil, false, NewQueryError(trimmed, err)
+		}
 	}
 	defer rows.Close()
 
@@ -300,7 +312,7 @@ func wrapStepErr(err error) error {
 	if err == nil {
 		return nil
 	}
-	return fmt.Errorf("%w: %w", ErrInvalid, err)
+	return NewQueryError("", err)
 }
 
 func checkRowValue(col string, v any) error {

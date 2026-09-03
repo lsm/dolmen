@@ -149,6 +149,134 @@ var Ops = map[string]OpDef{
 			return map[string]any{"tables": tables}, nil
 		},
 	},
+	"list_namespaces": {
+		Description: "List the namespaces on this server (one isolated SQLite file per namespace). " +
+			"Use it to see which namespaces already exist before creating or reusing one.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"namespaces": map[string]any{
+				"type":        "array",
+				"description": "Namespace names under the data directory, sorted",
+				"items":       map[string]any{"type": "string"},
+			},
+		}, "namespaces"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req struct{}
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			nss, err := s.st.ListNamespaces()
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			if nss == nil {
+				nss = []string{}
+			}
+			return map[string]any{"namespaces": nss}, nil
+		},
+	},
+	"create_namespace": {
+		Description: "Create an empty namespace. Namespaces are also created implicitly on first use, " +
+			"so this is only needed to reserve a name up front or to fail loudly when the name is taken. " +
+			"Creates no tables — follow with create_table.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{"namespace": nsProp("Namespace to create")},
+			"required":             []string{"namespace"},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"namespace": prop("string", "The created namespace name"),
+		}, "namespace"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req nsReq
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			ns := normNS(req.Namespace)
+			if err := s.st.CreateNamespace(ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"namespace": ns}, nil
+		},
+	},
+	"drop_namespace": {
+		Description: "Drop a namespace and every table in it, deleting its SQLite file and WAL sidecars. " +
+			"Irreversible. confirm must repeat the exact namespace name — a guard against dropping the wrong one. " +
+			"In-flight requests on the namespace finish first (or fail); any later use of the same name recreates " +
+			"the namespace empty. The server closes its own connections before deleting, but other processes " +
+			"holding the file open (a second dolmen, a backup tool) are not detected — coordinate drops within one server.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace to drop"),
+				"confirm": map[string]any{
+					"type":        "string",
+					"description": "Safety guard: repeat the exact namespace name here to confirm the irreversible drop",
+					"minLength":   1,
+				},
+			},
+			"required": []string{"namespace", "confirm"},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"dropped": prop("string", "The dropped namespace name"),
+		}, "dropped"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req dropNamespaceReq
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			ns := normNS(req.Namespace)
+			if normNS(req.Confirm) != ns {
+				return nil, badRequest("confirm must repeat the exact namespace name %q to drop it", ns)
+			}
+			if err := s.st.DropNamespace(ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"dropped": ns}, nil
+		},
+	},
+	"drop_table": {
+		Description: "Drop a table: its rows, its full-text index, its schema and migration history, and its " +
+			"idempotency keys. Irreversible. confirm must repeat the exact table name — a guard against dropping " +
+			"the wrong one. A table recreated under the same name starts fresh (version 1, empty, no history).",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace of the table"),
+				"table":     tableProp("Table name"),
+				"confirm": map[string]any{
+					"type":        "string",
+					"description": "Safety guard: repeat the exact table name here to confirm the irreversible drop",
+					"minLength":   1,
+				},
+			},
+			"required": []string{"namespace", "table", "confirm"},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"dropped": prop("string", "The dropped table name"),
+		}, "dropped"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req dropTableReq
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			table := normTable(req.Table)
+			if normTable(req.Confirm) != table {
+				return nil, badRequest("confirm must repeat the exact table name %q to drop it", table)
+			}
+			if err := s.st.DropTable(ctx, normNS(req.Namespace), table); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"dropped": table}, nil
+		},
+	},
 	"describe_table": {
 		Description: "Get the schema, version, and row count of a table.",
 		InputSchema: map[string]any{
@@ -561,12 +689,16 @@ var Ops = map[string]OpDef{
 	},
 	"search_vector": {
 		Description: "Nearest-neighbor vector search. Pass text (the server embeds it) or a raw vector. " +
-			"column is optional: defaults to the auto-embedding of a vectorized field, else the first vector field. " +
+			"column is optional for raw vectors: defaults to the auto-embedding of a vectorized field, else the first vector field. " +
+			"Text queries always target the server-managed vectorize (_embedding) space and are rejected for caller-provided " +
+			"vector columns — their embedding space is unknown, so cosine against a freshly embedded query would be meaningless; " +
+			"search those with a raw vector from the same embedding space that produced the stored vectors. " +
 			"Optional filter and args restrict rows with a SQL WHERE expression (like delete's filter) " +
 			"before scoring; optional min_score drops lower-similarity results before the ranking/limit. " +
 			"Results carry _score (cosine similarity, higher is closer), ordered by score with stable id tie-breaking, honor declared field types " +
 			"(boolean -> true/false, json -> decoded value, vector -> number array), and omit the hidden " +
-			"_embedding column unless include_hidden is true.",
+			"_embedding column unless include_hidden is true. skipped_vectors counts rows whose stored vector " +
+			"was corrupt or dimension-mismatched and could not be scored; a nonzero count means those rows are missing from results.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -588,7 +720,7 @@ var Ops = map[string]OpDef{
 					},
 					"minItems": 1,
 				},
-				"column": prop("string", "Vector column to search (optional)"),
+				"column": prop("string", "Vector column to search (raw-vector queries only; text queries always search the vectorize _embedding space)"),
 				"limit": map[string]any{
 					"type":        "integer",
 					"description": "Max results (default 10, max 200)",
@@ -647,8 +779,9 @@ var Ops = map[string]OpDef{
 					},
 				},
 			},
-			"truncated": prop("boolean", "True when more results are available beyond the returned page (because the limit was reached or the response budget was hit)"),
-		}, "results", "truncated"),
+			"truncated":       prop("boolean", "True when more results are available beyond the returned page (because the limit was reached or the response budget was hit)"),
+			"skipped_vectors": prop("integer", "Rows whose stored vector was corrupt or dimension-mismatched and could not be scored; nonzero means those rows are missing from results"),
+		}, "results", "truncated", "skipped_vectors"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req vecReq
 			if err := decodeAllowNullArgs(body, &req); err != nil {
@@ -693,18 +826,19 @@ var Ops = map[string]OpDef{
 			if req.Text != "" {
 				queryIdentity = s.emb.Identity()
 			}
-			results, truncated, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table),
+			res, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table),
 				strings.ToLower(strings.TrimSpace(req.Column)), vec, queryIdentity, req.Offset, limit(req.Limit), req.IncludeHidden,
 				req.Filter, req.Args, req.MinScore)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"results": results, "truncated": truncated}, nil
+			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "skipped_vectors": res.Skipped}, nil
 		},
 	},
 	"delete": {
 		Description: "Delete rows matching a SQL WHERE expression (e.g. \"status = 'done'\" or \"id IN (3, 7)\"). " +
-			"Rows are also removed from search indexes. The filter is required; pass \"1=1\" to empty the table.",
+			"Rows are also removed from search indexes. Use dry_run to preview the matched count, limit to set a safe threshold, " +
+			"and confirm: true to delete beyond the threshold. Without an explicit limit, deletes beyond " + fmt.Sprintf("%d", store.DefaultDeleteLimit) + " matching rows require confirm: true.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -728,22 +862,46 @@ var Ops = map[string]OpDef{
 						},
 					},
 				},
+				"dry_run": prop("boolean", "If true, only count matching rows and do not delete; returns matched with deleted: 0"),
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Maximum number of matching rows that can be deleted without confirmation; if more rows match, confirm: true is required",
+					"minimum":     1,
+				},
+				"confirm": prop("boolean", "If true, allow the delete to proceed when the number of matching rows exceeds the limit (or the default limit if no limit is set)"),
 			},
 			"required": []string{"namespace", "table", "filter"},
 		},
 		OutputSchema: outSchema(map[string]any{
-			"deleted": prop("integer", "Number of rows deleted"),
-		}, "deleted"),
+			"matched": prop("integer", "Number of rows matching the filter"),
+			"deleted": prop("integer", "Number of rows actually deleted (0 when dry_run is true)"),
+		}, "matched", "deleted"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req deleteReq
 			if err := decodeData(body, &req); err != nil {
 				return nil, err
 			}
-			deleted, err := s.st.Delete(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args)
+			dryRun, err := parseOptBool(req.DryRun, "dry_run")
+			if err != nil {
+				return nil, err
+			}
+			limit, err := parseOptPosInt(req.Limit, "limit")
+			if err != nil {
+				return nil, err
+			}
+			confirm, err := parseOptBool(req.Confirm, "confirm")
+			if err != nil {
+				return nil, err
+			}
+			res, err := s.st.Delete(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args, store.DeleteOptions{
+				DryRun:  dryRun,
+				Limit:   limit,
+				Confirm: confirm,
+			})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"deleted": deleted}, nil
+			return map[string]any{"matched": res.Matched, "deleted": res.Deleted}, nil
 		},
 	},
 	"update": {
@@ -1061,6 +1219,17 @@ type insertReq struct {
 	IdempotencyKey json.RawMessage  `json:"idempotency_key"`
 }
 
+type dropNamespaceReq struct {
+	Namespace string `json:"namespace"`
+	Confirm   string `json:"confirm"`
+}
+
+type dropTableReq struct {
+	Namespace string `json:"namespace"`
+	Table     string `json:"table"`
+	Confirm   string `json:"confirm"`
+}
+
 type upsertReq struct {
 	Namespace string           `json:"namespace"`
 	Table     string           `json:"table"`
@@ -1100,10 +1269,44 @@ type vecReq struct {
 }
 
 type deleteReq struct {
-	Namespace string `json:"namespace"`
-	Table     string `json:"table"`
-	Filter    string `json:"filter"`
-	Args      []any  `json:"args"`
+	Namespace string          `json:"namespace"`
+	Table     string          `json:"table"`
+	Filter    string          `json:"filter"`
+	Args      []any           `json:"args"`
+	DryRun    json.RawMessage `json:"dry_run,omitempty"`
+	Limit     json.RawMessage `json:"limit,omitempty"`
+	Confirm   json.RawMessage `json:"confirm,omitempty"`
+}
+
+func parseOptBool(raw json.RawMessage, what string) (bool, error) {
+	if len(raw) == 0 {
+		return false, nil
+	}
+	if string(bytes.TrimSpace(raw)) == "null" {
+		return false, badRequest("%s must be a boolean", what)
+	}
+	var v bool
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return false, badRequest("%s must be a boolean", what)
+	}
+	return v, nil
+}
+
+func parseOptPosInt(raw json.RawMessage, what string) (int, error) {
+	if len(raw) == 0 {
+		return 0, nil
+	}
+	if string(bytes.TrimSpace(raw)) == "null" {
+		return 0, badRequest("%s must be an integer", what)
+	}
+	var v int
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return 0, badRequest("%s must be an integer", what)
+	}
+	if v < 1 {
+		return 0, badRequest("%s must be at least 1", what)
+	}
+	return v, nil
 }
 
 type updateReq struct {

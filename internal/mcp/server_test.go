@@ -11,6 +11,7 @@ import (
 
 	"github.com/lsm/dolmen/internal/api"
 	"github.com/lsm/dolmen/internal/store"
+	"github.com/lsm/dolmen/internal/version"
 )
 
 type fakeEmb struct{}
@@ -136,8 +137,8 @@ func TestMCPProtocol(t *testing.T) {
 		t.Fatalf("tools/list status %d", code)
 	}
 	tools := res["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 14 {
-		t.Fatalf("expected 14 tools, got %d", len(tools))
+	if len(tools) != 18 {
+		t.Fatalf("expected 18 tools, got %d", len(tools))
 	}
 	first := tools[0].(map[string]any)
 	if first["name"] == "" || first["inputSchema"] == nil {
@@ -752,6 +753,66 @@ func TestMCPOriginAndContentTypeGuard(t *testing.T) {
 	}
 }
 
+func TestMCPToolErrorReturnsStableEnvelope(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+
+	body := map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{
+			"name":      "query",
+			"arguments": map[string]any{"namespace": "x", "sql": "SELECT * FROOOM notes"},
+		},
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-Id", "mcp-req-1")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.Header.Get("X-Request-Id") != "mcp-req-1" {
+		t.Fatalf("expected X-Request-Id header echoed, got %q", res.Header.Get("X-Request-Id"))
+	}
+
+	var decoded map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded["error"] != nil {
+		t.Fatalf("expected a tool result, got JSON-RPC error: %v", decoded["error"])
+	}
+	result, ok := decoded["result"].(map[string]any)
+	if !ok || result["isError"] != true {
+		t.Fatalf("expected isError tool result, got %v", decoded)
+	}
+	content := result["content"].([]any)[0].(map[string]any)
+	text := content["text"].(string)
+
+	var env map[string]any
+	if err := json.Unmarshal([]byte(text), &env); err != nil {
+		t.Fatalf("tool error content is not JSON: %v\ntext: %s", err, text)
+	}
+	if env["code"] != "query_error" {
+		t.Fatalf("expected query_error code, got %v", env["code"])
+	}
+	if env["request_id"] != "mcp-req-1" {
+		t.Fatalf("expected request_id echoed, got %v", env["request_id"])
+	}
+	msg, _ := env["message"].(string)
+	if !strings.Contains(msg, "FROOOM") || !strings.Contains(msg, "SELECT or WITH") {
+		t.Fatalf("expected self-correctable query error with offending token, got %q", msg)
+	}
+	if strings.Contains(msg, "SQL logic error") {
+		t.Fatalf("raw SQLite leaked into MCP tool error: %q", msg)
+	}
+}
+
 func TestMCPConfiguredOriginsAllowed(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -770,6 +831,12 @@ func TestMCPConfiguredOriginsAllowed(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("configured origin must pass the inner guard, got %d", res.StatusCode)
+	}
+	if res.Header.Get("Access-Control-Allow-Origin") != "https://app.example.com" {
+		t.Fatalf("allowed origin must be echoed, got %q", res.Header.Get("Access-Control-Allow-Origin"))
+	}
+	if res.Header.Get("Access-Control-Expose-Headers") != "X-Request-Id" {
+		t.Fatalf("X-Request-Id must be exposed, got %q", res.Header.Get("Access-Control-Expose-Headers"))
 	}
 	req, _ = http.NewRequest(http.MethodPost, srv.URL, strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"ping"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1045,8 +1112,19 @@ func TestToolsCallErrorOmitsStructuredContent(t *testing.T) {
 		t.Fatalf("error results must not carry structuredContent, got %v", callRes)
 	}
 	text := callRes["content"].([]any)[0].(map[string]any)["text"].(string)
-	if !strings.HasPrefix(text, "error:") {
-		t.Fatalf("error text must describe the failure, got %q", text)
+	var env map[string]any
+	if err := json.Unmarshal([]byte(text), &env); err != nil {
+		t.Fatalf("error content is not a valid JSON envelope: %v\ntext: %s", err, text)
+	}
+	if env["code"] != "not_found" {
+		t.Fatalf("error envelope must carry not_found code, got %v", env)
+	}
+	msg, _ := env["message"].(string)
+	if !strings.Contains(msg, "missing") {
+		t.Fatalf("error message should describe the failure, got %q", msg)
+	}
+	if strings.Contains(msg, "SQL logic error") {
+		t.Fatalf("raw SQLite leaked into MCP tool error: %q", msg)
 	}
 }
 
@@ -1139,5 +1217,111 @@ func TestMCPTypedReadContract(t *testing.T) {
 	assertRow(hit)
 	if _, ok := hit["_score"].(float64); !ok {
 		t.Fatalf("search_vector must attach _score, got %T %v", hit["_score"], hit["_score"])
+	}
+}
+
+func TestMCPLifecycleTools(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+
+	out := callTool(t, url, "create_namespace", map[string]any{"namespace": "agents"})
+	if out["namespace"] != "agents" {
+		t.Fatalf("unexpected create_namespace result: %v", out)
+	}
+	callTool(t, url, "create_table", map[string]any{
+		"namespace": "agents",
+		"table":     "memory",
+		"fields":    []map[string]any{{"name": "fact", "type": "string", "fulltext": true}},
+	})
+
+	out = callTool(t, url, "list_namespaces", map[string]any{})
+	if nss, ok := out["namespaces"].([]any); !ok || len(nss) != 1 || nss[0] != "agents" {
+		t.Fatalf("expected [agents] over MCP, got %v", out)
+	}
+
+	// The confirm guard must bite over MCP too: a mismatched confirm comes
+	// back as an errored tool result, not a silent drop.
+	code, res := rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+		"params": map[string]any{"name": "drop_table", "arguments": map[string]any{
+			"namespace": "agents", "table": "memory", "confirm": "memoryy",
+		}},
+	})
+	if code != 200 {
+		t.Fatalf("tools/call status %d", code)
+	}
+	if result, _ := res["result"].(map[string]any); result == nil || result["isError"] != true {
+		t.Fatalf("confirm mismatch must surface as an errored tool result, got %v", res)
+	}
+
+	out = callTool(t, url, "drop_table", map[string]any{
+		"namespace": "agents", "table": "memory", "confirm": "memory",
+	})
+	if out["dropped"] != "memory" {
+		t.Fatalf("unexpected drop_table result: %v", out)
+	}
+	out = callTool(t, url, "list_tables", map[string]any{"namespace": "agents"})
+	if tables, ok := out["tables"].([]any); !ok || len(tables) != 0 {
+		t.Fatalf("expected no tables after drop, got %v", out)
+	}
+
+	out = callTool(t, url, "drop_namespace", map[string]any{"namespace": "agents", "confirm": "agents"})
+	if out["dropped"] != "agents" {
+		t.Fatalf("unexpected drop_namespace result: %v", out)
+	}
+	out = callTool(t, url, "list_namespaces", map[string]any{})
+	if nss, ok := out["namespaces"].([]any); !ok || len(nss) != 0 {
+		t.Fatalf("expected no namespaces after drop, got %v", out)
+	}
+}
+
+// The wiring mirrors main.go — one api server behind /, one mcp server at
+// /mcp — so every version surface must report the single release identity
+// from internal/version (issue #67).
+func TestVersionSurfacesAgree(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	apiSrv := api.New(st, fakeEmb{})
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", New(apiSrv, nil))
+	mux.Handle("/", apiSrv.Handler())
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	res, err := http.Get(srv.URL + "/version")
+	if err != nil {
+		t.Fatalf("get /version: %v", err)
+	}
+	defer res.Body.Close()
+	var httpBody map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&httpBody); err != nil {
+		t.Fatalf("decode /version: %v", err)
+	}
+
+	code, rpcBody := rpc(t, srv.URL+"/mcp", map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "initialize",
+		"params": map[string]any{
+			"protocolVersion": protocolVersion,
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "version-test", "version": "0"},
+		},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("initialize failed: %d %v", code, rpcBody)
+	}
+	result, ok := rpcBody["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("initialize result missing: %v", rpcBody)
+	}
+	serverInfo, ok := result["serverInfo"].(map[string]any)
+	if !ok {
+		t.Fatalf("initialize result missing serverInfo: %v", rpcBody)
+	}
+
+	if httpBody["version"] != version.Version || serverInfo["version"] != version.Version {
+		t.Fatalf("version surfaces disagree: /version=%v serverInfo=%v want=%s",
+			httpBody["version"], serverInfo["version"], version.Version)
 	}
 }
