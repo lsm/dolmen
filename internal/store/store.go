@@ -146,6 +146,14 @@ func dsn(path string, readonly bool) string {
 	} else {
 		q.Add("_pragma", "journal_mode(WAL)")
 		q.Add("_pragma", "synchronous(NORMAL)")
+		// Writes take the lock at BEGIN, not at the first write: with a
+		// deferred transaction, a writer in another process that commits
+		// between our reads and our first write fails with SQLITE_BUSY_SNAPSHOT
+		// (not retried by busy_timeout). Immediate locking serializes writers
+		// up front, so read-then-write plans — like an idempotent insert's
+		// key lookup followed by its row inserts — see a stable snapshot and
+		// cross-process retries dedupe instead of erroring.
+		q.Add("_txlock", "immediate")
 	}
 	u.RawQuery = q.Encode()
 	return u.String()

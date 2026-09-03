@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -162,6 +163,9 @@ func TestInsertIdempotencyKeySchemaParity(t *testing.T) {
 	if key["type"] != "string" || key["minLength"] != 1 || key["maxLength"] != store.MaxIdempotencyKeyLen {
 		t.Fatalf("idempotency_key must declare its bounds to match the store (1..%d), got %v", store.MaxIdempotencyKeyLen, key)
 	}
+	if key["pattern"] != fmt.Sprintf(`^[ -~]{1,%d}$`, store.MaxIdempotencyKeyLen) {
+		t.Fatalf("idempotency_key must restrict to printable ASCII so schema chars and store bytes agree, got %v", key["pattern"])
+	}
 
 	srv := newTestServer(t)
 	mustCreateUsers(t, srv.URL)
@@ -172,6 +176,19 @@ func TestInsertIdempotencyKeySchemaParity(t *testing.T) {
 	})
 	if code != 400 {
 		t.Fatalf("over-length key must 400, got %d %v", code, res)
+	}
+	// 100 emoji are 400 bytes: schema chars and store bytes must agree, so a
+	// multi-byte key is rejected up front with the byte-count reason.
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "app", "table": "users",
+		"records":         []map[string]any{{"email": "emoji@example.com"}},
+		"idempotency_key": strings.Repeat("😀", 100),
+	})
+	if code != 400 {
+		t.Fatalf("multi-byte key exceeding the byte budget must 400, got %d %v", code, res)
+	}
+	if msg, _ := res["error"].(string); !strings.Contains(msg, "bytes") {
+		t.Fatalf("rejection should state the byte budget, got %v", res["error"])
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 
@@ -160,9 +161,13 @@ var Ops = map[string]OpDef{
 				},
 				"idempotency_key": map[string]any{
 					"type":        "string",
-					"description": "Unique client-chosen key that makes the insert safe to retry (replays return the original ids; reusing a key for different records is rejected)",
+					"description": fmt.Sprintf("Unique client-chosen key that makes the insert safe to retry (replays return the original ids; reusing a key for different records is rejected). Printable ASCII, 1-%d bytes — maxLength and the server both count bytes, so use ASCII tokens (uuid/ulid/hash) rather than multi-byte characters", store.MaxIdempotencyKeyLen),
 					"minLength":   1,
 					"maxLength":   store.MaxIdempotencyKeyLen,
+					// JSON Schema maxLength counts characters; the store counts
+					// bytes. Restricting to printable ASCII makes the two
+					// identical, so schema-valid keys are always accepted.
+					"pattern": fmt.Sprintf(`^[ -~]{1,%d}$`, store.MaxIdempotencyKeyLen),
 				},
 			},
 			"required": []string{"namespace", "table", "records"},

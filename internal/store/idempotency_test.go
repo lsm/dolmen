@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -192,5 +194,81 @@ func TestInsertIdempotentReplaySkipsEmbedding(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("replay must not call the embedding provider again, got %d calls", calls)
+	}
+}
+
+// Two writers racing the same fresh key on one namespace file must converge on
+// the winner's ids — never a SQLITE_BUSY_SNAPSHOT error. Each store opens its
+// own connection pool, which is the in-process analogue of two server
+// processes sharing a WAL database.
+func TestInsertIdempotentConcurrentWritersReplay(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	st1, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open st1: %v", err)
+	}
+	defer st1.Close()
+	st2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open st2: %v", err)
+	}
+	defer st2.Close()
+	mustCreateNotes(t, st1)
+
+	const writers = 8
+	rec := []map[string]any{{"title": "raced", "score": 1}}
+	type outcome struct {
+		id       int64
+		replayed bool
+		err      error
+	}
+	out := make([]outcome, writers)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			st := st1
+			if i%2 == 1 {
+				st = st2
+			}
+			<-start
+			ids, replayed, err := st.InsertIdempotent(ctx, "test", "notes", rec, testEmbed, "race-key")
+			if len(ids) == 1 {
+				out[i] = outcome{id: ids[0], replayed: replayed, err: err}
+				return
+			}
+			out[i] = outcome{err: fmt.Errorf("expected one id, got %v", ids)}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, o := range out {
+		if o.err != nil {
+			t.Fatalf("writer %d failed: %v (a raced retry must replay, not error)", i, o.err)
+		}
+		if o.id != out[0].id {
+			t.Fatalf("writer %d got id %d, writer 0 got %d — all writers must converge on the winner's row", i, o.id, out[0].id)
+		}
+	}
+	inserted := 0
+	for _, o := range out {
+		if !o.replayed {
+			inserted++
+		}
+	}
+	if inserted != 1 {
+		t.Fatalf("exactly one writer should insert, got %d", inserted)
+	}
+
+	rows, _, err := st1.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if rows[0]["n"].(int64) != 1 {
+		t.Fatalf("the race must leave exactly one row: %v", rows)
 	}
 }
