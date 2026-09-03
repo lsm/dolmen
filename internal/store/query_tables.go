@@ -489,23 +489,11 @@ func isPragmaFunction(rawName string) bool {
 	return strings.HasPrefix(asciiLower(unquoteIdent(rawName)), "pragma_")
 }
 
-// isDQString reports whether t is a double-quoted token, which SQLite's
-// double-quoted-string fallback treats as a string literal when it does not
-// resolve to an identifier — so pragma_table_info("notes") is valid read-only
-// SQL. Backtick- and bracket-quoted tokens resolve as identifiers instead and
-// are not accepted here.
-func isDQString(t token) bool {
-	return t.typ == "ident" && len(t.val) > 0 && t.val[0] == '"'
-}
-
-// pragmaArgValue extracts the literal text of a pragma argument.
-func pragmaArgValue(t token) string {
-	if t.typ == "string" {
-		return unquoteString(t.val)
-	}
-	return unquoteIdent(t.val)
-}
-
+// parsePragmaArgs validates the arguments of a table-valued PRAGMA. Only
+// single-quoted string literals are accepted: SQLite's double-quoted-string
+// fallback is context-dependent — with a table in scope, "title" binds to a
+// column before falling back to a literal, so pragma_table_info("title") can
+// run against row values that name internal tables.
 func (s *queryScanner) parsePragmaArgs(schema, rawName string) error {
 	if err := s.expect("("); err != nil {
 		return err
@@ -514,7 +502,7 @@ func (s *queryScanner) parsePragmaArgs(schema, rawName string) error {
 	if err != nil {
 		return err
 	}
-	if arg.typ != "string" && !isDQString(arg) {
+	if arg.typ != "string" {
 		return invalidf("pragma argument must be a single string literal")
 	}
 	// Table-valued PRAGMAs accept an optional second literal that selects the
@@ -526,7 +514,7 @@ func (s *queryScanner) parsePragmaArgs(schema, rawName string) error {
 		if err != nil {
 			return err
 		}
-		if schemaArg.typ != "string" && !isDQString(schemaArg) {
+		if schemaArg.typ != "string" {
 			return invalidf("pragma schema argument must be a string literal")
 		}
 	}
@@ -537,7 +525,7 @@ func (s *queryScanner) parsePragmaArgs(schema, rawName string) error {
 	if schema != "" {
 		name = unquoteIdent(schema) + "." + name
 	}
-	table := pragmaArgValue(arg)
+	table := unquoteString(arg.val)
 	if i := strings.LastIndex(table, "."); i >= 0 {
 		table = table[i+1:]
 	}
