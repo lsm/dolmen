@@ -389,6 +389,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 	})
+	mux.HandleFunc("/v1/openapi.json", s.handleOpenAPI)
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
 		op := strings.TrimPrefix(r.URL.Path, "/v1/")
 		if op == "" || strings.Contains(op, "/") {
