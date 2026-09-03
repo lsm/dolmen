@@ -20,7 +20,10 @@ func validateQueryTables(stmt string) error {
 
 // queryScanner is a small SQL tokenizer/parser used only to locate table
 // references in SELECT/WITH statements.
-const maxTableParens = 50
+const (
+	maxTableParens = 50
+	maxStmtDepth   = 50
+)
 
 type queryScanner struct {
 	s       string
@@ -31,6 +34,9 @@ type queryScanner struct {
 	// that a query with millions of nested parentheses cannot overflow the Go
 	// stack or pin CPU before SQLite rejects it.
 	tableParens int
+	// stmtDepth tracks the current nesting depth of SELECT/WITH/VALUES
+	// subqueries and CTE bodies.
+	stmtDepth int
 }
 
 type token struct {
@@ -457,6 +463,12 @@ func isJoinOp(t token) bool {
 }
 
 func (s *queryScanner) parseStatement() error {
+	if s.stmtDepth >= maxStmtDepth {
+		return invalidf("query statement nesting too deep")
+	}
+	s.stmtDepth++
+	defer func() { s.stmtDepth-- }()
+
 	// Snapshot the CTE scope so names introduced here do not leak outside this
 	// statement (e.g. out of a scalar subquery).
 	saved := s.cteNames
@@ -882,24 +894,31 @@ func (s *queryScanner) parseTableFactor() error {
 		}
 	}
 
-	if t.typ != "ident" {
+	// SQLite allows legacy single-quoted identifiers in table-factor position.
+	if t.typ != "ident" && t.typ != "string" {
 		return invalidf("expected table name, got %q", t.val)
 	}
 	s.next()
 
 	schema := ""
 	name := t.val
+	if t.typ == "string" {
+		name = unquoteString(name)
+	}
 	if t2, _ := s.peek(); t2.val == "." {
 		s.next() // dot
 		t3, err := s.next()
 		if err != nil {
 			return err
 		}
-		if t3.typ != "ident" {
+		if t3.typ != "ident" && t3.typ != "string" {
 			return invalidf("expected table name after '.', got %q", t3.val)
 		}
 		schema = name
 		name = t3.val
+		if t3.typ == "string" {
+			name = unquoteString(name)
+		}
 	}
 
 	// Table-valued functions (e.g. json_each(...)) use an identifier followed
