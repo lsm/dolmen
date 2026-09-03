@@ -98,14 +98,17 @@ func TestSQLKeywordNamesRejected(t *testing.T) {
 	if _, err := st.CreateTable(ctx, "test", "select", noteFields()); err == nil {
 		t.Fatal("expected SQL keyword table name to be rejected")
 	}
+	if _, err := st.CreateTable(ctx, "test", "notes", noteFields()); err != nil {
+		t.Fatalf("create notes: %v", err)
+	}
 	if _, err := st.Migrate(ctx, "test", "notes", []schema.Change{
 		{Op: schema.OpAddField, Field: &schema.Field{Name: "order", Type: schema.String}},
-	}, testEmbed); err == nil {
+	}, testEmbed, 0); err == nil {
 		t.Fatal("expected SQL keyword field name to be rejected on add_field")
 	}
 	if _, err := st.Migrate(ctx, "test", "notes", []schema.Change{
 		{Op: schema.OpRenameField, From: "title", To: "group"},
-	}, testEmbed); err == nil {
+	}, testEmbed, 0); err == nil {
 		t.Fatal("expected SQL keyword field name to be rejected on rename_field")
 	}
 	if _, err := st.CreateTable(ctx, "test", "my_select", []schema.Field{
@@ -185,11 +188,12 @@ func TestLegacyKeywordFieldMigration(t *testing.T) {
 	}
 
 	// Migrate should allow a keyword field to be renamed away, and should allow
-	// unrelated changes to a table that contains a keyword field.
+	// unrelated changes to a table that contains a keyword field. The rename is
+	// destructive, so it needs the expected_version precondition.
 	if _, err := st.Migrate(ctx, "test", legacyTable, []schema.Change{
 		{Op: schema.OpAddField, Field: &schema.Field{Name: "priority", Type: schema.Number}},
 		{Op: schema.OpRenameField, From: "order", To: "my_order"},
-	}, testEmbed); err != nil {
+	}, testEmbed, 1); err != nil {
 		t.Fatalf("migrate legacy keyword field: %v", err)
 	}
 	newSc, _, err := st.DescribeTable(ctx, "test", legacyTable)
@@ -203,14 +207,14 @@ func TestLegacyKeywordFieldMigration(t *testing.T) {
 	// Rename to a keyword must still fail.
 	if _, err := st.Migrate(ctx, "test", legacyTable, []schema.Change{
 		{Op: schema.OpRenameField, From: "my_order", To: "group"},
-	}, testEmbed); err == nil {
+	}, testEmbed, 2); err == nil {
 		t.Fatal("expected rename to a keyword to fail")
 	}
 
 	// Drop the legacy keyword field should also work (uses its current name).
 	if _, err := st.Migrate(ctx, "test", legacyTable, []schema.Change{
 		{Op: schema.OpDropField, Name: "my_order"},
-	}, testEmbed); err != nil {
+	}, testEmbed, 2); err != nil {
 		t.Fatalf("drop legacy renamed field: %v", err)
 	}
 }
@@ -283,7 +287,7 @@ func TestRowIdsNotReusedAfterDeleteAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if _, err := st.Delete(ctx, "test", "notes", "1=1", nil); err != nil {
+	if _, err := st.Delete(ctx, "test", "notes", "1=1", nil, DeleteOptions{}); err != nil {
 		t.Fatalf("delete all: %v", err)
 	}
 	second, err := st.Insert(ctx, "test", "notes", []map[string]any{

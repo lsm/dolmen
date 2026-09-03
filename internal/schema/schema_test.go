@@ -113,16 +113,28 @@ func TestInferStructuredMixedKindsFallbackToJSON(t *testing.T) {
 	}
 }
 
-func TestInferCaseVariantKeysMerge(t *testing.T) {
-	fields := InferFields([]map[string]any{
+func TestInferCaseVariantKeysAreReported(t *testing.T) {
+	r := InferSchema([]map[string]any{
 		{"Name": "a"},
 		{"name": "b"},
 	})
-	if len(fields) != 1 || fields[0].Name != "name" {
-		t.Fatalf("case variants should merge into one field: %+v", fields)
+	if len(r.Fields) != 1 || r.Fields[0].Name != "name" {
+		t.Fatalf("case variants should merge into one field: %+v", r.Fields)
 	}
-	if fields[0].Type != String {
-		t.Fatalf("merged same-kind variants should keep the kind, got %s", fields[0].Type)
+	if r.Fields[0].Type != String {
+		t.Fatalf("merged same-kind variants should keep the kind, got %s", r.Fields[0].Type)
+	}
+	found := false
+	for _, w := range r.Warnings {
+		if strings.Contains(w, "Name") && strings.Contains(w, "name") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a warning about case collision, got %v", r.Warnings)
+	}
+	if len(r.Provenance["name"]) != 2 {
+		t.Fatalf("expected provenance for name to list both raw keys, got %v", r.Provenance)
 	}
 }
 
@@ -488,5 +500,52 @@ func TestInferDeepPointerChainClassifies(t *testing.T) {
 	fields := InferFields([]map[string]any{{"x": v}})
 	if len(fields) != 1 || fields[0].Type != String {
 		t.Fatalf("deep acyclic pointer chain should still classify as string, got %+v", fields)
+	}
+}
+
+func TestInferFieldsEmitsValidIdents(t *testing.T) {
+	fields := InferFields([]map[string]any{
+		{"1st": "one", "my-field": "two", "ID": "three", "created_at": "four", "ok field": 5},
+	})
+	for _, f := range fields {
+		if !ValidIdent(f.Name) {
+			t.Fatalf("inferred name %q is not a valid identifier", f.Name)
+		}
+	}
+	names := map[string]bool{}
+	for _, f := range fields {
+		names[f.Name] = true
+	}
+	for _, want := range []string{"x1st", "my_field", "id_", "created_at_", "ok_field"} {
+		if !names[want] {
+			t.Fatalf("expected sanitized name %q, got %+v", want, fields)
+		}
+	}
+}
+
+func TestInferSchemaRoundTripsThroughValidate(t *testing.T) {
+	samples := []map[string]any{
+		{"1st": "one", "my-field": "two", "Name": "Alice", "name": "Bob", "id": 1},
+	}
+	fields := InferFields(samples)
+	if err := Validate(fields); err != nil {
+		t.Fatalf("inferred fields must pass Validate: %v", err)
+	}
+}
+
+func TestInferSchemaReportsSanitizationWarnings(t *testing.T) {
+	r := InferSchema([]map[string]any{
+		{"1st": "one", "my-field": "two", "id": "three", "created_at": "four"},
+	})
+	if len(r.Warnings) == 0 {
+		t.Fatalf("expected warnings for sanitized/keys, got none")
+	}
+	if len(r.Provenance) == 0 {
+		t.Fatalf("expected provenance")
+	}
+	for _, f := range r.Fields {
+		if !ValidIdent(f.Name) {
+			t.Fatalf("inferred name %q is not a valid identifier", f.Name)
+		}
 	}
 }

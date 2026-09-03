@@ -50,7 +50,14 @@ type Change struct {
 	From  string `json:"from,omitempty"`
 	To    string `json:"to,omitempty"`
 	Name  string `json:"name,omitempty"`
-	Value bool   `json:"value,omitempty"`
+	// Value carries no omitempty so history records set_fulltext/set_vectorize
+	// disables exactly as applied and stays replayable through the API (which
+	// requires an explicit value); other ops persist an inert false.
+	Value bool `json:"value"`
+	// Default is add_field's backfill value for existing rows: added required
+	// fields need one when the table has rows. Coerced by the field's type and
+	// applied as the column's literal default, so old rows read it immediately.
+	Default any `json:"default,omitempty"`
 }
 
 const (
@@ -103,6 +110,15 @@ func init() {
 // keywords that break unquoted SQL.
 func ValidIdent(s string) bool {
 	return identRe.MatchString(s) && !forbidden[s]
+}
+
+// ValidIdentSyntax reports whether s is syntactically a Dolmen identifier,
+// without the reserved-name and SQL-keyword exclusions. Use it to reference
+// identifiers that already exist and may predate the keyword restriction
+// (e.g. a natural-key field named with a legacy keyword); existence is then
+// verified against the loaded table schema.
+func ValidIdentSyntax(s string) bool {
+	return identRe.MatchString(s)
 }
 
 // ValidTableName reports whether s is a valid table name. It extends
@@ -181,6 +197,48 @@ func ReservedFieldNames() []string {
 // Dolmen and should be excluded in input schemas.
 func ReservedTableNames() []string {
 	return []string{"id", "created_at", "rowid"}
+}
+
+// cleanName transforms an arbitrary map key into a valid Dolmen field
+// identifier. It lowercases, replaces non-identifier characters with
+// underscores, ensures the result starts with a letter, and rewrites
+// reserved names by appending an underscore.
+func cleanName(raw string) string {
+	var runes []rune
+	for _, r := range strings.ToLower(raw) {
+		switch {
+		case r >= 'a' && r <= 'z':
+			runes = append(runes, r)
+		case r >= '0' && r <= '9':
+			runes = append(runes, r)
+		case r == '_':
+			runes = append(runes, r)
+		default:
+			runes = append(runes, '_')
+		}
+	}
+
+	if len(runes) > 64 {
+		runes = runes[:64]
+	}
+	if len(runes) == 0 {
+		return "x"
+	}
+	if runes[0] < 'a' || runes[0] > 'z' {
+		runes = append([]rune{'x'}, runes...)
+		if len(runes) > 64 {
+			runes = runes[:64]
+		}
+	}
+
+	if reserved[string(runes)] {
+		if len(runes) < 64 {
+			runes = append(runes, '_')
+		} else {
+			runes[len(runes)-1] = '_'
+		}
+	}
+	return string(runes)
 }
 
 func Normalize(fields []Field) []Field {
@@ -383,32 +441,66 @@ func validRFC3339Offset(s string) bool {
 	return h <= 23 && min <= 59
 }
 
-func InferFields(samples []map[string]any) []Field {
-	kinds := map[string]map[string]bool{}
+// Inference is the full result of running InferSchema. It contains the
+// proposed fields, any warnings about sanitized or colliding input keys, and
+// a provenance map from each final field name to the original key(s) that
+// produced it.
+type Inference struct {
+	Fields     []Field             `json:"fields"`
+	Warnings   []string            `json:"warnings"`
+	Provenance map[string][]string `json:"provenance"`
+}
+
+// InferSchema inspects sample records and proposes a schema with valid,
+// non-colliding field names. It returns warnings and provenance for keys that
+// were sanitized or merged due to case/punctuation collisions.
+func InferSchema(samples []map[string]any) Inference {
+	rawKinds := map[string]map[string]bool{}
 	for _, s := range samples {
 		for k, v := range s {
-			lk := strings.ToLower(k)
-			if kinds[lk] == nil {
-				kinds[lk] = map[string]bool{}
+			if rawKinds[k] == nil {
+				rawKinds[k] = map[string]bool{}
 			}
 			if isNilValue(v) {
 				continue
 			}
-			kinds[lk][goKind(v)] = true
+			rawKinds[k][goKind(v)] = true
 		}
 	}
-	keys := make([]string, 0, len(kinds))
-	for k := range kinds {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
 
-	var fields []Field
-	for _, k := range keys {
-		f := Field{Name: strings.ToLower(k)}
-		ks := kinds[k]
+	type group struct {
+		raws  []string
+		kinds map[string]bool
+	}
+	groups := map[string]*group{}
+	for raw, ks := range rawKinds {
+		final := cleanName(raw)
+		g, ok := groups[final]
+		if !ok {
+			g = &group{kinds: map[string]bool{}}
+			groups[final] = g
+		}
+		g.raws = append(g.raws, raw)
+		for k := range ks {
+			g.kinds[k] = true
+		}
+	}
+
+	finals := make([]string, 0, len(groups))
+	for f := range groups {
+		finals = append(finals, f)
+	}
+	sort.Strings(finals)
+
+	var result Inference
+	result.Provenance = map[string][]string{}
+	for _, final := range finals {
+		g := groups[final]
+		sort.Strings(g.raws)
+
+		f := Field{Name: final}
 		distinct := 0
-		for _, present := range ks {
+		for _, present := range g.kinds {
 			if present {
 				distinct++
 			}
@@ -416,17 +508,17 @@ func InferFields(samples []map[string]any) []Field {
 		switch {
 		case distinct > 1:
 			f.Type = JSON
-		case ks["bool"]:
+		case g.kinds["bool"]:
 			f.Type = Boolean
-		case ks["number"]:
+		case g.kinds["number"]:
 			f.Type = Number
-		case ks["object"] || ks["array"]:
+		case g.kinds["object"] || g.kinds["array"]:
 			f.Type = JSON
-		case ks["string"]:
+		case g.kinds["string"]:
 			f.Type = String
-			if allStringsMatch(samples, k, LooksLikeTimestamp) {
+			if allStringsMatch(samples, func(k string) bool { return cleanName(k) == final }, LooksLikeTimestamp) {
 				f.Type = Timestamp
-			} else if allStringsMatch(samples, k, func(s string) bool {
+			} else if allStringsMatch(samples, func(k string) bool { return cleanName(k) == final }, func(s string) bool {
 				return len(s) > 200 || strings.ContainsAny(s, "\n")
 			}) {
 				f.Type = Text
@@ -435,9 +527,40 @@ func InferFields(samples []map[string]any) []Field {
 		default:
 			f.Type = JSON
 		}
-		fields = append(fields, f)
+
+		result.Fields = append(result.Fields, f)
+		result.Provenance[final] = g.raws
+
+		if len(g.raws) > 1 {
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("keys %s are variants that collapse to %q; they were merged into field %q", quotedList(g.raws), final, final))
+		} else if g.raws[0] != final {
+			raw := g.raws[0]
+			if reserved[strings.ToLower(raw)] {
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("reserved key %q was renamed to %q", raw, final))
+			} else {
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("key %q was sanitized to %q", raw, final))
+			}
+		}
 	}
-	return fields
+	return result
+}
+
+// InferFields is a convenience wrapper that returns only the proposed fields
+// from InferSchema. Callers that need warnings or provenance should use
+// InferSchema directly.
+func InferFields(samples []map[string]any) []Field {
+	return InferSchema(samples).Fields
+}
+
+func quotedList(v []string) string {
+	q := make([]string, len(v))
+	for i, s := range v {
+		q[i] = fmt.Sprintf("%q", s)
+	}
+	return strings.Join(q, ", ")
 }
 
 func unwrapValue(v any) (rv reflect.Value, nilFound, cycled bool) {
@@ -506,10 +629,10 @@ func goKind(v any) string {
 	}
 }
 
-func allStringsMatch(samples []map[string]any, key string, pred func(string) bool) bool {
+func allStringsMatch(samples []map[string]any, match func(string) bool, pred func(string) bool) bool {
 	for _, s := range samples {
 		for k, v := range s {
-			if strings.ToLower(k) != key || isNilValue(v) {
+			if !match(k) || isNilValue(v) {
 				continue
 			}
 			str, ok := underlyingString(v)

@@ -13,12 +13,12 @@ import (
 	"strings"
 
 	"github.com/lsm/dolmen/internal/api"
+	"github.com/lsm/dolmen/internal/version"
 )
 
 const (
 	protocolVersion     = "2025-06-18"
 	serverName          = "dolmen"
-	serverVersion       = "0.1.0"
 	jsonRPCParseError   = -32700
 	jsonRPCMethodError  = -32601
 	jsonRPCInvalidReq   = -32600
@@ -45,6 +45,13 @@ type Server struct {
 // new rows on retry via a non-deterministic WHERE.
 var toolAnnotations = map[string]map[string]any{
 	"list_tables":     {"title": "List tables", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"list_namespaces": {"title": "List namespaces", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"create_namespace": {"title": "Create namespace", "readOnlyHint": false, "destructiveHint": false,
+		"idempotentHint": false, "openWorldHint": false},
+	"drop_namespace": {"title": "Drop namespace", "readOnlyHint": false, "destructiveHint": true,
+		"idempotentHint": false, "openWorldHint": false},
+	"drop_table": {"title": "Drop table", "readOnlyHint": false, "destructiveHint": true,
+		"idempotentHint": false, "openWorldHint": false},
 	"describe_table":  {"title": "Describe table", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"create_table":    {"title": "Create table", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
 	"infer_schema":    {"title": "Infer schema", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
@@ -57,6 +64,7 @@ var toolAnnotations = map[string]map[string]any{
 	"update":          {"title": "Update rows", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
 	"upsert":          {"title": "Upsert by filter", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
 	"migrate":         {"title": "Migrate table", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
+	"list_migrations": {"title": "List migrations", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 }
 
 func New(a *api.Server, extraOrigins []string) *Server {
@@ -206,7 +214,7 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		return map[string]any{
 			"protocolVersion": pv,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
-			"serverInfo":      map[string]any{"name": serverName, "version": serverVersion},
+			"serverInfo":      map[string]any{"name": serverName, "version": version.Version},
 		}, nil
 	case "ping":
 		if _, e := ensureObjectParams(msg.Params, "ping"); e != nil {

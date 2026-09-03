@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -323,12 +324,12 @@ func TestUpsertByKeyReEmbedsVectorizedField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
-	results, _, err := st.SearchVector(ctx, "test", "vec", "", qvecs[0], testEmbed.Identity, 10, false)
+	results, err := st.SearchVector(ctx, "test", "vec", "", qvecs[0], testEmbed.Identity, 10, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
-	if len(results) != 1 || results[0]["k"] != "a" {
-		t.Fatalf("vector search should find the re-embedded row: %v", results)
+	if len(results.Rows) != 1 || results.Rows[0]["k"] != "a" {
+		t.Fatalf("vector search should find the re-embedded row: %v", results.Rows)
 	}
 }
 
@@ -404,5 +405,60 @@ func TestUpsertByKeyRejectsProviderChange(t *testing.T) {
 	if _, _, _, err := st.UpsertByKey(ctx, "test", "vec", []string{"k"},
 		[]map[string]any{{"k": "a", "s": "world"}}, shifted); err == nil {
 		t.Fatal("upsert must reject an embedding-provider change like insert does")
+	}
+}
+
+func TestUpsertByKeyLegacyKeywordKeyField(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+
+	// A table whose key field is a legacy keyword name ("order") must remain
+	// usable as a natural key: the schema lookup verifies the field exists.
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("open namespace: %v", err)
+	}
+	legacyFields := []schema.Field{{Name: "order", Type: schema.String}, {Name: "qty", Type: schema.Number}}
+	if _, err := n.rw.ExecContext(ctx, tableDDL("orders", legacyFields)); err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	raw, err := json.Marshal(schema.TableSchema{Namespace: "test", Name: "orders", Version: 1, Fields: legacyFields})
+	if err != nil {
+		t.Fatalf("marshal schema: %v", err)
+	}
+	if _, err := n.rw.ExecContext(ctx,
+		`INSERT INTO _dolmen_tables(name, version, schema_json) VALUES(?,?,?)`,
+		"orders", 1, string(raw)); err != nil {
+		t.Fatalf("register legacy table: %v", err)
+	}
+
+	ids, inserted, updated, err := st.UpsertByKey(ctx, "test", "orders", []string{"order"},
+		[]map[string]any{{"order": "first", "qty": 1}}, testEmbed)
+	if err != nil {
+		t.Fatalf("keyword key field must work: %v", err)
+	}
+	if inserted != 1 || updated != 0 || len(ids) != 1 {
+		t.Fatalf("unexpected first result: ids=%v inserted=%d updated=%d", ids, inserted, updated)
+	}
+	ids2, inserted, updated, err := st.UpsertByKey(ctx, "test", "orders", []string{"order"},
+		[]map[string]any{{"order": "first", "qty": 5}}, testEmbed)
+	if err != nil {
+		t.Fatalf("keyword key field update: %v", err)
+	}
+	if inserted != 0 || updated != 1 || ids2[0] != ids[0] {
+		t.Fatalf("unexpected second result: ids=%v inserted=%d updated=%d", ids2, inserted, updated)
+	}
+	rows, _, err := st.Query(ctx, "test", `SELECT qty FROM "orders" WHERE id = ?`, []any{ids[0]})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if rows[0]["qty"].(int64) != 5 {
+		t.Fatalf("update must apply the new value, got %v", rows[0])
+	}
+
+	// A key field that does not exist is still rejected by the schema lookup.
+	if _, _, _, err := st.UpsertByKey(ctx, "test", "orders", []string{"group"},
+		[]map[string]any{{"order": "x"}}, testEmbed); err == nil {
+		t.Fatal("expected unknown key field to be rejected")
 	}
 }
