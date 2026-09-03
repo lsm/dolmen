@@ -70,9 +70,10 @@ func wrapStoreErr(err error) error {
 }
 
 type OpDef struct {
-	Description string
-	InputSchema map[string]any
-	Func        func(ctx context.Context, s *Server, body []byte) (any, error)
+	Description  string
+	InputSchema  map[string]any
+	OutputSchema map[string]any
+	Func         func(ctx context.Context, s *Server, body []byte) (any, error)
 }
 
 func prop(typ, desc string) map[string]any {

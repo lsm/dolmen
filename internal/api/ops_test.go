@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -572,8 +573,8 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 	if sqlP["minLength"] != 1 {
 		t.Fatalf("sql must declare minLength 1, got %v", sqlP)
 	}
-	if sqlP["pattern"] != `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b[^;]*;*\s*$` {
-		t.Fatalf("sql must declare the read-only prefix with a pure trailing-semicolon suffix, got %v", sqlP["pattern"])
+	if sqlP["pattern"] != `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b[\s\S]*$` {
+		t.Fatalf("sql must anchor to a SELECT/WITH prefix without banning semicolons (store guard is authoritative), got %v", sqlP["pattern"])
 	}
 	if props["args"].(map[string]any)["maxItems"] != 100 {
 		t.Fatalf("args must declare maxItems 100, got %v", props["args"])
@@ -586,8 +587,8 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 	if filter["pattern"] != `\S` {
 		t.Fatalf("filter must require a non-whitespace character, got %v", filter)
 	}
-	if _, ok := filter["not"].(map[string]any)["pattern"]; !ok {
-		t.Fatalf("filter must exclude all semicolons, got %v", filter)
+	if _, ok := filter["not"]; ok {
+		t.Fatalf("filter must not ban semicolons outright (store guard is authoritative), got %v", filter)
 	}
 	sv, ok := Ops["search_vector"]
 	if !ok {
@@ -626,6 +627,64 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 		if _, ok := p["not"].(map[string]any)["enum"]; !ok {
 			t.Fatalf("migrate %s must exclude reserved identifiers, got %v", key, p)
 		}
+	}
+}
+
+func TestSemicolonInsideQuotesAllowedAtAPI(t *testing.T) {
+	srv := newTestServer(t)
+
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "ns",
+		"table":     "findings",
+		"fields":    []map[string]any{{"name": "title", "type": "string"}},
+	})
+	if code != 200 {
+		t.Fatalf("create_table failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "ns",
+		"table":     "findings",
+		"records": []map[string]any{
+			{"title": "a;b"},
+			{"title": "plain"},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("insert failed: %d %v", code, res)
+	}
+
+	// A semicolon inside a quoted literal reaches the store and matches.
+	code, res = post(t, srv.URL, "query", map[string]any{
+		"namespace": "ns", "sql": "SELECT title FROM findings WHERE title = 'a;b'",
+	})
+	if code != 200 {
+		t.Fatalf("query with semicolon literal failed: %d %v", code, res)
+	}
+	rows := res["data"].(map[string]any)["rows"].([]any)
+	if len(rows) != 1 || rows[0].(map[string]any)["title"] != "a;b" {
+		t.Fatalf("unexpected query rows: %v", rows)
+	}
+
+	// A genuine multi-statement query is still rejected by the store.
+	code, _ = post(t, srv.URL, "query", map[string]any{
+		"namespace": "ns", "sql": "SELECT 1; SELECT 2",
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for multi-statement query, got %d", code)
+	}
+
+	// Same for the delete filter.
+	code, res = post(t, srv.URL, "delete", map[string]any{
+		"namespace": "ns", "table": "findings", "filter": "title = 'a;b'",
+	})
+	if code != 200 || res["data"].(map[string]any)["deleted"].(float64) != 1 {
+		t.Fatalf("delete with semicolon filter failed: %d %v", code, res)
+	}
+	code, _ = post(t, srv.URL, "delete", map[string]any{
+		"namespace": "ns", "table": "findings", "filter": "title = 'a;b'; DROP TABLE findings",
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for multi-statement filter, got %d", code)
 	}
 }
 
@@ -821,6 +880,12 @@ func TestMigrateDryRunAndVersionContractOverHTTP(t *testing.T) {
 	data := res["data"].(map[string]any)
 	if data["dry_run"] != true {
 		t.Fatalf("response must be marked dry_run: %v", data)
+	}
+	// The advertised output schema requires table on every migrate response —
+	// dry-run carries the prospective schema at the same key as an apply.
+	preview := data["table"].(map[string]any)
+	if preview["version"].(float64) != 2 {
+		t.Fatalf("dry-run table must be the prospective schema, got %v", preview)
 	}
 	plan := data["plan"].(map[string]any)
 	if plan["dry_run"] != true || plan["from_version"].(float64) != 1 || plan["to_version"].(float64) != 2 {
