@@ -69,6 +69,9 @@ func TestManifestShape(t *testing.T) {
 	if m.MCPURL != ctx.MCPURL {
 		t.Fatalf("manifest mcp_url: got %q, want %q", m.MCPURL, ctx.MCPURL)
 	}
+	if m.OpenAPIURL != ctx.BaseURL+"/v1/openapi.json" {
+		t.Fatalf("manifest openapi_url: got %q, want %q", m.OpenAPIURL, ctx.BaseURL+"/v1/openapi.json")
+	}
 	if m.LayerPicker == "" {
 		t.Fatalf("manifest layer_picker must not be empty")
 	}

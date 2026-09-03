@@ -68,6 +68,9 @@ func TestSkillsManifest(t *testing.T) {
 	if m.MCPURL != srv.URL+"/mcp" {
 		t.Fatalf("manifest mcp_url: got %q, want %q", m.MCPURL, srv.URL+"/mcp")
 	}
+	if m.OpenAPIURL != srv.URL+"/v1/openapi.json" {
+		t.Fatalf("manifest openapi_url: got %q, want %q", m.OpenAPIURL, srv.URL+"/v1/openapi.json")
+	}
 	if m.LayerPicker == "" {
 		t.Fatal("manifest layer_picker must not be empty")
 	}
