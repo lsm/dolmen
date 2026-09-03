@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -97,8 +96,11 @@ func TestInferCreateInsertRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if len(rows) != 2 || rows[0]["flag"] != "true" || rows[0]["note"] != "unknown" {
+	if len(rows) != 2 || rows[0]["flag"] != true || rows[0]["note"] != "unknown" {
 		t.Fatalf("unexpected rows: %v", rows)
+	}
+	if rows[1]["flag"] != "maybe" {
+		t.Fatalf("json field must decode to its JSON value: %v", rows)
 	}
 }
 
@@ -125,7 +127,7 @@ func TestJSONFieldStringScalarsAreValidJSON(t *testing.T) {
 	}
 }
 
-func TestZeroVectorBlobAlwaysBase64InQuery(t *testing.T) {
+func TestZeroVectorTypedInQuery(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
 	mustCreateNotes(t, st)
@@ -138,18 +140,12 @@ func TestZeroVectorBlobAlwaysBase64InQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	b64, ok := rows[0]["emb"].(string)
+	vec, ok := rows[0]["emb"].([]float64)
 	if !ok {
-		t.Fatalf("expected string, got %T", rows[0]["emb"])
+		t.Fatalf("expected a typed vector, got %T", rows[0]["emb"])
 	}
-	decoded, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil || len(decoded) != 16 {
-		t.Fatalf("expected base64 of a 16-byte zero vector, got %q", b64)
-	}
-	for _, b := range decoded {
-		if b != 0 {
-			t.Fatalf("expected zero bytes, got %q", b64)
-		}
+	if len(vec) != 4 || vec[0] != 0 || vec[3] != 0 {
+		t.Fatalf("expected [0 0 0 0], got %v", vec)
 	}
 }
 

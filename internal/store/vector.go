@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"math"
 	"sort"
@@ -10,7 +9,7 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, vec []float32, embedModel string, limit int) ([]map[string]any, bool, error) {
+func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, vec []float32, embedModel string, limit int, includeHidden bool) ([]map[string]any, bool, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
 		return nil, false, err
@@ -80,25 +79,13 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 		ids[i] = h.id
 		scoreByID[h.id] = h.score
 	}
-	vectorCols := map[string]int{column: dim}
-	out, complete, err := fetchByIDs(ctx, tx, table, ids, vectorCols)
+	out, complete, err := fetchByIDs(ctx, tx, table, ids, projectionFromSchema(sc, includeHidden))
 	if err != nil {
 		return nil, false, err
 	}
 	for _, row := range out {
 		if id, ok := row["id"].(int64); ok {
 			row["_score"] = scoreByID[id]
-		}
-		if str, ok := row[column].(string); ok {
-			if raw, err := base64.StdEncoding.DecodeString(str); err == nil {
-				if fv, err := schema.DecodeVector(raw); err == nil {
-					floats := make([]float64, len(fv))
-					for j, x := range fv {
-						floats[j] = float64(x)
-					}
-					row[column] = floats
-				}
-			}
 		}
 	}
 	return out, !complete, nil

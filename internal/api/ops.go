@@ -177,7 +177,10 @@ var Ops = map[string]OpDef{
 	"query": {
 		Description: "Run a read-only SQL statement (SELECT or WITH only) against one namespace. " +
 			"Use table and column names from list_tables/describe_table. Bind parameters with ? and pass args. " +
-			"Vector columns come back as base64 strings; id and created_at are included in SELECT *.",
+			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array, " +
+			"number -> integer or float); expression columns with no declared type fall back to raw values (blobs as base64). " +
+			"id and created_at are included in SELECT *; the hidden _embedding column is stripped from SELECT * — " +
+			"reference _embedding in the statement to include it.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -219,7 +222,9 @@ var Ops = map[string]OpDef{
 	},
 	"search_fulltext": {
 		Description: "Full-text search over fields marked fulltext, using SQLite FTS5 MATCH syntax " +
-			"(e.g. \"payment\", \"'credit refund'\", \"status:ok AND retry\"). Returns matching records ordered by relevance.",
+			"(e.g. \"payment\", \"'credit refund'\", \"status:ok AND retry\"). Returns matching records ordered by relevance. " +
+			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array) " +
+			"and omit the hidden _embedding column unless include_hidden is true.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -238,6 +243,7 @@ var Ops = map[string]OpDef{
 					"minimum":     1,
 					"maximum":     200,
 				},
+				"include_hidden": prop("boolean", "Also return hidden internal columns (currently _embedding) in results"),
 			},
 			"required": []string{"namespace", "table", "query"},
 		},
@@ -249,7 +255,7 @@ var Ops = map[string]OpDef{
 			if req.Query == "" {
 				return nil, badRequest("query must not be empty")
 			}
-			results, truncated, err := s.st.SearchFulltext(ctx, normNS(req.Namespace), normTable(req.Table), req.Query, limit(req.Limit))
+			results, truncated, err := s.st.SearchFulltext(ctx, normNS(req.Namespace), normTable(req.Table), req.Query, limit(req.Limit), req.IncludeHidden)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -259,7 +265,9 @@ var Ops = map[string]OpDef{
 	"search_vector": {
 		Description: "Nearest-neighbor vector search. Pass text (the server embeds it) or a raw vector. " +
 			"column is optional: defaults to the auto-embedding of a vectorized field, else the first vector field. " +
-			"Results carry _score (cosine similarity, higher is closer).",
+			"Results carry _score (cosine similarity, higher is closer), honor declared field types " +
+			"(boolean -> true/false, json -> decoded value, vector -> number array), and omit the hidden " +
+			"_embedding column unless include_hidden is true.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -288,6 +296,7 @@ var Ops = map[string]OpDef{
 					"minimum":     1,
 					"maximum":     200,
 				},
+				"include_hidden": prop("boolean", "Also return hidden internal columns (currently _embedding) in results"),
 			},
 			"required": []string{"namespace", "table"},
 			"oneOf": []any{
@@ -340,7 +349,7 @@ var Ops = map[string]OpDef{
 				queryIdentity = s.emb.Identity()
 			}
 			results, truncated, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table),
-				strings.ToLower(strings.TrimSpace(req.Column)), vec, queryIdentity, limit(req.Limit))
+				strings.ToLower(strings.TrimSpace(req.Column)), vec, queryIdentity, limit(req.Limit), req.IncludeHidden)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -503,19 +512,21 @@ type queryReq struct {
 }
 
 type ftsReq struct {
-	Namespace string `json:"namespace"`
-	Table     string `json:"table"`
-	Query     string `json:"query"`
-	Limit     int    `json:"limit"`
+	Namespace     string `json:"namespace"`
+	Table         string `json:"table"`
+	Query         string `json:"query"`
+	Limit         int    `json:"limit"`
+	IncludeHidden bool   `json:"include_hidden"`
 }
 
 type vecReq struct {
-	Namespace string    `json:"namespace"`
-	Table     string    `json:"table"`
-	Column    string    `json:"column"`
-	Text      string    `json:"text"`
-	Vector    []float64 `json:"vector"`
-	Limit     int       `json:"limit"`
+	Namespace     string    `json:"namespace"`
+	Table         string    `json:"table"`
+	Column        string    `json:"column"`
+	Text          string    `json:"text"`
+	Vector        []float64 `json:"vector"`
+	Limit         int       `json:"limit"`
+	IncludeHidden bool      `json:"include_hidden"`
 }
 
 type deleteReq struct {

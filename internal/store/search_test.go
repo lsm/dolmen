@@ -16,7 +16,7 @@ func TestFulltextSearchAndDeleteCascade(t *testing.T) {
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
 
-	rows, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 10)
+	rows, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 10, false)
 	if err != nil {
 		t.Fatalf("fts: %v", err)
 	}
@@ -32,14 +32,14 @@ func TestFulltextSearchAndDeleteCascade(t *testing.T) {
 		t.Fatalf("expected 1 deleted, got %d", deleted)
 	}
 
-	rows, _, err = st.SearchFulltext(ctx, "test", "notes", "dolmen", 10)
+	rows, _, err = st.SearchFulltext(ctx, "test", "notes", "dolmen", 10, false)
 	if err != nil {
 		t.Fatalf("fts after delete: %v", err)
 	}
 	if len(rows) != 0 {
 		t.Fatalf("expected deleted row gone from fts, got %v", rows)
 	}
-	rows, _, err = st.SearchFulltext(ctx, "test", "notes", "memory", 10)
+	rows, _, err = st.SearchFulltext(ctx, "test", "notes", "memory", 10, false)
 	if err != nil {
 		t.Fatalf("fts survivor: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestLargeDeleteUsesNoInParameterLists(t *testing.T) {
 	if got := rows[0]["n"].(int64); got != 0 {
 		t.Fatalf("expected 0 rows after delete, got %d", got)
 	}
-	fts, _, err := st.SearchFulltext(ctx, "test", "big", "row", 10)
+	fts, _, err := st.SearchFulltext(ctx, "test", "big", "row", 10, false)
 	if err != nil {
 		t.Fatalf("fts after delete: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestDeleteFilterEvaluatedOnce(t *testing.T) {
 	if rows[0]["n"].(int64) != 0 {
 		t.Fatalf("base rows must be deleted alongside the index: %v", rows)
 	}
-	fts, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 10)
+	fts, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 10, false)
 	if err != nil {
 		t.Fatalf("search after delete: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestMalformedDeleteFilterIsInvalidRequest(t *testing.T) {
 func TestMalformedFTSQueryIsInvalidRequest(t *testing.T) {
 	st := openStore(t)
 	mustCreateNotes(t, st)
-	if _, _, err := st.SearchFulltext(context.Background(), "test", "notes", "\"unterminated", 10); err == nil || !errors.Is(err, ErrInvalid) {
+	if _, _, err := st.SearchFulltext(context.Background(), "test", "notes", "\"unterminated", 10, false); err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected malformed FTS syntax to classify as invalid request, got %v", err)
 	}
 }
@@ -150,7 +150,7 @@ func TestSearchByteBudget(t *testing.T) {
 			t.Fatalf("insert %d: %v", i, err)
 		}
 	}
-	rows, truncated, err := st.SearchFulltext(ctx, "test", "bigsearch", "needle", 200)
+	rows, truncated, err := st.SearchFulltext(ctx, "test", "bigsearch", "needle", 200, false)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestSearchLabelBudget(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "wide", records, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	rows, truncated, err := st.SearchFulltext(ctx, "test", "wide", "target", 250)
+	rows, truncated, err := st.SearchFulltext(ctx, "test", "wide", "target", 250, false)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}

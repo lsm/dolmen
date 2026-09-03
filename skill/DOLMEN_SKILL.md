@@ -41,6 +41,12 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
 - Every table has implicit `id` and `created_at` columns; `SELECT *` includes them.
+- Results honor declared field types in every read (`query`, `search_fulltext`, `search_vector`):
+  `boolean` → `true`/`false`, `json` → the decoded value, `vector` → a number array, SQL `NULL` →
+  `null`. In `query`, coercion is by column name; computed expression columns fall back to raw
+  values (blobs as base64).
+- The hidden `_embedding` column (from `vectorize`) is excluded from `SELECT *` and search results;
+  select it explicitly in SQL or pass `include_hidden: true` to a search when you really need it.
 - Vector search results carry `_score` (cosine similarity; higher is closer).
 
 ## Typical flows
