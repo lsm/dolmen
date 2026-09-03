@@ -76,6 +76,7 @@ type Manifest struct {
 	Version     string          `json:"version"`
 	BaseURL     string          `json:"base_url"`
 	MCPURL      string          `json:"mcp_url"`
+	OpenAPIURL  string          `json:"openapi_url"`
 	Skills      []ManifestSkill `json:"skills"`
 	LayerPicker string          `json:"layer_picker"`
 }
@@ -120,6 +121,7 @@ func ManifestJSON(ctx Context) ([]byte, error) {
 		Version:     ctx.Version,
 		BaseURL:     ctx.BaseURL,
 		MCPURL:      ctx.MCPURL,
+		OpenAPIURL:  ctx.BaseURL + "/v1/openapi.json",
 		LayerPicker: picker,
 	}
 	for _, s := range []*skill{dolmen, dolmenAdmin} {
