@@ -873,19 +873,16 @@ func TestToolHintSemantics(t *testing.T) {
 	if ann := byName["infer_schema"]["annotations"].(map[string]any); ann["readOnlyHint"] != true {
 		t.Fatalf("infer_schema is pure (never touches the store) and must carry readOnlyHint true, got %v", ann)
 	}
-	for _, name := range []string{"delete", "migrate"} {
+	for _, name := range []string{"delete", "migrate", "update", "upsert", "upsert_by_key"} {
 		if ann := byName[name]["annotations"].(map[string]any); ann["destructiveHint"] != true {
-			t.Fatalf("destructive tool %q must carry destructiveHint true, got %v", name, ann)
+			t.Fatalf("write tool %q can overwrite or drop existing data and must carry destructiveHint true, got %v", name, ann)
 		}
 	}
-	for _, name := range []string{"update", "upsert"} {
+	for _, name := range []string{"update", "upsert", "upsert_by_key"} {
 		ann := byName[name]["annotations"].(map[string]any)
-		if ann["destructiveHint"] != true || ann["idempotentHint"] != false {
-			t.Fatalf("filter-driven write %q overwrites rows and can walk new rows on retry (arbitrary WHERE), got %v", name, ann)
+		if ann["idempotentHint"] != false {
+			t.Fatalf("write tool %q re-embeds on every retry (and filter-driven forms can walk new rows), so it must not claim idempotent, got %v", name, ann)
 		}
-	}
-	if ann := byName["upsert_by_key"]["annotations"].(map[string]any); ann["idempotentHint"] != true || ann["destructiveHint"] != false {
-		t.Fatalf("upsert_by_key converges on its declared natural key and must be idempotent and non-destructive, got %v", ann)
 	}
 	for _, name := range []string{"insert", "search_vector", "migrate"} {
 		if ann := byName[name]["annotations"].(map[string]any); ann["openWorldHint"] != true {
