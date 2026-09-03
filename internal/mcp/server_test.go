@@ -821,18 +821,21 @@ func TestToolHintSemantics(t *testing.T) {
 		tool := entry.(map[string]any)
 		byName[tool["name"].(string)] = tool
 	}
-	for _, name := range []string{"list_tables", "describe_table", "infer_schema", "query", "search_fulltext", "search_vector"} {
-		if ann := byName[name]["annotations"].(map[string]any); ann["readOnlyHint"] != true {
-			t.Fatalf("read-only tool %q must carry readOnlyHint true, got %v", name, ann)
+	for _, name := range []string{"list_tables", "describe_table", "query", "search_fulltext", "search_vector"} {
+		if ann := byName[name]["annotations"].(map[string]any); ann["readOnlyHint"] != false {
+			t.Fatalf("store-reading tool %q creates the namespace db on first touch and must not claim readOnly, got %v", name, ann)
 		}
+	}
+	if ann := byName["infer_schema"]["annotations"].(map[string]any); ann["readOnlyHint"] != true {
+		t.Fatalf("infer_schema is pure (never touches the store) and must carry readOnlyHint true, got %v", ann)
 	}
 	for _, name := range []string{"delete", "migrate"} {
 		if ann := byName[name]["annotations"].(map[string]any); ann["destructiveHint"] != true {
 			t.Fatalf("destructive tool %q must carry destructiveHint true, got %v", name, ann)
 		}
 	}
-	if ann := byName["query"]["annotations"].(map[string]any); ann["readOnlyHint"] != true || ann["destructiveHint"] != false {
-		t.Fatalf("query hints must be read-only and non-destructive, got %v", ann)
+	if ann := byName["query"]["annotations"].(map[string]any); ann["destructiveHint"] != false || ann["idempotentHint"] != true {
+		t.Fatalf("query hints must be non-destructive and idempotent, got %v", ann)
 	}
 }
 

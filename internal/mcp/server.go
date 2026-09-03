@@ -31,16 +31,19 @@ type Server struct {
 }
 
 // toolAnnotations carries the MCP annotations (client-side UI hints) for each
-// registry op. Titles and hints describe the op, not the transport.
+// registry op. Titles and hints describe the op, not the transport. Read ops
+// that touch the store still create the namespace db on first use (Store.ns
+// opens and initializes <namespace>.db), so they must not claim readOnlyHint
+// until that changes; infer_schema is pure and does.
 var toolAnnotations = map[string]map[string]any{
-	"list_tables":     {"title": "List tables", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
-	"describe_table":  {"title": "Describe table", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"list_tables":     {"title": "List tables", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"describe_table":  {"title": "Describe table", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"create_table":    {"title": "Create table", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
 	"infer_schema":    {"title": "Infer schema", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"insert":          {"title": "Insert records", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
-	"query":           {"title": "Query", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
-	"search_fulltext": {"title": "Full-text search", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
-	"search_vector":   {"title": "Vector search", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"query":           {"title": "Query", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"search_fulltext": {"title": "Full-text search", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"search_vector":   {"title": "Vector search", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"delete":          {"title": "Delete rows", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false},
 	"migrate":         {"title": "Migrate table", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false},
 }
