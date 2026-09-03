@@ -404,8 +404,8 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 	// fulltext index follows the new text
 	code, res = post(t, srv.URL, "update", map[string]any{
 		"namespace": "skills", "table": "findings",
-		"filter":    "title = 'slow query'",
-		"set":       map[string]any{"title": "slow query fixed"},
+		"filter": "title = 'slow query'",
+		"set":    map[string]any{"title": "slow query fixed"},
 	})
 	if code != 200 || res["data"].(map[string]any)["updated"].(float64) != 1 {
 		t.Fatalf("rename update failed: %d %v", code, res)
@@ -424,8 +424,8 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 	// null clears a field
 	code, _ = post(t, srv.URL, "update", map[string]any{
 		"namespace": "skills", "table": "findings",
-		"filter":    "title = 'typo'",
-		"set":       map[string]any{"confidence": nil},
+		"filter": "title = 'typo'",
+		"set":    map[string]any{"confidence": nil},
 	})
 	if code != 200 {
 		t.Fatalf("null clear must be allowed: %d", code)
@@ -444,8 +444,8 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 	// unknown field and missing set are rejected
 	code, _ = post(t, srv.URL, "update", map[string]any{
 		"namespace": "skills", "table": "findings",
-		"filter":    "1=1",
-		"set":       map[string]any{"bogus": 1},
+		"filter": "1=1",
+		"set":    map[string]any{"bogus": 1},
 	})
 	if code != 400 {
 		t.Fatalf("unknown field must 400, got %d", code)
@@ -460,8 +460,8 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 	// upsert with no match inserts (and embeds the vectorized field)
 	code, res = post(t, srv.URL, "upsert", map[string]any{
 		"namespace": "skills", "table": "findings",
-		"filter":    "title = 'ghost'",
-		"set":       map[string]any{"title": "ghost finding", "detail": "haunting detail", "confidence": 0.1},
+		"filter": "title = 'ghost'",
+		"set":    map[string]any{"title": "ghost finding", "detail": "haunting detail", "confidence": 0.1},
 	})
 	if code != 200 {
 		t.Fatalf("upsert insert failed: %d %v", code, res)
@@ -488,8 +488,8 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 	// upsert with a match updates instead
 	code, res = post(t, srv.URL, "upsert", map[string]any{
 		"namespace": "skills", "table": "findings",
-		"filter":    "title = 'auth bug'",
-		"set":       map[string]any{"confidence": 0.99},
+		"filter": "title = 'auth bug'",
+		"set":    map[string]any{"confidence": 0.99},
 	})
 	if code != 200 {
 		t.Fatalf("upsert update failed: %d %v", code, res)
@@ -518,8 +518,8 @@ func TestUpsertInsertPathRequiresRequiredFields(t *testing.T) {
 	}
 	code, _ = post(t, srv.URL, "upsert", map[string]any{
 		"namespace": "req", "table": "t",
-		"filter":    "1=0",
-		"set":       map[string]any{"note": "no name"},
+		"filter": "1=0",
+		"set":    map[string]any{"note": "no name"},
 	})
 	if code != 400 {
 		t.Fatalf("upsert insert path must enforce required fields, got %d", code)
