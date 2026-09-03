@@ -38,6 +38,23 @@ DOLMEN_EMBED_MODEL=nomic-embed-text \
 ./dolmen
 ```
 
+## Configuration
+
+Dolmen reads its startup configuration from command-line flags and environment
+variables. Unknown flags and positional arguments are rejected with an error.
+
+| Flag | Environment variable | Default | Description |
+|---|---|---|---|
+| `-addr` | `DOLMEN_ADDR` | `127.0.0.1:8790` | HTTP/MCP listen address |
+| `-data` | `DOLMEN_DATA` | `data` | Data directory (one SQLite file per namespace) |
+| `-version` | — | — | Print version and exit |
+| — | `DOLMEN_ALLOWED_ORIGINS` | — | Comma-separated allowed HTTP origins for CORS; `localhost`, `127.0.0.1`, and `::1` are always allowed |
+| — | `DOLMEN_EMBED_PROVIDER` | `none` | Embedding provider: `none` (caller supplies vectors) or `openai` (any OpenAI-compatible endpoint). Unknown values produce an error |
+| — | `DOLMEN_EMBED_BASE_URL` | `https://api.openai.com/v1` | Base URL for an OpenAI-compatible provider |
+| — | `DOLMEN_EMBED_MODEL` | `text-embedding-3-small` | Model for an OpenAI-compatible provider |
+| — | `DOLMEN_EMBED_API_KEY` | — | API key for an OpenAI-compatible provider. If set (even to `""`), it takes precedence over `OPENAI_API_KEY` |
+| — | `OPENAI_API_KEY` | — | Fallback API key when `DOLMEN_EMBED_API_KEY` is unset |
+
 ### HTTP API
 
 ```bash
@@ -83,7 +100,7 @@ curl -s localhost:8790/v1/update -H 'Content-Type: application/json' -d '{
 claude mcp add --transport http dolmen http://127.0.0.1:8790/mcp
 ```
 
-The MCP server exposes the same twelve operations as tools (`tools/list` shows them with full schemas).
+The MCP server exposes the same thirteen operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
 
 ## Tools
 
@@ -93,7 +110,8 @@ The MCP server exposes the same twelve operations as tools (`tools/list` shows t
 | `describe_table` | Schema, version, row count |
 | `create_table` | Typed fields with `fulltext` / `vector` / `vectorize` annotations |
 | `infer_schema` | Propose fields from sample records (creates nothing) |
-| `insert` | Validated records; indexes and embeddings update automatically |
+| `insert` | Validated records; indexes and embeddings update automatically; `idempotency_key` makes retries replay the original ids |
+| `upsert_by_key` | Insert-or-update keyed by natural field(s) (`on`); converges instead of duplicating on retry |
 | `query` | Read-only SQL (SELECT/WITH), parameter binding via `args`, typed results |
 | `search_fulltext` | FTS5 MATCH over `fulltext` fields, relevance-ordered, typed results |
 | `search_vector` | Cosine KNN over embeddings; pass `text` (server embeds) or `vector`; results carry `_score` |
@@ -109,6 +127,11 @@ The MCP server exposes the same twelve operations as tools (`tools/list` shows t
   and WAL sidecars, so deleting under a live server is unreliable). A small registry inside each file
   holds table schemas, versions, and a migration log.
 - **Full-text** via SQLite FTS5 shadow tables, maintained on insert/update/delete/migrate.
+- **Idempotent writes** for agent retries: `insert` accepts an `idempotency_key` (client-chosen,
+  durably recorded with its ids in a side table, so a retry — even after a restart — returns the
+  original ids; reusing a key for different records is an error), and `upsert_by_key` writes
+  records keyed by a natural field set (`on`), updating the matched row partially or inserting
+  when nothing matches.
 - **Vectors** stored as float32 blobs; KNN is a brute-force cosine scan in Go — fine into the low
   millions of rows, zero index infrastructure. (This is the deliberate MVP trade.)
 - **Read-only SQL** runs on a `mode=ro` connection with a SELECT/WITH allowlist — defense in depth.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -107,8 +108,7 @@ func TestUpdateCoercesValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	tags, ok := rows[0]["tags"].([]any)
-	if rows[0]["score"].(float64) != 2.5 || rows[0]["done"].(bool) != true || !ok || len(tags) != 1 || tags[0] != "x" {
+	if rows[0]["score"].(float64) != 2.5 || rows[0]["done"] != true || !reflect.DeepEqual(rows[0]["tags"], []any{"x"}) {
 		t.Fatalf("coerced values wrong: %v", rows[0])
 	}
 

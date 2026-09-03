@@ -339,10 +339,10 @@ var timestampLayouts = []string{
 	"2006-01-02",
 }
 
-func looksLikeTimestamp(s string) bool {
+func CanonicalTimestamp(s string) (string, bool) {
 	s = strings.TrimSpace(s)
 	if !isoRe.MatchString(s) {
-		return false
+		return "", false
 	}
 	norm := s
 	if len(norm) >= 11 && norm[10] == 't' {
@@ -355,10 +355,18 @@ func looksLikeTimestamp(s string) bool {
 	}
 	for _, layout := range timestampLayouts {
 		if _, err := time.Parse(layout, norm); err == nil {
-			return validRFC3339Offset(s)
+			if !validRFC3339Offset(s) {
+				return "", false
+			}
+			return norm, true
 		}
 	}
-	return false
+	return "", false
+}
+
+func LooksLikeTimestamp(s string) bool {
+	_, ok := CanonicalTimestamp(s)
+	return ok
 }
 
 var offsetRe = regexp.MustCompile(`(?:[Zz]|[+-]\d{2}:\d{2})$`)
@@ -416,7 +424,7 @@ func InferFields(samples []map[string]any) []Field {
 			f.Type = JSON
 		case ks["string"]:
 			f.Type = String
-			if allStringsMatch(samples, k, looksLikeTimestamp) {
+			if allStringsMatch(samples, k, LooksLikeTimestamp) {
 				f.Type = Timestamp
 			} else if allStringsMatch(samples, k, func(s string) bool {
 				return len(s) > 200 || strings.ContainsAny(s, "\n")

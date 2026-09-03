@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -404,8 +405,8 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 	// fulltext index follows the new text
 	code, res = post(t, srv.URL, "update", map[string]any{
 		"namespace": "skills", "table": "findings",
-		"filter":    "title = 'slow query'",
-		"set":       map[string]any{"title": "slow query fixed"},
+		"filter": "title = 'slow query'",
+		"set":    map[string]any{"title": "slow query fixed"},
 	})
 	if code != 200 || res["data"].(map[string]any)["updated"].(float64) != 1 {
 		t.Fatalf("rename update failed: %d %v", code, res)
@@ -424,8 +425,8 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 	// null clears a field
 	code, _ = post(t, srv.URL, "update", map[string]any{
 		"namespace": "skills", "table": "findings",
-		"filter":    "title = 'typo'",
-		"set":       map[string]any{"confidence": nil},
+		"filter": "title = 'typo'",
+		"set":    map[string]any{"confidence": nil},
 	})
 	if code != 200 {
 		t.Fatalf("null clear must be allowed: %d", code)
@@ -444,8 +445,8 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 	// unknown field and missing set are rejected
 	code, _ = post(t, srv.URL, "update", map[string]any{
 		"namespace": "skills", "table": "findings",
-		"filter":    "1=1",
-		"set":       map[string]any{"bogus": 1},
+		"filter": "1=1",
+		"set":    map[string]any{"bogus": 1},
 	})
 	if code != 400 {
 		t.Fatalf("unknown field must 400, got %d", code)
@@ -460,8 +461,8 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 	// upsert with no match inserts (and embeds the vectorized field)
 	code, res = post(t, srv.URL, "upsert", map[string]any{
 		"namespace": "skills", "table": "findings",
-		"filter":    "title = 'ghost'",
-		"set":       map[string]any{"title": "ghost finding", "detail": "haunting detail", "confidence": 0.1},
+		"filter": "title = 'ghost'",
+		"set":    map[string]any{"title": "ghost finding", "detail": "haunting detail", "confidence": 0.1},
 	})
 	if code != 200 {
 		t.Fatalf("upsert insert failed: %d %v", code, res)
@@ -488,8 +489,8 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 	// upsert with a match updates instead
 	code, res = post(t, srv.URL, "upsert", map[string]any{
 		"namespace": "skills", "table": "findings",
-		"filter":    "title = 'auth bug'",
-		"set":       map[string]any{"confidence": 0.99},
+		"filter": "title = 'auth bug'",
+		"set":    map[string]any{"confidence": 0.99},
 	})
 	if code != 200 {
 		t.Fatalf("upsert update failed: %d %v", code, res)
@@ -518,8 +519,8 @@ func TestUpsertInsertPathRequiresRequiredFields(t *testing.T) {
 	}
 	code, _ = post(t, srv.URL, "upsert", map[string]any{
 		"namespace": "req", "table": "t",
-		"filter":    "1=0",
-		"set":       map[string]any{"note": "no name"},
+		"filter": "1=0",
+		"set":    map[string]any{"note": "no name"},
 	})
 	if code != 400 {
 		t.Fatalf("upsert insert path must enforce required fields, got %d", code)
@@ -570,8 +571,8 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 	if sqlP["minLength"] != 1 {
 		t.Fatalf("sql must declare minLength 1, got %v", sqlP)
 	}
-	if sqlP["pattern"] != `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b[^;]*;*\s*$` {
-		t.Fatalf("sql must declare the read-only prefix with a pure trailing-semicolon suffix, got %v", sqlP["pattern"])
+	if sqlP["pattern"] != `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b[\s\S]*$` {
+		t.Fatalf("sql must anchor to a SELECT/WITH prefix without banning semicolons (store guard is authoritative), got %v", sqlP["pattern"])
 	}
 	if props["args"].(map[string]any)["maxItems"] != 100 {
 		t.Fatalf("args must declare maxItems 100, got %v", props["args"])
@@ -584,8 +585,8 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 	if filter["pattern"] != `\S` {
 		t.Fatalf("filter must require a non-whitespace character, got %v", filter)
 	}
-	if _, ok := filter["not"].(map[string]any)["pattern"]; !ok {
-		t.Fatalf("filter must exclude all semicolons, got %v", filter)
+	if _, ok := filter["not"]; ok {
+		t.Fatalf("filter must not ban semicolons outright (store guard is authoritative), got %v", filter)
 	}
 	sv, ok := Ops["search_vector"]
 	if !ok {
@@ -635,6 +636,64 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 		if key != "to" && hasNotEnum {
 			t.Fatalf("migrate %s must not exclude reserved identifiers (legacy fields may be reserved), got %v", key, p)
 		}
+	}
+}
+
+func TestSemicolonInsideQuotesAllowedAtAPI(t *testing.T) {
+	srv := newTestServer(t)
+
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "ns",
+		"table":     "findings",
+		"fields":    []map[string]any{{"name": "title", "type": "string"}},
+	})
+	if code != 200 {
+		t.Fatalf("create_table failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "ns",
+		"table":     "findings",
+		"records": []map[string]any{
+			{"title": "a;b"},
+			{"title": "plain"},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("insert failed: %d %v", code, res)
+	}
+
+	// A semicolon inside a quoted literal reaches the store and matches.
+	code, res = post(t, srv.URL, "query", map[string]any{
+		"namespace": "ns", "sql": "SELECT title FROM findings WHERE title = 'a;b'",
+	})
+	if code != 200 {
+		t.Fatalf("query with semicolon literal failed: %d %v", code, res)
+	}
+	rows := res["data"].(map[string]any)["rows"].([]any)
+	if len(rows) != 1 || rows[0].(map[string]any)["title"] != "a;b" {
+		t.Fatalf("unexpected query rows: %v", rows)
+	}
+
+	// A genuine multi-statement query is still rejected by the store.
+	code, _ = post(t, srv.URL, "query", map[string]any{
+		"namespace": "ns", "sql": "SELECT 1; SELECT 2",
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for multi-statement query, got %d", code)
+	}
+
+	// Same for the delete filter.
+	code, res = post(t, srv.URL, "delete", map[string]any{
+		"namespace": "ns", "table": "findings", "filter": "title = 'a;b'",
+	})
+	if code != 200 || res["data"].(map[string]any)["deleted"].(float64) != 1 {
+		t.Fatalf("delete with semicolon filter failed: %d %v", code, res)
+	}
+	code, _ = post(t, srv.URL, "delete", map[string]any{
+		"namespace": "ns", "table": "findings", "filter": "title = 'a;b'; DROP TABLE findings",
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for multi-statement filter, got %d", code)
 	}
 }
 
