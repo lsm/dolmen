@@ -379,7 +379,10 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			}
 			cur.Fields = append(cur.Fields, f)
 			physicalName[f.Name] = ""
-			defaults[f.Name] = ch.Default
+			// Store the coerced value: estimates must judge non-emptiness the
+			// way apply will (a numeric default on a text field arrives from
+			// the API as json.Number and coerces to a non-empty string).
+			defaults[f.Name] = defVal
 			if f.Fulltext {
 				rebuildFTSNeeded = true
 			}

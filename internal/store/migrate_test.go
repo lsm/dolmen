@@ -1441,3 +1441,43 @@ func TestFTSReindexEstimateMatchesRepopulatePredicate(t *testing.T) {
 		t.Fatalf("rebuilt index must hold exactly the predicted rows: %v", n)
 	}
 }
+
+func TestEmbedEstimateUsesCoercedDefault(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "coerced", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "coerced", []map[string]any{
+		{"v": "one"}, {"v": "two"},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	// The API layer decodes numbers as json.Number; a numeric default on a
+	// vectorized text field coerces to a non-empty string that apply embeds
+	// for every backfilled row — the dry-run must predict that workload.
+	changes := []schema.Change{{
+		Op:      schema.OpAddField,
+		Field:   &schema.Field{Name: "topic", Type: schema.Text, Vectorize: true},
+		Default: json.Number("5"),
+	}}
+	plan, err := st.PlanMigration(ctx, "test", "coerced", changes, testEmbed, 1)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if plan.EmbedRows != 2 {
+		t.Fatalf("embed_rows must use the coerced (non-empty) default, got %d", plan.EmbedRows)
+	}
+	if _, err := st.Migrate(ctx, "test", "coerced", changes, testEmbed, 1); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	n, _, err := st.Query(ctx, "test", `SELECT count(*) AS n FROM coerced WHERE "_embedding" IS NOT NULL`, nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if n[0]["n"].(int64) != 2 {
+		t.Fatalf("apply must embed every backfilled row, got %v", n)
+	}
+}
