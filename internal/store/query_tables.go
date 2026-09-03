@@ -317,34 +317,6 @@ func unquoteString(v string) string {
 	return v
 }
 
-func (s *queryScanner) collectStringArgs() ([]string, error) {
-	var out []string
-	depth := 0
-	for {
-		t, err := s.next()
-		if err != nil {
-			return nil, err
-		}
-		if t.typ == "eof" {
-			return nil, invalidf("unterminated pragma argument list")
-		}
-		if t.val == "(" {
-			depth++
-			continue
-		}
-		if t.val == ")" {
-			if depth == 0 {
-				return out, nil
-			}
-			depth--
-			continue
-		}
-		if t.typ == "string" {
-			out = append(out, unquoteString(t.val))
-		}
-	}
-}
-
 func isPragmaFunction(rawName string) bool {
 	return strings.HasPrefix(strings.ToLower(unquoteIdent(rawName)), "pragma_")
 }
@@ -353,25 +325,26 @@ func (s *queryScanner) parsePragmaArgs(schema, rawName string) error {
 	if err := s.expect("("); err != nil {
 		return err
 	}
-	args, err := s.collectStringArgs()
+	arg, err := s.next()
 	if err != nil {
+		return err
+	}
+	if arg.typ != "string" {
+		return invalidf("pragma argument must be a single string literal")
+	}
+	if err := s.expect(")"); err != nil {
 		return err
 	}
 	name := unquoteIdent(rawName)
 	if schema != "" {
 		name = unquoteIdent(schema) + "." + name
 	}
-	if len(args) == 0 {
-		return invalidf("query references reserved pragma %q", name)
+	table := unquoteString(arg.val)
+	if i := strings.LastIndex(table, "."); i >= 0 {
+		table = table[i+1:]
 	}
-	for _, arg := range args {
-		base := arg
-		if i := strings.LastIndex(base, "."); i >= 0 {
-			base = base[i+1:]
-		}
-		if !isUserTable(base) {
-			return invalidf("query references reserved table %q via %s", base, name)
-		}
+	if !isUserTable(table) {
+		return invalidf("query references reserved table %q via %s", table, name)
 	}
 	return nil
 }
@@ -418,6 +391,7 @@ var clauseEndStop = map[string]bool{
 	"having":    true,
 	"order":     true,
 	"limit":     true,
+	"window":    true,
 	"union":     true,
 	"intersect": true,
 	"except":    true,
@@ -465,14 +439,7 @@ func (s *queryScanner) parseStatement() error {
 		if err := s.parseWith(); err != nil {
 			return err
 		}
-	} else if isKeyword(t, "values") {
-		// CTE bodies may be VALUES lists; they contain no table references, but
-		// we still scan them so nested subqueries are inspected.
-		if _, err := s.scanUntil(map[string]bool{")": true}); err != nil {
-			return err
-		}
-		return nil
-	} else if !isKeyword(t, "select") {
+	} else if !isKeyword(t, "select") && !isKeyword(t, "values") {
 		return invalidf("only SELECT/WITH statements are allowed")
 	}
 	return s.parseSelectStatement()
@@ -501,6 +468,14 @@ func (s *queryScanner) parseWith() error {
 		if err := s.expect("as"); err != nil {
 			return err
 		}
+		if t, _ := s.peek(); isKeyword(t, "not") {
+			s.next()
+			if err := s.expect("materialized"); err != nil {
+				return err
+			}
+		} else if isKeyword(t, "materialized") {
+			s.next()
+		}
 		if err := s.expect("("); err != nil {
 			return err
 		}
@@ -519,7 +494,7 @@ func (s *queryScanner) parseWith() error {
 }
 
 func (s *queryScanner) parseSelectStatement() error {
-	if err := s.parseSelectCore(); err != nil {
+	if err := s.parseCore(); err != nil {
 		return err
 	}
 	for {
@@ -536,10 +511,40 @@ func (s *queryScanner) parseSelectStatement() error {
 				s.next()
 			}
 		}
-		if err := s.parseSelectCore(); err != nil {
+		if err := s.parseCore(); err != nil {
 			return err
 		}
 	}
+}
+
+func (s *queryScanner) parseCore() error {
+	t, _ := s.peek()
+	if isKeyword(t, "select") {
+		return s.parseSelectCore()
+	}
+	if isKeyword(t, "values") {
+		return s.parseValuesCore()
+	}
+	return invalidf("expected SELECT or VALUES")
+}
+
+func (s *queryScanner) parseValuesCore() error {
+	if err := s.expect("values"); err != nil {
+		return err
+	}
+	for {
+		if err := s.scanParenthesized(); err != nil {
+			return err
+		}
+		t, _ := s.peek()
+		if t.val == "," {
+			s.next()
+			continue
+		}
+		break
+	}
+	_, err := s.scanUntil(selectStop)
+	return err
 }
 
 func (s *queryScanner) parseSelectCore() error {
@@ -670,18 +675,8 @@ func (s *queryScanner) parseTableFactor() error {
 
 		t2, _ := s.peek()
 		switch {
-		case isKeyword(t2, "select") || isKeyword(t2, "with"):
+		case isKeyword(t2, "select") || isKeyword(t2, "with") || isKeyword(t2, "values"):
 			if err := s.parseStatement(); err != nil {
-				return err
-			}
-			if err := s.expect(")"); err != nil {
-				return err
-			}
-			return s.skipOptionalAlias()
-		case isKeyword(t2, "values"):
-			// VALUES table expressions contain no table references; skip to the
-			// matching ) while still inspecting any nested subqueries.
-			if _, err := s.scanUntil(map[string]bool{")": true}); err != nil {
 				return err
 			}
 			if err := s.expect(")"); err != nil {
@@ -728,10 +723,10 @@ func (s *queryScanner) parseTableFactor() error {
 			if err := s.parsePragmaArgs(schema, name); err != nil {
 				return err
 			}
-		} else {
-			if err := s.scanParenthesized(); err != nil {
-				return err
-			}
+			return s.skipOptionalAlias()
+		}
+		if err := s.scanParenthesized(); err != nil {
+			return err
 		}
 	} else if isPragmaFunction(name) {
 		// Pragma virtual tables with no argument list (e.g. pragma_table_list)

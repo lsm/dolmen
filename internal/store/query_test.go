@@ -484,6 +484,9 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"pragma table list", "SELECT * FROM pragma_table_list()"},
 		{"pragma table info reserved", "SELECT * FROM pragma_table_info('_dolmen_tables')"},
 		{"pragma table xinfo reserved", "SELECT * FROM pragma_table_xinfo('sqlite_master')"},
+		{"pragma computed arg", "SELECT * FROM pragma_table_info(char(95) || 'dolmen_tables')"},
+		{"values compound internal", "WITH c AS (VALUES(1) UNION ALL SELECT rowid FROM _dolmen_tables) SELECT * FROM c"},
+		{"values compound sqlite", "WITH c AS (VALUES(1) UNION ALL SELECT rowid FROM sqlite_master) SELECT * FROM c"},
 	}
 
 	for _, tc := range cases {
@@ -525,8 +528,13 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		"SELECT * FROM (notes)",
 		"SELECT n.id FROM (notes n JOIN users u ON n.id = u.id)",
 		"WITH cte AS (VALUES (1, 'x')) SELECT * FROM cte",
+		"WITH cte(x, y) AS (VALUES (1, 'x'), (2, 'y')) SELECT * FROM cte",
+		"WITH c AS (VALUES(1) UNION ALL SELECT id FROM notes) SELECT * FROM c",
 		"SELECT * FROM (VALUES (1, 2)) AS t",
 		"SELECT * FROM pragma_table_info('notes')",
+		"WITH c AS MATERIALIZED (SELECT * FROM notes) SELECT * FROM c",
+		"WITH c AS NOT MATERIALIZED (SELECT * FROM notes) SELECT * FROM c",
+		"SELECT sum(score) OVER win FROM notes WINDOW win AS (ORDER BY id)",
 	}
 
 	for _, q := range ok {
