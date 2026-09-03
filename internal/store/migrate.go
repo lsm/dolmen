@@ -350,6 +350,13 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				if fv, isFloat := cv.(float64); isFloat && (math.IsNaN(fv) || math.IsInf(fv, 0)) {
 					return nil, invalidf("field %q: default must be a finite number", f.Name)
 				}
+				// A NUL byte cannot appear in SQL text, so a required
+				// default carrying one would fail the ALTER at apply time
+				// after a clean dry-run — and a NUL stored via the optional
+				// backfill path would confuse FTS. Reject both outright.
+				if sv, isStr := cv.(string); isStr && strings.ContainsRune(sv, 0) {
+					return nil, invalidf("field %q: default must not contain NUL bytes", f.Name)
+				}
 				defVal = cv
 				if f.Required {
 					defSQL, err = sqlLiteral(cv)
@@ -529,15 +536,31 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 	_ = droppedFTSChange
 
 	plan.RebuildFulltext = rebuildFTSNeeded
-	if rebuildFTSNeeded && len(ftsFields(cur.Fields)) > 0 {
-		// Dropping the last fulltext field tears the index down without
-		// reindexing anything, so rows are only at stake while indexed
-		// fields remain in the prospective schema.
-		n, err := countRows(ctx, db, table)
-		if err != nil {
-			return nil, err
+	if rebuildFTSNeeded {
+		// Mirror repopulateFTS's predicate: only rows with at least one
+		// non-NULL indexed field are inserted into the rebuilt index. Columns
+		// added by this migration do not exist yet, so an added fulltext
+		// field contributes exactly its default's presence; existing fields
+		// count under their physical (possibly pre-rename) names.
+		var preds []string
+		for _, f := range ftsFields(cur.Fields) {
+			if phys := physicalName[f.Name]; phys == "" {
+				if defaults[f.Name] != nil {
+					preds = append(preds, `1`)
+				}
+				continue
+			} else {
+				preds = append(preds, fmt.Sprintf(`%s IS NOT NULL`, q(phys)))
+			}
 		}
-		plan.FulltextReindexRows = n
+		if len(preds) > 0 {
+			var n int64
+			if err := db.QueryRowContext(ctx,
+				fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s`, q(table), strings.Join(preds, ` OR `))).Scan(&n); err != nil {
+				return nil, err
+			}
+			plan.FulltextReindexRows = n
+		}
 	}
 
 	if vectorizeChanged {

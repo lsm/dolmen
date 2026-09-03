@@ -1356,3 +1356,88 @@ func TestNonFiniteNumericDefaultsRejected(t *testing.T) {
 		t.Fatalf("rejected defaults must leave the schema untouched: %+v err=%v", sc, err)
 	}
 }
+
+func TestNULByteDefaultsRejected(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "nuldef", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "nuldef", []map[string]any{{"v": "x"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	for _, tc := range []struct {
+		name     string
+		required bool
+		def      any
+	}{
+		{"required string", true, "bad\x00default"},
+		{"optional text", false, "a\x00b"},
+	} {
+		changes := []schema.Change{{Op: schema.OpAddField, Field: &schema.Field{Name: "s", Type: schema.String, Required: tc.required}, Default: tc.def}}
+		_, err := st.PlanMigration(ctx, "test", "nuldef", changes, testEmbed, 1)
+		if err == nil || !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "NUL") {
+			t.Fatalf("%s: NUL-bearing default must fail the dry-run (the literal cannot parse), got %v", tc.name, err)
+		}
+		if _, err := st.Migrate(ctx, "test", "nuldef", changes, testEmbed, 1); err == nil {
+			t.Fatalf("%s: NUL-bearing default must fail the apply too", tc.name)
+		}
+	}
+	sc, _, err := st.DescribeTable(ctx, "test", "nuldef")
+	if err != nil || sc.Version != 1 || sc.Field("s") != nil {
+		t.Fatalf("rejected defaults must leave the schema untouched: %+v err=%v", sc, err)
+	}
+}
+
+func TestFTSReindexEstimateMatchesRepopulatePredicate(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "ftsest", []schema.Field{
+		{Name: "body", Type: schema.Text, Fulltext: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "ftsest", []map[string]any{
+		{"body": "indexed one"}, {"body": nil}, {"body": "indexed two"}, {"body": nil},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	// Adding an optional fulltext field without a default rebuilds an index
+	// that stays empty for the NULL rows: only rows with non-NULL indexed
+	// fields are reindexed, and the estimate must say so.
+	plan, err := st.PlanMigration(ctx, "test", "ftsest", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "title", Type: schema.String, Fulltext: true}},
+	}, testEmbed, 1)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if !plan.RebuildFulltext || plan.FulltextReindexRows != 2 {
+		t.Fatalf("estimate must mirror repopulateFTS's non-NULL predicate (2 of 4 rows), got %+v", plan)
+	}
+	// With a default, every existing row receives the added field and all
+	// rows are reindexed.
+	plan, err = st.PlanMigration(ctx, "test", "ftsest", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "title", Type: schema.String, Fulltext: true}, Default: "untitled"},
+	}, testEmbed, 1)
+	if err != nil {
+		t.Fatalf("plan with default: %v", err)
+	}
+	if plan.FulltextReindexRows != 4 {
+		t.Fatalf("a defaulted fulltext add reindexes every row, got %+v", plan)
+	}
+	// The apply populates exactly what the estimate predicted.
+	if _, err := st.Migrate(ctx, "test", "ftsest", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "title", Type: schema.String, Fulltext: true}},
+	}, testEmbed, 1); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	n, _, err := st.Query(ctx, "test", `SELECT count(*) AS n FROM ftsest__fts`, nil)
+	if err != nil {
+		t.Fatalf("fts count: %v", err)
+	}
+	if n[0]["n"].(int64) != 2 {
+		t.Fatalf("rebuilt index must hold exactly the predicted rows: %v", n)
+	}
+}
