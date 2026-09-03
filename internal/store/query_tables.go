@@ -555,7 +555,7 @@ func (s *queryScanner) collectCteNames() (map[string]bool, error) {
 		}
 		names[strings.ToLower(unquoteIdent(t.val))] = true
 		if t2, _ := s.peek(); t2.val == "(" {
-			if err := s.scanParenthesized(); err != nil {
+			if err := s.skipParenthesized(); err != nil {
 				return nil, err
 			}
 		}
@@ -570,13 +570,7 @@ func (s *queryScanner) collectCteNames() (map[string]bool, error) {
 		} else if isKeyword(t, "materialized") {
 			s.next()
 		}
-		if err := s.expect("("); err != nil {
-			return nil, err
-		}
-		if _, err := s.scanUntil(map[string]bool{")": true}); err != nil {
-			return nil, err
-		}
-		if err := s.expect(")"); err != nil {
+		if err := s.skipParenthesized(); err != nil {
 			return nil, err
 		}
 		if t2, _ := s.peek(); t2.val == "," {
@@ -584,6 +578,32 @@ func (s *queryScanner) collectCteNames() (map[string]bool, error) {
 			continue
 		}
 		return names, nil
+	}
+}
+
+// skipParenthesized consumes a matching ) without interpreting the contents.
+// It is used during the CTE pre-scan so nested subqueries are not parsed twice.
+func (s *queryScanner) skipParenthesized() error {
+	if err := s.expect("("); err != nil {
+		return err
+	}
+	depth := 1
+	for {
+		t, err := s.next()
+		if err != nil {
+			return err
+		}
+		if t.typ == "eof" {
+			return invalidf("unterminated parenthesized group")
+		}
+		if t.val == "(" {
+			depth++
+		} else if t.val == ")" {
+			depth--
+			if depth == 0 {
+				return nil
+			}
+		}
 	}
 }
 
@@ -814,8 +834,11 @@ func (s *queryScanner) parseTableFactor() error {
 	// Table-valued functions (e.g. json_each(...)) use an identifier followed
 	// by an argument list. The function name itself is not a table reference,
 	// but we still need to skip the argument list.
+	// A CTE may shadow a pragma_* name, so check the CTE scope before treating
+	// the identifier as a reserved pragma virtual table.
+	isCTE := schema == "" && s.cteNames[strings.ToLower(unquoteIdent(name))]
 	if t2, _ := s.peek(); t2.val == "(" {
-		if isPragmaFunction(name) {
+		if !isCTE && isPragmaFunction(name) {
 			if err := s.parsePragmaArgs(schema, name); err != nil {
 				return err
 			}
@@ -824,7 +847,7 @@ func (s *queryScanner) parseTableFactor() error {
 		if err := s.scanParenthesized(); err != nil {
 			return err
 		}
-	} else if isPragmaFunction(name) {
+	} else if !isCTE && isPragmaFunction(name) {
 		// Pragma virtual tables with no argument list (e.g. pragma_table_list)
 		// can enumerate internal tables; reject them outright.
 		return invalidf("query references reserved pragma %q", unquoteIdent(name))

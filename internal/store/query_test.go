@@ -552,6 +552,7 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		"WITH RECURSIVE c(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM c WHERE x < 3) SELECT * FROM c",
 		"SELECT (VALUES(1) UNION ALL SELECT id FROM notes LIMIT 1) FROM notes",
 		"WITH a AS (SELECT x FROM _dolmen_tables), _dolmen_tables(x) AS (VALUES(7)) SELECT * FROM a",
+		"WITH pragma_table_list(x) AS (VALUES(1)) SELECT * FROM pragma_table_list",
 	}
 
 	for _, q := range ok {
