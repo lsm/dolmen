@@ -251,8 +251,7 @@ claude mcp add --transport http dolmen http://127.0.0.1:8790/mcp
 
 The MCP server exposes the same eighteen operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
 
-The file `skill/DOLMEN_SKILL.md` is the reference prompt for the dolmen skill; if your workspace
-supports project skills, place a copy at `.claude/skills/dolmen/SKILL.md`.
+Skill distribution is built into the server. `GET /skills` returns a JSON manifest with links to the layered skill markdown; `GET /skills/dolmen` is the end-user skill and `GET /skills/dolmen-admin` is the developer skill. Agents should fetch the skill from the running binary instead of copying a static file.
 
 ## Tools
 

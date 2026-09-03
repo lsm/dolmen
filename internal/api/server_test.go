@@ -610,7 +610,9 @@ func TestCreateTableRejectsSQLKeywordFieldAndTable(t *testing.T) {
 	if code != http.StatusBadRequest {
 		t.Fatalf("expected SQL keyword field name to be rejected, got code %d %v", code, res)
 	}
-	if !strings.Contains(res["error"].(string), "my_order") {
+	errObj := errorBody(t, res)
+	msg, _ := errObj["message"].(string)
+	if !strings.Contains(msg, "my_order") {
 		t.Fatalf("expected error to suggest an alternative, got %v", res)
 	}
 
@@ -625,7 +627,9 @@ func TestCreateTableRejectsSQLKeywordFieldAndTable(t *testing.T) {
 	if code != http.StatusBadRequest {
 		t.Fatalf("expected SQL keyword table name to be rejected, got code %d %v", code, res)
 	}
-	if !strings.Contains(res["error"].(string), "my_select") {
+	errObj = errorBody(t, res)
+	msg, _ = errObj["message"].(string)
+	if !strings.Contains(msg, "my_select") {
 		t.Fatalf("expected error to suggest an alternative, got %v", res)
 	}
 }

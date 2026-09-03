@@ -19,6 +19,7 @@ import (
 	"github.com/lsm/dolmen/internal/mcp"
 	"github.com/lsm/dolmen/internal/store"
 	"github.com/lsm/dolmen/internal/version"
+	"github.com/lsm/dolmen/skill"
 )
 
 func main() {
@@ -61,8 +62,8 @@ func run() error {
 		return fmt.Errorf("embed provider: %w", err)
 	}
 
-	apiSrv := api.New(st, emb)
-	mcpSrv := mcp.New(apiSrv, cfg.AllowedOrigins)
+	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint))
+	mcpSrv := mcp.New(apiSrv, cfg.AllowedOrigins, mcp.WithBaseURL(cfg.BaseURL), mcp.WithNamespaceHint(cfg.SkillNamespaceHint))
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcpSrv)
@@ -80,7 +81,7 @@ func run() error {
 	errCh := make(chan error, 1)
 	go func() {
 		slog.Info("dolmen listening", "addr", cfg.Addr, "data", cfg.DataDir, "embed", emb.Name(), "version", version.Version)
-		slog.Info("endpoints", "mcp", "http://"+cfg.Addr+"/mcp", "api", "http://"+cfg.Addr+"/v1/{op}", "health", "http://"+cfg.Addr+"/healthz", "version", "http://"+cfg.Addr+"/version")
+		slog.Info("endpoints", "mcp", "http://"+cfg.Addr+"/mcp", "api", "http://"+cfg.Addr+"/v1/{op}", "health", "http://"+cfg.Addr+"/healthz", "version", "http://"+cfg.Addr+"/version", "skills", "http://"+cfg.Addr+"/skills")
 		slog.Warn("no authentication: keep this bound to a private interface")
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
@@ -106,11 +107,13 @@ type printedError struct {
 func (e *printedError) Error() string { return e.err.Error() }
 
 type config struct {
-	Addr           string
-	DataDir        string
-	AllowedOrigins []string
-	Embed          embedConfig
-	Version        bool
+	Addr               string
+	DataDir            string
+	AllowedOrigins     []string
+	Embed              embedConfig
+	Version            bool
+	BaseURL            string
+	SkillNamespaceHint string
 }
 
 type embedConfig struct {
@@ -131,6 +134,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	addr := fs.String("addr", envOr("DOLMEN_ADDR", "127.0.0.1:8790", getenv), "listen address")
 	dataDir := fs.String("data", envOr("DOLMEN_DATA", "data", getenv), "data directory (one SQLite file per namespace)")
 	showVersion := fs.Bool("version", false, "print version and exit")
+	publicBaseURL := fs.String("base-url", envOr("DOLMEN_BASE_URL", "", getenv), "public base URL for skills and MCP links (default: use request Host)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -168,10 +172,14 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		return nil, &printedError{err}
 	}
 
+	skillNamespaceHint := envOr("DOLMEN_SKILL_NAMESPACE_HINT", skill.DefaultNamespaceHint, getenv)
+
 	return &config{
-		Addr:           *addr,
-		DataDir:        *dataDir,
-		AllowedOrigins: allowedOrigins,
+		Addr:               *addr,
+		DataDir:            *dataDir,
+		AllowedOrigins:     allowedOrigins,
+		BaseURL:            *publicBaseURL,
+		SkillNamespaceHint: skillNamespaceHint,
 		Embed: embedConfig{
 			Provider: provider,
 			BaseURL:  baseURL,
