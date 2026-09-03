@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -59,6 +60,10 @@ func wrapStoreErr(err error) error {
 	if errors.Is(err, store.ErrNotFound) {
 		return &Error{Status: http.StatusNotFound, Message: err.Error()}
 	}
+	var conflict *store.VersionConflictError
+	if errors.As(err, &conflict) {
+		return &Error{Status: http.StatusConflict, Message: err.Error()}
+	}
 	if errors.Is(err, store.ErrInvalid) {
 		return &Error{Status: http.StatusBadRequest, Message: err.Error()}
 	}
@@ -66,9 +71,10 @@ func wrapStoreErr(err error) error {
 }
 
 type OpDef struct {
-	Description string
-	InputSchema map[string]any
-	Func        func(ctx context.Context, s *Server, body []byte) (any, error)
+	Description  string
+	InputSchema  map[string]any
+	OutputSchema map[string]any
+	Func         func(ctx context.Context, s *Server, body []byte) (any, error)
 }
 
 func prop(typ, desc string) map[string]any {
@@ -238,6 +244,38 @@ func decodeData(body []byte, v any) error {
 	return nil
 }
 
+// decodeAllowNullArgs is like decode but permits null values inside the
+// "args" array so SQL-filter bind parameters can include NULL.
+func decodeAllowNullArgs(body []byte, v any) error {
+	if len(body) == 0 {
+		return badRequest("empty request body")
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var probe map[string]any
+	if err := dec.Decode(&probe); err != nil {
+		return badRequest("invalid JSON: %v", err)
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return badRequest("unexpected trailing content after JSON body")
+	}
+	for k, val := range probe {
+		if k == "args" {
+			continue
+		}
+		if err := rejectNulls(k, val); err != nil {
+			return err
+		}
+	}
+	return decodeData(body, v)
+}
+
+// jsonDefaultPathRe matches paths inside a migrate change's default value,
+// whether object-shaped (changes[0].default.… ) or array-shaped
+// (changes[0].default[…]). Nested nulls there are JSON data the store coerces
+// and serializes as-is; everywhere else null remains a request error.
+var jsonDefaultPathRe = regexp.MustCompile(`^changes\[\d+\]\.default(?:\.|\[)`)
+
 func rejectNulls(path string, v any) error {
 	switch t := v.(type) {
 	case map[string]any:
@@ -247,6 +285,9 @@ func rejectNulls(path string, v any) error {
 				p = path + "." + k
 			}
 			if val == nil {
+				if jsonDefaultPathRe.MatchString(p) {
+					continue
+				}
 				return badRequest("null is not allowed for %q", p)
 			}
 			if err := rejectNulls(p, val); err != nil {
@@ -257,6 +298,9 @@ func rejectNulls(path string, v any) error {
 		for i, val := range t {
 			p := fmt.Sprintf("%s[%d]", path, i)
 			if val == nil {
+				if jsonDefaultPathRe.MatchString(p) {
+					continue
+				}
 				return badRequest("null is not allowed for %q", p)
 			}
 			if err := rejectNulls(p, val); err != nil {
@@ -349,6 +393,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"name": "dolmen", "version": version.Version})
 	})
+	mux.HandleFunc("/v1/openapi.json", s.handleOpenAPI)
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
 		op := strings.TrimPrefix(r.URL.Path, "/v1/")
 		if op == "" || strings.Contains(op, "/") {

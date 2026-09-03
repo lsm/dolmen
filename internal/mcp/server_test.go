@@ -90,8 +90,8 @@ func TestMCPUpdateUpsertTools(t *testing.T) {
 	if code != 200 || res["result"].(map[string]any)["isError"] == true {
 		t.Fatalf("upsert tool call failed: %d %v", code, res)
 	}
-	if !strings.Contains(res["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string), `"inserted":true`) {
-		t.Fatalf("upsert must report an insert, got %v", res)
+	if up := res["result"].(map[string]any)["structuredContent"].(map[string]any); up["inserted"] != true {
+		t.Fatalf("upsert must report an insert, got %v", up)
 	}
 
 	code, res = rpc(t, url, map[string]any{
@@ -104,8 +104,8 @@ func TestMCPUpdateUpsertTools(t *testing.T) {
 	if code != 200 || res["result"].(map[string]any)["isError"] == true {
 		t.Fatalf("update tool call failed: %d %v", code, res)
 	}
-	if !strings.Contains(res["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string), `"updated":1`) {
-		t.Fatalf("update must report one row, got %v", res)
+	if upd := res["result"].(map[string]any)["structuredContent"].(map[string]any); upd["updated"].(float64) != 1 {
+		t.Fatalf("update must report one row, got %v", upd)
 	}
 }
 
@@ -137,8 +137,8 @@ func TestMCPProtocol(t *testing.T) {
 		t.Fatalf("tools/list status %d", code)
 	}
 	tools := res["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 13 {
-		t.Fatalf("expected 13 tools, got %d", len(tools))
+	if len(tools) != 14 {
+		t.Fatalf("expected 14 tools, got %d", len(tools))
 	}
 	first := tools[0].(map[string]any)
 	if first["name"] == "" || first["inputSchema"] == nil {
@@ -170,10 +170,9 @@ func TestMCPProtocol(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("tools/call list status %d", code)
 	}
-	content := res["result"].(map[string]any)["content"].([]any)
-	text := content[0].(map[string]any)["text"].(string)
-	if !strings.Contains(text, "memory") {
-		t.Fatalf("expected memory table in result, got: %s", text)
+	tables, ok := res["result"].(map[string]any)["structuredContent"].(map[string]any)["tables"].([]any)
+	if !ok || len(tables) != 1 || tables[0] != "memory" {
+		t.Fatalf("expected memory table in structuredContent, got: %v", res["result"])
 	}
 
 	res2, err := http.Get(url)
@@ -786,7 +785,273 @@ func TestMCPConfiguredOriginsAllowed(t *testing.T) {
 	}
 }
 
-// callTool invokes a stateless tools/call and decodes the JSON text payload.
+func TestToolAnnotationsMatchRegistry(t *testing.T) {
+	for _, name := range api.OpNames() {
+		ann, ok := toolAnnotations[name]
+		if !ok {
+			t.Fatalf("tool %q has no MCP annotations", name)
+		}
+		if title, ok := ann["title"].(string); !ok || title == "" {
+			t.Fatalf("tool %q annotations must carry a non-empty title, got %v", name, ann)
+		}
+		for _, hint := range []string{"readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"} {
+			if _, isBool := ann[hint].(bool); !isBool {
+				t.Fatalf("tool %q annotation %s must be a boolean, got %v", name, hint, ann[hint])
+			}
+		}
+	}
+	for name := range toolAnnotations {
+		if _, ok := api.Ops[name]; !ok {
+			t.Fatalf("annotations defined for unknown tool %q", name)
+		}
+	}
+}
+
+func TestToolsListAdvertisesOutputSchemasAndAnnotations(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	code, res := rpc(t, url, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+	if code != 200 {
+		t.Fatalf("tools/list status %d", code)
+	}
+	tools, _ := res["result"].(map[string]any)["tools"].([]any)
+	if len(tools) != len(api.OpNames()) {
+		t.Fatalf("expected %d tools, got %d", len(api.OpNames()), len(tools))
+	}
+	for _, entry := range tools {
+		tool, _ := entry.(map[string]any)
+		name, _ := tool["name"].(string)
+		schema, ok := tool["outputSchema"].(map[string]any)
+		if !ok {
+			t.Fatalf("tool %q must advertise an outputSchema, got %v", name, tool)
+		}
+		if schema["type"] != "object" {
+			t.Fatalf("tool %q outputSchema must be an object schema, got %v", name, schema["type"])
+		}
+		props, ok := schema["properties"].(map[string]any)
+		if !ok || len(props) == 0 {
+			t.Fatalf("tool %q outputSchema must declare properties, got %v", name, schema["properties"])
+		}
+		required, _ := schema["required"].([]any)
+		if len(required) == 0 {
+			t.Fatalf("tool %q outputSchema must require at least one property, got %v", name, schema["required"])
+		}
+		for _, r := range required {
+			if _, ok := props[r.(string)]; !ok {
+				t.Fatalf("tool %q outputSchema requires unknown property %q", name, r)
+			}
+		}
+		ann, ok := tool["annotations"].(map[string]any)
+		if !ok {
+			t.Fatalf("tool %q must advertise annotations, got %v", name, tool)
+		}
+		for _, hint := range []string{"readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"} {
+			if _, isBool := ann[hint].(bool); !isBool {
+				t.Fatalf("tool %q annotation %s must be a boolean, got %v", name, hint, ann[hint])
+			}
+		}
+	}
+}
+
+func TestToolHintSemantics(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	code, res := rpc(t, url, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+	if code != 200 {
+		t.Fatalf("tools/list status %d", code)
+	}
+	tools, _ := res["result"].(map[string]any)["tools"].([]any)
+	byName := map[string]map[string]any{}
+	for _, entry := range tools {
+		tool := entry.(map[string]any)
+		byName[tool["name"].(string)] = tool
+	}
+	for _, name := range []string{"list_tables", "describe_table", "query", "search_fulltext", "search_vector"} {
+		if ann := byName[name]["annotations"].(map[string]any); ann["readOnlyHint"] != false {
+			t.Fatalf("store-reading tool %q creates the namespace db on first touch and must not claim readOnly, got %v", name, ann)
+		}
+	}
+	if ann := byName["infer_schema"]["annotations"].(map[string]any); ann["readOnlyHint"] != true {
+		t.Fatalf("infer_schema is pure (never touches the store) and must carry readOnlyHint true, got %v", ann)
+	}
+	for _, name := range []string{"delete", "migrate", "update", "upsert", "upsert_by_key"} {
+		if ann := byName[name]["annotations"].(map[string]any); ann["destructiveHint"] != true {
+			t.Fatalf("write tool %q can overwrite or drop existing data and must carry destructiveHint true, got %v", name, ann)
+		}
+	}
+	for _, name := range []string{"update", "upsert", "upsert_by_key"} {
+		ann := byName[name]["annotations"].(map[string]any)
+		if ann["idempotentHint"] != false {
+			t.Fatalf("write tool %q re-embeds on every retry (and filter-driven forms can walk new rows), so it must not claim idempotent, got %v", name, ann)
+		}
+	}
+	for _, name := range []string{"insert", "search_vector", "migrate"} {
+		if ann := byName[name]["annotations"].(map[string]any); ann["openWorldHint"] != true {
+			t.Fatalf("provider-capable tool %q can send text to the configured remote embedding endpoint and must carry openWorldHint true, got %v", name, ann)
+		}
+	}
+	if ann := byName["search_vector"]["annotations"].(map[string]any); ann["idempotentHint"] != false {
+		t.Fatalf("search_vector reaches the embedding provider on every text call and must not claim idempotent, got %v", ann)
+	}
+	if ann := byName["query"]["annotations"].(map[string]any); ann["destructiveHint"] != false || ann["idempotentHint"] != true {
+		t.Fatalf("query hints must be non-destructive and idempotent, got %v", ann)
+	}
+}
+
+func TestToolsCallReturnsStructuredContent(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	call := func(id int, name string, arguments map[string]any) map[string]any {
+		t.Helper()
+		code, res := rpc(t, url, map[string]any{
+			"jsonrpc": "2.0", "id": id, "method": "tools/call",
+			"params": map[string]any{"name": name, "arguments": arguments},
+		})
+		if code != 200 {
+			t.Fatalf("tools/call %s status %d", name, code)
+		}
+		return res["result"].(map[string]any)
+	}
+
+	callRes := call(1, "create_table", map[string]any{
+		"namespace": "agents",
+		"table":     "memory",
+		"fields":    []map[string]any{{"name": "fact", "type": "string", "fulltext": true}},
+	})
+	if callRes["isError"] == true {
+		t.Fatalf("create_table failed: %v", callRes)
+	}
+	table, ok := callRes["structuredContent"].(map[string]any)["table"].(map[string]any)
+	if !ok {
+		t.Fatalf("create_table structuredContent.table must be an object, got %v", callRes["structuredContent"])
+	}
+	if table["name"] != "memory" || table["namespace"] != "agents" || table["version"].(float64) != 1 {
+		t.Fatalf("unexpected table in structuredContent: %v", table)
+	}
+	if _, ok := table["fields"].([]any); !ok {
+		t.Fatalf("table.fields must be an array, got %v", table["fields"])
+	}
+
+	callRes = call(2, "insert", map[string]any{
+		"namespace": "agents",
+		"table":     "memory",
+		"records":   []map[string]any{{"fact": "first fact"}, {"fact": "second fact"}},
+	})
+	inserted, ok := callRes["structuredContent"].(map[string]any)
+	if !ok {
+		t.Fatalf("insert must return structuredContent, got %v", callRes)
+	}
+	ids, _ := inserted["ids"].([]any)
+	if len(ids) != 2 || inserted["inserted"].(float64) != 2 {
+		t.Fatalf("unexpected insert structuredContent: %v", inserted)
+	}
+	if content, ok := callRes["content"].([]any); !ok || len(content) != 0 {
+		t.Fatalf("successful results must not mirror the payload as text, got %v", callRes["content"])
+	}
+
+	callRes = call(3, "list_tables", map[string]any{"namespace": "agents"})
+	tables, _ := callRes["structuredContent"].(map[string]any)["tables"].([]any)
+	if len(tables) != 1 || tables[0] != "memory" {
+		t.Fatalf("unexpected tables in structuredContent: %v", tables)
+	}
+
+	callRes = call(4, "query", map[string]any{
+		"namespace": "agents",
+		"sql":       "SELECT fact FROM memory",
+	})
+	queried, _ := callRes["structuredContent"].(map[string]any)
+	rows, _ := queried["rows"].([]any)
+	if queried["row_count"].(float64) != 2 || len(rows) != 2 || queried["truncated"] != false {
+		t.Fatalf("unexpected query structuredContent: %v", queried)
+	}
+
+	callRes = call(5, "describe_table", map[string]any{"namespace": "agents", "table": "memory"})
+	described, _ := callRes["structuredContent"].(map[string]any)
+	if described["row_count"].(float64) != 2 || described["table"].(map[string]any)["name"] != "memory" {
+		t.Fatalf("unexpected describe_table structuredContent: %v", described)
+	}
+
+	callRes = call(6, "search_fulltext", map[string]any{"namespace": "agents", "table": "memory", "query": "first"})
+	searched, _ := callRes["structuredContent"].(map[string]any)
+	results, _ := searched["results"].([]any)
+	if len(results) != 1 || searched["truncated"] != false {
+		t.Fatalf("unexpected search_fulltext structuredContent: %v", searched)
+	}
+	if results[0].(map[string]any)["fact"] != "first fact" {
+		t.Fatalf("unexpected match: %v", results[0])
+	}
+}
+
+func TestToolsCallVectorSearchStructuredContent(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	call := func(id int, name string, arguments map[string]any) map[string]any {
+		t.Helper()
+		code, res := rpc(t, url, map[string]any{
+			"jsonrpc": "2.0", "id": id, "method": "tools/call",
+			"params": map[string]any{"name": name, "arguments": arguments},
+		})
+		if code != 200 {
+			t.Fatalf("tools/call %s status %d", name, code)
+		}
+		return res["result"].(map[string]any)
+	}
+	code, res := rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": "create_table", "arguments": map[string]any{
+			"namespace": "agents",
+			"table":     "notes",
+			"fields":    []map[string]any{{"name": "body", "type": "text", "vectorize": true}},
+		}},
+	})
+	if code != 200 || res["result"].(map[string]any)["isError"] == true {
+		t.Fatalf("create_table failed: %d %v", code, res)
+	}
+	callRes := call(2, "insert", map[string]any{
+		"namespace": "agents",
+		"table":     "notes",
+		"records":   []map[string]any{{"body": "hello world"}},
+	})
+	if callRes["isError"] == true {
+		t.Fatalf("insert failed: %v", callRes)
+	}
+	callRes = call(3, "search_vector", map[string]any{
+		"namespace": "agents", "table": "notes", "text": "hello", "limit": 5,
+	})
+	if callRes["isError"] == true {
+		t.Fatalf("search_vector failed: %v", callRes)
+	}
+	results, _ := callRes["structuredContent"].(map[string]any)["results"].([]any)
+	if len(results) != 1 {
+		t.Fatalf("expected one hit, got %v", results)
+	}
+	row := results[0].(map[string]any)
+	if _, ok := row["_score"].(float64); !ok {
+		t.Fatalf("vector search result must carry a numeric _score, got %v", row)
+	}
+}
+
+func TestToolsCallErrorOmitsStructuredContent(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	code, res := rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": "describe_table", "arguments": map[string]any{
+			"namespace": "agents", "table": "missing",
+		}},
+	})
+	if code != 200 {
+		t.Fatalf("tools/call status %d", code)
+	}
+	callRes, _ := res["result"].(map[string]any)
+	if callRes["isError"] != true {
+		t.Fatalf("describe_table on a missing table must be a tool error, got %v", callRes)
+	}
+	if _, ok := callRes["structuredContent"]; ok {
+		t.Fatalf("error results must not carry structuredContent, got %v", callRes)
+	}
+	text := callRes["content"].([]any)[0].(map[string]any)["text"].(string)
+	if !strings.HasPrefix(text, "error:") {
+		t.Fatalf("error text must describe the failure, got %q", text)
+	}
+}
+
+// callTool invokes a stateless tools/call and returns its structuredContent.
 func callTool(t *testing.T, url, name string, args map[string]any) map[string]any {
 	t.Helper()
 	code, res := rpc(t, url, map[string]any{
@@ -800,10 +1065,9 @@ func callTool(t *testing.T, url, name string, args map[string]any) map[string]an
 	if !ok || result["isError"] == true {
 		t.Fatalf("tools/call %s failed: %v", name, res)
 	}
-	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
-	var out map[string]any
-	if err := json.Unmarshal([]byte(text), &out); err != nil {
-		t.Fatalf("tools/call %s result is not JSON: %v", name, err)
+	out, ok := result["structuredContent"].(map[string]any)
+	if !ok {
+		t.Fatalf("tools/call %s returned no structuredContent: %v", name, result)
 	}
 	return out
 }

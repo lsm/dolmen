@@ -323,7 +323,7 @@ func TestUpsertByKeyReEmbedsVectorizedField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
-	results, _, err := st.SearchVector(ctx, "test", "vec", "", qvecs[0], testEmbed.Identity, 10, false)
+	results, _, err := st.SearchVector(ctx, "test", "vec", "", qvecs[0], testEmbed.Identity, 10, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
