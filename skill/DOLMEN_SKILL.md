@@ -55,6 +55,71 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
   you really need it.
 - Vector search results carry `_score` (cosine similarity; higher is closer).
 
+## Agent-critical caveats
+
+### Quoting and placeholders
+
+- `query` only accepts read-only `SELECT`/`WITH` statements. Bind all values with `?` and pass them in
+  `args`; never interpolate anything into the SQL string.
+- SQL string literals use single quotes (`'value'`), escaped by doubling (`'can''t'`). Prefer `?`.
+- Double quotes are for SQL identifiers, not string values.
+- `search_fulltext` takes a raw FTS5 `MATCH` expression in `query`; it is **not** SQL, so do not wrap
+  the whole expression in single quotes.
+
+### Full-text (FTS5) search syntax
+
+Dolmen indexes `fulltext` fields with SQLite FTS5 using the default `unicode61` tokenizer:
+case-insensitive, diacritic-insensitive, no stemming. Most punctuation (including hyphens) is a token
+boundary.
+
+- `payment` — one token.
+- `payment gateway` — implicit `AND`.
+- `payment OR gateway`.
+- `payment NOT gateway`.
+- `title:payment` — only the `title` fulltext field.
+- `{title body}:payment` — any of those fields.
+- `"foo bar"` — phrase (adjacent tokens). Phrases match token adjacency, not literal punctuation.
+- `"foo-bar"` — double-quote terms that contain spaces or punctuation; bare `foo-bar` is parsed as
+  multiple terms and usually errors.
+- `pay*` — prefix match.
+- `payment NEAR(refund)` — proximity search (default near span).
+- Terms like `"can't"` must be in double quotes; bare single quotes are a syntax error.
+
+Results are ordered by FTS5 `rank` (BM25 by default): more relevant rows have a lower — more
+negative — value and are returned first. The rank value itself is not returned.
+
+### Vectors and semantic recall
+
+- `vector` fields accept JSON number arrays of the declared `dim`; stored as float32 blobs, returned
+  as `[]float64`.
+- `vectorize: true` on a string/text field stores one embedding per row in `_embedding`. Only one
+  field per table can be vectorized.
+- `search_vector(text=...)` embeds `text` server-side and searches `_embedding`; it must use the same
+  embedding provider/identity as the stored rows. `search_vector(vector=[...])` searches a caller-
+  supplied vector column.
+- `column` defaults to `_embedding` (if a vectorized field exists) or the first declared `vector` field.
+- Each result has `_score`: cosine similarity, higher is closer, typically `0`–`1` for positive
+  embeddings (mathematically `-1`–`1`).
+- `_embedding` is hidden from `SELECT *` and search results unless referenced explicitly or
+  `include_hidden: true`.
+
+### Id, `created_at`, and stability
+
+- Every row has `id` and `created_at`. You cannot supply them; they are assigned on insert and
+  returned in reads.
+- `id` is `AUTOINCREMENT` — monotonically increasing and never reused after deletes — so it is safe
+  to key off across sessions.
+- `created_at` is a UTC microsecond ISO string, e.g. `2026-09-03T12:34:56.123456Z`. Use string
+  comparisons or SQLite date/time functions.
+
+### Limits and performance
+
+- `query` caps at 1000 rows and 32 MiB; `truncated: true` if more rows exist.
+- `search_fulltext` and `search_vector` default to 10, max 200, 32 MiB budget.
+- `insert` up to 1000 records per call; chunk larger batches.
+- `create_table` up to 100 user fields.
+- Vector search is brute-force; fine for low millions. FTS5 uses an index and is fast.
+
 ## Typical flows
 
 Store session findings:

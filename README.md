@@ -132,6 +132,84 @@ The MCP server exposes the same thirteen operations as tools (`tools/list` shows
 Storage sits behind the store layer, so engines like DuckDB-over-Parquet or Iceberg-over-S3 can be
 added as adapters without touching the API or MCP surface.
 
+## Query and search notes
+
+### SQL `query` quoting
+
+- `query` is read-only: only `SELECT` or `WITH` statements are allowed, and only one statement at a time.
+- Bind all values with `?` placeholders and the `args` array. Do not interpolate values, identifiers,
+  or table names into the SQL string — `query` rejects that by design.
+- SQL string literals use single quotes (`'value'`). Escape a single quote by doubling it
+  (`'can''t'`), or better, use a `?` placeholder.
+- Double quotes are for SQL identifiers, not string values.
+- `id` and `created_at` are real columns: you can filter, order, and select them.
+
+### Full-text search (FTS5)
+
+Fields marked `fulltext: true` are indexed with a shadow SQLite FTS5 table. The default tokenizer is
+`unicode61`: case-insensitive, diacritic-insensitive, and it does **not** stem. Most punctuation,
+including hyphens, is a token boundary.
+
+`search_fulltext` takes a raw FTS5 `MATCH` expression in `query`. It is **not** SQL, so do not wrap
+the whole expression in single quotes.
+
+Common syntax:
+
+- `payment` — a single token.
+- `payment gateway` — implicit `AND` between tokens.
+- `payment OR gateway` — either token.
+- `payment NOT gateway` — must contain `payment` and must not contain `gateway`.
+- `title:payment` — only in the `title` fulltext field.
+- `{title body}:payment` — in any of the named fulltext fields.
+- `"foo bar"` — phrase (adjacent tokens). Because stored punctuation is also tokenized, a phrase
+  matches token adjacency, not literal punctuation.
+- `"foo-bar"` — double-quote any term that contains spaces or punctuation (hyphens, dots, slashes,
+  apostrophes). Bare `foo-bar` is parsed as multiple terms and usually errors.
+- `pay*` — prefix match.
+- `payment NEAR(refund)` — proximity search (default near span).
+
+Terms containing an apostrophe, such as `"can't"`, must be inside a double-quoted phrase. Bare
+single quotes in an FTS5 query are a syntax error.
+
+Results are ordered by FTS5 `rank` (BM25 by default). More relevant documents have a lower — more
+negative — `rank` value and are returned first. The rank value itself is not included in results.
+
+### Vectors and semantic search
+
+- `vector` fields store caller-supplied float arrays. Pass them as JSON number arrays; the server
+  stores them as float32 blobs and returns them as `[]float64` in reads.
+- `vectorize: true` on one string/text field makes the server embed that field into the hidden
+  `_embedding` column. Only one field per table can be vectorized.
+- `search_vector` with `text` embeds the text server-side and searches `_embedding`; it requires the
+  same embedding provider/identity as the stored rows. With `vector` you supply the array directly.
+- `column` is optional and defaults to `_embedding` if a vectorized field exists, otherwise the first
+  declared `vector` field.
+- Every vector result carries `_score`: cosine similarity, where higher is closer. For typical
+  positive embeddings it ranges `0`–`1`; mathematically it ranges `-1`–`1`.
+- `_embedding` is hidden from `SELECT *` and search results unless you reference it explicitly in the
+  SQL or pass `include_hidden: true`.
+
+### Id, `created_at`, and stability
+
+Every row has two implicit columns:
+
+- `id` — `INTEGER PRIMARY KEY AUTOINCREMENT`. It is assigned on insert, cannot be supplied or set,
+  and is never reused after rows are deleted. Ids are safe to reference across sessions.
+- `created_at` — a UTC microsecond timestamp in ISO/RFC3339 form, e.g. `2026-09-03T12:34:56.123456Z`.
+  It is set on insert and cannot be supplied or set. Use string comparisons or SQLite date/time
+  functions on it.
+
+`SELECT *` includes both columns.
+
+### Limits and performance
+
+- `query` returns at most 1000 rows and 32 MiB; `truncated: true` when more rows exist.
+- `search_fulltext` and `search_vector` default to 10 results, max 200, and share the 32 MiB budget.
+- `insert` accepts up to 1000 records per call; chunk larger batches.
+- `create_table` allows up to 100 user fields per table.
+- Vector search is a brute-force cosine scan in Go: fine into the low millions of rows, but it has no
+  approximate index. FTS5 uses an inverted index and is much faster.
+
 ## Not yet (deliberately)
 
 Authn/authz, quotas, multi-node, time travel, compaction, a UI, an Iceberg adapter. The MVP exists
