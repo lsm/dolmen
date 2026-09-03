@@ -203,6 +203,23 @@ func TestUpdateClearsEmbeddingWhenVectorizedFieldCleared(t *testing.T) {
 	if len(hits) != 1 {
 		t.Fatalf("cleared rows must lose their embeddings, got %d hits: %v", len(hits), hits)
 	}
+
+	// body is a fulltext field: cleared text must leave the index, and the
+	// untouched row (done = 1) must keep matching its own body text
+	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "memory", 10)
+	if err != nil {
+		t.Fatalf("fts cleared: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("cleared body must not match anymore, got %v", hits)
+	}
+	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "dolmen", 10)
+	if err != nil {
+		t.Fatalf("fts survivor: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("untouched row must stay searchable, got %v", hits)
+	}
 }
 
 func TestUpdateNoMatchTouchesNothing(t *testing.T) {
