@@ -66,7 +66,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace to create the table in"),
-				"table":     tableProp("Table name (lowercase [a-z0-9_]; no sqlite_ prefix or __fts)"),
+				"table":     tableProp("Table name (lowercase [a-z0-9_]; no sqlite_ prefix or __fts, and not a SQLite/SQL keyword or reserved name)"),
 				"fields": map[string]any{
 					"type":        "array",
 					"description": "Field definitions",

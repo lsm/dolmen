@@ -90,6 +90,30 @@ func TestFTSSuffixAndReservedNames(t *testing.T) {
 	}
 }
 
+func TestSQLKeywordNamesRejected(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+
+	if _, err := st.CreateTable(ctx, "test", "select", noteFields()); err == nil {
+		t.Fatal("expected SQL keyword table name to be rejected")
+	}
+	if _, err := st.Migrate(ctx, "test", "notes", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "order", Type: schema.String}},
+	}, testEmbed); err == nil {
+		t.Fatal("expected SQL keyword field name to be rejected on add_field")
+	}
+	if _, err := st.Migrate(ctx, "test", "notes", []schema.Change{
+		{Op: schema.OpRenameField, From: "title", To: "group"},
+	}, testEmbed); err == nil {
+		t.Fatal("expected SQL keyword field name to be rejected on rename_field")
+	}
+	if _, err := st.CreateTable(ctx, "test", "my_select", []schema.Field{
+		{Name: "order_id", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("suggested non-keyword name should be accepted: %v", err)
+	}
+}
+
 func TestFTSShadowTableNamesRejected(t *testing.T) {
 	st := openStore(t)
 	for _, name := range []string{"notes__fts", "notes__fts_data", "notes__fts_idx", "notes__fts_content"} {

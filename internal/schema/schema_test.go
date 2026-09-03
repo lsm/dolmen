@@ -242,6 +242,76 @@ func TestSQLiteReservedTableNamesRejected(t *testing.T) {
 	}
 }
 
+func TestSQLKeywordsRejected(t *testing.T) {
+	for _, name := range []string{"order", "group", "where", "select", "index", "from", "by", "current_date", "notnull"} {
+		if ValidIdent(name) {
+			t.Fatalf("SQL keyword %q must be rejected as an identifier", name)
+		}
+		if ValidTableName(name) {
+			t.Fatalf("SQL keyword %q must be rejected as a table name", name)
+		}
+	}
+	// Suffixes and prefixes that are not exact keywords should still be valid.
+	for _, name := range []string{"my_order", "order_field", "grouped", "selected", "my_indexed", "orderby"} {
+		if !ValidIdent(name) {
+			t.Fatalf("non-keyword %q must be accepted", name)
+		}
+	}
+}
+
+func TestValidateRejectsSQLKeywordWithSuggestion(t *testing.T) {
+	err := Validate([]Field{{Name: "order", Type: String}})
+	if err == nil {
+		t.Fatal("expected SQL keyword field name to be rejected")
+	}
+	if !strings.Contains(err.Error(), "order") || !strings.Contains(err.Error(), "SQLite/SQL keyword") {
+		t.Fatalf("expected a clear SQL keyword error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "my_order") {
+		t.Fatalf("expected error to suggest an alternative, got %v", err)
+	}
+
+	err = Validate([]Field{{Name: "id", Type: String}})
+	if err == nil {
+		t.Fatal("expected reserved internal name to be rejected")
+	}
+	if !strings.Contains(err.Error(), "record_id") {
+		t.Fatalf("expected suggestion for 'id', got %v", err)
+	}
+}
+
+func TestSuggestIdent(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"order", "my_order"},
+		{"id", "record_id"},
+		{"created_at", "created_time"},
+		{"rowid", "record_id"},
+		{"select", "my_select"},
+		{"by", "my_by"},
+		{"title", "title"},
+	}
+	for _, c := range cases {
+		if got := SuggestIdent(c.in); got != c.want {
+			t.Fatalf("SuggestIdent(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestIdentPattern(t *testing.T) {
+	pat := IdentPattern()
+	if !strings.HasPrefix(pat, "^(?!") {
+		t.Fatalf("IdentPattern must use a negative lookahead, got %q", pat)
+	}
+	if !strings.Contains(pat, "[a-z][a-z0-9_]{0,63}$") {
+		t.Fatalf("IdentPattern must end with the base identifier pattern, got %q", pat)
+	}
+	for _, kw := range []string{"order", "select", "where", "group", "index", "id", "rowid"} {
+		if !strings.Contains(pat, kw) {
+			t.Fatalf("IdentPattern must include %q, got %q", kw, pat)
+		}
+	}
+}
+
 func TestInferDefinedNumericTypesAreNumbers(t *testing.T) {
 	type score int64
 	type ratio float32

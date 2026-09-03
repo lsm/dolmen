@@ -312,12 +312,12 @@ func TestCreateTableNameAndDimConstraintsDeclared(t *testing.T) {
 	}
 	items := fields["items"].(map[string]any)
 	name := items["properties"].(map[string]any)["name"].(map[string]any)
-	if name["pattern"] != `^[a-z][a-z0-9_]{0,63}$` {
+	if name["pattern"] != schema.IdentPattern() {
 		t.Fatalf(`"name" must carry the ValidIdent pattern, got %v`, name["pattern"])
 	}
 	notEnum, ok := name["not"].(map[string]any)["enum"].([]string)
-	if !ok || len(notEnum) != 6 {
-		t.Fatalf(`"name" must exclude the six reserved identifiers, got %v`, name["not"])
+	if !ok || len(notEnum) != len(schema.ReservedFieldNames()) {
+		t.Fatalf(`"name" must exclude the reserved field identifiers, got %v`, name["not"])
 	}
 	allOf, ok := items["allOf"].([]any)
 	if !ok || len(allOf) != 3 {
@@ -385,7 +385,7 @@ func TestNamespaceAndTablePatternsDeclared(t *testing.T) {
 			continue
 		}
 		table := props["table"].(map[string]any)
-		if table["pattern"] != `^[a-z][a-z0-9_]{0,63}$` {
+		if table["pattern"] != schema.IdentPattern() {
 			t.Fatalf("%s: table must carry the ValidIdent pattern, got %v", op, table["pattern"])
 		}
 		notAnyOf, ok := table["not"].(map[string]any)["anyOf"].([]any)
@@ -393,8 +393,9 @@ func TestNamespaceAndTablePatternsDeclared(t *testing.T) {
 			t.Fatalf("%s: table must exclude __fts, sqlite_, and reserved identifier names, got %v", op, table["not"])
 		}
 		reservedEnum, ok := notAnyOf[2].(map[string]any)["enum"].([]string)
-		if !ok || len(reservedEnum) != 3 || reservedEnum[0] != "id" || reservedEnum[1] != "created_at" || reservedEnum[2] != "rowid" {
-			t.Fatalf("%s: reserved table-name exclusions must cover id/created_at/rowid, got %v", op, notAnyOf[2])
+		wantReserved := schema.ReservedTableNames()
+		if !ok || len(reservedEnum) != len(wantReserved) {
+			t.Fatalf("%s: reserved table-name exclusions must cover %v, got %v", op, wantReserved, notAnyOf[2])
 		}
 	}
 }
@@ -531,5 +532,39 @@ func TestInferSchemaNullSampleEntryRejected(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("null sample entries must 400, not masquerade as empty inference, got %d", res.StatusCode)
+	}
+}
+
+func TestCreateTableRejectsSQLKeywordFieldAndTable(t *testing.T) {
+	srv := newTestServer(t)
+
+	// Field named "order" is a SQLite/SQL keyword and must be rejected.
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"fields": []map[string]any{
+			{"name": "order", "type": "string"},
+		},
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("expected SQL keyword field name to be rejected, got code %d %v", code, res)
+	}
+	if !strings.Contains(res["error"].(string), "my_order") {
+		t.Fatalf("expected error to suggest an alternative, got %v", res)
+	}
+
+	// Table named "select" is a SQLite/SQL keyword and must be rejected.
+	code, res = post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "skills",
+		"table":     "select",
+		"fields": []map[string]any{
+			{"name": "title", "type": "string"},
+		},
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("expected SQL keyword table name to be rejected, got code %d %v", code, res)
+	}
+	if !strings.Contains(res["error"].(string), "my_select") {
+		t.Fatalf("expected error to suggest an alternative, got %v", res)
 	}
 }

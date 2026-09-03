@@ -78,9 +78,9 @@ func fieldNameProp(desc string) map[string]any {
 	return map[string]any{
 		"type":        "string",
 		"description": desc,
-		"pattern":     `^[a-z][a-z0-9_]{0,63}$`,
+		"pattern":     schema.IdentPattern(),
 		"not": map[string]any{
-			"enum": []string{"id", "created_at", "_embedding", "_score", "_rank", "rowid"},
+			"enum": schema.ReservedFieldNames(),
 		},
 	}
 }
@@ -93,10 +93,10 @@ func fieldItemSchema(desc string) map[string]any {
 		"properties": map[string]any{
 			"name": map[string]any{
 				"type":        "string",
-				"description": "Field name (lowercase, [a-z0-9_], max 64 chars)",
-				"pattern":     `^[a-z][a-z0-9_]{0,63}$`,
+				"description": "Field name (lowercase [a-z0-9_], max 64 chars; not a SQLite/SQL keyword or reserved name)",
+				"pattern":     schema.IdentPattern(),
 				"not": map[string]any{
-					"enum": []string{"id", "created_at", "_embedding", "_score", "_rank", "rowid"},
+					"enum": schema.ReservedFieldNames(),
 				},
 			},
 			"type": map[string]any{
@@ -166,12 +166,12 @@ func tableProp(desc string) map[string]any {
 	return map[string]any{
 		"type":        "string",
 		"description": desc,
-		"pattern":     `^[a-z][a-z0-9_]{0,63}$`,
+		"pattern":     schema.IdentPattern(),
 		"not": map[string]any{
 			"anyOf": []any{
 				map[string]any{"pattern": "__fts"},
 				map[string]any{"pattern": "^sqlite_"},
-				map[string]any{"enum": []string{"id", "created_at", "rowid"}},
+				map[string]any{"enum": schema.ReservedTableNames()},
 			},
 		},
 	}

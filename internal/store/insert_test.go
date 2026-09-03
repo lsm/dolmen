@@ -106,12 +106,12 @@ func TestProviderDimChangeRejected(t *testing.T) {
 
 func TestVectorFloat32OverflowRejected(t *testing.T) {
 	st := openStore(t)
-	if _, err := st.CreateTable(context.Background(), "test", "of", []schema.Field{
+	if _, err := st.CreateTable(context.Background(), "test", "overflow", []schema.Field{
 		{Name: "v", Type: schema.Vector, Dim: 1},
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := st.Insert(context.Background(), "test", "of", []map[string]any{{"v": []any{1e300}}}, testEmbed); err == nil {
+	if _, err := st.Insert(context.Background(), "test", "overflow", []map[string]any{{"v": []any{1e300}}}, testEmbed); err == nil {
 		t.Fatal("expected out-of-float32-range vector entry to be rejected")
 	}
 }

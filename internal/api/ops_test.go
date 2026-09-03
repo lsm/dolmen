@@ -618,7 +618,7 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 	mp := items["properties"].(map[string]any)
 	for _, key := range []string{"from", "to", "name"} {
 		p := mp[key].(map[string]any)
-		if p["pattern"] != `^[a-z][a-z0-9_]{0,63}$` {
+		if p["pattern"] != schema.IdentPattern() {
 			t.Fatalf("migrate %s must carry the field-name pattern, got %v", key, p)
 		}
 		if _, ok := p["not"].(map[string]any)["enum"]; !ok {
