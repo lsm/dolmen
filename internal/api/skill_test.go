@@ -81,6 +81,13 @@ func TestSkillsManifest(t *testing.T) {
 	if res2.StatusCode != http.StatusNotModified {
 		t.Fatalf("If-None-Match: got %d, want 304", res2.StatusCode)
 	}
+
+	// 304 on wildcard If-None-Match.
+	res3 := get(t, srv.URL, "/skills/dolmen", map[string]string{"If-None-Match": "*"})
+	defer res3.Body.Close()
+	if res3.StatusCode != http.StatusNotModified {
+		t.Fatalf("If-None-Match *: got %d, want 304", res3.StatusCode)
+	}
 	body, _ := io.ReadAll(res2.Body)
 	if len(body) != 0 {
 		t.Fatalf("304 response must be empty, got %d bytes", len(body))

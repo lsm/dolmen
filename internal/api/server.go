@@ -509,6 +509,9 @@ func etagMatch(r *http.Request, etag string) bool {
 	want := strings.Trim(etag, "\"")
 	for _, p := range strings.Split(in, ",") {
 		p = strings.TrimSpace(p)
+		if p == "*" || strings.Trim(p, "\"") == "*" {
+			return true
+		}
 		if strings.HasPrefix(p, "W/") {
 			p = p[2:]
 		}
