@@ -66,6 +66,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "origin not allowed", http.StatusForbidden)
 			return
 		}
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
+		w.Header().Set("Vary", "Origin")
 	}
 	if r.Method == http.MethodPost {
 		mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))

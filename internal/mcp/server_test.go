@@ -832,6 +832,12 @@ func TestMCPConfiguredOriginsAllowed(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("configured origin must pass the inner guard, got %d", res.StatusCode)
 	}
+	if res.Header.Get("Access-Control-Allow-Origin") != "https://app.example.com" {
+		t.Fatalf("allowed origin must be echoed, got %q", res.Header.Get("Access-Control-Allow-Origin"))
+	}
+	if res.Header.Get("Access-Control-Expose-Headers") != "X-Request-Id" {
+		t.Fatalf("X-Request-Id must be exposed, got %q", res.Header.Get("Access-Control-Expose-Headers"))
+	}
 	req, _ = http.NewRequest(http.MethodPost, srv.URL, strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"ping"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", "http://evil.example")

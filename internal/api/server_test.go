@@ -177,6 +177,30 @@ func TestCORSPreflight(t *testing.T) {
 	if res.StatusCode != http.StatusForbidden {
 		t.Fatalf("preflight for disallowed origin must be 403, got %d", res.StatusCode)
 	}
+
+	// Actual cross-origin POST must expose the echoed X-Request-Id.
+	raw, _ := json.Marshal(map[string]any{"namespace": "cors"})
+	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/v1/list_tables", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://app.example.com")
+	req.Header.Set("X-Request-Id", "cors-req-1")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("cross-origin post: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("cross-origin post must 200, got %d", res.StatusCode)
+	}
+	if res.Header.Get("Access-Control-Allow-Origin") != "https://app.example.com" {
+		t.Fatalf("allowed origin must be echoed, got %q", res.Header.Get("Access-Control-Allow-Origin"))
+	}
+	if res.Header.Get("Access-Control-Expose-Headers") != "X-Request-Id" {
+		t.Fatalf("X-Request-Id must be exposed, got %q", res.Header.Get("Access-Control-Expose-Headers"))
+	}
+	if res.Header.Get("X-Request-Id") != "cors-req-1" {
+		t.Fatalf("X-Request-Id must be echoed, got %q", res.Header.Get("X-Request-Id"))
+	}
 }
 
 func TestTrailingContentRejected(t *testing.T) {
