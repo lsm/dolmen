@@ -20,11 +20,17 @@ func validateQueryTables(stmt string) error {
 
 // queryScanner is a small SQL tokenizer/parser used only to locate table
 // references in SELECT/WITH statements.
+const maxTableParens = 50
+
 type queryScanner struct {
 	s       string
 	i       int
 	buf     *token
 	cteNames map[string]bool
+	// tableParens tracks the current depth of parenthesized table factors so
+	// that a query with millions of nested parentheses cannot overflow the Go
+	// stack or pin CPU before SQLite rejects it.
+	tableParens int
 }
 
 type token struct {
@@ -846,6 +852,12 @@ func (s *queryScanner) parseTableFactor() error {
 	}
 
 	if t.val == "(" {
+		if s.tableParens >= maxTableParens {
+			return invalidf("query table factor nesting too deep")
+		}
+		s.tableParens++
+		defer func() { s.tableParens-- }()
+
 		s.next() // consume (
 
 		t2, _ := s.peek()
