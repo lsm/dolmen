@@ -596,6 +596,21 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 	if vecItems["maximum"].(float64) != 3.4028234663852886e+38 || vecItems["minimum"].(float64) != -3.4028234663852886e+38 {
 		t.Fatalf("vector items must declare the float32 range, got %v", vecItems)
 	}
+	svFilter := sv.InputSchema["properties"].(map[string]any)["filter"].(map[string]any)
+	if svFilter["pattern"] != `\S` {
+		t.Fatalf("search_vector filter must require a non-whitespace character, got %v", svFilter)
+	}
+	if _, ok := svFilter["not"].(map[string]any)["pattern"]; !ok {
+		t.Fatalf("search_vector filter must exclude all semicolons, got %v", svFilter)
+	}
+	svArgs := sv.InputSchema["properties"].(map[string]any)["args"].(map[string]any)
+	if svArgs["maxItems"] != 100 {
+		t.Fatalf("search_vector args must declare maxItems 100, got %v", svArgs)
+	}
+	svMinScore := sv.InputSchema["properties"].(map[string]any)["min_score"].(map[string]any)
+	if svMinScore["type"] != "number" {
+		t.Fatalf("search_vector min_score must be a number, got %v", svMinScore)
+	}
 	for _, name := range []string{"search_fulltext", "search_vector"} {
 		def, ok := Ops[name]
 		if !ok {
@@ -834,5 +849,114 @@ func TestTypedReadContractHTTP(t *testing.T) {
 		if _, ok := def.InputSchema["properties"].(map[string]any)["include_hidden"]; !ok {
 			t.Fatalf("%s must declare include_hidden", name)
 		}
+	}
+}
+
+func TestSearchVectorFilterAndMinScoreOverHTTP(t *testing.T) {
+	srv := newTestServer(t)
+
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"fields": []map[string]any{
+			{"name": "title", "type": "string", "fulltext": true},
+			{"name": "detail", "type": "text", "vectorize": true},
+			{"name": "confidence", "type": "number"},
+		},
+	})
+	if code != 200 || res["ok"] != true {
+		t.Fatalf("create_table failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"records": []map[string]any{
+			{"title": "auth bug", "detail": "token expiry not checked in middleware", "confidence": 0.9},
+			{"title": "slow query", "detail": "missing index on users.email", "confidence": 0.7},
+		},
+	})
+	if code != 200 || res["ok"] != true {
+		t.Fatalf("insert failed: %d %v", code, res)
+	}
+
+	// filter with bound arg before scoring
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"text":      "token expiry not checked in middleware",
+		"filter":    "confidence >= ?",
+		"args":      []any{0.8},
+	})
+	if code != 200 {
+		t.Fatalf("filtered search_vector failed: %d %v", code, res)
+	}
+	results := res["data"].(map[string]any)["results"].([]any)
+	if len(results) != 1 || results[0].(map[string]any)["title"] != "auth bug" {
+		t.Fatalf("expected auth bug only, got %v", results)
+	}
+
+	// min_score threshold before ranking/limit
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"text":      "token expiry not checked in middleware",
+		"min_score": 0.99,
+	})
+	if code != 200 {
+		t.Fatalf("min_score search_vector failed: %d %v", code, res)
+	}
+	results = res["data"].(map[string]any)["results"].([]any)
+	if len(results) != 1 || results[0].(map[string]any)["title"] != "auth bug" {
+		t.Fatalf("expected one high-confidence hit, got %v", results)
+	}
+
+	// filter + min_score together
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"text":      "token expiry not checked in middleware",
+		"filter":    "confidence >= ?",
+		"args":      []any{0.85},
+		"min_score": 0.99,
+	})
+	if code != 200 {
+		t.Fatalf("filter+min_score search_vector failed: %d %v", code, res)
+	}
+	results = res["data"].(map[string]any)["results"].([]any)
+	if len(results) != 1 || results[0].(map[string]any)["title"] != "auth bug" {
+		t.Fatalf("expected auth bug with combined constraints, got %v", results)
+	}
+
+	// null bind arguments are allowed in filter args
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"text":      "token expiry not checked in middleware",
+		"filter":    "1=1",
+		"args":      []any{nil},
+	})
+	if code != 200 {
+		t.Fatalf("null in filter args must be accepted, got %d %v", code, res)
+	}
+
+	// null vector entries are still rejected
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"vector":    []any{1, nil, 0, 0},
+	})
+	if code != 400 {
+		t.Fatalf("null vector entries must 400, got %d %v", code, res)
+	}
+
+	// invalid filter is rejected
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"text":      "anything",
+		"filter":    "1=1; DROP TABLE findings",
+	})
+	if code != 400 {
+		t.Fatalf("semicolon in filter must 400, got %d %v", code, res)
 	}
 }
