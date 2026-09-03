@@ -12,6 +12,56 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
+func outSchema(props map[string]any, required ...string) map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"properties":           props,
+		"required":             required,
+		"additionalProperties": false,
+	}
+}
+
+func fieldOutSchema(desc string) map[string]any {
+	return map[string]any{
+		"type":        "object",
+		"description": desc,
+		"properties": map[string]any{
+			"name": prop("string", "Field name"),
+			"type": map[string]any{
+				"type":        "string",
+				"description": "Field type",
+				"enum": []schema.FieldType{
+					schema.String, schema.Text, schema.Number, schema.Boolean,
+					schema.Timestamp, schema.JSON, schema.Vector,
+				},
+			},
+			"fulltext":  prop("boolean", "Present and true when the field is full-text indexed"),
+			"vectorize": prop("boolean", "Present and true when the server embeds the field automatically"),
+			"dim":       prop("integer", "Vector dimension (present on vector fields)"),
+			"required":  prop("boolean", "Present and true when inserts must provide the field"),
+		},
+		"required":             []string{"name", "type"},
+		"additionalProperties": false,
+	}
+}
+
+func tableOutSchema(desc string) map[string]any {
+	return map[string]any{
+		"type":        "object",
+		"description": desc,
+		"properties": map[string]any{
+			"namespace":   prop("string", "Namespace of the table"),
+			"name":        prop("string", "Table name"),
+			"version":     prop("integer", "Schema version (starts at 1, bumps on migrate)"),
+			"fields":      map[string]any{"type": "array", "description": "Field definitions", "items": fieldOutSchema("Field definition")},
+			"embed_space": prop("string", "Embedding space of the vectorize field (present when set)"),
+			"embed_dim":   prop("integer", "Dimension of the server-side embedding (present when set)"),
+		},
+		"required":             []string{"namespace", "name", "version", "fields"},
+		"additionalProperties": false,
+	}
+}
+
 var Ops = map[string]OpDef{
 	"list_tables": {
 		Description: "List tables in a namespace.",
@@ -21,6 +71,13 @@ var Ops = map[string]OpDef{
 			"properties":           map[string]any{"namespace": nsProp("Namespace to list tables in")},
 			"required":             []string{"namespace"},
 		},
+		OutputSchema: outSchema(map[string]any{
+			"tables": map[string]any{
+				"type":        "array",
+				"description": "Table names in the namespace",
+				"items":       map[string]any{"type": "string"},
+			},
+		}, "tables"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req nsReq
 			if err := decode(body, &req); err != nil {
@@ -47,6 +104,10 @@ var Ops = map[string]OpDef{
 			},
 			"required": []string{"namespace", "table"},
 		},
+		OutputSchema: outSchema(map[string]any{
+			"table":     tableOutSchema("Table schema"),
+			"row_count": prop("integer", "Number of rows currently in the table"),
+		}, "table", "row_count"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req tableReq
 			if err := decode(body, &req); err != nil {
@@ -88,6 +149,9 @@ var Ops = map[string]OpDef{
 			},
 			"required": []string{"namespace", "table", "fields"},
 		},
+		OutputSchema: outSchema(map[string]any{
+			"table": tableOutSchema("Schema of the created table"),
+		}, "table"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req createTableReq
 			if err := decode(body, &req); err != nil {
@@ -117,6 +181,13 @@ var Ops = map[string]OpDef{
 			},
 			"required": []string{"samples"},
 		},
+		OutputSchema: outSchema(map[string]any{
+			"fields": map[string]any{
+				"type":        "array",
+				"description": "Proposed field definitions",
+				"items":       fieldOutSchema("Proposed field definition"),
+			},
+		}, "fields"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req inferReq
 			if err := decodeData(body, &req); err != nil {
@@ -172,6 +243,15 @@ var Ops = map[string]OpDef{
 			},
 			"required": []string{"namespace", "table", "records"},
 		},
+		OutputSchema: outSchema(map[string]any{
+			"ids": map[string]any{
+				"type":        "array",
+				"description": "Row ids assigned to the inserted records, in order",
+				"items":       map[string]any{"type": "integer"},
+			},
+			"inserted": prop("integer", "Number of records inserted"),
+			"replayed": prop("boolean", "True when an idempotency_key replayed a previous insert (original ids returned, nothing re-inserted); present only for idempotent inserts"),
+		}, "ids", "inserted"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req insertReq
 			if err := decodeData(body, &req); err != nil {
@@ -243,6 +323,15 @@ var Ops = map[string]OpDef{
 			},
 			"required": []string{"namespace", "table", "on", "records"},
 		},
+		OutputSchema: outSchema(map[string]any{
+			"ids": map[string]any{
+				"type":        "array",
+				"description": "Row ids after insert-or-update, in record order",
+				"items":       map[string]any{"type": "integer"},
+			},
+			"inserted": prop("integer", "Number of records inserted"),
+			"updated":  prop("integer", "Number of existing rows updated"),
+		}, "ids", "inserted", "updated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req upsertReq
 			if err := decodeData(body, &req); err != nil {
@@ -303,6 +392,15 @@ var Ops = map[string]OpDef{
 			},
 			"required": []string{"namespace", "sql"},
 		},
+		OutputSchema: outSchema(map[string]any{
+			"rows": map[string]any{
+				"type":        "array",
+				"description": "Rows keyed by column name; declared fields honor their types (vector columns read as number arrays, json fields decoded), undeclared labels fall back to raw values",
+				"items":       map[string]any{"type": "object", "description": "Row keyed by column name"},
+			},
+			"row_count": prop("integer", "Number of rows returned"),
+			"truncated": prop("boolean", "True when the result hit the response budget and was cut short"),
+		}, "rows", "row_count", "truncated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req queryReq
 			if err := decodeData(body, &req); err != nil {
@@ -342,6 +440,14 @@ var Ops = map[string]OpDef{
 			},
 			"required": []string{"namespace", "table", "query"},
 		},
+		OutputSchema: outSchema(map[string]any{
+			"results": map[string]any{
+				"type":        "array",
+				"description": "Matching records ordered by relevance (id, created_at, and table fields)",
+				"items":       map[string]any{"type": "object", "description": "Matching record"},
+			},
+			"truncated": prop("boolean", "True when the result hit the response budget and was cut short"),
+		}, "results", "truncated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req ftsReq
 			if err := decode(body, &req); err != nil {
@@ -399,6 +505,23 @@ var Ops = map[string]OpDef{
 				map[string]any{"required": []string{"vector"}},
 			},
 		},
+		OutputSchema: outSchema(map[string]any{
+			"results": map[string]any{
+				"type":        "array",
+				"description": "Nearest records ordered by similarity (higher _score is closer)",
+				"items": map[string]any{
+					"type":        "object",
+					"description": "Nearest record with _score; the searched vector column carries decoded floats",
+					"properties": map[string]any{
+						"_score": map[string]any{
+							"type":        "number",
+							"description": "Cosine similarity to the query vector (higher is closer)",
+						},
+					},
+				},
+			},
+			"truncated": prop("boolean", "True when the result hit the response budget and was cut short"),
+		}, "results", "truncated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req vecReq
 			if err := decode(body, &req); err != nil {
@@ -480,6 +603,9 @@ var Ops = map[string]OpDef{
 			},
 			"required": []string{"namespace", "table", "filter"},
 		},
+		OutputSchema: outSchema(map[string]any{
+			"deleted": prop("integer", "Number of rows deleted"),
+		}, "deleted"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req deleteReq
 			if err := decodeData(body, &req); err != nil {
@@ -530,6 +656,9 @@ var Ops = map[string]OpDef{
 			},
 			"required": []string{"namespace", "table", "filter", "set"},
 		},
+		OutputSchema: outSchema(map[string]any{
+			"updated": prop("integer", "Number of rows updated"),
+		}, "updated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req updateReq
 			if err := decodeData(body, &req); err != nil {
@@ -579,6 +708,11 @@ var Ops = map[string]OpDef{
 			},
 			"required": []string{"namespace", "table", "filter", "set"},
 		},
+		OutputSchema: outSchema(map[string]any{
+			"inserted": prop("boolean", "True when no row matched and a new record was inserted"),
+			"updated":  prop("integer", "Number of rows updated (0 when a record was inserted)"),
+			"id":       prop("integer", "Row id of the inserted record (present only when inserted is true)"),
+		}, "inserted", "updated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req updateReq
 			if err := decodeData(body, &req); err != nil {
@@ -666,6 +800,9 @@ var Ops = map[string]OpDef{
 			},
 			"required": []string{"namespace", "table", "changes"},
 		},
+		OutputSchema: outSchema(map[string]any{
+			"table": tableOutSchema("Schema of the migrated table (version bumped)"),
+		}, "table"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req migrateReq
 			if err := decode(body, &req); err != nil {

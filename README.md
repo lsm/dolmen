@@ -100,7 +100,7 @@ curl -s localhost:8790/v1/update -H 'Content-Type: application/json' -d '{
 claude mcp add --transport http dolmen http://127.0.0.1:8790/mcp
 ```
 
-The MCP server exposes the same thirteen operations as tools (`tools/list` shows them with full schemas).
+The MCP server exposes the same thirteen operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
 
 ## Tools
 
