@@ -487,6 +487,7 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"pragma computed arg", "SELECT * FROM pragma_table_info(char(95) || 'dolmen_tables')"},
 		{"values compound internal", "WITH c AS (VALUES(1) UNION ALL SELECT rowid FROM _dolmen_tables) SELECT * FROM c"},
 		{"values compound sqlite", "WITH c AS (VALUES(1) UNION ALL SELECT rowid FROM sqlite_master) SELECT * FROM c"},
+		{"window alias join reserved", "SELECT d.name FROM notes window JOIN _dolmen_tables d"},
 	}
 
 	for _, tc := range cases {
@@ -510,6 +511,12 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		{Name: "name", Type: schema.String},
 	}); err != nil {
 		t.Fatalf("create users: %v", err)
+	}
+	if _, err := st.CreateTable(ctx, "test", "sides", []schema.Field{
+		{Name: "left", Type: schema.Number},
+		{Name: "right", Type: schema.Number},
+	}); err != nil {
+		t.Fatalf("create sides: %v", err)
 	}
 
 	ok := []string{
@@ -535,6 +542,9 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		"WITH c AS MATERIALIZED (SELECT * FROM notes) SELECT * FROM c",
 		"WITH c AS NOT MATERIALIZED (SELECT * FROM notes) SELECT * FROM c",
 		"SELECT sum(score) OVER win FROM notes WINDOW win AS (ORDER BY id)",
+		"WITH sqlite_master(x) AS (VALUES(1)) SELECT x FROM sqlite_master",
+		"WITH _dolmen_tables(x) AS (VALUES(1)) SELECT x FROM _dolmen_tables",
+		"SELECT n.id FROM notes n JOIN sides s ON n.id = s.left",
 	}
 
 	for _, q := range ok {

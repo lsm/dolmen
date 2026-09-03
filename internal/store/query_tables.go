@@ -21,9 +21,10 @@ func validateQueryTables(stmt string) error {
 // queryScanner is a small SQL tokenizer/parser used only to locate table
 // references in SELECT/WITH statements.
 type queryScanner struct {
-	s   string
-	i   int
-	buf *token
+	s       string
+	i       int
+	buf     *token
+	cteNames map[string]bool
 }
 
 type token struct {
@@ -32,7 +33,7 @@ type token struct {
 }
 
 func newQueryScanner(stmt string) *queryScanner {
-	return &queryScanner{s: stmt}
+	return &queryScanner{s: stmt, cteNames: make(map[string]bool)}
 }
 
 func (s *queryScanner) next() (token, error) {
@@ -375,13 +376,6 @@ var joinConditionStop = map[string]bool{
 	"union":     true,
 	"intersect": true,
 	"except":    true,
-	"inner":     true,
-	"cross":     true,
-	"left":      true,
-	"right":     true,
-	"full":      true,
-	"outer":     true,
-	"natural":   true,
 	"join":      true,
 }
 
@@ -391,7 +385,6 @@ var clauseEndStop = map[string]bool{
 	"having":    true,
 	"order":     true,
 	"limit":     true,
-	"window":    true,
 	"union":     true,
 	"intersect": true,
 	"except":    true,
@@ -417,6 +410,33 @@ func isClauseEnd(t token) bool {
 		return t.val == ")" || t.val == ";"
 	}
 	return t.typ == "ident" && !isQuotedIdent(t.val) && clauseEndStop[strings.ToLower(t.val)]
+}
+
+// isWindowClause peeks ahead without consuming the current token. It reports
+// true when the current identifier is the keyword WINDOW introducing a named
+// window definition (WINDOW <name> AS ...), as opposed to WINDOW used as a
+// table alias.
+func (s *queryScanner) isWindowClause() bool {
+	start := s.i
+	startBuf := s.buf
+	// Consume WINDOW.
+	t, err := s.next()
+	if err != nil || !isKeyword(t, "window") {
+		s.i, s.buf = start, startBuf
+		return false
+	}
+	name, err := s.next()
+	if err != nil || name.typ != "ident" {
+		s.i, s.buf = start, startBuf
+		return false
+	}
+	as, err := s.next()
+	if err != nil {
+		s.i, s.buf = start, startBuf
+		return false
+	}
+	s.i, s.buf = start, startBuf
+	return isKeyword(as, "as")
 }
 
 func isJoinOp(t token) bool {
@@ -460,6 +480,7 @@ func (s *queryScanner) parseWith() error {
 		if t.typ != "ident" {
 			return invalidf("expected CTE name, got %q", t.val)
 		}
+		s.cteNames[strings.ToLower(unquoteIdent(t.val))] = true
 		if t2, _ := s.peek(); t2.val == "(" {
 			if err := s.scanParenthesized(); err != nil {
 				return err
@@ -636,6 +657,8 @@ func (s *queryScanner) parseTableList() error {
 				return err
 			}
 			continue
+		case isKeyword(t, "window") && s.isWindowClause():
+			return nil
 		case isClauseEnd(t) || t.typ == "eof":
 			return nil
 		default:
@@ -752,6 +775,12 @@ func (s *queryScanner) checkTableName(schema, rawName string) error {
 	if i := strings.LastIndex(base, "."); i >= 0 {
 		base = base[i+1:]
 	}
+	base = strings.ToLower(base)
+	// A CTE name (possibly shadowing a reserved table) is not a physical table
+	// reference, so allow it.
+	if schema == "" && s.cteNames[base] {
+		return nil
+	}
 	if !isUserTable(base) {
 		return invalidf("query references reserved table %q", base)
 	}
@@ -784,6 +813,11 @@ func (s *queryScanner) skipOptionalAlias() error {
 	}
 	kw := strings.ToLower(t.val)
 	if isJoinOp(t) || isClauseEnd(t) || kw == "on" || kw == "using" || t.val == ")" || t.val == "," {
+		return nil
+	}
+	// WINDOW is a clause when it is followed by a name and AS; otherwise it can
+	// be used as an implicit table alias (e.g. "FROM a window JOIN b").
+	if isKeyword(t, "window") && s.isWindowClause() {
 		return nil
 	}
 	s.next()
