@@ -127,6 +127,29 @@ func TestInsertIdempotencyOverHTTP(t *testing.T) {
 	if code != 400 {
 		t.Fatalf("key reuse for a different payload must 400, got %d %v", code, res)
 	}
+
+	// An explicitly empty or null key must not silently fall back to a plain
+	// (non-idempotent) insert — a retried call would then duplicate rows.
+	for _, badKey := range []any{"", nil} {
+		code, res = post(t, srv.URL, "insert", map[string]any{
+			"namespace": "app", "table": "users",
+			"records":         []map[string]any{{"email": "d@example.com"}},
+			"idempotency_key": badKey,
+		})
+		if code != 400 {
+			t.Fatalf("idempotency_key %v must 400, got %d %v", badKey, code, res)
+		}
+	}
+	code, res = post(t, srv.URL, "query", map[string]any{
+		"namespace": "app", "sql": "SELECT count(*) AS n FROM users WHERE email = 'd@example.com'",
+	})
+	if code != 200 {
+		t.Fatalf("query failed: %d %v", code, res)
+	}
+	rows = res["data"].(map[string]any)["rows"].([]any)
+	if rows[0].(map[string]any)["n"].(float64) != 0 {
+		t.Fatalf("rejected empty-key inserts must write nothing: %v", rows)
+	}
 }
 
 func TestInsertIdempotencyKeySchemaParity(t *testing.T) {

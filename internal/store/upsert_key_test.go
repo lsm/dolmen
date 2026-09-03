@@ -217,6 +217,17 @@ func TestUpsertByKeyRequiredOnlyOnInsertPath(t *testing.T) {
 		t.Fatalf("a matched record updates partially and must not re-require fields: %v", err)
 	}
 
+	// An explicit null for a required field is invalid input (a 400), not a
+	// constraint failure surfacing as a 500.
+	_, _, _, err := st.UpsertByKey(ctx, "test", "req", []string{"title"},
+		[]map[string]any{{"title": "needs-score", "score": nil}}, testEmbed)
+	if err == nil {
+		t.Fatal("nulling a required field on the update path must be rejected before SQL")
+	}
+	if !strings.Contains(err.Error(), "cannot be set to null") {
+		t.Fatalf("expected an invalid-request error, got: %v", err)
+	}
+
 	rows, _, err := st.Query(ctx, "test", "SELECT score, done FROM req WHERE title = 'needs-score'", nil)
 	if err != nil {
 		t.Fatalf("query: %v", err)

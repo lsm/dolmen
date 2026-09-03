@@ -269,6 +269,14 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 			continue
 		}
 		// Update path: partial update of the supplied fields.
+		for _, f := range sc.Fields {
+			if !f.Required {
+				continue
+			}
+			if v, present := p.rec[f.Name]; present && v == nil {
+				return nil, 0, 0, true, invalidf("record %d: field %q is required and cannot be set to null", i, f.Name)
+			}
+		}
 		uCols := p.cols
 		uVals := p.vals
 		if vec, ok := embFor[i]; ok {

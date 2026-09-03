@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"math"
 	"strings"
 
@@ -175,8 +177,19 @@ var Ops = map[string]OpDef{
 					return nil, badRequest("records[%d] must be an object, not null", i)
 				}
 			}
-			if req.IdempotencyKey != "" {
-				ids, replayed, err := s.st.InsertIdempotent(ctx, normNS(req.Namespace), normTable(req.Table), req.Records, s.embedder(), req.IdempotencyKey)
+			key := ""
+			if len(req.IdempotencyKey) > 0 {
+				var k string
+				if err := json.Unmarshal(req.IdempotencyKey, &k); err != nil || string(bytes.TrimSpace(req.IdempotencyKey)) == "null" {
+					return nil, badRequest("idempotency_key must be a string")
+				}
+				if k == "" {
+					return nil, badRequest("idempotency_key must not be empty — omit the field for a plain insert (an empty key would silently fall back to non-idempotent writes)")
+				}
+				key = k
+			}
+			if key != "" {
+				ids, replayed, err := s.st.InsertIdempotent(ctx, normNS(req.Namespace), normTable(req.Table), req.Records, s.embedder(), key)
 				if err != nil {
 					return nil, wrapStoreErr(err)
 				}
@@ -565,7 +578,7 @@ type insertReq struct {
 	Namespace      string           `json:"namespace"`
 	Table          string           `json:"table"`
 	Records        []map[string]any `json:"records"`
-	IdempotencyKey string           `json:"idempotency_key"`
+	IdempotencyKey json.RawMessage  `json:"idempotency_key"`
 }
 
 type upsertReq struct {
