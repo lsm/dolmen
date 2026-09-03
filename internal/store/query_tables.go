@@ -182,10 +182,12 @@ func (s *queryScanner) scanToken() (token, error) {
 			s.i++
 			return token{typ: "punct", val: "."}, nil
 		case ':', '@', '$':
-			// SQLite scans :name/@name/$name as a single variable token, so a
+			// SQLite scans :name/@name/$name as a single variable token,
+			// including Tcl-style :: suffixes ($x::from is one name), so a
 			// keyword can never appear inside one. Tokenize them atomically or
-			// SELECT 1 AS x:from FROM _dolmen_tables would smuggle a fake FROM.
-			if s.i+1 < len(s.s) && isIdentCont(s.s[s.i+1]) {
+			// SELECT schema_json, $x::from FROM _dolmen_tables would smuggle a
+			// fake FROM.
+			if s.i+1 < len(s.s) && (isIdentCont(s.s[s.i+1]) || s.atTclSuffix(s.i+1)) {
 				return token{typ: "param", val: s.readParam()}, nil
 			}
 			s.i++
@@ -333,14 +335,26 @@ func (s *queryScanner) readIdent() string {
 }
 
 // readParam consumes a named variable token (:name, @name, $name) as one
-// unit, mirroring SQLite so keywords inside parameter names stay inert.
+// unit, mirroring SQLite so keywords inside parameter names stay inert. The
+// name may carry Tcl-style :: suffixes: $x::ns::y is a single parameter.
 func (s *queryScanner) readParam() string {
 	start := s.i
 	s.i++ // prefix character
 	for s.i < len(s.s) && isIdentCont(s.s[s.i]) {
 		s.i++
 	}
+	for s.atTclSuffix(s.i) {
+		s.i += 2 // '::'
+		for s.i < len(s.s) && isIdentCont(s.s[s.i]) {
+			s.i++
+		}
+	}
 	return s.s[start:s.i]
+}
+
+// atTclSuffix reports whether a '::' namespace separator starts at index i.
+func (s *queryScanner) atTclSuffix(i int) bool {
+	return i+1 < len(s.s) && s.s[i] == ':' && s.s[i+1] == ':'
 }
 
 // readNumberedParam consumes ?NNN, digits only, matching SQLite.

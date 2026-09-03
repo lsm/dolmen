@@ -615,6 +615,11 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"bare table in pragma bare", "SELECT 1 WHERE 1 IN pragma_table_list"},
 		{"colon param bypass", "SELECT 1 AS x:from FROM _dolmen_tables"},
 		{"at param bypass", "SELECT 1 AS x@from FROM _dolmen_tables"},
+		// Tcl-style :: suffixes are part of a parameter name in SQLite.
+		{"tcl dollar param bypass", "SELECT schema_json, $x::from FROM _dolmen_tables"},
+		{"tcl colon param bypass", "SELECT schema_json, :x::from FROM _dolmen_tables"},
+		{"tcl at param bypass", "SELECT schema_json, @x::from FROM _dolmen_tables"},
+		{"tcl bare suffix bypass", "SELECT schema_json, $::from FROM _dolmen_tables"},
 		// The long-s fold orbit (ſ equals s under Unicode simple folding)
 		// must not make the alias ſrom act as the FROM keyword.
 		{"long-s alias fold", "SELECT 1 AS ſrom FROM _dolmen_tables"},
@@ -766,6 +771,8 @@ func TestQueryTokenizesVariablesAtomically(t *testing.T) {
 		"SELECT title FROM notes WHERE title = :name OR title = @name OR title = $name",
 		"SELECT title FROM notes WHERE title = ?1",
 		"SELECT :from AS f, @from AS g, $from AS h FROM notes",
+		"SELECT $x::ns::y AS v, :x::from AS w, @x::from AS z FROM notes",
+		"SELECT $::from AS v FROM notes",
 		// A user table in bare-table IN position passes the guard (SQLite
 		// checks column cardinality itself).
 		"SELECT 1 WHERE 1 IN notes",
