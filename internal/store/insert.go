@@ -2,7 +2,11 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -21,16 +25,41 @@ type Embedder struct {
 
 const MaxRecordsPerInsert = 1000
 
+// MaxIdempotencyKeyLen caps client-supplied idempotency keys.
+const MaxIdempotencyKeyLen = 256
+
+// Insert inserts records as-is: a repeated call duplicates rows. Writers that
+// may be retried should use InsertIdempotent.
 func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[string]any, emb Embedder) ([]int64, error) {
+	ids, _, err := s.insert(ctx, nsName, table, records, emb, "")
+	return ids, err
+}
+
+// InsertIdempotent inserts records under a client-supplied idempotency key.
+// The key and the inserted ids are committed together, durably, so a retry —
+// even after a process restart — returns the original ids (replayed = true)
+// instead of inserting again. A key reused with a different payload is an
+// error rather than a silent replay of unrelated ids.
+func (s *Store) InsertIdempotent(ctx context.Context, nsName, table string, records []map[string]any, emb Embedder, key string) (ids []int64, replayed bool, err error) {
+	if key == "" {
+		return nil, false, invalidf("idempotency key must not be empty")
+	}
+	if len(key) > MaxIdempotencyKeyLen {
+		return nil, false, invalidf("idempotency key is %d bytes (max %d)", len(key), MaxIdempotencyKeyLen)
+	}
+	return s.insert(ctx, nsName, table, records, emb, key)
+}
+
+func (s *Store) insert(ctx context.Context, nsName, table string, records []map[string]any, emb Embedder, idemKey string) (ids []int64, replayed bool, err error) {
 	if len(records) == 0 {
-		return nil, invalidf("no records given")
+		return nil, false, invalidf("no records given")
 	}
 	if len(records) > MaxRecordsPerInsert {
-		return nil, invalidf("too many records: %d > %d per call", len(records), MaxRecordsPerInsert)
+		return nil, false, invalidf("too many records: %d > %d per call", len(records), MaxRecordsPerInsert)
 	}
 	n, err := s.ns(nsName)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	normalized := make([]map[string]any, len(records))
 	for i, rec := range records {
@@ -38,7 +67,7 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 		for k, v := range rec {
 			lk := strings.ToLower(k)
 			if _, exists := nr[lk]; exists {
-				return nil, invalidf("record %d: fields %q and its case variant collapse to %q; use one spelling", i, k, lk)
+				return nil, false, invalidf("record %d: fields %q and its case variant collapse to %q; use one spelling", i, k, lk)
 			}
 			nr[lk] = v
 		}
@@ -46,21 +75,59 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 	}
 	records = normalized
 
+	var idemHash string
+	if idemKey != "" {
+		idemHash = payloadHash(records)
+	}
+
 	for attempt := 0; ; attempt++ {
 		if attempt >= 3 {
-			return nil, invalidf("table schema changed concurrently; retry the insert")
+			return nil, false, invalidf("table schema changed concurrently; retry the insert")
 		}
-		ids, done, err := s.insertAttempt(ctx, n, nsName, table, records, emb)
+		ids, replayed, done, err := s.insertAttempt(ctx, n, nsName, table, records, emb, idemKey, idemHash)
 		if done {
-			return ids, err
+			return ids, replayed, err
 		}
 	}
 }
 
-func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder) (ids []int64, done bool, err error) {
+func payloadHash(records []map[string]any) string {
+	raw, err := json.Marshal(records)
+	if err != nil {
+		// Unmarshalable payloads fail later at coercion; hash the error text so
+		// equal payloads still hash equal and unequal ones stay distinguishable.
+		raw = []byte("marshal error: " + err.Error())
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// lookupIdem returns the ids recorded for (table, key). found is true on a
+// replay; a hash mismatch means the key is being reused for a different write.
+func lookupIdem(ctx context.Context, db rowQuerier, table, key, wantHash string) (ids []int64, found bool, err error) {
+	var gotHash, idsJSON string
+	err = db.QueryRowContext(ctx,
+		`SELECT payload_hash, ids_json FROM _dolmen_idempotency WHERE table_name = ? AND key = ?`,
+		table, key).Scan(&gotHash, &idsJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if gotHash != wantHash {
+		return nil, false, invalidf("idempotency key %q was already recorded for a different insert into %s; keys are single-use, generate a fresh one", key, table)
+	}
+	if err := json.Unmarshal([]byte(idsJSON), &ids); err != nil {
+		return nil, false, fmt.Errorf("corrupt idempotency record for key %q: %w", key, err)
+	}
+	return ids, true, nil
+}
+
+func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, idemHash string) (ids []int64, replayed bool, done bool, err error) {
 	sc, err := loadSchema(ctx, n.rw, nsName, table)
 	if err != nil {
-		return nil, true, err
+		return nil, false, true, err
 	}
 	persistMeta := sc.EmbedSpace == "" || sc.EmbedDim == 0
 	origEmbedSpace := sc.EmbedSpace
@@ -68,7 +135,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	for _, rec := range records {
 		for k := range rec {
 			if sc.Field(k) == nil {
-				return nil, true, invalidf("unknown field %q on table %s (see describe_table)", k, table)
+				return nil, false, true, invalidf("unknown field %q on table %s (see describe_table)", k, table)
 			}
 		}
 		for _, f := range sc.Fields {
@@ -77,7 +144,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 				continue
 			}
 			if f.Required && (!present || v == nil) {
-				return nil, true, invalidf("field %q is required", f.Name)
+				return nil, false, true, invalidf("field %q is required", f.Name)
 			}
 		}
 	}
@@ -98,7 +165,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			}
 			cv, err := coerceValue(f, v)
 			if err != nil {
-				return nil, true, fmt.Errorf("%w: %w", ErrInvalid, err)
+				return nil, false, true, fmt.Errorf("%w: %w", ErrInvalid, err)
 			}
 			cols = append(cols, q(f.Name))
 			vals = append(vals, cv)
@@ -118,34 +185,34 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 		}
 		if len(texts) > 0 {
 			if emb.Embed == nil {
-				return nil, true, invalidf("table %s uses vectorize but no embedding provider is configured", table)
+				return nil, false, true, invalidf("table %s uses vectorize but no embedding provider is configured", table)
 			}
 			if emb.Identity == "" {
-				return nil, true, invalidf("table %s uses vectorize but the active embedding provider reports no identity; configure the provider before inserting so rows are attributable to an embedding space", table)
+				return nil, false, true, invalidf("table %s uses vectorize but the active embedding provider reports no identity; configure the provider before inserting so rows are attributable to an embedding space", table)
 			}
 			if sc.EmbedSpace != "" && sc.EmbedSpace != emb.Identity {
-				return nil, true, invalidf("embedding provider changed: table rows were embedded by %q but the active provider is %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedSpace, emb.Identity)
+				return nil, false, true, invalidf("embedding provider changed: table rows were embedded by %q but the active provider is %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedSpace, emb.Identity)
 			}
 			vecs, err := emb.Embed(ctx, texts)
 			if err != nil {
-				return nil, true, fmt.Errorf("embedding failed: %w", err)
+				return nil, false, true, fmt.Errorf("embedding failed: %w", err)
 			}
 			if len(vecs) != len(texts) {
-				return nil, true, fmt.Errorf("embedding provider returned %d vectors for %d texts", len(vecs), len(texts))
+				return nil, false, true, fmt.Errorf("embedding provider returned %d vectors for %d texts", len(vecs), len(texts))
 			}
 			for _, v := range vecs {
 				if len(v) == 0 {
-					return nil, true, invalidf("embedding provider returned a zero-dimensional vector for table %s", table)
+					return nil, false, true, invalidf("embedding provider returned a zero-dimensional vector for table %s", table)
 				}
 				for _, x := range v {
 					if math.IsNaN(float64(x)) || math.IsInf(float64(x), 0) {
-						return nil, true, invalidf("embedding provider returned a non-finite vector component for table %s", table)
+						return nil, false, true, invalidf("embedding provider returned a non-finite vector component for table %s", table)
 					}
 				}
 				if sc.EmbedDim == 0 {
 					sc.EmbedDim = len(v)
 				} else if len(v) != sc.EmbedDim {
-					return nil, true, invalidf("embedding provider returned %d-dimensional vectors but table %s stores %d-dimensional embeddings; re-embed via migrate (set_vectorize off, then on) if the provider changed", len(v), table, sc.EmbedDim)
+					return nil, false, true, invalidf("embedding provider returned %d-dimensional vectors but table %s stores %d-dimensional embeddings; re-embed via migrate (set_vectorize off, then on) if the provider changed", len(v), table, sc.EmbedDim)
 				}
 			}
 			for k, i := range idx {
@@ -157,59 +224,39 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	fts := sc.FTSFields()
 	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, true, err
+		return nil, false, true, err
 	}
 	defer tx.Rollback()
 
 	scTx, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
-		return nil, true, err
+		return nil, false, true, err
 	}
 	if scTx.Version != sc.Version || scTx.EmbedSpace != origEmbedSpace || scTx.EmbedDim != origEmbedDim {
-		return nil, false, nil
+		return nil, false, false, nil
+	}
+
+	if idemKey != "" {
+		ids, found, err := lookupIdem(ctx, tx, table, idemKey, idemHash)
+		if err != nil {
+			return nil, false, true, err
+		}
+		if found {
+			return ids, true, true, nil
+		}
 	}
 
 	ids = make([]int64, 0, len(records))
 	for i, row := range coercedRows {
-		rec := row.rec
-		cols := row.cols
-		vals := row.vals
+		var vec []float32
 		if ev, ok := embFor[i]; ok {
-			cols = append(cols, `"_embedding"`)
-			vals = append(vals, schema.EncodeVector(ev))
+			vec = ev
 		}
-		var stmt string
-		if len(cols) == 0 {
-			stmt = fmt.Sprintf(`INSERT INTO %s DEFAULT VALUES`, q(table))
-		} else {
-			ph := strings.TrimSuffix(strings.Repeat("?,", len(cols)), ",")
-			stmt = fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s)`, q(table), strings.Join(cols, ", "), ph)
-		}
-		res, err := tx.ExecContext(ctx, stmt, vals...)
+		id, err := execInsertWithFTS(ctx, tx, table, fts, row.rec, row.cols, row.vals, vec)
 		if err != nil {
-			return nil, true, fmt.Errorf("insert into %s: %w", table, err)
-		}
-		id, err := res.LastInsertId()
-		if err != nil {
-			return nil, true, err
+			return nil, false, true, err
 		}
 		ids = append(ids, id)
-
-		if len(fts) > 0 {
-			fcols := make([]string, len(fts))
-			fvals := make([]any, len(fts)+1)
-			fvals[0] = id
-			for j, f := range fts {
-				fcols[j] = q(f.Name)
-				fvals[j+1] = ftsText(rec[f.Name])
-			}
-			fph := strings.TrimSuffix(strings.Repeat("?,", len(fts)+1), ",")
-			fstmt := fmt.Sprintf(`INSERT INTO %s (rowid, %s) VALUES (%s)`,
-				q(ftsTable(table)), strings.Join(fcols, ", "), fph)
-			if _, err := tx.ExecContext(ctx, fstmt, fvals...); err != nil {
-				return nil, true, fmt.Errorf("update search index for %s: %w", table, err)
-			}
-		}
 	}
 	if len(embFor) > 0 && persistMeta {
 		if sc.EmbedSpace == "" && emb.Identity != "" {
@@ -223,17 +270,93 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 		}
 		raw, err := json.Marshal(sc)
 		if err != nil {
-			return nil, true, err
+			return nil, false, true, err
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE _dolmen_tables SET schema_json = ? WHERE name = ?`, string(raw), table); err != nil {
-			return nil, true, err
+			return nil, false, true, err
+		}
+	}
+	if idemKey != "" {
+		idsJSON, err := json.Marshal(ids)
+		if err != nil {
+			return nil, false, true, err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO _dolmen_idempotency(table_name, key, payload_hash, ids_json) VALUES(?,?,?,?)`,
+			table, idemKey, idemHash, string(idsJSON)); err != nil {
+			// A writer in another process may have committed this key between our
+			// lookup and this insert: their rows stand, ours roll back, and the
+			// retry gets their ids — which is exactly the dedup contract.
+			if strings.Contains(err.Error(), "UNIQUE constraint failed: _dolmen_idempotency") {
+				if rerr := tx.Rollback(); rerr != nil {
+					return nil, false, true, rerr
+				}
+				ids, found, lerr := lookupIdem(ctx, n.rw, table, idemKey, idemHash)
+				if lerr != nil {
+					return nil, false, true, lerr
+				}
+				if !found {
+					return nil, false, true, invalidf("idempotency key %q vanished mid-insert; retry", idemKey)
+				}
+				return ids, true, true, nil
+			}
+			return nil, false, true, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, true, err
+		return nil, false, true, err
 	}
-	return ids, true, nil
+	return ids, false, true, nil
+}
+
+// execInsertWithFTS inserts one coerced row (plus its FTS entry when the table
+// has fulltext fields) and returns the new row id. vec, when non-nil, is
+// stored as the row's _embedding.
+func execInsertWithFTS(ctx context.Context, tx *sql.Tx, table string, fts []schema.Field, rec map[string]any, cols []string, vals []any, vec []float32) (int64, error) {
+	if vec != nil {
+		cols = append(cols, `"_embedding"`)
+		vals = append(vals, schema.EncodeVector(vec))
+	}
+	var stmt string
+	if len(cols) == 0 {
+		stmt = fmt.Sprintf(`INSERT INTO %s DEFAULT VALUES`, q(table))
+	} else {
+		ph := strings.TrimSuffix(strings.Repeat("?,", len(cols)), ",")
+		stmt = fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s)`, q(table), strings.Join(cols, ", "), ph)
+	}
+	res, err := tx.ExecContext(ctx, stmt, vals...)
+	if err != nil {
+		return 0, fmt.Errorf("insert into %s: %w", table, err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if len(fts) > 0 {
+		if err := writeFTSRowFor(ctx, tx, table, fts, id, rec); err != nil {
+			return 0, err
+		}
+	}
+	return id, nil
+}
+
+// writeFTSRowFor indexes one row's fulltext fields from its record values.
+func writeFTSRowFor(ctx context.Context, tx *sql.Tx, table string, fts []schema.Field, id int64, rec map[string]any) error {
+	fcols := make([]string, len(fts))
+	fvals := make([]any, len(fts)+1)
+	fvals[0] = id
+	for j, f := range fts {
+		fcols[j] = q(f.Name)
+		fvals[j+1] = ftsText(rec[f.Name])
+	}
+	fph := strings.TrimSuffix(strings.Repeat("?,", len(fts)+1), ",")
+	fstmt := fmt.Sprintf(`INSERT INTO %s (rowid, %s) VALUES (%s)`,
+		q(ftsTable(table)), strings.Join(fcols, ", "), fph)
+	if _, err := tx.ExecContext(ctx, fstmt, fvals...); err != nil {
+		return fmt.Errorf("update search index for %s: %w", table, err)
+	}
+	return nil
 }
 
 func ftsText(v any) any {

@@ -127,6 +127,14 @@ var registryDDL = []string{
 		changes_json TEXT NOT NULL,
 		at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 	)`,
+	`CREATE TABLE IF NOT EXISTS _dolmen_idempotency(
+		table_name TEXT NOT NULL,
+		key TEXT NOT NULL,
+		payload_hash TEXT NOT NULL,
+		ids_json TEXT NOT NULL,
+		at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		PRIMARY KEY(table_name, key)
+	)`,
 }
 
 func dsn(path string, readonly bool) string {
