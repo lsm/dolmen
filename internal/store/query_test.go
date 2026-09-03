@@ -624,6 +624,7 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"paren punct param bypass", "SELECT schema_json, $x(a,from) FROM _dolmen_tables"},
 		{"paren colon param bypass", "SELECT schema_json, $x(a:from) FROM _dolmen_tables"},
 		{"paren open param bypass", "SELECT schema_json, $x(a(b) FROM _dolmen_tables"},
+		{"hash param bypass", "SELECT schema_json, #from FROM _dolmen_tables"},
 		// Go's ToLower maps İ to i, but SQLite folds identifiers ASCII-only,
 		// so a CTE whose name lowercases (in Go) onto an internal table's name
 		// must not shadow it.
@@ -789,6 +790,7 @@ func TestQueryTokenizesVariablesAtomically(t *testing.T) {
 		"SELECT $x::y(with) AS v, $x() AS w FROM notes",
 		"SELECT $x(a,from) AS v, $x(a.b) AS w, $x('a;b') AS z FROM notes",
 		"SELECT $x(a:from) AS v, $x(a(b) AS w FROM notes",
+		"SELECT #from AS v, #x(a,from) AS w, #x::y AS z FROM notes",
 		// A user table in bare-table IN position passes the guard (SQLite
 		// checks column cardinality itself).
 		"SELECT 1 WHERE 1 IN notes",

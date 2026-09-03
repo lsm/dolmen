@@ -181,8 +181,8 @@ func (s *queryScanner) scanToken() (token, error) {
 		case '.':
 			s.i++
 			return token{typ: "punct", val: "."}, nil
-		case ':', '@', '$':
-			// SQLite scans :name/@name/$name as a single variable token,
+		case ':', '@', '$', '#':
+			// SQLite scans :name/@name/$name/#name as a single variable token,
 			// including Tcl-style :: suffixes ($x::from is one name), so a
 			// keyword can never appear inside one. Tokenize them atomically or
 			// SELECT schema_json, $x::from FROM _dolmen_tables would smuggle a
@@ -334,10 +334,10 @@ func (s *queryScanner) readIdent() string {
 	return s.s[start:s.i]
 }
 
-// readParam consumes a named variable token (:name, @name, $name) as one
-// unit, mirroring SQLite so keywords inside parameter names stay inert. The
-// name may carry Tcl-style :: suffixes and one final parenthesized suffix:
-// $x::ns::y, $x(a,from), and $x(a(b) are each a single parameter. The
+// readParam consumes a named variable token (:name, @name, $name, #name) as
+// one unit, mirroring SQLite so keywords inside parameter names stay inert.
+// The name may carry Tcl-style :: suffixes and one final parenthesized
+// suffix: $x::ns::y, $x(a,from), and $x(a(b) are each a single parameter. The
 // parenthesized suffix is opaque through its closing ')' — colons and nested
 // '(' are content — and only whitespace ends it early, which SQLite rejects
 // as an unrecognized token.
