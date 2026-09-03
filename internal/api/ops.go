@@ -192,7 +192,11 @@ var Ops = map[string]OpDef{
 					"type":        "string",
 					"description": "Read-only SQL (SELECT/WITH)",
 					"minLength":   1,
-					"pattern":     `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b[^;]*;*\s*$`,
+					// Anchored to a SELECT/WITH prefix only; semicolons are
+					// permitted so quoted literals like 'a;b' pass a strict
+					// MCP client. The store's quote-aware guard rejects
+					// genuine multi-statement input.
+					"pattern": `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b[\s\S]*$`,
 				},
 				"args": map[string]any{
 					"type":        "array",
@@ -369,9 +373,8 @@ var Ops = map[string]OpDef{
 				"table":     tableProp("Table name"),
 				"filter": map[string]any{
 					"type":        "string",
-					"description": "SQL WHERE expression selecting rows to delete",
+					"description": "SQL WHERE expression selecting rows to delete. A semicolon inside a quoted literal or comment is fine; the store rejects genuine multi-statement filters.",
 					"pattern":     `\S`,
-					"not":         map[string]any{"pattern": ";"},
 				},
 				"args": map[string]any{
 					"type":        "array",
