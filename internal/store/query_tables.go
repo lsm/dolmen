@@ -1230,11 +1230,16 @@ func (s *queryScanner) checkTableName(schema, rawName string) error {
 	// a schema separator. SQLite never resolves a qualified name to a CTE, so
 	// the CTE match stays unqualified; the registry match also accepts the
 	// main qualifier, which resolves to the same physical table.
-	if (schema == "" && s.isCteName(base)) || (ownSchema(schema) && s.registered[base]) {
+	if schema == "" && s.isCteName(base) {
 		return nil
 	}
+	// Registry match on the unqualified name: main.pragma_notes names the
+	// same physical table as pragma_notes.
 	if i := strings.LastIndex(base, "."); i >= 0 {
 		base = base[i+1:]
+	}
+	if ownSchema(schema) && s.registered[base] {
+		return nil
 	}
 	if !isUserTable(base) {
 		return invalidf("query references reserved table %q", base)
