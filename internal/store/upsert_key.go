@@ -103,7 +103,7 @@ func matchByKey(ctx context.Context, tx *sql.Tx, table string, keyFields []strin
 		fmt.Sprintf(`SELECT id FROM %s WHERE %s LIMIT 2`, q(table), whereSQL),
 		keyVals...)
 	if err != nil {
-		return 0, NewQueryError(whereSQL, err)
+		return 0, NewFilterError(whereSQL, err)
 	}
 	var matchIDs []int64
 	for rows.Next() {

@@ -626,18 +626,85 @@ func TestOperationalFailuresAreNotQueryErrors(t *testing.T) {
 		t.Fatalf("recognized syntax error should be a QueryError, got %T", err)
 	}
 
+	// Generic SQL-layer errors (primary result code 1) name the problem in the
+	// message and are client-correctable even without a specific pattern.
+	ambiguous := errors.New(`SQL logic error: ambiguous column name: id (1)`)
+	err = NewQueryError("SELECT 1", ambiguous)
+	if !errors.As(err, &qe) {
+		t.Fatalf("generic SQL logic error should be a QueryError, got %T", err)
+	}
+	if !strings.Contains(err.Error(), "ambiguous column name") {
+		t.Fatalf("generic SQL message should be preserved, got %q", err.Error())
+	}
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("generic SQL logic error should classify as ErrInvalid, got %v", err)
+	}
+
 	// Operational failures the client cannot correct (I/O, corruption, busy
 	// timeouts) must stay internal: the original error is returned unwrapped
 	// so it maps to internal_error, never a 400 query_error with a syntax hint.
-	operational := errors.New("database disk image is malformed")
-	err = NewQueryError("SELECT 1", operational)
-	if errors.As(err, &qe) {
-		t.Fatalf("operational failure must not classify as a QueryError, got %v", err)
+	for _, raw := range []string{
+		"database disk image is malformed",
+		"database is locked (5) (SQLITE_BUSY)",
+		"disk I/O error (10) (SQLITE_IOERR)",
+		"context canceled",
+	} {
+		operational := errors.New(raw)
+		err = NewQueryError("SELECT 1", operational)
+		if errors.As(err, &qe) {
+			t.Fatalf("operational failure %q must not classify as a QueryError, got %v", raw, err)
+		}
+		if !errors.Is(err, operational) {
+			t.Fatalf("operational failure %q should return the original error, got %v", raw, err)
+		}
+		if errors.Is(err, ErrInvalid) {
+			t.Fatalf("operational failure %q must not carry ErrInvalid, got %v", raw, err)
+		}
 	}
-	if !errors.Is(err, operational) {
-		t.Fatalf("operational failure should return the original error, got %v", err)
+}
+
+func TestAmbiguousColumnQueryIsInvalidRequest(t *testing.T) {
+	st := openStore(t)
+	mustCreateNotes(t, st)
+	// A client-correctable error outside the specific pattern list must still
+	// classify as an invalid request, not an internal error.
+	_, _, err := st.Query(context.Background(), "test",
+		"SELECT id FROM notes a JOIN notes b ON 1=1", nil)
+	if err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("ambiguous column should classify as invalid request, got %v", err)
 	}
-	if errors.Is(err, ErrInvalid) {
-		t.Fatalf("operational failure must not carry ErrInvalid, got %v", err)
+	msg := err.Error()
+	if !strings.Contains(msg, "ambiguous column name") {
+		t.Fatalf("expected the SQLite message preserved, got %q", msg)
+	}
+	if strings.Contains(msg, "SQL logic error") || strings.Contains(msg, "(1)") {
+		t.Fatalf("raw SQLite framing leaked: %q", msg)
+	}
+}
+
+func TestFilterErrorsUseFilterGuidance(t *testing.T) {
+	st := openStore(t)
+	mustCreateNotes(t, st)
+
+	// Filter callers get WHERE-expression guidance, not SELECT/WITH guidance.
+	_, err := st.Update(context.Background(), "test", "notes", "id =", nil,
+		map[string]any{"title": "x"}, testEmbed)
+	if err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("malformed filter should classify as invalid request, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "WHERE expression") {
+		t.Fatalf("filter guidance should mention WHERE expressions, got %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "SELECT or WITH") {
+		t.Fatalf("filter guidance must not point at SELECT/WITH statements, got %q", err.Error())
+	}
+
+	// Query callers keep statement-oriented guidance.
+	_, _, qerr := st.Query(context.Background(), "test", "SELECT (", nil)
+	if qerr == nil || !errors.Is(qerr, ErrInvalid) {
+		t.Fatalf("incomplete query should classify as invalid request, got %v", qerr)
+	}
+	if !strings.Contains(qerr.Error(), "SELECT or WITH") {
+		t.Fatalf("query guidance should mention SELECT/WITH statements, got %q", qerr.Error())
 	}
 }

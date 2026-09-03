@@ -217,6 +217,12 @@ func TestErrorEnvelopeQueryErrorForMalformedFilter(t *testing.T) {
 	if strings.Contains(msg, "SQL logic error") || strings.Contains(msg, "(1)") {
 		t.Fatalf("raw SQLite internals leaked into message: %q", msg)
 	}
+	if !strings.Contains(msg, "WHERE expression") {
+		t.Fatalf("filter failures must carry WHERE-expression guidance, got %q", msg)
+	}
+	if strings.Contains(msg, "SELECT or WITH") {
+		t.Fatalf("filter guidance must not point at SELECT/WITH statements, got %q", msg)
+	}
 
 	code, body = post(t, srv.URL, "delete", map[string]any{
 		"namespace": "app",
@@ -229,6 +235,10 @@ func TestErrorEnvelopeQueryErrorForMalformedFilter(t *testing.T) {
 	errObj = errorBody(t, body)
 	if errObj["code"] != "query_error" {
 		t.Fatalf("expected query_error code for delete, got %v", errObj["code"])
+	}
+	msg, _ = errObj["message"].(string)
+	if !strings.Contains(msg, "WHERE expression") {
+		t.Fatalf("delete filter failures must carry WHERE-expression guidance, got %q", msg)
 	}
 
 	// Vector search filter failures must also classify as query errors.

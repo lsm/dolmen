@@ -47,17 +47,34 @@ var (
 	misuseRe        = regexp.MustCompile(`(?i)misuse\s+at.*`)
 )
 
-// NewQueryError sanitizes a raw SQLite error for the query endpoint.
+// NewQueryError sanitizes a raw SQLite error from the query endpoint.
 // It returns a QueryError that preserves the ErrInvalid/ErrNotFound sentinel
 // while keeping the original error for server-side logging. Operational
 // failures the client cannot correct (I/O errors, corruption, busy timeouts)
 // are returned unwrapped so they map to internal_error instead.
 func NewQueryError(sql string, err error) error {
+	return newSQLExecError(sql, err, false)
+}
+
+// NewFilterError is NewQueryError for user-supplied WHERE expressions
+// (update, delete, upsert, search_vector filters): identical classification,
+// but syntax guidance is worded for a predicate instead of a full statement.
+func NewFilterError(where string, err error) error {
+	return newSQLExecError(where, err, true)
+}
+
+func newSQLExecError(sql string, err error, filter bool) error {
 	if !recognizedQueryError(err.Error()) {
 		return err
 	}
 	base := RedactSQLMessage(err.Error())
 	sentinel := ErrInvalid
+	syntaxHint := "only single SELECT or WITH statements are allowed; use ? for parameters and table/column names from list_tables or describe_table"
+	defaultHint := "the query endpoint only accepts a single SELECT or WITH statement; use ? for parameters"
+	if filter {
+		syntaxHint = `the filter must be a single SQL WHERE expression (e.g. "status = 'done'" or "id IN (3, 7)"); use ? for parameters and column names from describe_table`
+		defaultHint = "the filter must be a valid SQL WHERE expression; use ? for parameters"
+	}
 	hint := ""
 
 	switch {
@@ -67,7 +84,7 @@ func NewQueryError(sql string, err error) error {
 	case strings.HasPrefix(base, "column "):
 		hint = "use describe_table to see valid column names"
 	case strings.HasPrefix(base, "SQL syntax error near "), strings.HasPrefix(base, "unrecognized SQL token "), base == "incomplete SQL statement":
-		hint = "only single SELECT or WITH statements are allowed; use ? for parameters and table/column names from list_tables or describe_table"
+		hint = syntaxHint
 	case strings.HasPrefix(base, "missing value for query parameter"):
 		hint = "pass the missing value in args"
 	case strings.HasPrefix(base, "too many query parameters"):
@@ -75,7 +92,7 @@ func NewQueryError(sql string, err error) error {
 	case strings.HasPrefix(base, "unknown SQL function "):
 		hint = "only standard SQL functions and table/column names from describe_table are supported"
 	default:
-		hint = "the query endpoint only accepts a single SELECT or WITH statement; use ? for parameters"
+		hint = defaultHint
 	}
 
 	_ = sql // reserved for future structured diagnostics; not echoed to avoid leaking input
@@ -86,13 +103,22 @@ func NewQueryError(sql string, err error) error {
 	return &QueryError{msg: msg, sentinel: sentinel, cause: err}
 }
 
-// recognizedQueryError reports whether a raw SQLite error matches one of the
-// well-known, client-correctable input patterns RedactSQLMessage renders
-// (syntax errors, unknown tokens, missing tables/columns/functions/parameters,
-// incomplete input, malformed JSON, parameter limits, misuse). Anything else —
-// disk I/O failures, corruption, busy timeouts — is operational and must not
-// surface as a query_error the client could retry into.
+// operationalSQLiteRe matches SQLite failures the client cannot correct by
+// fixing its SQL: lock contention, corruption, I/O and capacity errors, and
+// interrupted or protocol-level failures, by result-code name or message.
+var operationalSQLiteRe = regexp.MustCompile(`(?i)\bSQLITE_(BUSY|LOCKED|CORRUPT|IOERR|FULL|NOMEM|READONLY|CANTOPEN|INTERRUPT|PROTOCOL)\b|\b(?:database is locked|database is busy|disk I/O error|database disk image is malformed|out of memory|database or disk is full|attempt to write a readonly database|unable to open database file)\b`)
+
+// recognizedQueryError reports whether a raw SQLite error describes a problem
+// the client can correct in its own SQL: a known input pattern (syntax errors,
+// unknown tokens, missing tables/columns/functions/parameters, incomplete
+// input, malformed JSON, parameter limits, misuse), or a generic SQL-layer
+// error — SQLite primary result code 1 — whose message names the problem
+// (e.g. "ambiguous column name: id"). Operational failures such as disk I/O
+// errors, corruption, and busy timeouts must not surface as a query_error.
 func recognizedQueryError(raw string) bool {
+	if operationalSQLiteRe.MatchString(raw) {
+		return false
+	}
 	for _, re := range []*regexp.Regexp{
 		nearRe, unrecognizedRe, noSuchTableRe, noSuchColumnRe, noSuchFuncRe,
 		missingArgRe, incompleteRe, malformedJSONRe, tooManyVarsRe, misuseRe,
@@ -101,7 +127,8 @@ func recognizedQueryError(raw string) bool {
 			return true
 		}
 	}
-	return false
+	trimmed := strings.TrimSpace(raw)
+	return sqlLogicErrorRe.MatchString(trimmed) || strings.HasSuffix(trimmed, "(1)")
 }
 
 // redactSQLMessage turns a raw SQLite error string into a client-safe string.
