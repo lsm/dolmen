@@ -71,8 +71,8 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
 ### Full-text (FTS5) search syntax
 
 Dolmen indexes `fulltext` fields with SQLite FTS5 using the default `unicode61` tokenizer:
-case-insensitive, diacritic-insensitive, no stemming. Most punctuation (including hyphens) is a token
-boundary.
+case-insensitive, diacritic-insensitive for most Latin characters (some non-Latin or multi-diacritic
+characters may not normalize), no stemming. Most punctuation (including hyphens) is a token boundary.
 
 - `payment` — one token.
 - `payment gateway` — implicit `AND`.
@@ -96,13 +96,16 @@ negative — value and are returned first. The rank value itself is not returned
 
 - `vector` fields accept JSON number arrays of the declared `dim`; stored as float32 blobs, returned
   as `[]float64`.
-- `vectorize: true` on a string/text field stores one embedding per row in `_embedding`. Only one
-  field per table can be vectorized.
-- `search_vector(text=...)` embeds the query `text` and compares it against the resolved vector
-  column. `search_vector(vector=[...])` searches a caller-supplied vector column.
+- `vectorize: true` on a string/text field stores one embedding per non-empty row in `_embedding`.
+  Only one field per table can be vectorized; rows with `null`, empty string, or missing values have
+  `_embedding` NULL and are excluded from vector search.
+- `search_vector(text=...)` embeds the query `text` with the configured provider and compares it
+  against the resolved `column`. `search_vector(vector=[...])` supplies a query vector directly; `column`
+  still selects the searched stored vectors.
 - `column` defaults to `_embedding` (if a vectorized field exists) or the first declared `vector` field.
-  For `_embedding` (from `vectorize`), the embedding provider/identity must match the stored rows; for
-  caller-supplied `vector` fields, `column` simply selects the target vectors.
+  The query and stored vectors must come from the same embedding space. For `_embedding` (from
+  `vectorize`) this means the same provider/identity; for caller-supplied `vector` fields it means the
+  same model used for the stored and query vectors.
 - Each result has `_score`: cosine similarity, higher is closer, typically `0`–`1` for positive
   embeddings (mathematically `-1`–`1`).
 - `_embedding` is hidden from `SELECT *` and search results unless referenced explicitly or

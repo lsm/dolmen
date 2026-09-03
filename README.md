@@ -138,9 +138,9 @@ added as adapters without touching the API or MCP surface.
 
 - `query` is read-only: only `SELECT` or `WITH` statements are allowed, and only one statement at a time.
 - Bind all **values** with `?` placeholders and the `args` array. Identifiers and table names cannot be
-  bound with `?`, so write them directly from `list_tables`/`describe_table` and never let untrusted
-  input choose them. `query` only checks that the statement is read-only, not that the identifiers are
-  safe.
+  bound with `?`, so write them directly from `list_tables`/`describe_table` and treat them as an
+  allowlist, not user input. `query` only checks that the statement is read-only, not that the
+  identifiers are safe.
 - SQL string literals use single quotes (`'value'`). Escape a single quote by doubling it
   (`'can''t'`), or better, use a `?` placeholder.
 - Double quotes are for SQL identifiers, not string values.
@@ -149,8 +149,9 @@ added as adapters without touching the API or MCP surface.
 ### Full-text search (FTS5)
 
 Fields marked `fulltext: true` are indexed with a shadow SQLite FTS5 table. The default tokenizer is
-`unicode61`: case-insensitive, diacritic-insensitive, and it does **not** stem. Most punctuation,
-including hyphens, is a token boundary.
+`unicode61`: case-insensitive, diacritic-insensitive for most Latin characters (some non-Latin or
+multi-diacritic characters may not normalize), and it does **not** stem. Most punctuation, including
+hyphens, is a token boundary.
 
 `search_fulltext` takes a raw FTS5 `MATCH` expression in `query`. It is **not** SQL, so do not wrap
 the whole expression in single quotes.
@@ -183,13 +184,15 @@ negative — `rank` value and are returned first. The rank value itself is not i
 - `vector` fields store caller-supplied float arrays. Pass them as JSON number arrays; the server
   stores them as float32 blobs and returns them as `[]float64` in reads.
 - `vectorize: true` on one string/text field makes the server embed that field into the hidden
-  `_embedding` column. Only one field per table can be vectorized.
-- `search_vector` with `text` embeds the query text and compares it against the resolved vector
-  column. With `vector` you supply the array directly.
+  `_embedding` column. Only one field per table can be vectorized; only non-empty values are embedded,
+  so rows with `null`, empty strings, or missing values have `_embedding` NULL and are excluded from
+  vector search.
+- `search_vector` with `text` embeds the query `text` with the configured provider and compares it
+  against the resolved `column`. With `vector` you supply the query vector directly.
 - `column` is optional and defaults to `_embedding` if a vectorized field exists, otherwise the first
-  declared `vector` field. For `_embedding` (from `vectorize`), the embedding provider/identity must
-  match the stored rows; for caller-supplied `vector` fields, `column` simply selects the target
-  vectors.
+  declared `vector` field. The query and stored vectors must come from the same embedding space. For
+  `_embedding` (from `vectorize`) this means the same provider/identity; for caller-supplied `vector`
+  fields it means the same model used to produce the stored and query vectors.
 - Every vector result carries `_score`: cosine similarity, where higher is closer. For typical
   positive embeddings it ranges `0`–`1`; mathematically it ranges `-1`–`1`.
 - `_embedding` is hidden from `SELECT *` and search results unless you reference it explicitly in the
