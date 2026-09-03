@@ -106,11 +106,11 @@ The MCP server exposes the same ten operations as tools (`tools/list` shows them
 - **Read-only SQL** runs on a `mode=ro` connection with a SELECT/WITH allowlist — defense in depth.
 - **Typed reads** across `query`, `search_fulltext`, and `search_vector`: results honor declared field
   types — `boolean` → `true`/`false`, `json` → the decoded value, `vector` → a number array, `number` →
-  integer or float, SQL `NULL` → `null`. In raw SQL, coercion is resolved by column name across the
-  namespace's schemas; expression columns and names declared with conflicting types fall back to raw
-  values (blobs as base64). The hidden `_embedding` column (from `vectorize`) is stripped from
-  `SELECT *` and search results — reference it in the SQL or pass `include_hidden: true` to a search
-  to include it.
+  integer or float, SQL `NULL` → `null`. In raw SQL, coercion is by result-column label (aliases count
+  as their label); labels that match no declared field, or that different tables declare with
+  conflicting types, fall back to raw values (blobs as base64). The hidden `_embedding` column (from
+  `vectorize`) is stripped from `SELECT *` and search results — reference it in the SQL (outside string
+  literals and comments) or pass `include_hidden: true` to a search to include it.
 - **Embeddings** are pluggable: `none` (caller supplies vectors) or any OpenAI-compatible endpoint.
 - Namespaces are created implicitly on first use (one file per name); tables are not — call
   `create_table` before inserting. No other management surface to operate.

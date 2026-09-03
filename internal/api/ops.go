@@ -177,10 +177,12 @@ var Ops = map[string]OpDef{
 	"query": {
 		Description: "Run a read-only SQL statement (SELECT or WITH only) against one namespace. " +
 			"Use table and column names from list_tables/describe_table. Bind parameters with ? and pass args. " +
-			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array, " +
-			"number -> integer or float); expression columns with no declared type fall back to raw values (blobs as base64). " +
+			"Coercion to declared field types is by result-column label, so aliases count as their label: " +
+			"a label declared boolean reads true/false, json reads decoded, vector reads a number array, " +
+			"number reads integer or float. Labels that match no declared field, or that different tables " +
+			"declare with different types, fall back to raw values (blobs as base64). " +
 			"id and created_at are included in SELECT *; the hidden _embedding column is stripped from SELECT * — " +
-			"reference _embedding in the statement to include it.",
+			"reference _embedding in the statement (outside string literals/comments) to include it.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

@@ -104,9 +104,65 @@ func (p *projection) isHidden(col string) bool {
 	return p.hidden != nil && p.hidden[col]
 }
 
+// mentionsEmbedding reports whether a statement references the _embedding
+// identifier outside string literals and comments, so that hiding the column
+// is lifted only by an actual reference to it, not by a literal or comment
+// that happens to contain the name.
+func mentionsEmbedding(stmt string) bool {
+	var b strings.Builder
+	for i := 0; i < len(stmt); {
+		switch c := stmt[i]; c {
+		case '\'': // string literal; '' escapes a quote
+			i++
+			for i < len(stmt) {
+				if stmt[i] == '\'' {
+					if i+1 < len(stmt) && stmt[i+1] == '\'' {
+						i += 2
+						continue
+					}
+					i++
+					break
+				}
+				i++
+			}
+			b.WriteByte(' ')
+		case '-':
+			if i+1 < len(stmt) && stmt[i+1] == '-' { // line comment
+				for i < len(stmt) && stmt[i] != '\n' {
+					i++
+				}
+				b.WriteByte(' ')
+			} else {
+				b.WriteByte(c)
+				i++
+			}
+		case '/':
+			if i+1 < len(stmt) && stmt[i+1] == '*' { // block comment
+				i += 2
+				for i+1 < len(stmt) && !(stmt[i] == '*' && stmt[i+1] == '/') {
+					i++
+				}
+				i += 2
+				if i > len(stmt) {
+					i = len(stmt)
+				}
+				b.WriteByte(' ')
+			} else {
+				b.WriteByte(c)
+				i++
+			}
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	return embeddingMentionRe.MatchString(b.String())
+}
+
 // nsProjection builds the namespace-wide projection for a raw SQL statement.
-// Referencing _embedding anywhere in the statement opts the hidden column in;
-// otherwise it is stripped from results (e.g. from SELECT *).
+// Referencing _embedding in the statement (outside string literals and
+// comments) opts the hidden column in; otherwise it is stripped from results
+// (e.g. from SELECT *).
 func (s *Store) nsProjection(ctx context.Context, n *nsDB, statement string) (*projection, error) {
 	rows, err := n.ro.QueryContext(ctx, `SELECT schema_json FROM _dolmen_tables`)
 	if err != nil {
@@ -114,7 +170,7 @@ func (s *Store) nsProjection(ctx context.Context, n *nsDB, statement string) (*p
 	}
 	defer rows.Close()
 	p := newProjection()
-	if embeddingMentionRe.MatchString(statement) {
+	if mentionsEmbedding(statement) {
 		p.hidden = nil
 	}
 	for rows.Next() {

@@ -296,3 +296,67 @@ func TestJSONNumberPrecisionRoundTrip(t *testing.T) {
 		t.Fatalf("json integers must keep precision, got %T %v", rows[0]["j"], rows[0]["j"])
 	}
 }
+
+func TestMentionsEmbedding(t *testing.T) {
+	cases := []struct {
+		stmt string
+		want bool
+	}{
+		{"SELECT _embedding FROM notes", true},
+		{"select id, _EMBEDDING from notes", true},
+		{`SELECT * FROM notes WHERE "_embedding" IS NOT NULL`, true},
+		{"SELECT * FROM notes WHERE title = '_embedding'", false},
+		{"SELECT 'a''_embedding''b' AS x FROM notes", false},
+		{"SELECT * FROM notes -- _embedding", false},
+		{"SELECT * /* _embedding */ FROM notes", false},
+		{"SELECT * FROM notes WHERE title = 'x' OR body = '_embedding'", false},
+		{"SELECT 1 AS x_embedding FROM notes", false},
+	}
+	for _, tc := range cases {
+		if got := mentionsEmbedding(tc.stmt); got != tc.want {
+			t.Errorf("mentionsEmbedding(%q) = %v, want %v", tc.stmt, got, tc.want)
+		}
+	}
+}
+
+func TestQueryEmbeddingLiteralDoesNotOptIn(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{
+		{"title": "_embedding", "body": "a row literally named after the hidden column"},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, _, err := st.Query(ctx, "test", "SELECT * FROM notes WHERE title = '_embedding'", nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected the literal-titled row, got %d rows", len(rows))
+	}
+	if _, has := rows[0]["_embedding"]; has {
+		t.Fatal("a _embedding string literal must not opt the hidden column in")
+	}
+}
+
+func TestQueryAliasToDeclaredNameCoercesByLabel(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateTyped(t, st)
+	mustInsertTyped(t, st)
+
+	// Coercion is by result-column label: an expression aliased to a declared
+	// boolean field name takes that field's presentation, while values outside
+	// the boolean storage shape (0/1) stay raw.
+	rows, _, err := st.Query(ctx, "test", "SELECT 1 AS b, 2 AS b2 FROM typed", nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if rows[0]["b"] != true {
+		t.Fatalf("label b is declared boolean, so 1 must present as true, got %T %v", rows[0]["b"], rows[0]["b"])
+	}
+	if raw, ok := rows[0]["b2"].(int64); !ok || raw != 2 {
+		t.Fatalf("non-0/1 values must stay raw even under a boolean label, got %T %v", rows[0]["b2"], rows[0]["b2"])
+	}
+}
