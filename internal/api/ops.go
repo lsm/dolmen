@@ -505,7 +505,7 @@ var Ops = map[string]OpDef{
 	},
 	"search_fulltext": {
 		Description: "Full-text search over fields marked fulltext, using SQLite FTS5 MATCH syntax " +
-			"(e.g. \"payment\", \"'credit refund'\", \"status:ok AND retry\"). Returns matching records ordered by relevance (stable rowid tie-breaking). " +
+			"(e.g. \"payment\", \"credit refund\", \"status:ok AND retry\"). Returns matching records ordered by relevance (stable rowid tie-breaking). " +
 			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array) " +
 			"and omit the hidden _embedding column unless include_hidden is true.",
 		InputSchema: map[string]any{
