@@ -8,6 +8,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lsm/dolmen/internal/schema"
 )
@@ -1188,4 +1189,102 @@ func TestVacatedNameReuseEstimateTracksFieldIdentity(t *testing.T) {
 	if newA[0]["a"] != nil {
 		t.Fatalf("the re-added field must stay NULL on existing rows: %v", newA[0])
 	}
+}
+
+func TestPlanMigrationReportsProspectiveEmbeddingMetadata(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "pem", []schema.Field{
+		{Name: "s", Type: schema.Text, Vectorize: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "pem", []map[string]any{{"s": "hello"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	// Model switch: the preview must report the incoming space, not the one
+	// being replaced, with the dimension marked to-be-derived.
+	other := Embedder{Embed: fakeEmbed, Identity: "other-space"}
+	plan, err := st.PlanMigration(ctx, "test", "pem", []schema.Change{
+		{Op: schema.OpSetVectorize, Name: "s", Value: false},
+		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+	}, other, 1)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if plan.Table.EmbedSpace != "other-space" {
+		t.Fatalf("preview must carry the prospective embedding space, got %q", plan.Table.EmbedSpace)
+	}
+	if plan.Table.EmbedDim != 0 {
+		t.Fatalf("previewed dimension must be to-be-derived (0), got %d", plan.Table.EmbedDim)
+	}
+	if !plan.ClearsEmbeddings {
+		t.Fatal("model switch must plan clearing the old embeddings")
+	}
+	// The apply still re-baselines and derives the real dimension.
+	sc, err := st.Migrate(ctx, "test", "pem", []schema.Change{
+		{Op: schema.OpSetVectorize, Name: "s", Value: false},
+		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+	}, other, 1)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if sc.EmbedSpace != "other-space" || sc.EmbedDim == 0 {
+		t.Fatalf("apply must re-baseline space and derive dim: %+v", sc)
+	}
+}
+
+func TestPlanMigrationSeesOneSnapshotUnderConcurrentMigrations(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "snap", []schema.Field{
+		{Name: "a", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "snap", []map[string]any{{"a": "one"}, {"a": "two"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	// Flip the column name back and forth while dry-running a rename+vectorize
+	// plan against it: without a single-snapshot read every dry-run result is
+	// either a coherent plan or a version conflict — never a torn error such
+	// as "no such column".
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 40; i++ {
+			to := "b"
+			from := "a"
+			if i%2 == 1 {
+				from, to = "b", "a"
+			}
+			if _, err := st.Migrate(ctx, "test", "snap", []schema.Change{
+				{Op: schema.OpRenameField, From: from, To: to},
+			}, testEmbed, i+1); err != nil {
+				t.Errorf("concurrent apply: %v", err)
+				return
+			}
+		}
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-done:
+			return // enough overlap achieved
+		default:
+		}
+		_, err := st.PlanMigration(ctx, "test", "snap", []schema.Change{
+			{Op: schema.OpRenameField, From: "a", To: "b"},
+			{Op: schema.OpSetVectorize, Name: "b", Value: true},
+		}, testEmbed, 1)
+		if err == nil {
+			continue
+		}
+		var vce *VersionConflictError
+		if errors.As(err, &vce) {
+			continue // the table moved past version 1: a clean conflict
+		}
+		t.Fatalf("dry-run must fail with a version conflict, not a torn snapshot error: %v", err)
+	}
+	<-done
 }

@@ -112,7 +112,10 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 	if w.vectorizeChanged {
 		newVec := vectorizeField(cur.Fields)
 		if newVec != nil {
-			modelChanged := cur.EmbedSpace != "" && emb.Identity != "" && cur.EmbedSpace != emb.Identity
+			// The planner may have already re-baselined cur's embedding
+			// metadata to the prospective provider, so compare against the
+			// schema as it was before the migration.
+			modelChanged := old.EmbedSpace != "" && emb.Identity != "" && old.EmbedSpace != emb.Identity
 			if old.VectorizeField() != nil || modelChanged {
 				if _, err := tx.ExecContext(ctx,
 					fmt.Sprintf(`UPDATE %s SET "_embedding" = NULL`, q(table))); err != nil {
@@ -214,7 +217,10 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 
 // PlanMigration validates a change list and reports what applying it would do,
 // with zero side effects: it runs on the read-only connection, writes nothing,
-// and never calls the embedding provider. It applies the same
+// and never calls the embedding provider. The schema load, the version check,
+// and every planning query share one read transaction, so a concurrent
+// migration can never yield mixed estimates — the dry-run either sees the
+// version it expects or fails the precondition. It applies the same
 // expected_version precondition as Migrate so a stale plan fails the preview
 // instead of the apply.
 func (s *Store) PlanMigration(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expectedVersion int) (*MigrationPlan, error) {
@@ -225,14 +231,19 @@ func (s *Store) PlanMigration(ctx context.Context, nsName, table string, changes
 	if err != nil {
 		return nil, err
 	}
-	old, err := loadSchema(ctx, n.ro, nsName, table)
+	tx, err := n.ro.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	old, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
 		return nil, err
 	}
 	if err := checkExpectedVersion(nsName, table, expectedVersion, old); err != nil {
 		return nil, err
 	}
-	w, err := planMigration(ctx, n.ro, nsName, table, old, changes, emb, expectedVersion)
+	w, err := planMigration(ctx, tx, nsName, table, old, changes, emb, expectedVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -554,6 +565,13 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				}
 				plan.EmbedRows = n
 			}
+			// Prospective embedding metadata: apply re-baselines to the
+			// active provider and re-derives the dimension during backfill,
+			// so the previewed schema must not keep the old space (and a
+			// dimension the provider may not reproduce). EmbedDim 0 (omitted)
+			// marks the dimension as to-be-derived.
+			cur.EmbedSpace = emb.Identity
+			cur.EmbedDim = 0
 		} else if old.VectorizeField() != nil {
 			plan.ClearsEmbeddings = true
 		}
