@@ -36,20 +36,26 @@ type Server struct {
 // opens and initializes <namespace>.db), so they must not claim readOnlyHint
 // until that changes; infer_schema is pure and does. Ops that can send text to
 // a configured remote embedding provider (insert on vectorized fields,
-// search_vector by text, migrate when enabling vectorize) are open-world: the
-// client cannot know whether the deployment embeds locally. Text vector
-// searches reach the provider on every call, so search_vector is not
-// idempotent either.
+// search_vector by text, migrate when enabling vectorize, and the write ops
+// that re-embed) are open-world: the client cannot know whether the deployment
+// embeds locally. Text vector searches reach the provider on every call, so
+// search_vector is not idempotent either. Writes driven by an arbitrary SQL
+// WHERE filter (delete, update, upsert) are destructive and non-idempotent —
+// a non-deterministic filter walks new rows on retry — while upsert_by_key
+// converges on its declared natural key.
 var toolAnnotations = map[string]map[string]any{
 	"list_tables":     {"title": "List tables", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"describe_table":  {"title": "Describe table", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"create_table":    {"title": "Create table", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
 	"infer_schema":    {"title": "Infer schema", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"insert":          {"title": "Insert records", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
+	"upsert_by_key":   {"title": "Upsert by natural key", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true},
 	"query":           {"title": "Query", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"search_fulltext": {"title": "Full-text search", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"search_vector":   {"title": "Vector search", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
 	"delete":          {"title": "Delete rows", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false},
+	"update":          {"title": "Update rows", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
+	"upsert":          {"title": "Upsert by filter", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
 	"migrate":         {"title": "Migrate table", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
 }
 

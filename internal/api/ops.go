@@ -1,7 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 
@@ -211,7 +214,9 @@ var Ops = map[string]OpDef{
 	"insert": {
 		Description: "Insert one or more records (JSON objects) into a table. Unknown keys are rejected; " +
 			"missing required fields are rejected. Full-text and vector indexes update automatically; " +
-			"vectorized fields are embedded by the server.",
+			"vectorized fields are embedded by the server. Retried writes should pass idempotency_key: " +
+			"the key and its ids are recorded durably, so a retry with the same key and the same records " +
+			"returns the original ids (replayed=true, nothing re-inserted) instead of duplicating rows.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -225,6 +230,16 @@ var Ops = map[string]OpDef{
 					"minItems":    1,
 					"maxItems":    store.MaxRecordsPerInsert,
 				},
+				"idempotency_key": map[string]any{
+					"type":        "string",
+					"description": fmt.Sprintf("Unique client-chosen key that makes the insert safe to retry (replays return the original ids; reusing a key for different records is rejected). Printable ASCII, 1-%d bytes — maxLength and the server both count bytes, so use ASCII tokens (uuid/ulid/hash) rather than multi-byte characters", store.MaxIdempotencyKeyLen),
+					"minLength":   1,
+					"maxLength":   store.MaxIdempotencyKeyLen,
+					// JSON Schema maxLength counts characters; the store counts
+					// bytes. Restricting to printable ASCII makes the two
+					// identical, so schema-valid keys are always accepted.
+					"pattern": fmt.Sprintf(`^[ -~]{1,%d}$`, store.MaxIdempotencyKeyLen),
+				},
 			},
 			"required": []string{"namespace", "table", "records"},
 		},
@@ -235,6 +250,7 @@ var Ops = map[string]OpDef{
 				"items":       map[string]any{"type": "integer"},
 			},
 			"inserted": prop("integer", "Number of records inserted"),
+			"replayed": prop("boolean", "True when an idempotency_key replayed a previous insert (original ids returned, nothing re-inserted); present only for idempotent inserts"),
 		}, "ids", "inserted"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req insertReq
@@ -246,6 +262,28 @@ var Ops = map[string]OpDef{
 					return nil, badRequest("records[%d] must be an object, not null", i)
 				}
 			}
+			key := ""
+			if len(req.IdempotencyKey) > 0 {
+				var k string
+				if err := json.Unmarshal(req.IdempotencyKey, &k); err != nil || string(bytes.TrimSpace(req.IdempotencyKey)) == "null" {
+					return nil, badRequest("idempotency_key must be a string")
+				}
+				if k == "" {
+					return nil, badRequest("idempotency_key must not be empty — omit the field for a plain insert (an empty key would silently fall back to non-idempotent writes)")
+				}
+				key = k
+			}
+			if key != "" {
+				ids, replayed, err := s.st.InsertIdempotent(ctx, normNS(req.Namespace), normTable(req.Table), req.Records, s.embedder(), key)
+				if err != nil {
+					return nil, wrapStoreErr(err)
+				}
+				inserted := len(ids)
+				if replayed {
+					inserted = 0
+				}
+				return map[string]any{"ids": ids, "inserted": inserted, "replayed": replayed}, nil
+			}
 			ids, err := s.st.Insert(ctx, normNS(req.Namespace), normTable(req.Table), req.Records, s.embedder())
 			if err != nil {
 				return nil, wrapStoreErr(err)
@@ -253,10 +291,76 @@ var Ops = map[string]OpDef{
 			return map[string]any{"ids": ids, "inserted": len(ids)}, nil
 		},
 	},
+	"upsert_by_key": {
+		Description: "Insert or update records by natural key: for each record, when an existing row has the " +
+			"fields named in \"on\" equal to the record's values, that row is updated with the record's other " +
+			"fields (partial update — unspecified fields keep their values); otherwise the record is inserted " +
+			"and must satisfy required fields. Repeating the call converges instead of duplicating rows, so it " +
+			"is the retry-safe write path when the data carries its own identity (e.g. email, url, external id). " +
+			"Within a batch, later records update rows created by earlier ones with the same key. Key fields " +
+			"must be scalar (string, text, number, boolean, timestamp) and present, non-null, in every record.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace of the table"),
+				"table":     tableProp("Table name"),
+				"on": map[string]any{
+					"type":        "array",
+					"description": "Natural key: field name(s) whose values identify a row for update-vs-insert",
+					"items":       fieldNameProp("Key field name"),
+					"minItems":    1,
+					"maxItems":    store.MaxKeyFields,
+					"uniqueItems": true,
+				},
+				"records": map[string]any{
+					"type":        "array",
+					"description": "Records to insert or update (JSON objects keyed by field name)",
+					"items":       map[string]any{"type": "object"},
+					"minItems":    1,
+					"maxItems":    store.MaxRecordsPerInsert,
+				},
+			},
+			"required": []string{"namespace", "table", "on", "records"},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"ids": map[string]any{
+				"type":        "array",
+				"description": "Row ids after insert-or-update, in record order",
+				"items":       map[string]any{"type": "integer"},
+			},
+			"inserted": prop("integer", "Number of records inserted"),
+			"updated":  prop("integer", "Number of existing rows updated"),
+		}, "ids", "inserted", "updated"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req upsertReq
+			if err := decodeData(body, &req); err != nil {
+				return nil, err
+			}
+			for i, r := range req.Records {
+				if r == nil {
+					return nil, badRequest("records[%d] must be an object, not null", i)
+				}
+			}
+			if len(req.On) == 0 {
+				return nil, badRequest("on must name at least one key field")
+			}
+			ids, inserted, updated, err := s.st.UpsertByKey(ctx, normNS(req.Namespace), normTable(req.Table), req.On, req.Records, s.embedder())
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"ids": ids, "inserted": inserted, "updated": updated}, nil
+		},
+	},
 	"query": {
 		Description: "Run a read-only SQL statement (SELECT or WITH only) against one namespace. " +
 			"Use table and column names from list_tables/describe_table. Bind parameters with ? and pass args. " +
-			"Vector columns come back as base64 strings; id and created_at are included in SELECT *.",
+			"Coercion to declared field types is by result-column label, so aliases count as their label: " +
+			"a label declared boolean reads true/false, json reads decoded, vector reads a number array, " +
+			"number reads integer or float. Labels that match no declared field, or that different tables " +
+			"declare with different types, fall back to raw values (blobs as base64). " +
+			"id and created_at are included in SELECT *; the hidden _embedding column is stripped from SELECT * — " +
+			"reference _embedding in the statement (outside string literals/comments) to include it.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -287,7 +391,7 @@ var Ops = map[string]OpDef{
 		OutputSchema: outSchema(map[string]any{
 			"rows": map[string]any{
 				"type":        "array",
-				"description": "Rows keyed by column name; vector columns come back as base64 strings",
+				"description": "Rows keyed by column name; declared fields honor their types (vector columns read as number arrays, json fields decoded), undeclared labels fall back to raw values",
 				"items":       map[string]any{"type": "object", "description": "Row keyed by column name"},
 			},
 			"row_count": prop("integer", "Number of rows returned"),
@@ -307,7 +411,9 @@ var Ops = map[string]OpDef{
 	},
 	"search_fulltext": {
 		Description: "Full-text search over fields marked fulltext, using SQLite FTS5 MATCH syntax " +
-			"(e.g. \"payment\", \"'credit refund'\", \"status:ok AND retry\"). Returns matching records ordered by relevance.",
+			"(e.g. \"payment\", \"'credit refund'\", \"status:ok AND retry\"). Returns matching records ordered by relevance. " +
+			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array) " +
+			"and omit the hidden _embedding column unless include_hidden is true.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -326,6 +432,7 @@ var Ops = map[string]OpDef{
 					"minimum":     1,
 					"maximum":     200,
 				},
+				"include_hidden": prop("boolean", "Also return hidden internal columns (currently _embedding) in results"),
 			},
 			"required": []string{"namespace", "table", "query"},
 		},
@@ -345,7 +452,7 @@ var Ops = map[string]OpDef{
 			if req.Query == "" {
 				return nil, badRequest("query must not be empty")
 			}
-			results, truncated, err := s.st.SearchFulltext(ctx, normNS(req.Namespace), normTable(req.Table), req.Query, limit(req.Limit))
+			results, truncated, err := s.st.SearchFulltext(ctx, normNS(req.Namespace), normTable(req.Table), req.Query, limit(req.Limit), req.IncludeHidden)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -355,7 +462,9 @@ var Ops = map[string]OpDef{
 	"search_vector": {
 		Description: "Nearest-neighbor vector search. Pass text (the server embeds it) or a raw vector. " +
 			"column is optional: defaults to the auto-embedding of a vectorized field, else the first vector field. " +
-			"Results carry _score (cosine similarity, higher is closer).",
+			"Results carry _score (cosine similarity, higher is closer), honor declared field types " +
+			"(boolean -> true/false, json -> decoded value, vector -> number array), and omit the hidden " +
+			"_embedding column unless include_hidden is true.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -384,6 +493,7 @@ var Ops = map[string]OpDef{
 					"minimum":     1,
 					"maximum":     200,
 				},
+				"include_hidden": prop("boolean", "Also return hidden internal columns (currently _embedding) in results"),
 			},
 			"required": []string{"namespace", "table"},
 			"oneOf": []any{
@@ -453,7 +563,7 @@ var Ops = map[string]OpDef{
 				queryIdentity = s.emb.Identity()
 			}
 			results, truncated, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table),
-				strings.ToLower(strings.TrimSpace(req.Column)), vec, queryIdentity, limit(req.Limit))
+				strings.ToLower(strings.TrimSpace(req.Column)), vec, queryIdentity, limit(req.Limit), req.IncludeHidden)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -503,6 +613,117 @@ var Ops = map[string]OpDef{
 				return nil, wrapStoreErr(err)
 			}
 			return map[string]any{"deleted": deleted}, nil
+		},
+	},
+	"update": {
+		Description: "Update rows matching a SQL WHERE expression (e.g. \"status = 'done'\" or \"id IN (3, 7)\") " +
+			"by setting the given fields. Values are validated against the table schema; unknown fields are rejected; " +
+			"a null value clears a field (required fields cannot be cleared). All matched rows get the same values. " +
+			"Search indexes stay consistent: full-text rows are reindexed when an indexed field changes, and " +
+			"vectorized fields are re-embedded. The filter is required; pass \"1=1\" to update every row.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace of the table"),
+				"table":     tableProp("Table name"),
+				"filter": map[string]any{
+					"type":        "string",
+					"description": "SQL WHERE expression selecting rows to update",
+					"pattern":     `\S`,
+					"not":         map[string]any{"pattern": ";"},
+				},
+				"args": map[string]any{
+					"type":        "array",
+					"description": "Optional bind parameters for ? placeholders",
+					"items": map[string]any{
+						"anyOf": []any{
+							map[string]any{"type": "string"},
+							map[string]any{"type": "number"},
+							map[string]any{"type": "boolean"},
+							map[string]any{"type": "null"},
+						},
+					},
+				},
+				"set": map[string]any{
+					"type":          "object",
+					"description":   "Field values to set, keyed by field name (null clears a field)",
+					"minProperties": 1,
+				},
+			},
+			"required": []string{"namespace", "table", "filter", "set"},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"updated": prop("integer", "Number of rows updated"),
+		}, "updated"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req updateReq
+			if err := decodeData(body, &req); err != nil {
+				return nil, err
+			}
+			updated, err := s.st.Update(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args, req.Set, s.embedder())
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"updated": updated}, nil
+		},
+	},
+	"upsert": {
+		Description: "Update rows matching a SQL WHERE expression, or insert one record when no row matches. " +
+			"With matches it behaves exactly like update (all matched rows get the set values); with none it " +
+			"inserts set as a new record, which must then satisfy required fields. Returns inserted=true with " +
+			"the new id, or inserted=false with the updated row count.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace of the table"),
+				"table":     tableProp("Table name"),
+				"filter": map[string]any{
+					"type":        "string",
+					"description": "SQL WHERE expression selecting the row(s) to update; insert when it matches nothing",
+					"pattern":     `\S`,
+					"not":         map[string]any{"pattern": ";"},
+				},
+				"args": map[string]any{
+					"type":        "array",
+					"description": "Optional bind parameters for ? placeholders",
+					"items": map[string]any{
+						"anyOf": []any{
+							map[string]any{"type": "string"},
+							map[string]any{"type": "number"},
+							map[string]any{"type": "boolean"},
+							map[string]any{"type": "null"},
+						},
+					},
+				},
+				"set": map[string]any{
+					"type":          "object",
+					"description":   "Field values to apply, keyed by field name (used as the record when inserting; null clears a field)",
+					"minProperties": 1,
+				},
+			},
+			"required": []string{"namespace", "table", "filter", "set"},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"inserted": prop("boolean", "True when no row matched and a new record was inserted"),
+			"updated":  prop("integer", "Number of rows updated (0 when a record was inserted)"),
+			"id":       prop("integer", "Row id of the inserted record (present only when inserted is true)"),
+		}, "inserted", "updated"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req updateReq
+			if err := decodeData(body, &req); err != nil {
+				return nil, err
+			}
+			res, err := s.st.Upsert(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args, req.Set, s.embedder())
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			out := map[string]any{"inserted": res.Inserted, "updated": res.Updated}
+			if res.Inserted {
+				out["id"] = res.ID
+			}
+			return out, nil
 		},
 	},
 	"migrate": {
@@ -610,8 +831,16 @@ var Ops = map[string]OpDef{
 }
 
 type insertReq struct {
+	Namespace      string           `json:"namespace"`
+	Table          string           `json:"table"`
+	Records        []map[string]any `json:"records"`
+	IdempotencyKey json.RawMessage  `json:"idempotency_key"`
+}
+
+type upsertReq struct {
 	Namespace string           `json:"namespace"`
 	Table     string           `json:"table"`
+	On        []string         `json:"on"`
 	Records   []map[string]any `json:"records"`
 }
 
@@ -622,19 +851,21 @@ type queryReq struct {
 }
 
 type ftsReq struct {
-	Namespace string `json:"namespace"`
-	Table     string `json:"table"`
-	Query     string `json:"query"`
-	Limit     int    `json:"limit"`
+	Namespace     string `json:"namespace"`
+	Table         string `json:"table"`
+	Query         string `json:"query"`
+	Limit         int    `json:"limit"`
+	IncludeHidden bool   `json:"include_hidden"`
 }
 
 type vecReq struct {
-	Namespace string    `json:"namespace"`
-	Table     string    `json:"table"`
-	Column    string    `json:"column"`
-	Text      string    `json:"text"`
-	Vector    []float64 `json:"vector"`
-	Limit     int       `json:"limit"`
+	Namespace     string    `json:"namespace"`
+	Table         string    `json:"table"`
+	Column        string    `json:"column"`
+	Text          string    `json:"text"`
+	Vector        []float64 `json:"vector"`
+	Limit         int       `json:"limit"`
+	IncludeHidden bool      `json:"include_hidden"`
 }
 
 type deleteReq struct {
@@ -642,6 +873,14 @@ type deleteReq struct {
 	Table     string `json:"table"`
 	Filter    string `json:"filter"`
 	Args      []any  `json:"args"`
+}
+
+type updateReq struct {
+	Namespace string         `json:"namespace"`
+	Table     string         `json:"table"`
+	Filter    string         `json:"filter"`
+	Args      []any          `json:"args"`
+	Set       map[string]any `json:"set"`
 }
 
 type migrateReq struct {

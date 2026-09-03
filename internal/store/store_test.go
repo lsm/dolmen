@@ -146,6 +146,46 @@ func TestRequiredFieldsEmitNotNull(t *testing.T) {
 	}
 }
 
+func TestRowIdsNotReusedAfterDeleteAll(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+
+	first, err := st.Insert(ctx, "test", "notes", []map[string]any{
+		{"title": "one"},
+		{"title": "two"},
+	}, testEmbed)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if _, err := st.Delete(ctx, "test", "notes", "1=1", nil); err != nil {
+		t.Fatalf("delete all: %v", err)
+	}
+	second, err := st.Insert(ctx, "test", "notes", []map[string]any{
+		{"title": "three"},
+	}, testEmbed)
+	if err != nil {
+		t.Fatalf("reinsert: %v", err)
+	}
+
+	var maxFirst int64
+	seen := map[int64]bool{}
+	for _, id := range first {
+		seen[id] = true
+		if id > maxFirst {
+			maxFirst = id
+		}
+	}
+	for _, id := range second {
+		if seen[id] {
+			t.Fatalf("id %d was reused after delete-all; prior ids %v, new ids %v", id, first, second)
+		}
+		if id <= maxFirst {
+			t.Fatalf("id %d does not exceed the prior max id %d; ids must stay monotonic across delete-all", id, maxFirst)
+		}
+	}
+}
+
 func TestCreateTableTooManyFieldsRejected(t *testing.T) {
 	st := openStore(t)
 	fields := make([]schema.Field, MaxFieldsPerTable+1)

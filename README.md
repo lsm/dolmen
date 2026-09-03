@@ -69,6 +69,12 @@ curl -s localhost:8790/v1/search_vector -H 'Content-Type: application/json' -d '
 curl -s localhost:8790/v1/query -H 'Content-Type: application/json' -d '{
   "namespace": "myapp", "sql": "SELECT title, score FROM events WHERE score > ?", "args": [0.5]
 }'
+
+# update rows matching a WHERE filter (upsert inserts when nothing matches)
+curl -s localhost:8790/v1/update -H 'Content-Type: application/json' -d '{
+  "namespace": "myapp", "table": "events", "filter": "score < ?", "args": [0.5],
+  "set": {"score": 0.5, "title": "triaged bug"}
+}'
 ```
 
 ### MCP (agents)
@@ -77,7 +83,7 @@ curl -s localhost:8790/v1/query -H 'Content-Type: application/json' -d '{
 claude mcp add --transport http dolmen http://127.0.0.1:8790/mcp
 ```
 
-The MCP server exposes the same ten operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — alongside the JSON text block for older clients.
+The MCP server exposes the same thirteen operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — alongside the JSON text block for older clients.
 
 ## Tools
 
@@ -87,11 +93,14 @@ The MCP server exposes the same ten operations as tools (`tools/list` shows them
 | `describe_table` | Schema, version, row count |
 | `create_table` | Typed fields with `fulltext` / `vector` / `vectorize` annotations |
 | `infer_schema` | Propose fields from sample records (creates nothing) |
-| `insert` | Validated records; indexes and embeddings update automatically |
-| `query` | Read-only SQL (SELECT/WITH), parameter binding via `args` |
-| `search_fulltext` | FTS5 MATCH over `fulltext` fields, relevance-ordered |
-| `search_vector` | Cosine KNN over embeddings; pass `text` (server embeds) or `vector` |
+| `insert` | Validated records; indexes and embeddings update automatically; `idempotency_key` makes retries replay the original ids |
+| `upsert_by_key` | Insert-or-update keyed by natural field(s) (`on`); converges instead of duplicating on retry |
+| `query` | Read-only SQL (SELECT/WITH), parameter binding via `args`, typed results |
+| `search_fulltext` | FTS5 MATCH over `fulltext` fields, relevance-ordered, typed results |
+| `search_vector` | Cosine KNN over embeddings; pass `text` (server embeds) or `vector`; results carry `_score` |
 | `delete` | WHERE-filtered delete, cascades to search indexes |
+| `update` | WHERE-filtered field update; reindexes full-text rows and re-embeds changed vectorized fields |
+| `upsert` | Update matching rows, or insert one record when the filter matches nothing |
 | `migrate` | `add_field`, `rename_field`, `drop_field`, `set_fulltext`, `set_vectorize`; versioned + logged |
 
 ## Model
@@ -100,10 +109,22 @@ The MCP server exposes the same ten operations as tools (`tools/list` shows them
   shutting the server down cleanly first, then deleting the file (the server caches open connections
   and WAL sidecars, so deleting under a live server is unreliable). A small registry inside each file
   holds table schemas, versions, and a migration log.
-- **Full-text** via SQLite FTS5 shadow tables, maintained on insert/delete/migrate.
+- **Full-text** via SQLite FTS5 shadow tables, maintained on insert/update/delete/migrate.
+- **Idempotent writes** for agent retries: `insert` accepts an `idempotency_key` (client-chosen,
+  durably recorded with its ids in a side table, so a retry — even after a restart — returns the
+  original ids; reusing a key for different records is an error), and `upsert_by_key` writes
+  records keyed by a natural field set (`on`), updating the matched row partially or inserting
+  when nothing matches.
 - **Vectors** stored as float32 blobs; KNN is a brute-force cosine scan in Go — fine into the low
   millions of rows, zero index infrastructure. (This is the deliberate MVP trade.)
 - **Read-only SQL** runs on a `mode=ro` connection with a SELECT/WITH allowlist — defense in depth.
+- **Typed reads** across `query`, `search_fulltext`, and `search_vector`: results honor declared field
+  types — `boolean` → `true`/`false`, `json` → the decoded value, `vector` → a number array, `number` →
+  integer or float, SQL `NULL` → `null`. In raw SQL, coercion is by result-column label (aliases count
+  as their label); labels that match no declared field, or that different tables declare with
+  conflicting types, fall back to raw values (blobs as base64). The hidden `_embedding` column (from
+  `vectorize`) is stripped from `SELECT *` and search results — reference it in the SQL (outside string
+  literals and comments) or pass `include_hidden: true` to a search to include it.
 - **Embeddings** are pluggable: `none` (caller supplies vectors) or any OpenAI-compatible endpoint.
 - Namespaces are created implicitly on first use (one file per name); tables are not — call
   `create_table` before inserting. No other management surface to operate.

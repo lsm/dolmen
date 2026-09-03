@@ -127,6 +127,14 @@ var registryDDL = []string{
 		changes_json TEXT NOT NULL,
 		at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 	)`,
+	`CREATE TABLE IF NOT EXISTS _dolmen_idempotency(
+		table_name TEXT NOT NULL,
+		key TEXT NOT NULL,
+		payload_hash TEXT NOT NULL,
+		ids_json TEXT NOT NULL,
+		at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+		PRIMARY KEY(table_name, key)
+	)`,
 }
 
 func dsn(path string, readonly bool) string {
@@ -138,6 +146,14 @@ func dsn(path string, readonly bool) string {
 	} else {
 		q.Add("_pragma", "journal_mode(WAL)")
 		q.Add("_pragma", "synchronous(NORMAL)")
+		// Writes take the lock at BEGIN, not at the first write: with a
+		// deferred transaction, a writer in another process that commits
+		// between our reads and our first write fails with SQLITE_BUSY_SNAPSHOT
+		// (not retried by busy_timeout). Immediate locking serializes writers
+		// up front, so read-then-write plans — like an idempotent insert's
+		// key lookup followed by its row inserts — see a stable snapshot and
+		// cross-process retries dedupe instead of erroring.
+		q.Add("_txlock", "immediate")
 	}
 	u.RawQuery = q.Encode()
 	return u.String()
@@ -284,7 +300,10 @@ func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []
 
 func tableDDL(table string, fields []schema.Field) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf(`CREATE TABLE %s (id INTEGER PRIMARY KEY, created_at TEXT NOT NULL DEFAULT (strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ','now'))`, q(table)))
+	// AUTOINCREMENT keeps ids monotonic and never reused: without it SQLite
+	// assigns max(id)+1, so deleting every row lets fresh rows collide with
+	// ids agents may still be keying off.
+	sb.WriteString(fmt.Sprintf(`CREATE TABLE %s (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL DEFAULT (strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ','now'))`, q(table)))
 	for _, f := range fields {
 		sb.WriteString(fmt.Sprintf(`, %s %s`, q(f.Name), schema.SQLType(f)))
 		if f.Required {
