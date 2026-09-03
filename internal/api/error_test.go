@@ -122,7 +122,7 @@ func TestErrorEnvelopeConflict(t *testing.T) {
 
 	body := map[string]any{
 		"namespace": "app", "table": "users",
-		"records":         []map[string]any{{"email": "a@example.com", "plan": "free"}},
+		"records":         []map[string]any{{"email": "a@example.com", "plan_name": "free"}},
 		"idempotency_key": "retry-safe-1",
 	}
 	code, res := post(t, srv.URL, "insert", body)
@@ -130,7 +130,7 @@ func TestErrorEnvelopeConflict(t *testing.T) {
 		t.Fatalf("first insert failed: %d %v", code, res)
 	}
 
-	body["records"] = []map[string]any{{"email": "b@example.com", "plan": "pro"}}
+	body["records"] = []map[string]any{{"email": "b@example.com", "plan_name": "pro"}}
 	code, res = post(t, srv.URL, "insert", body)
 	if code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d %v", code, res)
@@ -204,7 +204,7 @@ func TestErrorEnvelopeQueryErrorForMalformedFilter(t *testing.T) {
 		"namespace": "app",
 		"table":     "users",
 		"filter":    "id =",
-		"set":       map[string]any{"plan": "pro"},
+		"set":       map[string]any{"plan_name": "pro"},
 	})
 	if code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d %v", code, body)
@@ -283,4 +283,3 @@ func TestErrorEnvelopeOmitsRequestIDWhenNotProvided(t *testing.T) {
 		t.Fatalf("request_id should be omitted when not provided, got %v", errObj)
 	}
 }
-

@@ -109,6 +109,32 @@ func TestMCPUpdateUpsertTools(t *testing.T) {
 	}
 }
 
+func TestInitializeIncludesInstructions(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	code, res := rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "test-client", "version": "1.0"},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("initialize status %d", code)
+	}
+	result := res["result"].(map[string]any)
+	instructions, ok := result["instructions"].(string)
+	if !ok || instructions == "" {
+		t.Fatalf("initialize result must contain a non-empty instructions string, got %v", result["instructions"])
+	}
+	if !strings.Contains(instructions, "/skills") {
+		t.Fatalf("instructions must point at /skills manifest, got %q", instructions)
+	}
+	if !strings.Contains(instructions, "/mcp") {
+		t.Fatalf("instructions must mention the MCP endpoint, got %q", instructions)
+	}
+}
+
 func TestMCPProtocol(t *testing.T) {
 	url := newMCPServer(t).URL + "/mcp"
 

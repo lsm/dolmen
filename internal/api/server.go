@@ -19,15 +19,39 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 	"github.com/lsm/dolmen/internal/version"
+	"github.com/lsm/dolmen/skill"
 )
 
 type Server struct {
-	st  *store.Store
-	emb embed.Provider
+	st            *store.Store
+	emb           embed.Provider
+	baseURL       string
+	namespaceHint string
 }
 
-func New(st *store.Store, emb embed.Provider) *Server {
-	return &Server{st: st, emb: emb}
+// Option customizes a Server.
+type Option func(*Server)
+
+// WithBaseURL sets a configured public base URL. If empty, the request Host is used.
+func WithBaseURL(u string) Option {
+	return func(s *Server) {
+		s.baseURL = strings.TrimRight(u, "/")
+	}
+}
+
+// WithNamespaceHint sets the namespace guidance rendered into skills.
+func WithNamespaceHint(h string) Option {
+	return func(s *Server) {
+		s.namespaceHint = h
+	}
+}
+
+func New(st *store.Store, emb embed.Provider, opts ...Option) *Server {
+	s := &Server{st: st, emb: emb}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 type OpDef struct {
@@ -383,6 +407,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"name": "dolmen", "version": version.Version})
 	})
+	mux.HandleFunc("/skills", s.handleSkillsManifest)
+	mux.HandleFunc("/skills/", s.handleSkill)
 	mux.HandleFunc("/v1/openapi.json", s.handleOpenAPI)
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
 		op := strings.TrimPrefix(r.URL.Path, "/v1/")
@@ -422,6 +448,78 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": res})
 	})
 	return mux
+}
+
+func (s *Server) handleSkillsManifest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeError(w, r, &Error{Status: http.StatusMethodNotAllowed, Code: ErrCodeInvalid, Message: "use GET"})
+		return
+	}
+	ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version)
+	manifest, err := skill.ManifestJSON(ctx)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	s.serveSkillBytes(w, r, manifest, "manifest", "application/json")
+}
+
+func (s *Server) handleSkill(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeError(w, r, &Error{Status: http.StatusMethodNotAllowed, Code: ErrCodeInvalid, Message: "use GET"})
+		return
+	}
+	name := strings.TrimPrefix(r.URL.Path, "/skills/")
+	if name == "" || strings.Contains(name, "/") {
+		writeError(w, r, notFound("unknown skill %q", name))
+		return
+	}
+	ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version)
+	body, err := skill.Render(name, ctx)
+	if err != nil {
+		if errors.Is(err, skill.ErrNotFound) {
+			writeError(w, r, notFound("unknown skill %q", name))
+		} else {
+			writeError(w, r, err)
+		}
+		return
+	}
+	s.serveSkillBytes(w, r, body, name, "text/markdown; charset=utf-8")
+}
+
+func (s *Server) serveSkillBytes(w http.ResponseWriter, r *http.Request, body []byte, name, contentType string) {
+	etag := skill.ETag(name, version.Version, body)
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Content-Type", contentType)
+	if etagMatch(r, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+func etagMatch(r *http.Request, etag string) bool {
+	in := r.Header.Get("If-None-Match")
+	if in == "" {
+		return false
+	}
+	want := strings.Trim(etag, "\"")
+	for _, p := range strings.Split(in, ",") {
+		p = strings.TrimSpace(p)
+		if p == "*" || strings.Trim(p, "\"") == "*" {
+			return true
+		}
+		if strings.HasPrefix(p, "W/") {
+			p = p[2:]
+		}
+		if strings.Trim(p, "\"") == want {
+			return true
+		}
+	}
+	return false
 }
 
 func writeError(w http.ResponseWriter, r *http.Request, err error) {

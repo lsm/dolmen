@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/lsm/dolmen/internal/version"
+	"github.com/lsm/dolmen/skill"
 )
 
 func TestVersionFlagPrintsInjectedVersion(t *testing.T) {
@@ -44,10 +45,11 @@ func TestLoadConfig(t *testing.T) {
 			args: []string{},
 			env:  map[string]string{},
 			want: &config{
-				Addr:           "127.0.0.1:8790",
-				DataDir:        "data",
-				AllowedOrigins: nil,
-				Embed:          embedConfig{Provider: "none"},
+				Addr:               "127.0.0.1:8790",
+				DataDir:            "data",
+				AllowedOrigins:     nil,
+				Embed:              embedConfig{Provider: "none"},
+				SkillNamespaceHint: skill.DefaultNamespaceHint,
 			},
 		},
 		{
@@ -55,10 +57,11 @@ func TestLoadConfig(t *testing.T) {
 			args: []string{"-addr", ":8080", "-data", "/tmp/data"},
 			env:  map[string]string{"DOLMEN_ADDR": ":9999", "DOLMEN_DATA": "/wrong"},
 			want: &config{
-				Addr:           ":8080",
-				DataDir:        "/tmp/data",
-				AllowedOrigins: nil,
-				Embed:          embedConfig{Provider: "none"},
+				Addr:               ":8080",
+				DataDir:            "/tmp/data",
+				AllowedOrigins:     nil,
+				Embed:              embedConfig{Provider: "none"},
+				SkillNamespaceHint: skill.DefaultNamespaceHint,
 			},
 		},
 		{
@@ -83,6 +86,7 @@ func TestLoadConfig(t *testing.T) {
 					Model:    "nomic-embed-text",
 					APIKey:   "secret",
 				},
+				SkillNamespaceHint: skill.DefaultNamespaceHint,
 			},
 		},
 		{
@@ -99,6 +103,7 @@ func TestLoadConfig(t *testing.T) {
 					Provider: "openai",
 					APIKey:   "fallback",
 				},
+				SkillNamespaceHint: skill.DefaultNamespaceHint,
 			},
 		},
 		{
@@ -116,6 +121,7 @@ func TestLoadConfig(t *testing.T) {
 					Provider: "openai",
 					APIKey:   "",
 				},
+				SkillNamespaceHint: skill.DefaultNamespaceHint,
 			},
 		},
 		{

@@ -1,53 +1,33 @@
 ---
-name: dolmen
-description: Persistent structured storage for this agent — tables with schema, full-text search, and vector search via a Dolmen server. Use whenever the task needs durable data across sessions: findings, memory, metrics, logs, or recall of earlier work. Not for ephemeral state.
+name: dolmen-admin
+description: Developer skill for Dolmen — schema inference, table creation, and migrations over the same durable storage tools. Use this when the task may design or evolve tables.
 ---
 
 # Dolmen — durable agent data
 
-A Dolmen server exposes eighteen tools over MCP. Everything lives in namespaces (isolated databases);
-pick one namespace per project or user and stay in it.
+> This is the `dolmen-admin` skill. It contains everything in the `dolmen` (core) skill and adds the tools needed to design and evolve tables: `infer_schema`, `create_table`, and `migrate`. If you only need to query, insert, search, and delete against existing tables, use the `dolmen` skill instead ({{ .BaseURL }}/skills/dolmen).
+
+A Dolmen server exposes eighteen tools over MCP. Everything lives in namespaces (isolated databases).
+
+{{ .NamespaceHint }}
 
 ## Setup
 
-### Run a server
-
-The binary is at `github.com/lsm/dolmen`. Build and start it from a Dolmen checkout:
-
-```bash
-git clone https://github.com/lsm/dolmen.git
-cd dolmen
-CGO_ENABLED=0 go build -o dolmen .
-./dolmen -addr 127.0.0.1:8790 -data ./data
-```
-
-On Windows (PowerShell):
-
-```powershell
-git clone https://github.com/lsm/dolmen.git
-cd dolmen
-$env:CGO_ENABLED = 0
-go build -o dolmen.exe .
-.\dolmen.exe -addr 127.0.0.1:8790 -data ./data
-```
-
-By default it listens on `127.0.0.1:8790` with no authentication, so keep it on a private
-interface. On Unix the data directory is opened with owner-only permissions (`0700` for the
- directory, `0600` for files); on Windows use NTFS ACLs for owner-only isolation.
+The running server is at `{{ .BaseURL }}` and the MCP endpoint is `{{ .MCPURL }}`. This skill matches server version `{{ .Version }}`.
 
 ### Health check
 
-Bash (honors `DOLMEN_URL` when set; a trailing slash is trimmed):
+Bash:
 
 ```bash
-base="${DOLMEN_URL:-http://127.0.0.1:8790}"
+base="{{ .BaseURL }}"
 curl -s "${base%/}/healthz"
 ```
 
-Windows PowerShell (use `curl.exe` because `curl` is an alias for `Invoke-WebRequest`):
+Windows PowerShell:
 
 ```powershell
-$base = if ($env:DOLMEN_URL) { $env:DOLMEN_URL } else { "http://127.0.0.1:8790" }
+$base = "{{ .BaseURL }}"
 curl.exe -s "$($base.TrimEnd('/'))/healthz"
 ```
 
@@ -60,21 +40,17 @@ Add the MCP server to Claude:
 Bash:
 
 ```bash
-base="${DOLMEN_URL:-http://127.0.0.1:8790}"
-claude mcp add --transport http dolmen "${base%/}/mcp"
+claude mcp add --transport http dolmen "{{ .MCPURL }}"
 ```
 
 Windows PowerShell:
 
 ```powershell
-$base = if ($env:DOLMEN_URL) { $env:DOLMEN_URL } else { "http://127.0.0.1:8790" }
-claude mcp add --transport http dolmen "$($base.TrimEnd('/'))/mcp"
+claude mcp add --transport http dolmen "{{ .MCPURL }}"
 ```
 
 The `dolmen` tools then appear in `tools/list` with full input schemas. The endpoint can also be
-read from the environment: `DOLMEN_URL` (default `http://127.0.0.1:8790`).
-
-If your workspace supports project skills, copy this file to `.claude/skills/dolmen/SKILL.md`.
+read from the environment: `DOLMEN_URL` (default `{{ .BaseURL }}`).
 
 If the `dolmen` MCP tools are not connected, do not improvise — ask the user to re-run the
 connection command above.

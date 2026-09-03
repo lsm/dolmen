@@ -15,6 +15,7 @@ import (
 
 	"github.com/lsm/dolmen/internal/api"
 	"github.com/lsm/dolmen/internal/version"
+	"github.com/lsm/dolmen/skill"
 )
 
 const (
@@ -27,8 +28,10 @@ const (
 )
 
 type Server struct {
-	api     *api.Server
-	origins map[string]bool
+	api           *api.Server
+	origins       map[string]bool
+	baseURL       string
+	namespaceHint string
 }
 
 // toolAnnotations carries the MCP annotations (client-side UI hints) for each
@@ -68,12 +71,33 @@ var toolAnnotations = map[string]map[string]any{
 	"list_migrations": {"title": "List migrations", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 }
 
-func New(a *api.Server, extraOrigins []string) *Server {
+// Option customizes an MCP Server.
+type Option func(*Server)
+
+// WithBaseURL sets the configured public base URL for initialize instructions.
+func WithBaseURL(u string) Option {
+	return func(s *Server) {
+		s.baseURL = strings.TrimRight(u, "/")
+	}
+}
+
+// WithNamespaceHint sets the namespace guidance included in initialize instructions.
+func WithNamespaceHint(h string) Option {
+	return func(s *Server) {
+		s.namespaceHint = h
+	}
+}
+
+func New(a *api.Server, extraOrigins []string, opts ...Option) *Server {
 	origins := map[string]bool{}
 	for _, o := range extraOrigins {
 		origins[strings.ToLower(strings.TrimRight(strings.TrimSpace(o), "/"))] = true
 	}
-	return &Server{api: a, origins: origins}
+	s := &Server{api: a, origins: origins}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 type rpcMessage struct {
@@ -163,7 +187,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	result, rpcErr := s.handle(r.Context(), msg)
+	result, rpcErr := s.handle(r.Context(), msg, r)
 	if rpcErr != nil {
 		writeRPCError(w, msg.ID, rpcErr.Code, rpcErr.Message)
 		return
@@ -176,7 +200,7 @@ type rpcErr struct {
 	Message string
 }
 
-func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
+func (s *Server) handle(ctx context.Context, msg rpcMessage, r *http.Request) (any, *rpcErr) {
 	switch msg.Method {
 	case "initialize":
 		var params struct {
@@ -219,10 +243,12 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		if params.ProtocolVersion == protocolVersion {
 			pv = params.ProtocolVersion
 		}
+		ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version)
 		return map[string]any{
 			"protocolVersion": pv,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
 			"serverInfo":      map[string]any{"name": serverName, "version": version.Version},
+			"instructions":    skill.MCPInstructions(ctx),
 		}, nil
 	case "ping":
 		if _, e := ensureObjectParams(msg.Params, "ping"); e != nil {
