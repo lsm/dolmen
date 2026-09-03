@@ -1,7 +1,10 @@
 package skill
 
 import (
+	"crypto/tls"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -132,5 +135,54 @@ func TestETagIsVersionDerivedAndStable(t *testing.T) {
 	}
 	if ETag("dolmen", "v0.2.0", body) == ETag("dolmen", "v0.2.0", []byte("different")) {
 		t.Fatal("ETag must differ by body")
+	}
+}
+
+func TestBaseURLForParsesForwardedHeaderChains(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		host            string
+		xForwardedProto string
+		xForwardedHost  string
+		want            string
+	}{
+		{
+			name:            "single forwarded proto and host",
+			host:            "127.0.0.1:8080",
+			xForwardedProto: "https",
+			xForwardedHost:  "public.example.com",
+			want:            "https://public.example.com",
+		},
+		{
+			name:            "multi-hop proto and host chain",
+			host:            "127.0.0.1:8080",
+			xForwardedProto: "https, http",
+			xForwardedHost:  "public.example.com, internal.example.com",
+			want:            "https://public.example.com",
+		},
+		{
+			name:            "tls fallback when no forwarded proto",
+			host:            "example.com",
+			xForwardedProto: "",
+			xForwardedHost:  "",
+			want:            "https://example.com",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/skills", nil)
+			r.Host = tc.host
+			if tc.xForwardedProto != "" {
+				r.Header.Set("X-Forwarded-Proto", tc.xForwardedProto)
+			}
+			if tc.xForwardedHost != "" {
+				r.Header.Set("X-Forwarded-Host", tc.xForwardedHost)
+			}
+			if tc.name == "tls fallback when no forwarded proto" {
+				r.TLS = &tls.ConnectionState{}
+			}
+			if got := BaseURLFor(r, ""); got != tc.want {
+				t.Fatalf("BaseURLFor: got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

@@ -155,6 +155,10 @@ func ETag(name, version string, body []byte) string {
 
 // BaseURLFor resolves the public base URL from the configured value, falling
 // back to the request's scheme and host. It trims any trailing slash.
+//
+// Forwarded headers are parsed as comma-separated hop chains; the first
+// (client-facing) value is used so the generated public URL reflects what the
+// outermost trusted proxy saw, rather than a concatenation of every hop.
 func BaseURLFor(r *http.Request, configured string) string {
 	if configured != "" {
 		return strings.TrimRight(configured, "/")
@@ -164,13 +168,25 @@ func BaseURLFor(r *http.Request, configured string) string {
 		scheme = "https"
 	}
 	if p := r.Header.Get("X-Forwarded-Proto"); p != "" {
-		scheme = p
+		scheme = forwardedFirst(p)
 	}
 	host := r.Host
 	if h := r.Header.Get("X-Forwarded-Host"); h != "" {
-		host = h
+		host = forwardedFirst(h)
 	}
 	return scheme + "://" + host
+}
+
+// forwardedFirst returns the first non-empty, trimmed value in a
+// comma-separated header chain (e.g. X-Forwarded-Proto or X-Forwarded-Host).
+func forwardedFirst(v string) string {
+	for _, p := range strings.Split(v, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			return p
+		}
+	}
+	return v
 }
 
 // ContextFor builds a full render context from a request and configuration.
