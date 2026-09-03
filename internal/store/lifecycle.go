@@ -35,16 +35,36 @@ func (s *Store) ListNamespaces() ([]string, error) {
 // CreateNamespace creates an empty namespace — its SQLite file plus registry
 // tables — up front. Namespaces are otherwise created implicitly on first use;
 // this exists so callers can reserve a name deliberately, and it fails when
-// the namespace already exists.
+// the namespace already exists. Reservation is atomic (O_EXCL): exactly one
+// concurrent or cross-process caller wins the name.
 func (s *Store) CreateNamespace(nsName string) error {
 	if err := validateNS(nsName); err != nil {
 		return err
 	}
-	if _, err := os.Stat(s.nsPath(nsName)); err == nil {
-		return invalidf("namespace %s already exists", nsName)
+	path := s.nsPath(nsName)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return invalidf("namespace %s already exists", nsName)
+		}
+		return err
 	}
-	_, err := s.ns(nsName)
-	return err
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	// A cached entry here is stale (its file was removed out-of-band); evict
+	// it so ns() initializes the fresh file instead of serving dead pools.
+	s.mu.Lock()
+	s.evict(nsName)
+	s.mu.Unlock()
+	if _, err := s.ns(nsName); err != nil {
+		// Un-reserve so a failed init doesn't wedge the name behind a
+		// zero-byte file.
+		_ = os.Remove(path)
+		return err
+	}
+	return nil
 }
 
 // DropNamespace removes a namespace and every table in it: cached connections
@@ -66,20 +86,18 @@ func (s *Store) DropNamespace(nsName string) error {
 	defer s.mu.Unlock()
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
-			// Evict any stale cache entry too (its file was removed out-of-band).
-			delete(s.nss, nsName)
+			// The file was removed out-of-band (or never existed): close the
+			// stale cached pools rather than orphaning them — Close() only
+			// reaches entries still in the map.
+			s.evict(nsName)
 			return fmt.Errorf("%w: namespace %s", ErrNotFound, nsName)
 		}
 		return err
 	}
-	if n, ok := s.nss[nsName]; ok {
-		// ro first: the rw connection is the one that checkpoints and clears
-		// the WAL on its final close. Close errors are advisory here — the
-		// file removal below is the outcome that matters.
-		_ = n.ro.Close()
-		_ = n.rw.Close()
-		delete(s.nss, nsName)
-	}
+	// ro first: the rw connection is the one that checkpoints and clears the
+	// WAL on its final close. Close errors are advisory here — the file
+	// removal below is the outcome that matters.
+	s.evict(nsName)
 	for _, p := range []string{path, path + "-wal", path + "-shm"} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("drop namespace %s: %w", nsName, err)
@@ -125,7 +143,25 @@ func (s *Store) DropTable(ctx context.Context, nsName, table string) error {
 			return err
 		}
 	}
+	// Bumped inside the transaction: write transactions serialize on the
+	// namespace's single rw connection, so any writer that can observe the
+	// drop's effects also observes the bump, and must retry against the
+	// recreated-or-absent table instead of committing a stale plan into a
+	// same-named successor.
+	n.gen.Add(1)
 	return tx.Commit()
+}
+
+// evict closes a namespace's cached pools and removes them from the cache.
+// Callers must hold s.mu. ro closes before rw so rw's final close is the one
+// that checkpoints the WAL. Close errors are advisory — the caller is
+// discarding the namespace either way.
+func (s *Store) evict(name string) {
+	if n, ok := s.nss[name]; ok {
+		_ = n.ro.Close()
+		_ = n.rw.Close()
+		delete(s.nss, name)
+	}
 }
 
 func validateNS(name string) error {

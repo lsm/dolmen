@@ -125,6 +125,12 @@ func lookupIdem(ctx context.Context, db rowQuerier, table, key, wantHash string)
 }
 
 func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, idemHash string) (ids []int64, replayed bool, done bool, err error) {
+	// Capture the drop generation before the schema read: a drop_table landing
+	// during the embedding pause below bumps it, so the in-transaction
+	// re-check retries instead of committing into a same-named recreated
+	// table (recreation resets the version to 1, which the version compare
+	// alone cannot distinguish from a never-migrated original).
+	gen := n.gen.Load()
 	sc, err := loadSchema(ctx, n.rw, nsName, table)
 	if err != nil {
 		return nil, false, true, err
@@ -214,7 +220,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	if err != nil {
 		return nil, false, true, err
 	}
-	if scTx.Version != sc.Version || scTx.EmbedSpace != origEmbedSpace || scTx.EmbedDim != origEmbedDim {
+	if scTx.Version != sc.Version || scTx.EmbedSpace != origEmbedSpace || scTx.EmbedDim != origEmbedDim || n.gen.Load() != gen {
 		return nil, false, false, nil
 	}
 

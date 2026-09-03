@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/lsm/dolmen/internal/schema"
 
@@ -37,6 +38,13 @@ type Store struct {
 type nsDB struct {
 	rw *sql.DB
 	ro *sql.DB
+	// gen is the drop generation: drop_table bumps it inside its transaction.
+	// Writers that pause between their schema read and their write
+	// transaction (embedding) capture it up front and re-check it in the
+	// transaction — a drop + recreate resets the schema version to 1, so the
+	// version compare alone cannot stop a stale write landing in a
+	// same-named successor table.
+	gen atomic.Uint64
 }
 
 func Open(dir string) (*Store, error) {

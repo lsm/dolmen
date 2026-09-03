@@ -265,3 +265,182 @@ func TestDropTableRemovesSearch(t *testing.T) {
 		t.Fatalf("search on dropped table must 404, got %v", err)
 	}
 }
+
+// pausingEmbedder returns an embedder whose first call blocks until released
+// (letting a test drop + recreate the table mid-embed), then behaves like
+// fakeEmbed for this and all later calls — as the insert retry loop requires.
+func pausingEmbedder() (Embedder, func(), func()) {
+	paused := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	return Embedder{
+		Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+			once.Do(func() { close(paused); <-release })
+			return fakeEmbed(ctx, texts)
+		},
+		Identity: "fake-space",
+	}, func() { <-paused }, func() { close(release) }
+}
+
+// recreatedFields is noteFields with score flipped from number to boolean: a
+// recreate under the same name and version that a stale write must not accept
+// (0.9 coerces cleanly against the old number field, not the new boolean one).
+func recreatedFields() []schema.Field {
+	f := noteFields()
+	for i := range f {
+		if f[i].Name == "score" {
+			f[i].Type = schema.Boolean
+		}
+	}
+	return f
+}
+
+func TestDropTableDuringInsertEmbedPause(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+
+	emb, waitPaused, release := pausingEmbedder()
+	type outcome struct {
+		ids []int64
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		ids, err := st.Insert(ctx, "test", "notes", []map[string]any{
+			{"title": "stale", "body": "validated against the dead schema", "score": 0.9},
+		}, emb)
+		done <- outcome{ids, err}
+	}()
+
+	// The insert has read the schema and is mid-embed: drop and recreate the
+	// table under the same name, same version, different field types.
+	waitPaused()
+	if err := st.DropTable(ctx, "test", "notes"); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	if _, err := st.CreateTable(ctx, "test", "notes", recreatedFields()); err != nil {
+		t.Fatalf("recreate: %v", err)
+	}
+	release()
+
+	// The stale attempt must be discarded, not committed: the retry
+	// re-validates against the recreated table and rejects the record.
+	out := <-done
+	if out.err == nil {
+		t.Fatalf("stale insert must not commit into the recreated table, got ids %v", out.ids)
+	}
+	if !errors.Is(out.err, ErrInvalid) {
+		t.Fatalf("expected ErrInvalid from re-validation against the recreated table, got %v", out.err)
+	}
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if rows[0]["n"].(int64) != 0 {
+		t.Fatalf("recreated table must stay empty, got %v", rows)
+	}
+	sc, _, err := st.DescribeTable(ctx, "test", "notes")
+	if err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	if f := sc.Field("score"); f == nil || f.Type != schema.Boolean {
+		t.Fatalf("recreated table must keep its own schema, got %v", sc.Fields)
+	}
+}
+
+func TestDropTableDuringUpsertByKeyEmbedPause(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+
+	emb, waitPaused, release := pausingEmbedder()
+	type outcome struct {
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		_, _, _, err := st.UpsertByKey(ctx, "test", "notes", []string{"title"}, []map[string]any{
+			{"title": "stale", "body": "validated against the dead schema", "score": 0.9},
+		}, emb)
+		done <- outcome{err}
+	}()
+
+	waitPaused()
+	if err := st.DropTable(ctx, "test", "notes"); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	if _, err := st.CreateTable(ctx, "test", "notes", recreatedFields()); err != nil {
+		t.Fatalf("recreate: %v", err)
+	}
+	release()
+
+	out := <-done
+	if out.err == nil || !errors.Is(out.err, ErrInvalid) {
+		t.Fatalf("stale upsert must re-validate and fail against the recreated table, got %v", out.err)
+	}
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if rows[0]["n"].(int64) != 0 {
+		t.Fatalf("recreated table must stay empty, got %v", rows)
+	}
+}
+
+func TestCreateNamespaceConcurrentReservation(t *testing.T) {
+	st := openStore(t)
+	const n = 8
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = st.CreateNamespace("race")
+		}(i)
+	}
+	wg.Wait()
+	won := 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			won++
+		case errors.Is(err, ErrInvalid):
+		default:
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	if won != 1 {
+		t.Fatalf("exactly one creator must win the reservation, got %d", won)
+	}
+}
+
+func TestNamespaceFileRemovedOutOfBand(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st) // namespace "test" is open and cached
+
+	// Simulate an operator deleting the file under a live server.
+	if err := os.Remove(filepath.Join(st.dir, "test.db")); err != nil {
+		t.Fatalf("out-of-band remove: %v", err)
+	}
+	if err := st.DropNamespace("test"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("drop of the removed namespace must 404, got %v", err)
+	}
+	if _, ok := st.nss["test"]; ok {
+		t.Fatal("stale cache entry must be evicted (pools closed, not orphaned)")
+	}
+
+	// The name is creatable again and starts fresh.
+	if err := st.CreateNamespace("test"); err != nil {
+		t.Fatalf("recreate: %v", err)
+	}
+	tables, err := st.ListTables(ctx, "test")
+	if err != nil {
+		t.Fatalf("list tables: %v", err)
+	}
+	if len(tables) != 0 {
+		t.Fatalf("recreated namespace must be empty, got %v", tables)
+	}
+}

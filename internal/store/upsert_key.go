@@ -128,6 +128,10 @@ func matchByKey(ctx context.Context, tx *sql.Tx, table string, keyFields []strin
 }
 
 func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table string, keyFields []string, records []map[string]any, emb Embedder) (ids []int64, inserted, updated int, done bool, err error) {
+	// Capture the drop generation before the schema read, for the same
+	// reason as insertAttempt: the embedding pause below must not be able to
+	// straddle a drop + recreate and commit a stale plan into the successor.
+	gen := n.gen.Load()
 	sc, err := loadSchema(ctx, n.rw, nsName, table)
 	if err != nil {
 		return nil, 0, 0, true, err
@@ -231,7 +235,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 	if err != nil {
 		return nil, 0, 0, true, err
 	}
-	if scTx.Version != sc.Version || scTx.EmbedSpace != origEmbedSpace || scTx.EmbedDim != origEmbedDim {
+	if scTx.Version != sc.Version || scTx.EmbedSpace != origEmbedSpace || scTx.EmbedDim != origEmbedDim || n.gen.Load() != gen {
 		return nil, 0, 0, false, nil
 	}
 
