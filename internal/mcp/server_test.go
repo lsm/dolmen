@@ -11,6 +11,7 @@ import (
 
 	"github.com/lsm/dolmen/internal/api"
 	"github.com/lsm/dolmen/internal/store"
+	"github.com/lsm/dolmen/internal/version"
 )
 
 type fakeEmb struct{}
@@ -875,5 +876,57 @@ func TestMCPTypedReadContract(t *testing.T) {
 	assertRow(hit)
 	if _, ok := hit["_score"].(float64); !ok {
 		t.Fatalf("search_vector must attach _score, got %T %v", hit["_score"], hit["_score"])
+	}
+}
+
+// The wiring mirrors main.go — one api server behind /, one mcp server at
+// /mcp — so every version surface must report the single release identity
+// from internal/version (issue #67).
+func TestVersionSurfacesAgree(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	apiSrv := api.New(st, fakeEmb{})
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", New(apiSrv, nil))
+	mux.Handle("/", apiSrv.Handler())
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	res, err := http.Get(srv.URL + "/version")
+	if err != nil {
+		t.Fatalf("get /version: %v", err)
+	}
+	defer res.Body.Close()
+	var httpBody map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&httpBody); err != nil {
+		t.Fatalf("decode /version: %v", err)
+	}
+
+	code, rpcBody := rpc(t, srv.URL+"/mcp", map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "initialize",
+		"params": map[string]any{
+			"protocolVersion": protocolVersion,
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "version-test", "version": "0"},
+		},
+	})
+	if code != http.StatusOK {
+		t.Fatalf("initialize failed: %d %v", code, rpcBody)
+	}
+	result, ok := rpcBody["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("initialize result missing: %v", rpcBody)
+	}
+	serverInfo, ok := result["serverInfo"].(map[string]any)
+	if !ok {
+		t.Fatalf("initialize result missing serverInfo: %v", rpcBody)
+	}
+
+	if httpBody["version"] != version.Version || serverInfo["version"] != version.Version {
+		t.Fatalf("version surfaces disagree: /version=%v serverInfo=%v want=%s",
+			httpBody["version"], serverInfo["version"], version.Version)
 	}
 }

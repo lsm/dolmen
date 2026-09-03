@@ -17,9 +17,8 @@ import (
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/mcp"
 	"github.com/lsm/dolmen/internal/store"
+	"github.com/lsm/dolmen/internal/version"
 )
-
-const version = "0.1.0"
 
 func main() {
 	if err := run(); err != nil {
@@ -34,7 +33,7 @@ func run() error {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 	if *showVersion {
-		fmt.Println("dolmen", version)
+		fmt.Println("dolmen", version.Version)
 		return nil
 	}
 
@@ -72,8 +71,8 @@ func run() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("dolmen listening", "addr", *addr, "data", *dataDir, "embed", emb.Name(), "version", version)
-		slog.Info("endpoints", "mcp", "http://"+*addr+"/mcp", "api", "http://"+*addr+"/v1/{op}", "health", "http://"+*addr+"/healthz")
+		slog.Info("dolmen listening", "addr", *addr, "data", *dataDir, "embed", emb.Name(), "version", version.Version)
+		slog.Info("endpoints", "mcp", "http://"+*addr+"/mcp", "api", "http://"+*addr+"/v1/{op}", "health", "http://"+*addr+"/healthz", "version", "http://"+*addr+"/version")
 		slog.Warn("no authentication: keep this bound to a private interface")
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err

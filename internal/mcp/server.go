@@ -13,12 +13,12 @@ import (
 	"strings"
 
 	"github.com/lsm/dolmen/internal/api"
+	"github.com/lsm/dolmen/internal/version"
 )
 
 const (
 	protocolVersion     = "2025-06-18"
 	serverName          = "dolmen"
-	serverVersion       = "0.1.0"
 	jsonRPCParseError   = -32700
 	jsonRPCMethodError  = -32601
 	jsonRPCInvalidReq   = -32600
@@ -177,7 +177,7 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		return map[string]any{
 			"protocolVersion": pv,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
-			"serverInfo":      map[string]any{"name": serverName, "version": serverVersion},
+			"serverInfo":      map[string]any{"name": serverName, "version": version.Version},
 		}, nil
 	case "ping":
 		if _, e := ensureObjectParams(msg.Params, "ping"); e != nil {
