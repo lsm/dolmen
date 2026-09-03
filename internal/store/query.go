@@ -83,7 +83,16 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]
 	if err != nil {
 		return nil, false, err
 	}
-	registered, err := n.registeredTables(ctx)
+	// One read snapshot covers the registry read, validation, and execution:
+	// otherwise a concurrent DropTable of a grandfathered pragma_*/dbstat
+	// table could commit between them, and SQLite would resolve the now-
+	// absent physical table to its built-in eponymous virtual table.
+	tx, err := n.ro.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback()
+	registered, err := registeredTables(ctx, tx)
 	if err != nil {
 		return nil, false, err
 	}
@@ -93,11 +102,11 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]
 	for i, a := range args {
 		args[i] = normalizeArg(a)
 	}
-	proj, err := s.nsProjection(ctx, n, trimmed)
+	proj, err := s.nsProjection(ctx, tx, trimmed)
 	if err != nil {
 		return nil, false, err
 	}
-	rows, err := n.ro.QueryContext(ctx, trimmed, args...)
+	rows, err := tx.QueryContext(ctx, trimmed, args...)
 	if err != nil {
 		return nil, false, NewQueryError(trimmed, err)
 	}

@@ -242,12 +242,18 @@ func (s *Store) ListTables(ctx context.Context, nsName string) ([]string, error)
 	return out, rows.Err()
 }
 
+// rowsQuerier is the read shape shared by *sql.DB and *sql.Tx so registry
+// reads and statement execution can share one snapshot.
+type rowsQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 // registeredTables returns the names recorded in the namespace's table
 // registry, so the query guard can allow tables whose names predate current
 // reservation rules (e.g. pragma_* or dbstat) while still rejecting the
 // internal tables those names collide with.
-func (n *nsDB) registeredTables(ctx context.Context) (map[string]bool, error) {
-	rows, err := n.ro.QueryContext(ctx, `SELECT name FROM _dolmen_tables`)
+func registeredTables(ctx context.Context, db rowsQuerier) (map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT name FROM _dolmen_tables`)
 	if err != nil {
 		return nil, err
 	}

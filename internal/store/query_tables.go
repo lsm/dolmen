@@ -1233,6 +1233,12 @@ func (s *queryScanner) skipOptionalAlias() error {
 	if err != nil {
 		return err
 	}
+	// INDEXED BY <index> and NOT INDEXED are table-factor suffixes, never
+	// aliases; recognize them before alias handling so INDEXED is not eaten
+	// as an implicit alias.
+	if isKeyword(t, "indexed") || (isKeyword(t, "not") && s.isNotIndexed()) {
+		return s.skipIndexedBy()
+	}
 	if isKeyword(t, "as") {
 		s.next() // consume AS
 		t, err = s.next()
@@ -1242,7 +1248,7 @@ func (s *queryScanner) skipOptionalAlias() error {
 		if t.typ != "ident" && t.typ != "string" {
 			return invalidf("expected alias after AS, got %q", t.val)
 		}
-		return nil
+		return s.skipIndexedBy()
 	}
 
 	if t.typ != "ident" && t.typ != "string" {
@@ -1264,5 +1270,46 @@ func (s *queryScanner) skipOptionalAlias() error {
 		}
 	}
 	s.next()
+	return s.skipIndexedBy()
+}
+
+// skipIndexedBy consumes SQLite's table-factor suffixes INDEXED BY <index>
+// and NOT INDEXED when present. Index names are not table references, so
+// they need no reserved-table check.
+func (s *queryScanner) skipIndexedBy() error {
+	t, err := s.peek()
+	if err != nil {
+		return err
+	}
+	switch {
+	case isKeyword(t, "indexed"):
+		s.next()
+		if err := s.expect("by"); err != nil {
+			return err
+		}
+		idx, err := s.next()
+		if err != nil {
+			return err
+		}
+		if idx.typ != "ident" && idx.typ != "string" {
+			return invalidf("expected index name after INDEXED BY, got %q", idx.val)
+		}
+	case isKeyword(t, "not") && s.isNotIndexed():
+		s.next() // NOT
+		if err := s.expect("indexed"); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// isNotIndexed peeks whether the current NOT begins a NOT INDEXED suffix.
+func (s *queryScanner) isNotIndexed() bool {
+	start, startBuf := s.i, s.buf
+	defer func() { s.i, s.buf = start, startBuf }()
+	if t, err := s.next(); err != nil || !isKeyword(t, "not") {
+		return false
+	}
+	t2, err := s.next()
+	return err == nil && isKeyword(t2, "indexed")
 }

@@ -768,6 +768,10 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		// Bare-table IN over user data stays allowed.
 		"WITH c(x) AS (VALUES(1)) SELECT 1 WHERE 1 IN c",
 		"SELECT id FROM notes WHERE id IN (SELECT id FROM notes)",
+		// INDEXED BY / NOT INDEXED are table-factor suffixes, not aliases.
+		"SELECT * FROM notes NOT INDEXED",
+		"SELECT id FROM notes AS n NOT INDEXED",
+		"SELECT id FROM notes n NOT INDEXED",
 		// MaxQueryRunes counts characters, matching JSON Schema maxLength, so a
 		// query whose UTF-8 encoding is larger than the limit in bytes but within
 		// it in characters is accepted.
@@ -825,6 +829,7 @@ func TestQueryTokenizesVariablesAtomically(t *testing.T) {
 		// A user table in bare-table IN position passes the guard (SQLite
 		// checks column cardinality itself).
 		"SELECT 1 WHERE 1 IN notes",
+		"SELECT * FROM notes INDEXED BY notes_idx",
 	}
 	for _, q := range ok {
 		if err := validateQueryTables(q, nil); err != nil {
@@ -834,6 +839,8 @@ func TestQueryTokenizesVariablesAtomically(t *testing.T) {
 
 	rejected := []string{
 		"SELECT schema_json, 1 AS x$from FROM _dolmen_tables",
+		// INDEXED BY with a reserved table still rejects the table itself.
+		"SELECT * FROM _dolmen_tables INDEXED BY i",
 		"SELECT 1 AS x:from FROM _dolmen_tables",
 		"SELECT 1 AS x@from FROM _dolmen_tables",
 		"SELECT 1 AS x$from, schema_json FROM _dolmen_tables UNION SELECT 1, 2 FROM notes",
