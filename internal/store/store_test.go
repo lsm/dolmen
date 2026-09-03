@@ -153,7 +153,7 @@ func TestLegacyKeywordTableRemainsAccessible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert into legacy keyword table: %v", err)
 	}
-	rows, _, err := st.Query(ctx, "test", `SELECT * FROM "select" WHERE id = ?`, []any{ids[0]})
+	rows, _, err := st.Query(ctx, "test", `SELECT * FROM "select" WHERE id = ?`, []any{ids[0]}, 0, 0)
 	if err != nil || len(rows) != 1 || rows[0]["order"] != "value" {
 		t.Fatalf("query legacy keyword table: %v %v", err, rows)
 	}

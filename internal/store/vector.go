@@ -21,7 +21,7 @@ type VectorSearchResult struct {
 	Skipped   int
 }
 
-func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, vec []float32, embedModel string, limit int, includeHidden bool, filter string, args []any, minScore *float64) (VectorSearchResult, error) {
+func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, vec []float32, embedModel string, offset, limit int, includeHidden bool, filter string, args []any, minScore *float64) (VectorSearchResult, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
 		return VectorSearchResult{}, err
@@ -45,6 +45,10 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 	if !allFinite(vec) {
 		return VectorSearchResult{}, invalidf("query vector contains a non-finite component")
 	}
+	limit = searchLimit(limit)
+	if offset < 0 {
+		return VectorSearchResult{}, invalidf("offset must be non-negative")
+	}
 	filter = strings.TrimSpace(filter)
 	if filter != "" {
 		if strings.Contains(filter, ";") {
@@ -57,7 +61,6 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 			args[i] = normalizeArg(a)
 		}
 	}
-	limit = boundedLimit(limit)
 
 	query := fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s IS NOT NULL`, q(column), q(table), q(column))
 	var qargs []any
@@ -111,18 +114,34 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 	if err := rows.Err(); err != nil {
 		return VectorSearchResult{}, err
 	}
+	// Stable, deterministic ordering: higher score first, then lower id.
 	sort.SliceStable(hits, func(i, j int) bool {
 		if hits[i].score == hits[j].score {
 			return hits[i].id < hits[j].id
 		}
 		return hits[i].score > hits[j].score
 	})
-	if len(hits) > limit {
-		hits = hits[:limit]
+
+	if offset > len(hits) {
+		offset = len(hits)
 	}
-	ids := make([]int64, len(hits))
-	scoreByID := make(map[int64]float64, len(hits))
-	for i, h := range hits {
+	end := offset + limit + 1
+	if end > len(hits) {
+		end = len(hits)
+	}
+	paged := hits[offset:end]
+
+	// The (limit+1)th hit is only a look-ahead for truncated — never fetch
+	// it, or an invalid value in that row would fail the whole page instead
+	// of returning the valid rows with truncated=true.
+	hasMore := len(paged) > limit
+	if hasMore {
+		paged = paged[:limit]
+	}
+
+	ids := make([]int64, len(paged))
+	scoreByID := make(map[int64]float64, len(paged))
+	for i, h := range paged {
 		ids[i] = h.id
 		scoreByID[h.id] = h.score
 	}
@@ -135,7 +154,7 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 			row["_score"] = scoreByID[id]
 		}
 	}
-	return VectorSearchResult{Rows: out, Truncated: !complete, Skipped: skipped}, nil
+	return VectorSearchResult{Rows: out, Truncated: hasMore || !complete, Skipped: skipped}, nil
 }
 
 // resolveVectorColumn picks the column a vector search runs against and the

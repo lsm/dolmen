@@ -331,7 +331,7 @@ func TestInsertStoresCanonicalTimestampValues(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	rows, _, err := st.Query(ctx, "test", "SELECT at FROM ts", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT at FROM ts", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}

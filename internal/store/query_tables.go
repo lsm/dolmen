@@ -800,7 +800,7 @@ func (s *queryScanner) skipParenthesized() error {
 			return err
 		}
 		if t.typ == "eof" {
-			return invalidf("incomplete SQL statement: unterminated parenthesized group")
+			return invalidf("incomplete SQL statement: unterminated parenthesized group; only read-only SELECT or WITH statements are allowed")
 		}
 		if t.val == "(" {
 			depth++
@@ -1006,7 +1006,7 @@ func (s *queryScanner) scanParenthesized() error {
 			return err
 		}
 		if t.typ == "eof" {
-			return invalidf("incomplete SQL statement: unterminated parenthesized group")
+			return invalidf("incomplete SQL statement: unterminated parenthesized group; only read-only SELECT or WITH statements are allowed")
 		}
 		// Bare-table IN applies inside expression groups too.
 		if isKeyword(t, "in") {
