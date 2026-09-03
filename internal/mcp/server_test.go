@@ -834,6 +834,11 @@ func TestToolHintSemantics(t *testing.T) {
 			t.Fatalf("destructive tool %q must carry destructiveHint true, got %v", name, ann)
 		}
 	}
+	for _, name := range []string{"insert", "search_vector", "migrate"} {
+		if ann := byName[name]["annotations"].(map[string]any); ann["openWorldHint"] != true {
+			t.Fatalf("provider-capable tool %q can send text to the configured remote embedding endpoint and must carry openWorldHint true, got %v", name, ann)
+		}
+	}
 	if ann := byName["query"]["annotations"].(map[string]any); ann["destructiveHint"] != false || ann["idempotentHint"] != true {
 		t.Fatalf("query hints must be non-destructive and idempotent, got %v", ann)
 	}
