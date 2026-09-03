@@ -232,6 +232,27 @@ func (s *Store) ListTables(ctx context.Context, nsName string) ([]string, error)
 	return out, rows.Err()
 }
 
+// registeredTables returns the names recorded in the namespace's table
+// registry, so the query guard can allow tables whose names predate current
+// reservation rules (e.g. pragma_* or dbstat) while still rejecting the
+// internal tables those names collide with.
+func (n *nsDB) registeredTables(ctx context.Context) (map[string]bool, error) {
+	rows, err := n.ro.QueryContext(ctx, `SELECT name FROM _dolmen_tables`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]bool)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out[name] = true
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) DescribeTable(ctx context.Context, nsName, table string) (*schema.TableSchema, int64, error) {
 	n, err := s.ns(nsName)
 	if err != nil {

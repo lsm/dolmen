@@ -11,11 +11,15 @@ import (
 // validateQueryTables checks that a raw SELECT/WITH statement does not
 // reference internal or reserved tables. It walks the statement without
 // executing it, so it cannot be bypassed by quoting or string literals.
-func validateQueryTables(stmt string) error {
+// registered holds the namespace's recorded table names so grandfathered
+// tables whose names predate current reservation rules (e.g. pragma_* or
+// dbstat) stay queryable.
+func validateQueryTables(stmt string, registered map[string]bool) error {
 	if utf8.RuneCountInString(stmt) > MaxQueryRunes {
 		return invalidf("query exceeds maximum length")
 	}
 	s := newQueryScanner(stmt)
+	s.registered = registered
 	if err := s.parseStatement(); err != nil {
 		return err
 	}
@@ -37,6 +41,9 @@ type queryScanner struct {
 	s       string
 	i       int
 	buf     *token
+	// registered holds the namespace's recorded user table names; a reference
+	// to one is user data even when its name collides with a now-reserved one.
+	registered map[string]bool
 	// cteScope is a stack of CTE name scopes. The top scope is the current
 	// statement; lookups fall through to enclosing scopes so CTEs defined in an
 	// outer WITH are visible inside their bodies, while inner CTEs do not leak.
@@ -946,9 +953,10 @@ func (s *queryScanner) checkInTableOperand() error {
 		// apply the reserved check like parseTableFactor does after args.
 		return s.checkTableName(schema, name)
 	}
-	if !isCTE && isPragmaFunction(name) {
+	if !isCTE && !s.isRegisteredRef(schema, name) && isPragmaFunction(name) {
 		// A pragma virtual table with no argument list (e.g. pragma_table_list)
-		// can enumerate internal tables; reject it outright.
+		// can enumerate internal tables; reject it outright unless the name is
+		// a registered user table.
 		return invalidf("query references reserved pragma %q", unquoteIdent(name))
 	}
 	return s.checkTableName(schema, name)
@@ -1090,6 +1098,12 @@ func (s *queryScanner) consumeJoinOp() error {
 	}
 }
 
+// isRegisteredRef reports whether an unqualified reference names a table the
+// namespace actually registered — grandfathered names included.
+func (s *queryScanner) isRegisteredRef(schema, name string) bool {
+	return schema == "" && s.registered[asciiLower(unquoteIdent(name))]
+}
+
 func (s *queryScanner) parseTableFactor() error {
 	t, err := s.peek()
 	if err != nil {
@@ -1170,9 +1184,10 @@ func (s *queryScanner) parseTableFactor() error {
 		if err := s.scanParenthesized(); err != nil {
 			return err
 		}
-	} else if !isCTE && isPragmaFunction(name) {
+	} else if !isCTE && !s.isRegisteredRef(schema, name) && isPragmaFunction(name) {
 		// Pragma virtual tables with no argument list (e.g. pragma_table_list)
-		// can enumerate internal tables; reject them outright.
+		// can enumerate internal tables; reject them outright unless the name
+		// is a registered user table.
 		return invalidf("query references reserved pragma %q", unquoteIdent(name))
 	}
 
@@ -1192,10 +1207,12 @@ func (s *queryScanner) checkTableName(schema, rawName string) error {
 	}
 	base := asciiLower(name)
 	// A CTE name (possibly shadowing a reserved table) is not a physical table
-	// reference, so allow it. A quoted identifier may contain dots
-	// ("c._dolmen_tables" is one name), so check the complete name against the
-	// CTE scope before treating a dot as a schema separator.
-	if schema == "" && s.isCteName(base) {
+	// reference, so allow it, as is a table actually registered in the
+	// namespace (its name may predate current reservation rules). A quoted
+	// identifier may contain dots ("c._dolmen_tables" is one name), so check
+	// the complete name against the CTE and registry before treating a dot as
+	// a schema separator.
+	if schema == "" && (s.isCteName(base) || s.registered[base]) {
 		return nil
 	}
 	if i := strings.LastIndex(base, "."); i >= 0 {

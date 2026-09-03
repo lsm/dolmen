@@ -774,7 +774,7 @@ func TestQueryValidatorCTEScale(t *testing.T) {
 	b.WriteString(" SELECT * FROM notes LIMIT 0")
 
 	start := time.Now()
-	if err := validateQueryTables(b.String()); err != nil {
+	if err := validateQueryTables(b.String(), nil); err != nil {
 		t.Fatalf("expected sequential CTEs to validate: %v", err)
 	}
 	if d := time.Since(start); d > 10*time.Second {
@@ -802,7 +802,7 @@ func TestQueryTokenizesVariablesAtomically(t *testing.T) {
 		"SELECT 1 WHERE 1 IN notes",
 	}
 	for _, q := range ok {
-		if err := validateQueryTables(q); err != nil {
+		if err := validateQueryTables(q, nil); err != nil {
 			t.Errorf("expected %q to validate: %v", q, err)
 		}
 	}
@@ -814,8 +814,45 @@ func TestQueryTokenizesVariablesAtomically(t *testing.T) {
 		"SELECT 1 AS x$from, schema_json FROM _dolmen_tables UNION SELECT 1, 2 FROM notes",
 	}
 	for _, q := range rejected {
-		if err := validateQueryTables(q); err == nil {
+		if err := validateQueryTables(q, nil); err == nil {
 			t.Errorf("expected %q to be rejected", q)
 		}
+	}
+}
+
+// TestQueryAllowsGrandfatheredReservedNames covers tables created before
+// pragma_*/dbstat were reserved: they remain registered user data, so the
+// guard must keep serving them while rejecting new reserved-named tables.
+func TestQueryAllowsGrandfatheredReservedNames(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	for _, name := range []string{"dbstat", "pragma_notes"} {
+		if _, err := n.rw.ExecContext(ctx,
+			`CREATE TABLE `+q(name)+` (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)`); err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+		sc := fmt.Sprintf(`{"name":%q,"version":1,"fields":[{"name":"v","type":"string"}]}`, name)
+		if _, err := n.rw.ExecContext(ctx,
+			`INSERT INTO _dolmen_tables(name, version, schema_json) VALUES(?,?,?)`,
+			name, 1, sc); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+	if _, err := st.CreateTable(ctx, "test", "dbstat", []schema.Field{{Name: "v", Type: schema.String}}); err == nil {
+		t.Fatal("expected new reserved-named table creation to be rejected")
+	}
+	for _, name := range []string{"dbstat", "pragma_notes"} {
+		if _, _, err := st.Query(ctx, "test", "SELECT v FROM "+name, nil); err != nil {
+			t.Fatalf("query grandfathered %s: %v", name, err)
+		}
+	}
+	// The registry cannot smuggle internal tables: those names were never
+	// creatable, so they stay rejected.
+	if _, _, err := st.Query(ctx, "test", "SELECT * FROM _dolmen_tables", nil); err == nil {
+		t.Fatal("expected internal registry to stay rejected")
 	}
 }

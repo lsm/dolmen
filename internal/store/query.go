@@ -80,15 +80,19 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]
 	if len(args) > 100 {
 		return nil, false, invalidf("too many query parameters")
 	}
-	if err := validateQueryTables(trimmed); err != nil {
+	n, err := s.ns(nsName)
+	if err != nil {
+		return nil, false, err
+	}
+	registered, err := n.registeredTables(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := validateQueryTables(trimmed, registered); err != nil {
 		return nil, false, err
 	}
 	for i, a := range args {
 		args[i] = normalizeArg(a)
-	}
-	n, err := s.ns(nsName)
-	if err != nil {
-		return nil, false, err
 	}
 	proj, err := s.nsProjection(ctx, n, trimmed)
 	if err != nil {
