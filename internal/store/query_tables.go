@@ -829,7 +829,68 @@ func (s *queryScanner) scanUntil(stop map[string]bool) (token, error) {
 		if _, err := s.next(); err != nil {
 			return token{}, err
 		}
+		// expr IN table_name is shorthand for expr IN (SELECT * FROM table_name),
+		// so a bare-table operand needs the same reserved-table check as a FROM
+		// factor.
+		if isKeyword(t, "in") {
+			if err := s.checkInTableOperand(); err != nil {
+				return token{}, err
+			}
+		}
 	}
+}
+
+// checkInTableOperand validates the operand of IN when it is a bare table
+// name (possibly schema-qualified or a table-valued function), mirroring the
+// handling of table factors in parseTableFactor.
+func (s *queryScanner) checkInTableOperand() error {
+	t, err := s.peek()
+	if err != nil {
+		return err
+	}
+	if t.typ != "ident" && t.typ != "string" {
+		// IN ( ... ) is handled by the surrounding scanners; anything else is
+		// a syntax error SQLite will report.
+		return nil
+	}
+	s.next()
+
+	schema, name := "", t.val
+	if t.typ == "string" {
+		name = unquoteString(name)
+	}
+	if t2, _ := s.peek(); t2.val == "." {
+		s.next() // dot
+		t3, err := s.next()
+		if err != nil {
+			return err
+		}
+		if t3.typ != "ident" && t3.typ != "string" {
+			return invalidf("expected table name after '.', got %q", t3.val)
+		}
+		schema, name = name, t3.val
+		if t3.typ == "string" {
+			name = unquoteString(name)
+		}
+	}
+	// A CTE may shadow a pragma_* name, so check the CTE scope before treating
+	// the identifier as a reserved pragma virtual table.
+	isCTE := schema == "" && s.isCteName(strings.ToLower(unquoteIdent(name)))
+	if t2, _ := s.peek(); t2.val == "(" {
+		if !isCTE && isPragmaFunction(name) {
+			if err := s.parsePragmaArgs(schema, name); err != nil {
+				return err
+			}
+			return nil
+		}
+		return s.scanParenthesized()
+	}
+	if !isCTE && isPragmaFunction(name) {
+		// A pragma virtual table with no argument list (e.g. pragma_table_list)
+		// can enumerate internal tables; reject it outright.
+		return invalidf("query references reserved pragma %q", unquoteIdent(name))
+	}
+	return s.checkTableName(schema, name)
 }
 
 func (s *queryScanner) scanParenthesized() error {
@@ -860,6 +921,12 @@ func (s *queryScanner) scanParenthesized() error {
 		}
 		if t.typ == "eof" {
 			return invalidf("unterminated parenthesized group")
+		}
+		// Bare-table IN applies inside expression groups too.
+		if isKeyword(t, "in") {
+			if err := s.checkInTableOperand(); err != nil {
+				return err
+			}
 		}
 		if t.val == "(" {
 			t2, err := s.peek()

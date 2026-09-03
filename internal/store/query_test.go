@@ -604,6 +604,15 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		// sees a fake FROM, treats the real FROM as a table named "from", and
 		// the reserved table slips through as its alias.
 		{"dollar alias bypass", "SELECT schema_json, 1 AS x$from FROM _dolmen_tables"},
+		// expr IN table is shorthand for expr IN (SELECT * FROM table), so the
+		// bare-table operand must be validated like a FROM factor or it leaks a
+		// boolean oracle over internal tables.
+		{"bare table in oracle", "SELECT ('notes','secret',NULL,NULL,NULL) IN _dolmen_idempotency"},
+		{"bare table in", "SELECT 1 WHERE 1 IN _dolmen_tables"},
+		{"bare table not in", "SELECT 1 WHERE 1 NOT IN sqlite_master"},
+		{"bare table in paren group", "SELECT (1 IN _dolmen_tables) FROM notes"},
+		{"bare table in qualified", "SELECT 1 WHERE 1 IN main._dolmen_tables"},
+		{"bare table in pragma bare", "SELECT 1 WHERE 1 IN pragma_table_list"},
 		{"colon param bypass", "SELECT 1 AS x:from FROM _dolmen_tables"},
 		{"at param bypass", "SELECT 1 AS x@from FROM _dolmen_tables"},
 		// The long-s fold orbit (ſ equals s under Unicode simple folding)
@@ -707,6 +716,9 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		"WITH\fc(x) AS (VALUES(1)) SELECT * FROM c",
 		"WITH c AS\f(VALUES(1)) SELECT * FROM c",
 		"SELECT\fcount(*) AS n FROM notes",
+		// Bare-table IN over user data stays allowed.
+		"WITH c(x) AS (VALUES(1)) SELECT 1 WHERE 1 IN c",
+		"SELECT id FROM notes WHERE id IN (SELECT id FROM notes)",
 		// MaxQueryRunes counts characters, matching JSON Schema maxLength, so a
 		// query whose UTF-8 encoding is larger than the limit in bytes but within
 		// it in characters is accepted.
@@ -754,6 +766,9 @@ func TestQueryTokenizesVariablesAtomically(t *testing.T) {
 		"SELECT title FROM notes WHERE title = :name OR title = @name OR title = $name",
 		"SELECT title FROM notes WHERE title = ?1",
 		"SELECT :from AS f, @from AS g, $from AS h FROM notes",
+		// A user table in bare-table IN position passes the guard (SQLite
+		// checks column cardinality itself).
+		"SELECT 1 WHERE 1 IN notes",
 	}
 	for _, q := range ok {
 		if err := validateQueryTables(q); err != nil {
