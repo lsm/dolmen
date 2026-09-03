@@ -187,7 +187,17 @@ var Ops = map[string]OpDef{
 				"description": "Proposed field definitions",
 				"items":       fieldOutSchema("Proposed field definition"),
 			},
-		}, "fields"),
+			"warnings": map[string]any{
+				"type":        "array",
+				"description": "Notes about sanitized or merged keys",
+				"items":       map[string]any{"type": "string"},
+			},
+			"provenance": map[string]any{
+				"type":                 "object",
+				"description":          "Map from inferred field name to the original key(s) that produced it",
+				"additionalProperties": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+		}, "fields", "warnings", "provenance"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req inferReq
 			if err := decodeData(body, &req); err != nil {
@@ -204,11 +214,21 @@ var Ops = map[string]OpDef{
 					return nil, badRequest("samples[%d] must be an object, not null", i)
 				}
 			}
-			fields := schema.InferFields(req.Samples)
-			if fields == nil {
-				fields = []schema.Field{}
+			inf := schema.InferSchema(req.Samples)
+			if inf.Fields == nil {
+				inf.Fields = []schema.Field{}
 			}
-			return map[string]any{"fields": fields}, nil
+			if inf.Warnings == nil {
+				inf.Warnings = []string{}
+			}
+			if inf.Provenance == nil {
+				inf.Provenance = map[string][]string{}
+			}
+			return map[string]any{
+				"fields":     inf.Fields,
+				"warnings":   inf.Warnings,
+				"provenance": inf.Provenance,
+			}, nil
 		},
 	},
 	"insert": {
