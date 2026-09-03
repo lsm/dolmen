@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -314,7 +315,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace to create the table in"),
-				"table":     tableProp("Table name (lowercase [a-z0-9_]; no sqlite_ prefix or __fts, and not a SQLite/SQL keyword or reserved name)"),
+				"table":     tableProp("Table name (lowercase [a-z0-9_]; no sqlite_/pragma_ prefix, __fts, or dbstat; not a SQLite/SQL keyword or reserved name)"),
 				"fields": map[string]any{
 					"type":        "array",
 					"description": "Field definitions",
@@ -574,8 +575,9 @@ var Ops = map[string]OpDef{
 				"namespace": nsProp("Namespace to query"),
 				"sql": map[string]any{
 					"type":        "string",
-					"description": "Read-only SQL (SELECT/WITH)",
+					"description": "Read-only SQL (SELECT/WITH), at most " + strconv.Itoa(store.MaxQueryRunes) + " characters",
 					"minLength":   1,
+					"maxLength":   store.MaxQueryRunes,
 					// Anchored to a SELECT/WITH prefix only; semicolons are
 					// permitted so quoted literals like 'a;b' pass a strict
 					// MCP client. The store's quote-aware guard rejects

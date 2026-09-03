@@ -171,6 +171,22 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, off
 	if err != nil {
 		return nil, false, err
 	}
+	// One read snapshot covers the registry read, validation, and execution:
+	// otherwise a concurrent DropTable of a grandfathered pragma_*/dbstat
+	// table could commit between them, and SQLite would resolve the now-
+	// absent physical table to its built-in eponymous virtual table.
+	tx, err := n.ro.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback()
+	registered, err := registeredTables(ctx, tx)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := validateQueryTables(trimmed, registered); err != nil {
+		return nil, false, err
+	}
 	paginated := trimmed + "\nLIMIT ? OFFSET ?"
 	args = append(args, limit+1, offset)
 
@@ -180,7 +196,7 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, off
 	// VALUES, some compound statements) are transparently wrapped in a
 	// subquery on a retry, preserving the original labels and duplicate
 	// detection for plain SELECTs.
-	rows, err := n.ro.QueryContext(ctx, paginated, args...)
+	rows, err := tx.QueryContext(ctx, paginated, args...)
 	if err != nil {
 		// A missing table fails the wrapped form the same way, so only retry
 		// statements that reject a trailing LIMIT (VALUES, some compounds) in
@@ -192,14 +208,14 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, off
 		userArgs := args[:len(args)-2]
 		if !strings.Contains(first.Error(), "no such table") {
 			wrapped := "SELECT * FROM (\n" + trimmed + "\n)\nLIMIT ? OFFSET ?"
-			rows, err = n.ro.QueryContext(ctx, wrapped, args...)
+			rows, err = tx.QueryContext(ctx, wrapped, args...)
 			if err == nil {
 				// SQLite disambiguates duplicate labels in a subquery (a, a:1),
 				// which would silently rename keys the unwrapped form rejects
 				// as duplicates. Validate the caller's own labels — prepare-time
 				// metadata, no rows are read — so the duplicate-label contract
 				// survives the retry.
-				if probe, perr := n.ro.QueryContext(ctx, trimmed, userArgs...); perr == nil {
+				if probe, perr := tx.QueryContext(ctx, trimmed, userArgs...); perr == nil {
 					if cols, cerr := probe.Columns(); cerr == nil {
 						seen := make(map[string]bool, len(cols))
 						for _, c := range cols {
@@ -214,7 +230,7 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, off
 				}
 				paginated = wrapped
 			} else {
-				if probe, bareErr := n.ro.QueryContext(ctx, trimmed, userArgs...); bareErr != nil {
+				if probe, bareErr := tx.QueryContext(ctx, trimmed, userArgs...); bareErr != nil {
 					err = bareErr
 				} else {
 					probe.Close()
@@ -228,7 +244,7 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, off
 	}
 	defer rows.Close()
 
-	proj, err := s.nsProjection(ctx, n, paginated)
+	proj, err := s.nsProjection(ctx, tx, paginated)
 	if err != nil {
 		return nil, false, err
 	}

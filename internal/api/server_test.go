@@ -415,6 +415,7 @@ func TestNamespaceAndTablePatternsDeclared(t *testing.T) {
 		}
 		table := props["table"].(map[string]any)
 		notAnyOf, ok := table["not"].(map[string]any)["anyOf"].([]any)
+
 		if !ok {
 			t.Fatalf("%s: table must declare exclusions, got %v", op, table["not"])
 		}
@@ -422,10 +423,13 @@ func TestNamespaceAndTablePatternsDeclared(t *testing.T) {
 			if table["pattern"] != schema.IdentPattern() {
 				t.Fatalf("%s: table must carry the ValidIdent pattern, got %v", op, table["pattern"])
 			}
-			if len(notAnyOf) != 3 {
-				t.Fatalf("%s: table must exclude __fts, sqlite_, and reserved identifier names, got %v", op, table["not"])
+			if len(notAnyOf) != 4 {
+				t.Fatalf("%s: table must exclude __fts, sqlite_, pragma_, and reserved identifier names, got %v", op, table["not"])
 			}
-			reservedEnum, ok := notAnyOf[2].(map[string]any)["enum"].([]string)
+			if notAnyOf[2].(map[string]any)["pattern"] != "^pragma_" {
+				t.Fatalf("%s: third exclusion must be ^pragma_, got %v", op, notAnyOf[2])
+			}
+			reservedEnum, ok := notAnyOf[3].(map[string]any)["enum"].([]string)
 			wantReserved := schema.ReservedTableNames()
 			if !ok || len(reservedEnum) != len(wantReserved) {
 				t.Fatalf("%s: reserved table-name exclusions must cover %v, got %v", op, wantReserved, notAnyOf[2])
@@ -438,6 +442,7 @@ func TestNamespaceAndTablePatternsDeclared(t *testing.T) {
 		}
 		if len(notAnyOf) != 2 {
 			t.Fatalf("%s: table must exclude only __fts and sqlite_, got %v", op, table["not"])
+
 		}
 	}
 }

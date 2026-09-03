@@ -163,8 +163,8 @@ func mentionsEmbedding(stmt string) bool {
 // Referencing _embedding in the statement (outside string literals and
 // comments) opts the hidden column in; otherwise it is stripped from results
 // (e.g. from SELECT *).
-func (s *Store) nsProjection(ctx context.Context, n *nsDB, statement string) (*projection, error) {
-	rows, err := n.ro.QueryContext(ctx, `SELECT schema_json FROM _dolmen_tables`)
+func (s *Store) nsProjection(ctx context.Context, db rowsQuerier, statement string) (*projection, error) {
+	rows, err := db.QueryContext(ctx, `SELECT schema_json FROM _dolmen_tables`)
 	if err != nil {
 		return nil, err
 	}

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lsm/dolmen/internal/schema"
 )
@@ -546,6 +548,364 @@ func TestJSONStringScalarsKeepType(t *testing.T) {
 		if rows[i]["val"] != want || rows[i]["kind"] != "text" {
 			t.Fatalf("row %d: string scalar changed type: %v", i, rows[i])
 		}
+	}
+}
+
+func TestQueryAllowsKeywordTableNames(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	// SQL keyword table names predate the keyword reservation, so simulate the
+	// legacy tables through the namespace connection like the grandfathering
+	// test; the guard must keep serving them.
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	for _, name := range []string{"left", "right", "full", "inner", "cross", "outer", "natural"} {
+		sc := fmt.Sprintf(`{"name":%q,"version":1,"fields":[{"name":"v","type":"string"}]}`, name)
+		if _, err := n.rw.ExecContext(ctx,
+			`CREATE TABLE `+q(name)+` (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)`); err != nil {
+			t.Fatalf("create %q: %v", name, err)
+		}
+		if _, err := n.rw.ExecContext(ctx,
+			`INSERT INTO _dolmen_tables(name, version, schema_json) VALUES(?,?,?)`, name, 1, sc); err != nil {
+			t.Fatalf("register %q: %v", name, err)
+		}
+		if _, _, err := st.Query(ctx, "test", fmt.Sprintf("SELECT v FROM %s", name), nil, 0, 0); err != nil {
+			t.Fatalf("query %q: %v", name, err)
+		}
+	}
+	// Keyword table names can also appear after commas and in cross joins.
+	if _, _, err := st.Query(ctx, "test", "SELECT left.v AS lv, right.v AS rv FROM left, right", nil, 0, 0); err != nil {
+		t.Fatalf("comma-separated keyword tables: %v", err)
+	}
+	if _, _, err := st.Query(ctx, "test", "SELECT left.v FROM left CROSS JOIN right", nil, 0, 0); err != nil {
+		t.Fatalf("cross join with keyword table: %v", err)
+	}
+}
+
+func TestQueryRejectsReservedTables(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{"_dolmen_tables", "SELECT * FROM _dolmen_tables"},
+		{"_dolmen_migrations", "SELECT * FROM _dolmen_migrations"},
+		{"_dolmen_idempotency", "SELECT * FROM _dolmen_idempotency"},
+		{"sqlite_master", "SELECT * FROM sqlite_master"},
+		{"sqlite_schema", "SELECT * FROM sqlite_schema"},
+		{"sqlite_temp_master", "SELECT * FROM sqlite_temp_master"},
+		{"__fts virtual", "SELECT * FROM notes__fts"},
+		{"__fts data", "SELECT * FROM notes__fts_data"},
+		{"__fts idx", "SELECT * FROM notes__fts_idx"},
+		{"__fts content", "SELECT * FROM notes__fts_content"},
+		{"__fts docsize", "SELECT * FROM notes__fts_docsize"},
+		{"__fts config", "SELECT * FROM notes__fts_config"},
+		{"aliased internal", "SELECT * FROM _dolmen_tables t"},
+		{"qualified internal", "SELECT * FROM main._dolmen_tables"},
+		{"temp internal", "SELECT * FROM temp._dolmen_delete_ids"},
+		{"subquery", "SELECT 1 WHERE EXISTS (SELECT 1 FROM _dolmen_tables)"},
+		{"select-list subquery", "SELECT (SELECT count(*) FROM _dolmen_tables) FROM notes"},
+		{"limit subquery", "SELECT * FROM notes LIMIT (SELECT count(*) FROM _dolmen_tables)"},
+		{"cte", "WITH cte AS (SELECT * FROM _dolmen_tables) SELECT * FROM cte"},
+		{"cte qualified", "WITH cte AS (SELECT * FROM notes) SELECT * FROM cte, _dolmen_tables"},
+		{"join", "SELECT * FROM notes JOIN _dolmen_tables d ON notes.id = d.rowid"},
+		{"compound", "SELECT * FROM notes EXCEPT SELECT * FROM sqlite_master"},
+		{"quoted reserved", `SELECT * FROM "_dolmen_tables"`},
+		// A quoted identifier containing a dot is one name; without a matching
+		// CTE its reserved-looking tail still rejects.
+		{"dotted quoted reserved", `SELECT * FROM "c._dolmen_tables"`},
+		{"bracketed reserved", "SELECT * FROM [sqlite_master]"},
+		{"parenthesized reserved", "SELECT * FROM (_dolmen_tables)"},
+		{"parenthesized join list reserved", "SELECT * FROM (notes JOIN _dolmen_tables ON notes.id = _dolmen_tables.rowid)"},
+		{"pragma table list", "SELECT * FROM pragma_table_list()"},
+		{"pragma table info reserved", "SELECT * FROM pragma_table_info('_dolmen_tables')"},
+		{"pragma table xinfo reserved", "SELECT * FROM pragma_table_xinfo('sqlite_master')"},
+		{"pragma computed arg", "SELECT * FROM pragma_table_info(char(95) || 'dolmen_tables')"},
+		{"values compound internal", "WITH c AS (VALUES(1) UNION ALL SELECT rowid FROM _dolmen_tables) SELECT * FROM c"},
+		{"values compound sqlite", "WITH c AS (VALUES(1) UNION ALL SELECT rowid FROM sqlite_master) SELECT * FROM c"},
+		{"window alias join reserved", "SELECT d.name FROM notes window JOIN _dolmen_tables d"},
+		{"values subquery internal", "SELECT (VALUES('safe') UNION ALL SELECT schema_json FROM _dolmen_tables LIMIT 1 OFFSET 1) FROM notes"},
+		{"cte scope leak", "SELECT (WITH _dolmen_tables(x) AS (VALUES(1)) SELECT x FROM _dolmen_tables), name FROM _dolmen_tables"},
+		{"pragma arg reserved", "SELECT * FROM pragma_table_info('pragma_table_list')"},
+		// Double-quoted pragma arguments are rejected outright: with a table in
+		// scope SQLite binds "title" to a column before the string fallback, so
+		// the pragma could run against row values naming internal tables.
+		{"pragma arg dqs literal", `SELECT * FROM pragma_table_info("notes")`},
+		{"pragma arg dqs correlated", `SELECT p.name FROM notes JOIN pragma_table_info("title") p`},
+		{"dbstat", "SELECT * FROM dbstat"},
+		{"nested expression bypass", "SELECT coalesce((SELECT 1), 0), schema_json FROM _dolmen_tables"},
+		// A $ inside an identifier must not split it: otherwise the scanner
+		// sees a fake FROM, treats the real FROM as a table named "from", and
+		// the reserved table slips through as its alias.
+		{"dollar alias bypass", "SELECT schema_json, 1 AS x$from FROM _dolmen_tables"},
+		// expr IN table is shorthand for expr IN (SELECT * FROM table), so the
+		// bare-table operand must be validated like a FROM factor or it leaks a
+		// boolean oracle over internal tables.
+		{"bare table in oracle", "SELECT ('notes','secret',NULL,NULL,NULL) IN _dolmen_idempotency"},
+		{"bare table in", "SELECT 1 WHERE 1 IN _dolmen_tables"},
+		{"bare table not in", "SELECT 1 WHERE 1 NOT IN sqlite_master"},
+		{"bare table in paren group", "SELECT (1 IN _dolmen_tables) FROM notes"},
+		{"bare table in qualified", "SELECT 1 WHERE 1 IN main._dolmen_tables"},
+		{"bare table in pragma bare", "SELECT 1 WHERE 1 IN pragma_table_list"},
+		{"colon param bypass", "SELECT 1 AS x:from FROM _dolmen_tables"},
+		{"at param bypass", "SELECT 1 AS x@from FROM _dolmen_tables"},
+		// Tcl-style :: suffixes are part of a parameter name in SQLite.
+		{"tcl dollar param bypass", "SELECT schema_json, $x::from FROM _dolmen_tables"},
+		{"tcl colon param bypass", "SELECT schema_json, :x::from FROM _dolmen_tables"},
+		{"tcl at param bypass", "SELECT schema_json, @x::from FROM _dolmen_tables"},
+		{"tcl bare suffix bypass", "SELECT schema_json, $::from FROM _dolmen_tables"},
+		{"paren param bypass", "SELECT schema_json, $x(from) FROM _dolmen_tables"},
+		{"paren punct param bypass", "SELECT schema_json, $x(a,from) FROM _dolmen_tables"},
+		{"paren colon param bypass", "SELECT schema_json, $x(a:from) FROM _dolmen_tables"},
+		{"paren open param bypass", "SELECT schema_json, $x(a(b) FROM _dolmen_tables"},
+		{"hash param bypass", "SELECT schema_json, #from FROM _dolmen_tables"},
+		// Go's ToLower maps İ to i, but SQLite folds identifiers ASCII-only,
+		// so a CTE whose name lowercases (in Go) onto an internal table's name
+		// must not shadow it.
+		{"i-dot cte shadow", "WITH _dolmen_İdempotency(x) AS (VALUES(1)) SELECT * FROM _dolmen_idempotency"},
+		{"bare table in dbstat fn", "SELECT 1 WHERE 1 IN dbstat()"},
+		// The long-s fold orbit (ſ equals s under Unicode simple folding)
+		// must not make the alias ſrom act as the FROM keyword.
+		{"long-s alias fold", "SELECT 1 AS ſrom FROM _dolmen_tables"},
+		// Non-ASCII names cannot be created as tables, and without a matching
+		// CTE they resolve to nothing, so they are rejected like any other
+		// non-user table.
+		{"non-ascii table", "SELECT * FROM 日本語"},
+		{"excessive table paren nesting", "SELECT * FROM " + strings.Repeat("(", maxTableParens+1) + "notes" + strings.Repeat(")", maxTableParens+1)},
+		{"excessive statement nesting", "SELECT * FROM " + strings.Repeat("(SELECT * FROM ", maxStmtDepth+1) + "notes" + strings.Repeat(")", maxStmtDepth+1)},
+		{"excessive query length", "SELECT * FROM notes WHERE x = '" + strings.Repeat("x", MaxQueryRunes) + "'"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := st.Query(ctx, "test", tc.query, nil, 0, 0)
+			if err == nil {
+				t.Fatalf("expected reserved table query to be rejected")
+			}
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("expected ErrInvalid, got %v", err)
+			}
+		})
+	}
+}
+
+func TestQueryAllowsUserTables(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	if _, err := st.CreateTable(ctx, "test", "users", []schema.Field{
+		{Name: "name", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create users: %v", err)
+	}
+	if _, err := st.CreateTable(ctx, "test", "sides", []schema.Field{
+		{Name: "leg_a", Type: schema.Number},
+		{Name: "leg_b", Type: schema.Number},
+	}); err != nil {
+		t.Fatalf("create sides: %v", err)
+	}
+
+	ok := []string{
+		"SELECT * FROM notes",
+		"SELECT * FROM notes n",
+		"SELECT n.id FROM notes n JOIN users u ON n.id = u.id",
+		"SELECT * FROM notes WHERE id IN (SELECT id FROM users)",
+		"SELECT * FROM notes WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = notes.id)",
+		"WITH cte AS (SELECT * FROM notes) SELECT * FROM cte",
+		"SELECT id FROM notes EXCEPT SELECT id FROM users",
+		"SELECT id FROM notes UNION SELECT id FROM users",
+		"SELECT '_dolmen_tables' AS lit FROM notes",
+		"SELECT * FROM notes /* _dolmen_tables */",
+		"SELECT * FROM notes WHERE title = '-- _dolmen_tables'",
+		"SELECT count(*) FROM (SELECT * FROM notes)",
+		"SELECT * FROM (notes)",
+		"SELECT n.id FROM (notes n JOIN users u ON n.id = u.id)",
+		"WITH cte AS (VALUES (1, 'x')) SELECT * FROM cte",
+		"WITH cte(x, y) AS (VALUES (1, 'x'), (2, 'y')) SELECT * FROM cte",
+		"WITH c AS (VALUES(1) UNION ALL SELECT id FROM notes) SELECT * FROM c",
+		"SELECT * FROM (VALUES (1, 2)) AS t",
+		"SELECT * FROM pragma_table_info('notes')",
+		"SELECT * FROM pragma_table_info('notes', 'main')",
+		"WITH c AS MATERIALIZED (SELECT * FROM notes) SELECT * FROM c",
+		"WITH c AS NOT MATERIALIZED (SELECT * FROM notes) SELECT * FROM c",
+		"SELECT sum(score) OVER win FROM notes WINDOW win AS (ORDER BY id)",
+		"SELECT sum(score) OVER 'win' FROM notes WINDOW 'win' AS (ORDER BY id)",
+		"WITH sqlite_master(x) AS (VALUES(1)) SELECT x FROM sqlite_master",
+		"WITH _dolmen_tables(x) AS (VALUES(1)) SELECT x FROM _dolmen_tables",
+		"SELECT n.id FROM notes n JOIN sides s ON n.id = s.leg_a",
+		"WITH RECURSIVE c(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM c WHERE x < 3) SELECT * FROM c",
+		"SELECT (VALUES(1) UNION ALL SELECT id FROM notes LIMIT 1) FROM notes",
+		"WITH a AS (SELECT x FROM _dolmen_tables), _dolmen_tables(x) AS (VALUES(7)) SELECT * FROM a",
+		"WITH pragma_table_list(x) AS (VALUES(1)) SELECT * FROM pragma_table_list",
+		`SELECT "my alias".id FROM notes "my alias"`,
+		"SELECT * FROM notes WHERE title = (((('x'))))",
+		"SELECT * FROM notes WHERE title = (SELECT 'x' FROM (VALUES(1)))",
+		"SELECT * FROM (((notes)))",
+		"SELECT * FROM 'notes'",
+		"SELECT * FROM main.'notes'",
+		"SELECT * FROM notes AS 'n'",
+		"SELECT * FROM (VALUES (1)) AS 'v'",
+		`SELECT "my alias".id FROM notes 'my alias'`,
+		"WITH 'c'(x) AS (VALUES(1)) SELECT * FROM 'c'",
+		// SQLite treats non-ASCII characters as identifier characters, so
+		// Unicode CTE names and aliases must tokenize as identifiers.
+		"WITH 日本語(x) AS (VALUES(1)) SELECT * FROM 日本語",
+		"WITH résumé AS (SELECT id FROM notes) SELECT * FROM résumé",
+		"SELECT * FROM notes AS 日本語",
+		"SELECT 日本語.id FROM notes 日本語",
+		// '$' continues an identifier (SQLite IdChar), so keywords cannot be
+		// recognized inside dollar-containing names.
+		"SELECT 1 AS x$from FROM notes",
+		"WITH c$1 AS (SELECT id FROM notes) SELECT * FROM c$1",
+		"SELECT n$x.id FROM notes n$x",
+		// Keyword matching is ASCII-only: ſrom is a plain alias to SQLite,
+		// never the FROM keyword.
+		"SELECT 1 AS ſrom FROM notes",
+		// Identifier folding is ASCII-only too: a CTE named with İ keeps that
+		// spelling and references to it resolve to the CTE.
+		"WITH _dolmen_İdempotency(x) AS (VALUES(1)) SELECT * FROM _dolmen_İdempotency",
+		// A quoted name containing a dot is one identifier, so the whole name
+		// is matched against the CTE scope before any schema split.
+		`WITH "c._dolmen_tables"(x) AS (VALUES(1)) SELECT * FROM "c._dolmen_tables"`,
+		// Form feed is SQLite whitespace, so it separates tokens like a space.
+		"WITH\fc(x) AS (VALUES(1)) SELECT * FROM c",
+		"WITH c AS\f(VALUES(1)) SELECT * FROM c",
+		"SELECT\fcount(*) AS n FROM notes",
+		// Bare-table IN over user data stays allowed.
+		"WITH c(x) AS (VALUES(1)) SELECT 1 WHERE 1 IN c",
+		"SELECT id FROM notes WHERE id IN (SELECT id FROM notes)",
+		// INDEXED BY / NOT INDEXED are table-factor suffixes, not aliases.
+		"SELECT * FROM notes NOT INDEXED",
+		"SELECT id FROM notes AS n NOT INDEXED",
+		"SELECT id FROM notes n NOT INDEXED",
+		// MaxQueryRunes counts characters, matching JSON Schema maxLength, so a
+		// query whose UTF-8 encoding is larger than the limit in bytes but within
+		// it in characters is accepted.
+		"SELECT * FROM notes WHERE title = '" + strings.Repeat("é", MaxQueryRunes-100) + "' LIMIT 0",
+	}
+
+	for _, q := range ok {
+		t.Run(q, func(t *testing.T) {
+			if _, _, err := st.Query(ctx, "test", q, nil, 0, 0); err != nil {
+				t.Fatalf("expected query to be allowed: %v", err)
+			}
+		})
+	}
+}
+
+// TestQueryValidatorCTEScale guards the validator against quadratic behavior on
+// long sequential CTE lists: each CTE body must not re-copy the names of its
+// siblings. A list this size validates in well under a second when linear, but
+// takes minutes when each body clones the forward-name map.
+func TestQueryValidatorCTEScale(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("WITH ")
+	for i := 0; i < 30000; i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "c%d AS (VALUES(1))", i)
+	}
+	b.WriteString(" SELECT * FROM notes LIMIT 0")
+
+	start := time.Now()
+	if err := validateQueryTables(b.String(), nil); err != nil {
+		t.Fatalf("expected sequential CTEs to validate: %v", err)
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Fatalf("sequential CTE validation should stay linear, took %v", d)
+	}
+}
+
+// TestQueryTokenizesVariablesAtomically checks that SQLite variable tokens
+// (:name, @name, $name, ?NNN) are consumed as one unit, so a keyword inside a
+// parameter name can never be mistaken for a clause boundary.
+func TestQueryTokenizesVariablesAtomically(t *testing.T) {
+	ok := []string{
+		"SELECT title FROM notes WHERE title = :name OR title = @name OR title = $name",
+		"SELECT title FROM notes WHERE title = ?1",
+		"SELECT :from AS f, @from AS g, $from AS h FROM notes",
+		"SELECT $x::ns::y AS v, :x::from AS w, @x::from AS z FROM notes",
+		"SELECT $::from AS v FROM notes",
+		"SELECT $x(with) AS v, :x(with) AS w, @x(with) AS x FROM notes",
+		"SELECT $x::y(with) AS v, $x() AS w FROM notes",
+		"SELECT $x(a,from) AS v, $x(a.b) AS w, $x('a;b') AS z FROM notes",
+		"SELECT $x(a:from) AS v, $x(a(b) AS w FROM notes",
+		"SELECT #from AS v, #x(a,from) AS w, #x::y AS z FROM notes",
+		// A user table in bare-table IN position passes the guard (SQLite
+		// checks column cardinality itself).
+		"SELECT 1 WHERE 1 IN notes",
+		"SELECT * FROM notes INDEXED BY notes_idx",
+	}
+	for _, q := range ok {
+		if err := validateQueryTables(q, nil); err != nil {
+			t.Errorf("expected %q to validate: %v", q, err)
+		}
+	}
+
+	rejected := []string{
+		"SELECT schema_json, 1 AS x$from FROM _dolmen_tables",
+		// INDEXED BY with a reserved table still rejects the table itself.
+		"SELECT * FROM _dolmen_tables INDEXED BY i",
+		"SELECT 1 AS x:from FROM _dolmen_tables",
+		"SELECT 1 AS x@from FROM _dolmen_tables",
+		"SELECT 1 AS x$from, schema_json FROM _dolmen_tables UNION SELECT 1, 2 FROM notes",
+	}
+	for _, q := range rejected {
+		if err := validateQueryTables(q, nil); err == nil {
+			t.Errorf("expected %q to be rejected", q)
+		}
+	}
+}
+
+// TestQueryAllowsGrandfatheredReservedNames covers tables created before
+// pragma_*/dbstat were reserved: they remain registered user data, so the
+// guard must keep serving them while rejecting new reserved-named tables.
+func TestQueryAllowsGrandfatheredReservedNames(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	for _, name := range []string{"dbstat", "pragma_notes"} {
+		if _, err := n.rw.ExecContext(ctx,
+			`CREATE TABLE `+q(name)+` (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)`); err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+		sc := fmt.Sprintf(`{"name":%q,"version":1,"fields":[{"name":"v","type":"string"}]}`, name)
+		if _, err := n.rw.ExecContext(ctx,
+			`INSERT INTO _dolmen_tables(name, version, schema_json) VALUES(?,?,?)`,
+			name, 1, sc); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+	if _, err := st.CreateTable(ctx, "test", "dbstat", []schema.Field{{Name: "v", Type: schema.String}}); err == nil {
+		t.Fatal("expected new reserved-named table creation to be rejected")
+	}
+	for _, name := range []string{"dbstat", "pragma_notes"} {
+		if _, _, err := st.Query(ctx, "test", "SELECT v FROM "+name, nil, 0, 0); err != nil {
+			t.Fatalf("query grandfathered %s: %v", name, err)
+		}
+		// A main-qualified reference resolves to the same physical table.
+		if _, _, err := st.Query(ctx, "test", "SELECT v FROM main."+name, nil, 0, 0); err != nil {
+			t.Fatalf("query main-qualified grandfathered %s: %v", name, err)
+		}
+	}
+	// The main qualifier does not smuggle internal tables: they were never
+	// registered.
+	if _, _, err := st.Query(ctx, "test", "SELECT * FROM main._dolmen_tables", nil, 0, 0); err == nil {
+		t.Fatal("expected main-qualified internal registry to stay rejected")
+	}
+	// The registry cannot smuggle internal tables: those names were never
+	// creatable, so they stay rejected.
+	if _, _, err := st.Query(ctx, "test", "SELECT * FROM _dolmen_tables", nil, 0, 0); err == nil {
+		t.Fatal("expected internal registry to stay rejected")
 	}
 }
 

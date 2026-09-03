@@ -448,7 +448,7 @@ func TestUpsertByKeyLegacyKeywordKeyField(t *testing.T) {
 	if inserted != 0 || updated != 1 || ids2[0] != ids[0] {
 		t.Fatalf("unexpected second result: ids=%v inserted=%d updated=%d", ids2, inserted, updated)
 	}
-	rows, _, err := st.Query(ctx, "test", `SELECT qty FROM "orders" WHERE id = ?`, []any{ids[0]})
+	rows, _, err := st.Query(ctx, "test", `SELECT qty FROM "orders" WHERE id = ?`, []any{ids[0]}, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}

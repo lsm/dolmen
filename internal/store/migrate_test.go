@@ -1433,12 +1433,18 @@ func TestFTSReindexEstimateMatchesRepopulatePredicate(t *testing.T) {
 	}, testEmbed, 1); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	n, _, err := st.Query(ctx, "test", `SELECT count(*) AS n FROM ftsest__fts`, nil, 0, 0)
+	// The public query path rejects __fts shadow tables by design, so count
+	// the rebuilt index through the namespace's own connection.
+	ns, err := st.ns("test")
 	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	var ftsCount int64
+	if err := ns.ro.QueryRowContext(ctx, `SELECT count(*) FROM ftsest__fts`).Scan(&ftsCount); err != nil {
 		t.Fatalf("fts count: %v", err)
 	}
-	if n[0]["n"].(int64) != 2 {
-		t.Fatalf("rebuilt index must hold exactly the predicted rows: %v", n)
+	if ftsCount != 2 {
+		t.Fatalf("rebuilt index must hold exactly the predicted rows: %d", ftsCount)
 	}
 }
 

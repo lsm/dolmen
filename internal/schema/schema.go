@@ -155,6 +155,12 @@ func ValidateTableName(name string) error {
 	if strings.HasPrefix(name, "sqlite_") {
 		return fmt.Errorf("table name %q must not start with sqlite_ (reserved for SQLite internal objects)", name)
 	}
+	if strings.HasPrefix(name, "pragma_") {
+		return fmt.Errorf("table name %q must not start with pragma_ (reserved for SQLite pragma virtual tables)", name)
+	}
+	if name == "dbstat" {
+		return fmt.Errorf("table name %q is reserved for the SQLite dbstat virtual table", name)
+	}
 	return nil
 }
 
@@ -196,7 +202,8 @@ func ReservedFieldNames() []string {
 // ReservedTableNames returns the internal table names that are reserved by
 // Dolmen and should be excluded in input schemas.
 func ReservedTableNames() []string {
-	return []string{"id", "created_at", "rowid"}
+	return []string{"id", "created_at", "rowid", "dbstat"}
+
 }
 
 // cleanName transforms an arbitrary map key into a valid Dolmen field
