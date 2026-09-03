@@ -134,6 +134,21 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 		return UpdateResult{}, err
 	}
 
+	// An unmatched upsert inserts: validate the candidate record before
+	// embedding it, so a record that can never be inserted (missing required
+	// field) fails deterministically instead of paying for an embedding.
+	if allowInsert && matched == 0 {
+		for _, f := range sc.Fields {
+			v, present := set[f.Name]
+			if present && v != nil {
+				continue
+			}
+			if f.Required {
+				return UpdateResult{}, invalidf("field %q is required (no row matched the filter, so upsert would insert a new record)", f.Name)
+			}
+		}
+	}
+
 	// Embed only when there is work that needs the vector: matched rows to
 	// re-embed, or an upsert insert about to run. A zero-match update skips
 	// the embedding provider entirely.
@@ -186,15 +201,6 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 		}
 		result.Updated = updated
 	case allowInsert:
-		for _, f := range sc.Fields {
-			v, present := set[f.Name]
-			if present && v != nil {
-				continue
-			}
-			if f.Required {
-				return UpdateResult{}, invalidf("field %q is required (no row matched the filter, so upsert would insert a new record)", f.Name)
-			}
-		}
 		icols := cols
 		ivals := vals
 		if vec != nil {

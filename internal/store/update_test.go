@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -366,6 +367,16 @@ func TestUpsertInsertEnforcesRequiredFields(t *testing.T) {
 
 	if _, err := st.Upsert(ctx, "test", "req", "1=0", nil, map[string]any{"title": "no score"}, testEmbed); err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected insert path to enforce required fields, got %v", err)
+	}
+	// the candidate is validated before the embedding provider is called:
+	// even a failing provider must surface the required-field error, not an
+	// embedding failure
+	broken := Embedder{Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+		return nil, errors.New("provider down")
+	}, Identity: "fake-space"}
+	_, err := st.Upsert(ctx, "test", "req", "1=0", nil, map[string]any{"body": "text but no score"}, broken)
+	if err == nil || !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `"score" is required`) {
+		t.Fatalf("expected the required-field error before any embedding, got %v", err)
 	}
 	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM req", nil)
 	if err != nil {
