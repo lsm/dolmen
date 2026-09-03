@@ -445,3 +445,85 @@ func TestJSONStringScalarsKeepType(t *testing.T) {
 		}
 	}
 }
+
+func TestQueryRejectsReservedTables(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{"_dolmen_tables", "SELECT * FROM _dolmen_tables"},
+		{"_dolmen_migrations", "SELECT * FROM _dolmen_migrations"},
+		{"_dolmen_idempotency", "SELECT * FROM _dolmen_idempotency"},
+		{"sqlite_master", "SELECT * FROM sqlite_master"},
+		{"sqlite_schema", "SELECT * FROM sqlite_schema"},
+		{"sqlite_temp_master", "SELECT * FROM sqlite_temp_master"},
+		{"__fts virtual", "SELECT * FROM notes__fts"},
+		{"__fts data", "SELECT * FROM notes__fts_data"},
+		{"__fts idx", "SELECT * FROM notes__fts_idx"},
+		{"__fts content", "SELECT * FROM notes__fts_content"},
+		{"__fts docsize", "SELECT * FROM notes__fts_docsize"},
+		{"__fts config", "SELECT * FROM notes__fts_config"},
+		{"aliased internal", "SELECT * FROM _dolmen_tables t"},
+		{"qualified internal", "SELECT * FROM main._dolmen_tables"},
+		{"temp internal", "SELECT * FROM temp._dolmen_delete_ids"},
+		{"subquery", "SELECT 1 WHERE EXISTS (SELECT 1 FROM _dolmen_tables)"},
+		{"select-list subquery", "SELECT (SELECT count(*) FROM _dolmen_tables) FROM notes"},
+		{"limit subquery", "SELECT * FROM notes LIMIT (SELECT count(*) FROM _dolmen_tables)"},
+		{"cte", "WITH cte AS (SELECT * FROM _dolmen_tables) SELECT * FROM cte"},
+		{"cte qualified", "WITH cte AS (SELECT * FROM notes) SELECT * FROM cte, _dolmen_tables"},
+		{"join", "SELECT * FROM notes JOIN _dolmen_tables d ON notes.id = d.rowid"},
+		{"compound", "SELECT * FROM notes EXCEPT SELECT * FROM sqlite_master"},
+		{"quoted reserved", `SELECT * FROM "_dolmen_tables"`},
+		{"bracketed reserved", "SELECT * FROM [sqlite_master]"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := st.Query(ctx, "test", tc.query, nil)
+			if err == nil {
+				t.Fatalf("expected reserved table query to be rejected")
+			}
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("expected ErrInvalid, got %v", err)
+			}
+		})
+	}
+}
+
+func TestQueryAllowsUserTables(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	if _, err := st.CreateTable(ctx, "test", "users", []schema.Field{
+		{Name: "name", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create users: %v", err)
+	}
+
+	ok := []string{
+		"SELECT * FROM notes",
+		"SELECT * FROM notes n",
+		"SELECT n.id FROM notes n JOIN users u ON n.id = u.id",
+		"SELECT * FROM notes WHERE id IN (SELECT id FROM users)",
+		"SELECT * FROM notes WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = notes.id)",
+		"WITH cte AS (SELECT * FROM notes) SELECT * FROM cte",
+		"SELECT id FROM notes EXCEPT SELECT id FROM users",
+		"SELECT id FROM notes UNION SELECT id FROM users",
+		"SELECT '_dolmen_tables' AS lit FROM notes",
+		"SELECT * FROM notes /* _dolmen_tables */",
+		"SELECT * FROM notes WHERE title = '-- _dolmen_tables'",
+		"SELECT count(*) FROM (SELECT * FROM notes)",
+	}
+
+	for _, q := range ok {
+		t.Run(q, func(t *testing.T) {
+			if _, _, err := st.Query(ctx, "test", q, nil); err != nil {
+				t.Fatalf("expected query to be allowed: %v", err)
+			}
+		})
+	}
+}

@@ -36,6 +36,9 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]
 	if len(args) > 100 {
 		return nil, false, invalidf("too many query parameters")
 	}
+	if err := validateQueryTables(trimmed); err != nil {
+		return nil, false, err
+	}
 	for i, a := range args {
 		args[i] = normalizeArg(a)
 	}
