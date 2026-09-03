@@ -68,10 +68,11 @@ Expected output:
 {"status":"ok"}
 ```
 
-All successful `/v1/*` operations return `{"ok":true,"data":{...}}`; errors from `/v1/*` return
+All successful `/v1/{operation}` POSTs return `{"ok":true,"data":{...}}`; errors return
 `{"ok":false,"error":{"code":"...","message":"..."}}` — plus `request_id` inside `error` when the
 request carried an `X-Request-Id` — with a matching 4xx/5xx status. Error codes are stable for
 branching: `invalid_request`, `not_found`, `query_error`, `conflict`, `forbidden`, `internal_error`.
+The one exception is `GET /v1/openapi.json`, which serves the raw OpenAPI document.
 `/healthz` returns `{"status":"ok"}` and `/mcp` returns JSON-RPC responses.
 
 ### First API calls
