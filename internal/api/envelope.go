@@ -150,6 +150,10 @@ func wrapStoreErr(err error) *Error {
 		msg = strings.TrimPrefix(msg, store.ErrNotFound.Error()+": ")
 		return &Error{Status: http.StatusNotFound, Code: ErrCodeNotFound, Message: msg, Cause: err}
 	}
+	var vce *store.VersionConflictError
+	if errors.As(err, &vce) {
+		return &Error{Status: http.StatusConflict, Code: ErrCodeConflict, Message: err.Error(), Cause: err}
+	}
 	if errors.Is(err, store.ErrInvalid) {
 		msg := redactStoreMsg(err.Error())
 		msg = strings.TrimPrefix(msg, store.ErrInvalid.Error()+": ")

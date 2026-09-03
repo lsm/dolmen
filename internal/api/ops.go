@@ -62,6 +62,62 @@ func tableOutSchema(desc string) map[string]any {
 	}
 }
 
+// changeOutSchema describes a recorded migration change (history entries and
+// plans), mirroring the migrate input shape including add_field defaults and
+// the explicit value set_* changes always record.
+func changeOutSchema(desc string) map[string]any {
+	return map[string]any{
+		"type":        "object",
+		"description": desc,
+		"properties": map[string]any{
+			"op": prop("string", "add_field | rename_field | drop_field | set_fulltext | set_vectorize"),
+			"field": map[string]any{
+				"type":                 "object",
+				"description":          "Field definition (add_field)",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"name":      prop("string", "Field name"),
+					"type":      prop("string", "Field type"),
+					"fulltext":  prop("boolean", "Present and true when full-text indexed"),
+					"vectorize": prop("boolean", "Present and true when server-embedded"),
+					"dim":       prop("integer", "Vector dimension (vector fields)"),
+					"required":  prop("boolean", "Present and true when inserts must provide the field"),
+				},
+				"required": []string{"name"},
+			},
+			"from":    prop("string", "Current name (rename_field)"),
+			"to":      prop("string", "New name (rename_field)"),
+			"name":    prop("string", "Field name (drop_field, set_fulltext, set_vectorize)"),
+			"value":   prop("boolean", "Flag value (set_fulltext, set_vectorize); always recorded"),
+			"default": map[string]any{"description": "Backfill value for existing rows (add_field), exactly as applied"},
+		},
+		"required":             []string{"op", "value"},
+		"additionalProperties": false,
+	}
+}
+
+func planOutSchema(desc string) map[string]any {
+	return map[string]any{
+		"type":        "object",
+		"description": desc,
+		"properties": map[string]any{
+			"dry_run":               prop("boolean", "Always true for a plan (nothing was applied)"),
+			"from_version":          prop("integer", "Schema version the changes were planned against"),
+			"to_version":            prop("integer", "Version the table would have after applying"),
+			"table":                 tableOutSchema("Prospective schema after the changes"),
+			"operations":            map[string]any{"type": "array", "description": "Human-readable operations, in order", "items": map[string]any{"type": "string"}},
+			"destructive":           map[string]any{"type": "array", "description": "Destructive changes with their consequence (present when any)", "items": map[string]any{"type": "string"}},
+			"backfill_rows":         prop("integer", "Existing rows that receive an added field's default"),
+			"rebuild_fulltext":      prop("boolean", "Whether the FTS index is rebuilt"),
+			"fulltext_reindex_rows": prop("integer", "Rows the rebuilt full-text index would hold"),
+			"clears_embeddings":     prop("boolean", "Whether existing embeddings are cleared"),
+			"embed_rows":            prop("integer", "Rows applying would embed (provider calls)"),
+		},
+		"required":             []string{"dry_run", "from_version", "to_version", "table", "operations", "backfill_rows", "rebuild_fulltext", "fulltext_reindex_rows", "clears_embeddings", "embed_rows"},
+		"additionalProperties": false,
+	}
+}
+
 var Ops = map[string]OpDef{
 	"list_tables": {
 		Description: "List tables in a namespace.",
@@ -778,7 +834,16 @@ var Ops = map[string]OpDef{
 	"migrate": {
 		Description: "Evolve a table schema: add_field, rename_field, drop_field, set_fulltext, set_vectorize. " +
 			"Bumps the schema version and records the change. Adding fulltext rebuilds the search index; " +
-			"enabling vectorize backfills embeddings for existing rows.",
+			"enabling vectorize backfills embeddings for existing rows. add_field accepts a default that is " +
+			"coerced to the field's type and backfilled into existing rows; it is required for adding a " +
+			"required field to a populated table (the column then carries NOT NULL DEFAULT — dolmen inserts " +
+			"must still supply the field). For optional fields the default is a one-time backfill: later " +
+			"inserts omitting the field store NULL. Pass expected_version (from describe_table) to assert " +
+			"the schema the changes were planned against: a mismatch fails with a conflict instead of " +
+			"running a stale plan (required for the destructive rename_field and drop_field). Pass " +
+			"dry_run=true to validate and preview — prospective schema and version, destructive changes, " +
+			"backfill rows, index rebuild, and embedding workload — with nothing applied and no provider " +
+			"calls.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -803,6 +868,9 @@ var Ops = map[string]OpDef{
 							"to":    fieldNameProp("New name (rename_field)"),
 							"name":  fieldNameProp("Field name (drop_field, set_fulltext, set_vectorize)"),
 							"value": prop("boolean", "Flag value (set_fulltext, set_vectorize)"),
+							"default": map[string]any{
+								"description": "Backfill value for existing rows (add_field only); coerced to the field's type — a string for string/text/timestamp/json, number, boolean, or a number array of the field's dim for vector",
+							},
 						},
 						"required": []string{"op"},
 						"allOf": []any{
@@ -829,6 +897,15 @@ var Ops = map[string]OpDef{
 							map[string]any{
 								"if": map[string]any{
 									"properties": map[string]any{
+										"op": map[string]any{"not": map[string]any{"const": "add_field"}},
+									},
+									"required": []string{"op"},
+								},
+								"then": map[string]any{"not": map[string]any{"required": []string{"default"}}},
+							},
+							map[string]any{
+								"if": map[string]any{
+									"properties": map[string]any{
 										"op":    map[string]any{"const": "set_fulltext"},
 										"value": map[string]any{"const": true},
 									},
@@ -843,11 +920,19 @@ var Ops = map[string]OpDef{
 						},
 					},
 				},
+				"expected_version": map[string]any{
+					"type":        "integer",
+					"description": "Schema version the changes were planned against (from describe_table); the migration aborts with a conflict if the table has moved past it. Required for rename_field and drop_field.",
+					"minimum":     1,
+				},
+				"dry_run": prop("boolean", "Validate and preview the migration without applying anything (no writes, no embedding calls)"),
 			},
 			"required": []string{"namespace", "table", "changes"},
 		},
 		OutputSchema: outSchema(map[string]any{
-			"table": tableOutSchema("Schema of the migrated table (version bumped)"),
+			"table":   tableOutSchema("Schema of the migrated table (version bumped); for dry_run, the prospective schema"),
+			"dry_run": prop("boolean", "True when this was a validation-only preview (nothing applied)"),
+			"plan":    planOutSchema("Migration preview (present when dry_run)"),
 		}, "table"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req migrateReq
@@ -855,9 +940,11 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			var shadow struct {
-				Namespace string           `json:"namespace"`
-				Table     string           `json:"table"`
-				Changes   []map[string]any `json:"changes"`
+				Namespace       string           `json:"namespace"`
+				Table           string           `json:"table"`
+				Changes         []map[string]any `json:"changes"`
+				ExpectedVersion *int             `json:"expected_version"`
+				DryRun          bool             `json:"dry_run"`
 			}
 			if err := decodeData(body, &shadow); err != nil {
 				return nil, err
@@ -870,11 +957,73 @@ var Ops = map[string]OpDef{
 					}
 				}
 			}
-			sc, err := s.st.Migrate(ctx, normNS(req.Namespace), normTable(req.Table), req.Changes, s.embedder())
+			ver := 0
+			if req.ExpectedVersion != nil {
+				if *req.ExpectedVersion < 1 {
+					return nil, badRequest("expected_version must be >= 1")
+				}
+				ver = *req.ExpectedVersion
+			}
+			if req.DryRun {
+				plan, err := s.st.PlanMigration(ctx, normNS(req.Namespace), normTable(req.Table), req.Changes, s.embedder(), ver)
+				if err != nil {
+					return nil, wrapStoreErr(err)
+				}
+				return map[string]any{"table": plan.Table, "dry_run": true, "plan": plan}, nil
+			}
+			sc, err := s.st.Migrate(ctx, normNS(req.Namespace), normTable(req.Table), req.Changes, s.embedder(), ver)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			return map[string]any{"table": sc}, nil
+		},
+	},
+	"list_migrations": {
+		Description: "List a table's migration history, newest first: version transitions with the exact " +
+			"recorded changes and timestamps. Read-only audit of schema evolution; the newest entry's " +
+			"to_version is the current schema version (creating the table is version 1 and predates the log).",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace of the table"),
+				"table":     tableProp("Table name"),
+			},
+			"required": []string{"namespace", "table"},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"migrations": map[string]any{
+				"type":        "array",
+				"description": "Recorded migrations, newest first",
+				"items": map[string]any{
+					"type":        "object",
+					"description": "One recorded schema transition",
+					"properties": map[string]any{
+						"id":           prop("integer", "History entry id (monotonic)"),
+						"from_version": prop("integer", "Schema version before the migration"),
+						"to_version":   prop("integer", "Schema version after the migration"),
+						"changes": map[string]any{
+							"type":        "array",
+							"description": "Recorded change list, replayable through migrate (add_field defaults and explicit set_* values included)",
+							"items":       changeOutSchema("Recorded change"),
+						},
+						"at": prop("string", "When the migration committed (RFC 3339)"),
+					},
+					"required":             []string{"id", "from_version", "to_version", "changes", "at"},
+					"additionalProperties": false,
+				},
+			},
+		}, "migrations"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req tableReq
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			ms, err := s.st.ListMigrations(ctx, normNS(req.Namespace), normTable(req.Table))
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"migrations": ms}, nil
 		},
 	},
 }
@@ -908,16 +1057,16 @@ type ftsReq struct {
 }
 
 type vecReq struct {
-	Namespace     string     `json:"namespace"`
-	Table         string     `json:"table"`
-	Column        string     `json:"column"`
-	Text          string     `json:"text"`
-	Vector        []float64  `json:"vector"`
-	Limit         int        `json:"limit"`
-	IncludeHidden bool       `json:"include_hidden"`
-	Filter        string     `json:"filter"`
-	Args          []any      `json:"args"`
-	MinScore      *float64   `json:"min_score"`
+	Namespace     string    `json:"namespace"`
+	Table         string    `json:"table"`
+	Column        string    `json:"column"`
+	Text          string    `json:"text"`
+	Vector        []float64 `json:"vector"`
+	Limit         int       `json:"limit"`
+	IncludeHidden bool      `json:"include_hidden"`
+	Filter        string    `json:"filter"`
+	Args          []any     `json:"args"`
+	MinScore      *float64  `json:"min_score"`
 }
 
 type deleteReq struct {
@@ -936,7 +1085,9 @@ type updateReq struct {
 }
 
 type migrateReq struct {
-	Namespace string          `json:"namespace"`
-	Table     string          `json:"table"`
-	Changes   []schema.Change `json:"changes"`
+	Namespace       string          `json:"namespace"`
+	Table           string          `json:"table"`
+	Changes         []schema.Change `json:"changes"`
+	ExpectedVersion *int            `json:"expected_version"`
+	DryRun          bool            `json:"dry_run"`
 }
