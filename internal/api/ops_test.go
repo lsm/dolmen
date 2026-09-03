@@ -2,14 +2,18 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestEndToEndHTTP(t *testing.T) {
@@ -297,6 +301,124 @@ func TestSearchVectorBlankIdentityRejected(t *testing.T) {
 func TestSearchVectorZeroDimEmbedRejected(t *testing.T) {
 	if code := vectorSearchWithProvider(t, zeroVecEmb{}); code != 400 {
 		t.Fatalf("zero-dimensional query embedding must 400, got %d", code)
+	}
+}
+
+func TestSearchVectorTextRejectedForCallerProvidedVectors(t *testing.T) {
+	srv := newTestServer(t)
+	code, _ := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "rv",
+		"table":     "t",
+		"fields": []map[string]any{
+			{"name": "s", "type": "string"},
+			{"name": "emb", "type": "vector", "dim": 4},
+		},
+	})
+	if code != 200 {
+		t.Fatal("create failed")
+	}
+	code, _ = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "rv",
+		"table":     "t",
+		"records":   []map[string]any{{"s": "hello", "emb": []float64{1, 0, 0, 0}}},
+	})
+	if code != 200 {
+		t.Fatal("insert failed")
+	}
+	// Text queries must not silently compare a server embedding against
+	// caller-provided vectors from an unrelated space — with or without column.
+	for _, extra := range []map[string]any{
+		{"text": "hello"},
+		{"text": "hello", "column": "emb"},
+	} {
+		body := map[string]any{"namespace": "rv", "table": "t"}
+		for k, v := range extra {
+			body[k] = v
+		}
+		code, res := post(t, srv.URL, "search_vector", body)
+		if code != 400 {
+			t.Fatalf("text query %v against a caller-provided vector column must 400, got %d %v", extra, code, res)
+		}
+		errEnv, _ := res["error"].(map[string]any)
+		msg, _ := errEnv["message"].(string)
+		if !strings.Contains(msg, "vectorize") {
+			t.Fatalf("rejection should point at the vectorize path or a raw-vector retry, got %q", msg)
+		}
+	}
+	// Raw vectors from the caller's own space keep working, column or not.
+	for _, extra := range []map[string]any{
+		{"vector": []float64{1, 0, 0, 0}},
+		{"vector": []float64{1, 0, 0, 0}, "column": "emb"},
+	} {
+		body := map[string]any{"namespace": "rv", "table": "t"}
+		for k, v := range extra {
+			body[k] = v
+		}
+		code, res := post(t, srv.URL, "search_vector", body)
+		if code != 200 {
+			t.Fatalf("raw-vector query %v must stay searchable, got %d %v", extra, code, res)
+		}
+		results := res["data"].(map[string]any)["results"].([]any)
+		if len(results) != 1 {
+			t.Fatalf("expected 1 hit, got %v", results)
+		}
+	}
+}
+
+func TestSearchVectorReportsSkippedVectors(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	srv := httptest.NewServer(New(st, fakeEmb{}).Handler())
+	t.Cleanup(srv.Close)
+	code, _ := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "sk",
+		"table":     "t",
+		"fields": []map[string]any{
+			{"name": "s", "type": "string"},
+			{"name": "emb", "type": "vector", "dim": 3},
+		},
+	})
+	if code != 200 {
+		t.Fatal("create failed")
+	}
+	code, _ = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "sk",
+		"table":     "t",
+		"records": []map[string]any{
+			{"s": "good", "emb": []float64{1, 0, 0}},
+			{"s": "bad", "emb": []float64{0, 1, 0}},
+		},
+	})
+	if code != 200 {
+		t.Fatal("insert failed")
+	}
+	// Corrupt one row the way only an out-of-band SQLite writer could.
+	raw, err := sql.Open("sqlite", filepath.Join(dir, "sk.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { raw.Close() })
+	if _, err := raw.Exec(`UPDATE t SET emb = X'0102' WHERE s = 'bad'`); err != nil {
+		t.Fatalf("corrupt row: %v", err)
+	}
+
+	code, res := post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "sk", "table": "t", "vector": []float64{1, 0, 0},
+	})
+	if code != 200 {
+		t.Fatalf("search over partially corrupt data must succeed, got %d %v", code, res)
+	}
+	data := res["data"].(map[string]any)
+	results := data["results"].([]any)
+	if len(results) != 1 || results[0].(map[string]any)["s"] != "good" {
+		t.Fatalf("expected only the intact row, got %v", results)
+	}
+	if skipped, _ := data["skipped_vectors"].(float64); skipped != 1 {
+		t.Fatalf("response must report skipped_vectors=1 so callers see results are incomplete, got %v", data["skipped_vectors"])
 	}
 }
 
@@ -961,6 +1083,9 @@ func TestTypedReadContractHTTP(t *testing.T) {
 	assertTypedHTTPRow(t, hit, false)
 	if _, ok := hit["_score"].(float64); !ok {
 		t.Fatalf("search_vector must attach _score, got %T %v", hit["_score"], hit["_score"])
+	}
+	if skipped, _ := res["data"].(map[string]any)["skipped_vectors"].(float64); skipped != 0 {
+		t.Fatalf("healthy table must report skipped_vectors=0, got %v", res["data"].(map[string]any)["skipped_vectors"])
 	}
 
 	code, res = post(t, srv.URL, "search_vector", map[string]any{

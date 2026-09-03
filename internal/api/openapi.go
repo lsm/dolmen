@@ -122,8 +122,8 @@ func components() map[string]any {
 				"embed_dim":   intProp(0, 0),
 			}, []string{"namespace", "name", "version", "fields"}),
 			"Row": map[string]any{
-				"type":        "object",
-				"description": "A result row keyed by column or field name; values are typed per the table schema.",
+				"type":                 "object",
+				"description":          "A result row keyed by column or field name; values are typed per the table schema.",
 				"additionalProperties": true,
 			},
 		},

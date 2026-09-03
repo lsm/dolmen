@@ -126,16 +126,16 @@ func TestTypedReadRoundTripSearchVector(t *testing.T) {
 	mustCreateTyped(t, st)
 	mustInsertTyped(t, st)
 
-	rows, _, err := st.SearchVector(ctx, "test", "typed", "vec", []float32{1, 0, 0, 0}, "", 10, false, "", nil, nil)
+	res, err := st.SearchVector(ctx, "test", "typed", "vec", []float32{1, 0, 0, 0}, "", 10, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
-	if len(rows) != 1 {
-		t.Fatalf("expected 1 vector hit, got %d", len(rows))
+	if len(res.Rows) != 1 {
+		t.Fatalf("expected 1 vector hit, got %d", len(res.Rows))
 	}
-	assertTypedRow(t, rows[0])
-	if _, ok := rows[0]["_score"].(float64); !ok {
-		t.Fatalf("vector search must attach _score, got %T %v", rows[0]["_score"], rows[0]["_score"])
+	assertTypedRow(t, res.Rows[0])
+	if _, ok := res.Rows[0]["_score"].(float64); !ok {
+		t.Fatalf("vector search must attach _score, got %T %v", res.Rows[0]["_score"], res.Rows[0]["_score"])
 	}
 }
 
@@ -161,14 +161,14 @@ func TestSearchHidesEmbeddingByDefault(t *testing.T) {
 		t.Fatalf("declared vector column must still come back typed, got %T %v", fts[0]["emb"], fts[0]["emb"])
 	}
 
-	vec, _, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 1, false, "", nil, nil)
+	vecRes, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 1, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
-	if len(vec) != 1 || vec[0]["title"] != "first note" {
+	if vec := vecRes.Rows; len(vec) != 1 || vec[0]["title"] != "first note" {
 		t.Fatalf("unexpected vector hit: %v", vec)
 	}
-	if _, has := vec[0]["_embedding"]; has {
+	if _, has := vecRes.Rows[0]["_embedding"]; has {
 		t.Fatal("search_vector must hide _embedding by default")
 	}
 
@@ -181,12 +181,12 @@ func TestSearchHidesEmbeddingByDefault(t *testing.T) {
 		t.Fatalf("include_hidden must return _embedding typed, got %T %v", fts[0]["_embedding"], fts[0]["_embedding"])
 	}
 
-	vec, _, err = st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 1, true, "", nil, nil)
+	vecRes, err = st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 1, true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search include_hidden: %v", err)
 	}
-	if emb, ok := vec[0]["_embedding"].([]float64); !ok || len(emb) != 8 {
-		t.Fatalf("include_hidden must return _embedding typed, got %T %v", vec[0]["_embedding"], vec[0]["_embedding"])
+	if emb, ok := vecRes.Rows[0]["_embedding"].([]float64); !ok || len(emb) != 8 {
+		t.Fatalf("include_hidden must return _embedding typed, got %T %v", vecRes.Rows[0]["_embedding"], vecRes.Rows[0]["_embedding"])
 	}
 }
 
