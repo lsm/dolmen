@@ -1123,7 +1123,6 @@ func TestQueryErrorsAreSanitizedAndSelfCorrectable(t *testing.T) {
 	}
 }
 
-
 func TestOperationalFailuresAreNotQueryErrors(t *testing.T) {
 	// Recognized input failures become sanitized QueryErrors.
 	syntax := errors.New(`SQL logic error: near "FROOOM": syntax error (1)`)
