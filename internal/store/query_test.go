@@ -522,3 +522,52 @@ func TestQueryExactLimitNotTruncated(t *testing.T) {
 		t.Fatalf("exactly 5 rows must not be truncated: %d %v", len(rows), truncated)
 	}
 }
+
+func TestQueryTrailingLineComment(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "comm", []schema.Field{
+		{Name: "v", Type: schema.Number},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	records := make([]map[string]any, 0, 3)
+	for i := 0; i < 3; i++ {
+		records = append(records, map[string]any{"v": i})
+	}
+	if _, err := st.Insert(ctx, "test", "comm", records, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	rows, truncated, err := st.Query(ctx, "test", "SELECT v FROM comm ORDER BY id -- stable order", nil, 0, 2)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 2 || !truncated || rows[0]["v"].(int64) != 0 || rows[1]["v"].(int64) != 1 {
+		t.Fatalf("trailing line comment must not break pagination: %v %v", rows, truncated)
+	}
+}
+
+func TestQueryValuesStatement(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+
+	rows, truncated, err := st.Query(ctx, "test", "WITH x(v) AS (VALUES (1),(2),(3)) VALUES (1),(2),(3)", nil, 0, 2)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 2 || !truncated {
+		t.Fatalf("page 0 should return 2 rows with truncated=true: %d %v", len(rows), truncated)
+	}
+	if rows[0]["column1"].(int64) != 1 || rows[1]["column1"].(int64) != 2 {
+		t.Fatalf("values rows out of order: %v", rows)
+	}
+
+	rows, truncated, err = st.Query(ctx, "test", "WITH x(v) AS (VALUES (1),(2),(3)) VALUES (1),(2),(3)", nil, 2, 2)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 1 || truncated {
+		t.Fatalf("page 1 should return 1 row with truncated=false: %d %v", len(rows), truncated)
+	}
+}

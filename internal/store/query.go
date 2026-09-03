@@ -47,20 +47,36 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, off
 	if err != nil {
 		return nil, false, err
 	}
-	paginated := trimmed + " LIMIT ? OFFSET ?"
+	paginated := trimmed + "\nLIMIT ? OFFSET ?"
 	args = append(args, limit+1, offset)
-	proj, err := s.nsProjection(ctx, n, paginated)
-	if err != nil {
-		return nil, false, err
-	}
+
+	// Most SELECT/WITH statements accept a trailing LIMIT on a fresh line.
+	// Put the LIMIT on its own line so a trailing `--` line comment does not
+	// swallow the placeholders. Statements that still reject LIMIT (e.g.
+	// VALUES, some compound statements) are transparently wrapped in a
+	// subquery on a retry, preserving the original labels and duplicate
+	// detection for plain SELECTs.
 	rows, err := n.ro.QueryContext(ctx, paginated, args...)
 	if err != nil {
 		if strings.Contains(err.Error(), "no such table") {
 			return nil, false, fmt.Errorf("%w: %w", ErrNotFound, err)
 		}
-		return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
+		wrapped := "SELECT * FROM (\n" + trimmed + "\n)\nLIMIT ? OFFSET ?"
+		rows, err = n.ro.QueryContext(ctx, wrapped, args...)
+		if err != nil {
+			if strings.Contains(err.Error(), "no such table") {
+				return nil, false, fmt.Errorf("%w: %w", ErrNotFound, err)
+			}
+			return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
+		paginated = wrapped
 	}
 	defer rows.Close()
+
+	proj, err := s.nsProjection(ctx, n, paginated)
+	if err != nil {
+		return nil, false, err
+	}
 	return rowsToMaps(rows, proj, limit)
 }
 
