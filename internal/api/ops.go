@@ -422,7 +422,7 @@ var Ops = map[string]OpDef{
 		},
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req vecReq
-			if err := decodeData(body, &req); err != nil {
+			if err := decodeAllowNullArgs(body, &req); err != nil {
 				return nil, err
 			}
 			if req.Text != "" && len(req.Vector) > 0 {

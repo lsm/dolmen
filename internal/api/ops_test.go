@@ -868,6 +868,28 @@ func TestSearchVectorFilterAndMinScoreOverHTTP(t *testing.T) {
 		t.Fatalf("expected auth bug with combined constraints, got %v", results)
 	}
 
+	// null bind arguments are allowed in filter args
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"text":      "token expiry not checked in middleware",
+		"filter":    "1=1",
+		"args":      []any{nil},
+	})
+	if code != 200 {
+		t.Fatalf("null in filter args must be accepted, got %d %v", code, res)
+	}
+
+	// null vector entries are still rejected
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"vector":    []any{1, nil, 0, 0},
+	})
+	if code != 400 {
+		t.Fatalf("null vector entries must 400, got %d %v", code, res)
+	}
+
 	// invalid filter is rejected
 	code, res = post(t, srv.URL, "search_vector", map[string]any{
 		"namespace": "skills",

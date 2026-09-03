@@ -237,6 +237,32 @@ func decodeData(body []byte, v any) error {
 	return nil
 }
 
+// decodeAllowNullArgs is like decode but permits null values inside the
+// "args" array so SQL-filter bind parameters can include NULL.
+func decodeAllowNullArgs(body []byte, v any) error {
+	if len(body) == 0 {
+		return badRequest("empty request body")
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var probe map[string]any
+	if err := dec.Decode(&probe); err != nil {
+		return badRequest("invalid JSON: %v", err)
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return badRequest("unexpected trailing content after JSON body")
+	}
+	for k, val := range probe {
+		if k == "args" {
+			continue
+		}
+		if err := rejectNulls(k, val); err != nil {
+			return err
+		}
+	}
+	return decodeData(body, v)
+}
+
 func rejectNulls(path string, v any) error {
 	switch t := v.(type) {
 	case map[string]any:
