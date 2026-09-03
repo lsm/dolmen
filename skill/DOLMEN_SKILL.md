@@ -212,7 +212,7 @@ negative — value and are returned first. The rank value itself is not returned
 | Natural key fields per `upsert_by_key` | 8 | rejected |
 | Idempotency key length | up to 256 bytes; use printable ASCII | keys over 256 bytes are rejected; the JSON Schema enforces ASCII for schema-validating clients |
 | Vector dimension (declared `vector` fields) | 1–4096 | rejected |
-| Search `limit` | default 10, max 200 | A `limit` of 0 or negative selects the default of 10; values above 200 are clamped to 200 |
+| Search `limit` | default 10, max 200 | omit `limit` for the default of 10; the tool schema enforces 1–200 for schema-validating clients, and the server clamps values above 200 to 200 (0 or negative selects the default on direct `/v1` calls) |
 | `query` result rows | 1,000 | truncated with `truncated: true` |
 | `query` / search result size | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
 | Request body | 32 MiB | rejected |

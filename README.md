@@ -408,7 +408,7 @@ Every row has two implicit columns:
 | Natural key fields per `upsert_by_key` | 8 | rejected |
 | Idempotency key length | up to 256 bytes; use printable ASCII (`[ -~]`) | keys over 256 bytes are rejected; the JSON Schema enforces printable ASCII for schema-validating clients |
 | Vector dimension (declared `vector` fields) | 1–4096 | rejected |
-| Search `limit` (`search_fulltext`, `search_vector`) | default 10, hard max 200 | A `limit` of 0 or negative selects the default of 10; values above 200 are clamped to 200 |
+| Search `limit` (`search_fulltext`, `search_vector`) | default 10, hard max 200 | omit `limit` for the default of 10; the tool schema enforces 1–200 for schema-validating clients, and the server clamps values above 200 to 200 (0 or negative selects the default on direct `/v1` calls) |
 | `query` result rows | 1,000 | truncated; `truncated` is `true` in the response |
 | `query` / search result bytes | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
 | Request body size | 32 MiB | rejected with `413 Request Entity Too Large` |
