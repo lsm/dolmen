@@ -31,6 +31,35 @@ type Server struct {
 	origins map[string]bool
 }
 
+// toolAnnotations carries the MCP annotations (client-side UI hints) for each
+// registry op. Titles and hints describe the op, not the transport. Read ops
+// that touch the store still create the namespace db on first use (Store.ns
+// opens and initializes <namespace>.db), so they must not claim readOnlyHint
+// until that changes; infer_schema is pure and does. Ops that can send text to
+// a configured remote embedding provider (insert on vectorized fields,
+// search_vector by text, migrate when enabling vectorize, and the write ops
+// that re-embed) are open-world: the client cannot know whether the deployment
+// embeds locally. Provider-capable ops are not idempotent either — retries
+// re-hit (and re-bill) the endpoint even when the row state would converge.
+// Every write except a plain insert is destructive: it can overwrite or drop
+// existing data, and filter-driven writes (delete, update, upsert) can walk
+// new rows on retry via a non-deterministic WHERE.
+var toolAnnotations = map[string]map[string]any{
+	"list_tables":     {"title": "List tables", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"describe_table":  {"title": "Describe table", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"create_table":    {"title": "Create table", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+	"infer_schema":    {"title": "Infer schema", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"insert":          {"title": "Insert records", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
+	"upsert_by_key":   {"title": "Upsert by natural key", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
+	"query":           {"title": "Query", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"search_fulltext": {"title": "Full-text search", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"search_vector":   {"title": "Vector search", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
+	"delete":          {"title": "Delete rows", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false},
+	"update":          {"title": "Update rows", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
+	"upsert":          {"title": "Upsert by filter", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
+	"migrate":         {"title": "Migrate table", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
+}
+
 func New(a *api.Server, extraOrigins []string) *Server {
 	origins := map[string]bool{}
 	for _, o := range extraOrigins {
@@ -205,11 +234,18 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		tools := make([]map[string]any, 0)
 		for _, name := range api.OpNames() {
 			def := api.Ops[name]
-			tools = append(tools, map[string]any{
+			tool := map[string]any{
 				"name":        name,
 				"description": def.Description,
 				"inputSchema": def.InputSchema,
-			})
+			}
+			if def.OutputSchema != nil {
+				tool["outputSchema"] = def.OutputSchema
+			}
+			if ann, ok := toolAnnotations[name]; ok {
+				tool["annotations"] = ann
+			}
+			tools = append(tools, tool)
 		}
 		return map[string]any{"tools": tools}, nil
 	case "tools/call":
@@ -251,7 +287,7 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 			}
 			env := apiErr.Public(reqID)
 			text, _ := json.Marshal(env)
-			return toolResult(string(text), true), nil
+			return toolError(string(text)), nil
 		}
 		var buf bytes.Buffer
 		enc := json.NewEncoder(&buf)
@@ -262,9 +298,9 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 			slog.Error("mcp tool result marshal error", "op", params.Name, "code", apiErr.Code, "request_id", reqID, "cause", apiErr.Cause)
 			env := apiErr.Public(reqID)
 			text, _ := json.Marshal(env)
-			return toolResult(string(text), true), nil
+			return toolError(string(text)), nil
 		}
-		return toolResult(buf.String(), false), nil
+		return toolResult(json.RawMessage(strings.TrimSuffix(buf.String(), "\n"))), nil
 	default:
 		return nil, &rpcErr{Code: jsonRPCMethodError, Message: fmt.Sprintf("unknown method %q", msg.Method)}
 	}
@@ -345,10 +381,22 @@ func ensureObjectParams(raw []byte, what string) (map[string]any, *rpcErr) {
 	return probe, nil
 }
 
-func toolResult(text string, isErr bool) map[string]any {
+// toolResult shapes a successful call: the result object travels only as
+// structuredContent. The spec keeps content mandatory (an array of content
+// blocks) but does not require mirroring the payload as text — dolmen has no
+// legacy clients to carry, and a text mirror would double every result.
+func toolResult(structured any) map[string]any {
+	return map[string]any{
+		"content":           []map[string]any{},
+		"structuredContent": structured,
+		"isError":           false,
+	}
+}
+
+func toolError(text string) map[string]any {
 	return map[string]any{
 		"content": []map[string]any{{"type": "text", "text": text}},
-		"isError": isErr,
+		"isError": true,
 	}
 }
 
