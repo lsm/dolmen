@@ -42,6 +42,13 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
 - Every table has implicit `id` and `created_at` columns; `SELECT *` includes them.
 - Retried writes must not duplicate rows: pass `idempotency_key` (any unique string) to `insert`, or use `upsert_by_key` with `"on": [field, ...]` naming the record's natural key (e.g. email, url) when the data identifies itself.
+- Results honor declared field types in every read (`query`, `search_fulltext`, `search_vector`):
+  `boolean` → `true`/`false`, `json` → the decoded value, `vector` → a number array, SQL `NULL` →
+  `null`. In `query`, coercion is by result-column label (aliases count as their label); labels that
+  match no declared field fall back to raw values (blobs as base64).
+- The hidden `_embedding` column (from `vectorize`) is excluded from `SELECT *` and search results;
+  reference it in the SQL (outside string literals) or pass `include_hidden: true` to a search when
+  you really need it.
 - Vector search results carry `_score` (cosine similarity; higher is closer).
 
 ## Typical flows

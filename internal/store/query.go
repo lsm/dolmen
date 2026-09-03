@@ -43,6 +43,10 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]
 	if err != nil {
 		return nil, false, err
 	}
+	proj, err := s.nsProjection(ctx, n, trimmed)
+	if err != nil {
+		return nil, false, err
+	}
 	rows, err := n.ro.QueryContext(ctx, trimmed, args...)
 	if err != nil {
 		if strings.Contains(err.Error(), "no such table") {
@@ -51,14 +55,14 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]
 		return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	defer rows.Close()
-	return rowsToMaps(rows)
+	return rowsToMaps(rows, proj)
 }
 
 const MaxQueryRows = 1000
 
 const MaxQueryBytes = 32 << 20
 
-func rowsToMaps(rows *sql.Rows) ([]map[string]any, bool, error) {
+func rowsToMaps(rows *sql.Rows, proj *projection) ([]map[string]any, bool, error) {
 	cols, err := rows.Columns()
 	if err != nil {
 		return nil, false, err
@@ -73,6 +77,9 @@ func rowsToMaps(rows *sql.Rows) ([]map[string]any, bool, error) {
 			return nil, false, invalidf("column label exceeds 4096 bytes; use a shorter AS alias")
 		}
 		seen[c] = true
+		if proj.isHidden(c) {
+			continue
+		}
 		labelBytes += encodedSize(c) + 16
 	}
 	out := []map[string]any{}
@@ -89,6 +96,9 @@ func rowsToMaps(rows *sql.Rows) ([]map[string]any, bool, error) {
 		m := make(map[string]any, len(cols))
 		rowBytes := 0
 		for i, c := range cols {
+			if proj.isHidden(c) {
+				continue
+			}
 			if err := checkRowValue(c, vals[i]); err != nil {
 				return nil, false, err
 			}
@@ -98,9 +108,9 @@ func rowsToMaps(rows *sql.Rows) ([]map[string]any, bool, error) {
 				}
 				return out, true, wrapStepErr(rows.Err())
 			}
-			v := normalizeVal(vals[i])
+			v := proj.decodeColumn(c, vals[i])
 			m[c] = v
-			rowBytes += approxSize(v)
+			rowBytes += proj.presentedSize(c, vals[i], v)
 		}
 		if len(out) >= MaxQueryRows {
 			return out, true, wrapStepErr(rows.Err())

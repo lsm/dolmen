@@ -300,7 +300,10 @@ func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []
 
 func tableDDL(table string, fields []schema.Field) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf(`CREATE TABLE %s (id INTEGER PRIMARY KEY, created_at TEXT NOT NULL DEFAULT (strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ','now'))`, q(table)))
+	// AUTOINCREMENT keeps ids monotonic and never reused: without it SQLite
+	// assigns max(id)+1, so deleting every row lets fresh rows collide with
+	// ids agents may still be keying off.
+	sb.WriteString(fmt.Sprintf(`CREATE TABLE %s (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL DEFAULT (strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ','now'))`, q(table)))
 	for _, f := range fields {
 		sb.WriteString(fmt.Sprintf(`, %s %s`, q(f.Name), schema.SQLType(f)))
 		if f.Required {

@@ -17,7 +17,7 @@ func boundedLimit(n int) int {
 	return n
 }
 
-func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string, limit int) ([]map[string]any, bool, error) {
+func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string, limit int, includeHidden bool) ([]map[string]any, bool, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
 		return nil, false, err
@@ -53,7 +53,7 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 	if err := rows.Err(); err != nil {
 		return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	out, complete, err := fetchByIDs(ctx, tx, table, ids, nil)
+	out, complete, err := fetchByIDs(ctx, tx, table, ids, projectionFromSchema(sc, includeHidden))
 	if err != nil {
 		return nil, false, err
 	}
@@ -64,7 +64,9 @@ type dbQueryer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-func fetchByIDs(ctx context.Context, db dbQueryer, table string, ids []int64, vectorCols map[string]int) ([]map[string]any, bool, error) {
+// fetchByIDs reads the full rows for ids (in that order) through proj, the
+// shared typed-read projection.
+func fetchByIDs(ctx context.Context, db dbQueryer, table string, ids []int64, proj *projection) ([]map[string]any, bool, error) {
 	if len(ids) == 0 {
 		return []map[string]any{}, true, nil
 	}
@@ -88,6 +90,9 @@ func fetchByIDs(ctx context.Context, db dbQueryer, table string, ids []int64, ve
 	byID := map[int64]map[string]any{}
 	labelBytes := 0
 	for _, c := range cols {
+		if proj.isHidden(c) {
+			continue
+		}
 		labelBytes += encodedSize(c) + 16
 	}
 	total := 0
@@ -106,6 +111,9 @@ scan:
 		var id int64
 		rowBytes := 0
 		for i, c := range cols {
+			if proj.isHidden(c) {
+				continue
+			}
 			if err := checkRowValue(c, vals[i]); err != nil {
 				return nil, false, err
 			}
@@ -121,17 +129,9 @@ scan:
 				complete = false
 				break scan
 			}
-			v := normalizeVal(vals[i])
+			v := proj.decodeColumn(c, vals[i])
 			m[c] = v
-			sz := approxSize(v)
-			if d, ok := vectorCols[c]; ok {
-				if d > 0 {
-					sz = d*27 + 8
-				} else {
-					sz = sz * 9 / 2
-				}
-			}
-			rowBytes += sz
+			rowBytes += proj.presentedSize(c, vals[i], v)
 			if total+rowBytes+labelBytes > MaxQueryBytes {
 				if len(byID) == 0 {
 					return nil, false, invalidf("search result exceeds the %d MiB response budget on its first row", MaxQueryBytes>>20)

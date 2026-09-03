@@ -16,7 +16,7 @@ func TestVectorSearch(t *testing.T) {
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
 
-	rows, _, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0, 0, 0}, "", 2)
+	rows, _, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0, 0, 0}, "", 2, false)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
@@ -27,12 +27,12 @@ func TestVectorSearch(t *testing.T) {
 		t.Fatalf("expected cosine ~1, got %f", score)
 	}
 
-	if _, _, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0}, "", 2); err == nil {
+	if _, _, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0}, "", 2, false); err == nil {
 		t.Fatal("expected dim mismatch to be rejected")
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"the dolmen stores stone tables"})
-	rows, _, err = st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 1)
+	rows, _, err = st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 1, false)
 	if err != nil {
 		t.Fatalf("vectorize search: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestRawVectorDimMismatchOnAutoEmbedding(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "auto", []map[string]any{{"s": "hello"}}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if _, _, err := st.SearchVector(ctx, "test", "auto", "", []float32{1, 0, 0, 0}, "", 5); err == nil {
+	if _, _, err := st.SearchVector(ctx, "test", "auto", "", []float32{1, 0, 0, 0}, "", 5, false); err == nil {
 		t.Fatal("expected wrong-length raw vector against auto-embeddings to be rejected")
 	}
 }
@@ -99,7 +99,7 @@ func TestVectorDecorationBudgeted(t *testing.T) {
 			t.Fatalf("insert %d: %v", b, err)
 		}
 	}
-	rows, truncated, err := st.SearchVector(ctx, "test", "vecbud", "emb", make([]float32, 4096), "", 200)
+	rows, truncated, err := st.SearchVector(ctx, "test", "vecbud", "emb", make([]float32, 4096), "", 200, false)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestSearchVectorLimitBounded(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "vlim", records, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	rows, _, err := st.SearchVector(ctx, "test", "vlim", "emb", []float32{1, 0}, "", -1)
+	rows, _, err := st.SearchVector(ctx, "test", "vlim", "emb", []float32{1, 0}, "", -1, false)
 	if err != nil {
 		t.Fatalf("search with negative limit must be bounded, not error: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestSearchVectorRejectsNonFiniteQuery(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 	for _, bad := range [][]float32{{1, 2, float32(math.NaN())}, {1, 2, float32(math.Inf(-1))}} {
-		if _, _, err := st.SearchVector(ctx, "test", "nfq", "emb", bad, "", 5); err == nil {
+		if _, _, err := st.SearchVector(ctx, "test", "nfq", "emb", bad, "", 5, false); err == nil {
 			t.Fatalf("expected non-finite query vector to be rejected: %v", bad)
 		}
 	}

@@ -46,7 +46,7 @@ func TestUpsertByKeyInsertsThenUpdates(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("upsert must not duplicate the row: %v", rows)
 	}
-	if rows[0]["score"].(int64) != 9 || rows[0]["done"].(int64) != 1 {
+	if rows[0]["score"].(int64) != 9 || rows[0]["done"] != true {
 		t.Fatalf("update must apply the new values: %v", rows[0])
 	}
 	if rows[0]["created_at"].(string) != createdAt {
@@ -66,7 +66,7 @@ func TestUpsertByKeyPartialUpdateKeepsOtherFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if len(rows) != 1 || rows[0]["score"].(int64) != 7 || rows[0]["done"].(int64) != 1 {
+	if len(rows) != 1 || rows[0]["score"].(int64) != 7 || rows[0]["done"] != true {
 		t.Fatalf("unspecified fields must keep their values: %v", rows)
 	}
 }
@@ -91,7 +91,7 @@ func TestUpsertByKeyCompositeKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if len(rows) != 1 || rows[0]["done"].(int64) != 0 {
+	if len(rows) != 1 || rows[0]["done"] != false {
 		t.Fatalf("the matching key's update must overwrite done: %v", rows)
 	}
 	rows, _, err = st.Query(ctx, "test", "SELECT count(*) AS n FROM notes WHERE title = ?", []any{"pair"})
@@ -232,7 +232,7 @@ func TestUpsertByKeyRequiredOnlyOnInsertPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if len(rows) != 1 || rows[0]["score"].(int64) != 4 || rows[0]["done"].(int64) != 1 {
+	if len(rows) != 1 || rows[0]["score"].(int64) != 4 || rows[0]["done"] != true {
 		t.Fatalf("update should apply done and keep score: %v", rows)
 	}
 }
@@ -243,7 +243,7 @@ func TestUpsertByKeyReindexesFulltext(t *testing.T) {
 	mustCreateNotes(t, st) // title and body are fulltext fields
 
 	mustUpsertByKey(t, st, []string{"title"}, []map[string]any{{"title": "fixed", "body": "elephant seal"}})
-	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "elephant", 10)
+	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "elephant", 10, false)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -252,14 +252,14 @@ func TestUpsertByKeyReindexesFulltext(t *testing.T) {
 	}
 
 	mustUpsertByKey(t, st, []string{"title"}, []map[string]any{{"title": "fixed", "body": "cheetah"}})
-	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "elephant", 10)
+	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "elephant", 10, false)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
 	if len(hits) != 0 {
 		t.Fatalf("old text must leave the fulltext index: %v", hits)
 	}
-	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "cheetah", 10)
+	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "cheetah", 10, false)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestUpsertByKeyReindexesFulltext(t *testing.T) {
 	// Nulling an indexed field must drop it from the index (and clear the
 	// stale embedding: body is also the vectorized field here).
 	mustUpsertByKey(t, st, []string{"title"}, []map[string]any{{"title": "fixed", "body": nil}})
-	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "cheetah", 10)
+	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "cheetah", 10, false)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestUpsertByKeyReEmbedsVectorizedField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
-	results, _, err := st.SearchVector(ctx, "test", "vec", "", qvecs[0], testEmbed.Identity, 10)
+	results, _, err := st.SearchVector(ctx, "test", "vec", "", qvecs[0], testEmbed.Identity, 10, false)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}

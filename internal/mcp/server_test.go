@@ -740,3 +740,96 @@ func TestMCPConfiguredOriginsAllowed(t *testing.T) {
 		t.Fatalf("unlisted origin must still be 403, got %d", res.StatusCode)
 	}
 }
+
+// callTool invokes a stateless tools/call and decodes the JSON text payload.
+func callTool(t *testing.T, url, name string, args map[string]any) map[string]any {
+	t.Helper()
+	code, res := rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": name, "arguments": args},
+	})
+	if code != 200 {
+		t.Fatalf("tools/call %s status %d: %v", name, code, res)
+	}
+	result, ok := res["result"].(map[string]any)
+	if !ok || result["isError"] == true {
+		t.Fatalf("tools/call %s failed: %v", name, res)
+	}
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	var out map[string]any
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatalf("tools/call %s result is not JSON: %v", name, err)
+	}
+	return out
+}
+
+func TestMCPTypedReadContract(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	code, _ := rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 0, "method": "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "test-client", "version": "1.0"},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("initialize status %d", code)
+	}
+	rpc(t, url, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+	callTool(t, url, "create_table", map[string]any{
+		"namespace": "typed",
+		"table":     "docs",
+		"fields": []map[string]any{
+			{"name": "title", "type": "string", "fulltext": true},
+			{"name": "body", "type": "text", "vectorize": true},
+			{"name": "done", "type": "boolean"},
+			{"name": "meta", "type": "json"},
+			{"name": "vec", "type": "vector", "dim": 4},
+		},
+	})
+	callTool(t, url, "insert", map[string]any{
+		"namespace": "typed",
+		"table":     "docs",
+		"records": []map[string]any{{
+			"title": "typed reads", "body": "the contract holds", "done": true,
+			"meta": map[string]any{"k": []any{1, "x"}}, "vec": []any{1.0, 2.0, 3.0, 4.0},
+		}},
+	})
+
+	assertRow := func(row map[string]any) {
+		t.Helper()
+		if row["done"] != true {
+			t.Fatalf("boolean must arrive as JSON true, got %T %v", row["done"], row["done"])
+		}
+		meta, ok := row["meta"].(map[string]any)
+		if !ok || len(meta["k"].([]any)) != 2 {
+			t.Fatalf("json must arrive decoded, got %T %v", row["meta"], row["meta"])
+		}
+		if vec, ok := row["vec"].([]any); !ok || len(vec) != 4 || vec[0] != float64(1) {
+			t.Fatalf("vector must arrive as a number array, got %T %v", row["vec"], row["vec"])
+		}
+		if _, has := row["_embedding"]; has {
+			t.Fatalf("_embedding must stay hidden, got %v", row)
+		}
+	}
+
+	out := callTool(t, url, "query", map[string]any{"namespace": "typed", "sql": "SELECT * FROM docs"})
+	assertRow(out["rows"].([]any)[0].(map[string]any))
+
+	out = callTool(t, url, "search_fulltext", map[string]any{
+		"namespace": "typed", "table": "docs", "query": "typed",
+	})
+	assertRow(out["results"].([]any)[0].(map[string]any))
+
+	out = callTool(t, url, "search_vector", map[string]any{
+		"namespace": "typed", "table": "docs", "vector": []float64{1, 0, 0, 0}, "column": "vec",
+	})
+	results := out["results"].([]any)
+	hit := results[0].(map[string]any)
+	assertRow(hit)
+	if _, ok := hit["_score"].(float64); !ok {
+		t.Fatalf("search_vector must attach _score, got %T %v", hit["_score"], hit["_score"])
+	}
+}
