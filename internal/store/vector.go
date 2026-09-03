@@ -35,7 +35,7 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 	if err != nil {
 		return VectorSearchResult{}, err
 	}
-	column, dim, err := resolveVectorColumn(sc, table, column, embedModel)
+	column, dim, err := resolveVectorColumn(sc, table, column, embedModel != "", embedModel)
 	if err != nil {
 		return VectorSearchResult{}, err
 	}
@@ -158,14 +158,15 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 }
 
 // resolveVectorColumn picks the column a vector search runs against and the
-// dimension the query must have. embedModel is non-empty only for text
-// queries, whose vector the active provider just embedded: those may only
-// target the server-managed vectorize (_embedding) space, because cosine
-// against a caller-provided vector column compares embeddings from an
-// unrelated model and returns confident nonsense. Raw-vector queries may
-// target any vector column — the caller owns matching the space.
-func resolveVectorColumn(sc *schema.TableSchema, table, column, embedModel string) (string, int, error) {
-	textQuery := embedModel != ""
+// dimension the query must have. textQuery is true only for text queries,
+// whose vector the active provider embeds: those may only target the
+// server-managed vectorize (_embedding) space, because cosine against a
+// caller-provided vector column compares embeddings from an unrelated model
+// and returns confident nonsense. Raw-vector queries may target any vector
+// column — the caller owns matching the space. textQuery is independent of
+// embedModel so a table's shape can be validated even when no provider is
+// configured (embedModel "") — the two failures must report distinct errors.
+func resolveVectorColumn(sc *schema.TableSchema, table, column string, textQuery bool, embedModel string) (string, int, error) {
 	if column == "" && sc.VectorizeField() != nil {
 		column = "_embedding"
 	} else if column == "" && !textQuery {
@@ -176,13 +177,20 @@ func resolveVectorColumn(sc *schema.TableSchema, table, column, embedModel strin
 	var dim int
 	switch {
 	case column == "":
-		if textQuery && len(sc.VectorFields()) > 0 {
-			return "", 0, invalidf("text queries search the table's vectorize (_embedding) space, but table %s has no vectorized field; its vector columns hold caller-provided embeddings, so pass a raw vector from the same embedding space to search them", table)
+		if textQuery {
+			if cols := sc.VectorFields(); len(cols) > 0 {
+				names := make([]string, len(cols))
+				for i, f := range cols {
+					names[i] = f.Name
+				}
+				return "", 0, invalidf("text queries search the server-managed vectorize (_embedding) space, but table %s has no vectorized field; add one via migrate (set_vectorize on a string or text field), or search a declared vector column (%s) with a raw vector from the same embedding space that produced the stored vectors", table, strings.Join(names, ", "))
+			}
+			return "", 0, invalidf("text queries need a vectorize field, but table %s has none and it has no vector columns to search with raw vectors; add one via migrate (set_vectorize on a string or text field)", table)
 		}
 		return "", 0, invalidf("table %s has no vector data (no vectorize field, no vector fields)", table)
 	case column == "_embedding":
 		if sc.VectorizeField() == nil {
-			return "", 0, invalidf("table %s has no vectorize field for _embedding", table)
+			return "", 0, invalidf("table %s has no vectorize field, so there is no _embedding space to search; add one via migrate (set_vectorize on a string or text field), or search a declared vector column with a raw vector query", table)
 		}
 		if sc.EmbedSpace != "" && embedModel != "" && sc.EmbedSpace != embedModel {
 			return "", 0, invalidf("embedding model changed: table rows are embedded with %q but the provider now serves %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedSpace, embedModel)
@@ -199,7 +207,7 @@ func resolveVectorColumn(sc *schema.TableSchema, table, column, embedModel strin
 	return column, dim, nil
 }
 
-func (s *Store) ValidateVectorSearch(ctx context.Context, nsName, table, column, embedIdentity string) error {
+func (s *Store) ValidateVectorSearch(ctx context.Context, nsName, table, column string, textQuery bool, embedIdentity string) error {
 	n, err := s.ns(nsName)
 	if err != nil {
 		return err
@@ -208,7 +216,7 @@ func (s *Store) ValidateVectorSearch(ctx context.Context, nsName, table, column,
 	if err != nil {
 		return err
 	}
-	_, _, err = resolveVectorColumn(sc, table, column, embedIdentity)
+	_, _, err = resolveVectorColumn(sc, table, column, textQuery, embedIdentity)
 	return err
 }
 

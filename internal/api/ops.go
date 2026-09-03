@@ -795,12 +795,16 @@ var Ops = map[string]OpDef{
 			var vec []float32
 			switch {
 			case req.Text != "":
-				if s.emb.Identity() == "" {
-					return nil, badRequest("text search requires an embedding provider with a reported identity so queries are attributable to an embedding space")
-				}
+				// Validate the table's shape before checking the provider: a missing
+				// vectorize field and a missing provider are different failures with
+				// different fixes (migrate the table vs operator DOLMEN_EMBED_* config),
+				// so each must be reported as itself — not whichever check runs first.
 				if err := s.st.ValidateVectorSearch(ctx, normNS(req.Namespace), normTable(req.Table),
-					strings.ToLower(strings.TrimSpace(req.Column)), s.emb.Identity()); err != nil {
+					strings.ToLower(strings.TrimSpace(req.Column)), true, s.emb.Identity()); err != nil {
 					return nil, wrapStoreErr(err)
+				}
+				if s.emb.Identity() == "" {
+					return nil, badRequest("text queries are embedded server-side, but this server has no usable embedding provider (none is configured, or the configured one does not report its identity); an operator must set the server-side DOLMEN_EMBED_* environment variables: DOLMEN_EMBED_PROVIDER=openai plus DOLMEN_EMBED_API_KEY (or OPENAI_API_KEY), optionally DOLMEN_EMBED_BASE_URL and DOLMEN_EMBED_MODEL")
 				}
 				vecs, err := s.emb.Embed(ctx, []string{req.Text})
 				if err != nil {
