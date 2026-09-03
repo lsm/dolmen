@@ -33,6 +33,12 @@ type Field struct {
 	Vectorize bool      `json:"vectorize,omitempty"`
 	Dim       int       `json:"dim,omitempty"`
 	Required  bool      `json:"required,omitempty"`
+	// Default is the value create_table callers declared for this field:
+	// inserts omitting the field store it instead of NULL. It is kept exactly
+	// as declared (numbers as json.Number) and coerced through the normal
+	// insert path on every use. add_field's backfill default is a migration
+	// concern and lives on Change, not here.
+	Default any `json:"default,omitempty"`
 }
 
 type TableSchema struct {
@@ -320,6 +326,14 @@ func validate(fields []Field, legacy map[string]bool) error {
 			}
 		} else if f.Dim != 0 {
 			return fmt.Errorf("field %q: dim is only allowed on vector fields", f.Name)
+		}
+		if f.Default != nil {
+			if f.Required {
+				return fmt.Errorf("field %q: default is not allowed on required fields (required rejects inserts that omit the field; default fills it — choose one)", f.Name)
+			}
+			if f.Vectorize {
+				return fmt.Errorf("field %q: default is not allowed on vectorize fields (the server embeds caller-supplied text; a defaulted value would not be embedded)", f.Name)
+			}
 		}
 	}
 	return nil

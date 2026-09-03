@@ -317,6 +317,12 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			if ch.Field == nil {
 				return nil, invalidf("add_field needs a field object")
 			}
+			// A field-level default would ride into the persisted schema and
+			// change insert behavior — add_field's default is a one-time
+			// backfill and lives on the change itself.
+			if ch.Field.Default != nil {
+				return nil, invalidf("changes[%d]: add_field takes default on the change (\"default\": ...), not inside field; a field default would silently change future inserts", i)
+			}
 			f := schema.Normalize([]schema.Field{*ch.Field})[0]
 			if err := schema.ValidateIdent(f.Name, "field name"); err != nil {
 				return nil, invalidf("%s", err)

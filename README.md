@@ -262,7 +262,7 @@ Skill distribution is built into the server. `GET /skills` returns a JSON manife
 | `drop_namespace` | Delete a namespace and all its tables; `confirm` must repeat the name |
 | `list_tables` | Tables in a namespace |
 | `describe_table` | Schema, version, row count |
-| `create_table` | Typed fields with `fulltext` / `vector` / `vectorize` annotations |
+| `create_table` | Typed fields with `fulltext` / `vector` / `vectorize` / `default` annotations (`default` is stored by inserts that omit the field) |
 | `infer_schema` | Propose fields from sample records (creates nothing) |
 | `insert` | Validated records; indexes and embeddings update automatically; `idempotency_key` makes retries replay the original ids |
 | `upsert_by_key` | Insert-or-update keyed by natural field(s) (`on`); converges instead of duplicating on retry |

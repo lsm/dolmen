@@ -203,6 +203,24 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 	case allowInsert:
 		icols := cols
 		ivals := vals
+		// The unmatched upsert inserts, so fields omitted from set with
+		// declared defaults store them (on the update path unspecified fields
+		// keep their values instead).
+		for _, f := range sc.Fields {
+			if _, present := set[f.Name]; present {
+				continue
+			}
+			if f.Default == nil {
+				continue
+			}
+			cv, err := coerceValue(f, f.Default)
+			if err != nil {
+				return UpdateResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+			}
+			coerced[f.Name] = cv
+			icols = append(icols, q(f.Name))
+			ivals = append(ivals, cv)
+		}
 		if vec != nil {
 			icols = append(icols, `"_embedding"`)
 			ivals = append(ivals, schema.EncodeVector(vec))

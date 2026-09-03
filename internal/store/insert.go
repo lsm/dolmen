@@ -160,10 +160,18 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 		}
 		for _, f := range sc.Fields {
 			v, present := rec[f.Name]
+			if !present && f.Default != nil {
+				// Fill an omitted field with its declared default before any
+				// validation, coercion, or indexing runs, so the default flows
+				// through exactly the path a caller-supplied value would (an
+				// explicit null stays null — it clears, it does not default).
+				rec[f.Name] = f.Default
+				continue
+			}
 			if present && v != nil {
 				continue
 			}
-			if f.Required && (!present || v == nil) {
+			if f.Required {
 				return nil, false, true, invalidf("field %q is required", f.Name)
 			}
 		}

@@ -40,6 +40,7 @@ func fieldOutSchema(desc string) map[string]any {
 			"vectorize": prop("boolean", "Present and true when the server embeds the field automatically"),
 			"dim":       prop("integer", "Vector dimension (present on vector fields)"),
 			"required":  prop("boolean", "Present and true when inserts must provide the field"),
+			"default":   map[string]any{"description": "Value stored when an insert omits the field; exactly as declared (present when set)"},
 		},
 		"required":             []string{"name", "type"},
 		"additionalProperties": false,
@@ -309,7 +310,8 @@ var Ops = map[string]OpDef{
 		Description: "Create a table with typed fields. Types: string, text, number, boolean, timestamp, json, vector. " +
 			"Annotations: fulltext=true indexes a string/text field for full-text search; type=vector stores caller-provided " +
 			"embeddings (dim required); vectorize=true on a string/text field makes the server embed that field automatically " +
-			"for vector search. Consider infer_schema first when starting from sample records.",
+			"for vector search; default=<value> is stored by later inserts that omit the field (instead of NULL; must match " +
+			"the field's type; not allowed on required or vectorize fields). Consider infer_schema first when starting from sample records.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -329,7 +331,7 @@ var Ops = map[string]OpDef{
 						},
 						"minContains": 2,
 					},
-					"items": fieldItemSchema("Field definition"),
+					"items": fieldItemSchema("Field definition", true),
 				},
 			},
 			"required": []string{"namespace", "table", "fields"},
@@ -418,7 +420,8 @@ var Ops = map[string]OpDef{
 	},
 	"insert": {
 		Description: "Insert one or more records (JSON objects) into a table. Unknown keys are rejected; " +
-			"missing required fields are rejected. Full-text and vector indexes update automatically; " +
+			"missing required fields are rejected; fields omitted without a declared default store NULL. " +
+			"Full-text and vector indexes update automatically; " +
 			"vectorized fields are embedded by the server. Retried writes should pass idempotency_key: " +
 			"the key and its ids are recorded durably, so a retry with the same key and the same records " +
 			"returns the original ids (replayed=true, nothing re-inserted) instead of duplicating rows.",
@@ -1053,7 +1056,7 @@ var Ops = map[string]OpDef{
 								"description": "add_field | rename_field | drop_field | set_fulltext | set_vectorize",
 								"enum":        []string{"add_field", "rename_field", "drop_field", "set_fulltext", "set_vectorize"},
 							},
-							"field": fieldItemSchema("Field definition for add_field"),
+							"field": fieldItemSchema("Field definition for add_field (its backfill default is the change's default, not a field property)", false),
 							"from":  existingFieldNameProp("Current name (rename_field)"),
 							"to":    fieldNameProp("New name (rename_field)"),
 							"name":  existingFieldNameProp("Field name (drop_field, set_fulltext, set_vectorize)"),

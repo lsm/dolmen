@@ -155,7 +155,9 @@ Validation notes:
 - `number` becomes `int64` or `float64`: integral values within the int64 range become `int64`; unsigned Go values > `MaxInt64` are rejected, and integral JSON numbers outside the int64 range become `float64` (precision loss).
 - `timestamp` must be a parseable ISO/RFC3339 string.
 - `vector` must be a number array of exactly the declared `dim`; `NaN`/`Inf` are rejected. The 4096-dimension cap applies only to declared `vector` fields; `vectorize` records the provider's returned dimension.
-- Unknown field keys are rejected. Missing or `null` required fields are rejected on `insert`.
+- Unknown field keys are rejected. Missing or `null` required fields are rejected on `insert`. Fields
+  may carry a declared `default` (shown by `describe_table`): an insert omitting such a field stores
+  the default instead of NULL; an explicit `null` still stores NULL.
 - Namespace and table names are trimmed and lowercased before validation on direct `/v1` requests, so `"namespace":" Production "` operates on `production`. The MCP tool schemas require already-canonical names — always send trimmed lowercase names.
 - `query` accepts only `SELECT`/`WITH`, rejects embedded semicolons (trailing semicolons are accepted), and binds at most 100 `args`.
 - `search_vector` with `text` requires a provider and searches only the server-managed `_embedding` column produced by a `vectorize: true` field — the provider identity must match the one that embedded the table, and a `text` query naming a declared `vector` column is rejected. Searches with a caller-supplied `vector` need no provider and are not checked against any embedding space — only you know which model produced the stored and query vectors.
