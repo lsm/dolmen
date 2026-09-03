@@ -5,7 +5,7 @@ description: Persistent structured storage for this agent — tables with schema
 
 # Dolmen — durable agent data
 
-A Dolmen server exposes thirteen tools over MCP. Everything lives in namespaces (isolated databases);
+A Dolmen server exposes eighteen tools over MCP. Everything lives in namespaces (isolated databases);
 pick one namespace per project or user and stay in it.
 
 ## Setup
@@ -16,8 +16,8 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
 
 ## Working rules
 
-1. **Check before creating.** Call `list_tables` first; reuse an existing table when one fits.
-   Only create tables for genuinely new kinds of data.
+1. **Check before creating.** Call `list_namespaces` then `list_tables` first; reuse an existing
+   namespace or table when one fits. Only create tables for genuinely new kinds of data.
 2. **Prefer `infer_schema` → review → `create_table`.** Never invent a schema blind when sample
    records exist. Note: inference proposes plain types only — during review, mark the main text
    field `vectorize: true` yourself if you want semantic recall (requires an embedding provider
@@ -40,6 +40,9 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
   enables `search_vector` with `text`), `required: true`.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
+- `drop_table` / `drop_namespace` are irreversible deletions (rows, search indexes, schema, history);
+  both require `confirm` to repeat the exact name being dropped. Prefer `delete` unless the table or
+  namespace itself must go.
 - `update`/`upsert` take the same `filter` plus a `set` object of field values; all matched rows get
   the same values, and `set` to `null` clears a field. Indexes and embeddings stay consistent
   automatically. `upsert` inserts `set` as one new record when the filter matches nothing (it must

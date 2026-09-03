@@ -45,6 +45,13 @@ type Server struct {
 // new rows on retry via a non-deterministic WHERE.
 var toolAnnotations = map[string]map[string]any{
 	"list_tables":     {"title": "List tables", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"list_namespaces": {"title": "List namespaces", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"create_namespace": {"title": "Create namespace", "readOnlyHint": false, "destructiveHint": false,
+		"idempotentHint": false, "openWorldHint": false},
+	"drop_namespace": {"title": "Drop namespace", "readOnlyHint": false, "destructiveHint": true,
+		"idempotentHint": false, "openWorldHint": false},
+	"drop_table": {"title": "Drop table", "readOnlyHint": false, "destructiveHint": true,
+		"idempotentHint": false, "openWorldHint": false},
 	"describe_table":  {"title": "Describe table", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"create_table":    {"title": "Create table", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
 	"infer_schema":    {"title": "Infer schema", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
