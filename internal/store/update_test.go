@@ -228,10 +228,15 @@ func TestUpdateNoMatchTouchesNothing(t *testing.T) {
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
 
+	// a failing provider must not turn a zero-match update into an error:
+	// nothing needs embedding, so the provider is never called
+	broken := Embedder{Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+		return nil, errors.New("provider down")
+	}, Identity: "fake-space"}
 	updated, err := st.Update(ctx, "test", "notes", "title = ?", []any{"ghost"},
-		map[string]any{"body": "ghost text"}, testEmbed)
+		map[string]any{"body": "ghost text"}, broken)
 	if err != nil {
-		t.Fatalf("update: %v", err)
+		t.Fatalf("zero-match update must not call the embedding provider: %v", err)
 	}
 	if updated != 0 {
 		t.Fatalf("expected 0 updated, got %d", updated)
@@ -404,5 +409,14 @@ func TestUpdatePlainTableWithoutIndexes(t *testing.T) {
 	}
 	if rows[0]["a"] != "z" || rows[0]["n"].(int64) != 9 || rows[1]["a"] != "y" {
 		t.Fatalf("plain update wrong: %v", rows)
+	}
+
+	// a table with no vectorize field must not gain embedding metadata on update
+	sc, _, err := st.DescribeTable(ctx, "test", "plain")
+	if err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	if sc.EmbedSpace != "" || sc.EmbedDim != 0 {
+		t.Fatalf("plain table must not gain embedding metadata, got space=%q dim=%d", sc.EmbedSpace, sc.EmbedDim)
 	}
 }

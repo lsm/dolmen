@@ -119,17 +119,6 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 			vf = f
 		}
 	}
-	persistMeta := sc.EmbedSpace == "" || sc.EmbedDim == 0
-	var vec []float32
-	if vf != nil {
-		text, _ := coerced[vf.Name].(string)
-		if text != "" {
-			vec, err = embedForUpdate(ctx, sc, table, text, emb)
-			if err != nil {
-				return UpdateResult{}, err
-			}
-		}
-	}
 
 	// Materialize matching ids first so the filter is evaluated exactly once,
 	// against the pre-update state (mirrors Delete).
@@ -143,6 +132,21 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 	var matched int64
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM _dolmen_update_ids`).Scan(&matched); err != nil {
 		return UpdateResult{}, err
+	}
+
+	// Embed only when there is work that needs the vector: matched rows to
+	// re-embed, or an upsert insert about to run. A zero-match update skips
+	// the embedding provider entirely.
+	persistMeta := false
+	var vec []float32
+	if vf != nil && (matched > 0 || allowInsert) {
+		if text, _ := coerced[vf.Name].(string); text != "" {
+			persistMeta = sc.EmbedSpace == "" || sc.EmbedDim == 0
+			vec, err = embedForUpdate(ctx, sc, table, text, emb)
+			if err != nil {
+				return UpdateResult{}, err
+			}
+		}
 	}
 
 	result := UpdateResult{}
