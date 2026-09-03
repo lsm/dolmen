@@ -596,13 +596,15 @@ var Ops = map[string]OpDef{
 		Description: "Evolve a table schema: add_field, rename_field, drop_field, set_fulltext, set_vectorize. " +
 			"Bumps the schema version and records the change. Adding fulltext rebuilds the search index; " +
 			"enabling vectorize backfills embeddings for existing rows. add_field accepts a default that is " +
-			"coerced to the field's type and backfilled into existing rows (required for adding a required " +
-			"field to a populated table; the insert contract is unchanged — required fields must still be " +
-			"present in each record). Pass expected_version (from describe_table) to assert the schema the " +
-			"changes were planned against: a mismatch fails with a conflict instead of running a stale plan " +
-			"(required for the destructive rename_field and drop_field). Pass dry_run=true to validate and " +
-			"preview — prospective schema and version, destructive changes, backfill rows, index rebuild, " +
-			"and embedding workload — with nothing applied and no provider calls.",
+			"coerced to the field's type and backfilled into existing rows; it is required for adding a " +
+			"required field to a populated table (the column then carries NOT NULL DEFAULT — dolmen inserts " +
+			"must still supply the field). For optional fields the default is a one-time backfill: later " +
+			"inserts omitting the field store NULL. Pass expected_version (from describe_table) to assert " +
+			"the schema the changes were planned against: a mismatch fails with a conflict instead of " +
+			"running a stale plan (required for the destructive rename_field and drop_field). Pass " +
+			"dry_run=true to validate and preview — prospective schema and version, destructive changes, " +
+			"backfill rows, index rebuild, and embedding workload — with nothing applied and no provider " +
+			"calls.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

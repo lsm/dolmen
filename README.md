@@ -101,7 +101,7 @@ The MCP server exposes the same fourteen operations as tools (`tools/list` shows
 | `delete` | WHERE-filtered delete, cascades to search indexes |
 | `update` | WHERE-filtered field update; reindexes full-text rows and re-embeds changed vectorized fields |
 | `upsert` | Update matching rows, or insert one record when the filter matches nothing |
-| `migrate` | `add_field` (optional `default` backfills existing rows, so required fields can land on populated tables), `rename_field`, `drop_field`, `set_fulltext`, `set_vectorize`; `expected_version` asserts the schema being migrated (required for rename/drop, conflicts surface as 409), `dry_run` previews the plan without side effects; versioned + logged |
+| `migrate` | `add_field` (optional `default` backfills existing rows — required fields land on populated tables as `NOT NULL DEFAULT`; optional fields get a one-time backfill, later omitted inserts store NULL), `rename_field`, `drop_field`, `set_fulltext`, `set_vectorize`; `expected_version` asserts the schema being migrated (required for rename/drop, conflicts surface as 409), `dry_run` previews the plan without side effects; versioned + logged |
 | `list_migrations` | A table's migration history, newest first, with the exact recorded changes |
 
 ## Model

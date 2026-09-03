@@ -1067,3 +1067,125 @@ func TestListMigrationsPreservesExactNumericDefaults(t *testing.T) {
 		t.Fatalf("stored default must be exact, got %T %v", rows[0]["n"], rows[0]["n"])
 	}
 }
+
+func TestOptionalFieldDefaultDoesNotLeakToFutureInserts(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "optdef", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "optdef", []map[string]any{{"v": "old"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if _, err := st.Migrate(ctx, "test", "optdef", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "note", Type: schema.Text, Fulltext: true}, Default: "legacy grievance"},
+	}, testEmbed, 1); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// Existing rows read the backfill; a fresh insert omitting the field reads NULL.
+	rows, _, err := st.Query(ctx, "test", `SELECT note FROM optdef ORDER BY id`, nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if rows[0]["note"] != "legacy grievance" {
+		t.Fatalf("existing row must read the backfilled default: %v", rows[0])
+	}
+	if _, err := st.Insert(ctx, "test", "optdef", []map[string]any{{"v": "new"}}, testEmbed); err != nil {
+		t.Fatalf("insert after optional default: %v", err)
+	}
+	rows, _, err = st.Query(ctx, "test", `SELECT note FROM optdef ORDER BY id`, nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if rows[1]["note"] != nil {
+		t.Fatalf("a later insert omitting an optional defaulted field must store NULL, got %v", rows[1]["note"])
+	}
+	// FTS stays consistent with the base rows: the old row matches the
+	// backfilled text, the new row (NULL) does not.
+	fts, _, err := st.SearchFulltext(ctx, "test", "optdef", "grievance", 10, false)
+	if err != nil {
+		t.Fatalf("fts: %v", err)
+	}
+	if len(fts) != 1 || fts[0]["v"] != "old" {
+		t.Fatalf("fulltext must match only the row that actually carries the default text: %v", fts)
+	}
+}
+
+func TestRenameCycleEstimateTerminates(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "cycle", []schema.Field{
+		{Name: "a", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "cycle", []map[string]any{
+		{"a": "one"}, {"a": "two"}, {"a": ""},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	changes := []schema.Change{
+		{Op: schema.OpRenameField, From: "a", To: "b"},
+		{Op: schema.OpRenameField, From: "b", To: "a"},
+		{Op: schema.OpSetVectorize, Name: "a", Value: true},
+	}
+	plan, err := st.PlanMigration(ctx, "test", "cycle", changes, testEmbed, 1)
+	if err != nil {
+		t.Fatalf("dry-run over a rename cycle must resolve the physical column and return: %v", err)
+	}
+	if plan.EmbedRows != 2 {
+		t.Fatalf("rename cycle must resolve back to the original column, embed_rows got %d", plan.EmbedRows)
+	}
+	if _, err := st.Migrate(ctx, "test", "cycle", changes, testEmbed, 1); err != nil {
+		t.Fatalf("apply over a rename cycle: %v", err)
+	}
+	qv, _ := fakeEmbed(ctx, []string{"one"})
+	rows, _, err := st.SearchVector(ctx, "test", "cycle", "", qv[0], "fake-space", 5, false)
+	if err != nil || len(rows) < 1 || rows[0]["a"] != "one" {
+		t.Fatalf("vectorize after rename cycle must be searchable: %v err=%v", rows, err)
+	}
+}
+
+func TestVacatedNameReuseEstimateTracksFieldIdentity(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "vacate", []schema.Field{
+		{Name: "a", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "vacate", []map[string]any{
+		{"a": "one"}, {"a": "two"}, {"a": ""},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	changes := []schema.Change{
+		{Op: schema.OpRenameField, From: "a", To: "b"},
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "a", Type: schema.String}},
+		{Op: schema.OpSetVectorize, Name: "b", Value: true},
+	}
+	plan, err := st.PlanMigration(ctx, "test", "vacate", changes, testEmbed, 1)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if plan.EmbedRows != 2 {
+		t.Fatalf("vectorizing the renamed field must count its stored texts, not the vacated-name re-add, got %d", plan.EmbedRows)
+	}
+	if _, err := st.Migrate(ctx, "test", "vacate", changes, testEmbed, 1); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	qv, _ := fakeEmbed(ctx, []string{"two"})
+	rows, _, err := st.SearchVector(ctx, "test", "vacate", "", qv[0], "fake-space", 5, false)
+	if err != nil || len(rows) < 1 || rows[0]["b"] != "two" {
+		t.Fatalf("vector search must hit the renamed column's values: %v err=%v", rows, err)
+	}
+	newA, _, err := st.Query(ctx, "test", `SELECT a FROM vacate WHERE b = 'two'`, nil)
+	if err != nil {
+		t.Fatalf("query new a: %v", err)
+	}
+	if newA[0]["a"] != nil {
+		t.Fatalf("the re-added field must stay NULL on existing rows: %v", newA[0])
+	}
+}

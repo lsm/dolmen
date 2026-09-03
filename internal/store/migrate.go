@@ -284,11 +284,18 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 		return nil, invalidf("field %q not found", name)
 	}
 
-	addedFields := map[string]any{}
-	// renamedFrom maps a field's prospective name back to the physical column
-	// the database still has: estimate queries run before any DDL step, so they
-	// must address current column names, not names this migration creates.
-	renamedFrom := map[string]string{}
+	// physicalName maps each field's prospective name to the column the
+	// database has right now ("" for fields this migration adds): estimate
+	// queries run before any DDL step, so they must address current columns,
+	// not names this migration creates. Tracking field identity rather than
+	// chaining renames keeps vacated-name reuse and rename cycles resolvable.
+	physicalName := map[string]string{}
+	for _, f := range old.Fields {
+		physicalName[f.Name] = f.Name
+	}
+	// defaults holds add_field backfill values keyed by the added field's
+	// current prospective name (moved on rename).
+	defaults := map[string]any{}
 
 	for i, ch := range changes {
 		if ch.Op != schema.OpAddField && ch.Default != nil {
@@ -311,15 +318,27 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			if len(cur.Fields) >= MaxFieldsPerTable {
 				return nil, invalidf("migration would leave %d fields (max %d; ALTERs run in request order, so adds cannot exceed the cap even when later drops reduce the final count)", len(cur.Fields)+1, MaxFieldsPerTable)
 			}
+			// A required column needs its default in the DDL: SQLite refuses
+			// ADD COLUMN ... NOT NULL without one, and dolmen inserts must
+			// supply required fields anyway, so that default never reaches
+			// future rows through the API. An optional column must NOT carry
+			// a persistent default — later inserts omitting the field would
+			// silently receive the backfill (and desync FTS/embedding
+			// indexing, which reads the request record) — so it backfills
+			// with a one-time UPDATE instead.
 			defSQL := ""
+			var defVal any
 			if ch.Default != nil {
 				cv, err := coerceValue(f, ch.Default)
 				if err != nil {
 					return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 				}
-				defSQL, err = sqlLiteral(cv)
-				if err != nil {
-					return nil, err
+				defVal = cv
+				if f.Required {
+					defSQL, err = sqlLiteral(cv)
+					if err != nil {
+						return nil, err
+					}
 				}
 			}
 			if f.Required || ch.Default != nil {
@@ -335,7 +354,8 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				}
 			}
 			cur.Fields = append(cur.Fields, f)
-			addedFields[f.Name] = ch.Default
+			physicalName[f.Name] = ""
+			defaults[f.Name] = ch.Default
 			if f.Fulltext {
 				rebuildFTSNeeded = true
 			}
@@ -371,6 +391,13 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 					fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, q(table), q(f.Name), ddl))
 				return err
 			})
+			if ch.Default != nil && !f.Required {
+				w.steps = append(w.steps, func(ctx context.Context, tx *sql.Tx) error {
+					_, err := tx.ExecContext(ctx,
+						fmt.Sprintf(`UPDATE %s SET %s = ?`, q(table), q(f.Name)), defVal)
+					return err
+				})
+			}
 		case schema.OpRenameField:
 			if !schema.ValidIdent(ch.To) {
 				return nil, invalidf("invalid new field name %q", ch.To)
@@ -388,7 +415,14 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				}
 			}
 			f.Name = ch.To
-			renamedFrom[ch.To] = oldName
+			if ch.To != ch.From {
+				physicalName[ch.To] = physicalName[oldName]
+				delete(physicalName, oldName)
+				if d, ok := defaults[oldName]; ok {
+					defaults[ch.To] = d
+					delete(defaults, oldName)
+				}
+			}
 			if f.Fulltext {
 				rebuildFTSNeeded = true
 			}
@@ -419,6 +453,8 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				}
 			}
 			cur.Fields = append(cur.Fields[:idx], cur.Fields[idx+1:]...)
+			delete(physicalName, ch.Name)
+			delete(defaults, ch.Name)
 			plan.Operations = append(plan.Operations, fmt.Sprintf("drop_field %s", ch.Name))
 			plan.Destructive = append(plan.Destructive, fmt.Sprintf("drop_field %s (the column and its data are removed permanently)", ch.Name))
 			w.steps = append(w.steps, func(ctx context.Context, tx *sql.Tx) error {
@@ -498,17 +534,12 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			// Every enable path re-embeds all rows carrying non-empty text:
 			// either there is no _embedding column yet, or the column is being
 			// cleared (field or model switch) — so count the texts, not the
-			// currently-unembedded rows. Resolve the prospective field name to
-			// the column the database has now: a field added by this migration
-			// has no stored texts yet (only its non-empty default embeds), and
-			// a renamed one lives under its pre-migration name until the DDL
-			// steps run.
-			physName := newVec.Name
-			for older, ok := renamedFrom[physName]; ok; older, ok = renamedFrom[physName] {
-				physName = older
-			}
-			if def, added := addedFields[physName]; added {
-				if s, ok := def.(string); ok && s != "" {
+			// currently-unembedded rows. Count under the physical column the
+			// database has now: a field added by this migration has no stored
+			// texts yet (only its non-empty default embeds), and a renamed one
+			// still lives under its pre-migration name until the DDL steps run.
+			if phys := physicalName[newVec.Name]; phys == "" {
+				if s, ok := defaults[newVec.Name].(string); ok && s != "" {
 					n, err := countRows(ctx, db, table)
 					if err != nil {
 						return nil, err
@@ -518,7 +549,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			} else {
 				var n int64
 				if err := db.QueryRowContext(ctx,
-					fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s IS NOT NULL AND %s != ''`, q(table), q(physName), q(physName))).Scan(&n); err != nil {
+					fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s IS NOT NULL AND %s != ''`, q(table), q(phys), q(phys))).Scan(&n); err != nil {
 					return nil, err
 				}
 				plan.EmbedRows = n
