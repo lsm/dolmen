@@ -196,6 +196,42 @@ func TestRedactStoreMsgPreservesProviderIdentity(t *testing.T) {
 	}
 }
 
+func TestErrorEnvelopeQueryErrorForMalformedFilter(t *testing.T) {
+	srv := newTestServer(t)
+	mustCreateUsers(t, srv.URL)
+
+	code, body := post(t, srv.URL, "update", map[string]any{
+		"namespace": "app",
+		"table":     "users",
+		"filter":    "id =",
+		"set":       map[string]any{"plan": "pro"},
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d %v", code, body)
+	}
+	errObj := errorBody(t, body)
+	if errObj["code"] != "query_error" {
+		t.Fatalf("expected query_error code, got %v", errObj["code"])
+	}
+	msg, _ := errObj["message"].(string)
+	if strings.Contains(msg, "SQL logic error") || strings.Contains(msg, "(1)") {
+		t.Fatalf("raw SQLite internals leaked into message: %q", msg)
+	}
+
+	code, body = post(t, srv.URL, "delete", map[string]any{
+		"namespace": "app",
+		"table":     "users",
+		"filter":    "id =",
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d %v", code, body)
+	}
+	errObj = errorBody(t, body)
+	if errObj["code"] != "query_error" {
+		t.Fatalf("expected query_error code for delete, got %v", errObj["code"])
+	}
+}
+
 func TestErrorEnvelopeOmitsRequestIDWhenNotProvided(t *testing.T) {
 	srv := newTestServer(t)
 	code, body := post(t, srv.URL, "query", map[string]any{

@@ -186,7 +186,7 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	}
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`CREATE TEMP TABLE _dolmen_delete_ids AS SELECT id FROM %s WHERE %s`, q(table), where), args...); err != nil {
-		return 0, fmt.Errorf("%w: filter error: %w", ErrInvalid, err)
+		return 0, NewQueryError(where, err)
 	}
 	if len(sc.FTSFields()) > 0 {
 		if _, err := tx.ExecContext(ctx,
