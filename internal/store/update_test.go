@@ -47,14 +47,14 @@ func TestUpdateRewritesRowsAndSearchIndex(t *testing.T) {
 		t.Fatalf("update must not renumber ids: %v", rows[0])
 	}
 
-	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "renamed", 10)
+	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "renamed", 10, false)
 	if err != nil {
 		t.Fatalf("fts after update: %v", err)
 	}
 	if len(hits) != 2 {
 		t.Fatalf("expected 2 fts hits for the new title, got %v", hits)
 	}
-	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "second", 10)
+	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "second", 10, false)
 	if err != nil {
 		t.Fatalf("fts old title: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestUpdateWithoutIndexChangesLeavesSearchIntact(t *testing.T) {
 	if updated != 3 {
 		t.Fatalf("expected 3 updated, got %d", updated)
 	}
-	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 10)
+	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 10, false)
 	if err != nil {
 		t.Fatalf("fts: %v", err)
 	}
@@ -107,7 +107,8 @@ func TestUpdateCoercesValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if rows[0]["score"].(float64) != 2.5 || rows[0]["done"].(int64) != 1 || rows[0]["tags"] != `["x"]` {
+	tags, ok := rows[0]["tags"].([]any)
+	if rows[0]["score"].(float64) != 2.5 || rows[0]["done"].(bool) != true || !ok || len(tags) != 1 || tags[0] != "x" {
 		t.Fatalf("coerced values wrong: %v", rows[0])
 	}
 
@@ -171,7 +172,7 @@ func TestUpdateReEmbedsVectorizedField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
-	hits, _, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10)
+	hits, _, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10, false)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
@@ -197,7 +198,7 @@ func TestUpdateClearsEmbeddingWhenVectorizedFieldCleared(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
-	hits, _, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10)
+	hits, _, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10, false)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
@@ -207,14 +208,14 @@ func TestUpdateClearsEmbeddingWhenVectorizedFieldCleared(t *testing.T) {
 
 	// body is a fulltext field: cleared text must leave the index, and the
 	// untouched row (done = 1) must keep matching its own body text
-	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "memory", 10)
+	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "memory", 10, false)
 	if err != nil {
 		t.Fatalf("fts cleared: %v", err)
 	}
 	if len(hits) != 0 {
 		t.Fatalf("cleared body must not match anymore, got %v", hits)
 	}
-	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "dolmen", 10)
+	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "dolmen", 10, false)
 	if err != nil {
 		t.Fatalf("fts survivor: %v", err)
 	}
@@ -249,7 +250,7 @@ func TestUpdateNoMatchTouchesNothing(t *testing.T) {
 	if sc.EmbedSpace != "fake-space" || sc.EmbedDim != 8 {
 		t.Fatalf("no-match update must not rewrite embedding metadata, got space=%q dim=%d", sc.EmbedSpace, sc.EmbedDim)
 	}
-	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "ghost", 10)
+	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "ghost", 10, false)
 	if err != nil {
 		t.Fatalf("fts: %v", err)
 	}
@@ -336,7 +337,7 @@ func TestUpsertInsertsWhenNoMatch(t *testing.T) {
 	if rows[0]["title"] != "ghost note" || rows[0]["score"].(int64) != 7 {
 		t.Fatalf("inserted row wrong: %v", rows[0])
 	}
-	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "haunting", 10)
+	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "haunting", 10, false)
 	if err != nil {
 		t.Fatalf("fts: %v", err)
 	}
@@ -347,7 +348,7 @@ func TestUpsertInsertsWhenNoMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
-	vhits, _, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10)
+	vhits, _, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10, false)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
