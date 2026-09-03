@@ -491,6 +491,7 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"values subquery internal", "SELECT (VALUES('safe') UNION ALL SELECT schema_json FROM _dolmen_tables LIMIT 1 OFFSET 1) FROM notes"},
 		{"cte scope leak", "SELECT (WITH _dolmen_tables(x) AS (VALUES(1)) SELECT x FROM _dolmen_tables), name FROM _dolmen_tables"},
 		{"pragma arg reserved", "SELECT * FROM pragma_table_info('pragma_table_list')"},
+		{"dbstat", "SELECT * FROM dbstat"},
 	}
 
 	for _, tc := range cases {
@@ -550,6 +551,7 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		"SELECT n.id FROM notes n JOIN sides s ON n.id = s.left",
 		"WITH RECURSIVE c(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM c WHERE x < 3) SELECT * FROM c",
 		"SELECT (VALUES(1) UNION ALL SELECT id FROM notes LIMIT 1) FROM notes",
+		"WITH a AS (SELECT x FROM _dolmen_tables), _dolmen_tables(x) AS (VALUES(7)) SELECT * FROM a",
 	}
 
 	for _, q := range ok {

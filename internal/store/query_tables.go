@@ -478,6 +478,20 @@ func (s *queryScanner) parseWith() error {
 	if err := s.expect("with"); err != nil {
 		return err
 	}
+	// Pre-scan the CTE list to register every name before any body is parsed.
+	// SQLite allows forward references, so a later CTE can be referenced by an
+	// earlier one.
+	fwd := *s
+	fwd.buf = nil
+	fwd.cteNames = nil
+	names, err := fwd.collectCteNames()
+	if err != nil {
+		return err
+	}
+	for k, v := range names {
+		s.cteNames[k] = v
+	}
+
 	if t, _ := s.peek(); isKeyword(t, "recursive") {
 		s.next()
 	}
@@ -520,6 +534,56 @@ func (s *queryScanner) parseWith() error {
 			continue
 		}
 		return nil
+	}
+}
+
+// collectCteNames scans a WITH clause without validating CTE bodies and returns
+// the set of CTE names. It is used by parseWith to register all names before
+// any body is parsed so that forward references between CTEs resolve correctly.
+func (s *queryScanner) collectCteNames() (map[string]bool, error) {
+	names := make(map[string]bool)
+	if t, _ := s.peek(); isKeyword(t, "recursive") {
+		s.next()
+	}
+	for {
+		t, err := s.next()
+		if err != nil {
+			return nil, err
+		}
+		if t.typ != "ident" {
+			return nil, invalidf("expected CTE name, got %q", t.val)
+		}
+		names[strings.ToLower(unquoteIdent(t.val))] = true
+		if t2, _ := s.peek(); t2.val == "(" {
+			if err := s.scanParenthesized(); err != nil {
+				return nil, err
+			}
+		}
+		if err := s.expect("as"); err != nil {
+			return nil, err
+		}
+		if t, _ := s.peek(); isKeyword(t, "not") {
+			s.next()
+			if err := s.expect("materialized"); err != nil {
+				return nil, err
+			}
+		} else if isKeyword(t, "materialized") {
+			s.next()
+		}
+		if err := s.expect("("); err != nil {
+			return nil, err
+		}
+		if _, err := s.scanUntil(map[string]bool{")": true}); err != nil {
+			return nil, err
+		}
+		if err := s.expect(")"); err != nil {
+			return nil, err
+		}
+		if t2, _ := s.peek(); t2.val == "," {
+			s.next()
+			continue
+		}
+		return names, nil
 	}
 }
 
