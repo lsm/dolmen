@@ -389,6 +389,109 @@ var Ops = map[string]OpDef{
 			return map[string]any{"deleted": deleted}, nil
 		},
 	},
+	"update": {
+		Description: "Update rows matching a SQL WHERE expression (e.g. \"status = 'done'\" or \"id IN (3, 7)\") " +
+			"by setting the given fields. Values are validated against the table schema; unknown fields are rejected; " +
+			"a null value clears a field (required fields cannot be cleared). All matched rows get the same values. " +
+			"Search indexes stay consistent: full-text rows are reindexed when an indexed field changes, and " +
+			"vectorized fields are re-embedded. The filter is required; pass \"1=1\" to update every row.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace of the table"),
+				"table":     tableProp("Table name"),
+				"filter": map[string]any{
+					"type":        "string",
+					"description": "SQL WHERE expression selecting rows to update",
+					"pattern":     `\S`,
+					"not":         map[string]any{"pattern": ";"},
+				},
+				"args": map[string]any{
+					"type":        "array",
+					"description": "Optional bind parameters for ? placeholders",
+					"items": map[string]any{
+						"anyOf": []any{
+							map[string]any{"type": "string"},
+							map[string]any{"type": "number"},
+							map[string]any{"type": "boolean"},
+							map[string]any{"type": "null"},
+						},
+					},
+				},
+				"set": map[string]any{
+					"type":          "object",
+					"description":   "Field values to set, keyed by field name (null clears a field)",
+					"minProperties": 1,
+				},
+			},
+			"required": []string{"namespace", "table", "filter", "set"},
+		},
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req updateReq
+			if err := decodeData(body, &req); err != nil {
+				return nil, err
+			}
+			updated, err := s.st.Update(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args, req.Set, s.embedder())
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"updated": updated}, nil
+		},
+	},
+	"upsert": {
+		Description: "Update rows matching a SQL WHERE expression, or insert one record when no row matches. " +
+			"With matches it behaves exactly like update (all matched rows get the set values); with none it " +
+			"inserts set as a new record, which must then satisfy required fields. Returns inserted=true with " +
+			"the new id, or inserted=false with the updated row count.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace of the table"),
+				"table":     tableProp("Table name"),
+				"filter": map[string]any{
+					"type":        "string",
+					"description": "SQL WHERE expression selecting the row(s) to update; insert when it matches nothing",
+					"pattern":     `\S`,
+					"not":         map[string]any{"pattern": ";"},
+				},
+				"args": map[string]any{
+					"type":        "array",
+					"description": "Optional bind parameters for ? placeholders",
+					"items": map[string]any{
+						"anyOf": []any{
+							map[string]any{"type": "string"},
+							map[string]any{"type": "number"},
+							map[string]any{"type": "boolean"},
+							map[string]any{"type": "null"},
+						},
+					},
+				},
+				"set": map[string]any{
+					"type":          "object",
+					"description":   "Field values to apply, keyed by field name (used as the record when inserting; null clears a field)",
+					"minProperties": 1,
+				},
+			},
+			"required": []string{"namespace", "table", "filter", "set"},
+		},
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req updateReq
+			if err := decodeData(body, &req); err != nil {
+				return nil, err
+			}
+			res, err := s.st.Upsert(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args, req.Set, s.embedder())
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			out := map[string]any{"inserted": res.Inserted, "updated": res.Updated}
+			if res.Inserted {
+				out["id"] = res.ID
+			}
+			return out, nil
+		},
+	},
 	"migrate": {
 		Description: "Evolve a table schema: add_field, rename_field, drop_field, set_fulltext, set_vectorize. " +
 			"Bumps the schema version and records the change. Adding fulltext rebuilds the search index; " +
@@ -523,6 +626,14 @@ type deleteReq struct {
 	Table     string `json:"table"`
 	Filter    string `json:"filter"`
 	Args      []any  `json:"args"`
+}
+
+type updateReq struct {
+	Namespace string         `json:"namespace"`
+	Table     string         `json:"table"`
+	Filter    string         `json:"filter"`
+	Args      []any          `json:"args"`
+	Set       map[string]any `json:"set"`
 }
 
 type migrateReq struct {
