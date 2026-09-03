@@ -54,6 +54,91 @@ func TestCreateInsertQuery(t *testing.T) {
 	}
 }
 
+func TestHasStatementSeparator(t *testing.T) {
+	cases := []struct {
+		sql  string
+		want bool
+	}{
+		{"SELECT 1", false},
+		{"SELECT 'a;b'", false},
+		{"SELECT 'a'';b'", false},
+		{`SELECT "a;b" FROM t`, false},
+		{"SELECT `a;b` FROM t", false},
+		{"SELECT [a;b] FROM t", false},
+		{"SELECT 1 -- ; comment", false},
+		{"SELECT 1 -- don't; parse\nFROM t", false},
+		{"SELECT /* ; comment */ 1", false},
+		{"SELECT 1; SELECT 2", true},
+		{"SELECT 'a'; DROP TABLE t", true},
+		{`SELECT "a" FROM t; SELECT 2`, true},
+		{"SELECT `a` FROM t; SELECT 2", true},
+		{"SELECT [a] FROM t; SELECT 2", true},
+		{"SELECT 1 -- fine\n; SELECT 2", true},
+		{"SELECT /* ; */ 1; SELECT 2", true},
+	}
+	for _, c := range cases {
+		if got := hasStatementSeparator(c.sql); got != c.want {
+			t.Errorf("hasStatementSeparator(%q) = %v, want %v", c.sql, got, c.want)
+		}
+	}
+}
+
+func TestQuerySemicolonInsideQuotesAllowed(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	mustInsertNotes(t, st)
+
+	allowed := []string{
+		"SELECT 'a;b' AS v",
+		"SELECT title FROM notes WHERE title = 'a;b'",
+		"SELECT title FROM notes WHERE title <> 'x'';y'",
+		`SELECT count(*) AS n FROM "notes"`,
+		"SELECT count(*) AS n FROM `notes`",
+		"SELECT count(*) AS n FROM [notes]",
+		"SELECT count(*) AS n FROM notes -- ; not a break",
+		"SELECT /* ; not a break */ count(*) AS n FROM notes",
+	}
+	for _, q := range allowed {
+		if _, _, err := st.Query(ctx, "test", q, nil); err != nil {
+			t.Fatalf("query %q: %v", q, err)
+		}
+	}
+
+	rejected := []string{
+		"SELECT 1; SELECT 2",
+		"SELECT 'a'; DROP TABLE notes",
+		`SELECT "title" FROM notes; SELECT 2`,
+		"SELECT `title` FROM notes; SELECT 2",
+		"SELECT [title] FROM notes; SELECT 2",
+		"SELECT 1 -- fine\n; SELECT 2",
+		"SELECT /* ; */ 1; SELECT 2",
+	}
+	for _, q := range rejected {
+		if _, _, err := st.Query(ctx, "test", q, nil); err == nil {
+			t.Fatalf("expected multi-statement query %q to be rejected", q)
+		}
+	}
+}
+
+func TestQuerySemicolonLiteralRoundTrip(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{
+		{"title": "a;b", "body": "semicolon title"},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, _, err := st.Query(ctx, "test", "SELECT title FROM notes WHERE title = 'a;b'", nil)
+	if err != nil {
+		t.Fatalf("query with semicolon literal: %v", err)
+	}
+	if len(rows) != 1 || rows[0]["title"] != "a;b" {
+		t.Fatalf("unexpected rows: %v", rows)
+	}
+}
+
 func TestInsertEmptyRecordDefaultValues(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
