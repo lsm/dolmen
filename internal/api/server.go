@@ -171,7 +171,8 @@ func tableProp(desc string) map[string]any {
 			"anyOf": []any{
 				map[string]any{"pattern": "__fts"},
 				map[string]any{"pattern": "^sqlite_"},
-				map[string]any{"enum": []string{"id", "created_at", "rowid"}},
+				map[string]any{"pattern": "^pragma_"},
+				map[string]any{"enum": []string{"id", "created_at", "rowid", "dbstat"}},
 			},
 		},
 	}

@@ -389,12 +389,21 @@ func TestNamespaceAndTablePatternsDeclared(t *testing.T) {
 			t.Fatalf("%s: table must carry the ValidIdent pattern, got %v", op, table["pattern"])
 		}
 		notAnyOf, ok := table["not"].(map[string]any)["anyOf"].([]any)
-		if !ok || len(notAnyOf) != 3 {
-			t.Fatalf("%s: table must exclude __fts, sqlite_, and reserved identifier names, got %v", op, table["not"])
+		if !ok || len(notAnyOf) != 4 {
+			t.Fatalf("%s: table must exclude __fts, sqlite_, pragma_, dbstat and reserved identifier names, got %v", op, table["not"])
 		}
-		reservedEnum, ok := notAnyOf[2].(map[string]any)["enum"].([]string)
-		if !ok || len(reservedEnum) != 3 || reservedEnum[0] != "id" || reservedEnum[1] != "created_at" || reservedEnum[2] != "rowid" {
-			t.Fatalf("%s: reserved table-name exclusions must cover id/created_at/rowid, got %v", op, notAnyOf[2])
+		if notAnyOf[0].(map[string]any)["pattern"] != "__fts" {
+			t.Fatalf("%s: first exclusion must be __fts, got %v", op, notAnyOf[0])
+		}
+		if notAnyOf[1].(map[string]any)["pattern"] != "^sqlite_" {
+			t.Fatalf("%s: second exclusion must be ^sqlite_, got %v", op, notAnyOf[1])
+		}
+		if notAnyOf[2].(map[string]any)["pattern"] != "^pragma_" {
+			t.Fatalf("%s: third exclusion must be ^pragma_, got %v", op, notAnyOf[2])
+		}
+		reservedEnum, ok := notAnyOf[3].(map[string]any)["enum"].([]string)
+		if !ok || len(reservedEnum) != 4 || reservedEnum[0] != "id" || reservedEnum[1] != "created_at" || reservedEnum[2] != "rowid" || reservedEnum[3] != "dbstat" {
+			t.Fatalf("%s: reserved table-name exclusions must cover id/created_at/rowid/dbstat, got %v", op, notAnyOf[3])
 		}
 	}
 }
