@@ -1103,10 +1103,21 @@ func (s *queryScanner) consumeJoinOp() error {
 	}
 }
 
-// isRegisteredRef reports whether an unqualified reference names a table the
-// namespace actually registered — grandfathered names included.
+// ownSchema reports whether a schema qualifier names the namespace's own
+// main schema (or is absent), making a qualified reference equivalent to an
+// unqualified one for registry lookups. temp and other schemas stay distinct.
+func ownSchema(schema string) bool {
+	if schema == "" {
+		return true
+	}
+	return asciiLower(unquoteIdent(schema)) == "main"
+}
+
+// isRegisteredRef reports whether a reference (unqualified or main-qualified)
+// names a table the namespace actually registered — grandfathered names
+// included.
 func (s *queryScanner) isRegisteredRef(schema, name string) bool {
-	return schema == "" && s.registered[asciiLower(unquoteIdent(name))]
+	return ownSchema(schema) && s.registered[asciiLower(unquoteIdent(name))]
 }
 
 func (s *queryScanner) parseTableFactor() error {
@@ -1216,8 +1227,10 @@ func (s *queryScanner) checkTableName(schema, rawName string) error {
 	// namespace (its name may predate current reservation rules). A quoted
 	// identifier may contain dots ("c._dolmen_tables" is one name), so check
 	// the complete name against the CTE and registry before treating a dot as
-	// a schema separator.
-	if schema == "" && (s.isCteName(base) || s.registered[base]) {
+	// a schema separator. SQLite never resolves a qualified name to a CTE, so
+	// the CTE match stays unqualified; the registry match also accepts the
+	// main qualifier, which resolves to the same physical table.
+	if (schema == "" && s.isCteName(base)) || (ownSchema(schema) && s.registered[base]) {
 		return nil
 	}
 	if i := strings.LastIndex(base, "."); i >= 0 {

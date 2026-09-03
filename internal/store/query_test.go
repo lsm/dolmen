@@ -892,6 +892,15 @@ func TestQueryAllowsGrandfatheredReservedNames(t *testing.T) {
 		if _, _, err := st.Query(ctx, "test", "SELECT v FROM "+name, nil, 0, 0); err != nil {
 			t.Fatalf("query grandfathered %s: %v", name, err)
 		}
+		// A main-qualified reference resolves to the same physical table.
+		if _, _, err := st.Query(ctx, "test", "SELECT v FROM main."+name, nil, 0, 0); err != nil {
+			t.Fatalf("query main-qualified grandfathered %s: %v", name, err)
+		}
+	}
+	// The main qualifier does not smuggle internal tables: they were never
+	// registered.
+	if _, _, err := st.Query(ctx, "test", "SELECT * FROM main._dolmen_tables", nil, 0, 0); err == nil {
+		t.Fatal("expected main-qualified internal registry to stay rejected")
 	}
 	// The registry cannot smuggle internal tables: those names were never
 	// creatable, so they stay rejected.
