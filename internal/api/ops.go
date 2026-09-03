@@ -413,7 +413,7 @@ var Ops = map[string]OpDef{
 				"items":       map[string]any{"type": "object", "description": "Row keyed by column name"},
 			},
 			"row_count": prop("integer", "Number of rows returned"),
-			"truncated": prop("boolean", "True when the result hit the response budget and was cut short"),
+			"truncated": prop("boolean", "True when more results are available beyond the returned page (because the limit was reached or the response budget was hit)"),
 		}, "rows", "row_count", "truncated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req queryReq
@@ -466,7 +466,7 @@ var Ops = map[string]OpDef{
 				"description": "Matching records ordered by relevance (id, created_at, and table fields)",
 				"items":       map[string]any{"type": "object", "description": "Matching record"},
 			},
-			"truncated": prop("boolean", "True when the result hit the response budget and was cut short"),
+			"truncated": prop("boolean", "True when more results are available beyond the returned page (because the limit was reached or the response budget was hit)"),
 		}, "results", "truncated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req ftsReq
@@ -546,7 +546,7 @@ var Ops = map[string]OpDef{
 					},
 				},
 			},
-			"truncated": prop("boolean", "True when the result hit the response budget and was cut short"),
+			"truncated": prop("boolean", "True when more results are available beyond the returned page (because the limit was reached or the response budget was hit)"),
 		}, "results", "truncated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req vecReq
