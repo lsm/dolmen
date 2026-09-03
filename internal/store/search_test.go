@@ -266,3 +266,39 @@ func TestFulltextPaginationAndTruncatedFlag(t *testing.T) {
 		t.Fatalf("page 2 should return 1 row with truncated=false: %d %v", len(rows), truncated)
 	}
 }
+
+func TestFulltextSentinelRowNeverFailsThePage(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "ftssent", []schema.Field{
+		{Name: "title", Type: schema.String, Fulltext: true},
+		{Name: "payload", Type: schema.Text},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "ftssent", []map[string]any{
+		{"title": "needle", "payload": "one"},
+		{"title": "needle", "payload": "two"},
+		{"title": "needle", "payload": "three"},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	// The (limit+1)th match carries a blob beyond the response budget: it is
+	// only a look-ahead for truncated, so it must never be materialized.
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	if _, err := n.rw.ExecContext(ctx,
+		`UPDATE ftssent SET payload = randomblob(34000000) WHERE title = 'needle' AND payload = 'three'`); err != nil {
+		t.Fatalf("out-of-band write: %v", err)
+	}
+
+	rows, truncated, err := st.SearchFulltext(ctx, "test", "ftssent", "needle", 0, 2, false)
+	if err != nil {
+		t.Fatalf("oversized sentinel row must not fail the page: %v", err)
+	}
+	if len(rows) != 2 || !truncated {
+		t.Fatalf("expected 2 valid rows with truncated=true, got %d rows truncated=%v", len(rows), truncated)
+	}
+}

@@ -195,6 +195,42 @@ func TestVectorPaginationAndTruncatedFlag(t *testing.T) {
 	}
 }
 
+func TestVectorSentinelRowNeverFailsThePage(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "vecsent", []schema.Field{
+		{Name: "payload", Type: schema.Text},
+		{Name: "emb", Type: schema.Vector, Dim: 1},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "vecsent", []map[string]any{
+		{"payload": "one", "emb": []any{1}},
+		{"payload": "two", "emb": []any{1}},
+		{"payload": "three", "emb": []any{1}},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	// The (limit+1)th hit carries a blob beyond the response budget: it is
+	// only a look-ahead for truncated, so it must never be materialized.
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	if _, err := n.rw.ExecContext(ctx,
+		`UPDATE vecsent SET payload = randomblob(34000000) WHERE payload = 'three'`); err != nil {
+		t.Fatalf("out-of-band write: %v", err)
+	}
+
+	res, err := st.SearchVector(ctx, "test", "vecsent", "emb", []float32{1}, "", 0, 2, false, "", nil, nil)
+	if err != nil {
+		t.Fatalf("oversized sentinel row must not fail the page: %v", err)
+	}
+	if len(res.Rows) != 2 || !res.Truncated {
+		t.Fatalf("expected 2 valid rows with truncated=true, got %d rows truncated=%v", len(res.Rows), res.Truncated)
+	}
+}
+
 func TestTextQueryCannotTargetRawVectorColumn(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()

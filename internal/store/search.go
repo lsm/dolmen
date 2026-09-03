@@ -64,15 +64,18 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 	if err := rows.Err(); err != nil {
 		return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
+	// The (limit+1)th id is only a look-ahead for truncated — never fetch it,
+	// or an invalid value in that row would fail the whole page instead of
+	// returning the valid rows with truncated=true.
+	hasMore := len(ids) > limit
+	if hasMore {
+		ids = ids[:limit]
+	}
 	out, complete, err := fetchByIDs(ctx, tx, table, ids, projectionFromSchema(sc, includeHidden))
 	if err != nil {
 		return nil, false, err
 	}
-	hasMore := !complete || len(out) > limit
-	if len(out) > limit {
-		out = out[:limit]
-	}
-	return out, hasMore, nil
+	return out, hasMore || !complete, nil
 }
 
 type dbQueryer interface {
