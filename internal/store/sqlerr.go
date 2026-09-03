@@ -16,7 +16,15 @@ type QueryError struct {
 }
 
 func (e *QueryError) Error() string { return e.msg }
-func (e *QueryError) Unwrap() error { return e.sentinel }
+
+// Unwrap exposes both the original SQLite cause and the sentinel so callers
+// can use errors.As for result-code inspection and errors.Is for classification.
+func (e *QueryError) Unwrap() []error {
+	if e.cause == nil {
+		return []error{e.sentinel}
+	}
+	return []error{e.cause, e.sentinel}
+}
 
 // Cause returns the original, unsanitized SQLite error for diagnostics.
 func (e *QueryError) Cause() error { return e.cause }

@@ -506,4 +506,16 @@ func TestQueryErrorsAreSanitizedAndSelfCorrectable(t *testing.T) {
 	if !strings.Contains(qe.Cause().Error(), "SQL logic error") && !strings.Contains(qe.Cause().Error(), "(1)") {
 		t.Fatalf("cause should be the raw SQLite error, got %q", qe.Cause().Error())
 	}
+
+	// Unwrap must expose both the original cause and the sentinel for errors.As/Is.
+	unwrapped := qe.Unwrap()
+	if len(unwrapped) != 2 {
+		t.Fatalf("expected Unwrap to return 2 errors, got %d", len(unwrapped))
+	}
+	if unwrapped[0] != qe.Cause() {
+		t.Fatalf("first unwrapped error should be the cause, got %v", unwrapped[0])
+	}
+	if !errors.Is(unwrapped[1], ErrInvalid) {
+		t.Fatalf("second unwrapped error should be ErrInvalid, got %v", unwrapped[1])
+	}
 }
