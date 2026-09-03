@@ -71,10 +71,11 @@ func (s *Store) CreateNamespace(nsName string) error {
 }
 
 // DropNamespace removes a namespace and every table in it: cached connections
-// are closed and evicted, then the SQLite file and its WAL sidecars are
-// deleted. Close waits for in-flight requests on that namespace to finish;
-// requests that arrive after the drop fail or — like any later use of the
-// name — recreate the namespace empty.
+// are closed, drained to zero, and evicted, then the SQLite file and its WAL
+// sidecars are deleted. The drop waits for in-flight requests on the
+// namespace to finish (unboundedly — see evict); requests that arrive after
+// the drop fail or — like any later use of the name — recreate the namespace
+// empty.
 //
 // The caveat from the stop-server-and-delete era still applies across
 // processes: another process holding the namespace file open (a second
@@ -177,40 +178,34 @@ func tableGen(ctx context.Context, db rowQuerier, table string) (int64, error) {
 	return gen.Int64, nil
 }
 
-// evict closes a namespace's cached pools and removes them from the cache,
-// then waits for connections checked out by in-flight requests to be returned
-// and closed. Waiting matters before the file paths are reused or deleted:
-// SQLite unlinks a WAL database's -wal/-shm sidecars by path when a
-// connection closes, so a straggler from the evicted pools would otherwise
-// delete the sidecars of the namespace's next incarnation at the same path —
-// leaving a WAL-mode database whose read-only connections then fail. Drain is
-// bounded by evictDrainTimeout; callers must hold s.mu (which is what keeps
-// the namespace from being recreated mid-drain). Close errors are advisory —
-// the caller is discarding the namespace either way.
+// evict closes a namespace's cached pools, waits until every connection they
+// handed out has been returned and fully closed, and only then removes the
+// namespace from the cache. Callers must hold s.mu, which is what keeps the
+// file paths reserved for the whole drain: SQLite unlinks a WAL database's
+// -wal/-shm sidecars by path on a connection's final close, so if the
+// namespace were recreated (or its files deleted and re-created) while a
+// straggler from the evicted pools was still alive, the straggler's unlink
+// would delete the next incarnation's sidecars and its connections would
+// fail with disk I/O errors. The wait is therefore unbounded: a request that
+// never finishes (a hung embedding provider with no context deadline) hangs
+// the eviction — and, since s.mu is held, new namespace opens — with it.
+// database/sql decrements its open-connection count only after the driver's
+// close returns, so observing zero means the sidecar unlinks have happened.
+// Close errors are advisory — the caller is discarding the namespace anyway.
 func (s *Store) evict(name string) {
 	n, ok := s.nss[name]
 	if !ok {
 		return
 	}
-	delete(s.nss, name)
 	// ro first: the rw connection is the one that checkpoints and clears
 	// the WAL on its final close.
 	_ = n.ro.Close()
 	_ = n.rw.Close()
-	deadline := time.Now().Add(evictDrainTimeout)
-	for time.Now().Before(deadline) {
-		if n.ro.Stats().OpenConnections == 0 && n.rw.Stats().OpenConnections == 0 {
-			return
-		}
+	for n.ro.Stats().OpenConnections > 0 || n.rw.Stats().OpenConnections > 0 {
 		time.Sleep(2 * time.Millisecond)
 	}
+	delete(s.nss, name)
 }
-
-// evictDrainTimeout bounds how long evict waits for in-flight requests on a
-// dropped namespace. A request outliving it (e.g. paused on a very slow
-// embedding provider) resumes against the deleted file and can, in the worst
-// case, disturb the sidecars of a namespace recreated under the same name.
-const evictDrainTimeout = 10 * time.Second
 
 func validateNS(name string) error {
 	if !nsRe.MatchString(name) {

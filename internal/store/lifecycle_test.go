@@ -502,3 +502,49 @@ func TestNamespaceFileRemovedOutOfBand(t *testing.T) {
 		t.Fatalf("recreated namespace must be empty, got %v", tables)
 	}
 }
+
+// The drop must not complete while a transaction holds one of the
+// namespace's connections: the paths stay reserved until the straggler's
+// final close, so its WAL-sidecar unlink cannot hit the next incarnation.
+// Update on a vectorized field re-embeds inside the write transaction, so a
+// pausing embedder pins the namespace's only rw connection deterministically.
+func TestDropNamespaceWaitsForInFlightTransaction(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	// The update below must match a row: with none, it skips embedding
+	// entirely and nothing holds the connection.
+	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{{"title": "seed"}}, testEmbed); err != nil {
+		t.Fatalf("seed insert: %v", err)
+	}
+
+	emb, waitPaused, release := pausingEmbedder()
+	updated := make(chan error, 1)
+	go func() {
+		_, err := st.Update(ctx, "test", "notes", "id > 0", nil, map[string]any{"body": "held open"}, emb)
+		updated <- err
+	}()
+	waitPaused() // the update now holds the rw connection inside its tx
+
+	dropped := make(chan error, 1)
+	go func() { dropped <- st.DropNamespace("test") }()
+	select {
+	case err := <-dropped:
+		t.Fatalf("drop must wait for the in-flight transaction, returned early with %v", err)
+	case <-time.After(150 * time.Millisecond):
+		// still waiting, as it must
+	}
+
+	release()
+	if err := <-updated; err != nil {
+		t.Fatalf("in-flight update must complete before the drop: %v", err)
+	}
+	if err := <-dropped; err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if _, err := os.Stat(filepath.Join(st.dir, "test.db"+suffix)); !os.IsNotExist(err) {
+			t.Fatalf("test.db%s must be gone after the waited drop", suffix)
+		}
+	}
+}
