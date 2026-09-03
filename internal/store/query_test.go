@@ -626,6 +626,7 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"values subquery internal", "SELECT (VALUES('safe') UNION ALL SELECT schema_json FROM _dolmen_tables LIMIT 1 OFFSET 1) FROM notes"},
 		{"cte scope leak", "SELECT (WITH _dolmen_tables(x) AS (VALUES(1)) SELECT x FROM _dolmen_tables), name FROM _dolmen_tables"},
 		{"pragma arg reserved", "SELECT * FROM pragma_table_info('pragma_table_list')"},
+		{"pragma arg reserved dqs", `SELECT * FROM pragma_table_info("_dolmen_tables")`},
 		{"dbstat", "SELECT * FROM dbstat"},
 		{"nested expression bypass", "SELECT coalesce((SELECT 1), 0), schema_json FROM _dolmen_tables"},
 		// A $ inside an identifier must not split it: otherwise the scanner
@@ -720,6 +721,9 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		"SELECT * FROM (VALUES (1, 2)) AS t",
 		"SELECT * FROM pragma_table_info('notes')",
 		"SELECT * FROM pragma_table_info('notes', 'main')",
+		// SQLite's double-quoted-string fallback makes pragma_table_info("notes")
+		// a literal argument, so it stays allowed.
+		`SELECT * FROM pragma_table_info("notes")`,
 		"WITH c AS MATERIALIZED (SELECT * FROM notes) SELECT * FROM c",
 		"WITH c AS NOT MATERIALIZED (SELECT * FROM notes) SELECT * FROM c",
 		"SELECT sum(score) OVER win FROM notes WINDOW win AS (ORDER BY id)",

@@ -489,6 +489,23 @@ func isPragmaFunction(rawName string) bool {
 	return strings.HasPrefix(asciiLower(unquoteIdent(rawName)), "pragma_")
 }
 
+// isDQString reports whether t is a double-quoted token, which SQLite's
+// double-quoted-string fallback treats as a string literal when it does not
+// resolve to an identifier — so pragma_table_info("notes") is valid read-only
+// SQL. Backtick- and bracket-quoted tokens resolve as identifiers instead and
+// are not accepted here.
+func isDQString(t token) bool {
+	return t.typ == "ident" && len(t.val) > 0 && t.val[0] == '"'
+}
+
+// pragmaArgValue extracts the literal text of a pragma argument.
+func pragmaArgValue(t token) string {
+	if t.typ == "string" {
+		return unquoteString(t.val)
+	}
+	return unquoteIdent(t.val)
+}
+
 func (s *queryScanner) parsePragmaArgs(schema, rawName string) error {
 	if err := s.expect("("); err != nil {
 		return err
@@ -497,7 +514,7 @@ func (s *queryScanner) parsePragmaArgs(schema, rawName string) error {
 	if err != nil {
 		return err
 	}
-	if arg.typ != "string" {
+	if arg.typ != "string" && !isDQString(arg) {
 		return invalidf("pragma argument must be a single string literal")
 	}
 	// Table-valued PRAGMAs accept an optional second literal that selects the
@@ -509,7 +526,7 @@ func (s *queryScanner) parsePragmaArgs(schema, rawName string) error {
 		if err != nil {
 			return err
 		}
-		if schemaArg.typ != "string" {
+		if schemaArg.typ != "string" && !isDQString(schemaArg) {
 			return invalidf("pragma schema argument must be a string literal")
 		}
 	}
@@ -520,7 +537,7 @@ func (s *queryScanner) parsePragmaArgs(schema, rawName string) error {
 	if schema != "" {
 		name = unquoteIdent(schema) + "." + name
 	}
-	table := unquoteString(arg.val)
+	table := pragmaArgValue(arg)
 	if i := strings.LastIndex(table, "."); i >= 0 {
 		table = table[i+1:]
 	}
