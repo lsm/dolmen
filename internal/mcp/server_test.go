@@ -136,8 +136,8 @@ func TestMCPProtocol(t *testing.T) {
 		t.Fatalf("tools/list status %d", code)
 	}
 	tools := res["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 17 {
-		t.Fatalf("expected 17 tools, got %d", len(tools))
+	if len(tools) != 18 {
+		t.Fatalf("expected 18 tools, got %d", len(tools))
 	}
 	first := tools[0].(map[string]any)
 	if first["name"] == "" || first["inputSchema"] == nil {

@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -596,6 +598,21 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 	if vecItems["maximum"].(float64) != 3.4028234663852886e+38 || vecItems["minimum"].(float64) != -3.4028234663852886e+38 {
 		t.Fatalf("vector items must declare the float32 range, got %v", vecItems)
 	}
+	svFilter := sv.InputSchema["properties"].(map[string]any)["filter"].(map[string]any)
+	if svFilter["pattern"] != `\S` {
+		t.Fatalf("search_vector filter must require a non-whitespace character, got %v", svFilter)
+	}
+	if _, ok := svFilter["not"].(map[string]any)["pattern"]; !ok {
+		t.Fatalf("search_vector filter must exclude all semicolons, got %v", svFilter)
+	}
+	svArgs := sv.InputSchema["properties"].(map[string]any)["args"].(map[string]any)
+	if svArgs["maxItems"] != 100 {
+		t.Fatalf("search_vector args must declare maxItems 100, got %v", svArgs)
+	}
+	svMinScore := sv.InputSchema["properties"].(map[string]any)["min_score"].(map[string]any)
+	if svMinScore["type"] != "number" {
+		t.Fatalf("search_vector min_score must be a number, got %v", svMinScore)
+	}
 	for _, name := range []string{"search_fulltext", "search_vector"} {
 		def, ok := Ops[name]
 		if !ok {
@@ -834,5 +851,427 @@ func TestTypedReadContractHTTP(t *testing.T) {
 		if _, ok := def.InputSchema["properties"].(map[string]any)["include_hidden"]; !ok {
 			t.Fatalf("%s must declare include_hidden", name)
 		}
+	}
+}
+
+func TestMigrateDryRunAndVersionContractOverHTTP(t *testing.T) {
+	srv := newTestServer(t)
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "mg",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "v", "type": "string"}},
+	})
+	if code != 200 {
+		t.Fatalf("create failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "mg", "table": "t",
+		"records": []map[string]any{{"v": "one"}, {"v": "two"}},
+	})
+	if code != 200 {
+		t.Fatalf("insert failed: %d %v", code, res)
+	}
+
+	// Destructive changes without expected_version are rejected up front.
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "mg", "table": "t",
+		"changes": []map[string]any{{"op": "drop_field", "name": "v"}},
+	})
+	if code != 400 || !strings.Contains(fmt.Sprint(res["error"]), "expected_version") {
+		t.Fatalf("destructive change without expected_version must 400 naming expected_version, got %d %v", code, res)
+	}
+
+	// Dry-run previews without applying.
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "mg", "table": "t", "expected_version": 1, "dry_run": true,
+		"changes": []map[string]any{
+			{"op": "add_field", "field": map[string]any{"name": "status", "type": "string", "required": true}, "default": "active"},
+			{"op": "drop_field", "name": "v"},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("dry_run failed: %d %v", code, res)
+	}
+	data := res["data"].(map[string]any)
+	if data["dry_run"] != true {
+		t.Fatalf("response must be marked dry_run: %v", data)
+	}
+	// The advertised output schema requires table on every migrate response —
+	// dry-run carries the prospective schema at the same key as an apply.
+	preview := data["table"].(map[string]any)
+	if preview["version"].(float64) != 2 {
+		t.Fatalf("dry-run table must be the prospective schema, got %v", preview)
+	}
+	plan := data["plan"].(map[string]any)
+	if plan["dry_run"] != true || plan["from_version"].(float64) != 1 || plan["to_version"].(float64) != 2 {
+		t.Fatalf("plan must carry the prospective version: %v", plan)
+	}
+	if plan["backfill_rows"].(float64) != 2 {
+		t.Fatalf("backfill_rows must report the populated rows: %v", plan["backfill_rows"])
+	}
+	if len(plan["operations"].([]any)) != 2 || len(plan["destructive"].([]any)) != 1 {
+		t.Fatalf("plan must enumerate operations and destructive changes: %v", plan)
+	}
+
+	code, res = post(t, srv.URL, "describe_table", map[string]any{"namespace": "mg", "table": "t"})
+	if code != 200 {
+		t.Fatalf("describe failed: %d %v", code, res)
+	}
+	table := res["data"].(map[string]any)["table"].(map[string]any)
+	if table["version"].(float64) != 1 {
+		t.Fatalf("dry-run must not bump the version, got %v", table["version"])
+	}
+
+	// A stale expected_version conflicts (409), for apply and dry-run alike.
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "mg", "table": "t", "expected_version": 9,
+		"changes": []map[string]any{{"op": "add_field", "field": map[string]any{"name": "status", "type": "string"}}},
+	})
+	if code != 409 || !strings.Contains(fmt.Sprint(res["error"]), "version conflict") {
+		t.Fatalf("stale expected_version must 409 with a version conflict, got %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "mg", "table": "t", "expected_version": 9, "dry_run": true,
+		"changes": []map[string]any{{"op": "add_field", "field": map[string]any{"name": "status", "type": "string"}}},
+	})
+	if code != 409 {
+		t.Fatalf("dry-run with stale expected_version must 409 too, got %d %v", code, res)
+	}
+
+	// The apply lands and is recorded in history.
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "mg", "table": "t", "expected_version": 1,
+		"changes": []map[string]any{
+			{"op": "add_field", "field": map[string]any{"name": "status", "type": "string", "required": true}, "default": "active"},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("apply failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "query", map[string]any{
+		"namespace": "mg", "sql": "SELECT status FROM t ORDER BY id",
+	})
+	if code != 200 {
+		t.Fatalf("query failed: %d %v", code, res)
+	}
+	rows := res["data"].(map[string]any)["rows"].([]any)
+	if len(rows) != 2 || rows[0].(map[string]any)["status"] != "active" {
+		t.Fatalf("backfilled rows must read the default: %v", rows)
+	}
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "mg", "table": "t", "records": []map[string]any{{"v": "x"}},
+	})
+	if code != 400 {
+		t.Fatalf("insert omitting a required field (with default) must still 400, got %d %v", code, res)
+	}
+}
+
+func TestListMigrationsOverHTTP(t *testing.T) {
+	srv := newTestServer(t)
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "hist",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "v", "type": "string"}},
+	})
+	if code != 200 {
+		t.Fatalf("create failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "hist", "table": "t", "expected_version": 1,
+		"changes": []map[string]any{
+			{"op": "add_field", "field": map[string]any{"name": "rank", "type": "number", "required": true}, "default": 7},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("migrate failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "list_migrations", map[string]any{"namespace": "hist", "table": "t"})
+	if code != 200 {
+		t.Fatalf("list_migrations failed: %d %v", code, res)
+	}
+	ms := res["data"].(map[string]any)["migrations"].([]any)
+	if len(ms) != 1 {
+		t.Fatalf("expected one recorded migration, got %v", ms)
+	}
+	m := ms[0].(map[string]any)
+	if m["from_version"].(float64) != 1 || m["to_version"].(float64) != 2 || m["at"] == "" {
+		t.Fatalf("migration entry must carry the transition and timestamp: %v", m)
+	}
+	ch := m["changes"].([]any)[0].(map[string]any)
+	if ch["op"] != "add_field" || ch["default"].(float64) != 7 {
+		t.Fatalf("history must record the exact change including its default: %v", ch)
+	}
+	code, res = post(t, srv.URL, "list_migrations", map[string]any{"namespace": "hist", "table": "nope"})
+	if code != 404 {
+		t.Fatalf("unknown table must 404, got %d %v", code, res)
+	}
+}
+
+func TestMigrateDefaultRejectedForWrongTypeOverHTTP(t *testing.T) {
+	srv := newTestServer(t)
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "co",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "v", "type": "string"}},
+	})
+	if code != 200 {
+		t.Fatalf("create failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "co", "table": "t", "records": []map[string]any{{"v": "x"}},
+	})
+	if code != 200 {
+		t.Fatalf("insert failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "co", "table": "t",
+		"changes": []map[string]any{
+			{"op": "add_field", "field": map[string]any{"name": "n", "type": "number", "required": true}, "default": "not a number"},
+		},
+	})
+	if code != 400 || !strings.Contains(fmt.Sprint(res["error"]), "expected a number") {
+		t.Fatalf("wrong-type default must 400 with the coercion error, got %d %v", code, res)
+	}
+}
+
+func TestMigrateJSONDefaultAllowsNestedNulls(t *testing.T) {
+	srv := newTestServer(t)
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "jn",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "v", "type": "string"}},
+	})
+	if code != 200 {
+		t.Fatalf("create failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "jn", "table": "t", "records": []map[string]any{{"v": "x"}},
+	})
+	if code != 200 {
+		t.Fatalf("insert failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "jn", "table": "t",
+		"changes": []map[string]any{
+			{"op": "add_field", "field": map[string]any{"name": "meta", "type": "json", "required": true},
+				"default": map[string]any{"deleted_at": nil, "tags": []any{1, nil, "x"}}},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("nested nulls inside a json default are data and must be accepted, got %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "query", map[string]any{
+		"namespace": "jn", "sql": "SELECT meta FROM t",
+	})
+	if code != 200 {
+		t.Fatalf("query failed: %d %v", code, res)
+	}
+	meta := res["data"].(map[string]any)["rows"].([]any)[0].(map[string]any)["meta"].(map[string]any)
+	if meta["deleted_at"] != nil {
+		t.Fatalf("nested null must round-trip as null: %v", meta)
+	}
+	tags, ok := meta["tags"].([]any)
+	if !ok || len(tags) != 3 || tags[1] != nil || tags[0] != float64(1) {
+		t.Fatalf("nulls inside default arrays must round-trip: %v", meta)
+	}
+	// A direct null default is still meaningless (indistinguishable from absent) and stays rejected.
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "jn", "table": "t",
+		"changes": []map[string]any{
+			{"op": "add_field", "field": map[string]any{"name": "other", "type": "json"}, "default": nil},
+		},
+	})
+	if code != 400 {
+		t.Fatalf("a literal null default must still 400, got %d %v", code, res)
+	}
+	// Null control fields elsewhere in the request stay rejected.
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "jn", "table": "t",
+		"changes": []map[string]any{
+			{"op": "add_field", "field": nil},
+		},
+	})
+	if code != 400 {
+		t.Fatalf("null migration-control fields must stay rejected, got %d %v", code, res)
+	}
+}
+
+func TestMigrateJSONDefaultAllowsRootArrayNulls(t *testing.T) {
+	srv := newTestServer(t)
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "ran",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "v", "type": "string"}},
+	})
+	if code != 200 {
+		t.Fatalf("create failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "ran", "table": "t", "records": []map[string]any{{"v": "x"}},
+	})
+	if code != 200 {
+		t.Fatalf("insert failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "ran", "table": "t",
+		"changes": []map[string]any{
+			{"op": "add_field", "field": map[string]any{"name": "tags", "type": "json", "required": true},
+				"default": []any{1, nil, "x"}},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("nulls in a root-array json default are data and must be accepted, got %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "query", map[string]any{"namespace": "ran", "sql": "SELECT tags FROM t"})
+	if code != 200 {
+		t.Fatalf("query failed: %d %v", code, res)
+	}
+	tags, ok := res["data"].(map[string]any)["rows"].([]any)[0].(map[string]any)["tags"].([]any)
+	if !ok || len(tags) != 3 || tags[1] != nil || tags[0] != float64(1) || tags[2] != "x" {
+		t.Fatalf("root-array default must round-trip with its null: %v", tags)
+	}
+}
+
+func TestListMigrationsRecordsExplicitFalseValues(t *testing.T) {
+	srv := newTestServer(t)
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "vf",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "body", "type": "text", "fulltext": true}},
+	})
+	if code != 200 {
+		t.Fatalf("create failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "vf", "table": "t", "expected_version": 1,
+		"changes": []map[string]any{{"op": "set_fulltext", "name": "body", "value": false}},
+	})
+	if code != 200 {
+		t.Fatalf("disable migrate failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "list_migrations", map[string]any{"namespace": "vf", "table": "t"})
+	if code != 200 {
+		t.Fatalf("list_migrations failed: %d %v", code, res)
+	}
+	ch := res["data"].(map[string]any)["migrations"].([]any)[0].(map[string]any)["changes"].([]any)[0].(map[string]any)
+	v, present := ch["value"]
+	if !present || v != false {
+		t.Fatalf("history must carry an explicit value:false for disable ops (replayable through migrate), got %v (present=%v)", v, present)
+	}
+	// The recorded change replays through the migrate endpoint as-is.
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "vf", "table": "t", "expected_version": 2, "changes": []any{ch},
+	})
+	if code != 200 {
+		t.Fatalf("recorded change must replay through migrate, got %d %v", code, res)
+	}
+}
+
+func TestSearchVectorFilterAndMinScoreOverHTTP(t *testing.T) {
+	srv := newTestServer(t)
+
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"fields": []map[string]any{
+			{"name": "title", "type": "string", "fulltext": true},
+			{"name": "detail", "type": "text", "vectorize": true},
+			{"name": "confidence", "type": "number"},
+		},
+	})
+	if code != 200 || res["ok"] != true {
+		t.Fatalf("create_table failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"records": []map[string]any{
+			{"title": "auth bug", "detail": "token expiry not checked in middleware", "confidence": 0.9},
+			{"title": "slow query", "detail": "missing index on users.email", "confidence": 0.7},
+		},
+	})
+	if code != 200 || res["ok"] != true {
+		t.Fatalf("insert failed: %d %v", code, res)
+	}
+
+	// filter with bound arg before scoring
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"text":      "token expiry not checked in middleware",
+		"filter":    "confidence >= ?",
+		"args":      []any{0.8},
+	})
+	if code != 200 {
+		t.Fatalf("filtered search_vector failed: %d %v", code, res)
+	}
+	results := res["data"].(map[string]any)["results"].([]any)
+	if len(results) != 1 || results[0].(map[string]any)["title"] != "auth bug" {
+		t.Fatalf("expected auth bug only, got %v", results)
+	}
+
+	// min_score threshold before ranking/limit
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"text":      "token expiry not checked in middleware",
+		"min_score": 0.99,
+	})
+	if code != 200 {
+		t.Fatalf("min_score search_vector failed: %d %v", code, res)
+	}
+	results = res["data"].(map[string]any)["results"].([]any)
+	if len(results) != 1 || results[0].(map[string]any)["title"] != "auth bug" {
+		t.Fatalf("expected one high-confidence hit, got %v", results)
+	}
+
+	// filter + min_score together
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"text":      "token expiry not checked in middleware",
+		"filter":    "confidence >= ?",
+		"args":      []any{0.85},
+		"min_score": 0.99,
+	})
+	if code != 200 {
+		t.Fatalf("filter+min_score search_vector failed: %d %v", code, res)
+	}
+	results = res["data"].(map[string]any)["results"].([]any)
+	if len(results) != 1 || results[0].(map[string]any)["title"] != "auth bug" {
+		t.Fatalf("expected auth bug with combined constraints, got %v", results)
+	}
+
+	// null bind arguments are allowed in filter args
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"text":      "token expiry not checked in middleware",
+		"filter":    "1=1",
+		"args":      []any{nil},
+	})
+	if code != 200 {
+		t.Fatalf("null in filter args must be accepted, got %d %v", code, res)
+	}
+
+	// null vector entries are still rejected
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"vector":    []any{1, nil, 0, 0},
+	})
+	if code != 400 {
+		t.Fatalf("null vector entries must 400, got %d %v", code, res)
+	}
+
+	// invalid filter is rejected
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"text":      "anything",
+		"filter":    "1=1; DROP TABLE findings",
+	})
+	if code != 400 {
+		t.Fatalf("semicolon in filter must 400, got %d %v", code, res)
 	}
 }

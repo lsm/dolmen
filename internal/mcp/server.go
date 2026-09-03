@@ -64,6 +64,7 @@ var toolAnnotations = map[string]map[string]any{
 	"update":          {"title": "Update rows", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
 	"upsert":          {"title": "Upsert by filter", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
 	"migrate":         {"title": "Migrate table", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
+	"list_migrations": {"title": "List migrations", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 }
 
 func New(a *api.Server, extraOrigins []string) *Server {

@@ -184,7 +184,7 @@ func TestDropTable(t *testing.T) {
 
 	if _, err := st.Migrate(ctx, "test", "notes", []schema.Change{
 		{Op: schema.OpAddField, Field: &schema.Field{Name: "extra", Type: schema.String}},
-	}, testEmbed); err != nil {
+	}, testEmbed, 0); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	if _, _, err := st.InsertIdempotent(ctx, "test", "notes",
