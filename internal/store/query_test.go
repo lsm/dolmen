@@ -620,6 +620,12 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"tcl colon param bypass", "SELECT schema_json, :x::from FROM _dolmen_tables"},
 		{"tcl at param bypass", "SELECT schema_json, @x::from FROM _dolmen_tables"},
 		{"tcl bare suffix bypass", "SELECT schema_json, $::from FROM _dolmen_tables"},
+		{"paren param bypass", "SELECT schema_json, $x(from) FROM _dolmen_tables"},
+		// Go's ToLower maps İ to i, but SQLite folds identifiers ASCII-only,
+		// so a CTE whose name lowercases (in Go) onto an internal table's name
+		// must not shadow it.
+		{"i-dot cte shadow", "WITH _dolmen_İdempotency(x) AS (VALUES(1)) SELECT * FROM _dolmen_idempotency"},
+		{"bare table in dbstat fn", "SELECT 1 WHERE 1 IN dbstat()"},
 		// The long-s fold orbit (ſ equals s under Unicode simple folding)
 		// must not make the alias ſrom act as the FROM keyword.
 		{"long-s alias fold", "SELECT 1 AS ſrom FROM _dolmen_tables"},
@@ -717,6 +723,9 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		// Keyword matching is ASCII-only: ſrom is a plain alias to SQLite,
 		// never the FROM keyword.
 		"SELECT 1 AS ſrom FROM notes",
+		// Identifier folding is ASCII-only too: a CTE named with İ keeps that
+		// spelling and references to it resolve to the CTE.
+		"WITH _dolmen_İdempotency(x) AS (VALUES(1)) SELECT * FROM _dolmen_İdempotency",
 		// Form feed is SQLite whitespace, so it separates tokens like a space.
 		"WITH\fc(x) AS (VALUES(1)) SELECT * FROM c",
 		"WITH c AS\f(VALUES(1)) SELECT * FROM c",
@@ -773,6 +782,8 @@ func TestQueryTokenizesVariablesAtomically(t *testing.T) {
 		"SELECT :from AS f, @from AS g, $from AS h FROM notes",
 		"SELECT $x::ns::y AS v, :x::from AS w, @x::from AS z FROM notes",
 		"SELECT $::from AS v FROM notes",
+		"SELECT $x(with) AS v, :x(with) AS w, @x(with) AS x FROM notes",
+		"SELECT $x::y(with) AS v, $x() AS w FROM notes",
 		// A user table in bare-table IN position passes the guard (SQLite
 		// checks column cardinality itself).
 		"SELECT 1 WHERE 1 IN notes",

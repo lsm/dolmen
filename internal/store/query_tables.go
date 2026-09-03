@@ -113,7 +113,7 @@ func (s *queryScanner) expect(kw string) error {
 	}
 	// ASCII case-insensitive like isKeyword; ToLower is the identity on the
 	// punctuation values expect is called with.
-	if strings.ToLower(t.val) == kw {
+	if asciiLower(t.val) == kw {
 		return nil
 	}
 	return invalidf("unexpected token %q, expected %q", t.val, kw)
@@ -336,18 +336,35 @@ func (s *queryScanner) readIdent() string {
 
 // readParam consumes a named variable token (:name, @name, $name) as one
 // unit, mirroring SQLite so keywords inside parameter names stay inert. The
-// name may carry Tcl-style :: suffixes: $x::ns::y is a single parameter.
+// name may carry Tcl-style :: suffixes and a parenthesized suffix:
+// $x::ns::y, $x(with), and $x::y(with) are each a single parameter.
 func (s *queryScanner) readParam() string {
 	start := s.i
 	s.i++ // prefix character
 	for s.i < len(s.s) && isIdentCont(s.s[s.i]) {
 		s.i++
 	}
-	for s.atTclSuffix(s.i) {
-		s.i += 2 // '::'
-		for s.i < len(s.s) && isIdentCont(s.s[s.i]) {
-			s.i++
+	for {
+		if s.atTclSuffix(s.i) {
+			s.i += 2 // '::'
+			for s.i < len(s.s) && isIdentCont(s.s[s.i]) {
+				s.i++
+			}
+			continue
 		}
+		if s.i < len(s.s) && s.s[s.i] == '(' {
+			// Parenthesized suffix: a flat group of identifier characters,
+			// no nesting ($x(a(b)) is a syntax error in SQLite).
+			s.i++ // '('
+			for s.i < len(s.s) && isIdentCont(s.s[s.i]) {
+				s.i++
+			}
+			if s.i < len(s.s) && s.s[s.i] == ')' {
+				s.i++
+			}
+			continue
+		}
+		break
 	}
 	return s.s[start:s.i]
 }
@@ -423,7 +440,7 @@ func unquoteIdent(v string) string {
 // values rather than strings.EqualFold, whose Unicode fold orbits would make
 // "ſrom" equal "from".
 func isKeyword(t token, kw string) bool {
-	return t.typ == "ident" && !isQuotedIdent(t.val) && strings.ToLower(t.val) == kw
+	return t.typ == "ident" && !isQuotedIdent(t.val) && asciiLower(t.val) == kw
 }
 
 func unquoteString(v string) string {
@@ -433,8 +450,35 @@ func unquoteString(v string) string {
 	return v
 }
 
+// asciiLower lowercases ASCII letters only, mirroring SQLite's ASCII-only
+// identifier case folding. Go's strings.ToLower maps non-ASCII letters such as
+// İ to ASCII (İ -> i), which would let WITH _dolmen_İdempotency register a CTE
+// under a physical internal table's name while SQLite resolves the reference
+// to the real table.
+func asciiLower(s string) string {
+	hasUpper := false
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; 'A' <= c && c <= 'Z' {
+			hasUpper = true
+			break
+		}
+	}
+	if !hasUpper {
+		return s
+	}
+	b := make([]byte, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		b[i] = c
+	}
+	return string(b)
+}
+
 func isPragmaFunction(rawName string) bool {
-	return strings.HasPrefix(strings.ToLower(unquoteIdent(rawName)), "pragma_")
+	return strings.HasPrefix(asciiLower(unquoteIdent(rawName)), "pragma_")
 }
 
 func (s *queryScanner) parsePragmaArgs(schema, rawName string) error {
@@ -527,7 +571,7 @@ func isStopToken(t token, stop map[string]bool) bool {
 	if t.typ == "punct" {
 		return stop[t.val]
 	}
-	return t.typ == "ident" && !isQuotedIdent(t.val) && stop[strings.ToLower(t.val)]
+	return t.typ == "ident" && !isQuotedIdent(t.val) && stop[asciiLower(t.val)]
 }
 
 func isClauseEnd(t token) bool {
@@ -537,7 +581,7 @@ func isClauseEnd(t token) bool {
 	if t.typ == "punct" {
 		return t.val == ")" || t.val == ";"
 	}
-	return t.typ == "ident" && !isQuotedIdent(t.val) && clauseEndStop[strings.ToLower(t.val)]
+	return t.typ == "ident" && !isQuotedIdent(t.val) && clauseEndStop[asciiLower(t.val)]
 }
 
 // isWindowClause peeks ahead without consuming the current token. It reports
@@ -571,7 +615,7 @@ func isJoinOp(t token) bool {
 	if t.typ != "ident" || isQuotedIdent(t.val) {
 		return false
 	}
-	switch strings.ToLower(t.val) {
+	switch asciiLower(t.val) {
 	case "inner", "cross", "left", "right", "full", "outer", "natural", "join":
 		return true
 	}
@@ -636,7 +680,7 @@ func (s *queryScanner) parseWith() error {
 		if t.typ == "string" {
 			name = unquoteString(t.val)
 		}
-		s.addCteName(strings.ToLower(name))
+		s.addCteName(asciiLower(name))
 		if t2, _ := s.peek(); t2.val == "(" {
 			if err := s.scanParenthesized(); err != nil {
 				return err
@@ -690,7 +734,7 @@ func (s *queryScanner) collectCteNames() (map[string]bool, error) {
 		if t.typ == "string" {
 			name = unquoteString(t.val)
 		}
-		names[strings.ToLower(name)] = true
+		names[asciiLower(name)] = true
 		if t2, _ := s.peek(); t2.val == "(" {
 			if err := s.skipParenthesized(); err != nil {
 				return nil, err
@@ -889,15 +933,17 @@ func (s *queryScanner) checkInTableOperand() error {
 	}
 	// A CTE may shadow a pragma_* name, so check the CTE scope before treating
 	// the identifier as a reserved pragma virtual table.
-	isCTE := schema == "" && s.isCteName(strings.ToLower(unquoteIdent(name)))
+	isCTE := schema == "" && s.isCteName(asciiLower(unquoteIdent(name)))
 	if t2, _ := s.peek(); t2.val == "(" {
 		if !isCTE && isPragmaFunction(name) {
-			if err := s.parsePragmaArgs(schema, name); err != nil {
-				return err
-			}
-			return nil
+			return s.parsePragmaArgs(schema, name)
 		}
-		return s.scanParenthesized()
+		if err := s.scanParenthesized(); err != nil {
+			return err
+		}
+		// A non-pragma function form such as IN dbstat() still names a table;
+		// apply the reserved check like parseTableFactor does after args.
+		return s.checkTableName(schema, name)
 	}
 	if !isCTE && isPragmaFunction(name) {
 		// A pragma virtual table with no argument list (e.g. pragma_table_list)
@@ -1112,7 +1158,7 @@ func (s *queryScanner) parseTableFactor() error {
 	// but we still need to skip the argument list.
 	// A CTE may shadow a pragma_* name, so check the CTE scope before treating
 	// the identifier as a reserved pragma virtual table.
-	isCTE := schema == "" && s.isCteName(strings.ToLower(unquoteIdent(name)))
+	isCTE := schema == "" && s.isCteName(asciiLower(unquoteIdent(name)))
 	if t2, _ := s.peek(); t2.val == "(" {
 		if !isCTE && isPragmaFunction(name) {
 			if err := s.parsePragmaArgs(schema, name); err != nil {
@@ -1147,7 +1193,7 @@ func (s *queryScanner) checkTableName(schema, rawName string) error {
 	if i := strings.LastIndex(base, "."); i >= 0 {
 		base = base[i+1:]
 	}
-	base = strings.ToLower(base)
+	base = asciiLower(base)
 	// A CTE name (possibly shadowing a reserved table) is not a physical table
 	// reference, so allow it.
 	if schema == "" && s.isCteName(base) {
@@ -1188,7 +1234,7 @@ func (s *queryScanner) skipOptionalAlias() error {
 	// identifiers need keyword disambiguation because they may introduce a join
 	// operator or clause end.
 	if t.typ == "ident" && !isQuotedIdent(t.val) {
-		kw := strings.ToLower(t.val)
+		kw := asciiLower(t.val)
 		if isJoinOp(t) || isClauseEnd(t) || kw == "on" || kw == "using" || t.val == ")" || t.val == "," {
 			return nil
 		}
