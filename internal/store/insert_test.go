@@ -316,6 +316,34 @@ func TestInsertAcceptsTimeTimeValuesForTimestamp(t *testing.T) {
 	}
 }
 
+func TestInsertStoresCanonicalTimestampValues(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "ts", []schema.Field{
+		{Name: "at", Type: schema.Timestamp},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if _, err := st.Insert(ctx, "test", "ts", []map[string]any{
+		{"at": "  2026-09-01t10:00:00z  "},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	rows, _, err := st.Query(ctx, "test", "SELECT at FROM ts", nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	s, ok := rows[0]["at"].(string)
+	if !ok || s != "2026-09-01T10:00:00Z" {
+		t.Fatalf("expected canonical timestamp \"2026-09-01T10:00:00Z\", got %T %q", rows[0]["at"], rows[0]["at"])
+	}
+}
+
 func TestInsertAcceptsMarshalableJSONValues(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()

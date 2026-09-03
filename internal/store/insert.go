@@ -378,10 +378,11 @@ func coerceValue(f schema.Field, v any) (any, error) {
 		if !ok {
 			return nil, fmt.Errorf("field %q: expected a timestamp string", f.Name)
 		}
-		if !schema.LooksLikeTimestamp(s) {
+		canonical, ok := schema.CanonicalTimestamp(s)
+		if !ok {
 			return nil, fmt.Errorf("field %q: expected an ISO/RFC3339 timestamp, got %q", f.Name, s)
 		}
-		return s, nil
+		return canonical, nil
 	default:
 		s, ok := storedString(v)
 		if !ok {

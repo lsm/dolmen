@@ -215,10 +215,10 @@ var timestampLayouts = []string{
 	"2006-01-02",
 }
 
-func LooksLikeTimestamp(s string) bool {
+func CanonicalTimestamp(s string) (string, bool) {
 	s = strings.TrimSpace(s)
 	if !isoRe.MatchString(s) {
-		return false
+		return "", false
 	}
 	norm := s
 	if len(norm) >= 11 && norm[10] == 't' {
@@ -231,10 +231,18 @@ func LooksLikeTimestamp(s string) bool {
 	}
 	for _, layout := range timestampLayouts {
 		if _, err := time.Parse(layout, norm); err == nil {
-			return validRFC3339Offset(s)
+			if !validRFC3339Offset(s) {
+				return "", false
+			}
+			return norm, true
 		}
 	}
-	return false
+	return "", false
+}
+
+func LooksLikeTimestamp(s string) bool {
+	_, ok := CanonicalTimestamp(s)
+	return ok
 }
 
 var offsetRe = regexp.MustCompile(`(?:[Zz]|[+-]\d{2}:\d{2})$`)
