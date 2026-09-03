@@ -257,6 +257,65 @@ func TestInsertAcceptsInferredStringRepresentations(t *testing.T) {
 	}
 }
 
+func TestInsertRejectsInvalidTimestamps(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "ts", []schema.Field{
+		{Name: "at", Type: schema.Timestamp},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	for _, bad := range []string{"not a timestamp", "2026-99-99", "2026-02-30", "hello world"} {
+		if _, err := st.Insert(ctx, "test", "ts", []map[string]any{{"at": bad}}, testEmbed); err == nil {
+			t.Fatalf("expected %q to be rejected as invalid timestamp", bad)
+		}
+	}
+
+	if _, err := st.Insert(ctx, "test", "ts", []map[string]any{{"at": 123}}, testEmbed); err == nil {
+		t.Fatal("expected non-string timestamp value to be rejected")
+	}
+}
+
+func TestInsertAcceptsValidTimestampVariants(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "ts", []schema.Field{
+		{Name: "at", Type: schema.Timestamp},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	for _, good := range []string{
+		"2026-09-01",
+		"2026-09-01T10:00:00Z",
+		"2026-09-01T10:00:00.5+02:00",
+		"2026-09-01 10:00:00",
+		"2026-09-01t10:00:00z",
+		"2026-09-01T10:00:05",
+	} {
+		if _, err := st.Insert(ctx, "test", "ts", []map[string]any{{"at": good}}, testEmbed); err != nil {
+			t.Fatalf("expected %q to be accepted as timestamp: %v", good, err)
+		}
+	}
+}
+
+func TestInsertAcceptsTimeTimeValuesForTimestamp(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "ts", []schema.Field{
+		{Name: "at", Type: schema.Timestamp},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if _, err := st.Insert(ctx, "test", "ts", []map[string]any{
+		{"at": time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)},
+	}, testEmbed); err != nil {
+		t.Fatalf("expected time.Time value to be accepted: %v", err)
+	}
+}
+
 func TestInsertAcceptsMarshalableJSONValues(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()

@@ -215,7 +215,7 @@ var timestampLayouts = []string{
 	"2006-01-02",
 }
 
-func looksLikeTimestamp(s string) bool {
+func LooksLikeTimestamp(s string) bool {
 	s = strings.TrimSpace(s)
 	if !isoRe.MatchString(s) {
 		return false
@@ -292,7 +292,7 @@ func InferFields(samples []map[string]any) []Field {
 			f.Type = JSON
 		case ks["string"]:
 			f.Type = String
-			if allStringsMatch(samples, k, looksLikeTimestamp) {
+			if allStringsMatch(samples, k, LooksLikeTimestamp) {
 				f.Type = Timestamp
 			} else if allStringsMatch(samples, k, func(s string) bool {
 				return len(s) > 200 || strings.ContainsAny(s, "\n")
