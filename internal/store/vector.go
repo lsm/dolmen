@@ -5,21 +5,23 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/lsm/dolmen/internal/schema"
 )
 
 // VectorSearchResult is the outcome of a vector search. Skipped counts rows
 // whose stored vector could not be scored — a corrupt blob, a dimension that
-// disagrees with the query, or a non-finite component — so those rows are
-// absent from Rows and a nonzero count means the search is partial.
+// disagrees with the query, a non-finite component, or a non-BLOB value an
+// out-of-band writer left in the column — so those rows are absent from Rows
+// and a nonzero count means the search is partial.
 type VectorSearchResult struct {
 	Rows      []map[string]any
 	Truncated bool
 	Skipped   int
 }
 
-func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, vec []float32, embedModel string, limit int, includeHidden bool) (VectorSearchResult, error) {
+func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, vec []float32, embedModel string, limit int, includeHidden bool, filter string, args []any, minScore *float64) (VectorSearchResult, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
 		return VectorSearchResult{}, err
@@ -43,14 +45,37 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 	if !allFinite(vec) {
 		return VectorSearchResult{}, invalidf("query vector contains a non-finite component")
 	}
+	filter = strings.TrimSpace(filter)
+	if filter != "" {
+		if strings.Contains(filter, ";") {
+			return VectorSearchResult{}, invalidf("multiple statements are not allowed in filter")
+		}
+		if len(args) > 100 {
+			return VectorSearchResult{}, invalidf("too many filter arguments")
+		}
+		for i, a := range args {
+			args[i] = normalizeArg(a)
+		}
+	}
 	limit = boundedLimit(limit)
 
-	rows, err := tx.QueryContext(ctx,
-		fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s IS NOT NULL`, q(column), q(table), q(column)))
+	query := fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s IS NOT NULL`, q(column), q(table), q(column))
+	var qargs []any
+	if filter != "" {
+		query = fmt.Sprintf(`%s AND (%s)`, query, filter)
+		qargs = args
+	}
+
+	rows, err := tx.QueryContext(ctx, query, qargs...)
 	if err != nil {
-		return VectorSearchResult{}, err
+		return VectorSearchResult{}, fmt.Errorf("%w: filter error: %w", ErrInvalid, err)
 	}
 	defer rows.Close()
+
+	threshold := math.Inf(-1)
+	if minScore != nil {
+		threshold = *minScore
+	}
 
 	type hit struct {
 		id    int64
@@ -60,16 +85,28 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 	skipped := 0
 	for rows.Next() {
 		var id int64
-		var blob []byte
-		if err := rows.Scan(&id, &blob); err != nil {
+		var raw any
+		if err := rows.Scan(&id, &raw); err != nil {
 			return VectorSearchResult{}, err
+		}
+		// An out-of-band SQLite writer can corrupt a vector column with any
+		// storage type (INTEGER, REAL, TEXT); only a BLOB of the right shape
+		// is scoreable — everything else is skipped and counted, not fatal.
+		blob, isBlob := raw.([]byte)
+		if !isBlob {
+			skipped++
+			continue
 		}
 		stored, err := schema.DecodeVector(blob)
 		if err != nil || len(stored) != len(vec) || !allFinite(stored) {
 			skipped++
 			continue
 		}
-		hits = append(hits, hit{id: id, score: cosine(vec, stored)})
+		score := cosine(vec, stored)
+		if score < threshold {
+			continue
+		}
+		hits = append(hits, hit{id: id, score: score})
 	}
 	if err := rows.Err(); err != nil {
 		return VectorSearchResult{}, err

@@ -187,7 +187,17 @@ var Ops = map[string]OpDef{
 				"description": "Proposed field definitions",
 				"items":       fieldOutSchema("Proposed field definition"),
 			},
-		}, "fields"),
+			"warnings": map[string]any{
+				"type":        "array",
+				"description": "Notes about sanitized or merged keys",
+				"items":       map[string]any{"type": "string"},
+			},
+			"provenance": map[string]any{
+				"type":                 "object",
+				"description":          "Map from inferred field name to the original key(s) that produced it",
+				"additionalProperties": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+		}, "fields", "warnings", "provenance"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req inferReq
 			if err := decodeData(body, &req); err != nil {
@@ -204,11 +214,21 @@ var Ops = map[string]OpDef{
 					return nil, badRequest("samples[%d] must be an object, not null", i)
 				}
 			}
-			fields := schema.InferFields(req.Samples)
-			if fields == nil {
-				fields = []schema.Field{}
+			inf := schema.InferSchema(req.Samples)
+			if inf.Fields == nil {
+				inf.Fields = []schema.Field{}
 			}
-			return map[string]any{"fields": fields}, nil
+			if inf.Warnings == nil {
+				inf.Warnings = []string{}
+			}
+			if inf.Provenance == nil {
+				inf.Provenance = map[string][]string{}
+			}
+			return map[string]any{
+				"fields":     inf.Fields,
+				"warnings":   inf.Warnings,
+				"provenance": inf.Provenance,
+			}, nil
 		},
 	},
 	"insert": {
@@ -415,7 +435,7 @@ var Ops = map[string]OpDef{
 	},
 	"search_fulltext": {
 		Description: "Full-text search over fields marked fulltext, using SQLite FTS5 MATCH syntax " +
-			"(e.g. \"payment\", \"'credit refund'\", \"status:ok AND retry\"). Returns matching records ordered by relevance. " +
+			"(e.g. \"payment\", \"credit refund\", \"status:ok AND retry\"). Returns matching records ordered by relevance. " +
 			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array) " +
 			"and omit the hidden _embedding column unless include_hidden is true.",
 		InputSchema: map[string]any{
@@ -469,6 +489,8 @@ var Ops = map[string]OpDef{
 			"Text queries always target the server-managed vectorize (_embedding) space and are rejected for caller-provided " +
 			"vector columns — their embedding space is unknown, so cosine against a freshly embedded query would be meaningless; " +
 			"search those with a raw vector from the same embedding space that produced the stored vectors. " +
+			"Optional filter and args restrict rows with a SQL WHERE expression (like delete's filter) " +
+			"before scoring; optional min_score drops lower-similarity results before the ranking/limit. " +
 			"Results carry _score (cosine similarity, higher is closer), honor declared field types " +
 			"(boolean -> true/false, json -> decoded value, vector -> number array), and omit the hidden " +
 			"_embedding column unless include_hidden is true. skipped_vectors counts rows whose stored vector " +
@@ -502,6 +524,29 @@ var Ops = map[string]OpDef{
 					"maximum":     200,
 				},
 				"include_hidden": prop("boolean", "Also return hidden internal columns (currently _embedding) in results"),
+				"filter": map[string]any{
+					"type":        "string",
+					"description": "Optional SQL WHERE expression filtering rows before vector scoring (like delete's filter)",
+					"pattern":     `\S`,
+					"not":         map[string]any{"pattern": ";"},
+				},
+				"args": map[string]any{
+					"type":        "array",
+					"description": "Optional bind parameters for ? placeholders in filter",
+					"items": map[string]any{
+						"anyOf": []any{
+							map[string]any{"type": "string"},
+							map[string]any{"type": "number"},
+							map[string]any{"type": "boolean"},
+							map[string]any{"type": "null"},
+						},
+					},
+					"maxItems": 100,
+				},
+				"min_score": map[string]any{
+					"type":        "number",
+					"description": "Optional minimum cosine-similarity score (inclusive); results below this are dropped before ranking and limit",
+				},
 			},
 			"required": []string{"namespace", "table"},
 			"oneOf": []any{
@@ -524,12 +569,12 @@ var Ops = map[string]OpDef{
 					},
 				},
 			},
-			"truncated": prop("boolean", "True when the result hit the response budget and was cut short"),
+			"truncated":       prop("boolean", "True when the result hit the response budget and was cut short"),
 			"skipped_vectors": prop("integer", "Rows whose stored vector was corrupt or dimension-mismatched and could not be scored; nonzero means those rows are missing from results"),
 		}, "results", "truncated", "skipped_vectors"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req vecReq
-			if err := decode(body, &req); err != nil {
+			if err := decodeAllowNullArgs(body, &req); err != nil {
 				return nil, err
 			}
 			if req.Text != "" && len(req.Vector) > 0 {
@@ -572,7 +617,8 @@ var Ops = map[string]OpDef{
 				queryIdentity = s.emb.Identity()
 			}
 			res, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table),
-				strings.ToLower(strings.TrimSpace(req.Column)), vec, queryIdentity, limit(req.Limit), req.IncludeHidden)
+				strings.ToLower(strings.TrimSpace(req.Column)), vec, queryIdentity, limit(req.Limit), req.IncludeHidden,
+				req.Filter, req.Args, req.MinScore)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -874,6 +920,9 @@ type vecReq struct {
 	Vector        []float64 `json:"vector"`
 	Limit         int       `json:"limit"`
 	IncludeHidden bool      `json:"include_hidden"`
+	Filter        string    `json:"filter"`
+	Args          []any     `json:"args"`
+	MinScore      *float64  `json:"min_score"`
 }
 
 type deleteReq struct {

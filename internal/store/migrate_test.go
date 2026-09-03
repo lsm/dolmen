@@ -74,7 +74,7 @@ func TestMigrateVectorizeBackfill(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"hello world"})
-	res, err := st.SearchVector(ctx, "test", "plain", "", qv[0], "fake-space", 1, false)
+	res, err := st.SearchVector(ctx, "test", "plain", "", qv[0], "fake-space", 1, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search after backfill: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestMigrateVectorizeSwitch(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"delta content here"})
-	res, err := st.SearchVector(ctx, "test", "switch", "", qv[0], "fake-space", 2, false)
+	res, err := st.SearchVector(ctx, "test", "switch", "", qv[0], "fake-space", 2, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search after switch: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestDropAndReAddVectorizeField(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"fresh row"})
-	res, err := st.SearchVector(ctx, "test", "recyc", "", qv[0], "fake-space", 5, false)
+	res, err := st.SearchVector(ctx, "test", "recyc", "", qv[0], "fake-space", 5, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestEmbedModelMismatchGuard(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"hello"})
-	if _, err := st.SearchVector(ctx, "test", "mm", "", qv[0], "other-space", 5, false); err == nil {
+	if _, err := st.SearchVector(ctx, "test", "mm", "", qv[0], "other-space", 5, false, "", nil, nil); err == nil {
 		t.Fatal("expected search with changed model to be rejected")
 	}
 
@@ -245,7 +245,7 @@ func TestChunkedVectorizeBackfill(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	qv, _ := fakeEmbed(ctx, []string{strings.Repeat("a", 300) + "b"})
-	res, err := st.SearchVector(ctx, "test", "chunky", "", qv[0], "fake-space", 1, false)
+	res, err := st.SearchVector(ctx, "test", "chunky", "", qv[0], "fake-space", 1, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestUnrelatedMigrationPreservesEmbedDim(t *testing.T) {
 	if err != nil || sc.EmbedDim != 8 {
 		t.Fatalf("unrelated migration must preserve embed_dim, got %+v err=%v", sc, err)
 	}
-	if _, err := st.SearchVector(ctx, "test", "dimkeep", "", []float32{1, 0, 0, 0}, "", 5, false); err == nil {
+	if _, err := st.SearchVector(ctx, "test", "dimkeep", "", []float32{1, 0, 0, 0}, "", 5, false, "", nil, nil); err == nil {
 		t.Fatal("dim guard must survive unrelated migrations")
 	}
 }
@@ -311,7 +311,7 @@ func TestNoOpVectorizeMigrationSkipsReembed(t *testing.T) {
 		t.Fatalf("no-op migration re-embedded: %d -> %d", before, calls)
 	}
 	qv, _ := fakeEmbed(context.Background(), []string{"hello world"})
-	res, err := st.SearchVector(context.Background(), "test", "noop", "", qv[0], "fake-space", 1, false)
+	res, err := st.SearchVector(context.Background(), "test", "noop", "", qv[0], "fake-space", 1, false, "", nil, nil)
 	if err != nil || len(res.Rows) != 1 || res.Rows[0]["s"] != "hello world" {
 		t.Fatalf("embeddings must survive no-op migration: %v %v", err, res.Rows)
 	}
@@ -354,7 +354,7 @@ func TestMigrateReDerivesEmbedDimAfterDisable(t *testing.T) {
 		t.Fatalf("expected re-derived embed_dim 4, got %+v err=%v", sc, err)
 	}
 	qv, _ := shortEmbed(ctx, []string{"anything"})
-	if _, err := st.SearchVector(ctx, "test", "redim", "", qv[0], "fake-space", 5, false); err != nil {
+	if _, err := st.SearchVector(ctx, "test", "redim", "", qv[0], "fake-space", 5, false, "", nil, nil); err != nil {
 		t.Fatalf("text-space search after dim change must work: %v", err)
 	}
 }

@@ -172,7 +172,7 @@ func TestUpdateReEmbedsVectorizedField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
-	hits, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10, false)
+	hits, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestUpdateClearsEmbeddingWhenVectorizedFieldCleared(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
-	vres, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10, false)
+	vres, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestUpsertInsertsWhenNoMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
-	vhits, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10, false)
+	vhits, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 10, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
