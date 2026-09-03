@@ -9,8 +9,8 @@ import (
 func TestInferFields(t *testing.T) {
 	long := "A very detailed finding body." + strings.Repeat(" x", 150)
 	fields := InferFields([]map[string]any{
-		{"title": "bug", "score": 3.5, "ok": true, "when": "2026-09-01T10:00:00Z", "detail": long, "tags": []any{"a"}},
-		{"title": "task", "score": 1, "ok": false, "when": "2026-09-02", "detail": long},
+		{"title": "bug", "score": 3.5, "ok": true, "at_time": "2026-09-01T10:00:00Z", "detail": long, "tags": []any{"a"}},
+		{"title": "task", "score": 1, "ok": false, "at_time": "2026-09-02", "detail": long},
 	})
 	byName := map[string]Field{}
 	for _, f := range fields {
@@ -22,8 +22,8 @@ func TestInferFields(t *testing.T) {
 	if byName["ok"].Type != Boolean {
 		t.Errorf("ok: got %s", byName["ok"].Type)
 	}
-	if byName["when"].Type != Timestamp {
-		t.Errorf("when: got %s", byName["when"].Type)
+	if byName["at_time"].Type != Timestamp {
+		t.Errorf("at_time: got %s", byName["at_time"].Type)
 	}
 	if byName["tags"].Type != JSON {
 		t.Errorf("tags: got %s", byName["tags"].Type)
@@ -175,7 +175,7 @@ func TestInferAllNullKeyRetained(t *testing.T) {
 
 func TestInferInvalidTimestampsStayString(t *testing.T) {
 	for _, bad := range []string{"2026-99-99", "2026-01-01T++++", "2026-02-30"} {
-		fields := InferFields([]map[string]any{{"when": bad}})
+		fields := InferFields([]map[string]any{{"at_time": bad}})
 		if len(fields) != 1 || fields[0].Type != String {
 			t.Fatalf("date-shaped but invalid %q must infer string, got %+v", bad, fields)
 		}
@@ -190,7 +190,7 @@ func TestInferValidTimestampVariants(t *testing.T) {
 		"2026-09-01 10:00:00",
 		"2026-09-01T10:00:05",
 	} {
-		fields := InferFields([]map[string]any{{"when": good}})
+		fields := InferFields([]map[string]any{{"at_time": good}})
 		if len(fields) != 1 || fields[0].Type != Timestamp {
 			t.Fatalf("valid timestamp %q must infer timestamp, got %+v", good, fields)
 		}
@@ -199,13 +199,13 @@ func TestInferValidTimestampVariants(t *testing.T) {
 
 func TestInferOutOfRangeTimestampOffsetsStayString(t *testing.T) {
 	for _, bad := range []string{"2026-01-01T00:00:00+24:00", "2026-01-01T00:00:00+23:60", "2026-01-01T00:00:00-25:00"} {
-		fields := InferFields([]map[string]any{{"when": bad}})
+		fields := InferFields([]map[string]any{{"at_time": bad}})
 		if len(fields) != 1 || fields[0].Type != String {
 			t.Fatalf("out-of-range offset %q must infer string, got %+v", bad, fields)
 		}
 	}
 	for _, good := range []string{"2026-01-01T00:00:00+23:59", "2026-01-01T00:00:00-05:30", "2026-01-01T00:00:00Z"} {
-		fields := InferFields([]map[string]any{{"when": good}})
+		fields := InferFields([]map[string]any{{"at_time": good}})
 		if len(fields) != 1 || fields[0].Type != Timestamp {
 			t.Fatalf("in-range offset %q must infer timestamp, got %+v", good, fields)
 		}
@@ -236,7 +236,7 @@ func TestValidateRejectsDimOnNonVectorField(t *testing.T) {
 
 func TestInferLowercaseRFC3339Separators(t *testing.T) {
 	for _, good := range []string{"2026-09-01t10:00:00z", "2026-09-01T10:00:00z"} {
-		fields := InferFields([]map[string]any{{"when": good}})
+		fields := InferFields([]map[string]any{{"at_time": good}})
 		if len(fields) != 1 || fields[0].Type != Timestamp {
 			t.Fatalf("lowercase rfc3339 %q must infer timestamp, got %+v", good, fields)
 		}
@@ -251,6 +251,94 @@ func TestSQLiteReservedTableNamesRejected(t *testing.T) {
 	}
 	if !ValidTableName("sqlitey_table") {
 		t.Fatal("names that merely start with the letters sqlite must stay valid")
+	}
+}
+
+func TestSQLKeywordsRejected(t *testing.T) {
+	for _, name := range []string{"order", "group", "where", "select", "index", "from", "by", "current_date", "notnull"} {
+		if ValidIdent(name) {
+			t.Fatalf("SQL keyword %q must be rejected as an identifier", name)
+		}
+		if ValidTableName(name) {
+			t.Fatalf("SQL keyword %q must be rejected as a table name", name)
+		}
+	}
+	// Suffixes and prefixes that are not exact keywords should still be valid.
+	for _, name := range []string{"my_order", "order_field", "grouped", "selected", "my_indexed", "orderby"} {
+		if !ValidIdent(name) {
+			t.Fatalf("non-keyword %q must be accepted", name)
+		}
+	}
+}
+
+func TestValidateRejectsSQLKeywordWithSuggestion(t *testing.T) {
+	err := Validate([]Field{{Name: "order", Type: String}})
+	if err == nil {
+		t.Fatal("expected SQL keyword field name to be rejected")
+	}
+	if !strings.Contains(err.Error(), "order") || !strings.Contains(err.Error(), "SQLite/SQL keyword") {
+		t.Fatalf("expected a clear SQL keyword error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "my_order") {
+		t.Fatalf("expected error to suggest an alternative, got %v", err)
+	}
+
+	err = Validate([]Field{{Name: "id", Type: String}})
+	if err == nil {
+		t.Fatal("expected reserved internal name to be rejected")
+	}
+	if !strings.Contains(err.Error(), "record_id") {
+		t.Fatalf("expected suggestion for 'id', got %v", err)
+	}
+}
+
+func TestSuggestIdent(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"order", "my_order"},
+		{"id", "record_id"},
+		{"created_at", "created_time"},
+		{"rowid", "record_id"},
+		{"select", "my_select"},
+		{"by", "my_by"},
+		{"title", "title"},
+	}
+	for _, c := range cases {
+		if got := SuggestIdent(c.in); got != c.want {
+			t.Fatalf("SuggestIdent(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestValidateForMigrationGrandfathersLegacyFields(t *testing.T) {
+	old := []Field{{Name: "order", Type: String}, {Name: "body", Type: Text}}
+	// Adding an unrelated field must succeed even though the table has a keyword field.
+	if err := ValidateForMigration(append(old, Field{Name: "priority", Type: Number}), old); err != nil {
+		t.Fatalf("expected migration to allow legacy keyword field, got %v", err)
+	}
+	// Renaming a legacy field to a non-keyword name must succeed.
+	renamed := []Field{{Name: "my_order", Type: String}, {Name: "body", Type: Text}}
+	if err := ValidateForMigration(renamed, old); err != nil {
+		t.Fatalf("expected rename away from keyword to succeed, got %v", err)
+	}
+	// Renaming an unrelated field to a keyword must still fail.
+	bad := []Field{{Name: "order", Type: String}}
+	if err := ValidateForMigration(bad, nil); err == nil {
+		t.Fatal("expected new keyword field to be rejected")
+	}
+}
+
+func TestIdentPattern(t *testing.T) {
+	pat := IdentPattern()
+	if !strings.HasPrefix(pat, "^(?!") {
+		t.Fatalf("IdentPattern must use a negative lookahead, got %q", pat)
+	}
+	if !strings.Contains(pat, "[a-z][a-z0-9_]{0,63}$") {
+		t.Fatalf("IdentPattern must end with the base identifier pattern, got %q", pat)
+	}
+	for _, kw := range []string{"order", "select", "where", "group", "index", "id", "rowid"} {
+		if !strings.Contains(pat, kw) {
+			t.Fatalf("IdentPattern must include %q, got %q", kw, pat)
+		}
 	}
 }
 
@@ -340,8 +428,8 @@ func TestInferPointerSamplesDereference(t *testing.T) {
 func TestInferTypedNilTimestampStaysTimestamp(t *testing.T) {
 	var missing *string
 	fields := InferFields([]map[string]any{
-		{"when": "2026-09-01T10:00:00Z"},
-		{"when": missing},
+		{"at_time": "2026-09-01T10:00:00Z"},
+		{"at_time": missing},
 	})
 	if len(fields) != 1 || fields[0].Type != Timestamp {
 		t.Fatalf("typed nil must not downgrade a timestamp field, got %+v", fields)
@@ -442,6 +530,39 @@ func TestInferSchemaRoundTripsThroughValidate(t *testing.T) {
 	fields := InferFields(samples)
 	if err := Validate(fields); err != nil {
 		t.Fatalf("inferred fields must pass Validate: %v", err)
+	}
+}
+
+func TestInferSchemaSanitizesSQLKeywordKeys(t *testing.T) {
+	// Common sample keys that are SQLite/SQL keywords must infer usable names
+	// (the documented infer-then-create workflow must not dead-end at
+	// create_table's keyword rejection).
+	r := InferSchema([]map[string]any{
+		{"order": "first", "group": "g", "index": 3, "plan": "free", "select": "x"},
+	})
+	byName := map[string]Field{}
+	for _, f := range r.Fields {
+		byName[f.Name] = f
+	}
+	for _, want := range []string{"order_", "group_", "index_", "plan_", "select_"} {
+		if _, ok := byName[want]; !ok {
+			t.Fatalf("expected keyword key to be renamed to %q, got %+v", want, r.Fields)
+		}
+	}
+	if err := Validate(r.Fields); err != nil {
+		t.Fatalf("inferred fields must pass Validate: %v", err)
+	}
+	found := false
+	for _, w := range r.Warnings {
+		if strings.Contains(w, "SQL keyword key") && strings.Contains(w, `"order"`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a SQL keyword rename warning, got %v", r.Warnings)
+	}
+	if raws := r.Provenance["order_"]; len(raws) != 1 || raws[0] != "order" {
+		t.Fatalf("provenance must map order_ back to the raw key, got %v", r.Provenance["order_"])
 	}
 }
 

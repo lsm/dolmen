@@ -15,7 +15,7 @@ func mustCreateUsers(t *testing.T, base string) {
 		"table":     "users",
 		"fields": []map[string]any{
 			{"name": "email", "type": "string"},
-			{"name": "plan", "type": "string"},
+			{"name": "plan_name", "type": "string"},
 			{"name": "logins", "type": "number"},
 			{"name": "active", "type": "boolean"},
 		},
@@ -32,8 +32,8 @@ func TestUpsertByKeyOverHTTP(t *testing.T) {
 	code, res := post(t, srv.URL, "upsert_by_key", map[string]any{
 		"namespace": "app", "table": "users", "on": []string{"email"},
 		"records": []map[string]any{
-			{"email": "a@example.com", "plan": "free", "logins": 1},
-			{"email": "b@example.com", "plan": "pro", "logins": 1},
+			{"email": "a@example.com", "plan_name": "free", "logins": 1},
+			{"email": "b@example.com", "plan_name": "pro", "logins": 1},
 		},
 	})
 	if code != 200 || res["ok"] != true {
@@ -64,7 +64,7 @@ func TestUpsertByKeyOverHTTP(t *testing.T) {
 
 	code, res = post(t, srv.URL, "query", map[string]any{
 		"namespace": "app",
-		"sql":       "SELECT plan, logins, count(*) OVER () AS n FROM users WHERE email = ?",
+		"sql":       "SELECT plan_name, logins, count(*) OVER () AS n FROM users WHERE email = ?",
 		"args":      []any{"a@example.com"},
 	})
 	if code != 200 {
@@ -75,7 +75,7 @@ func TestUpsertByKeyOverHTTP(t *testing.T) {
 		t.Fatalf("upsert must not duplicate the row: %v", rows)
 	}
 	row := rows[0].(map[string]any)
-	if row["plan"] != "free" || row["logins"].(float64) != 5 {
+	if row["plan_name"] != "free" || row["logins"].(float64) != 5 {
 		t.Fatalf("partial update should set logins and keep plan: %v", row)
 	}
 }
@@ -86,7 +86,7 @@ func TestInsertIdempotencyOverHTTP(t *testing.T) {
 
 	body := map[string]any{
 		"namespace": "app", "table": "users",
-		"records":         []map[string]any{{"email": "a@example.com", "plan": "free"}},
+		"records":         []map[string]any{{"email": "a@example.com", "plan_name": "free"}},
 		"idempotency_key": "retry-safe-1",
 	}
 	code, res := post(t, srv.URL, "insert", body)
@@ -123,7 +123,7 @@ func TestInsertIdempotencyOverHTTP(t *testing.T) {
 	}
 
 	// Same key, different records: rejected rather than replayed.
-	body["records"] = []map[string]any{{"email": "c@example.com", "plan": "pro"}}
+	body["records"] = []map[string]any{{"email": "c@example.com", "plan_name": "pro"}}
 	code, res = post(t, srv.URL, "insert", body)
 	if code != 400 {
 		t.Fatalf("key reuse for a different payload must 400, got %d %v", code, res)
@@ -237,7 +237,7 @@ func TestUpsertByKeyValidationOverHTTP(t *testing.T) {
 		{
 			name: "missing key value",
 			body: map[string]any{"namespace": "app", "table": "users", "on": []string{"email"},
-				"records": []map[string]any{{"plan": "free"}}},
+				"records": []map[string]any{{"plan_name": "free"}}},
 			want: "must be present and non-null",
 		},
 	}
