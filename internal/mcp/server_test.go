@@ -64,6 +64,50 @@ func rpc(t *testing.T, url string, body any) (int, map[string]any) {
 	return res.StatusCode, decoded
 }
 
+func TestMCPUpdateUpsertTools(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+
+	code, res := rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": "create_table", "arguments": map[string]any{
+			"namespace": "agents",
+			"table":     "tasks",
+			"fields":    []map[string]any{{"name": "title", "type": "string", "fulltext": true}, {"name": "done", "type": "boolean"}},
+		}},
+	})
+	if code != 200 || res["result"].(map[string]any)["isError"] == true {
+		t.Fatalf("create_table failed: %d %v", code, res)
+	}
+
+	code, res = rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+		"params": map[string]any{"name": "upsert", "arguments": map[string]any{
+			"namespace": "agents", "table": "tasks",
+			"filter": "title = 'first'", "set": map[string]any{"title": "first", "done": false},
+		}},
+	})
+	if code != 200 || res["result"].(map[string]any)["isError"] == true {
+		t.Fatalf("upsert tool call failed: %d %v", code, res)
+	}
+	if !strings.Contains(res["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string), `"inserted":true`) {
+		t.Fatalf("upsert must report an insert, got %v", res)
+	}
+
+	code, res = rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+		"params": map[string]any{"name": "update", "arguments": map[string]any{
+			"namespace": "agents", "table": "tasks",
+			"filter": "title = ?", "args": []any{"first"}, "set": map[string]any{"done": true},
+		}},
+	})
+	if code != 200 || res["result"].(map[string]any)["isError"] == true {
+		t.Fatalf("update tool call failed: %d %v", code, res)
+	}
+	if !strings.Contains(res["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string), `"updated":1`) {
+		t.Fatalf("update must report one row, got %v", res)
+	}
+}
+
 func TestMCPProtocol(t *testing.T) {
 	url := newMCPServer(t).URL + "/mcp"
 
@@ -92,8 +136,8 @@ func TestMCPProtocol(t *testing.T) {
 		t.Fatalf("tools/list status %d", code)
 	}
 	tools := res["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 11 {
-		t.Fatalf("expected 11 tools, got %d", len(tools))
+	if len(tools) != 13 {
+		t.Fatalf("expected 13 tools, got %d", len(tools))
 	}
 	first := tools[0].(map[string]any)
 	if first["name"] == "" || first["inputSchema"] == nil {
