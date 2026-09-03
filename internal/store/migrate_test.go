@@ -999,3 +999,71 @@ func TestAddFulltextFieldWithDefaultIndexesBackfill(t *testing.T) {
 		t.Fatalf("both pre-existing rows must be searchable via the backfilled default: %v", rows)
 	}
 }
+
+func TestPlanEstimatesUsePreMigrationNamesForRenamedVectorField(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "renvec", []schema.Field{
+		{Name: "a", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "renvec", []map[string]any{
+		{"a": "one"}, {"a": "two"}, {"a": ""},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	changes := []schema.Change{
+		{Op: schema.OpRenameField, From: "a", To: "b"},
+		{Op: schema.OpSetVectorize, Name: "b", Value: true},
+	}
+	plan, err := st.PlanMigration(ctx, "test", "renvec", changes, testEmbed, 1)
+	if err != nil {
+		t.Fatalf("dry-run must resolve the vectorized field back to its pre-migration column: %v", err)
+	}
+	if plan.EmbedRows != 2 {
+		t.Fatalf("embed_rows must count non-empty texts under the old name, got %d", plan.EmbedRows)
+	}
+	if _, err := st.Migrate(ctx, "test", "renvec", changes, testEmbed, 1); err != nil {
+		t.Fatalf("apply after rename must address the old column at plan time: %v", err)
+	}
+	qv, _ := fakeEmbed(ctx, []string{"two"})
+	rows, _, err := st.SearchVector(ctx, "test", "renvec", "", qv[0], "fake-space", 5, false)
+	if err != nil || len(rows) < 1 || rows[0]["b"] != "two" {
+		t.Fatalf("vectorize after rename must rank the exact text first: %v err=%v", rows, err)
+	}
+}
+
+func TestListMigrationsPreservesExactNumericDefaults(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "bignum", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "bignum", []map[string]any{{"v": "x"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	big := int64(9007199254740993) // 2^53+1: float64 rounds it down
+	if _, err := st.Migrate(ctx, "test", "bignum", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "n", Type: schema.Number, Required: true}, Default: big},
+	}, testEmbed, 1); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	ms, err := st.ListMigrations(ctx, "test", "bignum")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	num, ok := ms[0].Changes[0].Default.(json.Number)
+	if !ok || num.String() != "9007199254740993" {
+		t.Fatalf("history must preserve the exact numeric default, got %T %v", ms[0].Changes[0].Default, ms[0].Changes[0].Default)
+	}
+	rows, _, err := st.Query(ctx, "test", `SELECT n AS n FROM bignum LIMIT 1`, nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if got, ok := rows[0]["n"].(int64); !ok || got != 9007199254740993 {
+		t.Fatalf("stored default must be exact, got %T %v", rows[0]["n"], rows[0]["n"])
+	}
+}

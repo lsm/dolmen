@@ -282,7 +282,12 @@ func (s *Store) ListMigrations(ctx context.Context, nsName, table string) ([]Mig
 		if err := rows.Scan(&m.ID, &m.FromVersion, &m.ToVersion, &cj, &m.At); err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal([]byte(cj), &m.Changes); err != nil {
+		// UseNumber keeps recorded numeric defaults exact: a default above
+		// JSON's safe-integer range must survive the audit round-trip, not
+		// collapse to the nearest float64.
+		dec := json.NewDecoder(strings.NewReader(cj))
+		dec.UseNumber()
+		if err := dec.Decode(&m.Changes); err != nil {
 			return nil, fmt.Errorf("corrupt migration record %d for %s.%s: %w", m.ID, nsName, table, err)
 		}
 		out = append(out, m)

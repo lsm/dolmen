@@ -285,6 +285,10 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 	}
 
 	addedFields := map[string]any{}
+	// renamedFrom maps a field's prospective name back to the physical column
+	// the database still has: estimate queries run before any DDL step, so they
+	// must address current column names, not names this migration creates.
+	renamedFrom := map[string]string{}
 
 	for i, ch := range changes {
 		if ch.Op != schema.OpAddField && ch.Default != nil {
@@ -384,6 +388,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				}
 			}
 			f.Name = ch.To
+			renamedFrom[ch.To] = oldName
 			if f.Fulltext {
 				rebuildFTSNeeded = true
 			}
@@ -493,9 +498,16 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			// Every enable path re-embeds all rows carrying non-empty text:
 			// either there is no _embedding column yet, or the column is being
 			// cleared (field or model switch) — so count the texts, not the
-			// currently-unembedded rows. A field added by this migration has
-			// no stored texts yet: only its default (when non-empty) embeds.
-			if def, added := addedFields[newVec.Name]; added {
+			// currently-unembedded rows. Resolve the prospective field name to
+			// the column the database has now: a field added by this migration
+			// has no stored texts yet (only its non-empty default embeds), and
+			// a renamed one lives under its pre-migration name until the DDL
+			// steps run.
+			physName := newVec.Name
+			for older, ok := renamedFrom[physName]; ok; older, ok = renamedFrom[physName] {
+				physName = older
+			}
+			if def, added := addedFields[physName]; added {
 				if s, ok := def.(string); ok && s != "" {
 					n, err := countRows(ctx, db, table)
 					if err != nil {
@@ -506,7 +518,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			} else {
 				var n int64
 				if err := db.QueryRowContext(ctx,
-					fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s IS NOT NULL AND %s != ''`, q(table), q(newVec.Name), q(newVec.Name))).Scan(&n); err != nil {
+					fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s IS NOT NULL AND %s != ''`, q(table), q(physName), q(physName))).Scan(&n); err != nil {
 					return nil, err
 				}
 				plan.EmbedRows = n
