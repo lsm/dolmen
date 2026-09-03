@@ -179,6 +179,22 @@ func (s *queryScanner) scanToken() (token, error) {
 		case '.':
 			s.i++
 			return token{typ: "punct", val: "."}, nil
+		case ':', '@', '$':
+			// SQLite scans :name/@name/$name as a single variable token, so a
+			// keyword can never appear inside one. Tokenize them atomically or
+			// SELECT 1 AS x:from FROM _dolmen_tables would smuggle a fake FROM.
+			if s.i+1 < len(s.s) && isIdentCont(s.s[s.i+1]) {
+				return token{typ: "param", val: s.readParam()}, nil
+			}
+			s.i++
+			return token{typ: "op", val: string(c)}, nil
+		case '?':
+			// ?NNN binds atomically; SQLite scans only digits after '?'.
+			if s.i+1 < len(s.s) && unicode.IsDigit(rune(s.s[s.i+1])) {
+				return token{typ: "param", val: s.readNumberedParam()}, nil
+			}
+			s.i++
+			return token{typ: "op", val: string(c)}, nil
 		default:
 			if isIdentStart(c) {
 				return token{typ: "ident", val: s.readIdent()}, nil
@@ -293,17 +309,45 @@ func (s *queryScanner) readBracketed() (string, error) {
 // SQLite's tokenizer, every byte above ASCII counts as an identifier
 // character, so non-ASCII CTE and alias names (e.g. 日本語) tokenize as
 // identifiers instead of a run of operator bytes.
+// isIdentStart reports whether c can begin an unquoted identifier. Like
+// SQLite's tokenizer, every byte above ASCII counts as an identifier
+// character, so non-ASCII CTE and alias names (e.g. 日本語) tokenize as
+// identifiers instead of a run of operator bytes.
 func isIdentStart(c byte) bool {
 	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= utf8.RuneSelf
 }
 
+// isIdentCont reports whether c can continue an unquoted identifier. Like
+// SQLite's IdChar, '$' is a continuation character (x$from is one name), so
+// keywords cannot be recognized inside dollar-containing identifiers.
 func isIdentCont(c byte) bool {
-	return isIdentStart(c) || unicode.IsDigit(rune(c))
+	return isIdentStart(c) || c == '$' || unicode.IsDigit(rune(c))
 }
 
 func (s *queryScanner) readIdent() string {
 	start := s.i
 	for s.i < len(s.s) && isIdentCont(s.s[s.i]) {
+		s.i++
+	}
+	return s.s[start:s.i]
+}
+
+// readParam consumes a named variable token (:name, @name, $name) as one
+// unit, mirroring SQLite so keywords inside parameter names stay inert.
+func (s *queryScanner) readParam() string {
+	start := s.i
+	s.i++ // prefix character
+	for s.i < len(s.s) && isIdentCont(s.s[s.i]) {
+		s.i++
+	}
+	return s.s[start:s.i]
+}
+
+// readNumberedParam consumes ?NNN, digits only, matching SQLite.
+func (s *queryScanner) readNumberedParam() string {
+	start := s.i
+	s.i++ // '?'
+	for s.i < len(s.s) && unicode.IsDigit(rune(s.s[s.i])) {
 		s.i++
 	}
 	return s.s[start:s.i]

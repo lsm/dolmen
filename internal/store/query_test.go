@@ -600,6 +600,12 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"pragma arg reserved", "SELECT * FROM pragma_table_info('pragma_table_list')"},
 		{"dbstat", "SELECT * FROM dbstat"},
 		{"nested expression bypass", "SELECT coalesce((SELECT 1), 0), schema_json FROM _dolmen_tables"},
+		// A $ inside an identifier must not split it: otherwise the scanner
+		// sees a fake FROM, treats the real FROM as a table named "from", and
+		// the reserved table slips through as its alias.
+		{"dollar alias bypass", "SELECT schema_json, 1 AS x$from FROM _dolmen_tables"},
+		{"colon param bypass", "SELECT 1 AS x:from FROM _dolmen_tables"},
+		{"at param bypass", "SELECT 1 AS x@from FROM _dolmen_tables"},
 		// Non-ASCII names cannot be created as tables, and without a matching
 		// CTE they resolve to nothing, so they are rejected like any other
 		// non-user table.
@@ -686,6 +692,11 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		"WITH résumé AS (SELECT id FROM notes) SELECT * FROM résumé",
 		"SELECT * FROM notes AS 日本語",
 		"SELECT 日本語.id FROM notes 日本語",
+		// '$' continues an identifier (SQLite IdChar), so keywords cannot be
+		// recognized inside dollar-containing names.
+		"SELECT 1 AS x$from FROM notes",
+		"WITH c$1 AS (SELECT id FROM notes) SELECT * FROM c$1",
+		"SELECT n$x.id FROM notes n$x",
 		// MaxQueryRunes counts characters, matching JSON Schema maxLength, so a
 		// query whose UTF-8 encoding is larger than the limit in bytes but within
 		// it in characters is accepted.
@@ -722,5 +733,33 @@ func TestQueryValidatorCTEScale(t *testing.T) {
 	}
 	if d := time.Since(start); d > 10*time.Second {
 		t.Fatalf("sequential CTE validation should stay linear, took %v", d)
+	}
+}
+
+// TestQueryTokenizesVariablesAtomically checks that SQLite variable tokens
+// (:name, @name, $name, ?NNN) are consumed as one unit, so a keyword inside a
+// parameter name can never be mistaken for a clause boundary.
+func TestQueryTokenizesVariablesAtomically(t *testing.T) {
+	ok := []string{
+		"SELECT title FROM notes WHERE title = :name OR title = @name OR title = $name",
+		"SELECT title FROM notes WHERE title = ?1",
+		"SELECT :from AS f, @from AS g, $from AS h FROM notes",
+	}
+	for _, q := range ok {
+		if err := validateQueryTables(q); err != nil {
+			t.Errorf("expected %q to validate: %v", q, err)
+		}
+	}
+
+	rejected := []string{
+		"SELECT schema_json, 1 AS x$from FROM _dolmen_tables",
+		"SELECT 1 AS x:from FROM _dolmen_tables",
+		"SELECT 1 AS x@from FROM _dolmen_tables",
+		"SELECT 1 AS x$from, schema_json FROM _dolmen_tables UNION SELECT 1, 2 FROM notes",
+	}
+	for _, q := range rejected {
+		if err := validateQueryTables(q); err == nil {
+			t.Errorf("expected %q to be rejected", q)
+		}
 	}
 }
