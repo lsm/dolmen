@@ -8,7 +8,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -142,31 +141,21 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
-func FromEnv() Provider {
-	switch strings.ToLower(os.Getenv("DOLMEN_EMBED_PROVIDER")) {
+// NewProvider returns an embedding provider for the given configuration.
+// Valid providers are "none" (or "") and "openai" (any OpenAI-compatible endpoint).
+func NewProvider(provider, baseURL, model, apiKey string) (Provider, error) {
+	switch strings.ToLower(provider) {
 	case "", "none":
-		return None{}
+		return None{}, nil
 	case "openai":
-		return &OpenAI{
-			BaseURL: envOr("DOLMEN_EMBED_BASE_URL", "https://api.openai.com/v1"),
-			Model:   envOr("DOLMEN_EMBED_MODEL", "text-embedding-3-small"),
-			APIKey:  envOverride("DOLMEN_EMBED_API_KEY", os.Getenv("OPENAI_API_KEY")),
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
 		}
+		if model == "" {
+			model = "text-embedding-3-small"
+		}
+		return &OpenAI{BaseURL: baseURL, Model: model, APIKey: apiKey}, nil
 	default:
-		return None{}
+		return nil, fmt.Errorf("unknown embedding provider %q (valid: none, openai)", provider)
 	}
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func envOverride(key, fallback string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
-	}
-	return fallback
 }

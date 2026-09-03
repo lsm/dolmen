@@ -160,7 +160,7 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	if where == "" {
 		return 0, invalidf("filter is required (pass \"1=1\" to delete everything)")
 	}
-	if strings.Contains(where, ";") {
+	if hasStatementSeparator(where) {
 		return 0, invalidf("multiple statements are not allowed in filter")
 	}
 	for i, a := range args {
