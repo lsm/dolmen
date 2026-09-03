@@ -30,6 +30,21 @@ type Server struct {
 	origins map[string]bool
 }
 
+// toolAnnotations carries the MCP annotations (client-side UI hints) for each
+// registry op. Titles and hints describe the op, not the transport.
+var toolAnnotations = map[string]map[string]any{
+	"list_tables":     {"title": "List tables", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"describe_table":  {"title": "Describe table", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"create_table":    {"title": "Create table", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+	"infer_schema":    {"title": "Infer schema", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"insert":          {"title": "Insert records", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+	"query":           {"title": "Query", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"search_fulltext": {"title": "Full-text search", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"search_vector":   {"title": "Vector search", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"delete":          {"title": "Delete rows", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
+	"migrate":         {"title": "Migrate table", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false},
+}
+
 func New(a *api.Server, extraOrigins []string) *Server {
 	origins := map[string]bool{}
 	for _, o := range extraOrigins {
@@ -197,11 +212,18 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		tools := make([]map[string]any, 0)
 		for _, name := range api.OpNames() {
 			def := api.Ops[name]
-			tools = append(tools, map[string]any{
+			tool := map[string]any{
 				"name":        name,
 				"description": def.Description,
 				"inputSchema": def.InputSchema,
-			})
+			}
+			if def.OutputSchema != nil {
+				tool["outputSchema"] = def.OutputSchema
+			}
+			if ann, ok := toolAnnotations[name]; ok {
+				tool["annotations"] = ann
+			}
+			tools = append(tools, tool)
 		}
 		return map[string]any{"tools": tools}, nil
 	case "tools/call":
@@ -234,15 +256,15 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		}
 		res, err := s.api.Dispatch(ctx, params.Name, args)
 		if err != nil {
-			return toolResult(fmt.Sprintf("error: %s", err.Error()), true), nil
+			return toolResult(nil, fmt.Sprintf("error: %s", err.Error()), true), nil
 		}
 		var buf bytes.Buffer
 		enc := json.NewEncoder(&buf)
 		enc.SetEscapeHTML(false)
 		if mErr := enc.Encode(res); mErr != nil {
-			return toolResult(fmt.Sprintf("error: cannot encode result: %s", mErr.Error()), true), nil
+			return toolResult(nil, fmt.Sprintf("error: cannot encode result: %s", mErr.Error()), true), nil
 		}
-		return toolResult(buf.String(), false), nil
+		return toolResult(res, buf.String(), false), nil
 	default:
 		return nil, &rpcErr{Code: jsonRPCMethodError, Message: fmt.Sprintf("unknown method %q", msg.Method)}
 	}
@@ -323,11 +345,15 @@ func ensureObjectParams(raw []byte, what string) (map[string]any, *rpcErr) {
 	return probe, nil
 }
 
-func toolResult(text string, isErr bool) map[string]any {
-	return map[string]any{
+func toolResult(structured any, text string, isErr bool) map[string]any {
+	res := map[string]any{
 		"content": []map[string]any{{"type": "text", "text": text}},
 		"isError": isErr,
 	}
+	if structured != nil {
+		res["structuredContent"] = structured
+	}
+	return res
 }
 
 func writeRPCResult(w http.ResponseWriter, id json.RawMessage, result any) {
