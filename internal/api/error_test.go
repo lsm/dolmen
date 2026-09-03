@@ -230,6 +230,33 @@ func TestErrorEnvelopeQueryErrorForMalformedFilter(t *testing.T) {
 	if errObj["code"] != "query_error" {
 		t.Fatalf("expected query_error code for delete, got %v", errObj["code"])
 	}
+
+	// Vector search filter failures must also classify as query errors.
+	code, _ = post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "app",
+		"table":     "vectors",
+		"fields":    []map[string]any{{"name": "text", "type": "text", "vectorize": true}},
+	})
+	if code != 200 {
+		t.Fatalf("create_table for vector search failed: %d", code)
+	}
+	code, body = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "app",
+		"table":     "vectors",
+		"vector":    []float64{1, 0, 0, 0, 0, 0, 0, 0},
+		"filter":    "id =",
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d %v", code, body)
+	}
+	errObj = errorBody(t, body)
+	if errObj["code"] != "query_error" {
+		t.Fatalf("expected query_error code for search_vector filter, got %v", errObj["code"])
+	}
+	msg, _ = errObj["message"].(string)
+	if strings.Contains(msg, "SQL logic error") || strings.Contains(msg, "(1)") {
+		t.Fatalf("raw SQLite internals leaked into message: %q", msg)
+	}
 }
 
 func TestErrorEnvelopeOmitsRequestIDWhenNotProvided(t *testing.T) {
