@@ -34,7 +34,7 @@ func TestMigrate(t *testing.T) {
 		t.Fatalf("insert after migrate: %v", err)
 	}
 
-	rows, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 10, false)
+	rows, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 0, 10, false)
 	if err != nil {
 		t.Fatalf("fts after rename: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestMigrate(t *testing.T) {
 		t.Fatalf("fts not rebuilt after rename: %v", rows)
 	}
 
-	rows, _, err = st.Query(ctx, "test", "SELECT priority FROM notes WHERE heading = 'fourth note'", nil)
+	rows, _, err = st.Query(ctx, "test", "SELECT priority FROM notes WHERE heading = 'fourth note'", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query new column: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestMigrateVectorizeBackfill(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"hello world"})
-	rows, _, err := st.SearchVector(ctx, "test", "plain", "", qv[0], "fake-space", 1, false)
+	rows, _, err := st.SearchVector(ctx, "test", "plain", "", qv[0], "fake-space", 0, 1, false)
 	if err != nil {
 		t.Fatalf("vector search after backfill: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestMigrateVectorizeSwitch(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"delta content here"})
-	rows, _, err := st.SearchVector(ctx, "test", "switch", "", qv[0], "fake-space", 2, false)
+	rows, _, err := st.SearchVector(ctx, "test", "switch", "", qv[0], "fake-space", 0, 2, false)
 	if err != nil {
 		t.Fatalf("vector search after switch: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestDropAndReAddVectorizeField(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"fresh row"})
-	rows, _, err := st.SearchVector(ctx, "test", "recyc", "", qv[0], "fake-space", 5, false)
+	rows, _, err := st.SearchVector(ctx, "test", "recyc", "", qv[0], "fake-space", 0, 5, false)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestEmbedModelMismatchGuard(t *testing.T) {
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"hello"})
-	if _, _, err := st.SearchVector(ctx, "test", "mm", "", qv[0], "other-space", 5, false); err == nil {
+	if _, _, err := st.SearchVector(ctx, "test", "mm", "", qv[0], "other-space", 0, 5, false); err == nil {
 		t.Fatal("expected search with changed model to be rejected")
 	}
 
@@ -245,7 +245,7 @@ func TestChunkedVectorizeBackfill(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	qv, _ := fakeEmbed(ctx, []string{strings.Repeat("a", 300) + "b"})
-	rows, _, err := st.SearchVector(ctx, "test", "chunky", "", qv[0], "fake-space", 1, false)
+	rows, _, err := st.SearchVector(ctx, "test", "chunky", "", qv[0], "fake-space", 0, 1, false)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestUnrelatedMigrationPreservesEmbedDim(t *testing.T) {
 	if err != nil || sc.EmbedDim != 8 {
 		t.Fatalf("unrelated migration must preserve embed_dim, got %+v err=%v", sc, err)
 	}
-	if _, _, err := st.SearchVector(ctx, "test", "dimkeep", "", []float32{1, 0, 0, 0}, "", 5, false); err == nil {
+	if _, _, err := st.SearchVector(ctx, "test", "dimkeep", "", []float32{1, 0, 0, 0}, "", 0, 5, false); err == nil {
 		t.Fatal("dim guard must survive unrelated migrations")
 	}
 }
@@ -311,7 +311,7 @@ func TestNoOpVectorizeMigrationSkipsReembed(t *testing.T) {
 		t.Fatalf("no-op migration re-embedded: %d -> %d", before, calls)
 	}
 	qv, _ := fakeEmbed(context.Background(), []string{"hello world"})
-	rows, _, err := st.SearchVector(context.Background(), "test", "noop", "", qv[0], "fake-space", 1, false)
+	rows, _, err := st.SearchVector(context.Background(), "test", "noop", "", qv[0], "fake-space", 0, 1, false)
 	if err != nil || len(rows) != 1 || rows[0]["s"] != "hello world" {
 		t.Fatalf("embeddings must survive no-op migration: %v %v", err, rows)
 	}
@@ -354,7 +354,7 @@ func TestMigrateReDerivesEmbedDimAfterDisable(t *testing.T) {
 		t.Fatalf("expected re-derived embed_dim 4, got %+v err=%v", sc, err)
 	}
 	qv, _ := shortEmbed(ctx, []string{"anything"})
-	if _, _, err := st.SearchVector(ctx, "test", "redim", "", qv[0], "fake-space", 5, false); err != nil {
+	if _, _, err := st.SearchVector(ctx, "test", "redim", "", qv[0], "fake-space", 0, 5, false); err != nil {
 		t.Fatalf("text-space search after dim change must work: %v", err)
 	}
 }
@@ -377,7 +377,7 @@ func TestBackfillSkipsEmptyStrings(t *testing.T) {
 	}, testEmbed); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM empt WHERE _embedding IS NULL", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM empt WHERE _embedding IS NULL", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -423,7 +423,7 @@ func TestRequiredFieldAdditionCarriesNotNull(t *testing.T) {
 	}, testEmbed); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	rows, _, err := st.Query(ctx, "test", `SELECT "notnull" AS nn FROM pragma_table_info('reqempty') WHERE name = 'must'`, nil)
+	rows, _, err := st.Query(ctx, "test", `SELECT "notnull" AS nn FROM pragma_table_info('reqempty') WHERE name = 'must'`, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("pragma: %v", err)
 	}
@@ -516,7 +516,7 @@ func TestMigrateRejectsInjectedFieldName(t *testing.T) {
 	if err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected injected field name to be rejected at add time, got %v", err)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM victim", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM victim", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}

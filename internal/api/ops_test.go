@@ -376,6 +376,14 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 	if props["args"].(map[string]any)["maxItems"] != 100 {
 		t.Fatalf("args must declare maxItems 100, got %v", props["args"])
 	}
+	limitP := props["limit"].(map[string]any)
+	if limitP["minimum"] != 1 || limitP["maximum"] != 1000 {
+		t.Fatalf("query limit must declare 1..1000, got %v", limitP)
+	}
+	offsetP := props["offset"].(map[string]any)
+	if offsetP["minimum"] != 0 {
+		t.Fatalf("query offset must declare minimum 0, got %v", offsetP)
+	}
 	d, ok := Ops["delete"]
 	if !ok {
 		t.Fatal("delete op missing")
@@ -403,6 +411,10 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 		limitP := def.InputSchema["properties"].(map[string]any)["limit"].(map[string]any)
 		if limitP["minimum"] != 1 || limitP["maximum"] != 200 {
 			t.Fatalf("%s limit must declare 1..200 (no silent clamping), got %v", name, limitP)
+		}
+		offsetP := def.InputSchema["properties"].(map[string]any)["offset"].(map[string]any)
+		if offsetP["minimum"] != 0 {
+			t.Fatalf("%s offset must declare minimum 0, got %v", name, offsetP)
 		}
 	}
 	m, ok := Ops["migrate"]
@@ -575,5 +587,61 @@ func TestTypedReadContractHTTP(t *testing.T) {
 		if _, ok := def.InputSchema["properties"].(map[string]any)["include_hidden"]; !ok {
 			t.Fatalf("%s must declare include_hidden", name)
 		}
+	}
+}
+
+func TestQueryPaginationOverHTTP(t *testing.T) {
+	srv := newTestServer(t)
+
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "page",
+		"table":     "items",
+		"fields":    []map[string]any{{"name": "v", "type": "number"}},
+	})
+	if code != 200 {
+		t.Fatalf("create_table failed: %d %v", code, res)
+	}
+
+	records := make([]map[string]any, 0, 5)
+	for i := 0; i < 5; i++ {
+		records = append(records, map[string]any{"v": i})
+	}
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "page",
+		"table":     "items",
+		"records":   records,
+	})
+	if code != 200 {
+		t.Fatalf("insert failed: %d %v", code, res)
+	}
+
+	code, res = post(t, srv.URL, "query", map[string]any{
+		"namespace": "page",
+		"sql":       "SELECT v FROM items ORDER BY id",
+		"offset":    0,
+		"limit":     2,
+	})
+	if code != 200 {
+		t.Fatalf("query page 0 failed: %d %v", code, res)
+	}
+	data := res["data"].(map[string]any)
+	rows := data["rows"].([]any)
+	if len(rows) != 2 || data["truncated"] != true {
+		t.Fatalf("page 0 should return 2 rows and truncated=true: %v", data)
+	}
+
+	code, res = post(t, srv.URL, "query", map[string]any{
+		"namespace": "page",
+		"sql":       "SELECT v FROM items ORDER BY id",
+		"offset":    4,
+		"limit":     2,
+	})
+	if code != 200 {
+		t.Fatalf("query page 2 failed: %d %v", code, res)
+	}
+	data = res["data"].(map[string]any)
+	rows = data["rows"].([]any)
+	if len(rows) != 1 || data["truncated"] != false {
+		t.Fatalf("page 2 should return 1 row and truncated=false: %v", data)
 	}
 }

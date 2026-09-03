@@ -19,7 +19,7 @@ func TestCreateInsertQuery(t *testing.T) {
 		t.Fatalf("expected 3 ids, got %d", len(ids))
 	}
 
-	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query count: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestCreateInsertQuery(t *testing.T) {
 		t.Fatalf("expected 3 rows, got %d", got)
 	}
 
-	rows, _, err = st.Query(ctx, "test", "SELECT title FROM notes WHERE score > ? ORDER BY score DESC", []any{2})
+	rows, _, err = st.Query(ctx, "test", "SELECT title FROM notes WHERE score > ? ORDER BY score DESC", []any{2}, 0, 0)
 	if err != nil {
 		t.Fatalf("query filter: %v", err)
 	}
@@ -35,13 +35,13 @@ func TestCreateInsertQuery(t *testing.T) {
 		t.Fatalf("unexpected rows: %v", rows)
 	}
 
-	if _, _, err := st.Query(ctx, "test", "DELETE FROM notes", nil); err == nil {
+	if _, _, err := st.Query(ctx, "test", "DELETE FROM notes", nil, 0, 0); err == nil {
 		t.Fatal("expected DELETE via query to be rejected")
 	}
-	if _, _, err := st.Query(ctx, "test", "INSERT INTO notes(title) VALUES('x')", nil); err == nil {
+	if _, _, err := st.Query(ctx, "test", "INSERT INTO notes(title) VALUES('x')", nil, 0, 0); err == nil {
 		t.Fatal("expected INSERT via query to be rejected")
 	}
-	if _, _, err := st.Query(ctx, "test", "SELECT 1; DROP TABLE notes", nil); err == nil {
+	if _, _, err := st.Query(ctx, "test", "SELECT 1; DROP TABLE notes", nil, 0, 0); err == nil {
 		t.Fatal("expected multi-statement to be rejected")
 	}
 
@@ -69,7 +69,7 @@ func TestInsertEmptyRecordDefaultValues(t *testing.T) {
 	if len(ids) != 1 {
 		t.Fatalf("expected 1 id, got %v", ids)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM opts", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM opts", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestInferCreateInsertRoundTrip(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "mixed", samples, testEmbed); err != nil {
 		t.Fatalf("inserting the same samples must work: %v", err)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT flag, note FROM mixed ORDER BY id", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT flag, note FROM mixed ORDER BY id", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestJSONFieldStringScalarsAreValidJSON(t *testing.T) {
 	}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT json_extract(v, '$') AS decoded FROM jf ORDER BY id", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT json_extract(v, '$') AS decoded FROM jf ORDER BY id", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("json_extract over json field: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestZeroVectorTypedInQuery(t *testing.T) {
 	}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT emb FROM notes WHERE title = 'zero'", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT emb FROM notes WHERE title = 'zero'", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestIntegerPrecisionPreserved(t *testing.T) {
 	}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT n FROM prec", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT n FROM prec", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -188,14 +188,14 @@ func TestQueryResultCap(t *testing.T) {
 			t.Fatalf("insert: %v", err)
 		}
 	}
-	rows, truncated, err := st.Query(ctx, "test", "SELECT * FROM cap", nil)
+	rows, truncated, err := st.Query(ctx, "test", "SELECT * FROM cap", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
 	if len(rows) != 1000 || !truncated {
 		t.Fatalf("expected capped 1000 rows with truncated=true, got %d truncated=%v", len(rows), truncated)
 	}
-	rows, truncated, err = st.Query(ctx, "test", "SELECT count(*) AS n FROM cap", nil)
+	rows, truncated, err = st.Query(ctx, "test", "SELECT count(*) AS n FROM cap", nil, 0, 0)
 	if err != nil || truncated {
 		t.Fatalf("small query must not be truncated: %v %v", err, truncated)
 	}
@@ -219,7 +219,7 @@ func TestTruncationFlagAccuracy(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "exact", records, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	rows, truncated, err := st.Query(ctx, "test", "SELECT * FROM exact", nil)
+	rows, truncated, err := st.Query(ctx, "test", "SELECT * FROM exact", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestQueryByteBudget(t *testing.T) {
 			t.Fatalf("insert %d: %v", i, err)
 		}
 	}
-	rows, truncated, err := st.Query(ctx, "test", "SELECT v FROM bigvals", nil)
+	rows, truncated, err := st.Query(ctx, "test", "SELECT v FROM bigvals", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestOversizedFirstQueryRowRejected(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, _, err := st.Query(ctx, "test", "SELECT zeroblob(34000000) AS b", nil); err == nil {
+	if _, _, err := st.Query(ctx, "test", "SELECT zeroblob(34000000) AS b", nil, 0, 0); err == nil {
 		t.Fatal("expected oversized first row to be rejected")
 	}
 }
@@ -272,7 +272,7 @@ func TestNonFiniteQueryValueRejected(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, _, err := st.Query(ctx, "test", "SELECT 1e999 AS x", nil); err == nil {
+	if _, _, err := st.Query(ctx, "test", "SELECT 1e999 AS x", nil, 0, 0); err == nil {
 		t.Fatal("expected non-finite query value to be rejected")
 	}
 }
@@ -285,7 +285,7 @@ func TestDuplicateColumnLabelsRejected(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, _, err := st.Query(ctx, "test", "SELECT 1 AS a, 2 AS a", nil); err == nil {
+	if _, _, err := st.Query(ctx, "test", "SELECT 1 AS a, 2 AS a", nil, 0, 0); err == nil {
 		t.Fatal("expected duplicate column labels to be rejected")
 	}
 }
@@ -299,7 +299,7 @@ func TestOversizedColumnLabelRejected(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	longAlias := strings.Repeat("x", 5000)
-	if _, _, err := st.Query(ctx, "test", "SELECT 1 AS \""+longAlias+"\"", nil); err == nil {
+	if _, _, err := st.Query(ctx, "test", "SELECT 1 AS \""+longAlias+"\"", nil, 0, 0); err == nil {
 		t.Fatal("expected oversized column label to be rejected")
 	}
 }
@@ -312,10 +312,10 @@ func TestMalformedQueryIsInvalidRequest(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, _, err := st.Query(ctx, "test", "SELECT (", nil); err == nil || !errors.Is(err, ErrInvalid) {
+	if _, _, err := st.Query(ctx, "test", "SELECT (", nil, 0, 0); err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected malformed SQL to classify as invalid request, got %v", err)
 	}
-	if _, _, err := st.Query(ctx, "test", "SELECT 1 WHERE 1=?", nil); err == nil || !errors.Is(err, ErrInvalid) {
+	if _, _, err := st.Query(ctx, "test", "SELECT 1 WHERE 1=?", nil, 0, 0); err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected wrong arg count to classify as invalid request, got %v", err)
 	}
 }
@@ -332,7 +332,7 @@ func TestEscapeHeavyStringsBudgeted(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "esc", []map[string]any{{"v": control}}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if _, _, err := st.Query(ctx, "test", "SELECT v FROM esc", nil); err == nil {
+	if _, _, err := st.Query(ctx, "test", "SELECT v FROM esc", nil, 0, 0); err == nil {
 		t.Fatal("expected escape-heavy row to exceed the response budget")
 	}
 }
@@ -357,7 +357,7 @@ func TestQueryStepErrorsAreInvalidRequests(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, _, err := st.Query(ctx, "test", "SELECT json_extract('x', '$') AS v", nil); err == nil || !errors.Is(err, ErrInvalid) {
+	if _, _, err := st.Query(ctx, "test", "SELECT json_extract('x', '$') AS v", nil, 0, 0); err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected step-time SQL error to classify as invalid request, got %v", err)
 	}
 }
@@ -378,7 +378,7 @@ func TestLabelBytesEscapeAware(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 	alias := strings.Repeat("\x01", 4000)
-	rows, truncated, err := st.Query(ctx, "test", "SELECT v AS \""+alias+"\" FROM lbl2", nil)
+	rows, truncated, err := st.Query(ctx, "test", "SELECT v AS \""+alias+"\" FROM lbl2", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -395,7 +395,7 @@ func TestCumulativeBudgetBeforeNormalization(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, _, err := st.Query(ctx, "test", "SELECT zeroblob(30000000) AS a, zeroblob(30000000) AS b", nil); err == nil {
+	if _, _, err := st.Query(ctx, "test", "SELECT zeroblob(30000000) AS a, zeroblob(30000000) AS b", nil, 0, 0); err == nil {
 		t.Fatal("expected cumulative oversized row to be rejected before normalization")
 	}
 }
@@ -413,7 +413,7 @@ func TestJSONFieldAcceptsJSONNumbers(t *testing.T) {
 	}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT json_extract(payload, '$') AS v FROM jn", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT json_extract(payload, '$') AS v FROM jn", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -435,7 +435,7 @@ func TestJSONStringScalarsKeepType(t *testing.T) {
 	}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT json_extract(v, '$') AS val, typeof(json_extract(v, '$')) AS kind FROM js ORDER BY id", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT json_extract(v, '$') AS val, typeof(json_extract(v, '$')) AS kind FROM js ORDER BY id", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -443,5 +443,82 @@ func TestJSONStringScalarsKeepType(t *testing.T) {
 		if rows[i]["val"] != want || rows[i]["kind"] != "text" {
 			t.Fatalf("row %d: string scalar changed type: %v", i, rows[i])
 		}
+	}
+}
+
+func TestQueryPaginationAndTruncatedFlag(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "page", []schema.Field{
+		{Name: "v", Type: schema.Number},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	records := make([]map[string]any, 0, 10)
+	for i := 0; i < 10; i++ {
+		records = append(records, map[string]any{"v": i})
+	}
+	if _, err := st.Insert(ctx, "test", "page", records, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// Page 0: 3 rows, ordered by id.
+	rows, truncated, err := st.Query(ctx, "test", "SELECT v FROM page ORDER BY id", nil, 0, 3)
+	if err != nil {
+		t.Fatalf("page 0: %v", err)
+	}
+	if len(rows) != 3 || rows[0]["v"].(int64) != 0 || rows[2]["v"].(int64) != 2 || !truncated {
+		t.Fatalf("page 0 should return 3 rows with truncated=true: %v %v", len(rows), truncated)
+	}
+
+	// Page 1: next 3 rows.
+	rows, truncated, err = st.Query(ctx, "test", "SELECT v FROM page ORDER BY id", nil, 3, 3)
+	if err != nil {
+		t.Fatalf("page 1: %v", err)
+	}
+	if len(rows) != 3 || rows[0]["v"].(int64) != 3 || rows[2]["v"].(int64) != 5 || !truncated {
+		t.Fatalf("page 1 should return rows 3-5 with truncated=true: %v %v", len(rows), truncated)
+	}
+
+	// Page 3: last 1 row, truncated should be false.
+	rows, truncated, err = st.Query(ctx, "test", "SELECT v FROM page ORDER BY id", nil, 9, 3)
+	if err != nil {
+		t.Fatalf("page 3: %v", err)
+	}
+	if len(rows) != 1 || rows[0]["v"].(int64) != 9 || truncated {
+		t.Fatalf("page 3 should return 1 row with truncated=false: %v %v", len(rows), truncated)
+	}
+
+	// Empty page past the end.
+	rows, truncated, err = st.Query(ctx, "test", "SELECT v FROM page ORDER BY id", nil, 100, 3)
+	if err != nil {
+		t.Fatalf("empty page: %v", err)
+	}
+	if len(rows) != 0 || truncated {
+		t.Fatalf("empty page should return 0 rows with truncated=false: %v %v", len(rows), truncated)
+	}
+}
+
+func TestQueryExactLimitNotTruncated(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "exact5", []schema.Field{
+		{Name: "v", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	records := make([]map[string]any, 0, 5)
+	for i := 0; i < 5; i++ {
+		records = append(records, map[string]any{"v": "x"})
+	}
+	if _, err := st.Insert(ctx, "test", "exact5", records, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, truncated, err := st.Query(ctx, "test", "SELECT * FROM exact5 ORDER BY id", nil, 0, 5)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 5 || truncated {
+		t.Fatalf("exactly 5 rows must not be truncated: %d %v", len(rows), truncated)
 	}
 }

@@ -80,7 +80,7 @@ func TestTypedReadRoundTripQuery(t *testing.T) {
 	mustCreateTyped(t, st)
 	mustInsertTyped(t, st)
 
-	rows, _, err := st.Query(ctx, "test", "SELECT * FROM typed ORDER BY id", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT * FROM typed ORDER BY id", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestTypedReadRoundTripSearchFulltext(t *testing.T) {
 	mustCreateTyped(t, st)
 	mustInsertTyped(t, st)
 
-	rows, _, err := st.SearchFulltext(ctx, "test", "typed", "needle", 10, false)
+	rows, _, err := st.SearchFulltext(ctx, "test", "typed", "needle", 0, 10, false)
 	if err != nil {
 		t.Fatalf("fts: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestTypedReadRoundTripSearchVector(t *testing.T) {
 	mustCreateTyped(t, st)
 	mustInsertTyped(t, st)
 
-	rows, _, err := st.SearchVector(ctx, "test", "typed", "vec", []float32{1, 0, 0, 0}, "", 10, false)
+	rows, _, err := st.SearchVector(ctx, "test", "typed", "vec", []float32{1, 0, 0, 0}, "", 0, 10, false)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestSearchHidesEmbeddingByDefault(t *testing.T) {
 
 	qv, _ := fakeEmbed(ctx, []string{"the dolmen stores stone tables"})
 
-	fts, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 10, false)
+	fts, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 0, 10, false)
 	if err != nil {
 		t.Fatalf("fts: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestSearchHidesEmbeddingByDefault(t *testing.T) {
 		t.Fatalf("declared vector column must still come back typed, got %T %v", fts[0]["emb"], fts[0]["emb"])
 	}
 
-	vec, _, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 1, false)
+	vec, _, err := st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 0, 1, false)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestSearchHidesEmbeddingByDefault(t *testing.T) {
 		t.Fatal("search_vector must hide _embedding by default")
 	}
 
-	fts, _, err = st.SearchFulltext(ctx, "test", "notes", "dolmen", 10, true)
+	fts, _, err = st.SearchFulltext(ctx, "test", "notes", "dolmen", 0, 10, true)
 	if err != nil {
 		t.Fatalf("fts include_hidden: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestSearchHidesEmbeddingByDefault(t *testing.T) {
 		t.Fatalf("include_hidden must return _embedding typed, got %T %v", fts[0]["_embedding"], fts[0]["_embedding"])
 	}
 
-	vec, _, err = st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 1, true)
+	vec, _, err = st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 0, 1, true)
 	if err != nil {
 		t.Fatalf("vector search include_hidden: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestQueryEmbeddingProjection(t *testing.T) {
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
 
-	rows, _, err := st.Query(ctx, "test", "SELECT * FROM notes ORDER BY id", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT * FROM notes ORDER BY id", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query star: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestQueryEmbeddingProjection(t *testing.T) {
 		t.Fatalf("boolean must be typed in SELECT *, got %T %v", rows[0]["done"], rows[0]["done"])
 	}
 
-	rows, _, err = st.Query(ctx, "test", "SELECT id, _embedding FROM notes WHERE title = 'first note'", nil)
+	rows, _, err = st.Query(ctx, "test", "SELECT id, _embedding FROM notes WHERE title = 'first note'", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query explicit embedding: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestQueryAmbiguousColumnTypeNotCoerced(t *testing.T) {
 		t.Fatalf("insert amb_a: %v", err)
 	}
 
-	rows, _, err := st.Query(ctx, "test", "SELECT x, y FROM amb_a", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT x, y FROM amb_a", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestQueryExpressionColumnsFallBack(t *testing.T) {
 	mustInsertTyped(t, st)
 
 	rows, _, err := st.Query(ctx, "test",
-		"SELECT zeroblob(12) AS rawblob, count(*) AS c, 1.5 AS f FROM typed", nil)
+		"SELECT zeroblob(12) AS rawblob, count(*) AS c, 1.5 AS f FROM typed", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestJSONNumberPrecisionRoundTrip(t *testing.T) {
 	}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT j FROM typed", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT j FROM typed", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestQueryEmbeddingLiteralDoesNotOptIn(t *testing.T) {
 	}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	rows, _, err := st.Query(ctx, "test", "SELECT * FROM notes WHERE title = '_embedding'", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT * FROM notes WHERE title = '_embedding'", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestQueryAliasToDeclaredNameCoercesByLabel(t *testing.T) {
 	// Coercion is by result-column label: an expression aliased to a declared
 	// boolean field name takes that field's presentation, while values outside
 	// the boolean storage shape (0/1) stay raw.
-	rows, _, err := st.Query(ctx, "test", "SELECT 1 AS b, 2 AS b2 FROM typed", nil)
+	rows, _, err := st.Query(ctx, "test", "SELECT 1 AS b, 2 AS b2 FROM typed", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}

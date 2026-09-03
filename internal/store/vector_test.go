@@ -16,7 +16,7 @@ func TestVectorSearch(t *testing.T) {
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
 
-	rows, _, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0, 0, 0}, "", 2, false)
+	rows, _, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0, 0, 0}, "", 0, 2, false)
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
@@ -27,12 +27,12 @@ func TestVectorSearch(t *testing.T) {
 		t.Fatalf("expected cosine ~1, got %f", score)
 	}
 
-	if _, _, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0}, "", 2, false); err == nil {
+	if _, _, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0}, "", 0, 2, false); err == nil {
 		t.Fatal("expected dim mismatch to be rejected")
 	}
 
 	qv, _ := fakeEmbed(ctx, []string{"the dolmen stores stone tables"})
-	rows, _, err = st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 1, false)
+	rows, _, err = st.SearchVector(ctx, "test", "notes", "", qv[0], "fake-space", 0, 1, false)
 	if err != nil {
 		t.Fatalf("vectorize search: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestRawVectorDimMismatchOnAutoEmbedding(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "auto", []map[string]any{{"s": "hello"}}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if _, _, err := st.SearchVector(ctx, "test", "auto", "", []float32{1, 0, 0, 0}, "", 5, false); err == nil {
+	if _, _, err := st.SearchVector(ctx, "test", "auto", "", []float32{1, 0, 0, 0}, "", 0, 5, false); err == nil {
 		t.Fatal("expected wrong-length raw vector against auto-embeddings to be rejected")
 	}
 }
@@ -99,7 +99,7 @@ func TestVectorDecorationBudgeted(t *testing.T) {
 			t.Fatalf("insert %d: %v", b, err)
 		}
 	}
-	rows, truncated, err := st.SearchVector(ctx, "test", "vecbud", "emb", make([]float32, 4096), "", 200, false)
+	rows, truncated, err := st.SearchVector(ctx, "test", "vecbud", "emb", make([]float32, 4096), "", 0, 200, false)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -123,12 +123,20 @@ func TestSearchVectorLimitBounded(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "vlim", records, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	rows, _, err := st.SearchVector(ctx, "test", "vlim", "emb", []float32{1, 0}, "", -1, false)
+	rows, truncated, err := st.SearchVector(ctx, "test", "vlim", "emb", []float32{1, 0}, "", 0, -1, false)
 	if err != nil {
 		t.Fatalf("search with negative limit must be bounded, not error: %v", err)
 	}
-	if len(rows) > 200 {
-		t.Fatalf("negative limit must clamp to 200, got %d rows", len(rows))
+	if len(rows) != 10 || !truncated {
+		t.Fatalf("negative limit must clamp to the default 10 and report truncated: %d %v", len(rows), truncated)
+	}
+
+	rows, truncated, err = st.SearchVector(ctx, "test", "vlim", "emb", []float32{1, 0}, "", 0, 500, false)
+	if err != nil {
+		t.Fatalf("search with oversized limit must be bounded, not error: %v", err)
+	}
+	if len(rows) != 200 || !truncated {
+		t.Fatalf("oversized limit must clamp to the max 200 and report truncated: %d %v", len(rows), truncated)
 	}
 }
 
@@ -144,8 +152,50 @@ func TestSearchVectorRejectsNonFiniteQuery(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 	for _, bad := range [][]float32{{1, 2, float32(math.NaN())}, {1, 2, float32(math.Inf(-1))}} {
-		if _, _, err := st.SearchVector(ctx, "test", "nfq", "emb", bad, "", 5, false); err == nil {
+		if _, _, err := st.SearchVector(ctx, "test", "nfq", "emb", bad, "", 0, 5, false); err == nil {
 			t.Fatalf("expected non-finite query vector to be rejected: %v", bad)
 		}
+	}
+}
+
+func TestVectorPaginationAndTruncatedFlag(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "vecpage", []schema.Field{
+		{Name: "emb", Type: schema.Vector, Dim: 2},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	records := make([]map[string]any, 0, 5)
+	for i := 0; i < 5; i++ {
+		records = append(records, map[string]any{"emb": []any{float64(i), 0}})
+	}
+	if _, err := st.Insert(ctx, "test", "vecpage", records, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// Query vector aligned with row 0: scores descend 0..4.
+	rows, truncated, err := st.SearchVector(ctx, "test", "vecpage", "emb", []float32{4, 0}, "", 0, 2, false)
+	if err != nil {
+		t.Fatalf("page 0: %v", err)
+	}
+	if len(rows) != 2 || !truncated {
+		t.Fatalf("page 0 should return 2 rows and truncated=true: %d %v", len(rows), truncated)
+	}
+
+	rows, truncated, err = st.SearchVector(ctx, "test", "vecpage", "emb", []float32{4, 0}, "", 2, 2, false)
+	if err != nil {
+		t.Fatalf("page 1: %v", err)
+	}
+	if len(rows) != 2 || !truncated {
+		t.Fatalf("page 1 should return 2 rows and truncated=true: %d %v", len(rows), truncated)
+	}
+
+	rows, truncated, err = st.SearchVector(ctx, "test", "vecpage", "emb", []float32{4, 0}, "", 4, 2, false)
+	if err != nil {
+		t.Fatalf("page 2: %v", err)
+	}
+	if len(rows) != 1 || truncated {
+		t.Fatalf("page 2 should return 1 row with truncated=false: %d %v", len(rows), truncated)
 	}
 }

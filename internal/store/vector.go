@@ -9,7 +9,7 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, vec []float32, embedModel string, limit int, includeHidden bool) ([]map[string]any, bool, error) {
+func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, vec []float32, embedModel string, offset, limit int, includeHidden bool) ([]map[string]any, bool, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
 		return nil, false, err
@@ -35,7 +35,10 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 			return nil, false, invalidf("query vector contains a non-finite component")
 		}
 	}
-	limit = boundedLimit(limit)
+	limit = searchLimit(limit)
+	if offset < 0 {
+		return nil, false, invalidf("offset must be non-negative")
+	}
 
 	rows, err := tx.QueryContext(ctx,
 		fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s IS NOT NULL`, q(column), q(table), q(column)))
@@ -64,18 +67,26 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 	if err := rows.Err(); err != nil {
 		return nil, false, err
 	}
+	// Stable, deterministic ordering: higher score first, then lower id.
 	sort.SliceStable(hits, func(i, j int) bool {
 		if hits[i].score == hits[j].score {
 			return hits[i].id < hits[j].id
 		}
 		return hits[i].score > hits[j].score
 	})
-	if len(hits) > limit {
-		hits = hits[:limit]
+
+	if offset > len(hits) {
+		offset = len(hits)
 	}
-	ids := make([]int64, len(hits))
-	scoreByID := make(map[int64]float64, len(hits))
-	for i, h := range hits {
+	end := offset + limit + 1
+	if end > len(hits) {
+		end = len(hits)
+	}
+	paged := hits[offset:end]
+
+	ids := make([]int64, len(paged))
+	scoreByID := make(map[int64]float64, len(paged))
+	for i, h := range paged {
 		ids[i] = h.id
 		scoreByID[h.id] = h.score
 	}
@@ -88,7 +99,11 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 			row["_score"] = scoreByID[id]
 		}
 	}
-	return out, !complete, nil
+	hasMore := !complete || len(out) > limit
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
 }
 
 func resolveVectorColumn(sc *schema.TableSchema, table, column, embedModel string) (string, int, error) {

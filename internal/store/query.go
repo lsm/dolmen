@@ -25,7 +25,7 @@ func normalizeArg(v any) any {
 
 var queryStartRe = regexp.MustCompile(`(?i)\A\s*(select|with)\b`)
 
-func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]map[string]any, bool, error) {
+func (s *Store) Query(ctx context.Context, nsName, query string, args []any, offset, limit int) ([]map[string]any, bool, error) {
 	trimmed := strings.TrimRight(strings.TrimSpace(query), ";")
 	if !queryStartRe.MatchString(strings.TrimSpace(query)) {
 		return nil, false, invalidf("only read-only SELECT/WITH statements are allowed")
@@ -36,6 +36,10 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]
 	if len(args) > 100 {
 		return nil, false, invalidf("too many query parameters")
 	}
+	limit = queryLimit(limit)
+	if offset < 0 {
+		return nil, false, invalidf("offset must be non-negative")
+	}
 	for i, a := range args {
 		args[i] = normalizeArg(a)
 	}
@@ -43,11 +47,13 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]
 	if err != nil {
 		return nil, false, err
 	}
-	proj, err := s.nsProjection(ctx, n, trimmed)
+	paginated := trimmed + " LIMIT ? OFFSET ?"
+	args = append(args, limit+1, offset)
+	proj, err := s.nsProjection(ctx, n, paginated)
 	if err != nil {
 		return nil, false, err
 	}
-	rows, err := n.ro.QueryContext(ctx, trimmed, args...)
+	rows, err := n.ro.QueryContext(ctx, paginated, args...)
 	if err != nil {
 		if strings.Contains(err.Error(), "no such table") {
 			return nil, false, fmt.Errorf("%w: %w", ErrNotFound, err)
@@ -55,14 +61,27 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any) ([]
 		return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	defer rows.Close()
-	return rowsToMaps(rows, proj)
+	return rowsToMaps(rows, proj, limit)
 }
 
-const MaxQueryRows = 1000
+const (
+	DefaultPageLimit = 1000
+	MaxPageLimit     = 1000
+)
 
 const MaxQueryBytes = 32 << 20
 
-func rowsToMaps(rows *sql.Rows, proj *projection) ([]map[string]any, bool, error) {
+func queryLimit(n int) int {
+	if n <= 0 {
+		return DefaultPageLimit
+	}
+	if n > MaxPageLimit {
+		return MaxPageLimit
+	}
+	return n
+}
+
+func rowsToMaps(rows *sql.Rows, proj *projection, pageLimit int) ([]map[string]any, bool, error) {
 	cols, err := rows.Columns()
 	if err != nil {
 		return nil, false, err
@@ -84,47 +103,56 @@ func rowsToMaps(rows *sql.Rows, proj *projection) ([]map[string]any, bool, error
 	}
 	out := []map[string]any{}
 	total := 0
-	for rows.Next() {
+	hasMore := false
+scan:
+	for i := 0; i <= pageLimit; i++ {
+		if !rows.Next() {
+			break
+		}
+		if i == pageLimit {
+			// We fetched the (limit+1)th row, so there are more rows available.
+			hasMore = true
+			break
+		}
 		vals := make([]any, len(cols))
 		ptrs := make([]any, len(cols))
-		for i := range vals {
-			ptrs[i] = &vals[i]
+		for j := range vals {
+			ptrs[j] = &vals[j]
 		}
 		if err := rows.Scan(ptrs...); err != nil {
 			return nil, false, err
 		}
 		m := make(map[string]any, len(cols))
 		rowBytes := 0
-		for i, c := range cols {
+		for j, c := range cols {
 			if proj.isHidden(c) {
 				continue
 			}
-			if err := checkRowValue(c, vals[i]); err != nil {
+			if err := checkRowValue(c, vals[j]); err != nil {
 				return nil, false, err
 			}
-			if total+rowBytes+rawValSize(vals[i]) > MaxQueryBytes {
+			if total+rowBytes+rawValSize(vals[j]) > MaxQueryBytes {
 				if len(out) == 0 {
 					return nil, false, invalidf("query result exceeds the %d MiB response budget on its first row; select fewer or smaller columns", MaxQueryBytes>>20)
 				}
-				return out, true, wrapStepErr(rows.Err())
+				hasMore = true
+				break scan
 			}
-			v := proj.decodeColumn(c, vals[i])
+			v := proj.decodeColumn(c, vals[j])
 			m[c] = v
-			rowBytes += proj.presentedSize(c, vals[i], v)
-		}
-		if len(out) >= MaxQueryRows {
-			return out, true, wrapStepErr(rows.Err())
-		}
-		if total+rowBytes+labelBytes > MaxQueryBytes {
-			if len(out) == 0 {
-				return nil, false, invalidf("query result exceeds the %d MiB response budget on its first row; select fewer or smaller columns", MaxQueryBytes>>20)
+			rowBytes += proj.presentedSize(c, vals[j], v)
+			if total+rowBytes+labelBytes > MaxQueryBytes {
+				if len(out) == 0 {
+					return nil, false, invalidf("query result exceeds the %d MiB response budget on its first row; select fewer or smaller columns", MaxQueryBytes>>20)
+				}
+				hasMore = true
+				break scan
 			}
-			return out, true, wrapStepErr(rows.Err())
 		}
 		total += rowBytes + labelBytes
 		out = append(out, m)
 	}
-	return out, false, wrapStepErr(rows.Err())
+	return out, hasMore, wrapStepErr(rows.Err())
 }
 
 func wrapStepErr(err error) error {
@@ -180,8 +208,8 @@ func encodedSize(s string) int {
 			n += 3
 		}
 	}
-	if strings.Contains(s, "\u2028") || strings.Contains(s, "\u2029") {
-		n += 4 * (strings.Count(s, "\u2028") + strings.Count(s, "\u2029"))
+	if strings.Contains(s, " ") || strings.Contains(s, " ") {
+		n += 4 * (strings.Count(s, " ") + strings.Count(s, " "))
 	}
 	if !utf8.ValidString(s) {
 		for _, r := range s {

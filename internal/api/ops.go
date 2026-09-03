@@ -182,7 +182,9 @@ var Ops = map[string]OpDef{
 			"number reads integer or float. Labels that match no declared field, or that different tables " +
 			"declare with different types, fall back to raw values (blobs as base64). " +
 			"id and created_at are included in SELECT *; the hidden _embedding column is stripped from SELECT * — " +
-			"reference _embedding in the statement (outside string literals/comments) to include it.",
+			"reference _embedding in the statement (outside string literals/comments) to include it. " +
+			"Do not put LIMIT or OFFSET in the SQL; use the offset and limit parameters. " +
+			"For stable pagination, include an explicit ORDER BY clause.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -207,6 +209,18 @@ var Ops = map[string]OpDef{
 					},
 					"maxItems": 100,
 				},
+				"offset": map[string]any{
+					"type":        "integer",
+					"description": "Rows to skip (default 0)",
+					"minimum":     0,
+					"maximum":     1000000000,
+				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Max rows to return (default 1000, max 1000)",
+					"minimum":     1,
+					"maximum":     1000,
+				},
 			},
 			"required": []string{"namespace", "sql"},
 		},
@@ -215,7 +229,7 @@ var Ops = map[string]OpDef{
 			if err := decodeData(body, &req); err != nil {
 				return nil, err
 			}
-			rows, truncated, err := s.st.Query(ctx, normNS(req.Namespace), req.SQL, req.Args)
+			rows, truncated, err := s.st.Query(ctx, normNS(req.Namespace), req.SQL, req.Args, req.Offset, req.Limit)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -224,7 +238,7 @@ var Ops = map[string]OpDef{
 	},
 	"search_fulltext": {
 		Description: "Full-text search over fields marked fulltext, using SQLite FTS5 MATCH syntax " +
-			"(e.g. \"payment\", \"'credit refund'\", \"status:ok AND retry\"). Returns matching records ordered by relevance. " +
+			"(e.g. \"payment\", \"'credit refund'\", \"status:ok AND retry\"). Returns matching records ordered by relevance (stable rowid tie-breaking). " +
 			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array) " +
 			"and omit the hidden _embedding column unless include_hidden is true.",
 		InputSchema: map[string]any{
@@ -245,6 +259,12 @@ var Ops = map[string]OpDef{
 					"minimum":     1,
 					"maximum":     200,
 				},
+				"offset": map[string]any{
+					"type":        "integer",
+					"description": "Results to skip (default 0)",
+					"minimum":     0,
+					"maximum":     1000000000,
+				},
 				"include_hidden": prop("boolean", "Also return hidden internal columns (currently _embedding) in results"),
 			},
 			"required": []string{"namespace", "table", "query"},
@@ -257,7 +277,7 @@ var Ops = map[string]OpDef{
 			if req.Query == "" {
 				return nil, badRequest("query must not be empty")
 			}
-			results, truncated, err := s.st.SearchFulltext(ctx, normNS(req.Namespace), normTable(req.Table), req.Query, limit(req.Limit), req.IncludeHidden)
+			results, truncated, err := s.st.SearchFulltext(ctx, normNS(req.Namespace), normTable(req.Table), req.Query, req.Offset, limit(req.Limit), req.IncludeHidden)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -267,7 +287,7 @@ var Ops = map[string]OpDef{
 	"search_vector": {
 		Description: "Nearest-neighbor vector search. Pass text (the server embeds it) or a raw vector. " +
 			"column is optional: defaults to the auto-embedding of a vectorized field, else the first vector field. " +
-			"Results carry _score (cosine similarity, higher is closer), honor declared field types " +
+			"Results carry _score (cosine similarity, higher is closer), ordered by score with stable id tie-breaking, honor declared field types " +
 			"(boolean -> true/false, json -> decoded value, vector -> number array), and omit the hidden " +
 			"_embedding column unless include_hidden is true.",
 		InputSchema: map[string]any{
@@ -297,6 +317,12 @@ var Ops = map[string]OpDef{
 					"description": "Max results (default 10, max 200)",
 					"minimum":     1,
 					"maximum":     200,
+				},
+				"offset": map[string]any{
+					"type":        "integer",
+					"description": "Results to skip (default 0)",
+					"minimum":     0,
+					"maximum":     1000000000,
 				},
 				"include_hidden": prop("boolean", "Also return hidden internal columns (currently _embedding) in results"),
 			},
@@ -351,7 +377,7 @@ var Ops = map[string]OpDef{
 				queryIdentity = s.emb.Identity()
 			}
 			results, truncated, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table),
-				strings.ToLower(strings.TrimSpace(req.Column)), vec, queryIdentity, limit(req.Limit), req.IncludeHidden)
+				strings.ToLower(strings.TrimSpace(req.Column)), vec, queryIdentity, req.Offset, limit(req.Limit), req.IncludeHidden)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -511,12 +537,15 @@ type queryReq struct {
 	Namespace string `json:"namespace"`
 	SQL       string `json:"sql"`
 	Args      []any  `json:"args"`
+	Offset    int    `json:"offset"`
+	Limit     int    `json:"limit"`
 }
 
 type ftsReq struct {
 	Namespace     string `json:"namespace"`
 	Table         string `json:"table"`
 	Query         string `json:"query"`
+	Offset        int    `json:"offset"`
 	Limit         int    `json:"limit"`
 	IncludeHidden bool   `json:"include_hidden"`
 }
@@ -527,6 +556,7 @@ type vecReq struct {
 	Column        string    `json:"column"`
 	Text          string    `json:"text"`
 	Vector        []float64 `json:"vector"`
+	Offset        int       `json:"offset"`
 	Limit         int       `json:"limit"`
 	IncludeHidden bool      `json:"include_hidden"`
 }
