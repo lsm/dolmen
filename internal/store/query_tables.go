@@ -721,12 +721,49 @@ func (s *queryScanner) scanParenthesized() error {
 		if err := s.parseStatement(); err != nil {
 			return err
 		}
-	} else {
-		if _, err := s.scanUntil(map[string]bool{")": true}); err != nil {
+		return s.expect(")")
+	}
+
+	// For expression groups, scan balanced parentheses iteratively so that
+	// deeply nested ordinary parentheses cannot exhaust the Go stack or pin
+	// CPU through recursive scanUntil/scanParenthesized calls. Statement
+	// subqueries nested inside an expression group are still parsed when their
+	// opening '(' is followed by SELECT/WITH/VALUES.
+	depth := 1
+	for {
+		t, err := s.next()
+		if err != nil {
 			return err
 		}
+		if t.typ == "eof" {
+			return invalidf("unterminated parenthesized group")
+		}
+		if t.val == "(" {
+			t2, err := s.peek()
+			if err != nil {
+				return err
+			}
+			if isKeyword(t2, "select") || isKeyword(t2, "with") || isKeyword(t2, "values") {
+				if err := s.parseStatement(); err != nil {
+					return err
+				}
+				if err := s.expect(")"); err != nil {
+					return err
+				}
+				depth--
+				if depth == 0 {
+					return nil
+				}
+				continue
+			}
+			depth++
+		} else if t.val == ")" {
+			depth--
+			if depth == 0 {
+				return nil
+			}
+		}
 	}
-	return s.expect(")")
 }
 
 func (s *queryScanner) parseTableList() error {
@@ -904,17 +941,21 @@ func (s *queryScanner) skipOptionalAlias() error {
 		return nil
 	}
 
-	if t.typ != "ident" || isQuotedIdent(t.val) {
+	if t.typ != "ident" {
 		return nil
 	}
-	kw := strings.ToLower(t.val)
-	if isJoinOp(t) || isClauseEnd(t) || kw == "on" || kw == "using" || t.val == ")" || t.val == "," {
-		return nil
-	}
-	// WINDOW is a clause when it is followed by a name and AS; otherwise it can
-	// be used as an implicit table alias (e.g. "FROM a window JOIN b").
-	if isKeyword(t, "window") && s.isWindowClause() {
-		return nil
+
+	// Quoted identifiers can only be aliases, not keywords or clause ends.
+	if !isQuotedIdent(t.val) {
+		kw := strings.ToLower(t.val)
+		if isJoinOp(t) || isClauseEnd(t) || kw == "on" || kw == "using" || t.val == ")" || t.val == "," {
+			return nil
+		}
+		// WINDOW is a clause when it is followed by a name and AS; otherwise it can
+		// be used as an implicit table alias (e.g. "FROM a window JOIN b").
+		if isKeyword(t, "window") && s.isWindowClause() {
+			return nil
+		}
 	}
 	s.next()
 	return nil

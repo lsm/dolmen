@@ -553,6 +553,9 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		"SELECT (VALUES(1) UNION ALL SELECT id FROM notes LIMIT 1) FROM notes",
 		"WITH a AS (SELECT x FROM _dolmen_tables), _dolmen_tables(x) AS (VALUES(7)) SELECT * FROM a",
 		"WITH pragma_table_list(x) AS (VALUES(1)) SELECT * FROM pragma_table_list",
+		`SELECT "my alias".id FROM notes "my alias"`,
+		"SELECT * FROM notes WHERE title = (((('x'))))",
+		"SELECT * FROM notes WHERE title = (SELECT 'x' FROM (VALUES(1)))",
 	}
 
 	for _, q := range ok {
