@@ -100,7 +100,7 @@ curl -s localhost:8790/v1/update -H 'Content-Type: application/json' -d '{
 claude mcp add --transport http dolmen http://127.0.0.1:8790/mcp
 ```
 
-The MCP server exposes the same thirteen operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
+The MCP server exposes the same fourteen operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
 
 ## Tools
 
@@ -118,14 +118,15 @@ The MCP server exposes the same thirteen operations as tools (`tools/list` shows
 | `delete` | WHERE-filtered delete, cascades to search indexes |
 | `update` | WHERE-filtered field update; reindexes full-text rows and re-embeds changed vectorized fields |
 | `upsert` | Update matching rows, or insert one record when the filter matches nothing |
-| `migrate` | `add_field`, `rename_field`, `drop_field`, `set_fulltext`, `set_vectorize`; versioned + logged |
+| `migrate` | `add_field` (optional `default` backfills existing rows — required fields land on populated tables as `NOT NULL DEFAULT`; optional fields get a one-time backfill, later omitted inserts store NULL), `rename_field`, `drop_field`, `set_fulltext`, `set_vectorize`; `expected_version` asserts the schema being migrated (required for rename/drop, conflicts surface as 409), `dry_run` previews the plan without side effects; versioned + logged |
+| `list_migrations` | A table's migration history, newest first, with the exact recorded changes |
 
 ## Model
 
 - **Namespace = one SQLite file** (`data/<ns>.db`, WAL). Isolation is physical; drop a namespace by
   shutting the server down cleanly first, then deleting the file (the server caches open connections
   and WAL sidecars, so deleting under a live server is unreliable). A small registry inside each file
-  holds table schemas, versions, and a migration log.
+  holds table schemas, versions, and a migration log (surfaced by `list_migrations`).
 - **Full-text** via SQLite FTS5 shadow tables, maintained on insert/update/delete/migrate.
 - **Idempotent writes** for agent retries: `insert` accepts an `idempotency_key` (client-chosen,
   durably recorded with its ids in a side table, so a retry — even after a restart — returns the
@@ -210,12 +211,14 @@ negative — `rank` value and are returned first. The rank value itself is not i
   `_embedding` column. Only one field per table can be vectorized; only non-empty values are embedded,
   so rows with `null`, empty strings, or missing values have `_embedding` NULL and are excluded from
   vector search.
-- `search_vector` with `text` embeds the query `text` with the configured provider and compares it
-  against the resolved `column`. With `vector` you supply the query vector directly.
-- `column` is optional and defaults to `_embedding` if a vectorized field exists, otherwise the first
-  declared `vector` field. The query and stored vectors must come from the same embedding space. For
-  `_embedding` (from `vectorize`) this means the same provider/identity; for caller-supplied `vector`
-  fields it means the same model used to produce the stored and query vectors.
+- `search_vector` with `text` embeds the query `text` with the configured provider and searches only
+  the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`. With
+  `vector` you supply the query vector directly and may search any vector column.
+- `column` is optional for `vector` queries: it names the stored-vectors column and defaults to
+  `_embedding` if a vectorized field exists, otherwise the first declared `vector` field. The query
+  and stored vectors must come from the same embedding space. For `_embedding` (from `vectorize`)
+  this means the same provider/identity; for caller-supplied `vector` fields it means the same model
+  used to produce the stored and query vectors.
 - Every vector result carries `_score`: cosine similarity, where higher is closer. For typical
   positive embeddings it ranges `0`–`1`; mathematically it ranges `-1`–`1`.
 - `_embedding` is hidden from `SELECT *` and search results unless you reference it explicitly in the

@@ -12,6 +12,7 @@ import (
 
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
+	"github.com/lsm/dolmen/internal/version"
 )
 
 type fakeEmb struct{}
@@ -238,8 +239,8 @@ func TestInferSchemaSampleBoundsDeclared(t *testing.T) {
 }
 
 func TestAllOpSchemasClosedToUnknownProperties(t *testing.T) {
-	if len(Ops) != 13 {
-		t.Fatalf("expected the thirteen ops, got %d", len(Ops))
+	if len(Ops) != 14 {
+		t.Fatalf("expected the fourteen ops, got %d", len(Ops))
 	}
 	for name, def := range Ops {
 		if def.InputSchema["additionalProperties"] != false {
@@ -531,5 +532,26 @@ func TestInferSchemaNullSampleEntryRejected(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("null sample entries must 400, not masquerade as empty inference, got %d", res.StatusCode)
+	}
+}
+
+func TestVersionEndpoint(t *testing.T) {
+	res, err := http.Get(newTestServer(t).URL + "/version")
+	if err != nil {
+		t.Fatalf("get /version: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /version: got %d", res.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatalf("decode /version: %v", err)
+	}
+	if body["version"] != version.Version {
+		t.Fatalf("/version must report the injected version %q, got %v", version.Version, body["version"])
+	}
+	if body["name"] != "dolmen" {
+		t.Fatalf("/version must report the server name, got %v", body["name"])
 	}
 }
