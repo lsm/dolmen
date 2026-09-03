@@ -181,6 +181,46 @@ func TestOpenAPIWiredToOpsRegistry(t *testing.T) {
 	}
 }
 
+func TestOpenAPIOutputSchemasMarkRequiredGuaranteedFields(t *testing.T) {
+	optional := map[string]bool{"replayed": true, "id": true}
+	for _, name := range OpNames() {
+		def := Ops[name]
+		if def.OutputSchema == nil {
+			t.Fatalf("%s: OutputSchema must be wired to ops registry", name)
+		}
+		props, _ := def.OutputSchema["properties"].(map[string]any)
+		req, _ := def.OutputSchema["required"].([]string)
+		if len(req) == 0 {
+			t.Fatalf("%s: OutputSchema must declare required fields", name)
+		}
+		required := map[string]bool{}
+		for _, f := range req {
+			required[f] = true
+		}
+		for prop := range props {
+			if optional[prop] {
+				if required[prop] {
+					t.Fatalf("%s: conditional field %q must not be required", name, prop)
+				}
+				continue
+			}
+			if !required[prop] {
+				t.Fatalf("%s: guaranteed field %q must be marked required", name, prop)
+			}
+		}
+	}
+}
+
+func TestOpenAPIIntegerFormatIsInt64(t *testing.T) {
+	sc := integer(0)
+	if sc["format"] != "int64" {
+		t.Fatalf("integer() schema format = %v, want int64", sc["format"])
+	}
+	if sc["minimum"] != 0 {
+		t.Fatalf("integer() schema minimum = %v, want 0", sc["minimum"])
+	}
+}
+
 func TestOpenAPIPathNotUnknownOp(t *testing.T) {
 	srv := newTestServer(t)
 	// openapi.json must not be treated as an unknown op under /v1/.

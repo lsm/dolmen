@@ -12,19 +12,19 @@ const (
 )
 
 var outputSchemas = map[string]map[string]any{
-	"list_tables":       objectSchema(false, map[string]any{"tables": arrayOf(map[string]any{"type": "string"})}, nil),
-	"describe_table":    objectSchema(false, map[string]any{"table": ref("TableSchema"), "row_count": integer(0)}, nil),
-	"create_table":      objectSchema(false, map[string]any{"table": ref("TableSchema")}, nil),
-	"infer_schema":      objectSchema(false, map[string]any{"fields": arrayOf(ref("Field"))}, nil),
-	"insert":            objectSchema(false, map[string]any{"ids": arrayOf(integer(1)), "inserted": integer(0), "replayed": propBool()}, nil),
-	"upsert_by_key":     objectSchema(false, map[string]any{"ids": arrayOf(integer(1)), "inserted": integer(0), "updated": integer(0)}, nil),
-	"query":             objectSchema(false, map[string]any{"rows": arrayOf(ref("Row")), "row_count": integer(0), "truncated": propBool()}, nil),
-	"search_fulltext":   objectSchema(false, map[string]any{"results": arrayOf(ref("Row")), "truncated": propBool()}, nil),
-	"search_vector":     objectSchema(false, map[string]any{"results": arrayOf(ref("Row")), "truncated": propBool()}, nil),
-	"delete":            objectSchema(false, map[string]any{"deleted": integer(0)}, nil),
-	"update":            objectSchema(false, map[string]any{"updated": integer(0)}, nil),
-	"upsert":            objectSchema(false, map[string]any{"inserted": propBool(), "updated": integer(0), "id": integer(1)}, nil),
-	"migrate":           objectSchema(false, map[string]any{"table": ref("TableSchema")}, nil),
+	"list_tables":     objectSchema(false, map[string]any{"tables": arrayOf(map[string]any{"type": "string"})}, []string{"tables"}),
+	"describe_table":  objectSchema(false, map[string]any{"table": ref("TableSchema"), "row_count": integer(0)}, []string{"table", "row_count"}),
+	"create_table":    objectSchema(false, map[string]any{"table": ref("TableSchema")}, []string{"table"}),
+	"infer_schema":    objectSchema(false, map[string]any{"fields": arrayOf(ref("Field"))}, []string{"fields"}),
+	"insert":          objectSchema(false, map[string]any{"ids": arrayOf(integer(1)), "inserted": integer(0), "replayed": propBool()}, []string{"ids", "inserted"}),
+	"upsert_by_key":   objectSchema(false, map[string]any{"ids": arrayOf(integer(1)), "inserted": integer(0), "updated": integer(0)}, []string{"ids", "inserted", "updated"}),
+	"query":           objectSchema(false, map[string]any{"rows": arrayOf(ref("Row")), "row_count": integer(0), "truncated": propBool()}, []string{"rows", "row_count", "truncated"}),
+	"search_fulltext": objectSchema(false, map[string]any{"results": arrayOf(ref("Row")), "truncated": propBool()}, []string{"results", "truncated"}),
+	"search_vector":   objectSchema(false, map[string]any{"results": arrayOf(ref("Row")), "truncated": propBool()}, []string{"results", "truncated"}),
+	"delete":          objectSchema(false, map[string]any{"deleted": integer(0)}, []string{"deleted"}),
+	"update":          objectSchema(false, map[string]any{"updated": integer(0)}, []string{"updated"}),
+	"upsert":          objectSchema(false, map[string]any{"inserted": propBool(), "updated": integer(0), "id": integer(1)}, []string{"inserted", "updated"}),
+	"migrate":         objectSchema(false, map[string]any{"table": ref("TableSchema")}, []string{"table"}),
 }
 
 func init() {
@@ -163,7 +163,7 @@ func arrayOf(items map[string]any) map[string]any {
 }
 
 func integer(minimum int) map[string]any {
-	s := map[string]any{"type": "integer"}
+	s := map[string]any{"type": "integer", "format": "int64"}
 	if minimum != 0 {
 		s["minimum"] = minimum
 	} else {
