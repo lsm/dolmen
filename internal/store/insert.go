@@ -129,6 +129,15 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	if err != nil {
 		return nil, false, true, err
 	}
+	if idemKey != "" {
+		// Fast path: a recorded key must short-circuit before any embedding
+		// work. The in-transaction check below remains the authoritative one.
+		if ids, found, err := lookupIdem(ctx, n.rw, table, idemKey, idemHash); err != nil {
+			return nil, false, true, err
+		} else if found {
+			return ids, true, true, nil
+		}
+	}
 	persistMeta := sc.EmbedSpace == "" || sc.EmbedDim == 0
 	origEmbedSpace := sc.EmbedSpace
 	origEmbedDim := sc.EmbedDim
@@ -184,36 +193,9 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			}
 		}
 		if len(texts) > 0 {
-			if emb.Embed == nil {
-				return nil, false, true, invalidf("table %s uses vectorize but no embedding provider is configured", table)
-			}
-			if emb.Identity == "" {
-				return nil, false, true, invalidf("table %s uses vectorize but the active embedding provider reports no identity; configure the provider before inserting so rows are attributable to an embedding space", table)
-			}
-			if sc.EmbedSpace != "" && sc.EmbedSpace != emb.Identity {
-				return nil, false, true, invalidf("embedding provider changed: table rows were embedded by %q but the active provider is %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedSpace, emb.Identity)
-			}
-			vecs, err := emb.Embed(ctx, texts)
+			vecs, err := embedTexts(ctx, sc, table, texts, emb)
 			if err != nil {
-				return nil, false, true, fmt.Errorf("embedding failed: %w", err)
-			}
-			if len(vecs) != len(texts) {
-				return nil, false, true, fmt.Errorf("embedding provider returned %d vectors for %d texts", len(vecs), len(texts))
-			}
-			for _, v := range vecs {
-				if len(v) == 0 {
-					return nil, false, true, invalidf("embedding provider returned a zero-dimensional vector for table %s", table)
-				}
-				for _, x := range v {
-					if math.IsNaN(float64(x)) || math.IsInf(float64(x), 0) {
-						return nil, false, true, invalidf("embedding provider returned a non-finite vector component for table %s", table)
-					}
-				}
-				if sc.EmbedDim == 0 {
-					sc.EmbedDim = len(v)
-				} else if len(v) != sc.EmbedDim {
-					return nil, false, true, invalidf("embedding provider returned %d-dimensional vectors but table %s stores %d-dimensional embeddings; re-embed via migrate (set_vectorize off, then on) if the provider changed", len(v), table, sc.EmbedDim)
-				}
+				return nil, false, true, err
 			}
 			for k, i := range idx {
 				embFor[i] = vecs[k]
@@ -308,6 +290,46 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 		return nil, false, true, err
 	}
 	return ids, false, true, nil
+}
+
+// embedTexts embeds a batch of texts under the table's embedding-space rules:
+// the provider must exist and report an identity, the identity must match the
+// space the table was first embedded in, and every vector must be non-empty,
+// finite, and dimensionally stable. A first embedding records its dimension on
+// sc for persistence by the caller.
+func embedTexts(ctx context.Context, sc *schema.TableSchema, table string, texts []string, emb Embedder) ([][]float32, error) {
+	if emb.Embed == nil {
+		return nil, invalidf("table %s uses vectorize but no embedding provider is configured", table)
+	}
+	if emb.Identity == "" {
+		return nil, invalidf("table %s uses vectorize but the active embedding provider reports no identity; configure the provider before inserting so rows are attributable to an embedding space", table)
+	}
+	if sc.EmbedSpace != "" && sc.EmbedSpace != emb.Identity {
+		return nil, invalidf("embedding provider changed: table rows were embedded by %q but the active provider is %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedSpace, emb.Identity)
+	}
+	vecs, err := emb.Embed(ctx, texts)
+	if err != nil {
+		return nil, fmt.Errorf("embedding failed: %w", err)
+	}
+	if len(vecs) != len(texts) {
+		return nil, fmt.Errorf("embedding provider returned %d vectors for %d texts", len(vecs), len(texts))
+	}
+	for _, v := range vecs {
+		if len(v) == 0 {
+			return nil, invalidf("embedding provider returned a zero-dimensional vector for table %s", table)
+		}
+		for _, x := range v {
+			if math.IsNaN(float64(x)) || math.IsInf(float64(x), 0) {
+				return nil, invalidf("embedding provider returned a non-finite vector component for table %s", table)
+			}
+		}
+		if sc.EmbedDim == 0 {
+			sc.EmbedDim = len(v)
+		} else if len(v) != sc.EmbedDim {
+			return nil, invalidf("embedding provider returned %d-dimensional vectors but table %s stores %d-dimensional embeddings; re-embed via migrate (set_vectorize off, then on) if the provider changed", len(v), table, sc.EmbedDim)
+		}
+	}
+	return vecs, nil
 }
 
 // execInsertWithFTS inserts one coerced row (plus its FTS entry when the table

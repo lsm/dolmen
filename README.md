@@ -77,7 +77,7 @@ curl -s localhost:8790/v1/query -H 'Content-Type: application/json' -d '{
 claude mcp add --transport http dolmen http://127.0.0.1:8790/mcp
 ```
 
-The MCP server exposes the same ten operations as tools (`tools/list` shows them with full schemas).
+The MCP server exposes the same eleven operations as tools (`tools/list` shows them with full schemas).
 
 ## Tools
 
@@ -87,7 +87,8 @@ The MCP server exposes the same ten operations as tools (`tools/list` shows them
 | `describe_table` | Schema, version, row count |
 | `create_table` | Typed fields with `fulltext` / `vector` / `vectorize` annotations |
 | `infer_schema` | Propose fields from sample records (creates nothing) |
-| `insert` | Validated records; indexes and embeddings update automatically |
+| `insert` | Validated records; indexes and embeddings update automatically; `idempotency_key` makes retries replay the original ids |
+| `upsert_by_key` | Insert-or-update keyed by natural field(s) (`on`); converges instead of duplicating on retry |
 | `query` | Read-only SQL (SELECT/WITH), parameter binding via `args` |
 | `search_fulltext` | FTS5 MATCH over `fulltext` fields, relevance-ordered |
 | `search_vector` | Cosine KNN over embeddings; pass `text` (server embeds) or `vector` |
@@ -101,6 +102,11 @@ The MCP server exposes the same ten operations as tools (`tools/list` shows them
   and WAL sidecars, so deleting under a live server is unreliable). A small registry inside each file
   holds table schemas, versions, and a migration log.
 - **Full-text** via SQLite FTS5 shadow tables, maintained on insert/delete/migrate.
+- **Idempotent writes** for agent retries: `insert` accepts an `idempotency_key` (client-chosen,
+  durably recorded with its ids in a side table, so a retry — even after a restart — returns the
+  original ids; reusing a key for different records is an error), and `upsert_by_key` writes
+  records keyed by a natural field set (`on`), updating the matched row partially or inserting
+  when nothing matches.
 - **Vectors** stored as float32 blobs; KNN is a brute-force cosine scan in Go — fine into the low
   millions of rows, zero index infrastructure. (This is the deliberate MVP trade.)
 - **Read-only SQL** runs on a `mode=ro` connection with a SELECT/WITH allowlist — defense in depth.

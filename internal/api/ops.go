@@ -140,7 +140,9 @@ var Ops = map[string]OpDef{
 	"insert": {
 		Description: "Insert one or more records (JSON objects) into a table. Unknown keys are rejected; " +
 			"missing required fields are rejected. Full-text and vector indexes update automatically; " +
-			"vectorized fields are embedded by the server.",
+			"vectorized fields are embedded by the server. Retried writes should pass idempotency_key: " +
+			"the key and its ids are recorded durably, so a retry with the same key and the same records " +
+			"returns the original ids (replayed=true, nothing re-inserted) instead of duplicating rows.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -153,6 +155,12 @@ var Ops = map[string]OpDef{
 					"items":       map[string]any{"type": "object"},
 					"minItems":    1,
 					"maxItems":    store.MaxRecordsPerInsert,
+				},
+				"idempotency_key": map[string]any{
+					"type":        "string",
+					"description": "Unique client-chosen key that makes the insert safe to retry (replays return the original ids; reusing a key for different records is rejected)",
+					"minLength":   1,
+					"maxLength":   store.MaxIdempotencyKeyLen,
 				},
 			},
 			"required": []string{"namespace", "table", "records"},
@@ -167,11 +175,74 @@ var Ops = map[string]OpDef{
 					return nil, badRequest("records[%d] must be an object, not null", i)
 				}
 			}
+			if req.IdempotencyKey != "" {
+				ids, replayed, err := s.st.InsertIdempotent(ctx, normNS(req.Namespace), normTable(req.Table), req.Records, s.embedder(), req.IdempotencyKey)
+				if err != nil {
+					return nil, wrapStoreErr(err)
+				}
+				inserted := len(ids)
+				if replayed {
+					inserted = 0
+				}
+				return map[string]any{"ids": ids, "inserted": inserted, "replayed": replayed}, nil
+			}
 			ids, err := s.st.Insert(ctx, normNS(req.Namespace), normTable(req.Table), req.Records, s.embedder())
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			return map[string]any{"ids": ids, "inserted": len(ids)}, nil
+		},
+	},
+	"upsert_by_key": {
+		Description: "Insert or update records by natural key: for each record, when an existing row has the " +
+			"fields named in \"on\" equal to the record's values, that row is updated with the record's other " +
+			"fields (partial update — unspecified fields keep their values); otherwise the record is inserted " +
+			"and must satisfy required fields. Repeating the call converges instead of duplicating rows, so it " +
+			"is the retry-safe write path when the data carries its own identity (e.g. email, url, external id). " +
+			"Within a batch, later records update rows created by earlier ones with the same key. Key fields " +
+			"must be scalar (string, text, number, boolean, timestamp) and present, non-null, in every record.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace of the table"),
+				"table":     tableProp("Table name"),
+				"on": map[string]any{
+					"type":        "array",
+					"description": "Natural key: field name(s) whose values identify a row for update-vs-insert",
+					"items":       fieldNameProp("Key field name"),
+					"minItems":    1,
+					"maxItems":    store.MaxKeyFields,
+					"uniqueItems": true,
+				},
+				"records": map[string]any{
+					"type":        "array",
+					"description": "Records to insert or update (JSON objects keyed by field name)",
+					"items":       map[string]any{"type": "object"},
+					"minItems":    1,
+					"maxItems":    store.MaxRecordsPerInsert,
+				},
+			},
+			"required": []string{"namespace", "table", "on", "records"},
+		},
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req upsertReq
+			if err := decodeData(body, &req); err != nil {
+				return nil, err
+			}
+			for i, r := range req.Records {
+				if r == nil {
+					return nil, badRequest("records[%d] must be an object, not null", i)
+				}
+			}
+			if len(req.On) == 0 {
+				return nil, badRequest("on must name at least one key field")
+			}
+			ids, inserted, updated, err := s.st.UpsertByKey(ctx, normNS(req.Namespace), normTable(req.Table), req.On, req.Records, s.embedder())
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"ids": ids, "inserted": inserted, "updated": updated}, nil
 		},
 	},
 	"query": {
@@ -491,8 +562,16 @@ var Ops = map[string]OpDef{
 }
 
 type insertReq struct {
+	Namespace      string           `json:"namespace"`
+	Table          string           `json:"table"`
+	Records        []map[string]any `json:"records"`
+	IdempotencyKey string           `json:"idempotency_key"`
+}
+
+type upsertReq struct {
 	Namespace string           `json:"namespace"`
 	Table     string           `json:"table"`
+	On        []string         `json:"on"`
 	Records   []map[string]any `json:"records"`
 }
 

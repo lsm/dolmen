@@ -5,7 +5,7 @@ description: Persistent structured storage for this agent — tables with schema
 
 # Dolmen — durable agent data
 
-A Dolmen server exposes ten tools over MCP. Everything lives in namespaces (isolated databases);
+A Dolmen server exposes eleven tools over MCP. Everything lives in namespaces (isolated databases);
 pick one namespace per project or user and stay in it.
 
 ## Setup
@@ -28,7 +28,7 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
 4. **Read with the cheapest tool that answers the question:** `describe_table` → exact lookups via
    `query` (SQL, read-only) → `search_fulltext` for keyword recall → `search_vector` for
    meaning-based recall.
-5. **Never write SQL that mutates.** `query` rejects it by design; use `insert`/`delete`/`migrate`.
+5. **Never write SQL that mutates.** `query` rejects it by design; use `insert`/`upsert_by_key`/`delete`/`migrate`.
 6. **Evolve, don't fork.** When a table is missing a field, use `migrate` (add_field, rename_field,
    set_fulltext, set_vectorize) — do not create a parallel v2 table.
 
@@ -41,6 +41,7 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
 - Every table has implicit `id` and `created_at` columns; `SELECT *` includes them.
+- Retried writes must not duplicate rows: pass `idempotency_key` (any unique string) to `insert`, or use `upsert_by_key` with `"on": [field, ...]` naming the record's natural key (e.g. email, url) when the data identifies itself.
 - Vector search results carry `_score` (cosine similarity; higher is closer).
 
 ## Typical flows
