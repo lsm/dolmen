@@ -49,8 +49,13 @@ var (
 
 // NewQueryError sanitizes a raw SQLite error for the query endpoint.
 // It returns a QueryError that preserves the ErrInvalid/ErrNotFound sentinel
-// while keeping the original error for server-side logging.
+// while keeping the original error for server-side logging. Operational
+// failures the client cannot correct (I/O errors, corruption, busy timeouts)
+// are returned unwrapped so they map to internal_error instead.
 func NewQueryError(sql string, err error) error {
+	if !recognizedQueryError(err.Error()) {
+		return err
+	}
 	base := RedactSQLMessage(err.Error())
 	sentinel := ErrInvalid
 	hint := ""
@@ -79,6 +84,24 @@ func NewQueryError(sql string, err error) error {
 		msg = base + "; " + hint
 	}
 	return &QueryError{msg: msg, sentinel: sentinel, cause: err}
+}
+
+// recognizedQueryError reports whether a raw SQLite error matches one of the
+// well-known, client-correctable input patterns RedactSQLMessage renders
+// (syntax errors, unknown tokens, missing tables/columns/functions/parameters,
+// incomplete input, malformed JSON, parameter limits, misuse). Anything else —
+// disk I/O failures, corruption, busy timeouts — is operational and must not
+// surface as a query_error the client could retry into.
+func recognizedQueryError(raw string) bool {
+	for _, re := range []*regexp.Regexp{
+		nearRe, unrecognizedRe, noSuchTableRe, noSuchColumnRe, noSuchFuncRe,
+		missingArgRe, incompleteRe, malformedJSONRe, tooManyVarsRe, misuseRe,
+	} {
+		if re.MatchString(raw) {
+			return true
+		}
+	}
+	return false
 }
 
 // redactSQLMessage turns a raw SQLite error string into a client-safe string.

@@ -616,3 +616,28 @@ func TestQueryErrorsAreSanitizedAndSelfCorrectable(t *testing.T) {
 		t.Fatalf("second unwrapped error should be ErrInvalid, got %v", unwrapped[1])
 	}
 }
+
+func TestOperationalFailuresAreNotQueryErrors(t *testing.T) {
+	// Recognized input failures become sanitized QueryErrors.
+	syntax := errors.New(`SQL logic error: near "FROOOM": syntax error (1)`)
+	err := NewQueryError("SELECT 1", syntax)
+	var qe *QueryError
+	if !errors.As(err, &qe) {
+		t.Fatalf("recognized syntax error should be a QueryError, got %T", err)
+	}
+
+	// Operational failures the client cannot correct (I/O, corruption, busy
+	// timeouts) must stay internal: the original error is returned unwrapped
+	// so it maps to internal_error, never a 400 query_error with a syntax hint.
+	operational := errors.New("database disk image is malformed")
+	err = NewQueryError("SELECT 1", operational)
+	if errors.As(err, &qe) {
+		t.Fatalf("operational failure must not classify as a QueryError, got %v", err)
+	}
+	if !errors.Is(err, operational) {
+		t.Fatalf("operational failure should return the original error, got %v", err)
+	}
+	if errors.Is(err, ErrInvalid) {
+		t.Fatalf("operational failure must not carry ErrInvalid, got %v", err)
+	}
+}

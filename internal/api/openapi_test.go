@@ -26,6 +26,64 @@ func TestOpenAPIEndpoint(t *testing.T) {
 	assertOpenAPIDoc(t, doc)
 }
 
+func TestOpenAPIErrorEnvelopeMatchesObjectErrors(t *testing.T) {
+	doc := New(nil, fakeEmb{}).OpenAPIDoc()
+	components, ok := doc["components"].(map[string]any)
+	if !ok {
+		t.Fatalf("components missing")
+	}
+	schemas, ok := components["schemas"].(map[string]any)
+	if !ok {
+		t.Fatalf("components.schemas missing")
+	}
+	envelope, ok := schemas["ErrorEnvelope"].(map[string]any)
+	if !ok {
+		t.Fatalf("ErrorEnvelope missing")
+	}
+	props, ok := envelope["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("ErrorEnvelope has no properties")
+	}
+	// Failure responses carry a stable error object, not a bare string, so
+	// generated clients deserialize code/message/request_id correctly.
+	errObj, ok := props["error"].(map[string]any)
+	if !ok || errObj["type"] != "object" {
+		t.Fatalf("ErrorEnvelope.error must be an object schema, got %v", props["error"])
+	}
+	errProps, ok := errObj["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("ErrorEnvelope.error has no properties")
+	}
+	codeSchema, ok := errProps["code"].(map[string]any)
+	if !ok {
+		t.Fatalf("ErrorEnvelope.error.code missing")
+	}
+	enum, _ := codeSchema["enum"].([]string)
+	got := map[string]bool{}
+	for _, c := range enum {
+		got[c] = true
+	}
+	for _, want := range errorCodeEnum {
+		if !got[want] {
+			t.Fatalf("ErrorEnvelope.error.code enum must contain %q, got %v", want, enum)
+		}
+	}
+	if _, ok := errProps["message"]; !ok {
+		t.Fatalf("ErrorEnvelope.error.message missing")
+	}
+	if _, ok := errProps["request_id"]; !ok {
+		t.Fatalf("ErrorEnvelope.error.request_id missing")
+	}
+	req, _ := errObj["required"].([]string)
+	reqSet := map[string]bool{}
+	for _, r := range req {
+		reqSet[r] = true
+	}
+	if !reqSet["code"] || !reqSet["message"] {
+		t.Fatalf("ErrorEnvelope.error must require code and message, got %v", req)
+	}
+}
+
 func TestOpenAPIEndpointMethodNotAllowed(t *testing.T) {
 	srv := newTestServer(t)
 	res, err := http.Post(srv.URL+"/v1/openapi.json", "application/json", nil)
