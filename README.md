@@ -402,7 +402,7 @@ Every row has two implicit columns:
 | Resource | Limit | Behavior when exceeded |
 |---|---|---|
 | Namespace name | `^[a-z0-9][a-z0-9_-]{0,63}$` (max 64 chars) | rejected |
-| Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected; table also cannot contain `__fts` or start with `sqlite_` | rejected |
+| Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
 | Records per `insert` / `upsert_by_key` | 1,000 | rejected |
 | Natural key fields per `upsert_by_key` | 8 | rejected |
