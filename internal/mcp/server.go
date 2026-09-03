@@ -270,15 +270,9 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage) (any, *rpcErr) {
 		}
 		res, err := s.api.Dispatch(ctx, params.Name, args)
 		if err != nil {
-			return toolResult(nil, fmt.Sprintf("error: %s", err.Error()), true), nil
+			return toolError(fmt.Sprintf("error: %s", err.Error())), nil
 		}
-		var buf bytes.Buffer
-		enc := json.NewEncoder(&buf)
-		enc.SetEscapeHTML(false)
-		if mErr := enc.Encode(res); mErr != nil {
-			return toolResult(nil, fmt.Sprintf("error: cannot encode result: %s", mErr.Error()), true), nil
-		}
-		return toolResult(res, buf.String(), false), nil
+		return toolResult(res), nil
 	default:
 		return nil, &rpcErr{Code: jsonRPCMethodError, Message: fmt.Sprintf("unknown method %q", msg.Method)}
 	}
@@ -359,15 +353,23 @@ func ensureObjectParams(raw []byte, what string) (map[string]any, *rpcErr) {
 	return probe, nil
 }
 
-func toolResult(structured any, text string, isErr bool) map[string]any {
-	res := map[string]any{
+// toolResult shapes a successful call: the result object travels only as
+// structuredContent. The spec keeps content mandatory (an array of content
+// blocks) but does not require mirroring the payload as text — dolmen has no
+// legacy clients to carry, and a text mirror would double every result.
+func toolResult(structured any) map[string]any {
+	return map[string]any{
+		"content":           []map[string]any{},
+		"structuredContent": structured,
+		"isError":           false,
+	}
+}
+
+func toolError(text string) map[string]any {
+	return map[string]any{
 		"content": []map[string]any{{"type": "text", "text": text}},
-		"isError": isErr,
+		"isError": true,
 	}
-	if structured != nil {
-		res["structuredContent"] = structured
-	}
-	return res
 }
 
 func writeRPCResult(w http.ResponseWriter, id json.RawMessage, result any) {

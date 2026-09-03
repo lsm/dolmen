@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -90,8 +89,8 @@ func TestMCPUpdateUpsertTools(t *testing.T) {
 	if code != 200 || res["result"].(map[string]any)["isError"] == true {
 		t.Fatalf("upsert tool call failed: %d %v", code, res)
 	}
-	if !strings.Contains(res["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string), `"inserted":true`) {
-		t.Fatalf("upsert must report an insert, got %v", res)
+	if up := res["result"].(map[string]any)["structuredContent"].(map[string]any); up["inserted"] != true {
+		t.Fatalf("upsert must report an insert, got %v", up)
 	}
 
 	code, res = rpc(t, url, map[string]any{
@@ -104,8 +103,8 @@ func TestMCPUpdateUpsertTools(t *testing.T) {
 	if code != 200 || res["result"].(map[string]any)["isError"] == true {
 		t.Fatalf("update tool call failed: %d %v", code, res)
 	}
-	if !strings.Contains(res["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string), `"updated":1`) {
-		t.Fatalf("update must report one row, got %v", res)
+	if upd := res["result"].(map[string]any)["structuredContent"].(map[string]any); upd["updated"].(float64) != 1 {
+		t.Fatalf("update must report one row, got %v", upd)
 	}
 }
 
@@ -170,10 +169,9 @@ func TestMCPProtocol(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("tools/call list status %d", code)
 	}
-	content := res["result"].(map[string]any)["content"].([]any)
-	text := content[0].(map[string]any)["text"].(string)
-	if !strings.Contains(text, "memory") {
-		t.Fatalf("expected memory table in result, got: %s", text)
+	tables, ok := res["result"].(map[string]any)["structuredContent"].(map[string]any)["tables"].([]any)
+	if !ok || len(tables) != 1 || tables[0] != "memory" {
+		t.Fatalf("expected memory table in structuredContent, got: %v", res["result"])
 	}
 
 	res2, err := http.Get(url)
@@ -943,13 +941,8 @@ func TestToolsCallReturnsStructuredContent(t *testing.T) {
 	if len(ids) != 2 || inserted["inserted"].(float64) != 2 {
 		t.Fatalf("unexpected insert structuredContent: %v", inserted)
 	}
-	text := callRes["content"].([]any)[0].(map[string]any)["text"].(string)
-	var fromText any
-	if err := json.Unmarshal([]byte(text), &fromText); err != nil {
-		t.Fatalf("text content must be the JSON serialization of the result: %v", err)
-	}
-	if !reflect.DeepEqual(fromText, callRes["structuredContent"]) {
-		t.Fatalf("text and structuredContent must carry the same result, got %s vs %v", text, callRes["structuredContent"])
+	if content, ok := callRes["content"].([]any); !ok || len(content) != 0 {
+		t.Fatalf("successful results must not mirror the payload as text, got %v", callRes["content"])
 	}
 
 	callRes = call(3, "list_tables", map[string]any{"namespace": "agents"})
@@ -1057,7 +1050,7 @@ func TestToolsCallErrorOmitsStructuredContent(t *testing.T) {
 	}
 }
 
-// callTool invokes a stateless tools/call and decodes the JSON text payload.
+// callTool invokes a stateless tools/call and returns its structuredContent.
 func callTool(t *testing.T, url, name string, args map[string]any) map[string]any {
 	t.Helper()
 	code, res := rpc(t, url, map[string]any{
@@ -1071,10 +1064,9 @@ func callTool(t *testing.T, url, name string, args map[string]any) map[string]an
 	if !ok || result["isError"] == true {
 		t.Fatalf("tools/call %s failed: %v", name, res)
 	}
-	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
-	var out map[string]any
-	if err := json.Unmarshal([]byte(text), &out); err != nil {
-		t.Fatalf("tools/call %s result is not JSON: %v", name, err)
+	out, ok := result["structuredContent"].(map[string]any)
+	if !ok {
+		t.Fatalf("tools/call %s returned no structuredContent: %v", name, result)
 	}
 	return out
 }
