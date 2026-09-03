@@ -69,6 +69,12 @@ curl -s localhost:8790/v1/search_vector -H 'Content-Type: application/json' -d '
 curl -s localhost:8790/v1/query -H 'Content-Type: application/json' -d '{
   "namespace": "myapp", "sql": "SELECT title, score FROM events WHERE score > ?", "args": [0.5]
 }'
+
+# update rows matching a WHERE filter (upsert inserts when nothing matches)
+curl -s localhost:8790/v1/update -H 'Content-Type: application/json' -d '{
+  "namespace": "myapp", "table": "events", "filter": "score < ?", "args": [0.5],
+  "set": {"score": 0.5, "title": "triaged bug"}
+}'
 ```
 
 ### MCP (agents)
@@ -77,7 +83,7 @@ curl -s localhost:8790/v1/query -H 'Content-Type: application/json' -d '{
 claude mcp add --transport http dolmen http://127.0.0.1:8790/mcp
 ```
 
-The MCP server exposes the same ten operations as tools (`tools/list` shows them with full schemas).
+The MCP server exposes the same twelve operations as tools (`tools/list` shows them with full schemas).
 
 ## Tools
 
@@ -92,6 +98,8 @@ The MCP server exposes the same ten operations as tools (`tools/list` shows them
 | `search_fulltext` | FTS5 MATCH over `fulltext` fields, relevance-ordered, typed results |
 | `search_vector` | Cosine KNN over embeddings; pass `text` (server embeds) or `vector`; results carry `_score` |
 | `delete` | WHERE-filtered delete, cascades to search indexes |
+| `update` | WHERE-filtered field update; reindexes full-text rows and re-embeds changed vectorized fields |
+| `upsert` | Update matching rows, or insert one record when the filter matches nothing |
 | `migrate` | `add_field`, `rename_field`, `drop_field`, `set_fulltext`, `set_vectorize`; versioned + logged |
 
 ## Model
@@ -100,7 +108,7 @@ The MCP server exposes the same ten operations as tools (`tools/list` shows them
   shutting the server down cleanly first, then deleting the file (the server caches open connections
   and WAL sidecars, so deleting under a live server is unreliable). A small registry inside each file
   holds table schemas, versions, and a migration log.
-- **Full-text** via SQLite FTS5 shadow tables, maintained on insert/delete/migrate.
+- **Full-text** via SQLite FTS5 shadow tables, maintained on insert/update/delete/migrate.
 - **Vectors** stored as float32 blobs; KNN is a brute-force cosine scan in Go — fine into the low
   millions of rows, zero index infrastructure. (This is the deliberate MVP trade.)
 - **Read-only SQL** runs on a `mode=ro` connection with a SELECT/WITH allowlist — defense in depth.

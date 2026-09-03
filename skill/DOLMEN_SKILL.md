@@ -5,7 +5,7 @@ description: Persistent structured storage for this agent — tables with schema
 
 # Dolmen — durable agent data
 
-A Dolmen server exposes ten tools over MCP. Everything lives in namespaces (isolated databases);
+A Dolmen server exposes twelve tools over MCP. Everything lives in namespaces (isolated databases);
 pick one namespace per project or user and stay in it.
 
 ## Setup
@@ -28,7 +28,8 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
 4. **Read with the cheapest tool that answers the question:** `describe_table` → exact lookups via
    `query` (SQL, read-only) → `search_fulltext` for keyword recall → `search_vector` for
    meaning-based recall.
-5. **Never write SQL that mutates.** `query` rejects it by design; use `insert`/`delete`/`migrate`.
+5. **Never write SQL that mutates.** `query` rejects it by design; use `insert`/`update`/`upsert`/
+   `delete`/`migrate`.
 6. **Evolve, don't fork.** When a table is missing a field, use `migrate` (add_field, rename_field,
    set_fulltext, set_vectorize) — do not create a parallel v2 table.
 
@@ -40,6 +41,10 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
   enables `search_vector` with `text`), `required: true`.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
+- `update`/`upsert` take the same `filter` plus a `set` object of field values; all matched rows get
+  the same values, and `set` to `null` clears a field. Indexes and embeddings stay consistent
+  automatically. `upsert` inserts `set` as one new record when the filter matches nothing (it must
+  then satisfy required fields) — the idempotent way to keep one row per key.
 - Every table has implicit `id` and `created_at` columns; `SELECT *` includes them.
 - Results honor declared field types in every read (`query`, `search_fulltext`, `search_vector`):
   `boolean` → `true`/`false`, `json` → the decoded value, `vector` → a number array, SQL `NULL` →
