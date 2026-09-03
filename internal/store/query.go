@@ -105,13 +105,57 @@ func stripUnterminatedBlockComment(s string) string {
 	return s
 }
 
+// hasStatementSeparator reports whether sql contains a semicolon outside
+// string literals, quoted identifiers, and comments — the only semicolons
+// SQLite treats as statement terminators. Quoted or commented ones are
+// content (WHERE title = 'a;b'), not a second statement.
+func hasStatementSeparator(sql string) bool {
+	var closing byte // 0 outside quotes; otherwise the mark closing the current quote
+	for i := 0; i < len(sql); i++ {
+		c := sql[i]
+		if closing != 0 {
+			if c == closing {
+				if c != ']' && i+1 < len(sql) && sql[i+1] == c {
+					i++ // doubled quote mark escapes itself
+					continue
+				}
+				closing = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"', '`':
+			closing = c
+		case '[':
+			closing = ']'
+		case ';':
+			return true
+		case '-':
+			if i+1 < len(sql) && sql[i+1] == '-' { // line comment
+				for i < len(sql) && sql[i] != '\n' {
+					i++
+				}
+			}
+		case '/':
+			if i+1 < len(sql) && sql[i+1] == '*' { // block comment
+				i++
+				for i+1 < len(sql) && !(sql[i] == '*' && sql[i+1] == '/') {
+					i++
+				}
+				i++
+			}
+		}
+	}
+	return false
+}
+
 func (s *Store) Query(ctx context.Context, nsName, query string, args []any, offset, limit int) ([]map[string]any, bool, error) {
 	trimmed := strings.TrimRight(strings.TrimSpace(query), ";")
 	trimmed = stripUnterminatedBlockComment(trimmed)
 	if !queryStartRe.MatchString(strings.TrimSpace(query)) {
 		return nil, false, invalidf("only read-only SELECT/WITH statements are allowed")
 	}
-	if strings.Contains(trimmed, ";") {
+	if hasStatementSeparator(trimmed) {
 		return nil, false, invalidf("multiple statements are not allowed")
 	}
 	if len(args) > 100 {

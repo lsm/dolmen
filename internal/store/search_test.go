@@ -128,6 +128,43 @@ func TestMalformedDeleteFilterIsInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestDeleteFilterSemicolonInsideQuotesAllowed(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{
+		{"title": "a;b", "body": "semicolon title"},
+		{"title": "plain", "body": "plain title"},
+	}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	deleted, err := st.Delete(ctx, "test", "notes", "title = 'a;b'", nil)
+	if err != nil {
+		t.Fatalf("delete with semicolon in literal: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("expected 1 deleted, got %d", deleted)
+	}
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil, 0, 0)
+	if err != nil {
+		t.Fatalf("count after delete: %v", err)
+	}
+	if rows[0]["n"].(int64) != 1 {
+		t.Fatalf("expected 1 survivor, got %v", rows)
+	}
+}
+
+func TestDeleteFilterMultipleStatementsRejected(t *testing.T) {
+	st := openStore(t)
+	mustCreateNotes(t, st)
+	mustInsertNotes(t, st)
+	_, err := st.Delete(context.Background(), "test", "notes", "title = 'a;b'; DROP TABLE notes", nil)
+	if err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected multi-statement filter to be rejected, got %v", err)
+	}
+}
+
 func TestMalformedFTSQueryIsInvalidRequest(t *testing.T) {
 	st := openStore(t)
 	mustCreateNotes(t, st)
