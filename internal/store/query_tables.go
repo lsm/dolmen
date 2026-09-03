@@ -451,6 +451,15 @@ func isJoinOp(t token) bool {
 }
 
 func (s *queryScanner) parseStatement() error {
+	// Snapshot the CTE scope so names introduced here do not leak outside this
+	// statement (e.g. out of a scalar subquery).
+	saved := s.cteNames
+	s.cteNames = make(map[string]bool, len(saved))
+	for k, v := range saved {
+		s.cteNames[k] = v
+	}
+	defer func() { s.cteNames = saved }()
+
 	t, err := s.peek()
 	if err != nil {
 		return err
@@ -624,7 +633,7 @@ func (s *queryScanner) scanParenthesized() error {
 	if err != nil {
 		return err
 	}
-	if isKeyword(t, "select") || isKeyword(t, "with") {
+	if isKeyword(t, "select") || isKeyword(t, "with") || isKeyword(t, "values") {
 		if err := s.parseStatement(); err != nil {
 			return err
 		}
