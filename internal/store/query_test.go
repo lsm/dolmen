@@ -492,4 +492,18 @@ func TestQueryErrorsAreSanitizedAndSelfCorrectable(t *testing.T) {
 	if err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("syntax error should be ErrInvalid, got %v", err)
 	}
+
+	// The sanitized public message must not leak raw SQLite, but the original
+	// error should still be available for server-side diagnostics.
+	_, _, err = st.Query(ctx, "test", "SELECT * FROOOM notes", nil)
+	var qe *QueryError
+	if !errors.As(err, &qe) {
+		t.Fatalf("expected a QueryError, got %T", err)
+	}
+	if qe.Cause() == nil {
+		t.Fatalf("QueryError must preserve the original SQLite cause")
+	}
+	if !strings.Contains(qe.Cause().Error(), "SQL logic error") && !strings.Contains(qe.Cause().Error(), "(1)") {
+		t.Fatalf("cause should be the raw SQLite error, got %q", qe.Cause().Error())
+	}
 }

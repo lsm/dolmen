@@ -7,14 +7,19 @@ import (
 )
 
 // QueryError is a sanitized, client-safe SQL execution error.
-// It wraps either ErrInvalid or ErrNotFound so callers can still use errors.Is.
+// It wraps either ErrInvalid or ErrNotFound so callers can still use errors.Is,
+// while keeping the original SQLite error available for logging.
 type QueryError struct {
-	msg string
-	err error
+	msg      string
+	sentinel error
+	cause    error
 }
 
 func (e *QueryError) Error() string { return e.msg }
-func (e *QueryError) Unwrap() error { return e.err }
+func (e *QueryError) Unwrap() error { return e.sentinel }
+
+// Cause returns the original, unsanitized SQLite error for diagnostics.
+func (e *QueryError) Cause() error { return e.cause }
 
 var (
 	// SQLite error patterns. These are intentionally conservative: they only
@@ -35,9 +40,10 @@ var (
 )
 
 // NewQueryError sanitizes a raw SQLite error for the query endpoint.
-// It returns a QueryError that preserves the ErrInvalid/ErrNotFound sentinel.
-func NewQueryError(sql, raw string) error {
-	base := RedactSQLMessage(raw)
+// It returns a QueryError that preserves the ErrInvalid/ErrNotFound sentinel
+// while keeping the original error for server-side logging.
+func NewQueryError(sql string, err error) error {
+	base := RedactSQLMessage(err.Error())
 	sentinel := ErrInvalid
 	hint := ""
 
@@ -64,7 +70,7 @@ func NewQueryError(sql, raw string) error {
 	if hint != "" {
 		msg = base + "; " + hint
 	}
-	return &QueryError{msg: msg, err: sentinel}
+	return &QueryError{msg: msg, sentinel: sentinel, cause: err}
 }
 
 // redactSQLMessage turns a raw SQLite error string into a client-safe string.
