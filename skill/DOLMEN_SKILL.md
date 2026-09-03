@@ -233,8 +233,9 @@ Validation notes:
   returned dimension.
 - Unknown field keys are rejected. Missing or `null` required fields are rejected on `insert` and on
   the insert branch of `upsert`/`upsert_by_key`.
-- Namespace and table names are trimmed and lowercased before validation, so `"namespace":" Production "`
-  operates on `production`.
+- Namespace and table names are trimmed and lowercased before validation on direct `/v1` requests,
+  so `"namespace":" Production "` operates on `production`. The MCP tool schemas require
+  already-canonical names — always send trimmed lowercase names.
 - `query` accepts only `SELECT`/`WITH`, rejects embedded semicolons (trailing semicolons are accepted),
   and binds at most 100 `args`.
 - `search_vector` with `text` requires a provider and searches only the server-managed `_embedding`

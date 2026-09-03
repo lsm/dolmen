@@ -422,8 +422,11 @@ Coercion and validation rules:
   range, otherwise `float64`. Unsigned Go integer values larger than `math.MaxInt64` are rejected;
   integral JSON numbers outside the int64 range are stored as `float64` (precision loss).
 - `boolean`: stored as `0` or `1`; returned as `true`/`false`.
-- `timestamp`: stored as normalized RFC3339/ISO strings. Accepted forms include `YYYY-MM-DD`,
-  `YYYY-MM-DD HH:MM:SS`, and `YYYY-MM-DDTHH:MM:SS[±HH:MM|Z]`; offsets must be ≤ `±23:59`.
+- `timestamp`: stored as RFC3339/ISO strings with minimal canonicalization (whitespace trimmed,
+  lowercase `t`/`z` uppercased; offsets and date-only/space-separated forms are preserved as
+  given). Accepted forms include `YYYY-MM-DD`, `YYYY-MM-DD HH:MM:SS`, and
+  `YYYY-MM-DDTHH:MM:SS[±HH:MM|Z]`; offsets must be ≤ `±23:59`. Mixed-offset values do not sort
+  chronologically as strings — normalize to UTC before storing if you order by this field.
 - `json`: stored as JSON text; returned as the decoded value.
 - `vector`: stored as a float32 blob. Input must be a number array of exactly the declared dimension;
   `NaN`, `Inf`, and out-of-range values are rejected. The 4096-dimension cap in the table above
@@ -435,8 +438,9 @@ Coercion and validation rules:
   partial `set` maps and only reject setting a required field to `null`.
 - `query` only accepts `SELECT` or `WITH` statements, rejects embedded semicolons (no multiple
   statements), and binds at most 100 `args`.
-- Namespace and table names in requests are trimmed and lowercased before validation. A request such
-  as `namespace: " Production "` silently operates on `production`.
+- On direct `/v1` requests, namespace and table names are trimmed and lowercased before validation,
+  so `namespace: " Production "` silently operates on `production`. The MCP tool schemas require
+  already-canonical names, so schema-validating clients must send trimmed lowercase names.
 - `insert` with an `idempotency_key`: the same key and the same records replay the original ids; the
   same key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes.
 - `search_vector` with `text` requires a provider and searches only the server-managed `_embedding`
