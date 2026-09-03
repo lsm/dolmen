@@ -222,6 +222,9 @@ func TestDropTable(t *testing.T) {
 	if c := count(`SELECT count(*) FROM _dolmen_idempotency WHERE table_name = 'notes'`); c != 0 {
 		t.Fatal("idempotency keys must be gone")
 	}
+	if c := count(`SELECT count(*) FROM _dolmen_drop_gen WHERE table_name = 'notes' AND gen = 1`); c != 1 {
+		t.Fatal("drop generation must be persisted at 1")
+	}
 
 	// Recreating the name starts fresh: version 1, and the dropped table's
 	// idempotency key does not replay the old ids.
@@ -355,15 +358,12 @@ func TestDropTableDuringUpsertByKeyEmbedPause(t *testing.T) {
 	mustCreateNotes(t, st)
 
 	emb, waitPaused, release := pausingEmbedder()
-	type outcome struct {
-		err error
-	}
-	done := make(chan outcome, 1)
+	done := make(chan error, 1)
 	go func() {
 		_, _, _, err := st.UpsertByKey(ctx, "test", "notes", []string{"title"}, []map[string]any{
 			{"title": "stale", "body": "validated against the dead schema", "score": 0.9},
 		}, emb)
-		done <- outcome{err}
+		done <- err
 	}()
 
 	waitPaused()
@@ -375,13 +375,62 @@ func TestDropTableDuringUpsertByKeyEmbedPause(t *testing.T) {
 	}
 	release()
 
-	out := <-done
-	if out.err == nil || !errors.Is(out.err, ErrInvalid) {
-		t.Fatalf("stale upsert must re-validate and fail against the recreated table, got %v", out.err)
+	if err := <-done; err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("stale upsert must re-validate and fail against the recreated table, got %v", err)
 	}
 	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
 	if err != nil {
 		t.Fatalf("count: %v", err)
+	}
+	if rows[0]["n"].(int64) != 0 {
+		t.Fatalf("recreated table must stay empty, got %v", rows)
+	}
+}
+
+// The drop generation is persisted, so the guard also holds when a second
+// Store instance (or a second server process) sharing the data directory
+// performs the drop + recreate while this instance's write is mid-embedding.
+func TestDropTableBySecondStoreInstanceDuringEmbedPause(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	stA, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open A: %v", err)
+	}
+	t.Cleanup(func() { stA.Close() })
+	stB, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open B: %v", err)
+	}
+	t.Cleanup(func() { stB.Close() })
+	if _, err := stA.CreateTable(ctx, "test", "notes", noteFields()); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	emb, waitPaused, release := pausingEmbedder()
+	done := make(chan error, 1)
+	go func() {
+		_, err := stA.Insert(ctx, "test", "notes", []map[string]any{
+			{"title": "stale", "body": "validated against the dead schema", "score": 0.9},
+		}, emb)
+		done <- err
+	}()
+
+	waitPaused()
+	if err := stB.DropTable(ctx, "test", "notes"); err != nil {
+		t.Fatalf("drop via B: %v", err)
+	}
+	if _, err := stB.CreateTable(ctx, "test", "notes", recreatedFields()); err != nil {
+		t.Fatalf("recreate via B: %v", err)
+	}
+	release()
+
+	if err := <-done; err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("stale insert on A must re-validate and fail against B's recreated table, got %v", err)
+	}
+	rows, _, err := stB.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil)
+	if err != nil {
+		t.Fatalf("count via B: %v", err)
 	}
 	if rows[0]["n"].(int64) != 0 {
 		t.Fatalf("recreated table must stay empty, got %v", rows)

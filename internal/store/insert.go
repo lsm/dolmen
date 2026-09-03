@@ -129,8 +129,13 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	// during the embedding pause below bumps it, so the in-transaction
 	// re-check retries instead of committing into a same-named recreated
 	// table (recreation resets the version to 1, which the version compare
-	// alone cannot distinguish from a never-migrated original).
-	gen := n.gen.Load()
+	// alone cannot distinguish from a never-migrated original). The
+	// generation is persisted, so the guard also holds across Store
+	// instances and processes sharing the data directory.
+	gen, err := tableGen(ctx, n.rw, table)
+	if err != nil {
+		return nil, false, true, err
+	}
 	sc, err := loadSchema(ctx, n.rw, nsName, table)
 	if err != nil {
 		return nil, false, true, err
@@ -220,7 +225,11 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	if err != nil {
 		return nil, false, true, err
 	}
-	if scTx.Version != sc.Version || scTx.EmbedSpace != origEmbedSpace || scTx.EmbedDim != origEmbedDim || n.gen.Load() != gen {
+	txGen, err := tableGen(ctx, tx, table)
+	if err != nil {
+		return nil, false, true, err
+	}
+	if scTx.Version != sc.Version || scTx.EmbedSpace != origEmbedSpace || scTx.EmbedDim != origEmbedDim || txGen != gen {
 		return nil, false, false, nil
 	}
 

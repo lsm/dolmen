@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -143,13 +145,35 @@ func (s *Store) DropTable(ctx context.Context, nsName, table string) error {
 			return err
 		}
 	}
-	// Bumped inside the transaction: write transactions serialize on the
-	// namespace's single rw connection, so any writer that can observe the
-	// drop's effects also observes the bump, and must retry against the
+	// Bump the persisted drop generation inside the same transaction: write
+	// transactions serialize on the database's write lock, in this process or
+	// any other sharing the data directory, so a writer that can observe the
+	// drop's effects also observes the bump and must retry against the
 	// recreated-or-absent table instead of committing a stale plan into a
-	// same-named successor.
-	n.gen.Add(1)
+	// same-named successor. A rollback undoes the bump with the drop.
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO _dolmen_drop_gen(table_name, gen) VALUES(?, 1)
+		 ON CONFLICT(table_name) DO UPDATE SET gen = gen + 1`, table); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+// tableGen returns the persisted drop generation for a table name (0 when it
+// has never been dropped). Writers read it BEFORE their pre-transaction schema
+// read and again inside their write transaction: that order makes the pair
+// (gen, schema) consistent-or-stale, and a drop committing anywhere in between
+// is caught by the in-transaction comparison and retried.
+func tableGen(ctx context.Context, db rowQuerier, table string) (int64, error) {
+	var gen sql.NullInt64
+	if err := db.QueryRowContext(ctx,
+		`SELECT gen FROM _dolmen_drop_gen WHERE table_name = ?`, table).Scan(&gen); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return gen.Int64, nil
 }
 
 // evict closes a namespace's cached pools and removes them from the cache.

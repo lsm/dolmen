@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/lsm/dolmen/internal/schema"
 
@@ -38,13 +37,6 @@ type Store struct {
 type nsDB struct {
 	rw *sql.DB
 	ro *sql.DB
-	// gen is the drop generation: drop_table bumps it inside its transaction.
-	// Writers that pause between their schema read and their write
-	// transaction (embedding) capture it up front and re-check it in the
-	// transaction — a drop + recreate resets the schema version to 1, so the
-	// version compare alone cannot stop a stale write landing in a
-	// same-named successor table.
-	gen atomic.Uint64
 }
 
 func Open(dir string) (*Store, error) {
@@ -142,6 +134,15 @@ var registryDDL = []string{
 		ids_json TEXT NOT NULL,
 		at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
 		PRIMARY KEY(table_name, key)
+	)`,
+	// _dolmen_drop_gen counts drops per table name and survives recreation:
+	// writers compare it around their embedding pause so a write validated
+	// against a dropped table cannot commit into a same-named successor
+	// (whose version-1 schema the version compare alone cannot distinguish
+	// from the original's). See tableGen and DropTable.
+	`CREATE TABLE IF NOT EXISTS _dolmen_drop_gen(
+		table_name TEXT PRIMARY KEY,
+		gen INTEGER NOT NULL
 	)`,
 }
 
