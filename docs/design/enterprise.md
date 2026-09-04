@@ -560,10 +560,14 @@ type RowScope struct {
 // guarantee this: it lives inside the namespace database and is reset by the
 // drop). Version+DropGen distinguish a dropped table's same-named successor,
 // which is recreated at version 1 — the store already tracks drop
-// generations (_dolmen_drop_gen) for exactly this. The zero value means
-// "no guard" (auth off).
+// generations (_dolmen_drop_gen) for exactly this. Table binds the token to
+// its table: two same-namespace tables both at (version 1, DropGen 0) share
+// NsGen and would otherwise compare equal, so a plan's token could be
+// replayed against a different table — the engine verifies Table matches the
+// request's table. The zero value means "no guard" (auth off).
 type Incarnation struct {
     NsGen   [16]byte
+    Table   string
     Version int64
     DropGen int64
 }
