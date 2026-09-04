@@ -277,6 +277,24 @@ func TestSearchFulltextFilter(t *testing.T) {
 		t.Fatalf("expected 0 hits for null title bind, got %v", rows)
 	}
 
+	// Numbered placeholders (?NNN) bind from args with the same numbering the
+	// filter has standalone, like search_vector's filter — the internal MATCH
+	// and pagination parameters must not shift them.
+	rows, _, err = st.SearchFulltext(ctx, "test", "notes", "note", 0, 10, false, "score >= ?1", []any{3})
+	if err != nil {
+		t.Fatalf("numbered bind filter fts: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 hits with score >= 3 via ?1, got %v", rows)
+	}
+	rows, truncated, err := st.SearchFulltext(ctx, "test", "notes", "note", 0, 1, false, "score >= ?1", []any{1})
+	if err != nil {
+		t.Fatalf("numbered bind pagination fts: %v", err)
+	}
+	if len(rows) != 1 || !truncated {
+		t.Fatalf("pagination must bind correctly alongside ?1: %d rows truncated=%v", len(rows), truncated)
+	}
+
 	// Malicious/invalid filters are rejected like search_vector's filter.
 	if _, _, err := st.SearchFulltext(ctx, "test", "notes", "note", 0, 10, false, "1=1; DROP TABLE notes", nil); err == nil {
 		t.Fatal("expected semicolon in filter to be rejected")
@@ -360,7 +378,7 @@ func TestSearchFulltextFilterPlanLooksUpRowsPerHit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ns: %v", err)
 	}
-	rows, err := n.ro.QueryContext(ctx, `EXPLAIN QUERY PLAN `+fulltextFilterStmt("notes", "score >= 3"), "note", 10, 0)
+	rows, err := n.ro.QueryContext(ctx, `EXPLAIN QUERY PLAN `+fulltextFilterStmt("notes", "score >= 3", 0), "note", 10, 0)
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}

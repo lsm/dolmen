@@ -89,8 +89,10 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 			return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 		}
 		probe.Close()
-		stmt = fulltextFilterStmt(table, filter)
-		qargs = append(append([]any{query}, args...), limit+1, offset)
+		stmt = fulltextFilterStmt(table, filter, len(args))
+		qargs = make([]any, 0, len(args)+3)
+		qargs = append(qargs, args...)
+		qargs = append(qargs, query, limit+1, offset)
 	}
 	rows, err := tx.QueryContext(ctx, stmt, qargs...)
 	if err != nil {
@@ -127,13 +129,17 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 // search_vector's filter: its WHERE expression runs against the base table
 // alone — no join — so bare and table-qualified column names resolve exactly
 // as they do there, and the FTS table's duplicate column names (or a base
-// field named rank) cannot make a reference ambiguous. The predicate is
-// correlated to each FTS hit, so SQLite checks it with one primary-key id
-// lookup per MATCH result instead of scanning or materializing the filter's
-// matches when the filter is unselective.
-func fulltextFilterStmt(table, filter string) string {
-	return fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? AND EXISTS (SELECT 1 FROM %s WHERE %s.id = %s.rowid AND (%s)) ORDER BY rank, rowid LIMIT ? OFFSET ?`,
-		q(ftsTable(table)), ftsTable(table), q(table), q(table), ftsTable(table), filter)
+// field named rank) cannot make a reference ambiguous. The filter text comes
+// first and its placeholders keep numbers 1..nargs, with the internal MATCH
+// and pagination parameters explicitly numbered after them, so positional
+// and numbered (?NNN) placeholders alike bind from args with the same
+// numbering the filter has standalone. The predicate is correlated to each
+// FTS hit, so SQLite checks it with one primary-key id lookup per MATCH
+// result instead of scanning or materializing the filter's matches when the
+// filter is unselective.
+func fulltextFilterStmt(table, filter string, nargs int) string {
+	return fmt.Sprintf(`SELECT rowid FROM %s WHERE EXISTS (SELECT 1 FROM %s WHERE %s.id = %s.rowid AND (%s)) AND %s MATCH ?%d ORDER BY rank, rowid LIMIT ?%d OFFSET ?%d`,
+		q(ftsTable(table)), q(table), q(table), ftsTable(table), filter, ftsTable(table), nargs+1, nargs+2, nargs+3)
 }
 
 type dbQueryer interface {
