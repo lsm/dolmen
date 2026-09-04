@@ -242,6 +242,10 @@ $env:DOLMEN_EMBED_MODEL = "nomic-embed-text"
 .\dolmen.exe
 ```
 
+Whichever provider is configured, `describe_server` reports its status read-only over both `/v1`
+and MCP — provider, model, the identity that pins vectorized tables, and whether server-side
+embedding is usable — so an unconfigured or broken provider is visible without attempting a write.
+
 Local provider notes:
 
 - **Model cache** lives at `<data>/models/` (one `org--name` directory per model). Set
@@ -285,7 +289,7 @@ variables. Unknown flags and positional arguments are rejected with an error.
 claude mcp add --transport http dolmen http://127.0.0.1:8790/mcp
 ```
 
-The MCP server exposes the same eighteen operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
+The MCP server exposes the same nineteen operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
 
 Skill distribution is built into the server. `GET /skills` returns a JSON manifest with links to the layered skill markdown; `GET /skills/dolmen` is the end-user skill and `GET /skills/dolmen-admin` is the developer skill. Agents should fetch the skill from the running binary instead of copying a static file.
 
@@ -297,6 +301,7 @@ Skill distribution is built into the server. `GET /skills` returns a JSON manife
 | `create_namespace` | Reserve a namespace up front (creation is implicit on first use otherwise) |
 | `drop_namespace` | Delete a namespace and all its tables; `confirm` must repeat the name |
 | `list_tables` | Tables in a namespace |
+| `describe_server` | Server's embedding provider status — provider (`none` / `local` / `openai`), model, the identity that pins vectorized tables, and whether server-side embedding is usable; read-only, no secrets |
 | `describe_table` | Schema, version, row count |
 | `create_table` | Typed fields with `fulltext` / `vector` / `vectorize` / `default` annotations (`default` is stored by inserts that omit the field) |
 | `infer_schema` | Propose fields from sample records (creates nothing) |

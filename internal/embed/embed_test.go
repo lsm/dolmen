@@ -164,3 +164,12 @@ func TestNewProviderOpenAIEmptyKey(t *testing.T) {
 		t.Fatalf("embed: %v", err)
 	}
 }
+
+func TestProviderModelName(t *testing.T) {
+	if got := (None{}).ModelName(); got != "" {
+		t.Fatalf("none must report no model, got %q", got)
+	}
+	if got := (&OpenAI{Model: "text-embedding-3-small"}).ModelName(); got != "text-embedding-3-small" {
+		t.Fatalf("openai must report the configured model, got %q", got)
+	}
+}

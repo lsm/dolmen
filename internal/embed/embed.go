@@ -16,6 +16,9 @@ import (
 type Provider interface {
 	Name() string
 	Identity() string
+	// ModelName reports the configured model name — status surface for
+	// describe_server; empty when the provider has no model to name.
+	ModelName() string
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 }
 
@@ -24,6 +27,8 @@ type None struct{}
 func (None) Name() string { return "none" }
 
 func (None) Identity() string { return "" }
+
+func (None) ModelName() string { return "" }
 
 func (None) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	return nil, fmt.Errorf("no embedding provider configured: set DOLMEN_EMBED_PROVIDER=local for in-process embeddings (no external service), or DOLMEN_EMBED_PROVIDER=openai plus DOLMEN_EMBED_API_KEY (or OPENAI_API_KEY) for an external endpoint; optionally DOLMEN_EMBED_BASE_URL and DOLMEN_EMBED_MODEL")
@@ -39,6 +44,8 @@ type OpenAI struct {
 const openAIBatch = 96
 
 func (o *OpenAI) Name() string { return "openai" }
+
+func (o *OpenAI) ModelName() string { return o.Model }
 
 func (o *OpenAI) Identity() string {
 	return o.Name() + "|" + strings.TrimRight(o.BaseURL, "/") + "|" + o.Model

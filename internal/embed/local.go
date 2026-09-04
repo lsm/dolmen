@@ -60,6 +60,8 @@ type Local struct {
 
 func (l *Local) Name() string { return "local" }
 
+func (l *Local) ModelName() string { return l.Model }
+
 // Identity pins tables to this provider and model: "local/<model>". A model
 // change (or a switch to/from the OpenAI provider) is a different identity,
 // so inserts and text searches are rejected until the table is re-embedded

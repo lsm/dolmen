@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -17,6 +18,8 @@ import (
 type fakeEmb struct{}
 
 func (fakeEmb) Name() string { return "fake" }
+
+func (fakeEmb) ModelName() string { return "fake-model" }
 
 func (fakeEmb) Identity() string { return "fake-space" }
 
@@ -163,8 +166,8 @@ func TestMCPProtocol(t *testing.T) {
 		t.Fatalf("tools/list status %d", code)
 	}
 	tools := res["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 18 {
-		t.Fatalf("expected 18 tools, got %d", len(tools))
+	if len(tools) != 19 {
+		t.Fatalf("expected 19 tools, got %d", len(tools))
 	}
 	first := tools[0].(map[string]any)
 	if first["name"] == "" || first["inputSchema"] == nil {
@@ -1349,5 +1352,51 @@ func TestVersionSurfacesAgree(t *testing.T) {
 	if httpBody["version"] != version.Version || serverInfo["version"] != version.Version {
 		t.Fatalf("version surfaces disagree: /version=%v serverInfo=%v want=%s",
 			httpBody["version"], serverInfo["version"], version.Version)
+	}
+}
+
+func TestDescribeServerMatchesHTTPOp(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	apiSrv := api.New(st, fakeEmb{})
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", New(apiSrv, nil))
+	mux.Handle("/", apiSrv.Handler())
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	code, res := rpc(t, srv.URL+"/mcp", map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": "describe_server", "arguments": map[string]any{}},
+	})
+	if code != 200 {
+		t.Fatalf("tools/call describe_server status %d", code)
+	}
+	mcpData, ok := res["result"].(map[string]any)["structuredContent"].(map[string]any)
+	if !ok {
+		t.Fatalf("describe_server result must carry structuredContent: %v", res)
+	}
+
+	httpRes, err := http.Post(srv.URL+"/v1/describe_server", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("post /v1/describe_server: %v", err)
+	}
+	defer httpRes.Body.Close()
+	var env map[string]any
+	if err := json.NewDecoder(httpRes.Body).Decode(&env); err != nil {
+		t.Fatalf("decode /v1/describe_server: %v", err)
+	}
+	if env["ok"] != true {
+		t.Fatalf("/v1/describe_server failed: %v", env)
+	}
+	if !reflect.DeepEqual(mcpData, env["data"]) {
+		t.Fatalf("MCP and /v1 must report identical server status: mcp=%v http=%v", mcpData, env["data"])
+	}
+	emb, _ := mcpData["embedding"].(map[string]any)
+	if emb["provider"] != "fake" || emb["model"] != "fake-model" || emb["identity"] != "fake-space" || emb["usable"] != true {
+		t.Fatalf("unexpected embedding status: %v", emb)
 	}
 }

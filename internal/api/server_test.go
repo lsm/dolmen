@@ -19,6 +19,8 @@ type fakeEmb struct{}
 
 func (fakeEmb) Name() string { return "fake" }
 
+func (fakeEmb) ModelName() string { return "fake-model" }
+
 func (fakeEmb) Identity() string { return "fake-space" }
 
 func (fakeEmb) Embed(ctx context.Context, texts []string) ([][]float32, error) {
@@ -267,8 +269,8 @@ func TestInferSchemaSampleBoundsDeclared(t *testing.T) {
 }
 
 func TestAllOpSchemasClosedToUnknownProperties(t *testing.T) {
-	if len(Ops) != 18 {
-		t.Fatalf("expected the eighteen ops, got %d", len(Ops))
+	if len(Ops) != 19 {
+		t.Fatalf("expected the nineteen ops, got %d", len(Ops))
 	}
 	for name, def := range Ops {
 		if def.InputSchema["additionalProperties"] != false {

@@ -38,7 +38,7 @@ type Server struct {
 // registry op. Titles and hints describe the op, not the transport. Read ops
 // that touch the store still create the namespace db on first use (Store.ns
 // opens and initializes <namespace>.db), so they must not claim readOnlyHint
-// until that changes; infer_schema is pure and does. Ops that can send text to
+// until that changes; infer_schema and describe_server are pure and do. Ops that can send text to
 // a configured remote embedding provider (insert on vectorized fields,
 // search_vector by text, migrate when enabling vectorize, and the write ops
 // that re-embed) are open-world: the client cannot know whether the deployment
@@ -56,6 +56,7 @@ var toolAnnotations = map[string]map[string]any{
 		"idempotentHint": false, "openWorldHint": false},
 	"drop_table": {"title": "Drop table", "readOnlyHint": false, "destructiveHint": true,
 		"idempotentHint": false, "openWorldHint": false},
+	"describe_server": {"title": "Describe server", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"describe_table":  {"title": "Describe table", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"create_table":    {"title": "Create table", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
 	"infer_schema":    {"title": "Infer schema", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},

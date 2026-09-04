@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -207,8 +208,9 @@ func TestSearchVectorRawVectorIgnoresProviderIdentity(t *testing.T) {
 
 type multiEmb struct{}
 
-func (multiEmb) Name() string     { return "multi" }
-func (multiEmb) Identity() string { return "multi-space" }
+func (multiEmb) Name() string      { return "multi" }
+func (multiEmb) ModelName() string { return "multi-model" }
+func (multiEmb) Identity() string  { return "multi-space" }
 func (multiEmb) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	return make([][]float32, 2), nil
 }
@@ -250,8 +252,9 @@ func TestInsertBatchBoundsDeclared(t *testing.T) {
 
 type blankIdentityEmb struct{}
 
-func (blankIdentityEmb) Name() string     { return "blank" }
-func (blankIdentityEmb) Identity() string { return "" }
+func (blankIdentityEmb) Name() string      { return "blank" }
+func (blankIdentityEmb) ModelName() string { return "" }
+func (blankIdentityEmb) Identity() string  { return "" }
 func (blankIdentityEmb) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	out := make([][]float32, len(texts))
 	for i := range out {
@@ -262,14 +265,16 @@ func (blankIdentityEmb) Embed(ctx context.Context, texts []string) ([][]float32,
 
 type zeroVecEmb struct{}
 
-func (zeroVecEmb) Name() string     { return "zero" }
-func (zeroVecEmb) Identity() string { return "zero-space" }
+func (zeroVecEmb) Name() string      { return "zero" }
+func (zeroVecEmb) ModelName() string { return "zero-model" }
+func (zeroVecEmb) Identity() string  { return "zero-space" }
 func (zeroVecEmb) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	return [][]float32{{}}, nil
 }
 
 func vectorSearchWithProvider(t *testing.T, p interface {
 	Name() string
+	ModelName() string
 	Identity() string
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 }) int {
@@ -762,8 +767,9 @@ func TestMigrateSchemaParity(t *testing.T) {
 
 type emptyEmb struct{}
 
-func (emptyEmb) Name() string     { return "empty" }
-func (emptyEmb) Identity() string { return "empty-space" }
+func (emptyEmb) Name() string      { return "empty" }
+func (emptyEmb) ModelName() string { return "empty-model" }
+func (emptyEmb) Identity() string  { return "empty-space" }
 func (emptyEmb) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	return [][]float32{}, nil
 }
@@ -2097,5 +2103,74 @@ func TestCreateTableDefaultsEndToEnd(t *testing.T) {
 	field := openapi["components"].(map[string]any)["schemas"].(map[string]any)["Field"].(map[string]any)
 	if _, ok := field["properties"].(map[string]any)["default"]; !ok {
 		t.Fatalf("openapi Field schema must declare default, got %v", field["properties"])
+	}
+}
+
+func TestDescribeServerEmbeddingStatus(t *testing.T) {
+	cases := []struct {
+		name string
+		emb  embed.Provider
+		want map[string]any
+	}{
+		{
+			name: "none provider reports itself unusable",
+			emb:  embed.None{},
+			want: map[string]any{"provider": "none", "usable": false},
+		},
+		{
+			name: "openai reports model and the identity that pins tables",
+			emb:  &embed.OpenAI{BaseURL: "https://api.openai.com/v1", Model: "text-embedding-3-small", APIKey: "sk-test-secret"},
+			want: map[string]any{
+				"provider": "openai",
+				"model":    "text-embedding-3-small",
+				"identity": "openai|https://api.openai.com/v1|text-embedding-3-small",
+				"usable":   true,
+			},
+		},
+		{
+			name: "local reports model and the identity that pins tables",
+			emb:  &embed.Local{Model: "sentence-transformers/all-MiniLM-L6-v2"},
+			want: map[string]any{
+				"provider": "local",
+				"model":    "sentence-transformers/all-MiniLM-L6-v2",
+				"identity": "local/sentence-transformers/all-MiniLM-L6-v2",
+				"usable":   true,
+			},
+		},
+		{
+			name: "provider without identity reports itself unusable",
+			emb:  blankIdentityEmb{},
+			want: map[string]any{"provider": "blank", "usable": false},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := store.Open(t.TempDir())
+			if err != nil {
+				t.Fatalf("open store: %v", err)
+			}
+			t.Cleanup(func() { st.Close() })
+			srv := httptest.NewServer(New(st, tc.emb).Handler())
+			t.Cleanup(srv.Close)
+			code, res := post(t, srv.URL, "describe_server", map[string]any{})
+			if code != 200 {
+				t.Fatalf("describe_server failed: %d %v", code, res)
+			}
+			emb, _ := res["data"].(map[string]any)["embedding"].(map[string]any)
+			if !reflect.DeepEqual(emb, tc.want) {
+				t.Fatalf("embedding status = %v, want %v", emb, tc.want)
+			}
+			if strings.Contains(fmt.Sprint(res), "sk-test-secret") {
+				t.Fatalf("describe_server must never expose the provider API key: %v", res)
+			}
+		})
+	}
+}
+
+func TestDescribeServerRejectsUnknownProperties(t *testing.T) {
+	srv := newTestServer(t)
+	code, res := post(t, srv.URL, "describe_server", map[string]any{"namespace": "x"})
+	if code != 400 {
+		t.Fatalf("unknown input property must 400, got %d %v", code, res)
 	}
 }

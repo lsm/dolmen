@@ -40,6 +40,9 @@ func TestNewProviderLocalDefaults(t *testing.T) {
 	if l.Name() != "local" {
 		t.Fatalf("Name: %q", l.Name())
 	}
+	if l.ModelName() != "sentence-transformers/all-MiniLM-L6-v2" {
+		t.Fatalf("ModelName: %q", l.ModelName())
+	}
 	if got, want := l.Identity(), "local/sentence-transformers/all-MiniLM-L6-v2"; got != want {
 		t.Fatalf("Identity: got %q want %q", got, want)
 	}
