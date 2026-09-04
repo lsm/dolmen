@@ -369,10 +369,11 @@ type Engine interface {
     DropNamespace(ctx context.Context, ns string) error
 
     // Table DDL and registry — DescribeTable's scope scopes the returned row
-    // count to the caller's visible set (§4.3)
+    // count to the caller's visible set (§4.3). scopeVersion (0 = no guard,
+    // auth off) is re-checked inside the operation: §4.3's version guard.
     ListTables(ctx context.Context, ns string) ([]string, error)
     CreateTable(ctx context.Context, ns, table string, fields []schema.Field, opts TableOpts) (*schema.TableSchema, error)
-    DescribeTable(ctx context.Context, ns, table string, scope *RowScope) (*schema.TableSchema, int64, error)
+    DescribeTable(ctx context.Context, ns, table string, scope *RowScope, scopeVersion int) (*schema.TableSchema, int64, error)
     DropTable(ctx context.Context, ns, table string) error
 
     // Migrate ops — emb re-embeds set_vectorize backfills. Dry runs are a
@@ -390,14 +391,14 @@ type Engine interface {
     // and insert's idempotency key. The stamp owner is independent of the scope:
     // a caller may be unscoped yet still be the writer. emb embeds vectorize fields
     // on write and re-embeds changed ones, passed per call exactly as today.
-    Insert(ctx context.Context, ns, table string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope) (InsertResult, error)
-    UpsertByKey(ctx context.Context, ns, table string, on []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope) (InsertResult, error)
-    Upsert(ctx context.Context, ns, table string, filter string, args []any, record map[string]any, opts WriteOpts, emb Embedder, scope *RowScope) (InsertResult, error)
-    Update(ctx context.Context, ns, table string, filter string, args []any, set map[string]any, emb Embedder, scope *RowScope) (int64, error)
+    Insert(ctx context.Context, ns, table string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeVersion int) (InsertResult, error)
+    UpsertByKey(ctx context.Context, ns, table string, on []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeVersion int) (InsertResult, error)
+    Upsert(ctx context.Context, ns, table string, filter string, args []any, record map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeVersion int) (InsertResult, error)
+    Update(ctx context.Context, ns, table string, filter string, args []any, set map[string]any, emb Embedder, scope *RowScope, scopeVersion int) (int64, error)
     // DeleteOpts carries the v0.2.0 safety guard (dry_run, limit, confirm) and the
     // engine enforces the threshold inside the delete transaction — an API-layer
     // preflight would race. DeleteResult keeps the contract's matched/deleted pair.
-    Delete(ctx context.Context, ns, table string, filter string, args []any, opts DeleteOpts, scope *RowScope) (DeleteResult, error)
+    Delete(ctx context.Context, ns, table string, filter string, args []any, opts DeleteOpts, scope *RowScope, scopeVersion int) (DeleteResult, error)
 
     // Filtered reads — Query takes NO scope: the API layer gates raw SQL by table-wide
     // read (§4.4), which is precisely why no scope parameter exists here.
@@ -406,8 +407,8 @@ type Engine interface {
     // Search execution — includeHidden must cross the seam: truncated is
     // computed against the projected response-byte budget inside the engine,
     // so fetching hidden columns and stripping them above is not equivalent.
-    SearchFulltext(ctx context.Context, ns, table, match string, filter string, args []any, includeHidden bool, scope *RowScope, page Page) (SearchResult, error)
-    SearchVector(ctx context.Context, ns, table string, q VectorQuery, includeHidden bool, scope *RowScope, page Page) (SearchResult, error)
+    SearchFulltext(ctx context.Context, ns, table, match string, filter string, args []any, includeHidden bool, scope *RowScope, scopeVersion int, page Page) (SearchResult, error)
+    SearchVector(ctx context.Context, ns, table string, q VectorQuery, includeHidden bool, scope *RowScope, scopeVersion int, page Page) (SearchResult, error)
 
     Close() error
 }
@@ -427,9 +428,12 @@ type RowScope struct {
 
 The engine knows nothing of principals, grants, or verbs; it receives an opaque owner string.
 `WriteOpts` carries the stamp owner (absent under `auth: off`) and the idempotency key;
-`DeleteOpts`/`DeleteResult` carry the delete guard and its `matched`/`deleted` pair. A scope
-travels with the schema version it was resolved against (§4.3's version guard). The existing
-`store.Embedder` injection for vectorize paths is unchanged.
+`DeleteOpts`/`DeleteResult` carry the delete guard and its `matched`/`deleted` pair. The schema
+version a scope was resolved against travels as the separate `scopeVersion` argument on every
+scoped operation (§4.3's version guard) — separate because the guard must bind even to a **nil**
+scope: a request resolved before `row_access` was enabled must not execute as unscoped afterwards.
+`scopeVersion` is 0 under `auth: off` (no guard), mirroring `Migrate`'s `expectedVersion`. The
+existing `store.Embedder` injection for vectorize paths is unchanged.
 
 ## 7. Search as contract
 
