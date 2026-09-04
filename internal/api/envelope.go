@@ -2,12 +2,16 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
+	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -27,6 +31,12 @@ const (
 	ErrCodeConflict ErrorCode = "conflict"
 	// ErrCodeForbidden means the request is not allowed (e.g. disallowed origin).
 	ErrCodeForbidden ErrorCode = "forbidden"
+	// ErrCodeEmbedderUnavailable means the server's embedding provider could
+	// not load its model — typically the local provider's first-use download
+	// failing — so vectorized writes and text searches cannot run. The message
+	// names the operator remediation; it is not the client's request that is
+	// wrong, nor an unexpected server bug.
+	ErrCodeEmbedderUnavailable ErrorCode = "embedder_unavailable"
 	// ErrCodeInternal means an unexpected server-side problem occurred.
 	ErrCodeInternal ErrorCode = "internal_error"
 )
@@ -80,6 +90,29 @@ func requestIDFromHeader(r *http.Request) string {
 	return r.Header.Get("X-Request-Id")
 }
 
+// RequestIDFor returns the request id for r: the client's X-Request-Id when
+// present, otherwise a freshly generated one. Both transports assign it
+// before dispatch so every error envelope, log line, and response header
+// carries an id — a failure the client did not tag can still be found in the
+// server logs.
+func RequestIDFor(r *http.Request) string {
+	if id := requestIDFromHeader(r); id != "" {
+		return id
+	}
+	return newRequestID()
+}
+
+// newRequestID mints a request id: 16 random bytes, hex-encoded. crypto/rand
+// failing means the system entropy source is broken; a timestamp keeps ids
+// unique even then rather than dropping the correlation entirely.
+func newRequestID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("req-%x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
+
 func badRequest(format string, args ...any) *Error {
 	return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: fmt.Sprintf(format, args...)}
 }
@@ -100,8 +133,12 @@ var (
 	// filePathRe matches Unix/Windows-style absolute paths that may leak in
 	// internal errors. It preserves the leading separator so it does not match
 	// URL paths (://) or slash-bearing provider/model identifiers in
-	// "provider|<url>|<model>" strings.
-	filePathRe = regexp.MustCompile(`(^|[^A-Za-z0-9:|\\/.\-_])(?:[A-Za-z]:)?(?:[\\/]+[A-Za-z0-9_.\-]+)+[\\/]*`)
+	// "provider|<url>|<model>" strings. Path components may contain spaces
+	// ("C:\Users\Jane Doe\models"), so a component continues across
+	// space-separated words; when a path is followed by prose the extra words
+	// are swallowed into the redaction — over-redaction is safe, a leaked
+	// fragment is not.
+	filePathRe = regexp.MustCompile(`(^|[^A-Za-z0-9:|\\/.\-_])(?:[A-Za-z]:)?(?:[\\/]+[A-Za-z0-9_.\-]+(?:[ \t]+[A-Za-z0-9_.\-]+)*)+[\\/]*`)
 )
 
 // redactStoreMsg removes internal paths and raw SQLite internals from a store
@@ -115,8 +152,13 @@ func redactStoreMsg(msg string) string {
 		strings.Contains(msg, "misuse at line") {
 		return store.RedactSQLMessage(msg)
 	}
-	msg = filePathRe.ReplaceAllString(msg, "${1}<path>")
-	return strings.TrimSpace(msg)
+	return strings.TrimSpace(redactPaths(msg))
+}
+
+// redactPaths replaces absolute file paths with <path>, keeping provider and
+// model identifiers (which never start at a path separator) intact.
+func redactPaths(msg string) string {
+	return filePathRe.ReplaceAllString(msg, "${1}<path>")
 }
 
 // isConflict reports whether a store error message describes a state conflict.
@@ -162,6 +204,28 @@ func wrapStoreErr(err error) *Error {
 			code = ErrCodeConflict
 		}
 		return &Error{Status: http.StatusBadRequest, Code: code, Message: msg, Cause: err}
+	}
+	// A local model that cannot load (most often its first-use download
+	// failing) is an operator-actionable condition, not an unexpected bug:
+	// classify it and hand the client the offline remediations instead of the
+	// sanitized nothing of internal_error. Only a Hub id (org/name) is named
+	// in the message — it is a public identifier — while a model-directory
+	// path is filesystem layout and stays unnamed, just as the raw cause
+	// stays in Cause (server-side log only): downloader errors can carry
+	// signed CDN URLs, proxy credentials, or internal endpoints, and no
+	// redaction of arbitrary text can promise those are gone. The client
+	// correlates with the cause via the request id the envelope always
+	// carries.
+	var le *embed.LoadError
+	if errors.As(err, &le) {
+		what := fmt.Sprintf("the local embedding model %s (first use downloads it from the Hugging Face Hub into the model cache)", le.Model)
+		if !le.IsHubID() {
+			what = "the configured local model directory (DOLMEN_EMBED_MODEL)"
+		}
+		msg := redactStoreMsg(fmt.Sprintf(
+			"embedding is unavailable: %s could not be loaded; pre-seed the model cache per the README's local provider notes, or point DOLMEN_EMBED_MODEL at an absolute model-directory path, to serve without network access; the underlying cause is in the server log under this request id",
+			what))
+		return &Error{Status: http.StatusServiceUnavailable, Code: ErrCodeEmbedderUnavailable, Message: msg, Cause: err}
 	}
 	return &Error{Status: http.StatusInternalServerError, Code: ErrCodeInternal, Message: "internal error", Cause: err}
 }

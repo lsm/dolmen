@@ -120,9 +120,9 @@ func TestLoadConfig(t *testing.T) {
 			wantErr: "already ends with -prefix",
 		},
 		{
-			name:    "base-url host part plus prefix is allowed",
-			args:    []string{"-base-url", "https://example.com", "-prefix", "/dolmen"},
-			env:     map[string]string{},
+			name: "base-url host part plus prefix is allowed",
+			args: []string{"-base-url", "https://example.com", "-prefix", "/dolmen"},
+			env:  map[string]string{},
 			want: &config{
 				Addr:               "127.0.0.1:8790",
 				DataDir:            "data",

@@ -129,8 +129,10 @@ func TestOpenAPIErrorEnvelopeMatchesObjectErrors(t *testing.T) {
 	for _, r := range req {
 		reqSet[r] = true
 	}
-	if !reqSet["code"] || !reqSet["message"] {
-		t.Fatalf("ErrorEnvelope.error must require code and message, got %v", req)
+	// request_id is always present (echoed or server-generated), so generated
+	// clients may rely on it for log correlation.
+	if !reqSet["code"] || !reqSet["message"] || !reqSet["request_id"] {
+		t.Fatalf("ErrorEnvelope.error must require code, message, and request_id, got %v", req)
 	}
 }
 
