@@ -187,10 +187,28 @@ func seededCacheDir(cacheRoot, model string) string {
 	}
 	dir := filepath.Join(cacheRoot, modelCacheDirName(model))
 
+	// Loading a directory means loading exactly what is on disk: rembed
+	// cannot fall back to the Hub for a file a partial cache is missing
+	// (an interrupted download or tar extraction), so every artifact its
+	// directory load needs must already be present.
+	for _, f := range []string{"config.json", "tokenizer_config.json", "modules.json"} {
+		if fi, err := os.Stat(filepath.Join(dir, f)); err != nil || fi.IsDir() {
+			return ""
+		}
+	}
+	var hasTokenizer bool
+	for _, f := range []string{"vocab.txt", "tokenizer.json", "sentencepiece.bpe.model", "vocab.json"} {
+		if fi, err := os.Stat(filepath.Join(dir, f)); err == nil && !fi.IsDir() {
+			hasTokenizer = true
+			break
+		}
+	}
+	if !hasTokenizer {
+		return ""
+	}
+
 	// A single-file model has model.safetensors; sharded models have an
-	// index plus one or more shard files. The index alone is not enough: a
-	// partial cache must not be treated as fully seeded, because rembed would
-	// load it as a local directory and could not resume the missing shards.
+	// index plus one or more shard files. The index alone is not enough.
 	single := filepath.Join(dir, "model.safetensors")
 	if fi, err := os.Stat(single); err == nil && !fi.IsDir() {
 		return dir

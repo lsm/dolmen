@@ -141,11 +141,23 @@ func TestLocalCached(t *testing.T) {
 	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "config.json"), []byte(`{"model_type": "bert"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "tokenizer_config.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("write tokenizer_config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "modules.json"), []byte(`[]`), 0o600); err != nil {
+		t.Fatalf("write modules: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "vocab.txt"), []byte("[PAD]\n"), 0o600); err != nil {
+		t.Fatalf("write vocab: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(cacheDir, "model.safetensors"), []byte("weights"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if !l.Cached() {
-		t.Fatalf("model.safetensors present must report cached")
+		t.Fatalf("a complete cache must report cached")
 	}
 
 	// A fully seeded sharded cache also reports cached, so the startup log
@@ -153,6 +165,11 @@ func TestLocalCached(t *testing.T) {
 	shardDir := filepath.Join(dataDir, localModelDir, "org--sharded")
 	if err := os.MkdirAll(shardDir, 0o700); err != nil {
 		t.Fatalf("mkdir shard dir: %v", err)
+	}
+	for _, f := range []string{"config.json", "tokenizer_config.json", "modules.json", "tokenizer.json"} {
+		if err := os.WriteFile(filepath.Join(shardDir, f), []byte(`{}`), 0o600); err != nil {
+			t.Fatalf("write %s: %v", f, err)
+		}
 	}
 	idx := []byte(`{"weight_map": {"layer.0": "model-00001-of-00001.safetensors"}}`)
 	if err := os.WriteFile(filepath.Join(shardDir, "model.safetensors.index.json"), idx, 0o600); err != nil {
@@ -278,19 +295,61 @@ func TestLocalRef(t *testing.T) {
 	}
 }
 
+// seedCache writes the artifact set rembed's directory load needs, minus the
+// named files, so tests can build partial caches the way an interrupted
+// download or tar extraction would leave behind.
+func seedCache(t *testing.T, dir string, skip ...string) {
+	t.Helper()
+	skipMap := make(map[string]struct{}, len(skip))
+	for _, s := range skip {
+		skipMap[s] = struct{}{}
+	}
+	files := map[string]string{
+		"config.json":           `{"model_type": "bert"}`,
+		"tokenizer_config.json": `{"tokenizer_class": "BertTokenizer"}`,
+		"modules.json":          `[]`,
+		"vocab.txt":             "[PAD]\n",
+		"model.safetensors":     "weights",
+	}
+	for name, body := range files {
+		if _, ok := skipMap[name]; ok {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+}
+
 func TestSeededCacheDir(t *testing.T) {
 	cache := t.TempDir()
 
-	// A pre-seeded model cache is detected when model.safetensors exists.
+	// A pre-seeded model cache is detected when the full artifact set is on
+	// disk.
 	seeded := filepath.Join(cache, "sentence-transformers--all-MiniLM-L6-v2")
 	if err := os.MkdirAll(seeded, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(seeded, "model.safetensors"), []byte("weights"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	seedCache(t, seeded)
 	if got := seededCacheDir(cache, "sentence-transformers/all-MiniLM-L6-v2"); got != seeded {
 		t.Fatalf("seededCacheDir: got %q, want %q", got, seeded)
+	}
+
+	// Weights alone are not a loadable cache: an extraction interrupted after
+	// model.safetensors but before the tokenizer or module files must fall
+	// back to the Hub ref, where rembed can resume what is missing.
+	for _, missing := range []string{"config.json", "tokenizer_config.json", "modules.json", "vocab.txt"} {
+		partial := filepath.Join(cache, "org--partial")
+		if err := os.RemoveAll(partial); err != nil {
+			t.Fatalf("clean partial: %v", err)
+		}
+		if err := os.MkdirAll(partial, 0o755); err != nil {
+			t.Fatalf("mkdir partial: %v", err)
+		}
+		seedCache(t, partial, missing)
+		if got := seededCacheDir(cache, "org/partial"); got != "" {
+			t.Fatalf("seededCacheDir without %s: got %q, want empty", missing, got)
+		}
 	}
 
 	// A sharded pre-seeded cache is detected when the index and all of its
@@ -299,6 +358,7 @@ func TestSeededCacheDir(t *testing.T) {
 	if err := os.MkdirAll(sharded, 0o755); err != nil {
 		t.Fatalf("mkdir sharded: %v", err)
 	}
+	seedCache(t, sharded, "model.safetensors")
 	idx := []byte(`{"weight_map": {"layer.0": "model-00001-of-00002.safetensors", "layer.1": "model-00002-of-00002.safetensors"}}`)
 	if err := os.WriteFile(filepath.Join(sharded, "model.safetensors.index.json"), idx, 0o644); err != nil {
 		t.Fatalf("write index: %v", err)

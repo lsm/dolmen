@@ -311,9 +311,11 @@ curl -s localhost:8790/v1/search_vector -H 'Content-Type: application/json' -d '
 }'
 ```
 
-If `huggingface.co` is unreachable, `describe_server` still reports `provider: local` and `usable: true`
-once the pre-seeded cache is in place, and the first `search_vector(text=...)` loads the model from
-disk instead of the network.
+If `huggingface.co` is unreachable, the first `search_vector(text=...)` loads the model from disk
+instead of the network — the probe above succeeding end-to-end is the confirmation that the
+pre-seed worked. `describe_server`'s `usable` field is configuration-only (it never loads the
+model), and the startup log warns "local embedding model is not cached" when the pre-seeded cache
+is absent or incomplete; neither replaces the probe.
 
 Local provider notes:
 
