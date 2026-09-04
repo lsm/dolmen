@@ -207,6 +207,24 @@ func TestMigrateUnknownChangeKeyErrors(t *testing.T) {
 			want:     `changes[0]: unknown migration op "add_filed" (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize)`,
 			wantHint: false,
 		},
+		{
+			name:     "missing op",
+			changes:  []map[string]any{{"field": map[string]any{"name": "status", "type": "string"}}},
+			want:     `changes[0]: op must be a non-empty string naming the change (add_field, rename_field, drop_field, set_fulltext, set_vectorize)`,
+			wantHint: false,
+		},
+		{
+			name:     "non-string op",
+			changes:  []map[string]any{{"op": 123}},
+			want:     `changes[0]: op must be a non-empty string naming the change (add_field, rename_field, drop_field, set_fulltext, set_vectorize)`,
+			wantHint: false,
+		},
+		{
+			name:     "null op",
+			changes:  []map[string]any{{"op": nil}},
+			want:     `changes[0]: op must be a non-empty string naming the change (add_field, rename_field, drop_field, set_fulltext, set_vectorize)`,
+			wantHint: false,
+		},
 	} {
 		code, msg := migrate(t, tc.changes)
 		if code != 400 || !strings.Contains(msg, tc.want) {

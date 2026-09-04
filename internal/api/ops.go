@@ -180,7 +180,11 @@ var migrateFieldDefKeys = map[string]bool{
 // hint that add_field nests its field definition under "field".
 func validateMigrateChanges(changes []map[string]any) error {
 	for i, ch := range changes {
-		op, _ := ch["op"].(string)
+		rawOp, present := ch["op"]
+		op, isString := rawOp.(string)
+		if !present || !isString || op == "" {
+			return badRequest("changes[%d]: op must be a non-empty string naming the change (add_field, rename_field, drop_field, set_fulltext, set_vectorize)", i)
+		}
 		keys, known := migrateChangeKeys[op]
 		if !known {
 			return badRequest("changes[%d]: unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize)", i, op)
