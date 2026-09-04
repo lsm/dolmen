@@ -450,6 +450,12 @@ type Engine interface {
     // scope on PlanMigration is the DISCLOSURE scope (§4.3): the plan's row
     // counts are computed over the caller's visible set, while validation
     // remains table-wide. Nil = unscoped (auth off, or a table-wide reader).
+    // The plan also carries the Incarnation it was planned against, surfaced
+    // in the dry-run response as an opaque `expected_incarnation` token; the
+    // public migrate request accepts it and apply rejects on mismatch — the
+    // plan→apply binding survives across requests, so a table dropped and
+    // recreated between dry run and apply can no longer accept a stale
+    // destructive plan. `expected_version` alone remains the v0.2.0 path.
     PlanMigration(ctx context.Context, ns, table string, changes []schema.Change, emb Embedder, expected Incarnation, scope *RowScope) (*MigrationPlan, error)
     Migrate(ctx context.Context, ns, table string, changes []schema.Change, emb Embedder, expected Incarnation) (*schema.TableSchema, error)
     ListMigrations(ctx context.Context, ns, table string) ([]Migration, error)
