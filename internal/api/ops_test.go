@@ -1537,6 +1537,37 @@ func TestListMigrationsOmitsValueOnNonFlagChanges(t *testing.T) {
 	}
 }
 
+func TestMigrateRejectsValueOnNonFlagChanges(t *testing.T) {
+	srv := newTestServer(t)
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "rv",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "title", "type": "string"}},
+	})
+	if code != 200 {
+		t.Fatalf("create failed: %d %v", code, res)
+	}
+	// A caller-supplied value on a non-flag change is meaningless and must be
+	// rejected outright, not silently recorded into history.
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "rv", "table": "t",
+		"changes": []map[string]any{
+			{"op": "add_field", "field": map[string]any{"name": "tags", "type": "json"}, "value": false},
+		},
+	})
+	if code != 400 {
+		t.Fatalf("add_field with a value must 400, got %d %v", code, res)
+	}
+	// The flag ops keep requiring the key.
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "rv", "table": "t",
+		"changes": []map[string]any{{"op": "set_fulltext", "name": "title"}},
+	})
+	if code != 400 {
+		t.Fatalf("set_fulltext without a value must 400, got %d %v", code, res)
+	}
+}
+
 func TestSearchVectorFilterAndMinScoreOverHTTP(t *testing.T) {
 	srv := newTestServer(t)
 

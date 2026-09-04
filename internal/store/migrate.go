@@ -315,6 +315,9 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 		if (ch.Op == schema.OpSetFulltext || ch.Op == schema.OpSetVectorize) && ch.Value == nil {
 			return nil, invalidf("changes[%d]: %s requires an explicit value (true or false)", i, ch.Op)
 		}
+		if ch.Op != schema.OpSetFulltext && ch.Op != schema.OpSetVectorize && ch.Value != nil {
+			return nil, invalidf("changes[%d]: value is only allowed on set_fulltext/set_vectorize (op %q has no flag to set)", i, ch.Op)
+		}
 		switch ch.Op {
 		case schema.OpAddField:
 			if ch.Field == nil {

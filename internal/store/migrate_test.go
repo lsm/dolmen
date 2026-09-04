@@ -980,18 +980,24 @@ func TestListMigrationsNewestFirst(t *testing.T) {
 	}
 }
 
-func TestMigrateSetFlagWithoutValueIsRejected(t *testing.T) {
+func TestMigrateChangeValueValidation(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
 	mustCreateNotes(t, st)
 	// Value is a *bool so an omitted flag is distinguishable from an explicit
-	// false; the store must refuse the former instead of applying nil.
+	// false; the store must refuse a set_* without one instead of applying nil.
 	for _, op := range []string{schema.OpSetFulltext, schema.OpSetVectorize} {
 		if _, err := st.Migrate(ctx, "test", "notes", []schema.Change{
 			{Op: op, Name: "title"},
 		}, testEmbed, 0); err == nil || !errors.Is(err, ErrInvalid) {
 			t.Fatalf("%s without a value must be rejected as invalid, got %v", op, err)
 		}
+	}
+	// A value on a non-flag change is meaningless and must not be recorded.
+	if _, err := st.Migrate(ctx, "test", "notes", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "extra", Type: schema.String}, Value: boolPtr(false)},
+	}, testEmbed, 0); err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("add_field with a value must be rejected as invalid, got %v", err)
 	}
 }
 
