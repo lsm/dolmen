@@ -145,9 +145,10 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
    write on large tables — it runs a full `count(*)`, so cache the schema for the session.
 3. **Prefer `infer_schema` → review → `create_table`.** Never invent a schema blind when sample
    records exist. Note: inference proposes plain types only — during review, mark the main text
-   field `vectorize: true` yourself if you want semantic recall (needs an embedding provider on
-   the server: start it with `DOLMEN_EMBED_PROVIDER=local` for the built-in one, or `openai` for
-   an external endpoint; `describe_server` reports which one is active and usable). Keep tables small and purposeful — a sprawl of near-duplicate tables is a
+   field `vectorize: true` yourself if you want semantic recall (the built-in `local` embedding
+   provider is enabled by default; set `DOLMEN_EMBED_PROVIDER=openai` for an external endpoint, or
+   `none` to disable server-side embeddings; `describe_server` reports which one is active and
+   usable). Keep tables small and purposeful — a sprawl of near-duplicate tables is a
    failure mode.
 4. **Record as you go.** After finishing a meaningful unit of work, `insert` a record summarizing it
    (what/where/outcome). Future sessions recall it via search.
@@ -415,8 +416,9 @@ Validation notes:
   column produced by a `vectorize: true` field — the provider identity must match the one that
   embedded the table, and a `text` query naming a declared `vector` column is rejected. Searches
   with a caller-supplied `vector` need no provider and are not checked against any embedding
-  space — only you know which model produced the stored and query vectors. The active provider,
-  its identity, and whether server-side embedding is usable are reported by `describe_server`.
+  space — only you know which model produced the stored and query vectors. The built-in `local`
+  provider is enabled by default; `describe_server` reports the active provider, its identity, and
+  whether server-side embedding is usable.
 - `insert` with an `idempotency_key`: the same key + same records replays the original ids; the same
   key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes.
 

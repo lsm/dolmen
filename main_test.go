@@ -34,6 +34,18 @@ func TestVersionFlagPrintsInjectedVersion(t *testing.T) {
 }
 
 func TestLoadConfig(t *testing.T) {
+	oldREMBED, hadREMBED := os.LookupEnv("REMBED_CACHE")
+	t.Cleanup(func() {
+		if hadREMBED {
+			os.Setenv("REMBED_CACHE", oldREMBED)
+		} else {
+			os.Unsetenv("REMBED_CACHE")
+		}
+	})
+	os.Unsetenv("REMBED_CACHE")
+
+	dataDir := t.TempDir()
+
 	cases := []struct {
 		name    string
 		args    []string
@@ -44,24 +56,24 @@ func TestLoadConfig(t *testing.T) {
 		{
 			name: "defaults",
 			args: []string{},
-			env:  map[string]string{},
+			env:  map[string]string{"DOLMEN_DATA": dataDir},
 			want: &config{
 				Addr:               "127.0.0.1:8790",
-				DataDir:            "data",
+				DataDir:            dataDir,
 				AllowedOrigins:     nil,
-				Embed:              embedConfig{Provider: "none"},
+				Embed:              embedConfig{Provider: "local"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 			},
 		},
 		{
 			name: "flags override env and defaults",
-			args: []string{"-addr", ":8080", "-data", "/tmp/data"},
-			env:  map[string]string{"DOLMEN_ADDR": ":9999", "DOLMEN_DATA": "/wrong"},
+			args: []string{"-addr", ":8080", "-data", dataDir},
+			env:  map[string]string{"DOLMEN_ADDR": ":9999", "DOLMEN_DATA": dataDir + "-wrong"},
 			want: &config{
 				Addr:               ":8080",
-				DataDir:            "/tmp/data",
+				DataDir:            dataDir,
 				AllowedOrigins:     nil,
-				Embed:              embedConfig{Provider: "none"},
+				Embed:              embedConfig{Provider: "local"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 			},
 		},
