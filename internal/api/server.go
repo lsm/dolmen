@@ -23,7 +23,7 @@ import (
 )
 
 type Server struct {
-	st            *store.Store
+	st            store.Engine
 	emb           embed.Provider
 	baseURL       string
 	namespaceHint string
@@ -54,7 +54,9 @@ func WithNamespaceHint(h string) Option {
 	}
 }
 
-func New(st *store.Store, emb embed.Provider, opts ...Option) *Server {
+// New builds a Server over any store.Engine (the SQLite adapter is the
+// default; the op layer depends on the interface only).
+func New(st store.Engine, emb embed.Provider, opts ...Option) *Server {
 	s := &Server{st: st, emb: emb}
 	for _, opt := range opts {
 		opt(s)

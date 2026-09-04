@@ -88,7 +88,7 @@ type harness struct {
 	t   *testing.T
 	dir string
 	srv *httptest.Server
-	st  *store.Store
+	st  *store.Store // the SQLite engine when the harness opened one; nil over a foreign engine
 	emb *fakeProvider
 
 	httpURL string // .../v1
@@ -107,6 +107,17 @@ func newHarnessAt(t *testing.T, dir string, emb *fakeProvider) *harness {
 	return h
 }
 
+// newEngineHarness wires the same transport stack as newHarness over an
+// arbitrary store.Engine — the test bed proving the op layer runs against a
+// second, non-SQLite implementation unchanged (dolmen#76). Engines without
+// a Close (the in-memory stub) need no teardown beyond the server.
+func newEngineHarness(t *testing.T, eng store.Engine, emb *fakeProvider) *harness {
+	t.Helper()
+	h := &harness{t: t, emb: emb}
+	h.serve(eng)
+	return h
+}
+
 func (h *harness) start() {
 	h.t.Helper()
 	st, err := store.Open(h.dir)
@@ -114,7 +125,14 @@ func (h *harness) start() {
 		h.t.Fatalf("open store: %v", err)
 	}
 	h.st = st
-	apiSrv := api.New(st, embed.Provider(h.emb))
+	h.serve(st)
+}
+
+// serve exposes eng over the harness's HTTP and MCP transports, wired
+// exactly like main.go.
+func (h *harness) serve(eng store.Engine) {
+	h.t.Helper()
+	apiSrv := api.New(eng, embed.Provider(h.emb))
 	mcpSrv := mcp.New(apiSrv, nil)
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcpSrv)
@@ -143,10 +161,12 @@ func (h *harness) reopen() {
 }
 
 // close tears the server down without the test-cleanup hook (for tests that
-// reopen manually).
+// reopen manually). Over a foreign engine there is no store to close.
 func (h *harness) close() {
 	h.srv.Close()
-	_ = h.st.Close()
+	if h.st != nil {
+		_ = h.st.Close()
+	}
 }
 
 // httpCall POSTs an operation to /v1/{op} and decodes the JSON envelope.
