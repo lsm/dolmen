@@ -158,8 +158,17 @@ curl -s -X POST "${base%/}/v1/insert" \
   the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`; `vector`
   (raw numbers) searches any `vector` column, and only you know which embedding space produced both
   the stored and the query vectors, so keep them from the same model.
+  **Rows whose `vectorize` source is `null`/empty/missing have `_embedding` `null` and are silently
+  excluded from any `search_vector` that searches `_embedding` (a `text` query, or a raw `vector`
+  query with `column` omitted or set to `_embedding`). If recall matters, call `query` with
+  `SELECT COUNT(*) FROM <table_name> WHERE _embedding IS NULL AND (<same filter>)` (substitute the
+  table name; bind the same `args`; drop the `AND (...)` clause when no filter is used) to find
+  unembedded rows eligible for the search; if you compare counts instead, do it against
+  `SELECT COUNT(*) FROM <table_name> WHERE <same filter>` after exhausting all pages with
+  `min_score` unset (omit the WHERE clause when no filter is used).**
 - `skipped_vectors` in a `search_vector` response counts stored vectors that were corrupt or
-  dimension-mismatched and could not be scored; nonzero means those rows are missing from results.
+  dimension-mismatched and could not be scored; **it does not count rows with a `null`/empty/missing
+  `vectorize` source — those rows are silently excluded and will not raise `skipped_vectors`.**
 
 ## Agent-critical caveats
 
@@ -211,8 +220,18 @@ negative — value and are returned first. The rank value itself is not returned
 - `vector` fields accept JSON number arrays of the declared `dim`; stored as float32 blobs, returned
   as `[]float64`.
 - `vectorize: true` on a string/text field stores one embedding per non-empty row in `_embedding`.
-  Only one field per table can be vectorized; rows with `null`, empty string, or missing values have
-  `_embedding` NULL and are excluded from vector search.
+  Only one field per table can be vectorized.
+- **Vector search has silent recall holes.** Rows with `null`, empty string, or missing values in the
+  vectorized field have `_embedding` NULL and are silently excluded from any `search_vector` that
+  searches `_embedding` — whether it is a `text` query or a raw `vector` query with `column` omitted
+  or set to `_embedding`. `skipped_vectors` does NOT count those rows — it only counts stored vectors
+  that are corrupt or dimension-mismatched and could not be scored. If recall matters, call `query`
+  with `SELECT COUNT(*) FROM <table_name> WHERE _embedding IS NULL AND (<same filter>)` (substitute
+  the table name; bind the same `args`; drop the `AND (...)` clause when no filter is used) to find
+  unembedded rows eligible for the search. If you instead compare counts, compare against
+  `SELECT COUNT(*) FROM <table_name> WHERE <same filter>` after exhausting all pages with
+  `min_score` unset (omit the WHERE clause when no filter is used) — otherwise pagination,
+  `min_score`, offsets, filters, and response truncation can make embedded rows look missing.
 - `search_vector(text=...)` embeds the query `text` with the configured provider and searches only
   the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`.
   `search_vector(vector=[...])` supplies a query vector directly and may search any vector column.
