@@ -36,7 +36,7 @@ sidecar, …) authenticates the caller and forwards the asserted identity; dolme
 | Header | Shape | Semantics |
 |---|---|---|
 | `X-Dolmen-Principal` | single value, printable ASCII `^[!-~]{1,256}$` (0x21–0x7E: no space, no controls, no NUL/CR/LF, no non-ASCII) | The principal. Exact string; never interpreted, lowercased, or split. |
-| `X-Dolmen-Groups` | comma-separated, each entry printable ASCII `^[!-~]{1,128}$` **excluding comma** (the separator), at most 32 entries | The principal's groups. Entries are trimmed; empty entries dropped; exact repeats deduplicated preserving order. |
+| `X-Dolmen-Groups` | comma-separated, each entry printable ASCII `^[!-~]{1,128}$` **excluding comma** (the separator), at most `-max-groups` entries (default 128, range 1–1024) | The principal's groups. Entries are trimmed; empty entries dropped; exact repeats deduplicated preserving order. Over-limit is a malformed identity → 401 (§1.2) — silently dropping a group that carries a grant would be worse. |
 
 Both shapes are deliberately HTTP-header-safe: control characters and NUL are rejected by HTTP
 parsers before dolmen can inspect the request, leading/trailing spaces are stripped by field
@@ -56,6 +56,7 @@ semantics, and cannot be merged or rewritten in flight by generic forwarding lay
 |---|---|---|---|
 | `-auth` | `DOLMEN_AUTH` | `off` | `off` = v0.2.0 behavior (§8). `on` = deny-by-default; identity is required. |
 | `-trusted-proxies` | `DOLMEN_TRUSTED_PROXIES` | empty | Comma-separated CIDRs (bare IPs allowed). Only peers inside these ranges may assert §1.1 headers. |
+| `-max-groups` | `DOLMEN_MAX_GROUPS` | `128` | Maximum group entries accepted per request (§1.1). Valid range 1–1024; values outside the range are rejected at startup, consistent with existing config validation. Non-secret, so flag + env twin per convention. *Why 128 and configurable (amended 2026-09-04): Entra tokens routinely carry 200+ group claims for well-connected users; 128 keeps default operations pain-free while the deployment guide tells gateway operators to filter to relevant groups.* |
 
 Rules:
 
@@ -653,7 +654,7 @@ harness per test group, no CI matrix, no new make targets.
 
 | # | Decision | Where |
 |---|---|---|
-| D1 | `X-Dolmen-Principal` / `X-Dolmen-Groups` | §1.1 |
+| D1 | `X-Dolmen-Principal` / `X-Dolmen-Groups`; groups cap configurable via `-max-groups`/`DOLMEN_MAX_GROUPS` — default 128, range 1–1024, startup-rejected outside; over-limit stays 401 | §1.1–1.2 |
 | D2 | Trust = immediate TCP peer in `-trusted-proxies`/`DOLMEN_TRUSTED_PROXIES` CIDRs; XFF never used for trust | §1.2 |
 | D3 | `-auth`/`DOLMEN_AUTH`, default `off`; `auth: on` with no identity source fails startup | §1.2 |
 | D4 | `DOLMEN_ADMIN_KEY` env-only bearer; principal `dolmen-admin`; implicit `admin` on `*` attaches to the credential, not the name; `dolmen-admin` reserved in headers | §1.3 |
