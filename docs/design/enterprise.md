@@ -319,14 +319,24 @@ or the engine's equivalent), and caller SQL — filters, set-expressions, search
 executes against an invisible row, whatever the planner's chosen order.
 
 **Migration responses disclose only visible-set data.** `migrate` executes table-wide (a `schema`
-holder may restructure every row), and its *validations* cover every stored row — `set_enum` must
-reject a vocabulary that any stored value falls outside, invisible or not. But its *disclosures*
-follow the visible set: the plan's row counts (`backfill_rows`, `fulltext_reindex_rows`,
-`embed_rows`) are reported for visible rows only, and `set_enum`'s rejection names the offending
-values and their counts only to table-wide readers — a caller without table-wide read sees counts
-of 0 and a generic rejection naming no values. *Rationale: today's `set_enum` error enumerates
-every stored nonmember value; unscoped, a schema-only caller could harvest the distinct contents
-of any string field by offering unlikely one-value vocabularies.*
+holder may restructure every row), and its *disclosures* follow the visible set: the plan's row
+counts (`backfill_rows`, `fulltext_reindex_rows`, `embed_rows`) are reported for visible rows
+only, and `set_enum`'s rejection names the offending values and their counts only to table-wide
+readers — a caller without table-wide read sees counts of 0 and a generic rejection naming no
+values. *Rationale: today's `set_enum` error enumerates every stored nonmember value; unscoped, a
+schema-only caller could harvest the distinct contents of any string field by offering unlikely
+one-value vocabularies.*
+
+**Data-dependent validations require table-wide read.** Redacting the message is not enough: the
+validation's *outcome* is itself a disclosure. A caller without table-wide read could repeatedly
+attempt `set_enum` with chosen vocabularies and distinguish success from the generic rejection —
+a repeatable membership oracle over invisible values (and constraints can be cleared afterwards,
+so the oracle is practically exploitable). Under `auth: on`, a migration whose validation outcome
+depends on rows outside the caller's visible set — `set_enum` (value membership), `set_row_access`
+enabling (row existence), and `add_field` of a required field without a backfill default (row
+existence) — additionally requires table-wide `read` on the table; callers without it are denied
+`403` before any data-dependent check runs. All other migrations are data-independent and stay on
+the `schema` verb alone.
 
 - `update`/`delete` match only visible rows; `updated`/`deleted` counts are visible-set counts.
 - `search_fulltext`/`search_vector` (and their `filter`, `min_score`, pagination, and `truncated`)
@@ -548,7 +558,7 @@ What the contract pins (conformance-enforced on every engine):
 | Result shape | Rows as stored plus `id`/`created_at` (and `owner` when present), typed reads per field type; `_score` on every vector result (cosine, `-1..1`, engines agree within float tolerance); no rank value exposed for fulltext. |
 | Ordering | `search_fulltext`: relevance descending, deterministic tiebreak `id` ascending. `search_vector`: `_score` descending, tiebreak `id` ascending. Identical corpus + query ⇒ identical order on every engine. Under a scope, ranking operates over the **visible corpus only**: relevance statistics must not include rows outside the caller's visible set — foreign matching rows can never reorder or displace visible results (§4.3). Predicate conjunction alone is not sufficient (a shared index's corpus statistics span owners); engines choose the isolation — per-scope index partitioning, or filter-then-rescore. |
 | Match language | The documented FTS5 `MATCH` subset (terms, implicit AND, `OR`, `NOT`, `field:term`, `{a b}:term`, quoted phrases, `term*` prefix, `NEAR(...)`) with the documented tokenizer/stemmer behavior (porter over unicode61: case/diacritic folding, English stemming, opaque CJK runs). Engines must accept the whole subset; SQLite-only extensions to the grammar are not portable and not guaranteed. |
-| Ranking quality | BM25-family relevance over the §7 match language; the conformance corpus fixes expected orderings, so "same suite passes" *is* the quality bar. |
+| Ranking quality | The normative full-text ranking is SQLite FTS5's built-in BM25 (`rank`) with default parameters — k1=1.2, b=0.75, all column weights 1.0 — computed over the visible corpus. "BM25-family" is not a license for a variant: differing idf definitions, length normalization, parameters, or field weights reorder the same corpus while still feeling like BM25. Every engine reproduces this exact formula (ties break by `id` ascending); the conformance corpus verifies orderings, and the formula removes the ambiguity a finite corpus cannot. |
 | Truncated / pagination | `limit` default 10 max 200, `offset`, `truncated` exactly as v0.2.0 — always computed over the caller's visible set (§4.3). |
 | Vector skips | Corrupt/dimension-mismatched/non-finite stored vectors are skipped and reported as `skipped_vectors`, never silently dropped. |
 
