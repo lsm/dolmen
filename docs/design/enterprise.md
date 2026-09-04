@@ -35,8 +35,15 @@ sidecar, …) authenticates the caller and forwards the asserted identity; dolme
 
 | Header | Shape | Semantics |
 |---|---|---|
-| `X-Dolmen-Principal` | single value, UTF-8, 1–256 bytes after trim | The principal. Exact string; never interpreted, lowercased, or split. |
-| `X-Dolmen-Groups` | comma-separated, each entry UTF-8 1–128 bytes after trim, no commas inside an entry, at most 32 entries | The principal's groups. Entries are trimmed; empty entries dropped; exact repeats deduplicated preserving order. |
+| `X-Dolmen-Principal` | single value, printable ASCII `^[!-~]{1,256}$` (0x21–0x7E: no space, no controls, no NUL/CR/LF, no non-ASCII) | The principal. Exact string; never interpreted, lowercased, or split. |
+| `X-Dolmen-Groups` | comma-separated, each entry printable ASCII `^[!-~]{1,128}$` **excluding comma** (the separator), at most 32 entries | The principal's groups. Entries are trimmed; empty entries dropped; exact repeats deduplicated preserving order. |
+
+Both shapes are deliberately HTTP-header-safe: control characters and NUL are rejected by HTTP
+parsers before dolmen can inspect the request, leading/trailing spaces are stripped by field
+parsing, and non-ASCII bytes are obs-text that proxies may mangle — so none of them can appear in
+an identity that a trusted proxy can faithfully assert. Values outside the charset are malformed
+(→ 401, §1.2), and §3.1 grant subject ids carry the same charset (rejected `invalid_request`),
+so no durable grant can name an unassertable identity.
 
 *Why `X-Dolmen-*` and not `X-Forwarded-User`/`X-Forwarded-Groups`:* the `X-Forwarded-*` family is
 comma-appendable by proxy chains and conventionally carries display-name/email semantics, so its
