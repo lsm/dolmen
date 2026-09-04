@@ -76,8 +76,12 @@ Rules:
 
 - Presented as `Authorization: Bearer <key>`; compared in constant time.
 - Maps to the built-in principal `dolmen-admin`, which implicitly holds `admin` on `*`. The implicit
-  grant is configuration, not data: it is never listed by `list_grants`, and removing the env
-  removes the identity at next restart — while grants it minted persist normally.
+  grant attaches to the **credential, not the name** — it is configuration, not data: never listed
+  by `list_grants`, and removing the env removes the identity at next restart, while grants it
+  minted persist normally.
+- `dolmen-admin` is reserved in the header space: §1.1 headers asserting `X-Dolmen-Principal:
+  dolmen-admin` are rejected (401, like malformed values), so no proxied identity can occupy the
+  bootstrap principal and inherit its implicit grant.
 - Accepted from any address (the key is a direct credential, not a proxy assertion).
 - *Why env-only:* every non-secret flag has an env twin, secrets (`DOLMEN_EMBED_API_KEY`) do not —
   flags are visible in process listings.
@@ -226,7 +230,10 @@ names (`id`, `created_at`, `_embedding`, …): caller-declared fields named `own
   the declared `fields` list of `create_table`/`describe_table` output.
 - Enabling `row_access` later via `migrate` (`{"op": "set_row_access", "value": true}`) is rejected
   on a table with rows, with the error naming the row count — *rationale: ownership adopted after
-  the fact has no honest backfill; copy into a new `row_access` table with explicit owners instead.*
+  the fact has no honest backfill. No operation can write another principal's rows as that
+  principal (inserts stamp the caller; `owner` is never caller-supplied), so the supported path is
+  a fresh `row_access` table populated by replaying each owner's rows under their identity —
+  directly or through the gateway — letting the server stamp every `owner` itself.*
   Disabling (`value: false`) is allowed: the column and its values remain, filtering stops.
 - NULL-owner rows under `auth: on`: invisible to own-filtered callers; visible to table-wide
   readers (§4.3) — consistent with "no filter" being the stronger grant.
@@ -406,10 +413,14 @@ either mode fails CI.
 ### 8.1 What "byte-for-byte v0.2.0" means, precisely
 
 The existing conformance package — every request and pinned response it contains — runs against an
-`auth: off` server and passes **unmodified**. Additive extensions (optional request keys like
-`prefix`, new op names) are permitted; inputs v0.2.0 rejected may become valid (deep namespace
-paths); nothing v0.2.0 accepted may change meaning. `tools/list`, `/v1/openapi.json`, and all
-schemas are byte-identical to v0.2.0 under `auth: off` — no grant tools, no `row_access` annotation.
+`auth: off` server and passes **unmodified**: every request v0.2.0 accepts behaves identically, and
+nothing v0.2.0 accepted may change meaning. Additive extensions are permitted — optional request
+keys (`prefix`), newly valid inputs (deep namespace paths), new ops — and the schema documents may
+grow accordingly (`list_namespaces` gaining `prefix`, the namespace pattern widening to allow `/`),
+provided every schema change is strictly additive: each request that validated against the v0.2.0
+schemas still validates and produces the same response. What never appears under `auth: off`:
+`grant`/`revoke`/`list_grants` in dispatch, `tools/list`, or `/v1/openapi.json`, and the
+`row_access` annotation in any schema.
 
 ### 8.2 Modes in the harness
 
@@ -420,9 +431,11 @@ schemas are byte-identical to v0.2.0 under `auth: off` — no grant tools, no `r
 
 ### 8.3 What auth:on adds to the suite
 
-1. **Deny-by-default sweep** — every op (all 22), against: no identity (401 `unauthorized`),
-   untrusted-peer identity (401), authenticated-but-ungranted (403 `forbidden`). Envelope shapes
-   pinned like every other error.
+1. **Deny-by-default sweep** — for every op (all 22): no identity (401 `unauthorized`) and
+   untrusted-peer identity (401). Authenticated-but-ungranted (403 `forbidden`) applies to the
+   **grant-protected** ops only — the grant-free ops of §2 (`list_namespaces`, `list_tables`,
+   `describe_server`, `infer_schema`) succeed for an ungranted authenticated caller, returning
+   empty/filtered results. Envelope shapes pinned like every other error.
 2. **The #158 acceptance scenario, end-to-end** — one test scripting the umbrella scenario:
    tables with default permissions; a user who writes but reads only their own rows; read-only
    access elsewhere; list/create in one place not another; raw SQL denied without table-wide read;
@@ -432,7 +445,8 @@ schemas are byte-identical to v0.2.0 under `auth: off` — no grant tools, no `r
    limits, search invariants, migration guards run under an authorized principal with identical
    expectations wherever the op is permitted (test tables parameterized by mode).
 4. **Invariant tests** — `auth: off`: headers ignored even from trusted CIDRs (send them, assert
-   no principal anywhere); no `owner` on default tables; schemas byte-identical to v0.2.0.
+   no principal anywhere); no `owner` on default tables; the §8.1 rule holds — every v0.2.0-valid
+   request still validates and responds identically, with schema changes additive-only.
    `auth: on`: default tables still have no `owner` (invariant 1's "never on default tables" holds
    in both modes); grant ops enforce §3; namespace hierarchy enforces §5.
 5. **Fail-closed** — an authorization-check failure denies (500), never bypasses.
@@ -451,7 +465,7 @@ harness per test group, no CI matrix, no new make targets.
 | D1 | `X-Dolmen-Principal` / `X-Dolmen-Groups` | §1.1 |
 | D2 | Trust = immediate TCP peer in `-trusted-proxies`/`DOLMEN_TRUSTED_PROXIES` CIDRs; XFF never used for trust | §1.2 |
 | D3 | `-auth`/`DOLMEN_AUTH`, default `off`; `auth: on` with no identity source fails startup | §1.2 |
-| D4 | `DOLMEN_ADMIN_KEY` env-only bearer; principal `dolmen-admin`; implicit `admin` on `*`, not listed | §1.3 |
+| D4 | `DOLMEN_ADMIN_KEY` env-only bearer; principal `dolmen-admin`; implicit `admin` on `*` attaches to the credential, not the name; `dolmen-admin` reserved in headers | §1.3 |
 | D5 | New error code `unauthorized` (401); `forbidden` (403) = granted-no | §1.2 |
 | D6 | Verbs `read`/`write`/`schema`/`admin`; full op→verb table; `query` gated on the namespace | §2 |
 | D7 | Grants: subject {type,id}, object {namespace[,table] \| `*`}, explicit verbs; union resolution; inheritance down; no deny grants; no segment wildcards | §3 |
