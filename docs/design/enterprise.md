@@ -268,13 +268,16 @@ the request's **visible set**, and passes it to the engine as a `RowScope` (§6.
   reports a count of 0 rather than the real table count. The API layer passes an explicit empty
   scope; a nil scope means *unscoped*, never *empty*.
 
-**Scope resolution is version-guarded** — the annotation is consulted above the seam, so a
-`set_row_access` migration must not be able to race it. The API layer resolves the scope against
-the table's current schema version and passes that version alongside the scope; the engine
-re-checks the version inside the operation's transaction — the same consistent-or-stale guard the
-store already applies to migrations and drops — and fails `conflict` on a mismatch, after which
-the caller re-resolves and retries. A migration can therefore never flip a stale nil scope into
-access to foreign rows.
+**Scope resolution is incarnation-guarded** — the annotation is consulted above the seam, so a
+`set_row_access` migration (or a drop-and-recreate) must not be able to race it. The API layer
+resolves the scope against the table's current **incarnation** — the (schema version, drop
+generation) pair — and passes it alongside the scope; the engine re-checks both inside the
+operation's transaction — the same consistent-or-stale guard the store already applies to
+migrations and drops — and fails `conflict` on a mismatch, after which the caller re-resolves and
+retries. The drop generation is required because a version alone cannot distinguish a dropped
+table's same-named successor, which is recreated at version 1; a default table replaced by a
+`row_access` table of the same name and version can therefore never inherit a stale nil scope,
+and a migration can never flip one into access to foreign rows.
 
 The engine conjoins the scope predicate into every row read, count, mutation, and search it
 performs for that call. Everything observes the visible set:
@@ -369,11 +372,11 @@ type Engine interface {
     DropNamespace(ctx context.Context, ns string) error
 
     // Table DDL and registry — DescribeTable's scope scopes the returned row
-    // count to the caller's visible set (§4.3). scopeVersion (0 = no guard,
-    // auth off) is re-checked inside the operation: §4.3's version guard.
+    // count to the caller's visible set (§4.3). The zero Incarnation (no
+    // guard, auth off) is re-checked inside the operation: §4.3's scope guard.
     ListTables(ctx context.Context, ns string) ([]string, error)
     CreateTable(ctx context.Context, ns, table string, fields []schema.Field, opts TableOpts) (*schema.TableSchema, error)
-    DescribeTable(ctx context.Context, ns, table string, scope *RowScope, scopeVersion int) (*schema.TableSchema, int64, error)
+    DescribeTable(ctx context.Context, ns, table string, scope *RowScope, scopeIncarnation Incarnation) (*schema.TableSchema, int64, error)
     DropTable(ctx context.Context, ns, table string) error
 
     // Migrate ops — emb re-embeds set_vectorize backfills. Dry runs are a
@@ -391,14 +394,14 @@ type Engine interface {
     // and insert's idempotency key. The stamp owner is independent of the scope:
     // a caller may be unscoped yet still be the writer. emb embeds vectorize fields
     // on write and re-embeds changed ones, passed per call exactly as today.
-    Insert(ctx context.Context, ns, table string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeVersion int) (InsertResult, error)
-    UpsertByKey(ctx context.Context, ns, table string, on []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeVersion int) (InsertResult, error)
-    Upsert(ctx context.Context, ns, table string, filter string, args []any, record map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeVersion int) (InsertResult, error)
-    Update(ctx context.Context, ns, table string, filter string, args []any, set map[string]any, emb Embedder, scope *RowScope, scopeVersion int) (int64, error)
+    Insert(ctx context.Context, ns, table string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error)
+    UpsertByKey(ctx context.Context, ns, table string, on []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error)
+    Upsert(ctx context.Context, ns, table string, filter string, args []any, record map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error)
+    Update(ctx context.Context, ns, table string, filter string, args []any, set map[string]any, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (int64, error)
     // DeleteOpts carries the v0.2.0 safety guard (dry_run, limit, confirm) and the
     // engine enforces the threshold inside the delete transaction — an API-layer
     // preflight would race. DeleteResult keeps the contract's matched/deleted pair.
-    Delete(ctx context.Context, ns, table string, filter string, args []any, opts DeleteOpts, scope *RowScope, scopeVersion int) (DeleteResult, error)
+    Delete(ctx context.Context, ns, table string, filter string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation) (DeleteResult, error)
 
     // Filtered reads — Query takes NO scope: the API layer gates raw SQL by table-wide
     // read (§4.4), which is precisely why no scope parameter exists here.
@@ -407,8 +410,8 @@ type Engine interface {
     // Search execution — includeHidden must cross the seam: truncated is
     // computed against the projected response-byte budget inside the engine,
     // so fetching hidden columns and stripping them above is not equivalent.
-    SearchFulltext(ctx context.Context, ns, table, match string, filter string, args []any, includeHidden bool, scope *RowScope, scopeVersion int, page Page) (SearchResult, error)
-    SearchVector(ctx context.Context, ns, table string, q VectorQuery, includeHidden bool, scope *RowScope, scopeVersion int, page Page) (SearchResult, error)
+    SearchFulltext(ctx context.Context, ns, table, match string, filter string, args []any, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (SearchResult, error)
+    SearchVector(ctx context.Context, ns, table string, q VectorQuery, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (SearchResult, error)
 
     Close() error
 }
@@ -426,14 +429,26 @@ type RowScope struct {
 }
 ```
 
+```go
+// Incarnation identifies one lifetime of a table: its schema version and its
+// drop generation together. Version alone cannot distinguish a dropped
+// table's same-named successor, which is recreated at version 1 — the store
+// already tracks drop generations (_dolmen_drop_gen) for exactly this. The
+// zero value means "no guard" (auth off).
+type Incarnation struct {
+    Version int64
+    DropGen int64
+}
+```
+
 The engine knows nothing of principals, grants, or verbs; it receives an opaque owner string.
 `WriteOpts` carries the stamp owner (absent under `auth: off`) and the idempotency key;
-`DeleteOpts`/`DeleteResult` carry the delete guard and its `matched`/`deleted` pair. The schema
-version a scope was resolved against travels as the separate `scopeVersion` argument on every
-scoped operation (§4.3's version guard) — separate because the guard must bind even to a **nil**
-scope: a request resolved before `row_access` was enabled must not execute as unscoped afterwards.
-`scopeVersion` is 0 under `auth: off` (no guard), mirroring `Migrate`'s `expectedVersion`. The
-existing `store.Embedder` injection for vectorize paths is unchanged.
+`DeleteOpts`/`DeleteResult` carry the delete guard and its `matched`/`deleted` pair. The
+incarnation a scope was resolved against travels as the separate `scopeIncarnation` argument on
+every scoped operation (§4.3's scope guard) — separate because the guard must bind even to a
+**nil** scope: a request resolved before `row_access` was enabled, or against a predecessor table
+of the same name, must not execute as unscoped afterwards. The existing `store.Embedder` injection
+for vectorize paths is unchanged.
 
 ## 7. Search as contract
 
