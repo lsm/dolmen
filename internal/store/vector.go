@@ -178,19 +178,18 @@ func resolveVectorColumn(sc *schema.TableSchema, table, column string, textQuery
 	switch {
 	case column == "":
 		if textQuery {
-			if cols := sc.VectorFields(); len(cols) > 0 {
-				names := make([]string, len(cols))
-				for i, f := range cols {
-					names[i] = f.Name
-				}
-				return "", 0, invalidf("text queries search the server-managed vectorize (_embedding) space, but table %s has no vectorized field; add one via migrate (set_vectorize on a string or text field), or search a declared vector column (%s) with a raw vector from the same embedding space that produced the stored vectors", table, strings.Join(names, ", "))
+			if names := vectorColumnNames(sc); names != "" {
+				return "", 0, invalidf("text queries search the server-managed vectorize (_embedding) space, but table %s has no vectorized field; add one via migrate (set_vectorize on a string or text field), or search a declared vector column (%s) with a raw vector from the same embedding space that produced the stored vectors", table, names)
 			}
 			return "", 0, invalidf("text queries need a vectorize field, but table %s has none and it has no vector columns to search with raw vectors; add one via migrate (set_vectorize on a string or text field)", table)
 		}
 		return "", 0, invalidf("table %s has no vector data (no vectorize field, no vector fields)", table)
 	case column == "_embedding":
 		if sc.VectorizeField() == nil {
-			return "", 0, invalidf("table %s has no vectorize field, so there is no _embedding space to search; add one via migrate (set_vectorize on a string or text field), or search a declared vector column with a raw vector query", table)
+			if names := vectorColumnNames(sc); names != "" {
+				return "", 0, invalidf("table %s has no vectorize field, so there is no _embedding space to search; add one via migrate (set_vectorize on a string or text field), or search a declared vector column (%s) with a raw vector query", table, names)
+			}
+			return "", 0, invalidf("table %s has no vectorize field, so there is no _embedding space to search; add one via migrate (set_vectorize on a string or text field)", table)
 		}
 		if sc.EmbedSpace != "" && embedModel != "" && sc.EmbedSpace != embedModel {
 			return "", 0, invalidf("embedding model changed: table rows are embedded with %q but the provider now serves %q; re-embed via migrate (set_vectorize off, then on)", sc.EmbedSpace, embedModel)
@@ -205,6 +204,21 @@ func resolveVectorColumn(sc *schema.TableSchema, table, column string, textQuery
 		return "", 0, invalidf("column %q is not a vector column", column)
 	}
 	return column, dim, nil
+}
+
+// vectorColumnNames lists the table's declared vector columns, comma-joined,
+// or "" when there are none — the raw-vector fallback in an error message is
+// only offered when this is non-empty.
+func vectorColumnNames(sc *schema.TableSchema) string {
+	cols := sc.VectorFields()
+	if len(cols) == 0 {
+		return ""
+	}
+	names := make([]string, len(cols))
+	for i, f := range cols {
+		names[i] = f.Name
+	}
+	return strings.Join(names, ", ")
 }
 
 func (s *Store) ValidateVectorSearch(ctx context.Context, nsName, table, column string, textQuery bool, embedIdentity string) error {

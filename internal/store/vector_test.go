@@ -348,10 +348,21 @@ func TestTextQueryTableErrorsIndependentOfProvider(t *testing.T) {
 	}
 
 	// Naming _embedding explicitly on a non-vectorized table carries the same
-	// fixes instead of a bare "no vectorize field for _embedding".
+	// fixes instead of a bare "no vectorize field for _embedding" — and only
+	// offers the raw-vector alternative when declared vector columns exist.
 	err = st.ValidateVectorSearch(ctx, "test", "rawcols", "_embedding", true, "")
 	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "set_vectorize") {
 		t.Fatalf("expected actionable error for explicit _embedding on rawcols, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "emb") {
+		t.Fatalf("explicit _embedding on rawcols should name the declared vector column, got %q", err.Error())
+	}
+	err = st.ValidateVectorSearch(ctx, "test", "novec", "_embedding", true, "")
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "set_vectorize") {
+		t.Fatalf("expected actionable error for explicit _embedding on novec, got %v", err)
+	}
+	if strings.Contains(err.Error(), "vector column") {
+		t.Fatalf("explicit _embedding on novec must not offer raw-vector search of nonexistent columns, got %q", err.Error())
 	}
 
 	// A properly vectorized table passes shape validation with an empty
