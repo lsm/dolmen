@@ -560,6 +560,12 @@ sha256sum -c --ignore-missing SHA256SUMS
 oras manifest fetch ghcr.io/lsm/dolmen:v0.2.0
 ```
 
+The `internal/conformance` package is the contract-conformance suite: black-box
+tests over the HTTP and MCP transports that pin the interface — transport
+parity between `/v1` and MCP `tools/call`, the golden error contract, the
+limits table, typed-read coercion, write semantics, search invariants, and
+migration guards. Behavior-changing PRs update the suite in the same PR.
+
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE).
