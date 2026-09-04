@@ -100,6 +100,7 @@ The same call with a typo'd field name returns the error envelope:
 - Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`, and `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field).
 - Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field — enables `search_vector` with `text`; needs an embedding provider on the server: the built-in `local` one or an external endpoint), `required: true`.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
+- `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
 - `drop_table` / `drop_namespace` are irreversible deletions and are **not** part of this skill; do not use them. Ask the user to use `dolmen-admin` if a table or namespace must go.
 - `insert` with an `idempotency_key` (any unique string) makes retries replay the original ids; the same key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes.
@@ -149,6 +150,8 @@ keyword recall over space-less CJK text, fall back to vector search over an embe
 
 Results are ordered by FTS5 `rank` (BM25 by default): more relevant rows have a lower — more negative — value and are returned first. The rank value itself is not returned.
 
+The optional `filter` parameter is separate from the MATCH `query`: it is regular SQL over the table's columns (a WHERE expression with `?`-bound `args`, like `delete`'s filter) and selects which rows may match, before ranking.
+
 ### Vectors and semantic recall
 
 - `vector` fields accept JSON number arrays of the declared `dim`; stored as float32 blobs, returned as `[]float64`.
@@ -179,7 +182,7 @@ Results are ordered by FTS5 `rank` (BM25 by default): more relevant rows have a 
 | `query` result rows | 1,000 | truncated with `truncated: true` |
 | `query` / search result size | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
 | Request body | 32 MiB | rejected |
-| `query` `args` | 100 | rejected |
+| `query` / search filter `args` | 100 | rejected |
 
 Vector search is brute-force (fine into the low millions of rows); FTS5 uses an inverted index and is much faster.
 

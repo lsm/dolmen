@@ -39,7 +39,7 @@ func TestMigrate(t *testing.T) {
 		t.Fatalf("insert after migrate: %v", err)
 	}
 
-	rows, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 0, 10, false)
+	rows, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("fts after rename: %v", err)
 	}
@@ -1054,7 +1054,7 @@ func TestAddFulltextFieldWithDefaultIndexesBackfill(t *testing.T) {
 	}, testEmbed, 1); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	rows, _, err := st.SearchFulltext(ctx, "test", "ftsdef", "grievance", 0, 10, false)
+	rows, _, err := st.SearchFulltext(ctx, "test", "ftsdef", "grievance", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("search over backfilled default: %v", err)
 	}
@@ -1167,7 +1167,7 @@ func TestOptionalFieldDefaultDoesNotLeakToFutureInserts(t *testing.T) {
 	}
 	// FTS stays consistent with the base rows: the old row matches the
 	// backfilled text, the new row (NULL) does not.
-	fts, _, err := st.SearchFulltext(ctx, "test", "optdef", "grievance", 0, 10, false)
+	fts, _, err := st.SearchFulltext(ctx, "test", "optdef", "grievance", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("fts: %v", err)
 	}

@@ -162,7 +162,7 @@ func TestInsertDefaultsFeedFulltextIndex(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{{}}, Embedder{}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	res, _, err := st.SearchFulltext(ctx, "test", "notes", "operating", 0, 10, false)
+	res, _, err := st.SearchFulltext(ctx, "test", "notes", "operating", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}

@@ -267,13 +267,13 @@ func TestDropTableRemovesSearch(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{{"title": "findme"}}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if _, _, err := st.SearchFulltext(ctx, "test", "notes", "findme", 0, 10, false); err != nil {
+	if _, _, err := st.SearchFulltext(ctx, "test", "notes", "findme", 0, 10, false, "", nil); err != nil {
 		t.Fatalf("search before drop: %v", err)
 	}
 	if err := st.DropTable(ctx, "test", "notes"); err != nil {
 		t.Fatalf("drop: %v", err)
 	}
-	if _, _, err := st.SearchFulltext(ctx, "test", "notes", "findme", 0, 10, false); !errors.Is(err, ErrNotFound) {
+	if _, _, err := st.SearchFulltext(ctx, "test", "notes", "findme", 0, 10, false, "", nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("search on dropped table must 404, got %v", err)
 	}
 }

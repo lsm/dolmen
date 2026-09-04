@@ -48,14 +48,14 @@ func TestUpdateRewritesRowsAndSearchIndex(t *testing.T) {
 		t.Fatalf("update must not renumber ids: %v", rows[0])
 	}
 
-	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "renamed", 0, 10, false)
+	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "renamed", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("fts after update: %v", err)
 	}
 	if len(hits) != 2 {
 		t.Fatalf("expected 2 fts hits for the new title, got %v", hits)
 	}
-	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "second", 0, 10, false)
+	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "second", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("fts old title: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestUpdateWithoutIndexChangesLeavesSearchIntact(t *testing.T) {
 	if updated != 3 {
 		t.Fatalf("expected 3 updated, got %d", updated)
 	}
-	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 0, 10, false)
+	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("fts: %v", err)
 	}
@@ -208,14 +208,14 @@ func TestUpdateClearsEmbeddingWhenVectorizedFieldCleared(t *testing.T) {
 
 	// body is a fulltext field: cleared text must leave the index, and the
 	// untouched row (done = 1) must keep matching its own body text
-	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "memory", 0, 10, false)
+	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "memory", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("fts cleared: %v", err)
 	}
 	if len(hits) != 0 {
 		t.Fatalf("cleared body must not match anymore, got %v", hits)
 	}
-	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "dolmen", 0, 10, false)
+	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "dolmen", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("fts survivor: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestUpdateNoMatchTouchesNothing(t *testing.T) {
 	if sc.EmbedSpace != "fake-space" || sc.EmbedDim != 8 {
 		t.Fatalf("no-match update must not rewrite embedding metadata, got space=%q dim=%d", sc.EmbedSpace, sc.EmbedDim)
 	}
-	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "ghost", 0, 10, false)
+	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "ghost", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("fts: %v", err)
 	}
@@ -342,7 +342,7 @@ func TestUpsertInsertsWhenNoMatch(t *testing.T) {
 	if rows[0]["title"] != "ghost note" || rows[0]["score"].(int64) != 7 {
 		t.Fatalf("inserted row wrong: %v", rows[0])
 	}
-	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "haunting", 0, 10, false)
+	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "haunting", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("fts: %v", err)
 	}
