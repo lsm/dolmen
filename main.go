@@ -76,16 +76,17 @@ func run() error {
 		}
 	}
 
-	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint))
-	mcpSrv := mcp.New(apiSrv, cfg.AllowedOrigins, mcp.WithBaseURL(cfg.BaseURL), mcp.WithNamespaceHint(cfg.SkillNamespaceHint))
+	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix))
+	mcpSrv := mcp.New(apiSrv, cfg.AllowedOrigins, mcp.WithBaseURL(cfg.BaseURL), mcp.WithNamespaceHint(cfg.SkillNamespaceHint), mcp.WithPrefix(cfg.Prefix))
 
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcpSrv)
-	mux.Handle("/", apiSrv.Handler())
+	sub := http.NewServeMux()
+	sub.Handle("/mcp", mcpSrv)
+	sub.Handle("/", apiSrv.Handler())
+	router := withPrefix(cfg.Prefix, sub)
 
 	httpSrv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           api.OriginGuard(mux, cfg.AllowedOrigins),
+		Handler:           api.OriginGuard(router, cfg.AllowedOrigins),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -95,7 +96,7 @@ func run() error {
 	errCh := make(chan error, 1)
 	go func() {
 		slog.Info("dolmen listening", "addr", cfg.Addr, "data", cfg.DataDir, "embed", emb.Name(), "version", version.Version)
-		slog.Info("endpoints", "mcp", "http://"+cfg.Addr+"/mcp", "api", "http://"+cfg.Addr+"/v1/{op}", "health", "http://"+cfg.Addr+"/healthz", "version", "http://"+cfg.Addr+"/version", "skills", "http://"+cfg.Addr+"/skills")
+		slog.Info("endpoints", "mcp", "http://"+cfg.Addr+cfg.Prefix+"/mcp", "api", "http://"+cfg.Addr+cfg.Prefix+"/v1/{op}", "health", "http://"+cfg.Addr+cfg.Prefix+"/healthz", "version", "http://"+cfg.Addr+cfg.Prefix+"/version", "skills", "http://"+cfg.Addr+cfg.Prefix+"/skills")
 		slog.Warn("no authentication: keep this bound to a private interface")
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
@@ -127,6 +128,7 @@ type config struct {
 	Embed              embedConfig
 	Version            bool
 	BaseURL            string
+	Prefix             string
 	SkillNamespaceHint string
 }
 
@@ -149,6 +151,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	dataDir := fs.String("data", envOr("DOLMEN_DATA", "data", getenv), "data directory (one SQLite file per namespace)")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	publicBaseURL := fs.String("base-url", envOr("DOLMEN_BASE_URL", "", getenv), "public base URL for skills and MCP links (default: use request Host)")
+	prefix := fs.String("prefix", envOr("DOLMEN_PREFIX", "", getenv), "mount all endpoints under this URL prefix (pass-through proxy)")
 
 	fs.Usage = func() {
 		fmt.Fprint(out, "Usage: dolmen [flags]\n\nFlags:\n")
@@ -193,12 +196,23 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	}
 
 	skillNamespaceHint := envOr("DOLMEN_SKILL_NAMESPACE_HINT", skill.DefaultNamespaceHint, getenv)
+	prefixValue := skill.NormalizePrefix(*prefix)
+
+	if *publicBaseURL != "" && prefixValue != "" {
+		if strings.HasSuffix(strings.TrimRight(*publicBaseURL, "/"), prefixValue) {
+			e := fmt.Errorf("-base-url %q already ends with -prefix %q: remove one of them, or set -base-url to the scheme://host part and let -prefix supply the path", *publicBaseURL, prefixValue)
+			fmt.Fprintf(out, "%v\n", e)
+			fs.Usage()
+			return nil, &printedError{e}
+		}
+	}
 
 	return &config{
 		Addr:               *addr,
 		DataDir:            *dataDir,
 		AllowedOrigins:     allowedOrigins,
 		BaseURL:            *publicBaseURL,
+		Prefix:             prefixValue,
 		SkillNamespaceHint: skillNamespaceHint,
 		Embed: embedConfig{
 			Provider: provider,
@@ -255,4 +269,36 @@ func parseAllowedOrigins(raw string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// withPrefix mounts next under the given URL prefix. Requests outside the
+// prefix return 404; requests matching the prefix have it stripped before
+// being passed to next.
+func withPrefix(prefix string, next http.Handler) http.Handler {
+	prefix = skill.NormalizePrefix(prefix)
+	if prefix == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, prefix) || (len(r.URL.Path) > len(prefix) && r.URL.Path[len(prefix)] != '/') {
+			http.NotFound(w, r)
+			return
+		}
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = r.URL.Path[len(prefix):]
+		if r2.URL.Path == "" {
+			r2.URL.Path = "/"
+		}
+		if r2.URL.RawPath != "" {
+			if strings.HasPrefix(r2.URL.RawPath, prefix) {
+				r2.URL.RawPath = r2.URL.RawPath[len(prefix):]
+				if r2.URL.RawPath == "" {
+					r2.URL.RawPath = "/"
+				}
+			} else {
+				r2.URL.RawPath = ""
+			}
+		}
+		next.ServeHTTP(w, r2)
+	})
 }

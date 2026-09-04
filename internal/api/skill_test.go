@@ -158,6 +158,39 @@ func TestSkillMethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestSkillBaseURLFromForwardedPrefix(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	srv := httptest.NewServer(New(st, fakeEmb{}).Handler())
+	defer srv.Close()
+
+	res := get(t, srv.URL, "/skills", map[string]string{
+		"X-Forwarded-Proto":  "https",
+		"X-Forwarded-Host":   "public.example.com",
+		"X-Forwarded-Prefix": "/dolmen/",
+	})
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /skills: got %d", res.StatusCode)
+	}
+	var m skill.Manifest
+	if err := json.NewDecoder(res.Body).Decode(&m); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	if m.BaseURL != "https://public.example.com/dolmen" {
+		t.Fatalf("manifest base_url: got %q", m.BaseURL)
+	}
+	if m.MCPURL != "https://public.example.com/dolmen/mcp" {
+		t.Fatalf("manifest mcp_url: got %q", m.MCPURL)
+	}
+	if m.OpenAPIURL != "https://public.example.com/dolmen/v1/openapi.json" {
+		t.Fatalf("manifest openapi_url: got %q", m.OpenAPIURL)
+	}
+}
+
 func TestSkillBaseURLFromConfiguredValue(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
