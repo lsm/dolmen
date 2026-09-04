@@ -357,9 +357,11 @@ curl -s localhost:8790/v1/search_vector -H 'Content-Type: application/json' -d '
 }'
 ```
 
-If `huggingface.co` is unreachable, `describe_server` still reports `provider: local` and `usable: true`
-once the pre-seeded cache is in place, and the first `search_vector(text=...)` loads the model from
-disk instead of the network.
+Note that `describe_server`'s `usable` is configuration-only — it is true whether or not the cache
+actually holds the model — so the round-trip above is the real verification: with `huggingface.co`
+unreachable and the cache correctly pre-seeded, the insert and the `search_vector(text=...)` load
+the model from disk; a missing or incomplete cache fails at that first operation with the offline
+remediations in the error message.
 
 Local provider notes:
 
