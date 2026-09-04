@@ -173,3 +173,19 @@ func TestProviderModelName(t *testing.T) {
 		t.Fatalf("openai must report the configured model, got %q", got)
 	}
 }
+
+func TestOpenAIIdentityRedactsUserinfo(t *testing.T) {
+	cases := []struct {
+		baseURL string
+		want    string
+	}{
+		{"https://user:secret@proxy.example/v1", "openai|https://proxy.example/v1|m"},
+		{"https://user@proxy.example/v1/", "openai|https://proxy.example/v1|m"},
+		{"https://api.openai.com/v1", "openai|https://api.openai.com/v1|m"},
+	}
+	for _, tc := range cases {
+		if got := (&OpenAI{BaseURL: tc.baseURL, Model: "m"}).Identity(); got != tc.want {
+			t.Fatalf("Identity() with base URL %q = %q, want %q", tc.baseURL, got, tc.want)
+		}
+	}
+}

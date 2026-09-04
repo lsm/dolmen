@@ -2118,12 +2118,15 @@ func TestDescribeServerEmbeddingStatus(t *testing.T) {
 			want: map[string]any{"provider": "none", "usable": false},
 		},
 		{
+			// The base URL carries HTTP userinfo: the identity (and so the
+			// response) must not — credentials authenticate requests, they
+			// do not name the embedding space.
 			name: "openai reports model and the identity that pins tables",
-			emb:  &embed.OpenAI{BaseURL: "https://api.openai.com/v1", Model: "text-embedding-3-small", APIKey: "sk-test-secret"},
+			emb:  &embed.OpenAI{BaseURL: "https://user:sk-test-secret@proxy.example/v1", Model: "text-embedding-3-small", APIKey: "sk-test-secret"},
 			want: map[string]any{
 				"provider": "openai",
 				"model":    "text-embedding-3-small",
-				"identity": "openai|https://api.openai.com/v1|text-embedding-3-small",
+				"identity": "openai|https://proxy.example/v1|text-embedding-3-small",
 				"usable":   true,
 			},
 		},
