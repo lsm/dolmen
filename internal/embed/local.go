@@ -70,7 +70,7 @@ func (l *Local) Embed(ctx context.Context, texts []string) ([][]float32, error) 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	eng, err := l.engine()
+	eng, err := l.engine(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -83,12 +83,17 @@ func (l *Local) Embed(ctx context.Context, texts []string) ([][]float32, error) 
 
 // engine returns the loaded engine, loading it on first use. A failed load
 // is not memoized: a transient download failure must not disable embedding
-// until restart, so the next Embed call tries again.
-func (l *Local) engine() (LocalEngine, error) {
+// until restart, so the next Embed call tries again. ctx is rechecked after
+// the lock is acquired — a request canceled while queued behind a failed
+// load must not start another download its client no longer wants.
+func (l *Local) engine(ctx context.Context) (LocalEngine, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.eng != nil {
 		return l.eng, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	open := l.Open
 	if open == nil {

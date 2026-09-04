@@ -200,3 +200,53 @@ func TestLocalEmbedContextCanceled(t *testing.T) {
 		t.Fatalf("canceled context must surface before any load, got %v", err)
 	}
 }
+
+// TestLocalEmbedCanceledWhileQueuedBehindLoad pins the lock-queue case: a
+// request whose context is canceled while waiting behind another request's
+// in-flight (failing) load must not start a retry download of its own once
+// it finally acquires the lock.
+func TestLocalEmbedCanceledWhileQueuedBehindLoad(t *testing.T) {
+	var mu sync.Mutex
+	opens := 0
+	release := make(chan struct{})
+	l := &Local{
+		Model: "org/model",
+		Open: func() (LocalEngine, error) {
+			mu.Lock()
+			opens++
+			mu.Unlock()
+			<-release // simulate a slow load: hold the provider lock
+			return nil, errors.New("load failed")
+		},
+	}
+
+	resA := make(chan error, 1)
+	go func() {
+		_, err := l.Embed(context.Background(), []string{"a"})
+		resA <- err
+	}()
+	// Let A enter Open and hold the lock, then queue B and cancel it while
+	// it waits on the mutex.
+	time.Sleep(20 * time.Millisecond)
+	ctxB, cancelB := context.WithCancel(context.Background())
+	resB := make(chan error, 1)
+	go func() {
+		_, err := l.Embed(ctxB, []string{"b"})
+		resB <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancelB()
+	close(release)
+
+	if err := <-resA; err == nil || !strings.Contains(err.Error(), "load failed") {
+		t.Fatalf("A must see the load error, got %v", err)
+	}
+	if err := <-resB; !errors.Is(err, context.Canceled) {
+		t.Fatalf("B, canceled while queued, must surface cancellation instead of retrying the load, got %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if opens != 1 {
+		t.Fatalf("canceled queued request must not trigger another Open, got %d opens", opens)
+	}
+}
