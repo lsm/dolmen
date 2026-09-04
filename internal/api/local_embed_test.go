@@ -175,10 +175,10 @@ func TestLocalProviderLoadFailureActionable(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	// The stub's error mimics a blocked Hugging Face download, complete with
-	// cache paths that must be redacted out of the client-facing message —
-	// including one under a space-bearing directory, where naive path
-	// redaction would leak the fragments after the space.
+	// The stub's error mimics a blocked Hugging Face download whose text a
+	// naive message would leak: a hub URL, a cache path, and a cache path
+	// under a space-bearing directory. None of it may reach the client — the
+	// cause belongs to the server log, correlated by request id.
 	blockedDownload := errors.New(`Get "https://huggingface.co/org/model/resolve/main/config.json": TLS handshake timeout (cache dir ` + filepath.Join(t.TempDir(), "models", "org--model") + `; also tried C:\Users\Jane Doe\models\org--model)`)
 	failing := &embed.Local{
 		Model: "org/model",
@@ -226,21 +226,28 @@ func TestLocalProviderLoadFailureActionable(t *testing.T) {
 	msg, _ := errObj["message"].(string)
 	for _, want := range []string{
 		"org/model",                // which model failed
-		"TLS handshake timeout",    // the underlying cause
 		"pre-seed the model cache", // remediation 1 (README local provider notes)
 		"DOLMEN_EMBED_MODEL",       // remediation 2 (absolute model-directory path)
 		"model-directory path",
 		"Hugging Face Hub",
+		"this request id", // points at the log correlation
 	} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("message must name %q for the operator, got %q", want, msg)
 		}
 	}
-	if strings.Contains(msg, "models/org--model") || !strings.Contains(msg, "<path>") {
-		t.Fatalf("cache path must be redacted from the message, got %q", msg)
-	}
-	if strings.Contains(msg, "Jane") || strings.Contains(msg, "Doe") {
-		t.Fatalf("space-bearing cache path must redact whole, got %q", msg)
+	// The raw downloader cause never reaches the client: it can carry signed
+	// CDN URLs, proxy credentials, or internal endpoints, which no redaction
+	// of arbitrary text can promise removed. It belongs to the server log.
+	for _, leak := range []string{
+		"TLS handshake timeout",            // the cause text itself
+		"huggingface.co/org/model/resolve", // a URL from the cause
+		"models/org--model",                // cache paths
+		"Jane", "Doe",                      // space-bearing path fragments
+	} {
+		if strings.Contains(msg, leak) {
+			t.Fatalf("downloader cause %q leaked into the client message, got %q", leak, msg)
+		}
 	}
 
 	reqID, _ := errObj["request_id"].(string)

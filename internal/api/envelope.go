@@ -208,12 +208,16 @@ func wrapStoreErr(err error) *Error {
 	// A local model that cannot load (most often its first-use download
 	// failing) is an operator-actionable condition, not an unexpected bug:
 	// classify it and hand the client the offline remediations instead of the
-	// sanitized nothing of internal_error.
+	// sanitized nothing of internal_error. The raw cause stays in Cause
+	// (server-side log only) — a downloader error can carry signed CDN URLs,
+	// proxy credentials, or internal endpoints, and no redaction of arbitrary
+	// text can promise those are gone; the client correlates with the cause
+	// via the request id the envelope always carries.
 	var le *embed.LoadError
 	if errors.As(err, &le) {
 		msg := redactStoreMsg(fmt.Sprintf(
-			"embedding is unavailable: the local embedding model %s could not be loaded (%s); the first use of a local model downloads it from the Hugging Face Hub into the model cache — pre-seed the model cache per the README's local provider notes, or point DOLMEN_EMBED_MODEL at an absolute model-directory path, to serve without network access",
-			le.Model, le.Err))
+			"embedding is unavailable: the local embedding model %s could not be loaded (the first use of a local model downloads it from the Hugging Face Hub into the model cache); pre-seed the model cache per the README's local provider notes, or point DOLMEN_EMBED_MODEL at an absolute model-directory path, to serve without network access; the underlying cause is in the server log under this request id",
+			le.Model))
 		return &Error{Status: http.StatusServiceUnavailable, Code: ErrCodeEmbedderUnavailable, Message: msg, Cause: err}
 	}
 	return &Error{Status: http.StatusInternalServerError, Code: ErrCodeInternal, Message: "internal error", Cause: err}
