@@ -53,8 +53,9 @@ the read-only attribute, so use NTFS ACLs for owner-only isolation. By default t
 > **Embeddings are on by default.** The built-in `local` provider downloads
 > `sentence-transformers/all-MiniLM-L6-v2` (~90 MB) from the Hugging Face Hub the first time a
 > `vectorize` field is written. Start the server and watch the log for `local embedding model is not
-> cached` to confirm the state. Pre-seed the cache, or — once Dolmen#140 ships — download the release
-> model tarball, for offline or HF-blocked installs.
+> cached` to confirm the state. Pre-seed the cache, or download the model tarball from the
+> [releases page](https://github.com/lsm/dolmen/releases), for offline or HF-blocked installs
+> (see [Offline install](#offline-install)).
 
 ### Health check
 
@@ -563,7 +564,8 @@ Skill distribution is built into the server. `GET /skills` returns a JSON manife
 - **Pagination** on `query`, `search_fulltext`, and `search_vector` via `offset` and `limit` parameters.
   Do not put `LIMIT`/`OFFSET` in raw SQL; use the parameters. `search_fulltext` and `search_vector`
   have stable, deterministic ordering. The response includes `truncated: true` when more results are
-  available beyond the returned page.
+  available beyond the returned page — on `query` this is triggered by the 1,000-row result cap; on
+  the searches, by results existing beyond the requested `limit` (default 10, max 200).
 - **Embeddings** are pluggable: `none` (caller supplies vectors), `local` (built-in in-process
   inference via [rembed](https://github.com/rostamlabs/rembed) — pure Go, no cgo, model weights
   cached under the data dir), or any OpenAI-compatible endpoint.
