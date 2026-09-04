@@ -415,16 +415,25 @@ type Engine interface {
     // invalid query fails without contacting (or billing) the embedder.
     TableState(ctx context.Context, ns, table string) (*schema.TableSchema, Incarnation, error)
     ListTables(ctx context.Context, ns string) ([]string, error)
-    CreateTable(ctx context.Context, ns, table string, fields []schema.Field, opts TableOpts) (*schema.TableSchema, error)
+    // nsGen is the namespace's creation id: inside the operation's critical
+    // section the engine verifies the namespace exists with EXACTLY that id —
+    // table creation never creates a namespace implicitly and cannot race a
+    // concurrent drop_namespace into recreating one past §2's parent-admin
+    // gate. Zero = no guard (auth off).
+    CreateTable(ctx context.Context, ns, table string, fields []schema.Field, opts TableOpts, nsGen [16]byte) (*schema.TableSchema, error)
     DescribeTable(ctx context.Context, ns, table string, scope *RowScope, scopeIncarnation Incarnation) (*schema.TableSchema, int64, error)
     DropTable(ctx context.Context, ns, table string) error
 
     // Migrate ops — emb re-embeds set_vectorize backfills. Dry runs are a
     // separate method returning the FULL MigrationPlan (operations, destructive
     // changes, backfill/reindex/embed row counts) — those row-dependent values
-    // are computed against engine-owned data and cannot be rebuilt above the seam.
-    PlanMigration(ctx context.Context, ns, table string, changes []schema.Change, emb Embedder, expectedVersion int) (*MigrationPlan, error)
-    Migrate(ctx context.Context, ns, table string, changes []schema.Change, emb Embedder, expectedVersion int) (*schema.TableSchema, error)
+    // are computed against engine-owned data and cannot be rebuilt above the
+    // seam. expected is the full Incarnation the plan was made against: a bare
+    // version cannot distinguish a same-named successor recreated at version 1
+    // (§4.3), so apply verifies the namespace id and drop generation too. The
+    // zero value is the compatibility path, intentionally unguarded (auth off).
+    PlanMigration(ctx context.Context, ns, table string, changes []schema.Change, emb Embedder, expected Incarnation) (*MigrationPlan, error)
+    Migrate(ctx context.Context, ns, table string, changes []schema.Change, emb Embedder, expected Incarnation) (*schema.TableSchema, error)
     ListMigrations(ctx context.Context, ns, table string) ([]Migration, error)
 
     // Row CRUD — scope filters which existing rows may be matched, read, or counted;
