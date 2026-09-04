@@ -286,6 +286,18 @@ nil scope, and a migration can never flip one into access to foreign rows.
 The engine conjoins the scope predicate into every row read, count, mutation, and search it
 performs for that call. Everything observes the visible set:
 
+**Scoped filters are row-local.** The `filter` fragments accepted by `update`, `delete`, `upsert`,
+and the searches are raw SQL WHERE expressions interpolated into the statement. Under a scope, a
+subquery (`EXISTS (SELECT 1 FROM <target> WHERE owner <> ? AND secret = ?)`) or a cross-table
+reference would turn returned counts into an oracle over invisible rows — the outer
+`owner = ?` conjunct cannot protect against reads the filter itself performs. With `auth: on`,
+filters are therefore restricted to **row-local expressions**: column references of the target
+table, literals, bound `?` parameters, and scalar functions over them — no subqueries, no table
+references (including `__fts` shadow tables), no aggregate or window functions. Violations are
+`invalid_request`, validated above the seam before execution. `query` is unaffected: raw SQL
+already requires namespace-wide `read` (§2), which authorizes every table its subqueries touch.
+Under `auth: off` the filter language is unchanged from v0.2.0.
+
 - `update`/`delete` match only visible rows; `updated`/`deleted` counts are visible-set counts.
 - `search_fulltext`/`search_vector` (and their `filter`, `min_score`, pagination, and `truncated`)
   are computed over the visible set — pagination can never surface or imply a foreign row.
