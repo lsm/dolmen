@@ -75,8 +75,13 @@ Rules:
 
 | Environment variable | Shape |
 |---|---|
-| `DOLMEN_ADMIN_KEY` | printable ASCII, 32–256 bytes. Env-only, no flag twin. |
+| `DOLMEN_ADMIN_KEY` | base64url — `^[A-Za-z0-9_-]{32,256}$` (RFC 6750 Bearer `token68` without padding). Env-only, no flag twin. |
 
+- Keys outside that alphabet are a **startup error**, not a warning: HTTP field parsing strips
+  leading/trailing whitespace and clients/proxies may reject characters outside the Bearer
+  credential grammar, so a broader charset would let a deployment pass its identity-source check
+  with a credential that cannot be transmitted faithfully. Generate one with
+  `openssl rand -base64 32 | tr '+/' '-_' | tr -d '='`.
 - Presented as `Authorization: Bearer <key>`; compared in constant time.
 - Maps to the built-in principal `dolmen-admin`, which implicitly holds `admin` on `*`. The implicit
   grant attaches to the **credential, not the name** — it is configuration, not data: never listed
