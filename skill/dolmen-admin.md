@@ -15,6 +15,8 @@ A Dolmen server exposes eighteen tools over MCP. Everything lives in namespaces 
 
 The running server is at `{{ .BaseURL }}` and the MCP endpoint is `{{ .MCPURL }}`. This skill matches server version `{{ .Version }}`.
 
+The API's machine-readable description — every operation's request schema, the response envelope, and the error codes — is served at `GET {{ .BaseURL }}/v1/openapi.json`.
+
 ### Health check
 
 Bash:
@@ -54,6 +56,45 @@ read from the environment: `DOLMEN_URL` (default `{{ .BaseURL }}`).
 
 If the `dolmen` MCP tools are not connected, do not improvise — ask the user to re-run the
 connection command above.
+
+## Raw HTTP
+
+Every tool in this skill is also a plain HTTP operation: `POST /v1/{operation}` with the tool's input
+as the JSON body (`Content-Type: application/json`). Responses are enveloped — success is
+`{"ok":true,"data":...}` and failure is `{"ok":false,"error":{"code","message"}}` with a stable
+machine-readable `code` (`invalid_request`, `not_found`, `query_error`, `conflict`, `forbidden`,
+`internal_error`). The full list of operations and their request schemas is in the OpenAPI document (`GET /v1/openapi.json`).
+
+Create a table:
+
+```bash
+base="{{ .BaseURL }}"
+curl -s -X POST "${base%/}/v1/create_table" \
+  -H 'Content-Type: application/json' \
+  -d '{"namespace":"research","table":"findings","fields":[{"name":"title","type":"string","fulltext":true,"required":true},{"name":"body","type":"text"}]}'
+```
+
+Success envelope (the created schema is echoed in `data`):
+
+```json
+{"ok":true,"data":{"table":{"namespace":"research","name":"findings","version":1,"fields":[...]}}}
+```
+
+Insert a record — success, then the error envelope for a typo'd field name:
+
+```bash
+curl -s -X POST "${base%/}/v1/insert" \
+  -H 'Content-Type: application/json' \
+  -d '{"namespace":"research","table":"findings","records":[{"title":"auth flow"}]}'
+```
+
+```json
+{"ok":true,"data":{"ids":[1],"inserted":1}}
+```
+
+```json
+{"ok":false,"error":{"code":"invalid_request","message":"unknown field \"titel\" on table findings (see describe_table)"}}
+```
 
 ## Working rules
 
