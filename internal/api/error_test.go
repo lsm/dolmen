@@ -3,11 +3,13 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -180,6 +182,54 @@ func TestRedactStoreMsgRedactsFilePaths(t *testing.T) {
 	}
 }
 
+// TestRedactPathsCoversSpacesInPaths pins the redaction of paths whose
+// components contain spaces — a model cache under a user directory
+// ("C:\Users\Jane Doe\models") must redact whole, never leaking a trailing
+// fragment like "Doe\models" into a client-facing message.
+func TestRedactPathsCoversSpacesInPaths(t *testing.T) {
+	cases := []string{
+		`open C:\Users\Jane Doe\models\org--model: not found`,
+		`open /Users/Jane Doe/models/org--model: not found`,
+		`cache /a/b  spaced dir/x is missing`, // multiple spaces between words
+	}
+	for _, msg := range cases {
+		out := redactPaths(msg)
+		if strings.Contains(out, "Jane") || strings.Contains(out, "Doe") || strings.Contains(out, "models") || strings.Contains(out, "spaced") {
+			t.Fatalf("path fragment leaked from %q: %q", msg, out)
+		}
+		if !strings.Contains(out, "<path>") {
+			t.Fatalf("expected <path> in redaction of %q, got %q", msg, out)
+		}
+	}
+}
+
+// TestEmbedderUnavailableMessageNamesModelSafely pins what the public
+// embedder_unavailable message may name: a Hub id (org/name — a public
+// identifier) is echoed, but a model-directory path is filesystem layout and
+// is never interpolated, ASCII or not.
+func TestEmbedderUnavailableMessageNamesModelSafely(t *testing.T) {
+	hub := wrapStoreErr(&embed.LoadError{Model: "org/model", Err: errors.New("download failed")})
+	if hub.Code != ErrCodeEmbedderUnavailable || hub.Status != http.StatusServiceUnavailable {
+		t.Fatalf("code/status: %v %d", hub.Code, hub.Status)
+	}
+	if !strings.Contains(hub.Message, "org/model") || !strings.Contains(hub.Message, "Hugging Face Hub") {
+		t.Fatalf("Hub-id model must be named, got %q", hub.Message)
+	}
+	if strings.Contains(hub.Message, "download failed") {
+		t.Fatalf("raw cause must stay out of the public message, got %q", hub.Message)
+	}
+
+	dir := wrapStoreErr(&embed.LoadError{Model: "/Users/张三/models", Err: errors.New("download failed")})
+	for _, leak := range []string{"张三", "/Users", "models"} {
+		if strings.Contains(dir.Message, leak) {
+			t.Fatalf("directory model leaked %q into the public message, got %q", leak, dir.Message)
+		}
+	}
+	if !strings.Contains(dir.Message, "configured local model directory") {
+		t.Fatalf("directory model must be described generically, got %q", dir.Message)
+	}
+}
+
 func TestRedactStoreMsgPreservesProviderIdentity(t *testing.T) {
 	a := "openai|https://api.openai.com/v1|text-embedding-3-small"
 	b := "openai|https://proxy.example.com/v1|text-embedding-3-small"
@@ -269,17 +319,32 @@ func TestErrorEnvelopeQueryErrorForMalformedFilter(t *testing.T) {
 	}
 }
 
-func TestErrorEnvelopeOmitsRequestIDWhenNotProvided(t *testing.T) {
+// TestErrorEnvelopeGeneratesRequestIDWhenNotProvided pins the always-on
+// request-id contract (#144): a client that sends no X-Request-Id still gets
+// one — server-generated, in the envelope and the response header — so any
+// failure can be correlated with the server log.
+func TestErrorEnvelopeGeneratesRequestIDWhenNotProvided(t *testing.T) {
 	srv := newTestServer(t)
-	code, body := post(t, srv.URL, "query", map[string]any{
-		"namespace": "x",
-		"sql":       "SELECT (",
-	})
-	if code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d %v", code, body)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/query", strings.NewReader(`{"namespace":"x","sql":"SELECT ("}`))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", res.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
 	errObj := errorBody(t, body)
-	if _, ok := errObj["request_id"]; ok {
-		t.Fatalf("request_id should be omitted when not provided, got %v", errObj)
+	reqID, _ := errObj["request_id"].(string)
+	if reqID == "" {
+		t.Fatalf("request_id must be generated when the client sent none, got %v", errObj)
+	}
+	if got := res.Header.Get("X-Request-Id"); got != reqID {
+		t.Fatalf("X-Request-Id header %q must match envelope request_id %q", got, reqID)
 	}
 }

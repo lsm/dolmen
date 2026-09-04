@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/lsm/dolmen/internal/api"
+	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/store"
 	"github.com/lsm/dolmen/internal/version"
 )
@@ -1398,5 +1400,68 @@ func TestDescribeServerMatchesHTTPOp(t *testing.T) {
 	emb, _ := mcpData["embedding"].(map[string]any)
 	if emb["provider"] != "fake" || emb["model"] != "fake-model" || emb["identity"] != "fake-space" || emb["usable"] != true {
 		t.Fatalf("unexpected embedding status: %v", emb)
+	}
+}
+
+// TestToolErrorEmbedderUnavailable pins the #144 contract over MCP: a local
+// embedding model that fails to load reports the actionable
+// embedder_unavailable code — not a bare internal_error — and the tool error
+// envelope carries a request id even when the client sent none.
+func TestToolErrorEmbedderUnavailable(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	failing := &embed.Local{
+		Model: "org/model",
+		Open: func() (embed.LocalEngine, error) {
+			return nil, errors.New("download failed: TLS handshake timeout")
+		},
+	}
+	apiSrv := api.New(st, failing)
+	srv := httptest.NewServer(New(apiSrv, nil))
+	t.Cleanup(srv.Close)
+
+	code, res := rpc(t, srv.URL, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": "create_table", "arguments": map[string]any{
+			"namespace": "app", "table": "docs",
+			"fields": []map[string]any{{"name": "body", "type": "text", "vectorize": true}},
+		}},
+	})
+	if code != 200 || res["error"] != nil {
+		t.Fatalf("create_table must succeed (the model loads lazily): %d %v", code, res)
+	}
+	code, res = rpc(t, srv.URL, map[string]any{
+		"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+		"params": map[string]any{"name": "insert", "arguments": map[string]any{
+			"namespace": "app", "table": "docs",
+			"records": []map[string]any{{"body": "hello"}},
+		}},
+	})
+	if code != 200 {
+		t.Fatalf("insert rpc: %d %v", code, res)
+	}
+	result, ok := res["result"].(map[string]any)
+	if !ok || result["isError"] != true {
+		t.Fatalf("blocked-download insert must be a tool error, got %v", res)
+	}
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	var env map[string]any
+	if err := json.Unmarshal([]byte(text), &env); err != nil {
+		t.Fatalf("tool error content is not JSON: %v\ntext: %s", err, text)
+	}
+	if env["code"] != "embedder_unavailable" {
+		t.Fatalf("code %v, want embedder_unavailable: %v", env["code"], env)
+	}
+	msg, _ := env["message"].(string)
+	for _, want := range []string{"org/model", "pre-seed the model cache", "DOLMEN_EMBED_MODEL"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("message must name %q, got %q", want, msg)
+		}
+	}
+	if reqID, _ := env["request_id"].(string); reqID == "" {
+		t.Fatalf("tool error must carry a request id, got %v", env)
 	}
 }

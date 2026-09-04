@@ -34,6 +34,28 @@ type LocalEngine interface {
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 }
 
+// LoadError reports that the local embedding model could not be loaded —
+// most often the first-use download failing (no network, intercepted TLS, an
+// unwritable cache). It is a class of its own, not a generic failure: the
+// API surfaces it as an actionable embedder_unavailable error whose message
+// names the offline remediations, never a bare internal error.
+type LoadError struct {
+	Model string
+	Err   error
+}
+
+func (e *LoadError) Error() string {
+	return fmt.Sprintf("load local embedding model %s (first use downloads it from the Hugging Face Hub into the model cache; pre-seed the cache or pass a model directory for offline installs): %v", e.Model, e.Err)
+}
+
+func (e *LoadError) Unwrap() error { return e.Err }
+
+// IsHubID reports whether Model names a Hugging Face Hub id (org/name)
+// rather than a local model-directory path. Hub ids are public identifiers,
+// safe to name in client-facing messages; a directory path is filesystem
+// layout and must not be echoed to clients.
+func (e *LoadError) IsHubID() bool { return localModelIDRe.MatchString(e.Model) }
+
 // Local embeds in-process via rembed — pure Go inference, no cgo, no ONNX
 // Runtime — so vectorize works with zero external endpoints. Weights are
 // never in the binary: the model downloads from the Hugging Face Hub on
@@ -141,7 +163,7 @@ func (l *Local) engine(ctx context.Context) (LocalEngine, error) {
 	}
 	eng, err := open()
 	if err != nil {
-		return nil, fmt.Errorf("load local embedding model %s (first use downloads it from the Hugging Face Hub into the model cache; pre-seed the cache or pass a model directory for offline installs): %w", l.Model, err)
+		return nil, &LoadError{Model: l.Model, Err: err}
 	}
 	l.eng = eng
 	return eng, nil
