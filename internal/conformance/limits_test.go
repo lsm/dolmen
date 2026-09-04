@@ -83,7 +83,13 @@ func TestLimitsTableAndFieldNames(t *testing.T) {
 		{"sqlite_ table prefix", "sqlite_x", plain, `sqlite_`},
 		{"__fts table", "x__ftsy", plain, `__fts`},
 		{"65-char table", "t" + strings.Repeat("x", 64), plain, ""},
+		{"table leading digit", "1table", plain, ""},
+		{"table leading underscore", "_table", plain, ""},
+		{"table hyphen", "bad-name", plain, ""},
 		{"65-char field", "fldlen", []map[string]any{{"name": strings.Repeat("f", 65), "type": "string"}}, ""},
+		{"field leading digit", "fldshape", []map[string]any{{"name": "1field", "type": "string"}}, ""},
+		{"field leading underscore", "fldshape2", []map[string]any{{"name": "_field", "type": "string"}}, ""},
+		{"field hyphen", "fldshape3", []map[string]any{{"name": "bad-name", "type": "string"}}, ""},
 		{"reserved field id", "fldres", []map[string]any{{"name": "id", "type": "string"}}, `record_id`},
 		{"reserved field created_at", "fldres2", []map[string]any{{"name": "created_at", "type": "string"}}, `created_time`},
 		{"reserved field _embedding", "fldres3", []map[string]any{{"name": "_embedding", "type": "string"}}, ""},
@@ -160,6 +166,17 @@ func TestLimitsRecordsPerInsert(t *testing.T) {
 	})
 	if int64val(t, "inserted", data["inserted"]) != int64(store.MaxRecordsPerInsert) {
 		t.Fatalf("inserted %v, want %d", data["inserted"], store.MaxRecordsPerInsert)
+	}
+	// The same boundary through upsert_by_key's separate path: the batch is
+	// valid, every record matches an existing row, and all are processed.
+	data = h.mustHTTP("upsert_by_key", map[string]any{
+		"namespace": "limrec", "table": "t", "on": []string{"a"},
+		"records": recs(store.MaxRecordsPerInsert),
+	})
+	if len(data["ids"].([]any)) != store.MaxRecordsPerInsert ||
+		int64val(t, "uk inserted", data["inserted"]) != 0 ||
+		int64val(t, "uk updated", data["updated"]) != int64(store.MaxRecordsPerInsert) {
+		t.Fatalf("upsert_by_key at the boundary must process every record: %v", data)
 	}
 	// One more is rejected, both for insert and upsert_by_key.
 	for _, op := range []string{"insert", "upsert_by_key"} {
