@@ -254,11 +254,13 @@ and reserving it unconditionally would break tables and requests that v0.2.0 acc
 - `owner` appears in row reads (`SELECT *`, search results) like `id`/`created_at` do, but never in
   the declared `fields` list of `create_table`/`describe_table` output.
 - Enabling `row_access` later via `migrate` (`{"op": "set_row_access", "value": true}`) is rejected
-  on a table with rows, with the error naming the row count — *rationale: ownership adopted after
-  the fact has no honest backfill. No operation can write another principal's rows as that
-  principal (inserts stamp the caller; `owner` is never caller-supplied), so the supported path is
-  a fresh `row_access` table populated by replaying each owner's rows under their identity —
-  directly or through the gateway — letting the server stamp every `owner` itself.*
+  on a table with rows — *rationale: ownership adopted after the fact has no honest backfill. No
+  operation can write another principal's rows as that principal (inserts stamp the caller;
+  `owner` is never caller-supplied), so the supported path is a fresh `row_access` table populated
+  by replaying each owner's rows under their identity — directly or through the gateway — letting
+  the server stamp every `owner` itself.* The rejection is generic ("the table has rows") for
+  callers without table-wide read; the row count is disclosed only to table-wide readers (§4.3's
+  disclosure rule — it is precisely the aggregate `describe_table` redacts to 0).
   Disabling (`value: false`) is allowed: the column and its values remain, filtering stops.
 - NULL-owner rows under `auth: on`: invisible to own-filtered callers; visible to table-wide
   readers (§4.3) — consistent with "no filter" being the stronger grant.
@@ -445,7 +447,10 @@ type Engine interface {
     // version cannot distinguish a same-named successor recreated at version 1
     // (§4.3), so apply verifies the namespace id and drop generation too. The
     // zero value is the compatibility path, intentionally unguarded (auth off).
-    PlanMigration(ctx context.Context, ns, table string, changes []schema.Change, emb Embedder, expected Incarnation) (*MigrationPlan, error)
+    // scope on PlanMigration is the DISCLOSURE scope (§4.3): the plan's row
+    // counts are computed over the caller's visible set, while validation
+    // remains table-wide. Nil = unscoped (auth off, or a table-wide reader).
+    PlanMigration(ctx context.Context, ns, table string, changes []schema.Change, emb Embedder, expected Incarnation, scope *RowScope) (*MigrationPlan, error)
     Migrate(ctx context.Context, ns, table string, changes []schema.Change, emb Embedder, expected Incarnation) (*schema.TableSchema, error)
     ListMigrations(ctx context.Context, ns, table string) ([]Migration, error)
 
