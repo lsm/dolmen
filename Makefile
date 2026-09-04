@@ -1,4 +1,4 @@
-.PHONY: build test race run clean release release-sbom release-checksums release-all image vulncheck
+.PHONY: build test race run clean release release-sbom release-model release-checksums release-all image vulncheck
 
 # Release identity injected into the binary at link time. An exact git tag
 # wins (v0.2.0, or v0.2.0-dirty); otherwise development builds report
@@ -9,6 +9,14 @@ VERSION ?= $(shell git describe --tags --exact-match --dirty 2>/dev/null || prin
 LDFLAGS := -X github.com/lsm/dolmen/internal/version.Version=$(VERSION)
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 RELEASE_DIR := dist
+
+# Default embedding model packaged as a release asset for offline installs.
+# EMBED_MODEL_REVISION pins the upstream Hugging Face commit so release assets
+# are reproducible; rembed does not expose revision pinning, so the packer
+# downloads the pinned commit directly.
+EMBED_MODEL ?= sentence-transformers/all-MiniLM-L6-v2
+EMBED_MODEL_REVISION ?= 1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+MODEL_ASSET := dolmen-model-all-MiniLM-L6-v2-$(VERSION).tar.gz
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o dolmen .
@@ -45,6 +53,14 @@ release-sbom:
 	syft . -o spdx-json=$$tmp && \
 	mv "$$tmp" $(RELEASE_DIR)/dolmen-$(VERSION)-sbom.spdx.json
 
+release-model:
+	@mkdir -p $(RELEASE_DIR)
+	@echo "Packaging $(EMBED_MODEL) ($(MODEL_ASSET))"
+	@go run ./cmd/pack-model \
+		-model "$(EMBED_MODEL)" \
+		-revision "$(EMBED_MODEL_REVISION)" \
+		-out "$(RELEASE_DIR)/$(MODEL_ASSET)"
+
 CHECKSUM := $(shell if command -v sha256sum >/dev/null 2>&1; then echo sha256sum; else echo shasum -a 256; fi)
 
 release-checksums:
@@ -58,6 +74,7 @@ release-checksums:
 release-all:
 	@$(MAKE) release
 	@$(MAKE) release-sbom
+	@$(MAKE) release-model
 	@$(MAKE) release-checksums
 
 image:

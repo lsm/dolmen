@@ -62,7 +62,7 @@ func run() error {
 		return fmt.Errorf("embed provider: %w", err)
 	}
 	if l, ok := emb.(*embed.Local); ok {
-		slog.Info("local embedding provider", "model", l.Model, "cache", "under the data directory (first use downloads it from the Hugging Face Hub)")
+		slog.Info("local embedding provider", "model", l.Model, "cache", "under the data directory (first use loads from the cache; downloads from the Hugging Face Hub only if the model is not pre-seeded)")
 	}
 
 	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint))

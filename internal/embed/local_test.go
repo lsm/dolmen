@@ -195,6 +195,42 @@ func TestLocalRef(t *testing.T) {
 	}
 }
 
+func TestMaybeCachedRef(t *testing.T) {
+	old, had := os.LookupEnv("REMBED_CACHE")
+	t.Cleanup(func() {
+		if had {
+			os.Setenv("REMBED_CACHE", old)
+		} else {
+			os.Unsetenv("REMBED_CACHE")
+		}
+	})
+
+	cache := t.TempDir()
+	os.Setenv("REMBED_CACHE", cache)
+
+	// A pre-seeded model cache is detected when model.safetensors exists.
+	seeded := filepath.Join(cache, "sentence-transformers--all-MiniLM-L6-v2")
+	if err := os.MkdirAll(seeded, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(seeded, "model.safetensors"), []byte("weights"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := maybeCachedRef("sentence-transformers/all-MiniLM-L6-v2"); got != seeded {
+		t.Fatalf("maybeCachedRef: got %q, want %q", got, seeded)
+	}
+
+	// A missing cache means falling back to the Hub.
+	if got := maybeCachedRef("org/not-seeded"); got != "" {
+		t.Fatalf("maybeCachedRef for missing cache: got %q, want empty", got)
+	}
+
+	// Absolute model directories are not cache-looked-up.
+	if got := maybeCachedRef("/opt/models/minilm"); got != "" {
+		t.Fatalf("maybeCachedRef for absolute path: got %q, want empty", got)
+	}
+}
+
 func TestLocalEmbedContextCanceled(t *testing.T) {
 	l := &Local{Model: "org/model", Open: func() (LocalEngine, error) { return fakeEngine{}, nil }}
 	ctx, cancel := context.WithCancel(context.Background())

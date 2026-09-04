@@ -100,6 +100,9 @@ func (l *Local) engine(ctx context.Context) (LocalEngine, error) {
 	open := l.Open
 	if open == nil {
 		ref := localRef(l.Model)
+		if cacheRef := maybeCachedRef(l.Model); cacheRef != "" {
+			ref = cacheRef
+		}
 		open = func() (LocalEngine, error) {
 			return rembed.Load(ref, rembed.WithInt8(), rembed.WithWorkers(localWorkers))
 		}
@@ -121,6 +124,27 @@ func localRef(model string) string {
 		return "hf:" + model
 	}
 	return model
+}
+
+// maybeCachedRef returns the absolute path to a pre-seeded model cache
+// directory when the model is a Hugging Face id and the cache under
+// $REMBED_CACHE already contains the model weights. Loading the cache
+// directory directly lets rembed run without any Hugging Face Hub
+// requests, so air-gapped installs that pre-seed the data dir's model
+// cache work even when huggingface.co is unreachable.
+func maybeCachedRef(model string) string {
+	if !localModelIDRe.MatchString(model) {
+		return ""
+	}
+	cache := os.Getenv("REMBED_CACHE")
+	if cache == "" {
+		return ""
+	}
+	dir := filepath.Join(cache, strings.ReplaceAll(model, "/", "--"))
+	if fi, err := os.Stat(filepath.Join(dir, "model.safetensors")); err == nil && !fi.IsDir() {
+		return dir
+	}
+	return ""
 }
 
 // validateLocalModel accepts a Hugging Face model id (org/name) or an

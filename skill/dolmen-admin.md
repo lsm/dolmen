@@ -172,6 +172,9 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
   is false; a table whose `embed_space` (see `describe_table`) differs from `identity` was embedded
   by a different provider/model and rejects inserts and text searches until it is re-embedded
   (`migrate` with `set_vectorize` off, then on).
+- Operators in HF-blocked or air-gapped networks should pre-seed the embedding model per the
+  README's "Offline install" section before enabling `vectorize`; `describe_server` reports
+  `usable: true` once the model is in place.
 - `create_namespace` is only for reserving a name up front (or failing loudly if it is taken) —
   namespaces are otherwise created implicitly on first use, and it creates no tables.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.

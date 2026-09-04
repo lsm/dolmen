@@ -248,6 +248,52 @@ embedding is usable — so a missing provider is visible without attempting a wr
 configuration status only: the provider is not called, so an endpoint that is down or rejects its
 credentials still fails at first use, not here.
 
+### Offline install
+
+In networks that block `huggingface.co` (or on air-gapped machines), download the model asset from
+the release instead of relying on the Hub:
+
+```bash
+tag="v0.2.0"
+curl -LO "https://github.com/lsm/dolmen/releases/download/${tag}/dolmen-model-all-MiniLM-L6-v2-${tag}.tar.gz"
+
+# Option A: extract into the data directory's model cache, then run normally.
+mkdir -p data/models
+tar -xzf "dolmen-model-all-MiniLM-L6-v2-${tag}.tar.gz" -C data/models
+DOLMEN_EMBED_PROVIDER=local ./dolmen
+
+# Option B: extract anywhere and point DOLMEN_EMBED_MODEL at the directory.
+mkdir -p /opt/dolmen/models
+tar -xzf "dolmen-model-all-MiniLM-L6-v2-${tag}.tar.gz" -C /opt/dolmen/models
+DOLMEN_EMBED_PROVIDER=local \
+DOLMEN_EMBED_MODEL=/opt/dolmen/models/sentence-transformers--all-MiniLM-L6-v2 \
+./dolmen
+```
+
+The tarball is ~90 MB and contains the `sentence-transformers--all-MiniLM-L6-v2/` directory (the same
+layout the `local` provider uses under `<data>/models`).
+
+Verify the server embeds without reaching `huggingface.co` by creating a vectorized table, inserting
+a row, and running a text vector search:
+
+```bash
+curl -s localhost:8790/v1/create_table -H 'Content-Type: application/json' -d '{
+  "namespace": "demo", "table": "notes",
+  "fields": [{"name": "body", "type": "text", "vectorize": true}]
+}'
+curl -s localhost:8790/v1/insert -H 'Content-Type: application/json' -d '{
+  "namespace": "demo", "table": "notes",
+  "records": [{"body": "A cat sat on the mat."}]
+}'
+curl -s localhost:8790/v1/search_vector -H 'Content-Type: application/json' -d '{
+  "namespace": "demo", "table": "notes", "text": "feline"
+}'
+```
+
+If `huggingface.co` is unreachable, `describe_server` still reports `provider: local` and `usable: true`
+once the pre-seeded cache is in place, and the first `search_vector(text=...)` loads the model from
+disk instead of the network.
+
 Local provider notes:
 
 - **Model cache** lives at `<data>/models/` (one `org--name` directory per model). Set
@@ -256,12 +302,10 @@ Local provider notes:
   so models whose retrieval contract needs role prefixes — the e5 family (`query: `/`passage: `),
   bge, arctic — silently rank worse than they should. The default MiniLM and the
   `sentence-transformers/paraphrase-multilingual-*` models are symmetric and safe.
-- **Offline installs**: pre-seed the cache by copying `<data>/models/org--name/` from a machine
-  that already downloaded the model, or set `DOLMEN_EMBED_MODEL` to an absolute model-directory
-  path (the same directory layout) to skip the Hub entirely. Note: for bert-family models
-  (including the MiniLM default) a pre-seeded Hub-id model still makes one small Hub request per
-  process start to check for optional tokenizer files; the directory form (and the
-  xlm-roberta, modernbert, and gemma model families) makes none.
+- **Offline installs**: pre-seed the model cache under `<data>/models/` (the tarball extracts to
+  the right `org--name` layout), or set `DOLMEN_EMBED_MODEL` to an absolute model-directory path.
+  Both forms skip the Hub entirely when `huggingface.co` is unreachable. See the
+  Offline install section below.
 - **Identity pinning** works as with the OpenAI provider: tables record `local/<model>` as their
   embedding space, and a model change is rejected until the table is re-embedded
   (`migrate` with `set_vectorize` off, then on).

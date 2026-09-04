@@ -43,6 +43,9 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
+      - name: Package default embedding model
+        run: make release-model VERSION=${{ github.ref_name }}
+
       - name: Generate checksums
         run: make release-checksums
 
@@ -88,6 +91,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+          body: |
+            This release includes `dolmen-model-all-MiniLM-L6-v2-${{ github.ref_name }}.tar.gz` (model weights ~90 MB, compressed ~80 MB), a pre-packaged copy of the default `sentence-transformers/all-MiniLM-L6-v2` embedding model for offline or Hugging-Face-blocked installs. See the README's "Offline install" section.
           generate_release_notes: true
           prerelease: ${{ steps.tags.outputs.is_final != 'true' }}
           make_latest: ${{ steps.tags.outputs.is_final }}
