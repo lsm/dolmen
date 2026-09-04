@@ -316,6 +316,16 @@ set**: the scope predicate is applied first at a materialization boundary (a CTE
 or the engine's equivalent), and caller SQL — filters, set-expressions, search filters — never
 executes against an invisible row, whatever the planner's chosen order.
 
+**Migration responses disclose only visible-set data.** `migrate` executes table-wide (a `schema`
+holder may restructure every row), and its *validations* cover every stored row — `set_enum` must
+reject a vocabulary that any stored value falls outside, invisible or not. But its *disclosures*
+follow the visible set: the plan's row counts (`backfill_rows`, `fulltext_reindex_rows`,
+`embed_rows`) are reported for visible rows only, and `set_enum`'s rejection names the offending
+values and their counts only to table-wide readers — a caller without table-wide read sees counts
+of 0 and a generic rejection naming no values. *Rationale: today's `set_enum` error enumerates
+every stored nonmember value; unscoped, a schema-only caller could harvest the distinct contents
+of any string field by offering unlikely one-value vocabularies.*
+
 - `update`/`delete` match only visible rows; `updated`/`deleted` counts are visible-set counts.
 - `search_fulltext`/`search_vector` (and their `filter`, `min_score`, pagination, and `truncated`)
   are computed over the visible set — pagination can never surface or imply a foreign row.
@@ -400,7 +410,10 @@ conventions are what this spec pins:
 
 ```go
 type Engine interface {
-    // Namespace lifecycle
+    // Namespace lifecycle — NamespaceState returns the namespace's creation
+    // id (not_found when absent): the read the API uses to build CreateTable's
+    // nsGen guard; an empty namespace has no TableState to consult.
+    NamespaceState(ctx context.Context, ns string) ([16]byte, error)
     ListNamespaces(ctx context.Context, prefix string) ([]string, error)
     CreateNamespace(ctx context.Context, ns string) error
     DropNamespace(ctx context.Context, ns string) error
