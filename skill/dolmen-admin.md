@@ -129,6 +129,8 @@ curl -s -X POST "${base%/}/v1/insert" \
 - `create_namespace` is only for reserving a name up front (or failing loudly if it is taken) —
   namespaces are otherwise created implicitly on first use, and it creates no tables.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
+- `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's
+  columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
 - `drop_table` / `drop_namespace` are irreversible deletions (rows, search indexes, schema, history);
   both require `confirm` to repeat the exact name being dropped. Prefer `delete` unless the table or
@@ -206,6 +208,10 @@ keyword recall over space-less CJK text, fall back to vector search over an embe
 Results are ordered by FTS5 `rank` (BM25 by default): more relevant rows have a lower — more
 negative — value and are returned first. The rank value itself is not returned.
 
+The optional `filter` parameter is separate from the MATCH `query`: it is regular SQL over the table's
+columns (a WHERE expression with `?`-bound `args`, like `delete`'s filter) and selects which rows may
+match, before ranking.
+
 ### Vectors and semantic recall
 
 - `vector` fields accept JSON number arrays of the declared `dim`; stored as float32 blobs, returned
@@ -250,7 +256,7 @@ negative — value and are returned first. The rank value itself is not returned
 | `query` result rows | 1,000 | truncated with `truncated: true` |
 | `query` / search result size | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
 | Request body | 32 MiB | rejected |
-| `query` `args` | 100 | rejected |
+| `query` / search filter `args` | 100 | rejected |
 | `infer_schema` samples | 1–50 | rejected |
 
 Vector search is brute-force (fine into the low millions of rows); FTS5 uses an inverted index and

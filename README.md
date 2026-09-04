@@ -267,8 +267,8 @@ Skill distribution is built into the server. `GET /skills` returns a JSON manife
 | `insert` | Validated records; indexes and embeddings update automatically; `idempotency_key` makes retries replay the original ids |
 | `upsert_by_key` | Insert-or-update keyed by natural field(s) (`on`); converges instead of duplicating on retry |
 | `query` | Read-only SQL (SELECT/WITH), parameter binding via `args`, typed results |
-| `search_fulltext` | FTS5 MATCH over `fulltext` fields, relevance-ordered, typed results |
-| `search_vector` | Cosine KNN; `text` (server embeds; searches only the vectorize `_embedding` space) or raw `vector` (any vector column, caller owns the space); results carry `_score` and `skipped_vectors` |
+| `search_fulltext` | FTS5 MATCH over `fulltext` fields, relevance-ordered, typed results; optional `filter` + `args` restrict rows before ranking |
+| `search_vector` | Cosine KNN; `text` (server embeds; searches only the vectorize `_embedding` space) or raw `vector` (any vector column, caller owns the space); optional `filter` + `args` and `min_score` threshold; results carry `_score` and `skipped_vectors` |
 | `delete` | WHERE-filtered delete, cascades to search indexes |
 | `drop_table` | Drop a table — rows, search index, schema, history, idempotency keys; `confirm` must repeat the name |
 | `update` | WHERE-filtered field update; reindexes full-text rows and re-embeds changed vectorized fields |

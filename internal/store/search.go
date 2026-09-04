@@ -22,7 +22,7 @@ func searchLimit(n int) int {
 	return n
 }
 
-func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string, offset, limit int, includeHidden bool) ([]map[string]any, bool, error) {
+func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string, offset, limit int, includeHidden bool, filter string, args []any) ([]map[string]any, bool, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
 		return nil, false, err
@@ -43,13 +43,39 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 	if offset < 0 {
 		return nil, false, invalidf("offset must be non-negative")
 	}
+	filter = strings.TrimSpace(filter)
+	if filter != "" {
+		if strings.Contains(filter, ";") {
+			return nil, false, invalidf("multiple statements are not allowed in filter")
+		}
+		if len(args) > 100 {
+			return nil, false, invalidf("too many filter arguments")
+		}
+		for i, a := range args {
+			args[i] = normalizeArg(a)
+		}
+	}
 
 	// Fetch limit+1 ids so we can tell the caller whether more results exist.
-	rows, err := tx.QueryContext(ctx,
-		fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? ORDER BY rank, rowid LIMIT ? OFFSET ?`,
-			q(ftsTable(table)), ftsTable(table)),
-		query, limit+1, offset)
+	stmt := fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? ORDER BY rank, rowid LIMIT ? OFFSET ?`,
+		q(ftsTable(table)), ftsTable(table))
+	qargs := []any{query, limit + 1, offset}
+	if filter != "" {
+		// The filter restricts base-table rows before ranking, with the same
+		// semantics as search_vector's filter: its WHERE expression runs
+		// against the base table alone, so bare and table-qualified column
+		// names resolve exactly as they do there — no join, so the FTS table's
+		// duplicate column names (or a base field named rank) cannot make a
+		// reference ambiguous.
+		stmt = fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? AND rowid IN (SELECT id FROM %s WHERE %s) ORDER BY rank, rowid LIMIT ? OFFSET ?`,
+			q(ftsTable(table)), ftsTable(table), q(table), filter)
+		qargs = append(append([]any{query}, args...), limit+1, offset)
+	}
+	rows, err := tx.QueryContext(ctx, stmt, qargs...)
 	if err != nil {
+		if filter != "" {
+			return nil, false, NewFilterError(filter, err)
+		}
 		return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	defer rows.Close()

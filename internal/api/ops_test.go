@@ -421,7 +421,7 @@ func TestSearchVectorTextErrorsDisambiguated(t *testing.T) {
 	// (a') Same, on a table with no vector data at all.
 	if code, _ := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "dis", "table": "novec",
-		"fields":    []map[string]any{{"name": "s", "type": "string"}},
+		"fields": []map[string]any{{"name": "s", "type": "string"}},
 	}); code != 200 {
 		t.Fatal("create novec failed")
 	}
@@ -478,7 +478,7 @@ func TestSearchVectorTextErrorsDisambiguated(t *testing.T) {
 	// first instead of calling the operator for a healthy provider setup.
 	if code, _ := post(t, srvNone.URL, "create_table", map[string]any{
 		"namespace": "dis", "table": "plain",
-		"fields":    []map[string]any{{"name": "s", "type": "string"}},
+		"fields": []map[string]any{{"name": "s", "type": "string"}},
 	}); code != 200 {
 		t.Fatal("create plain failed")
 	}
@@ -562,7 +562,7 @@ func TestCreateTableRejectsVectorizeWithoutProvider(t *testing.T) {
 	// the operator fix, and nothing committed.
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "prov", "table": "notes",
-		"fields":    []map[string]any{{"name": "body", "type": "text", "vectorize": true}},
+		"fields": []map[string]any{{"name": "body", "type": "text", "vectorize": true}},
 	})
 	if code != 400 {
 		t.Fatalf("vectorize without a provider must 400 at creation, got %d %v", code, res)
@@ -585,7 +585,7 @@ func TestCreateTableRejectsVectorizeWithoutProvider(t *testing.T) {
 	// (b) the same server keeps creating non-vectorized tables.
 	if code, _ := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "prov", "table": "plain",
-		"fields":    []map[string]any{{"name": "s", "type": "string"}},
+		"fields": []map[string]any{{"name": "s", "type": "string"}},
 	}); code != 200 {
 		t.Fatal("plain create must keep working without a provider")
 	}
@@ -593,7 +593,7 @@ func TestCreateTableRejectsVectorizeWithoutProvider(t *testing.T) {
 	// (c) a provider-ful server keeps creating vectorized tables.
 	if code, _ := post(t, newTestServer(t).URL, "create_table", map[string]any{
 		"namespace": "prov", "table": "notes",
-		"fields":    []map[string]any{{"name": "body", "type": "text", "vectorize": true}},
+		"fields": []map[string]any{{"name": "body", "type": "text", "vectorize": true}},
 	}); code != 200 {
 		t.Fatal("vectorize create must keep working with a provider")
 	}
@@ -602,7 +602,7 @@ func TestCreateTableRejectsVectorizeWithoutProvider(t *testing.T) {
 	// first — the caller can fix it without an operator round-trip.
 	code, res = post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "prov", "table": "wrongtype",
-		"fields":    []map[string]any{{"name": "n", "type": "number", "vectorize": true}},
+		"fields": []map[string]any{{"name": "n", "type": "number", "vectorize": true}},
 	})
 	if code != 400 {
 		t.Fatalf("vectorize on a number field must 400, got %d %v", code, res)
@@ -630,7 +630,7 @@ func TestMigrateSetVectorizeRequiresProvider(t *testing.T) {
 	t.Cleanup(srv.Close)
 	if code, _ := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "prov", "table": "notes",
-		"fields":    []map[string]any{{"name": "s", "type": "text"}},
+		"fields": []map[string]any{{"name": "s", "type": "text"}},
 	}); code != 200 {
 		t.Fatal("create failed")
 	}
@@ -638,7 +638,7 @@ func TestMigrateSetVectorizeRequiresProvider(t *testing.T) {
 	for _, dry := range []bool{false, true} {
 		code, res := post(t, srv.URL, "migrate", map[string]any{
 			"namespace": "prov", "table": "notes",
-			"changes":   changes, "expected_version": 1, "dry_run": dry,
+			"changes": changes, "expected_version": 1, "dry_run": dry,
 		})
 		if code != 400 {
 			t.Fatalf("set_vectorize without a provider must 400 (dry_run=%t), got %d %v", dry, code, res)
@@ -1049,6 +1049,21 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 	svMinScore := sv.InputSchema["properties"].(map[string]any)["min_score"].(map[string]any)
 	if svMinScore["type"] != "number" {
 		t.Fatalf("search_vector min_score must be a number, got %v", svMinScore)
+	}
+	fts, ok := Ops["search_fulltext"]
+	if !ok {
+		t.Fatal("search_fulltext op missing")
+	}
+	ftsFilter := fts.InputSchema["properties"].(map[string]any)["filter"].(map[string]any)
+	if ftsFilter["pattern"] != `\S` {
+		t.Fatalf("search_fulltext filter must require a non-whitespace character, got %v", ftsFilter)
+	}
+	if _, ok := ftsFilter["not"].(map[string]any)["pattern"]; !ok {
+		t.Fatalf("search_fulltext filter must exclude all semicolons, got %v", ftsFilter)
+	}
+	ftsArgs := fts.InputSchema["properties"].(map[string]any)["args"].(map[string]any)
+	if ftsArgs["maxItems"] != 100 {
+		t.Fatalf("search_fulltext args must declare maxItems 100, got %v", ftsArgs)
 	}
 	for _, name := range []string{"search_fulltext", "search_vector"} {
 		def, ok := Ops[name]
@@ -1981,6 +1996,110 @@ func TestSearchVectorFilterAndMinScoreOverHTTP(t *testing.T) {
 	})
 	if code != 400 {
 		t.Fatalf("semicolon in filter must 400, got %d %v", code, res)
+	}
+}
+
+func TestSearchFulltextFilterOverHTTP(t *testing.T) {
+	srv := newTestServer(t)
+
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"fields": []map[string]any{
+			{"name": "title", "type": "string", "fulltext": true},
+			{"name": "confidence", "type": "number"},
+		},
+	})
+	if code != 200 || res["ok"] != true {
+		t.Fatalf("create_table failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"records": []map[string]any{
+			{"title": "auth token bug", "confidence": 0.9},
+			{"title": "auth token expired", "confidence": 0.7},
+			{"title": "unrelated note", "confidence": 0.5},
+		},
+	})
+	if code != 200 || res["ok"] != true {
+		t.Fatalf("insert failed: %d %v", code, res)
+	}
+
+	// filter with bound arg restricts matches before ranking
+	code, res = post(t, srv.URL, "search_fulltext", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"query":     "auth",
+		"filter":    "confidence >= ?",
+		"args":      []any{0.8},
+	})
+	if code != 200 {
+		t.Fatalf("filtered search_fulltext failed: %d %v", code, res)
+	}
+	results := res["data"].(map[string]any)["results"].([]any)
+	if len(results) != 1 || results[0].(map[string]any)["title"] != "auth token bug" {
+		t.Fatalf("expected auth token bug only, got %v", results)
+	}
+
+	// unfiltered search still returns every match
+	code, res = post(t, srv.URL, "search_fulltext", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"query":     "auth",
+	})
+	if code != 200 {
+		t.Fatalf("unfiltered search_fulltext failed: %d %v", code, res)
+	}
+	results = res["data"].(map[string]any)["results"].([]any)
+	if len(results) != 2 {
+		t.Fatalf("expected both auth rows unfiltered, got %v", results)
+	}
+
+	// null bind arguments are allowed in filter args
+	code, res = post(t, srv.URL, "search_fulltext", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"query":     "auth",
+		"filter":    "confidence = ?",
+		"args":      []any{nil},
+	})
+	if code != 200 {
+		t.Fatalf("null in filter args must be accepted, got %d %v", code, res)
+	}
+	results = res["data"].(map[string]any)["results"].([]any)
+	if len(results) != 0 {
+		t.Fatalf("null confidence binds SQL NULL and matches nothing, got %v", results)
+	}
+
+	// null outside args is still rejected
+	code, _ = post(t, srv.URL, "search_fulltext", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"query":     nil,
+	})
+	if code != 400 {
+		t.Fatalf("null query must 400, got %d", code)
+	}
+
+	// invalid filters are rejected like search_vector's
+	code, _ = post(t, srv.URL, "search_fulltext", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"query":     "auth",
+		"filter":    "1=1; DROP TABLE findings",
+	})
+	if code != 400 {
+		t.Fatalf("semicolon in filter must 400, got %d", code)
+	}
+	code, _ = post(t, srv.URL, "search_fulltext", map[string]any{
+		"namespace": "skills",
+		"table":     "findings",
+		"query":     "auth",
+		"filter":    "confidence >= ?",
+	})
+	if code != 400 {
+		t.Fatalf("missing bind argument must 400, got %d", code)
 	}
 }
 

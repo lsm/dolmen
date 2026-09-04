@@ -656,6 +656,8 @@ var Ops = map[string]OpDef{
 	"search_fulltext": {
 		Description: "Full-text search over fields marked fulltext, using SQLite FTS5 MATCH syntax " +
 			"(e.g. \"payment\", \"credit refund\", \"status:ok AND retry\"). Returns matching records ordered by relevance (stable rowid tie-breaking). " +
+			"Optional filter and args restrict matches to rows satisfying a SQL WHERE expression over the table's columns " +
+			"(same semantics as search_vector's filter) before ranking. " +
 			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array) " +
 			"and omit the hidden _embedding column unless include_hidden is true.",
 		InputSchema: map[string]any{
@@ -683,6 +685,25 @@ var Ops = map[string]OpDef{
 					"maximum":     1000000000,
 				},
 				"include_hidden": prop("boolean", "Also return hidden internal columns (currently _embedding) in results"),
+				"filter": map[string]any{
+					"type":        "string",
+					"description": "Optional SQL WHERE expression over the table's columns, filtering matches before ranking (same semantics as search_vector's filter)",
+					"pattern":     `\S`,
+					"not":         map[string]any{"pattern": ";"},
+				},
+				"args": map[string]any{
+					"type":        "array",
+					"description": "Optional bind parameters for ? placeholders in filter",
+					"items": map[string]any{
+						"anyOf": []any{
+							map[string]any{"type": "string"},
+							map[string]any{"type": "number"},
+							map[string]any{"type": "boolean"},
+							map[string]any{"type": "null"},
+						},
+					},
+					"maxItems": 100,
+				},
 			},
 			"required": []string{"namespace", "table", "query"},
 		},
@@ -696,13 +717,13 @@ var Ops = map[string]OpDef{
 		}, "results", "truncated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req ftsReq
-			if err := decode(body, &req); err != nil {
+			if err := decodeAllowNullArgs(body, &req); err != nil {
 				return nil, err
 			}
 			if req.Query == "" {
 				return nil, badRequest("query must not be empty")
 			}
-			results, truncated, err := s.st.SearchFulltext(ctx, normNS(req.Namespace), normTable(req.Table), req.Query, req.Offset, limit(req.Limit), req.IncludeHidden)
+			results, truncated, err := s.st.SearchFulltext(ctx, normNS(req.Namespace), normTable(req.Table), req.Query, req.Offset, limit(req.Limit), req.IncludeHidden, req.Filter, req.Args)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -1292,6 +1313,8 @@ type ftsReq struct {
 	Offset        int    `json:"offset"`
 	Limit         int    `json:"limit"`
 	IncludeHidden bool   `json:"include_hidden"`
+	Filter        string `json:"filter"`
+	Args          []any  `json:"args"`
 }
 
 type vecReq struct {

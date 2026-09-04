@@ -110,7 +110,7 @@ func TestTypedReadRoundTripSearchFulltext(t *testing.T) {
 	mustCreateTyped(t, st)
 	mustInsertTyped(t, st)
 
-	rows, _, err := st.SearchFulltext(ctx, "test", "typed", "needle", 0, 10, false)
+	rows, _, err := st.SearchFulltext(ctx, "test", "typed", "needle", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("fts: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestSearchHidesEmbeddingByDefault(t *testing.T) {
 
 	qv, _ := fakeEmbed(ctx, []string{"the dolmen stores stone tables"})
 
-	fts, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 0, 10, false)
+	fts, _, err := st.SearchFulltext(ctx, "test", "notes", "dolmen", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("fts: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestSearchHidesEmbeddingByDefault(t *testing.T) {
 		t.Fatal("search_vector must hide _embedding by default")
 	}
 
-	fts, _, err = st.SearchFulltext(ctx, "test", "notes", "dolmen", 0, 10, true)
+	fts, _, err = st.SearchFulltext(ctx, "test", "notes", "dolmen", 0, 10, true, "", nil)
 	if err != nil {
 		t.Fatalf("fts include_hidden: %v", err)
 	}

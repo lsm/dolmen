@@ -244,7 +244,7 @@ func TestUpsertByKeyReindexesFulltext(t *testing.T) {
 	mustCreateNotes(t, st) // title and body are fulltext fields
 
 	mustUpsertByKey(t, st, []string{"title"}, []map[string]any{{"title": "fixed", "body": "elephant seal"}})
-	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "elephant", 0, 10, false)
+	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "elephant", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -253,14 +253,14 @@ func TestUpsertByKeyReindexesFulltext(t *testing.T) {
 	}
 
 	mustUpsertByKey(t, st, []string{"title"}, []map[string]any{{"title": "fixed", "body": "cheetah"}})
-	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "elephant", 0, 10, false)
+	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "elephant", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
 	if len(hits) != 0 {
 		t.Fatalf("old text must leave the fulltext index: %v", hits)
 	}
-	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "cheetah", 0, 10, false)
+	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "cheetah", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestUpsertByKeyReindexesFulltext(t *testing.T) {
 	// Nulling an indexed field must drop it from the index (and clear the
 	// stale embedding: body is also the vectorized field here).
 	mustUpsertByKey(t, st, []string{"title"}, []map[string]any{{"title": "fixed", "body": nil}})
-	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "cheetah", 0, 10, false)
+	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "cheetah", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
