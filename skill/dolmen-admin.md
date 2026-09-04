@@ -83,11 +83,16 @@ connection command above.
   and `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field).
 - Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field —
   enables `search_vector` with `text`), `required: true`.
+- `create_namespace` is only for reserving a name up front (or failing loudly if it is taken) —
+  namespaces are otherwise created implicitly on first use, and it creates no tables.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
 - `drop_table` / `drop_namespace` are irreversible deletions (rows, search indexes, schema, history);
   both require `confirm` to repeat the exact name being dropped. Prefer `delete` unless the table or
   namespace itself must go.
+- `list_migrations` reads that history: a table's recorded migrations, newest first, with the exact
+  changes and timestamps — check it after `migrate` to confirm what changed; the newest entry's
+  `to_version` is the current schema version.
 - `update`/`upsert` take the same `filter` plus a `set` object of field values; all matched rows get
   the same values, and `set` to `null` clears an optional field. Matched updates accept partial `set`
   maps (missing required fields are not required), but `set` to `null` for a required field is
