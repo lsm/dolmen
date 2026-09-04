@@ -122,7 +122,7 @@ func components() map[string]any {
 					"code":       map[string]any{"type": "string", "enum": errorCodeEnum},
 					"message":    stringProp(""),
 					"request_id": stringProp(""),
-				}, []string{"code", "message"}),
+				}, []string{"code", "message", "request_id"}),
 			}, []string{"ok", "error"}),
 			"Field": objectSchema(false, map[string]any{
 				"name":      stringProp(`^[a-z][a-z0-9_]{0,63}$`),

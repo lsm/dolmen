@@ -180,6 +180,27 @@ func TestRedactStoreMsgRedactsFilePaths(t *testing.T) {
 	}
 }
 
+// TestRedactPathsCoversSpacesInPaths pins the redaction of paths whose
+// components contain spaces — a model cache under a user directory
+// ("C:\Users\Jane Doe\models") must redact whole, never leaking a trailing
+// fragment like "Doe\models" into a client-facing message.
+func TestRedactPathsCoversSpacesInPaths(t *testing.T) {
+	cases := []string{
+		`open C:\Users\Jane Doe\models\org--model: not found`,
+		`open /Users/Jane Doe/models/org--model: not found`,
+		`cache /a/b  spaced dir/x is missing`, // multiple spaces between words
+	}
+	for _, msg := range cases {
+		out := redactPaths(msg)
+		if strings.Contains(out, "Jane") || strings.Contains(out, "Doe") || strings.Contains(out, "models") || strings.Contains(out, "spaced") {
+			t.Fatalf("path fragment leaked from %q: %q", msg, out)
+		}
+		if !strings.Contains(out, "<path>") {
+			t.Fatalf("expected <path> in redaction of %q, got %q", msg, out)
+		}
+	}
+}
+
 func TestRedactStoreMsgPreservesProviderIdentity(t *testing.T) {
 	a := "openai|https://api.openai.com/v1|text-embedding-3-small"
 	b := "openai|https://proxy.example.com/v1|text-embedding-3-small"

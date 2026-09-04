@@ -176,8 +176,10 @@ func TestLocalProviderLoadFailureActionable(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	// The stub's error mimics a blocked Hugging Face download, complete with
-	// a cache path that must be redacted out of the client-facing message.
-	blockedDownload := errors.New(`Get "https://huggingface.co/org/model/resolve/main/config.json": TLS handshake timeout (cache dir ` + filepath.Join(t.TempDir(), "models", "org--model") + `)`)
+	// cache paths that must be redacted out of the client-facing message —
+	// including one under a space-bearing directory, where naive path
+	// redaction would leak the fragments after the space.
+	blockedDownload := errors.New(`Get "https://huggingface.co/org/model/resolve/main/config.json": TLS handshake timeout (cache dir ` + filepath.Join(t.TempDir(), "models", "org--model") + `; also tried C:\Users\Jane Doe\models\org--model)`)
 	failing := &embed.Local{
 		Model: "org/model",
 		Open: func() (embed.LocalEngine, error) {
@@ -236,6 +238,9 @@ func TestLocalProviderLoadFailureActionable(t *testing.T) {
 	}
 	if strings.Contains(msg, "models/org--model") || !strings.Contains(msg, "<path>") {
 		t.Fatalf("cache path must be redacted from the message, got %q", msg)
+	}
+	if strings.Contains(msg, "Jane") || strings.Contains(msg, "Doe") {
+		t.Fatalf("space-bearing cache path must redact whole, got %q", msg)
 	}
 
 	reqID, _ := errObj["request_id"].(string)

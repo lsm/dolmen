@@ -133,8 +133,12 @@ var (
 	// filePathRe matches Unix/Windows-style absolute paths that may leak in
 	// internal errors. It preserves the leading separator so it does not match
 	// URL paths (://) or slash-bearing provider/model identifiers in
-	// "provider|<url>|<model>" strings.
-	filePathRe = regexp.MustCompile(`(^|[^A-Za-z0-9:|\\/.\-_])(?:[A-Za-z]:)?(?:[\\/]+[A-Za-z0-9_.\-]+)+[\\/]*`)
+	// "provider|<url>|<model>" strings. Path components may contain spaces
+	// ("C:\Users\Jane Doe\models"), so a component continues across
+	// space-separated words; when a path is followed by prose the extra words
+	// are swallowed into the redaction — over-redaction is safe, a leaked
+	// fragment is not.
+	filePathRe = regexp.MustCompile(`(^|[^A-Za-z0-9:|\\/.\-_])(?:[A-Za-z]:)?(?:[\\/]+[A-Za-z0-9_.\-]+(?:[ \t]+[A-Za-z0-9_.\-]+)*)+[\\/]*`)
 )
 
 // redactStoreMsg removes internal paths and raw SQLite internals from a store
