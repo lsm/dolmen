@@ -77,7 +77,8 @@ connection command above.
 - The hidden `_embedding` column (from `vectorize`) is excluded from `SELECT *` and search results; reference it in the SQL (outside string literals and comments) or pass `include_hidden: true` to a search when you really need it.
 - Vector search results carry `_score` (cosine similarity; higher is closer).
 - `search_vector` has two query forms with different reach: `text` (server embeds it) searches only the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`; `vector` (raw numbers) searches any `vector` column, and only you know which embedding space produced both the stored and the query vectors, so keep them from the same model.
-- `skipped_vectors` in a `search_vector` response counts stored vectors that were corrupt or dimension-mismatched and could not be scored; nonzero means those rows are missing from results.
+  **Rows whose `vectorize` source is `null`/empty/missing have `_embedding` `null` and are silently excluded from `search_vector(text=...)` results; compare the result count to the table's row count when recall matters.**
+- `skipped_vectors` in a `search_vector` response counts stored vectors that were corrupt or dimension-mismatched and could not be scored; **it does not count rows with a `null`/empty/missing `vectorize` source — those rows are silently excluded and will not raise `skipped_vectors`.**
 
 ## Agent-critical caveats
 
@@ -112,7 +113,8 @@ Results are ordered by FTS5 `rank` (BM25 by default): more relevant rows have a 
 ### Vectors and semantic recall
 
 - `vector` fields accept JSON number arrays of the declared `dim`; stored as float32 blobs, returned as `[]float64`.
-- `vectorize: true` on a string/text field stores one embedding per non-empty row in `_embedding`. Only one field per table can be vectorized; rows with `null`, empty string, or missing values have `_embedding` NULL and are excluded from vector search.
+- `vectorize: true` on a string/text field stores one embedding per non-empty row in `_embedding`. Only one field per table can be vectorized.
+- **Vector search has silent recall holes.** Rows with `null`, empty string, or missing values in the vectorized field have `_embedding` NULL and are silently excluded from `search_vector(text=...)` results. `skipped_vectors` does NOT count those rows — it only counts stored vectors that are corrupt or dimension-mismatched and could not be scored. If recall matters, compare the `search_vector` result count to the table's row count from `describe_table` (or `SELECT COUNT(*)` via `query`) to detect unembedded rows.
 - `search_vector(text=...)` embeds the query `text` with the configured provider and searches only the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`. `search_vector(vector=[...])` supplies a query vector directly and may search any vector column.
 - `column` applies to `vector` queries: it names the stored-vectors column and defaults to `_embedding` (if a vectorized field exists) or the first declared `vector` field. The query and stored vectors must come from the same embedding space. For `_embedding` (from `vectorize`) this means the same provider/identity; for caller-supplied `vector` fields it means the same model used for the stored and query vectors.
 - Each result has `_score`: cosine similarity, higher is closer, typically `0`–`1` for positive embeddings (mathematically `-1`–`1`).
