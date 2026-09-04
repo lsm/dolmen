@@ -19,6 +19,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/lsm/dolmen/internal/embed"
 )
 
 var (
@@ -125,7 +127,7 @@ func ensure(modelID, revision, dir string) error {
 		return fmt.Errorf("parse tokenizer_config.json: %w", err)
 	}
 
-	tokFiles, probe := tokenizerFiles(hf.ModelType, tc.TokenizerClass)
+	tokFiles, probe := embed.TokenizerFiles(hf.ModelType, tc.TokenizerClass)
 	if probe {
 		err := fetch(modelID, revision, "sentencepiece.bpe.model", dir)
 		switch {
@@ -169,24 +171,6 @@ func ensure(modelID, revision, dir string) error {
 	}
 	fetched = append(fetched, weightFiles...)
 	return nil
-}
-
-// tokenizerFiles returns the tokenizer artifacts to fetch and whether to
-// probe for sentencepiece.bpe.model first. It matches rembed's hub logic.
-func tokenizerFiles(modelType, tokenizerClass string) (files []string, probe bool) {
-	if modelType == "xlm-roberta" || strings.HasPrefix(tokenizerClass, "XLMRobertaTokenizer") {
-		return []string{"sentencepiece.bpe.model"}, false
-	}
-	if modelType == "roberta" {
-		return []string{"vocab.json", "merges.txt"}, true
-	}
-	if modelType == "modernbert" || modelType == "qwen3" {
-		return []string{"tokenizer.json"}, false
-	}
-	if modelType == "gemma3_text" || modelType == "gemma3" {
-		return []string{"tokenizer.json"}, false
-	}
-	return []string{"vocab.txt"}, true
 }
 
 // supported lists the architectures rembed can run. Keep it in sync with

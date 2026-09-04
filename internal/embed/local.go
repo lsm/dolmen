@@ -196,15 +196,41 @@ func seededCacheDir(cacheRoot, model string) string {
 			return ""
 		}
 	}
-	var hasTokenizer bool
-	for _, f := range []string{"vocab.txt", "tokenizer.json", "sentencepiece.bpe.model", "vocab.json"} {
-		if fi, err := os.Stat(filepath.Join(dir, f)); err == nil && !fi.IsDir() {
-			hasTokenizer = true
-			break
+	// The tokenizer artifacts a cache needs depend on the model (RoBERTa
+	// needs both vocab.json and merges.txt; a SentencePiece repo ships
+	// sentencepiece.bpe.model instead of the model-type files), so derive
+	// them from the cached configuration rather than accepting any single
+	// tokenizer file.
+	var hf struct {
+		ModelType string `json:"model_type"`
+	}
+	cfgRaw, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
+		return ""
+	}
+	if err := json.Unmarshal(cfgRaw, &hf); err != nil {
+		return ""
+	}
+	var tc struct {
+		TokenizerClass string `json:"tokenizer_class"`
+	}
+	tcRaw, err := os.ReadFile(filepath.Join(dir, "tokenizer_config.json"))
+	if err != nil {
+		return ""
+	}
+	if err := json.Unmarshal(tcRaw, &tc); err != nil {
+		return ""
+	}
+	tokFiles, probe := TokenizerFiles(hf.ModelType, tc.TokenizerClass)
+	if probe {
+		if fi, err := os.Stat(filepath.Join(dir, "sentencepiece.bpe.model")); err == nil && !fi.IsDir() {
+			tokFiles = nil
 		}
 	}
-	if !hasTokenizer {
-		return ""
+	for _, f := range tokFiles {
+		if fi, err := os.Stat(filepath.Join(dir, f)); err != nil || fi.IsDir() {
+			return ""
+		}
 	}
 
 	// modules.json is the artifact manifest of a sentence-transformers cache:
@@ -226,14 +252,14 @@ func seededCacheDir(cacheRoot, model string) string {
 	if fi, err := os.Stat(idx); err != nil || fi.IsDir() {
 		return ""
 	}
-	raw, err := os.ReadFile(idx)
+	idxRaw, err := os.ReadFile(idx)
 	if err != nil {
 		return ""
 	}
 	var sharded struct {
 		WeightMap map[string]string `json:"weight_map"`
 	}
-	if err := json.Unmarshal(raw, &sharded); err != nil {
+	if err := json.Unmarshal(idxRaw, &sharded); err != nil {
 		return ""
 	}
 	seen := make(map[string]struct{})
@@ -260,6 +286,28 @@ func validCacheShard(name string) bool {
 		return false
 	}
 	return !strings.ContainsAny(name, `/\`)
+}
+
+// TokenizerFiles mirrors rembed's hub package: it returns the tokenizer
+// artifacts a model of the given type loads, and whether to probe for a
+// SentencePiece model first (a repo that ships sentencepiece.bpe.model uses it
+// instead of the model-type files). Model packaging (cmd/pack-model) and
+// seeded-cache validation share it so the downloader's file set and the
+// offline check can never drift apart.
+func TokenizerFiles(modelType, tokenizerClass string) (files []string, probe bool) {
+	if modelType == "xlm-roberta" || strings.HasPrefix(tokenizerClass, "XLMRobertaTokenizer") {
+		return []string{"sentencepiece.bpe.model"}, false
+	}
+	if modelType == "roberta" {
+		return []string{"vocab.json", "merges.txt"}, true
+	}
+	if modelType == "modernbert" || modelType == "qwen3" {
+		return []string{"tokenizer.json"}, false
+	}
+	if modelType == "gemma3_text" || modelType == "gemma3" {
+		return []string{"tokenizer.json"}, false
+	}
+	return []string{"vocab.txt"}, true
 }
 
 // moduleArtifactsComplete reports whether every module directory named by a

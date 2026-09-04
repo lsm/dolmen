@@ -166,10 +166,13 @@ func TestLocalCached(t *testing.T) {
 	if err := os.MkdirAll(shardDir, 0o700); err != nil {
 		t.Fatalf("mkdir shard dir: %v", err)
 	}
-	for _, f := range []string{"config.json", "tokenizer_config.json", "tokenizer.json"} {
+	for _, f := range []string{"tokenizer_config.json", "tokenizer.json"} {
 		if err := os.WriteFile(filepath.Join(shardDir, f), []byte(`{}`), 0o600); err != nil {
 			t.Fatalf("write %s: %v", f, err)
 		}
+	}
+	if err := os.WriteFile(filepath.Join(shardDir, "config.json"), []byte(`{"model_type": "modernbert"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(shardDir, "modules.json"), []byte(`[]`), 0o600); err != nil {
 		t.Fatalf("write modules: %v", err)
@@ -442,6 +445,29 @@ func TestSeededCacheDir(t *testing.T) {
 	}
 	if got := seededCacheDir(cache, "org/gemma"); got != gemma {
 		t.Fatalf("seededCacheDir with dense weights: got %q, want %q", got, gemma)
+	}
+
+	// A RoBERTa cache needs both vocab.json and merges.txt — one without the
+	// other cannot load and must fall back to the Hub.
+	roberta := filepath.Join(cache, "org--roberta")
+	if err := os.MkdirAll(roberta, 0o755); err != nil {
+		t.Fatalf("mkdir roberta: %v", err)
+	}
+	seedCache(t, roberta, "vocab.txt")
+	if err := os.WriteFile(filepath.Join(roberta, "config.json"), []byte(`{"model_type": "roberta"}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(roberta, "vocab.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write vocab.json: %v", err)
+	}
+	if got := seededCacheDir(cache, "org/roberta"); got != "" {
+		t.Fatalf("seededCacheDir without merges.txt: got %q, want empty", got)
+	}
+	if err := os.WriteFile(filepath.Join(roberta, "merges.txt"), []byte("a b\n"), 0o644); err != nil {
+		t.Fatalf("write merges.txt: %v", err)
+	}
+	if got := seededCacheDir(cache, "org/roberta"); got != roberta {
+		t.Fatalf("seededCacheDir with full roberta tokenizer: got %q, want %q", got, roberta)
 	}
 }
 
