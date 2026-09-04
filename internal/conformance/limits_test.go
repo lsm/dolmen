@@ -452,6 +452,86 @@ func TestLimitsSearchResponseBudget(t *testing.T) {
 	}
 }
 
+// The first-row-over-budget branches are errors, not truncated pages: with no
+// prior row to cut after, the contract is a 400 naming the budget. Query can
+// exceed the budget through one row whose selected columns alone (here, many
+// aliases of one 1 MiB column) cross it; the documented oversized-BLOB case
+// (a stored BLOB over 32 MiB always errors) can only exist via an out-of-band
+// writer — the same fixture pattern as skipped_vectors — and applies to all
+// three typed read paths.
+func TestLimitsResponseBudgetFirstRowError(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("limalias", "t", []map[string]any{{"name": "meg", "type": "text"}})
+	h.mustHTTP("insert", map[string]any{
+		"namespace": "limalias", "table": "t",
+		"records": []map[string]any{{"meg": strings.Repeat("x", 1<<20)}},
+	})
+
+	// 40 distinct aliases of the one-MiB column charge ~40 MiB for a single
+	// row: an error on the first row, not an empty truncated page.
+	cols := make([]string, 40)
+	for i := range cols {
+		cols[i] = fmt.Sprintf("meg AS m%02d", i)
+	}
+	status, body := h.httpCall("query", map[string]any{
+		"namespace": "limalias", "sql": "SELECT " + strings.Join(cols, ", ") + " FROM t",
+	})
+	if status != 400 {
+		t.Fatalf("first row over budget: status %d, want 400: %v", status, body)
+	}
+	errObj := envelopeOf(t, body)
+	if errObj["code"] != "invalid_request" {
+		t.Fatalf("first-row budget code %v, want invalid_request", errObj["code"])
+	}
+	wantMessage(t, "first-row budget", errObj["message"].(string),
+		`query result exceeds the 32 MiB response budget on its first row`)
+
+	// The documented oversized BLOB: stored over 32 MiB by an out-of-band
+	// writer (the API's own 32 MiB request limit keeps honest rows under
+	// it), it errors on every typed read path that would return the row.
+	h.seedTable("limblob", "t", []map[string]any{
+		{"name": "title", "type": "string", "fulltext": true},
+		{"name": "body", "type": "text", "vectorize": true},
+		{"name": "blob", "type": "text"},
+	})
+	h.mustHTTP("insert", map[string]any{
+		"namespace": "limblob", "table": "t",
+		"records": []map[string]any{{"title": "needle", "body": "needle text", "blob": "x"}},
+	})
+	h.outOfBand("limblob", func(db *sqlDB) error {
+		_, err := db.Exec("UPDATE t SET blob = ? WHERE id = 1", make([]byte, 33<<20))
+		return err
+	})
+
+	oversized := []struct {
+		name string
+		op   string
+		body map[string]any
+	}{
+		{"query", "query", map[string]any{"namespace": "limblob", "sql": "SELECT blob FROM t"}},
+		{"search_fulltext", "search_fulltext", map[string]any{
+			"namespace": "limblob", "table": "t", "query": "needle",
+		}},
+		{"search_vector", "search_vector", map[string]any{
+			"namespace": "limblob", "table": "t", "text": "needle text",
+		}},
+	}
+	for _, c := range oversized {
+		t.Run(c.name+" oversized blob errors", func(t *testing.T) {
+			status, body := h.httpCall(c.op, c.body)
+			if status != 400 {
+				t.Fatalf("status %d, want 400: %v", status, body)
+			}
+			errObj := envelopeOf(t, body)
+			if errObj["code"] != "invalid_request" {
+				t.Fatalf("code %v, want invalid_request: %v", errObj["code"], errObj)
+			}
+			wantMessage(t, c.name, errObj["message"].(string),
+				`column "blob" exceeds the 32 MiB response budget`)
+		})
+	}
+}
+
 func TestLimitsQueryArgs(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("limargs", "t", []map[string]any{{"name": "n", "type": "number"}})
