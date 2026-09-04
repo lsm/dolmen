@@ -334,6 +334,15 @@ func (s *Store) ListMigrations(ctx context.Context, nsName, table string) ([]Mig
 		if err := dec.Decode(&m.Changes); err != nil {
 			return nil, fmt.Errorf("corrupt migration record %d for %s.%s: %w", m.ID, nsName, table, err)
 		}
+		// Histories written before value became set_*-only still carry an
+		// inert "value": false on non-flag changes. Drop it on read so every
+		// entry matches the current contract and stays replayable through
+		// migrate, which now rejects values on non-flag ops.
+		for j := range m.Changes {
+			if m.Changes[j].Op != schema.OpSetFulltext && m.Changes[j].Op != schema.OpSetVectorize {
+				m.Changes[j].Value = nil
+			}
+		}
 		out = append(out, m)
 	}
 	return out, rows.Err()

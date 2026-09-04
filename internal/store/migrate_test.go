@@ -13,6 +13,9 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
+// boolPtr builds a *bool for Change.Value literals in tests.
+func boolPtr(b bool) *bool { return &b }
+
 func TestMigrate(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
@@ -70,7 +73,7 @@ func TestMigrateVectorizeBackfill(t *testing.T) {
 	}
 
 	if _, err := st.Migrate(ctx, "test", "plain", []schema.Change{
-		{Op: schema.OpSetVectorize, Name: "note", Value: true},
+		{Op: schema.OpSetVectorize, Name: "note", Value: boolPtr(true)},
 	}, testEmbed, 0); err != nil {
 		t.Fatalf("migrate vectorize: %v", err)
 	}
@@ -134,8 +137,8 @@ func TestMigrateVectorizeSwitch(t *testing.T) {
 	}
 
 	if _, err := st.Migrate(ctx, "test", "switch", []schema.Change{
-		{Op: schema.OpSetVectorize, Name: "a", Value: false},
-		{Op: schema.OpSetVectorize, Name: "b", Value: true},
+		{Op: schema.OpSetVectorize, Name: "a", Value: boolPtr(false)},
+		{Op: schema.OpSetVectorize, Name: "b", Value: boolPtr(true)},
 	}, testEmbed, 0); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -216,8 +219,8 @@ func TestEmbedModelMismatchGuard(t *testing.T) {
 	}
 
 	if _, err := st.Migrate(ctx, "test", "mm", []schema.Change{
-		{Op: schema.OpSetVectorize, Name: "s", Value: false},
-		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(false)},
+		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(true)},
 	}, other, 0); err != nil {
 		t.Fatalf("migrate should re-baseline to the new model: %v", err)
 	}
@@ -242,7 +245,7 @@ func TestChunkedVectorizeBackfill(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 	if _, err := st.Migrate(ctx, "test", "chunky", []schema.Change{
-		{Op: schema.OpSetVectorize, Name: "v", Value: true},
+		{Op: schema.OpSetVectorize, Name: "v", Value: boolPtr(true)},
 	}, testEmbed, 0); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -305,7 +308,7 @@ func TestNoOpVectorizeMigrationSkipsReembed(t *testing.T) {
 	}
 	before := calls
 	if _, err := st.Migrate(context.Background(), "test", "noop", []schema.Change{
-		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(true)},
 	}, counting, 0); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -331,7 +334,7 @@ func TestMigrateReDerivesEmbedDimAfterDisable(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 	if _, err := st.Migrate(ctx, "test", "redim", []schema.Change{
-		{Op: schema.OpSetVectorize, Name: "s", Value: false},
+		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(false)},
 	}, testEmbed, 0); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
@@ -347,7 +350,7 @@ func TestMigrateReDerivesEmbedDimAfterDisable(t *testing.T) {
 	}
 	shifted := Embedder{Embed: shortEmbed, Identity: "fake-space"}
 	if _, err := st.Migrate(ctx, "test", "redim", []schema.Change{
-		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(true)},
 	}, shifted, 0); err != nil {
 		t.Fatalf("re-enable: %v", err)
 	}
@@ -375,7 +378,7 @@ func TestBackfillSkipsEmptyStrings(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 	if _, err := st.Migrate(ctx, "test", "empt", []schema.Change{
-		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(true)},
 	}, testEmbed, 0); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -449,7 +452,7 @@ func TestBackfillRejectsShortProviderResponse(t *testing.T) {
 		return fakeEmbed(ctx, texts[:1])
 	}, Identity: "fake-space"}
 	_, err := st.Migrate(ctx, "test", "shortresp", []schema.Change{
-		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(true)},
 	}, short, 0)
 	if err == nil || !strings.Contains(err.Error(), "3 texts") {
 		t.Fatalf("expected cardinality error, got %v", err)
@@ -485,7 +488,7 @@ func TestBackfillRejectsInvalidVectors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		if _, err := st.Migrate(ctx, "test", "badvec", []schema.Change{
-			{Op: schema.OpSetVectorize, Name: "s", Value: true},
+			{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(true)},
 		}, tc.emb, 0); err == nil {
 			t.Fatalf("%s: expected rejection", tc.name)
 		}
@@ -540,7 +543,7 @@ func TestBackfillRequiresEmbedIdentity(t *testing.T) {
 	}
 	noIdentity := Embedder{Embed: fakeEmbed}
 	if _, err := st.Migrate(ctx, "test", "noid", []schema.Change{
-		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(true)},
 	}, noIdentity, 0); err == nil {
 		t.Fatal("expected identity-less provider to be rejected for backfill")
 	}
@@ -799,7 +802,7 @@ func TestPlanMigrationEstimatesEmbeddingWorkload(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 	plan, err := st.PlanMigration(ctx, "test", "estim", []schema.Change{
-		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(true)},
 	}, testEmbed, 1)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -812,12 +815,12 @@ func TestPlanMigrationEstimatesEmbeddingWorkload(t *testing.T) {
 	}
 	// Enabling on an already-vectorized table re-embeds everything.
 	if _, err := st.Migrate(ctx, "test", "estim", []schema.Change{
-		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(true)},
 	}, testEmbed, 1); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	plan, err = st.PlanMigration(ctx, "test", "estim", []schema.Change{
-		{Op: schema.OpSetVectorize, Name: "s", Value: false},
+		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(false)},
 	}, testEmbed, 2)
 	if err != nil {
 		t.Fatalf("plan disable: %v", err)
@@ -836,7 +839,7 @@ func TestPlanMigrationValidatesProviderWithoutCallingIt(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	_, err := st.PlanMigration(ctx, "test", "nprov", []schema.Change{
-		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(true)},
 	}, Embedder{}, 1)
 	if err == nil || !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "embedding provider") {
 		t.Fatalf("dry-run must reject vectorize without a provider, got %v", err)
@@ -960,6 +963,9 @@ func TestListMigrationsNewestFirst(t *testing.T) {
 	if ms[0].Changes[0].Op != schema.OpRenameField || ms[0].Changes[0].From != "v" || ms[0].Changes[0].To != "value" {
 		t.Fatalf("rename change must round-trip: %+v", ms[0].Changes[0])
 	}
+	if ms[0].Changes[0].Value != nil || ms[1].Changes[0].Value != nil {
+		t.Fatalf("non-flag changes must not record a value: %+v %+v", ms[0].Changes[0], ms[1].Changes[0])
+	}
 	if ms[1].ToVersion != 2 || ms[1].FromVersion != 1 {
 		t.Fatalf("second newest: %+v", ms[1])
 	}
@@ -971,6 +977,62 @@ func TestListMigrationsNewestFirst(t *testing.T) {
 	}
 	if _, err := st.ListMigrations(ctx, "test", "nosuch"); err == nil || !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown table must 404, got %v", err)
+	}
+}
+
+func TestListMigrationsNormalizesLegacyNonFlagValues(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "leg", []schema.Field{
+		{Name: "s", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Seed a history row in the pre-upgrade shape: a non-flag change carrying
+	// the inert "value": false older binaries recorded on every op.
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	if _, err := n.rw.ExecContext(ctx,
+		`INSERT INTO _dolmen_migrations(table_name, from_version, to_version, changes_json) VALUES('leg', 1, 2, ?)`,
+		`[{"op":"add_field","field":{"name":"note","type":"string"},"value":false},{"op":"set_fulltext","name":"s","value":true}]`,
+	); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+	ms, err := st.ListMigrations(ctx, "test", "leg")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(ms) != 1 || len(ms[0].Changes) != 2 {
+		t.Fatalf("expected one migration with two changes, got %+v", ms)
+	}
+	if ms[0].Changes[0].Op != schema.OpAddField || ms[0].Changes[0].Value != nil {
+		t.Fatalf("legacy non-flag value must be normalized away on read: %+v", ms[0].Changes[0])
+	}
+	if ms[0].Changes[1].Op != schema.OpSetFulltext || ms[0].Changes[1].Value == nil || !*ms[0].Changes[1].Value {
+		t.Fatalf("set_* values must survive normalization: %+v", ms[0].Changes[1])
+	}
+}
+
+func TestMigrateChangeValueValidation(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	// Value is a *bool so an omitted flag is distinguishable from an explicit
+	// false; the store must refuse a set_* without one instead of applying nil.
+	for _, op := range []string{schema.OpSetFulltext, schema.OpSetVectorize} {
+		if _, err := st.Migrate(ctx, "test", "notes", []schema.Change{
+			{Op: op, Name: "title"},
+		}, testEmbed, 0); err == nil || !errors.Is(err, ErrInvalid) {
+			t.Fatalf("%s without a value must be rejected as invalid, got %v", op, err)
+		}
+	}
+	// A value on a non-flag change is meaningless and must not be recorded.
+	if _, err := st.Migrate(ctx, "test", "notes", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "extra", Type: schema.String}, Value: boolPtr(false)},
+	}, testEmbed, 0); err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("add_field with a value must be rejected as invalid, got %v", err)
 	}
 }
 
@@ -1016,7 +1078,7 @@ func TestPlanEstimatesUsePreMigrationNamesForRenamedVectorField(t *testing.T) {
 	}
 	changes := []schema.Change{
 		{Op: schema.OpRenameField, From: "a", To: "b"},
-		{Op: schema.OpSetVectorize, Name: "b", Value: true},
+		{Op: schema.OpSetVectorize, Name: "b", Value: boolPtr(true)},
 	}
 	plan, err := st.PlanMigration(ctx, "test", "renvec", changes, testEmbed, 1)
 	if err != nil {
@@ -1130,7 +1192,7 @@ func TestRenameCycleEstimateTerminates(t *testing.T) {
 	changes := []schema.Change{
 		{Op: schema.OpRenameField, From: "a", To: "b"},
 		{Op: schema.OpRenameField, From: "b", To: "a"},
-		{Op: schema.OpSetVectorize, Name: "a", Value: true},
+		{Op: schema.OpSetVectorize, Name: "a", Value: boolPtr(true)},
 	}
 	plan, err := st.PlanMigration(ctx, "test", "cycle", changes, testEmbed, 1)
 	if err != nil {
@@ -1165,7 +1227,7 @@ func TestVacatedNameReuseEstimateTracksFieldIdentity(t *testing.T) {
 	changes := []schema.Change{
 		{Op: schema.OpRenameField, From: "a", To: "b"},
 		{Op: schema.OpAddField, Field: &schema.Field{Name: "a", Type: schema.String}},
-		{Op: schema.OpSetVectorize, Name: "b", Value: true},
+		{Op: schema.OpSetVectorize, Name: "b", Value: boolPtr(true)},
 	}
 	plan, err := st.PlanMigration(ctx, "test", "vacate", changes, testEmbed, 1)
 	if err != nil {
@@ -1206,8 +1268,8 @@ func TestPlanMigrationReportsProspectiveEmbeddingMetadata(t *testing.T) {
 	// being replaced, with the dimension marked to-be-derived.
 	other := Embedder{Embed: fakeEmbed, Identity: "other-space"}
 	plan, err := st.PlanMigration(ctx, "test", "pem", []schema.Change{
-		{Op: schema.OpSetVectorize, Name: "s", Value: false},
-		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(false)},
+		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(true)},
 	}, other, 1)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -1223,8 +1285,8 @@ func TestPlanMigrationReportsProspectiveEmbeddingMetadata(t *testing.T) {
 	}
 	// The apply still re-baselines and derives the real dimension.
 	sc, err := st.Migrate(ctx, "test", "pem", []schema.Change{
-		{Op: schema.OpSetVectorize, Name: "s", Value: false},
-		{Op: schema.OpSetVectorize, Name: "s", Value: true},
+		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(false)},
+		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(true)},
 	}, other, 1)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
@@ -1275,7 +1337,7 @@ func TestPlanMigrationSeesOneSnapshotUnderConcurrentMigrations(t *testing.T) {
 		}
 		_, err := st.PlanMigration(ctx, "test", "snap", []schema.Change{
 			{Op: schema.OpRenameField, From: "a", To: "b"},
-			{Op: schema.OpSetVectorize, Name: "b", Value: true},
+			{Op: schema.OpSetVectorize, Name: "b", Value: boolPtr(true)},
 		}, testEmbed, 1)
 		if err == nil {
 			continue
@@ -1303,7 +1365,7 @@ func TestPlanLastFulltextRemovalReportsZeroReindexRows(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 	plan, err := st.PlanMigration(ctx, "test", "lastfts", []schema.Change{
-		{Op: schema.OpSetFulltext, Name: "body", Value: false},
+		{Op: schema.OpSetFulltext, Name: "body", Value: boolPtr(false)},
 	}, testEmbed, 1)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -1313,7 +1375,7 @@ func TestPlanLastFulltextRemovalReportsZeroReindexRows(t *testing.T) {
 	}
 	// A rebuild that keeps indexed fields reports the rows it will reindex.
 	if _, err := st.Migrate(ctx, "test", "lastfts", []schema.Change{
-		{Op: schema.OpSetFulltext, Name: "body", Value: true},
+		{Op: schema.OpSetFulltext, Name: "body", Value: boolPtr(true)},
 	}, testEmbed, 1); err != nil {
 		t.Fatalf("re-enable: %v", err)
 	}
