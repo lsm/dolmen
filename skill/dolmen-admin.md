@@ -15,7 +15,7 @@ A Dolmen server exposes eighteen tools over MCP. Everything lives in namespaces 
 
 The running server is at `{{ .BaseURL }}` and the MCP endpoint is `{{ .MCPURL }}`. This skill matches server version `{{ .Version }}`.
 
-The machine-readable contract for the whole API — every operation's request and response schemas, plus the envelope and error codes — is served at `GET {{ .BaseURL }}/v1/openapi.json`.
+The API's machine-readable description — every operation's request schema, the response envelope, and the error codes — is served at `GET {{ .BaseURL }}/v1/openapi.json`.
 
 ### Health check
 
@@ -63,7 +63,7 @@ Every tool in this skill is also a plain HTTP operation: `POST /v1/{operation}` 
 as the JSON body (`Content-Type: application/json`). Responses are enveloped — success is
 `{"ok":true,"data":...}` and failure is `{"ok":false,"error":{"code","message"}}` with a stable
 machine-readable `code` (`invalid_request`, `not_found`, `query_error`, `conflict`, `forbidden`,
-`internal_error`). The full list of operations and schemas is in the OpenAPI document (`GET /v1/openapi.json`).
+`internal_error`). The full list of operations and their request schemas is in the OpenAPI document (`GET /v1/openapi.json`).
 
 Create a table:
 
