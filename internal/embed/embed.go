@@ -68,15 +68,23 @@ func identityMarker(model string) string {
 	return ""
 }
 
-// identityModel renders the model reference for an embedding identity,
-// percent-escaping "%" and "#" (the marker's lead byte). The escape makes the
-// identity injective in the model: a model directory whose name already ends
-// in a literal "#e5" must not collide with an e5-detected model's marked
-// identity — a collision would defeat the embed_space guard and mix
-// differently preprocessed embeddings in one table. Hugging Face ids cannot
-// contain either character, so only directory-path models are re-rendered.
+// identityModel renders the model reference for an embedding identity.
+// References without "%" or "#" are emitted verbatim — byte-identical to the
+// identities dolmen has always produced, so existing tables keep matching.
+// A reference containing either character is emitted in a versioned escaped
+// form, "v2:" + percent-escaping, for two reasons. First, the escape makes
+// the identity injective in the model (a directory literally named foo-e5#e5
+// must not collide with an e5-detected foo-e5's "#e5" marker). Second, the
+// "v2:" tag cannot occur in any legacy — unescaped — identity of a different
+// model: Hub ids allow no ":" before their "/", and absolute paths start
+// with "/", so an identity recorded by an earlier build can never equal a
+// v2-tagged one (OpenAI-side model names are endpoint-defined and not
+// validated; the tag is best-effort there).
 func identityModel(model string) string {
-	return strings.NewReplacer("%", "%25", "#", "%23").Replace(model)
+	if !strings.ContainsAny(model, "%#") {
+		return model
+	}
+	return "v2:" + strings.NewReplacer("%", "%25", "#", "%23").Replace(model)
 }
 
 // prefixAll returns texts with prefix prepended to each; the empty prefix

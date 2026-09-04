@@ -66,8 +66,9 @@ func TestE5IdentityMarker(t *testing.T) {
 // TestIdentityNoModelCollision pins identity injectivity: a model directory
 // whose name already ends in a literal "#e5" (not e5-detected — "#" breaks
 // the name segment) must never share an identity with an e5-detected
-// directory whose marker produces the same suffix. The model component is
-// percent-escaped, so no model reference can contain the marker's bytes.
+// directory whose marker produces the same suffix. References containing
+// "%" or "#" render in the versioned escaped form (v2: + percent-escape),
+// which no legacy unescaped identity of a different model can equal.
 func TestIdentityNoModelCollision(t *testing.T) {
 	e5Dir := (&Local{Model: "/models/foo-e5"}).Identity()         // e5-detected, marker appended
 	literalDir := (&Local{Model: "/models/foo-e5#e5"}).Identity() // not detected, literal "#e5" in name
@@ -77,12 +78,23 @@ func TestIdentityNoModelCollision(t *testing.T) {
 	if want := "local//models/foo-e5#e5"; e5Dir != want {
 		t.Fatalf("e5-detected directory identity: got %q, want %q", e5Dir, want)
 	}
-	if want := "local//models/foo-e5%23e5"; literalDir != want {
-		t.Fatalf("literal-#e5 directory identity must escape the marker byte: got %q, want %q", literalDir, want)
+	if want := "local/v2:/models/foo-e5%23e5"; literalDir != want {
+		t.Fatalf("literal-#e5 directory identity must use the versioned escape: got %q, want %q", literalDir, want)
 	}
 	// "%" itself is escaped too, keeping the encoding injective.
-	if got, want := (&Local{Model: "/models/100%23e5"}).Identity(), "local//models/100%2523e5"; got != want {
+	if got, want := (&Local{Model: "/models/100%23e5"}).Identity(), "local/v2:/models/100%2523e5"; got != want {
 		t.Fatalf("percent in model must be escaped: got %q, want %q", got, want)
+	}
+	// The legacy (unescaped) identity a pre-v2 build recorded for
+	// /models/foo%23bar must not equal any current identity: not the same
+	// model's (which re-embeds once under its v2 identity) and not a
+	// different model whose escaping would produce the same bytes.
+	legacy := "local//models/foo%23bar"
+	if got := (&Local{Model: "/models/foo%23bar"}).Identity(); got == legacy {
+		t.Fatalf("same model must move to the versioned identity (one-time re-embed), got %q", got)
+	}
+	if got := (&Local{Model: "/models/foo#bar"}).Identity(); got == legacy {
+		t.Fatalf("escaped /models/foo#bar must not match the legacy identity of /models/foo%%23bar: %q", got)
 	}
 }
 
