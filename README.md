@@ -276,6 +276,7 @@ variables. Unknown flags and positional arguments are rejected with an error.
 | `-addr` | `DOLMEN_ADDR` | `127.0.0.1:8790` | HTTP/MCP listen address |
 | `-data` | `DOLMEN_DATA` | `data` | Data directory (one SQLite file per namespace) |
 | `-version` | — | — | Print version and exit |
+| `-prefix` | `DOLMEN_PREFIX` | — | Mount all endpoints (`/healthz`, `/version`, `/skills*`, `/v1/*`, `/mcp`) under this URL prefix. Use with a pass-through proxy that forwards the full path |
 | — | `DOLMEN_ALLOWED_ORIGINS` | — | Comma-separated allowed HTTP origins for CORS; `localhost`, `127.0.0.1`, and `::1` are always allowed |
 | — | `DOLMEN_EMBED_PROVIDER` | `none` | Embedding provider: `none` (caller supplies vectors), `local` (built-in in-process embeddings via [rembed](https://github.com/rostamlabs/rembed)), or `openai` (any OpenAI-compatible endpoint). Unknown values produce an error |
 | — | `DOLMEN_EMBED_BASE_URL` | `https://api.openai.com/v1` | Base URL for an OpenAI-compatible provider |
@@ -284,6 +285,91 @@ variables. Unknown flags and positional arguments are rejected with an error.
 | — | `OPENAI_API_KEY` | — | Fallback API key when `DOLMEN_EMBED_API_KEY` is unset |
 | — | `REMBED_CACHE` | `<data>/models` | Model cache directory for the `local` provider (overrides the data-dir location) |
 | — | `HF_TOKEN` | — | Hugging Face token for gated repos downloaded by the `local` provider |
+
+## Reverse proxy / sub-path hosting
+
+Dolmen can be exposed at a sub-path behind a reverse proxy in two ways. In both
+recipes the public links rendered by the skills manifest, the skill markdown,
+and the MCP initialize instructions must match the URL the client uses.
+
+### Stripping proxy
+
+The proxy removes the sub-path before forwarding to dolmen. Set the public base
+URL explicitly or rely on forwarded headers (`X-Forwarded-Proto`,
+`X-Forwarded-Host`, `X-Forwarded-Prefix`).
+
+nginx:
+
+```nginx
+location /dolmen/ {
+    proxy_pass http://127.0.0.1:8790/;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Prefix /dolmen;
+}
+```
+
+Caddy (strips the matched prefix automatically):
+
+```caddy
+handle_path /dolmen/* {
+    reverse_proxy 127.0.0.1:8790 {
+        header_up X-Forwarded-Prefix /dolmen
+    }
+}
+```
+
+With the forwarded header, no extra dolmen configuration is needed. If your
+proxy does not add `X-Forwarded-*` headers, set `DOLMEN_BASE_URL` to the full
+public URL instead:
+
+```bash
+DOLMEN_BASE_URL=https://example.com/dolmen ./dolmen
+```
+
+### Pass-through proxy
+
+The proxy forwards the full path, including the sub-path, to dolmen. Run dolmen
+with `-prefix` (or `DOLMEN_PREFIX`):
+
+```bash
+./dolmen -prefix /dolmen
+```
+
+nginx:
+
+```nginx
+location /dolmen/ {
+    proxy_pass http://127.0.0.1:8790;  # no trailing slash: do not strip
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+Caddy:
+
+```caddy
+handle /dolmen/* {
+    reverse_proxy 127.0.0.1:8790
+}
+```
+
+`-base-url` and `-prefix` can be combined when the configured base URL does not
+already end with the prefix. For example, `-base-url https://example.com
+-prefix /dolmen` produces public links at `https://example.com/dolmen`. To avoid
+double-prefixing, dolmen refuses to start when `-base-url` ends with `-prefix`.
+
+### Browser MCP clients
+
+When a browser-based MCP client connects via a proxy, the browser sends an
+`Origin` header such as `https://example.com`. Add it to the allowlist:
+
+```bash
+DOLMEN_ALLOWED_ORIGINS=https://example.com ./dolmen
+```
+
+`localhost`, `127.0.0.1`, and `::1` are always allowed; the public origin of a
+proxy is not.
 
 ## MCP (agents)
 

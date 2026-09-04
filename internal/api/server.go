@@ -27,6 +27,7 @@ type Server struct {
 	emb           embed.Provider
 	baseURL       string
 	namespaceHint string
+	prefix        string
 }
 
 // Option customizes a Server.
@@ -36,6 +37,13 @@ type Option func(*Server)
 func WithBaseURL(u string) Option {
 	return func(s *Server) {
 		s.baseURL = strings.TrimRight(u, "/")
+	}
+}
+
+// WithPrefix sets the server prefix to include in rendered skill and MCP links.
+func WithPrefix(p string) Option {
+	return func(s *Server) {
+		s.prefix = skill.NormalizePrefix(p)
 	}
 }
 
@@ -485,7 +493,7 @@ func (s *Server) handleSkillsManifest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, &Error{Status: http.StatusMethodNotAllowed, Code: ErrCodeInvalid, Message: "use GET"})
 		return
 	}
-	ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version)
+	ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version, s.prefix)
 	manifest, err := skill.ManifestJSON(ctx)
 	if err != nil {
 		writeError(w, r, err)
@@ -505,7 +513,7 @@ func (s *Server) handleSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, notFound("unknown skill %q", name))
 		return
 	}
-	ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version)
+	ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version, s.prefix)
 	body, err := skill.Render(name, ctx)
 	if err != nil {
 		if errors.Is(err, skill.ErrNotFound) {

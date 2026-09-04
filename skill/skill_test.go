@@ -176,13 +176,76 @@ func TestETagIsVersionDerivedAndStable(t *testing.T) {
 	}
 }
 
+func TestContextForAddsServerPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		configured      string
+		xForwardedPrefix string
+		prefix          string
+		wantBase        string
+		wantMCP         string
+	}{
+		{
+			name:     "prefix appended to auto base",
+			prefix:   "/dolmen",
+			wantBase: "https://public.example.com/dolmen",
+			wantMCP:  "https://public.example.com/dolmen/mcp",
+		},
+		{
+			name:       "prefix appended to configured base",
+			configured: "https://example.com",
+			prefix:     "/dolmen",
+			wantBase:   "https://example.com/dolmen",
+			wantMCP:    "https://example.com/dolmen/mcp",
+		},
+		{
+			name:     "no prefix",
+			wantBase: "https://public.example.com",
+			wantMCP:  "https://public.example.com/mcp",
+		},
+		{
+			name:             "forwarded prefix and server prefix do not double",
+			xForwardedPrefix: "/dolmen",
+			prefix:           "/dolmen",
+			wantBase:         "https://public.example.com/dolmen",
+			wantMCP:          "https://public.example.com/dolmen/mcp",
+		},
+		{
+			name:       "configured base that already ends with prefix is not doubled",
+			configured: "https://example.com/dolmen",
+			prefix:     "/dolmen",
+			wantBase:   "https://example.com/dolmen",
+			wantMCP:    "https://example.com/dolmen/mcp",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/skills", nil)
+			r.Host = "public.example.com"
+			r.TLS = &tls.ConnectionState{}
+			r.Header.Set("X-Forwarded-Proto", "https")
+			r.Header.Set("X-Forwarded-Host", "public.example.com")
+			if tc.xForwardedPrefix != "" {
+				r.Header.Set("X-Forwarded-Prefix", tc.xForwardedPrefix)
+			}
+			ctx := ContextFor(r, tc.configured, "", "v0.2.0", tc.prefix)
+			if ctx.BaseURL != tc.wantBase {
+				t.Fatalf("BaseURL: got %q, want %q", ctx.BaseURL, tc.wantBase)
+			}
+			if ctx.MCPURL != tc.wantMCP {
+				t.Fatalf("MCPURL: got %q, want %q", ctx.MCPURL, tc.wantMCP)
+			}
+		})
+	}
+}
+
 func TestBaseURLForParsesForwardedHeaderChains(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
 		host            string
 		xForwardedProto string
 		xForwardedHost  string
-		want            string
+		xForwardedPrefix string
+		want             string
 	}{
 		{
 			name:            "single forwarded proto and host",
@@ -205,6 +268,38 @@ func TestBaseURLForParsesForwardedHeaderChains(t *testing.T) {
 			xForwardedHost:  "",
 			want:            "https://example.com",
 		},
+		{
+			name:             "forwarded prefix is appended",
+			host:             "127.0.0.1:8080",
+			xForwardedProto:  "https",
+			xForwardedHost:   "public.example.com",
+			xForwardedPrefix: "/dolmen",
+			want:             "https://public.example.com/dolmen",
+		},
+		{
+			name:             "forwarded prefix uses first hop",
+			host:             "127.0.0.1:8080",
+			xForwardedProto:  "https",
+			xForwardedHost:   "public.example.com",
+			xForwardedPrefix: "/dolmen, /inner",
+			want:             "https://public.example.com/dolmen",
+		},
+		{
+			name:             "forwarded prefix is canonicalized",
+			host:             "127.0.0.1:8080",
+			xForwardedProto:  "https",
+			xForwardedHost:   "public.example.com",
+			xForwardedPrefix: "dolmen/",
+			want:             "https://public.example.com/dolmen",
+		},
+		{
+			name:             "forwarded root prefix is ignored",
+			host:             "127.0.0.1:8080",
+			xForwardedProto:  "https",
+			xForwardedHost:   "public.example.com",
+			xForwardedPrefix: "/",
+			want:             "https://public.example.com",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodGet, "/skills", nil)
@@ -214,6 +309,9 @@ func TestBaseURLForParsesForwardedHeaderChains(t *testing.T) {
 			}
 			if tc.xForwardedHost != "" {
 				r.Header.Set("X-Forwarded-Host", tc.xForwardedHost)
+			}
+			if tc.xForwardedPrefix != "" {
+				r.Header.Set("X-Forwarded-Prefix", tc.xForwardedPrefix)
 			}
 			if tc.name == "tls fallback when no forwarded proto" {
 				r.TLS = &tls.ConnectionState{}
