@@ -163,9 +163,20 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
 
 ### Full-text (FTS5) search syntax
 
-Dolmen indexes `fulltext` fields with SQLite FTS5 using the default `unicode61` tokenizer:
-case-insensitive, diacritic-insensitive for most Latin characters (some non-Latin or multi-diacritic
-characters may not normalize), no stemming. Most punctuation (including hyphens) is a token boundary.
+Dolmen indexes `fulltext` fields with SQLite FTS5 using the `porter` stemmer over the `unicode61`
+tokenizer: case-insensitive, diacritic-insensitive for most Latin characters (some non-Latin or
+multi-diacritic characters may not normalize), **stemmed** — the index and the query both reduce
+English words to stems, so plural/inflected terms just match (`payments` ↔ `payment`, `refunds` ↔
+`refund`). Most punctuation (including hyphens) is a token boundary.
+
+**Stemming notes (porter is a suffix-stripper, not a lemmatizer):** it collapses inflections of the
+same root but not different derivations — `paying`/`pays`/`paid` stem to `pai`/`paid` and do **not**
+match `payment`. Phrases match on stems (`"payments were"` matches `the payments were refunded`).
+Prefix queries operate on stems: `pay*` stems to `pai*`, matching `paid`/`paying`/`pays` but not
+`payment`. Stemming is English-focused. Tables created before stemming became the default keep
+their exact-token index (they keep working); reindex one with `migrate`:
+`{"op": "set_fulltext", "name": "<fulltext field>", "value": true}` — re-asserting `true` on an
+already-indexed field rebuilds the index under the current tokenizer.
 
 **CJK limitation:** `unicode61` does not segment CJK text — it breaks tokens only at whitespace and
 punctuation. Chinese/Japanese are usually written without spaces, so an uninterrupted run of CJK
@@ -175,15 +186,15 @@ Whole-run terms, prefix queries (`中华*`), and space-delimited Korean still to
 keyword recall over space-less CJK text, fall back to vector search over an embedding column
 (`vectorize: true` + `search_vector(text=...)`) or `query` with `LIKE`.
 
-- `payment` — one token.
+- `payment` — one token (`payments` matches the same stem).
 - `payment gateway` — implicit `AND`.
 - `payment OR gateway`.
 - `payment NOT gateway`.
 - `title:payment` — only in the `title` fulltext field.
 - `{title body}:payment` — any of those fields.
-- `"foo bar"` — phrase (adjacent tokens). Phrases match token adjacency, not literal punctuation.
+- `"foo bar"` — phrase (adjacent tokens, matched on stems). Phrases match token adjacency, not literal punctuation.
 - `"foo-bar"` — double-quote terms that contain spaces or punctuation; bare `foo-bar` is parsed as multiple terms and usually errors.
-- `pay*` — prefix match.
+- `pay*` — prefix match, applied to the stemmed term (`pay*` → `pai*`).
 - `NEAR(payment refund)` — proximity search (default near span). Use the group form
   `NEAR(term1 term2 ...)`; `term1 NEAR(term2)` is parsed as an implicit `AND` and does not enforce proximity.
 - Terms like `"can't"` must be in double quotes; bare single quotes are a syntax error.

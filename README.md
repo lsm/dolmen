@@ -482,27 +482,44 @@ added as adapters without touching the API or MCP surface.
 
 ### Full-text search (FTS5)
 
-Fields marked `fulltext: true` are indexed with a shadow SQLite FTS5 table. The default tokenizer is
-`unicode61`: case-insensitive, diacritic-insensitive for most Latin characters (some non-Latin or
-multi-diacritic characters may not normalize), and it does **not** stem. Most punctuation, including
-hyphens, is a token boundary.
+Fields marked `fulltext: true` are indexed with a shadow SQLite FTS5 table. The tokenizer is the
+`porter` stemmer wrapping `unicode61`: case-insensitive, diacritic-insensitive for most Latin
+characters (some non-Latin or multi-diacritic characters may not normalize), and **stemmed** — both
+the index and the query reduce English words to stems, so `payments` matches `payment` and `refunds`
+matches `refund` without a prefix wildcard. Most punctuation, including hyphens, is a token boundary.
+
+Stemming notes:
+
+- Porter is a suffix-stripper, not a lemmatizer: it collapses inflections of the same root
+  (`payments`/`payment`, `refunded`/`refunds`/`refund`) but not different derivations — `paying`,
+  `pays`, and `paid` stem to `pai`/`paid` and do **not** match `payment`.
+- Phrases match on stems: each word of the phrase is stemmed before matching, so `"payments were"`
+  matches `"the payments were refunded"` (stems `payment`, `were`).
+- Prefix queries operate on stems: `pay*` stems to `pai*`, so it matches `paid`/`paying`/`pays` but
+  not `payment` (whose stem is `payment`).
+- Stemming is English-focused. CJK text is untouched by the stemmer — an uninterrupted CJK run is
+  still indexed as one opaque token, as before (#106).
+- Tables created before stemming became the default keep their exact-token index and keep working.
+  Reindex one with `migrate`: `{"op": "set_fulltext", "name": "<fulltext field>", "value": true}` —
+  re-asserting `true` on an already-indexed field rebuilds the index under the current tokenizer
+  (the migrate plan reports `rebuild_fulltext: true`). BM25 rank ordering shifts after a reindex.
 
 `search_fulltext` takes a raw FTS5 `MATCH` expression in `query`. It is **not** SQL, so do not wrap
 the whole expression in single quotes.
 
 Common syntax:
 
-- `payment` — a single token.
+- `payment` — a single token (`payments` matches the same stem).
 - `payment gateway` — implicit `AND` between tokens.
 - `payment OR gateway` — either token.
 - `payment NOT gateway` — must contain `payment` and must not contain `gateway`.
 - `title:payment` — only in the `title` fulltext field.
 - `{title body}:payment` — in any of the named fulltext fields.
-- `"foo bar"` — phrase (adjacent tokens). Because stored punctuation is also tokenized, a phrase
-  matches token adjacency, not literal punctuation.
+- `"foo bar"` — phrase (adjacent tokens, matched on stems). Because stored punctuation is also
+  tokenized, a phrase matches token adjacency, not literal punctuation.
 - `"foo-bar"` — double-quote any term that contains spaces or punctuation (hyphens, dots, slashes,
   apostrophes). Bare `foo-bar` is parsed as multiple terms and usually errors.
-- `pay*` — prefix match.
+- `pay*` — prefix match, applied to the stemmed term (`pay*` → `pai*`).
 - `NEAR(payment refund)` — proximity search (default near span). The group form
   `NEAR(term1 term2 ...)` enforces proximity; writing `term1 NEAR(term2)` instead parses as an
   implicit `AND` and does **not** enforce proximity.
