@@ -53,7 +53,8 @@ The `dolmen` tools then appear in `tools/list` with full input schemas. The endp
 read from the environment: `DOLMEN_URL` (default `{{ .BaseURL }}`).
 
 If the `dolmen` MCP tools are not connected, do not improvise — ask the user to re-run the
-connection command above.
+connection command above. MCP servers cannot be hot-loaded into an already-running session; when
+no user is available to re-run it, use the JSON-RPC fallback below instead.
 
 ## Raw HTTP
 
@@ -83,6 +84,42 @@ The same call with a typo'd field name returns the error envelope:
 ```json
 {"ok":false,"error":{"code":"invalid_request","message":"unknown field \"titel\" on table findings (see describe_table)"}}
 ```
+
+## JSON-RPC fallback
+
+When the `dolmen` tools are not connected and no user is available to re-run the connection
+command, drive the MCP endpoint directly: JSON-RPC 2.0 request objects, one per `POST` to
+`{{ .MCPURL }}` (`Content-Type: application/json`). The endpoint is stateless — no session id,
+no handshake order — so every request stands alone and a `tools/call` works without a prior
+`initialize`. Tool names, input schemas, and `structuredContent` results are exactly what a
+connected MCP client sees; for plain one-shot calls the raw HTTP operations above are simpler.
+
+Initialize:
+
+```bash
+mcp="{{ .MCPURL }}"
+curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"agent","version":"1.0"}}}'
+```
+
+List every tool with its input schema (single page, no cursor):
+
+```bash
+curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+```
+
+Call a tool — `arguments` is the tool's input, and the result data arrives unwrapped in
+`result.structuredContent`:
+
+```bash
+curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_tables","arguments":{"namespace":"research"}}}'
+```
+
+```json
+{"id":3,"jsonrpc":"2.0","result":{"content":[],"isError":false,"structuredContent":{"tables":["findings"]}}}
+```
+
+A failed call is not an HTTP error: the result carries `"isError":true` and the error object
+(`{"code","message"}`) as JSON text in `content[0].text`.
 
 ## Working rules
 

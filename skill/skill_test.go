@@ -41,6 +41,38 @@ func TestRenderRejectsUnknownSkill(t *testing.T) {
 	}
 }
 
+// TestRenderDocumentsJSONRPCFallback guards the autonomous-session fallback:
+// when the MCP tools cannot be hot-loaded, both skills must document driving
+// the MCP endpoint directly over stateless JSON-RPC.
+func TestRenderDocumentsJSONRPCFallback(t *testing.T) {
+	ctx := Context{
+		BaseURL:       "http://example.com",
+		MCPURL:        "http://example.com/mcp",
+		Version:       "v0.2.0",
+		NamespaceHint: "Use the `team` namespace.",
+	}
+	for _, name := range []string{"dolmen", "dolmen-admin"} {
+		out, err := Render(name, ctx)
+		if err != nil {
+			t.Fatalf("render %q: %v", name, err)
+		}
+		body := string(out)
+		for _, needle := range []string{
+			"JSON-RPC fallback",
+			"stateless",
+			ctx.MCPURL,
+			`"method":"initialize"`,
+			`"method":"tools/list"`,
+			`"method":"tools/call"`,
+			"structuredContent",
+		} {
+			if !strings.Contains(body, needle) {
+				t.Fatalf("%s: rendered body missing %q", name, needle)
+			}
+		}
+	}
+}
+
 func TestManifestShape(t *testing.T) {
 	ctx := Context{
 		BaseURL:       "http://example.com",
@@ -74,6 +106,9 @@ func TestManifestShape(t *testing.T) {
 	}
 	if m.LayerPicker == "" {
 		t.Fatalf("manifest layer_picker must not be empty")
+	}
+	if !strings.Contains(m.LayerPicker, "JSON-RPC") {
+		t.Fatalf("manifest layer_picker must mention the JSON-RPC fallback, got %q", m.LayerPicker)
 	}
 	if len(m.Skills) != 2 {
 		t.Fatalf("expected two skills, got %d", len(m.Skills))
