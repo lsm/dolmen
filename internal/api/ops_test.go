@@ -279,15 +279,15 @@ func vectorSearchWithProvider(t *testing.T, p interface {
 	t.Cleanup(func() { st.Close() })
 	srv := httptest.NewServer(New(st, p).Handler())
 	t.Cleanup(srv.Close)
-	code, _ := post(t, srv.URL, "create_table", map[string]any{
-		"namespace": "p",
-		"table":     "t",
-		"fields":    []map[string]any{{"name": "s", "type": "text", "vectorize": true}},
-	})
-	if code != 200 {
-		t.Fatal("create failed")
+	// create_table rejects vectorize when the provider cannot embed (a blank
+	// identity included), so create through the store: these tests exercise
+	// search_vector against an already-committed vectorized schema.
+	if _, err := st.CreateTable(context.Background(), "p", "t", []schema.Field{
+		{Name: "s", Type: schema.Text, Vectorize: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
 	}
-	code, _ = post(t, srv.URL, "search_vector", map[string]any{
+	code, _ := post(t, srv.URL, "search_vector", map[string]any{
 		"namespace": "p", "table": "t", "text": "anything",
 	})
 	return code
@@ -444,11 +444,14 @@ func TestSearchVectorTextErrorsDisambiguated(t *testing.T) {
 	t.Cleanup(func() { stNone.Close() })
 	srvNone := httptest.NewServer(New(stNone, embed.None{}).Handler())
 	t.Cleanup(srvNone.Close)
-	if code, _ := post(t, srvNone.URL, "create_table", map[string]any{
-		"namespace": "dis", "table": "vec",
-		"fields":    []map[string]any{{"name": "s", "type": "text", "vectorize": true}},
-	}); code != 200 {
-		t.Fatal("create vec failed")
+	// create_table rejects vectorize without a provider, so reach past the API
+	// and create through the store: a vectorized table can still legitimately
+	// exist on a provider-less server (it predates the provider's removal),
+	// which is exactly the case (b) must keep serving.
+	if _, err := stNone.CreateTable(context.Background(), "dis", "vec", []schema.Field{
+		{Name: "s", Type: schema.Text, Vectorize: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
 	}
 	code, res = post(t, srvNone.URL, "search_vector", map[string]any{
 		"namespace": "dis", "table": "vec", "text": "hello",
@@ -529,6 +532,142 @@ func TestSearchVectorTextErrorsDisambiguated(t *testing.T) {
 	}
 	if strings.Contains(msg, "DOLMEN_EMBED") || strings.Contains(msg, "no vectorized field") {
 		t.Fatalf("identity-mismatch error must not be confusable with the other two, got %q", msg)
+	}
+}
+
+// TestCreateTableRejectsVectorizeWithoutProvider pins the create-time half of
+// the vectorize provider contract: a server that cannot embed must refuse to
+// commit a vectorized schema, with an operator-facing error naming the
+// DOLMEN_EMBED_* configuration — while plain tables, and vectorized tables on
+// a provider-ful server, keep creating. A malformed vectorize request is the
+// caller's to fix and is reported before the provider error, the same
+// table-shape-before-provider ordering search_vector uses.
+func TestCreateTableRejectsVectorizeWithoutProvider(t *testing.T) {
+	errParts := func(res map[string]any) (string, string) {
+		errEnv, _ := res["error"].(map[string]any)
+		code, _ := errEnv["code"].(string)
+		msg, _ := errEnv["message"].(string)
+		return code, msg
+	}
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	srv := httptest.NewServer(New(st, embed.None{}).Handler())
+	t.Cleanup(srv.Close)
+
+	// (a) vectorize on a provider-less server: rejected at creation time with
+	// the operator fix, and nothing committed.
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "prov", "table": "notes",
+		"fields":    []map[string]any{{"name": "body", "type": "text", "vectorize": true}},
+	})
+	if code != 400 {
+		t.Fatalf("vectorize without a provider must 400 at creation, got %d %v", code, res)
+	}
+	errCode, msg := errParts(res)
+	if errCode != "invalid_request" {
+		t.Fatalf("provider-unavailable error must stay invalid_request, got %q", errCode)
+	}
+	for _, want := range []string{"body", "DOLMEN_EMBED_PROVIDER", "DOLMEN_EMBED_API_KEY", "operator", "not created", "set_vectorize"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("provider-unavailable error must mention %q, got %q", want, msg)
+		}
+	}
+	if code, res := post(t, srv.URL, "describe_table", map[string]any{
+		"namespace": "prov", "table": "notes",
+	}); code != 404 {
+		t.Fatalf("the rejected table must not exist, got %d %v", code, res)
+	}
+
+	// (b) the same server keeps creating non-vectorized tables.
+	if code, _ := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "prov", "table": "plain",
+		"fields":    []map[string]any{{"name": "s", "type": "string"}},
+	}); code != 200 {
+		t.Fatal("plain create must keep working without a provider")
+	}
+
+	// (c) a provider-ful server keeps creating vectorized tables.
+	if code, _ := post(t, newTestServer(t).URL, "create_table", map[string]any{
+		"namespace": "prov", "table": "notes",
+		"fields":    []map[string]any{{"name": "body", "type": "text", "vectorize": true}},
+	}); code != 200 {
+		t.Fatal("vectorize create must keep working with a provider")
+	}
+
+	// (d) malformed vectorize without a provider reports the field error
+	// first — the caller can fix it without an operator round-trip.
+	code, res = post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "prov", "table": "wrongtype",
+		"fields":    []map[string]any{{"name": "n", "type": "number", "vectorize": true}},
+	})
+	if code != 400 {
+		t.Fatalf("vectorize on a number field must 400, got %d %v", code, res)
+	}
+	errCode, msg = errParts(res)
+	if errCode != "invalid_request" || !strings.Contains(msg, "vectorize is only allowed on string or text fields") {
+		t.Fatalf("field error must win over the provider error, got %q %q", errCode, msg)
+	}
+	if strings.Contains(msg, "DOLMEN_EMBED") {
+		t.Fatalf("field error must not yet demand provider config, got %q", msg)
+	}
+}
+
+// TestMigrateSetVectorizeRequiresProvider pins the migration half of the
+// vectorize provider contract: enabling vectorize on a server that cannot
+// embed is rejected at plan time — apply and dry-run share the guard — with
+// the DOLMEN_EMBED_* pointer, and the table's schema is left untouched.
+func TestMigrateSetVectorizeRequiresProvider(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	srv := httptest.NewServer(New(st, embed.None{}).Handler())
+	t.Cleanup(srv.Close)
+	if code, _ := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "prov", "table": "notes",
+		"fields":    []map[string]any{{"name": "s", "type": "text"}},
+	}); code != 200 {
+		t.Fatal("create failed")
+	}
+	changes := []map[string]any{{"op": "set_vectorize", "name": "s", "value": true}}
+	for _, dry := range []bool{false, true} {
+		code, res := post(t, srv.URL, "migrate", map[string]any{
+			"namespace": "prov", "table": "notes",
+			"changes":   changes, "expected_version": 1, "dry_run": dry,
+		})
+		if code != 400 {
+			t.Fatalf("set_vectorize without a provider must 400 (dry_run=%t), got %d %v", dry, code, res)
+		}
+		errEnv, _ := res["error"].(map[string]any)
+		errCode, _ := errEnv["code"].(string)
+		msg, _ := errEnv["message"].(string)
+		if errCode != "invalid_request" {
+			t.Fatalf("must stay invalid_request (dry_run=%t), got %q", dry, errCode)
+		}
+		for _, want := range []string{"embedding provider", "identity", "DOLMEN_EMBED_PROVIDER"} {
+			if !strings.Contains(msg, want) {
+				t.Fatalf("must mention %q (dry_run=%t), got %q", want, dry, msg)
+			}
+		}
+	}
+	// The rejected migration left the schema untouched.
+	code, res := post(t, srv.URL, "describe_table", map[string]any{
+		"namespace": "prov", "table": "notes",
+	})
+	if code != 200 {
+		t.Fatalf("describe after rejected migrate: %d %v", code, res)
+	}
+	table, _ := res["data"].(map[string]any)["table"].(map[string]any)
+	if table["version"] != float64(1) {
+		t.Fatalf("version must still be 1, got %v", table["version"])
+	}
+	fields, _ := table["fields"].([]any)
+	if len(fields) != 1 || fields[0].(map[string]any)["vectorize"] == true {
+		t.Fatalf("vectorize must not be set on the stored schema, got %v", fields)
 	}
 }
 

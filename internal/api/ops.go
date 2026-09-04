@@ -342,6 +342,23 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
+			// A vectorized table on a server that cannot embed is unwritable:
+			// without this check the failure surfaces only at the first insert,
+			// after the schema has committed. Report the fields' own errors
+			// first (malformed vectorize is the caller's to fix, the provider
+			// is the operator's) — the same table-shape-before-provider
+			// ordering search_vector uses.
+			if s.emb.Identity() == "" {
+				for _, f := range req.Fields {
+					if !f.Vectorize {
+						continue
+					}
+					if err := schema.Validate(schema.Normalize(req.Fields)); err != nil {
+						return nil, badRequest("%s", err)
+					}
+					return nil, badRequest("field %q has vectorize, but this server has no usable embedding provider (none is configured, or the configured one does not report its identity); the table is not created — an operator must set the server-side DOLMEN_EMBED_* environment variables: DOLMEN_EMBED_PROVIDER=openai plus DOLMEN_EMBED_API_KEY (or OPENAI_API_KEY), optionally DOLMEN_EMBED_BASE_URL and DOLMEN_EMBED_MODEL; or create the field without vectorize and enable it via migrate (set_vectorize) once a provider is configured", f.Name)
+				}
+			}
 			sc, err := s.st.CreateTable(ctx, normNS(req.Namespace), normTable(req.Table), req.Fields)
 			if err != nil {
 				return nil, wrapStoreErr(err)
