@@ -71,6 +71,7 @@ func TestValidateRejects(t *testing.T) {
 		{{Name: "a", Type: Number, Enum: []string{"x"}}},
 		{{Name: "a", Type: String, Enum: []string{}}},
 		{{Name: "a", Type: String, Enum: []string{"x", "x"}}},
+		{{Name: "a", Type: String, Enum: []string{""}}},
 	}
 	for i, fields := range cases {
 		if err := Validate(fields); err == nil {

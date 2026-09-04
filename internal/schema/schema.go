@@ -148,14 +148,19 @@ func ValidTableName(s string) bool {
 }
 
 // ValidateEnum checks a declared enum vocabulary: at least one value, none
-// repeated. It is shared by field-list validation (create_table, add_field)
-// and migrate's set_enum, so the two cannot drift.
+// repeated, none empty — the schemas declare items with minLength 1, so the
+// server must reject exactly what they reject. It is shared by field-list
+// validation (create_table, add_field) and migrate's set_enum, so the paths
+// cannot drift.
 func ValidateEnum(field string, vals []string) error {
 	if len(vals) == 0 {
 		return fmt.Errorf("field %q: enum must list at least one value (pass an empty list to set_enum only, which removes the constraint)", field)
 	}
 	seen := make(map[string]bool, len(vals))
 	for _, v := range vals {
+		if v == "" {
+			return fmt.Errorf("field %q: enum values must not be empty strings", field)
+		}
 		if seen[v] {
 			return fmt.Errorf("field %q: enum lists duplicate value %q", field, v)
 		}

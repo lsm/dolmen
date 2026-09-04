@@ -46,6 +46,12 @@ func TestEnumCreateTableValidation(t *testing.T) {
 	}); err == nil || !strings.Contains(err.Error(), `field "title": enum lists duplicate value "a"`) {
 		t.Fatalf("duplicate enum values must be rejected, got %v", err)
 	}
+	// The schemas promise minLength-1 values; the server rejects the same.
+	if _, err := st.CreateTable(ctx, "test", "bad_empty_val", []schema.Field{
+		{Name: "title", Type: schema.String, Enum: []string{""}},
+	}); err == nil || !strings.Contains(err.Error(), `field "title": enum values must not be empty strings`) {
+		t.Fatalf("empty enum value must be rejected, got %v", err)
+	}
 	// A declared default must be an enum member; the rejection happens at
 	// create time, not at the first defaulted insert.
 	if _, err := st.CreateTable(ctx, "test", "bad_default", []schema.Field{
@@ -315,11 +321,16 @@ func TestEnumSetEnumValidation(t *testing.T) {
 	}, testEmbed, 1); err == nil || !strings.Contains(err.Error(), `field "title": enum is only allowed on string fields (this field has type text)`) {
 		t.Fatalf("set_enum on text field must be rejected, got %v", err)
 	}
-	// A new vocabulary must not have duplicates.
+	// A new vocabulary must not have duplicates or empty values.
 	if _, err := st.Migrate(ctx, "test", "incidents", []schema.Change{
 		{Op: schema.OpSetEnum, Name: "severity", Enum: enumPtr("SEV0", "SEV0")},
 	}, testEmbed, 1); err == nil || !strings.Contains(err.Error(), `duplicate value "SEV0"`) {
 		t.Fatalf("duplicate vocabulary must be rejected, got %v", err)
+	}
+	if _, err := st.Migrate(ctx, "test", "incidents", []schema.Change{
+		{Op: schema.OpSetEnum, Name: "severity", Enum: enumPtr("")},
+	}, testEmbed, 1); err == nil || !strings.Contains(err.Error(), `enum values must not be empty strings`) {
+		t.Fatalf("empty-string vocabulary must be rejected, got %v", err)
 	}
 	// A declared default must survive the new vocabulary.
 	if _, err := st.Migrate(ctx, "test", "incidents", []schema.Change{
