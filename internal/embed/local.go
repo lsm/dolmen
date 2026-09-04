@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -27,6 +28,13 @@ const localModelDir = "models"
 // shape rembed's hub accepts, so DOLMEN_EMBED_MODEL validates locally
 // before any download is attempted.
 var localModelIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+$`)
+
+// CacheManifestName is the file cmd/pack-model writes as the first tar
+// entry of a release model asset, recording every file's size. Its presence
+// lets the server reject a partially extracted cache: a tar stream cut
+// mid-file leaves the file on disk with the wrong size, which existence
+// checks alone cannot see.
+const CacheManifestName = ".dolmen-sizes.json"
 
 // LocalEngine is the slice of rembed's *Embedder the provider needs —
 // exported so tests outside the package can inject a stub engine, and the
@@ -241,6 +249,31 @@ func seededCacheDir(cacheRoot, model string) string {
 		return ""
 	}
 
+	// A cache packaged by the release asset carries a size manifest as its
+	// first entry; when present, every listed file must match its recorded
+	// size, so a tar extraction interrupted mid-file cannot pass as a
+	// complete cache. Caches without a manifest (written by rembed's own
+	// atomic-rename downloader) rely on the checks above.
+	if fi, err := os.Stat(filepath.Join(dir, CacheManifestName)); err == nil && !fi.IsDir() {
+		manifestRaw, err := os.ReadFile(filepath.Join(dir, CacheManifestName))
+		if err != nil {
+			return ""
+		}
+		var sizes map[string]int64
+		if err := json.Unmarshal(manifestRaw, &sizes); err != nil {
+			return ""
+		}
+		for name, want := range sizes {
+			if !validCacheRel(name) {
+				return ""
+			}
+			fi, err := os.Stat(filepath.Join(dir, filepath.FromSlash(name)))
+			if err != nil || fi.IsDir() || fi.Size() != want {
+				return ""
+			}
+		}
+	}
+
 	// A single-file model has model.safetensors; sharded models have an
 	// index plus one or more shard files. The index alone is not enough.
 	single := filepath.Join(dir, "model.safetensors")
@@ -286,6 +319,16 @@ func validCacheShard(name string) bool {
 		return false
 	}
 	return !strings.ContainsAny(name, `/\`)
+}
+
+// validCacheRel reports whether name is a relative, traversal-free slash path
+// (it may name a file inside a module directory, e.g. 1_Pooling/config.json)
+// safe to look for inside a pre-seeded cache directory.
+func validCacheRel(name string) bool {
+	if name == "" || strings.Contains(name, "..") || strings.ContainsRune(name, '\\') {
+		return false
+	}
+	return !filepath.IsAbs(name) && name == path.Clean(name)
 }
 
 // TokenizerFiles mirrors rembed's hub package: it returns the tokenizer

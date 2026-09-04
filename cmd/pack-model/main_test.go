@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/embed"
 )
 
 func TestPackageDefaultModelLayout(t *testing.T) {
@@ -70,6 +73,8 @@ func TestPackageDefaultModelLayout(t *testing.T) {
 	tr := tar.NewReader(gr)
 
 	found := make(map[string]int64)
+	var manifestName string
+	var manifestRaw []byte
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -83,6 +88,13 @@ func TestPackageDefaultModelLayout(t *testing.T) {
 		if hdr.Size == 0 {
 			t.Fatalf("empty file in tar: %s", hdr.Name)
 		}
+		if strings.HasSuffix(hdr.Name, embed.CacheManifestName) {
+			manifestName = hdr.Name
+			manifestRaw, err = io.ReadAll(tr)
+			if err != nil {
+				t.Fatalf("read manifest: %v", err)
+			}
+		}
 	}
 
 	prefix := "test-org--all-MiniLM-L6-v2/"
@@ -92,8 +104,24 @@ func TestPackageDefaultModelLayout(t *testing.T) {
 			t.Fatalf("missing tar entry: %s", want)
 		}
 	}
-	if len(found) != len(files) {
+	if len(found) != len(files)+1 {
 		t.Fatalf("unexpected tar entries: %v", found)
+	}
+
+	// The size manifest must record every model file with its exact size, so
+	// an interrupted extraction leaves either a missing file or one whose
+	// size disagrees with it.
+	var manifest map[string]int64
+	if err := json.Unmarshal(manifestRaw, &manifest); err != nil {
+		t.Fatalf("parse %s: %v", manifestName, err)
+	}
+	if len(manifest) != len(files) {
+		t.Fatalf("manifest records %d files, want %d: %v", len(manifest), len(files), manifest)
+	}
+	for name, data := range files {
+		if got, ok := manifest[name]; !ok || got != int64(len(data)) {
+			t.Fatalf("manifest entry for %s: got %d (present %v), want %d", name, got, ok, len(data))
+		}
 	}
 }
 
@@ -170,8 +198,8 @@ func TestPackageShardedWeights(t *testing.T) {
 		}
 		count++
 	}
-	if count != len(files) {
-		t.Fatalf("expected %d tar entries, got %d", len(files), count)
+	if count != len(files)+1 { // model files plus the size manifest
+		t.Fatalf("expected %d tar entries, got %d", len(files)+1, count)
 	}
 }
 

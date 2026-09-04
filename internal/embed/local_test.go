@@ -2,6 +2,7 @@ package embed
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -468,6 +469,38 @@ func TestSeededCacheDir(t *testing.T) {
 	}
 	if got := seededCacheDir(cache, "org/roberta"); got != roberta {
 		t.Fatalf("seededCacheDir with full roberta tokenizer: got %q, want %q", got, roberta)
+	}
+
+	// A cache extracted from the release asset carries a size manifest: a
+	// file present but truncated (extraction interrupted mid-entry) must be
+	// rejected, not loaded with a partial vocabulary.
+	manifested := filepath.Join(cache, "org--manifested")
+	if err := os.MkdirAll(manifested, 0o755); err != nil {
+		t.Fatalf("mkdir manifested: %v", err)
+	}
+	seedCache(t, manifested)
+	sizes := map[string]int64{
+		"config.json":           int64(len(`{"model_type": "bert"}`)),
+		"tokenizer_config.json": int64(len(`{"tokenizer_class": "BertTokenizer"}`)),
+		"modules.json":          int64(len(`[]`)),
+		"vocab.txt":             int64(len("[PAD]\n")),
+		"model.safetensors":     int64(len("weights")),
+	}
+	manifestRaw, err := json.Marshal(sizes)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(manifested, CacheManifestName), manifestRaw, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if got := seededCacheDir(cache, "org/manifested"); got != manifested {
+		t.Fatalf("seededCacheDir with matching sizes: got %q, want %q", got, manifested)
+	}
+	if err := os.WriteFile(filepath.Join(manifested, "vocab.txt"), []byte("[PAD"), 0o644); err != nil {
+		t.Fatalf("truncate vocab: %v", err)
+	}
+	if got := seededCacheDir(cache, "org/manifested"); got != "" {
+		t.Fatalf("seededCacheDir with truncated vocab.txt: got %q, want empty", got)
 	}
 }
 

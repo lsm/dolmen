@@ -292,7 +292,8 @@ DOLMEN_EMBED_MODEL=/opt/dolmen/models/sentence-transformers--all-MiniLM-L6-v2 \
 ```
 
 The tarball is ~90 MB and contains the `sentence-transformers--all-MiniLM-L6-v2/` directory (the same
-layout the `local` provider uses under `<data>/models`).
+layout the `local` provider uses under `<data>/models`), led by a size manifest (`.dolmen-sizes.json`)
+that lets the server reject a partially extracted cache instead of loading a truncated model.
 
 Verify the server embeds without reaching `huggingface.co` by creating a vectorized table, inserting
 a row, and running a text vector search:
