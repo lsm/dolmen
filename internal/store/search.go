@@ -61,21 +61,22 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 		q(ftsTable(table)), ftsTable(table))
 	qargs := []any{query, limit + 1, offset}
 	if filter != "" {
-		// The filter restricts base-table rows before ranking, with the same
-		// semantics as search_vector's filter: its WHERE expression runs
-		// against the base table alone, so bare and table-qualified column
-		// names resolve exactly as they do there — no join, so the FTS table's
-		// duplicate column names (or a base field named rank) cannot make a
-		// reference ambiguous.
-		stmt = fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? AND rowid IN (SELECT id FROM %s WHERE %s) ORDER BY rank, rowid LIMIT ? OFFSET ?`,
-			q(ftsTable(table)), ftsTable(table), q(table), filter)
+		// Validate the filter on its own before running the combined query:
+		// LIMIT 0 compiles it (syntax, column references, bind arity) without
+		// evaluating rows, so failures are classified against the filter while
+		// any later failure of the combined query belongs to the MATCH
+		// expression and keeps the FTS-query error wording.
+		probe, err := tx.QueryContext(ctx,
+			fmt.Sprintf(`SELECT 1 FROM %s WHERE %s LIMIT 0`, q(table), filter), args...)
+		if err != nil {
+			return nil, false, NewFilterError(filter, err)
+		}
+		probe.Close()
+		stmt = fulltextFilterStmt(table, filter)
 		qargs = append(append([]any{query}, args...), limit+1, offset)
 	}
 	rows, err := tx.QueryContext(ctx, stmt, qargs...)
 	if err != nil {
-		if filter != "" {
-			return nil, false, NewFilterError(filter, err)
-		}
 		return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	defer rows.Close()
@@ -102,6 +103,20 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 		return nil, false, err
 	}
 	return out, hasMore || !complete, nil
+}
+
+// fulltextFilterStmt is the filtered FTS candidate query. The filter
+// restricts base-table rows before ranking, with the same semantics as
+// search_vector's filter: its WHERE expression runs against the base table
+// alone — no join — so bare and table-qualified column names resolve exactly
+// as they do there, and the FTS table's duplicate column names (or a base
+// field named rank) cannot make a reference ambiguous. The predicate is
+// correlated to each FTS hit, so SQLite checks it with one primary-key id
+// lookup per MATCH result instead of scanning or materializing the filter's
+// matches when the filter is unselective.
+func fulltextFilterStmt(table, filter string) string {
+	return fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? AND EXISTS (SELECT 1 FROM %s WHERE %s.id = %s.rowid AND (%s)) ORDER BY rank, rowid LIMIT ? OFFSET ?`,
+		q(ftsTable(table)), ftsTable(table), q(table), q(table), ftsTable(table), filter)
 }
 
 type dbQueryer interface {

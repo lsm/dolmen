@@ -312,6 +312,78 @@ func TestSearchFulltextFilterWithRankField(t *testing.T) {
 	}
 }
 
+// Failures must be attributed to the expression that caused them: a malformed
+// MATCH with a valid filter stays an FTS-query error, and a malformed filter
+// with a valid MATCH reports the filter.
+func TestSearchFulltextFilterErrorClassification(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	mustInsertNotes(t, st)
+
+	_, _, err := st.SearchFulltext(ctx, "test", "notes", "\"unterminated", 0, 10, false, "score > 0", nil)
+	if err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected malformed MATCH to classify as invalid request, got %v", err)
+	}
+	if strings.Contains(err.Error(), "the filter must be") {
+		t.Fatalf("malformed MATCH must keep the FTS-query error wording, got %v", err)
+	}
+
+	_, _, err = st.SearchFulltext(ctx, "test", "notes", "note", 0, 10, false, "bogus =", nil)
+	if err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected malformed filter to classify as invalid request, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "the filter must be") {
+		t.Fatalf("malformed filter must carry the filter wording, got %v", err)
+	}
+}
+
+// The filtered query must check the filter with one primary-key lookup per
+// FTS hit, not by scanning (or materializing the matches of) the base table —
+// an unselective filter must not turn a selective MATCH into O(table).
+func TestSearchFulltextFilterPlanLooksUpRowsPerHit(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	mustInsertNotes(t, st)
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	rows, err := n.ro.QueryContext(ctx, `EXPLAIN QUERY PLAN `+fulltextFilterStmt("notes", "score >= 3"), "note", 10, 0)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	defer rows.Close()
+	var details []string
+	for rows.Next() {
+		var id, parent, notused any
+		var detail string
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		details = append(details, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	seek := "SEARCH notes USING INTEGER PRIMARY KEY (rowid=?)"
+	found := false
+	for _, d := range details {
+		if d == seek {
+			found = true
+		}
+		// The FTS side renders as "SCAN notes__fts VIRTUAL TABLE INDEX" —
+		// that prefix must not hide a scan of the base table itself.
+		if strings.HasPrefix(d, "SCAN notes") && !strings.HasPrefix(d, "SCAN notes__fts") {
+			t.Fatalf("filtered search must not scan the base table, plan: %v", details)
+		}
+	}
+	if !found {
+		t.Fatalf("filtered search must probe the base table by primary key per FTS hit, plan: %v", details)
+	}
+}
+
 // The filter must restrict the result set without reordering it: a filtered
 // page is exactly the unfiltered ranking with non-matching rows removed, and
 // offset/limit/truncated then page within that restricted set.
