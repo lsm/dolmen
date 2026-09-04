@@ -63,6 +63,29 @@ func TestE5IdentityMarker(t *testing.T) {
 	}
 }
 
+// TestIdentityNoModelCollision pins identity injectivity: a model directory
+// whose name already ends in a literal "#e5" (not e5-detected — "#" breaks
+// the name segment) must never share an identity with an e5-detected
+// directory whose marker produces the same suffix. The model component is
+// percent-escaped, so no model reference can contain the marker's bytes.
+func TestIdentityNoModelCollision(t *testing.T) {
+	e5Dir := (&Local{Model: "/models/foo-e5"}).Identity()         // e5-detected, marker appended
+	literalDir := (&Local{Model: "/models/foo-e5#e5"}).Identity() // not detected, literal "#e5" in name
+	if e5Dir == literalDir {
+		t.Fatalf("identities collide: %q vs %q — the embed_space guard would mix differently preprocessed embeddings", e5Dir, literalDir)
+	}
+	if want := "local//models/foo-e5#e5"; e5Dir != want {
+		t.Fatalf("e5-detected directory identity: got %q, want %q", e5Dir, want)
+	}
+	if want := "local//models/foo-e5%23e5"; literalDir != want {
+		t.Fatalf("literal-#e5 directory identity must escape the marker byte: got %q, want %q", literalDir, want)
+	}
+	// "%" itself is escaped too, keeping the encoding injective.
+	if got, want := (&Local{Model: "/models/100%23e5"}).Identity(), "local//models/100%2523e5"; got != want {
+		t.Fatalf("percent in model must be escaped: got %q, want %q", got, want)
+	}
+}
+
 // recordingEngine captures the text it is asked to embed, so tests can
 // assert exactly what reached the engine — the prefix behavior under test.
 type recordingEngine struct {

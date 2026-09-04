@@ -96,7 +96,9 @@ func (l *Local) ModelName() string { return l.Model }
 // switch to/from the OpenAI provider) is a different identity too, so
 // inserts and text searches are rejected until the table is re-embedded
 // via migrate — exactly as with the OpenAI provider.
-func (l *Local) Identity() string { return "local/" + l.Model + identityMarker(l.Model) }
+func (l *Local) Identity() string {
+	return "local/" + identityModel(l.Model) + identityMarker(l.Model)
+}
 
 // Cached reports whether the model weights are already on disk. A test stub
 // (Open != nil) is treated as cached so tests do not trigger the warning.

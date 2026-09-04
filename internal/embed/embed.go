@@ -68,6 +68,17 @@ func identityMarker(model string) string {
 	return ""
 }
 
+// identityModel renders the model reference for an embedding identity,
+// percent-escaping "%" and "#" (the marker's lead byte). The escape makes the
+// identity injective in the model: a model directory whose name already ends
+// in a literal "#e5" must not collide with an e5-detected model's marked
+// identity — a collision would defeat the embed_space guard and mix
+// differently preprocessed embeddings in one table. Hugging Face ids cannot
+// contain either character, so only directory-path models are re-rendered.
+func identityModel(model string) string {
+	return strings.NewReplacer("%", "%25", "#", "%23").Replace(model)
+}
+
 // prefixAll returns texts with prefix prepended to each; the empty prefix
 // returns texts unchanged.
 func prefixAll(prefix string, texts []string) []string {
@@ -120,7 +131,7 @@ func (o *OpenAI) ModelName() string { return o.Model }
 // trimmed) form — it cannot complete an HTTP request either, so it carries no
 // working credentials to leak.
 func (o *OpenAI) Identity() string {
-	model := o.Model + identityMarker(o.Model)
+	model := identityModel(o.Model) + identityMarker(o.Model)
 	trimmed := strings.TrimRight(o.BaseURL, "/")
 	u, err := url.Parse(trimmed)
 	if err != nil {
