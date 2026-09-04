@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -145,6 +147,69 @@ func writeOutSchema(withUpdated, withReplayed bool) map[string]any {
 		props["replayed"] = prop("boolean", "True when an idempotency_key replayed a previous insert (original ids returned, nothing re-inserted)")
 	}
 	return outSchema(props, required...)
+}
+
+// migrateChangeKeys lists the keys each migrate op accepts at change level, in
+// the order unknown-key errors quote them. add_field is the only op that takes
+// a field definition, nested under "field"; every other op names an existing
+// field with a plain string.
+var migrateChangeKeys = map[string][]string{
+	schema.OpAddField:     {"op", "field", "default"},
+	schema.OpRenameField:  {"op", "from", "to"},
+	schema.OpDropField:    {"op", "name"},
+	schema.OpSetFulltext:  {"op", "name", "value"},
+	schema.OpSetVectorize: {"op", "name", "value"},
+}
+
+// migrateFieldDefKeys are the field-definition properties that belong inside a
+// change's "field" object. Seeing one at change level means the caller
+// flattened add_field's nesting, so the error says where they go.
+var migrateFieldDefKeys = map[string]bool{
+	"name":      true,
+	"type":      true,
+	"dim":       true,
+	"fulltext":  true,
+	"vectorize": true,
+	"required":  true,
+}
+
+// validateMigrateChanges checks each change's keys against the op it names.
+// It runs on the raw decoded maps before the typed decode, whose
+// DisallowUnknownFields would otherwise surface a misplaced key as a bare
+// `json: unknown field "type"` — with no listing of the op's valid keys and no
+// hint that add_field nests its field definition under "field".
+func validateMigrateChanges(changes []map[string]any) error {
+	for i, ch := range changes {
+		op, _ := ch["op"].(string)
+		keys, known := migrateChangeKeys[op]
+		if !known {
+			return badRequest("changes[%d]: unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize)", i, op)
+		}
+		var unknown []string
+		for k := range ch {
+			if !slices.Contains(keys, k) {
+				unknown = append(unknown, k)
+			}
+		}
+		if len(unknown) > 0 {
+			sort.Strings(unknown)
+			hint := ""
+			for _, k := range unknown {
+				if migrateFieldDefKeys[k] {
+					hint = `; field definitions belong inside the "field" object for add_field`
+					break
+				}
+			}
+			return badRequest(`changes[%d]: unknown key %q on %s (valid keys: %s)%s`,
+				i, unknown[0], op, strings.Join(keys, ", "), hint)
+		}
+		if op == schema.OpSetFulltext || op == schema.OpSetVectorize {
+			if _, ok := ch["value"]; !ok {
+				return badRequest("changes[%d]: %s requires an explicit value (true or false); an omitted value would silently disable the feature and clear its index", i, op)
+			}
+		}
+	}
+	return nil
 }
 
 var Ops = map[string]OpDef{
@@ -1158,10 +1223,6 @@ var Ops = map[string]OpDef{
 			"plan":    planOutSchema("Migration preview (present when dry_run)"),
 		}, "table"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
-			var req migrateReq
-			if err := decode(body, &req); err != nil {
-				return nil, err
-			}
 			var shadow struct {
 				Namespace       string           `json:"namespace"`
 				Table           string           `json:"table"`
@@ -1172,18 +1233,12 @@ var Ops = map[string]OpDef{
 			if err := decodeData(body, &shadow); err != nil {
 				return nil, err
 			}
-			for i, ch := range shadow.Changes {
-				op, _ := ch["op"].(string)
-				if op == "set_fulltext" || op == "set_vectorize" {
-					if _, ok := ch["value"]; !ok {
-						return nil, badRequest("changes[%d]: %s requires an explicit value (true or false); an omitted value would silently disable the feature and clear its index", i, op)
-					}
-				}
-				if op == "add_field" || op == "rename_field" || op == "drop_field" {
-					if _, ok := ch["value"]; ok {
-						return nil, badRequest("changes[%d]: value is only allowed on set_fulltext and set_vectorize (op %q has no flag to set)", i, op)
-					}
-				}
+			if err := validateMigrateChanges(shadow.Changes); err != nil {
+				return nil, err
+			}
+			var req migrateReq
+			if err := decode(body, &req); err != nil {
+				return nil, err
 			}
 			ver := 0
 			if req.ExpectedVersion != nil {

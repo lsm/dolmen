@@ -125,6 +125,111 @@ func TestMigrateSetValueRequiredOverHTTP(t *testing.T) {
 	}
 }
 
+func TestMigrateUnknownChangeKeyErrors(t *testing.T) {
+	srv := newTestServer(t)
+	code, _ := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "mv",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "title", "type": "string"}},
+	})
+	if code != 200 {
+		t.Fatal("create failed")
+	}
+
+	migrate := func(t *testing.T, changes []map[string]any) (int, string) {
+		t.Helper()
+		code, res := post(t, srv.URL, "migrate", map[string]any{
+			"namespace": "mv", "table": "t", "changes": changes,
+		})
+		errEnv, _ := res["error"].(map[string]any)
+		msg, _ := errEnv["message"].(string)
+		return code, msg
+	}
+	const hint = `field definitions belong inside the "field" object for add_field`
+
+	for _, tc := range []struct {
+		name     string
+		changes  []map[string]any
+		want     string
+		wantHint bool
+	}{
+		{
+			name:     "flattened add_field definition",
+			changes:  []map[string]any{{"op": "add_field", "name": "status", "type": "string"}},
+			want:     `changes[0]: unknown key "name" on add_field (valid keys: op, field, default)`,
+			wantHint: true,
+		},
+		{
+			name:     "unknown add_field key",
+			changes:  []map[string]any{{"op": "add_field", "field": map[string]any{"name": "status", "type": "string"}, "bogus": 1}},
+			want:     `changes[0]: unknown key "bogus" on add_field (valid keys: op, field, default)`,
+			wantHint: false,
+		},
+		{
+			name:     "value on add_field",
+			changes:  []map[string]any{{"op": "add_field", "field": map[string]any{"name": "status", "type": "string"}, "value": true}},
+			want:     `changes[0]: unknown key "value" on add_field (valid keys: op, field, default)`,
+			wantHint: false,
+		},
+		{
+			name:     "field key on rename_field",
+			changes:  []map[string]any{{"op": "rename_field", "from": "title", "to": "headline", "type": "string"}},
+			want:     `changes[0]: unknown key "type" on rename_field (valid keys: op, from, to)`,
+			wantHint: true,
+		},
+		{
+			name:     "unknown drop_field key",
+			changes:  []map[string]any{{"op": "drop_field", "name": "title", "bogus": true}},
+			want:     `changes[0]: unknown key "bogus" on drop_field (valid keys: op, name)`,
+			wantHint: false,
+		},
+		{
+			name:     "unknown set_fulltext key",
+			changes:  []map[string]any{{"op": "set_fulltext", "name": "title", "value": true, "bogus": 1}},
+			want:     `changes[0]: unknown key "bogus" on set_fulltext (valid keys: op, name, value)`,
+			wantHint: false,
+		},
+		{
+			name:     "field key on set_vectorize",
+			changes:  []map[string]any{{"op": "set_vectorize", "name": "title", "value": false, "dim": 3}},
+			want:     `changes[0]: unknown key "dim" on set_vectorize (valid keys: op, name, value)`,
+			wantHint: true,
+		},
+		{
+			name:     "index of the offending change",
+			changes:  []map[string]any{{"op": "set_fulltext", "name": "title", "value": true}, {"op": "drop_field", "bogus": 1}},
+			want:     `changes[1]: unknown key "bogus" on drop_field (valid keys: op, name)`,
+			wantHint: false,
+		},
+		{
+			name:     "unknown op",
+			changes:  []map[string]any{{"op": "add_filed", "field": map[string]any{"name": "status"}}},
+			want:     `changes[0]: unknown migration op "add_filed" (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize)`,
+			wantHint: false,
+		},
+	} {
+		code, msg := migrate(t, tc.changes)
+		if code != 400 || !strings.Contains(msg, tc.want) {
+			t.Fatalf("%s: must 400 with %q, got %d %q", tc.name, tc.want, code, msg)
+		}
+		if hasHint := strings.Contains(msg, hint); hasHint != tc.wantHint {
+			t.Fatalf("%s: nesting hint presence must be %v, got %q", tc.name, tc.wantHint, msg)
+		}
+	}
+
+	// Well-formed changes must still pass the added validation.
+	code, res := post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "mv", "table": "t",
+		"changes": []map[string]any{
+			{"op": "add_field", "field": map[string]any{"name": "status", "type": "string"}, "default": "active"},
+			{"op": "set_fulltext", "name": "title", "value": true},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("valid changes must pass, got %d %v", code, res)
+	}
+}
+
 func TestSearchVectorBothFormsRejected(t *testing.T) {
 	srv := newTestServer(t)
 	code, res := post(t, srv.URL, "search_vector", map[string]any{
