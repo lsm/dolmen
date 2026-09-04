@@ -28,10 +28,18 @@ type Server struct {
 	baseURL       string
 	namespaceHint string
 	prefix        string
+	Auth          *Auth
 }
 
 // Option customizes a Server.
 type Option func(*Server)
+
+// WithAuth sets the authentication configuration for the server.
+func WithAuth(a *Auth) Option {
+	return func(s *Server) {
+		s.Auth = a
+	}
+}
 
 // WithBaseURL sets a configured public base URL. If empty, the request Host is used.
 func WithBaseURL(u string) Option {
@@ -58,6 +66,9 @@ func New(st *store.Store, emb embed.Provider, opts ...Option) *Server {
 	s := &Server{st: st, emb: emb}
 	for _, opt := range opts {
 		opt(s)
+	}
+	if s.Auth == nil {
+		s.Auth = &Auth{}
 	}
 	return s
 }
@@ -435,7 +446,7 @@ func OriginGuard(next http.Handler, extraOrigins []string) http.Handler {
 			w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
 			if r.Method == http.MethodOptions {
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id, X-Request-Id")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id, X-Request-Id, "+DefaultPrincipalHeader+", "+DefaultGroupsHeader)
 				w.Header().Set("Access-Control-Max-Age", "86400")
 				w.WriteHeader(http.StatusNoContent)
 				return
@@ -469,6 +480,17 @@ func (s *Server) Handler() http.Handler {
 		// X-Request-Id, generated when it did not.
 		r = r.WithContext(WithRequestID(r.Context(), RequestIDFor(r)))
 		w.Header().Set("X-Request-Id", RequestIDFrom(r.Context()))
+
+		// Resolve identity for this request. Auth-protected endpoints require a
+		// principal from a trusted proxy or a valid admin key; auth-off ignores
+		// any credentials and proceeds with no caller.
+		ctx, authErr := s.Auth.Authenticate(r.Context(), r)
+		if authErr != nil {
+			writeError(w, r, authErr)
+			return
+		}
+		r = r.WithContext(ctx)
+
 		op := strings.TrimPrefix(r.URL.Path, "/v1/")
 		if op == "" || strings.Contains(op, "/") {
 			writeError(w, r, notFound("unknown operation"))
@@ -495,7 +517,11 @@ func (s *Server) Handler() http.Handler {
 		}
 		res, err := s.Dispatch(r.Context(), op, body)
 		if err != nil {
-			slog.Debug("op failed", "op", op, "err", err)
+			logArgs := []any{"op", op, "err", err}
+			if c := CallerFrom(r.Context()); c != nil && c.Principal != "" {
+				logArgs = append(logArgs, "principal", c.Principal)
+			}
+			slog.Debug("op failed", logArgs...)
 			writeError(w, r, err)
 			return
 		}
@@ -596,10 +622,14 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	// Server-class failures (5xx) are operator-visible at Error level with
 	// their cause; request-class failures are client problems, logged only
 	// when debugging.
+	logArgs := []any{"code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause}
+	if c := CallerFrom(r.Context()); c != nil && c.Principal != "" {
+		logArgs = append(logArgs, "principal", c.Principal)
+	}
 	if status >= http.StatusInternalServerError {
-		slog.Error("api error", "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
+		slog.Error("api error", logArgs...)
 	} else {
-		slog.Debug("api error", "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
+		slog.Debug("api error", logArgs...)
 	}
 	writeJSONStatus(w, status, map[string]any{"ok": false, "error": apiErr.Public(reqID)})
 }

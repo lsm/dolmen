@@ -71,6 +71,7 @@ func TestLoadConfig(t *testing.T) {
 				AllowedOrigins:     nil,
 				Embed:              embedConfig{Provider: "local"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				Auth:               &api.Auth{},
 			},
 		},
 		{
@@ -83,6 +84,7 @@ func TestLoadConfig(t *testing.T) {
 				AllowedOrigins:     nil,
 				Embed:              embedConfig{Provider: "local"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				Auth:               &api.Auth{},
 			},
 		},
 		{
@@ -98,6 +100,7 @@ func TestLoadConfig(t *testing.T) {
 				Prefix:             "/dolmen",
 				Embed:              embedConfig{Provider: "none"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				Auth:               &api.Auth{},
 			},
 		},
 		{
@@ -112,6 +115,7 @@ func TestLoadConfig(t *testing.T) {
 				Prefix:             "/dolmen",
 				Embed:              embedConfig{Provider: "none"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				Auth:               &api.Auth{},
 			},
 		},
 		{
@@ -132,6 +136,7 @@ func TestLoadConfig(t *testing.T) {
 				Prefix:             "/dolmen",
 				Embed:              embedConfig{Provider: "none"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				Auth:               &api.Auth{},
 			},
 		},
 		{
@@ -157,6 +162,7 @@ func TestLoadConfig(t *testing.T) {
 					APIKey:   "secret",
 				},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				Auth:               &api.Auth{},
 			},
 		},
 		{
@@ -174,6 +180,7 @@ func TestLoadConfig(t *testing.T) {
 					APIKey:   "fallback",
 				},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				Auth:               &api.Auth{},
 			},
 		},
 		{
@@ -192,6 +199,7 @@ func TestLoadConfig(t *testing.T) {
 					APIKey:   "",
 				},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				Auth:               &api.Auth{},
 			},
 		},
 		{
@@ -220,6 +228,60 @@ func TestLoadConfig(t *testing.T) {
 			args:    []string{"-unknown"},
 			env:     map[string]string{},
 			wantErr: "flag provided but not defined",
+		},
+		{
+			name: "auth on with trusted proxies",
+			args: []string{"-auth", "on", "-trusted-proxies", "127.0.0.1/32,::1/128"},
+			env:  map[string]string{"DOLMEN_DATA": dataDir, "DOLMEN_EMBED_PROVIDER": "none"},
+			want: &config{
+				Addr:               "127.0.0.1:8790",
+				DataDir:            dataDir,
+				AllowedOrigins:     nil,
+				Embed:              embedConfig{Provider: "none"},
+				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				Auth:               mustAuth(t, "on", "127.0.0.1/32,::1/128", "", "", ""),
+			},
+		},
+		{
+			name: "auth on with admin key",
+			args: []string{"-auth", "on"},
+			env: map[string]string{
+				"DOLMEN_DATA":         dataDir,
+				"DOLMEN_EMBED_PROVIDER": "none",
+				"DOLMEN_ADMIN_KEY":    "0123456789abcdef0123456789abcdef",
+			},
+			want: &config{
+				Addr:               "127.0.0.1:8790",
+				DataDir:            dataDir,
+				AllowedOrigins:     nil,
+				Embed:              embedConfig{Provider: "none"},
+				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				Auth:               mustAuth(t, "on", "", "", "", "0123456789abcdef0123456789abcdef"),
+			},
+		},
+		{
+			name:    "auth on requires an identity source",
+			args:    []string{"-auth", "on"},
+			env:     map[string]string{"DOLMEN_DATA": dataDir, "DOLMEN_EMBED_PROVIDER": "none"},
+			wantErr: "DOLMEN_AUTH=on requires",
+		},
+		{
+			name:    "invalid DOLMEN_AUTH value",
+			args:    []string{"-auth", "maybe"},
+			env:     map[string]string{},
+			wantErr: "DOLMEN_AUTH must be",
+		},
+		{
+			name:    "invalid admin key alphabet",
+			args:    []string{},
+			env:     map[string]string{"DOLMEN_ADMIN_KEY": "has+padding="},
+			wantErr: "DOLMEN_ADMIN_KEY",
+		},
+		{
+			name:    "invalid trusted proxy CIDR",
+			args:    []string{"-auth", "on", "-trusted-proxies", "not-a-cidr"},
+			env:     map[string]string{},
+			wantErr: "DOLMEN_TRUSTED_PROXIES",
 		},
 	}
 
@@ -250,6 +312,15 @@ func TestLoadConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func mustAuth(t *testing.T, mode, proxies, principalHeader, groupsHeader string, adminKey string) *api.Auth {
+	t.Helper()
+	a, err := api.NewAuth(mode, proxies, principalHeader, groupsHeader, adminKey)
+	if err != nil {
+		t.Fatalf("new auth for test: %v", err)
+	}
+	return a
 }
 
 func TestLoadConfigVersion(t *testing.T) {

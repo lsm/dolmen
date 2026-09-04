@@ -139,6 +139,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
 		w.Header().Set("Vary", "Origin")
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id, X-Request-Id, "+api.DefaultPrincipalHeader+", "+api.DefaultGroupsHeader)
+			w.Header().Set("Access-Control-Max-Age", "86400")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 	}
 	if r.Method == http.MethodPost {
 		mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -195,6 +202,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(msg.ID) == 0 {
 		w.WriteHeader(http.StatusAccepted)
 		return
+	}
+	if msg.Method != "tools/call" {
+		if _, authErr := s.api.Auth.Authenticate(r.Context(), r); authErr != nil {
+			slog.Debug("mcp auth error", "method", msg.Method, "code", authErr.Code, "request_id", api.RequestIDFrom(r.Context()))
+			w.WriteHeader(http.StatusUnauthorized)
+			writeRPCError(w, msg.ID, jsonRPCInvalidReq, authErr.Message)
+			return
+		}
 	}
 	result, rpcErr := s.handle(r.Context(), msg, r)
 	if rpcErr != nil {
@@ -319,6 +334,16 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage, r *http.Request) (a
 		if _, known := api.Ops[params.Name]; !known {
 			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: fmt.Sprintf("unknown tool %q", params.Name)}
 		}
+
+		ctx, authErr := s.api.Auth.Authenticate(ctx, r)
+		if authErr != nil {
+			reqID := api.RequestIDFrom(ctx)
+			slog.Debug("mcp auth error", "op", params.Name, "code", authErr.Code, "request_id", reqID, "cause", authErr.Cause)
+			env := authErr.Public(reqID)
+			text, _ := json.Marshal(env)
+			return toolError(string(text)), nil
+		}
+
 		res, err := s.api.Dispatch(ctx, params.Name, args)
 		if err != nil {
 			apiErr := api.WrapError(err)
@@ -326,10 +351,14 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage, r *http.Request) (a
 			// Server-class failures (5xx) are operator-visible at Error level
 			// with their cause; request-class failures are client problems,
 			// logged only when debugging.
+			logArgs := []any{"op", params.Name, "code", apiErr.Code, "request_id", reqID, "cause", apiErr.Cause}
+			if c := api.CallerFrom(ctx); c != nil && c.Principal != "" {
+				logArgs = append(logArgs, "principal", c.Principal)
+			}
 			if status := apiErr.Status; status == 0 || status >= http.StatusInternalServerError {
-				slog.Error("mcp tool error", "op", params.Name, "code", apiErr.Code, "request_id", reqID, "cause", apiErr.Cause)
+				slog.Error("mcp tool error", logArgs...)
 			} else {
-				slog.Debug("mcp tool error", "op", params.Name, "code", apiErr.Code, "request_id", reqID, "cause", apiErr.Cause)
+				slog.Debug("mcp tool error", logArgs...)
 			}
 			env := apiErr.Public(reqID)
 			text, _ := json.Marshal(env)
@@ -341,7 +370,11 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage, r *http.Request) (a
 		if mErr := enc.Encode(res); mErr != nil {
 			apiErr := api.WrapError(mErr)
 			reqID := api.RequestIDFrom(ctx)
-			slog.Error("mcp tool result marshal error", "op", params.Name, "code", apiErr.Code, "request_id", reqID, "cause", apiErr.Cause)
+			logArgs := []any{"op", params.Name, "code", apiErr.Code, "request_id", reqID, "cause", apiErr.Cause}
+			if c := api.CallerFrom(ctx); c != nil && c.Principal != "" {
+				logArgs = append(logArgs, "principal", c.Principal)
+			}
+			slog.Error("mcp tool result marshal error", logArgs...)
 			env := apiErr.Public(reqID)
 			text, _ := json.Marshal(env)
 			return toolError(string(text)), nil
