@@ -130,7 +130,11 @@ open.
 **Implicit namespace creation is disabled under `auth: on`.** v0.2.0 creates a namespace file on
 first use, but that side effect would bypass the parent-level `admin` gate: a `schema` grant on a
 not-yet-existing namespace must not materialize the namespace through `create_table` or any other
-op. With `auth: on`, an operation targeting a nonexistent namespace fails `not_found`;
+op. With `auth: on`, an operation targeting a nonexistent namespace fails `not_found` — **but only
+after authorization succeeds**. Authorization precedes existence for every grant-protected op: an
+ungranted caller receives `403 forbidden` whether or not the object exists (and `401` before
+that, without identity), so no operation's error code — this one included — can be used to
+enumerate namespaces or tables; `not_found` is visible only to callers authorized to know.
 `create_namespace` is the only creation path. Under `auth: off` nothing changes — implicit
 creation stays, exactly as v0.2.0.
 
