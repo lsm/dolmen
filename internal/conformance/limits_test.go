@@ -281,10 +281,13 @@ func TestLimitsVectorDimension(t *testing.T) {
 
 func TestLimitsSearchLimitClampAndDefault(t *testing.T) {
 	h := newHarness(t)
-	h.seedTable("limsrc", "t", []map[string]any{{"name": "title", "type": "string", "fulltext": true}})
+	h.seedTable("limsrc", "t", []map[string]any{
+		{"name": "title", "type": "string", "fulltext": true},
+		{"name": "v", "type": "vector", "dim": 2},
+	})
 	recs := make([]map[string]any, 250)
 	for i := range recs {
-		recs[i] = map[string]any{"title": "shared needle " + pad(i)}
+		recs[i] = map[string]any{"title": "shared needle " + pad(i), "v": []any{1, 0}}
 	}
 	h.mustHTTP("insert", map[string]any{"namespace": "limsrc", "table": "t", "records": recs})
 
@@ -299,21 +302,36 @@ func TestLimitsSearchLimitClampAndDefault(t *testing.T) {
 		{"max 200 accepted", 200, 200},
 		{"above 200 clamps to 200", 500, 200},
 	}
-	for _, c := range cases {
-		t.Run(c.name+" fulltext", func(t *testing.T) {
-			body := map[string]any{"namespace": "limsrc", "table": "t", "query": "needle"}
-			if c.limit != nil {
-				body["limit"] = c.limit
-			}
-			data := h.mustHTTP("search_fulltext", body)
-			results := data["results"].([]any)
-			if len(results) != c.wantResult {
-				t.Fatalf("got %d results, want %d", len(results), c.wantResult)
-			}
-			if data["truncated"] != (len(results) < 250) {
-				t.Fatalf("truncated must be %v with %d of 250 matches", len(results) < 250, len(results))
-			}
-		})
+	// The two search operations have separate handlers; the limits row
+	// covers both, so the matrix runs through each.
+	searches := []struct {
+		name  string
+		op    string
+		extra map[string]any
+	}{
+		{"fulltext", "search_fulltext", map[string]any{"query": "needle"}},
+		{"vector", "search_vector", map[string]any{"column": "v", "vector": []any{1, 0}}},
+	}
+	for _, s := range searches {
+		for _, c := range cases {
+			t.Run(c.name+" "+s.name, func(t *testing.T) {
+				body := map[string]any{"namespace": "limsrc", "table": "t"}
+				for k, v := range s.extra {
+					body[k] = v
+				}
+				if c.limit != nil {
+					body["limit"] = c.limit
+				}
+				data := h.mustHTTP(s.op, body)
+				results := data["results"].([]any)
+				if len(results) != c.wantResult {
+					t.Fatalf("got %d results, want %d", len(results), c.wantResult)
+				}
+				if data["truncated"] != (len(results) < 250) {
+					t.Fatalf("truncated must be %v with %d of 250 matches", len(results) < 250, len(results))
+				}
+			})
+		}
 	}
 }
 
@@ -343,6 +361,17 @@ func TestLimitsQueryRowsTruncate(t *testing.T) {
 	}
 	if int64val(t, "row_count", data["row_count"]) != 1000 {
 		t.Fatalf("row_count %v", data["row_count"])
+	}
+	// An explicit limit above the cap clamps to the cap (1000 of 1001 rows,
+	// truncated true) — not to the requested 1500.
+	data = h.mustHTTP("query", map[string]any{
+		"namespace": "limrows", "sql": "SELECT n FROM t", "limit": 1500,
+	})
+	if got := len(data["rows"].([]any)); got != 1000 {
+		t.Fatalf("limit 1500 must clamp to 1000 rows, got %d", got)
+	}
+	if data["truncated"] != true {
+		t.Fatalf("clamped over-cap limit must report truncated, got %v", data["truncated"])
 	}
 	// Explicit smaller limit truncates too.
 	data = h.mustHTTP("query", map[string]any{"namespace": "limrows", "sql": "SELECT n FROM t", "limit": 10})
