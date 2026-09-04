@@ -21,9 +21,9 @@ tables plus search plus an agent-native interface.
 
 - [Go 1.26.6+](https://go.dev/dl/) (only to build; the binary is otherwise standalone).
 - Git.
-- Optional, for `vectorize` fields and text queries in `search_vector`: nothing — the built-in
-  `local` provider embeds in-process (downloads a model on first use) — or an OpenAI-compatible
-  embedding endpoint (OpenAI, Ollama, vLLM, or any compatible local server).
+- For `vectorize` fields and text queries in `search_vector`: nothing extra by default. The built-in
+  `local` provider is enabled automatically and embeds in-process (it downloads the model on first
+  use). Use an OpenAI-compatible endpoint instead by setting `DOLMEN_EMBED_PROVIDER=openai`.
 
 ### Build and run
 
@@ -44,10 +44,17 @@ go build -o dolmen.exe .
 .\dolmen.exe -addr 127.0.0.1:8790 -data ./data
 ```
 
-The first run creates the data directory (`./data` by default). On Unix it is opened with
-owner-only permissions (`0700` for the directory, `0600` for files); on Windows the permission bits
-only toggle the read-only attribute, so use NTFS ACLs for owner-only isolation. By default the server
-binds to `127.0.0.1:8790` and does **not** authenticate, so keep it on a private interface.
+The first run creates the data directory (`./data` by default) and, with the default `local`
+embedding provider, the model cache (`./data/models`). On Unix these are opened with owner-only
+permissions (`0700` for the directory, `0600` for files); on Windows the permission bits only toggle
+the read-only attribute, so use NTFS ACLs for owner-only isolation. By default the server binds to
+`127.0.0.1:8790` and does **not** authenticate, so keep it on a private interface.
+
+> **Embeddings are on by default.** The built-in `local` provider downloads
+> `sentence-transformers/all-MiniLM-L6-v2` (~90 MB) from the Hugging Face Hub the first time a
+> `vectorize` field is written. Start the server and watch the log for `local embedding model is not
+> cached` to confirm the state. Pre-seed the cache, or — once Dolmen#140 ships — download the release
+> model tarball, for offline or HF-blocked installs.
 
 ### Health check
 
@@ -197,14 +204,15 @@ curl.exe -s http://127.0.0.1:8790/v1/update -H "Content-Type: application/json" 
 
 ### Optional: embeddings
 
+The `local` provider is enabled by default. To change or disable it, set `DOLMEN_EMBED_PROVIDER`.
+
 Bash:
 
 ```bash
-# Built-in local embeddings — in-process inference, zero external services.
-# Downloads sentence-transformers/all-MiniLM-L6-v2 (~90 MB) from the Hugging
-# Face Hub on first use and caches it under the data dir; every later start
-# reuses the cache.
-DOLMEN_EMBED_PROVIDER=local ./dolmen
+# Built-in local embeddings are the default — in-process inference, zero external services.
+# It downloads sentence-transformers/all-MiniLM-L6-v2 (~90 MB) from the Hugging
+# Face Hub on first use and caches it under the data dir; every later start reuses the cache.
+# (To use a different local model, set DOLMEN_EMBED_MODEL.)
 
 # Mixed-language/CJK data — the multilingual model (see "Choosing an
 # embedding model" below; dolmen adds the e5 query:/passage: prefixes
@@ -213,7 +221,7 @@ DOLMEN_EMBED_PROVIDER=local \
 DOLMEN_EMBED_MODEL=intfloat/multilingual-e5-small \
 ./dolmen
 
-# An OpenAI-compatible endpoint instead (OpenAI, Ollama, vLLM):
+# Use an OpenAI-compatible endpoint instead (OpenAI, Ollama, vLLM):
 DOLMEN_EMBED_PROVIDER=openai \
 DOLMEN_EMBED_API_KEY=sk-... \
 DOLMEN_EMBED_MODEL=text-embedding-3-small \
@@ -224,14 +232,18 @@ DOLMEN_EMBED_PROVIDER=openai \
 DOLMEN_EMBED_BASE_URL=http://localhost:11434/v1 \
 DOLMEN_EMBED_MODEL=nomic-embed-text \
 ./dolmen
+
+# Disable server-side embeddings entirely (caller must supply vectors):
+DOLMEN_EMBED_PROVIDER=none ./dolmen
+
+# Another local model (e.g. multilingual/CJK — see the full-text CJK caveat):
+DOLMEN_EMBED_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 ./dolmen
 ```
 
 Windows PowerShell:
 
 ```powershell
-$env:DOLMEN_EMBED_PROVIDER = "local"
-.\dolmen.exe
-
+# OpenAI-compatible endpoint instead of the default local provider:
 $env:DOLMEN_EMBED_PROVIDER = "openai"
 $env:DOLMEN_EMBED_API_KEY = "sk-..."
 $env:DOLMEN_EMBED_MODEL = "text-embedding-3-small"
@@ -242,11 +254,19 @@ $env:DOLMEN_EMBED_PROVIDER = "openai"
 $env:DOLMEN_EMBED_BASE_URL = "http://localhost:11434/v1"
 $env:DOLMEN_EMBED_MODEL = "nomic-embed-text"
 .\dolmen.exe
+
+# Disable server-side embeddings:
+$env:DOLMEN_EMBED_PROVIDER = "none"
+.\dolmen.exe
+
+# Another local model:
+$env:DOLMEN_EMBED_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+.\dolmen.exe
 ```
 
 Whichever provider is configured, `describe_server` reports its status read-only over both `/v1`
 and MCP — provider, model, the identity that pins vectorized tables, and whether server-side
-embedding is usable — so a missing provider is visible without attempting a write. `usable` is
+embedding is usable — so the active provider is visible without attempting a write. `usable` is
 configuration status only: the provider is not called, so an endpoint that is down or rejects its
 credentials still fails at first use, not here.
 
@@ -361,14 +381,100 @@ variables. Unknown flags and positional arguments are rejected with an error.
 | `-addr` | `DOLMEN_ADDR` | `127.0.0.1:8790` | HTTP/MCP listen address |
 | `-data` | `DOLMEN_DATA` | `data` | Data directory (one SQLite file per namespace) |
 | `-version` | — | — | Print version and exit |
+| `-prefix` | `DOLMEN_PREFIX` | — | Mount all endpoints (`/healthz`, `/version`, `/skills*`, `/v1/*`, `/mcp`) under this URL prefix. Use with a pass-through proxy that forwards the full path |
 | — | `DOLMEN_ALLOWED_ORIGINS` | — | Comma-separated allowed HTTP origins for CORS; `localhost`, `127.0.0.1`, and `::1` are always allowed |
-| — | `DOLMEN_EMBED_PROVIDER` | `none` | Embedding provider: `none` (caller supplies vectors), `local` (built-in in-process embeddings via [rembed](https://github.com/rostamlabs/rembed)), or `openai` (any OpenAI-compatible endpoint). Unknown values produce an error |
+| — | `DOLMEN_EMBED_PROVIDER` | `local` | Embedding provider: `local` (built-in in-process embeddings via [rembed](https://github.com/rostamlabs/rembed), default), `openai` (any OpenAI-compatible endpoint), or `none` (caller supplies vectors). Unknown values produce an error |
 | — | `DOLMEN_EMBED_BASE_URL` | `https://api.openai.com/v1` | Base URL for an OpenAI-compatible provider |
 | — | `DOLMEN_EMBED_MODEL` | provider default | Model: `sentence-transformers/all-MiniLM-L6-v2` for `local` (or an absolute model-directory path; `intfloat/multilingual-e5-small` for mixed-language/CJK — e5-family ids get `query:`/`passage:` role prefixes automatically), `text-embedding-3-small` for `openai` |
 | — | `DOLMEN_EMBED_API_KEY` | — | API key for an OpenAI-compatible provider. If set (even to `""`), it takes precedence over `OPENAI_API_KEY` |
 | — | `OPENAI_API_KEY` | — | Fallback API key when `DOLMEN_EMBED_API_KEY` is unset |
 | — | `REMBED_CACHE` | `<data>/models` | Model cache directory for the `local` provider (overrides the data-dir location) |
 | — | `HF_TOKEN` | — | Hugging Face token for gated repos downloaded by the `local` provider |
+
+## Reverse proxy / sub-path hosting
+
+Dolmen can be exposed at a sub-path behind a reverse proxy in two ways. In both
+recipes the public links rendered by the skills manifest, the skill markdown,
+and the MCP initialize instructions must match the URL the client uses.
+
+### Stripping proxy
+
+The proxy removes the sub-path before forwarding to dolmen. Set the public base
+URL explicitly or rely on forwarded headers (`X-Forwarded-Proto`,
+`X-Forwarded-Host`, `X-Forwarded-Prefix`).
+
+nginx:
+
+```nginx
+location /dolmen/ {
+    proxy_pass http://127.0.0.1:8790/;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Prefix /dolmen;
+}
+```
+
+Caddy (strips the matched prefix automatically):
+
+```caddy
+handle_path /dolmen/* {
+    reverse_proxy 127.0.0.1:8790 {
+        header_up X-Forwarded-Prefix /dolmen
+    }
+}
+```
+
+With the forwarded header, no extra dolmen configuration is needed. If your
+proxy does not add `X-Forwarded-*` headers, set `DOLMEN_BASE_URL` to the full
+public URL instead:
+
+```bash
+DOLMEN_BASE_URL=https://example.com/dolmen ./dolmen
+```
+
+### Pass-through proxy
+
+The proxy forwards the full path, including the sub-path, to dolmen. Run dolmen
+with `-prefix` (or `DOLMEN_PREFIX`):
+
+```bash
+./dolmen -prefix /dolmen
+```
+
+nginx:
+
+```nginx
+location /dolmen/ {
+    proxy_pass http://127.0.0.1:8790;  # no trailing slash: do not strip
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+Caddy:
+
+```caddy
+handle /dolmen/* {
+    reverse_proxy 127.0.0.1:8790
+}
+```
+
+`-base-url` and `-prefix` can be combined when the configured base URL does not
+already end with the prefix. For example, `-base-url https://example.com
+-prefix /dolmen` produces public links at `https://example.com/dolmen`. To avoid
+double-prefixing, dolmen refuses to start when `-base-url` ends with `-prefix`.
+
+### Browser MCP clients
+
+When a browser-based MCP client connects via a proxy, the browser sends an
+`Origin` header such as `https://example.com`. Add it to the allowlist:
+
+```bash
+DOLMEN_ALLOWED_ORIGINS=https://example.com ./dolmen
+```
+
+`localhost`, `127.0.0.1`, and `::1` are always allowed; the public origin of a
+proxy is not.
 
 ## MCP (agents)
 
@@ -466,27 +572,44 @@ added as adapters without touching the API or MCP surface.
 
 ### Full-text search (FTS5)
 
-Fields marked `fulltext: true` are indexed with a shadow SQLite FTS5 table. The default tokenizer is
-`unicode61`: case-insensitive, diacritic-insensitive for most Latin characters (some non-Latin or
-multi-diacritic characters may not normalize), and it does **not** stem. Most punctuation, including
-hyphens, is a token boundary.
+Fields marked `fulltext: true` are indexed with a shadow SQLite FTS5 table. The tokenizer is the
+`porter` stemmer wrapping `unicode61`: case-insensitive, diacritic-insensitive for most Latin
+characters (some non-Latin or multi-diacritic characters may not normalize), and **stemmed** — both
+the index and the query reduce English words to stems, so `payments` matches `payment` and `refunds`
+matches `refund` without a prefix wildcard. Most punctuation, including hyphens, is a token boundary.
+
+Stemming notes:
+
+- Porter is a suffix-stripper, not a lemmatizer: it collapses inflections of the same root
+  (`payments`/`payment`, `refunded`/`refunds`/`refund`) but not different derivations — `paying`,
+  `pays`, and `paid` stem to `pai`/`paid` and do **not** match `payment`.
+- Phrases match on stems: each word of the phrase is stemmed before matching, so `"payments were"`
+  matches `"the payments were refunded"` (stems `payment`, `were`).
+- Prefix queries operate on stems: `pay*` stems to `pai*`, so it matches `paid`/`paying`/`pays` but
+  not `payment` (whose stem is `payment`).
+- Stemming is English-focused. CJK text is untouched by the stemmer — an uninterrupted CJK run is
+  still indexed as one opaque token, as before (#106).
+- Tables created before stemming became the default keep their exact-token index and keep working.
+  Reindex one with `migrate`: `{"op": "set_fulltext", "name": "<fulltext field>", "value": true}` —
+  re-asserting `true` on an already-indexed field rebuilds the index under the current tokenizer
+  (the migrate plan reports `rebuild_fulltext: true`). BM25 rank ordering shifts after a reindex.
 
 `search_fulltext` takes a raw FTS5 `MATCH` expression in `query`. It is **not** SQL, so do not wrap
 the whole expression in single quotes.
 
 Common syntax:
 
-- `payment` — a single token.
+- `payment` — a single token (`payments` matches the same stem).
 - `payment gateway` — implicit `AND` between tokens.
 - `payment OR gateway` — either token.
 - `payment NOT gateway` — must contain `payment` and must not contain `gateway`.
 - `title:payment` — only in the `title` fulltext field.
 - `{title body}:payment` — in any of the named fulltext fields.
-- `"foo bar"` — phrase (adjacent tokens). Because stored punctuation is also tokenized, a phrase
-  matches token adjacency, not literal punctuation.
+- `"foo bar"` — phrase (adjacent tokens, matched on stems). Because stored punctuation is also
+  tokenized, a phrase matches token adjacency, not literal punctuation.
 - `"foo-bar"` — double-quote any term that contains spaces or punctuation (hyphens, dots, slashes,
   apostrophes). Bare `foo-bar` is parsed as multiple terms and usually errors.
-- `pay*` — prefix match.
+- `pay*` — prefix match, applied to the stemmed term (`pay*` → `pai*`).
 - `NEAR(payment refund)` — proximity search (default near span). The group form
   `NEAR(term1 term2 ...)` enforces proximity; writing `term1 NEAR(term2)` instead parses as an
   implicit `AND` and does **not** enforce proximity.

@@ -512,6 +512,12 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			if f.Fulltext != *ch.Value {
 				f.Fulltext = *ch.Value
 				rebuildFTSNeeded = true
+			} else if *ch.Value {
+				// Re-asserting fulltext=true on an already-indexed field
+				// rebuilds the index under the engine's current tokenizer —
+				// the reindex path for tables created before stemming became
+				// the default.
+				rebuildFTSNeeded = true
 			}
 			plan.Operations = append(plan.Operations, fmt.Sprintf("set_fulltext %s = %t", ch.Name, *ch.Value))
 		case schema.OpSetVectorize:

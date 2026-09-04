@@ -32,6 +32,7 @@ type Server struct {
 	origins       map[string]bool
 	baseURL       string
 	namespaceHint string
+	prefix        string
 }
 
 // toolAnnotations carries the MCP annotations (client-side UI hints) for each
@@ -79,6 +80,13 @@ type Option func(*Server)
 func WithBaseURL(u string) Option {
 	return func(s *Server) {
 		s.baseURL = strings.TrimRight(u, "/")
+	}
+}
+
+// WithPrefix sets the server prefix to include in initialize instructions.
+func WithPrefix(p string) Option {
+	return func(s *Server) {
+		s.prefix = skill.NormalizePrefix(p)
 	}
 }
 
@@ -244,7 +252,7 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage, r *http.Request) (a
 		if params.ProtocolVersion == protocolVersion {
 			pv = params.ProtocolVersion
 		}
-		ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version)
+		ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version, s.prefix)
 		return map[string]any{
 			"protocolVersion": pv,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},

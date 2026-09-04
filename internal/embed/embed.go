@@ -266,7 +266,7 @@ func NewProvider(provider, baseURL, model, apiKey, dataDir string) (Provider, er
 		if err := useLocalCache(dataDir); err != nil {
 			return nil, err
 		}
-		return &Local{Model: model}, nil
+		return &Local{Model: model, CacheRoot: localCacheRoot(dataDir)}, nil
 	case "openai":
 		if baseURL == "" {
 			baseURL = "https://api.openai.com/v1"

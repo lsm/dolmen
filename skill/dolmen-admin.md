@@ -145,9 +145,10 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
    write on large tables — it runs a full `count(*)`, so cache the schema for the session.
 3. **Prefer `infer_schema` → review → `create_table`.** Never invent a schema blind when sample
    records exist. Note: inference proposes plain types only — during review, mark the main text
-   field `vectorize: true` yourself if you want semantic recall (needs an embedding provider on
-   the server: start it with `DOLMEN_EMBED_PROVIDER=local` for the built-in one, or `openai` for
-   an external endpoint; `describe_server` reports which one is active and usable). Keep tables small and purposeful — a sprawl of near-duplicate tables is a
+   field `vectorize: true` yourself if you want semantic recall (the built-in `local` embedding
+   provider is enabled by default; set `DOLMEN_EMBED_PROVIDER=openai` for an external endpoint, or
+   `none` to disable server-side embeddings; `describe_server` reports which one is active and
+   usable). Keep tables small and purposeful — a sprawl of near-duplicate tables is a
    failure mode.
 4. **Record as you go.** After finishing a meaningful unit of work, `insert` a record summarizing it
    (what/where/outcome). Future sessions recall it via search.
@@ -243,9 +244,20 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
 
 ### Full-text (FTS5) search syntax
 
-Dolmen indexes `fulltext` fields with SQLite FTS5 using the default `unicode61` tokenizer:
-case-insensitive, diacritic-insensitive for most Latin characters (some non-Latin or multi-diacritic
-characters may not normalize), no stemming. Most punctuation (including hyphens) is a token boundary.
+Dolmen indexes `fulltext` fields with SQLite FTS5 using the `porter` stemmer over the `unicode61`
+tokenizer: case-insensitive, diacritic-insensitive for most Latin characters (some non-Latin or
+multi-diacritic characters may not normalize), **stemmed** — the index and the query both reduce
+English words to stems, so plural/inflected terms just match (`payments` ↔ `payment`, `refunds` ↔
+`refund`). Most punctuation (including hyphens) is a token boundary.
+
+**Stemming notes (porter is a suffix-stripper, not a lemmatizer):** it collapses inflections of the
+same root but not different derivations — `paying`/`pays`/`paid` stem to `pai`/`paid` and do **not**
+match `payment`. Phrases match on stems (`"payments were"` matches `the payments were refunded`).
+Prefix queries operate on stems: `pay*` stems to `pai*`, matching `paid`/`paying`/`pays` but not
+`payment`. Stemming is English-focused. Tables created before stemming became the default keep
+their exact-token index (they keep working); reindex one with `migrate`:
+`{"op": "set_fulltext", "name": "<fulltext field>", "value": true}` — re-asserting `true` on an
+already-indexed field rebuilds the index under the current tokenizer.
 
 **CJK limitation:** `unicode61` does not segment CJK text — it breaks tokens only at whitespace and
 punctuation. Chinese/Japanese are usually written without spaces, so an uninterrupted run of CJK
@@ -257,16 +269,16 @@ keyword recall over space-less CJK text, fall back to vector search over an embe
 fallback only crosses languages when the server runs a multilingual model (see
 "Vectors and semantic recall" below).
 
-- `payment` — one token.
+- `payment` — one token (`payments` matches the same stem).
 - `payment gateway` — implicit `AND`.
 - `payment OR gateway`.
 - `payment NOT gateway`.
 - `title:payment` — only in the `title` fulltext field.
 - `{title body}:payment` — any of those fields.
-- `"foo bar"` — phrase (adjacent tokens). Phrases match token adjacency, not literal punctuation.
+- `"foo bar"` — phrase (adjacent tokens, matched on stems). Phrases match token adjacency, not literal punctuation.
 - `"foo-bar"` — double-quote terms that contain spaces or punctuation; bare `foo-bar` is parsed as
   multiple terms and usually errors.
-- `pay*` — prefix match.
+- `pay*` — prefix match, applied to the stemmed term (`pay*` → `pai*`).
 - `NEAR(payment refund)` — proximity search (default near span). Use the group form
   `NEAR(term1 term2 ...)`; `term1 NEAR(term2)` is parsed as an implicit `AND` and does not enforce
   proximity.
@@ -358,7 +370,10 @@ itself is shared — so copy the exact shape per op:
 
 - `set_fulltext` / `set_vectorize` — `name` + an explicit `value`, `true` to enable or `false` to
   disable (an omitted `value` is rejected, so a feature is never disabled by accident). Enabling is
-  only allowed on `string`/`text` fields, and `vectorize` on a second field is rejected:
+  only allowed on `string`/`text` fields, and `vectorize` on a second field is rejected. Re-asserting
+  `set_fulltext` with `value: true` on an already-indexed field rebuilds the FTS index under the
+  current tokenizer — the one-time reindex for tables created before stemming became the default
+  (exact-token indexes keep working until reindexed; BM25 rank ordering shifts after):
 
   ```json
   {"op": "set_fulltext", "name": "body", "value": true}
@@ -429,8 +444,9 @@ Validation notes:
   column produced by a `vectorize: true` field — the provider identity must match the one that
   embedded the table, and a `text` query naming a declared `vector` column is rejected. Searches
   with a caller-supplied `vector` need no provider and are not checked against any embedding
-  space — only you know which model produced the stored and query vectors. The active provider,
-  its identity, and whether server-side embedding is usable are reported by `describe_server`.
+  space — only you know which model produced the stored and query vectors. The built-in `local`
+  provider is enabled by default; `describe_server` reports the active provider, its identity, and
+  whether server-side embedding is usable.
 - `insert` with an `idempotency_key`: the same key + same records replays the original ids; the same
   key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes.
 
