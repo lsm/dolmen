@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 
@@ -362,6 +363,172 @@ func TestSearchVectorTextRejectedForCallerProvidedVectors(t *testing.T) {
 		if len(results) != 1 {
 			t.Fatalf("expected 1 hit, got %v", results)
 		}
+	}
+}
+
+// TestSearchVectorTextErrorsDisambiguated pins the three failure modes of a
+// text query to three distinguishable, actionable messages on the stable
+// invalid_request code: (a) the table has no vectorize field (fix the table
+// via migrate, or use a raw vector), (b) no usable provider (operator fix:
+// server-side DOLMEN_EMBED_* configuration), (c) provider identity mismatch
+// against the table's recorded embed space (re-embed via migrate).
+func TestSearchVectorTextErrorsDisambiguated(t *testing.T) {
+	errParts := func(res map[string]any) (string, string) {
+		errEnv, _ := res["error"].(map[string]any)
+		code, _ := errEnv["code"].(string)
+		msg, _ := errEnv["message"].(string)
+		return code, msg
+	}
+
+	// (a) Provider is fine, the table is not: with declared vector columns the
+	// error must blame the table and offer both fixes.
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	srv := httptest.NewServer(New(st, fakeEmb{}).Handler())
+	t.Cleanup(srv.Close)
+	if code, _ := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "dis", "table": "rawcols",
+		"fields": []map[string]any{
+			{"name": "s", "type": "string"},
+			{"name": "emb", "type": "vector", "dim": 4},
+		},
+	}); code != 200 {
+		t.Fatal("create rawcols failed")
+	}
+	code, res := post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "dis", "table": "rawcols", "text": "hello",
+	})
+	if code != 400 {
+		t.Fatalf("text query on a table without vectorize must 400, got %d %v", code, res)
+	}
+	errCode, msg := errParts(res)
+	if errCode != "invalid_request" {
+		t.Fatalf("missing vectorize field must stay invalid_request, got %q", errCode)
+	}
+	for _, want := range []string{"no vectorized field", "set_vectorize", "emb", "raw vector"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("missing-vectorize error must mention %q, got %q", want, msg)
+		}
+	}
+	if strings.Contains(msg, "DOLMEN_EMBED") || strings.Contains(msg, "provider") {
+		t.Fatalf("missing-vectorize error must not send the agent to the operator, got %q", msg)
+	}
+
+	// (a') Same, on a table with no vector data at all.
+	if code, _ := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "dis", "table": "novec",
+		"fields":    []map[string]any{{"name": "s", "type": "string"}},
+	}); code != 200 {
+		t.Fatal("create novec failed")
+	}
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "dis", "table": "novec", "text": "hello",
+	})
+	if code != 400 {
+		t.Fatalf("text query on a table without vector data must 400, got %d %v", code, res)
+	}
+	errCode, msg = errParts(res)
+	if errCode != "invalid_request" || !strings.Contains(msg, "set_vectorize") {
+		t.Fatalf("no-vector-data error must be invalid_request and name the migrate fix, got %q %q", errCode, msg)
+	}
+
+	// (b) Table is fine, the provider is not: the error must name the
+	// operator-side DOLMEN_EMBED_* configuration, not the table.
+	stNone, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { stNone.Close() })
+	srvNone := httptest.NewServer(New(stNone, embed.None{}).Handler())
+	t.Cleanup(srvNone.Close)
+	if code, _ := post(t, srvNone.URL, "create_table", map[string]any{
+		"namespace": "dis", "table": "vec",
+		"fields":    []map[string]any{{"name": "s", "type": "text", "vectorize": true}},
+	}); code != 200 {
+		t.Fatal("create vec failed")
+	}
+	code, res = post(t, srvNone.URL, "search_vector", map[string]any{
+		"namespace": "dis", "table": "vec", "text": "hello",
+	})
+	if code != 400 {
+		t.Fatalf("text query without a provider must 400, got %d %v", code, res)
+	}
+	errCode, msg = errParts(res)
+	if errCode != "invalid_request" {
+		t.Fatalf("provider-unavailable error must stay invalid_request, got %q", errCode)
+	}
+	for _, want := range []string{"DOLMEN_EMBED_PROVIDER", "DOLMEN_EMBED_API_KEY", "operator"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("provider-unavailable error must mention %q, got %q", want, msg)
+		}
+	}
+	if strings.Contains(msg, "no vectorized field") {
+		t.Fatalf("provider-unavailable error must not blame a vectorized table, got %q", msg)
+	}
+
+	// (b') The conflation this issue is about: no provider AND no vectorize
+	// field must report the table error, so the agent learns to fix the table
+	// first instead of calling the operator for a healthy provider setup.
+	if code, _ := post(t, srvNone.URL, "create_table", map[string]any{
+		"namespace": "dis", "table": "plain",
+		"fields":    []map[string]any{{"name": "s", "type": "string"}},
+	}); code != 200 {
+		t.Fatal("create plain failed")
+	}
+	code, res = post(t, srvNone.URL, "search_vector", map[string]any{
+		"namespace": "dis", "table": "plain", "text": "hello",
+	})
+	if code != 400 {
+		t.Fatalf("text query with no provider and no vectorize must 400, got %d %v", code, res)
+	}
+	errCode, msg = errParts(res)
+	if errCode != "invalid_request" || !strings.Contains(msg, "vectorize field") || !strings.Contains(msg, "set_vectorize") {
+		t.Fatalf("broken table + no provider must report the table error first, got %q %q", errCode, msg)
+	}
+	if strings.Contains(msg, "DOLMEN_EMBED") {
+		t.Fatalf("broken table + no provider must not yet demand provider config, got %q", msg)
+	}
+
+	// (c) Provider present but its identity differs from the table's recorded
+	// embed space: the error names both spaces and the re-embed path.
+	spaceA := store.Embedder{
+		Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+			out := make([][]float32, len(texts))
+			for i := range out {
+				out[i] = []float32{1, 0, 0, 0, 0, 0, 0, 0}
+			}
+			return out, nil
+		},
+		Identity: "space-a",
+	}
+	if _, err := st.CreateTable(context.Background(), "dis", "moved", []schema.Field{
+		{Name: "s", Type: schema.String, Vectorize: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(context.Background(), "dis", "moved", []map[string]any{{"s": "hello"}}, spaceA); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "dis", "table": "moved", "text": "hello",
+	})
+	if code != 400 {
+		t.Fatalf("text query across embedding spaces must 400, got %d %v", code, res)
+	}
+	errCode, msg = errParts(res)
+	if errCode != "invalid_request" {
+		t.Fatalf("identity mismatch must stay invalid_request, got %q", errCode)
+	}
+	for _, want := range []string{"embedding model changed", "space-a", "fake-space", "migrate"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("identity-mismatch error must mention %q, got %q", want, msg)
+		}
+	}
+	if strings.Contains(msg, "DOLMEN_EMBED") || strings.Contains(msg, "no vectorized field") {
+		t.Fatalf("identity-mismatch error must not be confusable with the other two, got %q", msg)
 	}
 }
 

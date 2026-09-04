@@ -63,7 +63,7 @@ func TestRawVectorDimMismatchOnAutoEmbedding(t *testing.T) {
 func TestValidateVectorSearchBeforeEmbedding(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
-	if err := st.ValidateVectorSearch(ctx, "test", "missing", "", "fake-space"); !errors.Is(err, ErrNotFound) {
+	if err := st.ValidateVectorSearch(ctx, "test", "missing", "", true, "fake-space"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected not-found for missing table, got %v", err)
 	}
 	if _, err := st.CreateTable(ctx, "test", "vv", []schema.Field{
@@ -74,7 +74,7 @@ func TestValidateVectorSearchBeforeEmbedding(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "vv", []map[string]any{{"s": "hello"}}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if err := st.ValidateVectorSearch(ctx, "test", "vv", "", "other-space"); !errors.Is(err, ErrInvalid) {
+	if err := st.ValidateVectorSearch(ctx, "test", "vv", "", true, "other-space"); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected identity mismatch to be caught before embedding, got %v", err)
 	}
 }
@@ -257,6 +257,10 @@ func TestTextQueryCannotTargetRawVectorColumn(t *testing.T) {
 		t.Fatal("text query naming a caller-provided vector column must be rejected")
 	} else if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("text query naming a vector column: expected ErrInvalid, got %v", err)
+	} else if strings.Contains(err.Error(), "search the table's vectorize field") || !strings.Contains(err.Error(), "set_vectorize") {
+		// rawvec has no vectorize field, so the error must not point at one —
+		// the text remedy is adding a vectorize field via migrate.
+		t.Fatalf("text query naming a vector column on a table without vectorize must offer the migrate fix, got %q", err.Error())
 	}
 	// The same table stays searchable with raw vectors, with and without column:
 	// the caller owns matching the embedding space.
@@ -271,16 +275,19 @@ func TestTextQueryCannotTargetRawVectorColumn(t *testing.T) {
 	}
 	// The fail-fast validation used before spending an embedding rejects too.
 	for _, column := range []string{"", "emb"} {
-		if err := st.ValidateVectorSearch(ctx, "test", "rawvec", column, "fake-space"); !errors.Is(err, ErrInvalid) {
+		if err := st.ValidateVectorSearch(ctx, "test", "rawvec", column, true, "fake-space"); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("ValidateVectorSearch with column %q: expected ErrInvalid, got %v", column, err)
 		}
 	}
 	// A vectorized table also rejects naming its raw vector column for a text
-	// query, even though its own _embedding space would be fine.
+	// query, even though its own _embedding space would be fine — and there the
+	// vectorize field is a real remedy, so the error may point at it.
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
-	if _, err := st.SearchVector(ctx, "test", "notes", "emb", qv[0], "fake-space", 0, 5, false, "", nil, nil); !errors.Is(err, ErrInvalid) {
+	if _, err := st.SearchVector(ctx, "test", "notes", "emb", qv[0], "fake-space", 0, 5, false, "", nil, nil); err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("text query naming a raw vector column on a vectorized table: expected ErrInvalid, got %v", err)
+	} else if !strings.Contains(err.Error(), "search the table's vectorize field") {
+		t.Fatalf("vectorized table must still offer its vectorize field as the text remedy, got %q", err.Error())
 	}
 }
 
@@ -295,6 +302,93 @@ func TestTextQueryOnTableWithoutAnyVectorData(t *testing.T) {
 	qv, _ := fakeEmbed(ctx, []string{"hello"})
 	if _, err := st.SearchVector(ctx, "test", "plain", "", qv[0], "fake-space", 0, 5, false, "", nil, nil); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected ErrInvalid for text query on a table with no vector data, got %v", err)
+	}
+}
+
+// TestTextQueryTableErrorsIndependentOfProvider pins the disambiguation
+// between a broken table and a missing provider: a text query's table-shape
+// validation must fail (or pass) on the table's own merits, even when no
+// provider is configured (empty embed identity), and each failure must name
+// its fix — the migrate/raw-vector path for a missing vectorize field, never
+// the provider.
+func TestTextQueryTableErrorsIndependentOfProvider(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "rawcols", []schema.Field{
+		{Name: "s", Type: schema.String},
+		{Name: "emb", Type: schema.Vector, Dim: 4},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.CreateTable(ctx, "test", "novec", []schema.Field{
+		{Name: "s", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Table with declared vector columns but no vectorize field: both fixes
+	// must appear — set_vectorize via migrate, or a raw-vector search of the
+	// declared column.
+	err := st.ValidateVectorSearch(ctx, "test", "rawcols", "", true, "")
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for text query on rawcols, got %v", err)
+	}
+	for _, want := range []string{"no vectorized field", "set_vectorize", "emb", "raw vector"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("rawcols text error must mention %q, got %q", want, err.Error())
+		}
+	}
+
+	// Table with no vector data at all: the text error points at adding a
+	// vectorize field via migrate.
+	err = st.ValidateVectorSearch(ctx, "test", "novec", "", true, "")
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for text query on novec, got %v", err)
+	}
+	for _, want := range []string{"vectorize field", "set_vectorize"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("novec text error must mention %q, got %q", want, err.Error())
+		}
+	}
+	if strings.Contains(err.Error(), "vector column (") {
+		t.Fatalf("novec text error must not offer raw-vector search of nonexistent columns, got %q", err.Error())
+	}
+
+	// Naming _embedding explicitly on a non-vectorized table carries the same
+	// fixes instead of a bare "no vectorize field for _embedding" — and only
+	// offers the raw-vector alternative when declared vector columns exist.
+	err = st.ValidateVectorSearch(ctx, "test", "rawcols", "_embedding", true, "")
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "set_vectorize") {
+		t.Fatalf("expected actionable error for explicit _embedding on rawcols, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "emb") {
+		t.Fatalf("explicit _embedding on rawcols should name the declared vector column, got %q", err.Error())
+	}
+	err = st.ValidateVectorSearch(ctx, "test", "novec", "_embedding", true, "")
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "set_vectorize") {
+		t.Fatalf("expected actionable error for explicit _embedding on novec, got %v", err)
+	}
+	if strings.Contains(err.Error(), "vector column") {
+		t.Fatalf("explicit _embedding on novec must not offer raw-vector search of nonexistent columns, got %q", err.Error())
+	}
+
+	// A properly vectorized table passes shape validation with an empty
+	// identity (the provider check belongs to the caller) and reports the
+	// identity mismatch only when an identity is actually known.
+	if _, err := st.CreateTable(ctx, "test", "vecok", []schema.Field{
+		{Name: "s", Type: schema.String, Vectorize: true},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "test", "vecok", []map[string]any{{"s": "hi"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := st.ValidateVectorSearch(ctx, "test", "vecok", "", true, ""); err != nil {
+		t.Fatalf("empty identity must not fail shape validation on a vectorized table: %v", err)
+	}
+	err = st.ValidateVectorSearch(ctx, "test", "vecok", "", true, "other-space")
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "embedding model changed") {
+		t.Fatalf("expected identity-mismatch error on vecok, got %v", err)
 	}
 }
 
