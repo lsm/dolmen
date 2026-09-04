@@ -120,6 +120,33 @@ func planOutSchema(desc string) map[string]any {
 	}
 }
 
+// writeOutSchema builds the response shape the write ops (insert, upsert,
+// upsert_by_key) share: the ids of the rows the write touched, how many rows
+// were inserted, and how many were updated. Keys are shared across ops so a
+// client handles every write alike — a key appears only where it can be
+// meaningful: updated is omitted where a write cannot update (insert), and
+// replayed — returned only by an idempotency-keyed insert — is optional
+// because the same op serves plain inserts too.
+func writeOutSchema(withUpdated, withReplayed bool) map[string]any {
+	props := map[string]any{
+		"ids": map[string]any{
+			"type":        "array",
+			"description": "Row ids the write inserted or updated, in order (a replayed insert returns the original ids)",
+			"items":       map[string]any{"type": "integer"},
+		},
+		"inserted": prop("integer", "Number of rows inserted (0 when an idempotency key replayed a previous insert)"),
+	}
+	required := []string{"ids", "inserted"}
+	if withUpdated {
+		props["updated"] = prop("integer", "Number of existing rows updated")
+		required = append(required, "updated")
+	}
+	if withReplayed {
+		props["replayed"] = prop("boolean", "True when an idempotency_key replayed a previous insert (original ids returned, nothing re-inserted)")
+	}
+	return outSchema(props, required...)
+}
+
 var Ops = map[string]OpDef{
 	"list_tables": {
 		Description: "List tables in a namespace.",
@@ -468,15 +495,7 @@ var Ops = map[string]OpDef{
 			},
 			"required": []string{"namespace", "table", "records"},
 		},
-		OutputSchema: outSchema(map[string]any{
-			"ids": map[string]any{
-				"type":        "array",
-				"description": "Row ids assigned to the inserted records, in order",
-				"items":       map[string]any{"type": "integer"},
-			},
-			"inserted": prop("integer", "Number of records inserted"),
-			"replayed": prop("boolean", "True when an idempotency_key replayed a previous insert (original ids returned, nothing re-inserted); present only for idempotent inserts"),
-		}, "ids", "inserted"),
+		OutputSchema: writeOutSchema(false, true),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req insertReq
 			if err := decodeData(body, &req); err != nil {
@@ -548,15 +567,7 @@ var Ops = map[string]OpDef{
 			},
 			"required": []string{"namespace", "table", "on", "records"},
 		},
-		OutputSchema: outSchema(map[string]any{
-			"ids": map[string]any{
-				"type":        "array",
-				"description": "Row ids after insert-or-update, in record order",
-				"items":       map[string]any{"type": "integer"},
-			},
-			"inserted": prop("integer", "Number of records inserted"),
-			"updated":  prop("integer", "Number of existing rows updated"),
-		}, "ids", "inserted", "updated"),
+		OutputSchema: writeOutSchema(true, false),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req upsertReq
 			if err := decodeData(body, &req); err != nil {
@@ -986,8 +997,9 @@ var Ops = map[string]OpDef{
 	"upsert": {
 		Description: "Update rows matching a SQL WHERE expression, or insert one record when no row matches. " +
 			"With matches it behaves exactly like update (all matched rows get the set values); with none it " +
-			"inserts set as a new record, which must then satisfy required fields. Returns inserted=true with " +
-			"the new id, or inserted=false with the updated row count.",
+			"inserts set as a new record, which must then satisfy required fields. Returns the shared write " +
+			"shape: ids of the touched rows (the updated rows in id order, or the new row), inserted (0 or 1), " +
+			"and updated.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -1020,11 +1032,7 @@ var Ops = map[string]OpDef{
 			},
 			"required": []string{"namespace", "table", "filter", "set"},
 		},
-		OutputSchema: outSchema(map[string]any{
-			"inserted": prop("boolean", "True when no row matched and a new record was inserted"),
-			"updated":  prop("integer", "Number of rows updated (0 when a record was inserted)"),
-			"id":       prop("integer", "Row id of the inserted record (present only when inserted is true)"),
-		}, "inserted", "updated"),
+		OutputSchema: writeOutSchema(true, false),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req updateReq
 			if err := decodeData(body, &req); err != nil {
@@ -1034,11 +1042,7 @@ var Ops = map[string]OpDef{
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			out := map[string]any{"inserted": res.Inserted, "updated": res.Updated}
-			if res.Inserted {
-				out["id"] = res.ID
-			}
-			return out, nil
+			return map[string]any{"ids": res.Ids, "inserted": res.Inserted, "updated": res.Updated}, nil
 		},
 	},
 	"migrate": {

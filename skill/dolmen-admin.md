@@ -144,6 +144,12 @@ curl -s -X POST "${base%/}/v1/insert" \
   as one new record when the filter matches nothing — but it is not retry-safe when `set` changes the
   fields the filter matches on (a retry then matches nothing and inserts a duplicate); for
   converging retries use `upsert_by_key` or an `idempotency_key`.
+- Every write (`insert`, `upsert`, `upsert_by_key`) answers in one shape: `ids` — the row ids the
+  write inserted or updated, in order (`upsert` names the updated rows in id order, or the new row
+  when it inserted; a replayed insert returns the original ids) — plus `inserted` and `updated`
+  counts (`updated` is omitted by `insert`, which can only insert). `insert` with an
+  `idempotency_key` also returns `replayed` (`true` when the original ids were returned instead of
+  inserting again).
 - Every table has implicit `id` and `created_at` columns; `SELECT *` includes them.
 - Retried writes must not duplicate rows: pass `idempotency_key` (any unique string) to `insert`, or use `upsert_by_key` with `"on": [field, ...]` naming the record's natural key (e.g. email, url) when the data identifies itself.
 - Results honor declared field types in every read (`query`, `search_fulltext`, `search_vector`):

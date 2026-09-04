@@ -11,19 +11,29 @@ const (
 	apiVersion     = "0.1.0"
 )
 
+// writeDataSchema is the shared success shape of the write ops that can
+// update: upsert and upsert_by_key. insert shares it minus updated (a plain
+// insert cannot update) plus the optional replayed (only idempotent inserts
+// can replay).
+var writeDataSchema = objectSchema(false, map[string]any{
+	"ids":      arrayOf(integer(1)),
+	"inserted": integer(0),
+	"updated":  integer(0),
+}, []string{"ids", "inserted", "updated"})
+
 var outputSchemas = map[string]map[string]any{
 	"list_tables":     objectSchema(false, map[string]any{"tables": arrayOf(map[string]any{"type": "string"})}, []string{"tables"}),
 	"describe_table":  objectSchema(false, map[string]any{"table": ref("TableSchema"), "row_count": integer(0)}, []string{"table", "row_count"}),
 	"create_table":    objectSchema(false, map[string]any{"table": ref("TableSchema")}, []string{"table"}),
 	"infer_schema":    objectSchema(false, map[string]any{"fields": arrayOf(ref("Field"))}, []string{"fields"}),
 	"insert":          objectSchema(false, map[string]any{"ids": arrayOf(integer(1)), "inserted": integer(0), "replayed": propBool()}, []string{"ids", "inserted"}),
-	"upsert_by_key":   objectSchema(false, map[string]any{"ids": arrayOf(integer(1)), "inserted": integer(0), "updated": integer(0)}, []string{"ids", "inserted", "updated"}),
+	"upsert_by_key":   writeDataSchema,
 	"query":           objectSchema(false, map[string]any{"rows": arrayOf(ref("Row")), "row_count": integer(0), "truncated": propBool()}, []string{"rows", "row_count", "truncated"}),
 	"search_fulltext": objectSchema(false, map[string]any{"results": arrayOf(ref("Row")), "truncated": propBool()}, []string{"results", "truncated"}),
 	"search_vector":   objectSchema(false, map[string]any{"results": arrayOf(ref("Row")), "truncated": propBool()}, []string{"results", "truncated"}),
 	"delete":          objectSchema(false, map[string]any{"deleted": integer(0)}, []string{"deleted"}),
 	"update":          objectSchema(false, map[string]any{"updated": integer(0)}, []string{"updated"}),
-	"upsert":          objectSchema(false, map[string]any{"inserted": propBool(), "updated": integer(0), "id": integer(1)}, []string{"inserted", "updated"}),
+	"upsert":          writeDataSchema,
 	"migrate":         objectSchema(false, map[string]any{"table": ref("TableSchema")}, []string{"table"}),
 }
 

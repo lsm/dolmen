@@ -899,12 +899,16 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 		t.Fatalf("upsert insert failed: %d %v", code, res)
 	}
 	data := res["data"].(map[string]any)
-	if data["inserted"] != true || data["updated"].(float64) != 0 {
+	if data["inserted"].(float64) != 1 || data["updated"].(float64) != 0 {
 		t.Fatalf("expected insert result, got %v", data)
 	}
-	id, ok := data["id"].(float64)
+	ids, ok := data["ids"].([]any)
+	if !ok || len(ids) != 1 {
+		t.Fatalf("inserted result must carry the new row's id, got %v", data)
+	}
+	id, ok := ids[0].(float64)
 	if !ok || id <= 0 {
-		t.Fatalf("inserted result must carry the new id, got %v", data)
+		t.Fatalf("inserted result must carry the new row's id, got %v", data)
 	}
 	code, res = post(t, srv.URL, "search_vector", map[string]any{
 		"namespace": "skills", "table": "findings", "text": "haunting detail",
@@ -927,11 +931,19 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 		t.Fatalf("upsert update failed: %d %v", code, res)
 	}
 	data = res["data"].(map[string]any)
-	if data["inserted"] != false || data["updated"].(float64) != 1 {
+	if data["inserted"].(float64) != 0 || data["updated"].(float64) != 1 {
 		t.Fatalf("expected update result, got %v", data)
 	}
-	if _, hasID := data["id"]; hasID {
-		t.Fatalf("update result must not carry an id, got %v", data)
+	code, res = post(t, srv.URL, "query", map[string]any{
+		"namespace": "skills", "sql": "SELECT id FROM findings WHERE title = 'auth bug'",
+	})
+	if code != 200 {
+		t.Fatalf("query updated row failed: %d %v", code, res)
+	}
+	rows = res["data"].(map[string]any)["rows"].([]any)
+	wantID := rows[0].(map[string]any)["id"].(float64)
+	if got, ok := data["ids"].([]any); !ok || len(got) != 1 || got[0].(float64) != wantID {
+		t.Fatalf("update result must carry the updated row's id %v, got %v", wantID, data["ids"])
 	}
 }
 

@@ -11,12 +11,14 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-// UpdateResult reports what an upsert did: how many rows matched the filter
-// and were updated, or — when nothing matched — the id of the inserted record.
-type UpdateResult struct {
+// UpsertResult reports what an upsert did, in the shared shape every write op
+// returns: the ids of the rows the write touched — the matched rows, in id
+// order, on the update path, the new row on the insert path — and how many
+// rows each branch affected.
+type UpsertResult struct {
+	Ids      []int64
+	Inserted int64
 	Updated  int64
-	Inserted bool
-	ID       int64
 }
 
 // Update sets the given fields on every row matching the SQL WHERE expression,
@@ -34,20 +36,20 @@ func (s *Store) Update(ctx context.Context, nsName, table, where string, args []
 // Upsert updates every row matching the SQL WHERE expression; when no row
 // matches, set is inserted as a new record instead (and must then satisfy
 // required fields).
-func (s *Store) Upsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder) (UpdateResult, error) {
+func (s *Store) Upsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder) (UpsertResult, error) {
 	return s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, true)
 }
 
-func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, allowInsert bool) (UpdateResult, error) {
+func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, allowInsert bool) (UpsertResult, error) {
 	where = strings.TrimSpace(where)
 	if where == "" {
-		return UpdateResult{}, invalidf("filter is required (pass \"1=1\" to update every row)")
+		return UpsertResult{}, invalidf("filter is required (pass \"1=1\" to update every row)")
 	}
 	if strings.Contains(where, ";") {
-		return UpdateResult{}, invalidf("multiple statements are not allowed in filter")
+		return UpsertResult{}, invalidf("multiple statements are not allowed in filter")
 	}
 	if len(set) == 0 {
-		return UpdateResult{}, invalidf("set is required (at least one field to update)")
+		return UpsertResult{}, invalidf("set is required (at least one field to update)")
 	}
 	for i, a := range args {
 		args[i] = normalizeArg(a)
@@ -56,7 +58,7 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 	for k, v := range set {
 		lk := strings.ToLower(k)
 		if _, exists := normalized[lk]; exists {
-			return UpdateResult{}, invalidf("fields %q and its case variant collapse to %q; use one spelling", k, lk)
+			return UpsertResult{}, invalidf("fields %q and its case variant collapse to %q; use one spelling", k, lk)
 		}
 		normalized[lk] = v
 	}
@@ -64,21 +66,21 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 
 	n, err := s.ns(nsName)
 	if err != nil {
-		return UpdateResult{}, err
+		return UpsertResult{}, err
 	}
 	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {
-		return UpdateResult{}, err
+		return UpsertResult{}, err
 	}
 	defer tx.Rollback()
 
 	sc, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
-		return UpdateResult{}, err
+		return UpsertResult{}, err
 	}
 	for k := range set {
 		if sc.Field(k) == nil {
-			return UpdateResult{}, invalidf("unknown field %q on table %s (see describe_table)", k, table)
+			return UpsertResult{}, invalidf("unknown field %q on table %s (see describe_table)", k, table)
 		}
 	}
 
@@ -92,11 +94,11 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 			continue
 		}
 		if f.Required && v == nil {
-			return UpdateResult{}, invalidf("field %q is required and cannot be set to null", f.Name)
+			return UpsertResult{}, invalidf("field %q is required and cannot be set to null", f.Name)
 		}
 		cv, err := coerceValue(f, v)
 		if err != nil {
-			return UpdateResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+			return UpsertResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 		}
 		cols = append(cols, q(f.Name))
 		vals = append(vals, cv)
@@ -123,15 +125,15 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 	// Materialize matching ids first so the filter is evaluated exactly once,
 	// against the pre-update state (mirrors Delete).
 	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS temp._dolmen_update_ids`); err != nil {
-		return UpdateResult{}, err
+		return UpsertResult{}, err
 	}
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`CREATE TEMP TABLE _dolmen_update_ids AS SELECT id FROM %s WHERE %s`, q(table), where), args...); err != nil {
-		return UpdateResult{}, NewFilterError(where, err)
+		return UpsertResult{}, NewFilterError(where, err)
 	}
 	var matched int64
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM _dolmen_update_ids`).Scan(&matched); err != nil {
-		return UpdateResult{}, err
+		return UpsertResult{}, err
 	}
 
 	// An unmatched upsert inserts: validate the candidate record before
@@ -144,7 +146,7 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 				continue
 			}
 			if f.Required {
-				return UpdateResult{}, invalidf("field %q is required (no row matched the filter, so upsert would insert a new record)", f.Name)
+				return UpsertResult{}, invalidf("field %q is required (no row matched the filter, so upsert would insert a new record)", f.Name)
 			}
 		}
 	}
@@ -159,12 +161,12 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 			persistMeta = sc.EmbedSpace == "" || sc.EmbedDim == 0
 			vec, err = embedForUpdate(ctx, sc, table, text, emb)
 			if err != nil {
-				return UpdateResult{}, err
+				return UpsertResult{}, err
 			}
 		}
 	}
 
-	result := UpdateResult{}
+	result := UpsertResult{}
 	switch {
 	case matched > 0:
 		assignments := make([]string, len(cols))
@@ -184,22 +186,32 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 			fmt.Sprintf(`UPDATE %s SET %s WHERE id IN (SELECT id FROM _dolmen_update_ids)`,
 				q(table), strings.Join(assignments, ", ")), avals...)
 		if err != nil {
-			return UpdateResult{}, fmt.Errorf("update %s: %w", table, err)
+			return UpsertResult{}, fmt.Errorf("update %s: %w", table, err)
 		}
 		updated, err := res.RowsAffected()
 		if err != nil {
-			return UpdateResult{}, err
+			return UpsertResult{}, err
 		}
 		if updated > 0 && ftsTouched {
 			if _, err := tx.ExecContext(ctx,
 				fmt.Sprintf(`DELETE FROM %s WHERE rowid IN (SELECT id FROM _dolmen_update_ids)`, q(ftsTable(table)))); err != nil {
-				return UpdateResult{}, err
+				return UpsertResult{}, err
 			}
 			if err := reindexFTSRows(ctx, tx, table, sc.FTSFields()); err != nil {
-				return UpdateResult{}, fmt.Errorf("update search index for %s: %w", table, err)
+				return UpsertResult{}, fmt.Errorf("update search index for %s: %w", table, err)
 			}
 		}
 		result.Updated = updated
+		// Upsert reports the ids of the rows it touched; plain update reports
+		// only the count. The ids are read inside the transaction, so they are
+		// exactly the rows the UPDATE above affected.
+		if allowInsert {
+			ids, err := selectUpdateIDs(ctx, tx)
+			if err != nil {
+				return UpsertResult{}, err
+			}
+			result.Ids = ids
+		}
 	case allowInsert:
 		icols := cols
 		ivals := vals
@@ -215,7 +227,7 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 			}
 			cv, err := coerceValue(f, f.Default)
 			if err != nil {
-				return UpdateResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+				return UpsertResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 			}
 			coerced[f.Name] = cv
 			icols = append(icols, q(f.Name))
@@ -229,42 +241,61 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 		res, err := tx.ExecContext(ctx,
 			fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s)`, q(table), strings.Join(icols, ", "), ph), ivals...)
 		if err != nil {
-			return UpdateResult{}, fmt.Errorf("insert into %s: %w", table, err)
+			return UpsertResult{}, fmt.Errorf("insert into %s: %w", table, err)
 		}
 		id, err := res.LastInsertId()
 		if err != nil {
-			return UpdateResult{}, err
+			return UpsertResult{}, err
 		}
 		if fts := sc.FTSFields(); len(fts) > 0 {
 			if err := insertFTSRow(ctx, tx, table, fts, id, coerced); err != nil {
-				return UpdateResult{}, fmt.Errorf("update search index for %s: %w", table, err)
+				return UpsertResult{}, fmt.Errorf("update search index for %s: %w", table, err)
 			}
 		}
-		result.Inserted = true
-		result.ID = id
+		result.Inserted = 1
+		result.Ids = []int64{id}
 	}
 
-	if persistMeta && (result.Updated > 0 || result.Inserted) {
+	if persistMeta && (result.Updated > 0 || result.Inserted > 0) {
 		if sc.EmbedSpace == "" {
 			sc.EmbedSpace = emb.Identity
 		}
 		raw, err := json.Marshal(sc)
 		if err != nil {
-			return UpdateResult{}, err
+			return UpsertResult{}, err
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE _dolmen_tables SET schema_json = ? WHERE name = ?`, string(raw), table); err != nil {
-			return UpdateResult{}, err
+			return UpsertResult{}, err
 		}
 	}
 
 	if _, err := tx.ExecContext(ctx, `DROP TABLE _dolmen_update_ids`); err != nil {
-		return UpdateResult{}, err
+		return UpsertResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return UpdateResult{}, err
+		return UpsertResult{}, err
 	}
 	return result, nil
+}
+
+// selectUpdateIDs reads the matched-row ids from the materialized update set,
+// in id order, so an upsert can report exactly the rows it touched.
+func selectUpdateIDs(ctx context.Context, tx *sql.Tx) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM _dolmen_update_ids ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func embedForUpdate(ctx context.Context, sc *schema.TableSchema, table, text string, emb Embedder) ([]float32, error) {

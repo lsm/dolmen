@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -22,6 +23,131 @@ func mustCreateUsers(t *testing.T, base string) {
 	})
 	if code != 200 || res["ok"] != true {
 		t.Fatalf("create_table failed: %d %v", code, res)
+	}
+}
+
+// dataKeys returns the response data's exact key set.
+func dataKeys(t *testing.T, res map[string]any) map[string]bool {
+	t.Helper()
+	data, ok := res["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("response must carry a data object, got %v", res)
+	}
+	keys := map[string]bool{}
+	for k := range data {
+		keys[k] = true
+	}
+	return keys
+}
+
+func keySet(keys ...string) map[string]bool {
+	set := map[string]bool{}
+	for _, k := range keys {
+		set[k] = true
+	}
+	return set
+}
+
+// TestWriteOpsShareResponseShape pins the write contract: insert, upsert, and
+// upsert_by_key answer in one shape — ids of the touched rows plus inserted
+// everywhere; updated wherever a write can update; replayed only where
+// idempotency applies (an idempotent insert), and never required.
+func TestWriteOpsShareResponseShape(t *testing.T) {
+	srv := newTestServer(t)
+	mustCreateUsers(t, srv.URL)
+
+	// plain insert: no update branch exists and without a key nothing replays
+	code, res := post(t, srv.URL, "insert", map[string]any{
+		"namespace": "app", "table": "users",
+		"records": []map[string]any{{"email": "a@example.com", "plan_name": "free"}},
+	})
+	if code != 200 {
+		t.Fatalf("plain insert failed: %d %v", code, res)
+	}
+	if got := dataKeys(t, res); !reflect.DeepEqual(got, keySet("ids", "inserted")) {
+		t.Fatalf("plain insert keys = %v, want exactly {ids, inserted}", got)
+	}
+
+	// idempotent insert: replayed joins the shape on first call and replay alike
+	body := map[string]any{
+		"namespace": "app", "table": "users",
+		"records":         []map[string]any{{"email": "b@example.com", "plan_name": "pro"}},
+		"idempotency_key": "shape-1",
+	}
+	code, res = post(t, srv.URL, "insert", body)
+	if code != 200 {
+		t.Fatalf("idempotent insert failed: %d %v", code, res)
+	}
+	if got := dataKeys(t, res); !reflect.DeepEqual(got, keySet("ids", "inserted", "replayed")) {
+		t.Fatalf("idempotent insert keys = %v, want exactly {ids, inserted, replayed}", got)
+	}
+	code, res = post(t, srv.URL, "insert", body)
+	if code != 200 {
+		t.Fatalf("replayed insert failed: %d %v", code, res)
+	}
+	data := res["data"].(map[string]any)
+	if got := dataKeys(t, res); !reflect.DeepEqual(got, keySet("ids", "inserted", "replayed")) {
+		t.Fatalf("replayed insert keys = %v, want exactly {ids, inserted, replayed}", got)
+	}
+	if data["inserted"].(float64) != 0 || data["replayed"] != true {
+		t.Fatalf("replay must insert nothing and say so, got %v", data)
+	}
+
+	// upsert insert path: the shared three keys, ids carrying the new row
+	code, res = post(t, srv.URL, "upsert", map[string]any{
+		"namespace": "app", "table": "users",
+		"filter": "email = 'c@example.com'",
+		"set":    map[string]any{"email": "c@example.com", "plan_name": "free"},
+	})
+	if code != 200 {
+		t.Fatalf("upsert insert failed: %d %v", code, res)
+	}
+	if got := dataKeys(t, res); !reflect.DeepEqual(got, keySet("ids", "inserted", "updated")) {
+		t.Fatalf("upsert insert-path keys = %v, want exactly {ids, inserted, updated}", got)
+	}
+	data = res["data"].(map[string]any)
+	if data["inserted"].(float64) != 1 || data["updated"].(float64) != 0 || len(data["ids"].([]any)) != 1 {
+		t.Fatalf("upsert insert path must report one new row id, got %v", data)
+	}
+	rowID := data["ids"].([]any)[0].(float64)
+
+	// upsert update path: same keys, ids carrying the updated row
+	code, res = post(t, srv.URL, "upsert", map[string]any{
+		"namespace": "app", "table": "users",
+		"filter": "email = 'c@example.com'",
+		"set":    map[string]any{"plan_name": "pro"},
+	})
+	if code != 200 {
+		t.Fatalf("upsert update failed: %d %v", code, res)
+	}
+	if got := dataKeys(t, res); !reflect.DeepEqual(got, keySet("ids", "inserted", "updated")) {
+		t.Fatalf("upsert update-path keys = %v, want exactly {ids, inserted, updated}", got)
+	}
+	data = res["data"].(map[string]any)
+	if data["inserted"].(float64) != 0 || data["updated"].(float64) != 1 {
+		t.Fatalf("upsert update path must report one update, got %v", data)
+	}
+	if got := data["ids"].([]any); len(got) != 1 || got[0].(float64) != rowID {
+		t.Fatalf("upsert update path must report the updated row's id %v, got %v", rowID, got)
+	}
+
+	// upsert_by_key: the same three keys, ids still naming touched rows
+	code, res = post(t, srv.URL, "upsert_by_key", map[string]any{
+		"namespace": "app", "table": "users", "on": []string{"email"},
+		"records": []map[string]any{{"email": "c@example.com", "logins": 3}},
+	})
+	if code != 200 {
+		t.Fatalf("upsert_by_key failed: %d %v", code, res)
+	}
+	if got := dataKeys(t, res); !reflect.DeepEqual(got, keySet("ids", "inserted", "updated")) {
+		t.Fatalf("upsert_by_key keys = %v, want exactly {ids, inserted, updated}", got)
+	}
+	data = res["data"].(map[string]any)
+	if data["inserted"].(float64) != 0 || data["updated"].(float64) != 1 {
+		t.Fatalf("upsert_by_key must report one update, got %v", data)
+	}
+	if got := data["ids"].([]any); len(got) != 1 || got[0].(float64) != rowID {
+		t.Fatalf("upsert_by_key must report the updated row's id %v, got %v", rowID, got)
 	}
 }
 
