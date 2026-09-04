@@ -70,7 +70,7 @@ func run() error {
 		return fmt.Errorf("embed provider: %w", err)
 	}
 	if l, ok := emb.(*embed.Local); ok {
-		slog.Info("local embedding provider", "model", l.Model, "cache", "under the data directory")
+		slog.Info("local embedding provider", "model", l.Model, "cache", "under the data directory (first use loads from the cache; downloads from the Hugging Face Hub only if the model is not pre-seeded)")
 		if !l.Cached() {
 			slog.Warn("local embedding model is not cached; the first vectorized write will download it from the Hugging Face Hub", "model", l.Model)
 		}

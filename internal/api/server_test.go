@@ -35,6 +35,14 @@ func (fakeEmb) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	return out, nil
 }
 
+func (e fakeEmb) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	vecs, err := e.Embed(ctx, []string{text})
+	if err != nil {
+		return nil, err
+	}
+	return vecs[0], nil
+}
+
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	st, err := store.Open(t.TempDir())

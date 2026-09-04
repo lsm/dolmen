@@ -338,6 +338,13 @@ func (multiEmb) Embed(ctx context.Context, texts []string) ([][]float32, error) 
 	return make([][]float32, 2), nil
 }
 
+// EmbedQuery mirrors what real providers do when their engine returns the
+// wrong vector count for one query text: the count check lives inside
+// EmbedQuery now, so a misbehaving engine surfaces as an error here.
+func (multiEmb) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	return nil, fmt.Errorf("embedding provider returned 2 vectors for one query text")
+}
+
 func TestSearchVectorMultiEmbedResultRejected(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -357,8 +364,8 @@ func TestSearchVectorMultiEmbedResultRejected(t *testing.T) {
 	code, res := post(t, srv.URL, "search_vector", map[string]any{
 		"namespace": "mt", "table": "t", "text": "anything",
 	})
-	if code != 400 {
-		t.Fatalf("multi-vector provider result must 400, got %d %v", code, res)
+	if code != 500 {
+		t.Fatalf("a query-side embedding error must surface as 500, not panic the handler, got %d %v", code, res)
 	}
 }
 
@@ -386,6 +393,14 @@ func (blankIdentityEmb) Embed(ctx context.Context, texts []string) ([][]float32,
 	return out, nil
 }
 
+func (e blankIdentityEmb) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	vecs, err := e.Embed(ctx, []string{text})
+	if err != nil {
+		return nil, err
+	}
+	return vecs[0], nil
+}
+
 type zeroVecEmb struct{}
 
 func (zeroVecEmb) Name() string      { return "zero" }
@@ -395,11 +410,16 @@ func (zeroVecEmb) Embed(ctx context.Context, texts []string) ([][]float32, error
 	return [][]float32{{}}, nil
 }
 
+func (zeroVecEmb) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	return []float32{}, nil
+}
+
 func vectorSearchWithProvider(t *testing.T, p interface {
 	Name() string
 	ModelName() string
 	Identity() string
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
+	EmbedQuery(ctx context.Context, text string) ([]float32, error)
 }) int {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -897,6 +917,13 @@ func (emptyEmb) Embed(ctx context.Context, texts []string) ([][]float32, error) 
 	return [][]float32{}, nil
 }
 
+// EmbedQuery errors like a real provider whose engine returned no vectors
+// for one query text — the count check moved from the api layer into
+// EmbedQuery implementations.
+func (emptyEmb) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	return nil, fmt.Errorf("embedding provider returned 0 vectors for one query text")
+}
+
 func TestSearchVectorEmptyEmbedResultRejected(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -916,8 +943,8 @@ func TestSearchVectorEmptyEmbedResultRejected(t *testing.T) {
 	code, res := post(t, srv.URL, "search_vector", map[string]any{
 		"namespace": "e", "table": "t", "text": "anything",
 	})
-	if code != 400 {
-		t.Fatalf("empty provider result must 400, not panic the handler, got %d %v", code, res)
+	if code != 500 {
+		t.Fatalf("a query-side embedding error must surface as 500, not panic the handler, got %d %v", code, res)
 	}
 }
 

@@ -97,11 +97,25 @@ func (l *Local) Name() string { return "local" }
 
 func (l *Local) ModelName() string { return l.Model }
 
-// Identity pins tables to this provider and model: "local/<model>". A model
-// change (or a switch to/from the OpenAI provider) is a different identity,
-// so inserts and text searches are rejected until the table is re-embedded
-// via migrate — exactly as with the OpenAI provider.
-func (l *Local) Identity() string { return "local/" + l.Model }
+// Identity pins tables to this provider and model: "local/<model>" for
+// symmetric, escape-free references (byte-identical to the identities dolmen
+// has always produced, so existing tables keep matching), and
+// "local/v2:<escaped>#e5" whenever the identity carries the e5 prefix
+// contract's marker or the model reference needs escaping. The v2 namespace
+// cannot be reached by any legacy identity of a different model: Hub ids
+// allow no ":" or "#" before their "/", and absolute paths start with "/".
+// The marker versions the embedding space, so tables embedded before
+// prefixes were applied are rejected rather than silently mixing
+// representations. A model change (or a switch to/from the OpenAI provider)
+// is a different identity too, so inserts and text searches are rejected
+// until the table is re-embedded via migrate — exactly as with the OpenAI
+// provider.
+func (l *Local) Identity() string {
+	if identityLegacy(l.Model) {
+		return "local/" + l.Model
+	}
+	return "local/v2:" + escapeIdentityReference(l.Model) + identityMarker(l.Model)
+}
 
 // Cached reports whether the model weights are already on disk. A test stub
 // (Open != nil) is treated as cached so tests do not trigger the warning.
@@ -125,7 +139,27 @@ func (l *Local) Cached() bool {
 // model id, matching the org--name layout rembed uses for the cache.
 func modelCacheDirName(model string) string { return strings.ReplaceAll(model, "/", "--") }
 
+// Embed embeds stored-row text, prepending the e5 passage prefix for
+// e5-family models — rembed embeds exactly the text it is given.
 func (l *Local) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	_, passage := e5Prefixes(l.Model)
+	return l.embed(ctx, texts, passage)
+}
+
+// EmbedQuery embeds one search text, prepending the e5 query prefix.
+func (l *Local) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	query, _ := e5Prefixes(l.Model)
+	vecs, err := l.embed(ctx, []string{text}, query)
+	if err != nil {
+		return nil, err
+	}
+	if len(vecs) != 1 {
+		return nil, fmt.Errorf("local embedding model %s: %d vectors for one query text", l.Model, len(vecs))
+	}
+	return vecs[0], nil
+}
+
+func (l *Local) embed(ctx context.Context, texts []string, prefix string) ([][]float32, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -133,6 +167,7 @@ func (l *Local) Embed(ctx context.Context, texts []string) ([][]float32, error) 
 	if err != nil {
 		return nil, err
 	}
+	texts = prefixAll(prefix, texts)
 	vecs, err := eng.Embed(ctx, texts)
 	if err != nil {
 		return nil, fmt.Errorf("local embedding model %s: %w", l.Model, err)
