@@ -403,6 +403,55 @@ func TestLimitsQueryResponseBudget(t *testing.T) {
 	}
 }
 
+// The search ops enforce the same 32 MiB budget through their own row-fetch
+// path (fetchByIDs in internal/store/search.go), separate from query's — so
+// a regression there would leave the query-boundary test above green. Pin
+// the same boundary for both search operations.
+func TestLimitsSearchResponseBudget(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("limsearch", "f", []map[string]any{
+		{"name": "title", "type": "string", "fulltext": true},
+		{"name": "body", "type": "text", "vectorize": true},
+		{"name": "blob", "type": "text"},
+	})
+	// 40 rows of exactly 1 MiB, eight records per insert so each request
+	// stays under the 32 MiB request-body limit.
+	big := strings.Repeat("x", 1<<20)
+	for i := 0; i < 40; i += 8 {
+		recs := make([]map[string]any, 0, 8)
+		for j := 0; j < 8 && i+j < 40; j++ {
+			recs = append(recs, map[string]any{"title": "needle", "body": "blob needle", "blob": big})
+		}
+		h.mustHTTP("insert", map[string]any{"namespace": "limsearch", "table": "f", "records": recs})
+	}
+
+	// limit 200 lifts the row-count cap so only the byte budget can cut
+	// the page; like query, 31 one-MiB rows fit under the 32 MiB budget.
+	fts := h.mustHTTP("search_fulltext", map[string]any{
+		"namespace": "limsearch", "table": "f", "query": "needle", "limit": 200,
+	})
+	if got := len(fts["results"].([]any)); got != 31 {
+		t.Fatalf("fulltext budget must cut at 31 one-MiB rows, got %d", got)
+	}
+	if fts["truncated"] != true {
+		t.Fatalf("fulltext budget cut must set truncated, got %v", fts["truncated"])
+	}
+
+	sv := h.mustHTTP("search_vector", map[string]any{
+		"namespace": "limsearch", "table": "f", "text": "blob needle", "limit": 200,
+	})
+	if got := len(sv["results"].([]any)); got != 31 {
+		t.Fatalf("vector budget must cut at 31 one-MiB rows, got %d", got)
+	}
+	if sv["truncated"] != true {
+		t.Fatalf("vector budget cut must set truncated, got %v", sv["truncated"])
+	}
+	// Every row scored — the cut is pure response budget, not skipped data.
+	if int64val(t, "skipped", sv["skipped_vectors"]) != 0 {
+		t.Fatalf("skipped_vectors %v, want 0", sv["skipped_vectors"])
+	}
+}
+
 func TestLimitsQueryArgs(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("limargs", "t", []map[string]any{{"name": "n", "type": "number"}})

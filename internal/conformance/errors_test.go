@@ -327,11 +327,44 @@ func TestTransportLevelErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("oversized body 413", func(t *testing.T) {
-		big := strings.Repeat("a", 33<<20)
-		res, _ := h.httpCallRaw("list_tables", big, "application/json")
-		if res.StatusCode != 413 {
-			t.Fatalf("status %d, want 413", res.StatusCode)
+	t.Run("request body at and over the 32 MiB limit, both transports", func(t *testing.T) {
+		// Exactly at the limit the body passes the size gate and fails as
+		// a parse error instead (400, never 413); one byte over is 413.
+		// /v1 and /mcp implement the boundary separately, so both are
+		// pinned: a ceiling regressed smaller 413s the at-limit body, one
+		// grown larger misses the over-limit 413.
+		atLimit := strings.Repeat("a", 32<<20)
+		res, _ := h.httpCallRaw("list_tables", atLimit, "application/json")
+		if res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("/v1 at-limit body: status %d, want 400 (must not 413)", res.StatusCode)
+		}
+		res, body := h.httpCallRaw("list_tables", atLimit+"a", "application/json")
+		if res.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Fatalf("/v1 one-over body: status %d, want 413: %s", res.StatusCode, body)
+		}
+		errObj := envelopeFromString(t, body)
+		if errObj["code"] != "invalid_request" {
+			t.Fatalf("/v1 413 code %v, want invalid_request", errObj["code"])
+		}
+
+		postMCP := func(payload string) int {
+			req, err := http.NewRequest(http.MethodPost, h.mcpURL, strings.NewReader(payload))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			r2, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r2.Body.Close()
+			return r2.StatusCode
+		}
+		if code := postMCP(atLimit); code != http.StatusBadRequest {
+			t.Fatalf("/mcp at-limit body: status %d, want 400 (must not 413)", code)
+		}
+		if code := postMCP(atLimit + "a"); code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("/mcp one-over body: status %d, want 413", code)
 		}
 	})
 }
