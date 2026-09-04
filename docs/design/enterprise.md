@@ -365,8 +365,8 @@ type Engine interface {
     DescribeTable(ctx context.Context, ns, table string, scope *RowScope) (*schema.TableSchema, int64, error)
     DropTable(ctx context.Context, ns, table string) error
 
-    // Migrate ops
-    Migrate(ctx context.Context, ns, table string, changes []schema.Change, expectedVersion int, dryRun bool) (*schema.TableSchema, []string, error)
+    // Migrate ops — emb re-embeds set_vectorize backfills
+    Migrate(ctx context.Context, ns, table string, changes []schema.Change, emb Embedder, expectedVersion int, dryRun bool) (*schema.TableSchema, []string, error)
     ListMigrations(ctx context.Context, ns, table string) ([]Migration, error)
 
     // Row CRUD — scope filters which existing rows may be matched, read, or counted;
@@ -374,11 +374,12 @@ type Engine interface {
     // WriteOpts carries the owner to stamp on EVERY row-insert path — including the
     // upsert insert branches, including table-wide callers whose scope is nil (§4.2) —
     // and insert's idempotency key. The stamp owner is independent of the scope:
-    // a caller may be unscoped yet still be the writer.
-    Insert(ctx context.Context, ns, table string, records []map[string]any, opts WriteOpts, scope *RowScope) (InsertResult, error)
-    UpsertByKey(ctx context.Context, ns, table string, on []string, records []map[string]any, opts WriteOpts, scope *RowScope) (InsertResult, error)
-    Upsert(ctx context.Context, ns, table string, filter string, args []any, record map[string]any, opts WriteOpts, scope *RowScope) (InsertResult, error)
-    Update(ctx context.Context, ns, table string, filter string, args []any, set map[string]any, scope *RowScope) (int64, error)
+    // a caller may be unscoped yet still be the writer. emb embeds vectorize fields
+    // on write and re-embeds changed ones, passed per call exactly as today.
+    Insert(ctx context.Context, ns, table string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope) (InsertResult, error)
+    UpsertByKey(ctx context.Context, ns, table string, on []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope) (InsertResult, error)
+    Upsert(ctx context.Context, ns, table string, filter string, args []any, record map[string]any, opts WriteOpts, emb Embedder, scope *RowScope) (InsertResult, error)
+    Update(ctx context.Context, ns, table string, filter string, args []any, set map[string]any, emb Embedder, scope *RowScope) (int64, error)
     // DeleteOpts carries the v0.2.0 safety guard (dry_run, limit, confirm) and the
     // engine enforces the threshold inside the delete transaction — an API-layer
     // preflight would race. DeleteResult keeps the contract's matched/deleted pair.
@@ -463,9 +464,11 @@ schemas still validates and produces the same response. What never appears under
 
 1. **Deny-by-default sweep** — for every op (all 22): no identity (401 `unauthorized`) and
    untrusted-peer identity (401). Authenticated-but-ungranted (403 `forbidden`) applies to the
-   **grant-protected** ops only — the grant-free ops of §2 (`list_namespaces`, `list_tables`,
-   `describe_server`, `infer_schema`) succeed for an ungranted authenticated caller, returning
-   empty/filtered results. Envelope shapes pinned like every other error.
+   **grant-protected** ops only. The grant-free ops of §2 succeed for an ungranted authenticated
+   caller (`describe_server`, `infer_schema`, `list_namespaces` — the latter returning an empty
+   list) — except `list_tables`, which per §2 returns `not_found` for a caller holding no grant on
+   or under the namespace; the sweep asserts exactly that. Envelope shapes pinned like every other
+   error.
 2. **The #158 acceptance scenario, end-to-end** — one test scripting the umbrella scenario:
    tables with default permissions; a user who writes but reads only their own rows; read-only
    access elsewhere; list/create in one place not another; raw SQL denied without table-wide read;
