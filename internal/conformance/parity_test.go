@@ -70,6 +70,10 @@ func parityScript() []parityStep {
 		{"search_fulltext", "search_fulltext", map[string]any{
 			"namespace": ns, "table": "docs", "query": "bug OR crash",
 		}, false},
+		{"search_fulltext_filtered", "search_fulltext", map[string]any{
+			"namespace": ns, "table": "docs", "query": "bug OR crash",
+			"filter": "score >= ?", "args": []any{1},
+		}, false},
 		{"search_vector_raw", "search_vector", map[string]any{
 			"namespace": ns, "table": "docs", "column": "vec", "vector": []any{0.5, 0.25, -0.5, 0.0},
 		}, false},

@@ -312,6 +312,60 @@ func TestSearchVectorNullEmbeddingExclusion(t *testing.T) {
 	}
 }
 
+// search_fulltext filter/args (#120): the optional SQL WHERE filter applies
+// before ranking with the same semantics as search_vector's, and its failure
+// classes match the established filter-error contract.
+func TestSearchFulltextFilterArgs(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("ftsf", "t", []map[string]any{
+		{"name": "title", "type": "string", "fulltext": true},
+		{"name": "tag", "type": "string"},
+	})
+	h.mustHTTP("insert", map[string]any{
+		"namespace": "ftsf", "table": "t",
+		"records": []map[string]any{
+			{"title": "payment one", "tag": "a"},
+			{"title": "payment two", "tag": "b"},
+		},
+	})
+
+	// The filter narrows the match set before ranking; args bind values.
+	data := h.mustHTTP("search_fulltext", map[string]any{
+		"namespace": "ftsf", "table": "t", "query": "payment",
+		"filter": "tag = ?", "args": []any{"a"},
+	})
+	results := data["results"].([]any)
+	if len(results) != 1 || results[0].(map[string]any)["tag"] != "a" {
+		t.Fatalf("filter must narrow to the tagged row, got %v", results)
+	}
+
+	// Failure classes: statement-level rejections are invalid_request;
+	// execution failures are query_error with WHERE-expression guidance.
+	status, body := h.httpCall("search_fulltext", map[string]any{
+		"namespace": "ftsf", "table": "t", "query": "payment", "filter": "tag = 'a'; DROP",
+	})
+	if status != 400 {
+		t.Fatalf("semicolon filter: status %d, want 400: %v", status, body)
+	}
+	errObj := envelopeOf(t, body)
+	if errObj["code"] != "invalid_request" {
+		t.Fatalf("semicolon filter code %v, want invalid_request", errObj["code"])
+	}
+	wantMessage(t, "semicolon filter", errObj["message"].(string), `multiple statements are not allowed in filter`)
+
+	status, body = h.httpCall("search_fulltext", map[string]any{
+		"namespace": "ftsf", "table": "t", "query": "payment", "filter": "tag =",
+	})
+	if status != 400 {
+		t.Fatalf("malformed filter: status %d, want 400: %v", status, body)
+	}
+	errObj = envelopeOf(t, body)
+	if errObj["code"] != "query_error" {
+		t.Fatalf("malformed filter code %v, want query_error", errObj["code"])
+	}
+	wantMessage(t, "malformed filter", errObj["message"].(string), `single SQL WHERE expression`)
+}
+
 // Search pagination contract: truncated is true exactly when more results
 // exist beyond the returned page.
 func TestSearchTruncatedContract(t *testing.T) {
