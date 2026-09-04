@@ -66,9 +66,10 @@ Rules:
   (liveness probes and client-side schema discovery); everything under `/v1/{op}` and `/mcp`
   requires identity when `auth: on`.
 - Audit attribution: with `auth: on` the principal is attached to the request's log line alongside
-  the existing `X-Request-Id` correlation. The caller's own principal is never echoed in response
-  bodies; `owner` values surfaced in row reads are row data, gated by the caller's visible set
-  (§4.3), not identity leakage.
+  the existing `X-Request-Id` correlation. Audit identity lives in logs, never in responses: dolmen
+  adds no identity echo of its own to response bodies — the only principal strings a response can
+  carry are row data (`owner`, already gated by the caller's visible set, §4.3) and grant records
+  (`list_grants`, itself `admin`-gated).
 
 ### 1.3 Bootstrap admin key
 
@@ -110,7 +111,7 @@ in §3):
 | `list_namespaces` | none (any authenticated principal) | Response lists only namespaces the caller holds **any** grant on or under (§3.3). |
 | `create_namespace` | `admin` | The **parent**: `*` for depth-1 namespaces, the containing namespace for deeper ones. Under `auth: on` this is the only way a namespace comes to exist (see below). |
 | `drop_namespace` | `admin` | The namespace itself. Leaf-only (§5.4). |
-| `list_tables` | none (any authenticated principal) | Filtered to tables the caller holds any grant on. |
+| `list_tables` | none (any authenticated principal) | Authorization runs **before** the existence check: unless the caller holds any grant on or under the namespace, the response is `not_found` — indistinguishable from a nonexistent namespace, so listing cannot be used to enumerate names. Holders see the tables they hold any grant on. |
 | `describe_table` | `read`, `write`, `schema`, **or** `admin` | The table. `row_count` follows the caller's visible set (§4.3) — holders of only `schema`/`admin` see the schema with a count of 0; no data visibility is implied. |
 | `describe_server`, `infer_schema` | none (any authenticated principal) | Untargeted: provider status is no secret; `infer_schema` is pure computation. |
 | `create_table` | `schema` | The namespace. |
@@ -226,8 +227,12 @@ invariant 1). The key is accepted **only when `auth: on`** — with `auth: off` 
 and rejected, exactly as v0.2.0 would.
 
 The `owner` column materializes **only** when the table declares `row_access` — never on default
-tables, in either mode (invariant 1; conformance-enforced, §8.3). `owner` joins the reserved field
-names (`id`, `created_at`, `_embedding`, …): caller-declared fields named `owner` are rejected.
+tables, in either mode (invariant 1; conformance-enforced, §8.3). `owner` is reserved exactly
+where the implicit column can exist: `create_table` with `row_access` rejects a caller-declared
+field named `owner`, and `migrate set_row_access: true` likewise rejects when a caller-declared
+`owner` field exists (the collision is named). Everywhere else a caller field named `owner`
+remains valid — v0.2.0 does not reserve the name, and reserving it unconditionally would break
+tables and requests that v0.2.0 accepts.
 
 ### 4.2 Column semantics
 
@@ -488,7 +493,7 @@ harness per test group, no CI matrix, no new make targets.
 | D7 | Grants: subject {type,id}, object {namespace[,table] \| `*`}, explicit verbs; union resolution; inheritance down; no deny grants; no segment wildcards | §3 |
 | D8 | Grant store is server-level, above the engine seam | §3 preamble |
 | D9 | `row_access: "own"` table-level on create_table; auth-off rejects the key | §4.1 |
-| D10 | `owner`: TEXT, reserved, server-stamped, materializes only on `row_access` tables; enabling later rejected on non-empty tables | §4.1–4.2 |
+| D10 | `owner`: TEXT, server-stamped, materializes only on `row_access` tables; the name is reserved only there (v0.2.0 `owner` fields stay valid elsewhere); enabling later rejected on non-empty tables | §4.1–4.2 |
 | D11 | Visible set → `RowScope` predicate passed to the engine; every count/mutation/search observes it | §4.3, §6.3 |
 | D12 | Raw SQL on `row_access` tables requires table-wide read | §4.4 |
 | D13 | Hierarchy: `/`-separated, v0.2.0 segment regex, depth ≤ 3, `<data>/a/b/c.db` layout, recursive-descendant `prefix` listing, leaf-only drops | §5 |
