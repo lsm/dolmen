@@ -112,27 +112,42 @@ func TestConcurrentReadersSingleWriter(t *testing.T) {
 				return
 			}
 			inserted++
-			if _, err := checkOK(h.httpCall("update", map[string]any{
+			upd, err := checkOK(h.httpCall("update", map[string]any{
 				"namespace": "race", "table": "t", "filter": "n = ?",
 				"args": []any{float64(i)},
 				"set":  map[string]any{"n": i + 1000},
-			})); err != nil {
+			}))
+			if err != nil {
 				t.Errorf("concurrent update %d failed: %v", i, err)
 				return
 			}
-			if _, err := checkOK(h.httpCall("upsert", map[string]any{
+			if int64val(t, "concurrent update count", upd["updated"]) != 1 {
+				t.Errorf("concurrent update %d reported %v, want 1", i, upd["updated"])
+				return
+			}
+			ups, err := checkOK(h.httpCall("upsert", map[string]any{
 				"namespace": "race", "table": "t", "filter": "n = ?", "args": []any{float64(i + 1000)},
 				"set": map[string]any{"n": i + 2000},
-			})); err != nil {
+			}))
+			if err != nil {
 				t.Errorf("concurrent upsert %d failed: %v", i, err)
+				return
+			}
+			if int64val(t, "concurrent upsert count", ups["updated"]) != 1 || int64val(t, "concurrent upsert inserted", ups["inserted"]) != 0 {
+				t.Errorf("concurrent upsert %d reported %v, want updated 1 / inserted 0", i, ups)
 				return
 			}
 			// Every fourth row is deleted to interleave deletes with reads.
 			if i%4 == 0 {
-				if _, err := checkOK(h.httpCall("delete", map[string]any{
+				del, err := checkOK(h.httpCall("delete", map[string]any{
 					"namespace": "race", "table": "t", "filter": "n = ?", "args": []any{float64(i + 2000)},
-				})); err != nil {
+				}))
+				if err != nil {
 					t.Errorf("concurrent delete %d failed: %v", i, err)
+					return
+				}
+				if int64val(t, "concurrent delete count", del["deleted"]) != 1 {
+					t.Errorf("concurrent delete %d reported %v, want 1", i, del["deleted"])
 					return
 				}
 				deleted++
