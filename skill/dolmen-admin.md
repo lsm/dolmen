@@ -116,6 +116,7 @@ curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0",
 List every tool with its input schema (single page, no cursor):
 
 ```bash
+mcp="{{ .MCPURL }}"
 curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 ```
 
@@ -123,6 +124,7 @@ Call a tool — `arguments` is the tool's input, and the result data arrives unw
 `result.structuredContent`:
 
 ```bash
+mcp="{{ .MCPURL }}"
 curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_tables","arguments":{"namespace":"research"}}}'
 ```
 
