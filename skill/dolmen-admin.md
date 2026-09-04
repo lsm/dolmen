@@ -132,6 +132,12 @@ Dolmen indexes `fulltext` fields with SQLite FTS5 using the default `unicode61` 
 case-insensitive, diacritic-insensitive for most Latin characters (some non-Latin or multi-diacritic
 characters may not normalize), no stemming. Most punctuation (including hyphens) is a token boundary.
 
+**CJK limitation:** `unicode61` does not segment Chinese/Japanese/Korean text. CJK is usually written
+without spaces, so a whole run of CJK characters is indexed as one opaque token — `search_fulltext`
+silently returns nothing for CJK keywords (no error; the rows are stored and `LIKE`-queryable via
+`query`). For CJK content, fall back to vector search over an embedding column (`vectorize: true` +
+`search_vector(text=...)`) or `query` with `LIKE`.
+
 - `payment` — one token.
 - `payment gateway` — implicit `AND`.
 - `payment OR gateway`.
