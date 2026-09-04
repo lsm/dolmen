@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"testing"
 )
 
@@ -240,7 +241,7 @@ func TestOpenAPIWiredToOpsRegistry(t *testing.T) {
 }
 
 func TestOpenAPIOutputSchemasMarkRequiredGuaranteedFields(t *testing.T) {
-	optional := map[string]bool{"replayed": true, "id": true}
+	optional := map[string]bool{"replayed": true}
 	for _, name := range OpNames() {
 		def := Ops[name]
 		if def.OutputSchema == nil {
@@ -265,6 +266,35 @@ func TestOpenAPIOutputSchemasMarkRequiredGuaranteedFields(t *testing.T) {
 			if !required[prop] {
 				t.Fatalf("%s: guaranteed field %q must be marked required", name, prop)
 			}
+		}
+	}
+}
+
+// TestWriteOpsOutputSchemasShareShape keeps the three write ops documented in
+// one shape: identical schemas for the ops that can update, and an insert
+// schema that differs only by dropping updated (an insert cannot update) and
+// carrying the optional replayed (only idempotent inserts can replay).
+func TestWriteOpsOutputSchemasShareShape(t *testing.T) {
+	if !reflect.DeepEqual(Ops["upsert"].OutputSchema, Ops["upsert_by_key"].OutputSchema) {
+		t.Fatalf("upsert and upsert_by_key must share one output schema, got %v vs %v",
+			Ops["upsert"].OutputSchema, Ops["upsert_by_key"].OutputSchema)
+	}
+	insProps, _ := Ops["insert"].OutputSchema["properties"].(map[string]any)
+	upsProps, _ := Ops["upsert"].OutputSchema["properties"].(map[string]any)
+	if _, ok := insProps["updated"]; ok {
+		t.Fatalf("insert cannot update rows; its output schema must not declare updated: %v", insProps)
+	}
+	for _, k := range []string{"ids", "inserted", "replayed"} {
+		if insProps[k] == nil {
+			t.Fatalf("insert output schema must declare %s: %v", k, insProps)
+		}
+	}
+	if _, ok := upsProps["replayed"]; ok {
+		t.Fatalf("only idempotent inserts can replay; upsert output schema must not declare replayed: %v", upsProps)
+	}
+	for _, k := range []string{"ids", "inserted", "updated"} {
+		if upsProps[k] == nil {
+			t.Fatalf("upsert output schema must declare %s: %v", k, upsProps)
 		}
 	}
 }

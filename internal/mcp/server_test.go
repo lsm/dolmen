@@ -90,7 +90,7 @@ func TestMCPUpdateUpsertTools(t *testing.T) {
 	if code != 200 || res["result"].(map[string]any)["isError"] == true {
 		t.Fatalf("upsert tool call failed: %d %v", code, res)
 	}
-	if up := res["result"].(map[string]any)["structuredContent"].(map[string]any); up["inserted"] != true {
+	if up := res["result"].(map[string]any)["structuredContent"].(map[string]any); up["inserted"].(float64) != 1 {
 		t.Fatalf("upsert must report an insert, got %v", up)
 	}
 

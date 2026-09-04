@@ -297,14 +297,18 @@ func TestUpsertUpdatesWhenMatched(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
 	mustCreateNotes(t, st)
-	mustInsertNotes(t, st)
+	ids := mustInsertNotes(t, st)
 
 	res, err := st.Upsert(ctx, "test", "notes", "done = 1", nil, map[string]any{"score": 42}, testEmbed)
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if res.Inserted || res.ID != 0 || res.Updated != 1 {
+	if res.Inserted != 0 || res.Updated != 1 {
 		t.Fatalf("expected matched upsert to update exactly one row, got %+v", res)
+	}
+	// the shared write shape reports the touched row's id, not just the count
+	if len(res.Ids) != 1 || res.Ids[0] != ids[0] {
+		t.Fatalf("matched upsert must report the updated row's id %d, got %v", ids[0], res.Ids)
 	}
 	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes WHERE score = 42", nil, 0, 0)
 	if err != nil {
@@ -326,11 +330,12 @@ func TestUpsertInsertsWhenNoMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if !res.Inserted || res.ID == 0 || res.Updated != 0 {
+	if res.Inserted != 1 || res.Updated != 0 || len(res.Ids) != 1 || res.Ids[0] == 0 {
 		t.Fatalf("expected unmatched upsert to insert, got %+v", res)
 	}
+	newID := res.Ids[0]
 
-	rows, _, err := st.Query(ctx, "test", "SELECT title, score FROM notes WHERE id = ?", []any{res.ID}, 0, 0)
+	rows, _, err := st.Query(ctx, "test", "SELECT title, score FROM notes WHERE id = ?", []any{newID}, 0, 0)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("query inserted row: %v %v", rows, err)
 	}
@@ -341,7 +346,7 @@ func TestUpsertInsertsWhenNoMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fts: %v", err)
 	}
-	if len(hits) != 1 || hits[0]["id"].(int64) != res.ID {
+	if len(hits) != 1 || hits[0]["id"].(int64) != newID {
 		t.Fatalf("inserted row must be searchable, got %v", hits)
 	}
 	qv, err := fakeEmbed(ctx, []string{"haunting new text"})
@@ -352,7 +357,7 @@ func TestUpsertInsertsWhenNoMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("vector search: %v", err)
 	}
-	if len(vhits.Rows) != 4 || vhits.Rows[0]["id"].(int64) != res.ID {
+	if len(vhits.Rows) != 4 || vhits.Rows[0]["id"].(int64) != newID {
 		t.Fatalf("inserted row must be embedded and rank first for its text, got %v", vhits.Rows)
 	}
 }
@@ -391,7 +396,7 @@ func TestUpsertInsertEnforcesRequiredFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert with required field satisfied: %v", err)
 	}
-	if !res.Inserted {
+	if res.Inserted != 1 {
 		t.Fatalf("expected insert, got %+v", res)
 	}
 }
