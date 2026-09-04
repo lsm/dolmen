@@ -171,7 +171,7 @@ func TestTransportParityAllOperations(t *testing.T) {
 	// Compare per step as subtests so a drift report names the operation.
 	for i, step := range steps {
 		t.Run(step.name, func(t *testing.T) {
-			assertJSONEqual(t, step.name+" result", maskVolatile(mcpData[i]), maskVolatile(httpData[i]))
+			assertJSONEqual(t, step.name+" result", maskVolatile(t, mcpData[i]), maskVolatile(t, httpData[i]))
 		})
 	}
 }

@@ -299,24 +299,39 @@ func (h *harness) mustMCP(op string, args any) map[string]any {
 // allowed to differ between two servers given identical inputs.
 var volatileKeys = map[string]bool{"created_at": true, "at": true}
 
+// createdAtRe is the documented created_at shape: a UTC millisecond
+// RFC3339 timestamp (SQLite strftime('%Y-%m-%dT%H:%M:%fZ','now')).
+var createdAtRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$`)
+
 // maskVolatile replaces server-assigned timestamp values with a placeholder so
-// responses from two independently-created stores compare equal.
-func maskVolatile(v any) any {
-	switch t := v.(type) {
+// responses from two independently-created stores compare equal. Before
+// masking, created_at must carry its documented shape — an unconditional
+// replace would let a serialization regression compare equal on both
+// transports.
+func maskVolatile(t *testing.T, v any) any {
+	switch row := v.(type) {
 	case map[string]any:
-		for k, val := range t {
-			if volatileKeys[k] {
-				t[k] = "<volatile>"
-			} else {
-				t[k] = maskVolatile(val)
+		for k, val := range row {
+			if !volatileKeys[k] {
+				row[k] = maskVolatile(t, val)
+				continue
 			}
+			if k == "created_at" {
+				s, ok := val.(string)
+				if !ok || !createdAtRe.MatchString(s) {
+					t.Errorf("created_at %v does not match the documented UTC millisecond RFC3339 shape", val)
+					row[k] = "<volatile>"
+					continue
+				}
+			}
+			row[k] = "<volatile>"
 		}
-		return t
+		return row
 	case []any:
-		for i, val := range t {
-			t[i] = maskVolatile(val)
+		for i, val := range row {
+			row[i] = maskVolatile(t, val)
 		}
-		return t
+		return row
 	default:
 		return v
 	}
