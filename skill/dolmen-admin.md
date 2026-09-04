@@ -201,8 +201,9 @@ itself is shared — so copy the exact shape per op:
 - `add_field` — a nested `field` object (same shape as `create_table` fields: `name` required,
   `type` optional and defaulting to `string`, `dim` with `vector`) plus an optional change-level
   `default` (a sibling of `field`, never inside it). The default is coerced to the field's type —
-  number, boolean, string for `string`/`text`/`timestamp`, any JSON value for `json`, a number
-  array of the field's `dim` for `vector` — and backfilled into existing rows; adding a `required`
+  number, boolean, string for `string`/`text`/`timestamp`, any JSON value for `json` (nested
+  `null`s are data), a number array of the field's `dim` for `vector` — and backfilled into
+  existing rows; a literal `null` default is rejected (omit the key instead), adding a `required`
   field to a populated table requires one, and no other op accepts a `default`:
 
   ```json
