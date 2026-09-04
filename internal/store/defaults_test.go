@@ -288,3 +288,46 @@ func TestMigrateRejectsFieldLevelDefault(t *testing.T) {
 		t.Fatalf("expected add_field field-level default to be rejected, got %v", err)
 	}
 }
+
+func TestInsertRetryAfterDefaultedFieldDropped(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "docs", []schema.Field{
+		{Name: "body", Type: schema.Text, Vectorize: true},
+		{Name: "tag", Type: schema.String, Default: "draft"},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	calls := 0
+	emb := Embedder{Identity: "fake-space", Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+		calls++
+		if calls == 1 {
+			// Land a schema change inside attempt 1's embedding pause: the
+			// in-transaction version check then forces a retry, which must see
+			// the caller's records exactly as sent — not fields defaulted by
+			// the stale attempt (the dropped field would fail as unknown).
+			if _, err := st.Migrate(ctx, "test", "docs", []schema.Change{
+				{Op: schema.OpDropField, Name: "tag"},
+			}, Embedder{}, 1); err != nil {
+				return nil, err
+			}
+		}
+		return fakeEmbed(ctx, texts)
+	}}
+
+	ids, err := st.Insert(ctx, "test", "docs", []map[string]any{{"body": "hello world"}}, emb)
+	if err != nil {
+		t.Fatalf("insert after concurrent drop of a defaulted field: %v", err)
+	}
+	if calls < 2 {
+		t.Fatalf("expected the schema change to force a retry, got %d embed calls", calls)
+	}
+	rows, _, err := st.Query(ctx, "test", "SELECT body FROM docs WHERE id = ?", []any{ids[0]}, 0, 0)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 1 || rows[0]["body"] != "hello world" {
+		t.Fatalf("retried insert must land its record, got %v", rows)
+	}
+}
