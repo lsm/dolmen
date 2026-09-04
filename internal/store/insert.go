@@ -152,6 +152,11 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	persistMeta := sc.EmbedSpace == "" || sc.EmbedDim == 0
 	origEmbedSpace := sc.EmbedSpace
 	origEmbedDim := sc.EmbedDim
+	// Defaults are filled into per-attempt copies, never the shared normalized
+	// maps: a retry after a concurrent schema change re-applies them against
+	// the fresh schema, so a defaulted field a stale attempt added cannot fail
+	// as unknown after the field was renamed or dropped mid-insert.
+	records = applyInsertDefaults(sc, records)
 	for _, rec := range records {
 		for k := range rec {
 			if sc.Field(k) == nil {
@@ -163,7 +168,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			if present && v != nil {
 				continue
 			}
-			if f.Required && (!present || v == nil) {
+			if f.Required {
 				return nil, false, true, invalidf("field %q is required", f.Name)
 			}
 		}
@@ -305,6 +310,40 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 		return nil, false, true, err
 	}
 	return ids, false, true, nil
+}
+
+// applyInsertDefaults returns records with each omitted field that carries a
+// schema default filled in, so defaults flow through validation, coercion,
+// FTS, and embedding exactly like caller-supplied values (an explicit null
+// stays null — it clears, it does not default). Records are copied, and only
+// when the schema declares defaults: attempts share the caller's normalized
+// maps, and a retry after a concurrent rename/drop must see the records as
+// sent — not fields a stale attempt defaulted under the old schema.
+func applyInsertDefaults(sc *schema.TableSchema, records []map[string]any) []map[string]any {
+	hasDefault := false
+	for _, f := range sc.Fields {
+		if f.Default != nil {
+			hasDefault = true
+			break
+		}
+	}
+	if !hasDefault {
+		return records
+	}
+	out := make([]map[string]any, len(records))
+	for i, rec := range records {
+		dr := make(map[string]any, len(rec)+1)
+		for k, v := range rec {
+			dr[k] = v
+		}
+		for _, f := range sc.Fields {
+			if _, present := dr[f.Name]; !present && f.Default != nil {
+				dr[f.Name] = f.Default
+			}
+		}
+		out[i] = dr
+	}
+	return out
 }
 
 // embedTexts embeds a batch of texts under the table's embedding-space rules:

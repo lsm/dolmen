@@ -123,7 +123,9 @@ curl -s -X POST "${base%/}/v1/insert" \
 - Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`,
   and `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field).
 - Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field —
-  enables `search_vector` with `text`), `required: true`.
+  enables `search_vector` with `text`), `required: true`, `default: <value>` (stored by later
+  inserts that omit the field, instead of NULL; must match the field's type; not allowed on
+  `required` or `vectorize` fields).
 - `create_namespace` is only for reserving a name up front (or failing loudly if it is taken) —
   namespaces are otherwise created implicitly on first use, and it creates no tables.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
@@ -264,7 +266,10 @@ Validation notes:
   4096-dimension cap applies only to declared `vector` fields; `vectorize` records the provider's
   returned dimension.
 - Unknown field keys are rejected. Missing or `null` required fields are rejected on `insert` and on
-  the insert branch of `upsert`/`upsert_by_key`.
+  the insert branch of `upsert`/`upsert_by_key`. A field with a declared `default` (shown by
+  `describe_table`) stores it when an insert omits the field; an explicit `null` still stores NULL.
+  Create-time defaults apply to future inserts; `add_field`'s `default` is a one-time backfill for
+  existing rows and does not change later inserts.
 - Namespace and table names are trimmed and lowercased before validation on direct `/v1` requests,
   so `"namespace":" Production "` operates on `production`. The MCP tool schemas require
   already-canonical names — always send trimmed lowercase names.

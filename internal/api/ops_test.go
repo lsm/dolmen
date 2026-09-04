@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1773,5 +1774,109 @@ func TestSearchVectorFilterAndMinScoreOverHTTP(t *testing.T) {
 	})
 	if code != 400 {
 		t.Fatalf("semicolon in filter must 400, got %d %v", code, res)
+	}
+}
+
+func TestCreateTableDefaultsEndToEnd(t *testing.T) {
+	srv := newTestServer(t)
+
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "e2e",
+		"table":     "items",
+		"fields": []map[string]any{
+			{"name": "sku", "type": "string"},
+			{"name": "qty", "type": "number", "default": 3},
+			{"name": "note", "type": "string", "default": "standard note", "fulltext": true},
+			{"name": "meta", "type": "json", "default": map[string]any{"a": nil}},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("create_table with defaults failed: %d %v", code, res)
+	}
+	table := res["data"].(map[string]any)["table"].(map[string]any)
+	fields := table["fields"].([]any)
+	qty := fields[1].(map[string]any)
+	if qty["default"] != float64(3) {
+		t.Fatalf("created schema must echo the default, got %v", qty["default"])
+	}
+
+	// Inserts omitting defaulted fields store them (including the nested-null
+	// json default); describe reflects the declarations.
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "e2e", "table": "items", "records": []map[string]any{{"sku": "a"}},
+	})
+	if code != 200 {
+		t.Fatalf("insert with omitted defaulted fields failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "query", map[string]any{
+		"namespace": "e2e", "sql": "SELECT qty, note, meta FROM items WHERE sku = 'a'",
+	})
+	if code != 200 {
+		t.Fatalf("query failed: %d %v", code, res)
+	}
+	rows := res["data"].(map[string]any)["rows"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %v", rows)
+	}
+	row := rows[0].(map[string]any)
+	if row["qty"] != float64(3) || row["note"] != "standard note" {
+		t.Fatalf("omitted fields must store their defaults, got %v", row)
+	}
+	if meta, ok := row["meta"].(map[string]any); !ok || meta["a"] != nil {
+		t.Fatalf("nested-null json default must round-trip, got %v", row["meta"])
+	}
+
+	// The defaulted fulltext value is indexed.
+	code, res = post(t, srv.URL, "search_fulltext", map[string]any{
+		"namespace": "e2e", "table": "items", "query": "standard",
+	})
+	if code != 200 {
+		t.Fatalf("search_fulltext failed: %d %v", code, res)
+	}
+	if results := res["data"].(map[string]any)["results"].([]any); len(results) != 1 {
+		t.Fatalf("defaulted fulltext value must be searchable, got %v", results)
+	}
+
+	code, res = post(t, srv.URL, "describe_table", map[string]any{
+		"namespace": "e2e", "table": "items",
+	})
+	if code != 200 {
+		t.Fatalf("describe_table failed: %d %v", code, res)
+	}
+	fields = res["data"].(map[string]any)["table"].(map[string]any)["fields"].([]any)
+	note := fields[2].(map[string]any)
+	if note["default"] != "standard note" {
+		t.Fatalf("describe_table must reflect the default, got %v", note["default"])
+	}
+
+	// Invalid default combinations are rejected with a clear error.
+	code, res = post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "e2e", "table": "bad",
+		"fields": []map[string]any{{"name": "a", "type": "string", "required": true, "default": "x"}},
+	})
+	if code != 400 || !strings.Contains(fmt.Sprint(res["error"]), "not allowed on required") {
+		t.Fatalf("required+default must 400, got %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "e2e", "table": "bad",
+		"fields": []map[string]any{{"name": "a", "type": "string", "default": nil}},
+	})
+	if code != 400 || !strings.Contains(fmt.Sprint(res["error"]), "null is not allowed") {
+		t.Fatalf("null default must 400, got %d %v", code, res)
+	}
+
+	// The OpenAPI document describes the default on the Field schema.
+	doc, err := http.Get(srv.URL + "/v1/openapi.json")
+	if err != nil {
+		t.Fatalf("get openapi: %v", err)
+	}
+	defer doc.Body.Close()
+	var openapi map[string]any
+	if err := json.NewDecoder(doc.Body).Decode(&openapi); err != nil {
+		t.Fatalf("decode openapi: %v", err)
+	}
+	field := openapi["components"].(map[string]any)["schemas"].(map[string]any)["Field"].(map[string]any)
+	if _, ok := field["properties"].(map[string]any)["default"]; !ok {
+		t.Fatalf("openapi Field schema must declare default, got %v", field["properties"])
 	}
 }

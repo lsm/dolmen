@@ -349,8 +349,8 @@ func TestCreateTableNameAndDimConstraintsDeclared(t *testing.T) {
 		t.Fatalf(`"name" must exclude the reserved field identifiers, got %v`, name["not"])
 	}
 	allOf, ok := items["allOf"].([]any)
-	if !ok || len(allOf) != 3 {
-		t.Fatalf("expected three conditional constraints (dim, fulltext, vectorize), got %v", items["allOf"])
+	if !ok || len(allOf) != 5 {
+		t.Fatalf("expected five conditional constraints (dim, fulltext, vectorize, default exclusions), got %v", items["allOf"])
 	}
 	dimRule := allOf[0].(map[string]any)
 	then, ok := dimRule["then"].(map[string]any)["required"].([]string)
@@ -371,8 +371,8 @@ func TestCreateTableFulltextAndVectorizeConstraintsDeclared(t *testing.T) {
 	fields := def.InputSchema["properties"].(map[string]any)["fields"].(map[string]any)
 	items := fields["items"].(map[string]any)
 	allOf, ok := items["allOf"].([]any)
-	if !ok || len(allOf) != 3 {
-		t.Fatalf("expected three conditional constraints, got %v", items["allOf"])
+	if !ok || len(allOf) != 5 {
+		t.Fatalf("expected five conditional constraints, got %v", items["allOf"])
 	}
 	fulltextThen := allOf[1].(map[string]any)["then"].(map[string]any)["properties"].(map[string]any)
 	ftTypes, ok := fulltextThen["type"].(map[string]any)["enum"].([]schema.FieldType)
@@ -396,6 +396,44 @@ func TestCreateTableFulltextAndVectorizeConstraintsDeclared(t *testing.T) {
 	}
 	if _, ok := notContains["contains"].(map[string]any)["properties"].(map[string]any)["vectorize"]; !ok {
 		t.Fatalf("vectorize cap must target the vectorize property, got %v", notContains["contains"])
+	}
+}
+
+func TestCreateTableDefaultConstraintsDeclared(t *testing.T) {
+	def, ok := Ops["create_table"]
+	if !ok {
+		t.Fatal("create_table op missing")
+	}
+	items := def.InputSchema["properties"].(map[string]any)["fields"].(map[string]any)["items"].(map[string]any)
+	props := items["properties"].(map[string]any)
+	if _, ok := props["default"].(map[string]any)["description"]; !ok {
+		t.Fatalf(`create_table field items must declare "default", got %v`, props["default"])
+	}
+	allOf := items["allOf"].([]any)
+	for i, exclude := range []string{"required", "vectorize"} {
+		rule, ok := allOf[3+i].(map[string]any)
+		if !ok {
+			t.Fatalf("default exclusion %d must be an if/then rule, got %v", i, allOf[3+i])
+		}
+		ifCond := rule["if"].(map[string]any)
+		if ifCond["properties"].(map[string]any)[exclude].(map[string]any)["const"] != true {
+			t.Fatalf("default exclusion must key on %s=true, got %v", exclude, ifCond)
+		}
+		thenNot, ok := rule["then"].(map[string]any)["not"].(map[string]any)["required"].([]string)
+		if !ok || len(thenNot) != 1 || thenNot[0] != "default" {
+			t.Fatalf("%s=true must reject default via not/required, got %v", exclude, rule["then"])
+		}
+	}
+	// add_field's backfill default lives on the change, so migrate's field
+	// object must not declare one.
+	migrateItems := Ops["migrate"].InputSchema["properties"].(map[string]any)["changes"].(map[string]any)["items"].(map[string]any)
+	changeProps := migrateItems["properties"].(map[string]any)
+	fieldProps := changeProps["field"].(map[string]any)["properties"].(map[string]any)
+	if _, ok := fieldProps["default"]; ok {
+		t.Fatalf("migrate's add_field field object must not declare default (it is the change's default), got %v", fieldProps["default"])
+	}
+	if _, ok := changeProps["default"].(map[string]any)["description"]; !ok {
+		t.Fatalf("migrate's change object must declare its backfill default, got %v", changeProps["default"])
 	}
 }
 

@@ -264,6 +264,26 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 			return nil, 0, 0, true, err
 		}
 		if matchID == 0 {
+			// An unmatched record inserts, so omitted fields with declared
+			// defaults store them (on the update path unspecified fields keep
+			// their values instead): the default joins the column list and the
+			// record so coercion, FTS, and embedding treat it exactly like a
+			// caller-supplied value.
+			for _, f := range sc.Fields {
+				if _, present := p.rec[f.Name]; present {
+					continue
+				}
+				if f.Default == nil {
+					continue
+				}
+				cv, err := coerceValue(f, f.Default)
+				if err != nil {
+					return nil, 0, 0, true, fmt.Errorf("%w: %w", ErrInvalid, err)
+				}
+				p.rec[f.Name] = f.Default
+				p.cols = append(p.cols, q(f.Name))
+				p.vals = append(p.vals, cv)
+			}
 			for _, f := range sc.Fields {
 				v, present := p.rec[f.Name]
 				if present && v != nil {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -195,7 +196,13 @@ func loadSchema(ctx context.Context, db rowQuerier, nsName, table string) (*sche
 		return nil, err
 	}
 	var sc schema.TableSchema
-	if err := json.Unmarshal([]byte(raw), &sc); err != nil {
+	// UseNumber keeps declared numeric defaults exact across the schema_json
+	// round-trip: a number field's default above JSON's safe-integer range must
+	// survive to later inserts and describe_table, not collapse to the nearest
+	// float64.
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&sc); err != nil {
 		return nil, fmt.Errorf("corrupt schema for %s.%s: %w", nsName, table, err)
 	}
 	return &sc, nil
@@ -345,6 +352,9 @@ func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []
 	if err := schema.Validate(fields); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
+	if err := validateFieldDefaults(fields); err != nil {
+		return nil, err
+	}
 	n, err := s.ns(nsName)
 	if err != nil {
 		return nil, err
@@ -379,6 +389,34 @@ func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []
 		return nil, err
 	}
 	return sc, nil
+}
+
+// validateFieldDefaults checks that each declared default coerces through its
+// field's type at create time, so a mismatched default fails here instead of
+// at the first insert that omits the field. The raw declared value is what the
+// schema persists; inserts coerce it through the same path on every use.
+func validateFieldDefaults(fields []schema.Field) error {
+	for _, f := range fields {
+		if f.Default == nil {
+			continue
+		}
+		cv, err := coerceValue(f, f.Default)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
+		// Non-finite floats cannot arrive through JSON but can through direct
+		// store use; they have no honest stored meaning — reject them outright.
+		if fv, isFloat := cv.(float64); isFloat && (math.IsNaN(fv) || math.IsInf(fv, 0)) {
+			return invalidf("field %q: default must be a finite number", f.Name)
+		}
+		// Same rule as add_field defaults: a NUL byte cannot appear in stored
+		// SQL text and would confuse FTS — reject it regardless of how the
+		// default was declared.
+		if sv, isStr := cv.(string); isStr && strings.ContainsRune(sv, 0) {
+			return invalidf("field %q: default must not contain NUL bytes", f.Name)
+		}
+	}
+	return nil
 }
 
 func tableDDL(table string, fields []schema.Field) string {

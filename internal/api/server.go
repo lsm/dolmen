@@ -88,72 +88,99 @@ func existingFieldNameProp(desc string) map[string]any {
 	}
 }
 
-func fieldItemSchema(desc string) map[string]any {
-	return map[string]any{
-		"description":          desc,
-		"type":                 "object",
-		"additionalProperties": false,
-		"properties": map[string]any{
-			"name": map[string]any{
-				"type":        "string",
-				"description": "Field name (lowercase [a-z0-9_], max 64 chars; not a SQLite/SQL keyword or reserved name)",
-				"pattern":     schema.IdentPattern(),
-				"not": map[string]any{
-					"enum": schema.ReservedFieldNames(),
-				},
+// fieldItemSchema describes a field definition. withDefault additionally
+// declares the create_table-only default annotation: migrate's add_field takes
+// its backfill default on the change itself, so its field object must not
+// accept one.
+func fieldItemSchema(desc string, withDefault bool) map[string]any {
+	properties := map[string]any{
+		"name": map[string]any{
+			"type":        "string",
+			"description": "Field name (lowercase [a-z0-9_], max 64 chars; not a SQLite/SQL keyword or reserved name)",
+			"pattern":     schema.IdentPattern(),
+			"not": map[string]any{
+				"enum": schema.ReservedFieldNames(),
 			},
-			"type": map[string]any{
-				"type":        "string",
-				"description": "One of: string, text, number, boolean, timestamp, json, vector (omit to default to string)",
-				"enum": []schema.FieldType{
-					schema.String, schema.Text, schema.Number, schema.Boolean,
-					schema.Timestamp, schema.JSON, schema.Vector,
-				},
-			},
-			"fulltext":  prop("boolean", "Index this field for full-text search (string/text only)"),
-			"vectorize": prop("boolean", "Server embeds this text field automatically (string/text only, one per table)"),
-			"dim": map[string]any{
-				"type":        "integer",
-				"description": "Dimension for vector fields",
-				"minimum":     1,
-				"maximum":     schema.MaxVectorDim,
-			},
-			"required": prop("boolean", "Reject inserts that omit this field"),
 		},
-		"required": []string{"name"},
-		"allOf": []any{
-			map[string]any{
-				"if": map[string]any{
-					"properties": map[string]any{"type": map[string]any{"const": string(schema.Vector)}},
-					"required":   []string{"type"},
-				},
-				"then": map[string]any{"required": []string{"dim"}},
-				"else": map[string]any{"not": map[string]any{"required": []string{"dim"}}},
+		"type": map[string]any{
+			"type":        "string",
+			"description": "One of: string, text, number, boolean, timestamp, json, vector (omit to default to string)",
+			"enum": []schema.FieldType{
+				schema.String, schema.Text, schema.Number, schema.Boolean,
+				schema.Timestamp, schema.JSON, schema.Vector,
 			},
+		},
+		"fulltext":  prop("boolean", "Index this field for full-text search (string/text only)"),
+		"vectorize": prop("boolean", "Server embeds this text field automatically (string/text only, one per table)"),
+		"dim": map[string]any{
+			"type":        "integer",
+			"description": "Dimension for vector fields",
+			"minimum":     1,
+			"maximum":     schema.MaxVectorDim,
+		},
+		"required": prop("boolean", "Reject inserts that omit this field"),
+	}
+	allOf := []any{
+		map[string]any{
+			"if": map[string]any{
+				"properties": map[string]any{"type": map[string]any{"const": string(schema.Vector)}},
+				"required":   []string{"type"},
+			},
+			"then": map[string]any{"required": []string{"dim"}},
+			"else": map[string]any{"not": map[string]any{"required": []string{"dim"}}},
+		},
+		map[string]any{
+			"if": map[string]any{
+				"properties": map[string]any{"fulltext": map[string]any{"const": true}},
+				"required":   []string{"fulltext"},
+			},
+			"then": map[string]any{
+				"properties": map[string]any{
+					"type": map[string]any{"enum": []schema.FieldType{schema.String, schema.Text}},
+					"name": map[string]any{"not": map[string]any{"const": "rank"}},
+				},
+			},
+		},
+		map[string]any{
+			"if": map[string]any{
+				"properties": map[string]any{"vectorize": map[string]any{"const": true}},
+				"required":   []string{"vectorize"},
+			},
+			"then": map[string]any{
+				"properties": map[string]any{
+					"type": map[string]any{"enum": []schema.FieldType{schema.String, schema.Text}},
+				},
+			},
+		},
+	}
+	if withDefault {
+		properties["default"] = map[string]any{
+			"description": "Value stored when an insert omits the field — string/text: a string; timestamp: an ISO/RFC3339 string; number: a number; boolean: a boolean; json: any JSON value; vector: a number array of dim entries. Must match the field's type; not allowed on required or vectorize fields",
+		}
+		allOf = append(allOf,
 			map[string]any{
 				"if": map[string]any{
-					"properties": map[string]any{"fulltext": map[string]any{"const": true}},
-					"required":   []string{"fulltext"},
+					"properties": map[string]any{"required": map[string]any{"const": true}},
+					"required":   []string{"required"},
 				},
-				"then": map[string]any{
-					"properties": map[string]any{
-						"type": map[string]any{"enum": []schema.FieldType{schema.String, schema.Text}},
-						"name": map[string]any{"not": map[string]any{"const": "rank"}},
-					},
-				},
+				"then": map[string]any{"not": map[string]any{"required": []string{"default"}}},
 			},
 			map[string]any{
 				"if": map[string]any{
 					"properties": map[string]any{"vectorize": map[string]any{"const": true}},
 					"required":   []string{"vectorize"},
 				},
-				"then": map[string]any{
-					"properties": map[string]any{
-						"type": map[string]any{"enum": []schema.FieldType{schema.String, schema.Text}},
-					},
-				},
+				"then": map[string]any{"not": map[string]any{"required": []string{"default"}}},
 			},
-		},
+		)
+	}
+	return map[string]any{
+		"description":          desc,
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           properties,
+		"required":             []string{"name"},
+		"allOf":                allOf,
 	}
 }
 
@@ -284,11 +311,12 @@ func decodeAllowNullArgs(body []byte, v any) error {
 	return decodeData(body, v)
 }
 
-// jsonDefaultPathRe matches paths inside a migrate change's default value,
-// whether object-shaped (changes[0].default.… ) or array-shaped
-// (changes[0].default[…]). Nested nulls there are JSON data the store coerces
-// and serializes as-is; everywhere else null remains a request error.
-var jsonDefaultPathRe = regexp.MustCompile(`^changes\[\d+\]\.default(?:\.|\[)`)
+// jsonDefaultPathRe matches paths inside a default value — a migrate change's
+// (changes[0].default.…) or a create_table field's (fields[0].default.…) —
+// whether object-shaped or array-shaped (fields[0].default[…]). Nested nulls
+// there are JSON data the store coerces and serializes as-is; everywhere else
+// null remains a request error.
+var jsonDefaultPathRe = regexp.MustCompile(`^(?:changes|fields)\[\d+\]\.default(?:\.|\[)`)
 
 func rejectNulls(path string, v any) error {
 	switch t := v.(type) {

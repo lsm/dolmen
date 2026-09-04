@@ -112,6 +112,7 @@ func components() map[string]any {
 				"vectorize": propBool(),
 				"dim":       intProp(1, schema.MaxVectorDim),
 				"required":  propBool(),
+				"default":   map[string]any{"description": "Value stored when an insert omits the field; exactly as declared (present when set)"},
 			}, []string{"name", "type"}),
 			"TableSchema": objectSchema(false, map[string]any{
 				"namespace":   stringProp(`^[a-z0-9][a-z0-9_-]{0,63}$`),
