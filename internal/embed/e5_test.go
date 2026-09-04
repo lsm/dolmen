@@ -45,18 +45,19 @@ func TestE5Prefixes(t *testing.T) {
 }
 
 // TestE5IdentityMarker pins the identity versioning: e5-configured servers
-// carry a "#e5" marker, so tables embedded before prefixes were applied no
-// longer match and are re-embedded via migrate instead of mixing
-// representations. Symmetric models keep their long-standing identity.
+// carry a "#e5" marker in the versioned namespace, so tables embedded before
+// prefixes were applied no longer match and are re-embedded via migrate
+// instead of mixing representations. Symmetric models keep their
+// long-standing identity.
 func TestE5IdentityMarker(t *testing.T) {
-	if got := (&Local{Model: "intfloat/multilingual-e5-small"}).Identity(); got != "local/intfloat/multilingual-e5-small#e5" {
-		t.Fatalf("Local e5 identity: got %q, want the #e5 marker", got)
+	if got := (&Local{Model: "intfloat/multilingual-e5-small"}).Identity(); got != "local/v2:intfloat/multilingual-e5-small#e5" {
+		t.Fatalf("Local e5 identity: got %q, want the versioned #e5 marker", got)
 	}
 	if got := (&Local{Model: "sentence-transformers/all-MiniLM-L6-v2"}).Identity(); got != "local/sentence-transformers/all-MiniLM-L6-v2" {
 		t.Fatalf("Local symmetric identity must be unchanged, got %q", got)
 	}
-	if got := (&OpenAI{BaseURL: "http://localhost:11434/v1", Model: "intfloat/multilingual-e5-small"}).Identity(); got != "openai|http://localhost:11434/v1|intfloat/multilingual-e5-small#e5" {
-		t.Fatalf("OpenAI e5 identity: got %q, want the #e5 marker", got)
+	if got := (&OpenAI{BaseURL: "http://localhost:11434/v1", Model: "intfloat/multilingual-e5-small"}).Identity(); got != "openai/v2|http://localhost:11434/v1|intfloat/multilingual-e5-small#e5" {
+		t.Fatalf("OpenAI e5 identity: got %q, want the versioned #e5 marker", got)
 	}
 	if got := (&OpenAI{BaseURL: "http://localhost:11434/v1", Model: "nomic-embed-text"}).Identity(); got != "openai|http://localhost:11434/v1|nomic-embed-text" {
 		t.Fatalf("OpenAI symmetric identity must be unchanged, got %q", got)
@@ -75,7 +76,7 @@ func TestIdentityNoModelCollision(t *testing.T) {
 	if e5Dir == literalDir {
 		t.Fatalf("identities collide: %q vs %q — the embed_space guard would mix differently preprocessed embeddings", e5Dir, literalDir)
 	}
-	if want := "local//models/foo-e5#e5"; e5Dir != want {
+	if want := "local/v2:/models/foo-e5#e5"; e5Dir != want {
 		t.Fatalf("e5-detected directory identity: got %q, want %q", e5Dir, want)
 	}
 	if want := "local/v2:/models/foo-e5%23e5"; literalDir != want {
@@ -95,6 +96,20 @@ func TestIdentityNoModelCollision(t *testing.T) {
 	}
 	if got := (&Local{Model: "/models/foo#bar"}).Identity(); got == legacy {
 		t.Fatalf("escaped /models/foo#bar must not match the legacy identity of /models/foo%%23bar: %q", got)
+	}
+	// A legacy identity that already ends in a literal "#e5" (recorded for a
+	// directory so named) must not match the marked identity of the distinct
+	// clean-named e5 model — on either provider.
+	legacyMarkedLocal := "local//models/foo-e5#e5"
+	if got := (&Local{Model: "/models/foo-e5"}).Identity(); got == legacyMarkedLocal {
+		t.Fatalf("marked identity must live in the versioned namespace, not match legacy %q", got)
+	}
+	legacyMarkedOpenAI := "openai|http://x|foo-e5#e5"
+	if got := (&OpenAI{BaseURL: "http://x", Model: "foo-e5"}).Identity(); got == legacyMarkedOpenAI {
+		t.Fatalf("marked OpenAI identity must live in the versioned namespace, not match legacy %q", got)
+	}
+	if got, want := (&OpenAI{BaseURL: "http://x", Model: "foo-e5"}).Identity(), "openai/v2|http://x|foo-e5#e5"; got != want {
+		t.Fatalf("OpenAI marked identity: got %q, want %q", got, want)
 	}
 	// OpenAI model names are endpoint-defined, so the version tag lives on
 	// the provider, outside the model-controlled namespace: legacy identities

@@ -257,8 +257,8 @@ func TestLocalProviderE5PrefixesEndToEnd(t *testing.T) {
 		t.Fatalf("describe_table: %d %v", code, res)
 	}
 	table, _ := res["data"].(map[string]any)["table"].(map[string]any)
-	if got := table["embed_space"]; got != "local/intfloat/multilingual-e5-small#e5" {
-		t.Fatalf("embed_space must carry the #e5 marker, got %v", got)
+	if got := table["embed_space"]; got != "local/v2:intfloat/multilingual-e5-small#e5" {
+		t.Fatalf("embed_space must carry the versioned #e5 marker, got %v", got)
 	}
 }
 

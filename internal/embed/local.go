@@ -89,15 +89,24 @@ func (l *Local) Name() string { return "local" }
 
 func (l *Local) ModelName() string { return l.Model }
 
-// Identity pins tables to this provider and model: "local/<model>", plus a
-// "#e5" marker when the e5 prefix contract is active — the marker versions
-// the embedding space, so tables embedded before prefixes were applied are
-// rejected rather than silently mixing representations. A model change (or a
-// switch to/from the OpenAI provider) is a different identity too, so
-// inserts and text searches are rejected until the table is re-embedded
-// via migrate — exactly as with the OpenAI provider.
+// Identity pins tables to this provider and model: "local/<model>" for
+// symmetric, escape-free references (byte-identical to the identities dolmen
+// has always produced, so existing tables keep matching), and
+// "local/v2:<escaped>#e5" whenever the identity carries the e5 prefix
+// contract's marker or the model reference needs escaping. The v2 namespace
+// cannot be reached by any legacy identity of a different model: Hub ids
+// allow no ":" or "#" before their "/", and absolute paths start with "/".
+// The marker versions the embedding space, so tables embedded before
+// prefixes were applied are rejected rather than silently mixing
+// representations. A model change (or a switch to/from the OpenAI provider)
+// is a different identity too, so inserts and text searches are rejected
+// until the table is re-embedded via migrate — exactly as with the OpenAI
+// provider.
 func (l *Local) Identity() string {
-	return "local/" + identityModel(l.Model) + identityMarker(l.Model)
+	if identityLegacy(l.Model) {
+		return "local/" + l.Model
+	}
+	return "local/v2:" + escapeIdentityReference(l.Model) + identityMarker(l.Model)
 }
 
 // Cached reports whether the model weights are already on disk. A test stub

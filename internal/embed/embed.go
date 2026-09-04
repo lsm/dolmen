@@ -68,30 +68,20 @@ func identityMarker(model string) string {
 	return ""
 }
 
-// identityModel renders the model reference for a Local-provider identity.
-// References without "%" or "#" are emitted verbatim — byte-identical to the
-// identities dolmen has always produced, so existing tables keep matching.
-// A reference containing either character is emitted in a versioned escaped
-// form, "v2:" + percent-escaping, for two reasons. First, the escape makes
-// the identity injective in the model (a directory literally named foo-e5#e5
-// must not collide with an e5-detected foo-e5's "#e5" marker). Second, the
-// "v2:" tag cannot occur in any legacy — unescaped — identity of a different
-// model: Hub ids allow no ":" before their "/", and absolute paths start
-// with "/", so an identity recorded by an earlier build can never equal a
-// v2-tagged one. OpenAI identities version their provider tag instead — see
-// OpenAI.Identity.
-func identityModel(model string) string {
-	if !strings.ContainsAny(model, "%#") {
-		return model
-	}
-	return "v2:" + escapeIdentityReference(model)
-}
-
 // escapeIdentityReference percent-escapes "%" and "#" — the marker's lead
 // byte — so an escaped model reference can never contain the bytes dolmen
 // appends after it.
 func escapeIdentityReference(model string) string {
 	return strings.NewReplacer("%", "%25", "#", "%23").Replace(model)
+}
+
+// identityLegacy reports whether the model renders in the identity namespace
+// dolmen has always used — the raw reference, byte for byte. Every other
+// identity (one carrying the e5 marker, or needing the escaped form) is
+// emitted in a versioned namespace instead, so it can never equal an
+// identity an earlier build recorded for a different model.
+func identityLegacy(model string) bool {
+	return identityMarker(model) == "" && !strings.ContainsAny(model, "%#")
 }
 
 // prefixAll returns texts with prefix prepended to each; the empty prefix
@@ -146,24 +136,23 @@ func (o *OpenAI) ModelName() string { return o.Model }
 // trimmed) form — it cannot complete an HTTP request either, so it carries no
 // working credentials to leak.
 // Identity pins tables to this endpoint and model. Model names are
-// endpoint-defined and unrestricted, so a model containing "%" or "#" is not
-// tagged inside the model component (any in-model tag could be mimicked by
-// some other endpoint's legacy alias); instead the provider tag itself is
-// versioned — "openai/v2|" — and legacy identities always begin "openai|",
-// so no model name can bridge the two formats. The base URL is stripped
-// of HTTP userinfo (user:pass@): credentials authenticate requests to the
-// endpoint, they do not name the embedding space, and the identity flows into
-// describe_server responses and stored embed_space values, which must never
-// expose secrets. A base URL that does not parse keeps its raw (trailing-slash
-// trimmed) form — it cannot complete an HTTP request either, so it carries no
-// working credentials to leak.
+// endpoint-defined and unrestricted, so anything beyond the legacy
+// raw-verbatim form — the e5 marker, or percent-escaping for a model
+// containing "%" or "#" — versions the provider tag itself: "openai/v2|".
+// Legacy identities always begin "openai|", and the two tags differ at byte
+// 7, so no endpoint-defined model name can bridge the formats. The base URL
+// is stripped of HTTP userinfo (user:pass@): credentials authenticate
+// requests to the endpoint, they do not name the embedding space, and the
+// identity flows into describe_server responses and stored embed_space
+// values, which must never expose secrets. A base URL that does not parse
+// keeps its raw (trailing-slash trimmed) form — it cannot complete an HTTP
+// request either, so it carries no working credentials to leak.
 func (o *OpenAI) Identity() string {
 	provider, model := o.Name(), o.Model
-	if strings.ContainsAny(model, "%#") {
+	if !identityLegacy(model) {
 		provider += "/v2"
-		model = escapeIdentityReference(model)
+		model = escapeIdentityReference(model) + identityMarker(model)
 	}
-	model += identityMarker(o.Model)
 	trimmed := strings.TrimRight(o.BaseURL, "/")
 	u, err := url.Parse(trimmed)
 	if err != nil {
