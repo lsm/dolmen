@@ -66,7 +66,9 @@ Rules:
   (liveness probes and client-side schema discovery); everything under `/v1/{op}` and `/mcp`
   requires identity when `auth: on`.
 - Audit attribution: with `auth: on` the principal is attached to the request's log line alongside
-  the existing `X-Request-Id` correlation. Principals never appear in response bodies.
+  the existing `X-Request-Id` correlation. The caller's own principal is never echoed in response
+  bodies; `owner` values surfaced in row reads are row data, gated by the caller's visible set
+  (§4.3), not identity leakage.
 
 ### 1.3 Bootstrap admin key
 
@@ -106,10 +108,10 @@ in §3):
 | Operation | Verb required | Object checked |
 |---|---|---|
 | `list_namespaces` | none (any authenticated principal) | Response lists only namespaces the caller holds **any** grant on or under (§3.3). |
-| `create_namespace` | `admin` | The **parent**: `*` for depth-1 namespaces, the containing namespace for deeper ones. |
+| `create_namespace` | `admin` | The **parent**: `*` for depth-1 namespaces, the containing namespace for deeper ones. Under `auth: on` this is the only way a namespace comes to exist (see below). |
 | `drop_namespace` | `admin` | The namespace itself. Leaf-only (§5.4). |
 | `list_tables` | none (any authenticated principal) | Filtered to tables the caller holds any grant on. |
-| `describe_table` | `read` **or** `write` | The table. `row_count` reflects the caller's visible set (§4.3). |
+| `describe_table` | `read`, `write`, **or** `schema` | The table. `row_count` follows the caller's visible set (§4.3) — a schema-only holder sees the schema and a count of 0. |
 | `describe_server`, `infer_schema` | none (any authenticated principal) | Untargeted: provider status is no secret; `infer_schema` is pure computation. |
 | `create_table` | `schema` | The namespace. |
 | `drop_table`, `migrate`, `list_migrations` | `schema` | The table. Migration history is the audit trail of schema changes — same verb as the changes themselves. |
@@ -123,6 +125,13 @@ Deny-by-default: with `auth: on`, a request is authorized only by a matching gra
 key). Denials are `403 forbidden` with the same envelope as every other error. Authorization
 *failure* (e.g. a corrupt grant store) is a `500 internal_error` — the check fails closed, never
 open.
+
+**Implicit namespace creation is disabled under `auth: on`.** v0.2.0 creates a namespace file on
+first use, but that side effect would bypass the parent-level `admin` gate: a `schema` grant on a
+not-yet-existing namespace must not materialize the namespace through `create_table` or any other
+op. With `auth: on`, an operation targeting a nonexistent namespace fails `not_found`;
+`create_namespace` is the only creation path. Under `auth: off` nothing changes — implicit
+creation stays, exactly as v0.2.0.
 
 Transport parity: `grant`/`revoke`/`list_grants` are ordinary ops — same envelope over `/v1/{op}`
 and MCP `tools/call`. With `auth: off` they **do not exist**: not dispatchable, absent from
@@ -247,7 +256,8 @@ the request's **visible set**, and passes it to the engine as a `RowScope` (§6.
 - Table with `row_access` and a caller holding `read` through any covering grant → no scope
   (table-wide; the `read` verb is explicitly table-wide visibility).
 - Table with `row_access` and a caller holding only `write` → scope `{owner = principal}`.
-  (Holders of only `schema`/`admin` have no row paths at all — no scope ever applies to them.)
+  (Holders of only `schema`/`admin` have no data paths beyond `describe_table`, whose count
+  follows the same rule — their visible set is empty, so the count is 0.)
 
 The engine conjoins the scope predicate into every row read, count, mutation, and search it
 performs for that call. Everything observes the visible set:
@@ -341,10 +351,11 @@ type Engine interface {
     CreateNamespace(ctx context.Context, ns string) error
     DropNamespace(ctx context.Context, ns string) error
 
-    // Table DDL and registry
+    // Table DDL and registry — DescribeTable's scope scopes the returned row
+    // count to the caller's visible set (§4.3)
     ListTables(ctx context.Context, ns string) ([]string, error)
     CreateTable(ctx context.Context, ns, table string, fields []schema.Field, opts TableOpts) (*schema.TableSchema, error)
-    DescribeTable(ctx context.Context, ns, table string) (*schema.TableSchema, int64, error)
+    DescribeTable(ctx context.Context, ns, table string, scope *RowScope) (*schema.TableSchema, int64, error)
     DropTable(ctx context.Context, ns, table string) error
 
     // Migrate ops
@@ -467,7 +478,7 @@ harness per test group, no CI matrix, no new make targets.
 | D3 | `-auth`/`DOLMEN_AUTH`, default `off`; `auth: on` with no identity source fails startup | §1.2 |
 | D4 | `DOLMEN_ADMIN_KEY` env-only bearer; principal `dolmen-admin`; implicit `admin` on `*` attaches to the credential, not the name; `dolmen-admin` reserved in headers | §1.3 |
 | D5 | New error code `unauthorized` (401); `forbidden` (403) = granted-no | §1.2 |
-| D6 | Verbs `read`/`write`/`schema`/`admin`; full op→verb table; `query` gated on the namespace | §2 |
+| D6 | Verbs `read`/`write`/`schema`/`admin`; full op→verb table (`describe_table` also serves `schema` holders); `query` gated on the namespace; `auth: on` disables implicit namespace creation (`not_found` instead) | §2 |
 | D7 | Grants: subject {type,id}, object {namespace[,table] \| `*`}, explicit verbs; union resolution; inheritance down; no deny grants; no segment wildcards | §3 |
 | D8 | Grant store is server-level, above the engine seam | §3 preamble |
 | D9 | `row_access: "own"` table-level on create_table; auth-off rejects the key | §4.1 |
