@@ -3,6 +3,8 @@ package conformance
 import (
 	"math"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/schema"
 )
 
 // FTS5 syntax invariants: the documented accept/reject set from the README's
@@ -120,15 +122,15 @@ func TestSearchVectorScoreIsLocalCosine(t *testing.T) {
 	})
 	vectors := map[string][]float32{
 		"same":     {1, 0, 0, 0},
+		"tied":     {1, 0, 0, 0}, // identical vector: equal-score tie with "same"
 		"half":     {1, 1, 0, 0},
 		"ortho":    {0, 0, 1, 0},
 		"opposite": {-1, 0, 0, 0},
 	}
 	recs := make([]map[string]any, 0, len(vectors))
 	for name, v := range vectors {
-		vv := v // copy for the closure-free literal below
-		arr := make([]any, len(vv))
-		for i, x := range vv {
+		arr := make([]any, len(v))
+		for i, x := range v {
 			arr[i] = float64(x)
 		}
 		recs = append(recs, map[string]any{"name": name, "v": arr})
@@ -140,8 +142,8 @@ func TestSearchVectorScoreIsLocalCosine(t *testing.T) {
 		"namespace": "vec", "table": "t", "column": "v", "vector": query,
 	})
 	results := data["results"].([]any)
-	if len(results) != 4 {
-		t.Fatalf("all four rows score, got %d: %v", len(results), results)
+	if len(results) != 5 {
+		t.Fatalf("all five rows score, got %d: %v", len(results), results)
 	}
 	if int64val(t, "skipped", data["skipped_vectors"]) != 0 {
 		t.Fatalf("skipped_vectors %v, want 0", data["skipped_vectors"])
@@ -177,14 +179,23 @@ func TestSearchVectorScoreIsLocalCosine(t *testing.T) {
 		}
 		prev, prevID = score, id
 	}
-	if math.Abs(byName["same"]-1.0) > 1e-6 {
-		t.Fatalf("identical vector must score 1, got %v", byName["same"])
+	if math.Abs(byName["same"]-1.0) > 1e-6 || math.Abs(byName["tied"]-1.0) > 1e-6 {
+		t.Fatalf("identical vectors must score 1, got %v and %v", byName["same"], byName["tied"])
 	}
 	if math.Abs(byName["opposite"]-(-1.0)) > 1e-6 {
 		t.Fatalf("opposite vector must score -1, got %v", byName["opposite"])
 	}
 	if math.Abs(byName["ortho"]) > 1e-6 {
 		t.Fatalf("orthogonal vector must score 0, got %v", byName["ortho"])
+	}
+	// The equal-score pair must be adjacent in ascending id order — the
+	// documented stable tie-break, now actually exercised.
+	tie := []int64{}
+	for _, r := range results[:2] {
+		tie = append(tie, int64val(t, "tied row id", r.(map[string]any)["id"]))
+	}
+	if len(tie) != 2 || tie[0] > tie[1] {
+		t.Fatalf("equal-score rows must order by ascending id, got %v", tie)
 	}
 
 	// min_score drops lower-similarity rows before ranking and limit.
@@ -195,13 +206,13 @@ func TestSearchVectorScoreIsLocalCosine(t *testing.T) {
 	for _, r := range data["results"].([]any) {
 		names = append(names, r.(map[string]any)["name"].(string))
 	}
-	if len(names) != 2 { // same (1.0) and half (~0.707)
-		t.Fatalf("min_score 0.5 must keep 2 rows, got %v", names)
+	if len(names) != 3 { // the two 1.0 ties and half (~0.707)
+		t.Fatalf("min_score 0.5 must keep 3 rows, got %v", names)
 	}
 
-	// offset/limit page deterministically: limit 2 offset 2 is the tail.
+	// offset/limit page deterministically: limit 2 offset 3 is the tail.
 	data = h.mustHTTP("search_vector", map[string]any{
-		"namespace": "vec", "table": "t", "column": "v", "vector": query, "limit": 2, "offset": 2,
+		"namespace": "vec", "table": "t", "column": "v", "vector": query, "limit": 2, "offset": 3,
 	})
 	tail := data["results"].([]any)
 	if len(tail) != 2 {
@@ -230,11 +241,15 @@ func TestSearchVectorSkippedVectors(t *testing.T) {
 			{"name": "good", "v": []any{1, 0}},
 			{"name": "text-corrupt", "v": []any{0, 1}},
 			{"name": "short-blob", "v": []any{1, 1}},
+			{"name": "dim-mismatch", "v": []any{0, 1}},
+			{"name": "nan-blob", "v": []any{1, 0}},
 		},
 	})
 
-	// Out-of-band writer corrupts two stored vectors: one becomes TEXT, one
-	// becomes a BLOB of the wrong shape (odd byte length).
+	// Out-of-band writer corrupts four stored vectors, one per documented
+	// skip shape: a non-BLOB value, a malformed BLOB (odd byte length), a
+	// well-formed float32 blob of the wrong dimension, and a well-formed
+	// blob containing a non-finite component.
 	rows := h.mustHTTP("query", map[string]any{
 		"namespace": "vec", "sql": "SELECT id, name FROM s ORDER BY id",
 	})["rows"].([]any)
@@ -252,7 +267,15 @@ func TestSearchVectorSkippedVectors(t *testing.T) {
 		if _, err := db.Exec("UPDATE s SET v = 'not a blob' WHERE id = ?", idOf("text-corrupt")); err != nil {
 			return err
 		}
-		_, err := db.Exec("UPDATE s SET v = x'0102' WHERE id = ?", idOf("short-blob")) // odd, invalid shape
+		if _, err := db.Exec("UPDATE s SET v = x'0102' WHERE id = ?", idOf("short-blob")); err != nil { // odd, invalid shape
+			return err
+		}
+		if _, err := db.Exec("UPDATE s SET v = ? WHERE id = ?",
+			schema.EncodeVector([]float32{1, 0, 1, 0}), idOf("dim-mismatch")); err != nil { // 4 floats in a dim-2 column
+			return err
+		}
+		_, err := db.Exec("UPDATE s SET v = ? WHERE id = ?",
+			schema.EncodeVector([]float32{float32(math.NaN()), 0}), idOf("nan-blob"))
 		return err
 	})
 
@@ -266,8 +289,8 @@ func TestSearchVectorSkippedVectors(t *testing.T) {
 	if results[0].(map[string]any)["name"] != "good" {
 		t.Fatalf("wrong survivor: %v", results[0])
 	}
-	if int64val(t, "skipped", data["skipped_vectors"]) != 2 {
-		t.Fatalf("skipped_vectors %v, want 2", data["skipped_vectors"])
+	if int64val(t, "skipped", data["skipped_vectors"]) != 4 {
+		t.Fatalf("skipped_vectors %v, want 4", data["skipped_vectors"])
 	}
 }
 
@@ -284,8 +307,9 @@ func TestSearchVectorNullEmbeddingExclusion(t *testing.T) {
 		"namespace": "vecz", "table": "t",
 		"records": []map[string]any{
 			{"body": "embedded text one", "tag": "a"},
-			{"body": "", "tag": "b"}, // empty string → not embedded
-			{"tag": "c"},             // absent → not embedded
+			{"body": "", "tag": "b"},  // empty string → not embedded
+			{"body": nil, "tag": "d"}, // explicit null → stored NULL, not embedded
+			{"tag": "c"},              // absent → not embedded
 		},
 	})
 
@@ -305,11 +329,16 @@ func TestSearchVectorNullEmbeddingExclusion(t *testing.T) {
 	if data["truncated"] != false {
 		t.Fatalf("single result page is not truncated: %v", data["truncated"])
 	}
-	// The row_count still reports all three rows.
+	// The row_count still reports all four rows.
 	desc := h.mustHTTP("describe_table", map[string]any{"namespace": "vecz", "table": "t"})
-	if int64val(t, "row count", desc["row_count"]) != 3 {
+	if int64val(t, "row count", desc["row_count"]) != 4 {
 		t.Fatalf("all rows stored: %v", desc["row_count"])
 	}
+	// The explicit null reads back as SQL NULL, never an embedding.
+	row := h.mustHTTP("query", map[string]any{
+		"namespace": "vecz", "sql": "SELECT body FROM t WHERE tag = 'd'",
+	})["rows"].([]any)[0].(map[string]any)
+	assertJSONEqual(t, "explicit null vectorized field reads NULL", row["body"], nil)
 }
 
 // search_fulltext filter/args (#120): the optional SQL WHERE filter applies
