@@ -980,6 +980,41 @@ func TestListMigrationsNewestFirst(t *testing.T) {
 	}
 }
 
+func TestListMigrationsNormalizesLegacyNonFlagValues(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "leg", []schema.Field{
+		{Name: "s", Type: schema.String},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Seed a history row in the pre-upgrade shape: a non-flag change carrying
+	// the inert "value": false older binaries recorded on every op.
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	if _, err := n.rw.ExecContext(ctx,
+		`INSERT INTO _dolmen_migrations(table_name, from_version, to_version, changes_json) VALUES('leg', 1, 2, ?)`,
+		`[{"op":"add_field","field":{"name":"note","type":"string"},"value":false},{"op":"set_fulltext","name":"s","value":true}]`,
+	); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+	ms, err := st.ListMigrations(ctx, "test", "leg")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(ms) != 1 || len(ms[0].Changes) != 2 {
+		t.Fatalf("expected one migration with two changes, got %+v", ms)
+	}
+	if ms[0].Changes[0].Op != schema.OpAddField || ms[0].Changes[0].Value != nil {
+		t.Fatalf("legacy non-flag value must be normalized away on read: %+v", ms[0].Changes[0])
+	}
+	if ms[0].Changes[1].Op != schema.OpSetFulltext || ms[0].Changes[1].Value == nil || !*ms[0].Changes[1].Value {
+		t.Fatalf("set_* values must survive normalization: %+v", ms[0].Changes[1])
+	}
+}
+
 func TestMigrateChangeValueValidation(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
