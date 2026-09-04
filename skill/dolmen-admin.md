@@ -114,8 +114,9 @@ connection command above.
   excluded from any `search_vector` that searches `_embedding` (a `text` query, or a raw `vector`
   query with `column` omitted or set to `_embedding`). If recall matters, call `query` with
   `SELECT COUNT(*) FROM <table_name> WHERE _embedding IS NULL` (substitute the table name; or the
-  equivalent filter) to find unembedded rows; comparing `search_vector` result count to the table's
-  row count is only reliable after exhausting all pages with the same filter and no `min_score`.**
+  equivalent filter) to find unembedded rows; if you compare counts instead, do it against
+  `SELECT COUNT(*) FROM <table_name> WHERE <same filter>` after exhausting all pages with
+  `min_score` unset (omit the WHERE clause when no filter is used).**
 - `skipped_vectors` in a `search_vector` response counts stored vectors that were corrupt or
   dimension-mismatched and could not be scored; **it does not count rows with a `null`/empty/missing
   `vectorize` source — those rows are silently excluded and will not raise `skipped_vectors`.**
@@ -169,10 +170,10 @@ negative — value and are returned first. The rank value itself is not returned
   or set to `_embedding`. `skipped_vectors` does NOT count those rows — it only counts stored vectors
   that are corrupt or dimension-mismatched and could not be scored. If recall matters, call `query`
   with `SELECT COUNT(*) FROM <table_name> WHERE _embedding IS NULL` (substitute the table name; or
-  the equivalent filter) to find unembedded rows. If you instead compare `search_vector` result count
-  to the table's row count, do so only after exhausting all pages with the same filter and no
-  `min_score` — otherwise pagination, `min_score`, offsets, filters, and response truncation can make
-  embedded rows look missing.
+  the equivalent filter) to find unembedded rows. If you instead compare counts, compare against
+  `SELECT COUNT(*) FROM <table_name> WHERE <same filter>` after exhausting all pages with
+  `min_score` unset (omit the WHERE clause when no filter is used) — otherwise pagination,
+  `min_score`, offsets, filters, and response truncation can make embedded rows look missing.
 - `search_vector(text=...)` embeds the query `text` with the configured provider and searches only
   the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`.
   `search_vector(vector=[...])` supplies a query vector directly and may search any vector column.
