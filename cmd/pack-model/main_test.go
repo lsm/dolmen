@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,11 +14,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/embed"
 )
 
 func TestPackageDefaultModelLayout(t *testing.T) {
 	files := map[string][]byte{
-		"config.json": []byte(`{"model_type": "bert", "vocab_size": 30522, "hidden_size": 384, "num_hidden_layers": 6, "num_attention_heads": 12, "intermediate_size": 1536, "max_position_embeddings": 512}`),
+		"config.json":           []byte(`{"model_type": "bert", "vocab_size": 30522, "hidden_size": 384, "num_hidden_layers": 6, "num_attention_heads": 12, "intermediate_size": 1536, "max_position_embeddings": 512}`),
 		"tokenizer_config.json": []byte(`{"do_lower_case": true, "cls_token": "[CLS]", "sep_token": "[SEP]", "unk_token": "[UNK]", "tokenizer_class": "BertTokenizer"}`),
 		"vocab.txt":             []byte("[PAD]\n[UNK]\n[CLS]\n"),
 		"1_Pooling/config.json": []byte(`{"pooling_mode_cls_token": true}`),
@@ -70,6 +73,8 @@ func TestPackageDefaultModelLayout(t *testing.T) {
 	tr := tar.NewReader(gr)
 
 	found := make(map[string]int64)
+	var manifestName string
+	var manifestRaw []byte
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -83,6 +88,13 @@ func TestPackageDefaultModelLayout(t *testing.T) {
 		if hdr.Size == 0 {
 			t.Fatalf("empty file in tar: %s", hdr.Name)
 		}
+		if strings.HasSuffix(hdr.Name, embed.CacheManifestName) {
+			manifestName = hdr.Name
+			manifestRaw, err = io.ReadAll(tr)
+			if err != nil {
+				t.Fatalf("read manifest: %v", err)
+			}
+		}
 	}
 
 	prefix := "test-org--all-MiniLM-L6-v2/"
@@ -92,57 +104,24 @@ func TestPackageDefaultModelLayout(t *testing.T) {
 			t.Fatalf("missing tar entry: %s", want)
 		}
 	}
-	if len(found) != len(files) {
+	if len(found) != len(files)+1 {
 		t.Fatalf("unexpected tar entries: %v", found)
 	}
-}
 
-// TestPackageMultilingualE5Layout pins the file selection for the
-// multilingual-e5-small release asset: model_type bert with a SentencePiece
-// tokenizer (no vocab.txt), so the packer must probe sentencepiece.bpe.model
-// and skip the bert vocab entirely.
-func TestPackageMultilingualE5Layout(t *testing.T) {
-	files := map[string][]byte{
-		"config.json":             []byte(`{"model_type": "bert", "hidden_size": 384}`),
-		"tokenizer_config.json":   []byte(`{"tokenizer_class": "XLMRobertaTokenizer"}`),
-		"sentencepiece.bpe.model": []byte("fake sentencepiece model"),
-		"1_Pooling/config.json":   []byte(`{"pooling_mode_mean_tokens": true}`),
-		"modules.json":            []byte(`[]`),
-		"model.safetensors":       []byte("fake safetensors weights"),
+	// The size manifest must record every model file with its exact size, so
+	// an interrupted extraction leaves either a missing file or one whose
+	// size disagrees with it.
+	var manifest map[string]int64
+	if err := json.Unmarshal(manifestRaw, &manifest); err != nil {
+		t.Fatalf("parse %s: %v", manifestName, err)
 	}
-	// vocab.txt must NOT be fetched: absent from the fake hub, a bert-model
-	// fetch of it would fail the test.
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.Path, "/resolve/pinned/") {
-			http.NotFound(w, r)
-			return
-		}
-		file := strings.SplitN(r.URL.Path, "/resolve/pinned/", 2)[1]
-		data, ok := files[file]
-		if !ok {
-			http.NotFound(w, r)
-			return
-		}
-		w.Write(data)
-	}))
-	defer srv.Close()
-
-	old := hubBase
-	hubBase = srv.URL + "/repo"
-	defer func() { hubBase = old }()
-
-	dir := t.TempDir()
-	if err := ensure("intfloat/multilingual-e5-small", "pinned", dir); err != nil {
-		t.Fatalf("ensure: %v", err)
+	if len(manifest) != len(files) {
+		t.Fatalf("manifest records %d files, want %d: %v", len(manifest), len(files), manifest)
 	}
-	for name := range files {
-		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(name))); err != nil {
-			t.Fatalf("missing packaged file: %s (%v)", name, err)
+	for name, data := range files {
+		if got, ok := manifest[name]; !ok || got != int64(len(data)) {
+			t.Fatalf("manifest entry for %s: got %d (present %v), want %d", name, got, ok, len(data))
 		}
-	}
-	if _, err := os.Stat(filepath.Join(dir, "vocab.txt")); err == nil {
-		t.Fatal("vocab.txt must not be packaged for a sentencepiece tokenizer repo")
 	}
 }
 
@@ -152,11 +131,11 @@ func TestPackageShardedWeights(t *testing.T) {
 		"model-00002-of-00002.safetensors": []byte("shard two"),
 	}
 	files := map[string][]byte{
-		"config.json": []byte(`{"model_type": "bert"}`),
-		"tokenizer_config.json": []byte(`{"tokenizer_class": "BertTokenizer"}`),
-		"vocab.txt":             []byte("a\nb\n"),
-		"1_Pooling/config.json": []byte(`{"pooling_mode_cls_token": true}`),
-		"modules.json":          []byte(`[]`),
+		"config.json":                  []byte(`{"model_type": "bert"}`),
+		"tokenizer_config.json":        []byte(`{"tokenizer_class": "BertTokenizer"}`),
+		"vocab.txt":                    []byte("a\nb\n"),
+		"1_Pooling/config.json":        []byte(`{"pooling_mode_cls_token": true}`),
+		"modules.json":                 []byte(`[]`),
 		"model.safetensors.index.json": []byte(`{"weight_map": {"layer.0": "model-00001-of-00002.safetensors", "layer.1": "model-00002-of-00002.safetensors"}}`),
 	}
 	for name, data := range shards {
@@ -219,8 +198,57 @@ func TestPackageShardedWeights(t *testing.T) {
 		}
 		count++
 	}
-	if count != len(files) {
-		t.Fatalf("expected %d tar entries, got %d", len(files), count)
+	if count != len(files)+1 { // model files plus the size manifest
+		t.Fatalf("expected %d tar entries, got %d", len(files)+1, count)
+	}
+}
+
+// TestPackageMultilingualE5Layout pins the file selection for the
+// multilingual-e5-small release asset: model_type bert with a SentencePiece
+// tokenizer (no vocab.txt), so the packer must probe sentencepiece.bpe.model
+// and skip the bert vocab entirely.
+func TestPackageMultilingualE5Layout(t *testing.T) {
+	files := map[string][]byte{
+		"config.json":             []byte(`{"model_type": "bert", "hidden_size": 384}`),
+		"tokenizer_config.json":   []byte(`{"tokenizer_class": "XLMRobertaTokenizer"}`),
+		"sentencepiece.bpe.model": []byte("fake sentencepiece model"),
+		"1_Pooling/config.json":   []byte(`{"pooling_mode_mean_tokens": true}`),
+		"modules.json":            []byte(`[]`),
+		"model.safetensors":       []byte("fake safetensors weights"),
+	}
+	// vocab.txt must NOT be fetched: absent from the fake hub, a bert-model
+	// fetch of it would fail the test.
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/resolve/pinned/") {
+			http.NotFound(w, r)
+			return
+		}
+		file := strings.SplitN(r.URL.Path, "/resolve/pinned/", 2)[1]
+		data, ok := files[file]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	old := hubBase
+	hubBase = srv.URL + "/repo"
+	defer func() { hubBase = old }()
+
+	dir := t.TempDir()
+	if err := ensure("intfloat/multilingual-e5-small", "pinned", dir); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	for name := range files {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(name))); err != nil {
+			t.Fatalf("missing packaged file: %s (%v)", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "vocab.txt")); err == nil {
+		t.Fatal("vocab.txt must not be packaged for a sentencepiece tokenizer repo")
 	}
 }
 

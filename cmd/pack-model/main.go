@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,6 +20,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/lsm/dolmen/internal/embed"
 )
 
 var (
@@ -125,7 +128,7 @@ func ensure(modelID, revision, dir string) error {
 		return fmt.Errorf("parse tokenizer_config.json: %w", err)
 	}
 
-	tokFiles, probe := tokenizerFiles(hf.ModelType, tc.TokenizerClass)
+	tokFiles, probe := embed.TokenizerFiles(hf.ModelType, tc.TokenizerClass)
 	if probe {
 		err := fetch(modelID, revision, "sentencepiece.bpe.model", dir)
 		switch {
@@ -169,24 +172,6 @@ func ensure(modelID, revision, dir string) error {
 	}
 	fetched = append(fetched, weightFiles...)
 	return nil
-}
-
-// tokenizerFiles returns the tokenizer artifacts to fetch and whether to
-// probe for sentencepiece.bpe.model first. It matches rembed's hub logic.
-func tokenizerFiles(modelType, tokenizerClass string) (files []string, probe bool) {
-	if modelType == "xlm-roberta" || strings.HasPrefix(tokenizerClass, "XLMRobertaTokenizer") {
-		return []string{"sentencepiece.bpe.model"}, false
-	}
-	if modelType == "roberta" {
-		return []string{"vocab.json", "merges.txt"}, true
-	}
-	if modelType == "modernbert" || modelType == "qwen3" {
-		return []string{"tokenizer.json"}, false
-	}
-	if modelType == "gemma3_text" || modelType == "gemma3" {
-		return []string{"tokenizer.json"}, false
-	}
-	return []string{"vocab.txt"}, true
 }
 
 // supported lists the architectures rembed can run. Keep it in sync with
@@ -378,35 +363,68 @@ func writeTar(modelDir, modelID, outPath string) (err error) {
 	// Normalize tar metadata so the same pinned revision produces the same
 	// bytes and checksum on every build regardless of the download time.
 	archiveEpoch := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
-	return filepath.Walk(modelDir, func(file string, fi os.FileInfo, err error) error {
+	writeEntry := func(name string, size int64, body io.Reader) error {
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     path.Join(prefix, filepath.ToSlash(name)),
+			Size:     size,
+			Mode:     0o644,
+			ModTime:  archiveEpoch,
+			Typeflag: tar.TypeReg,
+		}); err != nil {
+			return err
+		}
+		_, err := io.Copy(tw, body)
+		return err
+	}
+
+	// Collect the files first so the archive opens with the size manifest:
+	// as the first entry, its presence on disk means extraction reached it,
+	// and the sizes it records catch a stream cut mid-file.
+	type entry struct {
+		rel string
+		fi  os.FileInfo
+	}
+	var entries []entry
+	walkErr := filepath.Walk(modelDir, func(file string, fi os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 		if fi.IsDir() {
 			return nil
 		}
-
 		rel, err := filepath.Rel(modelDir, file)
 		if err != nil {
 			return err
 		}
-		hdr := &tar.Header{
-			Name:     path.Join(prefix, filepath.ToSlash(rel)),
-			Size:     fi.Size(),
-			Mode:     0o644,
-			ModTime:  archiveEpoch,
-			Typeflag: tar.TypeReg,
-		}
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
-		}
+		entries = append(entries, entry{rel: rel, fi: fi})
+		return nil
+	})
+	if walkErr != nil {
+		return walkErr
+	}
 
-		in, err := os.Open(file)
+	sizes := make(map[string]int64, len(entries))
+	for _, e := range entries {
+		sizes[filepath.ToSlash(e.rel)] = e.fi.Size()
+	}
+	manifestRaw, err := json.Marshal(sizes)
+	if err != nil {
+		return err
+	}
+	if err := writeEntry(embed.CacheManifestName, int64(len(manifestRaw)), bytes.NewReader(manifestRaw)); err != nil {
+		return err
+	}
+
+	for _, e := range entries {
+		in, err := os.Open(filepath.Join(modelDir, e.rel))
 		if err != nil {
 			return err
 		}
-		_, err = io.Copy(tw, in)
+		werr := writeEntry(e.rel, e.fi.Size(), in)
 		in.Close()
-		return err
-	})
+		if werr != nil {
+			return werr
+		}
+	}
+	return nil
 }

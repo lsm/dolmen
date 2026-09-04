@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -27,6 +28,13 @@ const localModelDir = "models"
 // shape rembed's hub accepts, so DOLMEN_EMBED_MODEL validates locally
 // before any download is attempted.
 var localModelIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+$`)
+
+// CacheManifestName is the file cmd/pack-model writes as the first tar
+// entry of a release model asset, recording every file's size. Its presence
+// lets the server reject a partially extracted cache: a tar stream cut
+// mid-file leaves the file on disk with the wrong size, which existence
+// checks alone cannot see.
+const CacheManifestName = ".dolmen-sizes.json"
 
 // LocalEngine is the slice of rembed's *Embedder the provider needs —
 // exported so tests outside the package can inject a stub engine, and the
@@ -116,16 +124,7 @@ func (l *Local) Cached() bool {
 		return true
 	}
 	if localModelIDRe.MatchString(l.Model) {
-		if l.CacheRoot == "" {
-			return false
-		}
-		// rembed stores Hub models as an org--name directory with the
-		// weights in model.safetensors.
-		dir := filepath.Join(l.CacheRoot, modelCacheDirName(l.Model))
-		if fi, err := os.Stat(filepath.Join(dir, "model.safetensors")); err == nil && !fi.IsDir() {
-			return true
-		}
-		return false
+		return seededCacheDir(l.CacheRoot, l.Model) != ""
 	}
 	// An absolute model-directory path is its own cache.
 	if filepath.IsAbs(l.Model) {
@@ -193,7 +192,7 @@ func (l *Local) engine(ctx context.Context) (LocalEngine, error) {
 	open := l.Open
 	if open == nil {
 		ref := localRef(l.Model)
-		if cacheRef := maybeCachedRef(l.Model); cacheRef != "" {
+		if cacheRef := seededCacheDir(l.CacheRoot, l.Model); cacheRef != "" {
 			ref = cacheRef
 		}
 		open = func() (LocalEngine, error) {
@@ -219,26 +218,99 @@ func localRef(model string) string {
 	return model
 }
 
-// maybeCachedRef returns the absolute path to a pre-seeded model cache
-// directory when the model is a Hugging Face id and the cache under
-// $REMBED_CACHE already contains the model weights. Loading the cache
-// directory directly lets rembed run without any Hugging Face Hub
-// requests, so air-gapped installs that pre-seed the data dir's model
-// cache work even when huggingface.co is unreachable.
-func maybeCachedRef(model string) string {
-	if !localModelIDRe.MatchString(model) {
+// seededCacheDir returns the absolute path to a pre-seeded model cache
+// directory when model is a Hugging Face id and the cache under cacheRoot
+// already contains the model weights. Loading the cache directory directly
+// lets rembed run without any Hugging Face Hub requests, so air-gapped
+// installs that pre-seed the data dir's model cache work even when
+// huggingface.co is unreachable.
+func seededCacheDir(cacheRoot, model string) string {
+	if cacheRoot == "" || !localModelIDRe.MatchString(model) {
 		return ""
 	}
-	cache := os.Getenv("REMBED_CACHE")
-	if cache == "" {
+	dir := filepath.Join(cacheRoot, modelCacheDirName(model))
+
+	// Loading a directory means loading exactly what is on disk: rembed
+	// cannot fall back to the Hub for a file a partial cache is missing
+	// (an interrupted download or tar extraction), so every artifact its
+	// directory load needs must already be present.
+	for _, f := range []string{"config.json", "tokenizer_config.json", "modules.json"} {
+		if fi, err := os.Stat(filepath.Join(dir, f)); err != nil || fi.IsDir() {
+			return ""
+		}
+	}
+	// The tokenizer artifacts a cache needs depend on the model (RoBERTa
+	// needs both vocab.json and merges.txt; a SentencePiece repo ships
+	// sentencepiece.bpe.model instead of the model-type files), so derive
+	// them from the cached configuration rather than accepting any single
+	// tokenizer file.
+	var hf struct {
+		ModelType string `json:"model_type"`
+	}
+	cfgRaw, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
 		return ""
 	}
-	dir := filepath.Join(cache, strings.ReplaceAll(model, "/", "--"))
+	if err := json.Unmarshal(cfgRaw, &hf); err != nil {
+		return ""
+	}
+	var tc struct {
+		TokenizerClass string `json:"tokenizer_class"`
+	}
+	tcRaw, err := os.ReadFile(filepath.Join(dir, "tokenizer_config.json"))
+	if err != nil {
+		return ""
+	}
+	if err := json.Unmarshal(tcRaw, &tc); err != nil {
+		return ""
+	}
+	tokFiles, probe := TokenizerFiles(hf.ModelType, tc.TokenizerClass)
+	if probe {
+		if fi, err := os.Stat(filepath.Join(dir, "sentencepiece.bpe.model")); err == nil && !fi.IsDir() {
+			tokFiles = nil
+		}
+	}
+	for _, f := range tokFiles {
+		if fi, err := os.Stat(filepath.Join(dir, f)); err != nil || fi.IsDir() {
+			return ""
+		}
+	}
+
+	// modules.json is the artifact manifest of a sentence-transformers cache:
+	// every module directory it names (pooling configs, Gemma dense heads)
+	// must carry its files, or the directory cannot load and must not bypass
+	// the Hub.
+	if !moduleArtifactsComplete(dir) {
+		return ""
+	}
+
+	// A cache packaged by the release asset carries a size manifest as its
+	// first entry; when present, every listed file must match its recorded
+	// size, so a tar extraction interrupted mid-file cannot pass as a
+	// complete cache. Caches without a manifest (written by rembed's own
+	// atomic-rename downloader) rely on the checks above.
+	if fi, err := os.Stat(filepath.Join(dir, CacheManifestName)); err == nil && !fi.IsDir() {
+		manifestRaw, err := os.ReadFile(filepath.Join(dir, CacheManifestName))
+		if err != nil {
+			return ""
+		}
+		var sizes map[string]int64
+		if err := json.Unmarshal(manifestRaw, &sizes); err != nil {
+			return ""
+		}
+		for name, want := range sizes {
+			if !validCacheRel(name) {
+				return ""
+			}
+			fi, err := os.Stat(filepath.Join(dir, filepath.FromSlash(name)))
+			if err != nil || fi.IsDir() || fi.Size() != want {
+				return ""
+			}
+		}
+	}
 
 	// A single-file model has model.safetensors; sharded models have an
-	// index plus one or more shard files. The index alone is not enough: a
-	// partial cache must not be treated as fully seeded, because rembed would
-	// load it as a local directory and could not resume the missing shards.
+	// index plus one or more shard files. The index alone is not enough.
 	single := filepath.Join(dir, "model.safetensors")
 	if fi, err := os.Stat(single); err == nil && !fi.IsDir() {
 		return dir
@@ -248,14 +320,14 @@ func maybeCachedRef(model string) string {
 	if fi, err := os.Stat(idx); err != nil || fi.IsDir() {
 		return ""
 	}
-	raw, err := os.ReadFile(idx)
+	idxRaw, err := os.ReadFile(idx)
 	if err != nil {
 		return ""
 	}
 	var sharded struct {
 		WeightMap map[string]string `json:"weight_map"`
 	}
-	if err := json.Unmarshal(raw, &sharded); err != nil {
+	if err := json.Unmarshal(idxRaw, &sharded); err != nil {
 		return ""
 	}
 	seen := make(map[string]struct{})
@@ -282,6 +354,80 @@ func validCacheShard(name string) bool {
 		return false
 	}
 	return !strings.ContainsAny(name, `/\`)
+}
+
+// validCacheRel reports whether name is a relative, traversal-free slash path
+// (it may name a file inside a module directory, e.g. 1_Pooling/config.json)
+// safe to look for inside a pre-seeded cache directory.
+func validCacheRel(name string) bool {
+	if name == "" || strings.Contains(name, "..") || strings.ContainsRune(name, '\\') {
+		return false
+	}
+	return !filepath.IsAbs(name) && name == path.Clean(name)
+}
+
+// TokenizerFiles mirrors rembed's hub package: it returns the tokenizer
+// artifacts a model of the given type loads, and whether to probe for a
+// SentencePiece model first (a repo that ships sentencepiece.bpe.model uses it
+// instead of the model-type files). Model packaging (cmd/pack-model) and
+// seeded-cache validation share it so the downloader's file set and the
+// offline check can never drift apart.
+func TokenizerFiles(modelType, tokenizerClass string) (files []string, probe bool) {
+	if modelType == "xlm-roberta" || strings.HasPrefix(tokenizerClass, "XLMRobertaTokenizer") {
+		return []string{"sentencepiece.bpe.model"}, false
+	}
+	if modelType == "roberta" {
+		return []string{"vocab.json", "merges.txt"}, true
+	}
+	if modelType == "modernbert" || modelType == "qwen3" {
+		return []string{"tokenizer.json"}, false
+	}
+	if modelType == "gemma3_text" || modelType == "gemma3" {
+		return []string{"tokenizer.json"}, false
+	}
+	return []string{"vocab.txt"}, true
+}
+
+// moduleArtifactsComplete reports whether every module directory named by a
+// cache's modules.json carries the files rembed's directory load reads: a
+// config.json for each module (e.g. 1_Pooling), plus the module's own
+// model.safetensors for Dense projection heads (e.g. Gemma's 2_Dense and
+// 3_Dense).
+func moduleArtifactsComplete(dir string) bool {
+	raw, err := os.ReadFile(filepath.Join(dir, "modules.json"))
+	if err != nil {
+		return false
+	}
+	var modules []struct {
+		Path string `json:"path"`
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &modules); err != nil {
+		return false
+	}
+	seen := make(map[string]struct{})
+	for _, m := range modules {
+		// Entries with an empty path (the Transformer module) keep their
+		// files at the cache root, which the caller already checked.
+		if m.Path == "" || !validCacheShard(m.Path) {
+			continue
+		}
+		if _, ok := seen[m.Path]; ok {
+			continue
+		}
+		seen[m.Path] = struct{}{}
+
+		sub := filepath.Join(dir, m.Path)
+		if fi, err := os.Stat(filepath.Join(sub, "config.json")); err != nil || fi.IsDir() {
+			return false
+		}
+		if strings.HasSuffix(m.Type, ".Dense") {
+			if fi, err := os.Stat(filepath.Join(sub, "model.safetensors")); err != nil || fi.IsDir() {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // validateLocalModel accepts a Hugging Face model id (org/name) or an

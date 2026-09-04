@@ -2,6 +2,7 @@ package embed
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -141,11 +142,52 @@ func TestLocalCached(t *testing.T) {
 	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "config.json"), []byte(`{"model_type": "bert"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "tokenizer_config.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("write tokenizer_config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "modules.json"), []byte(`[]`), 0o600); err != nil {
+		t.Fatalf("write modules: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "vocab.txt"), []byte("[PAD]\n"), 0o600); err != nil {
+		t.Fatalf("write vocab: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(cacheDir, "model.safetensors"), []byte("weights"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if !l.Cached() {
-		t.Fatalf("model.safetensors present must report cached")
+		t.Fatalf("a complete cache must report cached")
+	}
+
+	// A fully seeded sharded cache also reports cached, so the startup log
+	// does not warn about a Hub download an offline install cannot make.
+	shardDir := filepath.Join(dataDir, localModelDir, "org--sharded")
+	if err := os.MkdirAll(shardDir, 0o700); err != nil {
+		t.Fatalf("mkdir shard dir: %v", err)
+	}
+	for _, f := range []string{"tokenizer_config.json", "tokenizer.json"} {
+		if err := os.WriteFile(filepath.Join(shardDir, f), []byte(`{}`), 0o600); err != nil {
+			t.Fatalf("write %s: %v", f, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(shardDir, "config.json"), []byte(`{"model_type": "modernbert"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(shardDir, "modules.json"), []byte(`[]`), 0o600); err != nil {
+		t.Fatalf("write modules: %v", err)
+	}
+	idx := []byte(`{"weight_map": {"layer.0": "model-00001-of-00001.safetensors"}}`)
+	if err := os.WriteFile(filepath.Join(shardDir, "model.safetensors.index.json"), idx, 0o600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(shardDir, "model-00001-of-00001.safetensors"), []byte("shard"), 0o600); err != nil {
+		t.Fatalf("write shard: %v", err)
+	}
+	lSharded := &Local{Model: "org/sharded", CacheRoot: filepath.Join(dataDir, localModelDir)}
+	if !lSharded.Cached() {
+		t.Fatalf("complete sharded cache must report cached")
 	}
 
 	// An absolute model-directory path is its own cache.
@@ -260,29 +302,61 @@ func TestLocalRef(t *testing.T) {
 	}
 }
 
-func TestMaybeCachedRef(t *testing.T) {
-	old, had := os.LookupEnv("REMBED_CACHE")
-	t.Cleanup(func() {
-		if had {
-			os.Setenv("REMBED_CACHE", old)
-		} else {
-			os.Unsetenv("REMBED_CACHE")
+// seedCache writes the artifact set rembed's directory load needs, minus the
+// named files, so tests can build partial caches the way an interrupted
+// download or tar extraction would leave behind.
+func seedCache(t *testing.T, dir string, skip ...string) {
+	t.Helper()
+	skipMap := make(map[string]struct{}, len(skip))
+	for _, s := range skip {
+		skipMap[s] = struct{}{}
+	}
+	files := map[string]string{
+		"config.json":           `{"model_type": "bert"}`,
+		"tokenizer_config.json": `{"tokenizer_class": "BertTokenizer"}`,
+		"modules.json":          `[]`,
+		"vocab.txt":             "[PAD]\n",
+		"model.safetensors":     "weights",
+	}
+	for name, body := range files {
+		if _, ok := skipMap[name]; ok {
+			continue
 		}
-	})
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+}
 
+func TestSeededCacheDir(t *testing.T) {
 	cache := t.TempDir()
-	os.Setenv("REMBED_CACHE", cache)
 
-	// A pre-seeded model cache is detected when model.safetensors exists.
+	// A pre-seeded model cache is detected when the full artifact set is on
+	// disk.
 	seeded := filepath.Join(cache, "sentence-transformers--all-MiniLM-L6-v2")
 	if err := os.MkdirAll(seeded, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(seeded, "model.safetensors"), []byte("weights"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
+	seedCache(t, seeded)
+	if got := seededCacheDir(cache, "sentence-transformers/all-MiniLM-L6-v2"); got != seeded {
+		t.Fatalf("seededCacheDir: got %q, want %q", got, seeded)
 	}
-	if got := maybeCachedRef("sentence-transformers/all-MiniLM-L6-v2"); got != seeded {
-		t.Fatalf("maybeCachedRef: got %q, want %q", got, seeded)
+
+	// Weights alone are not a loadable cache: an extraction interrupted after
+	// model.safetensors but before the tokenizer or module files must fall
+	// back to the Hub ref, where rembed can resume what is missing.
+	for _, missing := range []string{"config.json", "tokenizer_config.json", "modules.json", "vocab.txt"} {
+		partial := filepath.Join(cache, "org--partial")
+		if err := os.RemoveAll(partial); err != nil {
+			t.Fatalf("clean partial: %v", err)
+		}
+		if err := os.MkdirAll(partial, 0o755); err != nil {
+			t.Fatalf("mkdir partial: %v", err)
+		}
+		seedCache(t, partial, missing)
+		if got := seededCacheDir(cache, "org/partial"); got != "" {
+			t.Fatalf("seededCacheDir without %s: got %q, want empty", missing, got)
+		}
 	}
 
 	// A sharded pre-seeded cache is detected when the index and all of its
@@ -291,34 +365,142 @@ func TestMaybeCachedRef(t *testing.T) {
 	if err := os.MkdirAll(sharded, 0o755); err != nil {
 		t.Fatalf("mkdir sharded: %v", err)
 	}
+	seedCache(t, sharded, "model.safetensors")
 	idx := []byte(`{"weight_map": {"layer.0": "model-00001-of-00002.safetensors", "layer.1": "model-00002-of-00002.safetensors"}}`)
 	if err := os.WriteFile(filepath.Join(sharded, "model.safetensors.index.json"), idx, 0o644); err != nil {
 		t.Fatalf("write index: %v", err)
 	}
-	if got := maybeCachedRef("org/sharded"); got != "" {
-		t.Fatalf("maybeCachedRef missing shards: got %q, want empty", got)
+	if got := seededCacheDir(cache, "org/sharded"); got != "" {
+		t.Fatalf("seededCacheDir missing shards: got %q, want empty", got)
 	}
 	if err := os.WriteFile(filepath.Join(sharded, "model-00001-of-00002.safetensors"), []byte("s1"), 0o644); err != nil {
 		t.Fatalf("write shard one: %v", err)
 	}
-	if got := maybeCachedRef("org/sharded"); got != "" {
-		t.Fatalf("maybeCachedRef incomplete shards: got %q, want empty", got)
+	if got := seededCacheDir(cache, "org/sharded"); got != "" {
+		t.Fatalf("seededCacheDir incomplete shards: got %q, want empty", got)
 	}
 	if err := os.WriteFile(filepath.Join(sharded, "model-00002-of-00002.safetensors"), []byte("s2"), 0o644); err != nil {
 		t.Fatalf("write shard two: %v", err)
 	}
-	if got := maybeCachedRef("org/sharded"); got != sharded {
-		t.Fatalf("maybeCachedRef sharded: got %q, want %q", got, sharded)
+	if got := seededCacheDir(cache, "org/sharded"); got != sharded {
+		t.Fatalf("seededCacheDir sharded: got %q, want %q", got, sharded)
 	}
 
 	// A missing cache means falling back to the Hub.
-	if got := maybeCachedRef("org/not-seeded"); got != "" {
-		t.Fatalf("maybeCachedRef for missing cache: got %q, want empty", got)
+	if got := seededCacheDir(cache, "org/not-seeded"); got != "" {
+		t.Fatalf("seededCacheDir for missing cache: got %q, want empty", got)
 	}
 
 	// Absolute model directories are not cache-looked-up.
-	if got := maybeCachedRef("/opt/models/minilm"); got != "" {
-		t.Fatalf("maybeCachedRef for absolute path: got %q, want empty", got)
+	if got := seededCacheDir(cache, "/opt/models/minilm"); got != "" {
+		t.Fatalf("seededCacheDir for absolute path: got %q, want empty", got)
+	}
+
+	// A manifest naming a module directory requires that module's files: a
+	// cache missing 1_Pooling/config.json must fall back to the Hub.
+	manifest := filepath.Join(cache, "org--manifest")
+	if err := os.MkdirAll(manifest, 0o755); err != nil {
+		t.Fatalf("mkdir manifest: %v", err)
+	}
+	seedCache(t, manifest)
+	modules := []byte(`[{"path": "", "type": "sentence_transformers.models.Transformer"}, {"path": "1_Pooling", "type": "sentence_transformers.models.Pooling"}]`)
+	if err := os.WriteFile(filepath.Join(manifest, "modules.json"), modules, 0o644); err != nil {
+		t.Fatalf("write modules: %v", err)
+	}
+	if got := seededCacheDir(cache, "org/manifest"); got != "" {
+		t.Fatalf("seededCacheDir without 1_Pooling/config.json: got %q, want empty", got)
+	}
+	if err := os.MkdirAll(filepath.Join(manifest, "1_Pooling"), 0o755); err != nil {
+		t.Fatalf("mkdir 1_Pooling: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(manifest, "1_Pooling", "config.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("write pooling config: %v", err)
+	}
+	if got := seededCacheDir(cache, "org/manifest"); got != manifest {
+		t.Fatalf("seededCacheDir with complete modules: got %q, want %q", got, manifest)
+	}
+
+	// A Dense projection head (Gemma's 2_Dense) also needs its own weights.
+	gemma := filepath.Join(cache, "org--gemma")
+	if err := os.MkdirAll(gemma, 0o755); err != nil {
+		t.Fatalf("mkdir gemma: %v", err)
+	}
+	seedCache(t, gemma)
+	gemmaModules := []byte(`[{"path": "1_Pooling", "type": "sentence_transformers.models.Pooling"}, {"path": "2_Dense", "type": "sentence_transformers.models.Dense"}]`)
+	if err := os.WriteFile(filepath.Join(gemma, "modules.json"), gemmaModules, 0o644); err != nil {
+		t.Fatalf("write gemma modules: %v", err)
+	}
+	for _, sub := range []string{"1_Pooling", "2_Dense"} {
+		if err := os.MkdirAll(filepath.Join(gemma, sub), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", sub, err)
+		}
+		if err := os.WriteFile(filepath.Join(gemma, sub, "config.json"), []byte(`{}`), 0o644); err != nil {
+			t.Fatalf("write %s config: %v", sub, err)
+		}
+	}
+	if got := seededCacheDir(cache, "org/gemma"); got != "" {
+		t.Fatalf("seededCacheDir without 2_Dense weights: got %q, want empty", got)
+	}
+	if err := os.WriteFile(filepath.Join(gemma, "2_Dense", "model.safetensors"), []byte("dense"), 0o644); err != nil {
+		t.Fatalf("write dense weights: %v", err)
+	}
+	if got := seededCacheDir(cache, "org/gemma"); got != gemma {
+		t.Fatalf("seededCacheDir with dense weights: got %q, want %q", got, gemma)
+	}
+
+	// A RoBERTa cache needs both vocab.json and merges.txt — one without the
+	// other cannot load and must fall back to the Hub.
+	roberta := filepath.Join(cache, "org--roberta")
+	if err := os.MkdirAll(roberta, 0o755); err != nil {
+		t.Fatalf("mkdir roberta: %v", err)
+	}
+	seedCache(t, roberta, "vocab.txt")
+	if err := os.WriteFile(filepath.Join(roberta, "config.json"), []byte(`{"model_type": "roberta"}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(roberta, "vocab.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write vocab.json: %v", err)
+	}
+	if got := seededCacheDir(cache, "org/roberta"); got != "" {
+		t.Fatalf("seededCacheDir without merges.txt: got %q, want empty", got)
+	}
+	if err := os.WriteFile(filepath.Join(roberta, "merges.txt"), []byte("a b\n"), 0o644); err != nil {
+		t.Fatalf("write merges.txt: %v", err)
+	}
+	if got := seededCacheDir(cache, "org/roberta"); got != roberta {
+		t.Fatalf("seededCacheDir with full roberta tokenizer: got %q, want %q", got, roberta)
+	}
+
+	// A cache extracted from the release asset carries a size manifest: a
+	// file present but truncated (extraction interrupted mid-entry) must be
+	// rejected, not loaded with a partial vocabulary.
+	manifested := filepath.Join(cache, "org--manifested")
+	if err := os.MkdirAll(manifested, 0o755); err != nil {
+		t.Fatalf("mkdir manifested: %v", err)
+	}
+	seedCache(t, manifested)
+	sizes := map[string]int64{
+		"config.json":           int64(len(`{"model_type": "bert"}`)),
+		"tokenizer_config.json": int64(len(`{"tokenizer_class": "BertTokenizer"}`)),
+		"modules.json":          int64(len(`[]`)),
+		"vocab.txt":             int64(len("[PAD]\n")),
+		"model.safetensors":     int64(len("weights")),
+	}
+	manifestRaw, err := json.Marshal(sizes)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(manifested, CacheManifestName), manifestRaw, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if got := seededCacheDir(cache, "org/manifested"); got != manifested {
+		t.Fatalf("seededCacheDir with matching sizes: got %q, want %q", got, manifested)
+	}
+	if err := os.WriteFile(filepath.Join(manifested, "vocab.txt"), []byte("[PAD"), 0o644); err != nil {
+		t.Fatalf("truncate vocab: %v", err)
+	}
+	if got := seededCacheDir(cache, "org/manifested"); got != "" {
+		t.Fatalf("seededCacheDir with truncated vocab.txt: got %q, want empty", got)
 	}
 }
 

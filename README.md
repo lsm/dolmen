@@ -339,7 +339,8 @@ DOLMEN_EMBED_MODEL=/opt/dolmen/models/intfloat--multilingual-e5-small \
 
 Each tarball contains the `org--name` model directory (the same layout the `local` provider uses
 under `<data>/models`): ~80 MB compressed for the MiniLM default, ~270 MB for
-`multilingual-e5-small`.
+`multilingual-e5-small`. Each archive opens with a size manifest (`.dolmen-sizes.json`) that lets
+the server reject a partially extracted cache instead of loading a truncated model.
 
 Verify the server embeds without reaching `huggingface.co` by creating a vectorized table, inserting
 a row, and running a text vector search:
