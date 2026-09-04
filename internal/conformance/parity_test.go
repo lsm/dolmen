@@ -103,6 +103,7 @@ func parityScript() []parityStep {
 		}, false},
 		{"drop_table", "drop_table", map[string]any{"namespace": ns, "table": "docs", "confirm": "docs"}, false},
 		{"list_namespaces", "list_namespaces", map[string]any{}, false},
+		{"describe_server", "describe_server", map[string]any{}, false},
 		{"drop_namespace", "drop_namespace", map[string]any{"namespace": ns, "confirm": ns}, false},
 	}
 }
@@ -111,7 +112,9 @@ func parityScript() []parityStep {
 // independent servers — one over /v1, one over MCP tools/call — and requires
 // every step to produce the identical result: HTTP data == MCP
 // structuredContent, modulo server-assigned timestamps. This is the drift
-// guard between the two transports (#119 caught them disagreeing once).
+// guard between the two transports (#119 caught them disagreeing once). The
+// registry-coverage check below keeps the script at one step per operation as
+// the registry grows.
 func TestTransportParityAllOperations(t *testing.T) {
 	httpH := newHarness(t)
 	mcpH := newHarness(t)

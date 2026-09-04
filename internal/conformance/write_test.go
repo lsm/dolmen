@@ -173,13 +173,23 @@ func TestWriteUpsertByKeyConvergence(t *testing.T) {
 	})["rows"].([]any)[0].(map[string]any)
 	assertJSONEqual(t, "later batch record wins", row["tier"], "pro")
 
-	// Missing or null key fields are rejected.
-	status, body := h.httpCall("upsert_by_key", map[string]any{
-		"namespace": "wr", "table": "u", "on": []string{"email"},
-		"records": []map[string]any{{"tier": "none"}},
-	})
-	if status != 400 {
-		t.Fatalf("missing key field: status %d, want 400: %v", status, body)
+	// Missing key fields are rejected, and so is an explicit null: a NULL
+	// key can never match an existing row, so it must not silently insert.
+	for name, record := range map[string]map[string]any{
+		"omitted": {"tier": "none"},
+		"null":    {"email": nil, "tier": "none"},
+	} {
+		status, body := h.httpCall("upsert_by_key", map[string]any{
+			"namespace": "wr", "table": "u", "on": []string{"email"},
+			"records": []map[string]any{record},
+		})
+		if status != 400 {
+			t.Fatalf("%s key field: status %d, want 400: %v", name, status, body)
+		}
+		errObj := envelopeOf(t, body)
+		if errObj["code"] != "invalid_request" {
+			t.Fatalf("%s key field code %v, want invalid_request", name, errObj["code"])
+		}
 	}
 }
 

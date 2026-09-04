@@ -115,10 +115,27 @@ func TestMigrateDryRunPurity(t *testing.T) {
 	if p["clears_embeddings"] != false {
 		t.Fatalf("first-time set_vectorize must not claim cleared embeddings: %v", p["clears_embeddings"])
 	}
-	// The returned table is the prospective schema, with the new field.
+	// The returned table is the prospective schema: version bumped AND the
+	// fields the changes would produce — the added status field and the
+	// vectorize annotation on body — not the current fields relabeled.
 	table := plan["table"].(map[string]any)
 	if int64val(t, "prospective version", table["version"]) != 2 {
 		t.Fatalf("prospective table must show the bumped version: %v", table["version"])
+	}
+	prospective := map[string]map[string]any{}
+	for _, f := range table["fields"].([]any) {
+		fm := f.(map[string]any)
+		prospective[fm["name"].(string)] = fm
+	}
+	if _, ok := prospective["status"]; !ok {
+		t.Fatalf("prospective schema must include the added field: %v", table["fields"])
+	}
+	if prospective["body"]["vectorize"] != true {
+		t.Fatalf("prospective schema must show the vectorize annotation: %v", prospective["body"])
+	}
+	// The same prospective table also rides the plan object.
+	if _, ok := p["table"]; !ok {
+		t.Fatalf("plan must carry the prospective table: %v", p)
 	}
 
 	// Purity: nothing changed.
