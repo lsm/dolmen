@@ -2,6 +2,7 @@ package embed
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -141,15 +142,54 @@ func maybeCachedRef(model string) string {
 		return ""
 	}
 	dir := filepath.Join(cache, strings.ReplaceAll(model, "/", "--"))
+
 	// A single-file model has model.safetensors; sharded models have an
-	// index and one or more shard files instead. Either is enough evidence
-	// that the cache is pre-seeded.
-	for _, marker := range []string{"model.safetensors", "model.safetensors.index.json"} {
-		if fi, err := os.Stat(filepath.Join(dir, marker)); err == nil && !fi.IsDir() {
-			return dir
+	// index plus one or more shard files. The index alone is not enough: a
+	// partial cache must not be treated as fully seeded, because rembed would
+	// load it as a local directory and could not resume the missing shards.
+	single := filepath.Join(dir, "model.safetensors")
+	if fi, err := os.Stat(single); err == nil && !fi.IsDir() {
+		return dir
+	}
+
+	idx := filepath.Join(dir, "model.safetensors.index.json")
+	if fi, err := os.Stat(idx); err != nil || fi.IsDir() {
+		return ""
+	}
+	raw, err := os.ReadFile(idx)
+	if err != nil {
+		return ""
+	}
+	var sharded struct {
+		WeightMap map[string]string `json:"weight_map"`
+	}
+	if err := json.Unmarshal(raw, &sharded); err != nil {
+		return ""
+	}
+	seen := make(map[string]struct{})
+	for _, shard := range sharded.WeightMap {
+		if !validCacheShard(shard) {
+			return ""
+		}
+		if _, ok := seen[shard]; ok {
+			continue
+		}
+		seen[shard] = struct{}{}
+		if fi, err := os.Stat(filepath.Join(dir, shard)); err != nil || fi.IsDir() {
+			return ""
 		}
 	}
-	return ""
+	return dir
+}
+
+// validCacheShard reports whether name is a plain filename safe to look for in
+// a pre-seeded cache directory. It mirrors the shard-name validation in
+// cmd/pack-model.
+func validCacheShard(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	return !strings.ContainsAny(name, `/\`)
 }
 
 // validateLocalModel accepts a Hugging Face model id (org/name) or an

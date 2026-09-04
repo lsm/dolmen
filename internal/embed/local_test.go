@@ -220,13 +220,27 @@ func TestMaybeCachedRef(t *testing.T) {
 		t.Fatalf("maybeCachedRef: got %q, want %q", got, seeded)
 	}
 
-	// A sharded pre-seeded cache is detected when the index exists.
+	// A sharded pre-seeded cache is detected when the index and all of its
+	// referenced shards exist.
 	sharded := filepath.Join(cache, "org--sharded")
 	if err := os.MkdirAll(sharded, 0o755); err != nil {
 		t.Fatalf("mkdir sharded: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(sharded, "model.safetensors.index.json"), []byte("{}"), 0o644); err != nil {
+	idx := []byte(`{"weight_map": {"layer.0": "model-00001-of-00002.safetensors", "layer.1": "model-00002-of-00002.safetensors"}}`)
+	if err := os.WriteFile(filepath.Join(sharded, "model.safetensors.index.json"), idx, 0o644); err != nil {
 		t.Fatalf("write index: %v", err)
+	}
+	if got := maybeCachedRef("org/sharded"); got != "" {
+		t.Fatalf("maybeCachedRef missing shards: got %q, want empty", got)
+	}
+	if err := os.WriteFile(filepath.Join(sharded, "model-00001-of-00002.safetensors"), []byte("s1"), 0o644); err != nil {
+		t.Fatalf("write shard one: %v", err)
+	}
+	if got := maybeCachedRef("org/sharded"); got != "" {
+		t.Fatalf("maybeCachedRef incomplete shards: got %q, want empty", got)
+	}
+	if err := os.WriteFile(filepath.Join(sharded, "model-00002-of-00002.safetensors"), []byte("s2"), 0o644); err != nil {
+		t.Fatalf("write shard two: %v", err)
 	}
 	if got := maybeCachedRef("org/sharded"); got != sharded {
 		t.Fatalf("maybeCachedRef sharded: got %q, want %q", got, sharded)

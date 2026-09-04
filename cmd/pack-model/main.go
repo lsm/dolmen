@@ -348,7 +348,7 @@ func validShardName(name string) bool {
 // writeTar creates a gzip-compressed tar archive at outPath containing the
 // model directory. The top-level entry is named after the model id with its
 // single slash replaced by two dashes, matching rembed's cache naming.
-func writeTar(modelDir, modelID, outPath string) error {
+func writeTar(modelDir, modelID, outPath string) (err error) {
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return err
 	}
@@ -357,12 +357,22 @@ func writeTar(modelDir, modelID, outPath string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-
 	gw := gzip.NewWriter(f)
-	defer gw.Close()
 	tw := tar.NewWriter(gw)
-	defer tw.Close()
+
+	// Close the layered writers in order and propagate any close error, but
+	// do not overwrite an earlier write/walk error with a later close error.
+	defer func() {
+		if cerr := tw.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+		if cerr := gw.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 
 	prefix := strings.ReplaceAll(modelID, "/", "--")
 	// Normalize tar metadata so the same pinned revision produces the same
