@@ -197,7 +197,10 @@ func resolveVectorColumn(sc *schema.TableSchema, table, column string, textQuery
 		dim = sc.EmbedDim
 	case sc.Field(column) != nil && sc.Field(column).Type == schema.Vector:
 		if textQuery {
-			return "", 0, invalidf("text queries cannot target vector column %q of table %s: its embeddings are caller-provided and may come from an unrelated embedding space, so cosine against a freshly embedded query is meaningless; pass a raw vector from that space instead, or search the table's vectorize field", column, table)
+			if sc.VectorizeField() != nil {
+				return "", 0, invalidf("text queries cannot target vector column %q of table %s: its embeddings are caller-provided and may come from an unrelated embedding space, so cosine against a freshly embedded query is meaningless; pass a raw vector from that space instead, or search the table's vectorize field", column, table)
+			}
+			return "", 0, invalidf("text queries cannot target vector column %q of table %s: its embeddings are caller-provided and may come from an unrelated embedding space, so cosine against a freshly embedded query is meaningless; pass a raw vector from that space instead — or add a vectorize field via migrate (set_vectorize on a string or text field) to make the table searchable by text", column, table)
 		}
 		dim = sc.Field(column).Dim
 	default:

@@ -257,6 +257,10 @@ func TestTextQueryCannotTargetRawVectorColumn(t *testing.T) {
 		t.Fatal("text query naming a caller-provided vector column must be rejected")
 	} else if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("text query naming a vector column: expected ErrInvalid, got %v", err)
+	} else if strings.Contains(err.Error(), "search the table's vectorize field") || !strings.Contains(err.Error(), "set_vectorize") {
+		// rawvec has no vectorize field, so the error must not point at one —
+		// the text remedy is adding a vectorize field via migrate.
+		t.Fatalf("text query naming a vector column on a table without vectorize must offer the migrate fix, got %q", err.Error())
 	}
 	// The same table stays searchable with raw vectors, with and without column:
 	// the caller owns matching the embedding space.
@@ -276,11 +280,14 @@ func TestTextQueryCannotTargetRawVectorColumn(t *testing.T) {
 		}
 	}
 	// A vectorized table also rejects naming its raw vector column for a text
-	// query, even though its own _embedding space would be fine.
+	// query, even though its own _embedding space would be fine — and there the
+	// vectorize field is a real remedy, so the error may point at it.
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
-	if _, err := st.SearchVector(ctx, "test", "notes", "emb", qv[0], "fake-space", 0, 5, false, "", nil, nil); !errors.Is(err, ErrInvalid) {
+	if _, err := st.SearchVector(ctx, "test", "notes", "emb", qv[0], "fake-space", 0, 5, false, "", nil, nil); err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("text query naming a raw vector column on a vectorized table: expected ErrInvalid, got %v", err)
+	} else if !strings.Contains(err.Error(), "search the table's vectorize field") {
+		t.Fatalf("vectorized table must still offer its vectorize field as the text remedy, got %q", err.Error())
 	}
 }
 
