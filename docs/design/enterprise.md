@@ -19,7 +19,7 @@ deviates. Terminology follows the vocabulary in §0 exactly.
 | **principal** | An opaque identity string asserted by a trusted proxy (or the bootstrap admin key). Dolmen never interprets its bytes; grants and `owner` values compare it exactly. |
 | **group** | An opaque string naming a set of principals. Membership is never stored by dolmen — it arrives per-request from the trusted proxy (invariant 3: identity is consumed, never produced). |
 | **trusted proxy** | A peer whose TCP source address falls inside a configured CIDR. Only trusted proxies may assert identity headers. |
-| **verb** | One of `read`, `write`, `schema`, `admin` (§2). |
+| **verb** | One of `create`, `read`, `update`, `delete`, `schema`, `admin` (§2). |
 | **object** | A namespace path, a namespace/table pair, or the server root `*` (§3, §5). |
 | **grant** | A durable (subject, object, verbs) tuple. Grants are additive; there are no deny grants. |
 | **visible set** | For one request against one table: the rows the principal may observe. All rows when the table has no `row_access`; `owner = principal` otherwise, for callers without table-wide read (§4). |
@@ -106,14 +106,26 @@ their verbs over `/v1/grant`, then drop the key from the environment.
 
 ## 2. Verbs
 
-Exactly four, never extended without editing this spec:
+Exactly six, CRUD-shaped, never extended without editing this spec:
 
 | Verb | Grants | Notes |
 |---|---|---|
+| `create` | Append rows (`insert`) | On `row_access` tables implies own-row read through structured ops (§4.3). |
 | `read` | Row visibility | Table-wide on `row_access` tables (§4). Never grants any write or DDL. |
-| `write` | Row mutation | On `row_access` tables also implies reading/mutating **own** rows through structured ops (§4). |
+| `update` | Mutate existing rows | Own rows only on `row_access` tables (§4.3). |
+| `delete` | Remove rows | Own rows only on `row_access` tables (§4.3). |
 | `schema` | DDL + migration | Table structure and its history. |
 | `admin` | Grants + namespace lifecycle | The only verb that can change what others may do, or delete a namespace. |
+
+*Why CRUD-shaped verbs (amended 2026-09-04 from design review; supersedes the four-verb
+`read`/`write`/`schema`/`admin` set):* append-only tables must be expressible in grants — the
+canonical shared **usage-telemetry** table lets every user append usage records while nobody,
+row authors included, may update or delete; a bundled `write` cannot express that, and `create`
+without `update`/`delete` expresses it exactly. Dolmen's ops are already CRUD-shaped
+(`insert`/`update`/`delete` are distinct ops), so the mapping stays trivial. There are no role
+presets or verb bundles in the API (`viewer`/`editor`/…); documentation may show canonical verb
+bundles as examples only. `list` is not a verb — existence visibility follows grants via
+authz-precedes-existence (§2), unchanged.
 
 Operation → verb mapping (the complete op set; `grant`/`revoke`/`list_grants` are new ops defined
 in §3):
@@ -124,13 +136,16 @@ in §3):
 | `create_namespace` | `admin` | The **parent**: `*` for depth-1 namespaces, the containing namespace for deeper ones. Under `auth: on` this is the only way a namespace comes to exist (see below). |
 | `drop_namespace` | `admin` | The namespace itself. Leaf-only (§5.4). |
 | `list_tables` | none (any authenticated principal) | Authorization runs **before** the existence check: unless the caller holds any grant on or under the namespace, the response is `not_found` — indistinguishable from a nonexistent namespace, so listing cannot be used to enumerate names. Holders see the tables they hold any grant on. |
-| `describe_table` | `read`, `write`, `schema`, **or** `admin` | The table. `row_count` follows the caller's visible set (§4.3) — holders of only `schema`/`admin` see the schema with a count of 0; no data visibility is implied. |
+| `describe_table` | any verb (`read`, `create`, `update`, `delete`, `schema`, `admin`) | The table. `row_count` follows the caller's visible set (§4.3) — table-wide for `read`, own rows for the other data verbs on `row_access` tables, 0 for `schema`/`admin` holders; no data visibility beyond the caller's set is implied. |
 | `describe_server`, `infer_schema` | none (any authenticated principal) | Untargeted: provider status is no secret; `infer_schema` is pure computation. |
 | `create_table` | `schema` | The namespace. |
 | `drop_table`, `migrate`, `list_migrations` | `schema` | The table. Migration history is the audit trail of schema changes — same verb as the changes themselves. |
-| `insert`, `upsert`, `upsert_by_key`, `update`, `delete` | `write` | The table. |
+| `insert` | `create` | The table. |
+| `update` | `update` | The table. |
+| `delete` | `delete` | The table. |
+| `upsert`, `upsert_by_key` | `create` **AND** `update` (both required) | The table. They are update-or-insert: a `create`-only caller is refused up front, not surprised by half the operation. |
 | `query` | `read` | The **namespace** — raw SQL may reference any table in it, so the grant must cover the namespace, not one table. See §4.4 for the extra rule on `row_access` tables. |
-| `search_fulltext`, `search_vector` | `read` on the table; **or** `write` when the table declares `row_access` (search then covers own rows only, §4.3) | The table. |
+| `search_fulltext`, `search_vector` | `read` on the table; **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` (search then covers own rows only, §4.3) | The table. |
 | `grant`, `revoke` | `admin` | The target object (an ancestor grant suffices, §3.3). |
 | `list_grants` | `admin` | The queried subtree (`*` when unfiltered). |
 
@@ -194,12 +209,12 @@ requires a concrete namespace: `{"namespace": "*", "table": …}` is `invalid_re
 // POST /v1/grant
 {"subject": {"type": "group", "id": "team-a"},
  "object": {"namespace": "acme/team-a"},
- "verbs": ["read", "write"]}
+ "verbs": ["create", "read", "update", "delete"]}
 
 // response data
 {"grant": {"subject": {"type": "group", "id": "team-a"},
            "object": {"namespace": "acme/team-a"},
-           "verbs": ["read", "write"],
+           "verbs": ["create", "read", "update", "delete"],
            "created_at": "2026-09-04T12:00:00.123Z"}}
 ```
 
@@ -277,10 +292,13 @@ and reserving it unconditionally would break tables and requests that v0.2.0 acc
 With `auth: on`, the API layer resolves verbs (§3.3), consults the table's `row_access`, computes
 the request's **visible set**, and passes it to the engine as a `RowScope` (§6.3):
 
-- Table without `row_access`, caller holding `read` or `write` → no scope (all rows).
+- Table without `row_access`, caller holding `read` or any data verb (`create`/`update`/`delete`)
+  → no scope (all rows).
 - Table with `row_access` and a caller holding `read` through any covering grant → no scope
   (table-wide; the `read` verb is explicitly table-wide visibility).
-- Table with `row_access` and a caller holding only `write` → scope `{owner = principal}`.
+- Table with `row_access` and a caller holding any data verb (`create`/`update`/`delete`) but not
+  `read` → scope `{owner = principal}` — own-row visibility rides with ANY data verb: a
+  `create`-only caller may search the rows they appended.
 - Holders of only `schema` or `admin` have an **empty visible set on every table** — they hold no
   data verbs, so `row_access` is irrelevant to them: their one metadata path, `describe_table`,
   reports a count of 0 rather than the real table count. The API layer passes an explicit empty
@@ -362,9 +380,9 @@ the `schema` verb alone.
 ### 4.4 Raw SQL
 
 `query` (raw SQL) on a table that declares `row_access` requires **table-wide** `read` — i.e. a
-`read` grant covering the table (§2 already requires `read` on the whole namespace). A
-write-only caller's own-row reads go through the structured ops (`search_*`, `describe_table`,
-their own writes' returned ids), never through `query`.
+`read` grant covering the table (§2 already requires `read` on the whole namespace). A caller
+without table-wide `read` reaches their own rows through the structured ops (`search_*`,
+`describe_table`, their own writes' returned ids), never through `query`.
 
 *Rationale: reliably conjoining `owner = ?` into arbitrary caller SQL (joins against the same table,
 subqueries, aggregations) is not sound; raw SQL is the power tool and is gated accordingly.*
@@ -609,7 +627,11 @@ schemas still validates and produces the same response. What never appears under
    tables with default permissions; a user who writes but reads only their own rows; read-only
    access elsewhere; list/create in one place not another; raw SQL denied without table-wide read;
    `upsert_by_key` collision non-leak; idempotent replay owner-only; `truncated` never leaks
-   foreign rows.
+   foreign rows. Plus the append-only telemetry scenario (§2's amendment rationale): a shared
+   `create`-only telemetry table where user A appends a row; A's `update`/`delete` on their own
+   row is 403; A still sees their own rows via search; user B cannot see A's rows; a
+   `create`-only caller's `upsert_by_key` is refused (needs `update` too); the developer
+   (`read`+`schema`) reads all rows.
 3. **Shared contract subset, re-run authorized** — envelope, error contract, typed reads, coercion,
    limits, search invariants, migration guards run under an authorized principal with identical
    expectations wherever the op is permitted (test tables parameterized by mode).
@@ -636,7 +658,7 @@ harness per test group, no CI matrix, no new make targets.
 | D3 | `-auth`/`DOLMEN_AUTH`, default `off`; `auth: on` with no identity source fails startup | §1.2 |
 | D4 | `DOLMEN_ADMIN_KEY` env-only bearer; principal `dolmen-admin`; implicit `admin` on `*` attaches to the credential, not the name; `dolmen-admin` reserved in headers | §1.3 |
 | D5 | New error code `unauthorized` (401); `forbidden` (403) = granted-no | §1.2 |
-| D6 | Verbs `read`/`write`/`schema`/`admin`; full op→verb table (`describe_table` also serves `schema`/`admin` holders, count 0); `query` gated on the namespace; `auth: on` disables implicit namespace creation (`not_found` instead) | §2 |
+| D6 | Verbs `create`/`read`/`update`/`delete`/`schema`/`admin` (CRUD-shaped, amended 2026-09-04 from the four-verb set — append-only tables must be expressible); full op→verb table (`upsert`/`upsert_by_key` need `create` AND `update`; own-row visibility rides with any data verb; `describe_table` serves any verb, count per visible set); `query` gated on the namespace; `auth: on` disables implicit namespace creation (`not_found` instead) | §2 |
 | D7 | Grants: subject {type,id}, object {namespace[,table] \| `*`}, explicit verbs; union resolution; inheritance down; no deny grants; no segment wildcards | §3 |
 | D8 | Grant store is server-level, above the engine seam | §3 preamble |
 | D9 | `row_access: "own"` table-level on create_table; auth-off rejects the key | §4.1 |
