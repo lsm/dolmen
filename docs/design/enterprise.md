@@ -228,11 +228,13 @@ and rejected, exactly as v0.2.0 would.
 
 The `owner` column materializes **only** when the table declares `row_access` — never on default
 tables, in either mode (invariant 1; conformance-enforced, §8.3). `owner` is reserved exactly
-where the implicit column can exist: `create_table` with `row_access` rejects a caller-declared
+where the implicit column exists: `create_table` with `row_access` rejects a caller-declared
 field named `owner`, and `migrate set_row_access: true` likewise rejects when a caller-declared
-`owner` field exists (the collision is named). Everywhere else a caller field named `owner`
-remains valid — v0.2.0 does not reserve the name, and reserving it unconditionally would break
-tables and requests that v0.2.0 accepts.
+`owner` field exists (the collision is named). Disabling `row_access` keeps the physical column
+(§4.2), so the name stays reserved for as long as the schema carries it: `add_field`/`rename_field`
+targeting `owner` is rejected on any table with the implicit column, enabled or disabled.
+Everywhere else a caller field named `owner` remains valid — v0.2.0 does not reserve the name,
+and reserving it unconditionally would break tables and requests that v0.2.0 accepts.
 
 ### 4.2 Column semantics
 
@@ -265,6 +267,14 @@ the request's **visible set**, and passes it to the engine as a `RowScope` (§6.
   data verbs, so `row_access` is irrelevant to them: their one metadata path, `describe_table`,
   reports a count of 0 rather than the real table count. The API layer passes an explicit empty
   scope; a nil scope means *unscoped*, never *empty*.
+
+**Scope resolution is version-guarded** — the annotation is consulted above the seam, so a
+`set_row_access` migration must not be able to race it. The API layer resolves the scope against
+the table's current schema version and passes that version alongside the scope; the engine
+re-checks the version inside the operation's transaction — the same consistent-or-stale guard the
+store already applies to migrations and drops — and fails `conflict` on a mismatch, after which
+the caller re-resolves and retries. A migration can therefore never flip a stale nil scope into
+access to foreign rows.
 
 The engine conjoins the scope predicate into every row read, count, mutation, and search it
 performs for that call. Everything observes the visible set:
@@ -417,7 +427,8 @@ type RowScope struct {
 
 The engine knows nothing of principals, grants, or verbs; it receives an opaque owner string.
 `WriteOpts` carries the stamp owner (absent under `auth: off`) and the idempotency key;
-`DeleteOpts`/`DeleteResult` carry the delete guard and its `matched`/`deleted` pair. The existing
+`DeleteOpts`/`DeleteResult` carry the delete guard and its `matched`/`deleted` pair. A scope
+travels with the schema version it was resolved against (§4.3's version guard). The existing
 `store.Embedder` injection for vectorize paths is unchanged.
 
 ## 7. Search as contract
@@ -433,7 +444,7 @@ What the contract pins (conformance-enforced on every engine):
 | Property | Contract |
 |---|---|
 | Result shape | Rows as stored plus `id`/`created_at` (and `owner` when present), typed reads per field type; `_score` on every vector result (cosine, `-1..1`, engines agree within float tolerance); no rank value exposed for fulltext. |
-| Ordering | `search_fulltext`: relevance descending, deterministic tiebreak `id` ascending. `search_vector`: `_score` descending, tiebreak `id` ascending. Identical corpus + query ⇒ identical order on every engine. |
+| Ordering | `search_fulltext`: relevance descending, deterministic tiebreak `id` ascending. `search_vector`: `_score` descending, tiebreak `id` ascending. Identical corpus + query ⇒ identical order on every engine. Under a scope, ranking operates over the **visible corpus only**: relevance statistics must not include rows outside the caller's visible set — foreign matching rows can never reorder or displace visible results (§4.3). Predicate conjunction alone is not sufficient (a shared index's corpus statistics span owners); engines choose the isolation — per-scope index partitioning, or filter-then-rescore. |
 | Match language | The documented FTS5 `MATCH` subset (terms, implicit AND, `OR`, `NOT`, `field:term`, `{a b}:term`, quoted phrases, `term*` prefix, `NEAR(...)`) with the documented tokenizer/stemmer behavior (porter over unicode61: case/diacritic folding, English stemming, opaque CJK runs). Engines must accept the whole subset; SQLite-only extensions to the grammar are not portable and not guaranteed. |
 | Ranking quality | BM25-family relevance over the §7 match language; the conformance corpus fixes expected orderings, so "same suite passes" *is* the quality bar. |
 | Truncated / pagination | `limit` default 10 max 200, `offset`, `truncated` exactly as v0.2.0 — always computed over the caller's visible set (§4.3). |
