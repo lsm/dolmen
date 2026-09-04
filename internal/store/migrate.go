@@ -585,7 +585,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				return nil, invalidf("vectorize requires an embedding provider (set DOLMEN_EMBED_PROVIDER=local or openai)")
 			}
 			if emb.Identity == "" {
-				return nil, invalidf("vectorize requires an embedding provider with a reported identity so backfilled rows are attributable to an embedding space; the active provider reports none — an operator must set DOLMEN_EMBED_PROVIDER plus its credentials (e.g. DOLMEN_EMBED_API_KEY) and restart the server")
+				return nil, invalidf("vectorize requires an embedding provider with a reported identity so backfilled rows are attributable to an embedding space; the active provider reports none — an operator must set DOLMEN_EMBED_PROVIDER (local or openai, plus credentials such as DOLMEN_EMBED_API_KEY for openai) and restart the server")
 			}
 			modelChanged := cur.EmbedSpace != "" && emb.Identity != "" && cur.EmbedSpace != emb.Identity
 			plan.ClearsEmbeddings = old.VectorizeField() != nil || modelChanged
