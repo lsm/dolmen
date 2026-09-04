@@ -7,7 +7,7 @@ description: Developer skill for Dolmen — schema inference, table creation, an
 
 > This is the `dolmen-admin` skill. It contains everything in the `dolmen` (core) skill and adds the tools needed to design and evolve tables: `infer_schema`, `create_table`, and `migrate`. If you only need to query, insert, search, and delete against existing tables, use the `dolmen` skill instead ({{ .BaseURL }}/skills/dolmen).
 
-A Dolmen server exposes eighteen tools over MCP. Everything lives in namespaces (isolated databases).
+A Dolmen server exposes nineteen tools over MCP. Everything lives in namespaces (isolated databases).
 
 {{ .NamespaceHint }}
 
@@ -147,7 +147,7 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
    records exist. Note: inference proposes plain types only — during review, mark the main text
    field `vectorize: true` yourself if you want semantic recall (needs an embedding provider on
    the server: start it with `DOLMEN_EMBED_PROVIDER=local` for the built-in one, or `openai` for
-   an external endpoint). Keep tables small and purposeful — a sprawl of near-duplicate tables is a
+   an external endpoint; `describe_server` reports which one is active and usable). Keep tables small and purposeful — a sprawl of near-duplicate tables is a
    failure mode.
 4. **Record as you go.** After finishing a meaningful unit of work, `insert` a record summarizing it
    (what/where/outcome). Future sessions recall it via search.
@@ -166,6 +166,12 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
   enables `search_vector` with `text`), `required: true`, `default: <value>` (stored by later
   inserts that omit the field, instead of NULL; must match the field's type; not allowed on
   `required` or `vectorize` fields).
+- `describe_server` reports the embedding provider status without attempting a write: `provider`
+  (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, and `usable`.
+  `vectorize` in `create_table`/`migrate` and `search_vector` `text` queries fail while `usable`
+  is false; a table whose `embed_space` (see `describe_table`) differs from `identity` was embedded
+  by a different provider/model and rejects inserts and text searches until it is re-embedded
+  (`migrate` with `set_vectorize` off, then on).
 - `create_namespace` is only for reserving a name up front (or failing loudly if it is taken) —
   namespaces are otherwise created implicitly on first use, and it creates no tables.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
@@ -409,7 +415,8 @@ Validation notes:
   column produced by a `vectorize: true` field — the provider identity must match the one that
   embedded the table, and a `text` query naming a declared `vector` column is rejected. Searches
   with a caller-supplied `vector` need no provider and are not checked against any embedding
-  space — only you know which model produced the stored and query vectors.
+  space — only you know which model produced the stored and query vectors. The active provider,
+  its identity, and whether server-side embedding is usable are reported by `describe_server`.
 - `insert` with an `idempotency_key`: the same key + same records replays the original ids; the same
   key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes.
 

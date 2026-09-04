@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +17,9 @@ import (
 type Provider interface {
 	Name() string
 	Identity() string
+	// ModelName reports the configured model name — status surface for
+	// describe_server; empty when the provider has no model to name.
+	ModelName() string
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 }
 
@@ -24,6 +28,8 @@ type None struct{}
 func (None) Name() string { return "none" }
 
 func (None) Identity() string { return "" }
+
+func (None) ModelName() string { return "" }
 
 func (None) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	return nil, fmt.Errorf("no embedding provider configured: set DOLMEN_EMBED_PROVIDER=local for in-process embeddings (no external service), or DOLMEN_EMBED_PROVIDER=openai plus DOLMEN_EMBED_API_KEY (or OPENAI_API_KEY) for an external endpoint; optionally DOLMEN_EMBED_BASE_URL and DOLMEN_EMBED_MODEL")
@@ -40,8 +46,23 @@ const openAIBatch = 96
 
 func (o *OpenAI) Name() string { return "openai" }
 
+func (o *OpenAI) ModelName() string { return o.Model }
+
+// Identity pins tables to this endpoint and model. The base URL is stripped
+// of HTTP userinfo (user:pass@): credentials authenticate requests to the
+// endpoint, they do not name the embedding space, and the identity flows into
+// describe_server responses and stored embed_space values, which must never
+// expose secrets. A base URL that does not parse keeps its raw (trailing-slash
+// trimmed) form — it cannot complete an HTTP request either, so it carries no
+// working credentials to leak.
 func (o *OpenAI) Identity() string {
-	return o.Name() + "|" + strings.TrimRight(o.BaseURL, "/") + "|" + o.Model
+	trimmed := strings.TrimRight(o.BaseURL, "/")
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return o.Name() + "|" + trimmed + "|" + o.Model
+	}
+	u.User = nil
+	return o.Name() + "|" + u.String() + "|" + o.Model
 }
 
 func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float32, error) {

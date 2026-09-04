@@ -375,6 +375,50 @@ var Ops = map[string]OpDef{
 			return map[string]any{"dropped": table}, nil
 		},
 	},
+	"describe_server": {
+		Description: "Report the server's embedding provider status read-only: provider (none, local, openai), " +
+			"model, the identity string that pins vectorized tables to this provider and model, and whether " +
+			"server-side embedding is usable (creating vectorize fields, embedding search_vector text queries). " +
+			"Call it to answer those questions without attempting a write or a text search. Status only — " +
+			"no secrets are exposed, and the provider is not called: usable reflects configuration, so an endpoint " +
+			"that is down or rejects the request still fails at first use, not here.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"embedding": map[string]any{
+				"type":        "object",
+				"description": "Server-side embedding provider status",
+				"properties": map[string]any{
+					"provider": prop("string", "Active embedding provider: none, local (in-process, no external service), or openai (external OpenAI-compatible endpoint)"),
+					"model":    prop("string", "Configured model name (present when the provider reports one)"),
+					"identity": prop("string", "Identity string that pins vectorized tables to this provider and model — the value a table's embed_space must match for inserts and text searches (present when the provider reports one; absent means vectorize and text queries are rejected until an operator configures the server)"),
+					"usable":   prop("boolean", "Whether server-side embedding is currently usable (creating vectorize fields, embedding text queries): true when the provider is configured and reports its identity; configuration status only — the provider is not called"),
+				},
+				"required":             []string{"provider", "usable"},
+				"additionalProperties": false,
+			},
+		}, "embedding"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req struct{}
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			emb := map[string]any{
+				"provider": s.emb.Name(),
+				"usable":   s.emb.Identity() != "",
+			}
+			if m := s.emb.ModelName(); m != "" {
+				emb["model"] = m
+			}
+			if id := s.emb.Identity(); id != "" {
+				emb["identity"] = id
+			}
+			return map[string]any{"embedding": emb}, nil
+		},
+	},
 	"describe_table": {
 		Description: "Get the schema, version, and row count of a table.",
 		InputSchema: map[string]any{
