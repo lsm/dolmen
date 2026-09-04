@@ -111,7 +111,7 @@ in §3):
 | `create_namespace` | `admin` | The **parent**: `*` for depth-1 namespaces, the containing namespace for deeper ones. Under `auth: on` this is the only way a namespace comes to exist (see below). |
 | `drop_namespace` | `admin` | The namespace itself. Leaf-only (§5.4). |
 | `list_tables` | none (any authenticated principal) | Filtered to tables the caller holds any grant on. |
-| `describe_table` | `read`, `write`, **or** `schema` | The table. `row_count` follows the caller's visible set (§4.3) — a schema-only holder sees the schema and a count of 0. |
+| `describe_table` | `read`, `write`, `schema`, **or** `admin` | The table. `row_count` follows the caller's visible set (§4.3) — holders of only `schema`/`admin` see the schema with a count of 0; no data visibility is implied. |
 | `describe_server`, `infer_schema` | none (any authenticated principal) | Untargeted: provider status is no secret; `infer_schema` is pure computation. |
 | `create_table` | `schema` | The namespace. |
 | `drop_table`, `migrate`, `list_migrations` | `schema` | The table. Migration history is the audit trail of schema changes — same verb as the changes themselves. |
@@ -252,12 +252,14 @@ names (`id`, `created_at`, `_embedding`, …): caller-declared fields named `own
 With `auth: on`, the API layer resolves verbs (§3.3), consults the table's `row_access`, computes
 the request's **visible set**, and passes it to the engine as a `RowScope` (§6.3):
 
-- Table without `row_access` → no scope (all rows), for any authorized verb.
+- Table without `row_access`, caller holding `read` or `write` → no scope (all rows).
 - Table with `row_access` and a caller holding `read` through any covering grant → no scope
   (table-wide; the `read` verb is explicitly table-wide visibility).
 - Table with `row_access` and a caller holding only `write` → scope `{owner = principal}`.
-  (Holders of only `schema`/`admin` have no data paths beyond `describe_table`, whose count
-  follows the same rule — their visible set is empty, so the count is 0.)
+- Holders of only `schema` or `admin` have an **empty visible set on every table** — they hold no
+  data verbs, so `row_access` is irrelevant to them: their one metadata path, `describe_table`,
+  reports a count of 0 rather than the real table count. The API layer passes an explicit empty
+  scope; a nil scope means *unscoped*, never *empty*.
 
 The engine conjoins the scope predicate into every row read, count, mutation, and search it
 performs for that call. Everything observes the visible set:
@@ -386,8 +388,12 @@ type Engine interface {
 
 ```go
 // RowScope restricts row visibility for one call. Nil = unscoped (auth off,
-// or a table-wide reader). Non-nil = only rows with owner == Owner visible.
-type RowScope struct{ Owner string }
+// or a table-wide reader). Non-nil = only rows with owner == Owner are visible,
+// or no rows at all when Empty is set (schema/admin-only describe_table, §4.3).
+type RowScope struct {
+    Owner string
+    Empty bool
+}
 ```
 
 The engine knows nothing of principals, grants, or verbs; it receives an opaque owner string.
@@ -478,7 +484,7 @@ harness per test group, no CI matrix, no new make targets.
 | D3 | `-auth`/`DOLMEN_AUTH`, default `off`; `auth: on` with no identity source fails startup | §1.2 |
 | D4 | `DOLMEN_ADMIN_KEY` env-only bearer; principal `dolmen-admin`; implicit `admin` on `*` attaches to the credential, not the name; `dolmen-admin` reserved in headers | §1.3 |
 | D5 | New error code `unauthorized` (401); `forbidden` (403) = granted-no | §1.2 |
-| D6 | Verbs `read`/`write`/`schema`/`admin`; full op→verb table (`describe_table` also serves `schema` holders); `query` gated on the namespace; `auth: on` disables implicit namespace creation (`not_found` instead) | §2 |
+| D6 | Verbs `read`/`write`/`schema`/`admin`; full op→verb table (`describe_table` also serves `schema`/`admin` holders, count 0); `query` gated on the namespace; `auth: on` disables implicit namespace creation (`not_found` instead) | §2 |
 | D7 | Grants: subject {type,id}, object {namespace[,table] \| `*`}, explicit verbs; union resolution; inheritance down; no deny grants; no segment wildcards | §3 |
 | D8 | Grant store is server-level, above the engine seam | §3 preamble |
 | D9 | `row_access: "own"` table-level on create_table; auth-off rejects the key | §4.1 |
