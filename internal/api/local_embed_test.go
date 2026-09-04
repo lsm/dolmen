@@ -136,7 +136,7 @@ func TestLocalProviderSwitchRejected(t *testing.T) {
 	vecOff := map[string]any{"op": "set_vectorize", "name": "body", "value": false}
 	code, _ = post(t, srvB.URL, "migrate", map[string]any{
 		"namespace": "app", "table": "docs",
-		"changes":   []map[string]any{vecOff},
+		"changes": []map[string]any{vecOff},
 	})
 	if code != 200 {
 		t.Fatalf("migrate vectorize off: %d", code)
@@ -144,7 +144,7 @@ func TestLocalProviderSwitchRejected(t *testing.T) {
 	vecOn := map[string]any{"op": "set_vectorize", "name": "body", "value": true}
 	code, res = post(t, srvB.URL, "migrate", map[string]any{
 		"namespace": "app", "table": "docs",
-		"changes":   []map[string]any{vecOn},
+		"changes": []map[string]any{vecOn},
 	})
 	if code != 200 {
 		t.Fatalf("migrate vectorize on under model-b: %d %v", code, res)

@@ -208,7 +208,7 @@ DOLMEN_EMBED_PROVIDER=local ./dolmen
 
 # Another model (e.g. multilingual/CJK — see the full-text CJK caveat):
 DOLMEN_EMBED_PROVIDER=local \
-DOLMEN_EMBED_MODEL=intfloat/multilingual-e5-small \
+DOLMEN_EMBED_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 \
 ./dolmen
 
 # An OpenAI-compatible endpoint instead (OpenAI, Ollama, vLLM):
@@ -246,12 +246,16 @@ Local provider notes:
 
 - **Model cache** lives at `<data>/models/` (one `org--name` directory per model). Set
   `REMBED_CACHE` to override the location, and `HF_TOKEN` for gated Hugging Face repos.
+- **Pick a symmetric model.** Dolmen embeds stored rows and query text through the same call,
+  so models whose retrieval contract needs role prefixes — the e5 family (`query: `/`passage: `),
+  bge, arctic — silently rank worse than they should. The default MiniLM and the
+  `sentence-transformers/paraphrase-multilingual-*` models are symmetric and safe.
 - **Offline installs**: pre-seed the cache by copying `<data>/models/org--name/` from a machine
   that already downloaded the model, or set `DOLMEN_EMBED_MODEL` to an absolute model-directory
   path (the same directory layout) to skip the Hub entirely. Note: for bert-family models
   (including the MiniLM default) a pre-seeded Hub-id model still makes one small Hub request per
   process start to check for optional tokenizer files; the directory form (and the
-  xlm-roberta/e5, modernbert, and gemma model families) makes none.
+  xlm-roberta, modernbert, and gemma model families) makes none.
 - **Identity pinning** works as with the OpenAI provider: tables record `local/<model>` as their
   embedding space, and a model change is rejected until the table is re-embedded
   (`migrate` with `set_vectorize` off, then on).

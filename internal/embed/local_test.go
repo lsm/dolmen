@@ -51,7 +51,7 @@ func TestNewProviderLocalModelValidation(t *testing.T) {
 		model   string
 		wantErr string
 	}{
-		{"intfloat/multilingual-e5-small", ""},
+		{"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2", ""},
 		{"BAAI/bge-small-en-v1.5", ""},
 		{dir, ""},
 		{"MiniLM", "neither a Hugging Face model id"},
@@ -181,7 +181,7 @@ func TestLocalIdentityIncludesDirectoryRef(t *testing.T) {
 func TestLocalRef(t *testing.T) {
 	cases := map[string]string{
 		"sentence-transformers/all-MiniLM-L6-v2": "hf:sentence-transformers/all-MiniLM-L6-v2",
-		"intfloat/multilingual-e5-small":         "hf:intfloat/multilingual-e5-small",
+		"intfloat/multilingual-e5-small":         "hf:intfloat/multilingual-e5-small", // any org/name is a Hub ref
 		"/opt/models/minilm":                     "/opt/models/minilm",
 		"/opt/models/nested/dir":                 "/opt/models/nested/dir",
 	}
