@@ -97,6 +97,55 @@ func TestPackageDefaultModelLayout(t *testing.T) {
 	}
 }
 
+// TestPackageMultilingualE5Layout pins the file selection for the
+// multilingual-e5-small release asset: model_type bert with a SentencePiece
+// tokenizer (no vocab.txt), so the packer must probe sentencepiece.bpe.model
+// and skip the bert vocab entirely.
+func TestPackageMultilingualE5Layout(t *testing.T) {
+	files := map[string][]byte{
+		"config.json":             []byte(`{"model_type": "bert", "hidden_size": 384}`),
+		"tokenizer_config.json":   []byte(`{"tokenizer_class": "XLMRobertaTokenizer"}`),
+		"sentencepiece.bpe.model": []byte("fake sentencepiece model"),
+		"1_Pooling/config.json":   []byte(`{"pooling_mode_mean_tokens": true}`),
+		"modules.json":            []byte(`[]`),
+		"model.safetensors":       []byte("fake safetensors weights"),
+	}
+	// vocab.txt must NOT be fetched: absent from the fake hub, a bert-model
+	// fetch of it would fail the test.
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/resolve/pinned/") {
+			http.NotFound(w, r)
+			return
+		}
+		file := strings.SplitN(r.URL.Path, "/resolve/pinned/", 2)[1]
+		data, ok := files[file]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	old := hubBase
+	hubBase = srv.URL + "/repo"
+	defer func() { hubBase = old }()
+
+	dir := t.TempDir()
+	if err := ensure("intfloat/multilingual-e5-small", "pinned", dir); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	for name := range files {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(name))); err != nil {
+			t.Fatalf("missing packaged file: %s (%v)", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "vocab.txt")); err == nil {
+		t.Fatal("vocab.txt must not be packaged for a sentencepiece tokenizer repo")
+	}
+}
+
 func TestPackageShardedWeights(t *testing.T) {
 	shards := map[string][]byte{
 		"model-00001-of-00002.safetensors": []byte("shard one"),

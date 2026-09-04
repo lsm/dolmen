@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/embed"
@@ -154,5 +155,92 @@ func TestLocalProviderSwitchRejected(t *testing.T) {
 	})
 	if code != 200 {
 		t.Fatalf("insert after re-embed under model-b: %d %v", code, res)
+	}
+}
+
+// recordingEngine captures the texts the provider is asked to embed, so the
+// e5 prefix test can assert what reached the engine on both the insert
+// (passage) and search (query) paths.
+type recordingEngine struct {
+	mu    sync.Mutex
+	texts []string
+	dim   int
+}
+
+func (r *recordingEngine) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	r.mu.Lock()
+	r.texts = append(r.texts, texts...)
+	r.mu.Unlock()
+	out := make([][]float32, len(texts))
+	for i := range out {
+		out[i] = make([]float32, r.dim)
+		for j := range out[i] {
+			out[i][j] = 0.1
+		}
+	}
+	return out, nil
+}
+
+func (r *recordingEngine) recorded() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.texts...)
+}
+
+// TestLocalProviderE5PrefixesEndToEnd pins the e5 role-prefix contract over
+// HTTP: with an e5-family model configured, inserts embed "passage: <text>"
+// and search_vector embeds "query: <text>". Dolmen adds the prefixes
+// server-side — callers never see or supply them.
+func TestLocalProviderE5PrefixesEndToEnd(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	eng := &recordingEngine{dim: 4}
+	srv := httptest.NewServer(New(st, &embed.Local{
+		Model: "intfloat/multilingual-e5-small",
+		Open:  func() (embed.LocalEngine, error) { return eng, nil },
+	}).Handler())
+	t.Cleanup(srv.Close)
+
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "e5",
+		"table":     "incidents",
+		"fields":    []map[string]any{{"name": "body", "type": "text", "vectorize": true}},
+	})
+	if code != 200 {
+		t.Fatalf("create_table: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "insert", map[string]any{
+		"namespace": "e5", "table": "incidents",
+		"records": []map[string]any{{"body": "接続プール枯渏"}},
+	})
+	if code != 200 {
+		t.Fatalf("insert: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "search_vector", map[string]any{
+		"namespace": "e5", "table": "incidents", "text": "connection pool exhausted",
+	})
+	if code != 200 {
+		t.Fatalf("search_vector text: %d %v", code, res)
+	}
+
+	texts := eng.recorded()
+	wantPassage, wantQuery := "passage: 接続プール枯渏", "query: connection pool exhausted"
+	var gotPassage, gotQuery bool
+	for _, tx := range texts {
+		if tx == wantPassage {
+			gotPassage = true
+		}
+		if tx == wantQuery {
+			gotQuery = true
+		}
+	}
+	if !gotPassage {
+		t.Errorf("engine must receive %q for the stored row, got %q", wantPassage, texts)
+	}
+	if !gotQuery {
+		t.Errorf("engine must receive %q for the search text, got %q", wantQuery, texts)
 	}
 }

@@ -69,7 +69,27 @@ func (l *Local) ModelName() string { return l.Model }
 // via migrate — exactly as with the OpenAI provider.
 func (l *Local) Identity() string { return "local/" + l.Model }
 
+// Embed embeds stored-row text, prepending the e5 passage prefix for
+// e5-family models — rembed embeds exactly the text it is given.
 func (l *Local) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	_, passage := e5Prefixes(l.Model)
+	return l.embed(ctx, texts, passage)
+}
+
+// EmbedQuery embeds one search text, prepending the e5 query prefix.
+func (l *Local) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	query, _ := e5Prefixes(l.Model)
+	vecs, err := l.embed(ctx, []string{text}, query)
+	if err != nil {
+		return nil, err
+	}
+	if len(vecs) != 1 {
+		return nil, fmt.Errorf("local embedding model %s: %d vectors for one query text", l.Model, len(vecs))
+	}
+	return vecs[0], nil
+}
+
+func (l *Local) embed(ctx context.Context, texts []string, prefix string) ([][]float32, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -77,6 +97,7 @@ func (l *Local) Embed(ctx context.Context, texts []string) ([][]float32, error) 
 	if err != nil {
 		return nil, err
 	}
+	texts = prefixAll(prefix, texts)
 	vecs, err := eng.Embed(ctx, texts)
 	if err != nil {
 		return nil, fmt.Errorf("local embedding model %s: %w", l.Model, err)

@@ -971,17 +971,18 @@ var Ops = map[string]OpDef{
 				if s.emb.Identity() == "" {
 					return nil, badRequest("text queries are embedded server-side, but this server has no usable embedding provider (none is configured, or the configured one does not report its identity); an operator must set the server-side DOLMEN_EMBED_* environment variables: DOLMEN_EMBED_PROVIDER=local (in-process embeddings, no external service), or DOLMEN_EMBED_PROVIDER=openai plus DOLMEN_EMBED_API_KEY (or OPENAI_API_KEY), optionally DOLMEN_EMBED_BASE_URL and DOLMEN_EMBED_MODEL")
 				}
-				vecs, err := s.emb.Embed(ctx, []string{req.Text})
+				// Query-side embedding: EmbedQuery, not Embed, so models with
+				// an asymmetric retrieval contract (the e5 family) get their
+				// "query: " prefix instead of the "passage: " one stored rows
+				// get.
+				qv, err := s.emb.EmbedQuery(ctx, req.Text)
 				if err != nil {
 					return nil, wrapStoreErr(err)
 				}
-				if len(vecs) != 1 {
-					return nil, badRequest("embedding provider returned %d vectors for one query text", len(vecs))
-				}
-				if len(vecs[0]) == 0 {
+				if len(qv) == 0 {
 					return nil, badRequest("embedding provider returned a zero-dimensional vector for the query text")
 				}
-				vec = vecs[0]
+				vec = qv
 			case len(req.Vector) > 0:
 				vec = make([]float32, len(req.Vector))
 				for i, x := range req.Vector {

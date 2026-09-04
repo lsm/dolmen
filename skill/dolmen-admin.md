@@ -174,7 +174,8 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
   (`migrate` with `set_vectorize` off, then on).
 - Operators in HF-blocked or air-gapped networks should pre-seed the embedding model per the
   README's "Offline install" section before enabling `vectorize`; `describe_server` reports
-  `usable: true` once the model is in place.
+  `usable: true` once the model is in place. Both the English default and the multilingual model
+  (`intfloat/multilingual-e5-small`) ship as release tarballs.
 - `create_namespace` is only for reserving a name up front (or failing loudly if it is taken) —
   namespaces are otherwise created implicitly on first use, and it creates no tables.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
@@ -252,7 +253,9 @@ characters is indexed as one opaque token: a `search_fulltext` term for a word o
 the run silently matches nothing (no error; the rows are stored and `LIKE`-queryable via `query`).
 Whole-run terms, prefix queries (`中华*`), and space-delimited Korean still tokenize and match. For
 keyword recall over space-less CJK text, fall back to vector search over an embedding column
-(`vectorize: true` + `search_vector(text=...)`) or `query` with `LIKE`.
+(`vectorize: true` + `search_vector(text=...)`) or `query` with `LIKE` — but note the vector
+fallback only crosses languages when the server runs a multilingual model (see
+"Vectors and semantic recall" below).
 
 - `payment` — one token.
 - `payment gateway` — implicit `AND`.
@@ -296,6 +299,14 @@ match, before ranking.
 - `search_vector(text=...)` embeds the query `text` with the configured provider and searches only
   the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`.
   `search_vector(vector=[...])` supplies a query vector directly and may search any vector column.
+- **Cross-language recall depends on the operator's model.** The default local model
+  (`all-MiniLM-L6-v2`, see `describe_server`) is English-only: semantic recall is per-language —
+  an English query will not surface a Japanese incident, and vice versa. Mixed-language/CJK
+  deployments should ask the operator to run `DOLMEN_EMBED_MODEL=intfloat/multilingual-e5-small`
+  (README, "Choosing an embedding model"; the e5 `query:`/`passage:` role prefixes are added
+  server-side, callers never supply them). Switching models changes the embedding identity, so
+  existing vectorized tables reject writes until re-embedded via `migrate` (`set_vectorize` off,
+  then on).
 - `column` applies to `vector` queries: it names the stored-vectors column and defaults to
   `_embedding` (if a vectorized field exists) or the first declared `vector` field. The query and
   stored vectors must come from the same embedding space. For `_embedding` (from `vectorize`) this

@@ -86,3 +86,65 @@ func cosine32(a, b []float32) float64 {
 	}
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
+
+// TestLocalEmbedE5Live runs the multilingual e5 model end to end, including
+// the role prefixes dolmen adds server-side. Gated like TestLocalEmbedLive;
+// the download is ~450 MB on first use.
+//
+//	DOLMEN_TEST_EMBED_LOCAL=1 go test ./internal/embed/ -run TestLocalEmbedE5Live -v
+func TestLocalEmbedE5Live(t *testing.T) {
+	if os.Getenv("DOLMEN_TEST_EMBED_LOCAL") != "1" {
+		t.Skip("set DOLMEN_TEST_EMBED_LOCAL=1 to run the live local-provider test (downloads the e5 model on first use)")
+	}
+
+	old, had := os.LookupEnv("REMBED_CACHE")
+	t.Cleanup(func() {
+		if had {
+			os.Setenv("REMBED_CACHE", old)
+		} else {
+			os.Unsetenv("REMBED_CACHE")
+		}
+	})
+	os.Unsetenv("REMBED_CACHE")
+
+	dataDir := t.TempDir()
+	p, err := NewProvider("local", "", "intfloat/multilingual-e5-small", "", dataDir)
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+
+	// The round-3 black-box failure this model exists for: an English query
+	// must surface the Japanese incident (connection pool exhaustion) over
+	// an unrelated English one.
+	passageJP := "接続プール枯渏により、深夜帯のAPIリクエストが大量に失敗した。"
+	passageUnrelated := "The marketing team published the Q3 newsletter."
+	vecs, err := p.Embed(context.Background(), []string{passageJP, passageUnrelated})
+	if err != nil {
+		t.Fatalf("embed passages: %v", err)
+	}
+	if len(vecs) != 2 || len(vecs[0]) != 384 {
+		t.Fatalf("multilingual-e5-small must produce 384-dim vectors, got %v dims", len(vecs[0]))
+	}
+	query, err := p.EmbedQuery(context.Background(), "connection pool exhausted")
+	if err != nil {
+		t.Fatalf("embed query: %v", err)
+	}
+	jp := cosine32(query, vecs[0])
+	unrelated := cosine32(query, vecs[1])
+	if jp <= unrelated {
+		t.Fatalf("English query must rank the Japanese incident above the unrelated passage: jp=%f unrelated=%f", jp, unrelated)
+	}
+
+	// And the mirror direction: a Chinese query against an English incident.
+	vecsEN, err := p.Embed(context.Background(), []string{"Database connection pool exhausted; nightly batch jobs failed."})
+	if err != nil {
+		t.Fatalf("embed English passage: %v", err)
+	}
+	cn, err := p.EmbedQuery(context.Background(), "连接池耗尽导致批处理任务失败")
+	if err != nil {
+		t.Fatalf("embed Chinese query: %v", err)
+	}
+	if cnJP := cosine32(cn, vecsEN[0]); cnJP <= unrelated {
+		t.Fatalf("Chinese query must rank the English pool incident above the unrelated passage: hit=%f unrelated=%f", cnJP, unrelated)
+	}
+}

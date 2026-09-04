@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -20,7 +21,47 @@ type Provider interface {
 	// ModelName reports the configured model name — status surface for
 	// describe_server; empty when the provider has no model to name.
 	ModelName() string
+	// Embed embeds stored-row text (the passage side of the retrieval
+	// contract): inserts, updates, and migrate backfills. Symmetric models
+	// embed the text as-is; e5-family models get their passage prefix
+	// prepended here.
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
+	// EmbedQuery embeds search text (the query side). Asymmetric models —
+	// the e5 family — need their query prefix here; callers cannot supply
+	// it themselves, because dolmen embeds exactly the text the request
+	// carried and a hand-prefixed query would double the prefix.
+	EmbedQuery(ctx context.Context, text string) ([]float32, error)
+}
+
+// e5ModelRe matches the e5 embedding-model family by id or directory name:
+// intfloat/e5-large-v2, intfloat/multilingual-e5-small, or their org--name
+// cache-directory form. The e5 retrieval contract is asymmetric — the models
+// were trained with "query: " / "passage: " role prefixes — and dolmen embeds
+// stored rows and search text through different calls, so the prefixes are
+// added server-side rather than silently degrading ranking for every caller.
+var e5ModelRe = regexp.MustCompile(`(?i)(?:^|[-_/])e5(?:[-_]|$)`)
+
+// e5Prefixes reports the role prefixes the e5 contract requires for model,
+// or empty strings for symmetric models (the MiniLM default and the
+// paraphrase-multilingual-* family), which need none.
+func e5Prefixes(model string) (query, passage string) {
+	if !e5ModelRe.MatchString(model) {
+		return "", ""
+	}
+	return "query: ", "passage: "
+}
+
+// prefixAll returns texts with prefix prepended to each; the empty prefix
+// returns texts unchanged.
+func prefixAll(prefix string, texts []string) []string {
+	if prefix == "" {
+		return texts
+	}
+	out := make([]string, len(texts))
+	for i, t := range texts {
+		out[i] = prefix + t
+	}
+	return out
 }
 
 type None struct{}
@@ -32,8 +73,14 @@ func (None) Identity() string { return "" }
 func (None) ModelName() string { return "" }
 
 func (None) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	return nil, fmt.Errorf("no embedding provider configured: set DOLMEN_EMBED_PROVIDER=local for in-process embeddings (no external service), or DOLMEN_EMBED_PROVIDER=openai plus DOLMEN_EMBED_API_KEY (or OPENAI_API_KEY) for an external endpoint; optionally DOLMEN_EMBED_BASE_URL and DOLMEN_EMBED_MODEL")
+	return nil, errNoProvider
 }
+
+func (None) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	return nil, errNoProvider
+}
+
+var errNoProvider = fmt.Errorf("no embedding provider configured: set DOLMEN_EMBED_PROVIDER=local for in-process embeddings (no external service), or DOLMEN_EMBED_PROVIDER=openai plus DOLMEN_EMBED_API_KEY (or OPENAI_API_KEY) for an external endpoint; optionally DOLMEN_EMBED_BASE_URL and DOLMEN_EMBED_MODEL")
 
 type OpenAI struct {
 	BaseURL string
@@ -65,7 +112,28 @@ func (o *OpenAI) Identity() string {
 	return o.Name() + "|" + u.String() + "|" + o.Model
 }
 
+// Embed embeds stored-row text, prepending the e5 passage prefix for
+// e5-family models — endpoints embed exactly the input they are sent.
 func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	_, passage := e5Prefixes(o.Model)
+	return o.embed(ctx, texts, passage)
+}
+
+// EmbedQuery embeds one search text, prepending the e5 query prefix.
+func (o *OpenAI) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	query, _ := e5Prefixes(o.Model)
+	vecs, err := o.embed(ctx, []string{text}, query)
+	if err != nil {
+		return nil, err
+	}
+	if len(vecs) != 1 {
+		return nil, fmt.Errorf("embeddings API returned %d vectors for one query text", len(vecs))
+	}
+	return vecs[0], nil
+}
+
+func (o *OpenAI) embed(ctx context.Context, texts []string, prefix string) ([][]float32, error) {
+	texts = prefixAll(prefix, texts)
 	client := o.Client
 	if client == nil {
 		client = &http.Client{Timeout: 60 * time.Second}

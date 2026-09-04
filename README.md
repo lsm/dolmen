@@ -206,9 +206,11 @@ Bash:
 # reuses the cache.
 DOLMEN_EMBED_PROVIDER=local ./dolmen
 
-# Another model (e.g. multilingual/CJK — see the full-text CJK caveat):
+# Mixed-language/CJK data — the multilingual model (see "Choosing an
+# embedding model" below; dolmen adds the e5 query:/passage: prefixes
+# itself, callers do not):
 DOLMEN_EMBED_PROVIDER=local \
-DOLMEN_EMBED_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 \
+DOLMEN_EMBED_MODEL=intfloat/multilingual-e5-small \
 ./dolmen
 
 # An OpenAI-compatible endpoint instead (OpenAI, Ollama, vLLM):
@@ -248,30 +250,67 @@ embedding is usable — so a missing provider is visible without attempting a wr
 configuration status only: the provider is not called, so an endpoint that is down or rejects its
 credentials still fails at first use, not here.
 
+### Choosing an embedding model
+
+`DOLMEN_EMBED_MODEL` accepts any Hugging Face model id the [rembed](https://github.com/rostamlabs/rembed)
+runtime supports (or an absolute model-directory path). Two are packaged as release assets and
+tested:
+
+- **`sentence-transformers/all-MiniLM-L6-v2`** (default) — English-only, 384-dim, fast, ~90 MB.
+  The right choice for English-only data.
+- **`intfloat/multilingual-e5-small`** — 100+ languages including Japanese/Chinese/Korean, also
+  384-dim, ~450 MB from the Hub (~270 MB as the release tarball). Use it when rows or queries mix
+  languages: with the English-centric default, semantic recall is per-language only — an English
+  "connection pool exhausted" query will not surface a Japanese 接続プール枯渏 incident.
+
+**The e5 prefix caveat is handled for you.** e5-family models were trained with an asymmetric
+retrieval contract — search text prefixed `"query: "` and stored text prefixed `"passage: "` —
+and embed exactly the text they are given, so missing prefixes silently degrade ranking. Dolmen
+adds the prefixes server-side: stored rows are embedded as `passage: <field value>`, `search_vector`
+text queries as `query: <text>`, for any model whose id carries an `e5` name segment
+(`intfloat/e5-*`, `intfloat/multilingual-e5-*`, and their offline directory forms). Callers never
+add or see the prefixes, and symmetric models — the MiniLM default, the
+`sentence-transformers/paraphrase-multilingual-*` family — get nothing prepended. Other
+asymmetric families (bge, arctic) use longer model-specific instructions dolmen does not know;
+avoid them.
+
+**Switching models re-embeds through `migrate`.** Every vectorized table records the identity of
+the space it was embedded in — `local/<model>` — visible as `identity` in `describe_server` and
+`embed_space` in `describe_table`. A server started with a different model rejects inserts and
+text searches on those tables until each is re-embedded: `migrate` with `set_vectorize` off, then
+on (the backfill re-embeds every row with the new model).
+
 ### Offline install
 
-In networks that block `huggingface.co` (or on air-gapped machines), download the model asset from
-the release instead of relying on the Hub:
+In networks that block `huggingface.co` (or on air-gapped machines), download a model asset from
+the release instead of relying on the Hub — the English default and the multilingual model are
+both packaged (see "Choosing an embedding model"):
 
 ```bash
 tag="v0.2.0"
 curl -LO "https://github.com/lsm/dolmen/releases/download/${tag}/dolmen-model-all-MiniLM-L6-v2-${tag}.tar.gz"
+# and/or, for mixed-language/CJK data (~270 MB):
+curl -LO "https://github.com/lsm/dolmen/releases/download/${tag}/dolmen-model-multilingual-e5-small-${tag}.tar.gz"
 
 # Option A: extract into the data directory's model cache, then run normally.
+# (The multilingual model needs DOLMEN_EMBED_MODEL; the default does not.)
 mkdir -p data/models
-tar -xzf "dolmen-model-all-MiniLM-L6-v2-${tag}.tar.gz" -C data/models
-DOLMEN_EMBED_PROVIDER=local ./dolmen
+tar -xzf "dolmen-model-multilingual-e5-small-${tag}.tar.gz" -C data/models
+DOLMEN_EMBED_PROVIDER=local \
+DOLMEN_EMBED_MODEL=intfloat/multilingual-e5-small \
+./dolmen
 
 # Option B: extract anywhere and point DOLMEN_EMBED_MODEL at the directory.
 mkdir -p /opt/dolmen/models
-tar -xzf "dolmen-model-all-MiniLM-L6-v2-${tag}.tar.gz" -C /opt/dolmen/models
+tar -xzf "dolmen-model-multilingual-e5-small-${tag}.tar.gz" -C /opt/dolmen/models
 DOLMEN_EMBED_PROVIDER=local \
-DOLMEN_EMBED_MODEL=/opt/dolmen/models/sentence-transformers--all-MiniLM-L6-v2 \
+DOLMEN_EMBED_MODEL=/opt/dolmen/models/intfloat--multilingual-e5-small \
 ./dolmen
 ```
 
-The tarball is ~90 MB and contains the `sentence-transformers--all-MiniLM-L6-v2/` directory (the same
-layout the `local` provider uses under `<data>/models`).
+Each tarball contains the `org--name` model directory (the same layout the `local` provider uses
+under `<data>/models`): ~80 MB compressed for the MiniLM default, ~270 MB for
+`multilingual-e5-small`.
 
 Verify the server embeds without reaching `huggingface.co` by creating a vectorized table, inserting
 a row, and running a text vector search:
@@ -298,10 +337,10 @@ Local provider notes:
 
 - **Model cache** lives at `<data>/models/` (one `org--name` directory per model). Set
   `REMBED_CACHE` to override the location, and `HF_TOKEN` for gated Hugging Face repos.
-- **Pick a symmetric model.** Dolmen embeds stored rows and query text through the same call,
-  so models whose retrieval contract needs role prefixes — the e5 family (`query: `/`passage: `),
-  bge, arctic — silently rank worse than they should. The default MiniLM and the
-  `sentence-transformers/paraphrase-multilingual-*` models are symmetric and safe.
+- **e5 role prefixes are automatic.** The e5 family's `"query: "` / `"passage: "` prefixes are
+  prepended server-side (see "Choosing an embedding model"); symmetric models, including the
+  default MiniLM, are embedded as-is. Models with other instruction contracts (bge, arctic) still
+  rank worse than they should — prefer the e5 family or a symmetric model.
 - **Offline installs**: pre-seed the model cache under `<data>/models/` (the tarball extracts to
   the right `org--name` layout), or set `DOLMEN_EMBED_MODEL` to an absolute model-directory path.
   Both forms skip the Hub entirely when `huggingface.co` is unreachable. See the
@@ -323,7 +362,7 @@ variables. Unknown flags and positional arguments are rejected with an error.
 | — | `DOLMEN_ALLOWED_ORIGINS` | — | Comma-separated allowed HTTP origins for CORS; `localhost`, `127.0.0.1`, and `::1` are always allowed |
 | — | `DOLMEN_EMBED_PROVIDER` | `none` | Embedding provider: `none` (caller supplies vectors), `local` (built-in in-process embeddings via [rembed](https://github.com/rostamlabs/rembed)), or `openai` (any OpenAI-compatible endpoint). Unknown values produce an error |
 | — | `DOLMEN_EMBED_BASE_URL` | `https://api.openai.com/v1` | Base URL for an OpenAI-compatible provider |
-| — | `DOLMEN_EMBED_MODEL` | provider default | Model: `sentence-transformers/all-MiniLM-L6-v2` for `local` (or an absolute model-directory path), `text-embedding-3-small` for `openai` |
+| — | `DOLMEN_EMBED_MODEL` | provider default | Model: `sentence-transformers/all-MiniLM-L6-v2` for `local` (or an absolute model-directory path; `intfloat/multilingual-e5-small` for mixed-language/CJK — e5-family ids get `query:`/`passage:` role prefixes automatically), `text-embedding-3-small` for `openai` |
 | — | `DOLMEN_EMBED_API_KEY` | — | API key for an OpenAI-compatible provider. If set (even to `""`), it takes precedence over `OPENAI_API_KEY` |
 | — | `OPENAI_API_KEY` | — | Fallback API key when `DOLMEN_EMBED_API_KEY` is unset |
 | — | `REMBED_CACHE` | `<data>/models` | Model cache directory for the `local` provider (overrides the data-dir location) |
