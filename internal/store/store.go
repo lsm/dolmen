@@ -466,12 +466,18 @@ func vectorizeField(fields []schema.Field) *schema.Field {
 	return nil
 }
 
+// createFTS builds the shadow FTS5 index with the porter stemming wrapper over
+// unicode61: case and diacritic folding are unchanged, while English suffixes
+// collapse to stems so inflected queries ("payments") match indexed forms
+// ("payment") without a prefix wildcard. Stemming applies to queries and the
+// index alike — phrases and prefix terms operate on stems, and it is
+// English-focused (CJK runs pass through untouched; see #106).
 func createFTS(ctx context.Context, tx *sql.Tx, table string, fts []schema.Field) error {
 	cols := make([]string, len(fts))
 	for i, f := range fts {
 		cols[i] = q(f.Name)
 	}
-	ddl := fmt.Sprintf(`CREATE VIRTUAL TABLE %s USING fts5(%s)`, q(ftsTable(table)), strings.Join(cols, ", "))
+	ddl := fmt.Sprintf(`CREATE VIRTUAL TABLE %s USING fts5(%s, tokenize='porter unicode61')`, q(ftsTable(table)), strings.Join(cols, ", "))
 	if _, err := tx.ExecContext(ctx, ddl); err != nil {
 		return err
 	}

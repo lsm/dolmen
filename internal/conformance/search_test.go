@@ -111,6 +111,96 @@ func TestSearchFulltextSyntaxAcceptReject(t *testing.T) {
 	assertJSONEqual(t, "stable ordering", again["results"], data["results"])
 }
 
+// Stemming invariants (#147): inflected query terms match indexed singulars,
+// prefix and phrase terms operate on stems, and a table whose index predates
+// stemming keeps working until the set_fulltext re-assert reindexes it.
+func TestSearchFulltextStemming(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("stems", "t", []map[string]any{
+		{"name": "body", "type": "text", "fulltext": true},
+	})
+	h.mustHTTP("insert", map[string]any{
+		"namespace": "stems", "table": "t",
+		"records": []map[string]any{{"body": "the payments were refunded"}},
+	})
+
+	for q, want := range map[string]int{
+		"payments":        1, // the issue's trap: plural matches singular
+		"refunds":         1, // inflected matches the indexed "refunded"
+		"payment*":        1, // prefix over payment's own stem
+		`"payments were"`: 1, // phrase terms stem before adjacency
+		"pay*":            0, // stems to pai*, which does not reach payment
+	} {
+		data := h.mustHTTP("search_fulltext", map[string]any{
+			"namespace": "stems", "table": "t", "query": q,
+		})
+		if got := len(data["results"].([]any)); got != want {
+			t.Fatalf("query %q: %d results, want %d", q, got, want)
+		}
+	}
+
+	// Plant a pre-stemming index the way an older binary would have written
+	// it (exact-token, no porter). It keeps matching exact tokens and misses
+	// inflected queries — existing tables keep working, unstemmed, until
+	// reindexed.
+	h.outOfBand("stems", func(db *sqlDB) error {
+		if _, err := db.Exec(`DROP TABLE IF EXISTS "t__fts"`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`CREATE VIRTUAL TABLE "t__fts" USING fts5("body")`); err != nil {
+			return err
+		}
+		_, err := db.Exec(`INSERT INTO "t__fts"(rowid, body) SELECT id, body FROM "t" WHERE body IS NOT NULL`)
+		return err
+	})
+	data := h.mustHTTP("search_fulltext", map[string]any{
+		"namespace": "stems", "table": "t", "query": "payments",
+	})
+	if got := len(data["results"].([]any)); got != 1 {
+		t.Fatalf("exact-token index must keep matching: %d results", got)
+	}
+	data = h.mustHTTP("search_fulltext", map[string]any{
+		"namespace": "stems", "table": "t", "query": "payment",
+	})
+	if got := len(data["results"].([]any)); got != 0 {
+		t.Fatalf("exact-token index must not stem: %d results", got)
+	}
+
+	// The dry-run plan reports the rebuild without applying it.
+	plan := h.mustHTTP("migrate", map[string]any{
+		"namespace": "stems", "table": "t", "dry_run": true,
+		"changes": []map[string]any{{"op": "set_fulltext", "name": "body", "value": true}},
+	})
+	p := plan["plan"].(map[string]any)
+	if p["rebuild_fulltext"] != true {
+		t.Fatalf("plan must report rebuild_fulltext: %v", p)
+	}
+	if got := int64val(t, "fulltext_reindex_rows", p["fulltext_reindex_rows"]); got != 1 {
+		t.Fatalf("plan fulltext_reindex_rows: %d", got)
+	}
+	data = h.mustHTTP("search_fulltext", map[string]any{
+		"namespace": "stems", "table": "t", "query": "payment",
+	})
+	if got := len(data["results"].([]any)); got != 0 {
+		t.Fatalf("dry-run must leave the old index in place: %d results", got)
+	}
+
+	// Re-asserting set_fulltext = true applies the reindex.
+	out := h.mustHTTP("migrate", map[string]any{
+		"namespace": "stems", "table": "t", "expected_version": 1,
+		"changes": []map[string]any{{"op": "set_fulltext", "name": "body", "value": true}},
+	})
+	if table := out["table"].(map[string]any); int64val(t, "version", table["version"]) != 2 {
+		t.Fatalf("version after reindex migrate: %v", table["version"])
+	}
+	data = h.mustHTTP("search_fulltext", map[string]any{
+		"namespace": "stems", "table": "t", "query": "payment",
+	})
+	if got := len(data["results"].([]any)); got != 1 {
+		t.Fatalf("reindexed table must match inflected query: %d results", got)
+	}
+}
+
 // Vector-search invariants: _score equals the locally computed cosine of the
 // query against each stored vector (float32 math), ordering is by descending
 // score with stable id tie-breaking, and identical vectors score 1.
