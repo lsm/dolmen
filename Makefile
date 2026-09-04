@@ -1,4 +1,4 @@
-.PHONY: build test race run clean release release-sbom release-checksums release-all image vulncheck
+.PHONY: build test race run clean release release-sbom release-model release-checksums release-all image vulncheck
 
 # Release identity injected into the binary at link time. An exact git tag
 # wins (v0.2.0, or v0.2.0-dirty); otherwise development builds report
@@ -9,6 +9,17 @@ VERSION ?= $(shell git describe --tags --exact-match --dirty 2>/dev/null || prin
 LDFLAGS := -X github.com/lsm/dolmen/internal/version.Version=$(VERSION)
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 RELEASE_DIR := dist
+
+# Embedding models packaged as release assets for offline installs: the
+# English default plus the multilingual/CJK option (README, "Choosing an
+# embedding model"). Each entry is <hf-id>@<pinned-revision>; the revision
+# pins the upstream Hugging Face commit so release assets are reproducible
+# (rembed does not expose revision pinning, so the packer downloads the
+# pinned commit directly). The asset name derives from the model name after
+# the slash: dolmen-model-<name>-$(VERSION).tar.gz.
+EMBED_MODELS ?= \
+	sentence-transformers/all-MiniLM-L6-v2@1110a243fdf4706b3f48f1d95db1a4f5529b4d41 \
+	intfloat/multilingual-e5-small@614241f622f53c4eeff9890bdc4f31cfecc418b3
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o dolmen .
@@ -45,6 +56,20 @@ release-sbom:
 	syft . -o spdx-json=$$tmp && \
 	mv "$$tmp" $(RELEASE_DIR)/dolmen-$(VERSION)-sbom.spdx.json
 
+release-model:
+	@mkdir -p $(RELEASE_DIR)
+	@for m in $(EMBED_MODELS); do \
+		id=$${m%@*}; \
+		rev=$${m#*@}; \
+		name=$${id##*/}; \
+		out="$(RELEASE_DIR)/dolmen-model-$$name-$(VERSION).tar.gz"; \
+		echo "Packaging $$id ($$out)"; \
+		go run ./cmd/pack-model \
+			-model "$$id" \
+			-revision "$$rev" \
+			-out "$$out" || exit 1; \
+	done
+
 CHECKSUM := $(shell if command -v sha256sum >/dev/null 2>&1; then echo sha256sum; else echo shasum -a 256; fi)
 
 release-checksums:
@@ -58,6 +83,7 @@ release-checksums:
 release-all:
 	@$(MAKE) release
 	@$(MAKE) release-sbom
+	@$(MAKE) release-model
 	@$(MAKE) release-checksums
 
 image:

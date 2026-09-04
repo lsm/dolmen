@@ -2,6 +2,7 @@ package embed
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -88,11 +89,25 @@ func (l *Local) Name() string { return "local" }
 
 func (l *Local) ModelName() string { return l.Model }
 
-// Identity pins tables to this provider and model: "local/<model>". A model
-// change (or a switch to/from the OpenAI provider) is a different identity,
-// so inserts and text searches are rejected until the table is re-embedded
-// via migrate — exactly as with the OpenAI provider.
-func (l *Local) Identity() string { return "local/" + l.Model }
+// Identity pins tables to this provider and model: "local/<model>" for
+// symmetric, escape-free references (byte-identical to the identities dolmen
+// has always produced, so existing tables keep matching), and
+// "local/v2:<escaped>#e5" whenever the identity carries the e5 prefix
+// contract's marker or the model reference needs escaping. The v2 namespace
+// cannot be reached by any legacy identity of a different model: Hub ids
+// allow no ":" or "#" before their "/", and absolute paths start with "/".
+// The marker versions the embedding space, so tables embedded before
+// prefixes were applied are rejected rather than silently mixing
+// representations. A model change (or a switch to/from the OpenAI provider)
+// is a different identity too, so inserts and text searches are rejected
+// until the table is re-embedded via migrate — exactly as with the OpenAI
+// provider.
+func (l *Local) Identity() string {
+	if identityLegacy(l.Model) {
+		return "local/" + l.Model
+	}
+	return "local/v2:" + escapeIdentityReference(l.Model) + identityMarker(l.Model)
+}
 
 // Cached reports whether the model weights are already on disk. A test stub
 // (Open != nil) is treated as cached so tests do not trigger the warning.
@@ -125,7 +140,27 @@ func (l *Local) Cached() bool {
 // model id, matching the org--name layout rembed uses for the cache.
 func modelCacheDirName(model string) string { return strings.ReplaceAll(model, "/", "--") }
 
+// Embed embeds stored-row text, prepending the e5 passage prefix for
+// e5-family models — rembed embeds exactly the text it is given.
 func (l *Local) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	_, passage := e5Prefixes(l.Model)
+	return l.embed(ctx, texts, passage)
+}
+
+// EmbedQuery embeds one search text, prepending the e5 query prefix.
+func (l *Local) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	query, _ := e5Prefixes(l.Model)
+	vecs, err := l.embed(ctx, []string{text}, query)
+	if err != nil {
+		return nil, err
+	}
+	if len(vecs) != 1 {
+		return nil, fmt.Errorf("local embedding model %s: %d vectors for one query text", l.Model, len(vecs))
+	}
+	return vecs[0], nil
+}
+
+func (l *Local) embed(ctx context.Context, texts []string, prefix string) ([][]float32, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -133,6 +168,7 @@ func (l *Local) Embed(ctx context.Context, texts []string) ([][]float32, error) 
 	if err != nil {
 		return nil, err
 	}
+	texts = prefixAll(prefix, texts)
 	vecs, err := eng.Embed(ctx, texts)
 	if err != nil {
 		return nil, fmt.Errorf("local embedding model %s: %w", l.Model, err)
@@ -157,6 +193,9 @@ func (l *Local) engine(ctx context.Context) (LocalEngine, error) {
 	open := l.Open
 	if open == nil {
 		ref := localRef(l.Model)
+		if cacheRef := maybeCachedRef(l.Model); cacheRef != "" {
+			ref = cacheRef
+		}
 		open = func() (LocalEngine, error) {
 			return rembed.Load(ref, rembed.WithInt8(), rembed.WithWorkers(localWorkers))
 		}
@@ -178,6 +217,71 @@ func localRef(model string) string {
 		return "hf:" + model
 	}
 	return model
+}
+
+// maybeCachedRef returns the absolute path to a pre-seeded model cache
+// directory when the model is a Hugging Face id and the cache under
+// $REMBED_CACHE already contains the model weights. Loading the cache
+// directory directly lets rembed run without any Hugging Face Hub
+// requests, so air-gapped installs that pre-seed the data dir's model
+// cache work even when huggingface.co is unreachable.
+func maybeCachedRef(model string) string {
+	if !localModelIDRe.MatchString(model) {
+		return ""
+	}
+	cache := os.Getenv("REMBED_CACHE")
+	if cache == "" {
+		return ""
+	}
+	dir := filepath.Join(cache, strings.ReplaceAll(model, "/", "--"))
+
+	// A single-file model has model.safetensors; sharded models have an
+	// index plus one or more shard files. The index alone is not enough: a
+	// partial cache must not be treated as fully seeded, because rembed would
+	// load it as a local directory and could not resume the missing shards.
+	single := filepath.Join(dir, "model.safetensors")
+	if fi, err := os.Stat(single); err == nil && !fi.IsDir() {
+		return dir
+	}
+
+	idx := filepath.Join(dir, "model.safetensors.index.json")
+	if fi, err := os.Stat(idx); err != nil || fi.IsDir() {
+		return ""
+	}
+	raw, err := os.ReadFile(idx)
+	if err != nil {
+		return ""
+	}
+	var sharded struct {
+		WeightMap map[string]string `json:"weight_map"`
+	}
+	if err := json.Unmarshal(raw, &sharded); err != nil {
+		return ""
+	}
+	seen := make(map[string]struct{})
+	for _, shard := range sharded.WeightMap {
+		if !validCacheShard(shard) {
+			return ""
+		}
+		if _, ok := seen[shard]; ok {
+			continue
+		}
+		seen[shard] = struct{}{}
+		if fi, err := os.Stat(filepath.Join(dir, shard)); err != nil || fi.IsDir() {
+			return ""
+		}
+	}
+	return dir
+}
+
+// validCacheShard reports whether name is a plain filename safe to look for in
+// a pre-seeded cache directory. It mirrors the shard-name validation in
+// cmd/pack-model.
+func validCacheShard(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	return !strings.ContainsAny(name, `/\`)
 }
 
 // validateLocalModel accepts a Hugging Face model id (org/name) or an

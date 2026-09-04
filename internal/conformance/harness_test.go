@@ -59,6 +59,15 @@ func (p *fakeProvider) Embed(ctx context.Context, texts []string) ([][]float32, 
 	return out, nil
 }
 
+// EmbedQuery tracks query-side calls like Embed tracks passage-side ones.
+func (p *fakeProvider) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	vecs, err := p.Embed(ctx, []string{text})
+	if err != nil {
+		return nil, err
+	}
+	return vecs[0], nil
+}
+
 func (p *fakeProvider) callCount() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
