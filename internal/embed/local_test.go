@@ -166,10 +166,13 @@ func TestLocalCached(t *testing.T) {
 	if err := os.MkdirAll(shardDir, 0o700); err != nil {
 		t.Fatalf("mkdir shard dir: %v", err)
 	}
-	for _, f := range []string{"config.json", "tokenizer_config.json", "modules.json", "tokenizer.json"} {
+	for _, f := range []string{"config.json", "tokenizer_config.json", "tokenizer.json"} {
 		if err := os.WriteFile(filepath.Join(shardDir, f), []byte(`{}`), 0o600); err != nil {
 			t.Fatalf("write %s: %v", f, err)
 		}
+	}
+	if err := os.WriteFile(filepath.Join(shardDir, "modules.json"), []byte(`[]`), 0o600); err != nil {
+		t.Fatalf("write modules: %v", err)
 	}
 	idx := []byte(`{"weight_map": {"layer.0": "model-00001-of-00001.safetensors"}}`)
 	if err := os.WriteFile(filepath.Join(shardDir, "model.safetensors.index.json"), idx, 0o600); err != nil {
@@ -387,6 +390,58 @@ func TestSeededCacheDir(t *testing.T) {
 	// Absolute model directories are not cache-looked-up.
 	if got := seededCacheDir(cache, "/opt/models/minilm"); got != "" {
 		t.Fatalf("seededCacheDir for absolute path: got %q, want empty", got)
+	}
+
+	// A manifest naming a module directory requires that module's files: a
+	// cache missing 1_Pooling/config.json must fall back to the Hub.
+	manifest := filepath.Join(cache, "org--manifest")
+	if err := os.MkdirAll(manifest, 0o755); err != nil {
+		t.Fatalf("mkdir manifest: %v", err)
+	}
+	seedCache(t, manifest)
+	modules := []byte(`[{"path": "", "type": "sentence_transformers.models.Transformer"}, {"path": "1_Pooling", "type": "sentence_transformers.models.Pooling"}]`)
+	if err := os.WriteFile(filepath.Join(manifest, "modules.json"), modules, 0o644); err != nil {
+		t.Fatalf("write modules: %v", err)
+	}
+	if got := seededCacheDir(cache, "org/manifest"); got != "" {
+		t.Fatalf("seededCacheDir without 1_Pooling/config.json: got %q, want empty", got)
+	}
+	if err := os.MkdirAll(filepath.Join(manifest, "1_Pooling"), 0o755); err != nil {
+		t.Fatalf("mkdir 1_Pooling: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(manifest, "1_Pooling", "config.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("write pooling config: %v", err)
+	}
+	if got := seededCacheDir(cache, "org/manifest"); got != manifest {
+		t.Fatalf("seededCacheDir with complete modules: got %q, want %q", got, manifest)
+	}
+
+	// A Dense projection head (Gemma's 2_Dense) also needs its own weights.
+	gemma := filepath.Join(cache, "org--gemma")
+	if err := os.MkdirAll(gemma, 0o755); err != nil {
+		t.Fatalf("mkdir gemma: %v", err)
+	}
+	seedCache(t, gemma)
+	gemmaModules := []byte(`[{"path": "1_Pooling", "type": "sentence_transformers.models.Pooling"}, {"path": "2_Dense", "type": "sentence_transformers.models.Dense"}]`)
+	if err := os.WriteFile(filepath.Join(gemma, "modules.json"), gemmaModules, 0o644); err != nil {
+		t.Fatalf("write gemma modules: %v", err)
+	}
+	for _, sub := range []string{"1_Pooling", "2_Dense"} {
+		if err := os.MkdirAll(filepath.Join(gemma, sub), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", sub, err)
+		}
+		if err := os.WriteFile(filepath.Join(gemma, sub, "config.json"), []byte(`{}`), 0o644); err != nil {
+			t.Fatalf("write %s config: %v", sub, err)
+		}
+	}
+	if got := seededCacheDir(cache, "org/gemma"); got != "" {
+		t.Fatalf("seededCacheDir without 2_Dense weights: got %q, want empty", got)
+	}
+	if err := os.WriteFile(filepath.Join(gemma, "2_Dense", "model.safetensors"), []byte("dense"), 0o644); err != nil {
+		t.Fatalf("write dense weights: %v", err)
+	}
+	if got := seededCacheDir(cache, "org/gemma"); got != gemma {
+		t.Fatalf("seededCacheDir with dense weights: got %q, want %q", got, gemma)
 	}
 }
 

@@ -207,6 +207,14 @@ func seededCacheDir(cacheRoot, model string) string {
 		return ""
 	}
 
+	// modules.json is the artifact manifest of a sentence-transformers cache:
+	// every module directory it names (pooling configs, Gemma dense heads)
+	// must carry its files, or the directory cannot load and must not bypass
+	// the Hub.
+	if !moduleArtifactsComplete(dir) {
+		return ""
+	}
+
 	// A single-file model has model.safetensors; sharded models have an
 	// index plus one or more shard files. The index alone is not enough.
 	single := filepath.Join(dir, "model.safetensors")
@@ -252,6 +260,48 @@ func validCacheShard(name string) bool {
 		return false
 	}
 	return !strings.ContainsAny(name, `/\`)
+}
+
+// moduleArtifactsComplete reports whether every module directory named by a
+// cache's modules.json carries the files rembed's directory load reads: a
+// config.json for each module (e.g. 1_Pooling), plus the module's own
+// model.safetensors for Dense projection heads (e.g. Gemma's 2_Dense and
+// 3_Dense).
+func moduleArtifactsComplete(dir string) bool {
+	raw, err := os.ReadFile(filepath.Join(dir, "modules.json"))
+	if err != nil {
+		return false
+	}
+	var modules []struct {
+		Path string `json:"path"`
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &modules); err != nil {
+		return false
+	}
+	seen := make(map[string]struct{})
+	for _, m := range modules {
+		// Entries with an empty path (the Transformer module) keep their
+		// files at the cache root, which the caller already checked.
+		if m.Path == "" || !validCacheShard(m.Path) {
+			continue
+		}
+		if _, ok := seen[m.Path]; ok {
+			continue
+		}
+		seen[m.Path] = struct{}{}
+
+		sub := filepath.Join(dir, m.Path)
+		if fi, err := os.Stat(filepath.Join(sub, "config.json")); err != nil || fi.IsDir() {
+			return false
+		}
+		if strings.HasSuffix(m.Type, ".Dense") {
+			if fi, err := os.Stat(filepath.Join(sub, "model.safetensors")); err != nil || fi.IsDir() {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // validateLocalModel accepts a Hugging Face model id (org/name) or an
