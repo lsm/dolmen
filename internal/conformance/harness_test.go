@@ -90,6 +90,7 @@ type harness struct {
 	srv *httptest.Server
 	st  *store.Store
 	emb *fakeProvider
+	auth *api.Auth
 
 	httpURL string // .../v1
 	mcpURL  string // .../mcp
@@ -107,6 +108,13 @@ func newHarnessAt(t *testing.T, dir string, emb *fakeProvider) *harness {
 	return h
 }
 
+func newHarnessWithAuth(t *testing.T, auth *api.Auth) *harness {
+	t.Helper()
+	h := &harness{t: t, dir: t.TempDir(), emb: &fakeProvider{}, auth: auth}
+	h.start()
+	return h
+}
+
 func (h *harness) start() {
 	h.t.Helper()
 	st, err := store.Open(h.dir)
@@ -114,7 +122,7 @@ func (h *harness) start() {
 		h.t.Fatalf("open store: %v", err)
 	}
 	h.st = st
-	apiSrv := api.New(st, embed.Provider(h.emb))
+	apiSrv := api.New(st, embed.Provider(h.emb), api.WithAuth(h.auth))
 	mcpSrv := mcp.New(apiSrv, nil)
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcpSrv)
@@ -152,11 +160,25 @@ func (h *harness) close() {
 // httpCall POSTs an operation to /v1/{op} and decodes the JSON envelope.
 func (h *harness) httpCall(op string, body any) (int, map[string]any) {
 	h.t.Helper()
+	return h.httpCallWithHeaders(op, body, nil)
+}
+
+// httpCallWithHeaders is httpCall with extra request headers.
+func (h *harness) httpCallWithHeaders(op string, body any, headers map[string]string) (int, map[string]any) {
+	h.t.Helper()
 	raw, err := json.Marshal(body)
 	if err != nil {
 		h.t.Fatalf("marshal %s body: %v", op, err)
 	}
-	res, err := http.Post(h.httpURL+"/"+op, "application/json", bytes.NewReader(raw))
+	req, err := http.NewRequest(http.MethodPost, h.httpURL+"/"+op, bytes.NewReader(raw))
+	if err != nil {
+		h.t.Fatalf("new request /v1/%s: %v", op, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		h.t.Fatalf("post /v1/%s: %v", op, err)
 	}
@@ -232,12 +254,18 @@ var mcpCallID int
 // mcpCall invokes a tool over MCP tools/call.
 func (h *harness) mcpCall(op string, args any) mcpResult {
 	h.t.Helper()
-	return h.rpc(map[string]any{
+	return h.mcpCallWithHeaders(op, args, nil)
+}
+
+// mcpCallWithHeaders is mcpCall with extra HTTP headers on the JSON-RPC request.
+func (h *harness) mcpCallWithHeaders(op string, args any, headers map[string]string) mcpResult {
+	h.t.Helper()
+	return h.rpcWithHeaders(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      mcpNextID(),
 		"method":  "tools/call",
 		"params":  map[string]any{"name": op, "arguments": args},
-	})
+	}, headers)
 }
 
 func mcpNextID() int {
@@ -248,11 +276,25 @@ func mcpNextID() int {
 // rpc sends one JSON-RPC message to /mcp.
 func (h *harness) rpc(msg any) mcpResult {
 	h.t.Helper()
+	return h.rpcWithHeaders(msg, nil)
+}
+
+// rpcWithHeaders is rpc with extra HTTP headers.
+func (h *harness) rpcWithHeaders(msg any, headers map[string]string) mcpResult {
+	h.t.Helper()
 	raw, err := json.Marshal(msg)
 	if err != nil {
 		h.t.Fatalf("marshal rpc: %v", err)
 	}
-	res, err := http.Post(h.mcpURL, "application/json", bytes.NewReader(raw))
+	req, err := http.NewRequest(http.MethodPost, h.mcpURL, bytes.NewReader(raw))
+	if err != nil {
+		h.t.Fatalf("new request /mcp: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		h.t.Fatalf("post /mcp: %v", err)
 	}

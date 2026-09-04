@@ -57,6 +57,7 @@ var errorCodeEnum = []string{
 	string(ErrCodeForbidden),
 	string(ErrCodeEmbedderUnavailable),
 	string(ErrCodeInternal),
+	string(ErrCodeUnauthorized),
 }
 
 func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
@@ -170,6 +171,7 @@ func opResponses(dataSchema map[string]any) map[string]any {
 	return map[string]any{
 		"200": responseOK(dataSchema),
 		"400": errorResponse("Bad request"),
+		"401": errorResponse("Unauthorized"),
 		"403": errorResponse("Origin not allowed"),
 		"404": errorResponse("Not found"),
 		"405": errorResponse("Method not allowed"),

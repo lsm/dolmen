@@ -39,6 +39,8 @@ const (
 	ErrCodeEmbedderUnavailable ErrorCode = "embedder_unavailable"
 	// ErrCodeInternal means an unexpected server-side problem occurred.
 	ErrCodeInternal ErrorCode = "internal_error"
+	// ErrCodeUnauthorized means the request could not be authenticated.
+	ErrCodeUnauthorized ErrorCode = "unauthorized"
 )
 
 // Error is an API-facing error. It carries a stable code, an HTTP status, and a
@@ -127,6 +129,10 @@ func internal(err error) *Error {
 
 func forbidden(format string, args ...any) *Error {
 	return &Error{Status: http.StatusForbidden, Code: ErrCodeForbidden, Message: fmt.Sprintf(format, args...)}
+}
+
+func unauthorized(format string, args ...any) *Error {
+	return &Error{Status: http.StatusUnauthorized, Code: ErrCodeUnauthorized, Message: fmt.Sprintf(format, args...)}
 }
 
 var (

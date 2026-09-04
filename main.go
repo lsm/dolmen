@@ -76,7 +76,7 @@ func run() error {
 		}
 	}
 
-	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix))
+	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithAuth(cfg.Auth))
 	mcpSrv := mcp.New(apiSrv, cfg.AllowedOrigins, mcp.WithBaseURL(cfg.BaseURL), mcp.WithNamespaceHint(cfg.SkillNamespaceHint), mcp.WithPrefix(cfg.Prefix))
 
 	sub := http.NewServeMux()
@@ -97,7 +97,11 @@ func run() error {
 	go func() {
 		slog.Info("dolmen listening", "addr", cfg.Addr, "data", cfg.DataDir, "embed", emb.Name(), "version", version.Version)
 		slog.Info("endpoints", "mcp", "http://"+cfg.Addr+cfg.Prefix+"/mcp", "api", "http://"+cfg.Addr+cfg.Prefix+"/v1/{op}", "health", "http://"+cfg.Addr+cfg.Prefix+"/healthz", "version", "http://"+cfg.Addr+cfg.Prefix+"/version", "skills", "http://"+cfg.Addr+cfg.Prefix+"/skills")
-		slog.Warn("no authentication: keep this bound to a private interface")
+		if cfg.Auth == nil || !cfg.Auth.On {
+			slog.Warn("no authentication: keep this bound to a private interface")
+		} else {
+			slog.Info("authentication enabled", "trusted_proxies", len(cfg.Auth.TrustedProxies), "admin_key_set", cfg.Auth.AdminKey != "")
+		}
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
@@ -130,6 +134,7 @@ type config struct {
 	BaseURL            string
 	Prefix             string
 	SkillNamespaceHint string
+	Auth               *api.Auth
 }
 
 type embedConfig struct {
@@ -152,6 +157,8 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	showVersion := fs.Bool("version", false, "print version and exit")
 	publicBaseURL := fs.String("base-url", envOr("DOLMEN_BASE_URL", "", getenv), "public base URL for skills and MCP links (default: use request Host)")
 	prefix := fs.String("prefix", envOr("DOLMEN_PREFIX", "", getenv), "mount all endpoints under this URL prefix (pass-through proxy)")
+	authMode := fs.String("auth", envOr("DOLMEN_AUTH", api.AuthModeOff, getenv), "authentication mode: off or on")
+	trustedProxies := fs.String("trusted-proxies", envOr("DOLMEN_TRUSTED_PROXIES", "", getenv), "comma-separated trusted proxy CIDRs (required when -auth=on)")
 
 	fs.Usage = func() {
 		fmt.Fprint(out, "Usage: dolmen [flags]\n\nFlags:\n")
@@ -195,6 +202,14 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		return nil, &printedError{err}
 	}
 
+	adminKey := getenv("DOLMEN_ADMIN_KEY")
+	auth, err := api.NewAuth(*authMode, *trustedProxies, "", "", adminKey)
+	if err != nil {
+		fmt.Fprintf(out, "config: %v\n", err)
+		fs.Usage()
+		return nil, &printedError{err}
+	}
+
 	skillNamespaceHint := envOr("DOLMEN_SKILL_NAMESPACE_HINT", skill.DefaultNamespaceHint, getenv)
 	prefixValue := skill.NormalizePrefix(*prefix)
 
@@ -214,6 +229,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		BaseURL:            *publicBaseURL,
 		Prefix:             prefixValue,
 		SkillNamespaceHint: skillNamespaceHint,
+		Auth:               auth,
 		Embed: embedConfig{
 			Provider: provider,
 			BaseURL:  baseURL,
@@ -238,6 +254,10 @@ func printEnvHelp(out io.Writer) {
 		{"DOLMEN_ALLOWED_ORIGINS", "comma-separated allowed HTTP origins for CORS"},
 		{"DOLMEN_BASE_URL", "public base URL for skills and MCP links (default: use request Host)"},
 		{"DOLMEN_SKILL_NAMESPACE_HINT", "hint text rendered into skill markdown"},
+		{"", ""},
+		{"DOLMEN_AUTH", "authentication mode: off (default) or on"},
+		{"DOLMEN_TRUSTED_PROXIES", "comma-separated trusted proxy CIDRs (required when DOLMEN_AUTH=on)"},
+		{"DOLMEN_ADMIN_KEY", "bootstrap admin key (base64url, env-only)"},
 		{"", ""},
 		{"DOLMEN_EMBED_PROVIDER", "embedding provider: none, local (default), or openai"},
 		{"DOLMEN_EMBED_MODEL", "model name or absolute model-directory path"},
