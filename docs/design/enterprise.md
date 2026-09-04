@@ -370,12 +370,19 @@ type Engine interface {
     ListMigrations(ctx context.Context, ns, table string) ([]Migration, error)
 
     // Row CRUD — scope filters which existing rows may be matched, read, or counted;
-    // on Insert it scopes the idempotency replay lookup (foreign-replay → conflict, §4.3)
-    Insert(ctx context.Context, ns, table string, records []map[string]any, opts InsertOpts, scope *RowScope) (InsertResult, error)
-    UpsertByKey(ctx context.Context, ns, table string, on []string, records []map[string]any, scope *RowScope) (InsertResult, error)
-    Upsert(ctx context.Context, ns, table string, filter string, args []any, record map[string]any, scope *RowScope) (InsertResult, error)
+    // on Insert it scopes the idempotency replay lookup (foreign-replay → conflict, §4.3).
+    // WriteOpts carries the owner to stamp on EVERY row-insert path — including the
+    // upsert insert branches, including table-wide callers whose scope is nil (§4.2) —
+    // and insert's idempotency key. The stamp owner is independent of the scope:
+    // a caller may be unscoped yet still be the writer.
+    Insert(ctx context.Context, ns, table string, records []map[string]any, opts WriteOpts, scope *RowScope) (InsertResult, error)
+    UpsertByKey(ctx context.Context, ns, table string, on []string, records []map[string]any, opts WriteOpts, scope *RowScope) (InsertResult, error)
+    Upsert(ctx context.Context, ns, table string, filter string, args []any, record map[string]any, opts WriteOpts, scope *RowScope) (InsertResult, error)
     Update(ctx context.Context, ns, table string, filter string, args []any, set map[string]any, scope *RowScope) (int64, error)
-    Delete(ctx context.Context, ns, table string, filter string, args []any, scope *RowScope) (int64, error)
+    // DeleteOpts carries the v0.2.0 safety guard (dry_run, limit, confirm) and the
+    // engine enforces the threshold inside the delete transaction — an API-layer
+    // preflight would race. DeleteResult keeps the contract's matched/deleted pair.
+    Delete(ctx context.Context, ns, table string, filter string, args []any, opts DeleteOpts, scope *RowScope) (DeleteResult, error)
 
     // Filtered reads — Query takes NO scope: the API layer gates raw SQL by table-wide
     // read (§4.4), which is precisely why no scope parameter exists here.
@@ -402,8 +409,9 @@ type RowScope struct {
 ```
 
 The engine knows nothing of principals, grants, or verbs; it receives an opaque owner string.
-`InsertOpts` carries the owner to stamp (absent under `auth: off`) and the idempotency key. The
-existing `store.Embedder` injection for vectorize paths is unchanged.
+`WriteOpts` carries the stamp owner (absent under `auth: off`) and the idempotency key;
+`DeleteOpts`/`DeleteResult` carry the delete guard and its `matched`/`deleted` pair. The existing
+`store.Embedder` injection for vectorize paths is unchanged.
 
 ## 7. Search as contract
 
