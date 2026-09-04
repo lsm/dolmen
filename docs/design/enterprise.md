@@ -284,7 +284,11 @@ and reserving it unconditionally would break tables and requests that v0.2.0 acc
   the server stamp every `owner` itself.* The rejection is generic ("the table has rows") for
   callers without table-wide read; the row count is disclosed only to table-wide readers (§4.3's
   disclosure rule — it is precisely the aggregate `describe_table` redacts to 0).
-  Disabling (`value: false`) is allowed: the column and its values remain, filtering stops.
+  Disabling (`value: false`) is allowed — the column and its values remain, filtering stops — but
+  it **additionally requires table-wide `read` (or `admin`)**: removing the filter widens every
+  data-verb holder's visibility from own rows to all rows (§4.3), so leaving it on `schema` alone
+  would let a `schema`+`update` caller unscope themselves and then mutate every owner's rows — a
+  direct escalation.
 - NULL-owner rows under `auth: on`: invisible to own-filtered callers; visible to table-wide
   readers (§4.3) — consistent with "no filter" being the stronger grant.
 
@@ -491,7 +495,12 @@ type Engine interface {
     // public migrate request accepts it and apply rejects on mismatch — the
     // plan→apply binding survives across requests, so a table dropped and
     // recreated between dry run and apply can no longer accept a stale
-    // destructive plan. `expected_version` alone remains the v0.2.0 path.
+    // destructive plan. `expected_version` alone remains the auth-off
+    // compatibility path: under `auth: on`, an apply carrying a precondition
+    // MUST carry `expected_incarnation` — a version-only precondition is
+    // `invalid_request`, because version 1 cannot identify a same-named
+    // predecessor and the version-only path would re-open exactly the
+    // destructive race the token closes.
     PlanMigration(ctx context.Context, ns, table string, changes []schema.Change, emb Embedder, expected Incarnation, scope *RowScope) (*MigrationPlan, error)
     Migrate(ctx context.Context, ns, table string, changes []schema.Change, emb Embedder, expected Incarnation) (*schema.TableSchema, error)
     ListMigrations(ctx context.Context, ns, table string) ([]Migration, error)
