@@ -68,7 +68,7 @@ func identityMarker(model string) string {
 	return ""
 }
 
-// identityModel renders the model reference for an embedding identity.
+// identityModel renders the model reference for a Local-provider identity.
 // References without "%" or "#" are emitted verbatim — byte-identical to the
 // identities dolmen has always produced, so existing tables keep matching.
 // A reference containing either character is emitted in a versioned escaped
@@ -78,13 +78,20 @@ func identityMarker(model string) string {
 // "v2:" tag cannot occur in any legacy — unescaped — identity of a different
 // model: Hub ids allow no ":" before their "/", and absolute paths start
 // with "/", so an identity recorded by an earlier build can never equal a
-// v2-tagged one (OpenAI-side model names are endpoint-defined and not
-// validated; the tag is best-effort there).
+// v2-tagged one. OpenAI identities version their provider tag instead — see
+// OpenAI.Identity.
 func identityModel(model string) string {
 	if !strings.ContainsAny(model, "%#") {
 		return model
 	}
-	return "v2:" + strings.NewReplacer("%", "%25", "#", "%23").Replace(model)
+	return "v2:" + escapeIdentityReference(model)
+}
+
+// escapeIdentityReference percent-escapes "%" and "#" — the marker's lead
+// byte — so an escaped model reference can never contain the bytes dolmen
+// appends after it.
+func escapeIdentityReference(model string) string {
+	return strings.NewReplacer("%", "%25", "#", "%23").Replace(model)
 }
 
 // prefixAll returns texts with prefix prepended to each; the empty prefix
@@ -138,15 +145,32 @@ func (o *OpenAI) ModelName() string { return o.Model }
 // expose secrets. A base URL that does not parse keeps its raw (trailing-slash
 // trimmed) form — it cannot complete an HTTP request either, so it carries no
 // working credentials to leak.
+// Identity pins tables to this endpoint and model. Model names are
+// endpoint-defined and unrestricted, so a model containing "%" or "#" is not
+// tagged inside the model component (any in-model tag could be mimicked by
+// some other endpoint's legacy alias); instead the provider tag itself is
+// versioned — "openai/v2|" — and legacy identities always begin "openai|",
+// so no model name can bridge the two formats. The base URL is stripped
+// of HTTP userinfo (user:pass@): credentials authenticate requests to the
+// endpoint, they do not name the embedding space, and the identity flows into
+// describe_server responses and stored embed_space values, which must never
+// expose secrets. A base URL that does not parse keeps its raw (trailing-slash
+// trimmed) form — it cannot complete an HTTP request either, so it carries no
+// working credentials to leak.
 func (o *OpenAI) Identity() string {
-	model := identityModel(o.Model) + identityMarker(o.Model)
+	provider, model := o.Name(), o.Model
+	if strings.ContainsAny(model, "%#") {
+		provider += "/v2"
+		model = escapeIdentityReference(model)
+	}
+	model += identityMarker(o.Model)
 	trimmed := strings.TrimRight(o.BaseURL, "/")
 	u, err := url.Parse(trimmed)
 	if err != nil {
-		return o.Name() + "|" + trimmed + "|" + model
+		return provider + "|" + trimmed + "|" + model
 	}
 	u.User = nil
-	return o.Name() + "|" + u.String() + "|" + model
+	return provider + "|" + u.String() + "|" + model
 }
 
 // Embed embeds stored-row text, prepending the e5 passage prefix for

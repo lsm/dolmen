@@ -96,6 +96,18 @@ func TestIdentityNoModelCollision(t *testing.T) {
 	if got := (&Local{Model: "/models/foo#bar"}).Identity(); got == legacy {
 		t.Fatalf("escaped /models/foo#bar must not match the legacy identity of /models/foo%%23bar: %q", got)
 	}
+	// OpenAI model names are endpoint-defined, so the version tag lives on
+	// the provider, outside the model-controlled namespace: legacy identities
+	// always begin "openai|", versioned ones "openai/v2|". A legacy alias
+	// literally named v2:foo%23bar must not match the versioned identity of
+	// the distinct alias foo#bar.
+	legacyOpenAI := "openai|http://x|v2:foo%23bar"
+	if got := (&OpenAI{BaseURL: "http://x", Model: "foo#bar"}).Identity(); got != "openai/v2|http://x|foo%23bar" || got == legacyOpenAI {
+		t.Fatalf("OpenAI versioned identity: got %q, want openai/v2|http://x|foo%%23bar and no legacy match", got)
+	}
+	if got := (&OpenAI{BaseURL: "http://x", Model: "v2:foo%23bar"}).Identity(); got == legacyOpenAI {
+		t.Fatalf("a %%-bearing alias must move to the versioned provider tag, got %q", got)
+	}
 }
 
 // recordingEngine captures the text it is asked to embed, so tests can
