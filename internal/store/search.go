@@ -60,16 +60,33 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 	stmt := fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? ORDER BY rank, rowid LIMIT ? OFFSET ?`,
 		q(ftsTable(table)), ftsTable(table))
 	qargs := []any{query, limit + 1, offset}
+	// classify attributes a failure of the combined query (at issue or during
+	// iteration): without a filter it is the store's own FTS-query error; with
+	// one, both user expressions have been validated by the probes below, so
+	// what remains is the filter evaluating against real rows at runtime
+	// (e.g. json_extract over non-JSON stored text) — a filter failure.
+	classify := func(err error) error {
+		if filter != "" {
+			return NewFilterError(filter, err)
+		}
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
 	if filter != "" {
-		// Validate the filter on its own before running the combined query:
-		// LIMIT 0 compiles it (syntax, column references, bind arity) without
-		// evaluating rows, so failures are classified against the filter while
-		// any later failure of the combined query belongs to the MATCH
-		// expression and keeps the FTS-query error wording.
+		// Validate each user expression on its own so failures are attributed
+		// to the expression that caused them: LIMIT 0 compiles the filter
+		// (syntax, column references, bind arity) without evaluating rows, and
+		// a LIMIT 1 candidate query parses the MATCH expression with at most
+		// one inverted-index probe.
 		probe, err := tx.QueryContext(ctx,
 			fmt.Sprintf(`SELECT 1 FROM %s WHERE %s LIMIT 0`, q(table), filter), args...)
 		if err != nil {
 			return nil, false, NewFilterError(filter, err)
+		}
+		probe.Close()
+		probe, err = tx.QueryContext(ctx,
+			fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? LIMIT 1`, q(ftsTable(table)), ftsTable(table)), query)
+		if err != nil {
+			return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 		}
 		probe.Close()
 		stmt = fulltextFilterStmt(table, filter)
@@ -77,7 +94,7 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 	}
 	rows, err := tx.QueryContext(ctx, stmt, qargs...)
 	if err != nil {
-		return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
+		return nil, false, classify(err)
 	}
 	defer rows.Close()
 	var ids []int64
@@ -89,7 +106,7 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
+		return nil, false, classify(err)
 	}
 	// The (limit+1)th id is only a look-ahead for truncated — never fetch it,
 	// or an invalid value in that row would fail the whole page instead of

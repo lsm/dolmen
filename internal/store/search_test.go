@@ -336,6 +336,16 @@ func TestSearchFulltextFilterErrorClassification(t *testing.T) {
 	if !strings.Contains(err.Error(), "the filter must be") {
 		t.Fatalf("malformed filter must carry the filter wording, got %v", err)
 	}
+
+	// A filter that compiles but fails while evaluating a real row is still a
+	// filter failure, not a MATCH failure.
+	_, _, err = st.SearchFulltext(ctx, "test", "notes", "note", 0, 10, false, `json_extract(title, '$.x') = 1`, nil)
+	if err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected runtime filter failure to classify as invalid request, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "the filter must be") {
+		t.Fatalf("runtime filter failure must carry the filter wording, got %v", err)
+	}
 }
 
 // The filtered query must check the filter with one primary-key lookup per
