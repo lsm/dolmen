@@ -217,7 +217,9 @@ func fetch(modelID, revision, name, dir string) error {
 	client := &http.Client{
 		Timeout: 15 * time.Minute,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if r := via[len(via)-1].Response; r != nil {
+			// The response that triggered the redirect is req.Response;
+			// via's requests have no Response until after the hop.
+			if r := req.Response; r != nil {
 				if etag := strings.Trim(r.Header.Get("X-Linked-Etag"), `W/"`); len(etag) == 64 {
 					wantSHA = etag
 				}
@@ -359,10 +361,13 @@ func writeTar(modelDir, modelID, outPath string) error {
 
 	gw := gzip.NewWriter(f)
 	defer gw.Close()
-	 tw := tar.NewWriter(gw)
+	tw := tar.NewWriter(gw)
 	defer tw.Close()
 
 	prefix := strings.ReplaceAll(modelID, "/", "--")
+	// Normalize tar metadata so the same pinned revision produces the same
+	// bytes and checksum on every build regardless of the download time.
+	archiveEpoch := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	return filepath.Walk(modelDir, func(file string, fi os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -376,10 +381,11 @@ func writeTar(modelDir, modelID, outPath string) error {
 			return err
 		}
 		hdr := &tar.Header{
-			Name:    path.Join(prefix, filepath.ToSlash(rel)),
-			Size:    fi.Size(),
-			Mode:    int64(fi.Mode().Perm()),
-			ModTime: fi.ModTime(),
+			Name:     path.Join(prefix, filepath.ToSlash(rel)),
+			Size:     fi.Size(),
+			Mode:     0o644,
+			ModTime:  archiveEpoch,
+			Typeflag: tar.TypeReg,
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
 			return err

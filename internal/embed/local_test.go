@@ -220,6 +220,18 @@ func TestMaybeCachedRef(t *testing.T) {
 		t.Fatalf("maybeCachedRef: got %q, want %q", got, seeded)
 	}
 
+	// A sharded pre-seeded cache is detected when the index exists.
+	sharded := filepath.Join(cache, "org--sharded")
+	if err := os.MkdirAll(sharded, 0o755); err != nil {
+		t.Fatalf("mkdir sharded: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sharded, "model.safetensors.index.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	if got := maybeCachedRef("org/sharded"); got != sharded {
+		t.Fatalf("maybeCachedRef sharded: got %q, want %q", got, sharded)
+	}
+
 	// A missing cache means falling back to the Hub.
 	if got := maybeCachedRef("org/not-seeded"); got != "" {
 		t.Fatalf("maybeCachedRef for missing cache: got %q, want empty", got)

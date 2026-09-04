@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
@@ -222,8 +223,8 @@ func TestValidShardName(t *testing.T) {
 }
 
 func TestFetchChecksXLinkedEtag(t *testing.T) {
-	want := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	data := []byte("hello weights")
+	want := fmt.Sprintf("%x", sha256.Sum256(data))
 
 	var base string
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

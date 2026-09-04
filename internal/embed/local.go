@@ -141,8 +141,13 @@ func maybeCachedRef(model string) string {
 		return ""
 	}
 	dir := filepath.Join(cache, strings.ReplaceAll(model, "/", "--"))
-	if fi, err := os.Stat(filepath.Join(dir, "model.safetensors")); err == nil && !fi.IsDir() {
-		return dir
+	// A single-file model has model.safetensors; sharded models have an
+	// index and one or more shard files instead. Either is enough evidence
+	// that the cache is pre-seeded.
+	for _, marker := range []string{"model.safetensors", "model.safetensors.index.json"} {
+		if fi, err := os.Stat(filepath.Join(dir, marker)); err == nil && !fi.IsDir() {
+			return dir
+		}
 	}
 	return ""
 }
