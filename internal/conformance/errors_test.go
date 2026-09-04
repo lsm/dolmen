@@ -59,10 +59,14 @@ func TestGoldenErrorContract(t *testing.T) {
 			"namespace": "errc", "table": "t", "idempotency_key": 42,
 			"records": []map[string]any{{"title": "x"}},
 		}, 400, "invalid_request", `idempotency_key must be a string`},
-		{"missing required field", "create_table", map[string]any{
+		{"required-field table setup", "create_table", map[string]any{
 			"namespace": "errc", "table": "req",
 			"fields": []map[string]any{{"name": "a", "type": "string", "required": true}},
-		}, 200, "", ""}, // created; the insert below exercises the rejection
+		}, 200, "", ""}, // created; the next case exercises the rejection
+		{"insert missing required field", "insert", map[string]any{
+			"namespace": "errc", "table": "req",
+			"records": []map[string]any{{}},
+		}, 400, "invalid_request", `field "a" is required`},
 		{"query vector dim mismatch", "search_vector", map[string]any{
 			"namespace": "errc", "table": "t", "column": "vec", "vector": []any{1, 0, 0},
 		}, 400, "invalid_request", `query vector has 3 entries, column vec expects dim 4`},

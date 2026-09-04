@@ -3,6 +3,8 @@ package conformance
 import (
 	"net/http"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/api"
 )
 
 // parityScript is one deterministic tour through every operation, in a
@@ -33,6 +35,7 @@ func parityScript() []parityStep {
 	return []parityStep{
 		{"create_namespace", "create_namespace", map[string]any{"namespace": ns}, false},
 		{"create_table", "create_table", map[string]any{"namespace": ns, "table": "docs", "fields": fields}, false},
+		{"list_tables", "list_tables", map[string]any{"namespace": ns}, false},
 		{"insert", "insert", map[string]any{
 			"namespace": ns, "table": "docs",
 			"records": []map[string]any{
@@ -110,6 +113,19 @@ func TestTransportParityAllOperations(t *testing.T) {
 	mcpH := newHarness(t)
 
 	steps := parityScript()
+
+	// The script must exercise every registered operation — a new op added
+	// to the registry without a parity step fails here instead of drifting.
+	covered := map[string]bool{}
+	for _, step := range steps {
+		covered[step.op] = true
+	}
+	for _, name := range api.OpNames() {
+		if !covered[name] {
+			t.Errorf("parity script never exercises operation %q", name)
+		}
+	}
+
 	httpData := make([]map[string]any, len(steps))
 	mcpData := make([]map[string]any, len(steps))
 

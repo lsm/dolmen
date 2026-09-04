@@ -112,6 +112,12 @@ func (h *harness) start() {
 	h.srv = httptest.NewServer(api.OriginGuard(mux, nil))
 	h.httpURL = h.srv.URL + "/v1"
 	h.mcpURL = h.srv.URL + "/mcp"
+	// Registered after the t.TempDir cleanup (LIFO order), so the server,
+	// store handles, and SQLite files are closed before the directory is
+	// removed — otherwise TempDir removal can fail on open files (Windows).
+	// After reopen() this closes the already-closed earlier incarnation too;
+	// both closes are safe to repeat.
+	h.t.Cleanup(h.close)
 }
 
 // reopen simulates a server restart on the same data directory: the store is
