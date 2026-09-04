@@ -4,6 +4,8 @@ import (
 	"net/http"
 
 	"github.com/lsm/dolmen/internal/schema"
+	"github.com/lsm/dolmen/internal/version"
+	"github.com/lsm/dolmen/skill"
 )
 
 const (
@@ -53,6 +55,7 @@ var errorCodeEnum = []string{
 	string(ErrCodeQuery),
 	string(ErrCodeConflict),
 	string(ErrCodeForbidden),
+	string(ErrCodeEmbedderUnavailable),
 	string(ErrCodeInternal),
 }
 
@@ -62,12 +65,14 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, &Error{Status: http.StatusMethodNotAllowed, Code: ErrCodeInvalid, Message: "use GET"})
 		return
 	}
-	writeJSON(w, http.StatusOK, s.OpenAPIDoc())
+	ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version, s.prefix)
+	writeJSON(w, http.StatusOK, s.OpenAPIDoc(ctx.BaseURL))
 }
 
 // OpenAPIDoc returns an OpenAPI 3.1.0 description of the /v1 HTTP API,
 // generated from the live Ops registry so it stays in sync with the handlers.
-func (s *Server) OpenAPIDoc() map[string]any {
+// The supplied baseURL is used as the OpenAPI server URL; pass "" for "/".
+func (s *Server) OpenAPIDoc(baseURL string) map[string]any {
 	paths := map[string]any{}
 	for _, name := range OpNames() {
 		def := Ops[name]
@@ -85,6 +90,10 @@ func (s *Server) OpenAPIDoc() map[string]any {
 		}
 	}
 
+	serverURL := "/"
+	if baseURL != "" {
+		serverURL = baseURL
+	}
 	return map[string]any{
 		"openapi": openAPIVersion,
 		"info": map[string]any{
@@ -93,7 +102,7 @@ func (s *Server) OpenAPIDoc() map[string]any {
 			"description": "Structured tables, full-text search, and vector search over a single-binary data layer.",
 		},
 		"servers": []map[string]any{
-			map[string]any{"url": "/"},
+			map[string]any{"url": serverURL},
 		},
 		"paths":      paths,
 		"components": components(),
@@ -113,7 +122,7 @@ func components() map[string]any {
 					"code":       map[string]any{"type": "string", "enum": errorCodeEnum},
 					"message":    stringProp(""),
 					"request_id": stringProp(""),
-				}, []string{"code", "message"}),
+				}, []string{"code", "message", "request_id"}),
 			}, []string{"ok", "error"}),
 			"Field": objectSchema(false, map[string]any{
 				"name":      stringProp(`^[a-z][a-z0-9_]{0,63}$`),
@@ -162,6 +171,7 @@ func opResponses(dataSchema map[string]any) map[string]any {
 		"413": errorResponse("Payload too large"),
 		"415": errorResponse("Unsupported media type"),
 		"500": errorResponse("Internal server error"),
+		"503": errorResponse("Embedding provider unavailable (the local model could not be loaded or downloaded); vectorized writes and text searches only"),
 	}
 }
 

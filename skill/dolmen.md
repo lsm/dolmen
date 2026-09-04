@@ -62,7 +62,7 @@ Every tool in this skill is also a plain HTTP operation: `POST /v1/{operation}` 
 as the JSON body (`Content-Type: application/json`). Responses are enveloped — success is
 `{"ok":true,"data":...}` and failure is `{"ok":false,"error":{"code","message"}}` with a stable
 machine-readable `code` (`invalid_request`, `not_found`, `query_error`, `conflict`, `forbidden`,
-`internal_error`). The full list of operations and their request schemas is in the OpenAPI document (`GET /v1/openapi.json`).
+`embedder_unavailable`, `internal_error`). The full list of operations and their request schemas is in the OpenAPI document (`GET /v1/openapi.json`).
 
 Insert a record:
 
@@ -137,7 +137,7 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
 
 - Core tools: `describe_server`, `list_namespaces`, `list_tables`, `describe_table`, `insert`, `query`, `search_fulltext`, `search_vector`, `delete`.
 - Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`, and `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field).
-- Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field — enables `search_vector` with `text`; needs an embedding provider on the server: the built-in `local` one or an external endpoint), `required: true`.
+- Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field — enables `search_vector` with `text`; the built-in `local` provider is enabled by default; set `DOLMEN_EMBED_PROVIDER=openai` for an external endpoint, or `none` to disable server-side embeddings), `required: true`.
 - `describe_server` reports the embedding provider status without attempting a write: `provider` (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, and `usable`. `vectorize` fields and `search_vector` `text` queries fail while `usable` is false; a table whose `embed_space` (see `describe_table`) differs from `identity` was embedded by a different provider/model and rejects inserts and text searches until it is re-embedded.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
 - `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
@@ -163,9 +163,20 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
 
 ### Full-text (FTS5) search syntax
 
-Dolmen indexes `fulltext` fields with SQLite FTS5 using the default `unicode61` tokenizer:
-case-insensitive, diacritic-insensitive for most Latin characters (some non-Latin or multi-diacritic
-characters may not normalize), no stemming. Most punctuation (including hyphens) is a token boundary.
+Dolmen indexes `fulltext` fields with SQLite FTS5 using the `porter` stemmer over the `unicode61`
+tokenizer: case-insensitive, diacritic-insensitive for most Latin characters (some non-Latin or
+multi-diacritic characters may not normalize), **stemmed** — the index and the query both reduce
+English words to stems, so plural/inflected terms just match (`payments` ↔ `payment`, `refunds` ↔
+`refund`). Most punctuation (including hyphens) is a token boundary.
+
+**Stemming notes (porter is a suffix-stripper, not a lemmatizer):** it collapses inflections of the
+same root but not different derivations — `paying`/`pays`/`paid` stem to `pai`/`paid` and do **not**
+match `payment`. Phrases match on stems (`"payments were"` matches `the payments were refunded`).
+Prefix queries operate on stems: `pay*` stems to `pai*`, matching `paid`/`paying`/`pays` but not
+`payment`. Stemming is English-focused. Tables created before stemming became the default keep
+their exact-token index (they keep working); reindex one with `migrate`:
+`{"op": "set_fulltext", "name": "<fulltext field>", "value": true}` — re-asserting `true` on an
+already-indexed field rebuilds the index under the current tokenizer.
 
 **CJK limitation:** `unicode61` does not segment CJK text — it breaks tokens only at whitespace and
 punctuation. Chinese/Japanese are usually written without spaces, so an uninterrupted run of CJK
@@ -175,15 +186,15 @@ Whole-run terms, prefix queries (`中华*`), and space-delimited Korean still to
 keyword recall over space-less CJK text, fall back to vector search over an embedding column
 (`vectorize: true` + `search_vector(text=...)`) or `query` with `LIKE`.
 
-- `payment` — one token.
+- `payment` — one token (`payments` matches the same stem).
 - `payment gateway` — implicit `AND`.
 - `payment OR gateway`.
 - `payment NOT gateway`.
 - `title:payment` — only in the `title` fulltext field.
 - `{title body}:payment` — any of those fields.
-- `"foo bar"` — phrase (adjacent tokens). Phrases match token adjacency, not literal punctuation.
+- `"foo bar"` — phrase (adjacent tokens, matched on stems). Phrases match token adjacency, not literal punctuation.
 - `"foo-bar"` — double-quote terms that contain spaces or punctuation; bare `foo-bar` is parsed as multiple terms and usually errors.
-- `pay*` — prefix match.
+- `pay*` — prefix match, applied to the stemmed term (`pay*` → `pai*`).
 - `NEAR(payment refund)` — proximity search (default near span). Use the group form
   `NEAR(term1 term2 ...)`; `term1 NEAR(term2)` is parsed as an implicit `AND` and does not enforce proximity.
 - Terms like `"can't"` must be in double quotes; bare single quotes are a syntax error.
@@ -236,7 +247,7 @@ Validation notes:
   the default instead of NULL; an explicit `null` still stores NULL.
 - Namespace and table names are trimmed and lowercased before validation on direct `/v1` requests, so `"namespace":" Production "` operates on `production`. The MCP tool schemas require already-canonical names — always send trimmed lowercase names.
 - `query` accepts only `SELECT`/`WITH`, rejects embedded semicolons (trailing semicolons are accepted), and binds at most 100 `args`.
-- `search_vector` with `text` requires a provider and searches only the server-managed `_embedding` column produced by a `vectorize: true` field — the provider identity must match the one that embedded the table, and a `text` query naming a declared `vector` column is rejected. Searches with a caller-supplied `vector` need no provider and are not checked against any embedding space — only you know which model produced the stored and query vectors. The active provider, its identity, and whether server-side embedding is usable are reported by `describe_server`.
+- `search_vector` with `text` requires a provider and searches only the server-managed `_embedding` column produced by a `vectorize: true` field — the provider identity must match the one that embedded the table, and a `text` query naming a declared `vector` column is rejected. Searches with a caller-supplied `vector` need no provider and are not checked against any embedding space — only you know which model produced the stored and query vectors. The built-in `local` provider is enabled by default; `describe_server` reports the active provider, its identity, and whether server-side embedding is usable.
 - `insert` with an `idempotency_key`: the same key + same records replays the original ids; the same key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes.
 
 ## Typical flows

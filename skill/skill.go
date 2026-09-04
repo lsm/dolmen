@@ -160,7 +160,9 @@ func ETag(name, version string, body []byte) string {
 //
 // Forwarded headers are parsed as comma-separated hop chains; the first
 // (client-facing) value is used so the generated public URL reflects what the
-// outermost trusted proxy saw, rather than a concatenation of every hop.
+// outermost trusted proxy saw, rather than a concatenation of every hop. When
+// X-Forwarded-Prefix is present, the first value is canonicalized (leading
+// slash, no trailing slash) and appended to the auto-detected base.
 func BaseURLFor(r *http.Request, configured string) string {
 	if configured != "" {
 		return strings.TrimRight(configured, "/")
@@ -176,7 +178,11 @@ func BaseURLFor(r *http.Request, configured string) string {
 	if h := r.Header.Get("X-Forwarded-Host"); h != "" {
 		host = forwardedFirst(h)
 	}
-	return scheme + "://" + host
+	prefix := ""
+	if p := r.Header.Get("X-Forwarded-Prefix"); p != "" {
+		prefix = NormalizePrefix(forwardedFirst(p))
+	}
+	return scheme + "://" + host + prefix
 }
 
 // forwardedFirst returns the first non-empty, trimmed value in a
@@ -192,17 +198,45 @@ func forwardedFirst(v string) string {
 }
 
 // ContextFor builds a full render context from a request and configuration.
-func ContextFor(r *http.Request, configuredBaseURL, namespaceHint, version string) Context {
+// The server prefix (e.g. "/dolmen") is appended to the public base URL unless
+// the base already ends with it, which prevents double-prefixing when both
+// X-Forwarded-Prefix and -prefix are in use.
+func ContextFor(r *http.Request, configuredBaseURL, namespaceHint, version, prefix string) Context {
 	if namespaceHint == "" {
 		namespaceHint = DefaultNamespaceHint
 	}
-	base := BaseURLFor(r, configuredBaseURL)
+	base := publicBase(BaseURLFor(r, configuredBaseURL), prefix)
 	return Context{
 		BaseURL:       base,
 		MCPURL:        base + "/mcp",
 		Version:       version,
 		NamespaceHint: namespaceHint,
 	}
+}
+
+// publicBase appends a server prefix to an already-resolved base URL.
+// It returns the base unchanged when the prefix is empty or is already present.
+func publicBase(base, prefix string) string {
+	prefix = NormalizePrefix(prefix)
+	if prefix == "" || strings.HasSuffix(base, prefix) {
+		return base
+	}
+	return base + prefix
+}
+
+// NormalizePrefix canonicalizes a URL path prefix: it trims whitespace and
+// trailing slashes, adds a leading slash when one is missing, and returns an
+// empty string for empty or root prefixes.
+func NormalizePrefix(v string) string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimRight(v, "/")
+	if v == "" {
+		return ""
+	}
+	if !strings.HasPrefix(v, "/") {
+		v = "/" + v
+	}
+	return v
 }
 
 func renderString(t *template.Template, ctx Context) (string, error) {

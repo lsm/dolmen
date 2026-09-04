@@ -17,7 +17,7 @@ import (
 
 func TestPackageDefaultModelLayout(t *testing.T) {
 	files := map[string][]byte{
-		"config.json": []byte(`{"model_type": "bert", "vocab_size": 30522, "hidden_size": 384, "num_hidden_layers": 6, "num_attention_heads": 12, "intermediate_size": 1536, "max_position_embeddings": 512}`),
+		"config.json":           []byte(`{"model_type": "bert", "vocab_size": 30522, "hidden_size": 384, "num_hidden_layers": 6, "num_attention_heads": 12, "intermediate_size": 1536, "max_position_embeddings": 512}`),
 		"tokenizer_config.json": []byte(`{"do_lower_case": true, "cls_token": "[CLS]", "sep_token": "[SEP]", "unk_token": "[UNK]", "tokenizer_class": "BertTokenizer"}`),
 		"vocab.txt":             []byte("[PAD]\n[UNK]\n[CLS]\n"),
 		"1_Pooling/config.json": []byte(`{"pooling_mode_cls_token": true}`),
@@ -103,11 +103,11 @@ func TestPackageShardedWeights(t *testing.T) {
 		"model-00002-of-00002.safetensors": []byte("shard two"),
 	}
 	files := map[string][]byte{
-		"config.json": []byte(`{"model_type": "bert"}`),
-		"tokenizer_config.json": []byte(`{"tokenizer_class": "BertTokenizer"}`),
-		"vocab.txt":             []byte("a\nb\n"),
-		"1_Pooling/config.json": []byte(`{"pooling_mode_cls_token": true}`),
-		"modules.json":          []byte(`[]`),
+		"config.json":                  []byte(`{"model_type": "bert"}`),
+		"tokenizer_config.json":        []byte(`{"tokenizer_class": "BertTokenizer"}`),
+		"vocab.txt":                    []byte("a\nb\n"),
+		"1_Pooling/config.json":        []byte(`{"pooling_mode_cls_token": true}`),
+		"modules.json":                 []byte(`[]`),
 		"model.safetensors.index.json": []byte(`{"weight_map": {"layer.0": "model-00001-of-00002.safetensors", "layer.1": "model-00002-of-00002.safetensors"}}`),
 	}
 	for name, data := range shards {

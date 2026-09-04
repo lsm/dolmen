@@ -102,11 +102,78 @@ func TestNewProviderLocalCacheEnv(t *testing.T) {
 
 	// An operator-set cache must win over the data-dir default.
 	os.Setenv("REMBED_CACHE", "/operator/cache")
-	if _, err := NewProvider("local", "", "", "", dataDir); err != nil {
+	p2, err := NewProvider("local", "", "", "", dataDir)
+	if err != nil {
 		t.Fatalf("NewProvider: %v", err)
 	}
 	if got := os.Getenv("REMBED_CACHE"); got != "/operator/cache" {
 		t.Fatalf("explicit REMBED_CACHE must not be overridden, got %q", got)
+	}
+	l2 := p2.(*Local)
+	if l2.CacheRoot != "/operator/cache" {
+		t.Fatalf("CacheRoot: got %q want %q", l2.CacheRoot, "/operator/cache")
+	}
+}
+
+func TestLocalCached(t *testing.T) {
+	old, had := os.LookupEnv("REMBED_CACHE")
+	t.Cleanup(func() {
+		if had {
+			os.Setenv("REMBED_CACHE", old)
+		} else {
+			os.Unsetenv("REMBED_CACHE")
+		}
+	})
+	os.Unsetenv("REMBED_CACHE")
+
+	dataDir := t.TempDir()
+	p, err := NewProvider("local", "", "", "", dataDir)
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	l := p.(*Local)
+	if l.Cached() {
+		t.Fatalf("empty cache must report not cached")
+	}
+
+	// Simulate a downloaded model cache.
+	cacheDir := filepath.Join(dataDir, localModelDir, "sentence-transformers--all-MiniLM-L6-v2")
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "model.safetensors"), []byte("weights"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !l.Cached() {
+		t.Fatalf("model.safetensors present must report cached")
+	}
+
+	// A fully seeded sharded cache also reports cached, so the startup log
+	// does not warn about a Hub download an offline install cannot make.
+	shardDir := filepath.Join(dataDir, localModelDir, "org--sharded")
+	if err := os.MkdirAll(shardDir, 0o700); err != nil {
+		t.Fatalf("mkdir shard dir: %v", err)
+	}
+	idx := []byte(`{"weight_map": {"layer.0": "model-00001-of-00001.safetensors"}}`)
+	if err := os.WriteFile(filepath.Join(shardDir, "model.safetensors.index.json"), idx, 0o600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(shardDir, "model-00001-of-00001.safetensors"), []byte("shard"), 0o600); err != nil {
+		t.Fatalf("write shard: %v", err)
+	}
+	lSharded := &Local{Model: "org/sharded", CacheRoot: filepath.Join(dataDir, localModelDir)}
+	if !lSharded.Cached() {
+		t.Fatalf("complete sharded cache must report cached")
+	}
+
+	// An absolute model-directory path is its own cache.
+	absPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(absPath, "model.safetensors"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	l2 := &Local{Model: absPath}
+	if !l2.Cached() {
+		t.Fatalf("absolute model directory must report cached")
 	}
 }
 
@@ -126,6 +193,22 @@ func TestLocalEmbedLazyRetryAndSuccess(t *testing.T) {
 	_, firstErr := l.Embed(context.Background(), []string{"a"})
 	if firstErr == nil || !errors.Is(firstErr, boom) {
 		t.Fatalf("first Embed must fail with the load error, got %v", firstErr)
+	}
+	// A failed load must be classifiable as a LoadError so the API can map
+	// it to an actionable embedder_unavailable error, not a bare internal one.
+	var le *LoadError
+	if !errors.As(firstErr, &le) {
+		t.Fatalf("load failure must be a *LoadError, got %T", firstErr)
+	}
+	if le.Model != "org/model" {
+		t.Fatalf("LoadError must carry the model name, got %q", le.Model)
+	}
+	// Hub ids are public identifiers; directory paths are filesystem layout.
+	if !le.IsHubID() {
+		t.Fatalf("org/model is a Hub id, IsHubID said false")
+	}
+	if (&LoadError{Model: "/opt/models/minilm"}).IsHubID() {
+		t.Fatalf("a directory path is not a Hub id, IsHubID said true")
 	}
 	for _, want := range []string{"org/model", "Hugging Face Hub"} {
 		if !strings.Contains(firstErr.Error(), want) {
@@ -195,18 +278,8 @@ func TestLocalRef(t *testing.T) {
 	}
 }
 
-func TestMaybeCachedRef(t *testing.T) {
-	old, had := os.LookupEnv("REMBED_CACHE")
-	t.Cleanup(func() {
-		if had {
-			os.Setenv("REMBED_CACHE", old)
-		} else {
-			os.Unsetenv("REMBED_CACHE")
-		}
-	})
-
+func TestSeededCacheDir(t *testing.T) {
 	cache := t.TempDir()
-	os.Setenv("REMBED_CACHE", cache)
 
 	// A pre-seeded model cache is detected when model.safetensors exists.
 	seeded := filepath.Join(cache, "sentence-transformers--all-MiniLM-L6-v2")
@@ -216,8 +289,8 @@ func TestMaybeCachedRef(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(seeded, "model.safetensors"), []byte("weights"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if got := maybeCachedRef("sentence-transformers/all-MiniLM-L6-v2"); got != seeded {
-		t.Fatalf("maybeCachedRef: got %q, want %q", got, seeded)
+	if got := seededCacheDir(cache, "sentence-transformers/all-MiniLM-L6-v2"); got != seeded {
+		t.Fatalf("seededCacheDir: got %q, want %q", got, seeded)
 	}
 
 	// A sharded pre-seeded cache is detected when the index and all of its
@@ -230,30 +303,30 @@ func TestMaybeCachedRef(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sharded, "model.safetensors.index.json"), idx, 0o644); err != nil {
 		t.Fatalf("write index: %v", err)
 	}
-	if got := maybeCachedRef("org/sharded"); got != "" {
-		t.Fatalf("maybeCachedRef missing shards: got %q, want empty", got)
+	if got := seededCacheDir(cache, "org/sharded"); got != "" {
+		t.Fatalf("seededCacheDir missing shards: got %q, want empty", got)
 	}
 	if err := os.WriteFile(filepath.Join(sharded, "model-00001-of-00002.safetensors"), []byte("s1"), 0o644); err != nil {
 		t.Fatalf("write shard one: %v", err)
 	}
-	if got := maybeCachedRef("org/sharded"); got != "" {
-		t.Fatalf("maybeCachedRef incomplete shards: got %q, want empty", got)
+	if got := seededCacheDir(cache, "org/sharded"); got != "" {
+		t.Fatalf("seededCacheDir incomplete shards: got %q, want empty", got)
 	}
 	if err := os.WriteFile(filepath.Join(sharded, "model-00002-of-00002.safetensors"), []byte("s2"), 0o644); err != nil {
 		t.Fatalf("write shard two: %v", err)
 	}
-	if got := maybeCachedRef("org/sharded"); got != sharded {
-		t.Fatalf("maybeCachedRef sharded: got %q, want %q", got, sharded)
+	if got := seededCacheDir(cache, "org/sharded"); got != sharded {
+		t.Fatalf("seededCacheDir sharded: got %q, want %q", got, sharded)
 	}
 
 	// A missing cache means falling back to the Hub.
-	if got := maybeCachedRef("org/not-seeded"); got != "" {
-		t.Fatalf("maybeCachedRef for missing cache: got %q, want empty", got)
+	if got := seededCacheDir(cache, "org/not-seeded"); got != "" {
+		t.Fatalf("seededCacheDir for missing cache: got %q, want empty", got)
 	}
 
 	// Absolute model directories are not cache-looked-up.
-	if got := maybeCachedRef("/opt/models/minilm"); got != "" {
-		t.Fatalf("maybeCachedRef for absolute path: got %q, want empty", got)
+	if got := seededCacheDir(cache, "/opt/models/minilm"); got != "" {
+		t.Fatalf("seededCacheDir for absolute path: got %q, want empty", got)
 	}
 }
 

@@ -448,7 +448,7 @@ var Ops = map[string]OpDef{
 	},
 	"create_table": {
 		Description: "Create a table with typed fields. Types: string, text, number, boolean, timestamp, json, vector. " +
-			"Annotations: fulltext=true indexes a string/text field for full-text search; type=vector stores caller-provided " +
+			"Annotations: fulltext=true indexes a string/text field for stemmed full-text search (plural/inflected terms match, e.g. payments <-> payment); type=vector stores caller-provided " +
 			"embeddings (dim required); vectorize=true on a string/text field makes the server embed that field automatically " +
 			"for vector search; default=<value> is stored by later inserts that omit the field (instead of NULL; must match " +
 			"the field's type; not allowed on required or vectorize fields). Consider infer_schema first when starting from sample records.",
@@ -779,7 +779,10 @@ var Ops = map[string]OpDef{
 	},
 	"search_fulltext": {
 		Description: "Full-text search over fields marked fulltext, using SQLite FTS5 MATCH syntax " +
-			"(e.g. \"payment\", \"credit refund\", \"status:ok AND retry\"). Returns matching records ordered by relevance (stable rowid tie-breaking). " +
+			"(e.g. \"payment\", \"credit refund\", \"status:ok AND retry\"). The index stems English words " +
+			"(porter over unicode61), so plural and inflected query terms match (payments <-> payment, refunds <-> refund); " +
+			"phrases and prefix terms operate on stems (pay* stems to pai*, matching paid/paying/pays but not payment). " +
+			"Returns matching records ordered by relevance (stable rowid tie-breaking). " +
 			"Optional filter and args restrict matches to rows satisfying a SQL WHERE expression over the table's columns " +
 			"(same semantics as search_vector's filter) before ranking. " +
 			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array) " +
@@ -1182,6 +1185,8 @@ var Ops = map[string]OpDef{
 	"migrate": {
 		Description: "Evolve a table schema: add_field, rename_field, drop_field, set_fulltext, set_vectorize. " +
 			"Bumps the schema version and records the change. Adding fulltext rebuilds the search index; " +
+			"re-asserting set_fulltext ... = true on an already-indexed field also rebuilds it (the reindex path for " +
+			"tables created before stemming became the default); " +
 			"enabling vectorize backfills embeddings for existing rows. add_field accepts a default that is " +
 			"coerced to the field's type and backfilled into existing rows; it is required for adding a " +
 			"required field to a populated table (the column then carries NOT NULL DEFAULT — dolmen inserts " +

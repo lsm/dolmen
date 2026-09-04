@@ -219,7 +219,7 @@ func TestTransportParityErrorEnvelope(t *testing.T) {
 			if httpErr == nil {
 				t.Fatalf("HTTP body carries no error envelope: %v", httpBody)
 			}
-			assertJSONEqual(t, "error envelope", mcpRes.toolError(), httpErr)
+			assertJSONEqual(t, "error envelope", withoutRequestID(mcpRes.toolError()), withoutRequestID(httpErr))
 		})
 	}
 
@@ -240,7 +240,21 @@ func TestTransportParityErrorEnvelope(t *testing.T) {
 		t.Fatalf("divergent replay over MCP did not fail: %+v", mcpRes)
 	}
 	httpErr, _ := httpBody["error"].(map[string]any)
-	assertJSONEqual(t, "conflict envelope", mcpRes.toolError(), httpErr)
+	assertJSONEqual(t, "conflict envelope", withoutRequestID(mcpRes.toolError()), withoutRequestID(httpErr))
+}
+
+// withoutRequestID drops the per-call request id from an error envelope
+// before a cross-transport comparison: parity pins the code and message, and
+// each transport call that sent no X-Request-Id carries its own
+// server-generated id.
+func withoutRequestID(env map[string]any) map[string]any {
+	out := make(map[string]any, len(env))
+	for k, v := range env {
+		if k != "request_id" {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // TestMCPToolResultShape pins the MCP result container itself: success carries

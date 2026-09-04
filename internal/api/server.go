@@ -27,6 +27,7 @@ type Server struct {
 	emb           embed.Provider
 	baseURL       string
 	namespaceHint string
+	prefix        string
 }
 
 // Option customizes a Server.
@@ -36,6 +37,13 @@ type Option func(*Server)
 func WithBaseURL(u string) Option {
 	return func(s *Server) {
 		s.baseURL = strings.TrimRight(u, "/")
+	}
+}
+
+// WithPrefix sets the server prefix to include in rendered skill and MCP links.
+func WithPrefix(p string) Option {
+	return func(s *Server) {
+		s.prefix = skill.NormalizePrefix(p)
 	}
 }
 
@@ -440,6 +448,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/skills/", s.handleSkill)
 	mux.HandleFunc("/v1/openapi.json", s.handleOpenAPI)
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
+		// Assign the request id before any error path so every response,
+		// envelope, and log line carries one — echoed when the client sent
+		// X-Request-Id, generated when it did not.
+		r = r.WithContext(WithRequestID(r.Context(), RequestIDFor(r)))
+		w.Header().Set("X-Request-Id", RequestIDFrom(r.Context()))
 		op := strings.TrimPrefix(r.URL.Path, "/v1/")
 		if op == "" || strings.Contains(op, "/") {
 			writeError(w, r, notFound("unknown operation"))
@@ -464,10 +477,6 @@ func (s *Server) Handler() http.Handler {
 			writeError(w, r, badRequest("cannot read body"))
 			return
 		}
-		r = r.WithContext(WithRequestID(r.Context(), requestIDFromHeader(r)))
-		if reqID := RequestIDFrom(r.Context()); reqID != "" {
-			w.Header().Set("X-Request-Id", reqID)
-		}
 		res, err := s.Dispatch(r.Context(), op, body)
 		if err != nil {
 			slog.Debug("op failed", "op", op, "err", err)
@@ -485,7 +494,7 @@ func (s *Server) handleSkillsManifest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, &Error{Status: http.StatusMethodNotAllowed, Code: ErrCodeInvalid, Message: "use GET"})
 		return
 	}
-	ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version)
+	ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version, s.prefix)
 	manifest, err := skill.ManifestJSON(ctx)
 	if err != nil {
 		writeError(w, r, err)
@@ -505,7 +514,7 @@ func (s *Server) handleSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, notFound("unknown skill %q", name))
 		return
 	}
-	ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version)
+	ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version, s.prefix)
 	body, err := skill.Render(name, ctx)
 	if err != nil {
 		if errors.Is(err, skill.ErrNotFound) {
@@ -561,11 +570,18 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	if reqID == "" {
 		reqID = RequestIDFrom(r.Context())
 	}
-	if reqID != "" {
-		w.Header().Set("X-Request-Id", reqID)
+	if reqID == "" {
+		// Reached only for errors outside the /v1/ and /mcp/ handlers (the
+		// origin and content-type guards), which run before the transports
+		// assign an id.
+		reqID = newRequestID()
 	}
-	if apiErr.Code == ErrCodeInternal {
-		slog.Error("internal api error", "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
+	w.Header().Set("X-Request-Id", reqID)
+	// Server-class failures (5xx) are operator-visible at Error level with
+	// their cause; request-class failures are client problems, logged only
+	// when debugging.
+	if status >= http.StatusInternalServerError {
+		slog.Error("api error", "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
 	} else {
 		slog.Debug("api error", "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
 	}

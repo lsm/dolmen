@@ -32,6 +32,7 @@ type Server struct {
 	origins       map[string]bool
 	baseURL       string
 	namespaceHint string
+	prefix        string
 }
 
 // toolAnnotations carries the MCP annotations (client-side UI hints) for each
@@ -82,6 +83,13 @@ func WithBaseURL(u string) Option {
 	}
 }
 
+// WithPrefix sets the server prefix to include in initialize instructions.
+func WithPrefix(p string) Option {
+	return func(s *Server) {
+		s.prefix = skill.NormalizePrefix(p)
+	}
+}
+
 // WithNamespaceHint sets the namespace guidance included in initialize instructions.
 func WithNamespaceHint(h string) Option {
 	return func(s *Server) {
@@ -110,10 +118,10 @@ type rpcMessage struct {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("MCP-Protocol-Version", protocolVersion)
-	r = r.WithContext(api.WithRequestID(r.Context(), r.Header.Get("X-Request-Id")))
-	if reqID := api.RequestIDFrom(r.Context()); reqID != "" {
-		w.Header().Set("X-Request-Id", reqID)
-	}
+	// Echoed when the client sent X-Request-Id, generated when it did not, so
+	// tool errors and log lines always carry a correlatable id.
+	r = r.WithContext(api.WithRequestID(r.Context(), api.RequestIDFor(r)))
+	w.Header().Set("X-Request-Id", api.RequestIDFrom(r.Context()))
 	if origin := r.Header.Get("Origin"); origin != "" {
 		allowed := s.origins[strings.ToLower(strings.TrimRight(origin, "/"))]
 		if !allowed {
@@ -244,7 +252,7 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage, r *http.Request) (a
 		if params.ProtocolVersion == protocolVersion {
 			pv = params.ProtocolVersion
 		}
-		ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version)
+		ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version, s.prefix)
 		return map[string]any{
 			"protocolVersion": pv,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
@@ -315,7 +323,10 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage, r *http.Request) (a
 		if err != nil {
 			apiErr := api.WrapError(err)
 			reqID := api.RequestIDFrom(ctx)
-			if apiErr.Code == api.ErrCodeInternal {
+			// Server-class failures (5xx) are operator-visible at Error level
+			// with their cause; request-class failures are client problems,
+			// logged only when debugging.
+			if status := apiErr.Status; status == 0 || status >= http.StatusInternalServerError {
 				slog.Error("mcp tool error", "op", params.Name, "code", apiErr.Code, "request_id", reqID, "cause", apiErr.Cause)
 			} else {
 				slog.Debug("mcp tool error", "op", params.Name, "code", apiErr.Code, "request_id", reqID, "cause", apiErr.Cause)

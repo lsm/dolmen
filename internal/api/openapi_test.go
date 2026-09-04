@@ -25,10 +25,59 @@ func TestOpenAPIEndpoint(t *testing.T) {
 		t.Fatalf("decode openapi: %v", err)
 	}
 	assertOpenAPIDoc(t, doc)
+
+	servers, ok := doc["servers"].([]any)
+	if !ok || len(servers) == 0 {
+		t.Fatalf("servers missing or empty")
+	}
+	server, ok := servers[0].(map[string]any)
+	if !ok {
+		t.Fatalf("server entry is not an object")
+	}
+	if server["url"] != srv.URL {
+		t.Fatalf("server url without prefix: got %q, want %q", server["url"], srv.URL)
+	}
+}
+
+func TestOpenAPIServerURLIncludesForwardedPrefix(t *testing.T) {
+	srv := newTestServer(t)
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/openapi.json", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "public.example.com")
+	req.Header.Set("X-Forwarded-Prefix", "/dolmen/")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get openapi: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", res.StatusCode)
+	}
+	var doc map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&doc); err != nil {
+		t.Fatalf("decode openapi: %v", err)
+	}
+	servers, ok := doc["servers"].([]any)
+	if !ok || len(servers) == 0 {
+		t.Fatalf("servers missing or empty")
+	}
+	server, ok := servers[0].(map[string]any)
+	if !ok {
+		t.Fatalf("server entry is not an object")
+	}
+	if server["url"] != "https://public.example.com/dolmen" {
+		t.Fatalf("server url: got %q, want %q", server["url"], "https://public.example.com/dolmen")
+	}
+	if _, ok := doc["paths"].(map[string]any)["/v1/query"]; !ok {
+		t.Fatalf("missing path /v1/query")
+	}
 }
 
 func TestOpenAPIErrorEnvelopeMatchesObjectErrors(t *testing.T) {
-	doc := New(nil, fakeEmb{}).OpenAPIDoc()
+	doc := New(nil, fakeEmb{}).OpenAPIDoc("")
 	components, ok := doc["components"].(map[string]any)
 	if !ok {
 		t.Fatalf("components missing")
@@ -80,8 +129,10 @@ func TestOpenAPIErrorEnvelopeMatchesObjectErrors(t *testing.T) {
 	for _, r := range req {
 		reqSet[r] = true
 	}
-	if !reqSet["code"] || !reqSet["message"] {
-		t.Fatalf("ErrorEnvelope.error must require code and message, got %v", req)
+	// request_id is always present (echoed or server-generated), so generated
+	// clients may rely on it for log correlation.
+	if !reqSet["code"] || !reqSet["message"] || !reqSet["request_id"] {
+		t.Fatalf("ErrorEnvelope.error must require code, message, and request_id, got %v", req)
 	}
 }
 
@@ -101,7 +152,7 @@ func TestOpenAPIEndpointMethodNotAllowed(t *testing.T) {
 }
 
 func TestOpenAPICoversAllOps(t *testing.T) {
-	doc := New(nil, fakeEmb{}).OpenAPIDoc()
+	doc := New(nil, fakeEmb{}).OpenAPIDoc("")
 	assertOpenAPIDoc(t, doc)
 }
 
@@ -323,8 +374,8 @@ func TestOpenAPIPathNotUnknownOp(t *testing.T) {
 }
 
 func TestOpenAPIIsStableJSON(t *testing.T) {
-	doc1 := New(nil, fakeEmb{}).OpenAPIDoc()
-	doc2 := New(nil, fakeEmb{}).OpenAPIDoc()
+	doc1 := New(nil, fakeEmb{}).OpenAPIDoc("")
+	doc2 := New(nil, fakeEmb{}).OpenAPIDoc("")
 	raw1, err := json.Marshal(doc1)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
