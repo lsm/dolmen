@@ -318,6 +318,12 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 		if ch.Op != schema.OpSetFulltext && ch.Op != schema.OpSetVectorize && ch.Value != nil {
 			return nil, invalidf("changes[%d]: value is only allowed on set_fulltext/set_vectorize (op %q has no flag to set)", i, ch.Op)
 		}
+		if ch.Op == schema.OpSetEnum && ch.Enum == nil {
+			return nil, invalidf("changes[%d]: set_enum requires an explicit enum array (the field's complete new vocabulary; pass an empty array to remove the constraint)", i)
+		}
+		if ch.Op != schema.OpSetEnum && ch.Enum != nil {
+			return nil, invalidf("changes[%d]: enum is only allowed on set_enum (op %q has no enum to set)", i, ch.Op)
+		}
 		switch ch.Op {
 		case schema.OpAddField:
 			if ch.Field == nil {
@@ -540,8 +546,93 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				vectorizeChanged = true
 			}
 			plan.Operations = append(plan.Operations, fmt.Sprintf("set_vectorize %s = %t", ch.Name, *ch.Value))
+		case schema.OpSetEnum:
+			f, err := findField(ch.Name)
+			if err != nil {
+				return nil, err
+			}
+			if f.Type != schema.String {
+				return nil, invalidf("field %q: enum is only allowed on string fields (this field has type %s)", f.Name, f.Type)
+			}
+			// Copy so the prospective schema never aliases the caller's slice.
+			vals := make([]string, len(*ch.Enum))
+			copy(vals, *ch.Enum)
+			if len(vals) > 0 {
+				if err := schema.ValidateEnum(f.Name, vals); err != nil {
+					return nil, invalidf("%s", err)
+				}
+			}
+			// Every value already stored in the column must survive the new
+			// vocabulary: a row holding a non-member value would be stranded —
+			// readable, but no write could ever re-store it, and the schema
+			// would claim a vocabulary the data does not honor. This covers
+			// narrowing an existing enum and constraining a previously free
+			// field alike (for that field every stored value is checked, not
+			// just ones the old enum listed). Clearing (an empty list) removes
+			// the vocabulary, so every stored value is valid by definition and
+			// nothing is verified. Count under the physical column name; a
+			// field added earlier in this change list has no rows yet.
+			if len(vals) > 0 {
+				if phys := physicalName[f.Name]; phys != "" {
+					rows, err := db.QueryContext(ctx,
+						fmt.Sprintf(`SELECT %s, count(*) FROM %s WHERE %s IS NOT NULL GROUP BY %s`, q(phys), q(table), q(phys), q(phys)))
+					if err != nil {
+						return nil, err
+					}
+					type usage struct {
+						val string
+						n   int64
+					}
+					var inUse []usage
+					for rows.Next() {
+						var u usage
+						if err := rows.Scan(&u.val, &u.n); err != nil {
+							rows.Close()
+							return nil, err
+						}
+						if !schema.EnumAllows(vals, u.val) {
+							inUse = append(inUse, u)
+						}
+					}
+					if err := rows.Err(); err != nil {
+						rows.Close()
+						return nil, err
+					}
+					rows.Close()
+					if len(inUse) > 0 {
+						parts := make([]string, len(inUse))
+						for k, u := range inUse {
+							parts[k] = fmt.Sprintf("%q is stored by %d rows", u.val, u.n)
+						}
+						return nil, invalidf("field %q: cannot apply this enum — %s; update those rows to a kept value first (update with set %s = ...), or keep the values in the enum", f.Name, strings.Join(parts, ", "), f.Name)
+					}
+				}
+			}
+			// A declared default must remain a member: inserts and unmatched
+			// upserts re-coerce it through the enum on every use.
+			if f.Default != nil {
+				if s, ok := storedString(f.Default); ok && !schema.EnumAllows(vals, s) {
+					return nil, invalidf("field %q: the declared default %q is not in the new enum (%s); keep the value, or pick a default among the allowed values", f.Name, s, strings.Join(vals, ", "))
+				}
+			}
+			// Same for a backfill default an earlier add_field in this change
+			// list carries: its UPDATE runs at apply time, after this check.
+			if dv := defaults[f.Name]; dv != nil {
+				if s, ok := dv.(string); ok && !schema.EnumAllows(vals, s) {
+					return nil, invalidf("field %q: the add_field backfill default %q is not in the new enum (%s); keep the value, or pick a backfill among the allowed values", f.Name, s, strings.Join(vals, ", "))
+				}
+			}
+			// An empty list removes the constraint: store it as nil so the
+			// prospective field list validates (a field-level empty enum is a
+			// declaration error; only set_enum may clear).
+			if len(vals) > 0 {
+				f.Enum = vals
+			} else {
+				f.Enum = nil
+			}
+			plan.Operations = append(plan.Operations, "set_enum "+ch.Name+" = "+describeValue(vals))
 		default:
-			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize)", ch.Op)
+			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum)", ch.Op)
 		}
 	}
 	if len(plan.Destructive) > 0 && expectedVersion == 0 {

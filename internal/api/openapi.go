@@ -131,7 +131,12 @@ func components() map[string]any {
 				"vectorize": propBool(),
 				"dim":       intProp(1, schema.MaxVectorDim),
 				"required":  propBool(),
-				"default":   map[string]any{"description": "Value stored when an insert omits the field; exactly as declared (present when set)"},
+				"enum": map[string]any{
+					"type":        "array",
+					"description": "Allowed values for this string field (present when the field has an enum constraint); writes carrying any other value are rejected",
+					"items":       map[string]any{"type": "string"},
+				},
+				"default": map[string]any{"description": "Value stored when an insert omits the field; exactly as declared (present when set)"},
 			}, []string{"name", "type"}),
 			"TableSchema": objectSchema(false, map[string]any{
 				"namespace":   stringProp(`^[a-z0-9][a-z0-9_-]{0,63}$`),

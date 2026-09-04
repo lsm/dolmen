@@ -67,6 +67,11 @@ func TestValidateRejects(t *testing.T) {
 		{{Name: "a", Type: String, Vectorize: true}, {Name: "b", Type: String, Vectorize: true}},
 		{{Name: "a", Type: Vector}},
 		{{Name: "a", Type: Vector, Dim: 9999}},
+		{{Name: "a", Type: Text, Enum: []string{"x"}}},
+		{{Name: "a", Type: Number, Enum: []string{"x"}}},
+		{{Name: "a", Type: String, Enum: []string{}}},
+		{{Name: "a", Type: String, Enum: []string{"x", "x"}}},
+		{{Name: "a", Type: String, Enum: []string{""}}},
 	}
 	for i, fields := range cases {
 		if err := Validate(fields); err == nil {
@@ -80,9 +85,28 @@ func TestValidateAccepts(t *testing.T) {
 		{Name: "title", Type: String, Fulltext: true},
 		{Name: "body", Type: Text, Vectorize: true},
 		{Name: "emb", Type: Vector, Dim: 1536},
+		{Name: "severity", Type: String, Enum: []string{"SEV0", "SEV1"}, Fulltext: true},
 	}
 	if err := Validate(fields); err != nil {
 		t.Fatalf("unexpected rejection: %v", err)
+	}
+}
+
+func TestEnumAllowsExactMatch(t *testing.T) {
+	f := Field{Name: "severity", Type: String, Enum: []string{"SEV0", "SEV1"}}
+	if !EnumAllows(f.Enum, "SEV0") || !EnumAllows(f.Enum, "SEV1") {
+		t.Fatal("members must be allowed")
+	}
+	// Exact match only: case variants, trimmed variants, and prefixes are
+	// rejected — values are compared as written.
+	for _, v := range []string{"sev0", "SEV0 ", "SEV", ""} {
+		if EnumAllows(f.Enum, v) {
+			t.Fatalf("%q must not be allowed", v)
+		}
+	}
+	// No enum imposes no constraint.
+	if !EnumAllows(nil, "anything") {
+		t.Fatal("an absent enum must allow every value")
 	}
 }
 

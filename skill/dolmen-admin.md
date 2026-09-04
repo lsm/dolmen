@@ -157,16 +157,19 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
    meaning-based recall.
 6. **Never write SQL that mutates.** `query` rejects it by design; use `insert`/`upsert_by_key`/`update`/`upsert`/`delete`/`migrate`.
 7. **Evolve, don't fork.** When a table is missing a field, use `migrate` (add_field, rename_field,
-   set_fulltext, set_vectorize) — do not create a parallel v2 table.
+   set_fulltext, set_vectorize, set_enum) — do not create a parallel v2 table.
 
 ## Quick reference
 
 - Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`,
   and `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field).
 - Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field —
-  enables `search_vector` with `text`), `required: true`, `default: <value>` (stored by later
-  inserts that omit the field, instead of NULL; must match the field's type; not allowed on
-  `required` or `vectorize` fields).
+  enables `search_vector` with `text`), `required: true`, `enum: [values]` (closed vocabulary for a
+  string field — writes with any other value are rejected naming the field, the rejected value, and
+  the allowed list; exact match, no case folding; a declared `default` must be a member; evolve it
+  with `migrate` `set_enum`, which refuses to drop a value rows still store),
+  `default: <value>` (stored by later inserts that omit the field, instead of NULL; must match
+  the field's type; not allowed on `required` or `vectorize` fields).
 - `describe_server` reports the embedding provider status without attempting a write: `provider`
   (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, and `usable`.
   `vectorize` in `create_table`/`migrate` and `search_vector` `text` queries fail while `usable`
@@ -385,6 +388,16 @@ itself is shared — so copy the exact shape per op:
   {"op": "set_vectorize", "name": "summary", "value": true}
   ```
 
+- `set_enum` — `name` + an explicit `enum` array: the string field's complete new vocabulary (not a
+  delta — the list you pass replaces the old one). Values match exactly with no case folding and are
+  stored as written. Every value rows currently store must be in the new list, or the change is
+  rejected naming each stranded value and its row count — update those rows to a kept value first.
+  An empty array removes the constraint. A field's declared `default` must stay in the new list.
+
+  ```json
+  {"op": "set_enum", "name": "severity", "enum": ["SEV0", "SEV1", "SEV2", "SEV3"]}
+  ```
+
 Two top-level keys complete the request:
 
 - `expected_version` — the schema version from `describe_table` that the changes were planned
@@ -465,7 +478,7 @@ describe_table(namespace="research", table="findings")
     insert(namespace="research", table="findings", records=[{...}])
   → exists but wrong shape:
     use migrate for the supported changes (add_field/rename_field/drop_field/set_fulltext/
-    set_vectorize) — do not create a v2 table. add_field with a `default` can add a required
+    set_vectorize/set_enum) — do not create a v2 table. add_field with a `default` can add a required
     field to a populated table (backfilled as NOT NULL DEFAULT). If the mismatch is outside those
     operations (e.g., changing a field type, or adding a required field with no suitable default),
     stop and ask the user before rebuilding or backfilling.

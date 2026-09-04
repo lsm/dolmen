@@ -127,6 +127,13 @@ func fieldItemSchema(desc string, withDefault bool) map[string]any {
 			"maximum":     schema.MaxVectorDim,
 		},
 		"required": prop("boolean", "Reject inserts that omit this field"),
+		"enum": map[string]any{
+			"type":        "array",
+			"description": "Closed vocabulary for a string field: writes carrying any other value are rejected. Exact match, no case folding — values are stored as written. The field's default (when set) must be one of these values; change the vocabulary later with migrate set_enum",
+			"items":       map[string]any{"type": "string", "minLength": 1},
+			"minItems":    1,
+			"uniqueItems": true,
+		},
 	}
 	allOf := []any{
 		map[string]any{
@@ -159,6 +166,15 @@ func fieldItemSchema(desc string, withDefault bool) map[string]any {
 					"type": map[string]any{"enum": []schema.FieldType{schema.String, schema.Text}},
 				},
 			},
+		},
+		map[string]any{
+			// enum is string-only; an omitted type defaults to string, so the
+			// guard fires only when a type is present and is not string.
+			"if": map[string]any{
+				"properties": map[string]any{"type": map[string]any{"not": map[string]any{"const": string(schema.String)}}},
+				"required":   []string{"type"},
+			},
+			"then": map[string]any{"not": map[string]any{"required": []string{"enum"}}},
 		},
 	}
 	if withDefault {

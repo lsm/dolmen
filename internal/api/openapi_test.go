@@ -156,6 +156,24 @@ func TestOpenAPICoversAllOps(t *testing.T) {
 	assertOpenAPIDoc(t, doc)
 }
 
+// TestOpenAPIFieldDeclaresEnum pins the annotation's presence in the OpenAPI
+// Field component — every client sees the vocabulary in the schema itself.
+func TestOpenAPIFieldDeclaresEnum(t *testing.T) {
+	doc := New(nil, fakeEmb{}).OpenAPIDoc("")
+	field := doc["components"].(map[string]any)["schemas"].(map[string]any)["Field"].(map[string]any)
+	enum, ok := field["properties"].(map[string]any)["enum"].(map[string]any)
+	if !ok {
+		t.Fatalf("Field component must declare an enum property, got %v", field["properties"])
+	}
+	if enum["type"] != "array" {
+		t.Fatalf("Field.enum must be an array of strings, got %v", enum)
+	}
+	items, ok := enum["items"].(map[string]any)
+	if !ok || items["type"] != "string" {
+		t.Fatalf("Field.enum items must be strings, got %v", enum["items"])
+	}
+}
+
 func assertOpenAPIDoc(t *testing.T, doc map[string]any) {
 	t.Helper()
 	if doc["openapi"] != "3.1.0" {
