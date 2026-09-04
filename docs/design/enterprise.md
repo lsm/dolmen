@@ -271,8 +271,9 @@ the request's **visible set**, and passes it to the engine as a `RowScope` (§6.
 **Scope resolution is incarnation-guarded** — the annotation is consulted above the seam, so a
 `set_row_access` migration (or a drop-and-recreate, of the table **or the whole namespace**) must
 not be able to race it. The API layer resolves the scope against the table's current
-**incarnation** — the (namespace creation id, schema version, drop generation) triple, §6.3 — and
-passes it alongside the scope; the engine re-checks it inside the operation's transaction — the
+**incarnation** — the (namespace creation id, schema version, drop generation) triple, §6.3 — read
+together with the schema from one snapshot (the engine's `TableState`, §6.2), and passes it
+alongside the scope; the engine re-checks it inside the operation's transaction — the
 same consistent-or-stale guard the store already applies to migrations and drops — and fails
 `conflict` on a mismatch, after which the caller re-resolves and retries. The drop generation is
 required because a version alone cannot distinguish a dropped table's same-named successor, which
@@ -377,6 +378,12 @@ type Engine interface {
     // Table DDL and registry — DescribeTable's scope scopes the returned row
     // count to the caller's visible set (§4.3). The zero Incarnation (no
     // guard, auth off) is re-checked inside the operation: §4.3's scope guard.
+    // TableState is the one-snapshot read the API layer resolves scopes with:
+    // schema (row_access, vectorize field, embed-space identity) together with
+    // the incarnation it must pass back — and it is also where a text vector
+    // query validates its preconditions BEFORE the provider is called, so an
+    // invalid query fails without contacting (or billing) the embedder.
+    TableState(ctx context.Context, ns, table string) (*schema.TableSchema, Incarnation, error)
     ListTables(ctx context.Context, ns string) ([]string, error)
     CreateTable(ctx context.Context, ns, table string, fields []schema.Field, opts TableOpts) (*schema.TableSchema, error)
     DescribeTable(ctx context.Context, ns, table string, scope *RowScope, scopeIncarnation Incarnation) (*schema.TableSchema, int64, error)
@@ -413,6 +420,10 @@ type Engine interface {
     // Search execution — includeHidden must cross the seam: truncated is
     // computed against the projected response-byte budget inside the engine,
     // so fetching hidden columns and stripping them above is not equivalent.
+    // A text vector query validates against the TableState snapshot (vectorize
+    // field present, identity pinned) and embeds BEFORE calling SearchVector —
+    // preserving today's error precedence, where an invalid query never
+    // reaches the embedding provider.
     SearchFulltext(ctx context.Context, ns, table, match string, filter string, args []any, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (SearchResult, error)
     SearchVector(ctx context.Context, ns, table string, q VectorQuery, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (SearchResult, error)
 
