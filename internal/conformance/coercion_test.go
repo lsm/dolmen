@@ -45,7 +45,9 @@ func TestTypedReadCoercionMatrix(t *testing.T) {
 			"obj":     map[string]any{"k": "v", "n": 1},
 			"arr":     []any{1, "two", true, nil},
 			"nest":    map[string]any{"a": []any{map[string]any{"b": false}}},
-			"at_time": "2026-09-03T10:11:12Z",
+			// noncanonical input (lowercase t/z): the documented minimal
+			// canonicalization uppercases them on the way in.
+			"at_time": "2026-09-03t10:11:12z",
 			"v":       []any{0.5, -0.25, 0.1, 1},
 		}},
 	})
@@ -102,7 +104,9 @@ func TestTypedReadCoercionMatrix(t *testing.T) {
 	assertJSONEqual(t, "json object", q["obj"], map[string]any{"k": "v", "n": float64(1)})
 	assertJSONEqual(t, "json array keeps null member", q["arr"], []any{float64(1), "two", true, nil})
 	assertJSONEqual(t, "nested json", q["nest"], map[string]any{"a": []any{map[string]any{"b": false}}})
-	assertJSONEqual(t, "timestamp string", q["at_time"], "2026-09-03T10:11:12Z")
+	// The lowercase t/z input reads back canonicalized, on all three paths
+	// (the cross-path comparison above already holds them equal).
+	assertJSONEqual(t, "timestamp canonicalized", q["at_time"], "2026-09-03T10:11:12Z")
 
 	// vector reads as a number array with float32 storage precision: 0.1
 	// comes back as the float64 of the stored float32.

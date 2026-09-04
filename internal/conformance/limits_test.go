@@ -41,6 +41,22 @@ func TestLimitsNamespaceName(t *testing.T) {
 			t.Fatalf("normalized namespace %v, want \"upper\"", data["namespace"])
 		}
 	})
+	// Table names normalize the same way: the padded/mixed-case name creates
+	// the canonical table, which is then addressable by its normalized form.
+	t.Run("table names normalize too", func(t *testing.T) {
+		data := h.mustHTTP("create_table", map[string]any{
+			"namespace": "normt", "table": " Docs ",
+			"fields": []map[string]any{{"name": "a", "type": "string"}},
+		})
+		if name := data["table"].(map[string]any)["name"]; name != "docs" {
+			t.Fatalf("normalized table name %v, want \"docs\"", name)
+		}
+		h.mustHTTP("describe_table", map[string]any{"namespace": "normt", "table": "docs"})
+		tables := h.mustHTTP("list_tables", map[string]any{"namespace": "normt"})["tables"].([]any)
+		if len(tables) != 1 || tables[0] != "docs" {
+			t.Fatalf("normalized table must be the one listed, got %v", tables)
+		}
+	})
 	for _, c := range reject {
 		t.Run("reject "+c.why, func(t *testing.T) {
 			status, body := h.httpCall("create_namespace", map[string]any{"namespace": c.ns})
@@ -389,6 +405,28 @@ func TestLimitsQueryRowsTruncate(t *testing.T) {
 	}
 	if data["truncated"] != true {
 		t.Fatalf("clamped over-cap limit must report truncated, got %v", data["truncated"])
+	}
+	// offset pages by value: the ordered scan resumes at row 100, and the
+	// final single row past offset 1000 exhausts the set.
+	data = h.mustHTTP("query", map[string]any{
+		"namespace": "limrows", "sql": "SELECT n FROM t ORDER BY n", "offset": 100,
+	})
+	paged := data["rows"].([]any)
+	if len(paged) != 901 || int64val(t, "offset first row", paged[0].(map[string]any)["n"]) != 100 {
+		t.Fatalf("offset 100 must resume at n=100 for the remaining 901 rows, got %d rows starting %v", len(paged), paged[0])
+	}
+	if data["truncated"] != true {
+		t.Fatalf("offset page with rows remaining must be truncated, got %v", data["truncated"])
+	}
+	data = h.mustHTTP("query", map[string]any{
+		"namespace": "limrows", "sql": "SELECT n FROM t ORDER BY n", "offset": 1000, "limit": 10,
+	})
+	paged = data["rows"].([]any)
+	if len(paged) != 1 || int64val(t, "tail row", paged[0].(map[string]any)["n"]) != 1000 {
+		t.Fatalf("offset 1000 must yield only n=1000, got %v", paged)
+	}
+	if data["truncated"] != false {
+		t.Fatalf("exhausted offset page must not be truncated, got %v", data["truncated"])
 	}
 	// Explicit smaller limit truncates too.
 	data = h.mustHTTP("query", map[string]any{"namespace": "limrows", "sql": "SELECT n FROM t", "limit": 10})
