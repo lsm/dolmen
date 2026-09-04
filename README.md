@@ -19,7 +19,7 @@ tables plus search plus an agent-native interface.
 
 ### Prerequisites
 
-- [Go 1.26.5+](https://go.dev/dl/) (only to build; the binary is otherwise standalone).
+- [Go 1.26.6+](https://go.dev/dl/) (only to build; the binary is otherwise standalone).
 - Git.
 - Optional, for `vectorize` fields and text queries in `search_vector`: nothing — the built-in
   `local` provider embeds in-process (downloads a model on first use) — or an OpenAI-compatible
@@ -514,9 +514,43 @@ keep it on a private interface.**
 ## Development
 
 ```bash
-make test     # go vet + go test ./...
-make build    # static binary
-make run      # run on :8790 with ./data
+make test            # go vet + go test ./...
+make race            # go vet + go test -race ./...
+make build           # static binary
+make run             # run on :8790 with ./data
+make vulncheck       # govulncheck ./...
+make release         # cross-compile release binaries into dist/
+make release-sbom    # generate an SPDX SBOM for the source tree
+make release-checksums  # generate SHA256SUMS for dist/
+make release-all     # release binaries + SBOM + SHA256SUMS
+make image           # build a local container image
+```
+
+### Releasing
+
+Pushing a `vX.Y.Z` tag starts the `release` workflow:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The workflow creates a GitHub Release with static binaries for `linux/darwin/windows` on `amd64/arm64`, a `SHA256SUMS` file, and an SPDX SBOM. It also builds and pushes a multi-arch (linux/amd64 and linux/arm64) container image to `ghcr.io/lsm/dolmen`:
+
+```bash
+docker run --rm -it -p 127.0.0.1:8790:8790 -v dolmen-data:/data ghcr.io/lsm/dolmen:v0.2.0
+```
+
+The image contains a single static Go binary in a `gcr.io/distroless/static` base. `/data` is exposed as a volume and is created by the container if not mounted. The default container command binds to `0.0.0.0:8790` so the port can be published from Docker. As with the native binary, keep this on a private network until authn/authz lands.
+
+### Verifying artifacts
+
+```bash
+# Check a downloaded binary
+sha256sum -c SHA256SUMS
+
+# Check the container image digest
+oras manifest fetch ghcr.io/lsm/dolmen:v0.2.0
 ```
 
 ## License
