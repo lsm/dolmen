@@ -365,8 +365,12 @@ type Engine interface {
     DescribeTable(ctx context.Context, ns, table string, scope *RowScope) (*schema.TableSchema, int64, error)
     DropTable(ctx context.Context, ns, table string) error
 
-    // Migrate ops — emb re-embeds set_vectorize backfills
-    Migrate(ctx context.Context, ns, table string, changes []schema.Change, emb Embedder, expectedVersion int, dryRun bool) (*schema.TableSchema, []string, error)
+    // Migrate ops — emb re-embeds set_vectorize backfills. Dry runs are a
+    // separate method returning the FULL MigrationPlan (operations, destructive
+    // changes, backfill/reindex/embed row counts) — those row-dependent values
+    // are computed against engine-owned data and cannot be rebuilt above the seam.
+    PlanMigration(ctx context.Context, ns, table string, changes []schema.Change, emb Embedder, expectedVersion int) (*MigrationPlan, error)
+    Migrate(ctx context.Context, ns, table string, changes []schema.Change, emb Embedder, expectedVersion int) (*schema.TableSchema, error)
     ListMigrations(ctx context.Context, ns, table string) ([]Migration, error)
 
     // Row CRUD — scope filters which existing rows may be matched, read, or counted;
@@ -389,9 +393,11 @@ type Engine interface {
     // read (§4.4), which is precisely why no scope parameter exists here.
     Query(ctx context.Context, ns, sql string, args []any, page Page) (QueryResult, error)
 
-    // Search execution
-    SearchFulltext(ctx context.Context, ns, table, match string, filter string, args []any, scope *RowScope, page Page) (SearchResult, error)
-    SearchVector(ctx context.Context, ns, table string, q VectorQuery, scope *RowScope, page Page) (SearchResult, error)
+    // Search execution — includeHidden must cross the seam: truncated is
+    // computed against the projected response-byte budget inside the engine,
+    // so fetching hidden columns and stripping them above is not equivalent.
+    SearchFulltext(ctx context.Context, ns, table, match string, filter string, args []any, includeHidden bool, scope *RowScope, page Page) (SearchResult, error)
+    SearchVector(ctx context.Context, ns, table string, q VectorQuery, includeHidden bool, scope *RowScope, page Page) (SearchResult, error)
 
     Close() error
 }
