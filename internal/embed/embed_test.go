@@ -149,7 +149,7 @@ func TestNewProviderOpenAIEmptyKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p, err := NewProvider("openai", srv.URL, "m", "")
+	p, err := NewProvider("openai", srv.URL, "m", "", "")
 	if err != nil {
 		t.Fatalf("NewProvider: %v", err)
 	}

@@ -98,7 +98,7 @@ The same call with a typo'd field name returns the error envelope:
 
 - Core tools: `list_namespaces`, `list_tables`, `describe_table`, `insert`, `query`, `search_fulltext`, `search_vector`, `delete`.
 - Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`, and `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field).
-- Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field — enables `search_vector` with `text`; requires an embedding provider on the server), `required: true`.
+- Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field — enables `search_vector` with `text`; needs an embedding provider on the server: the built-in `local` one or an external endpoint), `required: true`.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
 - `drop_table` / `drop_namespace` are irreversible deletions and are **not** part of this skill; do not use them. Ask the user to use `dolmen-admin` if a table or namespace must go.
