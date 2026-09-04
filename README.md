@@ -412,7 +412,7 @@ Skill distribution is built into the server. `GET /skills` returns a JSON manife
 | `list_tables` | Tables in a namespace |
 | `describe_server` | Server's embedding provider status — provider (`none` / `local` / `openai`), model, the identity that pins vectorized tables, and whether server-side embedding is usable; read-only, no secrets |
 | `describe_table` | Schema, version, row count |
-| `create_table` | Typed fields with `fulltext` / `vector` / `vectorize` / `default` annotations (`default` is stored by inserts that omit the field) |
+| `create_table` | Typed fields with `fulltext` / `vector` / `vectorize` / `enum` / `default` annotations (`enum` restricts a string field to a closed vocabulary; `default` is stored by inserts that omit the field) |
 | `infer_schema` | Propose fields from sample records (creates nothing) |
 | `insert` | Validated records; indexes and embeddings update automatically; `idempotency_key` makes retries replay the original ids |
 | `upsert_by_key` | Insert-or-update keyed by natural field(s) (`on`); converges instead of duplicating on retry |
@@ -423,7 +423,7 @@ Skill distribution is built into the server. `GET /skills` returns a JSON manife
 | `drop_table` | Drop a table — rows, search index, schema, history, idempotency keys; `confirm` must repeat the name |
 | `update` | WHERE-filtered field update; reindexes full-text rows and re-embeds changed vectorized fields |
 | `upsert` | Update matching rows, or insert one record when the filter matches nothing |
-| `migrate` | `add_field` (optional `default` backfills existing rows — required fields land on populated tables as `NOT NULL DEFAULT`; optional fields get a one-time backfill, later omitted inserts store NULL), `rename_field`, `drop_field`, `set_fulltext`, `set_vectorize`; `expected_version` asserts the schema being migrated (required for rename/drop, conflicts surface as 409), `dry_run` previews the plan without side effects; versioned + logged |
+| `migrate` | `add_field` (optional `default` backfills existing rows — required fields land on populated tables as `NOT NULL DEFAULT`; optional fields get a one-time backfill, later omitted inserts store NULL), `rename_field`, `drop_field`, `set_fulltext`, `set_vectorize`, `set_enum` (replaces a string field's vocabulary; rejects when a stored value falls outside the new list, naming it and its row count; an empty list removes the constraint); `expected_version` asserts the schema being migrated (required for rename/drop, conflicts surface as 409), `dry_run` previews the plan without side effects; versioned + logged |
 | `list_migrations` | A table's migration history, newest first, with the exact recorded changes |
 
 ## Model
@@ -437,6 +437,13 @@ Skill distribution is built into the server. `GET /skills` returns a JSON manife
   before dropping. A small registry inside each file holds table schemas, versions, and a migration
   log (surfaced by `list_migrations`).
 - **Full-text** via SQLite FTS5 shadow tables, maintained on insert/update/delete/migrate.
+- **Enum-validated writes**: a string field declared `enum: [...]` accepts only those values on every
+  write path (`insert`, `update`/`upsert` `set`, `upsert_by_key`) — exact match, no case folding, values
+  stored as written. A rejected write names the field, the rejected value, and the allowed list, over
+  `/v1` and MCP alike. A declared `default` must be a member; evolve the vocabulary with `migrate`
+  `set_enum`, which refuses to drop a value rows still store (naming it and its count). The annotation
+  is declared and reported in the MCP `tools/list` schemas and `/v1/openapi.json`, so schema-validating
+  clients see the vocabulary before the first write.
 - **Idempotent writes** for agent retries: `insert` accepts an `idempotency_key` (client-chosen,
   durably recorded with its ids in a side table, so a retry — even after a restart — returns the
   original ids; reusing a key for different records is an error), and `upsert_by_key` writes

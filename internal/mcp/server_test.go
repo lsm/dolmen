@@ -216,6 +216,55 @@ func TestMCPProtocol(t *testing.T) {
 	}
 }
 
+// TestToolsListSurfacesEnum pins the enum annotation's place in tools/list:
+// schema-validating clients see the vocabulary before the call, and every
+// client sees the declaration mechanism in the schemas themselves.
+func TestToolsListSurfacesEnum(t *testing.T) {
+	url := newMCPServer(t).URL + "/mcp"
+	_, res := rpc(t, url, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+	tools := res["result"].(map[string]any)["tools"].([]any)
+	byName := map[string]map[string]any{}
+	for _, tl := range tools {
+		tool := tl.(map[string]any)
+		byName[tool["name"].(string)] = tool
+	}
+	// create_table field items declare the enum annotation with its
+	// string-only guard among the conditional constraints.
+	items := byName["create_table"]["inputSchema"].(map[string]any)["properties"].(map[string]any)["fields"].(map[string]any)["items"].(map[string]any)
+	enum, ok := items["properties"].(map[string]any)["enum"].(map[string]any)
+	if !ok || enum["type"] != "array" || enum["minItems"] != float64(1) {
+		t.Fatalf("create_table field items must declare enum as a non-empty string array, got %v", items["properties"])
+	}
+	if _, ok := items["allOf"].([]any); !ok {
+		t.Fatalf("create_table field items must keep their conditional constraints")
+	}
+	// describe_table's output schema shows each field's vocabulary through the
+	// shared Field component (the same schema /v1/openapi.json declares).
+	tableRef, ok := byName["describe_table"]["outputSchema"].(map[string]any)["properties"].(map[string]any)["table"].(map[string]any)["$ref"].(string)
+	if !ok || tableRef != "#/components/schemas/TableSchema" {
+		t.Fatalf("describe_table output schema must reference the shared TableSchema component, got %v", byName["describe_table"])
+	}
+	// migrate lists set_enum among its ops and takes the vocabulary at
+	// change level.
+	migItems := byName["migrate"]["inputSchema"].(map[string]any)["properties"].(map[string]any)["changes"].(map[string]any)["items"].(map[string]any)
+	opEnum, ok := migItems["properties"].(map[string]any)["op"].(map[string]any)["enum"].([]any)
+	if !ok {
+		t.Fatalf("migrate op must enumerate its ops, got %v", migItems["properties"])
+	}
+	found := false
+	for _, op := range opEnum {
+		if op == "set_enum" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("migrate op enum must include set_enum, got %v", opEnum)
+	}
+	if _, ok := migItems["properties"].(map[string]any)["enum"].(map[string]any); !ok {
+		t.Fatalf("migrate changes must declare the change-level enum key, got %v", migItems["properties"])
+	}
+}
+
 func TestInitializeUnsupportedVersionFallsBack(t *testing.T) {
 	url := newMCPServer(t).URL + "/mcp"
 	code, res := rpc(t, url, map[string]any{

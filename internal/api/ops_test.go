@@ -205,25 +205,25 @@ func TestMigrateUnknownChangeKeyErrors(t *testing.T) {
 		{
 			name:     "unknown op",
 			changes:  []map[string]any{{"op": "add_filed", "field": map[string]any{"name": "status"}}},
-			want:     `changes[0]: unknown migration op "add_filed" (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize)`,
+			want:     `changes[0]: unknown migration op "add_filed" (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum)`,
 			wantHint: false,
 		},
 		{
 			name:     "missing op",
 			changes:  []map[string]any{{"field": map[string]any{"name": "status", "type": "string"}}},
-			want:     `changes[0]: op must be a non-empty string naming the change (add_field, rename_field, drop_field, set_fulltext, set_vectorize)`,
+			want:     `changes[0]: op must be a non-empty string naming the change (add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum)`,
 			wantHint: false,
 		},
 		{
 			name:     "non-string op",
 			changes:  []map[string]any{{"op": 123}},
-			want:     `changes[0]: op must be a non-empty string naming the change (add_field, rename_field, drop_field, set_fulltext, set_vectorize)`,
+			want:     `changes[0]: op must be a non-empty string naming the change (add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum)`,
 			wantHint: false,
 		},
 		{
 			name:     "null op",
 			changes:  []map[string]any{{"op": nil}},
-			want:     `changes[0]: op must be a non-empty string naming the change (add_field, rename_field, drop_field, set_fulltext, set_vectorize)`,
+			want:     `changes[0]: op must be a non-empty string naming the change (add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum)`,
 			wantHint: false,
 		},
 	} {

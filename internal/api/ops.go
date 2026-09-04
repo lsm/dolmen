@@ -42,7 +42,12 @@ func fieldOutSchema(desc string) map[string]any {
 			"vectorize": prop("boolean", "Present and true when the server embeds the field automatically"),
 			"dim":       prop("integer", "Vector dimension (present on vector fields)"),
 			"required":  prop("boolean", "Present and true when inserts must provide the field"),
-			"default":   map[string]any{"description": "Value stored when an insert omits the field; exactly as declared (present when set)"},
+			"enum": map[string]any{
+				"type":        "array",
+				"description": "Allowed values for this string field (present when the field has an enum constraint); writes carrying any other value are rejected",
+				"items":       map[string]any{"type": "string"},
+			},
+			"default": map[string]any{"description": "Value stored when an insert omits the field; exactly as declared (present when set)"},
 		},
 		"required":             []string{"name", "type"},
 		"additionalProperties": false,
@@ -74,7 +79,7 @@ func changeOutSchema(desc string) map[string]any {
 		"type":        "object",
 		"description": desc,
 		"properties": map[string]any{
-			"op": prop("string", "add_field | rename_field | drop_field | set_fulltext | set_vectorize"),
+			"op": prop("string", "add_field | rename_field | drop_field | set_fulltext | set_vectorize | set_enum"),
 			"field": map[string]any{
 				"type":                 "object",
 				"description":          "Field definition (add_field)",
@@ -86,13 +91,24 @@ func changeOutSchema(desc string) map[string]any {
 					"vectorize": prop("boolean", "Present and true when server-embedded"),
 					"dim":       prop("integer", "Vector dimension (vector fields)"),
 					"required":  prop("boolean", "Present and true when inserts must provide the field"),
+					"enum": map[string]any{
+						"type":        "array",
+						"description": "Allowed values (present on enum-constrained string fields)",
+						"items":       map[string]any{"type": "string"},
+					},
 				},
 				"required": []string{"name"},
 			},
-			"from":    prop("string", "Current name (rename_field)"),
-			"to":      prop("string", "New name (rename_field)"),
-			"name":    prop("string", "Field name (drop_field, set_fulltext, set_vectorize)"),
-			"value":   prop("boolean", "Flag value (set_fulltext, set_vectorize)"),
+			"from":  prop("string", "Current name (rename_field)"),
+			"to":    prop("string", "New name (rename_field)"),
+			"name":  prop("string", "Field name (drop_field, set_fulltext, set_vectorize, set_enum)"),
+			"value": prop("boolean", "Flag value (set_fulltext, set_vectorize)"),
+			"enum": map[string]any{
+				"type":        "array",
+				"description": "The field's complete new vocabulary (set_enum); an empty array removes the constraint",
+				"items":       map[string]any{"type": "string", "minLength": 1},
+				"uniqueItems": true,
+			},
 			"default": map[string]any{"description": "Backfill value for existing rows (add_field), exactly as applied"},
 		},
 		"required":             []string{"op"},
@@ -159,6 +175,7 @@ var migrateChangeKeys = map[string][]string{
 	schema.OpDropField:    {"op", "name"},
 	schema.OpSetFulltext:  {"op", "name", "value"},
 	schema.OpSetVectorize: {"op", "name", "value"},
+	schema.OpSetEnum:      {"op", "name", "enum"},
 }
 
 // migrateFieldDefKeys are the field-definition properties that belong inside a
@@ -183,11 +200,11 @@ func validateMigrateChanges(changes []map[string]any) error {
 		rawOp, present := ch["op"]
 		op, isString := rawOp.(string)
 		if !present || !isString || op == "" {
-			return badRequest("changes[%d]: op must be a non-empty string naming the change (add_field, rename_field, drop_field, set_fulltext, set_vectorize)", i)
+			return badRequest("changes[%d]: op must be a non-empty string naming the change (add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum)", i)
 		}
 		keys, known := migrateChangeKeys[op]
 		if !known {
-			return badRequest("changes[%d]: unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize)", i, op)
+			return badRequest("changes[%d]: unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum)", i, op)
 		}
 		var unknown []string
 		for k := range ch {
@@ -210,6 +227,11 @@ func validateMigrateChanges(changes []map[string]any) error {
 		if op == schema.OpSetFulltext || op == schema.OpSetVectorize {
 			if _, ok := ch["value"]; !ok {
 				return badRequest("changes[%d]: %s requires an explicit value (true or false); an omitted value would silently disable the feature and clear its index", i, op)
+			}
+		}
+		if op == schema.OpSetEnum {
+			if _, ok := ch["enum"]; !ok {
+				return badRequest("changes[%d]: set_enum requires an explicit enum array (the field's complete new vocabulary; an omitted array is ambiguous — pass an empty array to remove the constraint)", i)
 			}
 		}
 	}
@@ -450,7 +472,9 @@ var Ops = map[string]OpDef{
 		Description: "Create a table with typed fields. Types: string, text, number, boolean, timestamp, json, vector. " +
 			"Annotations: fulltext=true indexes a string/text field for stemmed full-text search (plural/inflected terms match, e.g. payments <-> payment); type=vector stores caller-provided " +
 			"embeddings (dim required); vectorize=true on a string/text field makes the server embed that field automatically " +
-			"for vector search; default=<value> is stored by later inserts that omit the field (instead of NULL; must match " +
+			"for vector search; enum=[values] restricts a string field to a closed vocabulary — writes carrying any other value " +
+			"are rejected (exact match, no case folding; a declared default must be a member); " +
+			"default=<value> is stored by later inserts that omit the field (instead of NULL; must match " +
 			"the field's type; not allowed on required or vectorize fields). Consider infer_schema first when starting from sample records.",
 		InputSchema: map[string]any{
 			"type":                 "object",
@@ -1183,11 +1207,13 @@ var Ops = map[string]OpDef{
 		},
 	},
 	"migrate": {
-		Description: "Evolve a table schema: add_field, rename_field, drop_field, set_fulltext, set_vectorize. " +
+		Description: "Evolve a table schema: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum. " +
 			"Bumps the schema version and records the change. Adding fulltext rebuilds the search index; " +
 			"re-asserting set_fulltext ... = true on an already-indexed field also rebuilds it (the reindex path for " +
 			"tables created before stemming became the default); " +
-			"enabling vectorize backfills embeddings for existing rows. add_field accepts a default that is " +
+			"enabling vectorize backfills embeddings for existing rows. set_enum replaces a string field's " +
+			"vocabulary with the given list (not a delta; an empty list removes the constraint) and rejects " +
+			"when a row still stores a dropped value, naming the value and its row count. add_field accepts a default that is " +
 			"coerced to the field's type and backfilled into existing rows; it is required for adding a " +
 			"required field to a populated table (the column then carries NOT NULL DEFAULT — dolmen inserts " +
 			"must still supply the field). For optional fields the default is a one-time backfill: later " +
@@ -1213,14 +1239,20 @@ var Ops = map[string]OpDef{
 						"properties": map[string]any{
 							"op": map[string]any{
 								"type":        "string",
-								"description": "add_field | rename_field | drop_field | set_fulltext | set_vectorize",
-								"enum":        []string{"add_field", "rename_field", "drop_field", "set_fulltext", "set_vectorize"},
+								"description": "add_field | rename_field | drop_field | set_fulltext | set_vectorize | set_enum",
+								"enum":        []string{"add_field", "rename_field", "drop_field", "set_fulltext", "set_vectorize", "set_enum"},
 							},
 							"field": fieldItemSchema("Field definition for add_field (its backfill default is the change's default, not a field property)", false),
 							"from":  existingFieldNameProp("Current name (rename_field)"),
 							"to":    fieldNameProp("New name (rename_field)"),
-							"name":  existingFieldNameProp("Field name (drop_field, set_fulltext, set_vectorize)"),
+							"name":  existingFieldNameProp("Field name (drop_field, set_fulltext, set_vectorize, set_enum)"),
 							"value": prop("boolean", "Flag value (set_fulltext, set_vectorize)"),
+							"enum": map[string]any{
+								"type":        "array",
+								"description": "The field's complete new vocabulary (set_enum only) — not a delta; exact-match string values stored as written. An empty array removes the constraint. Values still stored by rows must all be kept, or the change is rejected naming them and their row counts",
+								"items":       map[string]any{"type": "string", "minLength": 1},
+								"uniqueItems": true,
+							},
 							"default": map[string]any{
 								"description": "Backfill value for existing rows (add_field only); coerced to the field's type — a string for string/text/timestamp/json, number, boolean, or a number array of the field's dim for vector",
 							},
@@ -1248,6 +1280,10 @@ var Ops = map[string]OpDef{
 								"then": map[string]any{"required": []string{"name", "value"}},
 							},
 							map[string]any{
+								"if":   map[string]any{"properties": map[string]any{"op": map[string]any{"const": "set_enum"}}},
+								"then": map[string]any{"required": []string{"name", "enum"}},
+							},
+							map[string]any{
 								"if": map[string]any{
 									"properties": map[string]any{
 										"op": map[string]any{"not": map[string]any{"const": "add_field"}},
@@ -1264,6 +1300,15 @@ var Ops = map[string]OpDef{
 									"required": []string{"op"},
 								},
 								"then": map[string]any{"not": map[string]any{"required": []string{"value"}}},
+							},
+							map[string]any{
+								"if": map[string]any{
+									"properties": map[string]any{
+										"op": map[string]any{"not": map[string]any{"const": "set_enum"}},
+									},
+									"required": []string{"op"},
+								},
+								"then": map[string]any{"not": map[string]any{"required": []string{"enum"}}},
 							},
 							map[string]any{
 								"if": map[string]any{

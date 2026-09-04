@@ -587,6 +587,9 @@ func coerceValue(f schema.Field, v any) (any, error) {
 		if !ok {
 			return nil, fmt.Errorf("field %q: expected a string", f.Name)
 		}
+		if !schema.EnumAllows(f.Enum, s) {
+			return nil, fmt.Errorf("field %q: value %q is not one of the allowed enum values (%s)", f.Name, s, strings.Join(f.Enum, ", "))
+		}
 		return s, nil
 	}
 }

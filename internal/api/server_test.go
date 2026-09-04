@@ -351,8 +351,8 @@ func TestCreateTableNameAndDimConstraintsDeclared(t *testing.T) {
 		t.Fatalf(`"name" must exclude the reserved field identifiers, got %v`, name["not"])
 	}
 	allOf, ok := items["allOf"].([]any)
-	if !ok || len(allOf) != 5 {
-		t.Fatalf("expected five conditional constraints (dim, fulltext, vectorize, default exclusions), got %v", items["allOf"])
+	if !ok || len(allOf) != 6 {
+		t.Fatalf("expected six conditional constraints (dim, fulltext, vectorize, enum, default exclusions), got %v", items["allOf"])
 	}
 	dimRule := allOf[0].(map[string]any)
 	then, ok := dimRule["then"].(map[string]any)["required"].([]string)
@@ -373,8 +373,8 @@ func TestCreateTableFulltextAndVectorizeConstraintsDeclared(t *testing.T) {
 	fields := def.InputSchema["properties"].(map[string]any)["fields"].(map[string]any)
 	items := fields["items"].(map[string]any)
 	allOf, ok := items["allOf"].([]any)
-	if !ok || len(allOf) != 5 {
-		t.Fatalf("expected five conditional constraints, got %v", items["allOf"])
+	if !ok || len(allOf) != 6 {
+		t.Fatalf("expected six conditional constraints, got %v", items["allOf"])
 	}
 	fulltextThen := allOf[1].(map[string]any)["then"].(map[string]any)["properties"].(map[string]any)
 	ftTypes, ok := fulltextThen["type"].(map[string]any)["enum"].([]schema.FieldType)
@@ -401,6 +401,42 @@ func TestCreateTableFulltextAndVectorizeConstraintsDeclared(t *testing.T) {
 	}
 }
 
+func TestCreateTableEnumConstraintDeclared(t *testing.T) {
+	def, ok := Ops["create_table"]
+	if !ok {
+		t.Fatal("create_table op missing")
+	}
+	items := def.InputSchema["properties"].(map[string]any)["fields"].(map[string]any)["items"].(map[string]any)
+	props := items["properties"].(map[string]any)
+	enum, ok := props["enum"].(map[string]any)
+	if !ok {
+		t.Fatalf(`create_table field items must declare "enum", got %v`, props["enum"])
+	}
+	if enum["minItems"] != 1 || enum["uniqueItems"] != true {
+		t.Fatalf("enum must require at least one distinct value, got %v", enum)
+	}
+	if _, ok := enum["items"].(map[string]any)["minLength"]; !ok {
+		t.Fatalf("enum values must be non-empty strings, got %v", enum["items"])
+	}
+	// enum is string-only; an omitted type defaults to string, so the guard
+	// fires only when a type is present and is not string.
+	rule, ok := items["allOf"].([]any)[3].(map[string]any)
+	if !ok {
+		t.Fatalf("enum type guard must be the fourth conditional constraint, got %v", items["allOf"])
+	}
+	ifCond := rule["if"].(map[string]any)
+	if _, ok := ifCond["properties"].(map[string]any)["type"].(map[string]any)["not"].(map[string]any)["const"]; !ok {
+		t.Fatalf("enum guard must key on type not being string, got %v", ifCond)
+	}
+	if ifCond["required"].([]string)[0] != "type" {
+		t.Fatalf("enum guard must only fire when type is present, got %v", ifCond)
+	}
+	thenNot, ok := rule["then"].(map[string]any)["not"].(map[string]any)["required"].([]string)
+	if !ok || len(thenNot) != 1 || thenNot[0] != "enum" {
+		t.Fatalf("non-string types must reject enum via not/required, got %v", rule["then"])
+	}
+}
+
 func TestCreateTableDefaultConstraintsDeclared(t *testing.T) {
 	def, ok := Ops["create_table"]
 	if !ok {
@@ -413,9 +449,9 @@ func TestCreateTableDefaultConstraintsDeclared(t *testing.T) {
 	}
 	allOf := items["allOf"].([]any)
 	for i, exclude := range []string{"required", "vectorize"} {
-		rule, ok := allOf[3+i].(map[string]any)
+		rule, ok := allOf[4+i].(map[string]any)
 		if !ok {
-			t.Fatalf("default exclusion %d must be an if/then rule, got %v", i, allOf[3+i])
+			t.Fatalf("default exclusion %d must be an if/then rule, got %v", i, allOf[4+i])
 		}
 		ifCond := rule["if"].(map[string]any)
 		if ifCond["properties"].(map[string]any)[exclude].(map[string]any)["const"] != true {

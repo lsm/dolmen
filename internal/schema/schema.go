@@ -33,6 +33,11 @@ type Field struct {
 	Vectorize bool      `json:"vectorize,omitempty"`
 	Dim       int       `json:"dim,omitempty"`
 	Required  bool      `json:"required,omitempty"`
+	// Enum is the field's closed vocabulary: writes carrying any other value
+	// are rejected. String fields only, exact match with no case folding —
+	// values are stored exactly as written (the name-lowercasing rules never
+	// apply to values). Orthogonal to fulltext/vectorize.
+	Enum []string `json:"enum,omitempty"`
 	// Default is the value create_table callers declared for this field:
 	// inserts omitting the field store it instead of NULL. It is kept exactly
 	// as declared (numbers as json.Number) and coerced through the normal
@@ -61,6 +66,12 @@ type Change struct {
 	// explicit false disable, which stays replayable through the API (which
 	// requires an explicit value) — while other ops omit the meaningless key.
 	Value *bool `json:"value,omitempty"`
+	// Enum is set_enum's replacement vocabulary for a string field: the
+	// complete new list, not a delta. A pointer with omitempty so history
+	// records it exactly when the change carries one — including an explicit
+	// empty array, which removes the constraint and stays replayable through
+	// the API — while other ops omit the meaningless key.
+	Enum *[]string `json:"enum,omitempty"`
 	// Default is add_field's backfill value for existing rows: added required
 	// fields need one when the table has rows. Coerced by the field's type and
 	// applied as the column's literal default, so old rows read it immediately.
@@ -73,6 +84,7 @@ const (
 	OpDropField    = "drop_field"
 	OpSetFulltext  = "set_fulltext"
 	OpSetVectorize = "set_vectorize"
+	OpSetEnum      = "set_enum"
 )
 
 var identRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
@@ -133,6 +145,37 @@ func ValidIdentSyntax(s string) bool {
 // the FTS shadow-table suffix.
 func ValidTableName(s string) bool {
 	return ValidateTableName(s) == nil
+}
+
+// ValidateEnum checks a declared enum vocabulary: at least one value, none
+// repeated. It is shared by field-list validation (create_table, add_field)
+// and migrate's set_enum, so the two cannot drift.
+func ValidateEnum(field string, vals []string) error {
+	if len(vals) == 0 {
+		return fmt.Errorf("field %q: enum must list at least one value (pass an empty list to set_enum only, which removes the constraint)", field)
+	}
+	seen := make(map[string]bool, len(vals))
+	for _, v := range vals {
+		if seen[v] {
+			return fmt.Errorf("field %q: enum lists duplicate value %q", field, v)
+		}
+		seen[v] = true
+	}
+	return nil
+}
+
+// EnumAllows reports whether s is a member of an enum vocabulary — exact
+// match, no case folding. An empty (or absent) enum imposes no constraint.
+func EnumAllows(enum []string, s string) bool {
+	if len(enum) == 0 {
+		return true
+	}
+	for _, v := range enum {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidateIdent returns an error explaining why name is not a valid
@@ -311,6 +354,14 @@ func validate(fields []Field, legacy map[string]bool) error {
 		}
 		if f.Fulltext && f.Name == "rank" {
 			return fmt.Errorf("field %q: rank cannot be a fulltext field (reserved by the FTS5 index)", f.Name)
+		}
+		if f.Enum != nil {
+			if f.Type != String {
+				return fmt.Errorf("field %q: enum is only allowed on string fields", f.Name)
+			}
+			if err := ValidateEnum(f.Name, f.Enum); err != nil {
+				return err
+			}
 		}
 		if f.Vectorize {
 			if f.Type != String && f.Type != Text {
