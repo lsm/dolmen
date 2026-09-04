@@ -269,15 +269,18 @@ the request's **visible set**, and passes it to the engine as a `RowScope` (§6.
   scope; a nil scope means *unscoped*, never *empty*.
 
 **Scope resolution is incarnation-guarded** — the annotation is consulted above the seam, so a
-`set_row_access` migration (or a drop-and-recreate) must not be able to race it. The API layer
-resolves the scope against the table's current **incarnation** — the (schema version, drop
-generation) pair — and passes it alongside the scope; the engine re-checks both inside the
-operation's transaction — the same consistent-or-stale guard the store already applies to
-migrations and drops — and fails `conflict` on a mismatch, after which the caller re-resolves and
-retries. The drop generation is required because a version alone cannot distinguish a dropped
-table's same-named successor, which is recreated at version 1; a default table replaced by a
-`row_access` table of the same name and version can therefore never inherit a stale nil scope,
-and a migration can never flip one into access to foreign rows.
+`set_row_access` migration (or a drop-and-recreate, of the table **or the whole namespace**) must
+not be able to race it. The API layer resolves the scope against the table's current
+**incarnation** — the (namespace creation id, schema version, drop generation) triple, §6.3 — and
+passes it alongside the scope; the engine re-checks it inside the operation's transaction — the
+same consistent-or-stale guard the store already applies to migrations and drops — and fails
+`conflict` on a mismatch, after which the caller re-resolves and retries. The drop generation is
+required because a version alone cannot distinguish a dropped table's same-named successor, which
+is recreated at version 1; the namespace creation id is required because dropping a namespace
+deletes its file and with it the drop generations, so a recreated namespace's tables would
+otherwise repeat (version 1, generation 0). A default table replaced — by migration, table drop,
+or namespace drop — by a `row_access` table of the same name can therefore never inherit a stale
+nil scope, and a migration can never flip one into access to foreign rows.
 
 The engine conjoins the scope predicate into every row read, count, mutation, and search it
 performs for that call. Everything observes the visible set:
@@ -430,12 +433,18 @@ type RowScope struct {
 ```
 
 ```go
-// Incarnation identifies one lifetime of a table: its schema version and its
-// drop generation together. Version alone cannot distinguish a dropped
-// table's same-named successor, which is recreated at version 1 — the store
-// already tracks drop generations (_dolmen_drop_gen) for exactly this. The
-// zero value means "no guard" (auth off).
+// Incarnation identifies one lifetime of a table. NsGen is the namespace's
+// creation id — a random 128-bit value assigned when the namespace is
+// created and persisted in its registry; DropNamespace deletes it with the
+// file, so a recreated namespace gets a fresh one and the pair below can
+// never repeat across namespace lifetimes (the drop generation alone cannot
+// guarantee this: it lives inside the namespace database and is reset by the
+// drop). Version+DropGen distinguish a dropped table's same-named successor,
+// which is recreated at version 1 — the store already tracks drop
+// generations (_dolmen_drop_gen) for exactly this. The zero value means
+// "no guard" (auth off).
 type Incarnation struct {
+    NsGen   [16]byte
     Version int64
     DropGen int64
 }
