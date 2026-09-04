@@ -3,11 +3,13 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -198,6 +200,33 @@ func TestRedactPathsCoversSpacesInPaths(t *testing.T) {
 		if !strings.Contains(out, "<path>") {
 			t.Fatalf("expected <path> in redaction of %q, got %q", msg, out)
 		}
+	}
+}
+
+// TestEmbedderUnavailableMessageNamesModelSafely pins what the public
+// embedder_unavailable message may name: a Hub id (org/name — a public
+// identifier) is echoed, but a model-directory path is filesystem layout and
+// is never interpolated, ASCII or not.
+func TestEmbedderUnavailableMessageNamesModelSafely(t *testing.T) {
+	hub := wrapStoreErr(&embed.LoadError{Model: "org/model", Err: errors.New("download failed")})
+	if hub.Code != ErrCodeEmbedderUnavailable || hub.Status != http.StatusServiceUnavailable {
+		t.Fatalf("code/status: %v %d", hub.Code, hub.Status)
+	}
+	if !strings.Contains(hub.Message, "org/model") || !strings.Contains(hub.Message, "Hugging Face Hub") {
+		t.Fatalf("Hub-id model must be named, got %q", hub.Message)
+	}
+	if strings.Contains(hub.Message, "download failed") {
+		t.Fatalf("raw cause must stay out of the public message, got %q", hub.Message)
+	}
+
+	dir := wrapStoreErr(&embed.LoadError{Model: "/Users/张三/models", Err: errors.New("download failed")})
+	for _, leak := range []string{"张三", "/Users", "models"} {
+		if strings.Contains(dir.Message, leak) {
+			t.Fatalf("directory model leaked %q into the public message, got %q", leak, dir.Message)
+		}
+	}
+	if !strings.Contains(dir.Message, "configured local model directory") {
+		t.Fatalf("directory model must be described generically, got %q", dir.Message)
 	}
 }
 

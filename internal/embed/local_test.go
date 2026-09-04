@@ -185,6 +185,13 @@ func TestLocalEmbedLazyRetryAndSuccess(t *testing.T) {
 	if le.Model != "org/model" {
 		t.Fatalf("LoadError must carry the model name, got %q", le.Model)
 	}
+	// Hub ids are public identifiers; directory paths are filesystem layout.
+	if !le.IsHubID() {
+		t.Fatalf("org/model is a Hub id, IsHubID said false")
+	}
+	if (&LoadError{Model: "/opt/models/minilm"}).IsHubID() {
+		t.Fatalf("a directory path is not a Hub id, IsHubID said true")
+	}
 	for _, want := range []string{"org/model", "Hugging Face Hub"} {
 		if !strings.Contains(firstErr.Error(), want) {
 			t.Fatalf("load error must mention %q to orient the operator, got %q", want, firstErr)
