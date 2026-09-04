@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -254,6 +255,13 @@ func TestLimitsIdempotencyKeyLength(t *testing.T) {
 func TestLimitsVectorDimension(t *testing.T) {
 	h := newHarness(t)
 
+	// The documented ceiling is 4096: pin the constant so raising it
+	// requires updating this contract (and the README) explicitly, instead
+	// of the accept/reject pair below silently following the change.
+	if schema.MaxVectorDim != 4096 {
+		t.Fatalf("schema.MaxVectorDim = %d, want the documented ceiling 4096", schema.MaxVectorDim)
+	}
+
 	for _, dim := range []int{1, schema.MaxVectorDim} {
 		if status, body := h.httpCall("create_table", map[string]any{
 			"namespace": "limdim", "table": "v" + pad(dim), "fields": []map[string]any{{"name": "v", "type": "vector", "dim": dim}},
@@ -354,9 +362,14 @@ func TestLimitsQueryResponseBudget(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("limbudget", "t", []map[string]any{{"name": "blob", "type": "text"}})
 
-	// 40 rows × ~1 MiB text ≈ 40 MiB total, over the 32 MiB response budget.
-	// Inserted one row per call so each request stays under the 32 MiB
-	// request-body limit; the response must truncate, not error.
+	// The documented budget is 32 MiB: pin the constant so changing it
+	// requires updating this contract explicitly.
+	if store.MaxQueryBytes != 32<<20 {
+		t.Fatalf("store.MaxQueryBytes = %d, want the documented 32 MiB budget", store.MaxQueryBytes)
+	}
+
+	// 40 rows of exactly 1 MiB, inserted one row per call so each request
+	// stays under the 32 MiB request-body limit.
 	big := strings.Repeat("x", 1<<20)
 	for i := 0; i < 40; i++ {
 		h.mustHTTP("insert", map[string]any{
@@ -364,13 +377,29 @@ func TestLimitsQueryResponseBudget(t *testing.T) {
 		})
 	}
 
+	// Each row costs its 1 MiB text plus label/encoding overhead (~20
+	// bytes), so exactly 31 rows fit under the 32 MiB budget: 31 × (1 MiB +
+	// ε) ≈ 31.0 MiB fits; the 32nd would push past 33554432 bytes. Pinning
+	// the count verifies both sides of the boundary — a budget shrunk to
+	// ~28 MiB returns ≤ 28 rows, one grown to ~39 MiB returns more — instead
+	// of just "fewer than 40".
 	data := h.mustHTTP("query", map[string]any{"namespace": "limbudget", "sql": "SELECT blob FROM t"})
 	rows := data["rows"].([]any)
-	if len(rows) >= 40 {
-		t.Fatalf("budget must truncate below 40 rows, got %d", len(rows))
+	if len(rows) != 31 {
+		t.Fatalf("the 32 MiB budget must fit exactly 31 one-MiB rows, got %d", len(rows))
 	}
 	if data["truncated"] != true {
 		t.Fatalf("truncated must be true when the budget cuts the page, got %v", data["truncated"])
+	}
+
+	// The returned payload itself must sit just under the budget.
+	total := 0
+	for _, r := range rows {
+		raw, _ := json.Marshal(r)
+		total += len(raw)
+	}
+	if total < 31<<20 || total > 32<<20 {
+		t.Fatalf("returned payload %d bytes must sit just under the 32 MiB budget", total)
 	}
 }
 

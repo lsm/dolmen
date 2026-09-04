@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"testing"
+	"time"
 )
 
 // Migration guards: expected_version preconditions, dry_run purity (no
@@ -210,10 +211,10 @@ func TestMigrateAuditTrail(t *testing.T) {
 	}
 }
 
-// rfc3339ish checks the documented timestamp shape loosely (YYYY-MM-DDTHH:MM:SS...Z).
+// rfc3339ish reports whether s parses as RFC3339 with sub-second precision
+// allowed — the documented audit-trail timestamp form. A real parse, not a
+// punctuation check, so a regressed serializer fails the contract.
 func rfc3339ish(s string) bool {
-	if len(s) < 20 {
-		return false
-	}
-	return s[4] == '-' && s[7] == '-' && s[10] == 'T' && s[13] == ':' && s[16] == ':'
+	_, err := time.Parse(time.RFC3339Nano, s)
+	return err == nil
 }
