@@ -304,9 +304,9 @@ match, before ranking.
   an English query will not surface a Japanese incident, and vice versa. Mixed-language/CJK
   deployments should ask the operator to run `DOLMEN_EMBED_MODEL=intfloat/multilingual-e5-small`
   (README, "Choosing an embedding model"; the e5 `query:`/`passage:` role prefixes are added
-  server-side, callers never supply them). Switching models changes the embedding identity, so
-  existing vectorized tables reject writes until re-embedded via `migrate` (`set_vectorize` off,
-  then on).
+  server-side, callers never supply them — the `#e5` suffix in the reported identity reflects
+  that contract). Switching models changes the embedding identity, so existing vectorized tables
+  reject writes until re-embedded via `migrate` (`set_vectorize` off, then on).
 - `column` applies to `vector` queries: it names the stored-vectors column and defaults to
   `_embedding` (if a vectorized field exists) or the first declared `vector` field. The query and
   stored vectors must come from the same embedding space. For `_embedding` (from `vectorize`) this

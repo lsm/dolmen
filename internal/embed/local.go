@@ -63,11 +63,14 @@ func (l *Local) Name() string { return "local" }
 
 func (l *Local) ModelName() string { return l.Model }
 
-// Identity pins tables to this provider and model: "local/<model>". A model
-// change (or a switch to/from the OpenAI provider) is a different identity,
-// so inserts and text searches are rejected until the table is re-embedded
+// Identity pins tables to this provider and model: "local/<model>", plus a
+// "#e5" marker when the e5 prefix contract is active — the marker versions
+// the embedding space, so tables embedded before prefixes were applied are
+// rejected rather than silently mixing representations. A model change (or a
+// switch to/from the OpenAI provider) is a different identity too, so
+// inserts and text searches are rejected until the table is re-embedded
 // via migrate — exactly as with the OpenAI provider.
-func (l *Local) Identity() string { return "local/" + l.Model }
+func (l *Local) Identity() string { return "local/" + l.Model + identityMarker(l.Model) }
 
 // Embed embeds stored-row text, prepending the e5 passage prefix for
 // e5-family models — rembed embeds exactly the text it is given.

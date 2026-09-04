@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -33,22 +34,38 @@ type Provider interface {
 	EmbedQuery(ctx context.Context, text string) ([]float32, error)
 }
 
-// e5ModelRe matches the e5 embedding-model family by id or directory name:
-// intfloat/e5-large-v2, intfloat/multilingual-e5-small, or their org--name
-// cache-directory form. The e5 retrieval contract is asymmetric — the models
-// were trained with "query: " / "passage: " role prefixes — and dolmen embeds
-// stored rows and search text through different calls, so the prefixes are
-// added server-side rather than silently degrading ranking for every caller.
-var e5ModelRe = regexp.MustCompile(`(?i)(?:^|[-_/])e5(?:[-_]|$)`)
+// e5NameRe matches the e5 embedding-model family by the model's own name
+// segment: e5-large-v2, multilingual-e5-small, intfloat--multilingual-e5-small.
+// The e5 retrieval contract is asymmetric — the models were trained with
+// "query: " / "passage: " role prefixes — and dolmen embeds stored rows and
+// search text through different calls, so the prefixes are added server-side
+// rather than silently degrading ranking for every caller.
+var e5NameRe = regexp.MustCompile(`(?i)(?:^|[-_])e5(?:[-_]|$)`)
 
-// e5Prefixes reports the role prefixes the e5 contract requires for model,
-// or empty strings for symmetric models (the MiniLM default and the
-// paraphrase-multilingual-* family), which need none.
+// e5Prefixes reports the role prefixes the basic e5 contract requires for
+// model, or empty strings when the model does not follow it. Only the
+// model's own name segment decides (filepath.Base) — an org name or parent
+// directory containing "e5" must not — and instruct-tuned variants
+// (e5-mistral-7b-instruct, multilingual-e5-large-instruct) are excluded:
+// they take task instructions, not these prefixes.
 func e5Prefixes(model string) (query, passage string) {
-	if !e5ModelRe.MatchString(model) {
+	name := filepath.Base(model)
+	if !e5NameRe.MatchString(name) || strings.Contains(strings.ToLower(name), "instruct") {
 		return "", ""
 	}
 	return "query: ", "passage: "
+}
+
+// identityMarker returns "#e5" when dolmen applies the e5 prefix contract to
+// model, "" otherwise. The marker versions the embedding identity: tables
+// embedded before prefixes were applied carry the unmarked identity, so an
+// upgraded server rejects them (and re-embeds via migrate) instead of
+// silently mixing prefixed and raw vectors in one space.
+func identityMarker(model string) string {
+	if query, _ := e5Prefixes(model); query != "" {
+		return "#e5"
+	}
+	return ""
 }
 
 // prefixAll returns texts with prefix prepended to each; the empty prefix
@@ -103,13 +120,14 @@ func (o *OpenAI) ModelName() string { return o.Model }
 // trimmed) form — it cannot complete an HTTP request either, so it carries no
 // working credentials to leak.
 func (o *OpenAI) Identity() string {
+	model := o.Model + identityMarker(o.Model)
 	trimmed := strings.TrimRight(o.BaseURL, "/")
 	u, err := url.Parse(trimmed)
 	if err != nil {
-		return o.Name() + "|" + trimmed + "|" + o.Model
+		return o.Name() + "|" + trimmed + "|" + model
 	}
 	u.User = nil
-	return o.Name() + "|" + u.String() + "|" + o.Model
+	return o.Name() + "|" + u.String() + "|" + model
 }
 
 // Embed embeds stored-row text, prepending the e5 passage prefix for

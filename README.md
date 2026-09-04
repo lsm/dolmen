@@ -267,18 +267,20 @@ tested:
 retrieval contract — search text prefixed `"query: "` and stored text prefixed `"passage: "` —
 and embed exactly the text they are given, so missing prefixes silently degrade ranking. Dolmen
 adds the prefixes server-side: stored rows are embedded as `passage: <field value>`, `search_vector`
-text queries as `query: <text>`, for any model whose id carries an `e5` name segment
-(`intfloat/e5-*`, `intfloat/multilingual-e5-*`, and their offline directory forms). Callers never
-add or see the prefixes, and symmetric models — the MiniLM default, the
-`sentence-transformers/paraphrase-multilingual-*` family — get nothing prepended. Other
-asymmetric families (bge, arctic) use longer model-specific instructions dolmen does not know;
-avoid them.
+text queries as `query: <text>`, for any model whose own name segment carries `e5`
+(`intfloat/e5-*`, `intfloat/multilingual-e5-*`, and their offline directory forms; instruct-tuned
+variants are excluded — they need different prompts). Callers never add or see the prefixes, and
+symmetric models — the MiniLM default, the `sentence-transformers/paraphrase-multilingual-*`
+family — get nothing prepended. Other asymmetric families (bge, arctic) use longer
+model-specific instructions dolmen does not know; avoid them.
 
 **Switching models re-embeds through `migrate`.** Every vectorized table records the identity of
-the space it was embedded in — `local/<model>` — visible as `identity` in `describe_server` and
-`embed_space` in `describe_table`. A server started with a different model rejects inserts and
-text searches on those tables until each is re-embedded: `migrate` with `set_vectorize` off, then
-on (the backfill re-embeds every row with the new model).
+the space it was embedded in — `local/<model>`, plus a `#e5` marker when the prefix contract is
+active (e.g. `local/intfloat/multilingual-e5-small#e5`) — visible as `identity` in
+`describe_server` and `embed_space` in `describe_table`. A server whose identity differs — a
+different model, or a model whose prefix contract changed — rejects inserts and text searches on
+those tables until each is re-embedded: `migrate` with `set_vectorize` off, then on (the backfill
+re-embeds every row).
 
 ### Offline install
 
@@ -345,9 +347,9 @@ Local provider notes:
   the right `org--name` layout), or set `DOLMEN_EMBED_MODEL` to an absolute model-directory path.
   Both forms skip the Hub entirely when `huggingface.co` is unreachable. See the
   Offline install section below.
-- **Identity pinning** works as with the OpenAI provider: tables record `local/<model>` as their
-  embedding space, and a model change is rejected until the table is re-embedded
-  (`migrate` with `set_vectorize` off, then on).
+- **Identity pinning** works as with the OpenAI provider: tables record `local/<model>` (with a
+  `#e5` marker when the prefix contract is active) as their embedding space, and a model change is
+  rejected until the table is re-embedded (`migrate` with `set_vectorize` off, then on).
 
 ## Configuration
 

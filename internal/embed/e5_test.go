@@ -25,6 +25,12 @@ func TestE5Prefixes(t *testing.T) {
 		{"org/5e5", false},                // e5 must be a standalone name segment
 		{"org/e5small", false},
 		{"org/somee5model", false},
+		// Only the model's own name segment decides — not org or parent dirs.
+		{"/opt/e5-cache/all-MiniLM-L6-v2", false},
+		{"e5lab/model-x", false},
+		// Instruct-tuned e5 variants take task instructions, not these prefixes.
+		{"intfloat/e5-mistral-7b-instruct", false},
+		{"intfloat/multilingual-e5-large-instruct", false},
 	}
 	for _, tc := range cases {
 		query, passage := e5Prefixes(tc.model)
@@ -35,6 +41,25 @@ func TestE5Prefixes(t *testing.T) {
 		if tc.isE5 && (query != "query: " || passage != "passage: ") {
 			t.Errorf("e5Prefixes(%q) = (%q, %q), want the e5 role prefixes", tc.model, query, passage)
 		}
+	}
+}
+
+// TestE5IdentityMarker pins the identity versioning: e5-configured servers
+// carry a "#e5" marker, so tables embedded before prefixes were applied no
+// longer match and are re-embedded via migrate instead of mixing
+// representations. Symmetric models keep their long-standing identity.
+func TestE5IdentityMarker(t *testing.T) {
+	if got := (&Local{Model: "intfloat/multilingual-e5-small"}).Identity(); got != "local/intfloat/multilingual-e5-small#e5" {
+		t.Fatalf("Local e5 identity: got %q, want the #e5 marker", got)
+	}
+	if got := (&Local{Model: "sentence-transformers/all-MiniLM-L6-v2"}).Identity(); got != "local/sentence-transformers/all-MiniLM-L6-v2" {
+		t.Fatalf("Local symmetric identity must be unchanged, got %q", got)
+	}
+	if got := (&OpenAI{BaseURL: "http://localhost:11434/v1", Model: "intfloat/multilingual-e5-small"}).Identity(); got != "openai|http://localhost:11434/v1|intfloat/multilingual-e5-small#e5" {
+		t.Fatalf("OpenAI e5 identity: got %q, want the #e5 marker", got)
+	}
+	if got := (&OpenAI{BaseURL: "http://localhost:11434/v1", Model: "nomic-embed-text"}).Identity(); got != "openai|http://localhost:11434/v1|nomic-embed-text" {
+		t.Fatalf("OpenAI symmetric identity must be unchanged, got %q", got)
 	}
 }
 

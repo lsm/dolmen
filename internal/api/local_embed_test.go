@@ -243,4 +243,15 @@ func TestLocalProviderE5PrefixesEndToEnd(t *testing.T) {
 	if !gotQuery {
 		t.Errorf("engine must receive %q for the search text, got %q", wantQuery, texts)
 	}
+
+	// The table's embedding space carries the #e5 marker — the prefix
+	// contract is part of the pinned identity.
+	code, res = post(t, srv.URL, "describe_table", map[string]any{"namespace": "e5", "table": "incidents"})
+	if code != 200 {
+		t.Fatalf("describe_table: %d %v", code, res)
+	}
+	table, _ := res["data"].(map[string]any)["table"].(map[string]any)
+	if got := table["embed_space"]; got != "local/intfloat/multilingual-e5-small#e5" {
+		t.Fatalf("embed_space must carry the #e5 marker, got %v", got)
+	}
 }
