@@ -546,8 +546,8 @@ The image contains a single static Go binary in a `gcr.io/distroless/static` bas
 ### Verifying artifacts
 
 ```bash
-# Check a downloaded binary
-sha256sum -c SHA256SUMS
+# Check a downloaded binary (skips entries for artifacts you didn't download)
+sha256sum -c --ignore-missing SHA256SUMS
 
 # Check the container image digest
 oras manifest fetch ghcr.io/lsm/dolmen:v0.2.0
