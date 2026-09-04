@@ -235,6 +235,65 @@ negative — value and are returned first. The rank value itself is not returned
 - `created_at` is a UTC millisecond ISO string, e.g. `2026-09-03T12:34:56.123Z`. Use string
   comparisons or SQLite date/time functions.
 
+### The `migrate` payload
+
+`migrate` takes `namespace`, `table`, and an ordered `changes` array; changes apply in order and a
+successful call bumps the schema version by one. Each entry's shape depends on its `op` — only `op`
+itself is shared — so copy the exact shape per op:
+
+- `add_field` — a nested `field` object (same shape as `create_table` fields: `name` required,
+  `type` optional and defaulting to `string`, `dim` with `vector`) plus an optional change-level
+  `default` (a sibling of `field`, never inside it). The default is coerced to the field's type —
+  number, boolean, string for `string`/`text`/`timestamp`, any JSON value for `json` (nested
+  `null`s are data), a number array of the field's `dim` for `vector` — and backfilled into
+  existing rows; a literal `null` default is rejected (omit the key instead), adding a `required`
+  field to a populated table requires one, and no other op accepts a `default`:
+
+  ```json
+  {"op": "add_field", "field": {"name": "status", "type": "string", "required": true}, "default": "active"}
+  ```
+
+- `rename_field` — `from` (existing field) + `to` (its new name):
+
+  ```json
+  {"op": "rename_field", "from": "title", "to": "headline"}
+  ```
+
+- `drop_field` — `name` only:
+
+  ```json
+  {"op": "drop_field", "name": "legacy_code"}
+  ```
+
+- `set_fulltext` / `set_vectorize` — `name` + an explicit `value`, `true` to enable or `false` to
+  disable (an omitted `value` is rejected, so a feature is never disabled by accident). Enabling is
+  only allowed on `string`/`text` fields, and `vectorize` on a second field is rejected:
+
+  ```json
+  {"op": "set_fulltext", "name": "body", "value": true}
+  ```
+
+  ```json
+  {"op": "set_vectorize", "name": "summary", "value": true}
+  ```
+
+Two top-level keys complete the request:
+
+- `expected_version` — the schema version from `describe_table` that the changes were planned
+  against. Required for the destructive `rename_field` and `drop_field`; if the table has moved
+  past it the call fails with a version conflict — re-describe the table and re-plan.
+- `dry_run` — `true` validates and previews without applying anything (no writes, no embedding
+  calls): the response carries the prospective table schema plus a `plan` with the version
+  transition, ordered operations, destructive changes, `backfill_rows`, and the FTS-rebuild and
+  embedding workload.
+
+A complete call, previewed first:
+
+```json
+{"namespace": "research", "table": "findings", "expected_version": 3, "dry_run": true,
+ "changes": [{"op": "add_field", "field": {"name": "status", "type": "string", "required": true}, "default": "active"}]}
+```
+
 ### Limits and guardrails
 
 | Resource | Limit | Behavior |
