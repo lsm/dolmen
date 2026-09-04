@@ -1500,6 +1500,43 @@ func TestListMigrationsRecordsExplicitFalseValues(t *testing.T) {
 	}
 }
 
+func TestListMigrationsOmitsValueOnNonFlagChanges(t *testing.T) {
+	srv := newTestServer(t)
+	code, res := post(t, srv.URL, "create_table", map[string]any{
+		"namespace": "nv",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "title", "type": "string"}, {"name": "body", "type": "text"}},
+	})
+	if code != 200 {
+		t.Fatalf("create failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "migrate", map[string]any{
+		"namespace": "nv", "table": "t", "expected_version": 1,
+		"changes": []map[string]any{
+			{"op": "add_field", "field": map[string]any{"name": "tags", "type": "json"}},
+			{"op": "rename_field", "from": "title", "to": "heading"},
+			{"op": "drop_field", "name": "body"},
+		},
+	})
+	if code != 200 {
+		t.Fatalf("migrate failed: %d %v", code, res)
+	}
+	code, res = post(t, srv.URL, "list_migrations", map[string]any{"namespace": "nv", "table": "t"})
+	if code != 200 {
+		t.Fatalf("list_migrations failed: %d %v", code, res)
+	}
+	changes := res["data"].(map[string]any)["migrations"].([]any)[0].(map[string]any)["changes"].([]any)
+	if len(changes) != 3 {
+		t.Fatalf("expected 3 recorded changes, got %v", changes)
+	}
+	for _, c := range changes {
+		ch := c.(map[string]any)
+		if _, present := ch["value"]; present {
+			t.Fatalf("%s history must not carry a value key (the flag is meaningless there), got %v", ch["op"], ch["value"])
+		}
+	}
+}
+
 func TestSearchVectorFilterAndMinScoreOverHTTP(t *testing.T) {
 	srv := newTestServer(t)
 

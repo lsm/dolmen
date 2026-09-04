@@ -89,10 +89,10 @@ func changeOutSchema(desc string) map[string]any {
 			"from":    prop("string", "Current name (rename_field)"),
 			"to":      prop("string", "New name (rename_field)"),
 			"name":    prop("string", "Field name (drop_field, set_fulltext, set_vectorize)"),
-			"value":   prop("boolean", "Flag value (set_fulltext, set_vectorize); always recorded"),
+			"value":   prop("boolean", "Flag value (set_fulltext, set_vectorize)"),
 			"default": map[string]any{"description": "Backfill value for existing rows (add_field), exactly as applied"},
 		},
-		"required":             []string{"op", "value"},
+		"required":             []string{"op"},
 		"additionalProperties": false,
 	}
 }

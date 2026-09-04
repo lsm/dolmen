@@ -312,6 +312,9 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 		if ch.Op != schema.OpAddField && ch.Default != nil {
 			return nil, invalidf("changes[%d]: default is only allowed on add_field (op %q has no added field to backfill)", i, ch.Op)
 		}
+		if (ch.Op == schema.OpSetFulltext || ch.Op == schema.OpSetVectorize) && ch.Value == nil {
+			return nil, invalidf("changes[%d]: %s requires an explicit value (true or false)", i, ch.Op)
+		}
 		switch ch.Op {
 		case schema.OpAddField:
 			if ch.Field == nil {
@@ -494,20 +497,20 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			if err != nil {
 				return nil, err
 			}
-			if ch.Value && f.Type != schema.String && f.Type != schema.Text {
+			if *ch.Value && f.Type != schema.String && f.Type != schema.Text {
 				return nil, invalidf("field %q: fulltext is only allowed on string or text fields", f.Name)
 			}
-			if f.Fulltext != ch.Value {
-				f.Fulltext = ch.Value
+			if f.Fulltext != *ch.Value {
+				f.Fulltext = *ch.Value
 				rebuildFTSNeeded = true
 			}
-			plan.Operations = append(plan.Operations, fmt.Sprintf("set_fulltext %s = %t", ch.Name, ch.Value))
+			plan.Operations = append(plan.Operations, fmt.Sprintf("set_fulltext %s = %t", ch.Name, *ch.Value))
 		case schema.OpSetVectorize:
 			f, err := findField(ch.Name)
 			if err != nil {
 				return nil, err
 			}
-			if ch.Value {
+			if *ch.Value {
 				if f.Type != schema.String && f.Type != schema.Text {
 					return nil, invalidf("field %q: vectorize is only allowed on string or text fields", f.Name)
 				}
@@ -517,11 +520,11 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 					}
 				}
 			}
-			if f.Vectorize != ch.Value {
-				f.Vectorize = ch.Value
+			if f.Vectorize != *ch.Value {
+				f.Vectorize = *ch.Value
 				vectorizeChanged = true
 			}
-			plan.Operations = append(plan.Operations, fmt.Sprintf("set_vectorize %s = %t", ch.Name, ch.Value))
+			plan.Operations = append(plan.Operations, fmt.Sprintf("set_vectorize %s = %t", ch.Name, *ch.Value))
 		default:
 			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize)", ch.Op)
 		}

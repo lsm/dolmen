@@ -50,10 +50,11 @@ type Change struct {
 	From  string `json:"from,omitempty"`
 	To    string `json:"to,omitempty"`
 	Name  string `json:"name,omitempty"`
-	// Value carries no omitempty so history records set_fulltext/set_vectorize
-	// disables exactly as applied and stays replayable through the API (which
-	// requires an explicit value); other ops persist an inert false.
-	Value bool `json:"value"`
+	// Value is set_fulltext/set_vectorize's flag. A pointer with omitempty so
+	// history records it exactly when the change carries one — including an
+	// explicit false disable, which stays replayable through the API (which
+	// requires an explicit value) — while other ops omit the meaningless key.
+	Value *bool `json:"value,omitempty"`
 	// Default is add_field's backfill value for existing rows: added required
 	// fields need one when the table has rows. Coerced by the field's type and
 	// applied as the column's literal default, so old rows read it immediately.
