@@ -34,15 +34,16 @@ release: clean
 		[ "$$goos" = "windows" ] && ext=".exe"; \
 		out="$(RELEASE_DIR)/dolmen-$(VERSION)-$$goos-$$goarch$$ext"; \
 		echo "Building $$out"; \
-		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch go build -trimpath -ldflags "$(LDFLAGS)" -o "$$out" .; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch go build -trimpath -ldflags "$(LDFLAGS)" -o "$$out" . || exit 1; \
 	done
 
 release-sbom:
 	@command -v syft >/dev/null 2>&1 || { echo "syft not found; install from https://github.com/anchore/syft"; exit 1; }
 	@mkdir -p $(RELEASE_DIR)
 	@tmp=$$(mktemp); \
-	syft . -o spdx-json=$$tmp; \
-	mv $$tmp $(RELEASE_DIR)/dolmen-$(VERSION)-sbom.spdx.json
+	trap 'rm -f "$$tmp"' EXIT; \
+	syft . -o spdx-json=$$tmp && \
+	mv "$$tmp" $(RELEASE_DIR)/dolmen-$(VERSION)-sbom.spdx.json
 
 CHECKSUM := $(shell if command -v sha256sum >/dev/null 2>&1; then echo sha256sum; else echo shasum -a 256; fi)
 
