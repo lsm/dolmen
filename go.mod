@@ -1,6 +1,6 @@
 module github.com/lsm/dolmen
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/rostamlabs/rembed v0.3.0

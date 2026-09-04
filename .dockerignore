@@ -1,0 +1,14 @@
+# Build artifacts and local runtime data.
+/data/
+/dist/
+/dolmen
+/dolmen.exe
+*.db
+*.db-shm
+*.db-wal
+
+# Repository and CI metadata not needed to build the Go binary.
+/.git/
+/.github/
+/.gitignore
+Dockerfile
