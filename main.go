@@ -22,6 +22,14 @@ import (
 	"github.com/lsm/dolmen/skill"
 )
 
+// envHelp documents environment variables that are not represented by flags.
+// They are printed after the flag help so a fresh operator can discover the
+// embedding provider without reading the skill docs.
+type envHelp struct {
+	key  string
+	desc string
+}
+
 func main() {
 	if err := run(); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -62,7 +70,10 @@ func run() error {
 		return fmt.Errorf("embed provider: %w", err)
 	}
 	if l, ok := emb.(*embed.Local); ok {
-		slog.Info("local embedding provider", "model", l.Model, "cache", "under the data directory (first use downloads it from the Hugging Face Hub)")
+		slog.Info("local embedding provider", "model", l.Model, "cache", "under the data directory")
+		if !l.Cached() {
+			slog.Warn("local embedding model is not cached; the first vectorized write will download it from the Hugging Face Hub", "model", l.Model)
+		}
 	}
 
 	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint))
@@ -139,6 +150,12 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	showVersion := fs.Bool("version", false, "print version and exit")
 	publicBaseURL := fs.String("base-url", envOr("DOLMEN_BASE_URL", "", getenv), "public base URL for skills and MCP links (default: use request Host)")
 
+	fs.Usage = func() {
+		fmt.Fprint(out, "Usage: dolmen [flags]\n\nFlags:\n")
+		fs.PrintDefaults()
+		printEnvHelp(out)
+	}
+
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil, err
@@ -160,7 +177,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		return nil, fmt.Errorf("DOLMEN_ALLOWED_ORIGINS: %w", err)
 	}
 
-	provider := envOr("DOLMEN_EMBED_PROVIDER", "none", getenv)
+	provider := envOr("DOLMEN_EMBED_PROVIDER", "local", getenv)
 	baseURL := envOr("DOLMEN_EMBED_BASE_URL", "", getenv)
 	model := envOr("DOLMEN_EMBED_MODEL", "", getenv)
 
@@ -198,6 +215,33 @@ func envOr(key, fallback string, getenv func(string) string) string {
 		return v
 	}
 	return fallback
+}
+
+func printEnvHelp(out io.Writer) {
+	help := []envHelp{
+		{"DOLMEN_ADDR", "listen address (default 127.0.0.1:8790)"},
+		{"DOLMEN_DATA", "data directory (default data)"},
+		{"DOLMEN_ALLOWED_ORIGINS", "comma-separated allowed HTTP origins for CORS"},
+		{"DOLMEN_BASE_URL", "public base URL for skills and MCP links (default: use request Host)"},
+		{"DOLMEN_SKILL_NAMESPACE_HINT", "hint text rendered into skill markdown"},
+		{"", ""},
+		{"DOLMEN_EMBED_PROVIDER", "embedding provider: none, local (default), or openai"},
+		{"DOLMEN_EMBED_MODEL", "model name or absolute model-directory path"},
+		{"DOLMEN_EMBED_BASE_URL", "base URL for an OpenAI-compatible provider"},
+		{"DOLMEN_EMBED_API_KEY", "API key for an OpenAI-compatible provider"},
+		{"OPENAI_API_KEY", "fallback API key when DOLMEN_EMBED_API_KEY is unset"},
+		{"REMBED_CACHE", "model cache directory for the local provider"},
+		{"HF_TOKEN", "Hugging Face token for gated repos downloaded by the local provider"},
+	}
+
+	fmt.Fprintln(out, "\nEnvironment variables:")
+	for _, h := range help {
+		if h.key == "" {
+			fmt.Fprintln(out)
+			continue
+		}
+		fmt.Fprintf(out, "  %s  %s\n", h.key, h.desc)
+	}
 }
 
 func parseAllowedOrigins(raw string) ([]string, error) {

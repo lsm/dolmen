@@ -50,6 +50,10 @@ type Local struct {
 	// checkout) for offline installs.
 	Model string
 
+	// CacheRoot is the directory that holds downloaded model caches. It is
+	// set by NewProvider from REMBED_CACHE or <data>/models.
+	CacheRoot string
+
 	// Open loads the engine; overridable in tests. When nil it loads Model
 	// (via localRef) with weight-only int8 and the worker cap above.
 	Open func() (LocalEngine, error)
@@ -67,6 +71,37 @@ func (l *Local) ModelName() string { return l.Model }
 // so inserts and text searches are rejected until the table is re-embedded
 // via migrate — exactly as with the OpenAI provider.
 func (l *Local) Identity() string { return "local/" + l.Model }
+
+// Cached reports whether the model weights are already on disk. A test stub
+// (Open != nil) is treated as cached so tests do not trigger the warning.
+func (l *Local) Cached() bool {
+	if l.Open != nil {
+		return true
+	}
+	if localModelIDRe.MatchString(l.Model) {
+		if l.CacheRoot == "" {
+			return false
+		}
+		// rembed stores Hub models as an org--name directory with the
+		// weights in model.safetensors.
+		dir := filepath.Join(l.CacheRoot, modelCacheDirName(l.Model))
+		if fi, err := os.Stat(filepath.Join(dir, "model.safetensors")); err == nil && !fi.IsDir() {
+			return true
+		}
+		return false
+	}
+	// An absolute model-directory path is its own cache.
+	if filepath.IsAbs(l.Model) {
+		if fi, err := os.Stat(l.Model); err == nil && fi.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+// modelCacheDirName returns the on-disk directory name for a Hugging Face
+// model id, matching the org--name layout rembed uses for the cache.
+func modelCacheDirName(model string) string { return strings.ReplaceAll(model, "/", "--") }
 
 func (l *Local) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	if err := ctx.Err(); err != nil {
@@ -141,6 +176,19 @@ func validateLocalModel(model string) error {
 		return fmt.Errorf("DOLMEN_EMBED_MODEL %q is not an existing model directory", model)
 	}
 	return fmt.Errorf("DOLMEN_EMBED_MODEL %q is neither a Hugging Face model id (org/name) nor an absolute model-directory path", model)
+}
+
+// localCacheRoot returns the model cache directory for the given data dir.
+// An explicit REMBED_CACHE wins, so operators can share one cache across
+// instances; otherwise the cache lands under <data>/models.
+func localCacheRoot(dataDir string) string {
+	if v := os.Getenv("REMBED_CACHE"); v != "" {
+		return v
+	}
+	if dataDir == "" {
+		return ""
+	}
+	return filepath.Join(dataDir, localModelDir)
 }
 
 // useLocalCache points rembed's model cache at the data dir. An explicit

@@ -102,11 +102,60 @@ func TestNewProviderLocalCacheEnv(t *testing.T) {
 
 	// An operator-set cache must win over the data-dir default.
 	os.Setenv("REMBED_CACHE", "/operator/cache")
-	if _, err := NewProvider("local", "", "", "", dataDir); err != nil {
+	p2, err := NewProvider("local", "", "", "", dataDir)
+	if err != nil {
 		t.Fatalf("NewProvider: %v", err)
 	}
 	if got := os.Getenv("REMBED_CACHE"); got != "/operator/cache" {
 		t.Fatalf("explicit REMBED_CACHE must not be overridden, got %q", got)
+	}
+	l2 := p2.(*Local)
+	if l2.CacheRoot != "/operator/cache" {
+		t.Fatalf("CacheRoot: got %q want %q", l2.CacheRoot, "/operator/cache")
+	}
+}
+
+func TestLocalCached(t *testing.T) {
+	old, had := os.LookupEnv("REMBED_CACHE")
+	t.Cleanup(func() {
+		if had {
+			os.Setenv("REMBED_CACHE", old)
+		} else {
+			os.Unsetenv("REMBED_CACHE")
+		}
+	})
+	os.Unsetenv("REMBED_CACHE")
+
+	dataDir := t.TempDir()
+	p, err := NewProvider("local", "", "", "", dataDir)
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	l := p.(*Local)
+	if l.Cached() {
+		t.Fatalf("empty cache must report not cached")
+	}
+
+	// Simulate a downloaded model cache.
+	cacheDir := filepath.Join(dataDir, localModelDir, "sentence-transformers--all-MiniLM-L6-v2")
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "model.safetensors"), []byte("weights"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !l.Cached() {
+		t.Fatalf("model.safetensors present must report cached")
+	}
+
+	// An absolute model-directory path is its own cache.
+	absPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(absPath, "model.safetensors"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	l2 := &Local{Model: absPath}
+	if !l2.Cached() {
+		t.Fatalf("absolute model directory must report cached")
 	}
 }
 
