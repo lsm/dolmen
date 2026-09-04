@@ -230,13 +230,25 @@ func TestTypedReadEmbeddingHidden(t *testing.T) {
 		t.Fatal("_embedding must be stripped from search_vector results")
 	}
 
-	// include_hidden keeps it in searches, as a number array.
-	ftsHidden := h.mustHTTP("search_fulltext", map[string]any{
-		"namespace": "hidden", "table": "t", "query": "needle", "include_hidden": true,
-	})["results"].([]any)[0].(map[string]any)
-	emb := ftsHidden["_embedding"].([]any)
-	if len(emb) != 8 { // the fake provider embeds 8 dims
-		t.Fatalf("include_hidden must return the embedding vector, got %v", ftsHidden["_embedding"])
+	// include_hidden keeps it in searches, as a number array. Both search
+	// ops forward the flag through separate dispatch paths.
+	for _, search := range []struct {
+		name string
+		op   string
+		body map[string]any
+	}{
+		{"fulltext", "search_fulltext", map[string]any{
+			"namespace": "hidden", "table": "t", "query": "needle", "include_hidden": true,
+		}},
+		{"vector", "search_vector", map[string]any{
+			"namespace": "hidden", "table": "t", "text": "embed", "include_hidden": true,
+		}},
+	} {
+		row := h.mustHTTP(search.op, search.body)["results"].([]any)[0].(map[string]any)
+		emb, ok := row["_embedding"].([]any)
+		if !ok || len(emb) != 8 { // the fake provider embeds 8 dims
+			t.Fatalf("include_hidden must return the embedding vector through %s search, got %v", search.name, row["_embedding"])
+		}
 	}
 
 	// Explicitly referenced in SQL, it is included and typed as a vector.
