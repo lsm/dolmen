@@ -51,11 +51,14 @@ release-checksums:
 	@cd $(RELEASE_DIR) && { \
 		for f in *; do \
 			[ "$$f" = "SHA256SUMS" ] && continue; \
-			[ -f "$$f" ] && $(CHECKSUM) "$$f"; \
+			[ -f "$$f" ] && { $(CHECKSUM) "$$f" || exit 1; }; \
 		done; \
 	} > .SHA256SUMS.new && mv .SHA256SUMS.new SHA256SUMS
 
-release-all: release release-sbom release-checksums
+release-all:
+	@$(MAKE) release
+	@$(MAKE) release-sbom
+	@$(MAKE) release-checksums
 
 image:
 	docker buildx build \
