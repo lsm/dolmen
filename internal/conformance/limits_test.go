@@ -406,17 +406,18 @@ func TestLimitsQueryRowsTruncate(t *testing.T) {
 	if data["truncated"] != true {
 		t.Fatalf("clamped over-cap limit must report truncated, got %v", data["truncated"])
 	}
-	// offset pages by value: the ordered scan resumes at row 100, and the
-	// final single row past offset 1000 exhausts the set.
+	// offset pages by value: an ordered scan resumes at n=100 with a
+	// truncated page when the limit cuts it, and the final single row past
+	// offset 1000 exhausts the set.
 	data = h.mustHTTP("query", map[string]any{
-		"namespace": "limrows", "sql": "SELECT n FROM t ORDER BY n", "offset": 100,
+		"namespace": "limrows", "sql": "SELECT n FROM t ORDER BY n", "offset": 100, "limit": 10,
 	})
 	paged := data["rows"].([]any)
-	if len(paged) != 901 || int64val(t, "offset first row", paged[0].(map[string]any)["n"]) != 100 {
-		t.Fatalf("offset 100 must resume at n=100 for the remaining 901 rows, got %d rows starting %v", len(paged), paged[0])
+	if len(paged) != 10 || int64val(t, "offset first row", paged[0].(map[string]any)["n"]) != 100 {
+		t.Fatalf("offset 100 must resume at n=100, got %d rows starting %v", len(paged), paged[0])
 	}
 	if data["truncated"] != true {
-		t.Fatalf("offset page with rows remaining must be truncated, got %v", data["truncated"])
+		t.Fatalf("offset page cut by the limit must be truncated, got %v", data["truncated"])
 	}
 	data = h.mustHTTP("query", map[string]any{
 		"namespace": "limrows", "sql": "SELECT n FROM t ORDER BY n", "offset": 1000, "limit": 10,
