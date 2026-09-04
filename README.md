@@ -21,8 +21,9 @@ tables plus search plus an agent-native interface.
 
 - [Go 1.26.5+](https://go.dev/dl/) (only to build; the binary is otherwise standalone).
 - Git.
-- Optional: an OpenAI-compatible embedding endpoint if you want `vectorize` fields or text queries
-  in `search_vector` — OpenAI, Ollama, vLLM, or any compatible local server.
+- Optional, for `vectorize` fields and text queries in `search_vector`: nothing — the built-in
+  `local` provider embeds in-process (downloads a model on first use) — or an OpenAI-compatible
+  embedding endpoint (OpenAI, Ollama, vLLM, or any compatible local server).
 
 ### Build and run
 
@@ -199,6 +200,18 @@ curl.exe -s http://127.0.0.1:8790/v1/update -H "Content-Type: application/json" 
 Bash:
 
 ```bash
+# Built-in local embeddings — in-process inference, zero external services.
+# Downloads sentence-transformers/all-MiniLM-L6-v2 (~90 MB) from the Hugging
+# Face Hub on first use and caches it under the data dir; every later start
+# reuses the cache.
+DOLMEN_EMBED_PROVIDER=local ./dolmen
+
+# Another model (e.g. multilingual/CJK — see the full-text CJK caveat):
+DOLMEN_EMBED_PROVIDER=local \
+DOLMEN_EMBED_MODEL=intfloat/multilingual-e5-small \
+./dolmen
+
+# An OpenAI-compatible endpoint instead (OpenAI, Ollama, vLLM):
 DOLMEN_EMBED_PROVIDER=openai \
 DOLMEN_EMBED_API_KEY=sk-... \
 DOLMEN_EMBED_MODEL=text-embedding-3-small \
@@ -214,6 +227,9 @@ DOLMEN_EMBED_MODEL=nomic-embed-text \
 Windows PowerShell:
 
 ```powershell
+$env:DOLMEN_EMBED_PROVIDER = "local"
+.\dolmen.exe
+
 $env:DOLMEN_EMBED_PROVIDER = "openai"
 $env:DOLMEN_EMBED_API_KEY = "sk-..."
 $env:DOLMEN_EMBED_MODEL = "text-embedding-3-small"
@@ -226,6 +242,20 @@ $env:DOLMEN_EMBED_MODEL = "nomic-embed-text"
 .\dolmen.exe
 ```
 
+Local provider notes:
+
+- **Model cache** lives at `<data>/models/` (one `org--name` directory per model). Set
+  `REMBED_CACHE` to override the location, and `HF_TOKEN` for gated Hugging Face repos.
+- **Offline installs**: pre-seed the cache by copying `<data>/models/org--name/` from a machine
+  that already downloaded the model, or set `DOLMEN_EMBED_MODEL` to an absolute model-directory
+  path (the same directory layout) to skip the Hub entirely. Note: for bert-family models
+  (including the MiniLM default) a pre-seeded Hub-id model still makes one small Hub request per
+  process start to check for optional tokenizer files; the directory form (and the
+  xlm-roberta/e5, modernbert, and gemma model families) makes none.
+- **Identity pinning** works as with the OpenAI provider: tables record `local/<model>` as their
+  embedding space, and a model change is rejected until the table is re-embedded
+  (`migrate` with `set_vectorize` off, then on).
+
 ## Configuration
 
 Dolmen reads its startup configuration from command-line flags and environment
@@ -237,11 +267,13 @@ variables. Unknown flags and positional arguments are rejected with an error.
 | `-data` | `DOLMEN_DATA` | `data` | Data directory (one SQLite file per namespace) |
 | `-version` | — | — | Print version and exit |
 | — | `DOLMEN_ALLOWED_ORIGINS` | — | Comma-separated allowed HTTP origins for CORS; `localhost`, `127.0.0.1`, and `::1` are always allowed |
-| — | `DOLMEN_EMBED_PROVIDER` | `none` | Embedding provider: `none` (caller supplies vectors) or `openai` (any OpenAI-compatible endpoint). Unknown values produce an error |
+| — | `DOLMEN_EMBED_PROVIDER` | `none` | Embedding provider: `none` (caller supplies vectors), `local` (built-in in-process embeddings via [rembed](https://github.com/rostamlabs/rembed)), or `openai` (any OpenAI-compatible endpoint). Unknown values produce an error |
 | — | `DOLMEN_EMBED_BASE_URL` | `https://api.openai.com/v1` | Base URL for an OpenAI-compatible provider |
-| — | `DOLMEN_EMBED_MODEL` | `text-embedding-3-small` | Model for an OpenAI-compatible provider |
+| — | `DOLMEN_EMBED_MODEL` | provider default | Model: `sentence-transformers/all-MiniLM-L6-v2` for `local` (or an absolute model-directory path), `text-embedding-3-small` for `openai` |
 | — | `DOLMEN_EMBED_API_KEY` | — | API key for an OpenAI-compatible provider. If set (even to `""`), it takes precedence over `OPENAI_API_KEY` |
 | — | `OPENAI_API_KEY` | — | Fallback API key when `DOLMEN_EMBED_API_KEY` is unset |
+| — | `REMBED_CACHE` | `<data>/models` | Model cache directory for the `local` provider (overrides the data-dir location) |
+| — | `HF_TOKEN` | — | Hugging Face token for gated repos downloaded by the `local` provider |
 
 ## MCP (agents)
 
@@ -312,7 +344,9 @@ Skill distribution is built into the server. `GET /skills` returns a JSON manife
   Do not put `LIMIT`/`OFFSET` in raw SQL; use the parameters. `search_fulltext` and `search_vector`
   have stable, deterministic ordering. The response includes `truncated: true` when more results are
   available beyond the returned page.
-- **Embeddings** are pluggable: `none` (caller supplies vectors) or any OpenAI-compatible endpoint.
+- **Embeddings** are pluggable: `none` (caller supplies vectors), `local` (built-in in-process
+  inference via [rembed](https://github.com/rostamlabs/rembed) — pure Go, no cgo, model weights
+  cached under the data dir), or any OpenAI-compatible endpoint.
 - Namespaces are created implicitly on first use (one file per name; `create_namespace` just reserves
   the name up front); tables are not — call `create_table` before inserting, `drop_table` (confirm-guarded)
   to remove one completely. No other management surface to operate.

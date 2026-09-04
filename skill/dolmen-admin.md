@@ -106,8 +106,9 @@ curl -s -X POST "${base%/}/v1/insert" \
    write on large tables — it runs a full `count(*)`, so cache the schema for the session.
 3. **Prefer `infer_schema` → review → `create_table`.** Never invent a schema blind when sample
    records exist. Note: inference proposes plain types only — during review, mark the main text
-   field `vectorize: true` yourself if you want semantic recall (requires an embedding provider
-   on the server). Keep tables small and purposeful — a sprawl of near-duplicate tables is a
+   field `vectorize: true` yourself if you want semantic recall (needs an embedding provider on
+   the server: start it with `DOLMEN_EMBED_PROVIDER=local` for the built-in one, or `openai` for
+   an external endpoint). Keep tables small and purposeful — a sprawl of near-duplicate tables is a
    failure mode.
 4. **Record as you go.** After finishing a meaningful unit of work, `insert` a record summarizing it
    (what/where/outcome). Future sessions recall it via search.

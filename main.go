@@ -57,9 +57,12 @@ func run() error {
 	}
 	defer st.Close()
 
-	emb, err := embed.NewProvider(cfg.Embed.Provider, cfg.Embed.BaseURL, cfg.Embed.Model, cfg.Embed.APIKey)
+	emb, err := embed.NewProvider(cfg.Embed.Provider, cfg.Embed.BaseURL, cfg.Embed.Model, cfg.Embed.APIKey, cfg.DataDir)
 	if err != nil {
 		return fmt.Errorf("embed provider: %w", err)
+	}
+	if l, ok := emb.(*embed.Local); ok {
+		slog.Info("local embedding provider", "model", l.Model, "cache", "under the data directory (first use downloads it from the Hugging Face Hub)")
 	}
 
 	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint))
@@ -166,7 +169,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		apiKey = getenv("OPENAI_API_KEY")
 	}
 
-	if _, err := embed.NewProvider(provider, baseURL, model, apiKey); err != nil {
+	if _, err := embed.NewProvider(provider, baseURL, model, apiKey, *dataDir); err != nil {
 		fmt.Fprintf(out, "config: %v\n", err)
 		fs.Usage()
 		return nil, &printedError{err}

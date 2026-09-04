@@ -824,7 +824,7 @@ var Ops = map[string]OpDef{
 					return nil, wrapStoreErr(err)
 				}
 				if s.emb.Identity() == "" {
-					return nil, badRequest("text queries are embedded server-side, but this server has no usable embedding provider (none is configured, or the configured one does not report its identity); an operator must set the server-side DOLMEN_EMBED_* environment variables: DOLMEN_EMBED_PROVIDER=openai plus DOLMEN_EMBED_API_KEY (or OPENAI_API_KEY), optionally DOLMEN_EMBED_BASE_URL and DOLMEN_EMBED_MODEL")
+					return nil, badRequest("text queries are embedded server-side, but this server has no usable embedding provider (none is configured, or the configured one does not report its identity); an operator must set the server-side DOLMEN_EMBED_* environment variables: DOLMEN_EMBED_PROVIDER=local (in-process embeddings, no external service), or DOLMEN_EMBED_PROVIDER=openai plus DOLMEN_EMBED_API_KEY (or OPENAI_API_KEY), optionally DOLMEN_EMBED_BASE_URL and DOLMEN_EMBED_MODEL")
 				}
 				vecs, err := s.emb.Embed(ctx, []string{req.Text})
 				if err != nil {

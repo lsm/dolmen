@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -131,6 +132,15 @@ func TestLoadConfig(t *testing.T) {
 			wantErr: "unknown embedding provider",
 		},
 		{
+			name: "local provider with an invalid model is rejected",
+			args: []string{},
+			env: map[string]string{
+				"DOLMEN_EMBED_PROVIDER": "local",
+				"DOLMEN_EMBED_MODEL":    "not a model",
+			},
+			wantErr: "neither a Hugging Face model id",
+		},
+		{
 			name:    "positional arguments are rejected",
 			args:    []string{"extra"},
 			env:     map[string]string{},
@@ -180,5 +190,43 @@ func TestLoadConfigVersion(t *testing.T) {
 	}
 	if !cfg.Version {
 		t.Fatalf("expected Version to be true")
+	}
+}
+
+// TestLoadConfigLocalProvider covers the local provider's config path
+// outside the table: a valid model passes validation and points the model
+// cache at <data>/models. It needs a real temp data dir because the local
+// provider creates the cache directory at config time.
+func TestLoadConfigLocalProvider(t *testing.T) {
+	old, had := os.LookupEnv("REMBED_CACHE")
+	t.Cleanup(func() {
+		if had {
+			os.Setenv("REMBED_CACHE", old)
+		} else {
+			os.Unsetenv("REMBED_CACHE")
+		}
+	})
+	os.Unsetenv("REMBED_CACHE")
+
+	dataDir := t.TempDir()
+	env := map[string]string{
+		"DOLMEN_EMBED_PROVIDER": "local",
+		"DOLMEN_DATA":           dataDir,
+	}
+	cfg, err := loadConfig([]string{}, func(k string) string { return env[k] },
+		func(k string) (string, bool) { v, ok := env[k]; return v, ok }, io.Discard)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.Embed.Provider != "local" {
+		t.Fatalf("provider: %q", cfg.Embed.Provider)
+	}
+	// The model default kicks in inside NewProvider; config records the
+	// raw empty value, the provider owns the default.
+	if cfg.Embed.Model != "" {
+		t.Fatalf("model: %q", cfg.Embed.Model)
+	}
+	if got := os.Getenv("REMBED_CACHE"); got != filepath.Join(dataDir, "models") {
+		t.Fatalf("REMBED_CACHE: %q", got)
 	}
 }

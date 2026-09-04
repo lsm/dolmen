@@ -582,7 +582,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 		newVec := vectorizeField(cur.Fields)
 		if newVec != nil {
 			if emb.Embed == nil {
-				return nil, invalidf("vectorize requires an embedding provider (set DOLMEN_EMBED_PROVIDER)")
+				return nil, invalidf("vectorize requires an embedding provider (set DOLMEN_EMBED_PROVIDER=local or openai)")
 			}
 			if emb.Identity == "" {
 				return nil, invalidf("vectorize requires an embedding provider with a reported identity so backfilled rows are attributable to an embedding space; the active provider reports none — an operator must set DOLMEN_EMBED_PROVIDER plus its credentials (e.g. DOLMEN_EMBED_API_KEY) and restart the server")

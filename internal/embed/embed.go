@@ -26,7 +26,7 @@ func (None) Name() string { return "none" }
 func (None) Identity() string { return "" }
 
 func (None) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	return nil, fmt.Errorf("no embedding provider configured: set DOLMEN_EMBED_PROVIDER=openai plus DOLMEN_EMBED_API_KEY (or OPENAI_API_KEY); optionally DOLMEN_EMBED_BASE_URL and DOLMEN_EMBED_MODEL")
+	return nil, fmt.Errorf("no embedding provider configured: set DOLMEN_EMBED_PROVIDER=local for in-process embeddings (no external service), or DOLMEN_EMBED_PROVIDER=openai plus DOLMEN_EMBED_API_KEY (or OPENAI_API_KEY) for an external endpoint; optionally DOLMEN_EMBED_BASE_URL and DOLMEN_EMBED_MODEL")
 }
 
 type OpenAI struct {
@@ -142,11 +142,24 @@ func truncate(s string, n int) string {
 }
 
 // NewProvider returns an embedding provider for the given configuration.
-// Valid providers are "none" (or "") and "openai" (any OpenAI-compatible endpoint).
-func NewProvider(provider, baseURL, model, apiKey string) (Provider, error) {
+// Valid providers are "none" (or ""), "local" (in-process inference via
+// rembed; dataDir is where the model cache lands), and "openai" (any
+// OpenAI-compatible endpoint).
+func NewProvider(provider, baseURL, model, apiKey, dataDir string) (Provider, error) {
 	switch strings.ToLower(provider) {
 	case "", "none":
 		return None{}, nil
+	case "local":
+		if model == "" {
+			model = "sentence-transformers/all-MiniLM-L6-v2"
+		}
+		if err := validateLocalModel(model); err != nil {
+			return nil, err
+		}
+		if err := useLocalCache(dataDir); err != nil {
+			return nil, err
+		}
+		return &Local{Model: model}, nil
 	case "openai":
 		if baseURL == "" {
 			baseURL = "https://api.openai.com/v1"
@@ -156,6 +169,6 @@ func NewProvider(provider, baseURL, model, apiKey string) (Provider, error) {
 		}
 		return &OpenAI{BaseURL: baseURL, Model: model, APIKey: apiKey}, nil
 	default:
-		return nil, fmt.Errorf("unknown embedding provider %q (valid: none, openai)", provider)
+		return nil, fmt.Errorf("unknown embedding provider %q (valid: none, local, openai)", provider)
 	}
 }
