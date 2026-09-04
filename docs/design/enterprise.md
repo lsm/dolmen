@@ -298,6 +298,15 @@ references (including `__fts` shadow tables), no aggregate or window functions. 
 already requires namespace-wide `read` (§2), which authorizes every table its subqueries touch.
 Under `auth: off` the filter language is unchanged from v0.2.0.
 
+**The scope is a security barrier, not a sibling conjunct.** SQL does not guarantee conjunct
+evaluation order, so `AND owner = ?` alone cannot make row-local expressions safe: a caller can
+write `iif(secret = ?, abs(-9223372036854775808), 1)` — an integer-overflow *error* on a foreign
+row reveals the foreign value even though the row can never affect the returned count. The engine
+must therefore evaluate caller-supplied expressions only over the **already-filtered visible
+set**: the scope predicate is applied first at a materialization boundary (a CTE/subquery stage,
+or the engine's equivalent), and caller SQL — filters, set-expressions, search filters — never
+executes against an invisible row, whatever the planner's chosen order.
+
 - `update`/`delete` match only visible rows; `updated`/`deleted` counts are visible-set counts.
 - `search_fulltext`/`search_vector` (and their `filter`, `min_score`, pagination, and `truncated`)
   are computed over the visible set — pagination can never surface or imply a foreign row.
