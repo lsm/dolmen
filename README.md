@@ -244,7 +244,9 @@ $env:DOLMEN_EMBED_MODEL = "nomic-embed-text"
 
 Whichever provider is configured, `describe_server` reports its status read-only over both `/v1`
 and MCP — provider, model, the identity that pins vectorized tables, and whether server-side
-embedding is usable — so an unconfigured or broken provider is visible without attempting a write.
+embedding is usable — so a missing provider is visible without attempting a write. `usable` is
+configuration status only: the provider is not called, so an endpoint that is down or rejects its
+credentials still fails at first use, not here.
 
 Local provider notes:
 
