@@ -269,17 +269,32 @@ func TestErrorEnvelopeQueryErrorForMalformedFilter(t *testing.T) {
 	}
 }
 
-func TestErrorEnvelopeOmitsRequestIDWhenNotProvided(t *testing.T) {
+// TestErrorEnvelopeGeneratesRequestIDWhenNotProvided pins the always-on
+// request-id contract (#144): a client that sends no X-Request-Id still gets
+// one — server-generated, in the envelope and the response header — so any
+// failure can be correlated with the server log.
+func TestErrorEnvelopeGeneratesRequestIDWhenNotProvided(t *testing.T) {
 	srv := newTestServer(t)
-	code, body := post(t, srv.URL, "query", map[string]any{
-		"namespace": "x",
-		"sql":       "SELECT (",
-	})
-	if code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d %v", code, body)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/query", strings.NewReader(`{"namespace":"x","sql":"SELECT ("}`))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", res.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
 	errObj := errorBody(t, body)
-	if _, ok := errObj["request_id"]; ok {
-		t.Fatalf("request_id should be omitted when not provided, got %v", errObj)
+	reqID, _ := errObj["request_id"].(string)
+	if reqID == "" {
+		t.Fatalf("request_id must be generated when the client sent none, got %v", errObj)
+	}
+	if got := res.Header.Get("X-Request-Id"); got != reqID {
+		t.Fatalf("X-Request-Id header %q must match envelope request_id %q", got, reqID)
 	}
 }

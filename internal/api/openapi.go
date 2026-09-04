@@ -55,6 +55,7 @@ var errorCodeEnum = []string{
 	string(ErrCodeQuery),
 	string(ErrCodeConflict),
 	string(ErrCodeForbidden),
+	string(ErrCodeEmbedderUnavailable),
 	string(ErrCodeInternal),
 }
 
@@ -170,6 +171,7 @@ func opResponses(dataSchema map[string]any) map[string]any {
 		"413": errorResponse("Payload too large"),
 		"415": errorResponse("Unsupported media type"),
 		"500": errorResponse("Internal server error"),
+		"503": errorResponse("Embedding provider unavailable (the local model could not be loaded or downloaded); vectorized writes and text searches only"),
 	}
 }
 

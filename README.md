@@ -77,9 +77,15 @@ Expected output:
 ```
 
 All successful `/v1/{operation}` POSTs return `{"ok":true,"data":{...}}`; errors return
-`{"ok":false,"error":{"code":"...","message":"..."}}` — plus `request_id` inside `error` when the
-request carried an `X-Request-Id` — with a matching 4xx/5xx status. Error codes are stable for
-branching: `invalid_request`, `not_found`, `query_error`, `conflict`, `forbidden`, `internal_error`.
+`{"ok":false,"error":{"code":"...","message":"...","request_id":"..."}}` — the request id is the
+request's `X-Request-Id` header when one was sent, otherwise a server-generated id, echoed back as
+the `X-Request-Id` response header so any error can be correlated with the server log — with a
+matching 4xx/5xx status. Error codes are stable for branching: `invalid_request`, `not_found`,
+`query_error`, `conflict`, `forbidden`, `embedder_unavailable`, `internal_error`.
+`embedder_unavailable` (503) means the server's embedding provider could not load its model — with
+the `local` provider, typically the first-use Hugging Face download failing — and its message names
+the offline remediations (pre-seed the model cache, or point `DOLMEN_EMBED_MODEL` at a local model
+directory); retrying the same request makes no sense until the model can load.
 The one exception is `GET /v1/openapi.json`, which serves the raw OpenAPI document.
 `/healthz` returns `{"status":"ok"}` and `/mcp` returns JSON-RPC responses.
 

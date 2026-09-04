@@ -249,14 +249,16 @@ func TestGoldenErrorInternal(t *testing.T) {
 		t.Fatalf("message must be the fixed sanitized string, got %q", msg)
 	}
 
-	// MCP reports the identical envelope as a tool error.
+	// MCP reports the identical envelope as a tool error (request_id is
+	// dropped before comparing: each transport call that sent no
+	// X-Request-Id gets its own server-generated id).
 	res := h.mcpCall("search_vector", map[string]any{
 		"namespace": "errint", "table": "t", "text": "anything",
 	})
 	if !res.isError() {
 		t.Fatalf("MCP provider outage must be a tool error: %+v", res)
 	}
-	assertJSONEqual(t, "internal error envelope", res.toolError(), errObj)
+	assertJSONEqual(t, "internal error envelope", withoutRequestID(res.toolError()), withoutRequestID(errObj))
 }
 
 // TestTransportLevelErrors pins the HTTP transport guards: unknown operation,

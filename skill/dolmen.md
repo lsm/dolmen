@@ -62,7 +62,7 @@ Every tool in this skill is also a plain HTTP operation: `POST /v1/{operation}` 
 as the JSON body (`Content-Type: application/json`). Responses are enveloped — success is
 `{"ok":true,"data":...}` and failure is `{"ok":false,"error":{"code","message"}}` with a stable
 machine-readable `code` (`invalid_request`, `not_found`, `query_error`, `conflict`, `forbidden`,
-`internal_error`). The full list of operations and their request schemas is in the OpenAPI document (`GET /v1/openapi.json`).
+`embedder_unavailable`, `internal_error`). The full list of operations and their request schemas is in the OpenAPI document (`GET /v1/openapi.json`).
 
 Insert a record:
 

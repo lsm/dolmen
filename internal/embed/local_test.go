@@ -176,6 +176,15 @@ func TestLocalEmbedLazyRetryAndSuccess(t *testing.T) {
 	if firstErr == nil || !errors.Is(firstErr, boom) {
 		t.Fatalf("first Embed must fail with the load error, got %v", firstErr)
 	}
+	// A failed load must be classifiable as a LoadError so the API can map
+	// it to an actionable embedder_unavailable error, not a bare internal one.
+	var le *LoadError
+	if !errors.As(firstErr, &le) {
+		t.Fatalf("load failure must be a *LoadError, got %T", firstErr)
+	}
+	if le.Model != "org/model" {
+		t.Fatalf("LoadError must carry the model name, got %q", le.Model)
+	}
 	for _, want := range []string{"org/model", "Hugging Face Hub"} {
 		if !strings.Contains(firstErr.Error(), want) {
 			t.Fatalf("load error must mention %q to orient the operator, got %q", want, firstErr)
