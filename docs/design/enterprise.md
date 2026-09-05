@@ -690,8 +690,15 @@ type Engine interface {
     //     Root        bool       // matched a * grant
     //     Ancestor    string     // ancestor namespace path, when inherited
     //     AncestorGen [16]byte   // that ancestor's nsGen at grant time
-    //     TargetGen   [16]byte   // target's nsGen, for targeted grants
+    //     TargetGen   [16]byte   // target's nsGen, for namespace-targeted grants
+    //     Table       string     // table name, for direct table grants
+    //     TableDropGen int64     // that table's DropGen at grant time
     // }
+    // TableState verifies the FULL applicable binding: a direct table grant
+    // carries (Table, TableDropGen) as well, because a table-only drop and
+    // recreate leaves the namespace generation unchanged — an nsGen-only
+    // check would mint the successor's incarnation for a grant naming the
+    // predecessor's DropGen.
     NamespaceState(ctx context.Context, ns string, auth AuthBinding) ([16]byte, error)
     ListNamespaces(ctx context.Context, prefix string) ([]string, error)
     // parentNsGen binds child creation to the authorized parent: creating
@@ -711,13 +718,12 @@ type Engine interface {
     // the incarnation it must pass back — and it is also where a text vector
     // query validates its preconditions BEFORE the provider is called, so an
     // invalid query fails without contacting (or billing) the embedder.
-    // TableState is itself authorization-bound: nsGen is the NAMESPACE
-    // incarnation the caller's grant check was resolved against (from
-    // NamespaceState), verified atomically with the read — otherwise a
+    // TableState is itself authorization-bound via the same AuthBinding
+    // (§3.4 lifetime keys), verified atomically with the read — otherwise a
     // stale grant could fetch the SUCCESSOR's incarnation here and pass it
     // to a later scoped operation, laundering expired authorization through
     // the very call that mints the guard. Zero = no guard (auth off).
-    TableState(ctx context.Context, ns, table string, nsGen [16]byte) (*schema.TableSchema, Incarnation, error)
+    TableState(ctx context.Context, ns, table string, auth AuthBinding) (*schema.TableSchema, Incarnation, error)
     ListTables(ctx context.Context, ns string, nsGen [16]byte) ([]string, error)
     // nsGen is the namespace's creation id: inside the operation's critical
     // section the engine verifies the namespace exists with EXACTLY that id —
