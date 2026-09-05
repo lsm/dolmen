@@ -38,7 +38,7 @@ adapter #1's mapping, not the definition of tenancy:
 |---|---|---|---|
 | namespace → | one file | one schema | catalog namespace / storage prefix |
 | isolation | physical (the file is the wall) | engine-enforced (schema confinement; optional native RLS) | engine-enforced (catalog scoping) |
-| raw-SQL confinement | free (separate file) | `search_path` / role-per-schema pinning | catalog-prefix qualification |
+| raw-SQL confinement | free (separate file) | role-per-schema **privileges** — the connection's role has no access to other schemas (`search_path` alone is only name resolution) | catalog/prefix ACLs — **privileges**, not qualification, are the wall |
 | RowScope (own-rows) | predicate conjoined in SQL | predicate, **or delegated to native RLS** | predicate in the scan |
 
 ### 0.5.2 Two-level tenancy — two mechanisms, never mixed
@@ -63,8 +63,13 @@ adapter #1's mapping, not the definition of tenancy:
 ### 0.5.3 Raw-SQL confinement is an engine obligation
 
 Contract, not a SQLite accident: `query` executes within exactly ONE namespace, and the engine
-must make cross-namespace reference **impossible by mechanism** — separate file (SQLite), schema
-pinning (Postgres), catalog qualification (lakehouse). This is why `query` gates on the namespace
+must make cross-namespace reference **impossible by mechanism** — separate file (SQLite),
+role-per-schema privileges (Postgres), catalog/prefix ACLs (lakehouse). Name-resolution pinning
+(`search_path`, prefix qualification) is **not** confinement: a fully qualified
+`other_schema.table` still resolves when the shared connection's role can reach it — the
+mechanism must be privilege-based (a role with no access to other namespaces' objects) or an
+equally strong check that rejects every cross-namespace reference; otherwise a namespace-level
+`read` grant becomes cross-tenant access. This is why `query` gates on the namespace
 (§2): per-table enforcement on arbitrary caller SQL is not sound; granularity lives in the
 structured ops.
 
