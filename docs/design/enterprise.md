@@ -431,11 +431,12 @@ Under `auth: on`, a migration whose outcome or execution depends on rows outside
 visible set additionally requires table-wide `read` on the table; callers without it are denied
 `403` before any data-dependent check or processing runs. The list: `set_enum` (value
 membership), `set_row_access` enabling (row existence), `add_field` of a required field without a
-backfill default (row existence), and **`set_vectorize` enabling or re-enabling over stored
-rows** — its backfill reads every non-empty value and sends it to the embedding provider,
-exporting invisible rows at the caller's direction, and the provider's outcome itself depends on
-those hidden inputs. All other migrations are data-independent and stay on the `schema` verb
-alone.
+backfill default (row existence), and **`set_vectorize` enabling or re-enabling — unconditionally,
+even on an empty table** — its backfill reads every non-empty value and sends it to the embedding
+provider, exporting invisible rows at the caller's direction, and the provider's outcome itself
+depends on those hidden inputs; conditioning the gate on the table having rows would itself be a
+row-existence oracle (succeeds on empty, 403 on invisible population). All other migrations are
+data-independent and stay on the `schema` verb alone.
 
 - `update`/`delete` match only visible rows; `updated`/`deleted` counts are visible-set counts.
 - `search_fulltext`/`search_vector` (and their `filter`, `min_score`, pagination, and `truncated`)
@@ -534,6 +535,15 @@ type Engine interface {
     // Namespace lifecycle — NamespaceState returns the namespace's creation
     // id (not_found when absent): the read the API uses to build CreateTable's
     // nsGen guard; an empty namespace has no TableState to consult.
+    //
+    // GLOBAL RULE: the engine NEVER creates a namespace implicitly. Every
+    // operation that opens a namespace — listing, table state, DDL, rows,
+    // search — requires it to exist, checked atomically with the operation
+    // (not_found otherwise); adapter #1's create-on-open path (Store.ns) is a
+    // v0.2.0 behavior that ends at the seam. Calls carrying an Incarnation
+    // (which embeds NsGen) additionally hold the race guard, so a concurrent
+    // drop_namespace cannot turn any auth-on call into an implicit recreation
+    // past §2's parent-admin gate.
     NamespaceState(ctx context.Context, ns string) ([16]byte, error)
     ListNamespaces(ctx context.Context, prefix string) ([]string, error)
     CreateNamespace(ctx context.Context, ns string) error
@@ -677,7 +687,7 @@ What the contract pins (conformance-enforced on every engine):
 
 | Property | Contract |
 |---|---|
-| Result shape | Rows as stored plus `id`/`created_at` (and `owner` when present), typed reads per field type; `_score` on every vector result (cosine, `-1..1`, engines agree within float tolerance); no rank value exposed for fulltext. |
+| Result shape | Rows as stored plus `id`/`created_at` (and `owner` when present), typed reads per field type; `_score` on every vector result (cosine; `-1..1` is the **auth-on clamped guarantee** — under `auth: off` the raw value is preserved and may marginally exceed the range, per Ordering); no rank value exposed for fulltext. |
 | Ordering | **Two tiers.** Under `auth: off`, adapter #1's v0.2.0 behavior is preserved bit-for-bit (§8.1): raw cosine — unclamped, so a self-comparison may report `1.0000000000000002` — exact comparisons, and native FTS5 `ORDER BY rank` with its own tie order; nothing in this row redefines that mode, and engine-2 passes the golden auth-off corpus by reproducing adapter #1's exact arithmetic (which the canonical accumulation below already matches). With `auth: on`, and for cross-engine conformance generally: `search_fulltext` relevance descending, tiebreak `id` ascending; `search_vector` `_score` descending, tiebreak `id` ascending — via **canonical arithmetic, then transitive quantization**. Canonical cosine, fully specified: computed in binary64 from the stored float32 vectors; dot products and squared norms accumulated component-wise in dimension order; every multiply and add individually rounded (IEEE-754 round-to-nearest-even) — fused multiply-add/contraction and reassociation are FORBIDDEN; norms via the correctly-rounded square root; if either vector has zero norm the score is exactly `0` (never NaN, never skipped); the final quotient clamped to `[-1, 1]`. Engines may use faster internal paths only if the canonical value (and hence its bucket) is identical; the conformance corpus verifies. Quantize the canonical value with prescribed arithmetic: `q(s) = floor(s / fl64(1e-9))` — the divisor is the binary64 value nearest `1e-9`, the division is one correctly-rounded binary64 operation, then `floor` — computed in binary64 by EVERY engine regardless of internal storage (a decimal-backed engine evaluating the division exactly would put `q(0.5)` in bucket 500000000 where the prescribed binary64 division yields 499999999; the binary64 result is the contract). Order by the integer `q(_score)` (ties break by `id` ascending); `min_score` is constrained to the cosine range `[-1, 1]` (`invalid_request` outside), and the threshold compares `q(s) ≥ q(min_score)`. Quantizing per-engine approximations would NOT be consistent, and pairwise epsilon is non-transitive; canonical-then-bucket avoids both. Identical corpus + query ⇒ identical order on every engine. Under a scope, ranking operates over the **visible corpus only**: relevance statistics must not include rows outside the caller's visible set — foreign matching rows can never reorder or displace visible results (§4.3). Predicate conjunction alone is not sufficient (a shared index's corpus statistics span owners); engines choose the isolation — per-scope index partitioning, or filter-then-rescore. |
 | Match language | The documented FTS5 `MATCH` subset (terms, implicit AND, `OR`, `NOT`, `field:term`, `{a b}:term`, quoted phrases, `term*` prefix, `NEAR(...)`) with the documented tokenizer/stemmer behavior (porter over unicode61: case/diacritic folding, English stemming, opaque CJK runs). Engines must accept the whole subset; SQLite-only extensions to the grammar are not portable and not guaranteed. |
 | Ranking quality | The normative full-text ranking is SQLite FTS5's built-in BM25 (`rank`) with default parameters — k1=1.2, b=0.75, all column weights 1.0 — computed over the visible corpus. "BM25-family" is not a license for a variant: differing idf definitions, length normalization, parameters, or field weights reorder the same corpus while still feeling like BM25. Two tiers, mirroring Ordering: under `auth: off`, adapter #1's native FTS5 `ORDER BY rank` (with its own tie order) is preserved bit-for-bit per §8.1. With `auth: on`, the normative rank values are adapter #1's emitted ranks, bit-for-bit — SQLite FTS5 as the reference oracle, other engines reproduce its output exactly (corpus-verified on fixtures) — and near-equal scores compare with the same canonical quantization as vectors, `q(rank) = floor(rank / fl64(1e-9))` with `id` tiebreak, so precision, evaluation order, and log rounding cannot reorder documents or shift offset pages between engines. |
