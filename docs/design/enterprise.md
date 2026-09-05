@@ -369,8 +369,12 @@ inheritance). There are no deny grants, no precedence, no ordering — union onl
   on completion. At recovery, a pending tombstone is finalized if the engine object is gone and
   rolled back (restoring evaluation) if the object still exists — either crash point converges to
   no resurrectable grants and no silently-granted successors, satisfying §0.6's all-or-nothing
-  guarantee. The tombstone records the deleted object's **Incarnation**, and recovery finalizes
-  whenever THAT incarnation is gone — even if a same-named successor already exists (a crash
+  guarantee. The tombstone records the deleted object's **lifetime key** — `(NsGen, Table,
+  DropGen)` for a table, `nsGen` for a namespace; the schema `Version` is deliberately excluded,
+  exactly as grant bindings and idempotency records exclude it, because a migration authorized
+  by a surviving ancestor grant during the pending window must not make the still-live lifetime
+  look "gone" and trigger a spurious finalization. Recovery finalizes whenever THAT lifetime is
+  gone — even if a same-named successor already exists (a crash
   after the engine deletion but before cleanup, with a concurrent recreate, would otherwise roll
   the tombstone back on "name exists" and restore the predecessor's grants onto the successor).
   The tombstone also captures the **exact grant rows** it covers as a fixed set at creation:
@@ -682,12 +686,18 @@ type Engine interface {
     // Incarnation for table-level calls — so a drop-and-recreate between
     // authorization and execution can never act on a successor the old grant
     // does not cover. Zero values = no guard (auth off).
-    // Bootstrap: the AuthBinding handed to NamespaceState is WHAT THE
-    // AUTHORIZATION LAYER PROVED, never caller-supplied (§3.4): a targeted
-    // grant's TargetGen mismatches a successor; an inherited grant verifies
-    // its ANCESTOR's (path, nsGen) while the call returns the TARGET's
-    // current generation — inheritance bootstraps descendants; a Root (*)
-    // grant has nothing to verify. The zero value = no guard (auth off).
+    // Bootstrap: the AuthBinding set handed to NamespaceState/TableState is
+    // WHAT THE AUTHORIZATION LAYER PROVED — one binding per grant that
+    // CONTRIBUTED to the operation's required verbs, never caller-supplied
+    // (§3.4). For conjunctive requirements (upsert = create AND update;
+    // drop_table = schema AND admin), EVERY contributing binding is
+    // verified: one stale contributor (e.g. a direct-table admin grant
+    // naming the predecessor's DropGen while a namespace schema grant still
+    // matches) denies the whole state acquisition — no arbitrarily selected
+    // grant can launder the others. Targeted grants mismatch successors;
+    // inherited grants verify their ANCESTOR's (path, nsGen) while the call
+    // returns the TARGET's current generation; a Root (*) grant verifies
+    // nothing. Empty/zero = no guard (auth off).
     //
     // type AuthBinding struct {
     //     Root        bool       // matched a * grant
@@ -704,7 +714,7 @@ type Engine interface {
     // recreate resets table drop generations and a same-named successor can
     // repeat the predecessor's value; the namespace generation is what
     // separates the two.
-    NamespaceState(ctx context.Context, ns string, auth AuthBinding) ([16]byte, error)
+    NamespaceState(ctx context.Context, ns string, auth []AuthBinding) ([16]byte, error)
     ListNamespaces(ctx context.Context, prefix string) ([]string, error)
     // parentNsGen binds child creation to the authorized parent: creating
     // acme/team-a was authorized against acme's incarnation, and the engine
@@ -728,7 +738,7 @@ type Engine interface {
     // stale grant could fetch the SUCCESSOR's incarnation here and pass it
     // to a later scoped operation, laundering expired authorization through
     // the very call that mints the guard. Zero = no guard (auth off).
-    TableState(ctx context.Context, ns, table string, auth AuthBinding) (*schema.TableSchema, Incarnation, error)
+    TableState(ctx context.Context, ns, table string, auth []AuthBinding) (*schema.TableSchema, Incarnation, error)
     // bindings = the caller's matched grants (§3.4 lifetime keys): each is
     // verified atomically with the listing, and a direct-table binding's
     // (TableNsGen, Table, TableDropGen) is checked per listed table — a
@@ -880,7 +890,7 @@ What the contract pins (conformance-enforced on every engine):
 | Ordering | **Two tiers.** Under `auth: off`, adapter #1's v0.2.0 behavior is preserved bit-for-bit (§8.1): raw cosine — unclamped, so a self-comparison may report `1.0000000000000002` — exact comparisons, and full-text ordered exactly as v0.2.0 executes it, `ORDER BY rank, rowid` (the explicit `rowid` tiebreak, not "native tie order"); nothing in this row redefines that mode, and engine-2 passes the golden auth-off corpus by reproducing adapter #1's exact arithmetic and ordering (which the canonical accumulation below already matches). With `auth: on`, and for cross-engine conformance generally: `search_fulltext` orders by **`q(rank)` ASCENDING** — FTS5 rank is lower/more-negative for more relevant rows, so ascending buckets ARE relevance-descending — tiebreak `id` ascending; `search_vector` orders by `q(_score)` descending, tiebreak `id` ascending — via **canonical arithmetic, then transitive quantization**. Canonical cosine, fully specified: BOTH operands are normalized to float32 first — the query
 vector (raw caller-supplied or provider-embedded) is rounded to nearest float32 exactly as
 adapter #1 does today, matching the stored float32 vectors — then computed in binary64; dot products and squared norms accumulated component-wise in dimension order; every multiply and add individually rounded (IEEE-754 round-to-nearest-even) — fused multiply-add/contraction and reassociation are FORBIDDEN; norms via the correctly-rounded square root; if either vector has zero norm the score is exactly `0` (never NaN, never skipped); the final quotient clamped to `[-1, 1]`. Engines may use faster internal paths only if the canonical value (and hence its bucket) is identical; the conformance corpus verifies. Quantize the canonical value with prescribed arithmetic: `q(s) = floor(s / fl64(1e-9))` — the divisor is the binary64 value nearest `1e-9`, the division is one correctly-rounded binary64 operation, then `floor` — computed in binary64 by EVERY engine regardless of internal storage (a decimal-backed engine evaluating the division exactly would put `q(0.5)` in bucket 500000000 where the prescribed binary64 division yields 499999999; the binary64 result is the contract). Order by the integer `q(_score)` (ties break by `id` ascending); `min_score` is constrained to the cosine range `[-1, 1]` (`invalid_request` outside), and the threshold compares `q(s) ≥ q(min_score)`. Quantizing per-engine approximations would NOT be consistent, and pairwise epsilon is non-transitive; canonical-then-bucket avoids both. Identical corpus + query ⇒ identical order on every engine. Under a scope, ranking operates over the **visible corpus only**: relevance statistics must not include rows outside the caller's visible set — foreign matching rows can never reorder or displace visible results (§4.3). Predicate conjunction alone is not sufficient (a shared index's corpus statistics span owners); engines choose the isolation — per-scope index partitioning, or filter-then-rescore. |
-| Match language | **Two tiers** (amended 2026-09-05). **Core subset — contract on EVERY engine**: terms, implicit AND, `OR`, `NOT`, quoted phrases, `term*` prefix — with the **grammar pinned to SQLite FTS5's documented parsing rules** (NOT is unary and binds tightest; implicit AND and explicit `AND` bind next; `OR` binds loosest; all left-associative; parentheses group; phrase interiors are token sequences with no operators; prefix `*` applies to the immediately preceding term) — identical semantics across engines, conformance-enforced, with the documented tokenizer/stemmer behavior (porter over unicode61: case/diacritic folding, English stemming, opaque CJK runs). **Extended grammar — engine-documented, not guaranteed portable**: `field:term`, `{a b}:term`, `NEAR(...)`; SQLite (adapter #1) supports all of it natively, other engines may implement any of it, and engines document which extended constructs they accept — unsupported extended syntax fails with the same teaching-error quality as everything else. *Rationale: requiring a scan-and-score engine to reimplement the full FTS5 grammar is lift without a demander; the core subset covers observed agent usage.* |
+| Match language | **Two tiers** (amended 2026-09-05). **Core subset — contract on EVERY engine**: terms, implicit AND, `OR`, `NOT`, quoted phrases, `term*` prefix — with the **grammar pinned to SQLite FTS5's documented parsing rules** (`NOT` is a BINARY exclusion operator — `a NOT b` matches rows matching `a` but not `b`; bare leading `NOT b` is a syntax error; `NOT` and implicit/explicit `AND` bind tighter than `OR`; all binary operators left-associative; parentheses group; phrase interiors are token sequences with no operators; prefix `*` applies to the immediately preceding term) — identical semantics across engines, conformance-enforced, with the documented tokenizer/stemmer behavior (porter over unicode61: case/diacritic folding, English stemming, opaque CJK runs). **Extended grammar — engine-documented, not guaranteed portable**: `field:term`, `{a b}:term`, `NEAR(...)`; SQLite (adapter #1) supports all of it natively, other engines may implement any of it, and engines document which extended constructs they accept — unsupported extended syntax fails with the same teaching-error quality as everything else. *Rationale: requiring a scan-and-score engine to reimplement the full FTS5 grammar is lift without a demander; the core subset covers observed agent usage.* |
 | Ranking quality | The normative full-text ranking is SQLite FTS5's built-in BM25 (`rank`) with default parameters — k1=1.2, b=0.75, all column weights 1.0 — computed over the visible corpus. "BM25-family" is not a license for a variant: differing idf definitions, length normalization, parameters, or field weights reorder the same corpus while still feeling like BM25. Two tiers, mirroring Ordering: under `auth: off`, adapter #1's explicit `ORDER BY rank, rowid` is preserved bit-for-bit per §8.1. With `auth: on`, the normative rank values are adapter #1's emitted ranks, bit-for-bit — SQLite FTS5 as the reference oracle, other engines reproduce its output exactly (corpus-verified on fixtures) — and near-equal scores compare with the same canonical quantization as vectors, `q(rank) = floor(rank / fl64(1e-9))` with `id` tiebreak, so precision, evaluation order, and log rounding cannot reorder documents or shift offset pages between engines. |
 | Truncated / pagination | `limit` default 10 max 200, `offset`, `truncated` exactly as v0.2.0 — always computed over the caller's visible set (§4.3). |
 | Vector skips | Corrupt/dimension-mismatched/non-finite stored vectors are skipped and reported as `skipped_vectors`, never silently dropped. |
