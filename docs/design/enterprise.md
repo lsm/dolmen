@@ -153,7 +153,13 @@ Rules:
   `unauthorized` (a new code; `auth: off` never emits it). Existing `forbidden` (403) means
   *authenticated but not granted*.
 - `auth: on` with no identity source at all (no trusted proxies, no admin key) is a **startup
-  error** — fail fast rather than a server that 401s everything.
+  error** — fail fast rather than a server that 401s everything. So is `auth: on` with **no
+  usable root administrator**: neither the admin key nor a durable grant of `admin` on `*`. A
+  trusted-proxy CIDR alone leaves every proxied identity authenticated-but-ungranted, and
+  `grant` itself requires `admin` — nobody could create the first grant without a restart. The
+  same check guards the other end: removing `DOLMEN_ADMIN_KEY` from the environment is only
+  safe once a durable root-admin grant exists (the §3.4 last-admin guard then keeps it
+  un-revocable).
 - `/healthz`, `/version`, `/skills*`, and `/v1/openapi.json` remain unauthenticated in both modes
   (liveness probes and client-side schema discovery; they expose no row data — **confirmed in
   review 2026-09-05, a decision, not a default**); everything under `/v1/{op}` and `/mcp`
@@ -383,7 +389,13 @@ inheritance). There are no deny grants, no precedence, no ordering — union onl
   incarnation guards, can only target the successor) are never denied or deleted by the
   predecessor's cleanup.
 - **Grants target existing objects only** (`*` excepted as the root): no pre-provisioning grants
-  against nonexistent namespaces — create, then grant.
+  against nonexistent namespaces — create, then grant. And grant/revoke mutations themselves
+  carry the **target lifetime the request was authorized against** (from the state read),
+  compared atomically with the existing row's recorded binding: a mutation that validated
+  against a predecessor, paused, and resumed after another replica completed a full
+  drop/recreate cycle (tombstone recorded, finalized, name recreated, successor grant added —
+  no tombstone pending) must not merge into or revoke the successor's row on name-based
+  `(subject, object)` identity alone. A lifetime mismatch is `409` — re-read, re-issue.
 - **Grant rows bind to their target's LIFETIME identity, recorded at grant time** (possible
   because grants target existing objects): a table grant records (`NsGen`, `Table`, `DropGen`) —
   the schema `Version` is deliberately excluded, exactly as idempotency records exclude it, so a
