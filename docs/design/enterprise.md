@@ -420,10 +420,15 @@ it as a `?` parameter — **this list is the whole allowlist**, not a
 category sketch: no subqueries, no table references (including `__fts` shadow tables), no
 aggregate or window functions, and no other function of any kind — user-defined, data-reading,
 nondeterministic (`random`, …), `sqlite_*` internals, or side-effecting ones are all
-`invalid_request`. Materializing the visible rows first constrains a function's *arguments* but
-never SQL executed inside its body, so an impure function's results or errors would still be an
-oracle over hidden data. Validation happens above the seam before execution, from this list —
-one shared rule, not per-adapter judgment. `query` is unaffected: raw SQL already requires
+`invalid_request`. **Evaluation semantics are SQLite's, pinned**: `LIKE` is ASCII-case-insensitive
+(true: `'A' LIKE 'a'`), string comparison uses BINARY byte-wise collation, integer division
+truncates toward zero, `round` rounds half away from zero, NULL follows three-valued logic, and
+coercion follows SQLite's documented rules — engines whose native functions differ (Postgres
+`LIKE` is case-sensitive; collations vary) implement SQLite's semantics for scoped filters:
+one shared evaluator, not just a shared validator. Materializing the visible rows first
+constrains a function's *arguments* but never SQL executed inside its body, so an impure
+function's results or errors would still be an oracle over hidden data. Validation happens above
+the seam before execution, from this list — one shared rule, not per-adapter judgment. `query` is unaffected: raw SQL already requires
 namespace-wide `read` (§2), which authorizes every table its subqueries touch. Under `auth: off`
 the filter language is unchanged from v0.2.0.
 
@@ -479,7 +484,10 @@ data-independent and stay on the `schema` verb alone.
   recorded one — returning the hash-mismatch `invalid_request` for wrong-payload guesses would
   let the caller distinguish correct from incorrect payload guesses and oracle the hidden
   payload. *Rationale: idempotency keys are per-table unique; a foreign key replay is misuse,
-  unlike a natural-key collision.*
+  unlike a natural-key collision.* Idempotency records die with their table incarnation: dropping
+  a table removes its records atomically with it (adapter #1's behavior), or the engine binds
+  the record to the `Incarnation` in the lookup — either way, a same-named successor table must
+  never replay a predecessor's ids.
 
 ### 4.4 Raw SQL
 
