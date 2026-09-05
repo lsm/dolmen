@@ -683,7 +683,13 @@ type Engine interface {
     // the incarnation it must pass back — and it is also where a text vector
     // query validates its preconditions BEFORE the provider is called, so an
     // invalid query fails without contacting (or billing) the embedder.
-    TableState(ctx context.Context, ns, table string) (*schema.TableSchema, Incarnation, error)
+    // TableState is itself authorization-bound: nsGen is the NAMESPACE
+    // incarnation the caller's grant check was resolved against (from
+    // NamespaceState), verified atomically with the read — otherwise a
+    // stale grant could fetch the SUCCESSOR's incarnation here and pass it
+    // to a later scoped operation, laundering expired authorization through
+    // the very call that mints the guard. Zero = no guard (auth off).
+    TableState(ctx context.Context, ns, table string, nsGen [16]byte) (*schema.TableSchema, Incarnation, error)
     ListTables(ctx context.Context, ns string, nsGen [16]byte) ([]string, error)
     // nsGen is the namespace's creation id: inside the operation's critical
     // section the engine verifies the namespace exists with EXACTLY that id —
