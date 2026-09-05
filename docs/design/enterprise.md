@@ -80,10 +80,35 @@ The predicate is the contract; enforcement is dispatch checks (always dolmen, FG
 dolmen's check remains the contract guarantee, and the conformance suite is the proof it cannot
 be skipped.
 
-Forward notes (non-normative): cross-namespace query is a future, permission-checked capability —
-only meaningful on shared engines; FGA's visible-namespace-set (ListObjects) is already the
-mechanism. Postgres is the anticipated adapter #3 for operational SQL workloads when
-file-per-tenant fleets cap out.
+Forward note (non-normative): Postgres is the anticipated adapter #3 for operational SQL
+workloads when file-per-tenant fleets cap out — the rationale for the engine-mapping invariant's
+generality (file / schema / catalog), not a feature promise.
+
+## 0.6. Consistency contract
+
+Engine obligations, stated beside §0.5.3's confinement rule:
+
+- **Atomicity.** Every operation is all-or-nothing; a failed operation leaves zero partial
+  state, and an idempotency record commits atomically with its rows.
+- **Ordering.** Writes to one namespace are observable as some serial order (engines may
+  parallelize internally; the observable result must match one). Read-your-writes: once an
+  operation acks, subsequent operations observe it. Reads never see torn batches.
+- **Collision surfacing.** Concurrent-write anomalies are transparently serialized or retried
+  internally within bounds; when neither is possible they surface as `409 conflict` — never
+  partial writes, never corruption. Agent retry recipe (for the docs): on 409, re-read,
+  re-issue.
+- **Deployment topology is engine-declared.** `sqlite`: exactly one dolmen process per data
+  directory (the existing README rule, now contract). Shared engines (`postgres`, `iceberg`):
+  concurrent dolmen processes are safe via engine-native coordination. Declared so no one
+  assumes HA an engine cannot give.
+
+**Deliberate non-features** (recorded so they read as decisions, not omissions): **data
+portability is SKIPPED** — no `export`/`import` ops; laptop→central promotion, per-tenant
+offboarding, and engine-migration dumps all wait for a real-world demander (#32 stays open,
+unrescoped; the seam keeps portability designed, not user-exercisable). **The audit surface is
+DEFERRED** — no `list_audit` or audit-event store now; the audit story is §1.2 attribution
+(principal on every op log line, with `X-Request-Id`) plus `list_migrations`; a structured audit
+surface waits for a named compliance requirement. No features without demanders.
 
 ## 1. Identity (authentication)
 
@@ -265,8 +290,9 @@ Objects use the same shape as every other op — namespace path (§5), optional 
 sub-namespace inside it (§3.3), so segment wildcards would express nothing new while adding a
 grammar to validate and interpolate safely.*
 
-Grants may name objects that do not exist yet (grant-then-create is the natural order for
-onboarding a team). Namespace paths and table names are validated by syntax only (§5.1). A table
+Grants target **existing objects only** (`{"namespace":"*"}` excepted as the root): no
+pre-provisioning grants against nonexistent namespaces — create, then grant (§3.4). Namespace
+paths and table names are validated by existence, not just syntax (§5.1). A table
 requires a concrete namespace: `{"namespace": "*", "table": …}` is `invalid_request`.
 
 ### 3.2 Ops
@@ -314,6 +340,24 @@ Namespace grants inherit down to all tables and all sub-namespaces. `admin` on a
 `grant`/`revoke` on that object and everything under it (delegation follows the same direction as
 inheritance). There are no deny grants, no precedence, no ordering — union only.
 
+### 3.4 Grant lifecycle
+
+- **No ownership concept — deliberately.** Creators need none: `create_namespace` requires
+  `admin` on the parent, and grants inherit down (§3.3), so the creator of a namespace always
+  already administers it; delegation composes via targeted child grants (grant `admin` on
+  `acme/team-a` specifically). Recorded so no one adds an owner concept later.
+- **Last-admin lockout guard.** Revoking the final grant of `admin` on `*` is refused — a
+  `409 conflict`-family error with a teaching message. This makes the bootstrap flow's advice to
+  drop `DOLMEN_ADMIN_KEY` after the first grants permanently safe. No guard below `*`: an
+  admin-less namespace still has ancestor admins.
+- **Drop cascades grant deletion.** Dropping a namespace or table deletes the grants targeting
+  that object and its subtree; recreation starts with a clean grant slate — a reused namespace
+  name cannot inherit the previous tenant's grants (offboarded contractors, the resurrection
+  risk). Ancestor grants survive and apply, which is correct because an ancestor-admin does the
+  recreating. The drop's `confirm` flow reports the number of grants that die with the object.
+- **Grants target existing objects only** (`*` excepted as the root): no pre-provisioning grants
+  against nonexistent namespaces — create, then grant.
+
 ## 4. `row_access` and the implicit `owner` column
 
 ### 4.1 Declaration
@@ -359,8 +403,10 @@ and reserving it unconditionally would break tables and requests that v0.2.0 acc
   count, is only ever seen by table-wide readers, who are authorized to know; a schema-only
   caller learns nothing, not even whether the table has rows (a generic non-reader rejection
   would still distinguish empty from populated).
-  Disabling (`value: false`) is allowed — the column and its values remain, filtering stops — but
-  it **additionally requires table-wide `read` (or `admin`)**: removing the filter widens every
+  Disabling (`value: false`) is allowed — the column and its values remain, filtering stops. It
+  is not a feature but the **recovery hatch** for a mistaken declaration: without it, undoing
+  `row_access` requires dropping and recreating the table — data loss. It **additionally requires
+  table-wide `read` (or `admin`)**: removing the filter widens every
   data-verb holder's visibility from own rows to all rows (§4.3), so leaving it on `schema` alone
   would let a `schema`+`update` caller unscope themselves and then mutate every owner's rows — a
   direct escalation.
@@ -545,7 +591,9 @@ behave identically (§8.1).
 ### 5.4 Recursive drop guard
 
 `drop_namespace` drops exactly one namespace: its `.db` and sidecars, plus its registry — the
-v0.2.0 semantics, unchanged. Dropping a namespace that **has descendants** is rejected
+v0.2.0 semantics, unchanged — **and cascades grant deletion** (§3.4): the grants targeting the
+namespace and its subtree die with it, the `confirm` flow reports that count, and recreation
+starts with a clean grant slate. Dropping a namespace that **has descendants** is rejected
 (`invalid_request`) with the error naming the descendant count; drop the children first.
 *Rationale: no accidental tree deletion, and at depth ≤ 3 explicit child-first drops are cheap.*
 
@@ -826,3 +874,6 @@ harness per test group, no CI matrix, no new make targets.
 | D15 | Search semantics are contract; index vs scan is engine choice; index never changes semantics | §7 |
 | D16 | Dual-mode conformance: precise byte-for-byte rule, deny sweep, acceptance scenario, invariant tests, no CI matrix | §8 |
 | D17 | Architecture invariants: namespace is a logical tenant coordinate (permissions bind to names, never files); two-level tenancy — projects structural via namespaces (engine-mapped file/schema/catalog), users logical via the owner predicate (delegatable to native RLS); user-per-namespace is an anti-pattern; raw-SQL confinement is an engine obligation; Postgres anticipated as adapter #3 | §0.5 |
+| D18 | Grant lifecycle: no owner concept (inheritance covers creators); last-admin-on-`*` revoke guard (409); drop cascades grant deletion (clean slate on recreation, count reported in drop confirm); grants target existing objects only | §3.4 |
+| D19 | Consistency contract: op atomicity; per-namespace serial observability + read-your-writes; 409-or-nothing collision surfacing; engine-declared deployment topology (sqlite = 1 process/data-dir; shared engines = N pods) | §0.6 |
+| D20 | Data portability SKIPPED and audit surface DEFERRED, deliberately — no features without real-world demanders (#32 open, unrescoped) | §0.6 |
