@@ -566,7 +566,9 @@ fields. So does **every vector-clearing path** — `set_vectorize` disabling and
 vectorized field: apply nulls `_embedding` across every row, so runtime, I/O, and failures read
 on hidden population. So does **every `drop_field`** — even an ordinary non-FTS, non-vector
 column drop rewrites storage across every hidden row, and add-nullable-then-drop cycles make the
-probe repeatable. All other migrations are
+probe repeatable. And **`add_field` of a `vectorize: true` field even WITHOUT a backfill
+default** — apply still runs the table-wide pending-embedding scan, so latency and I/O read on
+hidden population even though every new value is NULL. All other migrations are
 data-independent and stay on the `schema` verb alone.
 
 - `update`/`delete` match only visible rows; `updated`/`deleted` counts are visible-set counts.
