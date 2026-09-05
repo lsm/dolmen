@@ -373,6 +373,11 @@ inheritance). There are no deny grants, no precedence, no ordering — union onl
   whenever THAT incarnation is gone — even if a same-named successor already exists (a crash
   after the engine deletion but before cleanup, with a concurrent recreate, would otherwise roll
   the tombstone back on "name exists" and restore the predecessor's grants onto the successor).
+  The tombstone also captures the **exact grant rows** it covers as a fixed set at creation:
+  exclusion-from-evaluation and physical removal apply to exactly that set and nothing else —
+  grants minted after tombstone creation (which, per §3.4's existing-objects rule and the
+  incarnation guards, can only target the successor) are never denied or deleted by the
+  predecessor's cleanup.
 - **Grants target existing objects only** (`*` excepted as the root): no pre-provisioning grants
   against nonexistent namespaces — create, then grant.
 
@@ -650,14 +655,17 @@ type Engine interface {
     // operation that opens a namespace — listing, table state, DDL, rows,
     // search — requires it to exist, checked atomically with the operation
     // (not_found otherwise); adapter #1's create-on-open path (Store.ns) is a
-    // v0.2.0 behavior that ends at the seam. Calls carrying an Incarnation
-    // (which embeds NsGen) additionally hold the race guard, so a concurrent
-    // drop_namespace cannot turn any auth-on call into an implicit recreation
-    // past §2's parent-admin gate.
-    NamespaceState(ctx context.Context, ns string) ([16]byte, error)
+    // v0.2.0 behavior that ends at the seam. And EVERY engine call whose
+    // authorization was resolved against an object carries and atomically
+    // verifies that object's incarnation — nsGen for namespace-level calls
+    // (Query and the namespace lifecycle/listing methods below), the full
+    // Incarnation for table-level calls — so a drop-and-recreate between
+    // authorization and execution can never act on a successor the old grant
+    // does not cover. Zero values = no guard (auth off).
+    NamespaceState(ctx context.Context, ns string, nsGen [16]byte) ([16]byte, error)
     ListNamespaces(ctx context.Context, prefix string) ([]string, error)
     CreateNamespace(ctx context.Context, ns string) error
-    DropNamespace(ctx context.Context, ns string) error
+    DropNamespace(ctx context.Context, ns string, nsGen [16]byte) error
 
     // Table DDL and registry — DescribeTable's scope scopes the returned row
     // count to the caller's visible set (§4.3). The zero Incarnation (no
@@ -668,7 +676,7 @@ type Engine interface {
     // query validates its preconditions BEFORE the provider is called, so an
     // invalid query fails without contacting (or billing) the embedder.
     TableState(ctx context.Context, ns, table string) (*schema.TableSchema, Incarnation, error)
-    ListTables(ctx context.Context, ns string) ([]string, error)
+    ListTables(ctx context.Context, ns string, nsGen [16]byte) ([]string, error)
     // nsGen is the namespace's creation id: inside the operation's critical
     // section the engine verifies the namespace exists with EXACTLY that id —
     // table creation never creates a namespace implicitly and cannot race a
@@ -676,7 +684,7 @@ type Engine interface {
     // gate. Zero = no guard (auth off).
     CreateTable(ctx context.Context, ns, table string, fields []schema.Field, opts TableOpts, nsGen [16]byte) (*schema.TableSchema, error)
     DescribeTable(ctx context.Context, ns, table string, scope *RowScope, scopeIncarnation Incarnation) (*schema.TableSchema, int64, error)
-    DropTable(ctx context.Context, ns, table string) error
+    DropTable(ctx context.Context, ns, table string, inc Incarnation) error
 
     // Migrate ops — emb re-embeds set_vectorize backfills. Dry runs are a
     // separate method returning the FULL MigrationPlan (operations, destructive
@@ -708,7 +716,7 @@ type Engine interface {
     // destructive race the token closes.
     PlanMigration(ctx context.Context, ns, table string, changes []schema.Change, emb Embedder, expected Incarnation, scope *RowScope, scopeIncarnation Incarnation) (*MigrationPlan, error)
     Migrate(ctx context.Context, ns, table string, changes []schema.Change, emb Embedder, expected Incarnation) (*schema.TableSchema, error)
-    ListMigrations(ctx context.Context, ns, table string) ([]Migration, error)
+    ListMigrations(ctx context.Context, ns, table string, inc Incarnation) ([]Migration, error)
 
     // Row CRUD — scope filters which existing rows may be matched, read, or counted;
     // on Insert it scopes the idempotency replay lookup (foreign-replay → conflict, §4.3).
