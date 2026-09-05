@@ -463,7 +463,10 @@ backfill default (row existence), and **`set_vectorize` enabling or re-enabling 
 even on an empty table** — its backfill reads every non-empty value and sends it to the embedding
 provider, exporting invisible rows at the caller's direction, and the provider's outcome itself
 depends on those hidden inputs; conditioning the gate on the table having rows would itself be a
-row-existence oracle (succeeds on empty, 403 on invisible population). All other migrations are
+row-existence oracle (succeeds on empty, 403 on invisible population). **`add_field` of a
+`vectorize: true` field with a backfill `default` is on the list too** — apply embeds the default
+for every existing row, so provider calls, cost, timing, and failure all read on hidden row
+population. All other migrations are
 data-independent and stay on the `schema` verb alone.
 
 - `update`/`delete` match only visible rows; `updated`/`deleted` counts are visible-set counts.
@@ -486,8 +489,11 @@ data-independent and stay on the `schema` verb alone.
   payload. *Rationale: idempotency keys are per-table unique; a foreign key replay is misuse,
   unlike a natural-key collision.* Idempotency records die with their table incarnation: dropping
   a table removes its records atomically with it (adapter #1's behavior), or the engine binds
-  the record to the `Incarnation` in the lookup — either way, a same-named successor table must
-  never replay a predecessor's ids.
+  the record to the **table-lifetime components only — `NsGen`, `Table`, `DropGen`** — in the
+  lookup. The schema `Version` is deliberately excluded: it increments on every migration, and
+  binding to it would miss a pre-migration record after any `migrate` and re-insert the retried
+  payload instead of replaying the original ids — idempotency must survive migrations. Either
+  way, a same-named successor table must never replay a predecessor's ids.
 
 ### 4.4 Raw SQL
 
