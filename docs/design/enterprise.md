@@ -422,16 +422,20 @@ values. *Rationale: today's `set_enum` error enumerates every stored nonmember v
 schema-only caller could harvest the distinct contents of any string field by offering unlikely
 one-value vocabularies.*
 
-**Data-dependent validations require table-wide read.** Redacting the message is not enough: the
-validation's *outcome* is itself a disclosure. A caller without table-wide read could repeatedly
-attempt `set_enum` with chosen vocabularies and distinguish success from the generic rejection —
-a repeatable membership oracle over invisible values (and constraints can be cleared afterwards,
-so the oracle is practically exploitable). Under `auth: on`, a migration whose validation outcome
-depends on rows outside the caller's visible set — `set_enum` (value membership), `set_row_access`
-enabling (row existence), and `add_field` of a required field without a backfill default (row
-existence) — additionally requires table-wide `read` on the table; callers without it are denied
-`403` before any data-dependent check runs. All other migrations are data-independent and stay on
-the `schema` verb alone.
+**Data-dependent migrations require table-wide read.** Redacting the message is not enough: the
+validation's *outcome* is itself a disclosure, and some migrations *process* hidden rows. A
+caller without table-wide read could repeatedly attempt `set_enum` with chosen vocabularies and
+distinguish success from the generic rejection — a repeatable membership oracle over invisible
+values (and constraints can be cleared afterwards, so the oracle is practically exploitable).
+Under `auth: on`, a migration whose outcome or execution depends on rows outside the caller's
+visible set additionally requires table-wide `read` on the table; callers without it are denied
+`403` before any data-dependent check or processing runs. The list: `set_enum` (value
+membership), `set_row_access` enabling (row existence), `add_field` of a required field without a
+backfill default (row existence), and **`set_vectorize` enabling or re-enabling over stored
+rows** — its backfill reads every non-empty value and sends it to the embedding provider,
+exporting invisible rows at the caller's direction, and the provider's outcome itself depends on
+those hidden inputs. All other migrations are data-independent and stay on the `schema` verb
+alone.
 
 - `update`/`delete` match only visible rows; `updated`/`deleted` counts are visible-set counts.
 - `search_fulltext`/`search_vector` (and their `filter`, `min_score`, pagination, and `truncated`)
@@ -676,7 +680,7 @@ What the contract pins (conformance-enforced on every engine):
 | Result shape | Rows as stored plus `id`/`created_at` (and `owner` when present), typed reads per field type; `_score` on every vector result (cosine, `-1..1`, engines agree within float tolerance); no rank value exposed for fulltext. |
 | Ordering | `search_fulltext`: relevance descending, deterministic tiebreak `id` ascending. `search_vector`: `_score` descending, tiebreak `id` ascending — via **canonical arithmetic, then transitive quantization**. Canonical cosine, fully specified: computed in binary64 from the stored float32 vectors; dot products and squared norms accumulated component-wise in dimension order; every multiply and add individually rounded (IEEE-754 round-to-nearest-even) — fused multiply-add/contraction and reassociation are FORBIDDEN; norms via the correctly-rounded square root; if either vector has zero norm the score is exactly `0` (matching adapter #1 today — never NaN, never skipped); the final quotient clamped to `[-1, 1]` (unclamped rounding can exceed the range, e.g. a self-comparison yielding `1.0000000000000002`). Engines may use faster internal paths only if the canonical value (and hence its bucket) is identical; the conformance corpus verifies. Quantize the canonical value with prescribed arithmetic: `q(s) = floor(s / fl64(1e-9))` — the divisor is the binary64 value nearest `1e-9`, the division is one correctly-rounded binary64 operation, then `floor` — computed in binary64 by EVERY engine regardless of internal storage (a decimal-backed engine evaluating the division exactly would put `q(0.5)` in bucket 500000000 where the prescribed binary64 division yields 499999999; the binary64 result is the contract). Order by the integer `q(_score)` (ties break by `id` ascending); `min_score` is constrained to the cosine range `[-1, 1]` (`invalid_request` outside — matching the documented `_score` range), and the threshold compares `q(s) ≥ q(min_score)`, which cannot overflow within the range. Quantizing per-engine approximations would NOT be consistent — `0.5000000000` and `0.4999999999` (within tolerance) land in different buckets — and pairwise epsilon is non-transitive; canonical-then-bucket avoids both. Identical corpus + query ⇒ identical order on every engine. Under a scope, ranking operates over the **visible corpus only**: relevance statistics must not include rows outside the caller's visible set — foreign matching rows can never reorder or displace visible results (§4.3). Predicate conjunction alone is not sufficient (a shared index's corpus statistics span owners); engines choose the isolation — per-scope index partitioning, or filter-then-rescore. |
 | Match language | The documented FTS5 `MATCH` subset (terms, implicit AND, `OR`, `NOT`, `field:term`, `{a b}:term`, quoted phrases, `term*` prefix, `NEAR(...)`) with the documented tokenizer/stemmer behavior (porter over unicode61: case/diacritic folding, English stemming, opaque CJK runs). Engines must accept the whole subset; SQLite-only extensions to the grammar are not portable and not guaranteed. |
-| Ranking quality | The normative full-text ranking is SQLite FTS5's built-in BM25 (`rank`) with default parameters — k1=1.2, b=0.75, all column weights 1.0 — computed over the visible corpus. "BM25-family" is not a license for a variant: differing idf definitions, length normalization, parameters, or field weights reorder the same corpus while still feeling like BM25. Every engine reproduces this exact formula (ties break by `id` ascending); the conformance corpus verifies orderings, and the formula removes the ambiguity a finite corpus cannot. |
+| Ranking quality | The normative full-text ranking is SQLite FTS5's built-in BM25 (`rank`) with default parameters — k1=1.2, b=0.75, all column weights 1.0 — computed over the visible corpus. "BM25-family" is not a license for a variant: differing idf definitions, length normalization, parameters, or field weights reorder the same corpus while still feeling like BM25. The normative rank VALUES are adapter #1's emitted ranks, bit-for-bit: SQLite FTS5 is the reference oracle, other engines reproduce its output exactly (the conformance corpus verifies on fixtures), and near-equal scores are compared with the same canonical quantization as vectors — `q(rank) = floor(rank / fl64(1e-9))`, ties break by `id` ascending — so precision, evaluation order, and log rounding cannot reorder documents or shift offset pages between engines. |
 | Truncated / pagination | `limit` default 10 max 200, `offset`, `truncated` exactly as v0.2.0 — always computed over the caller's visible set (§4.3). |
 | Vector skips | Corrupt/dimension-mismatched/non-finite stored vectors are skipped and reported as `skipped_vectors`, never silently dropped. |
 
