@@ -150,6 +150,12 @@ Rules:
   with a credential that cannot be transmitted faithfully. Generate one with
   `openssl rand -base64 32 | tr '+/' '-_' | tr -d '='`.
 - Presented as `Authorization: Bearer <key>`; compared in constant time.
+- **Precedence when both mechanisms are present** (a trusted proxy commonly forwards the client's
+  `Authorization` header alongside the identity headers): the direct bearer credential wins — a
+  deliberate credential outranks an asserted header, and the proxy headers are ignored for that
+  request. An **invalid** bearer value is never ignored in favor of a valid proxy identity: the
+  request fails `401` (fail-closed — a rejected direct credential must not silently downgrade to
+  the weaker mechanism).
 - Maps to the built-in principal `dolmen-admin`, which implicitly holds `admin` on `*`. The implicit
   grant attaches to the **credential, not the name** — it is configuration, not data: never listed
   by `list_grants`, and removing the env removes the identity at next restart, while grants it
@@ -658,7 +664,7 @@ What the contract pins (conformance-enforced on every engine):
 | Property | Contract |
 |---|---|
 | Result shape | Rows as stored plus `id`/`created_at` (and `owner` when present), typed reads per field type; `_score` on every vector result (cosine, `-1..1`, engines agree within float tolerance); no rank value exposed for fulltext. |
-| Ordering | `search_fulltext`: relevance descending, deterministic tiebreak `id` ascending. `search_vector`: `_score` descending, tiebreak `id` ascending. Identical corpus + query ⇒ identical order on every engine. Under a scope, ranking operates over the **visible corpus only**: relevance statistics must not include rows outside the caller's visible set — foreign matching rows can never reorder or displace visible results (§4.3). Predicate conjunction alone is not sufficient (a shared index's corpus statistics span owners); engines choose the isolation — per-scope index partitioning, or filter-then-rescore. |
+| Ordering | `search_fulltext`: relevance descending, deterministic tiebreak `id` ascending. `search_vector`: `_score` descending, tiebreak `id` ascending — with **epsilon comparison**: two scores within 1e-9 (relative) are EQUAL for ordering, so the `id` tiebreak decides; ordering and the `min_score` threshold likewise compare against the quantized score (score ≥ min_score − 1e-9 passes). Engines accumulating in float32, float64, or different reduction orders then produce identical pages while every reported `_score` stays within the §7 tolerance. Identical corpus + query ⇒ identical order on every engine. Under a scope, ranking operates over the **visible corpus only**: relevance statistics must not include rows outside the caller's visible set — foreign matching rows can never reorder or displace visible results (§4.3). Predicate conjunction alone is not sufficient (a shared index's corpus statistics span owners); engines choose the isolation — per-scope index partitioning, or filter-then-rescore. |
 | Match language | The documented FTS5 `MATCH` subset (terms, implicit AND, `OR`, `NOT`, `field:term`, `{a b}:term`, quoted phrases, `term*` prefix, `NEAR(...)`) with the documented tokenizer/stemmer behavior (porter over unicode61: case/diacritic folding, English stemming, opaque CJK runs). Engines must accept the whole subset; SQLite-only extensions to the grammar are not portable and not guaranteed. |
 | Ranking quality | The normative full-text ranking is SQLite FTS5's built-in BM25 (`rank`) with default parameters — k1=1.2, b=0.75, all column weights 1.0 — computed over the visible corpus. "BM25-family" is not a license for a variant: differing idf definitions, length normalization, parameters, or field weights reorder the same corpus while still feeling like BM25. Every engine reproduces this exact formula (ties break by `id` ascending); the conformance corpus verifies orderings, and the formula removes the ambiguity a finite corpus cannot. |
 | Truncated / pagination | `limit` default 10 max 200, `offset`, `truncated` exactly as v0.2.0 — always computed over the caller's visible set (§4.3). |
