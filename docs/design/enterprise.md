@@ -26,6 +26,60 @@ deviates. Terminology follows the vocabulary in §0 exactly.
 | **engine** | An implementation of the `store.Engine` interface (§6). SQLite is adapter #1. |
 | **mode** | `auth: off` (default, golden v0.2.0 contract) or `auth: on` (deny-by-default). |
 
+## 0.5. Architecture invariants
+
+### 0.5.1 Namespace is a logical tenant coordinate
+
+Physical isolation is an **engine implementation detail**. Permissions bind to names — never to
+files — so the tenancy model survives any engine swap. §5.2's `<data>/a/b/c.db` layout is
+adapter #1's mapping, not the definition of tenancy:
+
+| | SQLite (adapter 1) | Postgres (anticipated adapter 3) | DuckDB/Iceberg (adapter 2) |
+|---|---|---|---|
+| namespace → | one file | one schema | catalog namespace / storage prefix |
+| isolation | physical (the file is the wall) | engine-enforced (schema confinement; optional native RLS) | engine-enforced (catalog scoping) |
+| raw-SQL confinement | free (separate file) | `search_path` / role-per-schema pinning | catalog-prefix qualification |
+| RowScope (own-rows) | predicate conjoined in SQL | predicate, **or delegated to native RLS** | predicate in the scan |
+
+### 0.5.2 Two-level tenancy — two mechanisms, never mixed
+
+- **Level 1, project isolation → namespaces (STRUCTURAL).** Hard wall; queries cannot cross;
+  grants anchor here. The engine maps it to file / schema / catalog object. File-per-namespace is
+  adapter #1's isolation *strategy* — the strongest cheap one — capped by fleet size (thousands
+  of open handles), not correctness; when a fleet outgrows it, the Postgres adapter takes over
+  with **nothing above the seam changing**.
+- **Level 2, user isolation inside a project → rows (LOGICAL).** Users share the project's
+  tables; each sees only their own rows (`owner` column + visible-set predicate, §4). Deliberately
+  NOT structural: an `owner`-column WHERE is the lowest common denominator of every engine — that
+  is what makes it portable — and engines with something better (Postgres RLS) may take over
+  beneath the same contract.
+- **User-per-namespace is an anti-pattern.** It explodes namespace count and makes shared tables
+  (the usage-telemetry pattern, §8.3) impossible.
+- **The architect's two knobs** (seed for the #167 skill docs): *structural* — give the team a
+  sub-namespace (`acme/team-a`) when they must never see each other's schema or data; *logical* —
+  one table with `row_access: "own"` when they share a table but keep private rows. The same
+  grant language drives both.
+
+### 0.5.3 Raw-SQL confinement is an engine obligation
+
+Contract, not a SQLite accident: `query` executes within exactly ONE namespace, and the engine
+must make cross-namespace reference **impossible by mechanism** — separate file (SQLite), schema
+pinning (Postgres), catalog qualification (lakehouse). This is why `query` gates on the namespace
+(§2): per-table enforcement on arbitrary caller SQL is not sound; granularity lives in the
+structured ops.
+
+### 0.5.4 RowScope is engine-delegatable
+
+The predicate is the contract; enforcement is dispatch checks (always dolmen, FGA) + row filtering
+(engine-translated). Engines may delegate the filtering to native mechanisms (Postgres RLS) —
+dolmen's check remains the contract guarantee, and the conformance suite is the proof it cannot
+be skipped.
+
+Forward notes (non-normative): cross-namespace query is a future, permission-checked capability —
+only meaningful on shared engines; FGA's visible-namespace-set (ListObjects) is already the
+mechanism. Postgres is the anticipated adapter #3 for operational SQL workloads when
+file-per-tenant fleets cap out.
+
 ## 1. Identity (authentication)
 
 Dolmen terminates no user-facing authn. A gateway (Entra/GitHub via OAuth proxy, service-token
@@ -390,7 +444,8 @@ without table-wide `read` reaches their own rows through the structured ops (`se
 `describe_table`, their own writes' returned ids), never through `query`.
 
 *Rationale: reliably conjoining `owner = ?` into arbitrary caller SQL (joins against the same table,
-subqueries, aggregations) is not sound; raw SQL is the power tool and is gated accordingly.*
+subqueries, aggregations) is not sound; raw SQL is the power tool and is gated accordingly. The
+namespace-level confinement itself is an engine obligation, impossible by mechanism — §0.5.3.*
 
 ## 5. Namespace hierarchy grammar
 
@@ -409,7 +464,8 @@ table-object   := namespace-path "/" table-name        # table-name: existing ru
 
 ### 5.2 File layout
 
-Namespace `a/b/c` is the SQLite file `<data>/a/b/c.db` (WAL sidecars alongside). The directory
+This layout is **adapter #1's mapping** of the namespace coordinate (§0.5.1), not the definition
+of tenancy. Namespace `a/b/c` is the SQLite file `<data>/a/b/c.db` (WAL sidecars alongside). The directory
 `<data>/a/` (and `a/b/`) is created on first child creation. A namespace and its subtree may
 coexist: `a` is `<data>/a.db`, its children live under `<data>/a/`. Depth-1 namespaces are exactly
 v0.2.0's layout — no migration, no behavior change for existing data directories.
@@ -432,7 +488,9 @@ v0.2.0 semantics, unchanged. Dropping a namespace that **has descendants** is re
 
 ## 6. `store.Engine` interface
 
-The seam extracted by #76. Everything above it — envelope, error mapping, validation, authn/authz,
+The seam extracted by #76 — and, with §0.5, the **tenancy portability guarantee**: everything the
+contract says about namespaces, isolation, and row visibility holds on every engine. Everything
+above it — envelope, error mapping, validation, authn/authz,
 visible-set computation, skills/MCP/OpenAPI rendering — is engine-neutral and shared. SQLite becomes
 adapter #1 with **zero contract change** (the conformance suite is the proof).
 
@@ -683,3 +741,4 @@ harness per test group, no CI matrix, no new make targets.
 | D14 | Engine interface operation set + signature sketch; `Query` deliberately unscoped | §6 |
 | D15 | Search semantics are contract; index vs scan is engine choice; index never changes semantics | §7 |
 | D16 | Dual-mode conformance: precise byte-for-byte rule, deny sweep, acceptance scenario, invariant tests, no CI matrix | §8 |
+| D17 | Architecture invariants: namespace is a logical tenant coordinate (permissions bind to names, never files); two-level tenancy — projects structural via namespaces (engine-mapped file/schema/catalog), users logical via the owner predicate (delegatable to native RLS); user-per-namespace is an anti-pattern; raw-SQL confinement is an engine obligation; Postgres anticipated as adapter #3 | §0.5 |
