@@ -441,11 +441,13 @@ the `schema` verb alone.
   insert branch adds a fresh row owned by the writer. Two rows sharing a natural key (one invisible
   to the writer) may coexist; that is the consistent outcome of visible-set semantics, and the
   collision never leaks existence. *Rationale: natural keys are expected to collide across users.*
-- `insert` with an `idempotency_key`: the idempotency record stores the owner. A replay by the
-  original owner (or any table-wide reader) returns the original ids verbatim. A replay by a
-  principal who cannot see those rows gets `409 conflict` — never the ids, never a silent
-  re-insert under the same key. *Rationale: idempotency keys are per-table unique; a foreign key
-  replay is misuse, unlike a natural-key collision.*
+- `insert` with an `idempotency_key`: the idempotency record stores the owner. A replay returns
+  the original ids verbatim to the **original owner, or any caller holding table-wide `read`**;
+  any other caller gets `409 conflict` — never the ids, never a silent re-insert under the same
+  key. (The engine distinguishes them via `WriteOpts.TableWideRead`, §6.2 — a nil scope alone
+  cannot, because a `create`-only caller on a default table and a table-wide reader are both
+  unscoped.) *Rationale: idempotency keys are per-table unique; a foreign key replay is misuse,
+  unlike a natural-key collision.*
 
 ### 4.4 Raw SQL
 
@@ -578,9 +580,13 @@ type Engine interface {
     // on Insert it scopes the idempotency replay lookup (foreign-replay → conflict, §4.3).
     // WriteOpts carries the owner to stamp on EVERY row-insert path — including the
     // upsert insert branches, including table-wide callers whose scope is nil (§4.2) —
-    // and insert's idempotency key. The stamp owner is independent of the scope:
-    // a caller may be unscoped yet still be the writer. emb embeds vectorize fields
-    // on write and re-embeds changed ones, passed per call exactly as today.
+    // insert's idempotency key, and TableWideRead: set iff the caller holds `read`
+    // through a covering grant. The idempotency replay decision needs it because nil
+    // scope alone cannot distinguish a create-only caller on a default table from a
+    // table-wide reader (§4.3): replay returns ids iff the record's owner equals the
+    // stamp owner OR TableWideRead, else conflict. The stamp owner is independent of
+    // the scope: a caller may be unscoped yet still be the writer. emb embeds
+    // vectorize fields on write and re-embeds changed ones, passed per call as today.
     Insert(ctx context.Context, ns, table string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error)
     UpsertByKey(ctx context.Context, ns, table string, on []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error)
     Upsert(ctx context.Context, ns, table string, filter string, args []any, record map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error)
@@ -664,7 +670,7 @@ What the contract pins (conformance-enforced on every engine):
 | Property | Contract |
 |---|---|
 | Result shape | Rows as stored plus `id`/`created_at` (and `owner` when present), typed reads per field type; `_score` on every vector result (cosine, `-1..1`, engines agree within float tolerance); no rank value exposed for fulltext. |
-| Ordering | `search_fulltext`: relevance descending, deterministic tiebreak `id` ascending. `search_vector`: `_score` descending, tiebreak `id` ascending — via **canonical arithmetic, then transitive quantization**. Canonical: cosine is computed in float64 from the stored float32 vectors, dot products and norms accumulated component-wise in dimension order — deterministic, engine-independent by construction; engines may use faster internal paths only if the canonical value (and hence its bucket) is identical, and the conformance corpus verifies. Quantize that canonical value: `q(s) = floor(s / 1e-9)`; order by the integer `q(_score)` (ties break by `id` ascending); `min_score` compares `q(s) ≥ q(min_score)`. Quantizing per-engine approximations would NOT be consistent — `0.5000000000` and `0.4999999999` (within tolerance) land in different buckets — and pairwise epsilon is non-transitive (adjacent pairs equal, endpoints ordered, sorters cycle); canonical-then-bucket avoids both. Identical corpus + query ⇒ identical order on every engine. Under a scope, ranking operates over the **visible corpus only**: relevance statistics must not include rows outside the caller's visible set — foreign matching rows can never reorder or displace visible results (§4.3). Predicate conjunction alone is not sufficient (a shared index's corpus statistics span owners); engines choose the isolation — per-scope index partitioning, or filter-then-rescore. |
+| Ordering | `search_fulltext`: relevance descending, deterministic tiebreak `id` ascending. `search_vector`: `_score` descending, tiebreak `id` ascending — via **canonical arithmetic, then transitive quantization**. Canonical cosine, fully specified: computed in binary64 from the stored float32 vectors; dot products and squared norms accumulated component-wise in dimension order; every multiply and add individually rounded (IEEE-754 round-to-nearest-even) — fused multiply-add/contraction and reassociation are FORBIDDEN; norms via the correctly-rounded square root; if either vector has zero norm the score is exactly `0` (matching adapter #1 today — never NaN, never skipped); the final quotient clamped to `[-1, 1]` (unclamped rounding can exceed the range, e.g. a self-comparison yielding `1.0000000000000002`). Engines may use faster internal paths only if the canonical value (and hence its bucket) is identical; the conformance corpus verifies. Quantize the canonical value: `q(s) = floor(s / 1e-9)`; order by the integer `q(_score)` (ties break by `id` ascending); `min_score` compares `q(s) ≥ q(min_score)`. Quantizing per-engine approximations would NOT be consistent — `0.5000000000` and `0.4999999999` (within tolerance) land in different buckets — and pairwise epsilon is non-transitive; canonical-then-bucket avoids both. Identical corpus + query ⇒ identical order on every engine. Under a scope, ranking operates over the **visible corpus only**: relevance statistics must not include rows outside the caller's visible set — foreign matching rows can never reorder or displace visible results (§4.3). Predicate conjunction alone is not sufficient (a shared index's corpus statistics span owners); engines choose the isolation — per-scope index partitioning, or filter-then-rescore. |
 | Match language | The documented FTS5 `MATCH` subset (terms, implicit AND, `OR`, `NOT`, `field:term`, `{a b}:term`, quoted phrases, `term*` prefix, `NEAR(...)`) with the documented tokenizer/stemmer behavior (porter over unicode61: case/diacritic folding, English stemming, opaque CJK runs). Engines must accept the whole subset; SQLite-only extensions to the grammar are not portable and not guaranteed. |
 | Ranking quality | The normative full-text ranking is SQLite FTS5's built-in BM25 (`rank`) with default parameters — k1=1.2, b=0.75, all column weights 1.0 — computed over the visible corpus. "BM25-family" is not a license for a variant: differing idf definitions, length normalization, parameters, or field weights reorder the same corpus while still feeling like BM25. Every engine reproduces this exact formula (ties break by `id` ascending); the conformance corpus verifies orderings, and the formula removes the ambiguity a finite corpus cannot. |
 | Truncated / pagination | `limit` default 10 max 200, `offset`, `truncated` exactly as v0.2.0 — always computed over the caller's visible set (§4.3). |
