@@ -380,15 +380,19 @@ inheritance). There are no deny grants, no precedence, no ordering — union onl
   predecessor's cleanup.
 - **Grants target existing objects only** (`*` excepted as the root): no pre-provisioning grants
   against nonexistent namespaces — create, then grant.
-- **Grant rows bind to the target object's Incarnation**, recorded at grant time (possible
-  because grants target existing objects): a targeted grant authorizes only against the
-  incarnation it names — a predecessor's grant can never authorize a successor, at any hop,
-  including the bootstrap state read (§6.2: the `nsGen` handed to `NamespaceState` comes from
-  the authorization layer's matched grant row, never from the caller). Ancestor and `*` grants
-  intentionally span incarnations — an ancestor-admin administers a recreated namespace by
-  design. Grant mutations targeting a subtree with a **pending tombstone** fail `409` until
-  cleanup completes, so no grant can slip between the tombstone's captured set and the engine
-  deletion.
+- **Grant rows bind to their target's LIFETIME identity, recorded at grant time** (possible
+  because grants target existing objects): a table grant records (`NsGen`, `Table`, `DropGen`) —
+  the schema `Version` is deliberately excluded, exactly as idempotency records exclude it, so a
+  migration never silently revokes direct table grants; a namespace grant records the namespace's
+  `nsGen`; an ancestor grant records the **ancestor's** `nsGen`; a `*` grant records nothing. A
+  targeted grant authorizes only against the lifetime it names — a predecessor's grant can never
+  authorize a successor, at any hop, including the bootstrap state read (§6.2: the binding handed
+  to `NamespaceState` comes from the authorization layer's matched grant row, never from the
+  caller; an inherited grant verifies its ANCESTOR's incarnation there while receiving the
+  TARGET's current generation — inheritance bootstraps descendants). An ancestor-admin
+  administering a recreated namespace is by design. Grant mutations targeting a subtree with a
+  **pending tombstone** fail `409` until cleanup completes, so no grant can slip between the
+  tombstone's captured set and the engine deletion.
 
 ## 4. `row_access` and the implicit `owner` column
 
@@ -553,7 +557,9 @@ only vectorized ones: apply runs `UPDATE` over every existing row, so the work, 
 storage impact read on hidden population, and the caller can re-probe by dropping and re-adding
 fields. So does **every vector-clearing path** — `set_vectorize` disabling and dropping the
 vectorized field: apply nulls `_embedding` across every row, so runtime, I/O, and failures read
-on hidden population. All other migrations are
+on hidden population. So does **every `drop_field`** — even an ordinary non-FTS, non-vector
+column drop rewrites storage across every hidden row, and add-nullable-then-drop cycles make the
+probe repeatable. All other migrations are
 data-independent and stay on the `schema` verb alone.
 
 - `update`/`delete` match only visible rows; `updated`/`deleted` counts are visible-set counts.
@@ -673,12 +679,20 @@ type Engine interface {
     // Incarnation for table-level calls — so a drop-and-recreate between
     // authorization and execution can never act on a successor the old grant
     // does not cover. Zero values = no guard (auth off).
-    // Bootstrap: the nsGen handed to NamespaceState comes from the
-    // AUTHORIZATION layer's matched grant row (§3.4: targeted grants record
-    // the target's Incarnation at grant time; ancestor/* grants span
-    // incarnations by design), never from the caller — so a predecessor's
-    // grant yields the predecessor's nsGen and mismatches here.
-    NamespaceState(ctx context.Context, ns string, nsGen [16]byte) ([16]byte, error)
+    // Bootstrap: the AuthBinding handed to NamespaceState is WHAT THE
+    // AUTHORIZATION LAYER PROVED, never caller-supplied (§3.4): a targeted
+    // grant's TargetGen mismatches a successor; an inherited grant verifies
+    // its ANCESTOR's (path, nsGen) while the call returns the TARGET's
+    // current generation — inheritance bootstraps descendants; a Root (*)
+    // grant has nothing to verify. The zero value = no guard (auth off).
+    //
+    // type AuthBinding struct {
+    //     Root        bool       // matched a * grant
+    //     Ancestor    string     // ancestor namespace path, when inherited
+    //     AncestorGen [16]byte   // that ancestor's nsGen at grant time
+    //     TargetGen   [16]byte   // target's nsGen, for targeted grants
+    // }
+    NamespaceState(ctx context.Context, ns string, auth AuthBinding) ([16]byte, error)
     ListNamespaces(ctx context.Context, prefix string) ([]string, error)
     // parentNsGen binds child creation to the authorized parent: creating
     // acme/team-a was authorized against acme's incarnation, and the engine
