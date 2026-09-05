@@ -466,7 +466,11 @@ depends on those hidden inputs; conditioning the gate on the table having rows w
 row-existence oracle (succeeds on empty, 403 on invisible population). **`add_field` of a
 `vectorize: true` field with a backfill `default` is on the list too** — apply embeds the default
 for every existing row, so provider calls, cost, timing, and failure all read on hidden row
-population. All other migrations are
+population. **Every FTS-rebuilding path is on the list as well** — `set_fulltext` enabling or
+re-asserting `true` (which triggers a rebuild) and any other change that rebuilds an existing
+full-text index: the rebuild scans every indexed value, so its latency, resource use, and
+failures depend on hidden row count and content — a repeatable oracle even with
+`fulltext_reindex_rows` redacted. All other migrations are
 data-independent and stay on the `schema` verb alone.
 
 - `update`/`delete` match only visible rows; `updated`/`deleted` counts are visible-set counts.
