@@ -351,11 +351,19 @@ inheritance). There are no deny grants, no precedence, no ordering — union onl
   `409 conflict`-family error with a teaching message. This makes the bootstrap flow's advice to
   drop `DOLMEN_ADMIN_KEY` after the first grants permanently safe. No guard below `*`: an
   admin-less namespace still has ancestor admins.
-- **Drop cascades grant deletion.** Dropping a namespace or table deletes the grants targeting
-  that object and its subtree; recreation starts with a clean grant slate — a reused namespace
-  name cannot inherit the previous tenant's grants (offboarded contractors, the resurrection
-  risk). Ancestor grants survive and apply, which is correct because an ancestor-admin does the
-  recreating. The drop's `confirm` flow reports the number of grants that die with the object.
+- **Drop cascades grant deletion — crash-atomically.** Dropping a namespace or table deletes the
+  grants targeting that object and its subtree; recreation starts with a clean grant slate — a
+  reused namespace name cannot inherit the previous tenant's grants (offboarded contractors, the
+  resurrection risk). Ancestor grants survive and apply, which is correct because an
+  ancestor-admin does the recreating. The drop's `confirm` flow reports the number of grants that
+  die with the object. Because the grant registry lives above the seam from the engine's
+  deletion, the cascade is coordinated by a **write-ahead tombstone**: the tombstone is recorded
+  in the grant registry FIRST and immediately excludes the subtree's grants from evaluation
+  (they deny, never bypass); the engine deletion then runs; the grant rows are physically removed
+  on completion. At recovery, a pending tombstone is finalized if the engine object is gone and
+  rolled back (restoring evaluation) if the object still exists — either crash point converges to
+  no resurrectable grants and no silently-granted successors, satisfying §0.6's all-or-nothing
+  guarantee.
 - **Grants target existing objects only** (`*` excepted as the root): no pre-provisioning grants
   against nonexistent namespaces — create, then grant.
 
@@ -711,8 +719,12 @@ type Engine interface {
     Delete(ctx context.Context, ns, table string, filter string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation) (DeleteResult, error)
 
     // Filtered reads — Query takes NO scope: the API layer gates raw SQL by table-wide
-    // read (§4.4), which is precisely why no scope parameter exists here.
-    Query(ctx context.Context, ns, sql string, args []any, page Page) (QueryResult, error)
+    // read (§4.4), which is precisely why no scope parameter exists here. nsGen is the
+    // namespace lifecycle guard: the namespace-level read authorization was resolved
+    // against THAT namespace incarnation, and the engine verifies it atomically with
+    // execution — a drop-and-recreate between authorization and execution cannot let a
+    // predecessor's grant read a successor tenant's data. Zero = no guard (auth off).
+    Query(ctx context.Context, ns, sql string, args []any, nsGen [16]byte, page Page) (QueryResult, error)
 
     // Search execution — includeHidden must cross the seam: truncated is
     // computed against the projected response-byte budget inside the engine,
