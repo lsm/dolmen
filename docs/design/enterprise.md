@@ -552,7 +552,10 @@ population. **Every FTS-rebuilding path is on the list as well** — `set_fullte
 re-asserting `true` (which triggers a rebuild) and any other change that rebuilds an existing
 full-text index: the rebuild scans every indexed value, so its latency, resource use, and
 failures depend on hidden row count and content — a repeatable oracle even with
-`fulltext_reindex_rows` redacted. And **every `add_field` carrying a backfill `default`** — not
+`fulltext_reindex_rows` redacted. So does **removal of the last full-text index** — `set_fulltext`
+disabling the table's only full-text field drops the populated shadow index without recreating
+it; latency, I/O, and failures read on hidden corpus size exactly like a rebuild. And **every
+`add_field` carrying a backfill `default`** — not
 only vectorized ones: apply runs `UPDATE` over every existing row, so the work, latency, and
 storage impact read on hidden population, and the caller can re-probe by dropping and re-adding
 fields. So does **every vector-clearing path** — `set_vectorize` disabling and dropping the
