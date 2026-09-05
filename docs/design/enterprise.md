@@ -284,7 +284,11 @@ requires a concrete namespace: `{"namespace": "*", "table": …}` is `invalid_re
            "created_at": "2026-09-04T12:00:00.123Z"}}
 ```
 
-- `verbs` is required, non-empty, duplicate-free; unknown verbs are `invalid_request`.
+- `verbs` is required, non-empty, duplicate-free; unknown verbs are `invalid_request`. Requests
+  may list verbs in any order, but `grant.verbs` in every response (`grant`, `revoke`,
+  `list_grants`) is serialized in the fixed §2 order — `create`, `read`, `update`, `delete`,
+  `schema`, `admin` — so the same durable grant never serializes differently across re-grants,
+  restarts, or listings.
 - Re-granting verbs an existing (subject, object) grant already holds is a no-op success returning
   the stored grant; new verbs are merged into it, keeping the original `created_at`. Grants are
   idempotent by (subject, object).
@@ -401,16 +405,21 @@ subquery (`EXISTS (SELECT 1 FROM <target> WHERE owner <> ? AND secret = ?)`) or 
 reference would turn returned counts into an oracle over invisible rows — the outer
 `owner = ?` conjunct cannot protect against reads the filter itself performs. With `auth: on`,
 filters are therefore restricted to **row-local expressions**: column references of the target
-table, literals, bound `?` parameters, and functions drawn from an **engine-neutral allowlist of
-pure, deterministic, side-effect-free scalar functions** (arithmetic, string, date/time; the
-exact list is pinned with the conformance corpus) — no subqueries, no table references
-(including `__fts` shadow tables), no aggregate or window functions, and no user-defined,
-data-reading, nondeterministic (`random`, …), or side-effecting functions: materializing the
-visible rows first constrains a function's *arguments* but never SQL executed inside its body,
-so an impure function's results or errors are still an oracle over hidden data. Violations are
-`invalid_request`, validated above the seam before execution. `query` is unaffected: raw SQL
-already requires namespace-wide `read` (§2), which authorizes every table its subqueries touch.
-Under `auth: off` the filter language is unchanged from v0.2.0.
+table, literals, bound `?` parameters, and functions drawn from an **enumerated engine-neutral
+allowlist** — operators `||`, arithmetic, comparison, `AND`/`OR`/`NOT`, `IS`/`IS NOT`, `IN`
+(literal lists), `BETWEEN`, `LIKE`, and `CASE`; functions `abs`, `round(x[,n])`, `length`,
+`lower`, `upper`, `substr(x,y[,n])`, `trim`, `ltrim`, `rtrim`, `replace`, `instr`, `coalesce`,
+`ifnull`, `nullif`, `iif`, and `date`, `time`, `datetime`, `julianday`, `strftime` (with
+literal-only format and modifier arguments) — **this list is the whole allowlist**, not a
+category sketch: no subqueries, no table references (including `__fts` shadow tables), no
+aggregate or window functions, and no other function of any kind — user-defined, data-reading,
+nondeterministic (`random`, …), `sqlite_*` internals, or side-effecting ones are all
+`invalid_request`. Materializing the visible rows first constrains a function's *arguments* but
+never SQL executed inside its body, so an impure function's results or errors would still be an
+oracle over hidden data. Validation happens above the seam before execution, from this list —
+one shared rule, not per-adapter judgment. `query` is unaffected: raw SQL already requires
+namespace-wide `read` (§2), which authorizes every table its subqueries touch. Under `auth: off`
+the filter language is unchanged from v0.2.0.
 
 **The scope is a security barrier, not a sibling conjunct.** SQL does not guarantee conjunct
 evaluation order, so `AND owner = ?` alone cannot make row-local expressions safe: a caller can
