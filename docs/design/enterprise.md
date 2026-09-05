@@ -380,6 +380,15 @@ inheritance). There are no deny grants, no precedence, no ordering — union onl
   predecessor's cleanup.
 - **Grants target existing objects only** (`*` excepted as the root): no pre-provisioning grants
   against nonexistent namespaces — create, then grant.
+- **Grant rows bind to the target object's Incarnation**, recorded at grant time (possible
+  because grants target existing objects): a targeted grant authorizes only against the
+  incarnation it names — a predecessor's grant can never authorize a successor, at any hop,
+  including the bootstrap state read (§6.2: the `nsGen` handed to `NamespaceState` comes from
+  the authorization layer's matched grant row, never from the caller). Ancestor and `*` grants
+  intentionally span incarnations — an ancestor-admin administers a recreated namespace by
+  design. Grant mutations targeting a subtree with a **pending tombstone** fail `409` until
+  cleanup completes, so no grant can slip between the tombstone's captured set and the engine
+  deletion.
 
 ## 4. `row_access` and the implicit `owner` column
 
@@ -664,6 +673,11 @@ type Engine interface {
     // Incarnation for table-level calls — so a drop-and-recreate between
     // authorization and execution can never act on a successor the old grant
     // does not cover. Zero values = no guard (auth off).
+    // Bootstrap: the nsGen handed to NamespaceState comes from the
+    // AUTHORIZATION layer's matched grant row (§3.4: targeted grants record
+    // the target's Incarnation at grant time; ancestor/* grants span
+    // incarnations by design), never from the caller — so a predecessor's
+    // grant yields the predecessor's nsGen and mismatches here.
     NamespaceState(ctx context.Context, ns string, nsGen [16]byte) ([16]byte, error)
     ListNamespaces(ctx context.Context, prefix string) ([]string, error)
     // parentNsGen binds child creation to the authorized parent: creating
