@@ -231,7 +231,7 @@ in §3):
 | `describe_table` | any verb (`read`, `create`, `update`, `delete`, `schema`, `admin`) | The table. `row_count` follows the caller's visible set (§4.3) — table-wide for `read`, own rows for the other data verbs on `row_access` tables, 0 for `schema`/`admin` holders; no data visibility beyond the caller's set is implied. |
 | `describe_server`, `infer_schema` | none (any authenticated principal) | Untargeted: provider status is no secret; `infer_schema` is pure computation. |
 | `create_table` | `schema` | The namespace. |
-| `drop_table`, `migrate`, `list_migrations` | `schema` | The table. Migration history is the audit trail of schema changes — same verb as the changes themselves. |
+| `drop_table`, `migrate`, `list_migrations` | `schema`; `drop_table` additionally requires `admin` under `auth: on` — §3.4 makes a table drop delete every grant targeting the table, and changing what others may do is the `admin` verb, not `schema` | The table. Migration history is the audit trail of schema changes — same verb as the changes themselves. |
 | `insert` | `create` | The table. |
 | `update` | `update` | The table. |
 | `delete` | `delete` | The table. |
@@ -542,7 +542,9 @@ failures depend on hidden row count and content — a repeatable oracle even wit
 `fulltext_reindex_rows` redacted. And **every `add_field` carrying a backfill `default`** — not
 only vectorized ones: apply runs `UPDATE` over every existing row, so the work, latency, and
 storage impact read on hidden population, and the caller can re-probe by dropping and re-adding
-fields. All other migrations are
+fields. So does **every vector-clearing path** — `set_vectorize` disabling and dropping the
+vectorized field: apply nulls `_embedding` across every row, so runtime, I/O, and failures read
+on hidden population. All other migrations are
 data-independent and stay on the `schema` verb alone.
 
 - `update`/`delete` match only visible rows; `updated`/`deleted` counts are visible-set counts.
@@ -664,7 +666,13 @@ type Engine interface {
     // does not cover. Zero values = no guard (auth off).
     NamespaceState(ctx context.Context, ns string, nsGen [16]byte) ([16]byte, error)
     ListNamespaces(ctx context.Context, prefix string) ([]string, error)
-    CreateNamespace(ctx context.Context, ns string) error
+    // parentNsGen binds child creation to the authorized parent: creating
+    // acme/team-a was authorized against acme's incarnation, and the engine
+    // verifies that incarnation atomically with creation — a drop/recreate of
+    // the parent between authorization and execution cannot place the child
+    // under a successor. Zero = no parent guard (depth-1 child of `*`, or
+    // auth off).
+    CreateNamespace(ctx context.Context, ns string, parentNsGen [16]byte) error
     DropNamespace(ctx context.Context, ns string, nsGen [16]byte) error
 
     // Table DDL and registry — DescribeTable's scope scopes the returned row
