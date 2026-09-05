@@ -353,9 +353,12 @@ and reserving it unconditionally would break tables and requests that v0.2.0 acc
   operation can write another principal's rows as that principal (inserts stamp the caller;
   `owner` is never caller-supplied), so the supported path is a fresh `row_access` table populated
   by replaying each owner's rows under their identity — directly or through the gateway — letting
-  the server stamp every `owner` itself.* The rejection is generic ("the table has rows") for
-  callers without table-wide read; the row count is disclosed only to table-wide readers (§4.3's
-  disclosure rule — it is precisely the aggregate `describe_table` redacts to 0).
+  the server stamp every `owner` itself.* **The table-wide-`read` requirement is enforced BEFORE
+  the populated-table test** (§4.3's data-dependent-migrations rule: callers without it are
+  `403` before any row-dependent check runs) — so the populated rejection, including its row
+  count, is only ever seen by table-wide readers, who are authorized to know; a schema-only
+  caller learns nothing, not even whether the table has rows (a generic non-reader rejection
+  would still distinguish empty from populated).
   Disabling (`value: false`) is allowed — the column and its values remain, filtering stops — but
   it **additionally requires table-wide `read` (or `admin`)**: removing the filter widens every
   data-verb holder's visibility from own rows to all rows (§4.3), so leaving it on `schema` alone
@@ -409,8 +412,11 @@ table, literals, bound `?` parameters, and functions drawn from an **enumerated 
 allowlist** — operators `||`, arithmetic, comparison, `AND`/`OR`/`NOT`, `IS`/`IS NOT`, `IN`
 (literal lists), `BETWEEN`, `LIKE`, and `CASE`; functions `abs`, `round(x[,n])`, `length`,
 `lower`, `upper`, `substr(x,y[,n])`, `trim`, `ltrim`, `rtrim`, `replace`, `instr`, `coalesce`,
-`ifnull`, `nullif`, `iif`, and `date`, `time`, `datetime`, `julianday`, `strftime` (with
-literal-only format and modifier arguments) — **this list is the whole allowlist**, not a
+`ifnull`, `nullif`, `iif`, and `date`, `time`, `datetime`, `julianday`, `strftime` — the
+date/time functions accept only **explicit time values and deterministic modifiers**: `'now'`,
+`'localtime'`, `'utc'`, and every other wall-clock or host-timezone-dependent form is
+`invalid_request`; a caller wanting a now-relative comparison computes the timestamp and binds
+it as a `?` parameter — **this list is the whole allowlist**, not a
 category sketch: no subqueries, no table references (including `__fts` shadow tables), no
 aggregate or window functions, and no other function of any kind — user-defined, data-reading,
 nondeterministic (`random`, …), `sqlite_*` internals, or side-effecting ones are all
