@@ -692,13 +692,15 @@ type Engine interface {
     //     AncestorGen [16]byte   // that ancestor's nsGen at grant time
     //     TargetGen   [16]byte   // target's nsGen, for namespace-targeted grants
     //     Table       string     // table name, for direct table grants
+    //     TableNsGen  [16]byte   // the table's NAMESPACE generation at grant time
     //     TableDropGen int64     // that table's DropGen at grant time
     // }
     // TableState verifies the FULL applicable binding: a direct table grant
-    // carries (Table, TableDropGen) as well, because a table-only drop and
-    // recreate leaves the namespace generation unchanged — an nsGen-only
-    // check would mint the successor's incarnation for a grant naming the
-    // predecessor's DropGen.
+    // carries the complete lifetime key (TableNsGen, Table, TableDropGen) —
+    // TableDropGen alone is not enough, because a whole-namespace drop and
+    // recreate resets table drop generations and a same-named successor can
+    // repeat the predecessor's value; the namespace generation is what
+    // separates the two.
     NamespaceState(ctx context.Context, ns string, auth AuthBinding) ([16]byte, error)
     ListNamespaces(ctx context.Context, prefix string) ([]string, error)
     // parentNsGen binds child creation to the authorized parent: creating
