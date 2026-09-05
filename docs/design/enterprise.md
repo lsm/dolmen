@@ -265,9 +265,15 @@ and MCP `tools/call`. With `auth: off` they **do not exist**: not dispatchable, 
 
 Authorization = embedded OpenFGA (SQLite tuple store, groups resolved as contextual tuples per
 request). FGA is an implementation detail behind the three ops below; it never surfaces in the API.
-Grants persist in a server-level registry SQLite file directly under the data directory (chosen so
-its filename cannot match the namespace regex, e.g. a leading `_`), **above** the engine seam
-(§6) — engines never see grants, only verb-gated calls and `RowScope`s.
+Grants persist in a registry **above** the engine seam (§6) — engines never see grants, only
+verb-gated calls and `RowScope`s — and the registry's placement is topology-bound (§0.6): in the
+single-process topology (adapter #1) it is a server-level SQLite file directly under the data
+directory (its filename chosen so it cannot match the namespace regex, e.g. a leading `_`); in a
+multi-process shared-engine deployment, per-pod local grant stores are **forbidden** — replicas
+would authorize differently and a revoke acked by one pod would stay live on another. Grants live
+in a deployment-wide coordinated backend (the shared engine itself, or the deployment runs a
+single authorization process); grant changes are visible to every replica with §0.6's ordering
+guarantees.
 
 ### 3.1 Subjects and objects
 
@@ -363,7 +369,10 @@ inheritance). There are no deny grants, no precedence, no ordering — union onl
   on completion. At recovery, a pending tombstone is finalized if the engine object is gone and
   rolled back (restoring evaluation) if the object still exists — either crash point converges to
   no resurrectable grants and no silently-granted successors, satisfying §0.6's all-or-nothing
-  guarantee.
+  guarantee. The tombstone records the deleted object's **Incarnation**, and recovery finalizes
+  whenever THAT incarnation is gone — even if a same-named successor already exists (a crash
+  after the engine deletion but before cleanup, with a concurrent recreate, would otherwise roll
+  the tombstone back on "name exists" and restore the predecessor's grants onto the successor).
 - **Grants target existing objects only** (`*` excepted as the root): no pre-provisioning grants
   against nonexistent namespaces — create, then grant.
 
@@ -791,7 +800,10 @@ for vectorize paths is unchanged.
 Results, ranking, and truncation are **engine-neutral contract**; the implementation (FTS5 index,
 in-memory BM25 scan, ANN index) is engine-chosen. An index is an accelerator, never a semantic
 change: adding, building, or dropping any index must not change results, ordering, `truncated`,
-`skipped_vectors`, or `_score` beyond float tolerance. Shadow structures (FTS5 tables, ANN stores)
+`skipped_vectors`, or `_score` **at all** — every reported score is exactly the mode's value
+(raw, auth: off; canonical, auth: on, per the table below), with no tolerance window: a permitted
+tiny drift could cross a bucket boundary or alter the serialized score, changing an otherwise
+identical response. Shadow structures (FTS5 tables, ANN stores)
 never appear in `list_tables` or any other surface.
 
 What the contract pins (conformance-enforced on every engine):
