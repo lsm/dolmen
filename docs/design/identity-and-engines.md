@@ -1090,23 +1090,32 @@ type Engine interface {
     ChangesSince(ctx context.Context, ns, table string, from Cursor, nsGen [16]byte, scope *RowScope, scopeIncarnation Incarnation, page Page) ([]ChangeRecord, Cursor, error)
     // Listen is the engine-declared notification capability (B4-style), and
     // it is CURSOR-AWARE so the seam itself provides §9.3's atomic
-    // register-and-replay: the engine registers the listener and drains the
-    // log from `from` as ONE coordinated operation — the returned replay
-    // batch carries every in-scope record from `from` up to the
-    // registration point, and every record committing after that point
-    // flows to notify, with each record delivered EXACTLY ONCE across the
-    // two halves (boundary dedup is the engine's, inside the atomic
-    // operation — an event committed before registration exists only in
-    // the replay, one committed after exists only in the stream, so no
-    // committed event can be missed and none delivered twice). A
-    // replay-then-listen split at the op layer would retain the
+    // register-and-replay: the engine registers the listener and fixes the
+    // replay boundary at the registration point as ONE coordinated
+    // operation. Replay is PAGED, not one slice — an old-but-retained
+    // cursor must not let a client force an unbounded allocation — ChangeReplay
+    // pages with the same conventions as ChangesSince, preserving the
+    // atomic boundary throughout. Order is cursor order, period:
+    // `notify` is NOT invoked until the caller has drained the replay to
+    // the registration point — records committing in the interim buffer
+    // (a bounded queue) and are delivered after, so the concatenation
+    // replay-then-live is exactly cursor order and a client persisting only
+    // its last-delivered cursor can never skip older records. If the client
+    // drains the replay slower than writes arrive and the interim buffer
+    // bounds, the engine closes the stream with the teaching reconnect
+    // recipe (resume from the persisted cursor — the log is durable; the
+    // buffer never is the durability mechanism). An event committed before
+    // registration exists only in the replay, one committed after only in
+    // the stream — exactly once across the two halves, boundary dedup is
+    // the engine's, inside the atomic operation. An op-layer
+    // replay-then-listen split would retain the
     // commit-before-registration gap; a listen-then-replay split would need
     // an unspecified buffering protocol — neither is conforming. Engines
     // without the capability degrade — wait_for
     // still meets its bounded-time contract via internal scanning, subscribe
     // may be declared unavailable — surfaced like every other engine
     // capability; notification is never the durability mechanism (§9.3).
-    Listen(ctx context.Context, ns, table string, from Cursor, notify func(ChangeRecord)) (replay []ChangeRecord, cancel func(), error)
+    Listen(ctx context.Context, ns, table string, from Cursor, notify func(ChangeRecord)) (*ChangeReplay, cancel func(), error)
 
     // Filtered reads — Query takes NO scope: the API layer gates raw SQL by table-wide
     // read (§4.4), which is precisely why no scope parameter exists here. nsGen is the
