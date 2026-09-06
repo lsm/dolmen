@@ -467,6 +467,7 @@ in §3, `whoami` and the key ops in §1.4–1.5):
 | `delete` | `delete` | The table. |
 | `upsert`, `upsert_by_key` | `create` **AND** `update` (both required) | The table. They are update-or-insert: a `create`-only caller is refused up front, not surprised by half the operation. |
 | `query` | `read` | The **namespace** — raw SQL may reference any table in it, so the grant must cover the namespace, not one table. See §4.4 for the extra rule on `row_access` tables. |
+| `read_rows` | `read`; **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` — the response then contains own rows only, the same rule as search and feeds | The table. Id-addressed scoped fetch: `{table, ids}` → the rows the caller can see (present in both modes; additive under `auth: off` per §8.1 — a plain by-id fetch without raw SQL). The realtime recovery path depends on it: a feed consumer re-reads a change's row content by id through its standing read (§9.3), and `query`'s namespace-wide gate plus the searches' index dependence would leave a create-only `row_access` subscriber with an id they cannot resolve. |
 | `changes_since`, `wait_for`, `subscribe` | `read` on the selected table(s); **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` — the feed then covers own rows only, mirroring the search rule | The **selected target**: a table-filtered feed checks the named table(s) (direct table grants qualify — inheritance is downward-only); an unfiltered namespace feed checks `read` on the namespace, the same rule as `query`. Per-event scope and credential reevaluation further restrict delivery — foreign rows never wake the caller. Ordinary data ops present in **both** modes (§9.4). |
 | `search_fulltext`, `search_vector` | `read` on the table; **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` (search then covers own rows only, §4.3) | The table. |
 | `grant`, `revoke` | `admin` | The target object (an ancestor grant suffices, §3.3). |
@@ -1014,7 +1015,14 @@ type Engine interface {
     // mismatch successors;
     // inherited grants verify their ANCESTOR's (path, nsGen) while the call
     // returns the TARGET's current generation; a Root (*) grant verifies
-    // nothing. Empty/zero = no guard (auth off).
+    // nothing. Empty/zero = no guard (auth off) — and that is the ONLY
+    // meaning an empty binding set carries at the seam: under `auth: on`
+    // the API layer NEVER calls ListNamespaces/ListTables with zero
+    // bindings — an authenticated principal holding no grant is
+    // short-circuited above the seam (empty namespace list; `not_found`
+    // for list_tables, §2) before the engine is reached, so the engine
+    // cannot mistake "filter everything" for "no guard" and expose tenant
+    // names.
     //
     // type AuthBinding struct {
     //     Root        bool       // matched a * grant
@@ -1111,6 +1119,9 @@ type Engine interface {
     // on Insert it scopes the idempotency replay to the caller's OWN
     // principal domain — own-domain hit = replay, miss = insert; foreign
     // records neither conflict nor reveal (§4.3).
+    // GetRows is the id-addressed scoped fetch behind read_rows (§2): the
+    // realtime recovery path (§9.3) and agents generally need by-id reads
+    // without raw SQL's namespace-wide gate.
     // WriteOpts carries the owner to stamp on EVERY row-insert path — including the
     // upsert insert branches, including table-wide callers whose scope is nil (§4.2) —
     // insert's idempotency key, and TableWideRead: set iff the caller holds `read`
@@ -1123,6 +1134,7 @@ type Engine interface {
     // the scope: a caller may be unscoped yet still be the writer. emb embeds
     // vectorize fields on write and re-embeds changed ones, passed per call as today.
     Insert(ctx context.Context, ns, table string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error)
+    GetRows(ctx context.Context, ns, table string, ids []int64, scope *RowScope, scopeIncarnation Incarnation) (QueryResult, error)
     UpsertByKey(ctx context.Context, ns, table string, on []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error)
     Upsert(ctx context.Context, ns, table string, filter string, args []any, record map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error)
     // Update returns UpdateResult, not a bare count: the count AND the change
@@ -1526,7 +1538,10 @@ the sleeping agent holds nothing, burns nothing, and is told.
   every **change** a missed wake would have signaled — identity, cursor, kind, owner — but not
   the transient payload bytes of a live SSE frame: the record stores no row snapshot (a later
   update or delete would falsify one), so a replaying client re-reads current row content by id
-  through its standing read. Cross-pod fan-out on
+  through its standing read — concretely via **`read_rows`** (§2), the id-addressed scoped fetch
+  whose data-verb own-row rule matches the feed's own; `query`'s namespace-wide gate and the
+  searches' index dependence would otherwise leave a create-only `row_access` subscriber with
+  an id they cannot resolve. Cross-pod fan-out on
   shared engines is an **engine-declared capability** (B4-style topology rule): single-process
   works day one; engines without a notification bus may declare `subscribe`/`wait_for`
   unavailable or degraded, surfaced like every other engine capability — with one division that
