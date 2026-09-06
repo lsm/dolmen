@@ -363,7 +363,13 @@ credentials:
   active keys, two concurrent `revoke_key` calls on different replicas cannot each observe the
   other key still active and both commit — the registry's serialization admits one, and the
   second fails `409`. A single-request wording alone would not hold in the multi-replica
-  topology. (`DOLMEN_ADMIN_KEY` remains the universal
+  topology. And the invariant spans **both registry regions under one lock**: keys live beside
+  grants in the single coordinated registry (§3's topology binding), so the reachable-admin set
+  is evaluated and preserved by key mutations and root-grant mutations under a **shared
+  serialization** — a concurrent `revoke_key(alice)` (observing bob reachable) and
+  `revoke(bob's root grant)` (observing alice reachable) cannot both commit across the two
+  stores and leave each administrator reachable only through the other's removed half.
+  (`DOLMEN_ADMIN_KEY` remains the universal
   recovery, §1.2.)
 
 ### 1.6 Credential model (trade-offs on record)
@@ -562,7 +568,11 @@ inheritance). There are no deny grants, no precedence, no ordering — union onl
   key bears bob's principal; the revocation would leave no credential able to exercise root
   admin, locking out the running server and failing the next startup's reachability check. This
   makes the bootstrap flow's advice to
-  drop `DOLMEN_ADMIN_KEY` after the first grants permanently safe. No guard below `*`: an
+  drop `DOLMEN_ADMIN_KEY` after the first grants permanently safe. This guard and §1.5's key
+  guard share one serialization: the reachable-admin invariant is evaluated under a single lock
+  spanning the grant and key regions of the coordinated registry, so a root-grant revoke and a
+  `revoke_key` cannot interleave to strip both halves of the last administration. No guard
+  below `*`: an
   admin-less namespace still has ancestor admins.
 - **Drop cascades grant deletion — crash-atomically.** Dropping a namespace or table deletes the
   grants targeting that object and its subtree; recreation starts with a clean grant slate — a
@@ -1151,10 +1161,13 @@ ANN-with-recall-bound) and **per-result execution metadata** on every `search_ve
 (which path served it — an engine that switches between ANN and exact fallback as an index
 builds or query conditions change says so on each response). The contract then pins the result
 **shape**, the
-**visible set**, and **determinism** — same input → same order **on the same path** (exact or
-ANN) for an unchanged corpus and index state, with a deterministic `id` tiebreak, so offset
-pagination stays exact: an engine that cannot guarantee per-state stable ordering must not
-serve offset-paginated ANN results — not
+**visible set**, and **determinism** — the ranked sequence is a property of
+**(query, corpus, index state) alone**: one total order with a deterministic `id` tiebreak,
+independent of the requested `limit`/`offset` — every pagination request reads a window of THAT
+sequence, and the engine may not let the requested K influence which candidates the index
+retrieves (a deterministic-but-K-dependent candidate set would still duplicate or omit rows
+across `offset` pages). An engine that cannot guarantee a K-independent stable sequence must
+not serve offset-paginated ANN results — exact fallback instead — not
 bit-identical ranking across engines or index configs. What stays exact regardless of index:
 the visible set (RowScope filtering), `truncated`, `skipped_vectors`, pagination — approximation
 affects ordering among the top-K only, never which rows are eligible. Under a `RowScope`, the
