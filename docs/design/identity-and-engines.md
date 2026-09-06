@@ -1407,9 +1407,13 @@ the sleeping agent holds nothing, burns nothing, and is told.
   indefinitely despite sitting in the durable log; the atomic form closes that window, and the
   manual two-step is a client convenience, not the recovery guarantee. Cursor semantics:
   **per-namespace, monotonic,
-  gap-free**; pruning/retention of old change records is a configuration concern (documented
-  retention knob); a cursor pointing beyond retention is an explicit teaching error naming the
-  catch-up path. The cursor is **bound to the namespace lifetime that minted it** — it encodes
+  gap-free**; a cursor pointing beyond retention is an explicit teaching error naming the
+  catch-up path. Pruning/retention of old change records is a configuration concern whose knob
+  is **time-based expiry only, never a record-count or byte cap**: a volume-based limit would
+  let foreign commits evict a scoped reader's cursor while that reader has received nothing
+  visible, and the resulting beyond-retention error would reveal that hidden namespace traffic
+  occurred — precisely the observation the opacity rules below forbid; age-based expiry is
+  independent of who wrote what. The cursor is **bound to the namespace lifetime that minted it** — it encodes
   the `nsGen` alongside the sequence position, opaquely: adapter #1's change log dies with the
   namespace database (§5.4's clean slate), so a recreated namespace's sequence restarts, and a
   predecessor cursor replayed against the successor would otherwise silently skip its first N
