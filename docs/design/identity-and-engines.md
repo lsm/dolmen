@@ -225,10 +225,15 @@ Rules:
   deliberately not built), so a principal root grant alongside either enabled source is accepted
   as reachable, and retiring the gateway account or IdP subject that holds root admin is an
   operator error this check cannot catch — with **one decidable exception**: source B's
-  principals are issuer-qualified (§1.4), so a root grant whose principal carries a *different*
+  principals are issuer-qualified (§1.4), so when reachability is being established through the
+  OIDC source, a root grant whose principal carries a *different*
   issuer's qualification than the currently configured `DOLMEN_AUTH_OIDC_ISSUER` is **not
-  reachable** — the new issuer can never yield it, the mismatch is visible locally without
-  probing the provider, and startup fails the usable-root-administrator check naming the stale
+  reachable through that source** — the new issuer can never yield it, the mismatch is visible
+  locally without probing the provider. Reachability is an **OR across enabled sources**: if the
+  header source is enabled (any well-formed principal is assertable) or an active API key bears
+  exactly that principal, the grant is reachable through that source and the deployment starts
+  — the issuer comparison governs only the OIDC branch, never the whole check. Within the OIDC
+  branch, a stale qualification fails the usable-root-administrator check naming the stale
   grant rather than succeeding with an administrator who can never log in. Every reachability
   lockout, the rest included, has one
   universal recovery: set `DOLMEN_ADMIN_KEY` and restart — the kingmaker re-enters (§1.3) while
@@ -1318,7 +1323,8 @@ the sleeping agent holds nothing, burns nothing, and is told.
 3. **`subscribe` (SSE stream):** server-sent events on the HTTP surface — change type
    (insert/update/delete), row ids, optional row payload, filtered by the caller's scope. The
    payload is a live-notification convenience and is **not replayable** — the durable record
-   carries the change's identity and authorization metadata, never a row snapshot (§9.3). For
+   carries the change's identity and authorization metadata, never a row snapshot (§9.3).
+   Reconnect passes the cursor: listener registration and replay are **atomic** (§9.3). For
    agent **hosts** holding connections: an LLM turn cannot hold a connection; a framework can.
    Transport note: like `/mcp`, this is an HTTP-surface capability — the MCP tool surface gets
    `wait_for` (its request/response shape); SSE `subscribe` is host-side.
@@ -1381,9 +1387,18 @@ the sleeping agent holds nothing, burns nothing, and is told.
   through its standing read. Cross-pod fan-out on
   shared engines is an **engine-declared capability** (B4-style topology rule): single-process
   works day one; engines without a notification bus may declare `subscribe`/`wait_for`
-  unavailable or degraded, surfaced like every other engine capability.
+  unavailable or degraded, surfaced like every other engine capability — with one division that
+  is NOT the engine's choice: **`wait_for` is never unavailable** — it degrades to internal
+  scanning and always retains its bounded-time contract (§6.2, §9.2); only `subscribe`, which
+  requires a held connection, may be declared unavailable.
 - **Cursors are durable.** A restarted agent replays from its cursor; reconnect =
-  `changes_since` catch-up + re-subscribe. Cursor semantics: **per-namespace, monotonic,
+  `changes_since` catch-up + re-subscribe — and the server side makes that sequence
+  race-free: **`subscribe` accepts the cursor and atomically registers the listener and replays
+  from it as one operation**. A write committing after a standalone catch-up read but before
+  listener registration would otherwise have no recipient and could sleep the new stream
+  indefinitely despite sitting in the durable log; the atomic form closes that window, and the
+  manual two-step is a client convenience, not the recovery guarantee. Cursor semantics:
+  **per-namespace, monotonic,
   gap-free**; pruning/retention of old change records is a configuration concern (documented
   retention knob); a cursor pointing beyond retention is an explicit teaching error naming the
   catch-up path. The cursor is **bound to the namespace lifetime that minted it** — it encodes
