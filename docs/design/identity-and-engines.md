@@ -1120,13 +1120,18 @@ type Engine interface {
     // its last-delivered cursor can never skip older records. Per-event
     // authorization runs BEFORE queue admission, and it is LIVE: the engine
     // calls liveAuthz before enqueueing each record — the API layer's
-    // re-resolver returns the caller's CURRENT RowScope (a grant revoked
+    // re-resolver returns the caller's CURRENT RowScope AND the table
+    // incarnation the authorization was resolved against (a grant revoked
     // mid-stream, or narrowed from table-wide read to an own-row verb,
     // takes effect at the next event) or ok=false, which teaching-closes the
     // stream (§9.3's mid-subscription rule). The engine stays grant-blind:
-    // it invokes the predicate and filters by the returned scope and the
-    // record's Owner label — a notify-side check would come after admission
-    // and satisfy nothing. Foreign records therefore never enter the handoff
+    // it invokes the predicate, filters by the returned scope and the
+    // record's Owner label, and atomically compares the returned incarnation
+    // with the record's Lifetime — a record minted by a successor lifetime
+    // than the one the authorization names is not admitted, so a drop and
+    // recreate between callback and admission cannot carry a stale unscoped
+    // decision onto the successor's records — a notify-side check would come
+    // after admission and satisfy nothing. Foreign records therefore never enter the handoff
     // queue at all, so they cannot fill it, displace, or starve a scoped
     // subscriber; §9.3's foreign-rows-never-wake rule holds under backpressure
     // too, and the overflow-reconnect below can only ever be triggered by the
@@ -1147,7 +1152,7 @@ type Engine interface {
     // still meets its bounded-time contract via internal scanning, subscribe
     // may be declared unavailable — surfaced like every other engine
     // capability; notification is never the durability mechanism (§9.3).
-    Listen(ctx context.Context, ns, table string, from Cursor, nsGen [16]byte, liveAuthz func() (scope *RowScope, ok bool), notify func(ChangeRecord)) (*ChangeReplay, cancel func(), error)
+    Listen(ctx context.Context, ns, table string, from Cursor, nsGen [16]byte, liveAuthz func() (scope *RowScope, inc Incarnation, ok bool), notify func(ChangeRecord)) (*ChangeReplay, cancel func(), error)
 
     // Filtered reads — Query takes NO scope: the API layer gates raw SQL by table-wide
     // read (§4.4), which is precisely why no scope parameter exists here. nsGen is the
@@ -1462,11 +1467,18 @@ the sleeping agent holds nothing, burns nothing, and is told.
   gap-free**; a cursor pointing beyond retention is an explicit teaching error naming the
   catch-up path — and retention is **token-age-based, unconditional**: cursor tokens carry
   their issuance time and expire by the retention bound no matter what the log contains, so the
-  error is a function of the client's own token age alone. A resume under a still-valid token
-  returns whatever visible records survive — aged-out records, hidden or the caller's own, are
-  simply absent — and a hidden write that later ages out can never turn an otherwise-empty
-  resume into an error: whether the error fires must not depend on whether invisible records
-  existed. Pruning of old change records is the same time-based expiry, never a record-count or
+  error is a function of the client's own token age alone. A hidden write that later ages out
+  can therefore never turn an otherwise-empty resume into an error: whether the error fires
+  must not depend on whether invisible records existed. Two availability rules keep replay
+  gap-free for valid cursors: **page chains preserve the originating issuance time** — every
+  next-page token of a catch-up carries the SAME issuance as the first, so paging through an
+  old backlog never refreshes the clock — and **a record is pruned only when no still-valid
+  cursor can reference it** (the simple sufficient implementation retains each record for
+  twice the retention bound, since token validity and record age share the same knob; any
+  cursor issued within R of a record's mint then cannot outlive the record). A conforming
+  engine never silently shortens a page: if it cannot uphold the availability invariant it
+  returns the explicit beyond-retention error instead. Pruning of old change records is the
+  same time-based expiry, never a record-count or
   byte cap: a volume-based limit would
   let foreign commits evict a scoped reader's cursor while that reader has received nothing
   visible, and the resulting beyond-retention error would reveal that hidden namespace traffic
