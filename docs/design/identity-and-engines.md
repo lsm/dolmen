@@ -447,7 +447,7 @@ in §3, `whoami` and the key ops in §1.4–1.5):
 | `whoami` | none (any authenticated principal) | Untargeted self-description: the caller's principal and groups (§1), whatever the source. The teaching-error philosophy applied to auth — an agent that just got a `403` self-diagnoses in one call. `auth: on`-only (meaningless without identity; see transport parity below). |
 | `create_key`, `list_keys`, `revoke_key` | `admin` on `*` | Untargeted (§1.5): a key bears any principal and optional groups, so minting one is administrative at the root — above any one namespace — even though the grants the minted identity can use still have to be granted separately. `auth: on`-only. |
 | `create_table` | `schema` | The namespace. |
-| `drop_table`, `migrate`, `list_migrations` | `schema`; `drop_table` additionally requires `admin` under `auth: on` — §3.4 makes a table drop delete every grant targeting the table, and changing what others may do is the `admin` verb, not `schema`; so does **`migrate` with `set_row_access: false`**, which additionally requires table-wide `read` (§4.2) — disabling the filter widens every data-verb holder's reach to all owners' rows, the same others'-permissions change | The table. Migration history is the audit trail of schema changes — same verb as the changes themselves. |
+| `drop_table`, `migrate`, `list_migrations` | `schema`; `drop_table` additionally requires `admin` under `auth: on` — §3.4 makes a table drop delete every grant targeting the table, and changing what others may do is the `admin` verb, not `schema`; so does **`migrate` with `set_row_access: false`**, which additionally requires table-wide `read` (§4.2) — disabling the filter widens every data-verb holder's reach to all owners' rows, the same others'-permissions change. And **any migration on §4.3's data-dependent list additionally requires table-wide `read` under `auth: on`** — `set_enum`, `set_row_access` enabling, every vectorization change (enabling/re-enabling/disabling, vectorized `add_field` with or without a backfill), all FTS-rebuilding and last-FTS-removal paths, every `add_field` backfill `default`, and every `drop_field` — a `schema`-only caller must never trigger outcomes based on hidden rows or send their values to the embedding provider | The table. Migration history is the audit trail of schema changes — same verb as the changes themselves. |
 | `insert` | `create` | The table. |
 | `update` | `update` | The table. |
 | `delete` | `delete` | The table. |
@@ -857,7 +857,14 @@ data-independent and stay on the `schema` verb alone.
   cannot, because a `create`-only caller on a default table and a table-wide reader are both
   unscoped.) Without owner namespacing,
   the occupied/unoccupied difference would be an existence oracle over foreign writes even
-  with the ownership check below in place. That collision `409` is decided **before
+  with the ownership check below in place. **Legacy pre-auth records** — idempotency rows
+  written under `auth: off`, whose key predates the principal domain — are preserved across
+  the auth switch, never deleted: they replay **only to table-wide readers** (never to scoped
+  callers), because a legacy record's ids are rows a table-wide reader can already see — no
+  cross-principal exposure — while a scoped caller's own-domain miss inserts their own record
+  as usual. Under `auth: off` again, they replay exactly as v0.2.0 (the domain is ignored);
+  idempotency thus survives restarts *and* the auth transition without attributing unattributable
+  rows to any assertable principal. That collision `409` is decided **before
   any payload comparison**: an
   unauthorized replayer receives `409` regardless of whether the submitted payload matches the
   recorded one — returning the hash-mismatch `invalid_request` for wrong-payload guesses would
@@ -1525,11 +1532,15 @@ the sleeping agent holds nothing, burns nothing, and is told.
   commit is observable through cursor arithmetic. The token mapping is **persistent and
   deployment-wide, never per-process**: tokens are self-contained and **encrypted** —
   **randomized** authenticated encryption, with a fresh nonce per issuance, or an equivalent
-  construction that cryptographically hides the internal position AND its equality: a
+  construction that cryptographically hides the internal position AND its equality AND its
+  length: a
   deterministic authenticated encryption of the same position would emit identical bytes, and
   comparing opaque token bytes across polls would then reveal that a hidden foreign commit
   advanced the position — fresh randomization makes the same position yield unrelated
-  ciphertexts every response (a plaintext payload plus a MAC authenticates but does not
+  ciphertexts every response — and the plaintext is encoded at a **fixed length, padded**, so
+  the ciphertext never grows when the position crosses an encoding boundary (a varint or
+  decimal encoding would leak hidden traffic by length alone). (A plaintext payload plus a MAC
+  authenticates but does not
   conceal, and the
   sequence gaps must stay unobservable; a coordinated-storage mapping satisfies this trivially
   — the client never sees position-derived bytes at all) — under a
