@@ -36,17 +36,34 @@ Physical isolation is an **engine implementation detail**. Permissions bind to n
 files — so the tenancy model survives any engine swap. §5.2's `<data>/a/b/c.db` layout is
 adapter #1's mapping, not the definition of tenancy:
 
-| | SQLite (adapter 1) | Postgres (anticipated adapter 3) | DuckDB/Iceberg (adapter 2) |
-|---|---|---|---|
-| namespace → | one file | one schema | catalog namespace / storage prefix |
-| isolation | physical (the file is the wall) | engine-enforced (schema confinement; optional native RLS) | engine-enforced (catalog scoping) |
-| raw-SQL confinement | free (separate file) | role-per-schema **privileges** — the connection's role has no access to other schemas (`search_path` alone is only name resolution) | catalog/prefix ACLs — **privileges**, not qualification, are the wall |
-| RowScope (own-rows) | predicate conjoined in SQL | predicate, **or delegated to native RLS** | predicate in the scan |
+| | SQLite (adapter 1) | Postgres (adapter 2 — the reference shared engine) |
+|---|---|---|
+| namespace → | one file | one schema |
+| isolation | physical (the file is the wall) | engine-enforced (schema confinement; native RLS available) |
+| raw-SQL confinement | free (separate file) | role-per-schema **privileges** — the connection's role has no access to other schemas (`search_path` alone is only name resolution) |
+| RowScope (own-rows) | predicate conjoined in SQL | predicate, **or delegated to native RLS** |
+
+**Postgres is the reference shared engine (amended 2026-09-06):** dolmen is an *operational*
+store — governed row-level multi-user CRUD, synchronous typed reads, idempotency — and only an
+operational engine can honor that contract. The seam's invariants (schema-per-namespace, native
+RLS for RowScope, role-per-schema confinement, ACID) are Postgres's native vocabulary; it is the
+only engine that can honor the contract at shared scale today. File-per-tenant fleets that cap
+out graduate to Postgres — the org/multi-host tier.
+
+**The lakehouse is read-side, not an engine (amended 2026-09-06):** Iceberg/Delta (and
+DuckDB-as-engine) are *analytical* — no cheap point updates, no fine-grained row grants, no
+FTS5 — so they cannot honor the write contract and are reclassified out of the engine-adapter
+list. Dolmen's data may be **published** to Parquet/Iceberg/Delta via a background export/CDC
+path so Spark/Trino/DuckDB can query it alongside the operational store: **designed-not-built,
+demander-gated (D20), the same status as webhooks (§9)** — a bolt-on read path, NOT a
+`store.Engine` implementation. This is DISTINCT from the user-facing `export`/`import` ops D20
+skips: those are synchronous portability ops and stay skipped; this is a deferred background
+publish path, and the seam keeps it designed-not-user-exercisable.
 
 ### 0.5.2 Two-level tenancy — two mechanisms, never mixed
 
 - **Level 1, project isolation → namespaces (STRUCTURAL).** Hard wall; queries cannot cross;
-  grants anchor here. The engine maps it to file / schema / catalog object. File-per-namespace is
+  grants anchor here. The engine maps it to a file or a schema object. File-per-namespace is
   adapter #1's isolation *strategy* — the strongest cheap one — capped by fleet size (thousands
   of open handles), not correctness; when a fleet outgrows it, the Postgres adapter takes over
   with **nothing above the seam changing**.
@@ -66,7 +83,7 @@ adapter #1's mapping, not the definition of tenancy:
 
 Contract, not a SQLite accident: `query` executes within exactly ONE namespace, and the engine
 must make cross-namespace reference **impossible by mechanism** — separate file (SQLite),
-role-per-schema privileges (Postgres), catalog/prefix ACLs (lakehouse). Name-resolution pinning
+role-per-schema privileges (Postgres). Name-resolution pinning
 (`search_path`, prefix qualification) is **not** confinement: a fully qualified
 `other_schema.table` still resolves when the shared connection's role can reach it — the
 mechanism must be privilege-based (a role with no access to other namespaces' objects) or an
@@ -82,9 +99,10 @@ The predicate is the contract; enforcement is dispatch checks (always dolmen, FG
 dolmen's check remains the contract guarantee, and the conformance suite is the proof it cannot
 be skipped.
 
-Forward note (non-normative): Postgres is the anticipated adapter #3 for operational SQL
-workloads when file-per-tenant fleets cap out — the rationale for the engine-mapping invariant's
-generality (file / schema / catalog), not a feature promise.
+Forward note (non-normative): the engine-mapping invariant stays general (file / schema) even
+though exactly two operational engines are on the list — SQLite for the local tier, Postgres
+(adapter #2, the reference shared engine, above) for the org/multi-host tier; the lakehouse tier
+is read-side publish, not an engine.
 
 ## 0.6. Consistency contract
 
@@ -100,7 +118,7 @@ Engine obligations, stated beside §0.5.3's confinement rule:
   partial writes, never corruption. Agent retry recipe (for the docs): on 409, re-read,
   re-issue.
 - **Deployment topology is engine-declared.** `sqlite`: exactly one dolmen process per data
-  directory (the existing README rule, now contract). Shared engines (`postgres`, `iceberg`):
+  directory (the existing README rule, now contract). Shared engines (`postgres`):
   concurrent dolmen processes are safe via engine-native coordination. Declared so no one
   assumes HA an engine cannot give.
 
@@ -1115,7 +1133,21 @@ change: adding, building, or dropping any index must not change results, orderin
 `skipped_vectors`, or `_score` **at all** — every reported score is exactly the mode's value
 (raw, auth: off; canonical, auth: on, per the table below), with no tolerance window: a permitted
 tiny drift could cross a bucket boundary or alter the serialized score, changing an otherwise
-identical response. Shadow structures (FTS5 tables, ANN stores)
+identical response. **One exception, `search_vector` only (amended 2026-09-06):** an engine MAY
+run vector search over an ANN index (e.g. pgvector HNSW) as a first-class **accelerator**, and
+when it does the ranking is *approximate* — it may differ from exact brute-force within a
+documented recall bound, and the capability MUST be **declared** (B4-style, like §9's
+notification capability), never silent. The contract then pins the result **shape**, the
+**visible set**, and **determinism** (same input → same order on the exact path), not
+bit-identical ranking across engines or index configs. What stays exact regardless of index:
+the visible set (RowScope filtering), `truncated`, `skipped_vectors`, pagination — approximation
+affects ordering among the top-K only, never which rows are eligible. The **brute-force exact
+path remains the conformance reference**: the canonical-cosine arithmetic and
+`q(s)=floor(s/fl64(1e-9))` quantization below stay the *definition of the exact path* — they
+stop being the only permitted execution strategy. §8.1's byte-identical auth-off corpus is
+untouched: SQLite under `auth: off` stays exact brute-force. Full-text search is out of scope
+for this exception — every full-text path stays exact per the rule above. Shadow structures
+(FTS5 tables, ANN stores)
 never appear in `list_tables` or any other surface.
 
 What the contract pins (conformance-enforced on every engine):
@@ -1123,7 +1155,7 @@ What the contract pins (conformance-enforced on every engine):
 | Property | Contract |
 |---|---|
 | Result shape | Rows as stored plus `id`/`created_at` (and `owner` when present), typed reads per field type; `_score` on every vector result (cosine; `-1..1` is the **auth-on clamped guarantee** — under `auth: off` the raw value is preserved and may marginally exceed the range, per Ordering); no rank value exposed for fulltext. |
-| Ordering | **Two tiers.** Under `auth: off`, adapter #1's v0.2.0 behavior is preserved bit-for-bit (§8.1): raw cosine — unclamped, so a self-comparison may report `1.0000000000000002` — exact comparisons, and full-text ordered exactly as v0.2.0 executes it, `ORDER BY rank, rowid` (the explicit `rowid` tiebreak, not "native tie order"); nothing in this row redefines that mode, and engine-2 passes the golden auth-off corpus by reproducing adapter #1's exact arithmetic and ordering (which the canonical accumulation below already matches). With `auth: on`, and for cross-engine conformance generally: `search_fulltext` orders by **`q(rank)` ASCENDING** — FTS5 rank is lower/more-negative for more relevant rows, so ascending buckets ARE relevance-descending — tiebreak `id` ascending; `search_vector` orders by `q(_score)` descending, tiebreak `id` ascending — via **canonical arithmetic, then transitive quantization**. Canonical cosine, fully specified: BOTH operands are normalized to float32 first — the query
+| Ordering | **Two tiers.** Under `auth: off`, adapter #1's v0.2.0 behavior is preserved bit-for-bit (§8.1): raw cosine — unclamped, so a self-comparison may report `1.0000000000000002` — exact comparisons, and full-text ordered exactly as v0.2.0 executes it, `ORDER BY rank, rowid` (the explicit `rowid` tiebreak, not "native tie order"); nothing in this row redefines that mode, and engine-2 passes the golden auth-off corpus by reproducing adapter #1's exact arithmetic and ordering (which the canonical accumulation below already matches). With `auth: on`, and for cross-engine conformance generally: `search_fulltext` orders by **`q(rank)` ASCENDING** — FTS5 rank is lower/more-negative for more relevant rows, so ascending buckets ARE relevance-descending — tiebreak `id` ascending; `search_vector` orders by `q(_score)` descending, tiebreak `id` ascending — via **canonical arithmetic, then transitive quantization** (the exact path's rule; a declared-ANN engine's approximate ordering may differ within its documented recall bound per the accelerator exception above, while shape, visible set, and pagination stay exact). Canonical cosine, fully specified: BOTH operands are normalized to float32 first — the query
 vector (raw caller-supplied or provider-embedded) is rounded to nearest float32 exactly as
 adapter #1 does today, matching the stored float32 vectors — then computed in binary64; dot products and squared norms accumulated component-wise in dimension order; every multiply and add individually rounded (IEEE-754 round-to-nearest-even) — fused multiply-add/contraction and reassociation are FORBIDDEN; norms via the correctly-rounded square root; if either vector has zero norm the score is exactly `0` (never NaN, never skipped); the final quotient clamped to `[-1, 1]`. Engines may use faster internal paths only if the canonical value (and hence its bucket) is identical; the conformance corpus verifies. Quantize the canonical value with prescribed arithmetic: `q(s) = floor(s / fl64(1e-9))` — the divisor is the binary64 value nearest `1e-9`, the division is one correctly-rounded binary64 operation, then `floor` — computed in binary64 by EVERY engine regardless of internal storage (a decimal-backed engine evaluating the division exactly would put `q(0.5)` in bucket 500000000 where the prescribed binary64 division yields 499999999; the binary64 result is the contract). Order by the integer `q(_score)` (ties break by `id` ascending); `min_score` is constrained to the cosine range `[-1, 1]` (`invalid_request` outside), and the threshold compares `q(s) ≥ q(min_score)`. Quantizing per-engine approximations would NOT be consistent, and pairwise epsilon is non-transitive; canonical-then-bucket avoids both. Identical corpus + query ⇒ identical order on every engine. Under a scope, ranking operates over the **visible corpus only**: relevance statistics must not include rows outside the caller's visible set — foreign matching rows can never reorder or displace visible results (§4.3). Predicate conjunction alone is not sufficient (a shared index's corpus statistics span owners); engines choose the isolation — per-scope index partitioning, or filter-then-rescore. |
 | Match language | **Two tiers** (amended 2026-09-05). **Core subset — contract on EVERY engine**: terms, implicit AND, `OR`, `NOT`, quoted phrases, `term*` prefix — with the **grammar pinned to SQLite FTS5's documented parsing rules and complete precedence ladder** (`NOT` is a BINARY exclusion operator — `a NOT b` matches rows matching `a` but not `b`, and bare leading `NOT b` is a syntax error; precedence, tightest to loosest: **implicit AND (juxtaposition), then `NOT`, then explicit `AND`, then `OR`** — so `a NOT b AND c` groups `(a NOT b) AND c` while `a NOT b c` groups `a NOT (b AND c)`; binary operators left-associative within their level; parentheses group; phrase interiors are token sequences with no operators; prefix `*` applies to the immediately preceding term) — identical semantics across engines, conformance-enforced, with the documented tokenizer/stemmer behavior (porter over unicode61: case/diacritic folding, English stemming, opaque CJK runs). **Extended grammar — engine-documented, not guaranteed portable**: `field:term`, `{a b}:term`, `NEAR(...)`; SQLite (adapter #1) supports all of it natively, other engines may implement any of it, and engines document which extended constructs they accept — unsupported extended syntax fails with the same teaching-error quality as everything else. *Rationale: requiring a scan-and-score engine to reimplement the full FTS5 grammar is lift without a demander; the core subset covers observed agent usage.* |
@@ -1366,9 +1398,9 @@ ETL layer (an ETL layer in dolmen would be fiso-shaped, not dolmen-shaped).
 | D12 | Raw SQL on `row_access` tables requires table-wide read | §4.4 |
 | D13 | Hierarchy: `/`-separated, v0.2.0 segment regex, depth ≤ 3, `<data>/a/b/c.db` layout, recursive-descendant `prefix` listing, leaf-only drops | §5 |
 | D14 | Engine interface operation set + signature sketch; `Query` deliberately unscoped | §6 |
-| D15 | Search semantics are contract; index vs scan is engine choice; index never changes semantics; match language is tiered — core subset (terms, implicit AND, OR, NOT, phrases, prefix) contract on every engine, extended grammar (`field:term`, `{a b}:term`, `NEAR`) engine-documented | §7 |
+| D15 | Search semantics are contract; index vs scan is engine choice; index never changes semantics (search_vector ANN exception per D26); match language is tiered — core subset (terms, implicit AND, OR, NOT, phrases, prefix) contract on every engine, extended grammar (`field:term`, `{a b}:term`, `NEAR`) engine-documented | §7 |
 | D16 | Dual-mode conformance: precise byte-for-byte rule, deny sweep, acceptance scenario, invariant tests, no CI matrix | §8 |
-| D17 | Architecture invariants: namespace is a logical tenant coordinate (permissions bind to names, never files); two-level tenancy — projects structural via namespaces (engine-mapped file/schema/catalog), users logical via the owner predicate (delegatable to native RLS); user-per-namespace is an anti-pattern; raw-SQL confinement is an engine obligation; Postgres anticipated as adapter #3 | §0.5 |
+| D17 | Architecture invariants: namespace is a logical tenant coordinate (permissions bind to names, never files); two-level tenancy — projects structural via namespaces (engine-mapped file/schema), users logical via the owner predicate (delegatable to native RLS); user-per-namespace is an anti-pattern; raw-SQL confinement is an engine obligation; Postgres the reference shared engine (adapter #2, D25) | §0.5 |
 | D18 | Grant lifecycle: no owner concept (inheritance covers creators); last-admin-on-`*` revoke guard (409); drop cascades grant deletion (clean slate on recreation, count reported in drop confirm); grants target existing objects only | §3.4 |
 | D19 | Consistency contract: op atomicity; per-namespace serial observability + read-your-writes; 409-or-nothing collision surfacing; engine-declared deployment topology (sqlite = 1 process/data-dir; shared engines = N pods) | §0.6 |
 | D20 | Data portability SKIPPED and audit surface DEFERRED, deliberately — no features without real-world demanders (#32 open, unrescoped) | §0.6 |
@@ -1376,3 +1408,5 @@ ETL layer (an ETL layer in dolmen would be fiso-shaped, not dolmen-shaped).
 | D22 | Credential model on record: humans get expiring signed tokens, machines get hashed revocable named keys carrying principal + optional groups; no sessions/refresh/email/user records (deliberate — nothing user-shaped to leak, IdP owns recovery); accepted losses on record — no per-device revocation (revoke = rotate the signing secret), no sliding sessions; enterprises use the gateway tier | §1.4–1.6 |
 | D23 | Bootstrap written up explicitly: the deadlock rationale; the admin key is a kingmaker, not a king (implicit grant on the credential, identity vanishes with the env, grants persist; `dolmen-admin` reserved across all sources; removal safe via the root-admin startup check + last-admin guard). Namespace-creation gates: `auth: off` implicit forever; `auth: on` `not_found`-after-authz; `create_namespace` requires `admin` on the parent; `schema` creates content, never tenancy | §1.3, §2 |
 | D24 | Realtime change notifications join the spec ("one bag" — auth, authz, and subscription designed together): four layers in build order (durable per-namespace change log + `changes_since` → `wait_for` long-poll ≤60s → SSE `subscribe` for agent hosts → webhooks designed-not-built); a subscription is a **standing read** (`read` verb — or any data verb under `row_access`, own rows only — visible set, **per-event** scope AND credential evaluation, mid-subscription revocation drops the stream, source-A streams duration-bounded with the documented gateway termination obligation); change records and cursors are **minted inside the write transaction** (per-record table-lifetime key and internal owner label; no CDC; notification after commit only, never the durability mechanism; order = §0.6 serial observability; cross-pod fan-out = engine-declared capability); durable gap-free per-namespace cursors with a retention knob (beyond retention = teaching error); realtime ops exist in both modes (data ops, not auth surface); decoding stays OUT (agent decodes; fiso is the codec layer for non-LLM pipelines) | §9 |
+| D25 | Postgres is the reference shared engine (adapter #2 — the org/multi-host tier; schema-per-namespace, native RLS for RowScope, role-per-schema confinement, ACID are its native vocabulary; only an operational engine can honor the operational contract). The lakehouse is **read-side, not an engine**: Iceberg/Delta/DuckDB-as-engine reclassified out of the adapter list — analytical stores cannot honor the write contract; dolmen's data may be published to Parquet/Iceberg/Delta via background export/CDC, designed-not-built and demander-gated (D20 status, like webhooks §9) — a bolt-on read path, NOT a `store.Engine` implementation, and DISTINCT from the user-facing `export`/`import` portability ops D20 skips | §0.5 |
+| D26 | `search_vector` ANN accelerator exception (full-text stays exact): an engine MAY serve vector search from an ANN index (e.g. pgvector HNSW) with **declared** capability (B4-style, never silent) and a documented recall bound; the contract pins result shape, visible set, and per-path determinism — not bit-identical ranking across engines or index configs; RowScope, `truncated`, `skipped_vectors`, and pagination stay exact regardless of index (approximation affects top-K ordering only, never eligibility); the brute-force exact path (canonical cosine + `q(s)` quantization) remains the conformance reference; §8.1's auth-off corpus untouched | §7 |
