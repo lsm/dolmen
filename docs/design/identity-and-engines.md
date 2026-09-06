@@ -493,7 +493,7 @@ in §3, `whoami` and the key ops in §1.4–1.5):
 | `upsert`, `upsert_by_key` | `create` **AND** `update` (both required) | The table. They are update-or-insert: a `create`-only caller is refused up front, not surprised by half the operation. |
 | `query` | `read` | The **namespace** — raw SQL may reference any table in it, so the grant must cover the namespace, not one table. See §4.4 for the extra rule on `row_access` tables. |
 | `read_rows` | `read`; **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` — the response then contains own rows only, the same rule as search and feeds | The table. Id-addressed scoped fetch: `{table, ids}` → the rows the caller can see (present in both modes; additive under `auth: off` per §8.1 — a plain by-id fetch without raw SQL). The realtime recovery path depends on it: a feed consumer re-reads a change's row content by id through its standing read (§9.3), and `query`'s namespace-wide gate plus the searches' index dependence would leave a create-only `row_access` subscriber with an id they cannot resolve. |
-| `capabilities` | none (any authenticated principal; unauthenticated under `auth: off`) | Untargeted: reports the engine capability surface from `Engine.Capabilities()` (§6) — `vector_execution` (`"exact"` \| `"ann"`), `ann_recall_bound` (number, iff ann), `notifications` (bool), `subscribe` (bool); field names, types, and enum values pinned so the discovery is portable and conformance-comparable, unknown fields additive (§8.1) — **in both modes** (additive under `auth: off` per §8.1). Realtime ops exist in both modes and an `auth: off` client has no other discovery surface (`describe_server`'s extension is `auth: on`-only); this op is that surface, and it is the single source `describe_server` inlines under `auth: on`. |
+| `capabilities` | none (any authenticated principal; unauthenticated under `auth: off`) | Untargeted: reports the engine capability surface from `Engine.Capabilities()` (§6) — `vector_execution` (`"exact"` \| `"ann"`), `ann_recall_bound` (explicit `null` in exact mode, never omitted; a number iff ann), `notifications` (bool), `subscribe` (bool); field names, types, and enum values pinned so the discovery is portable and conformance-comparable, unknown fields additive (§8.1) — **in both modes** (additive under `auth: off` per §8.1). Realtime ops exist in both modes and an `auth: off` client has no other discovery surface (`describe_server`'s extension is `auth: on`-only); this op is that surface, and it is the single source `describe_server` inlines under `auth: on`. |
 | `changes_since`, `wait_for`, `subscribe` | `read` on the selected table(s); **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` — the feed then covers own rows only, mirroring the search rule | The **selected target**: a table-filtered feed checks the named table(s) (direct table grants qualify — inheritance is downward-only); an unfiltered namespace feed checks `read` on the namespace, the same rule as `query`. Per-event scope and credential reevaluation further restrict delivery — foreign rows never wake the caller. Ordinary data ops present in **both** modes (§9.4). |
 | `search_fulltext`, `search_vector` | `read` on the table; **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` (search then covers own rows only, §4.3) | The table. |
 | `grant`, `revoke` | `admin` | The target object (an ancestor grant suffices, §3.3). |
@@ -1286,7 +1286,9 @@ type Engine interface {
     // the same facts under the same names (the conformance suite compares
     // it): a fixed JSON object with
     //   vector_execution: "exact" | "ann"          (never absent)
-    //   ann_recall_bound: number | null            (required iff ann; e.g. 0.98)
+    //   ann_recall_bound: number                     ("null" — explicitly, never
+                                               omitted — when vector_execution is
+                                               "exact"; a number e.g. 0.98 iff ann)
     //   notifications:    bool                     (Listen implemented?)
     //   subscribe:        bool                     (streams available?)
     // — unknown future fields are additive (§8.1 rules), enum values are
@@ -1357,7 +1359,9 @@ engine's capability surface — the **`capabilities` op** (§2; both modes, the 
 `describe_server`'s `auth: on`-only extension inlining the same data, kept out of the auth-off
 response so it stays byte-identical v0.2.0 (§8.1; adapter #1
 under `auth: off` is exact brute-force and reports nothing new) — and **per-result execution
-metadata** on every `search_vector` response
+metadata** on `search_vector` responses under `auth: on` (the mode where ANN can serve); under
+`auth: off` the field is absent entirely — the exact path emits nothing, and existing clients
+and golden fixtures see byte-identical responses
 (which path served it — an engine that switches between ANN and exact fallback as an index
 builds or query conditions change says so on each response). The contract then pins the result
 **shape**, the
@@ -1619,12 +1623,14 @@ the sleeping agent holds nothing, burns nothing, and is told.
   error is a function of the client's own token age alone. A hidden write that later ages out
   can therefore never turn an otherwise-empty resume into an error: whether the error fires
   must not depend on whether invisible records existed. Two availability rules keep replay
-  gap-free for valid cursors: **page chains preserve the originating issuance time** — every
-  next-page token of a catch-up carries the SAME issuance as the first, so paging through an
-  old backlog never refreshes the clock — and **a record is pruned only when no still-valid
-  cursor can reference it** (the simple sufficient implementation retains each record for
-  twice the retention bound, since token validity and record age share the same knob; any
-  cursor issued within R of a record's mint then cannot outlive the record). A conforming
+  gap-free for valid cursors: **page chains refresh the deadline on each page issuance** —
+  every next-page token carries a fresh issuance (a promptly-paged backlog never fails between
+  pages because the first token was nearly `R` old), while the chain's ORIGIN — the position
+  and the `begin`-boundary semantics — is preserved unchanged across the chain — and **a
+  record is pruned only when no still-valid
+  cursor can reference it** — a record referenced by a live page chain is retained through the
+  chain's current deadline, so refresh and retention move together (a cursor issued within `R`
+  of a record's mint cannot outlive it under the 2×`R` default hold). A conforming
   engine never silently shortens a page: if it cannot uphold the availability invariant it
   returns the explicit beyond-retention error instead. Pruning of old change records is the
   same time-based expiry, never a record-count or
