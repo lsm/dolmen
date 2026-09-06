@@ -1148,7 +1148,10 @@ type Engine interface {
     // table-wide reader (§4.3): the lookup consults ONLY the caller's own
     // principal domain — hit = verbatim replay, miss = insert recording the
     // caller's domain; foreign records neither block nor reveal, TableWideRead
-    // included. The stamp owner is independent of
+    // included — one exception, same as the Insert rule above: a table-wide
+    // caller's miss ALSO consults the legacy pre-auth domain and replays a
+    // matching principal-less record (§4.3), so a lost auth-off response
+    // retried after enabling auth does not duplicate. The stamp owner is independent of
     // the scope: a caller may be unscoped yet still be the writer. emb embeds
     // vectorize fields on write and re-embeds changed ones, passed per call as today.
     Insert(ctx context.Context, ns, table string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error)
