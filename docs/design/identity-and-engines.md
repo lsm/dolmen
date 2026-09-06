@@ -324,7 +324,13 @@ credentials:
   in a deployment whose usable root administrator is reachable only through keys, revoking the
   last active key bearing that principal is a `409` with a teaching message — the durable grant
   would survive while no credential could authenticate as it, wedging the running server and
-  failing the next startup's reachability check. (`DOLMEN_ADMIN_KEY` remains the universal
+  failing the next startup's reachability check. The check is an **atomic invariant over the
+  principal's complete active-key set, serialized in the key registry itself** (the same
+  topology-bound coordination that orders grant mutations, §3): with one root principal and two
+  active keys, two concurrent `revoke_key` calls on different replicas cannot each observe the
+  other key still active and both commit — the registry's serialization admits one, and the
+  second fails `409`. A single-request wording alone would not hold in the multi-replica
+  topology. (`DOLMEN_ADMIN_KEY` remains the universal
   recovery, §1.2.)
 
 ### 1.6 Credential model (trade-offs on record)
@@ -1200,7 +1206,10 @@ mode-parameterized, so this adds fixtures, not machinery:
 
 ### 8.4 CI wiring
 
-Both modes are ordinary `go test ./...` runs inside `make test` — mode selection happens inside the
+**Every matrix mode that has landed runs in CI** — `auth: off` + `gateway` from day one,
+`native+keys` when the OIDC stream lands (§8.2): skipping an available mode fails CI, so the
+native fixtures (source-blindness, the OIDC dance, key issuance) can never silently drop out.
+Each is an ordinary `go test ./...` run inside `make test` — mode selection happens inside the
 harness per test group, no CI matrix, no new make targets.
 
 ## 9. Realtime change notifications
