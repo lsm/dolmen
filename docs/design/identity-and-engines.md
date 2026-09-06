@@ -210,7 +210,12 @@ Rules:
   `admin` on `*` targeting a **principal**. Group grants do not count — membership is asserted per
   request and never stored (§0), so startup cannot establish that the group has any member, and an
   empty or retired external group would silently satisfy the check while no identity can actually
-  administer. A grant naming the reserved `dolmen-admin` does not count either — no source can
+  administer — **one decidable exception**: the API-key source stores its keys' groups (§1.5),
+  so a root group grant **counts when an active key's stored groups locally prove membership** —
+  the machine-group mechanism can then serve as the sole root administrator of an API-key-only
+  deployment, and revoking the proving key or that group grant joins the same cross-registry
+  lock as every other root mutation (§1.5, §3.4). A grant naming the reserved `dolmen-admin`
+  does not count either — no source can
   yield that principal (§1.3), so such a grant is permanently unusable. A trusted-proxy CIDR
   alone leaves every proxied identity authenticated-but-ungranted, and `grant` itself requires
   `admin` — nobody could create the first grant without a restart. And the two predicates must
@@ -369,7 +374,8 @@ credentials:
   and force administrators to remove the associated grant first — the deployment-wide invariant
   keeps the credential layer self-contained. The
   check is an **atomic invariant over the deployment-wide set of active keys bearing usable-root
-  principals, serialized in the key registry itself** (the same
+  principals or proving usable-root group grants (§1.2's key-provable exception), serialized in
+  the key registry itself** (the same
   topology-bound coordination that orders grant mutations, §3): with one root principal and two
   active keys, two concurrent `revoke_key` calls on different replicas cannot each observe the
   other key still active and both commit — the registry's serialization admits one, and the
@@ -568,7 +574,9 @@ inheritance). There are no deny grants, no precedence, no ordering — union onl
   `acme/team-a` specifically). Recorded so no one adds an owner concept later.
 - **Last-admin lockout guard.** Revoking the final grant of `admin` on `*` is refused — a
   `409 conflict`-family error with a teaching message. The guard counts **usable** root grants
-  only: principal subjects, mirroring §1.2's usability rule — a group grant never counts toward
+  only: principal subjects — or group subjects **locally proven by an active key's stored
+  groups** (§1.2's decidable exception; §1.5) — mirroring §1.2's usability rule. An
+  externally-membered group grant never counts toward
   "another administrator exists" (its membership is external and may be empty or retired), so the
   final principal root-admin grant stays un-revocable even when group root grants are also
   present; otherwise that principal could revoke its own root grant while the guard pointed at an
