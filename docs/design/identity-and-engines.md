@@ -1169,11 +1169,18 @@ type Engine interface {
     // are resolved per target, never once for the whole stream. The engine
     // stays grant-blind:
     // it invokes the predicate, filters by the returned scope and the
-    // record's Owner label, and atomically compares the returned incarnation
+    // record's Owner label, and — for TABLE-FILTERED feeds — atomically
+    // compares the returned incarnation
     // with the record's Lifetime — a record minted by a successor lifetime
     // than the one the authorization names is not admitted, so a drop and
     // recreate between callback and admission cannot carry a stale unscoped
-    // decision onto the successor's records — a notify-side check would come
+    // decision onto the successor's records. NAMESPACE-WIDE feeds make no
+    // per-record table-lifetime comparison: their replay spans table
+    // lifetimes by design (§9.3 — the namespace's recorded history), so a
+    // cursor predating a drop/recreate still delivers the predecessor's
+    // records; they revalidate the namespace authorization and `nsGen`
+    // instead, and the per-record Owner-label scope filtering still applies.
+    // A notify-side check would come
     // after admission and satisfy nothing. Foreign records therefore never enter the handoff
     // queue at all, so they cannot fill it, displace, or starve a scoped
     // subscriber; §9.3's foreign-rows-never-wake rule holds under backpressure
