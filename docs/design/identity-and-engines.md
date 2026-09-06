@@ -704,10 +704,11 @@ and reserving it unconditionally would break tables and requests that v0.2.0 acc
   Disabling (`value: false`) is allowed — the column and its values remain, filtering stops. It
   is not a feature but the **recovery hatch** for a mistaken declaration: without it, undoing
   `row_access` requires dropping and recreating the table — data loss. It **additionally requires
-  table-wide `read` (or `admin`)**: removing the filter widens every
-  data-verb holder's visibility from own rows to all rows (§4.3), so leaving it on `schema` alone
-  would let a `schema`+`update` caller unscope themselves and then mutate every owner's rows — a
-  direct escalation.
+  `admin` under `auth: on`** (with table-wide `read`): removing the filter widens
+  **every** data-verb holder's reach from own rows to all owners' rows — not only the caller's,
+  which makes it a change to what *others* may do, the `admin` verb's domain (§2), not
+  `schema`'s. A `schema`+`read` caller must not be able to unscope every `update`/`delete`
+  holder on the table; self-escalation is only the narrowest case of the same rule.
 - NULL-owner rows under `auth: on`: invisible to own-filtered callers; visible to table-wide
   readers (§4.3) — consistent with "no filter" being the stronger grant.
 
@@ -842,7 +843,15 @@ data-independent and stay on the `schema` verb alone.
   any other caller gets `409 conflict` — never the ids, never a silent re-insert under the same
   key. (The engine distinguishes them via `WriteOpts.TableWideRead`, §6.2 — a nil scope alone
   cannot, because a `create`-only caller on a default table and a table-wide reader are both
-  unscoped.) The foreign-collision `409` is decided **before any payload comparison**: an
+  unscoped.) And for **scoped writers, key uniqueness is itself namespaced by owner**: the
+  idempotency key of a caller restricted to own rows collides only with the same owner's
+  records — a foreign writer's use of the same predictable key neither conflicts nor
+  distinguishes occupied from unoccupied (the scoped writer simply inserts their own row
+  under their own namespaced key). The `409`-on-foreign-key outcome remains a table-wide
+  caller's rule only: they are entitled to see the collision. Without owner namespacing, the
+  occupied/unoccupied difference would be an existence oracle over foreign writes even with the
+  ownership check below in place. That foreign-collision `409` is decided **before any payload
+  comparison**: an
   unauthorized replayer receives `409` regardless of whether the submitted payload matches the
   recorded one — returning the hash-mismatch `invalid_request` for wrong-payload guesses would
   let the caller distinguish correct from incorrect payload guesses and oracle the hidden
