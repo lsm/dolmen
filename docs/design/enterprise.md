@@ -112,8 +112,34 @@ surface waits for a named compliance requirement. No features without demanders.
 
 ## 1. Identity (authentication)
 
-Dolmen terminates no user-facing authn. A gateway (Entra/GitHub via OAuth proxy, service-token
-sidecar, …) authenticates the caller and forwards the asserted identity; dolmen consumes it.
+The contract of this section is mode-level: under `auth: on`, a request resolves to exactly one
+`(principal, groups)` pair or fails `401` (§1.2). **Production of that pair is a set of additive,
+pluggable identity sources behind one seam** (amended 2026-09-06): enable any mix; a request is
+authenticated when any enabled source yields a principal; everything downstream of the seam —
+verbs (§2), grants (§3), RowScope and owner stamping (§4) — is **source-blind** and unchanged by
+which source fired. `auth: off` = no sources enabled, byte-identical v0.2.0 — permanently (§8.1).
+
+| Source | Config | Credential | Notes |
+|---|---|---|---|
+| A — trusted-proxy headers (v1) | `-trusted-proxies` CIDRs (§1.2) | asserted headers (gateway session) | unchanged (D1/D2) |
+| B — native OIDC (designed; built on demand) | `DOLMEN_AUTH_OIDC_ISSUER` / `_CLIENT_ID` / `_CLIENT_SECRET` (+ optional scopes; optional GitHub preset) | stateless signed token (Ed25519, default 7–14 d TTL, configurable) | §1.4 |
+| C — API keys | `create_key` / `list_keys` / `revoke_key` ops (§1.5) | `dlm_…` bearer, stored hashed | §1.5 |
+| D — admin key (bootstrap) | `DOLMEN_ADMIN_KEY` env (§1.3) | bearer → `dolmen-admin` | unchanged (D4) |
+
+Source A is the v1 default: dolmen terminates no user-facing authn itself — a gateway
+(Entra/GitHub via OAuth proxy, service-token sidecar, …) authenticates the caller and forwards the
+asserted identity (§1.1–1.2). Source B is the one exception where dolmen runs an authentication
+protocol directly (§1.4).
+
+Precedence with several sources enabled: a deliberate bearer credential outranks an asserted
+header (§1.3); among bearer sources, shape selects — a `dlm_` prefix routes to the key registry,
+structural token separators route to signed-token verification, otherwise the admin-key compare
+runs — and a bearer that fails the interpretation its shape selects is `401`, never silently
+reinterpreted as a weaker source (fail-closed, §1.3).
+
+Build order (mirrored on issue #160): #160 (authn plumbing) builds **the seam itself — identity
+sources as a pluggable interface, with the header source as v1**. Native OIDC and API keys land
+later as one additive stream: they touch only the source layer and the key registry, never FGA.
 
 ### 1.1 Headers
 
@@ -152,10 +178,10 @@ Rules:
   `X-Dolmen-Principal`, malformed header values, over-limit groups — fails `401` with error code
   `unauthorized` (a new code; `auth: off` never emits it). Existing `forbidden` (403) means
   *authenticated but not granted*.
-- `auth: on` with no identity source at all (no trusted proxies, no admin key) is a **startup
-  error** — fail fast rather than a server that 401s everything. So is `auth: on` with **no
-  usable root administrator**: neither the admin key nor a durable grant of `admin` on `*`. A
-  trusted-proxy CIDR alone leaves every proxied identity authenticated-but-ungranted, and
+- `auth: on` with no identity source at all (no trusted proxies, no admin key, no OIDC source) is
+  a **startup error** — fail fast rather than a server that 401s everything. So is `auth: on`
+  with **no usable root administrator**: neither the admin key nor a durable grant of `admin`
+  on `*`. A trusted-proxy CIDR alone leaves every proxied identity authenticated-but-ungranted, and
   `grant` itself requires `admin` — nobody could create the first grant without a restart. The
   same check guards the other end: removing `DOLMEN_ADMIN_KEY` from the environment is only
   safe once a durable root-admin grant exists (the §3.4 last-admin guard then keeps it
@@ -163,7 +189,9 @@ Rules:
 - `/healthz`, `/version`, `/skills*`, and `/v1/openapi.json` remain unauthenticated in both modes
   (liveness probes and client-side schema discovery; they expose no row data — **confirmed in
   review 2026-09-05, a decision, not a default**); everything under `/v1/{op}` and `/mcp`
-  requires identity when `auth: on`.
+  requires identity when `auth: on`. `/v1/auth/begin` and its callback (§1.4) are unauthenticated
+  under `auth: on` by construction — they *are* the authentication — and do not exist under
+  `auth: off`.
 - Audit attribution: with `auth: on` the principal is attached to the request's log line alongside
   the existing `X-Request-Id` correlation. Audit identity lives in logs, never in responses: dolmen
   adds no identity echo of its own to response bodies — the only principal strings a response can
@@ -175,6 +203,10 @@ Rules:
 | Environment variable | Shape |
 |---|---|
 | `DOLMEN_ADMIN_KEY` | base64url — `^[A-Za-z0-9_-]{32,256}$` (RFC 6750 Bearer `token68` without padding). Env-only, no flag twin. |
+
+**The bootstrap deadlock, written out (amended 2026-09-06).** With `auth: on` every op needs a
+grant, and `grant` itself needs an `admin` grant — a fresh server therefore deadlocks: nobody can
+create the first grant. `DOLMEN_ADMIN_KEY` breaks it.
 
 - Keys outside that alphabet are a **startup error**, not a warning: HTTP field parsing strips
   leading/trailing whitespace and clients/proxies may reject characters outside the Bearer
@@ -191,16 +223,81 @@ Rules:
 - Maps to the built-in principal `dolmen-admin`, which implicitly holds `admin` on `*`. The implicit
   grant attaches to the **credential, not the name** — it is configuration, not data: never listed
   by `list_grants`, and removing the env removes the identity at next restart, while grants it
-  minted persist normally.
-- `dolmen-admin` is reserved in the header space: §1.1 headers asserting `X-Dolmen-Principal:
-  dolmen-admin` are rejected (401, like malformed values), so no proxied identity can occupy the
-  bootstrap principal and inherit its implicit grant.
+  minted persist normally. The key holder is thus **a kingmaker, not a king**: its purpose is to
+  mint the first real administrators, not to reign — power that lives only as long as the
+  credential does, and everything it confers survives as ordinary grants.
+- `dolmen-admin` is reserved across **all** sources (amended 2026-09-06): §1.1 headers asserting
+  `X-Dolmen-Principal: dolmen-admin` are rejected (401, like malformed values), and no key or
+  OIDC principal may occupy it (§1.4–1.5) — so no minted identity can inherit the bootstrap
+  principal's implicit grant. The bootstrap identity exists only while its credential does.
 - Accepted from any address (the key is a direct credential, not a proxy assertion).
 - *Why env-only:* every non-secret flag has an env twin, secrets (`DOLMEN_EMBED_API_KEY`) do not —
   flags are visible in process listings.
 
 Bootstrap flow: start with `DOLMEN_AUTH=on DOLMEN_ADMIN_KEY=…`, grant the first real principals
-their verbs over `/v1/grant`, then drop the key from the environment.
+their verbs over `/v1/grant`, then remove the key from the environment and restart — the identity
+vanishes while its grants persist. The removal is permanently safe: §1.2's startup check requires
+a usable root administrator (the key **or** a durable `admin` on `*` grant), and the last-admin
+guard (§3.4) then keeps that root grant un-revocable.
+
+### 1.4 Native OIDC (source B — designed, not built)
+
+Motivation: the gateway-less small-team tier — everything needed to run behind an IdP without
+standing up a proxy. PocketBase-shaped by intent: the provider abstraction is endpoints + scopes +
+one normalize-to-`AuthUser` method, ~500–800 lines total, and the expensive 90% of PocketBase
+auth — user records, email flows, session machinery — is deliberately skipped (§1.6). Generic
+OIDC covers Entra, Okta, Google, etc.
+
+- Config: `DOLMEN_AUTH_OIDC_ISSUER`, `DOLMEN_AUTH_OIDC_CLIENT_ID`, `DOLMEN_AUTH_OIDC_CLIENT_SECRET`
+  (the secret env-only per the §1.3 convention), plus optional extra scopes and an optional GitHub
+  preset that fills in endpoints and claim mapping.
+- Flow: `/v1/auth/begin` → the IdP's authorization endpoint → callback with PKCE and state/CSRF →
+  code exchange. `/v1/auth/begin` and the callback are **the one deliberate non-JSON browser
+  surface** — a tiny page that hands the token out — with the same exceptional status as `/mcp`;
+  every op keeps the JSON envelope. Both are `auth: on`-only and unauthenticated by construction
+  (§1.2).
+- The credential is a **stateless signed token**: Ed25519-signed by the server, default TTL in the
+  7–14 d range, configurable, presented as a bearer. No session store — the trade-offs are on
+  record in §1.6.
+- **Principal = the `sub` claim, never the email** — grants survive email changes; email is
+  display-only and not stored (§1.6). Groups come from claims. Caveat, documented rather than
+  papered over: Entra emits group claims as object GUIDs, not names, so Entra deployments either
+  sync names or grant on the GUIDs.
+- Built on demand; until then it exists as this design. The `dolmen-admin` reservation applies
+  (§1.3).
+
+### 1.5 API keys (source C)
+
+Machines are principals too, but a machine cannot do an OAuth dance, and a shared long-lived user
+token is the wrong shape for a CI job. API keys are minted, named, individually revocable
+credentials:
+
+- Ops: `create_key` / `list_keys` / `revoke_key` — `admin` verb, object checked `*` (§2):
+  a key can bear *any* principal and optional groups (so group grants work for machines), and
+  minting an identity that did not exist is administrative at the root, above any one namespace —
+  the grants such an identity can use still have to be granted separately.
+- Shape: `dlm_…` bearer, shown in full exactly once at creation; `list_keys` returns names and
+  principals, never credentials.
+- Stored **hashed** in the server-level registry beside grants (§3) — a registry leak does not
+  leak credentials. Lookup and comparison follow §1.3's constant-time convention. Rejection of a
+  revoked or unknown key is a plain `401` (§1.2) — indistinguishable, like every other auth
+  failure.
+- A key may not bear the reserved principal `dolmen-admin` (§1.3): the bootstrap identity exists
+  only while its credential does, and a minted key would outlive it.
+
+### 1.6 Credential model (trade-offs on record)
+
+**Humans get expiring signed tokens; machines get revocable named keys.** Deliberately absent:
+session store, refresh tokens, email flows, user records — nothing user-shaped to leak, the IdP
+owns verification and recovery, and principals stay opaque strings (§1.1).
+
+Accepted losses, on record (amended 2026-09-06):
+
+- No per-device revocation or "where am I logged in" for interactive users: revoking every human
+  token at once means rotating the signing secret — rare, and acceptable at the small-team tier
+  source B serves.
+- No sliding sessions: a token lives out its TTL, then the dance reruns.
+- Enterprises are unaffected — the gateway tier (source A) does all of this at the proxy.
 
 ## 2. Verbs
 
@@ -226,7 +323,7 @@ bundles as examples only. `list` is not a verb — existence visibility follows 
 authz-precedes-existence (§2), unchanged.
 
 Operation → verb mapping (the complete op set; `grant`/`revoke`/`list_grants` are new ops defined
-in §3):
+in §3, `whoami` and the key ops in §1.4–1.5):
 
 | Operation | Verb required | Object checked |
 |---|---|---|
@@ -235,7 +332,9 @@ in §3):
 | `drop_namespace` | `admin` | The namespace itself. Leaf-only (§5.4). |
 | `list_tables` | none (any authenticated principal) | Authorization runs **before** the existence check: unless the caller holds any grant on or under the namespace, the response is `not_found` — indistinguishable from a nonexistent namespace, so listing cannot be used to enumerate names. Holders see the tables they hold any grant on. |
 | `describe_table` | any verb (`read`, `create`, `update`, `delete`, `schema`, `admin`) | The table. `row_count` follows the caller's visible set (§4.3) — table-wide for `read`, own rows for the other data verbs on `row_access` tables, 0 for `schema`/`admin` holders; no data visibility beyond the caller's set is implied. |
-| `describe_server`, `infer_schema` | none (any authenticated principal) | Untargeted: provider status is no secret; `infer_schema` is pure computation. |
+| `describe_server`, `infer_schema` | none (any authenticated principal) | Untargeted: provider status is no secret; `infer_schema` is pure computation. `describe_server` is **extended, not replaced** (amended 2026-09-06): it additionally reports the auth mode and the enabled identity sources — read-only, no secrets (names like `trusted-proxy`/`oidc`/`api-keys`, never key material or issuer secrets) — the established provider-status pattern applied to identity. |
+| `whoami` | none (any authenticated principal) | Untargeted self-description: the caller's principal and groups (§1), whatever the source. The teaching-error philosophy applied to auth — an agent that just got a `403` self-diagnoses in one call. `auth: on`-only (meaningless without identity; see transport parity below). |
+| `create_key`, `list_keys`, `revoke_key` | `admin` on `*` | Untargeted (§1.5): a key bears any principal and optional groups, so minting one is administrative at the root — above any one namespace — even though the grants the minted identity can use still have to be granted separately. `auth: on`-only. |
 | `create_table` | `schema` | The namespace. |
 | `drop_table`, `migrate`, `list_migrations` | `schema`; `drop_table` additionally requires `admin` under `auth: on` — §3.4 makes a table drop delete every grant targeting the table, and changing what others may do is the `admin` verb, not `schema` | The table. Migration history is the audit trail of schema changes — same verb as the changes themselves. |
 | `insert` | `create` | The table. |
@@ -260,12 +359,19 @@ after authorization succeeds**. Authorization precedes existence for every grant
 ungranted caller receives `403 forbidden` whether or not the object exists (and `401` before
 that, without identity), so no operation's error code — this one included — can be used to
 enumerate namespaces or tables; `not_found` is visible only to callers authorized to know.
-`create_namespace` is the only creation path. Under `auth: off` nothing changes — implicit
-creation stays, exactly as v0.2.0.
+`create_namespace` is the only creation path. The gate is `admin` on the **parent** (`*` for
+depth-1, the containing namespace for deeper), never `schema`: `schema` on a namespace creates
+tables — content — never sub-namespaces — tenancy. Namespaces are the objects grants hang on
+(§3.1); minting one is administrative, and parent-`admin` inherits down (§3.3), so a legitimate
+creator always already administers what they create. Under `auth: off` nothing changes — implicit
+creation stays, exactly as v0.2.0, permanently.
 
 Transport parity: `grant`/`revoke`/`list_grants` are ordinary ops — same envelope over `/v1/{op}`
-and MCP `tools/call`. With `auth: off` they **do not exist**: not dispatchable, absent from
-`tools/list` and `/v1/openapi.json`, keeping the auth-off surface byte-identical to v0.2.0.
+and MCP `tools/call`. The full `auth: on`-only surface is those three plus `whoami` and the key
+ops of §1.5, and the `/v1/auth/begin` + callback browser endpoints of §1.4 (JSON-envelope ops and
+one deliberate non-JSON pair, respectively). With `auth: off` **none of it exists**: not
+dispatchable, absent from `tools/list` and `/v1/openapi.json`, keeping the auth-off surface
+byte-identical to v0.2.0.
 
 ## 3. Grant model
 
@@ -918,8 +1024,8 @@ dialect stance is engine-2's issue, and must keep the conformance corpus green.
 
 ## 8. Dual-mode conformance plan
 
-The conformance suite (`internal/conformance`) runs in both modes in CI (`make test`); breaking
-either mode fails CI.
+The conformance suite (`internal/conformance`) runs in every mode in CI (`make test`); breaking
+any mode fails CI.
 
 ### 8.1 What "byte-for-byte v0.2.0" means, precisely
 
@@ -930,23 +1036,32 @@ keys (`prefix`), newly valid inputs (deep namespace paths), new ops — and the 
 grow accordingly (`list_namespaces` gaining `prefix`, the namespace pattern widening to allow `/`),
 provided every schema change is strictly additive: each request that validated against the v0.2.0
 schemas still validates and produces the same response. What never appears under `auth: off`:
-`grant`/`revoke`/`list_grants` in dispatch, `tools/list`, or `/v1/openapi.json`, and the
-`row_access` annotation in any schema.
+`grant`/`revoke`/`list_grants` in dispatch, `tools/list`, or `/v1/openapi.json`; the identity
+surface of §1.4–1.5 (`whoami`, `create_key`/`list_keys`/`revoke_key`, and the `/v1/auth/begin` +
+callback endpoints) likewise; and the `row_access` annotation in any schema.
 
 ### 8.2 Modes in the harness
 
+The matrix has three modes (grown from two, 2026-09-06) — the harness is already
+mode-parameterized, so this adds fixtures, not machinery:
+
 - `auth: off` — today's harness, unchanged: full suite, golden contract.
-- `auth: on` — a harness variant with `DOLMEN_AUTH=on`, `DOLMEN_TRUSTED_PROXIES=127.0.0.1/8`, and
-  an admin key; tests assert identity via `X-Dolmen-Principal`/`X-Dolmen-Groups` (or the bearer key)
-  the way a gateway would.
+- `gateway` — `DOLMEN_AUTH=on`, `DOLMEN_TRUSTED_PROXIES=127.0.0.1/8`, and an admin key; tests
+  assert identity via `X-Dolmen-Principal`/`X-Dolmen-Groups` (or the bearer key) the way a
+  gateway would.
+- `native+keys` — `DOLMEN_AUTH=on` with the OIDC source enabled against a **local issuer stub**:
+  fixtures run the real dance (`/v1/auth/begin` → stub → callback → bearer token) and exercise key
+  issuance (`create_key` → use → `list_keys` → `revoke_key` → 401).
 
 ### 8.3 What auth:on adds to the suite
 
-1. **Deny-by-default sweep** — for every op (all 22): no identity (401 `unauthorized`) and
-   untrusted-peer identity (401). Authenticated-but-ungranted (403 `forbidden`) applies to the
-   **grant-protected** ops only. The grant-free ops of §2 succeed for an ungranted authenticated
-   caller (`describe_server`, `infer_schema`, `list_namespaces` — the latter returning an empty
-   list) — except `list_tables`, which per §2 returns `not_found` for a caller holding no grant on
+1. **Deny-by-default sweep** — for every op (all 26 with §1.4–1.5; `/v1/auth/begin` and the
+   callback are excluded — unauthenticated by construction, §1.2): no identity (401
+   `unauthorized`) and untrusted-peer identity (401). Authenticated-but-ungranted (403
+   `forbidden`) applies to the **grant-protected** ops only. The grant-free ops of §2 succeed for
+   an ungranted authenticated caller (`describe_server`, `infer_schema`, `list_namespaces`,
+   `whoami` — `list_namespaces` returning an empty list) — except `list_tables`, which per §2
+   returns `not_found` for a caller holding no grant on
    or under the namespace; the sweep asserts exactly that. Envelope shapes pinned like every other
    error.
 2. **The #158 acceptance scenario, end-to-end** — one test scripting the umbrella scenario:
@@ -967,6 +1082,11 @@ schemas still validates and produces the same response. What never appears under
    `auth: on`: default tables still have no `owner` (invariant 1's "never on default tables" holds
    in both modes); grant ops enforce §3; namespace hierarchy enforces §5.
 5. **Fail-closed** — an authorization-check failure denies (500), never bypasses.
+6. **Source-blindness** (added 2026-09-06) — the grant-matrix subset of item 3 runs identically
+   under a header identity, an OIDC token, and an API key for the same `(principal, groups)`:
+   identical verb decisions, identical RowScope, identical responses. Downstream must not be able
+   to tell sources apart — that is §1's seam claim made conformance-enforced. The native-mode
+   fixtures (§8.2) supply the token and key identities.
 
 ### 8.4 CI wiring
 
@@ -999,3 +1119,6 @@ harness per test group, no CI matrix, no new make targets.
 | D18 | Grant lifecycle: no owner concept (inheritance covers creators); last-admin-on-`*` revoke guard (409); drop cascades grant deletion (clean slate on recreation, count reported in drop confirm); grants target existing objects only | §3.4 |
 | D19 | Consistency contract: op atomicity; per-namespace serial observability + read-your-writes; 409-or-nothing collision surfacing; engine-declared deployment topology (sqlite = 1 process/data-dir; shared engines = N pods) | §0.6 |
 | D20 | Data portability SKIPPED and audit surface DEFERRED, deliberately — no features without real-world demanders (#32 open, unrescoped) | §0.6 |
+| D21 | Identity is additive, pluggable **sources** behind one seam; a request is authenticated when any enabled source yields a principal; everything downstream is source-blind. Trusted-proxy headers = v1; native OIDC designed-not-built (PocketBase-shaped provider abstraction, Ed25519 signed tokens, PKCE+state, principal = `sub` never email, `/v1/auth/begin` + callback as the one non-JSON browser surface); API keys `dlm_…` hashed in the registry; #160 builds the seam (mirrored on issue #160) | §1, §1.4–1.5 |
+| D22 | Credential model on record: humans get expiring signed tokens, machines get hashed revocable named keys carrying principal + optional groups; no sessions/refresh/email/user records (deliberate — nothing user-shaped to leak, IdP owns recovery); accepted losses on record — no per-device revocation (revoke = rotate the signing secret), no sliding sessions; enterprises use the gateway tier | §1.4–1.6 |
+| D23 | Bootstrap written up explicitly: the deadlock rationale; the admin key is a kingmaker, not a king (implicit grant on the credential, identity vanishes with the env, grants persist; `dolmen-admin` reserved across all sources; removal safe via the root-admin startup check + last-admin guard). Namespace-creation gates: `auth: off` implicit forever; `auth: on` `not_found`-after-authz; `create_namespace` requires `admin` on the parent; `schema` creates content, never tenancy | §1.3, §2 |
