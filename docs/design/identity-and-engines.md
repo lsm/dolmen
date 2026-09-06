@@ -18,8 +18,8 @@ deviates. Terminology follows the vocabulary in §0 exactly.
 
 | Term | Meaning |
 |---|---|
-| **principal** | An opaque identity string asserted by a trusted proxy (or the bootstrap admin key). Dolmen never interprets its bytes; grants and `owner` values compare it exactly. |
-| **group** | An opaque string naming a set of principals. Membership is never stored by dolmen — it arrives per-request from the trusted proxy (invariant 3: identity is consumed, never produced). |
+| **principal** | An opaque identity string produced by an enabled identity source (§1): header-asserted by a trusted proxy, an OIDC issuer-qualified subject, an API key's stored principal, or the bootstrap admin key. Dolmen never interprets its bytes; grants and `owner` values compare it exactly. |
+| **group** | An opaque string naming a set of principals, part of the normalized identity (§1) whatever the source. Membership is never stored by dolmen for per-request sources — headers and OIDC claims arrive with each request (invariant 3: identity is consumed, never produced) — with **one storage exception**: an API key's groups are stored with the key (§1.5), the sole dolmen-persisted identity fact, so machine groups can be locally proven (§1.2). |
 | **trusted proxy** | A peer whose TCP source address falls inside a configured CIDR. Only trusted proxies may assert identity headers. |
 | **verb** | One of `create`, `read`, `update`, `delete`, `schema`, `admin` (§2). |
 | **object** | A namespace path, a namespace/table pair, or the server root `*` (§3, §5). |
@@ -1454,9 +1454,13 @@ the sleeping agent holds nothing, burns nothing, and is told.
 1. **Change log (foundation):** a durable **per-namespace monotonic sequence**, assigned at
    commit. Op `changes_since(namespace, cursor, [table filter])` → ordered change records. This
    alone makes even polling cheap and incremental.
-2. **`wait_for` (long-poll op):** blocks up to a bounded time (default ≤60 s, configurable) until
+2. **`wait_for` (long-poll op):** blocks up to a bounded time until
    a matching change commits; returns immediately when one lands; **empty result — never an
-   error — on timeout**. Fully agent-usable over plain MCP/HTTP today: one tool call per wait, no
+   error — on timeout**. The bound is a per-call request field, `timeout_ms` — **default
+   `30000`** (30 s), valid range `0`–`60000`, values outside it `invalid_request`; `0` returns
+   immediately (a cheap conditional poll). The 60 s ceiling is the contract's, not a deployment
+   setting — an agent host holding connections longer uses `subscribe` (§9.3). Fully
+   agent-usable over plain MCP/HTTP today: one tool call per wait, no
    special client.
 3. **`subscribe` (SSE stream):** server-sent events on the HTTP surface — change type
    (insert/update/delete), row ids, optional row payload, filtered by the caller's scope. The
