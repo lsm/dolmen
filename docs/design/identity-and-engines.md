@@ -1133,7 +1133,10 @@ type Engine interface {
     // Row CRUD — scope filters which existing rows may be matched, read, or counted;
     // on Insert it scopes the idempotency replay to the caller's OWN
     // principal domain — own-domain hit = replay, miss = insert; foreign
-    // records neither conflict nor reveal (§4.3).
+    // records neither conflict nor reveal — with §4.3's legacy exception:
+    // a TABLE-WIDE caller's miss also replays a matching legacy pre-auth
+    // record (principal-less rows written under auth: off), so a lost
+    // response retried after enabling auth does not duplicate.
     // GetRows is the id-addressed scoped fetch behind read_rows (§2): the
     // realtime recovery path (§9.3) and agents generally need by-id reads
     // without raw SQL's namespace-wide gate.
