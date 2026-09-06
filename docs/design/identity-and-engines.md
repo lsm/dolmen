@@ -1306,7 +1306,20 @@ the sleeping agent holds nothing, burns nothing, and is told.
   `changes_since` catch-up + re-subscribe. Cursor semantics: **per-namespace, monotonic,
   gap-free**; pruning/retention of old change records is a configuration concern (documented
   retention knob); a cursor pointing beyond retention is an explicit teaching error naming the
-  catch-up path. And every record carries its **table's lifetime key** (`NsGen`, `Table`,
+  catch-up path. The cursor is **bound to the namespace lifetime that minted it** — it encodes
+  the `nsGen` alongside the sequence position, opaquely: adapter #1's change log dies with the
+  namespace database (§5.4's clean slate), so a recreated namespace's sequence restarts, and a
+  predecessor cursor replayed against the successor would otherwise silently skip its first N
+  records (cursor 5 against a successor that has already emitted ten) — instead it is a lifetime
+  mismatch, the same explicit teaching-error family as beyond-retention, naming the catch-up path
+  (resume from the current head). And the cursor is **opaque and non-order-revealing to the
+  client**: a scoped or table-filtered feed delivers only the caller's visible records, and
+  handing back raw namespace-wide sequence positions would expose that a filtered-out record
+  existed between two visible ones (cursors 10 and 12 reveal record 11) — client-facing cursors
+  are per-feed resume tokens the server maps to its internal position on resume, so consecutive
+  visible records yield consecutive tokens indistinguishable from adjacent ones, and no foreign
+  commit is observable through cursor arithmetic.
+  And every record carries its **table's lifetime key** (`NsGen`, `Table`,
   `DropGen` — Version excluded as everywhere): a table-filtered feed delivers only records of the
   table's **current** lifetime, so a caller granted on a recreated same-named successor can never
   replay a predecessor's records from an old cursor — `scopeIncarnation` proves the current table
