@@ -839,19 +839,21 @@ data-independent and stay on the `schema` verb alone.
   to the writer) may coexist; that is the consistent outcome of visible-set semantics, and the
   collision never leaks existence. *Rationale: natural keys are expected to collide across users.*
 - `insert` with an `idempotency_key`: the idempotency record stores the owner, and **key
-  uniqueness is namespaced by owner — bound to the writer's immutable principal, never to the
-  caller's current scope**. The lookup is own-domain only, and it is deterministic: **the
-  caller's own domain** (their principal + key) — a hit replays the caller's original ids
-  verbatim, and a retry ALWAYS finds its original record there, through grant changes, gained
-  table-wide `read`, and `row_access` disablement alike; the lookup domain can never move under
-  a retry. An own-domain miss is `409 conflict` for EVERY caller, table-wide readers included —
-  with multiple owners legitimately recording the same key, a cross-owner probe could name no
-  unique "original" and would make the outcome depend on lookup order, so there is none: the
-  miss says only "occupied" (by whom, and how many times, is never revealed — a table-wide
-  caller entitled to know more reads the rows themselves). A scoped caller whose own domain is
-  empty inserts their own namespaced row — a foreign writer's use of the same predictable key
-  neither conflicts nor distinguishes occupied from unoccupied for them. Never the ids, never a
-  silent re-insert under the same key. (The engine distinguishes scopes via
+  occupancy is namespaced by owner — bound to the writer's immutable principal, never to the
+  caller's current scope**. Three deterministic cases, with **occupancy checked across all
+  domains but replay decided solely by the caller's own domain** (their principal + key):
+  (1) the key is occupied in the caller's own domain — verbatim replay of the caller's
+  original ids, and a retry ALWAYS finds it there, through grant changes, gained table-wide
+  `read`, and `row_access` disablement alike; the lookup domain can never move under a retry;
+  (2) the key is occupied only by foreign domains — `409` for EVERY caller, table-wide readers
+  included: with multiple owners legitimately recording the same key, a cross-owner replay
+  could name no unique "original" and would make the outcome depend on lookup order, so replay
+  never crosses owners — the `409` says only "occupied" (by whom, and how many times, is never
+  revealed; a table-wide caller entitled to know more reads the rows themselves);
+  (3) the key is unoccupied anywhere — **insert, for every caller including table-wide
+  readers**: first use must create the caller's own record, or idempotent inserts would be
+  impossible for the common `create`+table-wide-`read` permission set. Never foreign ids, never
+  a silent re-insert under the same key. (The engine distinguishes scopes via
   `WriteOpts.TableWideRead`, §6.2 — a nil scope alone
   cannot, because a `create`-only caller on a default table and a table-wide reader are both
   unscoped.) Without owner namespacing,
@@ -1081,8 +1083,10 @@ type Engine interface {
     // insert's idempotency key, and TableWideRead: set iff the caller holds `read`
     // through a covering grant. The idempotency replay decision needs it because nil
     // scope alone cannot distinguish a create-only caller on a default table from a
-    // table-wide reader (§4.3): replay returns ids iff the record's owner equals the
-    // stamp owner OR TableWideRead, else conflict. The stamp owner is independent of
+    // table-wide reader (§4.3): replay returns ids iff the key is occupied in the
+    // CALLER'S own principal domain — never across owners, TableWideRead included;
+    // a key occupied only by foreign records is 409 for every caller, and an
+    // unoccupied key inserts. The stamp owner is independent of
     // the scope: a caller may be unscoped yet still be the writer. emb embeds
     // vectorize fields on write and re-embeds changed ones, passed per call as today.
     Insert(ctx context.Context, ns, table string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error)
@@ -1512,9 +1516,15 @@ the sleeping agent holds nothing, burns nothing, and is told.
   visible records yield consecutive tokens indistinguishable from adjacent ones, and no foreign
   commit is observable through cursor arithmetic. The token mapping is **persistent and
   deployment-wide, never per-process**: tokens are self-contained and **encrypted** —
-  authenticated encryption (or an equivalent construction that cryptographically hides the
-  internal position — a plaintext payload plus a MAC authenticates but does not conceal, and the
-  sequence gaps must stay unobservable) — under a
+  **randomized** authenticated encryption, with a fresh nonce per issuance, or an equivalent
+  construction that cryptographically hides the internal position AND its equality: a
+  deterministic authenticated encryption of the same position would emit identical bytes, and
+  comparing opaque token bytes across polls would then reveal that a hidden foreign commit
+  advanced the position — fresh randomization makes the same position yield unrelated
+  ciphertexts every response (a plaintext payload plus a MAC authenticates but does not
+  conceal, and the
+  sequence gaps must stay unobservable; a coordinated-storage mapping satisfies this trivially
+  — the client never sees position-derived bytes at all) — under a
   persistent deployment-wide key (the §1.4 signing-key coordination pattern), or the mapping
   lives in coordinated storage like the registry itself — a token issued by one replica must
   resume on another, and a restart must not invalidate clients' cursors.
