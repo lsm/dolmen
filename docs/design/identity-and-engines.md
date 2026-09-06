@@ -321,8 +321,10 @@ OIDC covers Entra, Okta, Google, etc.
   surface** — a tiny page that hands the token out — with the same exceptional status as `/mcp`;
   every op keeps the JSON envelope. Both are `auth: on`-only and unauthenticated by construction
   (§1.2).
-- The credential is a **stateless signed token**: Ed25519-signed, default TTL in the 7–14 d
-  range, configurable, presented as a bearer. No session store — the trade-offs are on record in
+- The credential is a **stateless signed token**: Ed25519-signed, presented as a bearer, with
+  the TTL configured by `DOLMEN_AUTH_OIDC_TOKEN_TTL` — default `168h` (7 days, the short end of
+  the design's 7–14 d window), valid range `1h`–`720h` (30 days), other values rejected at
+  startup alongside the rest of the OIDC config. No session store — the trade-offs are on record in
   §1.6. The **signing key is persistent, deployment-wide configuration, never per-process**:
   single-process deployments persist it beside the grant registry; shared-engine multi-process
   topologies coordinate it exactly as the grant registry's placement is topology-bound (§3
@@ -362,7 +364,12 @@ credentials:
   minting an identity that did not exist is administrative at the root, above any one namespace —
   the grants such an identity can use still have to be granted separately.
 - Shape: `dlm_…` bearer, shown in full exactly once at creation; `list_keys` returns names,
-  principals, and key state (active/revoked) — never credentials. The uniform `401` below is the
+  principals, and key state (active/revoked) — never credentials. **Generation is pinned**:
+  the server mints every key from a CSPRNG as `dlm_` + 32 random bytes in base64url — 43
+  characters after the prefix, 256 bits of entropy, exact alphabet `A–Z a–z 0–9 - _` — and the
+  caller never supplies key material. A bearer matching the `dlm_` prefix but not this exact
+  shape is a `401` at dispatch; the fixed length keeps hashed-registry offline guessing at
+  2²⁵⁶ per key, not a function of operator choice. The uniform `401` below is the
   **caller-side** surface only; admins see key state through listing.
 - Stored **hashed** in the server-level registry beside grants (§3) — a registry leak does not
   leak credentials. Lookup and comparison follow §1.3's constant-time convention. Rejection of a
