@@ -351,14 +351,19 @@ OIDC covers Entra, Okta, Google, etc.
   papered over: Entra emits group claims as object GUIDs, not names, so Entra deployments either
   sync names or grant on the GUIDs. And because OIDC subject identifiers are unique **only
   within an issuer**, source B's principals and groups are **issuer-qualified**: the source
-  yields the pair (issuer, `sub`) under a **stable, injective, grant-safe encoding** — the
-  issuer folds to a fixed-length base32 digest (collision risk negligible and pinned), the
-  `sub` (or group claim) appends verbatim, and the whole is validated against §3.1's subject
-  charset and length at authentication: an identity that cannot be encoded within the grant
+  yields the pair (issuer, `sub`) under a **versioned, byte-for-byte encoding, pinned so
+  normalized identities are stable across implementations and releases** —
+  `oidc:v1:<D>:<claim>`, where `<D>` is the first 26 lowercase base32 (RFC 4648, unpadded)
+  characters of SHA-256 over the issuer URL's exact UTF-8 bytes (130 bits; collision risk
+  negligible) and `<claim>` is the `sub` (or group claim) verbatim, the whole validated
+  against §3.1's subject charset and length at authentication — an identity that cannot be
+  encoded within the grant
   limits is rejected at the source (`401`) rather than authenticating into a body no durable
-  grant can name. Deterministic and injective across issuers by construction, so the same
-  (issuer, claim) always yields the same principal and different issuers never collide; the
-  exact serialization is otherwise the source layer's. The same encoding qualifies group claims.
+  grant can name. The `v1` tag is load-bearing: a future algorithm change mints `v2` and
+  never silently reinterprets `v1` principals — grants minted under one version are never
+  silently reassigned by an upgrade (a lockout-grade change would be visible as a new
+  version, not a silent normalization drift). Deterministic and injective across issuers by
+  construction; the same encoding qualifies group claims.
   A deployment that changes
   `DOLMEN_AUTH_OIDC_ISSUER` therefore mints a disjoint principal population: a same-`sub` user
   at the new issuer is a *different* principal and inherits nothing — grants from the old
@@ -377,8 +382,13 @@ credentials:
 - Ops: `create_key` / `list_keys` / `revoke_key` — `admin` verb, object checked `*` (§2):
   a key can bear *any* principal and optional groups (so group grants work for machines), and
   minting an identity that did not exist is administrative at the root, above any one namespace —
-  the grants such an identity can use still have to be granted separately.
-- Shape: `dlm_…` bearer, shown in full exactly once at creation; `list_keys` returns names,
+  the grants such an identity can use still have to be granted separately. Every key carries an
+  **immutable server-generated key ID** (unique, never reused); `revoke_key` selects by that ID,
+  so two keys sharing a name and principal remain individually revocable — an administrator can
+  drop exactly the compromised credential, never the wrong key or every matching one. Names need
+  not be unique; IDs disambiguate.
+- Shape: `dlm_…` bearer, shown in full exactly once at creation (with its key ID);
+  `list_keys` returns key IDs, names,
   principals, and key state (active/revoked) — never credentials. **Generation is pinned**:
   the server mints every key from a CSPRNG as `dlm_` + 32 random bytes in base64url — 43
   characters after the prefix, 256 bits of entropy, exact alphabet `A–Z a–z 0–9 - _` — and the
@@ -483,7 +493,7 @@ in §3, `whoami` and the key ops in §1.4–1.5):
 | `upsert`, `upsert_by_key` | `create` **AND** `update` (both required) | The table. They are update-or-insert: a `create`-only caller is refused up front, not surprised by half the operation. |
 | `query` | `read` | The **namespace** — raw SQL may reference any table in it, so the grant must cover the namespace, not one table. See §4.4 for the extra rule on `row_access` tables. |
 | `read_rows` | `read`; **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` — the response then contains own rows only, the same rule as search and feeds | The table. Id-addressed scoped fetch: `{table, ids}` → the rows the caller can see (present in both modes; additive under `auth: off` per §8.1 — a plain by-id fetch without raw SQL). The realtime recovery path depends on it: a feed consumer re-reads a change's row content by id through its standing read (§9.3), and `query`'s namespace-wide gate plus the searches' index dependence would leave a create-only `row_access` subscriber with an id they cannot resolve. |
-| `capabilities` | none (any authenticated principal; unauthenticated under `auth: off`) | Untargeted: reports the engine capability surface from `Engine.Capabilities()` (§6) — vector execution, notification/`subscribe` availability, every declared capability — **in both modes** (additive under `auth: off` per §8.1). Realtime ops exist in both modes and an `auth: off` client has no other discovery surface (`describe_server`'s extension is `auth: on`-only); this op is that surface, and it is the single source `describe_server` inlines under `auth: on`. |
+| `capabilities` | none (any authenticated principal; unauthenticated under `auth: off`) | Untargeted: reports the engine capability surface from `Engine.Capabilities()` (§6) — `vector_execution` (`"exact"` \| `"ann"`), `ann_recall_bound` (number, iff ann), `notifications` (bool), `subscribe` (bool); field names, types, and enum values pinned so the discovery is portable and conformance-comparable, unknown fields additive (§8.1) — **in both modes** (additive under `auth: off` per §8.1). Realtime ops exist in both modes and an `auth: off` client has no other discovery surface (`describe_server`'s extension is `auth: on`-only); this op is that surface, and it is the single source `describe_server` inlines under `auth: on`. |
 | `changes_since`, `wait_for`, `subscribe` | `read` on the selected table(s); **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` — the feed then covers own rows only, mirroring the search rule | The **selected target**: a table-filtered feed checks the named table(s) (direct table grants qualify — inheritance is downward-only); an unfiltered namespace feed checks `read` on the namespace, the same rule as `query`. Per-event scope and credential reevaluation further restrict delivery — foreign rows never wake the caller. Ordinary data ops present in **both** modes (§9.4). |
 | `search_fulltext`, `search_vector` | `read` on the table; **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` (search then covers own rows only, §4.3) | The table. |
 | `grant`, `revoke` | `admin` | The target object (an ancestor grant suffices, §3.3). |
@@ -1271,12 +1281,16 @@ type Engine interface {
     SearchVector(ctx context.Context, ns, table string, q VectorQuery, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (SearchResult, error)
 
     // Capabilities is the engine's static self-description — the seam-level
-    // source for describe_server's capability surface (auth:on, §2): vector
-    // execution (exact | declared-ANN with recall bound, §7), notification
-    // capability / subscribe availability (§9), and every other
-    // engine-declared capability. Without this descriptor the server has no
-    // defined way to construct the required declaration; the op layer
-    // publishes it, never invents it.
+    // source for the capabilities op and describe_server's auth:on extension
+    // (§2). Its serialization is PINNED so two conforming adapters report
+    // the same facts under the same names (the conformance suite compares
+    // it): a fixed JSON object with
+    //   vector_execution: "exact" | "ann"          (never absent)
+    //   ann_recall_bound: number | null            (required iff ann; e.g. 0.98)
+    //   notifications:    bool                     (Listen implemented?)
+    //   subscribe:        bool                     (streams available?)
+    // — unknown future fields are additive (§8.1 rules), enum values are
+    // closed. The op layer publishes it verbatim, never invents it.
     Capabilities() EngineCapabilities
 
     Close() error
@@ -1583,7 +1597,10 @@ the sleeping agent holds nothing, burns nothing, and is told.
   survives to `M+2R`, and the chain lives to `T+R`, so every reachable record satisfies
   `M ≥ T−R`). Records older than the boundary, if any still exist, are outside every replay
   guarantee — they could otherwise be pruned mid-chain and force a beyond-retention error
-  onto a valid token, breaking the gap-free promise. Both forms are
+  onto a valid token, breaking the gap-free promise. **When `R = 0`** (pruning disabled,
+  `-change-retention` §1.2), records never age out and the headroom argument is vacuous:
+  `begin` starts at the **oldest retained record** — unlimited retention must not reduce
+  `begin` to a no-op. Both forms are
   deterministic across engines — an implementation may neither silently replay the backlog
   on a bare start nor skip the backlog on the sentinel. A restarted agent replays from its cursor; reconnect =
   `changes_since` catch-up + re-subscribe — and the server side makes that sequence
