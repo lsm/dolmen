@@ -195,11 +195,19 @@ Rules:
   alone leaves every proxied identity authenticated-but-ungranted, and `grant` itself requires
   `admin` — nobody could create the first grant without a restart. And the two predicates must
   not be satisfiable by disjoint identities — the durable root grant's principal must be
-  **reachable through an enabled source**: with the header or OIDC source enabled, any
-  well-formed principal is yieldable, so a principal root grant is reachable by construction; in
-  an API-key-only deployment, at least one **active** key must bear that principal — bob's active
-  key satisfying the source check while alice's grant satisfies the administrator check boots a
-  server nobody can administer, a startup error. The same check guards the
+  **reachable through an enabled source**. Reachability is decidable for exactly one source: the
+  API-key registry is local, so an API-key-only deployment requires at least one **active** key
+  bearing the root principal — bob's active key satisfying the source check while alice's grant
+  satisfies the administrator check boots a server nobody can administer, a startup error. For
+  the header and OIDC sources reachability is **assumed, not verified** — an explicit, documented
+  assumption: dolmen cannot observe which principals a gateway will assert or which subjects an
+  IdP will still authenticate (verifying would mean probing the identity provider per principal —
+  deliberately not built), so a principal root grant alongside either enabled source is accepted
+  as reachable, and retiring the gateway account or IdP subject that holds root admin is an
+  operator error this check cannot catch. Every reachability lockout, that one included, has one
+  universal recovery: set `DOLMEN_ADMIN_KEY` and restart — the kingmaker re-enters (§1.3) while
+  the grants persist; the guards around root administration exist to make accidental lockout
+  hard, not operator error unrecoverable. The same check guards the
   other end: removing `DOLMEN_ADMIN_KEY` from the environment is only safe once a durable
   principal root-admin grant exists (the §3.4 last-admin guard then keeps it un-revocable).
 - `/healthz`, `/version`, `/skills*`, and `/v1/openapi.json` remain unauthenticated in both modes
@@ -310,6 +318,12 @@ credentials:
   failure.
 - A key may not bear the reserved principal `dolmen-admin` (§1.3): the bootstrap identity exists
   only while its credential does, and a minted key would outlive it.
+- **Self-revocation guard.** `revoke_key` mirrors §3.4's last-admin rule at the credential layer:
+  in a deployment whose usable root administrator is reachable only through keys, revoking the
+  last active key bearing that principal is a `409` with a teaching message — the durable grant
+  would survive while no credential could authenticate as it, wedging the running server and
+  failing the next startup's reachability check. (`DOLMEN_ADMIN_KEY` remains the universal
+  recovery, §1.2.)
 
 ### 1.6 Credential model (trade-offs on record)
 
@@ -368,6 +382,7 @@ in §3, `whoami` and the key ops in §1.4–1.5):
 | `delete` | `delete` | The table. |
 | `upsert`, `upsert_by_key` | `create` **AND** `update` (both required) | The table. They are update-or-insert: a `create`-only caller is refused up front, not surprised by half the operation. |
 | `query` | `read` | The **namespace** — raw SQL may reference any table in it, so the grant must cover the namespace, not one table. See §4.4 for the extra rule on `row_access` tables. |
+| `changes_since`, `wait_for`, `subscribe` | `read` | The namespace (the per-namespace change log); a table filter and §9.3's per-event scope evaluation further restrict what is delivered — a subscription is a standing read, foreign rows never wake the caller. Ordinary data ops present in **both** modes (§9.4). |
 | `search_fulltext`, `search_vector` | `read` on the table; **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` (search then covers own rows only, §4.3) | The table. |
 | `grant`, `revoke` | `admin` | The target object (an ancestor grant suffices, §3.3). |
 | `list_grants` | `admin` | The queried subtree (`*` when unfiltered). |
@@ -397,7 +412,9 @@ and MCP `tools/call`. The full `auth: on`-only surface is those three plus `whoa
 ops of §1.5, and the `/v1/auth/begin` + callback browser endpoints of §1.4 (JSON-envelope ops and
 one deliberate non-JSON pair, respectively). With `auth: off` **none of it exists**: not
 dispatchable, absent from `tools/list` and `/v1/openapi.json`, keeping the auth-off surface
-byte-identical to v0.2.0.
+byte-identical to v0.2.0. The realtime ops of §9 are the deliberate contrast — data ops, not auth
+surface, present in both modes (`wait_for` on both `/v1/{op}` and MCP; SSE `subscribe` is
+HTTP-surface like `/mcp`).
 
 ## 3. Grant model
 
@@ -498,7 +515,12 @@ inheritance). There are no deny grants, no precedence, no ordering — union onl
   final principal root-admin grant stays un-revocable even when group root grants are also
   present; otherwise that principal could revoke its own root grant while the guard pointed at an
   unusable group grant, leaving the running server without an administrator and the next restart
-  a startup failure. This makes the bootstrap flow's advice to
+  a startup failure. Nor does an **unreachable** principal grant count: "another administrator
+  exists" means another usable root grant **reachable under §1.2's rule** — in an API-key-only
+  deployment, alice cannot revoke her own root grant under cover of bob's grant while no active
+  key bears bob's principal; the revocation would leave no credential able to exercise root
+  admin, locking out the running server and failing the next startup's reachability check. This
+  makes the bootstrap flow's advice to
   drop `DOLMEN_ADMIN_KEY` after the first grants permanently safe. No guard below `*`: an
   admin-less namespace still has ancestor admins.
 - **Drop cascades grant deletion — crash-atomically.** Dropping a namespace or table deletes the
@@ -1092,8 +1114,8 @@ mode-parameterized, so this adds fixtures, not machinery:
 
 ### 8.3 What auth:on adds to the suite
 
-1. **Deny-by-default sweep** — for every op (all 26 with §1.4–1.5; `/v1/auth/begin` and the
-   callback are excluded — unauthenticated by construction, §1.2): no identity (401
+1. **Deny-by-default sweep** — for every op (all 29 with §1.4–1.5 and §9; `/v1/auth/begin` and
+   the callback are excluded — unauthenticated by construction, §1.2): no identity (401
    `unauthorized`) and untrusted-peer identity (401). Authenticated-but-ungranted (403
    `forbidden`) applies to the **grant-protected** ops only. The grant-free ops of §2 succeed for
    an ungranted authenticated caller (`describe_server`, `infer_schema`, `list_namespaces`,
@@ -1124,11 +1146,85 @@ mode-parameterized, so this adds fixtures, not machinery:
    identical verb decisions, identical RowScope, identical responses. Downstream must not be able
    to tell sources apart — that is §1's seam claim made conformance-enforced. The native-mode
    fixtures (§8.2) supply the token and key identities.
+7. **Realtime cases** (added 2026-09-06, §9 — in **all** modes, auth-off included): event-on-write
+   (a commit produces the change record, in §0.6 order); cursor replay (a restarted client
+   replays from its stored cursor, gap-free); scope filtering (a foreign row's commit never
+   delivers an event to a scoped caller, on every one of `changes_since`/`wait_for`/`subscribe`);
+   per-event scope evaluation (a grant revoked mid-subscription drops the stream — auth:on);
+   `wait_for` timeout returns **empty, not an error**; reconnect catch-up
+   (`changes_since` + re-subscribe equals the missed events); a cursor beyond retention is the
+   documented teaching error.
 
 ### 8.4 CI wiring
 
 Both modes are ordinary `go test ./...` runs inside `make test` — mode selection happens inside the
 harness per test group, no CI matrix, no new make targets.
+
+## 9. Realtime change notifications
+
+(Amended 2026-09-06 — auth, authz, and subscription are designed together: the standing-read,
+scope, and emission semantics interlock with §4.3, §0.6, and the engine-capability rules.)
+
+### 9.1 The pattern
+
+Invert dolmen from queryable memory into the **wake-up channel for 24/7 agents**: appenders
+(email connectors, webhook catchers, cron, other agents) write events; sleeping agents get woken
+by the rows they care about instead of polling. This kills the poll-every-N-minutes token burn —
+the sleeping agent holds nothing, burns nothing, and is told.
+
+### 9.2 Four layers, each independently useful (build order)
+
+1. **Change log (foundation):** a durable **per-namespace monotonic sequence**, assigned at
+   commit. Op `changes_since(namespace, cursor, [table filter])` → ordered change records. This
+   alone makes even polling cheap and incremental.
+2. **`wait_for` (long-poll op):** blocks up to a bounded time (default ≤60 s, configurable) until
+   a matching change commits; returns immediately when one lands; **empty result — never an
+   error — on timeout**. Fully agent-usable over plain MCP/HTTP today: one tool call per wait, no
+   special client.
+3. **`subscribe` (SSE stream):** server-sent events on the HTTP surface — change type
+   (insert/update/delete), row ids, optional row payload, filtered by the caller's scope. For
+   agent **hosts** holding connections: an LLM turn cannot hold a connection; a framework can.
+   Transport note: like `/mcp`, this is an HTTP-surface capability — the MCP tool surface gets
+   `wait_for` (its request/response shape); SSE `subscribe` is host-side.
+4. **Webhooks (designed, not built):** outbound delivery for server-side agents behind NATs —
+   retry machinery and receiver authentication; recorded as a deferred layer with this note, the
+   same status as portability and audit (§0.6): no demander yet for dolmen-side outbound
+   delivery.
+
+### 9.3 The three commitments (cheap now, retrofit-expensive — pinned precisely)
+
+- **A subscription is a standing read.** `changes_since`/`wait_for`/`subscribe` require `read` on
+  the target object(s) (§2's verb table gains these rows); every event is filtered through the
+  caller's visible set — **foreign rows never trigger a wake-up and never appear in a change
+  record**. Scope is evaluated **per event, not just at subscribe time**: a grant revoked
+  mid-subscription stops the stream; a `row_access` or schema change re-resolves the scope
+  against current grants (composing with §4.3's incarnation/version-guard pattern — the guard
+  binds even to the standing stream, not only to point reads).
+- **Events are emitted at the op layer, after commit.** Every write already funnels through
+  dolmen, so there is no CDC machinery on SQLite — engine-neutral by construction. Event order
+  is the §0.6 serial-observability order; the cursor reflects commit order. Cross-pod fan-out on
+  shared engines is an **engine-declared capability** (B4-style topology rule): single-process
+  works day one; engines without a notification bus may declare `subscribe`/`wait_for`
+  unavailable or degraded, surfaced like every other engine capability.
+- **Cursors are durable.** A restarted agent replays from its cursor; reconnect =
+  `changes_since` catch-up + re-subscribe. Cursor semantics: **per-namespace, monotonic,
+  gap-free**; pruning/retention of old change records is a configuration concern (documented
+  retention knob); a cursor pointing beyond retention is an explicit teaching error naming the
+  catch-up path.
+
+### 9.4 Modes
+
+Realtime ops exist in **both modes** — they are data ops, not auth surface. Under `auth: off`
+they are additive per §8.1's additive-extension rule (the local agent waiting on its own data is
+a first-class scenario); unrestricted, ordinary rules. Under `auth: on`, the standing-read
+semantics of §9.3 apply.
+
+### 9.5 Boundary (decided in review)
+
+Message **decoding** (MIME, webhook bodies, protobuf → structured rows) stays OUT of dolmen: the
+agent itself decodes for LLM pipelines; fiso (or any mediator) is the codec/transform layer for
+non-LLM ones. Dolmen contributes typed fields, coercion, `json` fields, `infer_schema` — not an
+ETL layer (an ETL layer in dolmen would be fiso-shaped, not dolmen-shaped).
 
 ---
 
@@ -1159,3 +1255,4 @@ harness per test group, no CI matrix, no new make targets.
 | D21 | Identity is additive, pluggable **sources** behind one seam; a request is authenticated when any enabled source yields a principal; everything downstream is source-blind. Trusted-proxy headers = v1; native OIDC designed-not-built (PocketBase-shaped provider abstraction, Ed25519 signed tokens, PKCE+state, principal = `sub` never email, `/v1/auth/begin` + callback as the one non-JSON browser surface); API keys `dlm_…` hashed in the registry; #160 builds the seam (mirrored on issue #160) | §1, §1.4–1.5 |
 | D22 | Credential model on record: humans get expiring signed tokens, machines get hashed revocable named keys carrying principal + optional groups; no sessions/refresh/email/user records (deliberate — nothing user-shaped to leak, IdP owns recovery); accepted losses on record — no per-device revocation (revoke = rotate the signing secret), no sliding sessions; enterprises use the gateway tier | §1.4–1.6 |
 | D23 | Bootstrap written up explicitly: the deadlock rationale; the admin key is a kingmaker, not a king (implicit grant on the credential, identity vanishes with the env, grants persist; `dolmen-admin` reserved across all sources; removal safe via the root-admin startup check + last-admin guard). Namespace-creation gates: `auth: off` implicit forever; `auth: on` `not_found`-after-authz; `create_namespace` requires `admin` on the parent; `schema` creates content, never tenancy | §1.3, §2 |
+| D24 | Realtime change notifications join the spec ("one bag" — auth, authz, and subscription designed together): four layers in build order (durable per-namespace change log + `changes_since` → `wait_for` long-poll ≤60s → SSE `subscribe` for agent hosts → webhooks designed-not-built); a subscription is a **standing read** (`read` verb, visible set, **per-event** scope evaluation, mid-subscription revocation drops the stream); events emitted at the op layer **after commit** (no CDC; order = §0.6 serial observability; cross-pod fan-out = engine-declared capability); durable gap-free per-namespace cursors with a retention knob (beyond retention = teaching error); realtime ops exist in both modes (data ops, not auth surface); decoding stays OUT (agent decodes; fiso is the codec layer for non-LLM pipelines) | §9 |
