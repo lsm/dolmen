@@ -382,7 +382,7 @@ in §3, `whoami` and the key ops in §1.4–1.5):
 | `delete` | `delete` | The table. |
 | `upsert`, `upsert_by_key` | `create` **AND** `update` (both required) | The table. They are update-or-insert: a `create`-only caller is refused up front, not surprised by half the operation. |
 | `query` | `read` | The **namespace** — raw SQL may reference any table in it, so the grant must cover the namespace, not one table. See §4.4 for the extra rule on `row_access` tables. |
-| `changes_since`, `wait_for`, `subscribe` | `read` | The **selected target**: a table-filtered feed checks `read` on the named table(s) — direct table grants qualify, and `row_access` own-row visibility applies as for structured reads (§9.3); an unfiltered namespace feed checks `read` on the namespace, the same rule as `query`. Per-event scope and credential reevaluation further restrict delivery — foreign rows never wake the caller. Ordinary data ops present in **both** modes (§9.4). |
+| `changes_since`, `wait_for`, `subscribe` | `read` on the selected table(s); **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` — the feed then covers own rows only, mirroring the search rule | The **selected target**: a table-filtered feed checks the named table(s) (direct table grants qualify — inheritance is downward-only); an unfiltered namespace feed checks `read` on the namespace, the same rule as `query`. Per-event scope and credential reevaluation further restrict delivery — foreign rows never wake the caller. Ordinary data ops present in **both** modes (§9.4). |
 | `search_fulltext`, `search_vector` | `read` on the table; **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` (search then covers own rows only, §4.3) | The table. |
 | `grant`, `revoke` | `admin` | The target object (an ancestor grant suffices, §3.3). |
 | `list_grants` | `admin` | The queried subtree (`*` when unfiltered). |
@@ -840,8 +840,8 @@ namespace/table/row below.
 
 ### 6.1 Operation set
 
-Namespace lifecycle, table DDL, row CRUD, filtered reads, migrate ops, search execution — mirroring
-today's `*store.Store` methods.
+Namespace lifecycle, table DDL, row CRUD, filtered reads, migrate ops, search execution, change-log
+access (§9) — mirroring today's `*store.Store` methods plus the realtime seam.
 
 ### 6.2 Signature sketch
 
@@ -983,11 +983,39 @@ type Engine interface {
     Insert(ctx context.Context, ns, table string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error)
     UpsertByKey(ctx context.Context, ns, table string, on []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error)
     Upsert(ctx context.Context, ns, table string, filter string, args []any, record map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error)
-    Update(ctx context.Context, ns, table string, filter string, args []any, set map[string]any, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (int64, error)
+    // Update returns UpdateResult, not a bare count: the count AND the change
+    // records minted by the same transaction (below) — the op layer cannot
+    // reconstruct what a mutation changed without leaking engine storage above
+    // the seam, and a count alone cannot notify (§9.3).
+    Update(ctx context.Context, ns, table string, filter string, args []any, set map[string]any, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (UpdateResult, error)
     // DeleteOpts carries the v0.2.0 safety guard (dry_run, limit, confirm) and the
     // engine enforces the threshold inside the delete transaction — an API-layer
     // preflight would race. DeleteResult keeps the contract's matched/deleted pair.
     Delete(ctx context.Context, ns, table string, filter string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation) (DeleteResult, error)
+
+    // Change log (§9). The durable per-namespace log is ENGINE-OWNED — records
+    // and cursors are minted inside the write transaction (§9.3) — so both
+    // access paths cross the seam:
+    // 1. Every write result (InsertResult, UpdateResult, DeleteResult) carries
+    //    the []ChangeRecord minted by its own transaction: {Cursor, Table,
+    //    RowID, Kind (insert/update/delete), Owner}. Owner is INTERNAL
+    //    authorization metadata stamped from the row (§9.3) — delete events
+    //    cannot be scope-filtered from a row that no longer exists, and
+    //    historical replay cannot consult current row state. It never appears
+    //    in public payloads unless the row itself would be visible.
+    // 2. ChangesSince is the scoped replay read: table != "" applies the
+    //    table-authorized feed rule (per-record scope via the Owner label);
+    //    table == "" is the namespace feed, guarded by nsGen exactly like
+    //    Query. Returns records in cursor order plus the next cursor.
+    ChangesSince(ctx context.Context, ns, table string, from Cursor, nsGen [16]byte, scope *RowScope, scopeIncarnation Incarnation, page Page) ([]ChangeRecord, Cursor, error)
+    // Listen is the engine-declared notification capability (B4-style): when
+    // implemented, the engine invokes notify for records as their
+    // transactions commit, and the op layer uses it to wake wait_for callers
+    // and drive SSE frames immediately. Engines without it degrade — wait_for
+    // still meets its bounded-time contract via internal scanning, subscribe
+    // may be declared unavailable — surfaced like every other engine
+    // capability; notification is never the durability mechanism (§9.3).
+    Listen(ctx context.Context, ns, table string, notify func(ChangeRecord)) (cancel func(), error)
 
     // Filtered reads — Query takes NO scope: the API layer gates raw SQL by table-wide
     // read (§4.4), which is precisely why no scope parameter exists here. nsGen is the
@@ -1195,10 +1223,12 @@ the sleeping agent holds nothing, burns nothing, and is told.
 
 - **A subscription is a standing read.** `changes_since`/`wait_for`/`subscribe` authorize against
   the **selected target** (§2's verb table carries these rows): a table-filtered feed requires
-  `read` on the named table(s) — direct table grants qualify (inheritance runs downward only, so
-  the namespace-level check would wrongly deny them), and on `row_access` tables own-row
-  visibility applies exactly as for structured reads (§4.3): a data-verb holder subscribes to
-  their own rows; an unfiltered namespace feed requires `read` on the namespace — the same rule
+  `read` on the named table(s) — **or, when the table declares `row_access`, any data verb**
+  (`create`/`update`/`delete`), the feed then covering own rows only, mirroring the search rule
+  (§2) so a `create`-only telemetry writer can wait on their own appends. Direct table grants
+  qualify (inheritance runs downward only, so
+  the namespace-level check would wrongly deny them); an unfiltered namespace feed requires
+  `read` on the namespace — the same rule
   as `query` (§4.4). Every event is filtered through the caller's visible set — **foreign rows
   never trigger a wake-up and never appear in a change record**. Scope is evaluated **per event,
   not just at subscribe time**: a grant revoked mid-subscription stops the stream; a `row_access`
@@ -1218,7 +1248,13 @@ the sleeping agent holds nothing, burns nothing, and is told.
   in an order different from their commits, because the same serialization point that orders
   commits (§0.6) assigns the sequence. Every write already funnels through dolmen, so there is no
   CDC machinery on SQLite — engine-neutral by construction. Event order is the §0.6
-  serial-observability order; the cursor reflects commit order. What the op layer does after
+  serial-observability order; the cursor reflects commit order. Every record captures the row's
+  **owner as internal authorization metadata**, stamped in the write transaction (absent on plain
+  tables with no `owner` column) — a delete event cannot be scope-filtered from its row after the
+  fact (the row is gone), and historical replay cannot consult current row state once a later
+  delete removes it; without the label an implementation must either leak foreign delete events
+  or suppress legitimate own-row ones. The label never appears in public payloads unless the row
+  itself would be visible. What the op layer does after
   commit is only **notification** — waking `wait_for` callers and pushing SSE frames — and
   notification loss is harmless: the durable log is complete, and `changes_since` recovers
   everything a missed wake would have delivered. Cross-pod fan-out on
