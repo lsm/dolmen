@@ -320,12 +320,19 @@ credentials:
   failure.
 - A key may not bear the reserved principal `dolmen-admin` (§1.3): the bootstrap identity exists
   only while its credential does, and a minted key would outlive it.
-- **Self-revocation guard.** `revoke_key` mirrors §3.4's last-admin rule at the credential layer:
-  in a deployment whose usable root administrator is reachable only through keys, revoking the
-  last active key bearing that principal is a `409` with a teaching message — the durable grant
-  would survive while no credential could authenticate as it, wedging the running server and
-  failing the next startup's reachability check. The check is an **atomic invariant over the
-  principal's complete active-key set, serialized in the key registry itself** (the same
+- **Self-revocation guard.** `revoke_key` mirrors §3.4's last-admin rule at the credential layer,
+  and the protected invariant is **deployment-wide, not per-principal**: a revocation is a `409`
+  (teaching message) only when it would leave the deployment with **no usable root administrator
+  reachable through any enabled source** — not when it merely removes the caller's own last key.
+  In an API-key-only deployment where alice and bob each hold a usable root grant and one active
+  key, alice revoking her key is allowed — bob remains reachable; where alice is the only
+  reachable root administrator, her last key is refused: the durable grant would survive while no
+  credential could authenticate as it, wedging the running server and failing the next startup's
+  reachability check. A per-principal reading would make keys less than individually revocable
+  and force administrators to remove the associated grant first — the deployment-wide invariant
+  keeps the credential layer self-contained. The
+  check is an **atomic invariant over the deployment-wide set of active keys bearing usable-root
+  principals, serialized in the key registry itself** (the same
   topology-bound coordination that orders grant mutations, §3): with one root principal and two
   active keys, two concurrent `revoke_key` calls on different replicas cannot each observe the
   other key still active and both commit — the registry's serialization admits one, and the
