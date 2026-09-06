@@ -354,7 +354,13 @@ OIDC covers Entra, Okta, Google, etc.
   an unexpired `exp`, a supported `v` — an unknown version rejects, never guesses — and
   **`iss` equal to the receiving deployment's own stable issuer ID**: two deployments that
   accidentally share a keyring (cloned staging configuration, say) must not accept each
-  other's tokens, and the signature alone cannot tell them apart. No session store — the trade-offs are on record in
+  other's tokens, and the signature alone cannot tell them apart. The deployment issuer ID
+  itself is **minted once at first startup and persisted beside the signing key** —
+  deployment-wide coordinated exactly as the keyring is (§1.4), so replicas and restarts agree;
+  operators may pin it explicitly with `DOLMEN_AUTH_OIDC_DEPLOYMENT_ID` (any stable string,
+  validated non-empty; a mismatch against the persisted value is a startup error naming both).
+  Deriving it from the keyring alone is forbidden — that is precisely the clone that must not
+  authenticate across deployments. No session store — the trade-offs are on record in
   §1.6. The **signing key is persistent, deployment-wide configuration, never per-process**:
   single-process deployments persist it beside the grant registry; shared-engine multi-process
   topologies coordinate it exactly as the grant registry's placement is topology-bound (§3
@@ -1464,7 +1470,8 @@ mode-parameterized, so this adds fixtures, not machinery:
    `unauthorized`) and untrusted-peer identity (401). Authenticated-but-ungranted (403
    `forbidden`) applies to the **grant-protected** ops only. The grant-free ops of §2 succeed for
    an ungranted authenticated caller (`describe_server`, `infer_schema`, `list_namespaces`,
-   `whoami` — `list_namespaces` returning an empty list) — except `list_tables`, which per §2
+   `whoami`, `capabilities` — `list_namespaces` returning an empty list) — except
+   `list_tables`, which per §2
    returns `not_found` for a caller holding no grant on
    or under the namespace; the sweep asserts exactly that. Envelope shapes pinned like every other
    error.
@@ -1530,7 +1537,13 @@ the sleeping agent holds nothing, burns nothing, and is told.
    error — on timeout**. The bound is a per-call request field, `timeout_ms` — **default
    `30000`** (30 s), valid range `0`–`60000`, values outside it `invalid_request`; `0` returns
    immediately (a cheap conditional poll). The 60 s ceiling is the contract's, not a deployment
-   setting — an agent host holding connections longer uses `subscribe` (§9.3). Fully
+   setting — an agent host holding connections longer uses `subscribe` (§9.3). The response
+   is a **bounded page with `changes_since`'s exact semantics**: every matching visible record
+   committed since the supplied cursor, in cursor order, up to `limit` (same default 100 /
+   max 1000 / `invalid_request` outside 1–1000, §9.3) plus the next cursor; on timeout, an
+   empty page carrying the unchanged head cursor. A burst of matching commits therefore never
+   allocates unboundedly, and the client resumes from the returned cursor exactly as after
+   `changes_since`. Fully
    agent-usable over plain MCP/HTTP today: one tool call per wait, no
    special client.
 3. **`subscribe` (SSE stream):** server-sent events on the HTTP surface — change type
