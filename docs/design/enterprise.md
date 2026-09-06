@@ -276,8 +276,9 @@ credentials:
   a key can bear *any* principal and optional groups (so group grants work for machines), and
   minting an identity that did not exist is administrative at the root, above any one namespace —
   the grants such an identity can use still have to be granted separately.
-- Shape: `dlm_…` bearer, shown in full exactly once at creation; `list_keys` returns names and
-  principals, never credentials.
+- Shape: `dlm_…` bearer, shown in full exactly once at creation; `list_keys` returns names,
+  principals, and key state (active/revoked) — never credentials. The uniform `401` below is the
+  **caller-side** surface only; admins see key state through listing.
 - Stored **hashed** in the server-level registry beside grants (§3) — a registry leak does not
   leak credentials. Lookup and comparison follow §1.3's constant-time convention. Rejection of a
   revoked or unknown key is a plain `401` (§1.2) — indistinguishable, like every other auth
