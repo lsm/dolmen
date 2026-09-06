@@ -1083,9 +1083,15 @@ type Engine interface {
     // and cursors are minted inside the write transaction (§9.3) — so both
     // access paths cross the seam:
     // 1. Every write result (InsertResult, UpdateResult, DeleteResult) carries
-    //    the []ChangeRecord minted by its own transaction: {Cursor, Table,
-    //    RowID, Kind (insert/update/delete), Owner, Lifetime (the table's
-    //    lifetime key, §9.3)}. Owner is INTERNAL
+    //    the CURSOR RANGE its own transaction minted, readable as ChangeRecords
+    //    through a paged iterator with the same conventions as ChangesSince —
+    //    NEVER materialized as one slice: a bulk update (filter `1=1`) or a
+    //    confirmed delete has no match-count cap, and a routine mutation must
+    //    not be able to exhaust server memory constructing a duplicate
+    //    in-memory copy of the durable log it just wrote. Counts stay scalar;
+    //    waiters are woken with the range alone. The records themselves:
+    //    {Cursor, Table, RowID, Kind (insert/update/delete), Owner, Lifetime
+    //    (the table's lifetime key, §9.3)}. Owner is INTERNAL
     //    authorization metadata stamped from the row (§9.3) — delete events
     //    cannot be scope-filtered from a row that no longer exists, and
     //    historical replay cannot consult current row state. It never appears
@@ -1108,12 +1114,21 @@ type Engine interface {
     // (a bounded queue) and are delivered after, so the concatenation
     // replay-then-live is exactly cursor order and a client persisting only
     // its last-delivered cursor can never skip older records. Per-event
-    // authorization — the caller's RowScope and its incarnation, passed in —
-    // runs BEFORE queue admission: foreign records never enter the handoff
+    // authorization runs BEFORE queue admission, and it is LIVE: the engine
+    // calls liveAuthz before enqueueing each record — the API layer's
+    // re-resolver returns the caller's CURRENT RowScope (a grant revoked
+    // mid-stream, or narrowed from table-wide read to an own-row verb,
+    // takes effect at the next event) or ok=false, which teaching-closes the
+    // stream (§9.3's mid-subscription rule). The engine stays grant-blind:
+    // it invokes the predicate and filters by the returned scope and the
+    // record's Owner label — a notify-side check would come after admission
+    // and satisfy nothing. Foreign records therefore never enter the handoff
     // queue at all, so they cannot fill it, displace, or starve a scoped
     // subscriber; §9.3's foreign-rows-never-wake rule holds under backpressure
     // too, and the overflow-reconnect below can only ever be triggered by the
-    // subscriber's own visible traffic. If the client
+    // subscriber's own visible traffic. nsGen is the namespace-lifetime guard
+    // for namespace-wide registrations (table == ""), analogous to
+    // ChangesSince — a fresh subscription has no cursor to carry it. If the client
     // drains the replay slower than writes arrive and the interim buffer
     // bounds, the engine closes the stream with the teaching reconnect
     // recipe (resume from the persisted cursor — the log is durable; the
@@ -1128,7 +1143,7 @@ type Engine interface {
     // still meets its bounded-time contract via internal scanning, subscribe
     // may be declared unavailable — surfaced like every other engine
     // capability; notification is never the durability mechanism (§9.3).
-    Listen(ctx context.Context, ns, table string, from Cursor, scope *RowScope, scopeIncarnation Incarnation, notify func(ChangeRecord)) (*ChangeReplay, cancel func(), error)
+    Listen(ctx context.Context, ns, table string, from Cursor, nsGen [16]byte, liveAuthz func() (scope *RowScope, ok bool), notify func(ChangeRecord)) (*ChangeReplay, cancel func(), error)
 
     // Filtered reads — Query takes NO scope: the API layer gates raw SQL by table-wide
     // read (§4.4), which is precisely why no scope parameter exists here. nsGen is the
