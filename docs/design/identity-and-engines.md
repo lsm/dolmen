@@ -508,7 +508,10 @@ guarantees.
 ```
 
 A principal matches subject `{"type":"principal","id":<their principal>}`; a group subject matches
-any group in their `X-Dolmen-Groups`. Principals and groups never collide (the `type` discriminates).
+any group in the **normalized identity's groups, regardless of source** — the header-asserted
+groups of §1.1, an API key's stored groups (§1.5), or the OIDC source's qualified group claims
+(§1.4); downstream authorization is source-blind (§1), so restricting matching to one source's
+groups would silently ignore the others' grants. Principals and groups never collide (the `type` discriminates).
 
 Objects use the same shape as every other op — namespace path (§5), optional table:
 
@@ -862,9 +865,14 @@ data-independent and stay on the `schema` verb alone.
   the auth switch, never deleted: they replay **only to table-wide readers** (never to scoped
   callers), because a legacy record's ids are rows a table-wide reader can already see — no
   cross-principal exposure — while a scoped caller's own-domain miss inserts their own record
-  as usual. Under `auth: off` again, they replay exactly as v0.2.0 (the domain is ignored);
-  idempotency thus survives restarts *and* the auth transition without attributing unattributable
-  rows to any assertable principal. On an **own-domain hit** the payload comparison guards the
+  as usual. Under `auth: off` again, the rule is deterministic for auth-on-era records too:
+  **the principal-less lookup consults only the legacy domain** — records created under
+  `auth: on` (which carry a principal) are invisible to an `auth: off` retry, whose miss is an
+  ordinary v0.2.0 insert; no arbitrary choice among alice's and bob's same-keyed records is
+  ever made. The `auth: on` → `off` transition is a return to single-user mode, and
+  mixed-era idempotency continuity across it is explicitly not promised — v0.2.0 semantics are
+  preserved exactly (every key misses or hits precisely as a pre-auth store would).
+  On an **own-domain hit** the payload comparison guards the
   retry: a different payload under the same key is `invalid_request` — and because the lookup
   consults no foreign domain, that comparison runs only against the caller's own record, never
   against hidden data, so the wrong-payload-guess oracle of the earlier global-key design is
@@ -938,8 +946,11 @@ above it — envelope, error mapping, validation, authn/authz,
 visible-set computation, skills/MCP/OpenAPI rendering — is engine-neutral and shared. SQLite becomes
 adapter #1 with **zero contract change** (the conformance suite is the proof).
 
-What stays above the seam: `infer_schema`, `describe_server` (pure/no engine), grant ops and the
-grant store (server-level), identity and `RowScope` computation. What the engine owns: everything
+What stays above the seam: `infer_schema` (pure computation), `describe_server`'s **response
+rendering**, grant ops and the
+grant store (server-level), identity and `RowScope` computation — while `describe_server`'s
+capability data is obtained **through the engine's `Capabilities()`** (below), never invented
+above the seam. What the engine owns: everything
 namespace/table/row below.
 
 ### 6.1 Operation set
@@ -1083,7 +1094,9 @@ type Engine interface {
     ListMigrations(ctx context.Context, ns, table string, inc Incarnation) ([]Migration, error)
 
     // Row CRUD — scope filters which existing rows may be matched, read, or counted;
-    // on Insert it scopes the idempotency replay lookup (foreign-replay → conflict, §4.3).
+    // on Insert it scopes the idempotency replay to the caller's OWN
+    // principal domain — own-domain hit = replay, miss = insert; foreign
+    // records neither conflict nor reveal (§4.3).
     // WriteOpts carries the owner to stamp on EVERY row-insert path — including the
     // upsert insert branches, including table-wide callers whose scope is nil (§4.2) —
     // insert's idempotency key, and TableWideRead: set iff the caller holds `read`
@@ -1144,12 +1157,17 @@ type Engine interface {
     // replay-then-live is exactly cursor order and a client persisting only
     // its last-delivered cursor can never skip older records. Per-event
     // authorization runs BEFORE queue admission, and it is LIVE: the engine
-    // calls liveAuthz before enqueueing each record — the API layer's
-    // re-resolver returns the caller's CURRENT RowScope AND the table
-    // incarnation the authorization was resolved against (a grant revoked
+    // calls liveAuthz before enqueueing each record, passing the record's
+    // target table — the API layer's
+    // re-resolver returns the caller's CURRENT RowScope AND the incarnation
+    // the authorization for THAT table was resolved against (a grant revoked
     // mid-stream, or narrowed from table-wide read to an own-row verb,
     // takes effect at the next event) or ok=false, which teaching-closes the
-    // stream (§9.3's mid-subscription rule). The engine stays grant-blind:
+    // stream (§9.3's mid-subscription rule). The per-record table parameter
+    // is what makes namespace-wide listeners correct: one stream carries
+    // records from many tables, and the authorization and its incarnation
+    // are resolved per target, never once for the whole stream. The engine
+    // stays grant-blind:
     // it invokes the predicate, filters by the returned scope and the
     // record's Owner label, and atomically compares the returned incarnation
     // with the record's Lifetime — a record minted by a successor lifetime
@@ -1177,7 +1195,7 @@ type Engine interface {
     // still meets its bounded-time contract via internal scanning, subscribe
     // may be declared unavailable — surfaced like every other engine
     // capability; notification is never the durability mechanism (§9.3).
-    Listen(ctx context.Context, ns, table string, from Cursor, nsGen [16]byte, liveAuthz func() (scope *RowScope, inc Incarnation, ok bool), notify func(ChangeRecord)) (*ChangeReplay, cancel func(), error)
+    Listen(ctx context.Context, ns, table string, from Cursor, nsGen [16]byte, liveAuthz func(table string) (scope *RowScope, inc Incarnation, ok bool), notify func(ChangeRecord)) (*ChangeReplay, cancel func(), error)
 
     // Filtered reads — Query takes NO scope: the API layer gates raw SQL by table-wide
     // read (§4.4), which is precisely why no scope parameter exists here. nsGen is the
