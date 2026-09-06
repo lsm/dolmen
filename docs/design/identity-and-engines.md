@@ -447,7 +447,7 @@ in §3, `whoami` and the key ops in §1.4–1.5):
 | `whoami` | none (any authenticated principal) | Untargeted self-description: the caller's principal and groups (§1), whatever the source. The teaching-error philosophy applied to auth — an agent that just got a `403` self-diagnoses in one call. `auth: on`-only (meaningless without identity; see transport parity below). |
 | `create_key`, `list_keys`, `revoke_key` | `admin` on `*` | Untargeted (§1.5): a key bears any principal and optional groups, so minting one is administrative at the root — above any one namespace — even though the grants the minted identity can use still have to be granted separately. `auth: on`-only. |
 | `create_table` | `schema` | The namespace. |
-| `drop_table`, `migrate`, `list_migrations` | `schema`; `drop_table` additionally requires `admin` under `auth: on` — §3.4 makes a table drop delete every grant targeting the table, and changing what others may do is the `admin` verb, not `schema` | The table. Migration history is the audit trail of schema changes — same verb as the changes themselves. |
+| `drop_table`, `migrate`, `list_migrations` | `schema`; `drop_table` additionally requires `admin` under `auth: on` — §3.4 makes a table drop delete every grant targeting the table, and changing what others may do is the `admin` verb, not `schema`; so does **`migrate` with `set_row_access: false`** (§4.2) — disabling the filter widens every data-verb holder's reach to all owners' rows, the same others'-permissions change | The table. Migration history is the audit trail of schema changes — same verb as the changes themselves. |
 | `insert` | `create` | The table. |
 | `update` | `update` | The table. |
 | `delete` | `delete` | The table. |
@@ -838,21 +838,23 @@ data-independent and stay on the `schema` verb alone.
   insert branch adds a fresh row owned by the writer. Two rows sharing a natural key (one invisible
   to the writer) may coexist; that is the consistent outcome of visible-set semantics, and the
   collision never leaks existence. *Rationale: natural keys are expected to collide across users.*
-- `insert` with an `idempotency_key`: the idempotency record stores the owner. A replay returns
-  the original ids verbatim to the **original owner, or any caller holding table-wide `read`**;
-  any other caller gets `409 conflict` — never the ids, never a silent re-insert under the same
-  key. (The engine distinguishes them via `WriteOpts.TableWideRead`, §6.2 — a nil scope alone
+- `insert` with an `idempotency_key`: the idempotency record stores the owner, and **key
+  uniqueness is namespaced by owner — bound to the writer's immutable principal, never to the
+  caller's current scope**. The lookup is own-domain only, and it is deterministic: **the
+  caller's own domain** (their principal + key) — a hit replays the caller's original ids
+  verbatim, and a retry ALWAYS finds its original record there, through grant changes, gained
+  table-wide `read`, and `row_access` disablement alike; the lookup domain can never move under
+  a retry. An own-domain miss is `409 conflict` for EVERY caller, table-wide readers included —
+  with multiple owners legitimately recording the same key, a cross-owner probe could name no
+  unique "original" and would make the outcome depend on lookup order, so there is none: the
+  miss says only "occupied" (by whom, and how many times, is never revealed — a table-wide
+  caller entitled to know more reads the rows themselves). A scoped caller whose own domain is
+  empty inserts their own namespaced row — a foreign writer's use of the same predictable key
+  neither conflicts nor distinguishes occupied from unoccupied for them. Never the ids, never a
+  silent re-insert under the same key. (The engine distinguishes scopes via
+  `WriteOpts.TableWideRead`, §6.2 — a nil scope alone
   cannot, because a `create`-only caller on a default table and a table-wide reader are both
-  unscoped.) And **key uniqueness is namespaced by owner — bound to the writer's immutable
-  principal, never to the caller's current scope**: the idempotency record's identity is
-  (owner-principal, key), and the lookup order is fixed — **the caller's own domain first**
-  (their principal + key), where a retry ALWAYS finds its original record, through grant
-  changes, gained table-wide `read`, and `row_access` disablement alike; the lookup domain can
-  never move under a retry. Only on an own-domain miss does a **table-wide caller
-  additionally probe across owners** (a foreign record there is the `409`-or-verbatim-replay
-  entitlement above — they are entitled to see the collision), while a scoped caller inserts
-  their own namespaced row: a foreign writer's use of the same predictable key neither
-  conflicts nor distinguishes occupied from unoccupied for them. Without owner namespacing,
+  unscoped.) Without owner namespacing,
   the occupied/unoccupied difference would be an existence oracle over foreign writes even
   with the ownership check below in place. That foreign-collision `409` is decided **before
   any payload comparison**: an
