@@ -382,7 +382,7 @@ in §3, `whoami` and the key ops in §1.4–1.5):
 | `delete` | `delete` | The table. |
 | `upsert`, `upsert_by_key` | `create` **AND** `update` (both required) | The table. They are update-or-insert: a `create`-only caller is refused up front, not surprised by half the operation. |
 | `query` | `read` | The **namespace** — raw SQL may reference any table in it, so the grant must cover the namespace, not one table. See §4.4 for the extra rule on `row_access` tables. |
-| `changes_since`, `wait_for`, `subscribe` | `read` | The namespace (the per-namespace change log); a table filter and §9.3's per-event scope evaluation further restrict what is delivered — a subscription is a standing read, foreign rows never wake the caller. Ordinary data ops present in **both** modes (§9.4). |
+| `changes_since`, `wait_for`, `subscribe` | `read` | The **selected target**: a table-filtered feed checks `read` on the named table(s) — direct table grants qualify, and `row_access` own-row visibility applies as for structured reads (§9.3); an unfiltered namespace feed checks `read` on the namespace, the same rule as `query`. Per-event scope and credential reevaluation further restrict delivery — foreign rows never wake the caller. Ordinary data ops present in **both** modes (§9.4). |
 | `search_fulltext`, `search_vector` | `read` on the table; **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` (search then covers own rows only, §4.3) | The table. |
 | `grant`, `revoke` | `admin` | The target object (an ancestor grant suffices, §3.3). |
 | `list_grants` | `admin` | The queried subtree (`*` when unfiltered). |
@@ -1193,16 +1193,35 @@ the sleeping agent holds nothing, burns nothing, and is told.
 
 ### 9.3 The three commitments (cheap now, retrofit-expensive — pinned precisely)
 
-- **A subscription is a standing read.** `changes_since`/`wait_for`/`subscribe` require `read` on
-  the target object(s) (§2's verb table gains these rows); every event is filtered through the
-  caller's visible set — **foreign rows never trigger a wake-up and never appear in a change
-  record**. Scope is evaluated **per event, not just at subscribe time**: a grant revoked
-  mid-subscription stops the stream; a `row_access` or schema change re-resolves the scope
-  against current grants (composing with §4.3's incarnation/version-guard pattern — the guard
-  binds even to the standing stream, not only to point reads).
-- **Events are emitted at the op layer, after commit.** Every write already funnels through
-  dolmen, so there is no CDC machinery on SQLite — engine-neutral by construction. Event order
-  is the §0.6 serial-observability order; the cursor reflects commit order. Cross-pod fan-out on
+- **A subscription is a standing read.** `changes_since`/`wait_for`/`subscribe` authorize against
+  the **selected target** (§2's verb table carries these rows): a table-filtered feed requires
+  `read` on the named table(s) — direct table grants qualify (inheritance runs downward only, so
+  the namespace-level check would wrongly deny them), and on `row_access` tables own-row
+  visibility applies exactly as for structured reads (§4.3): a data-verb holder subscribes to
+  their own rows; an unfiltered namespace feed requires `read` on the namespace — the same rule
+  as `query` (§4.4). Every event is filtered through the caller's visible set — **foreign rows
+  never trigger a wake-up and never appear in a change record**. Scope is evaluated **per event,
+  not just at subscribe time**: a grant revoked mid-subscription stops the stream; a `row_access`
+  or schema change re-resolves the scope against current grants (composing with §4.3's
+  incarnation/version-guard pattern — the guard binds even to the standing stream, not only to
+  point reads). And the **credential is revalidated per event too**, not just the grants: a
+  revoked API key drops the stream at the next event (best-effort immediately), and an OIDC
+  token's expiry bounds the connection lifetime — the stream closes no later than token expiry
+  with a teaching close, and reconnect with a fresh token resumes from the durable cursor;
+  `wait_for`'s bounded window makes the same revaluation implicit at every return.
+- **Change records are written atomically with the write they describe; notification happens
+  after commit.** The durable log record and its cursor are assigned **inside the same
+  transaction as the data write** (adapter #1: the log lives in the same SQLite database file, so
+  this is natural; an engine where co-transaction is awkward may use an equivalent
+  transactional-outbox design). There is no crash window in which an acknowledged write is
+  missing from the log — there is no "between" — and concurrent handlers cannot append records
+  in an order different from their commits, because the same serialization point that orders
+  commits (§0.6) assigns the sequence. Every write already funnels through dolmen, so there is no
+  CDC machinery on SQLite — engine-neutral by construction. Event order is the §0.6
+  serial-observability order; the cursor reflects commit order. What the op layer does after
+  commit is only **notification** — waking `wait_for` callers and pushing SSE frames — and
+  notification loss is harmless: the durable log is complete, and `changes_since` recovers
+  everything a missed wake would have delivered. Cross-pod fan-out on
   shared engines is an **engine-declared capability** (B4-style topology rule): single-process
   works day one; engines without a notification bus may declare `subscribe`/`wait_for`
   unavailable or degraded, surfaced like every other engine capability.
