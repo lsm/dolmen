@@ -1400,7 +1400,7 @@ mode-parameterized, so this adds fixtures, not machinery:
 
 ### 8.3 What auth:on adds to the suite
 
-1. **Deny-by-default sweep** — for every op (all 29 with §1.4–1.5 and §9; `/v1/auth/begin` and
+1. **Deny-by-default sweep** — for every op (all 30 with §1.4–1.5, §9, and read_rows; `/v1/auth/begin` and
    the callback are excluded — unauthenticated by construction, §1.2): no identity (401
    `unauthorized`) and untrusted-peer identity (401). Authenticated-but-ungranted (403
    `forbidden`) applies to the **grant-protected** ops only. The grant-free ops of §2 succeed for
