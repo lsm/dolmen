@@ -224,7 +224,13 @@ Rules:
   IdP will still authenticate (verifying would mean probing the identity provider per principal —
   deliberately not built), so a principal root grant alongside either enabled source is accepted
   as reachable, and retiring the gateway account or IdP subject that holds root admin is an
-  operator error this check cannot catch. Every reachability lockout, that one included, has one
+  operator error this check cannot catch — with **one decidable exception**: source B's
+  principals are issuer-qualified (§1.4), so a root grant whose principal carries a *different*
+  issuer's qualification than the currently configured `DOLMEN_AUTH_OIDC_ISSUER` is **not
+  reachable** — the new issuer can never yield it, the mismatch is visible locally without
+  probing the provider, and startup fails the usable-root-administrator check naming the stale
+  grant rather than succeeding with an administrator who can never log in. Every reachability
+  lockout, the rest included, has one
   universal recovery: set `DOLMEN_ADMIN_KEY` and restart — the kingmaker re-enters (§1.3) while
   the grants persist; the guards around root administration exist to make accidental lockout
   hard, not operator error unrecoverable. The same check guards the
@@ -419,7 +425,7 @@ in §3, `whoami` and the key ops in §1.4–1.5):
 | `drop_namespace` | `admin` | The namespace itself. Leaf-only (§5.4). |
 | `list_tables` | none (any authenticated principal) | Authorization runs **before** the existence check: unless the caller holds any grant on or under the namespace, the response is `not_found` — indistinguishable from a nonexistent namespace, so listing cannot be used to enumerate names. Holders see the tables they hold any grant on. |
 | `describe_table` | any verb (`read`, `create`, `update`, `delete`, `schema`, `admin`) | The table. `row_count` follows the caller's visible set (§4.3) — table-wide for `read`, own rows for the other data verbs on `row_access` tables, 0 for `schema`/`admin` holders; no data visibility beyond the caller's set is implied. |
-| `describe_server`, `infer_schema` | none (any authenticated principal) | Untargeted: provider status is no secret; `infer_schema` is pure computation. `describe_server` is **extended, not replaced** (amended 2026-09-06): it additionally reports the auth mode, the enabled identity sources — read-only, no secrets (names like `trusted-proxy`/`oidc`/`api-keys`, never key material or issuer secrets) — and the engine's **capability surface**, including vector-search execution (exact, or declared-ANN with its recall bound, §7) — the established provider-status pattern applied to identity and engine capabilities. |
+| `describe_server`, `infer_schema` | none (any authenticated principal) | Untargeted: provider status is no secret; `infer_schema` is pure computation. `describe_server` is **extended, not replaced** (amended 2026-09-06), **under `auth: on` only** — under `auth: off` its response stays byte-identical v0.2.0 (§8.1): the extension reports the auth mode, the enabled identity sources — read-only, no secrets (names like `trusted-proxy`/`oidc`/`api-keys`, never key material or issuer secrets) — and the engine's **capability surface**, including vector-search execution (exact, or declared-ANN with its recall bound, §7) — the established provider-status pattern applied to identity and engine capabilities. |
 | `whoami` | none (any authenticated principal) | Untargeted self-description: the caller's principal and groups (§1), whatever the source. The teaching-error philosophy applied to auth — an agent that just got a `403` self-diagnoses in one call. `auth: on`-only (meaningless without identity; see transport parity below). |
 | `create_key`, `list_keys`, `revoke_key` | `admin` on `*` | Untargeted (§1.5): a key bears any principal and optional groups, so minting one is administrative at the root — above any one namespace — even though the grants the minted identity can use still have to be granted separately. `auth: on`-only. |
 | `create_table` | `schema` | The namespace. |
@@ -1155,7 +1161,9 @@ identical response. **One exception, `search_vector` only (amended 2026-09-06):*
 run vector search over an ANN index (e.g. pgvector HNSW) as a first-class **accelerator**, and
 when it does the ranking is *approximate* — it may differ from exact brute-force within a
 documented recall bound, and the capability MUST be **declared** (B4-style, like §9's
-notification capability), never silent — and the declaration is **public on two channels**: the
+notification capability), never silent — and the declaration is **public on two channels**, both
+`auth: on`-only so the auth-off response shapes stay byte-identical v0.2.0 (§8.1; adapter #1
+under `auth: off` is exact brute-force and reports nothing new): the
 engine's capability surface (`describe_server`, §2, advertises vector execution as exact or
 ANN-with-recall-bound) and **per-result execution metadata** on every `search_vector` response
 (which path served it — an engine that switches between ANN and exact fallback as an index
@@ -1391,7 +1399,10 @@ the sleeping agent holds nothing, burns nothing, and is told.
   are per-feed resume tokens the server maps to its internal position on resume, so consecutive
   visible records yield consecutive tokens indistinguishable from adjacent ones, and no foreign
   commit is observable through cursor arithmetic. The token mapping is **persistent and
-  deployment-wide, never per-process**: tokens are self-contained and authenticated under a
+  deployment-wide, never per-process**: tokens are self-contained and **encrypted** —
+  authenticated encryption (or an equivalent construction that cryptographically hides the
+  internal position — a plaintext payload plus a MAC authenticates but does not conceal, and the
+  sequence gaps must stay unobservable) — under a
   persistent deployment-wide key (the §1.4 signing-key coordination pattern), or the mapping
   lives in coordinated storage like the registry itself — a token issued by one replica must
   resume on another, and a restart must not invalidate clients' cursors.
