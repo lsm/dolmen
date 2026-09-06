@@ -843,15 +843,19 @@ data-independent and stay on the `schema` verb alone.
   any other caller gets `409 conflict` — never the ids, never a silent re-insert under the same
   key. (The engine distinguishes them via `WriteOpts.TableWideRead`, §6.2 — a nil scope alone
   cannot, because a `create`-only caller on a default table and a table-wide reader are both
-  unscoped.) And for **scoped writers, key uniqueness is itself namespaced by owner**: the
-  idempotency key of a caller restricted to own rows collides only with the same owner's
-  records — a foreign writer's use of the same predictable key neither conflicts nor
-  distinguishes occupied from unoccupied (the scoped writer simply inserts their own row
-  under their own namespaced key). The `409`-on-foreign-key outcome remains a table-wide
-  caller's rule only: they are entitled to see the collision. Without owner namespacing, the
-  occupied/unoccupied difference would be an existence oracle over foreign writes even with the
-  ownership check below in place. That foreign-collision `409` is decided **before any payload
-  comparison**: an
+  unscoped.) And **key uniqueness is namespaced by owner — bound to the writer's immutable
+  principal, never to the caller's current scope**: the idempotency record's identity is
+  (owner-principal, key), and the lookup order is fixed — **the caller's own domain first**
+  (their principal + key), where a retry ALWAYS finds its original record, through grant
+  changes, gained table-wide `read`, and `row_access` disablement alike; the lookup domain can
+  never move under a retry. Only on an own-domain miss does a **table-wide caller
+  additionally probe across owners** (a foreign record there is the `409`-or-verbatim-replay
+  entitlement above — they are entitled to see the collision), while a scoped caller inserts
+  their own namespaced row: a foreign writer's use of the same predictable key neither
+  conflicts nor distinguishes occupied from unoccupied for them. Without owner namespacing,
+  the occupied/unoccupied difference would be an existence oracle over foreign writes even
+  with the ownership check below in place. That foreign-collision `409` is decided **before
+  any payload comparison**: an
   unauthorized replayer receives `409` regardless of whether the submitted payload matches the
   recorded one — returning the hash-mismatch `invalid_request` for wrong-payload guesses would
   let the caller distinguish correct from incorrect payload guesses and oracle the hidden
