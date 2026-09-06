@@ -193,7 +193,13 @@ Rules:
   administer. A grant naming the reserved `dolmen-admin` does not count either — no source can
   yield that principal (§1.3), so such a grant is permanently unusable. A trusted-proxy CIDR
   alone leaves every proxied identity authenticated-but-ungranted, and `grant` itself requires
-  `admin` — nobody could create the first grant without a restart. The same check guards the
+  `admin` — nobody could create the first grant without a restart. And the two predicates must
+  not be satisfiable by disjoint identities — the durable root grant's principal must be
+  **reachable through an enabled source**: with the header or OIDC source enabled, any
+  well-formed principal is yieldable, so a principal root grant is reachable by construction; in
+  an API-key-only deployment, at least one **active** key must bear that principal — bob's active
+  key satisfying the source check while alice's grant satisfies the administrator check boots a
+  server nobody can administer, a startup error. The same check guards the
   other end: removing `DOLMEN_ADMIN_KEY` from the environment is only safe once a durable
   principal root-admin grant exists (the §3.4 last-admin guard then keeps it un-revocable).
 - `/healthz`, `/version`, `/skills*`, and `/v1/openapi.json` remain unauthenticated in both modes
@@ -486,7 +492,13 @@ inheritance). There are no deny grants, no precedence, no ordering — union onl
   already administers it; delegation composes via targeted child grants (grant `admin` on
   `acme/team-a` specifically). Recorded so no one adds an owner concept later.
 - **Last-admin lockout guard.** Revoking the final grant of `admin` on `*` is refused — a
-  `409 conflict`-family error with a teaching message. This makes the bootstrap flow's advice to
+  `409 conflict`-family error with a teaching message. The guard counts **usable** root grants
+  only: principal subjects, mirroring §1.2's usability rule — a group grant never counts toward
+  "another administrator exists" (its membership is external and may be empty or retired), so the
+  final principal root-admin grant stays un-revocable even when group root grants are also
+  present; otherwise that principal could revoke its own root grant while the guard pointed at an
+  unusable group grant, leaving the running server without an administrator and the next restart
+  a startup failure. This makes the bootstrap flow's advice to
   drop `DOLMEN_ADMIN_KEY` after the first grants permanently safe. No guard below `*`: an
   admin-less namespace still has ancestor admins.
 - **Drop cascades grant deletion — crash-atomically.** Dropping a namespace or table deletes the
