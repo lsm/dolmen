@@ -447,7 +447,7 @@ in §3, `whoami` and the key ops in §1.4–1.5):
 | `whoami` | none (any authenticated principal) | Untargeted self-description: the caller's principal and groups (§1), whatever the source. The teaching-error philosophy applied to auth — an agent that just got a `403` self-diagnoses in one call. `auth: on`-only (meaningless without identity; see transport parity below). |
 | `create_key`, `list_keys`, `revoke_key` | `admin` on `*` | Untargeted (§1.5): a key bears any principal and optional groups, so minting one is administrative at the root — above any one namespace — even though the grants the minted identity can use still have to be granted separately. `auth: on`-only. |
 | `create_table` | `schema` | The namespace. |
-| `drop_table`, `migrate`, `list_migrations` | `schema`; `drop_table` additionally requires `admin` under `auth: on` — §3.4 makes a table drop delete every grant targeting the table, and changing what others may do is the `admin` verb, not `schema`; so does **`migrate` with `set_row_access: false`**, which additionally requires table-wide `read` (§4.2) — disabling the filter widens every data-verb holder's reach to all owners' rows, the same others'-permissions change. And **any migration on §4.3's data-dependent list additionally requires table-wide `read` under `auth: on`** — `set_enum`, `set_row_access` enabling, every vectorization change (enabling/re-enabling/disabling, vectorized `add_field` with or without a backfill), all FTS-rebuilding and last-FTS-removal paths, every `add_field` backfill `default`, and every `drop_field` — a `schema`-only caller must never trigger outcomes based on hidden rows or send their values to the embedding provider | The table. Migration history is the audit trail of schema changes — same verb as the changes themselves. |
+| `drop_table`, `migrate`, `list_migrations` | `schema`; `drop_table` additionally requires `admin` under `auth: on` — §3.4 makes a table drop delete every grant targeting the table, and changing what others may do is the `admin` verb, not `schema`; so does **`migrate` with `set_row_access: false`**, which additionally requires table-wide `read` (§4.2) — disabling the filter widens every data-verb holder's reach to all owners' rows, the same others'-permissions change. And **any migration on §4.3's data-dependent list additionally requires table-wide `read` under `auth: on`** — `set_enum`, `set_row_access` enabling, every vectorization change (enabling/re-enabling/disabling, vectorized `add_field` with or without a backfill), all FTS-rebuilding and last-FTS-removal paths, every `add_field` backfill `default`, `add_field` of a **required field without a backfill default** (success/failure reveals row existence), and every `drop_field` — a `schema`-only caller must never trigger outcomes based on hidden rows or send their values to the embedding provider | The table. Migration history is the audit trail of schema changes — same verb as the changes themselves. |
 | `insert` | `create` | The table. |
 | `update` | `update` | The table. |
 | `delete` | `delete` | The table. |
@@ -864,13 +864,13 @@ data-independent and stay on the `schema` verb alone.
   cross-principal exposure — while a scoped caller's own-domain miss inserts their own record
   as usual. Under `auth: off` again, they replay exactly as v0.2.0 (the domain is ignored);
   idempotency thus survives restarts *and* the auth transition without attributing unattributable
-  rows to any assertable principal. That collision `409` is decided **before
-  any payload comparison**: an
-  unauthorized replayer receives `409` regardless of whether the submitted payload matches the
-  recorded one — returning the hash-mismatch `invalid_request` for wrong-payload guesses would
-  let the caller distinguish correct from incorrect payload guesses and oracle the hidden
-  payload. *Rationale: idempotency keys are per-table unique; a foreign key replay is misuse,
-  unlike a natural-key collision.* Idempotency records die with their table incarnation: dropping
+  rows to any assertable principal. On an **own-domain hit** the payload comparison guards the
+  retry: a different payload under the same key is `invalid_request` — and because the lookup
+  consults no foreign domain, that comparison runs only against the caller's own record, never
+  against hidden data, so the wrong-payload-guess oracle of the earlier global-key design is
+  moot: there is no foreign collision to probe. *Rationale: idempotency keys are unique per
+  (table, owner-principal) — a foreign domain's use of the same key string is a different key,
+  not a collision.* Idempotency records die with their table incarnation: dropping
   a table removes its records atomically with it (adapter #1's behavior), or the engine binds
   the record to the **table-lifetime components only — `NsGen`, `Table`, `DropGen`** — in the
   lookup. The schema `Version` is deliberately excluded: it increments on every migration, and
