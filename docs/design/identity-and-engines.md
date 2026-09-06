@@ -351,7 +351,10 @@ OIDC covers Entra, Okta, Google, etc.
   issuer-qualified principal string, `oidc:v1:…` above), `grp` (array of qualified group
   strings, possibly empty), `iat` and `exp` (unix seconds); verification requires a valid
   signature under the keyring key named by `kid` (rotation overlap honored, §1.4's keyring),
-  an unexpired `exp`, and a supported `v` — an unknown version rejects, never guesses. No session store — the trade-offs are on record in
+  an unexpired `exp`, a supported `v` — an unknown version rejects, never guesses — and
+  **`iss` equal to the receiving deployment's own stable issuer ID**: two deployments that
+  accidentally share a keyring (cloned staging configuration, say) must not accept each
+  other's tokens, and the signature alone cannot tell them apart. No session store — the trade-offs are on record in
   §1.6. The **signing key is persistent, deployment-wide configuration, never per-process**:
   single-process deployments persist it beside the grant registry; shared-engine multi-process
   topologies coordinate it exactly as the grant registry's placement is topology-bound (§3
@@ -505,7 +508,7 @@ in §3, `whoami` and the key ops in §1.4–1.5):
 | `upsert`, `upsert_by_key` | `create` **AND** `update` (both required) | The table. They are update-or-insert: a `create`-only caller is refused up front, not surprised by half the operation. |
 | `query` | `read` | The **namespace** — raw SQL may reference any table in it, so the grant must cover the namespace, not one table. See §4.4 for the extra rule on `row_access` tables. |
 | `read_rows` | `read`; **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` — the response then contains own rows only, the same rule as search and feeds | The table. Id-addressed scoped fetch: `{table, ids}` → the rows the caller can see (present in both modes; additive under `auth: off` per §8.1 — a plain by-id fetch without raw SQL). The realtime recovery path depends on it: a feed consumer re-reads a change's row content by id through its standing read (§9.3), and `query`'s namespace-wide gate plus the searches' index dependence would leave a create-only `row_access` subscriber with an id they cannot resolve. |
-| `capabilities` | none (any authenticated principal; unauthenticated under `auth: off`) | Untargeted: reports the engine capability surface from `Engine.Capabilities()` (§6) — `vector_execution` (`"exact"` \| `"ann"`), `ann_recall_bound` (explicit `null` in exact mode, never omitted; a number iff ann), `notifications` (bool), `subscribe` (bool); field names, types, and enum values pinned so the discovery is portable and conformance-comparable, unknown fields additive (§8.1) — **in both modes** (additive under `auth: off` per §8.1). Realtime ops exist in both modes and an `auth: off` client has no other discovery surface (`describe_server`'s extension is `auth: on`-only); this op is that surface, and it is the single source `describe_server` inlines under `auth: on`. |
+| `capabilities` | none (any authenticated principal; unauthenticated under `auth: off`) | Untargeted: reports the engine capability surface from `Engine.Capabilities()` (§6) — `vector_execution` (`"exact"` \| `"ann"`), `ann_recall_bound` (explicit `null` in exact mode, never omitted; iff ann a number in (0,1] — the engine's **guaranteed minimum Recall@10 versus the exact path over the conformance corpus**, a worst-case bound, never an empirical average), `notifications` (bool), `subscribe` (bool); field names, types, and enum values pinned so the discovery is portable and conformance-comparable, unknown fields additive (§8.1) — **in both modes** (additive under `auth: off` per §8.1). Realtime ops exist in both modes and an `auth: off` client has no other discovery surface (`describe_server`'s extension is `auth: on`-only); this op is that surface, and it is the single source `describe_server` inlines under `auth: on`. |
 | `changes_since`, `wait_for`, `subscribe` | `read` on the selected table(s); **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` — the feed then covers own rows only, mirroring the search rule | The **selected target**: a table-filtered feed checks the named table(s) (direct table grants qualify — inheritance is downward-only); an unfiltered namespace feed checks `read` on the namespace, the same rule as `query`. Per-event scope and credential reevaluation further restrict delivery — foreign rows never wake the caller. Ordinary data ops present in **both** modes (§9.4). |
 | `search_fulltext`, `search_vector` | `read` on the table; **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` (search then covers own rows only, §4.3) | The table. |
 | `grant`, `revoke` | `admin` | The target object (an ancestor grant suffices, §3.3). |
@@ -1616,7 +1619,10 @@ the sleeping agent holds nothing, burns nothing, and is told.
   survives to `M+2R`, and the chain lives to `T+R`, so every reachable record satisfies
   `M ≥ T−R`). Records older than the boundary, if any still exist, are outside every replay
   guarantee — they could otherwise be pruned mid-chain and force a beyond-retention error
-  onto a valid token, breaking the gap-free promise. **When `R = 0`** (pruning disabled,
+  onto a valid token, breaking the gap-free promise. Page sizes are pinned like search
+  pagination: `changes_since`/replay pages take `limit` **default 100, max 1000** (values
+  outside 1–1000 are `invalid_request`) — the replay-bounding rules above are only enforceable
+  against a bounded page, and conforming adapters must agree on the bounds. **When `R = 0`** (pruning disabled,
   `-change-retention` §1.2), records never age out and the headroom argument is vacuous:
   `begin` starts at the **oldest retained record** — unlimited retention must not reduce
   `begin` to a no-op. Both forms are
