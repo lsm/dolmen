@@ -1,11 +1,13 @@
-# Enterprise contract — design spec
+# Identity, tenancy, and engines — design spec
 
 **Local-first is the first invariant and it is non-negotiable: `auth: off` is the default and equals
 today's v0.2.0 behavior byte-for-byte — no headers read, no principal, no `owner` column on default
 tables, zero new steps to start.**
 
-This document is the design authority for the #158 enterprise stream (authn, authz, row-level
-access, hierarchy, `store.Engine` extraction, engine-2, dual-mode conformance, docs+skills). Every
+This document is the design authority for the #159 epic — auth, multi-tenancy, and pluggable
+engines (authn, authz, row-level access, hierarchy, `store.Engine` extraction, engine-2,
+dual-mode conformance, docs+skills) — serving every deployment size from local single-user to
+organization-scale gateway deployments. Every
 decision below is already made; this doc pins it precisely so parallel streams never conflict.
 Deviating from anything written here requires editing this spec **first, in the same PR** that
 deviates. Terminology follows the vocabulary in §0 exactly.
@@ -135,7 +137,9 @@ Precedence with several sources enabled: a deliberate bearer credential outranks
 header (§1.3); among bearer sources, shape selects — a `dlm_` prefix routes to the key registry,
 structural token separators route to signed-token verification, otherwise the admin-key compare
 runs — and a bearer that fails the interpretation its shape selects is `401`, never silently
-reinterpreted as a weaker source (fail-closed, §1.3).
+reinterpreted as a weaker source (fail-closed, §1.3). The shapes stay disjoint by construction:
+§1.3 rejects an admin key beginning with `dlm_` at startup, so no credential is ever two
+interpretations at once and dispatch never needs a second guess.
 
 Build order (mirrored on issue #160): #160 (authn plumbing) builds **the seam itself — identity
 sources as a pluggable interface, with the header source as v1**. Native OIDC and API keys land
@@ -178,14 +182,20 @@ Rules:
   `X-Dolmen-Principal`, malformed header values, over-limit groups — fails `401` with error code
   `unauthorized` (a new code; `auth: off` never emits it). Existing `forbidden` (403) means
   *authenticated but not granted*.
-- `auth: on` with no identity source at all (no trusted proxies, no admin key, no OIDC source) is
-  a **startup error** — fail fast rather than a server that 401s everything. So is `auth: on`
-  with **no usable root administrator**: neither the admin key nor a durable grant of `admin`
-  on `*`. A trusted-proxy CIDR alone leaves every proxied identity authenticated-but-ungranted, and
-  `grant` itself requires `admin` — nobody could create the first grant without a restart. The
-  same check guards the other end: removing `DOLMEN_ADMIN_KEY` from the environment is only
-  safe once a durable root-admin grant exists (the §3.4 last-admin guard then keeps it
-  un-revocable).
+- `auth: on` with no identity source at all (no trusted proxies, no admin key, no OIDC source,
+  and no active API key) is a **startup error** — fail fast rather than a server that 401s
+  everything. An API-key-only instance is a valid mix (§1): after bootstrapping an active key
+  whose principal holds a durable root grant, the deployment may drop every other source. So is
+  `auth: on` with **no usable root administrator**: neither the admin key nor a durable grant of
+  `admin` on `*` targeting a **principal**. Group grants do not count — membership is asserted per
+  request and never stored (§0), so startup cannot establish that the group has any member, and an
+  empty or retired external group would silently satisfy the check while no identity can actually
+  administer. A grant naming the reserved `dolmen-admin` does not count either — no source can
+  yield that principal (§1.3), so such a grant is permanently unusable. A trusted-proxy CIDR
+  alone leaves every proxied identity authenticated-but-ungranted, and `grant` itself requires
+  `admin` — nobody could create the first grant without a restart. The same check guards the
+  other end: removing `DOLMEN_ADMIN_KEY` from the environment is only safe once a durable
+  principal root-admin grant exists (the §3.4 last-admin guard then keeps it un-revocable).
 - `/healthz`, `/version`, `/skills*`, and `/v1/openapi.json` remain unauthenticated in both modes
   (liveness probes and client-side schema discovery; they expose no row data — **confirmed in
   review 2026-09-05, a decision, not a default**); everything under `/v1/{op}` and `/mcp`
@@ -211,7 +221,11 @@ create the first grant. `DOLMEN_ADMIN_KEY` breaks it.
 - Keys outside that alphabet are a **startup error**, not a warning: HTTP field parsing strips
   leading/trailing whitespace and clients/proxies may reject characters outside the Bearer
   credential grammar, so a broader charset would let a deployment pass its identity-source check
-  with a credential that cannot be transmitted faithfully. Generate one with
+  with a credential that cannot be transmitted faithfully. A key beginning with the reserved
+  `dlm_` prefix is likewise a **startup error**: bearer dispatch routes that shape exclusively to
+  the API-key registry and never retries the admin-key compare (§1 preamble), so a `dlm_`-prefixed
+  admin key would pass validation yet never authenticate — locking the deployment out of bootstrap
+  administration. Generate one with
   `openssl rand -base64 32 | tr '+/' '-_' | tr -d '='`.
 - Presented as `Authorization: Bearer <key>`; compared in constant time.
 - **Precedence when both mechanisms are present** (a trusted proxy commonly forwards the client's
@@ -256,9 +270,14 @@ OIDC covers Entra, Okta, Google, etc.
   surface** — a tiny page that hands the token out — with the same exceptional status as `/mcp`;
   every op keeps the JSON envelope. Both are `auth: on`-only and unauthenticated by construction
   (§1.2).
-- The credential is a **stateless signed token**: Ed25519-signed by the server, default TTL in the
-  7–14 d range, configurable, presented as a bearer. No session store — the trade-offs are on
-  record in §1.6.
+- The credential is a **stateless signed token**: Ed25519-signed, default TTL in the 7–14 d
+  range, configurable, presented as a bearer. No session store — the trade-offs are on record in
+  §1.6. The **signing key is persistent, deployment-wide configuration, never per-process**:
+  single-process deployments persist it beside the grant registry; shared-engine multi-process
+  topologies coordinate it exactly as the grant registry's placement is topology-bound (§3
+  preamble, §0.6) — a token issued by one replica must verify on every other, and a restart
+  must not invalidate live tokens. Rotation is keyring-style: mint the successor, verify both
+  during the overlap, retire the predecessor — the operational form of §1.6's revoke-all-humans.
 - **Principal = the `sub` claim, never the email** — grants survive email changes; email is
   display-only and not stored (§1.6). Groups come from claims. Caveat, documented rather than
   papered over: Entra emits group claims as object GUIDs, not names, so Entra deployments either
@@ -498,11 +517,16 @@ inheritance). There are no deny grants, no precedence, no ordering — union onl
 - **Grants target existing objects only** (`*` excepted as the root): no pre-provisioning grants
   against nonexistent namespaces — create, then grant. And grant/revoke mutations themselves
   carry the **target lifetime the request was authorized against** (from the state read),
-  compared atomically with the existing row's recorded binding: a mutation that validated
-  against a predecessor, paused, and resumed after another replica completed a full
-  drop/recreate cycle (tombstone recorded, finalized, name recreated, successor grant added —
-  no tombstone pending) must not merge into or revoke the successor's row on name-based
-  `(subject, object)` identity alone. A lifetime mismatch is `409` — re-read, re-issue.
+  verified atomically against the object's **current** lifetime at mutation time — on the update
+  path by comparing with the existing row's recorded binding, and on the insert path (no existing
+  row) by the same currency check: a mutation that validated against a predecessor, paused, and
+  resumed after another replica completed a full drop/recreate cycle (tombstone recorded,
+  finalized, name recreated — no tombstone pending, successor grant not yet created) can neither
+  merge into or revoke the successor's row on name-based `(subject, object)` identity alone, nor
+  **plant** a stale predecessor-bound row that would then `409` every later legitimate grant for
+  the same `(subject, object)` indefinitely. Comparing against an existing row's binding alone
+  does not cover the no-row path; the insert verifies currency exactly as the update does.
+  A lifetime mismatch is `409` — re-read, re-issue.
 - **Grant rows bind to their target's LIFETIME identity, recorded at grant time** (possible
   because grants target existing objects): a table grant records (`NsGen`, `Table`, `DropGen`) —
   the schema `Version` is deliberately excluded, exactly as idempotency records exclude it, so a
@@ -1065,7 +1089,7 @@ mode-parameterized, so this adds fixtures, not machinery:
    returns `not_found` for a caller holding no grant on
    or under the namespace; the sweep asserts exactly that. Envelope shapes pinned like every other
    error.
-2. **The #158 acceptance scenario, end-to-end** — one test scripting the umbrella scenario:
+2. **The acceptance scenario, end-to-end** — one test scripting the umbrella scenario:
    tables with default permissions; a user who writes but reads only their own rows; read-only
    access elsewhere; list/create in one place not another; raw SQL denied without table-wide read;
    `upsert_by_key` collision non-leak; idempotent replay owner-only; `truncated` never leaks
