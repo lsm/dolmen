@@ -50,15 +50,29 @@ RLS for RowScope, role-per-schema confinement, ACID) are Postgres's native vocab
 only engine that can honor the contract at shared scale today. File-per-tenant fleets that cap
 out graduate to Postgres — the org/multi-host tier.
 
-**The lakehouse is read-side, not an engine (amended 2026-09-06):** Iceberg/Delta (and
-DuckDB-as-engine) are *analytical* — no cheap point updates, no fine-grained row grants, no
-FTS5 — so they cannot honor the write contract and are reclassified out of the engine-adapter
-list. Dolmen's data may be **published** to Parquet/Iceberg/Delta via a background export/CDC
-path so Spark/Trino/DuckDB can query it alongside the operational store: **designed-not-built,
-demander-gated (D20), the same status as webhooks (§9)** — a bolt-on read path, NOT a
-`store.Engine` implementation. This is DISTINCT from the user-facing `export`/`import` ops D20
-skips: those are synchronous portability ops and stay skipped; this is a deferred background
-publish path, and the seam keeps it designed-not-user-exercisable.
+**The lakehouse is adapter #3 — a first-class engine for the append-dominated tier (amended
+2026-09-06, refining #8's demotion):** dolmen's enterprise workload is append-dominated with
+rare updates — events, telemetry, memory, the bulk of agent writes — not high-frequency OLTP,
+and for that workload the lakehouse write path is viable. It is **not** the reference engine
+(Postgres stays adapter #2 for the org operational tier) and **not** for high-frequency OLTP.
+The small-write problem is solved **below the seam** — an engine-internal choice, dolmen-blind
+behind `store.Engine` — via any of: **deletion vectors** (Iceberg V3 / Delta — a point
+update/delete is a metadata bitmap plus a small append, no file rewrite, sub-second);
+**merge-on-read log files** (Hudi — writes append to delta files, merged at read); an
+**LSM-tree format** (Apache Paimon — memtable → sorted files → background compaction, built
+for high-frequency upsert); or a **WAL/write-buffer in front of Parquet** (absorb hot writes in
+a row store, flush in batches). Whichever it picks, the engine honors §0.6 — atomicity,
+read-your-writes, serial observability. The caveat, stated precisely: **high-frequency OLTP
+(tens of thousands of point mutations per second) is out of scope for this tier** — that is
+the operational store's job (SQLite/Postgres); rare updates are NOT a blocker. Reads are
+solved via a serving/cache tier (Lakegres/Lakebase-style) over the Parquet. **Full-text is the
+one genuine gap**: engine-specific bolt-ons, not a table-format feature — a lakehouse backend
+needs a sidecar implementing dolmen's FTS core subset (§7), stated plainly rather than papered
+over. Side benefit: because the engine stores open-format Parquet/Iceberg, analytics
+consumption (Spark/Trino/DuckDB) is a *property of the storage*, not a separate export
+pipeline — still DISTINCT from the user-facing `export`/`import` portability ops D20 skips
+(those remain skipped). Demand-gating stays: **designed-not-built until a demander (D20
+status, like webhooks §9)** — now designed *as an engine*, not as a read-side path.
 
 ### 0.5.2 Two-level tenancy — two mechanisms, never mixed
 
@@ -99,10 +113,11 @@ The predicate is the contract; enforcement is dispatch checks (always dolmen, FG
 dolmen's check remains the contract guarantee, and the conformance suite is the proof it cannot
 be skipped.
 
-Forward note (non-normative): the engine-mapping invariant stays general (file / schema) even
-though exactly two operational engines are on the list — SQLite for the local tier, Postgres
-(adapter #2, the reference shared engine, above) for the org/multi-host tier; the lakehouse tier
-is read-side publish, not an engine.
+Forward note (non-normative): the engine-mapping invariant stays general (file / schema /
+table-format) even
+though the reference list holds SQLite for the local tier, Postgres
+(adapter #2, the reference shared engine, above) for the org/multi-host tier, and the
+lakehouse (adapter #3) for the append-dominated tier — designed-not-built until a demander.
 
 ## 0.6. Consistency contract
 
@@ -1665,5 +1680,5 @@ ETL layer (an ETL layer in dolmen would be fiso-shaped, not dolmen-shaped).
 | D22 | Credential model on record: humans get expiring signed tokens, machines get hashed revocable named keys carrying principal + optional groups; no sessions/refresh/email/user records (deliberate — nothing user-shaped to leak, IdP owns recovery); accepted losses on record — no per-device revocation (revoke = rotate the signing secret), no sliding sessions; enterprises use the gateway tier | §1.4–1.6 |
 | D23 | Bootstrap written up explicitly: the deadlock rationale; the admin key is a kingmaker, not a king (implicit grant on the credential, identity vanishes with the env, grants persist; `dolmen-admin` reserved across all sources; removal safe via the root-admin startup check + last-admin guard). Namespace-creation gates: `auth: off` implicit forever; `auth: on` `not_found`-after-authz; `create_namespace` requires `admin` on the parent; `schema` creates content, never tenancy | §1.3, §2 |
 | D24 | Realtime change notifications join the spec ("one bag" — auth, authz, and subscription designed together): four layers in build order (durable per-namespace change log + `changes_since` → `wait_for` long-poll ≤60s → SSE `subscribe` for agent hosts → webhooks designed-not-built); a subscription is a **standing read** (`read` verb — or any data verb under `row_access`, own rows only — visible set, **per-event** scope AND credential evaluation, mid-subscription revocation drops the stream, source-A streams duration-bounded with the documented gateway termination obligation); change records and cursors are **minted inside the write transaction** (per-record table-lifetime key and internal owner label; no CDC; notification after commit only, never the durability mechanism; order = §0.6 serial observability; cross-pod fan-out = engine-declared capability); durable gap-free per-namespace cursors with a retention knob (beyond retention = teaching error); realtime ops exist in both modes (data ops, not auth surface); decoding stays OUT (agent decodes; fiso is the codec layer for non-LLM pipelines) | §9 |
-| D25 | Postgres is the reference shared engine (adapter #2 — the org/multi-host tier; schema-per-namespace, native RLS for RowScope, role-per-schema confinement, ACID are its native vocabulary; only an operational engine can honor the operational contract). The lakehouse is **read-side, not an engine**: Iceberg/Delta/DuckDB-as-engine reclassified out of the adapter list — analytical stores cannot honor the write contract; dolmen's data may be published to Parquet/Iceberg/Delta via background export/CDC, designed-not-built and demander-gated (D20 status, like webhooks §9) — a bolt-on read path, NOT a `store.Engine` implementation, and DISTINCT from the user-facing `export`/`import` portability ops D20 skips | §0.5 |
+| D25 | Postgres is the reference shared engine (adapter #2 — the org/multi-host tier; schema-per-namespace, native RLS for RowScope, role-per-schema confinement, ACID are its native vocabulary; only an operational engine can honor the operational contract). The lakehouse is **adapter #3, a first-class engine for the append-dominated tier** (events, telemetry, memory — amended 2026-09-06, refining #8's demotion): the small-write problem is solved below the seam (deletion vectors / merge-on-read / LSM-tree / WAL-fronted Parquet — engine-internal, dolmen-blind), §0.6 honored via any; **high-frequency OLTP (tens of thousands of point mutations/sec) is out of scope** for this tier — the operational store's job; rare updates are not a blocker; reads via a serving/cache tier; **full-text is the one genuine gap** — engine-specific sidecar for the FTS core subset, stated plainly; open-format storage makes analytics consumption a property of the storage, not an export pipeline (still DISTINCT from the skipped user-facing `export`/`import` ops, D20); designed-not-built until a demander (D20 status, like webhooks §9) — designed *as an engine* | §0.5 |
 | D26 | `search_vector` ANN accelerator exception (full-text stays exact): an engine MAY serve vector search from an ANN index (e.g. pgvector HNSW) with **declared** capability (B4-style, never silent) and a documented recall bound; the contract pins result shape, visible set, and per-path determinism — not bit-identical ranking across engines or index configs; RowScope, `truncated`, `skipped_vectors`, and pagination stay exact regardless of index (approximation affects top-K ordering only, never eligibility); the brute-force exact path (canonical cosine + `q(s)` quantization) remains the conformance reference; §8.1's auth-off corpus untouched | §7 |
