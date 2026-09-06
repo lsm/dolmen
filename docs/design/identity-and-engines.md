@@ -315,7 +315,15 @@ OIDC covers Entra, Okta, Google, etc.
 - **Principal = the `sub` claim, never the email** — grants survive email changes; email is
   display-only and not stored (§1.6). Groups come from claims. Caveat, documented rather than
   papered over: Entra emits group claims as object GUIDs, not names, so Entra deployments either
-  sync names or grant on the GUIDs.
+  sync names or grant on the GUIDs. And because OIDC subject identifiers are unique **only
+  within an issuer**, source B's principals and groups are **issuer-qualified**: the source
+  yields the pair (issuer, `sub`) — serialized opaquely, exact form is the source layer's — and
+  likewise qualifies its group claims. A deployment that changes
+  `DOLMEN_AUTH_OIDC_ISSUER` therefore mints a disjoint principal population: a same-`sub` user
+  at the new issuer is a *different* principal and inherits nothing — grants from the old
+  issuer never match (fail-closed), and if the old issuer's principals held the only root
+  grants, §1.2's usable-root-administrator check names that at startup rather than letting a
+  stranger in silently.
 - Built on demand; until then it exists as this design. The `dolmen-admin` reservation applies
   (§1.3).
 
@@ -405,7 +413,7 @@ in §3, `whoami` and the key ops in §1.4–1.5):
 | `drop_namespace` | `admin` | The namespace itself. Leaf-only (§5.4). |
 | `list_tables` | none (any authenticated principal) | Authorization runs **before** the existence check: unless the caller holds any grant on or under the namespace, the response is `not_found` — indistinguishable from a nonexistent namespace, so listing cannot be used to enumerate names. Holders see the tables they hold any grant on. |
 | `describe_table` | any verb (`read`, `create`, `update`, `delete`, `schema`, `admin`) | The table. `row_count` follows the caller's visible set (§4.3) — table-wide for `read`, own rows for the other data verbs on `row_access` tables, 0 for `schema`/`admin` holders; no data visibility beyond the caller's set is implied. |
-| `describe_server`, `infer_schema` | none (any authenticated principal) | Untargeted: provider status is no secret; `infer_schema` is pure computation. `describe_server` is **extended, not replaced** (amended 2026-09-06): it additionally reports the auth mode and the enabled identity sources — read-only, no secrets (names like `trusted-proxy`/`oidc`/`api-keys`, never key material or issuer secrets) — the established provider-status pattern applied to identity. |
+| `describe_server`, `infer_schema` | none (any authenticated principal) | Untargeted: provider status is no secret; `infer_schema` is pure computation. `describe_server` is **extended, not replaced** (amended 2026-09-06): it additionally reports the auth mode, the enabled identity sources — read-only, no secrets (names like `trusted-proxy`/`oidc`/`api-keys`, never key material or issuer secrets) — and the engine's **capability surface**, including vector-search execution (exact, or declared-ANN with its recall bound, §7) — the established provider-status pattern applied to identity and engine capabilities. |
 | `whoami` | none (any authenticated principal) | Untargeted self-description: the caller's principal and groups (§1), whatever the source. The teaching-error philosophy applied to auth — an agent that just got a `403` self-diagnoses in one call. `auth: on`-only (meaningless without identity; see transport parity below). |
 | `create_key`, `list_keys`, `revoke_key` | `admin` on `*` | Untargeted (§1.5): a key bears any principal and optional groups, so minting one is administrative at the root — above any one namespace — even though the grants the minted identity can use still have to be granted separately. `auth: on`-only. |
 | `create_table` | `schema` | The namespace. |
@@ -709,8 +717,8 @@ allowlist** — operators `||`, arithmetic, comparison, `AND`/`OR`/`NOT`, `IS`/`
 (literal lists), `BETWEEN`, `LIKE`, and `CASE`; functions `abs`, `round(x[,n])`, `length`,
 `lower`, `upper`, `substr(x,y[,n])`, `trim`, `ltrim`, `rtrim`, `replace`, `instr`, `coalesce`,
 `ifnull`, `nullif`, `iif`, and `date`, `time`, `datetime`, `julianday`, `strftime` — the
-date/time functions accept only **explicit time values and deterministic modifiers**: `'now'`,
-`'localtime'`, `'utc'`, and every other wall-clock or host-timezone-dependent form is
+date/time functions accept only **explicit time values and deterministic modifiers**.
+`'now'`, `'localtime'`, `'utc'`, and every other wall-clock or host-timezone-dependent form are
 `invalid_request`; a caller wanting a now-relative comparison computes the timestamp and binds
 it as a `?` parameter — **this list is the whole allowlist**, not a
 category sketch: no subqueries, no table references (including `__fts` shadow tables), no
@@ -1137,11 +1145,25 @@ identical response. **One exception, `search_vector` only (amended 2026-09-06):*
 run vector search over an ANN index (e.g. pgvector HNSW) as a first-class **accelerator**, and
 when it does the ranking is *approximate* — it may differ from exact brute-force within a
 documented recall bound, and the capability MUST be **declared** (B4-style, like §9's
-notification capability), never silent. The contract then pins the result **shape**, the
-**visible set**, and **determinism** (same input → same order on the exact path), not
+notification capability), never silent — and the declaration is **public on two channels**: the
+engine's capability surface (`describe_server`, §2, advertises vector execution as exact or
+ANN-with-recall-bound) and **per-result execution metadata** on every `search_vector` response
+(which path served it — an engine that switches between ANN and exact fallback as an index
+builds or query conditions change says so on each response). The contract then pins the result
+**shape**, the
+**visible set**, and **determinism** — same input → same order **on the same path** (exact or
+ANN) for an unchanged corpus and index state, with a deterministic `id` tiebreak, so offset
+pagination stays exact: an engine that cannot guarantee per-state stable ordering must not
+serve offset-paginated ANN results — not
 bit-identical ranking across engines or index configs. What stays exact regardless of index:
 the visible set (RowScope filtering), `truncated`, `skipped_vectors`, pagination — approximation
-affects ordering among the top-K only, never which rows are eligible. The **brute-force exact
+affects ordering among the top-K only, never which rows are eligible. Under a `RowScope`, the
+ANN **candidate generation itself runs over the already-filtered visible corpus** —
+scope-partitioned indexes or equivalent prefiltering; post-filtering an unscoped candidate set
+is NOT conforming, because foreign vectors consuming the candidate budget would let another
+tenant's writes reorder or displace the caller's results (the §7 scope rule) and turn the index
+into a cross-tenant existence oracle; an engine that cannot prefilter safely serves that query
+from the exact path. The **brute-force exact
 path remains the conformance reference**: the canonical-cosine arithmetic and
 `q(s)=floor(s/fl64(1e-9))` quantization below stay the *definition of the exact path* — they
 stop being the only permitted execution strategy. §8.1's byte-identical auth-off corpus is
@@ -1273,7 +1295,9 @@ the sleeping agent holds nothing, burns nothing, and is told.
    error — on timeout**. Fully agent-usable over plain MCP/HTTP today: one tool call per wait, no
    special client.
 3. **`subscribe` (SSE stream):** server-sent events on the HTTP surface — change type
-   (insert/update/delete), row ids, optional row payload, filtered by the caller's scope. For
+   (insert/update/delete), row ids, optional row payload, filtered by the caller's scope. The
+   payload is a live-notification convenience and is **not replayable** — the durable record
+   carries the change's identity and authorization metadata, never a row snapshot (§9.3). For
    agent **hosts** holding connections: an LLM turn cannot hold a connection; a framework can.
    Transport note: like `/mcp`, this is an HTTP-surface capability — the MCP tool surface gets
    `wait_for` (its request/response shape); SSE `subscribe` is host-side.
@@ -1330,7 +1354,10 @@ the sleeping agent holds nothing, burns nothing, and is told.
   itself would be visible. What the op layer does after
   commit is only **notification** — waking `wait_for` callers and pushing SSE frames — and
   notification loss is harmless: the durable log is complete, and `changes_since` recovers
-  everything a missed wake would have delivered. Cross-pod fan-out on
+  every **change** a missed wake would have signaled — identity, cursor, kind, owner — but not
+  the transient payload bytes of a live SSE frame: the record stores no row snapshot (a later
+  update or delete would falsify one), so a replaying client re-reads current row content by id
+  through its standing read. Cross-pod fan-out on
   shared engines is an **engine-declared capability** (B4-style topology rule): single-process
   works day one; engines without a notification bus may declare `subscribe`/`wait_for`
   unavailable or degraded, surfaced like every other engine capability.
@@ -1350,7 +1377,11 @@ the sleeping agent holds nothing, burns nothing, and is told.
   existed between two visible ones (cursors 10 and 12 reveal record 11) — client-facing cursors
   are per-feed resume tokens the server maps to its internal position on resume, so consecutive
   visible records yield consecutive tokens indistinguishable from adjacent ones, and no foreign
-  commit is observable through cursor arithmetic.
+  commit is observable through cursor arithmetic. The token mapping is **persistent and
+  deployment-wide, never per-process**: tokens are self-contained and authenticated under a
+  persistent deployment-wide key (the §1.4 signing-key coordination pattern), or the mapping
+  lives in coordinated storage like the registry itself — a token issued by one replica must
+  resume on another, and a restart must not invalidate clients' cursors.
   And every record carries its **table's lifetime key** (`NsGen`, `Table`,
   `DropGen` — Version excluded as everywhere): a table-filtered feed delivers only records of the
   table's **current** lifetime, so a caller granted on a recreated same-named successor can never
