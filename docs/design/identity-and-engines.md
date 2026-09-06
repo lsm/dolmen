@@ -1576,8 +1576,14 @@ the sleeping agent holds nothing, burns nothing, and is told.
   response carries the head cursor as its next-cursor, and only subsequent commits are
   delivered (the wake-up-channel semantics — sleeping agents want future events, and a
   fresh subscriber cannot miss what committed before it existed). A caller wanting retained
-  history passes the explicit **`"begin"` sentinel**, which starts at the oldest retained
-  record and is subject to the retention and availability rules below. Both forms are
+  history passes the explicit **`"begin"` sentinel** — and `begin` carries its own
+  oldest-readable boundary, because a page chain's preserved deadline is `R` from issuance
+  while retained records can be nearly `2R` old: **`begin` starts no earlier than `R` before
+  the call** — the oldest record with a full page-chain of headroom (a record minted at `M`
+  survives to `M+2R`, and the chain lives to `T+R`, so every reachable record satisfies
+  `M ≥ T−R`). Records older than the boundary, if any still exist, are outside every replay
+  guarantee — they could otherwise be pruned mid-chain and force a beyond-retention error
+  onto a valid token, breaking the gap-free promise. Both forms are
   deterministic across engines — an implementation may neither silently replay the backlog
   on a bare start nor skip the backlog on the sentinel. A restarted agent replays from its cursor; reconnect =
   `changes_since` catch-up + re-subscribe — and the server side makes that sequence
