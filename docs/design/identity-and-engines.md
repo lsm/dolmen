@@ -191,6 +191,7 @@ semantics, and cannot be merged or rewritten in flight by generic forwarding lay
 | `-trusted-proxies` | `DOLMEN_TRUSTED_PROXIES` | empty | Comma-separated CIDRs (bare IPs allowed). Only peers inside these ranges may assert §1.1 headers. |
 | `-max-groups` | `DOLMEN_MAX_GROUPS` | `128` | Maximum group entries accepted per request (§1.1). Valid range 1–1024; values outside the range are rejected at startup, consistent with existing config validation. Non-secret, so flag + env twin per convention. *Why 128 and configurable (amended 2026-09-04): Entra tokens routinely carry 200+ group claims for well-connected users; 128 keeps default operations pain-free while the deployment guide tells gateway operators to filter to relevant groups.* |
 | `-max-subscription-age` | `DOLMEN_MAX_SUBSCRIPTION_AGE` | `30m` | Ceiling on `subscribe` connection age (§9.3): at the bound the server teaching-closes and the client reconnects — re-asserting headers, hence refreshing a source-A identity — resuming from its cursor. Valid range `0` or `1s`–`24h`; other values rejected at startup, consistent with existing config validation. `0` disables the bound, documented as removing source A's identity-refresh backstop — not recommended with the header source enabled. Non-secret, so flag + env twin per convention. *Why 30m (added 2026-09-06): the bound is the backstop for the gateway's connection-termination obligation (§9.3) — short enough that a gateway identity change takes effect within minutes-to-an-hour, long enough not to churn healthy streams.* |
+| `-change-retention` | `DOLMEN_CHANGE_RETENTION` | `168h` (7d) | The change log's retention bound `R` (§9.3) — the shared knob for cursor-token expiry and record pruning (availability holds records for `2R`). Valid range `0` or `1h`–`2160h` (90d); other values rejected at startup. `0` disables pruning entirely — records accumulate and cursors never expire; an operator choice about disk, never a correctness requirement. Non-secret, so flag + env twin per convention. *Why 7d (added 2026-09-06): agent reconnect windows are minutes-to-days; a week covers a down weekend, and longer windows cost linear log storage — raise it deliberately.* |
 
 Rules:
 
@@ -369,6 +370,12 @@ credentials:
   failure.
 - A key may not bear the reserved principal `dolmen-admin` (§1.3): the bootstrap identity exists
   only while its credential does, and a minted key would outlive it.
+- **Key identities satisfy the same shape limits as every other source**: the principal must
+  match §1.1's printable-ASCII/length shape, each group the group-entry shape, and the group
+  count `-max-groups` — validated at `create_key` (`invalid_request`), mirroring the OIDC
+  source's reject-at-authentication rule (§1.4). A key bearing an identity no durable grant
+  could name would be an unusable credential and a source-blindness violation, never a
+  silent one.
 - **Self-revocation guard.** `revoke_key` mirrors §3.4's last-admin rule at the credential layer,
   and the protected invariant is **deployment-wide, not per-principal**: a revocation is a `409`
   (teaching message) only when it would leave the deployment with **no usable root administrator
@@ -1524,7 +1531,10 @@ the sleeping agent holds nothing, burns nothing, and is told.
   manual two-step is a client convenience, not the recovery guarantee. Cursor semantics:
   **per-namespace, monotonic,
   gap-free**; a cursor pointing beyond retention is an explicit teaching error naming the
-  catch-up path — and retention is **token-age-based, unconditional**: cursor tokens carry
+  catch-up path — and retention is **token-age-based, unconditional**, with the bound `R`
+  configured by `-change-retention`/`DOLMEN_CHANGE_RETENTION` (§1.2: default `168h`/7 days,
+  valid `0` or `1h`–`2160h`, startup-rejected outside; `0` disables pruning — cursors never
+  expire, records accumulate): cursor tokens carry
   their issuance time and expire by the retention bound no matter what the log contains, so the
   error is a function of the client's own token age alone. A hidden write that later ages out
   can therefore never turn an otherwise-empty resume into an error: whether the error fires
