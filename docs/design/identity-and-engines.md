@@ -483,6 +483,7 @@ in §3, `whoami` and the key ops in §1.4–1.5):
 | `upsert`, `upsert_by_key` | `create` **AND** `update` (both required) | The table. They are update-or-insert: a `create`-only caller is refused up front, not surprised by half the operation. |
 | `query` | `read` | The **namespace** — raw SQL may reference any table in it, so the grant must cover the namespace, not one table. See §4.4 for the extra rule on `row_access` tables. |
 | `read_rows` | `read`; **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` — the response then contains own rows only, the same rule as search and feeds | The table. Id-addressed scoped fetch: `{table, ids}` → the rows the caller can see (present in both modes; additive under `auth: off` per §8.1 — a plain by-id fetch without raw SQL). The realtime recovery path depends on it: a feed consumer re-reads a change's row content by id through its standing read (§9.3), and `query`'s namespace-wide gate plus the searches' index dependence would leave a create-only `row_access` subscriber with an id they cannot resolve. |
+| `capabilities` | none (any authenticated principal; unauthenticated under `auth: off`) | Untargeted: reports the engine capability surface from `Engine.Capabilities()` (§6) — vector execution, notification/`subscribe` availability, every declared capability — **in both modes** (additive under `auth: off` per §8.1). Realtime ops exist in both modes and an `auth: off` client has no other discovery surface (`describe_server`'s extension is `auth: on`-only); this op is that surface, and it is the single source `describe_server` inlines under `auth: on`. |
 | `changes_since`, `wait_for`, `subscribe` | `read` on the selected table(s); **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` — the feed then covers own rows only, mirroring the search rule | The **selected target**: a table-filtered feed checks the named table(s) (direct table grants qualify — inheritance is downward-only); an unfiltered namespace feed checks `read` on the namespace, the same rule as `query`. Per-event scope and credential reevaluation further restrict delivery — foreign rows never wake the caller. Ordinary data ops present in **both** modes (§9.4). |
 | `search_fulltext`, `search_vector` | `read` on the table; **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` (search then covers own rows only, §4.3) | The table. |
 | `grant`, `revoke` | `admin` | The target object (an ancestor grant suffices, §3.3). |
@@ -1337,11 +1338,12 @@ identical response. **One exception, `search_vector` only (amended 2026-09-06):*
 run vector search over an ANN index (e.g. pgvector HNSW) as a first-class **accelerator**, and
 when it does the ranking is *approximate* — it may differ from exact brute-force within a
 documented recall bound, and the capability MUST be **declared** (B4-style, like §9's
-notification capability), never silent — and the declaration is **public on two channels**, both
-`auth: on`-only so the auth-off response shapes stay byte-identical v0.2.0 (§8.1; adapter #1
-under `auth: off` is exact brute-force and reports nothing new): the
-engine's capability surface (`describe_server`, §2, advertises vector execution as exact or
-ANN-with-recall-bound) and **per-result execution metadata** on every `search_vector` response
+notification capability), never silent — and the declaration is **public on two channels**: the
+engine's capability surface — the **`capabilities` op** (§2; both modes, the single source) and
+`describe_server`'s `auth: on`-only extension inlining the same data, kept out of the auth-off
+response so it stays byte-identical v0.2.0 (§8.1; adapter #1
+under `auth: off` is exact brute-force and reports nothing new) — and **per-result execution
+metadata** on every `search_vector` response
 (which path served it — an engine that switches between ANN and exact fallback as an index
 builds or query conditions change says so on each response). The contract then pins the result
 **shape**, the
@@ -1421,7 +1423,7 @@ mode-parameterized, so this adds fixtures, not machinery:
 
 ### 8.3 What auth:on adds to the suite
 
-1. **Deny-by-default sweep** — for every op (all 30 with §1.4–1.5, §9, and read_rows; `/v1/auth/begin` and
+1. **Deny-by-default sweep** — for every op (all 31 with §1.4–1.5, §9, read_rows, and capabilities; `/v1/auth/begin` and
    the callback are excluded — unauthenticated by construction, §1.2): no identity (401
    `unauthorized`) and untrusted-peer identity (401). Authenticated-but-ungranted (403
    `forbidden`) applies to the **grant-protected** ops only. The grant-free ops of §2 succeed for
@@ -1569,7 +1571,15 @@ the sleeping agent holds nothing, burns nothing, and is told.
   is NOT the engine's choice: **`wait_for` is never unavailable** — it degrades to internal
   scanning and always retains its bounded-time contract (§6.2, §9.2); only `subscribe`, which
   requires a held connection, may be declared unavailable.
-- **Cursors are durable.** A restarted agent replays from its cursor; reconnect =
+- **Cursors are durable.** A first-time caller has no cursor, and the boundary is pinned:
+  **an omitted or zero cursor starts at the CURRENT HEAD** — no backlog is replayed; the
+  response carries the head cursor as its next-cursor, and only subsequent commits are
+  delivered (the wake-up-channel semantics — sleeping agents want future events, and a
+  fresh subscriber cannot miss what committed before it existed). A caller wanting retained
+  history passes the explicit **`"begin"` sentinel**, which starts at the oldest retained
+  record and is subject to the retention and availability rules below. Both forms are
+  deterministic across engines — an implementation may neither silently replay the backlog
+  on a bare start nor skip the backlog on the sentinel. A restarted agent replays from its cursor; reconnect =
   `changes_since` catch-up + re-subscribe — and the server side makes that sequence
   race-free: **`subscribe` accepts the cursor and atomically registers the listener and replays
   from it as one operation**. A write committing after a standalone catch-up read but before
