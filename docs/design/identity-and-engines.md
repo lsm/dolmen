@@ -1088,14 +1088,25 @@ type Engine interface {
     //    table == "" is the namespace feed, guarded by nsGen exactly like
     //    Query. Returns records in cursor order plus the next cursor.
     ChangesSince(ctx context.Context, ns, table string, from Cursor, nsGen [16]byte, scope *RowScope, scopeIncarnation Incarnation, page Page) ([]ChangeRecord, Cursor, error)
-    // Listen is the engine-declared notification capability (B4-style): when
-    // implemented, the engine invokes notify for records as their
-    // transactions commit, and the op layer uses it to wake wait_for callers
-    // and drive SSE frames immediately. Engines without it degrade — wait_for
+    // Listen is the engine-declared notification capability (B4-style), and
+    // it is CURSOR-AWARE so the seam itself provides §9.3's atomic
+    // register-and-replay: the engine registers the listener and drains the
+    // log from `from` as ONE coordinated operation — the returned replay
+    // batch carries every in-scope record from `from` up to the
+    // registration point, and every record committing after that point
+    // flows to notify, with each record delivered EXACTLY ONCE across the
+    // two halves (boundary dedup is the engine's, inside the atomic
+    // operation — an event committed before registration exists only in
+    // the replay, one committed after exists only in the stream, so no
+    // committed event can be missed and none delivered twice). A
+    // replay-then-listen split at the op layer would retain the
+    // commit-before-registration gap; a listen-then-replay split would need
+    // an unspecified buffering protocol — neither is conforming. Engines
+    // without the capability degrade — wait_for
     // still meets its bounded-time contract via internal scanning, subscribe
     // may be declared unavailable — surfaced like every other engine
     // capability; notification is never the durability mechanism (§9.3).
-    Listen(ctx context.Context, ns, table string, notify func(ChangeRecord)) (cancel func(), error)
+    Listen(ctx context.Context, ns, table string, from Cursor, notify func(ChangeRecord)) (replay []ChangeRecord, cancel func(), error)
 
     // Filtered reads — Query takes NO scope: the API layer gates raw SQL by table-wide
     // read (§4.4), which is precisely why no scope parameter exists here. nsGen is the
