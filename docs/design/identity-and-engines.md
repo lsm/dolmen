@@ -580,7 +580,11 @@ inheritance). There are no deny grants, no precedence, no ordering — union onl
   already administers it; delegation composes via targeted child grants (grant `admin` on
   `acme/team-a` specifically). Recorded so no one adds an owner concept later.
 - **Last-admin lockout guard.** Revoking the final grant of `admin` on `*` is refused — a
-  `409 conflict`-family error with a teaching message. The guard counts **usable** root grants
+  `409 conflict`-family error with a teaching message — unless another usable root
+  administrator exists deployment-wide under the SAME invariant key revocation evaluates
+  (§1.5), **including a configured `DOLMEN_ADMIN_KEY`**: while the bootstrap key remains
+  configured it is a usable root administrator (§1.2), so an operator may delete a mistaken or
+  retired bootstrap grant without first manufacturing a replacement. The guard counts **usable** root grants
   only: principal subjects — or group subjects **locally proven by an active key's stored
   groups** (§1.2's decidable exception; §1.5) — mirroring §1.2's usability rule. An
   externally-membered group grant never counts toward
@@ -1456,8 +1460,14 @@ the sleeping agent holds nothing, burns nothing, and is told.
   manual two-step is a client convenience, not the recovery guarantee. Cursor semantics:
   **per-namespace, monotonic,
   gap-free**; a cursor pointing beyond retention is an explicit teaching error naming the
-  catch-up path. Pruning/retention of old change records is a configuration concern whose knob
-  is **time-based expiry only, never a record-count or byte cap**: a volume-based limit would
+  catch-up path — and retention is **token-age-based, unconditional**: cursor tokens carry
+  their issuance time and expire by the retention bound no matter what the log contains, so the
+  error is a function of the client's own token age alone. A resume under a still-valid token
+  returns whatever visible records survive — aged-out records, hidden or the caller's own, are
+  simply absent — and a hidden write that later ages out can never turn an otherwise-empty
+  resume into an error: whether the error fires must not depend on whether invisible records
+  existed. Pruning of old change records is the same time-based expiry, never a record-count or
+  byte cap: a volume-based limit would
   let foreign commits evict a scoped reader's cursor while that reader has received nothing
   visible, and the resulting beyond-retention error would reveal that hidden namespace traffic
   occurred — precisely the observation the opacity rules below forbid; age-based expiry is
