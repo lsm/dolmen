@@ -57,7 +57,7 @@ adapter #1's mapping, not the definition of tenancy:
   beneath the same contract.
 - **User-per-namespace is an anti-pattern.** It explodes namespace count and makes shared tables
   (the usage-telemetry pattern, §8.3) impossible.
-- **The architect's two knobs** (seed for the #167 skill docs): *structural* — give the team a
+- **The architect's two knobs** (seed for the docs+skills stream's skill docs): *structural* — give the team a
   sub-namespace (`acme/team-a`) when they must never see each other's schema or data; *logical* —
   one table with `row_access: "own"` when they share a table but keep private rows. The same
   grant language drives both.
@@ -141,7 +141,8 @@ reinterpreted as a weaker source (fail-closed, §1.3). The shapes stay disjoint 
 §1.3 rejects an admin key beginning with `dlm_` at startup, so no credential is ever two
 interpretations at once and dispatch never needs a second guess.
 
-Build order (mirrored on issue #160): #160 (authn plumbing) builds **the seam itself — identity
+Build order (mirrored on the epic's authn stream, #159's checklist): the authn stream builds
+**the seam itself — identity
 sources as a pluggable interface, with the header source as v1**. Native OIDC and API keys land
 later as one additive stream: they touch only the source layer and the key registry, never FGA.
 
@@ -828,7 +829,7 @@ starts with a clean grant slate. Dropping a namespace that **has descendants** i
 
 ## 6. `store.Engine` interface
 
-The seam extracted by #76 — and, with §0.5, the **tenancy portability guarantee**: everything the
+The seam extracted by the engine-seam stream (SQLite adapter #1) — and, with §0.5, the **tenancy portability guarantee**: everything the
 contract says about namespaces, isolation, and row visibility holds on every engine. Everything
 above it — envelope, error mapping, validation, authn/authz,
 visible-set computation, skills/MCP/OpenAPI rendering — is engine-neutral and shared. SQLite becomes
@@ -845,7 +846,7 @@ access (§9) — mirroring today's `*store.Store` methods plus the realtime seam
 
 ### 6.2 Signature sketch
 
-Sketch only — #76 owns the final signatures; the operation set and the `RowScope`/paging
+Sketch only — the engine-seam stream owns the final signatures; the operation set and the `RowScope`/paging
 conventions are what this spec pins:
 
 ```go
@@ -873,7 +874,16 @@ type Engine interface {
     // verified: one stale contributor (e.g. a direct-table admin grant
     // naming the predecessor's DropGen while a namespace schema grant still
     // matches) denies the whole state acquisition — no arbitrarily selected
-    // grant can launder the others. Targeted grants mismatch successors;
+    // grant can launder the others. The set also includes every binding that
+    // DERIVES A SECURITY-SENSITIVE OPTION — the RowScope and the
+    // WriteOpts.TableWideRead of the call site — even when its verb is not
+    // required to dispatch the operation: a caller holding `update` through
+    // a surviving namespace grant and `read` through a direct grant on a
+    // predecessor `row_access` table must fail the acquisition on the stale
+    // read binding after a drop/recreate, not carry the nil scope it implies
+    // onto the successor and update every owner's rows; verifying only the
+    // required-verb bindings would launder exactly that. Targeted grants
+    // mismatch successors;
     // inherited grants verify their ANCESTOR's (path, nsGen) while the call
     // returns the TARGET's current generation; a Root (*) grant verifies
     // nothing. Empty/zero = no guard (auth off).
@@ -998,7 +1008,8 @@ type Engine interface {
     // access paths cross the seam:
     // 1. Every write result (InsertResult, UpdateResult, DeleteResult) carries
     //    the []ChangeRecord minted by its own transaction: {Cursor, Table,
-    //    RowID, Kind (insert/update/delete), Owner}. Owner is INTERNAL
+    //    RowID, Kind (insert/update/delete), Owner, Lifetime (the table's
+    //    lifetime key, §9.3)}. Owner is INTERNAL
     //    authorization metadata stamped from the row (§9.3) — delete events
     //    cannot be scope-filtered from a row that no longer exists, and
     //    historical replay cannot consult current row state. It never appears
@@ -1138,7 +1149,10 @@ mode-parameterized, so this adds fixtures, not machinery:
   gateway would.
 - `native+keys` — `DOLMEN_AUTH=on` with the OIDC source enabled against a **local issuer stub**:
   fixtures run the real dance (`/v1/auth/begin` → stub → callback → bearer token) and exercise key
-  issuance (`create_key` → use → `list_keys` → `revoke_key` → 401).
+  issuance (`create_key` → use → `list_keys` → `revoke_key` → 401). **Arrives with the native-OIDC
+  stream** — source B is designed-not-built (§1.4/D21), so this mode is contingent on that stream
+  landing; until then the matrix runs `off` + `gateway`, and the key-issuance fixtures may ride
+  earlier (API keys have no such dependency).
 
 ### 8.3 What auth:on adds to the suite
 
@@ -1238,7 +1252,15 @@ the sleeping agent holds nothing, burns nothing, and is told.
   revoked API key drops the stream at the next event (best-effort immediately), and an OIDC
   token's expiry bounds the connection lifetime — the stream closes no later than token expiry
   with a teaching close, and reconnect with a fresh token resumes from the durable cursor;
-  `wait_for`'s bounded window makes the same revaluation implicit at every return.
+  `wait_for`'s bounded window makes the same revaluation implicit at every return. Source A has
+  no credential state to revalidate — its identity is headers asserted once on the request that
+  opens the stream, and dolmen holds no gateway-session or group-membership state (§0) — so
+  source-A streams are **bounded by a configurable maximum connection duration**: at the bound
+  the server teaching-closes and the client reconnects, which re-asserts headers and thus
+  refreshes the identity cheaply (cursor resume). The deployment obligation is documented
+  alongside §1.2's reachability assumption: the gateway **must terminate the upstream connection
+  when the asserted identity's session ends or its groups change** — dolmen cannot observe it,
+  and the duration bound is the backstop, not the enforcement.
 - **Change records are written atomically with the write they describe; notification happens
   after commit.** The durable log record and its cursor are assigned **inside the same
   transaction as the data write** (adapter #1: the log lives in the same SQLite database file, so
@@ -1265,7 +1287,15 @@ the sleeping agent holds nothing, burns nothing, and is told.
   `changes_since` catch-up + re-subscribe. Cursor semantics: **per-namespace, monotonic,
   gap-free**; pruning/retention of old change records is a configuration concern (documented
   retention knob); a cursor pointing beyond retention is an explicit teaching error naming the
-  catch-up path.
+  catch-up path. And every record carries its **table's lifetime key** (`NsGen`, `Table`,
+  `DropGen` — Version excluded as everywhere): a table-filtered feed delivers only records of the
+  table's **current** lifetime, so a caller granted on a recreated same-named successor can never
+  replay a predecessor's records from an old cursor — `scopeIncarnation` proves the current table
+  is authorized, but only the per-record lifetime label can tell which lifetime produced each
+  historical record. (Deleting predecessor records on drop would forfeit the namespace's
+  gap-free replay; labeling keeps the log intact and filters instead.) Namespace-wide feeds are
+  guarded by `nsGen` like `query` and deliver the namespace's own recorded history — their
+  readers held namespace read throughout.
 
 ### 9.4 Modes
 
@@ -1307,7 +1337,7 @@ ETL layer (an ETL layer in dolmen would be fiso-shaped, not dolmen-shaped).
 | D18 | Grant lifecycle: no owner concept (inheritance covers creators); last-admin-on-`*` revoke guard (409); drop cascades grant deletion (clean slate on recreation, count reported in drop confirm); grants target existing objects only | §3.4 |
 | D19 | Consistency contract: op atomicity; per-namespace serial observability + read-your-writes; 409-or-nothing collision surfacing; engine-declared deployment topology (sqlite = 1 process/data-dir; shared engines = N pods) | §0.6 |
 | D20 | Data portability SKIPPED and audit surface DEFERRED, deliberately — no features without real-world demanders (#32 open, unrescoped) | §0.6 |
-| D21 | Identity is additive, pluggable **sources** behind one seam; a request is authenticated when any enabled source yields a principal; everything downstream is source-blind. Trusted-proxy headers = v1; native OIDC designed-not-built (PocketBase-shaped provider abstraction, Ed25519 signed tokens, PKCE+state, principal = `sub` never email, `/v1/auth/begin` + callback as the one non-JSON browser surface); API keys `dlm_…` hashed in the registry; #160 builds the seam (mirrored on issue #160) | §1, §1.4–1.5 |
+| D21 | Identity is additive, pluggable **sources** behind one seam; a request is authenticated when any enabled source yields a principal; everything downstream is source-blind. Trusted-proxy headers = v1; native OIDC designed-not-built (PocketBase-shaped provider abstraction, Ed25519 signed tokens, PKCE+state, principal = `sub` never email, `/v1/auth/begin` + callback as the one non-JSON browser surface); API keys `dlm_…` hashed in the registry; the authn stream builds the seam | §1, §1.4–1.5 |
 | D22 | Credential model on record: humans get expiring signed tokens, machines get hashed revocable named keys carrying principal + optional groups; no sessions/refresh/email/user records (deliberate — nothing user-shaped to leak, IdP owns recovery); accepted losses on record — no per-device revocation (revoke = rotate the signing secret), no sliding sessions; enterprises use the gateway tier | §1.4–1.6 |
 | D23 | Bootstrap written up explicitly: the deadlock rationale; the admin key is a kingmaker, not a king (implicit grant on the credential, identity vanishes with the env, grants persist; `dolmen-admin` reserved across all sources; removal safe via the root-admin startup check + last-admin guard). Namespace-creation gates: `auth: off` implicit forever; `auth: on` `not_found`-after-authz; `create_namespace` requires `admin` on the parent; `schema` creates content, never tenancy | §1.3, §2 |
-| D24 | Realtime change notifications join the spec ("one bag" — auth, authz, and subscription designed together): four layers in build order (durable per-namespace change log + `changes_since` → `wait_for` long-poll ≤60s → SSE `subscribe` for agent hosts → webhooks designed-not-built); a subscription is a **standing read** (`read` verb, visible set, **per-event** scope evaluation, mid-subscription revocation drops the stream); events emitted at the op layer **after commit** (no CDC; order = §0.6 serial observability; cross-pod fan-out = engine-declared capability); durable gap-free per-namespace cursors with a retention knob (beyond retention = teaching error); realtime ops exist in both modes (data ops, not auth surface); decoding stays OUT (agent decodes; fiso is the codec layer for non-LLM pipelines) | §9 |
+| D24 | Realtime change notifications join the spec ("one bag" — auth, authz, and subscription designed together): four layers in build order (durable per-namespace change log + `changes_since` → `wait_for` long-poll ≤60s → SSE `subscribe` for agent hosts → webhooks designed-not-built); a subscription is a **standing read** (`read` verb — or any data verb under `row_access`, own rows only — visible set, **per-event** scope AND credential evaluation, mid-subscription revocation drops the stream, source-A streams duration-bounded with the documented gateway termination obligation); change records and cursors are **minted inside the write transaction** (per-record table-lifetime key and internal owner label; no CDC; notification after commit only, never the durability mechanism; order = §0.6 serial observability; cross-pod fan-out = engine-declared capability); durable gap-free per-namespace cursors with a retention knob (beyond retention = teaching error); realtime ops exist in both modes (data ops, not auth surface); decoding stays OUT (agent decodes; fiso is the codec layer for non-LLM pipelines) | §9 |
