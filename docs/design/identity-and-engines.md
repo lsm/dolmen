@@ -172,6 +172,7 @@ semantics, and cannot be merged or rewritten in flight by generic forwarding lay
 | `-auth` | `DOLMEN_AUTH` | `off` | `off` = v0.2.0 behavior (§8). `on` = deny-by-default; identity is required. |
 | `-trusted-proxies` | `DOLMEN_TRUSTED_PROXIES` | empty | Comma-separated CIDRs (bare IPs allowed). Only peers inside these ranges may assert §1.1 headers. |
 | `-max-groups` | `DOLMEN_MAX_GROUPS` | `128` | Maximum group entries accepted per request (§1.1). Valid range 1–1024; values outside the range are rejected at startup, consistent with existing config validation. Non-secret, so flag + env twin per convention. *Why 128 and configurable (amended 2026-09-04): Entra tokens routinely carry 200+ group claims for well-connected users; 128 keeps default operations pain-free while the deployment guide tells gateway operators to filter to relevant groups.* |
+| `-max-subscription-age` | `DOLMEN_MAX_SUBSCRIPTION_AGE` | `30m` | Ceiling on `subscribe` connection age (§9.3): at the bound the server teaching-closes and the client reconnects — re-asserting headers, hence refreshing a source-A identity — resuming from its cursor. Valid range `0` or `1s`–`24h`; other values rejected at startup, consistent with existing config validation. `0` disables the bound, documented as removing source A's identity-refresh backstop — not recommended with the header source enabled. Non-secret, so flag + env twin per convention. *Why 30m (added 2026-09-06): the bound is the backstop for the gateway's connection-termination obligation (§9.3) — short enough that a gateway identity change takes effect within minutes-to-an-hour, long enough not to churn healthy streams.* |
 
 Rules:
 
@@ -1255,7 +1256,9 @@ the sleeping agent holds nothing, burns nothing, and is told.
   `wait_for`'s bounded window makes the same revaluation implicit at every return. Source A has
   no credential state to revalidate — its identity is headers asserted once on the request that
   opens the stream, and dolmen holds no gateway-session or group-membership state (§0) — so
-  source-A streams are **bounded by a configurable maximum connection duration**: at the bound
+  source-A streams are **bounded by `-max-subscription-age`/`DOLMEN_MAX_SUBSCRIPTION_AGE`**
+  (§1.2: default `30m`, valid `0` or `1s`–`24h`, startup-rejected outside; `0` disables the bound
+  and with it the backstop): at the bound
   the server teaching-closes and the client reconnects, which re-asserts headers and thus
   refreshes the identity cheaply (cursor resume). The deployment obligation is documented
   alongside §1.2's reachability assumption: the gateway **must terminate the upstream connection
@@ -1292,8 +1295,11 @@ the sleeping agent holds nothing, burns nothing, and is told.
   table's **current** lifetime, so a caller granted on a recreated same-named successor can never
   replay a predecessor's records from an old cursor — `scopeIncarnation` proves the current table
   is authorized, but only the per-record lifetime label can tell which lifetime produced each
-  historical record. (Deleting predecessor records on drop would forfeit the namespace's
-  gap-free replay; labeling keeps the log intact and filters instead.) Namespace-wide feeds are
+  historical record. (Deleting a dropped table's records instead would punch a hole in the
+  per-namespace sequence — retention would become table-scoped, and every table drop would force
+  a "beyond retention" error onto mid-replay clients, contradicting the gap-free cursor guarantee;
+  labeling with delivery-time lifetime filtering is the only shape consistent with it.)
+  Namespace-wide feeds are
   guarded by `nsGen` like `query` and deliver the namespace's own recorded history — their
   readers held namespace read throughout.
 
