@@ -40,7 +40,7 @@ adapter #1's mapping, not the definition of tenancy:
 |---|---|---|
 | namespace → | one file | one schema |
 | isolation | physical (the file is the wall) | engine-enforced (schema confinement; native RLS available) |
-| raw-SQL confinement | free (separate file) | role-per-schema **privileges** — the connection's role has no access to other schemas (`search_path` alone is only name resolution) |
+| raw-SQL confinement | free (separate file) | role-per-schema **privileges** plus **catalog rejection** (`pg_catalog`/`information_schema` and function-equivalent probes refused on the query path, §0.5.3 — privileges alone are not confinement) |
 | RowScope (own-rows) | predicate conjoined in SQL | predicate, **or delegated to native RLS** |
 
 **Postgres is the reference shared engine (amended 2026-09-06):** dolmen is an *operational*
@@ -96,8 +96,13 @@ status, like webhooks §9)** — now designed *as an engine*, not as a read-side
 ### 0.5.3 Raw-SQL confinement is an engine obligation
 
 Contract, not a SQLite accident: `query` executes within exactly ONE namespace, and the engine
-must make cross-namespace reference **impossible by mechanism** — separate file (SQLite),
-role-per-schema privileges (Postgres). Name-resolution pinning
+must make cross-namespace reference **impossible by mechanism** — separate file (SQLite);
+role-per-schema privileges (Postgres) **plus catalog rejection**: ordinary roles can read
+`pg_catalog`/`information_schema` (`pg_namespace`, `pg_class`, …), which would enumerate other
+tenants' schema and table names through §2's existence-hiding rules — so the Postgres adapter's
+query path REJECTS references to system catalogs and equivalent function-based probes
+(`current_schemas()`, `pg_*` functions revealing names), or deploys a stronger mechanism
+(a database per namespace); schema privileges alone are NOT confinement. Name-resolution pinning
 (`search_path`, prefix qualification) is **not** confinement: a fully qualified
 `other_schema.table` still resolves when the shared connection's role can reach it — the
 mechanism must be privilege-based (a role with no access to other namespaces' objects) or an
@@ -339,7 +344,14 @@ OIDC covers Entra, Okta, Google, etc.
 - The credential is a **stateless signed token**: Ed25519-signed, presented as a bearer, with
   the TTL configured by `DOLMEN_AUTH_OIDC_TOKEN_TTL` — default `168h` (7 days, the short end of
   the design's 7–14 d window), valid range `1h`–`720h` (30 days), other values rejected at
-  startup alongside the rest of the OIDC config. No session store — the trade-offs are on record in
+  startup alongside the rest of the OIDC config. **The wire format is pinned** so a token
+  minted by one replica or release verifies identically on another: a compact JWT —
+  header `{"typ":"dolmen-token","alg":"EdDSA","kid":<keyring key id>}`; claims `v` (format
+  version, integer, currently `1`), `iss` (the deployment's own stable issuer id), `sub` (the
+  issuer-qualified principal string, `oidc:v1:…` above), `grp` (array of qualified group
+  strings, possibly empty), `iat` and `exp` (unix seconds); verification requires a valid
+  signature under the keyring key named by `kid` (rotation overlap honored, §1.4's keyring),
+  an unexpired `exp`, and a supported `v` — an unknown version rejects, never guesses. No session store — the trade-offs are on record in
   §1.6. The **signing key is persistent, deployment-wide configuration, never per-process**:
   single-process deployments persist it beside the grant registry; shared-engine multi-process
   topologies coordinate it exactly as the grant registry's placement is topology-bound (§3
@@ -1359,7 +1371,10 @@ engine's capability surface — the **`capabilities` op** (§2; both modes, the 
 `describe_server`'s `auth: on`-only extension inlining the same data, kept out of the auth-off
 response so it stays byte-identical v0.2.0 (§8.1; adapter #1
 under `auth: off` is exact brute-force and reports nothing new) — and **per-result execution
-metadata** on `search_vector` responses under `auth: on` (the mode where ANN can serve); under
+metadata** on `search_vector` responses under `auth: on` (the mode where ANN can serve): a
+canonical response-level field — `"execution": "exact" | "ann"` — an envelope key, never a row
+field, closed enum, one path per response (the response names the path that served it, so
+fallback switches are visible per query); under
 `auth: off` the field is absent entirely — the exact path emits nothing, and existing clients
 and golden fixtures see byte-identical responses
 (which path served it — an engine that switches between ANN and exact fallback as an index
