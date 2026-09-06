@@ -333,8 +333,15 @@ OIDC covers Entra, Okta, Google, etc.
   papered over: Entra emits group claims as object GUIDs, not names, so Entra deployments either
   sync names or grant on the GUIDs. And because OIDC subject identifiers are unique **only
   within an issuer**, source B's principals and groups are **issuer-qualified**: the source
-  yields the pair (issuer, `sub`) — serialized opaquely, exact form is the source layer's — and
-  likewise qualifies its group claims. A deployment that changes
+  yields the pair (issuer, `sub`) under a **stable, injective, grant-safe encoding** — the
+  issuer folds to a fixed-length base32 digest (collision risk negligible and pinned), the
+  `sub` (or group claim) appends verbatim, and the whole is validated against §3.1's subject
+  charset and length at authentication: an identity that cannot be encoded within the grant
+  limits is rejected at the source (`401`) rather than authenticating into a body no durable
+  grant can name. Deterministic and injective across issuers by construction, so the same
+  (issuer, claim) always yields the same principal and different issuers never collide; the
+  exact serialization is otherwise the source layer's. The same encoding qualifies group claims.
+  A deployment that changes
   `DOLMEN_AUTH_OIDC_ISSUER` therefore mints a disjoint principal population: a same-`sub` user
   at the new issuer is a *different* principal and inherits nothing — grants from the old
   issuer never match (fail-closed), and if the old issuer's principals held the only root
@@ -1100,7 +1107,13 @@ type Engine interface {
     // the registration point — records committing in the interim buffer
     // (a bounded queue) and are delivered after, so the concatenation
     // replay-then-live is exactly cursor order and a client persisting only
-    // its last-delivered cursor can never skip older records. If the client
+    // its last-delivered cursor can never skip older records. Per-event
+    // authorization — the caller's RowScope and its incarnation, passed in —
+    // runs BEFORE queue admission: foreign records never enter the handoff
+    // queue at all, so they cannot fill it, displace, or starve a scoped
+    // subscriber; §9.3's foreign-rows-never-wake rule holds under backpressure
+    // too, and the overflow-reconnect below can only ever be triggered by the
+    // subscriber's own visible traffic. If the client
     // drains the replay slower than writes arrive and the interim buffer
     // bounds, the engine closes the stream with the teaching reconnect
     // recipe (resume from the persisted cursor — the log is durable; the
@@ -1115,7 +1128,7 @@ type Engine interface {
     // still meets its bounded-time contract via internal scanning, subscribe
     // may be declared unavailable — surfaced like every other engine
     // capability; notification is never the durability mechanism (§9.3).
-    Listen(ctx context.Context, ns, table string, from Cursor, notify func(ChangeRecord)) (*ChangeReplay, cancel func(), error)
+    Listen(ctx context.Context, ns, table string, from Cursor, scope *RowScope, scopeIncarnation Incarnation, notify func(ChangeRecord)) (*ChangeReplay, cancel func(), error)
 
     // Filtered reads — Query takes NO scope: the API layer gates raw SQL by table-wide
     // read (§4.4), which is precisely why no scope parameter exists here. nsGen is the
