@@ -100,7 +100,8 @@ Changes:
   `EngineCapabilities` — and every remaining type the §6.2 signatures reference:
   `TableOpts` (carrying the future `row_access` option, so 9a adds a value without
   re-signaturing `CreateTable`), `QueryResult`, `SearchResult`, `VectorQuery`, and
-  `ChangeRange` (what `InsertResult`/`UpdateResult` carry).
+  `ChangeRange` (carried by every write result — `InsertResult`, `UpdateResult`, AND
+  `DeleteResult`, §6.2).
 - Doc comments copied tight from §6.2 (the global rules: never create implicitly, atomic
   incarnation verification, empty-bindings meaning).
 
@@ -282,7 +283,8 @@ Changes:
   (owner is immutable — callers cannot set it); `UpdateResult` carries the range.
 - `Delete` (search.go:261-345): records for the `_dolmen_delete_ids` set — delete events carry the
   owner stamp from the pre-delete rows (owner is NULL until 9c; the column exists now so no
-  registry rebuild later).
+  registry rebuild later); `DeleteResult` carries the minted range (§6.2: every write result
+  does — bulk deletes included).
 - `DropTable` does **not** purge change records (lifetime labels, not deletion — §3.4/D24);
   `DropNamespace` deletes the log with the file, free.
 
