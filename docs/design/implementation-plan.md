@@ -483,6 +483,10 @@ Changes:
   `^[A-Za-z0-9_-]{32,256}$`; a `dlm_`-prefixed value is a startup error, §1.3) — in `loadConfig`
   (`main.go:142-225`) + env help table.
 - Config struct fields plumbed to `api.New` via a new option (carried, unused until 7b).
+- The fail-closed `-auth on` startup rejection installs **here** — the slice that introduces
+  the value must reject what it cannot honor: a 7a-only revision that silently boots with
+  authentication disabled while the operator selected `on` would be the worst outcome of all.
+  7b keeps the gate through the middleware work; 8d lifts it.
 
 Files: `main.go`, `internal/api/server.go` (option); `main_test.go`.
 
@@ -645,7 +649,7 @@ Acceptance: conformance shape/validation pins; ops absent from dispatch under `a
 end-to-end from 8d.)
 
 ### 8c. Authorization resolution in dispatch
-**Spec:** §3.3, §2 (verb table), §6.2 (AuthBinding) · **Dep:** 8b, 7b, 7e, 8e, 6b, 6c, 8f, 9h, 5a, 9g
+**Spec:** §3.3, §2 (verb table), §6.2 (AuthBinding) · **Dep:** 8b, 7b, 7e, 8e, 6b, 6c, 8f, 9h, 5a, 5d, 9g
 
 Goal: deny-by-default becomes real — every op checks its required verb(s) against resolved
 grants; the engine guards receive real bindings. Enforcement is complete here; the `auth: on`
@@ -715,9 +719,16 @@ Changes:
   (`read` on the selected table(s), or the namespace for unfiltered feeds) at stream open and
   re-evaluates live — an authenticated-but-ungranted caller gets 403 and no frames from the
   first enforcing revision (9d adds per-record owner-label scope filtering when `row_access`
-  goes live).
+  goes live). The work lives in the SSE handler itself (`sse.go` — the `Listen` call site that
+  supplies the `liveAuthz` callback), which joins this slice's file list.
+- `wait_for` revalidates authorization from activation: identity/grant resolution re-runs
+  after each wake and immediately before returning a page (§9.3 — the bounded window makes
+  the revaluation implicit at every return; 5d is a dependency so the op exists), so a
+  request blocked before a revocation never returns committed changes under stale initial
+  authorization.
 
-Files: `internal/api/auth.go`, `internal/api/ops.go` (dispatch), `internal/store/engine.go`,
+Files: `internal/api/auth.go`, `internal/api/ops.go` (dispatch), `internal/api/sse.go` (the
+standing-read gate and live re-evaluation live in the handler), `internal/store/engine.go`,
 and the concrete operation files that carry the in-transaction checks — `lifecycle.go`,
 `store.go`, `insert.go`, `update.go`, `upsert_key.go`, `search.go`, `vector.go`, `query.go`,
 `migrate.go`, `changelog.go`, `getrows.go` (2b's ignored guard parameters become enforced
@@ -940,11 +951,10 @@ Changes:
   teaching-closes the stream (§9.3). Per-event **credential** revalidation rides the same
   callback: API-key state is rechecked per event once keys exist (10b), and token-backed
   streams close no later than the token's `exp` — a deadline armed at stream open, firing the
-  teaching close even when no event arrives — once tokens exist (10e). `wait_for` revalidates
-  too — §9.3 makes the revaluation implicit at every return of the bounded window: identity/
-  grant/scope resolution re-runs after each wake and immediately before returning a page, so a
-  grant or key revoked mid-wait never delivers the already-matched page (a
-  revoke-while-waiting case joins the acceptance).
+  teaching close even when no event arrives — once tokens exist (10e). (`wait_for`'s
+  after-wake/pre-return revalidation landed with 8c's activation path — before `auth: on`
+  ever boots; this slice's scope machinery joins that recheck for `row_access` tables, and
+  the revoke-while-waiting case joins the acceptance here.)
 - Public flip (deferred to 9j): `create_table` accepting the `row_access` key and
   `set_row_access` joining dispatch happen only when every scoped path enforces — the
   enforcement series 9d–9i lands as machinery with store-level pins, and 9j turns the surface
