@@ -537,14 +537,11 @@ Changes:
   ungranted; `list_tables` → `not_found` ungranted. Envelope shapes pinned.
 - Auth-off invariants: headers ignored even from trusted CIDRs (send them, assert no principal
   anywhere).
-- `describe_server`'s `auth: on`-only extension lands here (§2): the response reports the auth
-  mode, the enabled identity sources (read-only names — `trusted-proxy` when proxies are
-  configured and `admin-key` when `DOLMEN_ADMIN_KEY` is set, initially; `api-keys`
-  joins with 10b, `oidc` with 10f; never key material), and the engine capability surface
-  inlined verbatim from the `capabilities` op (5a); under `auth: off` the response stays
-  byte-identical (§8.1).
+- Gateway conformance asserts `describe_server`'s auth-on extension — landed with 8d, at
+  activation, so no bootable revision ever lacks it: auth mode, enabled-source names, and the
+  engine capabilities inlined from the op (5a); auth-off byte-identical (§8.1).
 
-Files: `internal/api/ops.go` (describe_server extension), `internal/conformance/` (new
+Files: `internal/conformance/` (new
 `auth_mode_test.go` + harness extension).
 
 Acceptance: the full sweep runs green in `make test`; op-count table-driven so new ops join
@@ -663,6 +660,21 @@ Changes:
   `schema`/`admin` receive an explicit empty visible set and a count of 0 (§4.3 — every
   table, default tables included); `read`/data-verb holders get the table-wide count until
   9d's scope work refines `row_access` tables.
+- The §6.2 plan→apply binding lands here, in the activation path: dry-run responses carry the
+  opaque `expected_incarnation` token, and under `auth: on` an apply carrying any
+  precondition MUST carry it — `expected_version` alone is `invalid_request` (a same-named
+  successor recreated at version 1 matches the bare version while ancestor authorization
+  legitimately covers it; the predecessor's destructive plan must 409 on the token mismatch).
+  `expected_version` stays the auth-off compatibility path; 9i folds the token into the
+  in-transaction guard.
+- §7's auth-on search semantics are in force from the first bootable revision: canonical
+  cosine (float32-normalized operands, binary64 accumulation, correctly-rounded sqrt,
+  zero-norm → exactly 0, quotient clamped to `[-1, 1]`), `q(s) = floor(s / fl64(1e-9))`
+  ordering with `id` tiebreak (FTS ranks compared with the same quantization), `min_score`
+  constrained to `[-1, 1]` (`invalid_request` outside; threshold `q(s) ≥ q(min_score)`), and
+  the response-level `execution` field (`"exact"` on adapter #1; closed enum; absent under
+  `auth: off` per §8.1). 9e/9f carry only the visible-corpus enforcement; the auth-off path
+  stays bit-for-bit raw.
 - The SSE route joins deny-by-default: `/v1/subscribe` checks the §2/§9.3 standing-read target
   (`read` on the selected table(s), or the namespace for unfiltered feeds) at stream open and
   re-evaluates live — an authenticated-but-ungranted caller gets 403 and no frames from the
@@ -674,7 +686,8 @@ and the concrete operation files that carry the in-transaction checks — `lifec
 `store.go`, `insert.go`, `update.go`, `upsert_key.go`, `search.go`, `vector.go`, `query.go`,
 `migrate.go`, `changelog.go`, `getrows.go` (2b's ignored guard parameters become enforced
 here; the interface file alone activates nothing; 5a is a dependency so `getrows.go` exists
-to be guarded). 6c is a dependency because trusted-proxy streams
+to be guarded) — plus `internal/api/openapi.go` and `internal/mcp/server.go` for the
+`execution` field's schemas. 6c is a dependency because trusted-proxy streams
 carry no credential state to revalidate — the age bound is their identity-refresh backstop.
 
 Acceptance: gateway conformance — the 7d sweep's 403s become real; inheritance-down,
@@ -698,8 +711,15 @@ Changes:
   (7c, transitive), and the usable-root-administrator check (this slice) all exist — no
   `auth: on` revision ever booted permissive or administratively dead (7d's full sweep runs
   from the next slice on).
+- `describe_server`'s `auth: on`-only extension lands here, at activation (§2) — no bootable
+  revision lacks it: the response reports the auth mode, the enabled identity sources
+  (read-only names — `trusted-proxy` when proxies are configured and `admin-key` when
+  `DOLMEN_ADMIN_KEY` is set; `api-keys` joins with 10b, `oidc` with 10f; never key material),
+  and the engine capability surface inlined verbatim from the `capabilities` op (5a); under
+  `auth: off` the response stays byte-identical (§8.1). 7d pins it in conformance.
 
-Files: `main.go`, `internal/store/grants.go` (guard helper), tests.
+Files: `main.go`, `internal/api/ops.go` (describe_server extension), `internal/store/grants.go`
+(guard helper), tests.
 
 Acceptance: guard tests for every "last admin" shape incl. the group-grant decoy; startup
 failure messages pinned.
@@ -876,7 +896,11 @@ Changes:
   teaching-closes the stream (§9.3). Per-event **credential** revalidation rides the same
   callback: API-key state is rechecked per event once keys exist (10b), and token-backed
   streams close no later than the token's `exp` — a deadline armed at stream open, firing the
-  teaching close even when no event arrives — once tokens exist (10e).
+  teaching close even when no event arrives — once tokens exist (10e). `wait_for` revalidates
+  too — §9.3 makes the revaluation implicit at every return of the bounded window: identity/
+  grant/scope resolution re-runs after each wake and immediately before returning a page, so a
+  grant or key revoked mid-wait never delivers the already-matched page (a
+  revoke-while-waiting case joins the acceptance).
 - Public flip (deferred to 9j): `create_table` accepting the `row_access` key and
   `set_row_access` joining dispatch happen only when every scoped path enforces — the
   enforcement series 9d–9i lands as machinery with store-level pins, and 9j turns the surface
@@ -910,21 +934,11 @@ Changes:
 - `SearchFulltext`: FTS candidate ids intersected with the materialized visible set, and the
   caller filter evaluated only over surviving ids before fetch; `truncated` over visible
   matches (the ranking-isolation refinement is 9f).
-- `describe_table`/`read_rows` scope from 9d rides here in conformance.
-- §7's auth-on scoring tier lands here: canonical cosine (float32-normalized operands,
-  binary64 component-wise accumulation, correctly-rounded sqrt, zero-norm → exactly 0, final
-  quotient clamped to `[-1, 1]`); ordering and thresholds via `q(s) = floor(s / fl64(1e-9))`
-  with `id` tiebreak; `min_score` constrained to `[-1, 1]` (`invalid_request` outside),
-  threshold compares `q(s) ≥ q(min_score)`. The auth-off path stays bit-for-bit raw
-  (§7/§8.1); conformance pins the buckets, the clamp, and the range rejection.
-- §7's execution metadata rides auth-on `search_vector` responses: the canonical
-  response-level `execution` field (`"exact"` on adapter #1's brute-force path; the closed
-  enum is ready for a declared-ANN engine), absent under `auth: off` (§8.1); OpenAPI/MCP
-  schemas updated; conformance asserts presence-and-value under `auth: on` and absence under
-  `auth: off`.
+- `describe_table`/`read_rows` scope from 9d rides here in conformance. (§7's auth-on
+  scoring tier, `min_score` range validation, and the `execution` field landed with 8c, in
+  the activation path — this slice adds only the visible-corpus enforcement above.)
 
-Files: `internal/store/vector.go`, `search.go`, `internal/api/ops.go` (execution field),
-`internal/api/openapi.go`, `internal/mcp/server.go`; conformance.
+Files: `internal/store/vector.go`, `search.go`; conformance.
 
 Acceptance: foreign rows never surface or displace; the §4.3 error-oracle expression pinned as
 a conformance case (a scoped search filter whose allowed expression would overflow on a
@@ -939,9 +953,9 @@ Goal: adapter #1 isolates ranking statistics per visible corpus.
 Changes:
 - Filter-then-rescore over the shared FTS index: candidates restricted to visible ids, rank
   computed over that corpus (per-scope index partitioning is the documented alternative —
-  engine's choice per §7, conformance-verifiable either way). §7's auth-on comparison tier —
-  the emitted ranks compared with the same canonical `q()` quantization and `id` tiebreak —
-  rides this slice.
+  engine's choice per §7, conformance-verifiable either way). The auth-on `q()` rank
+  comparison itself landed with 8c's activation semantics; this slice adds only the
+  corpus isolation.
 
 Files: `internal/store/search.go`; conformance.
 
@@ -1012,12 +1026,10 @@ Changes:
   here inside the ordering §4.2/§2 pin — before any data-dependent check or provider call —
   and §4.3's response-disclosure rules (visible-set counts, redacted rejections) join with
   the scope machinery.
-- The §6.2 cross-request plan→apply binding: dry-run responses carry the opaque
-  `expected_incarnation` token (the plan's `Incarnation`), and under `auth: on` an apply
-  carrying any precondition MUST carry it — `expected_version` alone is `invalid_request`
-  (version 1 cannot distinguish a same-named predecessor recreated at version 1; a stale
-  destructive plan must 409 on the token mismatch). `expected_version` remains the auth-off
-  compatibility path.
+- The §6.2 `expected_incarnation` plan→apply binding (landed with 8c, in the activation
+  path) is folded into the same in-transaction consistent-or-stale guard as every scoped
+  operation — the token's `Incarnation` is verified inside apply's transaction, not just at
+  dispatch; `expected_version` remains the auth-off compatibility path.
 
 Files: `internal/store/` (guard in each scoped method), `internal/api/ops.go` (migrate gate);
 tests.
