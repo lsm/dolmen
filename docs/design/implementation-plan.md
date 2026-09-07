@@ -497,10 +497,14 @@ Changes:
   authenticated-but-permissive dispatch or an administratively dead boot. The middleware and
   its 401 rules are exercised here at unit/handler level; `auth: off` stays byte-identical;
   7d's gateway fixtures (post-8d) cover the end-to-end surface.
-- `whoami` op (auth:on-only: absent from dispatch under off — §2 transport parity).
+- `whoami` op (auth:on-only: absent from dispatch under off — §2 transport parity) **and
+  mode-aware OpenAPI/MCP discovery**: `OpenAPIDoc`/`tools/list` are filtered by auth mode —
+  the op registry enumerates globally, so `whoami` (and the later grant/key ops) must be
+  explicitly hidden under `auth: off`, keeping the surface byte-identical (§8.1).
 
 Files: new `internal/api/auth.go`, `internal/api/envelope.go`, `internal/api/server.go`,
-`internal/api/ops.go` (whoami), `internal/mcp/server.go`, `main.go` (the fail-closed
+`internal/api/ops.go` (whoami), `internal/api/openapi.go` (mode-aware op filtering),
+`internal/mcp/server.go`, `main.go` (the fail-closed
 `-auth on` startup gate is installed in the startup path — 7a only carries the configuration;
 8d lifts the gate from there); tests.
 
@@ -881,7 +885,7 @@ Files: `internal/store/insert.go`, `update.go`, `upsert_key.go`, `typed.go`,
 Acceptance: stamping on every write path; `owner` visible in reads, never in declared fields.
 
 ### 9d. RowScope computation + CRUD and feed enforcement
-**Spec:** §4.3, §2 (feed verb rows), §9.3 · **Dep:** 9c, 5a, 5c, 5d, 6b, 8c
+**Spec:** §4.3, §2 (feed verb rows), §9.3 · **Dep:** 9c, 5a, 5c, 5d, 6b, 8c, 7d
 
 Goal: the visible set is computed above the seam and enforced below it — for row CRUD and the
 realtime feeds in the same slice, so no revision exists with CRUD enforced but feeds leaking
@@ -1062,13 +1066,19 @@ Changes:
   live.
 - `query` on `row_access` tables requires table-wide `read` (403 otherwise) — the namespace-level
   gate from 8c already covers the rest.
+- Auth-mode-aware schema projection: under `auth: off`, `describe_table` and every
+  schema-bearing response omit the `row_access` annotation even for tables that carry it from
+  an `auth: on` era — §8.1's "never appears under `auth: off`" covers reopened data
+  directories, not just creation (the 9a/9j gates prevent creating such tables, not leaking
+  the annotation).
 - Conformance: the umbrella end-to-end scenario (default permissions; write-own-read-own;
   read-only elsewhere; list/create asymmetry; raw SQL denied; upsert non-leak; idempotent
   replay owner-only; `truncated` never leaks) and the append-only telemetry scenario; the
   fail-closed (corrupt grant store → 500, never bypass) and source-blindness subset (runs fully
-  in 10g).
+  in 10g); the auth:off projection pin (an auth:on-era `row_access` table described under off
+  shows no annotation).
 
-Files: `internal/api/ops.go` (gate), `internal/conformance/` (scenarios).
+Files: `internal/api/ops.go` (gate + schema projection), `internal/conformance/` (scenarios).
 
 Acceptance: both scenarios green in gateway mode; fail-closed test; the 9a/9b public-surface
 pins green from here.
