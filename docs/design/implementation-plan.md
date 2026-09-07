@@ -465,6 +465,11 @@ Changes:
   (`mcp/server.go:119`), and the `/v1/subscribe` SSE route (its own mux entry since 6b —
   streams carry identity too); identity into the op-context and the request's log line beside
   `X-Request-Id`.
+- Fail-closed rollout: `-auth on` is a **startup error until 8c** — the mode that promises
+  deny-by-default never boots without deny-by-default, so no revision is deployable with
+  authenticated-but-permissive dispatch. The middleware and its 401 rules are exercised here
+  at unit/handler level; `auth: off` stays byte-identical; 7d's gateway fixtures (post-8c)
+  cover the end-to-end surface.
 - `whoami` op (auth:on-only: absent from dispatch under off — §2 transport parity).
 
 Files: new `internal/api/auth.go`, `internal/api/envelope.go`, `internal/api/server.go`,
@@ -481,29 +486,26 @@ Goal: fail-fast at boot for decidable misconfigurations.
 Changes:
 - `auth: on` with no identity source at all (no trusted proxies, no admin key) = startup error.
 - Admin-key-only deployments validated per §1.2. (The root-administrator usability check needs
-  grants — 8d completes it.)
+  grants — 8d completes it; the `auth: on` runtime checks are exercised from 8c, when the mode
+  first boots.)
 
 Files: `main.go` (run), `main_test.go`.
 
 Acceptance: startup tests for each failure mode with the teaching message pinned.
 
 ### 7d. Gateway-mode conformance
-**Spec:** §8.2 (gateway mode), §8.3 items 1–4 · **Dep:** 7b, 1
+**Spec:** §8.2 (gateway mode), §8.3 items 1–4 · **Dep:** 7b, 1, 8c
 
-Goal: the deny-by-default sweep and gateway fixtures exist — the safety net for every later auth
-slice — asserting only what is enforceable at this point: the 401 half. Grant enforcement is 8c,
-so between 7b and 8c dispatch under `auth: on` is authenticated-but-not-yet-authorized — an
-intermediate build state of the epic, not the contract — and the sweep's
-authenticated-but-ungranted rows (403s) activate with 8c, where they first hold.
+Goal: the full deny sweep and gateway fixtures exist — the safety net for every later auth
+slice — running against real enforcement: `auth: on` boots from 8c, so both halves of the
+sweep hold from this slice on and no permissive window was ever deployable.
 
 Changes:
 - Harness mode `gateway` (env-configured server; identity-injecting helpers from slice 1).
-- Deny sweep, enforceable half: every op — no identity → 401 `unauthorized`; untrusted-peer
-  identity → 401; grant-free ops (`describe_server`, `infer_schema`, `list_namespaces`,
-  `whoami`, `capabilities`) succeed ungranted. Envelope shapes pinned. The
-  authenticated-but-ungranted rows — 403 `forbidden` for grant-protected ops, `list_tables` →
-  `not_found` ungranted — ride the same table but are asserted from 8c on, when enforcement
-  exists.
+- Deny sweep, complete: every op — no identity → 401 `unauthorized`; untrusted-peer identity →
+  401; authenticated-but-ungranted → 403 `forbidden` for grant-protected ops; grant-free ops
+  (`describe_server`, `infer_schema`, `list_namespaces`, `whoami`, `capabilities`) succeed
+  ungranted; `list_tables` → `not_found` ungranted. Envelope shapes pinned.
 - Auth-off invariants: headers ignored even from trusted CIDRs (send them, assert no principal
   anywhere).
 - `describe_server`'s `auth: on`-only extension lands here (§2): the response reports the auth
@@ -515,9 +517,8 @@ Changes:
 Files: `internal/api/ops.go` (describe_server extension), `internal/conformance/` (new
 `auth_mode_test.go` + harness extension).
 
-Acceptance: the enforceable half of the sweep runs green in `make test`; op-count table-driven
-so new ops join the sweep automatically and flip their 403 rows on at 8c; the auth:on
-extension pinned (auth-off byte-identical).
+Acceptance: the full sweep runs green in `make test`; op-count table-driven so new ops join
+automatically; the auth:on extension pinned (auth-off byte-identical).
 
 ### 7e. Namespace-creation gating above the seam
 **Spec:** §2 (implicit creation disabled under auth:on), §6.2 global rule · **Dep:** 7b
@@ -538,7 +539,8 @@ Files: `internal/store/store.go` (ns), `internal/api/` (dispatch helper + op cal
 store tests (mechanical ensure additions).
 
 Acceptance: auth-off conformance byte-identical (implicit creation still works through the op
-layer); gateway-mode tests show `not_found` (post-authz) for absent namespaces.
+layer); gateway-mode tests show `not_found` (post-authz) for absent namespaces (the
+gateway-mode pins ride with 7d's fixtures, which run post-8c).
 
 ### 8a. Grant registry store
 **Spec:** §3 preamble, §3.1–3.2 · **Dep:** 3b
@@ -582,18 +584,22 @@ Changes:
 Files: `internal/api/ops.go`, `internal/mcp/server.go`, `internal/api/openapi.go`; conformance.
 
 Acceptance: conformance shape/validation pins; ops absent from dispatch under `auth: off`
-(§8.1).
+(§8.1). (`auth: on` is not bootable until 8c — the pins run at handler level here and
+end-to-end from 8c.)
 
 ### 8c. Authorization resolution in dispatch
-**Spec:** §3.3, §2 (verb table), §6.2 (AuthBinding) · **Dep:** 8b, 7b, 7e, 8e, 6b
+**Spec:** §3.3, §2 (verb table), §6.2 (AuthBinding) · **Dep:** 8b, 7b, 7e, 8e, 6b, 8f, 9h
 
 Goal: deny-by-default becomes real — every op checks its required verb(s) against resolved
-grants; the engine guards receive real bindings. The 7e dependency is load-bearing: with
-`Store.ns()` still create-on-open, a covering `schema` grant could materialize a missing
-namespace through `create_table` — exactly the §2 bypass the parent-`admin` gate exists to
-prevent — so implicit creation must already be gone when enforcement lands. So is 8e: grants
-are lifetime-bound from the first enforcing revision — without 8e's recorded bindings, a
-dropped-and-recreated table's predecessor grant would still authorize the successor.
+grants; the engine guards receive real bindings — and `auth: on` becomes bootable (7b's
+fail-closed gate lifts). Every dependency is load-bearing: 7e — with `Store.ns()` still
+create-on-open, a covering `schema` grant could materialize a missing namespace through
+`create_table`, the §2 bypass the parent-`admin` gate exists to prevent; 8e — grants are
+lifetime-bound from the first enforcing revision, else a dropped-and-recreated table's
+predecessor grant still authorizes the successor; 8f — without the drop cascade a
+predecessor's row survives the drop inert-but-wedged, 409-ing every later re-grant of the
+same (subject, object); 9h — authenticated writes must never share a global idempotency
+domain, where two principals' same-keyed inserts collide, replay, or suppress each other.
 
 Changes:
 - `resolveVerbs(identity, object)` in `internal/api/auth.go`: union over principal subject +
@@ -606,8 +612,19 @@ Changes:
 - `AuthBinding` sets computed from matched grant rows and passed to engine calls (the 2a
   zero-values become real here); authz-precedes-existence for `list_tables` (ungranted →
   `not_found`).
-- The 7d sweep's deferred rows activate: authenticated-but-ungranted → 403 for grant-protected
-  ops; `list_tables` → `not_found` ungranted — deny-by-default is real from here on.
+- `auth: on` becomes bootable here: 7b's fail-closed startup gate lifts — the mode that
+  promises deny-by-default never boots without it — so no revision is deployable with
+  authenticated-but-permissive dispatch (7d's full sweep runs from the next slice on).
+- The §2 data-dependent migration list (`set_enum`, `set_row_access` enabling, every
+  vectorization change, FTS rebuild/removal paths, `add_field` with backfill or
+  required-no-backfill, `drop_field`) additionally requires table-wide `read` under
+  `auth: on` — from this slice on: the gate is a verb check and belongs to enforcement (a
+  `schema`-only caller must never trigger row-dependent outcomes or embedding-provider
+  calls); 9i re-verifies it against the scope machinery and adds §4.3's disclosure rules.
+- `describe_table`'s count follows the caller's verbs from here: holders of only
+  `schema`/`admin` receive an explicit empty visible set and a count of 0 (§4.3 — every
+  table, default tables included); `read`/data-verb holders get the table-wide count until
+  9d's scope work refines `row_access` tables.
 - The SSE route joins deny-by-default: `/v1/subscribe` checks the §2/§9.3 standing-read target
   (`read` on the selected table(s), or the namespace for unfiltered feeds) at stream open and
   re-evaluates live — an authenticated-but-ungranted caller gets 403 and no frames from the
@@ -722,7 +739,7 @@ Files: `internal/conformance/`, `internal/store/grants.go` (crash-injection help
 Acceptance: the full matrix green; both window behaviors pinned.
 
 ### 9a. `row_access` annotation + `owner` column
-**Spec:** §4.1 · **Dep:** 8c
+**Spec:** §4.1 · **Dep:** —
 
 Goal: the schema machinery for `row_access: "own"` — annotation, implicit `owner` column,
 reservation — exists. The public surface stays OFF: `create_table` keeps rejecting the key as
@@ -788,7 +805,7 @@ Files: `internal/store/insert.go`, `update.go`, `upsert_key.go`, `typed.go`,
 Acceptance: stamping on every write path; `owner` visible in reads, never in declared fields.
 
 ### 9d. RowScope computation + CRUD and feed enforcement
-**Spec:** §4.3, §2 (feed verb rows), §9.3 · **Dep:** 9c, 5a, 5c, 5d, 6b
+**Spec:** §4.3, §2 (feed verb rows), §9.3 · **Dep:** 9c, 5a, 5c, 5d, 6b, 8c
 
 Goal: the visible set is computed above the seam and enforced below it — for row CRUD and the
 realtime feeds in the same slice, so no revision exists with CRUD enforced but feeds leaking
@@ -846,6 +863,12 @@ Changes:
   caller filter evaluated only over surviving ids before fetch; `truncated` over visible
   matches (the ranking-isolation refinement is 9f).
 - `describe_table`/`read_rows` scope from 9d rides here in conformance.
+- §7's auth-on scoring tier lands here: canonical cosine (float32-normalized operands,
+  binary64 component-wise accumulation, correctly-rounded sqrt, zero-norm → exactly 0, final
+  quotient clamped to `[-1, 1]`); ordering and thresholds via `q(s) = floor(s / fl64(1e-9))`
+  with `id` tiebreak; `min_score` constrained to `[-1, 1]` (`invalid_request` outside),
+  threshold compares `q(s) ≥ q(min_score)`. The auth-off path stays bit-for-bit raw
+  (§7/§8.1); conformance pins the buckets, the clamp, and the range rejection.
 - §7's execution metadata rides auth-on `search_vector` responses: the canonical
   response-level `execution` field (`"exact"` on adapter #1's brute-force path; the closed
   enum is ready for a declared-ANN engine), absent under `auth: off` (§8.1); OpenAPI/MCP
@@ -868,7 +891,9 @@ Goal: adapter #1 isolates ranking statistics per visible corpus.
 Changes:
 - Filter-then-rescore over the shared FTS index: candidates restricted to visible ids, rank
   computed over that corpus (per-scope index partitioning is the documented alternative —
-  engine's choice per §7, conformance-verifiable either way).
+  engine's choice per §7, conformance-verifiable either way). §7's auth-on comparison tier —
+  the emitted ranks compared with the same canonical `q()` quantization and `id` tiebreak —
+  rides this slice.
 
 Files: `internal/store/search.go`; conformance.
 
@@ -899,6 +924,8 @@ visible set per 9e — no foreign-row error, no leak; allowlist bounds pinned by
 **Spec:** §4.3 (final idempotency semantics) · **Dep:** 9c
 
 Goal: idempotency keys are per-(table, owner); foreign domains neither conflict nor reveal.
+This slice is required before authorization activates (8c depends on it): authenticated
+writes must never share a global idempotency domain.
 
 Changes:
 - `_dolmen_idempotency` gains `owner TEXT NOT NULL DEFAULT ''` (`''` = the legacy pre-auth
@@ -926,10 +953,10 @@ Changes:
 - `scopeIncarnation` verified inside every scoped operation's transaction (extend the existing
   consistent-or-stale pattern from version+dropgen to the full `Incarnation`); mismatch → 409
   retry.
-- The §2 data-dependent list (`set_enum`, `set_row_access` on, every vectorization change, FTS
-  rebuild/removal paths, `add_field` with backfill or required-no-backfill, `drop_field`)
-  additionally requires table-wide `read` under `auth: on` — enforced before any data-dependent
-  check or provider call.
+- The §2 data-dependent-migration read gate (enforced in dispatch since 8c) is re-verified
+  here inside the ordering §4.2/§2 pin — before any data-dependent check or provider call —
+  and §4.3's response-disclosure rules (visible-set counts, redacted rejections) join with
+  the scope machinery.
 - The §6.2 cross-request plan→apply binding: dry-run responses carry the opaque
   `expected_incarnation` token (the plan's `Incarnation`), and under `auth: on` an apply
   carrying any precondition MUST carry it — `expected_version` alone is `invalid_request`
