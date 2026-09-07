@@ -177,7 +177,10 @@ Changes:
 - `nsRe` single-segment regex (store.go:30) becomes a segment regex + `validateNSPath`
   (1–3 segments, no empty/leading/trailing/double slashes).
 - `nsPath` joins nested (`lifecycle.go:217`); `ns()` creates parent directories on first use of a
-  child; the `nss` cache keys by full path. A namespace and its subtree coexist (`a.db` beside
+  child; `CreateNamespace` creates the parent directory itself before its `O_EXCL` open — under
+  `auth: on` (post-7e) it is the sole creation path, and the first explicit creation of `a/b`
+  while `a` exists as `a.db` must not depend on the implicit-open path's directory creation;
+  the `nss` cache keys by full path. A namespace and its subtree coexist (`a.db` beside
   `a/`).
 - Existing call sites validate via `validateNSPath`; store tests for path grammar, layout, and
   coexistence.
@@ -1277,7 +1280,9 @@ Changes:
 
 Files: `internal/authn/oidc.go`, `internal/api/auth.go`, `internal/api/ops.go` (the
 `describe_server` source list gains `oidc`, matching 10b's `api-keys` update),
-`internal/api/server.go` (routes on),
+`internal/api/server.go` (routes on), `internal/api/openapi.go` (the browser routes are
+standalone paths, not `OpNames()` entries — mode-aware path entries advertise them under
+`auth: on` and omit them under `auth: off`),
 `main.go` (source-presence check); tests.
 
 Acceptance: encoding table tests; issuer-change lockout scenario pinned at startup; the 10d
