@@ -361,7 +361,10 @@ Changes:
   next-page token is valid to nearly `chain_start + 2R` while its records are nearly `2R` old;
   pure age-`R` pruning would break gap-free replay with a beyond-retention error or a
   shortened page on a perfectly valid cursor — pruning consults the durable chain rows, not
-  age alone), pinned by a slow multi-page-chain conformance test.
+  age alone), pinned by a slow multi-page-chain conformance test. `R = 0` disables more than
+  pruning: cursors never expire — no token deadlines, no chain cap, and `begin` starts at the
+  oldest retained record (§9.3 — the formulas must NOT apply, or `M ≥ T` skips retained
+  history and `chain_start + 0` expires every chain immediately); pinned by test.
 - `-change-retention` / `DOLMEN_CHANGE_RETENTION` (default `168h`, valid `0` or `1h`–`2160h`,
   startup-rejected outside) in `main.go` config (`loadConfig`, env help).
 
@@ -950,7 +953,9 @@ Changes:
   column; NULL-owner rows (written under auth:off) read as NULL.
 
 Files: `internal/store/insert.go`, `update.go`, `upsert_key.go`, `typed.go`,
-`internal/api/auth.go` (opts); tests.
+`internal/api/auth.go` (opts), `internal/api/ops.go` (the `WriteOpts` call sites — insert and
+both upsert paths set the principal there; `auth.go` alone cannot populate an argument
+another file constructs); tests.
 
 Acceptance: stamping on every write path; `owner` visible in reads, never in declared fields.
 
@@ -1282,7 +1287,9 @@ Changes:
 - Encoding `oidc:v1:<D>:<claim>` (D = first 26 lowercase base32 chars of SHA-256 over the
   issuer URL bytes); applied to `sub` and group claims at authentication; validated against
   §3.1's charset/length — un-encodable identity = 401 at the source, never a grant that cannot
-  be named; `v1` tag never reinterpreted; issuer change = disjoint principal population with the
+  be named — and the group count against `-max-groups`: over-limit claims reject at the
+  source, before token issuance (the cap is per-request identity policy for every source,
+  §1.1; pinned in 10g's native-mode tests); `v1` tag never reinterpreted; issuer change = disjoint principal population with the
   §1.2 startup check naming the stale grant; reachability's issuer-qualification branch wired
   into 8d's check.
 - The 10d routes (`/v1/auth/begin` + callback) join the mux — the dance goes public exactly
