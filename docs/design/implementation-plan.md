@@ -864,8 +864,9 @@ Changes:
   on with the `query` gate.
 
 Files: `internal/store/update.go`, `search.go` (Delete + fetch), `upsert_key.go`,
-`getrows.go`, `changelog.go` (feed filtering), `internal/api/sse.go` (liveAuthz wiring),
-`internal/api/auth.go`; tests.
+`getrows.go`, `changelog.go` (feed filtering), `internal/store/store.go` (the concrete
+`DescribeTable` count), `internal/api/ops.go` (the scope call sites — 2c's zero-value passes
+become real here), `internal/api/sse.go` (liveAuthz wiring), `internal/api/auth.go`; tests.
 
 Acceptance: store-level + gateway-mode pins — update/delete touch own rows only; upsert-by-key
 invisible-collision creates a second row without leaking; counts scoped; §8.3 item 7's
