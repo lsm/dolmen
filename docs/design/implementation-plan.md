@@ -358,21 +358,24 @@ waiter), timeout-empty, `timeout_ms: 0` behavior, cursor-resume chain.
 ### 6a. `subscribe`: SSE handler, replay half
 **Spec:** §9.2 (layer 3) · **Dep:** 5c
 
-Goal: the HTTP-surface stream endpoint exists — `GET /v1/subscribe` (SSE), streaming the replay
-then closing (live frames in 6b).
+Goal: the HTTP-surface stream handler exists — replay then close — but stays UNREGISTERED: the
+endpoint's specified behavior is a live stream (6b), and a client discovering a registered
+replay-then-terminate route on an intermediate revision could mistake the terminal frame for
+end-of-subscription and miss subsequent commits. The route joins the mux in 6b, with live
+streaming; here the handler is exercised directly (`httptest` against the handler).
 
 Changes:
-- SSE handler on the api mux (like `/mcp`, an HTTP-surface capability — not an `Ops` entry):
-  query params `namespace`, `table?`, `cursor?`/`begin?`; content-type `text/event-stream`,
-  immediate flush; replay events from 5c in cursor order; then a close frame (6b replaces close
-  with live streaming). Teaching errors as SSE error events with the standard envelope inside.
+- SSE handler (an HTTP-surface capability like `/mcp` — not an `Ops` entry): query params
+  `namespace`, `table?`, `cursor?`/`begin?`; content-type `text/event-stream`, immediate flush;
+  replay events from 5c in cursor order; then a close frame (6b replaces close with live
+  streaming). Teaching errors as SSE error events with the standard envelope inside.
 - `wait_for` remains the MCP-surface equivalent (transport parity note, §2).
 
-Files: `internal/api/server.go` (mux + handler), new `internal/api/sse.go`; conformance
-(streaming read via `httptest` + bufio).
+Files: new `internal/api/sse.go`, `internal/api/server.go` (route registration lands with 6b);
+conformance (streaming read via `httptest` + bufio, handler-direct).
 
-Acceptance: conformance — a subscriber with a cursor receives exactly the missed events then a
-terminal frame; bad cursors get the teaching error event.
+Acceptance: handler-level conformance — a subscriber with a cursor receives exactly the missed
+events then a terminal frame; bad cursors get the teaching error event; no route registered.
 
 ### 6b. `subscribe`: live streaming
 **Spec:** §9.3 (atomic register-and-replay) · **Dep:** 6a, 4d
@@ -384,12 +387,14 @@ Changes:
   atomically; `notify` not invoked until the replay drains to the boundary; interim commits
   buffer in a bounded queue; overflow closes the stream with the teaching reconnect recipe.
 - The SSE handler drives replay-then-live through `Listen`; client disconnect cancels cleanly.
+- `GET /v1/subscribe` joins the api mux — the endpoint goes public exactly when its specified
+  live-stream behavior exists (6a's handler stays handler-tested until then).
 
 Files: `internal/store/notify.go` (Listen), `internal/api/sse.go`; store + conformance tests.
 
 Acceptance: conformance — a write during replay is neither duplicated nor skipped (exactly-once
 across the boundary); slow-drain overflow triggers the reconnect frame; disconnect releases the
-listener.
+listener; the registered route serves replay-then-live.
 
 ### 6c. Subscription age bound + resume contract
 **Spec:** §1.2 (`-max-subscription-age`), §9.3 · **Dep:** 6b
@@ -626,61 +631,75 @@ Files: `internal/store/grants.go`, `internal/api/auth.go`; tests.
 Acceptance: drop-and-recreate a namespace/table; the old grant neither authorizes nor blocks the
 successor — pinned end-to-end in gateway mode.
 
-### 8f. Drop cascade: synchronous half
-**Spec:** §3.4 (drop cascades grant deletion) · **Dep:** 8b
+### 8f. Drop cascade: write-ahead tombstone
+**Spec:** §3.4 (drop cascades grant deletion, crash-atomically) · **Dep:** 8b
 
-Goal: dropping an object deletes its grants (and its subtree's) in the same operation; the
-confirm flow reports the count.
+Goal: dropping an object deletes its grants (and its subtree's) in the same operation,
+coordinated by the §3.4 write-ahead tombstone from the start — a cascade without its tombstone
+has a crash window that leaves a live object grant-less or a recreated successor inheriting the
+predecessor's grants, both forbidden. The cascade and its crash-atomic protocol land together;
+8g seals the pending window.
 
 Changes:
-- `drop_namespace`/`drop_table` delete targeting grant rows around the engine deletion;
-  confirm-flow responses report the grant count dying with the object (additive response field).
+- `tombstones` table in the grant registry: recorded FIRST (capturing the exact covered grant
+  set and the target's lifetime key — `nsGen` for a namespace, `(NsGen, Table, DropGen)` for a
+  table); engine deletion runs; the captured set is physically removed on completion — exactly
+  that set and nothing else (grants minted after capture can only target the successor).
+- Recovery on open: a pending tombstone finalizes when THAT lifetime is gone (even with a
+  same-named successor already recreated) and rolls back (restoring evaluation) when the object
+  is alive — every crash point converges to no resurrectable grants and no silently-denied
+  successors.
+- Confirm-flow responses report the grant count dying with the object (additive response
+  field).
 
-Files: `internal/api/ops.go` (drop ops), `internal/store/grants.go`; conformance.
+Files: `internal/api/ops.go` (drop ops), `internal/store/grants.go` (tombstones + recovery);
+conformance.
 
 Acceptance: gateway conformance — recreation starts with a clean grant slate; confirm count
-correct.
+correct; a crash-recovery pin (kill between tombstone and deletion → recovery converges).
 
-### 8g. Drop cascade: crash-atomic tombstones
-**Spec:** §3.4 (write-ahead tombstone, recovery) · **Dep:** 8f
+### 8g. Drop cascade: pending-window semantics
+**Spec:** §3.4 (exclusion never observable; pending-window mutations) · **Dep:** 8f
 
-Goal: the cascade is crash-atomic — no crash window leaves resurrectable grants or
-silently-denied successors.
+Goal: the pending window is sealed — while a tombstone is live, evaluation and mutation of the
+covered subtree behave exactly as §3.4 specifies, and the full crash matrix is pinned.
 
 Changes:
-- `tombstones` table in the registry: recorded FIRST (capturing the exact covered grant set),
-  excluding the subtree from evaluation while pending (authz checks on the subtree → retryable
-  409-family, never observable provisional denials); engine deletion then physical removal;
-  recovery on open finalizes (object gone) or rolls back (object alive); pending-window grant
-  mutations 409.
+- Evaluation exclusion while pending: authz checks on the covered subtree are held behind the
+  drop's serialization boundary (retryable `409`-family) — never an observable provisional
+  denial for a drop that may not happen.
+- Grant mutations targeting a subtree with a pending tombstone fail `409` until cleanup
+  completes — nothing slips between the captured set and the engine deletion.
 
-Files: `internal/store/grants.go`, `internal/api/auth.go` (evaluation exclusion), recovery in
-registry open; tests incl. simulated crash points.
+Files: `internal/api/auth.go` (evaluation exclusion), `internal/store/grants.go`; tests incl.
+simulated crash points.
 
-Acceptance: injected-crash tests at each window converge to the §3.4 outcome.
+Acceptance: injected-crash tests at each window converge to the §3.4 outcome; pending-window
+409s pinned (evaluation holds + mutation refusals).
 
 ### 9a. `row_access` annotation + `owner` column
 **Spec:** §4.1 · **Dep:** 8c
 
 Goal: the schema machinery for `row_access: "own"` — annotation, implicit `owner` column,
 reservation — exists. The public surface stays OFF: `create_table` keeps rejecting the key as
-an unknown field in both modes until 9d turns scope enforcement on, so no main revision ever
-holds a `row_access` table whose CRUD/search paths do not enforce the visible set (stamping is
-9c, enforcement 9d; the flip that makes the annotation publicly usable is 9d's closing step).
+an unknown field in both modes until 9j turns scope enforcement on, so no main revision ever
+holds a `row_access` table whose paths do not enforce the visible set (stamping is 9c, CRUD and
+feed enforcement 9d, searches 9e/9f, filter allowlist 9g, idempotency domains 9h, guards 9i;
+the flip that makes the annotation publicly usable is 9j's opening step, with the query gate).
 
 Changes:
 - `TableSchema.RowAccess` (omitted = none); DDL adds `"owner" TEXT` when declared; `owner`
   reserved exactly where the column exists (caller fields, add/rename targets);
   `describe_table` omits `owner` from `fields` but reports the annotation.
 - Dispatch gate: the `row_access` key on `create_table` remains an unknown-field rejection in
-  both modes (under off permanently, byte-identical §8.1; under on until 9d) — the machinery is
+  both modes (under off permanently, byte-identical §8.1; under on until 9j) — the machinery is
   pinned by store/schema-level tests here, not through the public op.
 
 Files: `internal/schema/schema.go`, `internal/store/store.go` (DDL), `internal/api/ops.go`,
 `internal/api/server.go` (schema surface); tests.
 
 Acceptance: store/schema-level pins — column present/absent per declaration, reservation
-rules; `create_table` still rejects the key in both modes (9d's flip is what makes it accepted
+rules; `create_table` still rejects the key in both modes (9j's flip is what makes it accepted
 under `auth: on`).
 
 ### 9b. `set_row_access` migration
@@ -694,13 +713,13 @@ Changes:
   ordering — the rejection is only ever seen by authorized-to-know callers); disabling requires
   `admin` + table-wide read (widens every data-verb holder's reach — §4.2 final wording);
   disabling keeps the physical column.
-- The migration is implemented here but **absent from dispatch until 9d** — a table can only
+- The migration is implemented here but **absent from dispatch until 9j** — a table can only
   become `row_access` when enforcement exists (the same gate as 9a's create key).
 
 Files: `internal/schema/schema.go` (Change), `internal/store/migrate.go`,
 `internal/api/ops.go`; tests.
 
-Acceptance: all §4.2 cases pinned (store-level here; end-to-end through dispatch from 9d on)
+Acceptance: all §4.2 cases pinned (store-level here; end-to-end through dispatch from 9j on)
 incl. the empty-table enable and the gate ordering.
 
 ### 9c. Owner stamping + typed reads
@@ -720,10 +739,14 @@ Files: `internal/store/insert.go`, `update.go`, `upsert_key.go`, `typed.go`,
 
 Acceptance: stamping on every write path; `owner` visible in reads, never in declared fields.
 
-### 9d. RowScope computation + CRUD enforcement
-**Spec:** §4.3 · **Dep:** 9c
+### 9d. RowScope computation + CRUD and feed enforcement
+**Spec:** §4.3, §2 (feed verb rows), §9.3 · **Dep:** 9c
 
-Goal: the visible set is computed above the seam and enforced below it for row CRUD.
+Goal: the visible set is computed above the seam and enforced below it — for row CRUD and the
+realtime feeds in the same slice, so no revision exists with CRUD enforced but feeds leaking
+(§2 grants data-verb holders table-filtered feeds — own rows only). The public flip itself
+waits for 9j, when every scoped path enforces: searches 9e/9f, filter allowlist 9g, idempotency
+domains 9h, guards 9i.
 
 Changes:
 - Scope resolution in the op layer per §4.3 (read → table-wide; data verbs without read on
@@ -734,16 +757,25 @@ Changes:
   becomes the materialization boundary — §4.3's security-barrier rule); `upsert_by_key` treats
   invisible natural-key matches as no-match; `GetRows` drops invisible ids; `describe_table`
   counts the visible set.
-- Public flip: `create_table` now accepts the `row_access` key under `auth: on` and
-  `set_row_access` joins dispatch — the 9a/9b machinery becomes publicly usable exactly when
-  enforcement exists, and its deferred conformance pins go live.
+- Realtime feeds enforce the same visible set (5c's deferral ends here): `ChangesSince`/
+  `WaitFor` deliver only records whose `owner` label (stamped since 9c) and table lifetime
+  (§9.3) pass the caller's scope; the subscribe handler's `Listen` registration passes the §6.2
+  `liveAuthz` re-resolver — per-event scope + incarnation, mid-subscription grant revocation
+  teaching-closes the stream (§9.3).
+- Public flip (deferred to 9j): `create_table` accepting the `row_access` key and
+  `set_row_access` joining dispatch happen only when every scoped path enforces — the
+  enforcement series 9d–9i lands as machinery with store-level pins, and 9j turns the surface
+  on with the `query` gate.
 
 Files: `internal/store/update.go`, `search.go` (Delete + fetch), `upsert_key.go`,
-`getrows.go`, `internal/api/auth.go`; tests.
+`getrows.go`, `changelog.go` (feed filtering), `internal/api/sse.go` (liveAuthz wiring),
+`internal/api/auth.go`; tests.
 
-Acceptance: gateway conformance — update/delete touch own rows only; upsert-by-key
-invisible-collision creates a second row without leaking; counts scoped; the 9a/9b
-public-surface pins green from here.
+Acceptance: store-level + gateway-mode pins — update/delete touch own rows only; upsert-by-key
+invisible-collision creates a second row without leaking; counts scoped; §8.3 item 7's
+scope-filtering cases (a foreign row's commit never delivers an event to a scoped caller on
+`changes_since`/`wait_for`/`subscribe`; per-event revocation drops the stream) on internal
+`row_access` fixtures.
 
 ### 9e. Scope in searches + vector predicate
 **Spec:** §4.3, §7 (visible set exact) · **Dep:** 9d
@@ -838,9 +870,16 @@ migration 403s without table-wide read.
 ### 9j. `query` gate + acceptance scenarios
 **Spec:** §4.4, §8.3 items 2–6 · **Dep:** 9d–9i
 
-Goal: raw SQL gated per contract; the epic's acceptance scenarios become conformance.
+Goal: raw SQL gated per contract; the epic's acceptance scenarios become conformance; and the
+`row_access` surface goes public — the flip 9a deferred lands here, when every scoped path
+enforces (CRUD + feeds 9d, searches 9e/9f, filter allowlist 9g, idempotency domains 9h, guards
+9i, and this slice's own `query` gate).
 
 Changes:
+- Public flip: `create_table` now accepts the `row_access` key under `auth: on` (still an
+  unknown field under off) and `set_row_access` joins dispatch — the 9a/9b machinery becomes
+  publicly usable exactly when enforcement is complete, and its deferred conformance pins go
+  live.
 - `query` on `row_access` tables requires table-wide `read` (403 otherwise) — the namespace-level
   gate from 8c already covers the rest.
 - Conformance: the umbrella end-to-end scenario (default permissions; write-own-read-own;
@@ -851,7 +890,8 @@ Changes:
 
 Files: `internal/api/ops.go` (gate), `internal/conformance/` (scenarios).
 
-Acceptance: both scenarios green in gateway mode; fail-closed test.
+Acceptance: both scenarios green in gateway mode; fail-closed test; the 9a/9b public-surface
+pins green from here.
 
 ### 10a. API-key registry + ops
 **Spec:** §1.5 · **Dep:** 8a
@@ -909,7 +949,8 @@ Acceptance: discovery + preset resolution tests; malformed config startup errors
 Goal: the browser dance — the one deliberate non-JSON surface — implemented but not yet
 exposed: the callback cannot hand out a token before 10e's keyring exists, and a temporary
 incompatible token is exactly what §1.4's pinned wire format forbids. The routes join the mux
-in 10e, when the pinned token can be minted; here the handlers are exercised directly
+in 10f, when minted principals also carry the pinned issuer-qualified encoding (a token minted
+with a bare `sub` could collide across issuers, §1.4); here the handlers are exercised directly
 (handler-level tests), never through registered routes.
 
 Changes:
@@ -917,10 +958,10 @@ Changes:
   callback exchanges the code and extracts `sub` + groups claims; token minting sits behind the
   10e seam at the point where the page would hand the credential out. Auth:on-only; nonexistent
   under off (absent from dispatch and unauthenticated by construction, §1.2); routes
-  unregistered until 10e.
+  unregistered until 10f.
 
 Files: new `internal/api/authflow.go`, `internal/api/server.go` (route registration lands with
-10e); tests with the stub.
+10f); tests with the stub.
 
 Acceptance: full dance against the stub at handler level incl. state rejection and PKCE
 verification; no route registered yet.
@@ -937,14 +978,14 @@ Changes:
   overlap, unexpired, supported `v`, `iss` equality — cloned-config deployments reject each
   other); `DOLMEN_AUTH_OIDC_TOKEN_TTL` (default `168h`, range `1h`–`720h`) +
 `DOLMEN_AUTH_OIDC_DEPLOYMENT_ID` pin; bearer presentation in dispatch.
-- The 10d routes (`/v1/auth/begin` + callback) join the mux — the dance goes public exactly
-  when the pinned token format can be minted.
+- Routes stay unregistered: a conforming mint also needs the issuer-qualified principal (10f) —
+  a token bearing a bare `sub` could match another issuer's grants (§1.4), so the dance goes
+  public with 10f, not here.
 
 Files: new `internal/authn/token.go`, `internal/store/grants.go` (keyring persistence),
-`internal/api/auth.go`, `internal/api/server.go` (routes on), `main.go`; tests.
+`internal/api/auth.go`, `main.go`; tests.
 
-Acceptance: format/verification matrix incl. cross-deployment rejection and rotation overlap;
-the 10d dance end-to-end through the registered routes.
+Acceptance: format/verification matrix incl. cross-deployment rejection and rotation overlap.
 
 ### 10f. Issuer-qualified principal encoding
 **Spec:** §1.4 (`oidc:v1:…`) · **Dep:** 10e
@@ -958,10 +999,14 @@ Changes:
   be named; `v1` tag never reinterpreted; issuer change = disjoint principal population with the
   §1.2 startup check naming the stale grant; reachability's issuer-qualification branch wired
   into 8d's check.
+- The 10d routes (`/v1/auth/begin` + callback) join the mux — the dance goes public exactly
+  when minted principals carry the pinned issuer-qualified encoding.
 
-Files: `internal/authn/oidc.go`, `internal/api/auth.go`; tests.
+Files: `internal/authn/oidc.go`, `internal/api/auth.go`, `internal/api/server.go` (routes on);
+tests.
 
-Acceptance: encoding table tests; issuer-change lockout scenario pinned at startup.
+Acceptance: encoding table tests; issuer-change lockout scenario pinned at startup; the 10d
+dance end-to-end through the registered routes.
 
 ### 10g. Native+keys conformance mode
 **Spec:** §8.2 (mode 3), §8.3 items 6–7 · **Dep:** 10b, 10f, 1
