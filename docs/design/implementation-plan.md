@@ -1,4 +1,4 @@
-# Implementation plan — the #159 epic in 49 S-sized slices
+# Implementation plan — the #159 epic in 48 S-sized slices
 
 This document is the **execution plan** for the epic specified in
 `docs/design/identity-and-engines.md` (the design authority — "the spec"). Every decision the spec
@@ -29,16 +29,22 @@ at the current `main`.
 ```
 Lane 0        1 (harness modes)
 
-Lane A        2a → 2b → 2c ─┬─ 3a → 3b → 3c ─┬─────────────→ 8a … 8g → 9a … 9j
-(storage +                   └─ 4a → 4b → 4c → 4d ─ 5b → 5c → 5d ─ 6a → 6b → 6c
- realtime)                    └─ 5a (any time after 2c)
+Lane A        2a → 2b → 2c ─┬─ 3a → 3b → 3c
+(storage +                   ├─ 4a → 4b → 4c → 4d ─ 5b → 5c → 5d ─ 6a → 6b → 6c
+ realtime)                   └─ 5a (any time after 2c, with 4d)
 
-Lane B        7a … 7e ─┬─ 8c … 8g (grants, with Lane A's 3b/4a)
-(auth,                     └─ 10a … 10g (OIDC + keys, needs 8a/8d)
- native-first)
+Lane B        7a → 7b → 7c → 7e ─────────┐
+(auth,          9g (after 7a) ───────────┤
+ native-first)  9a → 9c → 9h ────────────┼─→ 8c → 8d → 7d → 9d → 9e → 9f → 9i → 9j → 10g
+               8e (after 8a, 4a, 7b) ────┘    ▲
 
 Closing       11
 ```
+
+The sketch shows the critical path only; every slice's `Dep` field is authoritative. The
+activation slice 8c additionally requires Lane A's 8a → 8b → 8f, 5a, 5d, 6b, and 6c; the
+10-series gates are 10a (after 8a, 8d), 10b (…, 8d, 9d), 10c → 10d → 10e (…, 8a, 9d) →
+10f (…, 8d), with 10g last (…, 9j, 7d).
 
 Filing cadence (drift control): Lane 0 + Lane A issues are filed now; Lane B issues file when
 Lane A is moving. **Deliberately not filed — demander-gated (spec D20/D25):** the Postgres adapter,
