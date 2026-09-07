@@ -575,7 +575,7 @@ Acceptance: conformance shape/validation pins; ops absent from dispatch under `a
 (§8.1).
 
 ### 8c. Authorization resolution in dispatch
-**Spec:** §3.3, §2 (verb table), §6.2 (AuthBinding) · **Dep:** 8b, 7b, 7e, 8e
+**Spec:** §3.3, §2 (verb table), §6.2 (AuthBinding) · **Dep:** 8b, 7b, 7e, 8e, 6b
 
 Goal: deny-by-default becomes real — every op checks its required verb(s) against resolved
 grants; the engine guards receive real bindings. The 7e dependency is load-bearing: with
@@ -762,9 +762,12 @@ incl. the empty-table enable and the gate ordering.
 Goal: every row-insert path stamps the principal; reads surface `owner` like `id`/`created_at`.
 
 Changes:
-- `WriteOpts.Owner` (declared in 2a) flows from the op layer under `auth: on` into insert, both
-  upsert insert branches, delete-event labels; callers can never supply `owner` (not a request
-  field — automatic via DisallowUnknownFields).
+- `WriteOpts.Owner` (declared in 2a) flows from the op layer under `auth: on` into the insert
+  branches only — insert and both upsert insert branches; callers can never supply `owner`
+  (not a request field — automatic via DisallowUnknownFields). Delete-event labels are
+  different: each record captures the deleted row's own pre-delete `owner` (4c's rule — a
+  table-wide deleter removing another user's row must not relabel it, or the original owner's
+  scoped feed misses the deletion; the deleter is not the row's owner).
 - Projection (`typed.go`) surfaces `owner` on row reads/search results for tables with the
   column; NULL-owner rows (written under auth:off) read as NULL.
 
@@ -965,7 +968,7 @@ Files: `internal/store/grants.go` (registry grows keys), `internal/api/ops.go`; 
 Acceptance: mint/list/revoke lifecycle; shape rejections; never-echo-credentials pinned.
 
 ### 10b. Bearer dispatch + self-revocation guard
-**Spec:** §1 preamble (shape-selected dispatch), §1.5 guard · **Dep:** 10a, 8d
+**Spec:** §1 preamble (shape-selected dispatch), §1.5 guard · **Dep:** 10a, 8d, 9d
 
 Goal: `dlm_` keys authenticate; revocation cannot wedge the deployment.
 
@@ -1028,7 +1031,7 @@ Acceptance: full dance against the stub at handler level incl. state rejection a
 verification; no route registered yet.
 
 ### 10e. Token format + keyring
-**Spec:** §1.4 (pinned wire format) · **Dep:** 10d, 8a
+**Spec:** §1.4 (pinned wire format) · **Dep:** 10d, 8a, 9d
 
 Goal: Ed25519 tokens that verify on every replica and restart, per the pinned format.
 
@@ -1079,7 +1082,7 @@ Acceptance: encoding table tests; issuer-change lockout scenario pinned at start
 dance end-to-end through the registered routes.
 
 ### 10g. Native+keys conformance mode
-**Spec:** §8.2 (mode 3), §8.3 items 6–7 · **Dep:** 10b, 10f, 1
+**Spec:** §8.2 (mode 3), §8.3 items 6–7 · **Dep:** 10b, 10f, 1, 9j
 
 Goal: the third harness mode — the full native story under CI.
 
