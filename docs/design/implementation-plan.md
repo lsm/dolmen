@@ -1070,7 +1070,10 @@ Changes:
   schema-bearing response omit the `row_access` annotation even for tables that carry it from
   an `auth: on` era — §8.1's "never appears under `auth: off`" covers reopened data
   directories, not just creation (the 9a/9j gates prevent creating such tables, not leaking
-  the annotation).
+  the annotation). The OpenAPI `TableSchema` component updates in the same mode-aware way
+  (the component is `additionalProperties: false`, so auth-on responses would otherwise carry
+  an annotation the advertised schema rejects — and adding the property globally would violate
+  the auth-off requirement): the `row_access` property is advertised only under `auth: on`.
 - Conformance: the umbrella end-to-end scenario (default permissions; write-own-read-own;
   read-only elsewhere; list/create asymmetry; raw SQL denied; upsert non-leak; idempotent
   replay owner-only; `truncated` never leaks) and the append-only telemetry scenario; the
@@ -1078,7 +1081,8 @@ Changes:
   in 10g); the auth:off projection pin (an auth:on-era `row_access` table described under off
   shows no annotation).
 
-Files: `internal/api/ops.go` (gate + schema projection), `internal/conformance/` (scenarios).
+Files: `internal/api/ops.go` (gate + schema projection), `internal/api/openapi.go`
+(mode-aware `TableSchema`), `internal/conformance/` (scenarios).
 
 Acceptance: both scenarios green in gateway mode; fail-closed test; the 9a/9b public-surface
 pins green from here.
@@ -1115,11 +1119,14 @@ Changes:
   verification (10e; until then a non-`dlm_` bearer is the admin-key compare only); wrong-shape
   bearer = 401, never reinterpreted.
 - `revoke_key` mirrors the last-admin guard at the credential layer under the shared
-  registry serialization (the cross-registry lock from 8d); revoking the last active key that
-  bears a usable root principal **or locally proves one** — its stored groups satisfy a root
-  group grant, §1.2's key-provable exception — is the 409; the same proof updates 8d's startup
-  check symmetrically (an active key's stored groups make a root group grant a usable
-  administrator from here on).
+  registry serialization (the cross-registry lock from 8d), evaluating the complete
+  deployment-wide reachable-admin set — the 409 fires only when the revocation would leave no
+  usable root administrator reachable through any enabled source (§1.5): a configured admin
+  key and durable root principal grants reachable through the header/OIDC sources count, so a
+  key that merely bears (or proves) a root identity stays individually revocable while
+  another administrator exists elsewhere; active keys bearing usable-root principals or
+  locally proving one (§1.2's key-provable exception, stored groups satisfying a root group
+  grant) join the same set, and the same proof updates 8d's startup check symmetrically.
 - The 10a key ops join dispatch — minted keys can authenticate from this revision on.
 - Active keys join 7c's source-presence startup check and `describe_server`'s auth-on source
   list (7d's extension).
@@ -1127,7 +1134,9 @@ Changes:
   the stream at its next event, best-effort immediately (§9.3).
 
 Files: `internal/api/auth.go`, `internal/api/ops.go` (the key ops join dispatch; the
-`describe_server` source list gains `api-keys`), `internal/api/sse.go`, `main.go`
+`describe_server` source list gains `api-keys`), `internal/mcp/server.go` and
+`internal/api/openapi.go` (tool annotations + discovery output schemas — the registry-match
+test iterates every dispatched op, so the first live revision must publish them), `internal/api/sse.go`, `main.go`
 (source-presence startup check update — an API-key-only deployment must boot after its
 bootstrap source is removed), `internal/store/grants.go`; tests.
 
