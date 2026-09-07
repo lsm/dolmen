@@ -513,7 +513,7 @@ in §3, `whoami` and the key ops in §1.4–1.5):
 | `delete` | `delete` | The table. |
 | `upsert`, `upsert_by_key` | `create` **AND** `update` (both required) | The table. They are update-or-insert: a `create`-only caller is refused up front, not surprised by half the operation. |
 | `query` | `read` | The **namespace** — raw SQL may reference any table in it, so the grant must cover the namespace, not one table. See §4.4 for the extra rule on `row_access` tables. |
-| `read_rows` | `read`; **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` — the response then contains own rows only, the same rule as search and feeds | The table. Id-addressed scoped fetch: `{table, ids}` → the rows the caller can see (present in both modes; additive under `auth: off` per §8.1 — a plain by-id fetch without raw SQL). The realtime recovery path depends on it: a feed consumer re-reads a change's row content by id through its standing read (§9.3), and `query`'s namespace-wide gate plus the searches' index dependence would leave a create-only `row_access` subscriber with an id they cannot resolve. |
+| `read_rows` | `read`; **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` — the response then contains own rows only, the same rule as search and feeds | The table. Id-addressed scoped fetch: `{table, ids}` → the rows the caller can see, in ascending id order; **`ids` is capped at 1000 per request** (`invalid_request` beyond — a body under the byte cap can still carry millions of ids and blow past any engine's bind limits), and ids that are missing or outside the caller's visible set are simply absent (authz-precedes-existence, §2 — a scoped caller cannot distinguish nonexistent from foreign). Present in both modes; additive under `auth: off` per §8.1 — a plain by-id fetch without raw SQL. The realtime recovery path depends on it: a feed consumer re-reads a change's row content by id through its standing read (§9.3), and `query`'s namespace-wide gate plus the searches' index dependence would leave a create-only `row_access` subscriber with an id they cannot resolve. |
 | `capabilities` | none (any authenticated principal; unauthenticated under `auth: off`) | Untargeted: reports the engine capability surface from `Engine.Capabilities()` (§6) — `vector_execution` (`"exact"` \| `"ann"`), `ann_recall_bound` (explicit `null` in exact mode, never omitted; iff ann a number in (0,1] — the engine's **guaranteed minimum Recall@10 versus the exact path over the conformance corpus**, a worst-case bound, never an empirical average), `notifications` (bool), `subscribe` (bool); field names, types, and enum values pinned so the discovery is portable and conformance-comparable, unknown fields additive (§8.1) — **in both modes** (additive under `auth: off` per §8.1). Realtime ops exist in both modes and an `auth: off` client has no other discovery surface (`describe_server`'s extension is `auth: on`-only); this op is that surface, and it is the single source `describe_server` inlines under `auth: on`. |
 | `changes_since`, `wait_for`, `subscribe` | `read` on the selected table(s); **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` — the feed then covers own rows only, mirroring the search rule | The **selected target**: a table-filtered feed checks the named table(s) (direct table grants qualify — inheritance is downward-only); an unfiltered namespace feed checks `read` on the namespace, the same rule as `query`. Per-event scope and credential reevaluation further restrict delivery — foreign rows never wake the caller. Ordinary data ops present in **both** modes (§9.4). |
 | `search_fulltext`, `search_vector` | `read` on the table; **or** any data verb (`create`/`update`/`delete`) when the table declares `row_access` (search then covers own rows only, §4.3) | The table. |
@@ -676,8 +676,14 @@ inheritance). There are no deny grants, no precedence, no ordering — union onl
   ancestor-admin does the recreating. The drop's `confirm` flow reports the number of grants that
   die with the object. Because the grant registry lives above the seam from the engine's
   deletion, the cascade is coordinated by a **write-ahead tombstone**: the tombstone is recorded
-  in the grant registry FIRST and immediately excludes the subtree's grants from evaluation
-  (they deny, never bypass); the engine deletion then runs; the grant rows are physically removed
+  in the grant registry FIRST and excludes the subtree's grants from evaluation
+  (they deny, never bypass) — **but that exclusion is never observable while the outcome is
+  unknown**: authorization checks touching the pending tombstone's subtree are held behind the
+  drop's serialization boundary (a retryable `409`-family response) until the engine deletion
+  commits or rolls back, so no request ever receives a provisional denial for a drop that may
+  not happen — a rolled-back drop leaves no externally visible partial effect, preserving
+  §0.6's all-or-nothing guarantee at the response level, not just the storage level. The
+  engine deletion then runs; the grant rows are physically removed
   on completion. At recovery, a pending tombstone is finalized if the engine object is gone and
   rolled back (restoring evaluation) if the object still exists — either crash point converges to
   no resurrectable grants and no silently-granted successors, satisfying §0.6's all-or-nothing
@@ -1660,7 +1666,11 @@ the sleeping agent holds nothing, burns nothing, and is told.
   gap-free for valid cursors: **page chains refresh the deadline on each page issuance** —
   every next-page token carries a fresh issuance (a promptly-paged backlog never fails between
   pages because the first token was nearly `R` old), while the chain's ORIGIN — the position
-  and the `begin`-boundary semantics — is preserved unchanged across the chain — and **a
+  and the `begin`-boundary semantics — is preserved unchanged across the chain — **but each
+  chain carries an absolute cap: chain-start + `2R`**. Resubmitting the same page cursor (a
+  legitimate retry) refreshes that page's deadline yet cannot extend the chain past the cap, so
+  a client cannot keep an old backlog alive forever and defeat `-change-retention` — the cap
+  costs nothing beyond the `2R` hold records already receive. And **a
   record is pruned only when no still-valid
   cursor can reference it** — a record referenced by a live page chain is retained through the
   chain's current deadline, so refresh and retention move together (a cursor issued within `R`
