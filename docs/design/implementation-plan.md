@@ -927,8 +927,12 @@ Changes:
   ordering — the rejection is only ever seen by authorized-to-know callers); disabling requires
   `admin` + table-wide read (widens every data-verb holder's reach — §4.2 final wording);
   disabling keeps the physical column.
-- The migration is implemented here but **absent from dispatch until 9j** — a table can only
-  become `row_access` when enforcement exists (the same gate as 9a's create key).
+- The migration is implemented here but **rejected in `migrate`'s change validation until
+  9j**: `set_row_access` is not a separately dispatched op — it rides `migrate`'s `changes[]`
+  through `validateMigrateChanges` — so the gate lives THERE (an unknown/unsupported change
+  under `auth: off`, permanently per §8.1's no-annotation rule; under `auth: on`, rejected
+  until 9j activates the variant), never in dispatch. A table can only become `row_access`
+  when enforcement exists (the same principle as 9a's create key).
 
 Files: `internal/schema/schema.go` (Change), `internal/store/migrate.go`,
 `internal/api/ops.go`; tests.
@@ -1135,7 +1139,8 @@ enforces (CRUD + feeds 9d, searches 9e/9f, filter allowlist 9g, idempotency doma
 
 Changes:
 - Public flip: `create_table` now accepts the `row_access` key under `auth: on` (still an
-  unknown field under off) and `set_row_access` joins dispatch — the 9a/9b machinery becomes
+  unknown field under off) and `validateMigrateChanges` activates the `set_row_access`
+  variant — the 9a/9b machinery becomes
   publicly usable exactly when enforcement is complete, and its deferred conformance pins go
   live.
 - `query` on `row_access` tables requires table-wide `read` (403 otherwise) — the namespace-level
@@ -1148,6 +1153,11 @@ Changes:
   (the component is `additionalProperties: false`, so auth-on responses would otherwise carry
   an annotation the advertised schema rejects — and adding the property globally would violate
   the auth-off requirement): the `row_access` property is advertised only under `auth: on`.
+  The **input** schemas project by mode too, in both discovery transports (OpenAPI request
+  bodies and MCP tool schemas derive from the global `Ops` definitions): the `row_access` key
+  on `create_table` and the `set_row_access` variant on `migrate` appear under `auth: on` —
+  without them, strict auth-on clients reject the newly supported requests — and never under
+  `auth: off`.
 - Conformance: the umbrella end-to-end scenario (default permissions; write-own-read-own;
   read-only elsewhere; list/create asymmetry; raw SQL denied; upsert non-leak; idempotent
   replay owner-only; `truncated` never leaks) and the append-only telemetry scenario; the
@@ -1156,7 +1166,8 @@ Changes:
   shows no annotation).
 
 Files: `internal/api/ops.go` (gate + schema projection), `internal/api/openapi.go`
-(mode-aware `TableSchema`), `internal/conformance/` (scenarios).
+(mode-aware `TableSchema` and input bodies), `internal/mcp/server.go` (mode-aware tool input
+schemas), `internal/conformance/` (scenarios).
 
 Acceptance: both scenarios green in gateway mode; fail-closed test; the 9a/9b public-surface
 pins green from here.
