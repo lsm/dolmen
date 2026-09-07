@@ -536,9 +536,8 @@ Changes:
 
 Files: new `internal/api/auth.go`, `internal/api/envelope.go`, `internal/api/server.go`,
 `internal/api/ops.go` (whoami), `internal/api/openapi.go` (mode-aware op filtering),
-`internal/mcp/server.go`, `main.go` (the fail-closed
-`-auth on` startup gate is installed in the startup path — 7a only carries the configuration;
-8d lifts the gate from there); tests.
+`internal/mcp/server.go`, `main.go` (7b **preserves** the fail-closed `-auth on` startup
+rejection 7a installed — 7a rejects what it cannot honor; 8d lifts the gate); tests.
 
 Acceptance: unit tests for every 401 rule; auth-off conformance byte-identical; startup warning
 line at `main.go:100` updated to reflect mode.
