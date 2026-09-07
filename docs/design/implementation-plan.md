@@ -131,6 +131,11 @@ Changes:
   `ValidateVectorSearch` call sites become the `TableState`-snapshot validation §6.2 specifies
   (vectorize-field presence and identity pinned before the provider is called) — neither
   method exists on `Engine`, so leaving them would break 2c's swap.
+- The five `Engine` methods whose concrete implementations arrive later (`NamespaceState` 4a,
+  `GetRows` 5a, `ChangesSince` 5c, `Listen` 6b, `Capabilities` 4d) land here as **temporary
+  stubs** — a single not-yet-implemented error (`Capabilities` returns the zero value) — so
+  `var _ Engine = (*Store)(nil)` compiles from this slice on; each later slice swaps its stub
+  for the real body, and no signature ever changes (2a's pin holds).
 
 Files: `internal/store/store.go`, `lifecycle.go`, `insert.go`, `update.go`, `upsert_key.go`,
 `search.go`, `vector.go`, `query.go`, `migrate.go`, `internal/api/ops.go` (call-site
@@ -804,15 +809,20 @@ Changes:
   commits and before removal, a recreated same-named successor must not inherit the
   predecessor's grants) and never an observable provisional denial (a rolled-back drop
   restores evaluation; no request ever sees the in-between).
-- Recovery on open: a pending tombstone finalizes when THAT lifetime is gone (even with a
+- Recovery at startup: a pending tombstone finalizes when THAT lifetime is gone (even with a
   same-named successor already recreated) and rolls back (restoring evaluation) when the object
   is alive — every crash point converges to no resurrectable grants and no silently-denied
-  successors.
+  successors. The lifetime check queries the **engine** (`NamespaceState`/`TableState` —
+  never the SQLite files directly, which would cross the seam), and `main.go` and the
+  conformance harness invoke recovery after opening both the engine and the registry, before
+  serving requests, so no restart leaves a tombstone pending indefinitely.
 - Confirm-flow responses report the grant count dying with the object (additive response
   field).
 
 Files: `internal/api/ops.go` (drop ops), `internal/api/auth.go` (evaluation hold),
-`internal/store/grants.go` (tombstones + recovery + mutation refusal); conformance.
+`internal/store/grants.go` (tombstones + recovery + mutation refusal), `main.go` (recovery
+invoked at startup, before serving), `internal/conformance/` (harness wires recovery the same
+way); conformance.
 
 Acceptance: store/handler-level conformance — recreation starts with a clean grant slate;
 confirm count correct; grant mutations during the pending window 409; evaluation on a pending
@@ -1246,7 +1256,9 @@ Changes:
   source and boots — the check knows proxies and keys only until here; the `oidc` source also
   joins `describe_server`'s auth-on source list (7d's extension).
 
-Files: `internal/authn/oidc.go`, `internal/api/auth.go`, `internal/api/server.go` (routes on),
+Files: `internal/authn/oidc.go`, `internal/api/auth.go`, `internal/api/ops.go` (the
+`describe_server` source list gains `oidc`, matching 10b's `api-keys` update),
+`internal/api/server.go` (routes on),
 `main.go` (source-presence check); tests.
 
 Acceptance: encoding table tests; issuer-change lockout scenario pinned at startup; the 10d
