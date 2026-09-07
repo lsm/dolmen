@@ -422,6 +422,7 @@ Changes:
   surface and the registered route change together, never contradicting each other.
 
 Files: `internal/store/notify.go` (Listen), `internal/store/engine.go` (capabilities),
+`internal/api/server.go` (mux registration — `Server.Handler` builds its routes there),
 `internal/api/sse.go`; store + conformance tests.
 
 Acceptance: conformance — a write during replay is neither duplicated nor skipped (exactly-once
@@ -499,7 +500,9 @@ Changes:
 - `whoami` op (auth:on-only: absent from dispatch under off — §2 transport parity).
 
 Files: new `internal/api/auth.go`, `internal/api/envelope.go`, `internal/api/server.go`,
-`internal/api/ops.go` (whoami), `internal/mcp/server.go`; tests.
+`internal/api/ops.go` (whoami), `internal/mcp/server.go`, `main.go` (the fail-closed
+`-auth on` startup gate is installed in the startup path — 7a only carries the configuration;
+8d lifts the gate from there); tests.
 
 Acceptance: unit tests for every 401 rule; auth-off conformance byte-identical; startup warning
 line at `main.go:100` updated to reflect mode.
@@ -596,7 +599,7 @@ Acceptance: idempotent merge, last-verb-revoke deletes row, subtree semantics, s
 pinned by store tests. No ops yet.
 
 ### 8b. `grant` / `revoke` / `list_grants` ops
-**Spec:** §3.1–3.2, §2 · **Dep:** 8a
+**Spec:** §3.1–3.2, §2 · **Dep:** 8a, 4a
 
 Goal: the three grant ops exist and validate per contract (still inert until 8c wires checks).
 
