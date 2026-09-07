@@ -589,7 +589,7 @@ Acceptance: conformance shape/validation pins; ops absent from dispatch under `a
 end-to-end from 8d.)
 
 ### 8c. Authorization resolution in dispatch
-**Spec:** §3.3, §2 (verb table), §6.2 (AuthBinding) · **Dep:** 8b, 7b, 7e, 8e, 6b, 6c, 8f, 9h
+**Spec:** §3.3, §2 (verb table), §6.2 (AuthBinding) · **Dep:** 8b, 7b, 7e, 8e, 6b, 6c, 8f, 9h, 5a
 
 Goal: deny-by-default becomes real — every op checks its required verb(s) against resolved
 grants; the engine guards receive real bindings. Enforcement is complete here; the `auth: on`
@@ -607,7 +607,11 @@ Changes:
 - `resolveVerbs(identity, object)` in `internal/api/auth.go`: union over principal subject +
   group subjects × `*` + each ancestor namespace + namespace + table (path walk, depth ≤3 —
   no FGA dependency needed for these semantics; the resolver is the "embedded FGA" the spec
-  names, invisible above the ops).
+  names, invisible above the ops) — **plus the admin-key identity's implicit `admin` on `*`**
+  (§1.3): it is configuration, not data (attached to the credential, never a `list_grants`
+  row, gone when the env is removed), surfaced to the engine as a synthetic Root
+  `AuthBinding`. Without it the bootstrap kingmaker 403s on `grant` itself and no first real
+  administrator can ever be minted.
 - Per-op required-verb table (from §2, incl. conjunctive rules: upsert = create AND update;
   drop_table = schema AND admin) enforced in dispatch under `auth: on`; 403 `forbidden`
   envelope; authorization failure fails closed (500, never bypass).
@@ -637,8 +641,9 @@ Changes:
 Files: `internal/api/auth.go`, `internal/api/ops.go` (dispatch), `internal/store/engine.go`,
 and the concrete operation files that carry the in-transaction checks — `lifecycle.go`,
 `store.go`, `insert.go`, `update.go`, `upsert_key.go`, `search.go`, `vector.go`, `query.go`,
-`migrate.go`, `changelog.go` (2b's ignored guard parameters become enforced here; the
-interface file alone activates nothing). 6c is a dependency because trusted-proxy streams
+`migrate.go`, `changelog.go`, `getrows.go` (2b's ignored guard parameters become enforced
+here; the interface file alone activates nothing; 5a is a dependency so `getrows.go` exists
+to be guarded). 6c is a dependency because trusted-proxy streams
 carry no credential state to revalidate — the age bound is their identity-refresh backstop.
 
 Acceptance: gateway conformance — the 7d sweep's 403s become real; inheritance-down,
