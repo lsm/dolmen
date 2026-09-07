@@ -398,13 +398,17 @@ Changes:
   buffer in a bounded queue; overflow closes the stream with the teaching reconnect recipe.
 - The SSE handler drives replay-then-live through `Listen`; client disconnect cancels cleanly.
 - `GET /v1/subscribe` joins the api mux — the endpoint goes public exactly when its specified
-  live-stream behavior exists (6a's handler stays handler-tested until then).
+  live-stream behavior exists (6a's handler stays handler-tested until then) — and
+  `Capabilities().subscribe` flips to `true` in the same slice: the portable capability
+  surface and the registered route change together, never contradicting each other.
 
-Files: `internal/store/notify.go` (Listen), `internal/api/sse.go`; store + conformance tests.
+Files: `internal/store/notify.go` (Listen), `internal/store/engine.go` (capabilities),
+`internal/api/sse.go`; store + conformance tests.
 
 Acceptance: conformance — a write during replay is neither duplicated nor skipped (exactly-once
 across the boundary); slow-drain overflow triggers the reconnect frame; disconnect releases the
-listener; the registered route serves replay-then-live.
+listener; the registered route serves replay-then-live; the capabilities op reports
+`subscribe: true`.
 
 ### 6c. Subscription age bound + resume contract
 **Spec:** §1.2 (`-max-subscription-age`), §9.3 · **Dep:** 6b
@@ -589,7 +593,7 @@ Acceptance: conformance shape/validation pins; ops absent from dispatch under `a
 end-to-end from 8d.)
 
 ### 8c. Authorization resolution in dispatch
-**Spec:** §3.3, §2 (verb table), §6.2 (AuthBinding) · **Dep:** 8b, 7b, 7e, 8e, 6b, 6c, 8f, 9h, 5a
+**Spec:** §3.3, §2 (verb table), §6.2 (AuthBinding) · **Dep:** 8b, 7b, 7e, 8e, 6b, 6c, 8f, 9h, 5a, 9g
 
 Goal: deny-by-default becomes real — every op checks its required verb(s) against resolved
 grants; the engine guards receive real bindings. Enforcement is complete here; the `auth: on`
@@ -601,7 +605,9 @@ lifetime-bound from the first enforcing revision, else a dropped-and-recreated t
 predecessor grant still authorizes the successor; 8f — without the drop cascade a
 predecessor's row survives the drop inert-but-wedged, 409-ing every later re-grant of the
 same (subject, object); 9h — authenticated writes must never share a global idempotency
-domain, where two principals' same-keyed inserts collide, replay, or suppress each other.
+domain, where two principals' same-keyed inserts collide, replay, or suppress each other;
+9g — every auth-on filter is row-local from the first enforcing revision, else a data-verb
+grant on one table becomes an existence oracle over ungranted tables.
 
 Changes:
 - `resolveVerbs(identity, object)` in `internal/api/auth.go`: union over principal subject +
@@ -917,24 +923,30 @@ Acceptance: a foreign document cannot reorder or displace visible results — th
 pinned.
 
 ### 9g. Row-local filter allowlist
-**Spec:** §4.3 (scoped filters) · **Dep:** 9d, 9e
+**Spec:** §4.3 (row-local filters) · **Dep:** —
 
-Goal: scoped callers' filter fragments are restricted to row-local expressions, validated above
-the seam.
+Goal: filter fragments are restricted to row-local expressions, validated above the seam —
+and under `auth: on` the restriction applies to **every** update/delete/upsert/search filter,
+not only scoped ones: a caller holding a data verb on table A can otherwise place a subquery
+against ungranted table B inside A's filter and infer B through result counts or errors (§2
+existence-hiding), nil `RowScope` included — default tables and table-wide readers alike.
+8c depends on this slice, so the validator is in force before authorization activates; the
+materialization barrier (9d/9e) remains specific to own-row scopes.
 
 Changes:
 - New `internal/store/filterlang.go`: tokenize a WHERE fragment (reusing the `query_tables.go`
   scanner primitives), accept only target-table column refs, literals, `?` params, the
   enumerated operator/function lists (incl. the deterministic date/time rules — `'now'` and
   timezone forms rejected); reject subqueries, table references (incl. `__fts`), aggregates,
-  everything else — `invalid_request` before execution. Applied under `auth: on` for scoped
-  update/delete/upsert/search filters; unchanged under off.
+  everything else — `invalid_request` before execution. Applied under `auth: on` to every
+  update/delete/upsert/search filter; unchanged under off.
 
 Files: new `internal/store/filterlang.go`, call sites in `internal/api/ops.go`; tests.
 
-Acceptance: the §4.3 subquery example rejected by the validator; the `iif` error-oracle example
-passes validation (`iif`/`abs` are allowlisted) and executes safely over the materialized
-visible set per 9e — no foreign-row error, no leak; allowlist bounds pinned by table tests.
+Acceptance: the §4.3 subquery example rejected by the validator — for scoped AND unscoped
+(table-wide/default-table) auth-on callers alike; allowlist bounds pinned by table tests (the
+allowlisted `iif`/`abs` expression executes safely over the materialized visible set per
+9e).
 
 ### 9h. Idempotency owner-namespacing
 **Spec:** §4.3 (final idempotency semantics) · **Dep:** 9c
@@ -1023,10 +1035,15 @@ Changes:
   once; identity-shape validation at `create_key` (§1.1 charset, `-max-groups`); `admin`-on-`*`
   required; `dolmen-admin` forbidden; `list_keys` shows state, never credentials;
   `revoke_key` by key ID; hashed storage with constant-time comparison convention.
+- The key ops stay **out of dispatch until 10b**: `dlm_` bearer authentication does not exist
+  yet, and an intermediate revision must never hand an administrator a credential the server
+  itself rejects with 401 — the ops are implemented and tested at handler level here and join
+  dispatch with 10b (the same gating the OIDC slices apply to their routes).
 
 Files: `internal/store/grants.go` (registry grows keys), `internal/api/ops.go`; tests.
 
-Acceptance: mint/list/revoke lifecycle; shape rejections; never-echo-credentials pinned.
+Acceptance: mint/list/revoke lifecycle at handler level; shape rejections;
+never-echo-credentials pinned (dispatch and end-to-end pins from 10b on).
 
 ### 10b. Bearer dispatch + self-revocation guard
 **Spec:** §1 preamble (shape-selected dispatch), §1.5 guard · **Dep:** 10a, 8d, 9d
@@ -1044,6 +1061,7 @@ Changes:
   group grant, §1.2's key-provable exception — is the 409; the same proof updates 8d's startup
   check symmetrically (an active key's stored groups make a root group grant a usable
   administrator from here on).
+- The 10a key ops join dispatch — minted keys can authenticate from this revision on.
 - Active keys join 7c's source-presence startup check and `describe_server`'s auth-on source
   list (7d's extension).
 - SSE streams recheck key state per event through the 9d live callback — a revoked key drops
