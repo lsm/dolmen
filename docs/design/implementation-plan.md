@@ -451,8 +451,9 @@ Changes:
   admin-key compare constant-time; `dolmen-admin` reservation (header asserting it = 401);
   unauthenticated paths per §1.2 (`/healthz`, `/version`, `/skills*`, `/v1/openapi.json`).
 - `ErrCodeUnauthorized` (401) in `envelope.go`; distinct from 403 `forbidden`.
-- Middleware wired in the `/v1/` handler (`server.go:466`) and `mcp.ServeHTTP`
-  (`mcp/server.go:119`); identity into the op-context and the request's log line beside
+- Middleware wired in the `/v1/` handler (`server.go:466`), `mcp.ServeHTTP`
+  (`mcp/server.go:119`), and the `/v1/subscribe` SSE route (its own mux entry since 6b —
+  streams carry identity too); identity into the op-context and the request's log line beside
   `X-Request-Id`.
 - `whoami` op (auth:on-only: absent from dispatch under off — §2 transport parity).
 
@@ -567,10 +568,15 @@ Acceptance: conformance shape/validation pins; ops absent from dispatch under `a
 (§8.1).
 
 ### 8c. Authorization resolution in dispatch
-**Spec:** §3.3, §2 (verb table), §6.2 (AuthBinding) · **Dep:** 8b, 7b
+**Spec:** §3.3, §2 (verb table), §6.2 (AuthBinding) · **Dep:** 8b, 7b, 7e, 8e
 
 Goal: deny-by-default becomes real — every op checks its required verb(s) against resolved
-grants; the engine guards receive real bindings.
+grants; the engine guards receive real bindings. The 7e dependency is load-bearing: with
+`Store.ns()` still create-on-open, a covering `schema` grant could materialize a missing
+namespace through `create_table` — exactly the §2 bypass the parent-`admin` gate exists to
+prevent — so implicit creation must already be gone when enforcement lands. So is 8e: grants
+are lifetime-bound from the first enforcing revision — without 8e's recorded bindings, a
+dropped-and-recreated table's predecessor grant would still authorize the successor.
 
 Changes:
 - `resolveVerbs(identity, object)` in `internal/api/auth.go`: union over principal subject +
@@ -585,6 +591,11 @@ Changes:
   `not_found`).
 - The 7d sweep's deferred rows activate: authenticated-but-ungranted → 403 for grant-protected
   ops; `list_tables` → `not_found` ungranted — deny-by-default is real from here on.
+- The SSE route joins deny-by-default: `/v1/subscribe` checks the §2/§9.3 standing-read target
+  (`read` on the selected table(s), or the namespace for unfiltered feeds) at stream open and
+  re-evaluates live — an authenticated-but-ungranted caller gets 403 and no frames from the
+  first enforcing revision (9d adds per-record owner-label scope filtering when `row_access`
+  goes live).
 
 Files: `internal/api/auth.go`, `internal/api/ops.go` (dispatch), `internal/store/engine.go`
 (guards now verified — the in-tx incarnation checks activate).
@@ -624,9 +635,10 @@ Changes:
   record the namespace's nsGen; ancestor grants the ancestor's nsGen; `*` records nothing.
   `grant`/`revoke` verify current-generation currency atomically at mutation (mismatch = 409,
   re-read re-issue).
-- The `AuthBinding` verification paths from 8c now actually distinguish predecessors (targeted
+- The `AuthBinding` verification paths land with 8c — which depends on this slice — so
+  grant-based authorization is lifetime-bound from its first enforcing revision: targeted
   grants mismatch successors; inherited grants verify the ancestor's generation while receiving
-  the target's current one).
+  the target's current one.
 
 Files: `internal/store/grants.go`, `internal/api/auth.go`; tests.
 
@@ -982,7 +994,7 @@ Acceptance: full dance against the stub at handler level incl. state rejection a
 verification; no route registered yet.
 
 ### 10e. Token format + keyring
-**Spec:** §1.4 (pinned wire format) · **Dep:** 10d
+**Spec:** §1.4 (pinned wire format) · **Dep:** 10d, 8a
 
 Goal: Ed25519 tokens that verify on every replica and restart, per the pinned format.
 
@@ -1003,7 +1015,7 @@ Files: new `internal/authn/token.go`, `internal/store/grants.go` (keyring persis
 Acceptance: format/verification matrix incl. cross-deployment rejection and rotation overlap.
 
 ### 10f. Issuer-qualified principal encoding
-**Spec:** §1.4 (`oidc:v1:…`) · **Dep:** 10e
+**Spec:** §1.4 (`oidc:v1:…`) · **Dep:** 10e, 8d
 
 Goal: principals and groups from source B are stable, injective, versioned strings.
 
@@ -1015,7 +1027,9 @@ Changes:
   §1.2 startup check naming the stale grant; reachability's issuer-qualification branch wired
   into 8d's check.
 - The 10d routes (`/v1/auth/begin` + callback) join the mux — the dance goes public exactly
-  when minted principals carry the pinned issuer-qualified encoding.
+  when minted principals carry the pinned issuer-qualified encoding (the 8d dependency is
+  load-bearing: tokens must not be mintable while grant-protected ops are still permissive;
+  the root-administrator invariant exists too).
 
 Files: `internal/authn/oidc.go`, `internal/api/auth.go`, `internal/api/server.go` (routes on);
 tests.
