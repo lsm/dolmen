@@ -353,9 +353,12 @@ Goal: the replay op — the foundation layer of realtime, agent-usable today.
 Changes:
 - `ChangesSince` on `*Store`: paged read in cursor order; table filter selects the table's
   **current lifetime** only (drop_gen/nsgen labels); namespace feed guarded by nsGen.
-- Op `changes_since`: request `{namespace, cursor?, table?, begin?, limit?}`; omitted/zero cursor
+- Op `changes_since`: request `{namespace, cursor?, table?, limit?}` — `cursor` is an opaque
+  resume token **or the literal `"begin"` sentinel** (§9.3's pinned form: retained history
+  starting at the 5b boundary; no separate `begin` field, so the portable request is
+  `{"cursor":"begin"}`); omitted/zero cursor
   = current head (wake-up semantics: fresh subscribers get future events only, and the response
-  carries the head cursor); `begin` = the retained-history boundary from 5b; `limit` default 100
+  carries the head cursor); `limit` default 100
   / max 1000; response `{changes:[{cursor, table, row_id, kind}], next_cursor}`. Public records
   expose cursor/table/row_id/kind only — owner never (internal label until 9d makes rows
   visible-set-filtered).
@@ -403,7 +406,8 @@ streaming; here the handler is exercised directly (`httptest` against the handle
 
 Changes:
 - SSE handler (an HTTP-surface capability like `/mcp` — not an `Ops` entry): query params
-  `namespace`, `table?`, `cursor?`/`begin?`; content-type `text/event-stream`, immediate flush;
+  `namespace`, `table?`, `cursor?` (an opaque token or the `"begin"` sentinel, mirroring the
+  op); content-type `text/event-stream`, immediate flush;
   replay events from 5c in cursor order; then a close frame (6b replaces close with live
   streaming). Teaching errors as SSE error events with the standard envelope inside.
 - `wait_for` remains the MCP-surface equivalent (transport parity note, §2).
@@ -450,7 +454,9 @@ Changes:
 - Resume contract pinned in conformance: disconnect + reconnect-with-cursor equals
   catch-up-then-live (no loss, no duplication).
 
-Files: `main.go`, `internal/api/sse.go`, `internal/store/notify.go`; conformance.
+Files: `main.go`, `internal/api/server.go` (the bound is stored on `Server` — per-server
+configuration the SSE handler reads; an identity-refresh policy stays adapter-agnostic),
+`internal/api/sse.go`, `internal/store/notify.go`; conformance.
 
 Acceptance: conformance — age-bound close fires with resume token; reconnect-equals-catch-up
 holds under interleaved writes.
@@ -600,9 +606,16 @@ Changes:
   a `meta` table reserved for 8e tombstones and 10a keys.
 - Store API: put/merge (idempotent, keeps `created_at`, fixed §2 verb serialization order),
   revoke-verbs, subtree/exact queries, subject filters, the §3.2 sort order.
-- Open/close beside `Store.Open`; single-writer (WAL + immediate tx, same DSN discipline).
+- Open/close independent of the engine: the registry is opened in `main.go` beside (not
+  inside) `Store.Open`, and wired into `api.Server` as its **own constructor dependency** (a
+  `*GrantRegistry` option beside the `Engine`) — the server holds only `store.Engine` after
+  2c, and coupling the above-seam registry to the concrete store would force 8b into a type
+  assertion or an `Engine` method, both seam violations; the conformance harness constructs it
+  the same way. Single-writer (WAL + immediate tx, same DSN discipline).
 
-Files: new `internal/store/grants.go`, `internal/store/store.go` (open/close); store tests.
+Files: new `internal/store/grants.go`, `internal/api/server.go` (the registry wiring — its own
+dependency), `main.go` (open/close beside the store), `internal/conformance/` (harness
+construction); store tests.
 
 Acceptance: idempotent merge, last-verb-revoke deletes row, subtree semantics, sort order —
 pinned by store tests. No ops yet.
