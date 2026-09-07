@@ -781,7 +781,10 @@ Changes:
   `WaitFor` deliver only records whose `owner` label (stamped since 9c) and table lifetime
   (§9.3) pass the caller's scope; the subscribe handler's `Listen` registration passes the §6.2
   `liveAuthz` re-resolver — per-event scope + incarnation, mid-subscription grant revocation
-  teaching-closes the stream (§9.3).
+  teaching-closes the stream (§9.3). Per-event **credential** revalidation rides the same
+  callback: API-key state is rechecked per event once keys exist (10b), and token-backed
+  streams close no later than the token's `exp` — a deadline armed at stream open, firing the
+  teaching close even when no event arrives — once tokens exist (10e).
 - Public flip (deferred to 9j): `create_table` accepting the `row_access` key and
   `set_row_access` joining dispatch happen only when every scoped path enforces — the
   enforcement series 9d–9i lands as machinery with store-level pins, and 9j turns the surface
@@ -798,21 +801,29 @@ scope-filtering cases (a foreign row's commit never delivers an event to a scope
 `row_access` fixtures.
 
 ### 9e. Scope in searches + vector predicate
-**Spec:** §4.3, §7 (visible set exact) · **Dep:** 9d
+**Spec:** §4.3 (security barrier), §7 (visible set exact) · **Dep:** 9d
 
-Goal: searches operate over the visible corpus; pagination/truncated never leak.
+Goal: searches operate over the visible corpus through the §4.3 materialization boundary —
+predicate conjunction alone is not a barrier: SQL does not guarantee evaluation order, and an
+allowlisted expression (`iif(secret = ?, abs(-9223372036854775808), 1)`) evaluated on a foreign
+row leaks its value through the error. 9g's allowlist cannot reject this (`iif`/`abs` are
+legitimate), so the engine evaluates every caller filter only over already-materialized visible
+ids — the same boundary 9d's CRUD paths use.
 
 Changes:
-- `SearchVector`: owner predicate into the scan (`vector.go:65` — brute force already scans row
-  by row; the filter is exact); `min_score`, `truncated`, `skipped_vectors` computed over visible
-  hits only.
-- `SearchFulltext`: candidate ids intersected with the visible set before fetch;
-  `truncated` over visible matches (the ranking-isolation refinement is 9f).
+- `SearchVector`: visible ids materialized first; the brute-force scan (`vector.go:65`) and all
+  caller-filter evaluation restricted to them — no caller expression ever evaluates against a
+  foreign row; `min_score`, `truncated`, `skipped_vectors` computed over visible hits only.
+- `SearchFulltext`: FTS candidate ids intersected with the materialized visible set, and the
+  caller filter evaluated only over surviving ids before fetch; `truncated` over visible
+  matches (the ranking-isolation refinement is 9f).
 - `describe_table`/`read_rows` scope from 9d rides here in conformance.
 
 Files: `internal/store/vector.go`, `search.go`; conformance.
 
-Acceptance: foreign rows never surface or displace; skipped/truncated semantics over the
+Acceptance: foreign rows never surface or displace; the §4.3 error-oracle expression pinned as
+a conformance case (a scoped search filter whose allowed expression would overflow on a
+foreign row returns no error and leaks nothing); skipped/truncated semantics over the
 visible set pinned.
 
 ### 9f. FTS visible-corpus ranking
@@ -892,7 +903,7 @@ Acceptance: race tests (migration concurrent with scoped op → 409-retry conver
 migration 403s without table-wide read.
 
 ### 9j. `query` gate + acceptance scenarios
-**Spec:** §4.4, §8.3 items 2–6 · **Dep:** 9d–9i
+**Spec:** §4.4, §8.3 items 2–6 · **Dep:** 9b, 9d–9i
 
 Goal: raw SQL gated per contract; the epic's acceptance scenarios become conformance; and the
 `row_access` surface goes public — the flip 9a deferred lands here, when every scoped path
@@ -950,8 +961,10 @@ Changes:
   check symmetrically (an active key's stored groups make a root group grant a usable
   administrator from here on).
 - Active keys join 7c's source-presence startup check.
+- SSE streams recheck key state per event through the 9d live callback — a revoked key drops
+  the stream at its next event, best-effort immediately (§9.3).
 
-Files: `internal/api/auth.go`, `internal/store/grants.go`; tests.
+Files: `internal/api/auth.go`, `internal/api/sse.go`, `internal/store/grants.go`; tests.
 
 Acceptance: uniform-401 tests; guard tests incl. the alice/bob cross-check scenario.
 
@@ -1008,9 +1021,12 @@ Changes:
 - Routes stay unregistered: a conforming mint also needs the issuer-qualified principal (10f) —
   a token bearing a bare `sub` could match another issuer's grants (§1.4), so the dance goes
   public with 10f, not here.
+- Token-backed SSE streams arm an expiry deadline at open and close no later than the token's
+  `exp` with the §9.3 teaching close; reconnect with a fresh token resumes from the durable
+  cursor.
 
 Files: new `internal/authn/token.go`, `internal/store/grants.go` (keyring persistence),
-`internal/api/auth.go`, `main.go`; tests.
+`internal/api/auth.go`, `internal/api/sse.go` (expiry deadline), `main.go`; tests.
 
 Acceptance: format/verification matrix incl. cross-deployment rejection and rotation overlap.
 
@@ -1030,9 +1046,12 @@ Changes:
   when minted principals carry the pinned issuer-qualified encoding (the 8d dependency is
   load-bearing: tokens must not be mintable while grant-protected ops are still permissive;
   the root-administrator invariant exists too).
+- The OIDC source joins 7c's source-presence startup check: an OIDC-only deployment (no
+  trusted proxies, no admin key) counts its enabled, validated provider config as an identity
+  source and boots — the check knows proxies and keys only until here.
 
-Files: `internal/authn/oidc.go`, `internal/api/auth.go`, `internal/api/server.go` (routes on);
-tests.
+Files: `internal/authn/oidc.go`, `internal/api/auth.go`, `internal/api/server.go` (routes on),
+`main.go` (source-presence check); tests.
 
 Acceptance: encoding table tests; issuer-change lockout scenario pinned at startup; the 10d
 dance end-to-end through the registered routes.
