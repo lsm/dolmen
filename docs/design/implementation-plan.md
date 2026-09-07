@@ -308,7 +308,7 @@ Acceptance: a registered test listener observes ranges after commit only (never 
 in a listener cannot fail the write (recovered, logged).
 
 ### 5a. `read_rows` + `capabilities` ops
-**Spec:** §2 (verb table rows) · **Dep:** 2c
+**Spec:** §2 (verb table rows) · **Dep:** 2c, 4d
 
 Goal: two small contract ops land early — the by-id fetch the realtime recovery path needs, and
 the engine capability surface.
@@ -639,7 +639,7 @@ Acceptance: idempotent merge, last-verb-revoke deletes row, subtree semantics, s
 pinned by store tests. No ops yet.
 
 ### 8b. `grant` / `revoke` / `list_grants` ops
-**Spec:** §3.1–3.2, §2 · **Dep:** 8a, 4a
+**Spec:** §3.1–3.2, §2 · **Dep:** 8a, 4a, 7b
 
 Goal: the three grant ops exist and validate per contract (still inert until 8c wires checks).
 
@@ -871,7 +871,7 @@ Files: `internal/conformance/`, `internal/store/grants.go` (crash-injection help
 Acceptance: the full matrix green; both window behaviors pinned.
 
 ### 9a. `row_access` annotation + `owner` column
-**Spec:** §4.1 · **Dep:** —
+**Spec:** §4.1 · **Dep:** 2b
 
 Goal: the schema machinery for `row_access: "own"` — annotation, implicit `owner` column,
 reservation — exists. The public surface stays OFF: `create_table` keeps rejecting the key as
