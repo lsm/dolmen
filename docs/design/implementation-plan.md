@@ -118,6 +118,11 @@ Changes:
   mechanical zero-value arguments (guards, nil scopes): changing `*Store`'s signatures while
   wrapping only the store tests would leave `internal/api` uncompilable, and 2b must land
   green. 2c then switches those calls from the concrete type to the `Engine` variable.
+- Two concrete-only helpers fold into the interface's paths as part of that adaptation:
+  `InsertIdempotent` call sites become `Insert` with `WriteOpts.IdempotencyKey`, and
+  `ValidateVectorSearch` call sites become the `TableState`-snapshot validation §6.2 specifies
+  (vectorize-field presence and identity pinned before the provider is called) — neither
+  method exists on `Engine`, so leaving them would break 2c's swap.
 
 Files: `internal/store/store.go`, `lifecycle.go`, `insert.go`, `update.go`, `upsert_key.go`,
 `search.go`, `vector.go`, `query.go`, `migrate.go`, `internal/api/ops.go` (call-site
@@ -366,7 +371,11 @@ Changes:
   semantics; on timeout an **empty page carrying the unchanged head cursor, never an error**.
 - Implementation: check the log; if empty and `timeout_ms > 0`, wait on the 4d registry (channel
   with deadline) with a poll tick fallback (e.g. 250 ms) — the degraded-mode contract holds even
-  without a wake; return on first matching commit.
+  without a wake; return on first matching commit. Correctness does not rest on the tick: the
+  waiter registers with the notification registry BEFORE the final emptiness check, and the
+  timeout path re-checks the log before returning an empty page, so a matching commit between
+  the initial check and registration is never missed (a sub-tick timeout can never wrongly
+  return empty) — the tick is a fallback for lost wakeups, not the race guard.
 - Skill guidance (dolmen.md): the poll-replacement pattern with a one-tool-call example.
 
 Files: `internal/store/changelog.go` (WaitFor helper), `internal/api/ops.go`,
@@ -1176,7 +1185,7 @@ Acceptance: encoding table tests; issuer-change lockout scenario pinned at start
 dance end-to-end through the registered routes.
 
 ### 10g. Native+keys conformance mode
-**Spec:** §8.2 (mode 3), §8.3 items 6–7 · **Dep:** 10b, 10f, 1, 9j
+**Spec:** §8.2 (mode 3), §8.3 items 6–7 · **Dep:** 10b, 10f, 1, 9j, 7d
 
 Goal: the third harness mode — the full native story under CI.
 
