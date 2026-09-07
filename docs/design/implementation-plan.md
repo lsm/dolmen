@@ -108,9 +108,12 @@ Changes:
   `bindings`/`page` where the interface has them). Signatures that change shape
   (`CreateNamespace`/`DropNamespace` gain `ctx` + guard args; `ListNamespaces` gains `ctx`,
   `prefix`, `bindings`; `Query` gains `nsGen`, `Page`).
-- **Zero test churn:** the old-arity methods stay as thin unexported/legacy wrappers on `*Store`
-  that delegate with zero values, so the ~300 direct store-test call sites keep compiling. The
-  wrappers are deleted in 7e/9i when the api layer supplies real values.
+- **Contained test churn:** Go cannot overload methods, so `*Store` cannot carry both the old
+  arities and the `Engine` signatures under one name — the old arities move to a separate
+  `legacy` adapter (`type legacyStore struct{ *Store }`, package helper `legacy(s)`) whose
+  methods delegate with zero values; store-test suites switch their constructor once (one line
+  per setup, not per call site), so the ~300 direct call sites keep compiling unchanged. The
+  adapter is deleted in 7e/9i when the api layer supplies real values.
 
 Files: `internal/store/store.go`, `lifecycle.go`, `insert.go`, `update.go`, `upsert_key.go`,
 `search.go`, `vector.go`, `query.go`, `migrate.go`; new `engine_compat_test.go`
@@ -683,7 +686,7 @@ Acceptance: guard tests for every "last admin" shape incl. the group-grant decoy
 failure messages pinned.
 
 ### 8e. Grants bind lifetime keys
-**Spec:** §3.4 (lifetime identity) · **Dep:** 8a, 4a
+**Spec:** §3.4 (lifetime identity) · **Dep:** 8a, 4a, 7b
 
 Goal: a grant names the incarnation it was minted against; resurrected names inherit nothing.
 
