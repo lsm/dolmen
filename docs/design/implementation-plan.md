@@ -313,7 +313,7 @@ Acceptance: token mint/resolve round-trip survives reopen; pruning bounded by ag
 count); `begin` boundary math pinned by table-driven tests.
 
 ### 5c. `changes_since` op
-**Spec:** §9.2–9.3 · **Dep:** 5b
+**Spec:** §9.2–9.3 · **Dep:** 5b, 4c
 
 Goal: the replay op — the foundation layer of realtime, agent-usable today.
 
@@ -496,11 +496,18 @@ Changes:
   exists.
 - Auth-off invariants: headers ignored even from trusted CIDRs (send them, assert no principal
   anywhere).
+- `describe_server`'s `auth: on`-only extension lands here (§2): the response reports the auth
+  mode, the enabled identity sources (read-only names — `trusted-proxy` initially; `api-keys`
+  joins with 10b, `oidc` with 10f; never key material), and the engine capability surface
+  inlined verbatim from the `capabilities` op (5a); under `auth: off` the response stays
+  byte-identical (§8.1).
 
-Files: `internal/conformance/` (new `auth_mode_test.go` + harness extension).
+Files: `internal/api/ops.go` (describe_server extension), `internal/conformance/` (new
+`auth_mode_test.go` + harness extension).
 
 Acceptance: the enforceable half of the sweep runs green in `make test`; op-count table-driven
-so new ops join the sweep automatically and flip their 403 rows on at 8c.
+so new ops join the sweep automatically and flip their 403 rows on at 8c; the auth:on
+extension pinned (auth-off byte-identical).
 
 ### 7e. Namespace-creation gating above the seam
 **Spec:** §2 (implicit creation disabled under auth:on), §6.2 global rule · **Dep:** 7b
@@ -651,9 +658,9 @@ successor — pinned end-to-end in gateway mode.
 Goal: dropping an object deletes its grants (and its subtree's) in the same operation,
 coordinated by the §3.4 write-ahead tombstone from the start — a cascade without its tombstone
 has a crash window that leaves a live object grant-less or a recreated successor inheriting the
-predecessor's grants, both forbidden. The cascade, its crash-atomic protocol, and the
-pending-window mutation refusal land together; 8g adds the evaluation hold and the full crash
-matrix.
+predecessor's grants, both forbidden. The full §3.4 protocol lands here — tombstone, mutation
+refusal, evaluation hold, removal, recovery; 8g is the exhaustive crash matrix and window
+pinning.
 
 Changes:
 - `tombstones` table in the grant registry: recorded FIRST (capturing the exact covered grant
@@ -665,6 +672,12 @@ Changes:
   deletion — a grant minted against the still-live predecessor after capture would otherwise
   survive the drop as a stale row that authorizes the successor (unbound) or blocks re-granting
   (bound).
+- Evaluation hold while pending: the captured grants leave evaluation the moment the tombstone
+  records, and authorization checks touching the covered subtree are held behind the drop's
+  serialization boundary (retryable `409`-family) — never a bypass (after engine deletion
+  commits and before removal, a recreated same-named successor must not inherit the
+  predecessor's grants) and never an observable provisional denial (a rolled-back drop
+  restores evaluation; no request ever sees the in-between).
 - Recovery on open: a pending tombstone finalizes when THAT lifetime is gone (even with a
   same-named successor already recreated) and rolls back (restoring evaluation) when the object
   is alive — every crash point converges to no resurrectable grants and no silently-denied
@@ -672,30 +685,31 @@ Changes:
 - Confirm-flow responses report the grant count dying with the object (additive response
   field).
 
-Files: `internal/api/ops.go` (drop ops), `internal/store/grants.go` (tombstones + recovery +
-mutation refusal); conformance.
+Files: `internal/api/ops.go` (drop ops), `internal/api/auth.go` (evaluation hold),
+`internal/store/grants.go` (tombstones + recovery + mutation refusal); conformance.
 
 Acceptance: gateway conformance — recreation starts with a clean grant slate; confirm count
-correct; grant mutations during the pending window 409; a crash-recovery pin (kill between
+correct; grant mutations during the pending window 409; evaluation on a pending subtree holds
+(409 — not a bypass, not an observable provisional denial); a crash-recovery pin (kill between
 tombstone and deletion → recovery converges).
 
-### 8g. Drop cascade: evaluation hold + crash matrix
-**Spec:** §3.4 (exclusion never observable) · **Dep:** 8f
+### 8g. Drop cascade: crash matrix + window pins
+**Spec:** §3.4 (recovery convergence; never-observable exclusion) · **Dep:** 8f
 
-Goal: the pending window is sealed on the read side and the full crash matrix is pinned —
-while a tombstone is live, authorization checks behave exactly as §3.4 specifies.
+Goal: the §3.4 protocol shipped by 8f is verified exhaustively — injected crashes at every
+window and the pending-window behaviors pinned end-to-end.
 
 Changes:
-- Evaluation exclusion while pending: authz checks on the covered subtree are held behind the
-  drop's serialization boundary (retryable `409`-family) — never an observable provisional
-  denial for a drop that may not happen, and never a bypass either.
+- Injected-crash matrix: kill points at tombstone capture, between capture and engine
+  deletion, after deletion before removal, during removal, and mid-recovery (including a
+  concurrent recreate after deletion) — every point converges to no resurrectable grants and
+  no silently-denied successors.
+- Pending-window conformance pins: evaluation holds (retryable 409 — never a bypass, never an
+  observable provisional denial) and mutation refusals (409), end-to-end in gateway mode.
 
-Files: `internal/api/auth.go` (evaluation exclusion), `internal/store/grants.go`; tests incl.
-simulated crash points.
+Files: `internal/conformance/`, `internal/store/grants.go` (crash-injection helpers); tests.
 
-Acceptance: injected-crash tests at each window (capture, deletion, removal, recovery)
-converge to the §3.4 outcome; pending-window evaluation holds pinned (the mutation refusals
-landed with 8f).
+Acceptance: the full matrix green; both window behaviors pinned.
 
 ### 9a. `row_access` annotation + `owner` column
 **Spec:** §4.1 · **Dep:** 8c
@@ -760,7 +774,7 @@ Files: `internal/store/insert.go`, `update.go`, `upsert_key.go`, `typed.go`,
 Acceptance: stamping on every write path; `owner` visible in reads, never in declared fields.
 
 ### 9d. RowScope computation + CRUD and feed enforcement
-**Spec:** §4.3, §2 (feed verb rows), §9.3 · **Dep:** 9c
+**Spec:** §4.3, §2 (feed verb rows), §9.3 · **Dep:** 9c, 5a, 5c, 5d, 6b
 
 Goal: the visible set is computed above the seam and enforced below it — for row CRUD and the
 realtime feeds in the same slice, so no revision exists with CRUD enforced but feeds leaking
@@ -895,6 +909,12 @@ Changes:
   rebuild/removal paths, `add_field` with backfill or required-no-backfill, `drop_field`)
   additionally requires table-wide `read` under `auth: on` — enforced before any data-dependent
   check or provider call.
+- The §6.2 cross-request plan→apply binding: dry-run responses carry the opaque
+  `expected_incarnation` token (the plan's `Incarnation`), and under `auth: on` an apply
+  carrying any precondition MUST carry it — `expected_version` alone is `invalid_request`
+  (version 1 cannot distinguish a same-named predecessor recreated at version 1; a stale
+  destructive plan must 409 on the token mismatch). `expected_version` remains the auth-off
+  compatibility path.
 
 Files: `internal/store/` (guard in each scoped method), `internal/api/ops.go` (migrate gate);
 tests.
@@ -960,7 +980,8 @@ Changes:
   group grant, §1.2's key-provable exception — is the 409; the same proof updates 8d's startup
   check symmetrically (an active key's stored groups make a root group grant a usable
   administrator from here on).
-- Active keys join 7c's source-presence startup check.
+- Active keys join 7c's source-presence startup check and `describe_server`'s auth-on source
+  list (7d's extension).
 - SSE streams recheck key state per event through the 9d live callback — a revoked key drops
   the stream at its next event, best-effort immediately (§9.3).
 
@@ -1048,7 +1069,8 @@ Changes:
   the root-administrator invariant exists too).
 - The OIDC source joins 7c's source-presence startup check: an OIDC-only deployment (no
   trusted proxies, no admin key) counts its enabled, validated provider config as an identity
-  source and boots — the check knows proxies and keys only until here.
+  source and boots — the check knows proxies and keys only until here; the `oidc` source also
+  joins `describe_server`'s auth-on source list (7d's extension).
 
 Files: `internal/authn/oidc.go`, `internal/api/auth.go`, `internal/api/server.go` (routes on),
 `main.go` (source-presence check); tests.
