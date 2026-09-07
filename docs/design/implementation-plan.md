@@ -465,11 +465,12 @@ Changes:
   (`mcp/server.go:119`), and the `/v1/subscribe` SSE route (its own mux entry since 6b —
   streams carry identity too); identity into the op-context and the request's log line beside
   `X-Request-Id`.
-- Fail-closed rollout: `-auth on` is a **startup error until 8c** — the mode that promises
-  deny-by-default never boots without deny-by-default, so no revision is deployable with
-  authenticated-but-permissive dispatch. The middleware and its 401 rules are exercised here
-  at unit/handler level; `auth: off` stays byte-identical; 7d's gateway fixtures (post-8c)
-  cover the end-to-end surface.
+- Fail-closed rollout: `-auth on` is a **startup error until 8d** — the mode that promises
+  deny-by-default never boots without deny-by-default AND its startup invariants
+  (source-presence, usable root administrator), so no revision is deployable with
+  authenticated-but-permissive dispatch or an administratively dead boot. The middleware and
+  its 401 rules are exercised here at unit/handler level; `auth: off` stays byte-identical;
+  7d's gateway fixtures (post-8d) cover the end-to-end surface.
 - `whoami` op (auth:on-only: absent from dispatch under off — §2 transport parity).
 
 Files: new `internal/api/auth.go`, `internal/api/envelope.go`, `internal/api/server.go`,
@@ -486,7 +487,7 @@ Goal: fail-fast at boot for decidable misconfigurations.
 Changes:
 - `auth: on` with no identity source at all (no trusted proxies, no admin key) = startup error.
 - Admin-key-only deployments validated per §1.2. (The root-administrator usability check needs
-  grants — 8d completes it; the `auth: on` runtime checks are exercised from 8c, when the mode
+  grants — 8d completes it; the `auth: on` runtime checks are exercised from 8d, when the mode
   first boots.)
 
 Files: `main.go` (run), `main_test.go`.
@@ -494,10 +495,10 @@ Files: `main.go` (run), `main_test.go`.
 Acceptance: startup tests for each failure mode with the teaching message pinned.
 
 ### 7d. Gateway-mode conformance
-**Spec:** §8.2 (gateway mode), §8.3 items 1–4 · **Dep:** 7b, 1, 8c
+**Spec:** §8.2 (gateway mode), §8.3 items 1–4 · **Dep:** 7b, 1, 8d, 5a
 
 Goal: the full deny sweep and gateway fixtures exist — the safety net for every later auth
-slice — running against real enforcement: `auth: on` boots from 8c, so both halves of the
+slice — running against real enforcement: `auth: on` boots from 8d, so both halves of the
 sweep hold from this slice on and no permissive window was ever deployable.
 
 Changes:
@@ -540,7 +541,7 @@ store tests (mechanical ensure additions).
 
 Acceptance: auth-off conformance byte-identical (implicit creation still works through the op
 layer); gateway-mode tests show `not_found` (post-authz) for absent namespaces (the
-gateway-mode pins ride with 7d's fixtures, which run post-8c).
+gateway-mode pins ride with 7d's fixtures, which run post-8d).
 
 ### 8a. Grant registry store
 **Spec:** §3 preamble, §3.1–3.2 · **Dep:** 3b
@@ -584,15 +585,16 @@ Changes:
 Files: `internal/api/ops.go`, `internal/mcp/server.go`, `internal/api/openapi.go`; conformance.
 
 Acceptance: conformance shape/validation pins; ops absent from dispatch under `auth: off`
-(§8.1). (`auth: on` is not bootable until 8c — the pins run at handler level here and
-end-to-end from 8c.)
+(§8.1). (`auth: on` is not bootable until 8d — the pins run at handler level here and
+end-to-end from 8d.)
 
 ### 8c. Authorization resolution in dispatch
-**Spec:** §3.3, §2 (verb table), §6.2 (AuthBinding) · **Dep:** 8b, 7b, 7e, 8e, 6b, 8f, 9h
+**Spec:** §3.3, §2 (verb table), §6.2 (AuthBinding) · **Dep:** 8b, 7b, 7e, 8e, 6b, 6c, 8f, 9h
 
 Goal: deny-by-default becomes real — every op checks its required verb(s) against resolved
-grants; the engine guards receive real bindings — and `auth: on` becomes bootable (7b's
-fail-closed gate lifts). Every dependency is load-bearing: 7e — with `Store.ns()` still
+grants; the engine guards receive real bindings. Enforcement is complete here; the `auth: on`
+boot gate lifts with 8d, once the startup invariants exist. Every dependency is
+load-bearing: 7e — with `Store.ns()` still
 create-on-open, a covering `schema` grant could materialize a missing namespace through
 `create_table`, the §2 bypass the parent-`admin` gate exists to prevent; 8e — grants are
 lifetime-bound from the first enforcing revision, else a dropped-and-recreated table's
@@ -612,9 +614,10 @@ Changes:
 - `AuthBinding` sets computed from matched grant rows and passed to engine calls (the 2a
   zero-values become real here); authz-precedes-existence for `list_tables` (ungranted →
   `not_found`).
-- `auth: on` becomes bootable here: 7b's fail-closed startup gate lifts — the mode that
-  promises deny-by-default never boots without it — so no revision is deployable with
-  authenticated-but-permissive dispatch (7d's full sweep runs from the next slice on).
+- Enforcement is complete here; 7b's fail-closed `-auth on` startup gate stays down one more
+  slice — it lifts with 8d, after the source-presence (7c) and usable-root-administrator
+  checks exist, so no `auth: on` deployment can boot administratively dead (no usable source,
+  or a trusted proxy with no reachable root grant).
 - The §2 data-dependent migration list (`set_enum`, `set_row_access` enabling, every
   vectorization change, FTS rebuild/removal paths, `add_field` with backfill or
   required-no-backfill, `drop_field`) additionally requires table-wide `read` under
@@ -631,8 +634,12 @@ Changes:
   first enforcing revision (9d adds per-record owner-label scope filtering when `row_access`
   goes live).
 
-Files: `internal/api/auth.go`, `internal/api/ops.go` (dispatch), `internal/store/engine.go`
-(guards now verified — the in-tx incarnation checks activate).
+Files: `internal/api/auth.go`, `internal/api/ops.go` (dispatch), `internal/store/engine.go`,
+and the concrete operation files that carry the in-transaction checks — `lifecycle.go`,
+`store.go`, `insert.go`, `update.go`, `upsert_key.go`, `search.go`, `vector.go`, `query.go`,
+`migrate.go`, `changelog.go` (2b's ignored guard parameters become enforced here; the
+interface file alone activates nothing). 6c is a dependency because trusted-proxy streams
+carry no credential state to revalidate — the age bound is their identity-refresh backstop.
 
 Acceptance: gateway conformance — the 7d sweep's 403s become real; inheritance-down,
 union, ancestor-admin delegation cases pinned.
@@ -651,6 +658,10 @@ Changes:
   exception).
 - `revoke` refuses (409, teaching message) when it would remove the last usable root grant —
   including a configured admin key as "another administrator exists".
+- 7b's fail-closed `-auth on` startup gate lifts here: enforcement (8c), source-presence
+  (7c, transitive), and the usable-root-administrator check (this slice) all exist — no
+  `auth: on` revision ever booted permissive or administratively dead (7d's full sweep runs
+  from the next slice on).
 
 Files: `main.go`, `internal/store/grants.go` (guard helper), tests.
 
@@ -784,7 +795,7 @@ Acceptance: all §4.2 cases pinned (store-level here; end-to-end through dispatc
 incl. the empty-table enable and the gate ordering.
 
 ### 9c. Owner stamping + typed reads
-**Spec:** §4.2 · **Dep:** 9a
+**Spec:** §4.2 · **Dep:** 9a, 7b
 
 Goal: every row-insert path stamps the principal; reads surface `owner` like `id`/`created_at`.
 
@@ -901,7 +912,7 @@ Acceptance: a foreign document cannot reorder or displace visible results — th
 pinned.
 
 ### 9g. Row-local filter allowlist
-**Spec:** §4.3 (scoped filters) · **Dep:** 9d
+**Spec:** §4.3 (scoped filters) · **Dep:** 9d, 9e
 
 Goal: scoped callers' filter fragments are restricted to row-local expressions, validated above
 the seam.
