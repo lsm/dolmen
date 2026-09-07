@@ -219,9 +219,13 @@ Changes:
   INTEGER NOT NULL, kind TEXT NOT NULL, owner TEXT, nsgen BLOB NOT NULL, drop_gen INTEGER NOT
   NULL, at TEXT NOT NULL DEFAULT …)` in `registryDDL`; the AUTOINCREMENT sequence *is* the
   per-namespace cursor (monotonic, gap-free by construction).
-- `mintChanges(ctx, tx, table, kind, ids, owner)` helper (new `internal/store/changelog.go`):
-  assigns contiguous seqs inside the caller's transaction, one row per inserted id, recording the
-  table's current drop generation and the namespace's nsGen.
+- `mintChanges(ctx, tx, table, kind, ids, owners)` helper (new `internal/store/changelog.go`):
+  assigns contiguous seqs inside the caller's transaction, one row per affected id, recording the
+  table's current drop generation and the namespace's nsGen. The owner label is captured
+  **per row**: insert branches stamp the caller (`WriteOpts`); update and delete read each
+  affected row's own owner from the write's materialized id set — a single caller-value label
+  would relabel other users' rows on table-wide updates and deletes (§9.3's label is the row's,
+  not the writer's).
 - `insertAttempt` (insert.go:127-313) calls it beside the idempotency insert; `InsertResult`
   gains the internal `ChangeRange{First, Last, Count}` — **never a materialized slice** (§6.2).
 
@@ -240,7 +244,8 @@ Changes:
 - `upsertKeyAttempt` (upsert_key.go:134-370): one record per record-branch (insert or update),
   minted in-transaction.
 - `updateOrUpsert` (update.go:43-280): records for matched rows via the materialized
-  `_dolmen_update_ids` set; `UpdateResult` carries the range.
+  `_dolmen_update_ids` set, each carrying that row's own owner read from the materialization
+  (owner is immutable — callers cannot set it); `UpdateResult` carries the range.
 - `Delete` (search.go:261-345): records for the `_dolmen_delete_ids` set — delete events carry the
   owner stamp from the pre-delete rows (owner is NULL until 9c; the column exists now so no
   registry rebuild later).
@@ -298,9 +303,14 @@ Goal: opaque resume tokens and the retention knob exist at the engine level, bef
 
 Changes:
 - `_dolmen_cursor_tokens(token TEXT PRIMARY KEY, position INTEGER NOT NULL, issued_at INTEGER NOT
-  NULL, chain_id TEXT NOT NULL, chain_origin INTEGER NOT NULL)` in the namespace db — the
-  coordinated-storage mapping (§9.3: "the client never sees position-derived bytes"; satisfies
-  the opacity/length rules trivially, deployment-wide by living in the durable db).
+  NULL, chain_id TEXT NOT NULL, chain_origin INTEGER NOT NULL, feed_table TEXT NOT NULL DEFAULT
+  '' — `''` = the unfiltered namespace feed)` in the namespace db — the coordinated-storage
+  mapping (§9.3: "the client never sees position-derived bytes"; satisfies the opacity/length
+  rules trivially, deployment-wide by living in the durable db; namespace-lifetime binding is
+  inherent — the mapping dies with the namespace db, §5.4). The token is bound to its FEED:
+  resolve verifies the caller's table selector against the stored `feed_table` — a token
+  minted on table A's feed replayed against table B (or an unfiltered feed) is rejected as a
+  cross-feed reuse, never honored as a position, which would silently skip B's events.
 - Helpers in `changelog.go`: mint (random token), resolve, head position, `begin` boundary
   (oldest with full page-chain headroom: `M ≥ T−R`), page-chain deadline refresh + absolute cap
   `chain_start + 2R`, age-based pruning of records and tokens (`R = 0` disables).
@@ -764,10 +774,11 @@ Goal: every row-insert path stamps the principal; reads surface `owner` like `id
 Changes:
 - `WriteOpts.Owner` (declared in 2a) flows from the op layer under `auth: on` into the insert
   branches only — insert and both upsert insert branches; callers can never supply `owner`
-  (not a request field — automatic via DisallowUnknownFields). Delete-event labels are
-  different: each record captures the deleted row's own pre-delete `owner` (4c's rule — a
-  table-wide deleter removing another user's row must not relabel it, or the original owner's
-  scoped feed misses the deletion; the deleter is not the row's owner).
+  (not a request field — automatic via DisallowUnknownFields). Delete- and update-event labels
+  are different: each record captures the affected row's own owner, read from the materialized
+  rows before the write (4c's rule — a table-wide writer touching another user's row must not
+  relabel it, or the original owner's scoped feed misses the event; the writer is not the
+  row's owner).
 - Projection (`typed.go`) surfaces `owner` on row reads/search results for tables with the
   column; NULL-owner rows (written under auth:off) read as NULL.
 
@@ -835,8 +846,14 @@ Changes:
   caller filter evaluated only over surviving ids before fetch; `truncated` over visible
   matches (the ranking-isolation refinement is 9f).
 - `describe_table`/`read_rows` scope from 9d rides here in conformance.
+- §7's execution metadata rides auth-on `search_vector` responses: the canonical
+  response-level `execution` field (`"exact"` on adapter #1's brute-force path; the closed
+  enum is ready for a declared-ANN engine), absent under `auth: off` (§8.1); OpenAPI/MCP
+  schemas updated; conformance asserts presence-and-value under `auth: on` and absence under
+  `auth: off`.
 
-Files: `internal/store/vector.go`, `search.go`; conformance.
+Files: `internal/store/vector.go`, `search.go`, `internal/api/ops.go` (execution field),
+`internal/api/openapi.go`, `internal/mcp/server.go`; conformance.
 
 Acceptance: foreign rows never surface or displace; the §4.3 error-oracle expression pinned as
 a conformance case (a scoped search filter whose allowed expression would overflow on a
@@ -874,8 +891,9 @@ Changes:
 
 Files: new `internal/store/filterlang.go`, call sites in `internal/api/ops.go`; tests.
 
-Acceptance: the §4.3 attack examples (subquery oracle, `iif` error oracle) rejected; allowlist
-bounds pinned by table tests.
+Acceptance: the §4.3 subquery example rejected by the validator; the `iif` error-oracle example
+passes validation (`iif`/`abs` are allowlisted) and executes safely over the materialized
+visible set per 9e — no foreign-row error, no leak; allowlist bounds pinned by table tests.
 
 ### 9h. Idempotency owner-namespacing
 **Spec:** §4.3 (final idempotency semantics) · **Dep:** 9c
