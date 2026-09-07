@@ -599,9 +599,11 @@ Goal: accidental lockout is hard; boot fails without a usable administrator.
 
 Changes:
 - Startup: `auth: on` requires a usable root administrator — the admin key **or** a durable
-  `admin`-on-`*` grant targeting a principal (group grants never count; `dolmen-admin`-named
-  grants never count; API-key reachability joins with 10b; header/OIDC assumed-reachable per
-  §1.2's documented exception).
+  `admin`-on-`*` grant targeting a principal (group grants never count — with the one decidable
+  §1.2 exception: a root group grant counts when an active key's stored groups locally prove
+  membership, activating when keys land (10a/10b); `dolmen-admin`-named grants never count;
+  API-key reachability joins with 10b; header/OIDC assumed-reachable per §1.2's documented
+  exception).
 - `revoke` refuses (409, teaching message) when it would remove the last usable root grant —
   including a configured admin key as "another administrator exists".
 
@@ -632,19 +634,25 @@ Acceptance: drop-and-recreate a namespace/table; the old grant neither authorize
 successor — pinned end-to-end in gateway mode.
 
 ### 8f. Drop cascade: write-ahead tombstone
-**Spec:** §3.4 (drop cascades grant deletion, crash-atomically) · **Dep:** 8b
+**Spec:** §3.4 (drop cascades grant deletion, crash-atomically) · **Dep:** 8b, 8e
 
 Goal: dropping an object deletes its grants (and its subtree's) in the same operation,
 coordinated by the §3.4 write-ahead tombstone from the start — a cascade without its tombstone
 has a crash window that leaves a live object grant-less or a recreated successor inheriting the
-predecessor's grants, both forbidden. The cascade and its crash-atomic protocol land together;
-8g seals the pending window.
+predecessor's grants, both forbidden. The cascade, its crash-atomic protocol, and the
+pending-window mutation refusal land together; 8g adds the evaluation hold and the full crash
+matrix.
 
 Changes:
 - `tombstones` table in the grant registry: recorded FIRST (capturing the exact covered grant
   set and the target's lifetime key — `nsGen` for a namespace, `(NsGen, Table, DropGen)` for a
   table); engine deletion runs; the captured set is physically removed on completion — exactly
-  that set and nothing else (grants minted after capture can only target the successor).
+  that set and nothing else.
+- Grant mutations targeting a subtree with a pending tombstone fail `409` until cleanup
+  completes (§3.4): nothing can be minted into the gap between the captured set and the engine
+  deletion — a grant minted against the still-live predecessor after capture would otherwise
+  survive the drop as a stale row that authorizes the successor (unbound) or blocks re-granting
+  (bound).
 - Recovery on open: a pending tombstone finalizes when THAT lifetime is gone (even with a
   same-named successor already recreated) and rolls back (restoring evaluation) when the object
   is alive — every crash point converges to no resurrectable grants and no silently-denied
@@ -652,30 +660,30 @@ Changes:
 - Confirm-flow responses report the grant count dying with the object (additive response
   field).
 
-Files: `internal/api/ops.go` (drop ops), `internal/store/grants.go` (tombstones + recovery);
-conformance.
+Files: `internal/api/ops.go` (drop ops), `internal/store/grants.go` (tombstones + recovery +
+mutation refusal); conformance.
 
 Acceptance: gateway conformance — recreation starts with a clean grant slate; confirm count
-correct; a crash-recovery pin (kill between tombstone and deletion → recovery converges).
+correct; grant mutations during the pending window 409; a crash-recovery pin (kill between
+tombstone and deletion → recovery converges).
 
-### 8g. Drop cascade: pending-window semantics
-**Spec:** §3.4 (exclusion never observable; pending-window mutations) · **Dep:** 8f
+### 8g. Drop cascade: evaluation hold + crash matrix
+**Spec:** §3.4 (exclusion never observable) · **Dep:** 8f
 
-Goal: the pending window is sealed — while a tombstone is live, evaluation and mutation of the
-covered subtree behave exactly as §3.4 specifies, and the full crash matrix is pinned.
+Goal: the pending window is sealed on the read side and the full crash matrix is pinned —
+while a tombstone is live, authorization checks behave exactly as §3.4 specifies.
 
 Changes:
 - Evaluation exclusion while pending: authz checks on the covered subtree are held behind the
   drop's serialization boundary (retryable `409`-family) — never an observable provisional
-  denial for a drop that may not happen.
-- Grant mutations targeting a subtree with a pending tombstone fail `409` until cleanup
-  completes — nothing slips between the captured set and the engine deletion.
+  denial for a drop that may not happen, and never a bypass either.
 
 Files: `internal/api/auth.go` (evaluation exclusion), `internal/store/grants.go`; tests incl.
 simulated crash points.
 
-Acceptance: injected-crash tests at each window converge to the §3.4 outcome; pending-window
-409s pinned (evaluation holds + mutation refusals).
+Acceptance: injected-crash tests at each window (capture, deletion, removal, recovery)
+converge to the §3.4 outcome; pending-window evaluation holds pinned (the mutation refusals
+landed with 8f).
 
 ### 9a. `row_access` annotation + `owner` column
 **Spec:** §4.1 · **Dep:** 8c
@@ -835,11 +843,15 @@ bounds pinned by table tests.
 Goal: idempotency keys are per-(table, owner); foreign domains neither conflict nor reveal.
 
 Changes:
-- `_dolmen_idempotency` gains `owner` (NULL = legacy); PK becomes `(table_name, owner, key)`
-  with a one-time registry migration; `lookupIdem` consults the caller's own domain only —
-  own-domain hit = verbatim replay (payload comparison only against one's own record);
-  miss = insert recording the domain; legacy pre-auth records replay only to table-wide readers;
-  auth:off retries consult the legacy domain only.
+- `_dolmen_idempotency` gains `owner TEXT NOT NULL DEFAULT ''` (`''` = the legacy pre-auth
+  domain — §1.1's charset makes principal strings non-empty, so the sentinel is unambiguous,
+  and NOT NULL keeps the composite PK a true uniqueness constraint: SQLite treats NULLs as
+  distinct, so a nullable owner would let two racing `auth: off` inserts both record instead of
+  the second replaying the first); PK becomes `(table_name, owner, key)` with a one-time
+  registry migration; `lookupIdem` consults the caller's own domain only — own-domain hit =
+  verbatim replay (payload comparison only against one's own record); miss = insert recording
+  the domain; legacy pre-auth records replay only to table-wide readers; auth:off retries
+  consult the legacy domain only.
 
 Files: `internal/store/store.go` (DDL + migration), `insert.go` (lookup/insert); tests incl.
 auth-transition cases.
@@ -894,7 +906,7 @@ Acceptance: both scenarios green in gateway mode; fail-closed test; the 9a/9b pu
 pins green from here.
 
 ### 10a. API-key registry + ops
-**Spec:** §1.5 · **Dep:** 8a
+**Spec:** §1.5 · **Dep:** 8a, 8d
 
 Goal: source C's storage and ops exist (native-first per the build-order ruling).
 
@@ -920,8 +932,11 @@ Changes:
   verification (10e; until then a non-`dlm_` bearer is the admin-key compare only); wrong-shape
   bearer = 401, never reinterpreted.
 - `revoke_key` mirrors the last-admin guard at the credential layer under the shared
-  registry serialization (the cross-registry lock from 8d); revoking the last active key bearing
-  the usable root principal = 409.
+  registry serialization (the cross-registry lock from 8d); revoking the last active key that
+  bears a usable root principal **or locally proves one** — its stored groups satisfy a root
+  group grant, §1.2's key-provable exception — is the 409; the same proof updates 8d's startup
+  check symmetrically (an active key's stored groups make a root group grant a usable
+  administrator from here on).
 - Active keys join 7c's source-presence startup check.
 
 Files: `internal/api/auth.go`, `internal/store/grants.go`; tests.
