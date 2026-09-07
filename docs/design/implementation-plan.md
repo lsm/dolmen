@@ -665,8 +665,14 @@ Changes:
   precondition MUST carry it — `expected_version` alone is `invalid_request` (a same-named
   successor recreated at version 1 matches the bare version while ancestor authorization
   legitimately covers it; the predecessor's destructive plan must 409 on the token mismatch).
-  `expected_version` stays the auth-off compatibility path; 9i folds the token into the
-  in-transaction guard.
+  `expected_version` stays the auth-off compatibility path.
+- **All in-transaction incarnation verification is complete at activation**: every guarded
+  engine call verifies its `AuthBinding` set / nsGen / `Incarnation` inside the operation's
+  transaction, and the migration token's `Incarnation` is verified inside apply's
+  transaction — a drop/recreate between authorization and execution fails the transaction and
+  never executes against a successor; the dispatch-level checks alone cannot close that
+  race. (9i later extends the same in-transaction pattern to `scopeIncarnation`, which is
+  vacuous until scopes exist, and adds the conformance coverage.)
 - §7's auth-on search semantics are in force from the first bootable revision: canonical
   cosine (float32-normalized operands, binary64 accumulation, correctly-rounded sqrt,
   zero-norm → exactly 0, quotient clamped to `[-1, 1]`), `q(s) = floor(s / fl64(1e-9))`
@@ -744,7 +750,8 @@ Changes:
 Files: `internal/store/grants.go`, `internal/api/auth.go`; tests.
 
 Acceptance: drop-and-recreate a namespace/table; the old grant neither authorizes nor blocks the
-successor — pinned end-to-end in gateway mode.
+successor — pinned at store level here; the gateway-mode pin rides with 7d's fixtures (post-8d,
+where the mode first boots).
 
 ### 8f. Drop cascade: write-ahead tombstone
 **Spec:** §3.4 (drop cascades grant deletion, crash-atomically) · **Dep:** 8b, 8e
@@ -782,10 +789,11 @@ Changes:
 Files: `internal/api/ops.go` (drop ops), `internal/api/auth.go` (evaluation hold),
 `internal/store/grants.go` (tombstones + recovery + mutation refusal); conformance.
 
-Acceptance: gateway conformance — recreation starts with a clean grant slate; confirm count
-correct; grant mutations during the pending window 409; evaluation on a pending subtree holds
-(409 — not a bypass, not an observable provisional denial); a crash-recovery pin (kill between
-tombstone and deletion → recovery converges).
+Acceptance: store/handler-level conformance — recreation starts with a clean grant slate;
+confirm count correct; grant mutations during the pending window 409; evaluation on a pending
+subtree holds (409 — not a bypass, not an observable provisional denial); a crash-recovery pin
+(kill between tombstone and deletion → recovery converges). Gateway-mode pins ride with 7d
+(post-8d, where the mode first boots).
 
 ### 8g. Drop cascade: crash matrix + window pins
 **Spec:** §3.4 (recovery convergence; never-observable exclusion) · **Dep:** 8f
@@ -799,7 +807,8 @@ Changes:
   concurrent recreate after deletion) — every point converges to no resurrectable grants and
   no silently-denied successors.
 - Pending-window conformance pins: evaluation holds (retryable 409 — never a bypass, never an
-  observable provisional denial) and mutation refusals (409), end-to-end in gateway mode.
+  observable provisional denial) and mutation refusals (409), at store/handler level;
+  gateway-mode pins ride with 7d (post-8d, where the mode first boots).
 
 Files: `internal/conformance/`, `internal/store/grants.go` (crash-injection helpers); tests.
 
@@ -1019,9 +1028,10 @@ Goal: scope resolution cannot race a migration or a drop; the data-dependent mig
 table-wide read.
 
 Changes:
-- `scopeIncarnation` verified inside every scoped operation's transaction (extend the existing
-  consistent-or-stale pattern from version+dropgen to the full `Incarnation`); mismatch → 409
-  retry.
+- `scopeIncarnation` verified inside every scoped operation's transaction — extending 8c's
+  in-transaction pattern (already complete at activation for bindings, nsGen, `Incarnation`,
+  and the migration token) to the scope snapshot, which is vacuous until scopes exist;
+  mismatch → 409 retry. Conformance coverage for the whole guard family lands here.
 - The §2 data-dependent-migration read gate (enforced in dispatch since 8c) is re-verified
   here inside the ordering §4.2/§2 pin — before any data-dependent check or provider call —
   and §4.3's response-disclosure rules (visible-set counts, redacted rejections) join with
@@ -1106,7 +1116,10 @@ Changes:
 - SSE streams recheck key state per event through the 9d live callback — a revoked key drops
   the stream at its next event, best-effort immediately (§9.3).
 
-Files: `internal/api/auth.go`, `internal/api/sse.go`, `internal/store/grants.go`; tests.
+Files: `internal/api/auth.go`, `internal/api/ops.go` (the key ops join dispatch; the
+`describe_server` source list gains `api-keys`), `internal/api/sse.go`, `main.go`
+(source-presence startup check update — an API-key-only deployment must boot after its
+bootstrap source is removed), `internal/store/grants.go`; tests.
 
 Acceptance: uniform-401 tests; guard tests incl. the alice/bob cross-check scenario.
 
