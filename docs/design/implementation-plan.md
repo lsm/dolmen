@@ -114,9 +114,14 @@ Changes:
   methods delegate with zero values; store-test suites switch their constructor once (one line
   per setup, not per call site), so the ~300 direct call sites keep compiling unchanged. The
   adapter is deleted in 7e/9i when the api layer supplies real values.
+- The ~19 **production** call sites in `internal/api/ops.go` are adapted in the same slice —
+  mechanical zero-value arguments (guards, nil scopes): changing `*Store`'s signatures while
+  wrapping only the store tests would leave `internal/api` uncompilable, and 2b must land
+  green. 2c then switches those calls from the concrete type to the `Engine` variable.
 
 Files: `internal/store/store.go`, `lifecycle.go`, `insert.go`, `update.go`, `upsert_key.go`,
-`search.go`, `vector.go`, `query.go`, `migrate.go`; new `engine_compat_test.go`
+`search.go`, `vector.go`, `query.go`, `migrate.go`, `internal/api/ops.go` (call-site
+adaptation); new `engine_compat_test.go`
 (`var _ Engine = (*Store)(nil)` plus a compile-drift guard).
 
 Acceptance: compile-time proof; full test suite green unchanged.
@@ -130,8 +135,10 @@ type except where it constructs nothing — it programs against `Engine`.
 Changes:
 - `Server.st *store.Store` → `eng store.Engine` (`internal/api/server.go:26`); `New()` signature
   keeps accepting what it gets (a `*Store` satisfies `Engine`; `main.go` and the harness unchanged).
-- All 19 op funcs in `internal/api/ops.go` call through the interface, passing zero-value guards
-  and nil scopes (auth is off everywhere until Lane B).
+- All 19 op funcs in `internal/api/ops.go` call through the interface (their arities were
+  adapted to zero-value guards in 2b; this slice switches them from the concrete type to the
+  `Engine` variable), still passing zero-value guards and nil scopes (auth is off everywhere
+  until Lane B).
 - `embedder()` helper unchanged.
 
 Files: `internal/api/server.go`, `internal/api/ops.go` (mechanical call-site updates).
