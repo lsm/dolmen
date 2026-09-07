@@ -356,7 +356,12 @@ Changes:
   cross-feed reuse, never honored as a position, which would silently skip B's events.
 - Helpers in `changelog.go`: mint (random token), resolve, head position, `begin` boundary
   (oldest with full page-chain headroom: `M ≥ T−R`), page-chain deadline refresh + absolute cap
-  `chain_start + 2R`, age-based pruning of records and tokens (`R = 0` disables).
+  `chain_start + 2R`, age-based pruning of records and tokens (`R = 0` disables) — but never a
+  record still reachable from a live chain through its current deadline (§9.3: a refreshed
+  next-page token is valid to nearly `chain_start + 2R` while its records are nearly `2R` old;
+  pure age-`R` pruning would break gap-free replay with a beyond-retention error or a
+  shortened page on a perfectly valid cursor — pruning consults the durable chain rows, not
+  age alone), pinned by a slow multi-page-chain conformance test.
 - `-change-retention` / `DOLMEN_CHANGE_RETENTION` (default `168h`, valid `0` or `1h`–`2160h`,
   startup-rejected outside) in `main.go` config (`loadConfig`, env help).
 
@@ -568,7 +573,7 @@ Files: `main.go` (run), `main_test.go`.
 Acceptance: startup tests for each failure mode with the teaching message pinned.
 
 ### 7d. Gateway-mode conformance
-**Spec:** §8.2 (gateway mode), §8.3 items 1–4 · **Dep:** 7b, 1, 8d, 5a
+**Spec:** §8.2 (gateway mode), §8.3 items 1–4 · **Dep:** 7b, 1, 8d, 5a, 3c
 
 Goal: the full deny sweep and gateway fixtures exist — the safety net for every later auth
 slice — running against real enforcement: `auth: on` boots from 8d, so both halves of the
