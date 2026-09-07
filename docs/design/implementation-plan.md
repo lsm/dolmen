@@ -341,11 +341,16 @@ Goal: opaque resume tokens and the retention knob exist at the engine level, bef
 
 Changes:
 - `_dolmen_cursor_tokens(token TEXT PRIMARY KEY, position INTEGER NOT NULL, issued_at INTEGER NOT
-  NULL, chain_id TEXT NOT NULL, chain_origin INTEGER NOT NULL, feed_table TEXT NOT NULL DEFAULT
+  NULL, chain_id TEXT NOT NULL, chain_origin INTEGER NOT NULL, chain_start INTEGER NOT NULL,
+  feed_table TEXT NOT NULL DEFAULT
   '' — `''` = the unfiltered namespace feed)` in the namespace db — the coordinated-storage
   mapping (§9.3: "the client never sees position-derived bytes"; satisfies the opacity/length
   rules trivially, deployment-wide by living in the durable db; namespace-lifetime binding is
-  inherent — the mapping dies with the namespace db, §5.4). The token is bound to its FEED:
+  inherent — the mapping dies with the namespace db, §5.4). `chain_start` is the durable
+  chain-creation timestamp, set once and inherited by every token in the chain — the absolute
+  cap `chain_start + 2R` reads it, never the oldest surviving token row (pruning removes old
+  rows, and a derived cap would drift with them, letting repeated paging retain an old backlog
+  past the retention bound). The token is bound to its FEED:
   resolve verifies the caller's table selector against the stored `feed_table` — a token
   minted on table A's feed replayed against table B (or an unfiltered feed) is rejected as a
   cross-feed reuse, never honored as a position, which would silently skip B's events.
@@ -718,8 +723,12 @@ Changes:
   transaction, and the migration token's `Incarnation` is verified inside apply's
   transaction — a drop/recreate between authorization and execution fails the transaction and
   never executes against a successor; the dispatch-level checks alone cannot close that
-  race. (9i later extends the same in-transaction pattern to `scopeIncarnation`, which is
-  vacuous until scopes exist, and adds the conformance coverage.)
+  race. That includes `scopeIncarnation`: §6.2's signatures give the CRUD, search, describe,
+  and replay calls no separate authorization incarnation — it is the ONLY incarnation
+  argument they carry — so its in-transaction verification cannot wait for the scope slices; a
+  direct table grant that passes `TableState` and races a drop/recreate must fail inside the
+  operation's transaction from the first enforcing revision (zero values remain no-guard
+  under `auth: off`). (9i carries the conformance coverage of the whole guard family.)
 - §7's auth-on search semantics are in force from the first bootable revision: canonical
   cosine (float32-normalized operands, binary64 accumulation, correctly-rounded sqrt,
   zero-norm → exactly 0, quotient clamped to `[-1, 1]`), `q(s) = floor(s / fl64(1e-9))`
@@ -1087,10 +1096,10 @@ Goal: scope resolution cannot race a migration or a drop; the data-dependent mig
 table-wide read.
 
 Changes:
-- `scopeIncarnation` verified inside every scoped operation's transaction — extending 8c's
-  in-transaction pattern (already complete at activation for bindings, nsGen, `Incarnation`,
-  and the migration token) to the scope snapshot, which is vacuous until scopes exist;
-  mismatch → 409 retry. Conformance coverage for the whole guard family lands here.
+- `scopeIncarnation` verification (in force since 8c's activation — §6.2 makes it the only
+  incarnation argument the CRUD/search/describe/replay calls carry, so it could not wait for
+  the scope slices) is pinned by conformance here: race tests (a migration concurrent with a
+  scoped op → 409-retry converges) and the full guard-family matrix.
 - The §2 data-dependent-migration read gate (enforced in dispatch since 8c) is re-verified
   here inside the ordering §4.2/§2 pin — before any data-dependent check or provider call —
   and §4.3's response-disclosure rules (visible-set counts, redacted rejections) join with
