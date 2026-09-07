@@ -97,7 +97,10 @@ Changes:
   `RowScope{Owner, Empty}`, `WriteOpts{Owner, IdempotencyKey, TableWideRead}`,
   `DeleteOpts`/`DeleteResult`, `InsertResult`/`UpdateResult` (UpdateResult carries the change
   cursor range, not a bare count), `Page`, `Cursor`, `ChangeRecord`, `ChangeReplay`,
-  `EngineCapabilities`.
+  `EngineCapabilities` — and every remaining type the §6.2 signatures reference:
+  `TableOpts` (carrying the future `row_access` option, so 9a adds a value without
+  re-signaturing `CreateTable`), `QueryResult`, `SearchResult`, `VectorQuery`, and
+  `ChangeRange` (what `InsertResult`/`UpdateResult` carry).
 - Doc comments copied tight from §6.2 (the global rules: never create implicitly, atomic
   incarnation verification, empty-bindings meaning).
 
@@ -293,8 +296,10 @@ Goal: in-process waiters can be woken after commit; the engine declares the capa
 Changes:
 - New `internal/store/notify.go`: a mutex-guarded per-namespace listener list;
   `notifyCommitted(ns, table, range)` invoked **after** `tx.Commit()` returns in every write path.
-- `Capabilities()` on `*Store`: `vector_execution:"exact"`, `notifications:true`,
-  `subscribe:false` (true from 6b), `ann_recall_bound:null`.
+- `Capabilities()` on `*Store`: `vector_execution:"exact"`, `notifications:false`
+  (true from 6b, when `Listen` is actually implemented — the capability answers "is `Listen`
+  implemented?", and 2b's stub must not be advertised), `subscribe:false` (true from 6b),
+  `ann_recall_bound:null`.
 
 Files: `internal/store/notify.go` (new), write paths (one call each),
 `internal/store/engine.go` implementation note.
@@ -437,8 +442,10 @@ Changes:
 - The SSE handler drives replay-then-live through `Listen`; client disconnect cancels cleanly.
 - `GET /v1/subscribe` joins the api mux — the endpoint goes public exactly when its specified
   live-stream behavior exists (6a's handler stays handler-tested until then) — and
-  `Capabilities().subscribe` flips to `true` in the same slice: the portable capability
-  surface and the registered route change together, never contradicting each other.
+  `Capabilities()` flips `.subscribe` and `.notifications` to `true` in the same slice (4d
+  kept both false while `Listen` was 2b's stub): the portable capability surface, the
+  registered route, and the implemented listener change together, never contradicting each
+  other.
 
 Files: `internal/store/notify.go` (Listen), `internal/store/engine.go` (capabilities),
 `internal/api/server.go` (mux registration — `Server.Handler` builds its routes there),
