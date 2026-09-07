@@ -460,7 +460,9 @@ Changes:
 - New `internal/api/auth.go`: `Identity{Principal, Groups, Source}`;
   `resolveIdentity(r, cfg)` — trusted-proxy check on the **immediate TCP peer** (`RemoteAddr`,
   never XFF); `X-Dolmen-Principal` charset `^[!-~]{1,256}$`; `X-Dolmen-Groups` parse (trim, drop
-  empties, dedupe preserving order, cap at `-max-groups` — over-limit = 401); bearer precedence
+  empties, dedupe preserving order, each surviving entry validated against §1.1's
+  `^[!-~]{1,128}$` — internal spaces, non-ASCII, or over-length entries are malformed identity
+  = 401, never silently accepted; cap at `-max-groups` — over-limit = 401); bearer precedence
   over headers with fail-closed (invalid bearer = 401 even behind a valid proxy identity);
   admin-key compare constant-time; `dolmen-admin` reservation (header asserting it = 401);
   unauthenticated paths per §1.2 (`/healthz`, `/version`, `/skills*`, `/v1/openapi.json`).
@@ -514,7 +516,8 @@ Changes:
 - Auth-off invariants: headers ignored even from trusted CIDRs (send them, assert no principal
   anywhere).
 - `describe_server`'s `auth: on`-only extension lands here (§2): the response reports the auth
-  mode, the enabled identity sources (read-only names — `trusted-proxy` initially; `api-keys`
+  mode, the enabled identity sources (read-only names — `trusted-proxy` when proxies are
+  configured and `admin-key` when `DOLMEN_ADMIN_KEY` is set, initially; `api-keys`
   joins with 10b, `oidc` with 10f; never key material), and the engine capability surface
   inlined verbatim from the `capabilities` op (5a); under `auth: off` the response stays
   byte-identical (§8.1).
@@ -923,7 +926,7 @@ Acceptance: a foreign document cannot reorder or displace visible results — th
 pinned.
 
 ### 9g. Row-local filter allowlist
-**Spec:** §4.3 (row-local filters) · **Dep:** —
+**Spec:** §4.3 (row-local filters) · **Dep:** 7a
 
 Goal: filter fragments are restricted to row-local expressions, validated above the seam —
 and under `auth: on` the restriction applies to **every** update/delete/upsert/search filter,
@@ -944,9 +947,10 @@ Changes:
 Files: new `internal/store/filterlang.go`, call sites in `internal/api/ops.go`; tests.
 
 Acceptance: the §4.3 subquery example rejected by the validator — for scoped AND unscoped
-(table-wide/default-table) auth-on callers alike; allowlist bounds pinned by table tests (the
-allowlisted `iif`/`abs` expression executes safely over the materialized visible set per
-9e).
+(table-wide/default-table) auth-on callers alike; the allowlisted `iif`/`abs` expression
+passes validation here; allowlist bounds pinned by table tests. (The safe-execution
+assertion — the expression evaluated over the materialized visible set, no foreign-row error
+— lives in 9e, which owns the barrier.)
 
 ### 9h. Idempotency owner-namespacing
 **Spec:** §4.3 (final idempotency semantics) · **Dep:** 9c
