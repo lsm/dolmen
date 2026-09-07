@@ -385,16 +385,18 @@ Changes:
 - Op `wait_for`: request adds `timeout_ms` (default 30000, valid 0–60000,
   `invalid_request` outside; `0` = immediate conditional poll); response = `changes_since`'s page
   semantics; on timeout an **empty page carrying the unchanged head cursor, never an error**.
-- Implementation: check the log; if empty and `timeout_ms > 0`, wait on the 4d registry (channel
-  with deadline) with a poll tick fallback (e.g. 250 ms) — the degraded-mode contract holds even
-  without a wake; return on first matching commit. Correctness does not rest on the tick: the
-  waiter registers with the notification registry BEFORE the final emptiness check, and the
-  timeout path re-checks the log before returning an empty page, so a matching commit between
-  the initial check and registration is never missed (a sub-tick timeout can never wrongly
-  return empty) — the tick is a fallback for lost wakeups, not the race guard.
+- Implementation: a bounded poll loop over `ChangesSince` — the only interface surface
+  involved, so dispatch never asserts the concrete store (an engine-internal `WaitFor` helper
+  would cross the seam, and `Engine.Listen` is 6b's and the stream's own). Check the log; if
+  empty and `timeout_ms > 0`, sleep a short tick (e.g. 250 ms) and re-check, with a final
+  re-check immediately before returning an empty page — a matching commit between any two
+  checks is caught by the next one or the final one, so a sub-tick timeout can never wrongly
+  return empty. This IS §9.3's degraded-mode contract (wait_for never depends on the
+  notification capability); once 6b lands `Listen`, the engine may use the notification
+  registry to shorten latency internally — invisible above the seam.
 - Skill guidance (dolmen.md): the poll-replacement pattern with a one-tool-call example.
 
-Files: `internal/store/changelog.go` (WaitFor helper), `internal/api/ops.go`,
+Files: `internal/api/ops.go` (the poll loop), `internal/store/changelog.go` (cursor helpers),
 `internal/mcp/server.go`, `internal/api/openapi.go`, `skill/dolmen.md`; conformance.
 
 Acceptance: conformance — wake-on-write (insert from a second harness client wakes a blocked
@@ -737,8 +739,9 @@ to be guarded) — plus `internal/api/openapi.go` and `internal/mcp/server.go` f
 `execution` field's schemas. 6c is a dependency because trusted-proxy streams
 carry no credential state to revalidate — the age bound is their identity-refresh backstop.
 
-Acceptance: gateway conformance — the 7d sweep's 403s become real; inheritance-down,
-union, ancestor-admin delegation cases pinned.
+Acceptance: handler/store-level conformance — inheritance-down, union, ancestor-admin
+delegation cases pinned here; the full gateway sweep runs with 7d (post-8d, where the mode
+first boots — depending on it here would cycle).
 
 ### 8d. Lockout guards + startup root-admin check
 **Spec:** §1.2 (usable root administrator), §3.4 (last-admin) · **Dep:** 8c, 7c
