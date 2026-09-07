@@ -44,6 +44,14 @@ Filing cadence (drift control): Lane 0 + Lane A issues are filed now; Lane B iss
 Lane A is moving. **Deliberately not filed — demander-gated (spec D20/D25):** the Postgres adapter,
 the lakehouse adapter, webhooks, export/import, job-queue/claim semantics.
 
+**Native OIDC (10c–10g) is scheduled, not demander-gated — the scope decision, recorded:** the
+spec's build order lands the OIDC + keys stream as part of the authn seam work (§1: "Native
+OIDC and API keys land later as one additive stream: they touch only the source layer and the
+key registry, never FGA"), §8.2's third conformance mode "arrives with the native-OIDC stream"
+and runs in CI once it lands, and D20's demander-gated list deliberately excludes it — D21's
+"designed, not built" records the spec-time status, not a gate. The epic's native-first lane
+is the demand §1.4's "built on demand" awaited.
+
 ---
 
 ## Lane 0 — enabler
