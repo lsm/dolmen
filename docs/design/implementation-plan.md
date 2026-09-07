@@ -475,21 +475,26 @@ Acceptance: startup tests for each failure mode with the teaching message pinned
 **Spec:** §8.2 (gateway mode), §8.3 items 1–4 · **Dep:** 7b, 1
 
 Goal: the deny-by-default sweep and gateway fixtures exist — the safety net for every later auth
-slice.
+slice — asserting only what is enforceable at this point: the 401 half. Grant enforcement is 8c,
+so between 7b and 8c dispatch under `auth: on` is authenticated-but-not-yet-authorized — an
+intermediate build state of the epic, not the contract — and the sweep's
+authenticated-but-ungranted rows (403s) activate with 8c, where they first hold.
 
 Changes:
 - Harness mode `gateway` (env-configured server; identity-injecting helpers from slice 1).
-- Deny sweep: every op — no identity → 401 `unauthorized`; untrusted-peer identity → 401;
-  authenticated-but-ungranted → 403 `forbidden` for grant-protected ops; grant-free ops
-  (`describe_server`, `infer_schema`, `list_namespaces`, `whoami`, `capabilities`) succeed
-  ungranted; `list_tables` → `not_found` ungranted. Envelope shapes pinned.
+- Deny sweep, enforceable half: every op — no identity → 401 `unauthorized`; untrusted-peer
+  identity → 401; grant-free ops (`describe_server`, `infer_schema`, `list_namespaces`,
+  `whoami`, `capabilities`) succeed ungranted. Envelope shapes pinned. The
+  authenticated-but-ungranted rows — 403 `forbidden` for grant-protected ops, `list_tables` →
+  `not_found` ungranted — ride the same table but are asserted from 8c on, when enforcement
+  exists.
 - Auth-off invariants: headers ignored even from trusted CIDRs (send them, assert no principal
   anywhere).
 
 Files: `internal/conformance/` (new `auth_mode_test.go` + harness extension).
 
-Acceptance: the sweep runs in `make test` green; op-count table-driven so new ops join the sweep
-automatically.
+Acceptance: the enforceable half of the sweep runs green in `make test`; op-count table-driven
+so new ops join the sweep automatically and flip their 403 rows on at 8c.
 
 ### 7e. Namespace-creation gating above the seam
 **Spec:** §2 (implicit creation disabled under auth:on), §6.2 global rule · **Dep:** 7b
@@ -519,9 +524,16 @@ Goal: the server-level grant store exists — durable, above the seam, engine-in
 
 Changes:
 - `<data>/_dolmen_registry.db` (leading underscore: cannot match the namespace grammar, excluded
-  from listing automatically): `grants(subject_type, subject_id, ns_path, table_name NULL,
-  verbs_json, nsgen BLOB NULL, created_at)` PK `(subject_type, subject_id, ns_path, table_name)`;
-  plus a `meta` table reserved for 8e tombstones and 10a keys.
+  from listing automatically): `grants(subject_type, subject_id, ns_path, table_name TEXT NOT
+  NULL DEFAULT '', drop_gen INTEGER NULL, verbs_json, nsgen BLOB NULL, created_at)` PK
+  `(subject_type, subject_id, ns_path, table_name)`. `''` marks a namespace-level grant — the
+  table-name grammar forbids the empty string, so the sentinel is unambiguous, and NOT NULL is
+  what makes the composite PK enforce uniqueness: SQLite treats NULLs as distinct, so a nullable
+  `table_name` would admit duplicate namespace grants and break the idempotent merge. Lifetime
+  binding per §3.4: a table grant records `(nsGen, table_name, drop_gen)` — the schema `Version`
+  excluded, exactly as everywhere; a namespace grant records the namespace's `nsGen` (`drop_gen`
+  NULL); an ancestor grant records the ancestor's `nsGen`; `*` records nothing (both NULL); plus
+  a `meta` table reserved for 8e tombstones and 10a keys.
 - Store API: put/merge (idempotent, keeps `created_at`, fixed §2 verb serialization order),
   revoke-verbs, subtree/exact queries, subject filters, the §3.2 sort order.
 - Open/close beside `Store.Open`; single-writer (WAL + immediate tx, same DSN discipline).
@@ -566,6 +578,8 @@ Changes:
 - `AuthBinding` sets computed from matched grant rows and passed to engine calls (the 2a
   zero-values become real here); authz-precedes-existence for `list_tables` (ungranted →
   `not_found`).
+- The 7d sweep's deferred rows activate: authenticated-but-ungranted → 403 for grant-protected
+  ops; `list_tables` → `not_found` ungranted — deny-by-default is real from here on.
 
 Files: `internal/api/auth.go`, `internal/api/ops.go` (dispatch), `internal/store/engine.go`
 (guards now verified — the in-tx incarnation checks activate).
@@ -597,9 +611,12 @@ failure messages pinned.
 Goal: a grant names the incarnation it was minted against; resurrected names inherit nothing.
 
 Changes:
-- Grant rows record the target's nsGen at grant time (8a's column activates); `grant`/`revoke`
-  verify current-generation currency atomically at mutation (mismatch = 409, re-read re-issue);
-  ancestor grants record the ancestor's nsGen; `*` records nothing.
+- Grant rows record the target's lifetime key at grant time (8a's columns activate): table
+  grants the full `(nsGen, Table, DropGen)` — `nsGen` alone cannot distinguish a same-named
+  successor recreated inside the same namespace (§3.4; `Version` excluded); namespace grants
+  record the namespace's nsGen; ancestor grants the ancestor's nsGen; `*` records nothing.
+  `grant`/`revoke` verify current-generation currency atomically at mutation (mismatch = 409,
+  re-read re-issue).
 - The `AuthBinding` verification paths from 8c now actually distinguish predecessors (targeted
   grants mismatch successors; inherited grants verify the ancestor's generation while receiving
   the target's current one).
@@ -645,19 +662,26 @@ Acceptance: injected-crash tests at each window converge to the §3.4 outcome.
 ### 9a. `row_access` annotation + `owner` column
 **Spec:** §4.1 · **Dep:** 8c
 
-Goal: tables can declare `row_access: "own"`; the implicit `owner` column materializes exactly
-there and nowhere else.
+Goal: the schema machinery for `row_access: "own"` — annotation, implicit `owner` column,
+reservation — exists. The public surface stays OFF: `create_table` keeps rejecting the key as
+an unknown field in both modes until 9d turns scope enforcement on, so no main revision ever
+holds a `row_access` table whose CRUD/search paths do not enforce the visible set (stamping is
+9c, enforcement 9d; the flip that makes the annotation publicly usable is 9d's closing step).
 
 Changes:
-- `TableSchema.RowAccess` (omitted = none); `create_table` accepts the key **only under
-  `auth: on`** (under off it is an unknown field → rejected, byte-identical §8.1); DDL adds
-  `"owner" TEXT` when declared; `owner` reserved exactly where the column exists (caller fields,
-  add/rename targets); `describe_table` omits `owner` from `fields` but reports the annotation.
+- `TableSchema.RowAccess` (omitted = none); DDL adds `"owner" TEXT` when declared; `owner`
+  reserved exactly where the column exists (caller fields, add/rename targets);
+  `describe_table` omits `owner` from `fields` but reports the annotation.
+- Dispatch gate: the `row_access` key on `create_table` remains an unknown-field rejection in
+  both modes (under off permanently, byte-identical §8.1; under on until 9d) — the machinery is
+  pinned by store/schema-level tests here, not through the public op.
 
 Files: `internal/schema/schema.go`, `internal/store/store.go` (DDL), `internal/api/ops.go`,
 `internal/api/server.go` (schema surface); tests.
 
-Acceptance: auth-off rejection pinned; column present/absent per declaration; reservation rules.
+Acceptance: store/schema-level pins — column present/absent per declaration, reservation
+rules; `create_table` still rejects the key in both modes (9d's flip is what makes it accepted
+under `auth: on`).
 
 ### 9b. `set_row_access` migration
 **Spec:** §4.2 · **Dep:** 9a
@@ -670,11 +694,14 @@ Changes:
   ordering — the rejection is only ever seen by authorized-to-know callers); disabling requires
   `admin` + table-wide read (widens every data-verb holder's reach — §4.2 final wording);
   disabling keeps the physical column.
+- The migration is implemented here but **absent from dispatch until 9d** — a table can only
+  become `row_access` when enforcement exists (the same gate as 9a's create key).
 
 Files: `internal/schema/schema.go` (Change), `internal/store/migrate.go`,
 `internal/api/ops.go`; tests.
 
-Acceptance: all §4.2 cases pinned incl. the empty-table enable and the gate ordering.
+Acceptance: all §4.2 cases pinned (store-level here; end-to-end through dispatch from 9d on)
+incl. the empty-table enable and the gate ordering.
 
 ### 9c. Owner stamping + typed reads
 **Spec:** §4.2 · **Dep:** 9a
@@ -707,12 +734,16 @@ Changes:
   becomes the materialization boundary — §4.3's security-barrier rule); `upsert_by_key` treats
   invisible natural-key matches as no-match; `GetRows` drops invisible ids; `describe_table`
   counts the visible set.
+- Public flip: `create_table` now accepts the `row_access` key under `auth: on` and
+  `set_row_access` joins dispatch — the 9a/9b machinery becomes publicly usable exactly when
+  enforcement exists, and its deferred conformance pins go live.
 
 Files: `internal/store/update.go`, `search.go` (Delete + fetch), `upsert_key.go`,
 `getrows.go`, `internal/api/auth.go`; tests.
 
 Acceptance: gateway conformance — update/delete touch own rows only; upsert-by-key
-invisible-collision creates a second row without leaking; counts scoped.
+invisible-collision creates a second row without leaking; counts scoped; the 9a/9b
+public-surface pins green from here.
 
 ### 9e. Scope in searches + vector predicate
 **Spec:** §4.3, §7 (visible set exact) · **Dep:** 9d
@@ -875,17 +906,24 @@ Acceptance: discovery + preset resolution tests; malformed config startup errors
 ### 10d. `/v1/auth/begin` + callback
 **Spec:** §1.4 · **Dep:** 10c
 
-Goal: the browser dance — the one deliberate non-JSON surface.
+Goal: the browser dance — the one deliberate non-JSON surface — implemented but not yet
+exposed: the callback cannot hand out a token before 10e's keyring exists, and a temporary
+incompatible token is exactly what §1.4's pinned wire format forbids. The routes join the mux
+in 10e, when the pinned token can be minted; here the handlers are exercised directly
+(handler-level tests), never through registered routes.
 
 Changes:
 - `GET /v1/auth/begin` → redirect to the IdP authorization endpoint (PKCE + state/CSRF);
-  callback exchanges the code, extracts `sub` + groups claims, mints the token (10e), and hands
-  it out on the tiny page. Auth:on-only; nonexistent under off (absent from dispatch and
-  unauthenticated by construction, §1.2).
+  callback exchanges the code and extracts `sub` + groups claims; token minting sits behind the
+  10e seam at the point where the page would hand the credential out. Auth:on-only; nonexistent
+  under off (absent from dispatch and unauthenticated by construction, §1.2); routes
+  unregistered until 10e.
 
-Files: `internal/api/server.go` (routes), new `internal/api/authflow.go`; tests with the stub.
+Files: new `internal/api/authflow.go`, `internal/api/server.go` (route registration lands with
+10e); tests with the stub.
 
-Acceptance: full dance against the stub incl. state rejection and PKCE verification.
+Acceptance: full dance against the stub at handler level incl. state rejection and PKCE
+verification; no route registered yet.
 
 ### 10e. Token format + keyring
 **Spec:** §1.4 (pinned wire format) · **Dep:** 10d
@@ -898,12 +936,15 @@ Changes:
   `sub`, `grp`, `iat`, `exp`, `kid`); verification (signature under `kid` with rotation
   overlap, unexpired, supported `v`, `iss` equality — cloned-config deployments reject each
   other); `DOLMEN_AUTH_OIDC_TOKEN_TTL` (default `168h`, range `1h`–`720h`) +
-  `DOLMEN_AUTH_OIDC_DEPLOYMENT_ID` pin; bearer presentation in dispatch.
+`DOLMEN_AUTH_OIDC_DEPLOYMENT_ID` pin; bearer presentation in dispatch.
+- The 10d routes (`/v1/auth/begin` + callback) join the mux — the dance goes public exactly
+  when the pinned token format can be minted.
 
 Files: new `internal/authn/token.go`, `internal/store/grants.go` (keyring persistence),
-`internal/api/auth.go`, `main.go`; tests.
+`internal/api/auth.go`, `internal/api/server.go` (routes on), `main.go`; tests.
 
-Acceptance: format/verification matrix incl. cross-deployment rejection and rotation overlap.
+Acceptance: format/verification matrix incl. cross-deployment rejection and rotation overlap;
+the 10d dance end-to-end through the registered routes.
 
 ### 10f. Issuer-qualified principal encoding
 **Spec:** §1.4 (`oidc:v1:…`) · **Dep:** 10e
