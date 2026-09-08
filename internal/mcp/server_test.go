@@ -1514,6 +1514,7 @@ func TestToolErrorEmbedderUnavailable(t *testing.T) {
 	apiSrv := api.New(st, failing)
 	srv := httptest.NewServer(New(apiSrv, nil))
 	t.Cleanup(srv.Close)
+	mustMCPNS(t, srv.URL, "app")
 
 	code, res := rpc(t, srv.URL, map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",

@@ -240,6 +240,7 @@ func TestVectorSentinelRowNeverFailsThePage(t *testing.T) {
 
 func TestTextQueryCannotTargetRawVectorColumn(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	// rawvec has no vectorize field, only a caller-provided vector column:
 	// a text query has no defensible space to compare against.

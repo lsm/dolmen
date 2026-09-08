@@ -155,13 +155,17 @@ func TestDropNamespaceWithConcurrentWriters(t *testing.T) {
 	close(stop)
 	wg.Wait()
 
-	// The namespace is either gone or — when a racing writer recreated the
-	// name after the drop — exists again but fresh: the old table must not
-	// survive in either case, and the post-drop namespace must be fully
-	// usable. A straggler connection from the evicted pools closing after the
-	// namespace's recreation deletes its WAL sidecars by path, leaving the
-	// new pools poisoned (read-only opens then fail with disk I/O errors) —
-	// evict drains precisely to prevent that.
+	// The dropped name must be reusable and the old table must not survive.
+	// 2b retired implicit recreation (nothing recreates the name underneath
+	// the writers anymore — 2c's ensureNamespace restores that at the op
+	// layer), so recreate explicitly and require the fresh namespace to be
+	// fully usable. A straggler connection from the evicted pools closing
+	// after the namespace's recreation deletes its WAL sidecars by path,
+	// leaving the new pools poisoned (read-only opens then fail with disk I/O
+	// errors) — evict drains precisely to prevent that.
+	if err := st.CreateNamespace("test"); err != nil {
+		t.Fatalf("recreate dropped namespace: %v", err)
+	}
 	tables, err := st.ListTables(ctx, "test")
 	if err != nil {
 		t.Fatalf("post-drop state must be queryable: %v", err)

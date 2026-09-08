@@ -75,8 +75,10 @@ func TestNamespaceLifecycleOverHTTP(t *testing.T) {
 		t.Fatalf("namespace must be gone after drop, got %v", nss)
 	}
 
-	// The dropped namespace is queryable as empty and reusable; dropping a
-	// missing one 404s.
+	// The dropped name is reusable; 2b retired implicit recreation at the
+	// store seam (2c's ensureNamespace restores it at the op layer), so create
+	// explicitly and require the fresh namespace to list as empty.
+	mustNS(t, srv.URL, "myapp")
 	code, _ = post(t, srv.URL, "list_tables", map[string]any{"namespace": "myapp"})
 	if code != 200 {
 		t.Fatalf("list_tables on the recreated-empty namespace must succeed, got %d", code)
