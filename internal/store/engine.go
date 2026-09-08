@@ -217,7 +217,18 @@ type Engine interface {
 	// its bounded-time contract via internal scanning — surfaced through
 	// Capabilities like every other engine capability; notification is never
 	// the durability mechanism.
-	Listen(ctx context.Context, ns, table string, from Cursor, nsGen [16]byte, liveAuthz func(table string) (scope *RowScope, inc Incarnation, ok bool), notify func(ChangeRecord)) (*ChangeReplay, func(), error)
+	//
+	// closed is the engine's terminal signal — the reply path the teaching
+	// close needs: the engine invokes it at most once when IT ends the
+	// session (authorization revoked via liveAuthz's ok=false, interim
+	// buffer overflow with the reconnect recipe, or engine shutdown), with
+	// cause carrying the teaching error to surface to the client. After
+	// closed fires no further records are delivered and Next reports done;
+	// it never fires for a caller-initiated cancel (the caller already
+	// knows). nil = no terminal signal requested. notify alone cannot carry
+	// a close — it takes only valid records — and a revoked or overflowed
+	// subscriber must not hang waiting for a record that never comes.
+	Listen(ctx context.Context, ns, table string, from Cursor, nsGen [16]byte, liveAuthz func(table string) (scope *RowScope, inc Incarnation, ok bool), notify func(ChangeRecord), closed func(cause error)) (*ChangeReplay, func(), error)
 
 	// Query executes a read-only SELECT/WITH statement (§6.2, §4.4). It takes
 	// NO scope: the API layer gates raw SQL by table-wide read, which is
@@ -435,9 +446,10 @@ type ChangeRange struct {
 // persisting only its last-delivered cursor can never skip older records.
 // Boundary dedup across the two halves is the engine's, inside the atomic
 // registration. If the caller drains slower than writes arrive and the
-// interim buffer bounds, the engine closes the session with the teaching
-// reconnect recipe — resume from the persisted cursor; the log is durable,
-// the buffer never is the durability mechanism.
+// interim buffer bounds, the engine closes the session — through Listen's
+// closed callback — with the teaching reconnect recipe: resume from the
+// persisted cursor; the log is durable, the buffer never is the durability
+// mechanism.
 type ChangeReplay struct {
 	// Next returns the next page of replay records in cursor order plus the
 	// cursor to resume from. The page carrying the final replay records
