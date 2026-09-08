@@ -9,13 +9,17 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/lsm/dolmen/internal/schema"
 )
 
 // ListNamespaces returns the namespaces that exist under the data directory,
 // sorted by name. A namespace exists when its <name>.db file does; files whose
 // stem could not be a valid namespace name are skipped, so the list matches
-// exactly what the store can open.
-func (s *Store) ListNamespaces() ([]string, error) {
+// exactly what the store can open. TODO(3b): prefix is ignored while
+// namespaces are depth-1 — slice 3b's recursive walk filters to the subtree.
+// TODO(8c): bindings are ignored while auth is off.
+func (s *Store) ListNamespaces(ctx context.Context, prefix string, bindings []AuthBinding) ([]string, error) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return nil, err
@@ -40,7 +44,9 @@ func (s *Store) ListNamespaces() ([]string, error) {
 // this exists so callers can reserve a name deliberately, and it fails when
 // the namespace already exists. Reservation is atomic (O_EXCL): exactly one
 // concurrent or cross-process caller wins the name.
-func (s *Store) CreateNamespace(nsName string) error {
+// TODO(8c): parentNsGen is ignored while auth is off — slice 8c verifies the
+// parent's incarnation atomically with creation.
+func (s *Store) CreateNamespace(ctx context.Context, nsName string, parentNsGen [16]byte) error {
 	if err := validateNS(nsName); err != nil {
 		return err
 	}
@@ -81,7 +87,9 @@ func (s *Store) CreateNamespace(nsName string) error {
 // processes: another process holding the namespace file open (a second
 // dolmen, a backup tool, a sqlite shell) is not detected. Coordinate drops
 // within one server.
-func (s *Store) DropNamespace(nsName string) error {
+// TODO(8c): nsGen is ignored while auth is off — slice 8c verifies the
+// namespace-lifetime guard atomically with the drop.
+func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte) error {
 	if err := validateNS(nsName); err != nil {
 		return err
 	}
@@ -115,7 +123,9 @@ func (s *Store) DropNamespace(nsName string) error {
 // version, migration history, and idempotency keys. Purging the idempotency
 // keys matters for correctness: a table recreated under the same name must
 // not replay the old table's ids.
-func (s *Store) DropTable(ctx context.Context, nsName, table string) error {
+// TODO(8c): inc is ignored while auth is off — slice 8c verifies the table's
+// full lifetime key atomically with the drop.
+func (s *Store) DropTable(ctx context.Context, nsName, table string, inc Incarnation) error {
 	n, err := s.ns(nsName)
 	if err != nil {
 		return err
@@ -159,6 +169,28 @@ func (s *Store) DropTable(ctx context.Context, nsName, table string) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// TableState is the one-snapshot read the API layer resolves scopes and
+// validates text vector queries with (§6.2): the schema together with the
+// Incarnation a later scoped call must pass back. The read never creates a
+// namespace implicitly (see ns). TODO(8c): auth bindings are ignored while
+// auth is off. TODO(4a): NsGen is zero until namespaces carry a persisted
+// creation id — slice 4a's NamespaceState mints it and this read returns it.
+func (s *Store) TableState(ctx context.Context, nsName, table string, auth []AuthBinding) (*schema.TableSchema, Incarnation, error) {
+	n, err := s.ns(nsName)
+	if err != nil {
+		return nil, Incarnation{}, err
+	}
+	sc, err := loadSchema(ctx, n.ro, nsName, table)
+	if err != nil {
+		return nil, Incarnation{}, err
+	}
+	dropGen, err := tableGen(ctx, n.ro, table)
+	if err != nil {
+		return nil, Incarnation{}, err
+	}
+	return sc, Incarnation{Table: table, Version: sc.Version, DropGen: dropGen}, nil
 }
 
 // tableGen returns the persisted drop generation for a table name (0 when it

@@ -21,15 +21,17 @@ func typedFields() []schema.Field {
 	}
 }
 
-func mustCreateTyped(t *testing.T, st *Store) {
+func mustCreateTyped(t *testing.T, st legacyStore) {
 	t.Helper()
+	mustNS(t, st, "test")
 	if _, err := st.CreateTable(context.Background(), "test", "typed", typedFields()); err != nil {
 		t.Fatalf("create typed table: %v", err)
 	}
 }
 
-func mustInsertTyped(t *testing.T, st *Store) {
+func mustInsertTyped(t *testing.T, st legacyStore) {
 	t.Helper()
+	mustNS(t, st, "test")
 	if _, err := st.Insert(context.Background(), "test", "typed", []map[string]any{
 		{"s": "hello", "t": "the needle rests here", "n": 42, "f": 2.5, "b": true,
 			"at": "2026-09-01T10:00:00Z", "j": map[string]any{"k": []any{json.Number("1"), "x"}},
@@ -227,6 +229,7 @@ func TestQueryEmbeddingProjection(t *testing.T) {
 
 func TestQueryAmbiguousColumnTypeNotCoerced(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "amb_a", []schema.Field{
 		{Name: "x", Type: schema.Boolean},

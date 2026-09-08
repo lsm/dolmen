@@ -44,6 +44,7 @@ func TestLimitsNamespaceName(t *testing.T) {
 	// Table names normalize the same way: the padded/mixed-case name creates
 	// the canonical table, which is then addressable by its normalized form.
 	t.Run("table names normalize too", func(t *testing.T) {
+		h.ensureNS("normt")
 		data := h.mustHTTP("create_table", map[string]any{
 			"namespace": "normt", "table": " Docs ",
 			"fields": []map[string]any{{"name": "a", "type": "string"}},
@@ -73,6 +74,7 @@ func TestLimitsNamespaceName(t *testing.T) {
 
 func TestLimitsTableAndFieldNames(t *testing.T) {
 	h := newHarness(t)
+	h.ensureNS("lim")
 	base := func(table string, fields []map[string]any) (int, map[string]any) {
 		return h.httpCall("create_table", map[string]any{
 			"namespace": "lim", "table": table, "fields": fields,
@@ -141,6 +143,7 @@ func TestLimitsTableAndFieldNames(t *testing.T) {
 
 func TestLimitsFieldCount(t *testing.T) {
 	h := newHarness(t)
+	h.ensureNS("lim")
 	fields := func(n int) []map[string]any {
 		out := make([]map[string]any, n)
 		for i := range out {
@@ -287,6 +290,7 @@ func TestLimitsIdempotencyKeyLength(t *testing.T) {
 
 func TestLimitsVectorDimension(t *testing.T) {
 	h := newHarness(t)
+	h.ensureNS("limdim")
 
 	// The documented ceiling is 4096: pin the constant so raising it
 	// requires updating this contract (and the README) explicitly, instead

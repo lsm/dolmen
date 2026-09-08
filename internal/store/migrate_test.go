@@ -58,6 +58,7 @@ func TestMigrate(t *testing.T) {
 
 func TestMigrateVectorizeBackfill(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 
 	if _, err := st.CreateTable(ctx, "test", "plain", []schema.Field{
@@ -121,6 +122,7 @@ func TestDropFieldAndVersioning(t *testing.T) {
 
 func TestMigrateVectorizeSwitch(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 
 	if _, err := st.CreateTable(ctx, "test", "switch", []schema.Field{
@@ -161,6 +163,7 @@ func TestMigrateVectorizeSwitch(t *testing.T) {
 
 func TestDropAndReAddVectorizeField(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "recyc", []schema.Field{
 		{Name: "a", Type: schema.String, Vectorize: true},
@@ -198,6 +201,7 @@ func TestDropAndReAddVectorizeField(t *testing.T) {
 
 func TestEmbedModelMismatchGuard(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "mm", []schema.Field{
 		{Name: "s", Type: schema.String, Vectorize: true},
@@ -231,6 +235,7 @@ func TestEmbedModelMismatchGuard(t *testing.T) {
 
 func TestChunkedVectorizeBackfill(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "chunky", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -264,6 +269,7 @@ func TestChunkedVectorizeBackfill(t *testing.T) {
 
 func TestUnrelatedMigrationPreservesEmbedDim(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "dimkeep", []schema.Field{
 		{Name: "s", Type: schema.String, Vectorize: true},
@@ -293,6 +299,7 @@ func TestUnrelatedMigrationPreservesEmbedDim(t *testing.T) {
 
 func TestNoOpVectorizeMigrationSkipsReembed(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	calls := 0
 	counting := Embedder{Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
 		calls++
@@ -324,6 +331,7 @@ func TestNoOpVectorizeMigrationSkipsReembed(t *testing.T) {
 
 func TestMigrateReDerivesEmbedDimAfterDisable(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "redim", []schema.Field{
 		{Name: "s", Type: schema.String, Vectorize: true},
@@ -366,6 +374,7 @@ func TestMigrateReDerivesEmbedDimAfterDisable(t *testing.T) {
 
 func TestBackfillSkipsEmptyStrings(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "empt", []schema.Field{
 		{Name: "s", Type: schema.String},
@@ -393,6 +402,7 @@ func TestBackfillSkipsEmptyStrings(t *testing.T) {
 
 func TestRequiredFieldAdditionOnPopulatedTableRejected(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "reqadd", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -417,6 +427,7 @@ func TestRequiredFieldAdditionOnPopulatedTableRejected(t *testing.T) {
 
 func TestRequiredFieldAdditionCarriesNotNull(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "reqempty", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -439,6 +450,7 @@ func TestRequiredFieldAdditionCarriesNotNull(t *testing.T) {
 
 func TestBackfillRejectsShortProviderResponse(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "shortresp", []schema.Field{
 		{Name: "s", Type: schema.String},
@@ -461,6 +473,7 @@ func TestBackfillRejectsShortProviderResponse(t *testing.T) {
 
 func TestBackfillRejectsInvalidVectors(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "badvec", []schema.Field{
 		{Name: "s", Type: schema.String},
@@ -504,6 +517,7 @@ func TestBackfillRejectsInvalidVectors(t *testing.T) {
 
 func TestMigrateRejectsInjectedFieldName(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "victim", []schema.Field{
 		{Name: "keep", Type: schema.String},
@@ -532,6 +546,7 @@ func TestMigrateRejectsInjectedFieldName(t *testing.T) {
 
 func TestBackfillRequiresEmbedIdentity(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "noid", []schema.Field{
 		{Name: "s", Type: schema.String},
@@ -558,6 +573,7 @@ func TestBackfillRequiresEmbedIdentity(t *testing.T) {
 
 func TestMigrateEnforcesFieldCap(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	fields := make([]schema.Field, MaxFieldsPerTable)
 	for i := range fields {
@@ -576,6 +592,7 @@ func TestMigrateEnforcesFieldCap(t *testing.T) {
 
 func TestMigrateAddDropOrderCannotExceedCap(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	fields := make([]schema.Field, MaxFieldsPerTable-1)
 	for i := range fields {
@@ -599,6 +616,7 @@ func TestMigrateAddDropOrderCannotExceedCap(t *testing.T) {
 
 func TestRequiredFieldAdditionWithDefaultBackfillsEveryType(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "defaults", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -683,6 +701,7 @@ func TestRequiredFieldAdditionWithDefaultBackfillsEveryType(t *testing.T) {
 
 func TestAddFieldDefaultCoercionFailureLeavesTableUntouched(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "baddef", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -790,6 +809,7 @@ func TestMigrateDryRunReportsPlanWithoutSideEffects(t *testing.T) {
 
 func TestPlanMigrationEstimatesEmbeddingWorkload(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "estim", []schema.Field{
 		{Name: "s", Type: schema.Text},
@@ -832,6 +852,7 @@ func TestPlanMigrationEstimatesEmbeddingWorkload(t *testing.T) {
 
 func TestPlanMigrationValidatesProviderWithoutCallingIt(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "nprov", []schema.Field{
 		{Name: "s", Type: schema.Text},
@@ -882,6 +903,7 @@ func TestMigrateExpectedVersionConflict(t *testing.T) {
 
 func TestMigrateConcurrentVersionCAS(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "race", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -931,6 +953,7 @@ func TestMigrateConcurrentVersionCAS(t *testing.T) {
 
 func TestListMigrationsNewestFirst(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "hist", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -982,6 +1005,7 @@ func TestListMigrationsNewestFirst(t *testing.T) {
 
 func TestListMigrationsNormalizesLegacyNonFlagValues(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "leg", []schema.Field{
 		{Name: "s", Type: schema.String},
@@ -1038,6 +1062,7 @@ func TestMigrateChangeValueValidation(t *testing.T) {
 
 func TestAddFulltextFieldWithDefaultIndexesBackfill(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "ftsdef", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -1065,6 +1090,7 @@ func TestAddFulltextFieldWithDefaultIndexesBackfill(t *testing.T) {
 
 func TestPlanEstimatesUsePreMigrationNamesForRenamedVectorField(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "renvec", []schema.Field{
 		{Name: "a", Type: schema.String},
@@ -1099,6 +1125,7 @@ func TestPlanEstimatesUsePreMigrationNamesForRenamedVectorField(t *testing.T) {
 
 func TestListMigrationsPreservesExactNumericDefaults(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "bignum", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -1133,6 +1160,7 @@ func TestListMigrationsPreservesExactNumericDefaults(t *testing.T) {
 
 func TestOptionalFieldDefaultDoesNotLeakToFutureInserts(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "optdef", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -1178,6 +1206,7 @@ func TestOptionalFieldDefaultDoesNotLeakToFutureInserts(t *testing.T) {
 
 func TestRenameCycleEstimateTerminates(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "cycle", []schema.Field{
 		{Name: "a", Type: schema.String},
@@ -1213,6 +1242,7 @@ func TestRenameCycleEstimateTerminates(t *testing.T) {
 
 func TestVacatedNameReuseEstimateTracksFieldIdentity(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "vacate", []schema.Field{
 		{Name: "a", Type: schema.String},
@@ -1255,6 +1285,7 @@ func TestVacatedNameReuseEstimateTracksFieldIdentity(t *testing.T) {
 
 func TestPlanMigrationReportsProspectiveEmbeddingMetadata(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "pem", []schema.Field{
 		{Name: "s", Type: schema.Text, Vectorize: true},
@@ -1298,6 +1329,7 @@ func TestPlanMigrationReportsProspectiveEmbeddingMetadata(t *testing.T) {
 
 func TestPlanMigrationSeesOneSnapshotUnderConcurrentMigrations(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "snap", []schema.Field{
 		{Name: "a", Type: schema.String},
@@ -1353,6 +1385,7 @@ func TestPlanMigrationSeesOneSnapshotUnderConcurrentMigrations(t *testing.T) {
 
 func TestPlanLastFulltextRemovalReportsZeroReindexRows(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "lastfts", []schema.Field{
 		{Name: "body", Type: schema.Text, Fulltext: true},
@@ -1392,6 +1425,7 @@ func TestPlanLastFulltextRemovalReportsZeroReindexRows(t *testing.T) {
 
 func TestNonFiniteNumericDefaultsRejected(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "finit", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -1421,6 +1455,7 @@ func TestNonFiniteNumericDefaultsRejected(t *testing.T) {
 
 func TestNULByteDefaultsRejected(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "nuldef", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -1455,6 +1490,7 @@ func TestNULByteDefaultsRejected(t *testing.T) {
 
 func TestFTSReindexEstimateMatchesRepopulatePredicate(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "ftsest", []schema.Field{
 		{Name: "body", Type: schema.Text, Fulltext: true},
@@ -1512,6 +1548,7 @@ func TestFTSReindexEstimateMatchesRepopulatePredicate(t *testing.T) {
 
 func TestEmbedEstimateUsesCoercedDefault(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "coerced", []schema.Field{
 		{Name: "v", Type: schema.String},

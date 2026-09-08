@@ -28,26 +28,23 @@ const MaxRecordsPerInsert = 1000
 // MaxIdempotencyKeyLen caps client-supplied idempotency keys.
 const MaxIdempotencyKeyLen = 256
 
-// Insert inserts records as-is: a repeated call duplicates rows. Writers that
-// may be retried should use InsertIdempotent.
-func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[string]any, emb Embedder) ([]int64, error) {
-	ids, _, err := s.insert(ctx, nsName, table, records, emb, "")
-	return ids, err
-}
-
-// InsertIdempotent inserts records under a client-supplied idempotency key.
-// The key and the inserted ids are committed together, durably, so a retry —
-// even after a process restart — returns the original ids (replayed = true)
-// instead of inserting again. A key reused with a different payload is an
-// error rather than a silent replay of unrelated ids.
-func (s *Store) InsertIdempotent(ctx context.Context, nsName, table string, records []map[string]any, emb Embedder, key string) (ids []int64, replayed bool, err error) {
-	if key == "" {
-		return nil, false, invalidf("idempotency key must not be empty")
+// Insert inserts records as-is: a repeated call duplicates rows (§6.2, §6.3).
+// opts.IdempotencyKey makes it retry-safe instead: the key and the inserted
+// ids are committed together, durably, so a retry — even after a process
+// restart — returns the original ids (Replayed = true) instead of inserting
+// again. A key reused with a different payload is an error rather than a
+// silent replay of unrelated ids. TODO(9h): opts.Owner and
+// opts.TableWideRead, scope, and scopeIncarnation are ignored while auth is
+// off — slice 9h stamps the owner and scopes the idempotency replay.
+func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
+	if len(opts.IdempotencyKey) > MaxIdempotencyKeyLen {
+		return InsertResult{}, invalidf("idempotency key is %d bytes (max %d)", len(opts.IdempotencyKey), MaxIdempotencyKeyLen)
 	}
-	if len(key) > MaxIdempotencyKeyLen {
-		return nil, false, invalidf("idempotency key is %d bytes (max %d)", len(key), MaxIdempotencyKeyLen)
+	ids, replayed, err := s.insert(ctx, nsName, table, records, emb, opts.IdempotencyKey)
+	if err != nil {
+		return InsertResult{}, err
 	}
-	return s.insert(ctx, nsName, table, records, emb, key)
+	return InsertResult{Ids: ids, Replayed: replayed}, nil
 }
 
 func (s *Store) insert(ctx context.Context, nsName, table string, records []map[string]any, emb Embedder, idemKey string) (ids []int64, replayed bool, err error) {

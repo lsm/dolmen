@@ -24,6 +24,7 @@ func errorBody(t *testing.T, body map[string]any) map[string]any {
 
 func TestErrorEnvelopeHasStableCodeAndMessage(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "x")
 
 	code, body := post(t, srv.URL, "query", map[string]any{
 		"namespace": "x",
@@ -53,6 +54,7 @@ func TestErrorEnvelopeHasStableCodeAndMessage(t *testing.T) {
 
 func TestErrorEnvelopeEchoesRequestID(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "x")
 
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/query", strings.NewReader(`{"namespace":"x","sql":"SELECT ("}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -78,6 +80,7 @@ func TestErrorEnvelopeEchoesRequestID(t *testing.T) {
 
 func TestErrorEnvelopeNotFoundForMissingTable(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "x")
 
 	code, body := post(t, srv.URL, "query", map[string]any{
 		"namespace": "x",
@@ -101,6 +104,7 @@ func TestErrorEnvelopeNotFoundForMissingTable(t *testing.T) {
 
 func TestErrorEnvelopeRedactsStoreInternalErrors(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "x")
 
 	// create_table with a reserved table name triggers an ErrInvalid. The
 	// envelope must expose a clean message and code, not raw details.
@@ -120,6 +124,7 @@ func TestErrorEnvelopeRedactsStoreInternalErrors(t *testing.T) {
 
 func TestErrorEnvelopeConflict(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "app")
 	mustCreateUsers(t, srv.URL)
 
 	body := map[string]any{
@@ -248,6 +253,7 @@ func TestRedactStoreMsgPreservesProviderIdentity(t *testing.T) {
 
 func TestErrorEnvelopeQueryErrorForMalformedFilter(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "app")
 	mustCreateUsers(t, srv.URL)
 
 	code, body := post(t, srv.URL, "update", map[string]any{
@@ -325,6 +331,7 @@ func TestErrorEnvelopeQueryErrorForMalformedFilter(t *testing.T) {
 // failure can be correlated with the server log.
 func TestErrorEnvelopeGeneratesRequestIDWhenNotProvided(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "x")
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/query", strings.NewReader(`{"namespace":"x","sql":"SELECT ("}`))
 	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)

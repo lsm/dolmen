@@ -19,17 +19,19 @@ const MaxKeyFields = 8
 // keep their values); otherwise the record is inserted and must satisfy
 // required fields. Repeating the call converges instead of duplicating rows,
 // making it the retry-safe write path for agents. ids align with records; an
-// updated record reports the existing row's id.
-func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields []string, records []map[string]any, emb Embedder) (ids []int64, inserted, updated int, err error) {
+// updated record reports the existing row's id (§6.2). TODO(9h): opts, scope,
+// and scopeIncarnation are ignored while auth is off — slice 9h stamps the
+// insert branches with opts.Owner and applies the scope.
+func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
 	if len(records) == 0 {
-		return nil, 0, 0, invalidf("no records given")
+		return InsertResult{}, invalidf("no records given")
 	}
 	if len(records) > MaxRecordsPerInsert {
-		return nil, 0, 0, invalidf("too many records: %d > %d per call", len(records), MaxRecordsPerInsert)
+		return InsertResult{}, invalidf("too many records: %d > %d per call", len(records), MaxRecordsPerInsert)
 	}
-	keyFields, err = normalizeKeyFields(keyFields)
+	keyFields, err := normalizeKeyFields(keyFields)
 	if err != nil {
-		return nil, 0, 0, err
+		return InsertResult{}, err
 	}
 	normalized := make([]map[string]any, len(records))
 	for i, rec := range records {
@@ -37,7 +39,7 @@ func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields
 		for k, v := range rec {
 			lk := strings.ToLower(k)
 			if _, exists := nr[lk]; exists {
-				return nil, 0, 0, invalidf("record %d: fields %q and its case variant collapse to %q; use one spelling", i, k, lk)
+				return InsertResult{}, invalidf("record %d: fields %q and its case variant collapse to %q; use one spelling", i, k, lk)
 			}
 			nr[lk] = v
 		}
@@ -47,15 +49,18 @@ func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields
 
 	n, err := s.ns(nsName)
 	if err != nil {
-		return nil, 0, 0, err
+		return InsertResult{}, err
 	}
 	for attempt := 0; ; attempt++ {
 		if attempt >= 3 {
-			return nil, 0, 0, invalidf("table schema changed concurrently; retry the upsert")
+			return InsertResult{}, invalidf("table schema changed concurrently; retry the upsert")
 		}
 		ids, inserted, updated, done, err := s.upsertKeyAttempt(ctx, n, nsName, table, keyFields, records, emb)
 		if done {
-			return ids, inserted, updated, err
+			if err != nil {
+				return InsertResult{}, err
+			}
+			return InsertResult{Ids: ids, Inserted: int64(inserted), Updated: int64(updated)}, nil
 		}
 	}
 }

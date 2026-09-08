@@ -13,6 +13,7 @@ import (
 // (suffix-stripper, not lemmatizer) stays as documented.
 func TestFulltextStemming(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "stems", []schema.Field{
 		{Name: "body", Type: schema.Text, Fulltext: true},
@@ -91,6 +92,7 @@ func TestFulltextStemming(t *testing.T) {
 // under the engine's current tokenizer (#147).
 func TestFulltextReindexViaSetFulltext(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "legacy", []schema.Field{
 		{Name: "body", Type: schema.Text, Fulltext: true},

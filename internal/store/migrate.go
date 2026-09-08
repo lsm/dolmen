@@ -74,7 +74,13 @@ type migrationWork struct {
 	vectorizeChanged bool
 }
 
-func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expectedVersion int) (*schema.TableSchema, error) {
+// Migrate applies a change list, verifying expected (the full Incarnation the
+// plan was made against) inside the apply exactly as PlanMigration does
+// (§6.2). TODO(8c): only expected.Version is verified while auth is off —
+// slice 8c checks the whole Incarnation (the version alone cannot
+// distinguish a same-named successor recreated at version 1, §4.3).
+func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expected Incarnation) (*schema.TableSchema, error) {
+	expectedVersion := expected.Version
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
 	}
@@ -231,8 +237,12 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 // migration can never yield mixed estimates — the dry-run either sees the
 // version it expects or fails the precondition. It applies the same
 // expected_version precondition as Migrate so a stale plan fails the preview
-// instead of the apply.
-func (s *Store) PlanMigration(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expectedVersion int) (*MigrationPlan, error) {
+// instead of the apply. TODO(8c): only expected.Version is verified while
+// auth is off — slice 8c checks the whole Incarnation, and scope/
+// scopeIncarnation then bound the plan's DISCLOSURE counts to the caller's
+// visible set (validation stays table-wide).
+func (s *Store) PlanMigration(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expected Incarnation, scope *RowScope, scopeIncarnation Incarnation) (*MigrationPlan, error) {
+	expectedVersion := expected.Version
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
 	}

@@ -46,6 +46,7 @@ func TestVectorSearch(t *testing.T) {
 
 func TestRawVectorDimMismatchOnAutoEmbedding(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "auto", []schema.Field{
 		{Name: "s", Type: schema.String, Vectorize: true},
@@ -62,6 +63,7 @@ func TestRawVectorDimMismatchOnAutoEmbedding(t *testing.T) {
 
 func TestValidateVectorSearchBeforeEmbedding(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if err := st.ValidateVectorSearch(ctx, "test", "missing", "", true, "fake-space"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected not-found for missing table, got %v", err)
@@ -81,6 +83,7 @@ func TestValidateVectorSearchBeforeEmbedding(t *testing.T) {
 
 func TestVectorDecorationBudgeted(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "vecbud", []schema.Field{
 		{Name: "t", Type: schema.Text},
@@ -113,6 +116,7 @@ func TestVectorDecorationBudgeted(t *testing.T) {
 
 func TestSearchVectorLimitBounded(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "vlim", []schema.Field{
 		{Name: "emb", Type: schema.Vector, Dim: 2},
@@ -137,6 +141,7 @@ func TestSearchVectorLimitBounded(t *testing.T) {
 
 func TestSearchVectorRejectsNonFiniteQuery(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "nfq", []schema.Field{
 		{Name: "emb", Type: schema.Vector, Dim: 3},
@@ -155,6 +160,7 @@ func TestSearchVectorRejectsNonFiniteQuery(t *testing.T) {
 
 func TestVectorPaginationAndTruncatedFlag(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "vecpage", []schema.Field{
 		{Name: "emb", Type: schema.Vector, Dim: 2},
@@ -197,6 +203,7 @@ func TestVectorPaginationAndTruncatedFlag(t *testing.T) {
 
 func TestVectorSentinelRowNeverFailsThePage(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "vecsent", []schema.Field{
 		{Name: "payload", Type: schema.Text},
@@ -293,6 +300,7 @@ func TestTextQueryCannotTargetRawVectorColumn(t *testing.T) {
 
 func TestTextQueryOnTableWithoutAnyVectorData(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "plain", []schema.Field{
 		{Name: "s", Type: schema.String},
@@ -313,6 +321,7 @@ func TestTextQueryOnTableWithoutAnyVectorData(t *testing.T) {
 // the provider.
 func TestTextQueryTableErrorsIndependentOfProvider(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "rawcols", []schema.Field{
 		{Name: "s", Type: schema.String},
@@ -394,6 +403,7 @@ func TestTextQueryTableErrorsIndependentOfProvider(t *testing.T) {
 
 func TestSearchVectorSurfacesSkippedCorruptVectors(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "vsk", []schema.Field{
 		{Name: "s", Type: schema.String},

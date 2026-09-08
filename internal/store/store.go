@@ -70,6 +70,13 @@ func (s *Store) Close() error {
 	return first
 }
 
+// ns opens the namespace's databases. It never creates: a namespace exists
+// when its file does (CreateNamespace is the only creation path), and a
+// missing one is ErrNotFound — the §6.2 global rule that engines never
+// create implicitly, literal since slice 2b (previously the first use of a
+// name silently materialized an empty namespace). The registry DDL below is
+// idempotent, so opening a file that exists but predates a registry table
+// still upgrades it in place.
 func (s *Store) ns(name string) (*nsDB, error) {
 	if err := validateNS(name); err != nil {
 		return nil, err
@@ -80,6 +87,12 @@ func (s *Store) ns(name string) (*nsDB, error) {
 		return n, nil
 	}
 	path := s.nsPath(name)
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: namespace %s", ErrNotFound, name)
+		}
+		return nil, err
+	}
 	rw, err := sql.Open("sqlite", dsn(path, false))
 	if err != nil {
 		return nil, err
@@ -228,7 +241,10 @@ func saveSchemaTx(ctx context.Context, tx *sql.Tx, nsName string, sc *schema.Tab
 	return err
 }
 
-func (s *Store) ListTables(ctx context.Context, nsName string) ([]string, error) {
+// ListTables lists the namespace's tables (§6.2). TODO(8c): bindings are
+// ignored while auth is off — slice 8c verifies them atomically with the
+// listing.
+func (s *Store) ListTables(ctx context.Context, nsName string, bindings []AuthBinding) ([]string, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
 		return nil, err
@@ -276,7 +292,10 @@ func registeredTables(ctx context.Context, db rowsQuerier) (map[string]bool, err
 	return out, rows.Err()
 }
 
-func (s *Store) DescribeTable(ctx context.Context, nsName, table string) (*schema.TableSchema, int64, error) {
+// DescribeTable returns the table's schema and row count (§4.3). TODO(9d):
+// scope and scopeIncarnation are ignored while auth is off — a non-nil scope
+// will bound the count.
+func (s *Store) DescribeTable(ctx context.Context, nsName, table string, scope *RowScope, scopeIncarnation Incarnation) (*schema.TableSchema, int64, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
 		return nil, 0, err
@@ -305,7 +324,9 @@ type Migration struct {
 // ListMigrations returns a table's migration history, newest first, with each
 // transition's recorded changes decoded. Creating the table is version 1 and is
 // not part of the log, so the newest entry's to_version is the current version.
-func (s *Store) ListMigrations(ctx context.Context, nsName, table string) ([]Migration, error) {
+// TODO(8c): inc is ignored while auth is off — slice 8c verifies the
+// table-lifetime guard atomically with the read.
+func (s *Store) ListMigrations(ctx context.Context, nsName, table string, inc Incarnation) ([]Migration, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
 		return nil, err
@@ -350,7 +371,11 @@ func (s *Store) ListMigrations(ctx context.Context, nsName, table string) ([]Mig
 
 const MaxFieldsPerTable = 100
 
-func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []schema.Field) (*schema.TableSchema, error) {
+// CreateTable creates a table (§6.2). TODO(8c): nsGen is ignored while auth
+// is off — slice 8c verifies the namespace exists with exactly that creation
+// id inside the operation's critical section. TODO(9a): opts.RowAccess is
+// ignored until row access lands.
+func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []schema.Field, opts TableOpts, nsGen [16]byte) (*schema.TableSchema, error) {
 	if err := schema.ValidateTableName(table); err != nil {
 		return nil, invalidf("%s", err)
 	}

@@ -122,6 +122,7 @@ func TestUpdateCoercesValues(t *testing.T) {
 
 func TestUpdateNullClearsOptionalButNotRequired(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	fields := noteFields()
 	fields[2].Required = true
@@ -364,6 +365,7 @@ func TestUpsertInsertsWhenNoMatch(t *testing.T) {
 
 func TestUpsertInsertEnforcesRequiredFields(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	fields := noteFields()
 	fields[2].Required = true
@@ -403,6 +405,7 @@ func TestUpsertInsertEnforcesRequiredFields(t *testing.T) {
 
 func TestUpdatePlainTableWithoutIndexes(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "plain", []schema.Field{
 		{Name: "a", Type: schema.String},

@@ -53,6 +53,7 @@ func TestLocalProviderVectorizeEndToEnd(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	srv := httptest.NewServer(New(st, localStub("sentence-transformers/all-MiniLM-L6-v2", 4)).Handler())
+	mustNS(t, srv.URL, "app")
 	t.Cleanup(srv.Close)
 
 	code, res := post(t, srv.URL, "create_table", map[string]any{
@@ -104,6 +105,7 @@ func TestLocalProviderSwitchRejected(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	srvA := httptest.NewServer(New(st, localStub("org/model-a", 4)).Handler())
 	t.Cleanup(srvA.Close)
+	mustNS(t, srvA.URL, "app")
 
 	code, res := post(t, srvA.URL, "create_table", map[string]any{
 		"namespace": "app",
@@ -205,6 +207,7 @@ func TestLocalProviderE5PrefixesEndToEnd(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	eng := &recordingEngine{dim: 4}
 	srv := httptest.NewServer(New(st, &embed.Local{
+	mustNS(t, srv.URL, "e5")
 		Model: "intfloat/multilingual-e5-small",
 		Open:  func() (embed.LocalEngine, error) { return eng, nil },
 	}).Handler())
@@ -286,6 +289,7 @@ func TestLocalProviderLoadFailureActionable(t *testing.T) {
 		},
 	}
 	srv := httptest.NewServer(New(st, failing).Handler())
+	mustNS(t, srv.URL, "app")
 	t.Cleanup(srv.Close)
 
 	code, res := post(t, srv.URL, "create_table", map[string]any{

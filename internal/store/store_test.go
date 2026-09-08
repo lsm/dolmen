@@ -13,14 +13,28 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-func openStore(t *testing.T) *Store {
+// openStore returns the store wrapped in the legacy adapter (slice 2b): the
+// suite's ~300 direct call sites keep the pre-Engine arities, and new-arity
+// calls go through the Engine-shaped methods on *Store itself.
+func openStore(t *testing.T) legacyStore {
 	t.Helper()
 	st, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return st
+	return legacy(st)
+}
+
+// mustNS creates the namespace, tolerating an existing one — the test-side
+// counterpart of the op layer's ensureNamespace (2c). Since the store stopped
+// creating namespaces on first use (2b's §6.2 rule), fixtures that used to
+// rely on create-on-open create explicitly.
+func mustNS(t *testing.T, st legacyStore, ns string) {
+	t.Helper()
+	if err := st.CreateNamespace(ns); err != nil && !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("create namespace %s: %v", ns, err)
+	}
 }
 
 func noteFields() []schema.Field {
@@ -34,8 +48,9 @@ func noteFields() []schema.Field {
 	}
 }
 
-func mustCreateNotes(t *testing.T, st *Store) {
+func mustCreateNotes(t *testing.T, st legacyStore) {
 	t.Helper()
+	mustNS(t, st, "test")
 	if _, err := st.CreateTable(context.Background(), "test", "notes", noteFields()); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
@@ -43,6 +58,7 @@ func mustCreateNotes(t *testing.T, st *Store) {
 
 func TestTableAndNamespaceValidation(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 
 	if _, err := st.CreateTable(ctx, "test", "BadName", noteFields()); err == nil {
@@ -68,6 +84,7 @@ func TestTableAndNamespaceValidation(t *testing.T) {
 
 func TestFTSSuffixAndReservedNames(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 
 	if _, err := st.CreateTable(ctx, "test", "notes__fts", noteFields()); err == nil {
@@ -93,6 +110,7 @@ func TestFTSSuffixAndReservedNames(t *testing.T) {
 
 func TestSQLKeywordNamesRejected(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 
 	if _, err := st.CreateTable(ctx, "test", "select", noteFields()); err == nil {
@@ -120,6 +138,7 @@ func TestSQLKeywordNamesRejected(t *testing.T) {
 
 func TestLegacyKeywordTableRemainsAccessible(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 
 	n, err := st.ns("test")
@@ -165,6 +184,7 @@ func TestLegacyKeywordTableRemainsAccessible(t *testing.T) {
 
 func TestLegacyKeywordFieldMigration(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 
 	n, err := st.ns("test")
@@ -221,6 +241,7 @@ func TestLegacyKeywordFieldMigration(t *testing.T) {
 
 func TestFTSShadowTableNamesRejected(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	for _, name := range []string{"notes__fts", "notes__fts_data", "notes__fts_idx", "notes__fts_content"} {
 		if _, err := st.CreateTable(context.Background(), "test", name, noteFields()); err == nil {
 			t.Fatalf("expected shadow-table name %q to be rejected", name)
@@ -241,7 +262,9 @@ func TestStoragePermissions(t *testing.T) {
 	}
 	defer st.Close()
 	ctx := context.Background()
-	if _, err := st.CreateTable(ctx, "sec", "t", []schema.Field{
+	ls := legacy(st)
+	mustNS(t, ls, "sec")
+	if _, err := ls.CreateTable(ctx, "sec", "t", []schema.Field{
 		{Name: "x", Type: schema.String},
 	}); err != nil {
 		t.Fatalf("create: %v", err)
@@ -317,6 +340,7 @@ func TestRowIdsNotReusedAfterDeleteAll(t *testing.T) {
 
 func TestCreateTableTooManyFieldsRejected(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	fields := make([]schema.Field, MaxFieldsPerTable+1)
 	for i := range fields {
 		fields[i] = schema.Field{Name: fmt.Sprintf("f%d", i), Type: schema.String}

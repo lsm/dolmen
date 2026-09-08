@@ -17,8 +17,9 @@ func enumPtr(vals ...string) *[]string {
 	return &v
 }
 
-func mustCreateSeverity(t *testing.T, st *Store) {
+func mustCreateSeverity(t *testing.T, st legacyStore) {
 	t.Helper()
+	mustNS(t, st, "test")
 	if _, err := st.CreateTable(context.Background(), "test", "incidents", []schema.Field{
 		{Name: "title", Type: schema.String},
 		{Name: "severity", Type: schema.String, Enum: []string{"SEV0", "SEV1", "SEV2", "SEV3"}},
@@ -29,6 +30,7 @@ func mustCreateSeverity(t *testing.T, st *Store) {
 
 func TestEnumCreateTableValidation(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 
 	if _, err := st.CreateTable(ctx, "test", "bad_type", []schema.Field{
@@ -82,10 +84,11 @@ func TestEnumCreateTableValidation(t *testing.T) {
 func TestEnumInsertRejectsNonMember(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	st, err := Open(dir)
+	raw, err := Open(dir)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	st := legacy(raw)
 	mustCreateSeverity(t, st)
 
 	_, err = st.Insert(ctx, "test", "incidents", []map[string]any{
@@ -136,10 +139,11 @@ func TestEnumInsertRejectsNonMember(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	st2, err := Open(dir)
+	raw2, err := Open(dir)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
+	st2 := legacy(raw2)
 	defer st2.Close()
 	if _, err := st2.Insert(ctx, "test", "incidents", []map[string]any{
 		{"title": "after reopen", "severity": "SEV9"},
@@ -201,6 +205,7 @@ func TestEnumUpdateAndUpsertPaths(t *testing.T) {
 
 func TestEnumSetEnumLifecycle(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	// No enum at first: free strings land, including typos.
 	if _, err := st.CreateTable(ctx, "test", "incidents", []schema.Field{
@@ -307,6 +312,7 @@ func TestEnumSetEnumLifecycle(t *testing.T) {
 
 func TestEnumSetEnumValidation(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "incidents", []schema.Field{
 		{Name: "title", Type: schema.Text},
@@ -359,6 +365,7 @@ func TestEnumSetEnumValidation(t *testing.T) {
 
 func TestEnumAddFieldAndOrthogonality(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "notes", []schema.Field{
 		{Name: "body", Type: schema.Text, Fulltext: true},

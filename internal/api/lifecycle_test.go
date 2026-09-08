@@ -89,6 +89,7 @@ func TestNamespaceLifecycleOverHTTP(t *testing.T) {
 
 func TestDropTableOverHTTP(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "ns1")
 
 	code, _ := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "ns1",

@@ -21,46 +21,55 @@ type VectorSearchResult struct {
 	Skipped   int
 }
 
-func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, vec []float32, embedModel string, offset, limit int, includeHidden bool, filter string, args []any, minScore *float64) (VectorSearchResult, error) {
+// SearchVector executes a vector search (§6.2, §7). The engine is exact:
+// Execution reports the brute-force path that served the query (Capabilities,
+// still the 2b stub, will say the same once slice 4d makes it real). TODO(9d):
+// scope and scopeIncarnation are ignored while auth is off — a non-nil scope
+// will filter visible rows.
+func (s *Store) SearchVector(ctx context.Context, nsName, table string, q VectorQuery, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (SearchResult, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
-		return VectorSearchResult{}, err
+		return SearchResult{}, err
 	}
 	tx, err := n.ro.BeginTx(ctx, nil)
 	if err != nil {
-		return VectorSearchResult{}, err
+		return SearchResult{}, err
 	}
 	defer tx.Rollback()
 	sc, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
-		return VectorSearchResult{}, err
+		return SearchResult{}, err
 	}
-	column, dim, err := resolveVectorColumn(sc, table, column, embedModel != "", embedModel)
+	column, dim, err := resolveVectorColumn(sc, table, q.Column, q.EmbedModel != "", q.EmbedModel)
 	if err != nil {
-		return VectorSearchResult{}, err
+		return SearchResult{}, err
 	}
-	if dim > 0 && len(vec) != dim {
-		return VectorSearchResult{}, invalidf("query vector has %d entries, column %s expects dim %d", len(vec), column, dim)
+	if dim > 0 && len(q.Vec) != dim {
+		return SearchResult{}, invalidf("query vector has %d entries, column %s expects dim %d", len(q.Vec), column, dim)
 	}
-	if !allFinite(vec) {
-		return VectorSearchResult{}, invalidf("query vector contains a non-finite component")
+	if !allFinite(q.Vec) {
+		return SearchResult{}, invalidf("query vector contains a non-finite component")
 	}
-	limit = searchLimit(limit)
+	limit := searchLimit(page.Limit)
+	offset := page.Offset
 	if offset < 0 {
-		return VectorSearchResult{}, invalidf("offset must be non-negative")
+		return SearchResult{}, invalidf("offset must be non-negative")
 	}
-	filter = strings.TrimSpace(filter)
+	filter := strings.TrimSpace(q.Filter)
+	args := q.Args
 	if filter != "" {
 		if strings.Contains(filter, ";") {
-			return VectorSearchResult{}, invalidf("multiple statements are not allowed in filter")
+			return SearchResult{}, invalidf("multiple statements are not allowed in filter")
 		}
 		if len(args) > 100 {
-			return VectorSearchResult{}, invalidf("too many filter arguments")
+			return SearchResult{}, invalidf("too many filter arguments")
 		}
 		for i, a := range args {
 			args[i] = normalizeArg(a)
 		}
 	}
+	vec := q.Vec
+	minScore := q.MinScore
 
 	query := fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s IS NOT NULL`, q(column), q(table), q(column))
 	var qargs []any
@@ -71,7 +80,7 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 
 	rows, err := tx.QueryContext(ctx, query, qargs...)
 	if err != nil {
-		return VectorSearchResult{}, NewFilterError(filter, err)
+		return SearchResult{}, NewFilterError(filter, err)
 	}
 	defer rows.Close()
 
@@ -90,7 +99,7 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 		var id int64
 		var raw any
 		if err := rows.Scan(&id, &raw); err != nil {
-			return VectorSearchResult{}, err
+			return SearchResult{}, err
 		}
 		// An out-of-band SQLite writer can corrupt a vector column with any
 		// storage type (INTEGER, REAL, TEXT); only a BLOB of the right shape
@@ -112,7 +121,7 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 		hits = append(hits, hit{id: id, score: score})
 	}
 	if err := rows.Err(); err != nil {
-		return VectorSearchResult{}, err
+		return SearchResult{}, err
 	}
 	// Stable, deterministic ordering: higher score first, then lower id.
 	sort.SliceStable(hits, func(i, j int) bool {
@@ -147,14 +156,19 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table, column string, 
 	}
 	out, complete, err := fetchByIDs(ctx, tx, table, ids, projectionFromSchema(sc, includeHidden))
 	if err != nil {
-		return VectorSearchResult{}, err
+		return SearchResult{}, err
 	}
 	for _, row := range out {
 		if id, ok := row["id"].(int64); ok {
 			row["_score"] = scoreByID[id]
 		}
 	}
-	return VectorSearchResult{Rows: out, Truncated: hasMore || !complete, Skipped: skipped}, nil
+	return SearchResult{
+		Rows:           out,
+		Truncated:      hasMore || !complete,
+		SkippedVectors: skipped,
+		Execution:      VectorExact,
+	}, nil
 }
 
 // resolveVectorColumn picks the column a vector search runs against and the
@@ -224,16 +238,16 @@ func vectorColumnNames(sc *schema.TableSchema) string {
 	return strings.Join(names, ", ")
 }
 
-func (s *Store) ValidateVectorSearch(ctx context.Context, nsName, table, column string, textQuery bool, embedIdentity string) error {
-	n, err := s.ns(nsName)
-	if err != nil {
-		return err
-	}
-	sc, err := loadSchema(ctx, n.ro, nsName, table)
-	if err != nil {
-		return err
-	}
-	_, _, err = resolveVectorColumn(sc, table, column, textQuery, embedIdentity)
+// ValidateVectorQuery validates a TEXT vector query against a TableState
+// snapshot (§6.2): vectorize field present and embed-space identity pinned —
+// the pre-embed check the API layer runs against the same snapshot it will
+// resolve scopes from, so an invalid query fails before the embedding
+// provider is contacted (or billed) (§7). It is deliberately a function over
+// the snapshot, not an Engine method: the validation travels with the schema
+// the caller already holds. embedModel is the active provider's identity (""
+// when none is configured — the table's shape still validates).
+func ValidateVectorQuery(sc *schema.TableSchema, table, column, embedModel string) error {
+	_, _, err := resolveVectorColumn(sc, table, column, true, embedModel)
 	return err
 }
 

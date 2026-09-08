@@ -40,7 +40,7 @@ func TestNamespaceListCreateDrop(t *testing.T) {
 		t.Fatalf("drop of invalid name must fail with ErrInvalid, got %v", err)
 	}
 
-	mustCreateNotes(t, st) // implicitly creates namespace "test" with a WAL
+	mustCreateNotes(t, st) // creates namespace "test" explicitly, with a WAL
 	nss, err = st.ListNamespaces()
 	if err != nil {
 		t.Fatalf("list: %v", err)
@@ -93,8 +93,9 @@ func TestDropNamespaceSurvivesRestartWithWAL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	mustCreateNotes(t, st)
-	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{{"title": "wal row"}}, testEmbed); err != nil {
+	ls := legacy(st)
+	mustCreateNotes(t, ls)
+	if _, err := ls.Insert(ctx, "test", "notes", []map[string]any{{"title": "wal row"}}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	if err := st.Close(); err != nil {
@@ -106,7 +107,7 @@ func TestDropNamespaceSurvivesRestartWithWAL(t *testing.T) {
 		t.Fatalf("reopen: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	if err := st.DropNamespace("test"); err != nil {
+	if err := legacy(st).DropNamespace("test"); err != nil {
 		t.Fatalf("drop after restart: %v", err)
 	}
 	for _, suffix := range []string{"", "-wal", "-shm"} {
@@ -114,7 +115,7 @@ func TestDropNamespaceSurvivesRestartWithWAL(t *testing.T) {
 			t.Fatalf("test.db%s must be gone after drop with a WAL present", suffix)
 		}
 	}
-	nss, err := st.ListNamespaces()
+	nss, err := legacy(st).ListNamespaces()
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -412,24 +413,26 @@ func TestDropTableBySecondStoreInstanceDuringEmbedPause(t *testing.T) {
 		t.Fatalf("open B: %v", err)
 	}
 	t.Cleanup(func() { stB.Close() })
-	if _, err := stA.CreateTable(ctx, "test", "notes", noteFields()); err != nil {
+	lsA, lsB := legacy(stA), legacy(stB)
+	mustNS(t, lsA, "test")
+	if _, err := lsA.CreateTable(ctx, "test", "notes", noteFields()); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
 	emb, waitPaused, release := pausingEmbedder()
 	done := make(chan error, 1)
 	go func() {
-		_, err := stA.Insert(ctx, "test", "notes", []map[string]any{
+		_, err := lsA.Insert(ctx, "test", "notes", []map[string]any{
 			{"title": "stale", "body": "validated against the dead schema", "score": 0.9},
 		}, emb)
 		done <- err
 	}()
 
 	waitPaused()
-	if err := stB.DropTable(ctx, "test", "notes"); err != nil {
+	if err := lsB.DropTable(ctx, "test", "notes"); err != nil {
 		t.Fatalf("drop via B: %v", err)
 	}
-	if _, err := stB.CreateTable(ctx, "test", "notes", recreatedFields()); err != nil {
+	if _, err := lsB.CreateTable(ctx, "test", "notes", recreatedFields()); err != nil {
 		t.Fatalf("recreate via B: %v", err)
 	}
 	release()
@@ -437,7 +440,7 @@ func TestDropTableBySecondStoreInstanceDuringEmbedPause(t *testing.T) {
 	if err := <-done; err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("stale insert on A must re-validate and fail against B's recreated table, got %v", err)
 	}
-	rows, _, err := stB.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil, 0, 0)
+	rows, _, err := lsB.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("count via B: %v", err)
 	}

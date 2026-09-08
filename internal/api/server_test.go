@@ -73,6 +73,24 @@ func post(t *testing.T, base, op string, body any) (int, map[string]any) {
 	return res.StatusCode, decoded
 }
 
+// mustNS creates the namespace over HTTP, tolerating an existing one. The
+// store stopped creating namespaces on first use (slice 2b's §6.2 rule), so
+// test fixtures that relied on create-on-open create explicitly; the op
+// layer's compensating ensureNamespace lands with 2c.
+func mustNS(t *testing.T, base, ns string) {
+	t.Helper()
+	code, res := post(t, base, "create_namespace", map[string]any{"namespace": ns})
+	if code == 200 {
+		return
+	}
+	if errEnv, ok := res["error"].(map[string]any); ok {
+		if msg, _ := errEnv["message"].(string); strings.Contains(msg, "already exists") {
+			return
+		}
+	}
+	t.Fatalf("create namespace %s: %d %v", ns, code, res)
+}
+
 func TestInferSchemaEndpoint(t *testing.T) {
 	srv := newTestServer(t)
 	long := fmt.Sprintf("A detailed finding body.%s", bytes.Repeat([]byte(" x"), 150))
@@ -109,6 +127,7 @@ func TestOriginGuard(t *testing.T) {
 	}
 	defer st.Close()
 	srv := httptest.NewServer(OriginGuard(New(st, fakeEmb{}).Handler(), []string{"https://app.example.com"}))
+	mustNS(t, srv.URL, "x")
 	t.Cleanup(srv.Close)
 
 	do := func(origin, contentType string) int {
@@ -160,6 +179,7 @@ func TestCORSPreflight(t *testing.T) {
 	}
 	defer st.Close()
 	srv := httptest.NewServer(OriginGuard(New(st, fakeEmb{}).Handler(), []string{"https://app.example.com"}))
+	mustNS(t, srv.URL, "cors")
 	t.Cleanup(srv.Close)
 
 	req, _ := http.NewRequest(http.MethodOptions, srv.URL+"/v1/insert", nil)
@@ -216,6 +236,8 @@ func TestCORSPreflight(t *testing.T) {
 
 func TestTrailingContentRejected(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "x")
+	mustNS(t, srv.URL, "y")
 	res, err := http.Post(srv.URL+"/v1/list_tables", "application/json",
 		strings.NewReader(`{"namespace":"x"} {"namespace":"y"}`))
 	if err != nil {
@@ -229,6 +251,7 @@ func TestTrailingContentRejected(t *testing.T) {
 
 func TestListTablesEmptyNamespaceReturnsArray(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "fresh")
 	code, body := post(t, srv.URL, "list_tables", map[string]any{"namespace": "fresh"})
 	if code != http.StatusOK {
 		t.Fatalf("list_tables on fresh namespace: %d %v", code, body)
@@ -307,6 +330,7 @@ func TestCreateTableFieldsMinItemsDeclared(t *testing.T) {
 
 func TestUnknownRequestFieldsRejected(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "x")
 	code, body := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "x",
 		"table":     "typo",
@@ -548,6 +572,7 @@ func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 
 func TestRequestIdEchoedOnSuccess(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "x")
 	raw, _ := json.Marshal(map[string]any{"namespace": "x"})
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/list_tables", bytes.NewReader(raw))
 	req.Header.Set("Content-Type", "application/json")
@@ -619,6 +644,7 @@ func TestContentTypeParsedExactly(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	srv := httptest.NewServer(OriginGuard(New(st, fakeEmb{}).Handler(), nil))
+	mustNS(t, srv.URL, "x")
 	t.Cleanup(srv.Close)
 	for _, ct := range []string{"application/json", "application/json; charset=utf-8", "APPLICATION/JSON"} {
 		res, err := http.Post(srv.URL+"/v1/list_tables", ct, strings.NewReader(`{"namespace":"x"}`))
@@ -644,6 +670,7 @@ func TestContentTypeParsedExactly(t *testing.T) {
 
 func TestNullOptionValuesRejected(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "x")
 	res, err := http.Post(srv.URL+"/v1/create_table", "application/json",
 		strings.NewReader(`{"namespace":"x","table":"nully","fields":[{"name":"title","type":null,"required":null}]}`))
 	if err != nil {
@@ -687,6 +714,7 @@ func TestInferSchemaNullSampleEntryRejected(t *testing.T) {
 
 func TestCreateTableRejectsSQLKeywordFieldAndTable(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "skills")
 
 	// Field named "order" is a SQLite/SQL keyword and must be rejected.
 	code, res := post(t, srv.URL, "create_table", map[string]any{
