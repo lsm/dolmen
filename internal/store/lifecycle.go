@@ -190,7 +190,7 @@ func (s *Store) TableState(ctx context.Context, nsName, table string, auth []Aut
 	if err != nil {
 		return nil, Incarnation{}, err
 	}
-	return sc, Incarnation{Table: table, Version: sc.Version, DropGen: dropGen}, nil
+	return sc, Incarnation{Table: table, Version: int64(sc.Version), DropGen: dropGen}, nil
 }
 
 // tableGen returns the persisted drop generation for a table name (0 when it

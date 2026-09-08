@@ -26,7 +26,7 @@ type VectorSearchResult struct {
 // still the 2b stub, will say the same once slice 4d makes it real). TODO(9d):
 // scope and scopeIncarnation are ignored while auth is off — a non-nil scope
 // will filter visible rows.
-func (s *Store) SearchVector(ctx context.Context, nsName, table string, q VectorQuery, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (SearchResult, error) {
+func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq VectorQuery, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (SearchResult, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
 		return SearchResult{}, err
@@ -40,14 +40,14 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, q Vector
 	if err != nil {
 		return SearchResult{}, err
 	}
-	column, dim, err := resolveVectorColumn(sc, table, q.Column, q.EmbedModel != "", q.EmbedModel)
+	column, dim, err := resolveVectorColumn(sc, table, vq.Column, vq.EmbedModel != "", vq.EmbedModel)
 	if err != nil {
 		return SearchResult{}, err
 	}
-	if dim > 0 && len(q.Vec) != dim {
-		return SearchResult{}, invalidf("query vector has %d entries, column %s expects dim %d", len(q.Vec), column, dim)
+	if dim > 0 && len(vq.Vec) != dim {
+		return SearchResult{}, invalidf("query vector has %d entries, column %s expects dim %d", len(vq.Vec), column, dim)
 	}
-	if !allFinite(q.Vec) {
+	if !allFinite(vq.Vec) {
 		return SearchResult{}, invalidf("query vector contains a non-finite component")
 	}
 	limit := searchLimit(page.Limit)
@@ -55,8 +55,8 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, q Vector
 	if offset < 0 {
 		return SearchResult{}, invalidf("offset must be non-negative")
 	}
-	filter := strings.TrimSpace(q.Filter)
-	args := q.Args
+	filter := strings.TrimSpace(vq.Filter)
+	args := vq.Args
 	if filter != "" {
 		if strings.Contains(filter, ";") {
 			return SearchResult{}, invalidf("multiple statements are not allowed in filter")
@@ -68,8 +68,8 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, q Vector
 			args[i] = normalizeArg(a)
 		}
 	}
-	vec := q.Vec
-	minScore := q.MinScore
+	vec := vq.Vec
+	minScore := vq.MinScore
 
 	query := fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s IS NOT NULL`, q(column), q(table), q(column))
 	var qargs []any

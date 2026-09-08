@@ -48,11 +48,11 @@ func (l legacyStore) DropTable(ctx context.Context, nsName, table string) error 
 }
 
 func (l legacyStore) PlanMigration(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expectedVersion int) (*MigrationPlan, error) {
-	return l.Store.PlanMigration(ctx, nsName, table, changes, emb, Incarnation{Version: expectedVersion}, nil, Incarnation{})
+	return l.Store.PlanMigration(ctx, nsName, table, changes, emb, Incarnation{Version: int64(expectedVersion)}, nil, Incarnation{})
 }
 
 func (l legacyStore) Migrate(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expectedVersion int) (*schema.TableSchema, error) {
-	return l.Store.Migrate(ctx, nsName, table, changes, emb, Incarnation{Version: expectedVersion})
+	return l.Store.Migrate(ctx, nsName, table, changes, emb, Incarnation{Version: int64(expectedVersion)})
 }
 
 func (l legacyStore) ListMigrations(ctx context.Context, nsName, table string) ([]Migration, error) {

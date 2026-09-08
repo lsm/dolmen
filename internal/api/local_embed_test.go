@@ -207,11 +207,11 @@ func TestLocalProviderE5PrefixesEndToEnd(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	eng := &recordingEngine{dim: 4}
 	srv := httptest.NewServer(New(st, &embed.Local{
-	mustNS(t, srv.URL, "e5")
 		Model: "intfloat/multilingual-e5-small",
 		Open:  func() (embed.LocalEngine, error) { return eng, nil },
 	}).Handler())
 	t.Cleanup(srv.Close)
+	mustNS(t, srv.URL, "e5")
 
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "e5",

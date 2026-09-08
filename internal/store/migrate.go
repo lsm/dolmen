@@ -80,7 +80,7 @@ type migrationWork struct {
 // slice 8c checks the whole Incarnation (the version alone cannot
 // distinguish a same-named successor recreated at version 1, §4.3).
 func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expected Incarnation) (*schema.TableSchema, error) {
-	expectedVersion := expected.Version
+	expectedVersion := int(expected.Version)
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
 	}
@@ -242,7 +242,7 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 // scopeIncarnation then bound the plan's DISCLOSURE counts to the caller's
 // visible set (validation stays table-wide).
 func (s *Store) PlanMigration(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expected Incarnation, scope *RowScope, scopeIncarnation Incarnation) (*MigrationPlan, error) {
-	expectedVersion := expected.Version
+	expectedVersion := int(expected.Version)
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
 	}
