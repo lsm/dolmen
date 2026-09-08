@@ -11,9 +11,11 @@ at the current `main`.
 
 ## Slice conventions
 
-- **Every slice is S-sized**: one focused PR, one sitting's work, lands green (`go vet`, `go test
-  ./...` race-enabled via `make test`, `govulncheck`), conformance-visible where the slice has
-  contract surface.
+- **Every slice is S-sized**: one focused PR, one sitting's work, lands green (`make test` —
+  `go vet` + `go test ./...` — **plus `make race`**, the separate target where the race
+  detector actually runs, and `govulncheck`), conformance-visible where the slice has
+  contract surface. The concurrency-heavy slices — notification (4d/6b), the drop cascade
+  (8f/8g), grant serialization (8d/8e/10b) — must never merge on `test` alone.
 - **Each slice becomes one thin GitHub issue**, generated from its entry here — title, spec §ref,
   file list, acceptance. No paraphrase of the spec (the drift lesson of the closed stream issues).
 - **Additive-only**: nothing v0.2.0 accepts may change meaning (spec §8.1). Response-shape additions
@@ -980,7 +982,11 @@ Goal: every row-insert path stamps the principal; reads surface `owner` like `id
 Changes:
 - `WriteOpts.Owner` (declared in 2a) flows from the op layer under `auth: on` into the insert
   branches only — insert and both upsert insert branches; callers can never supply `owner`
-  (not a request field — automatic via DisallowUnknownFields). Delete- and update-event labels
+  (not a request field — automatic via DisallowUnknownFields). The **change-record** owner
+  derives from the inserted row's schema: NULL on plain tables without the implicit column
+  (§9.3 — "absent on plain tables"), so a pre-enable plain-table era never leaves
+  caller-stamped records that a later `row_access` enablement would misclassify as own-row
+  events. Delete- and update-event labels
   are different: each record captures the affected row's own owner, read from the materialized
   rows before the write (4c's rule — a table-wide writer touching another user's row must not
   relabel it, or the original owner's scoped feed misses the event; the writer is not the
