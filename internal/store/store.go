@@ -83,6 +83,13 @@ func (s *Store) ns(name string) (*nsDB, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.lockedNS(name)
+}
+
+// lockedNS is ns() for a caller already holding s.mu: CreateNamespace
+// reserves, evicts, and initializes under one lock span, so a concurrent
+// first-use open can never interleave with them.
+func (s *Store) lockedNS(name string) (*nsDB, error) {
 	if n, ok := s.nss[name]; ok {
 		return n, nil
 	}

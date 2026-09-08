@@ -23,7 +23,10 @@ import (
 )
 
 type Server struct {
-	st            *store.Store
+	// eng is the storage seam: the ops layer programs against Engine, never
+	// the concrete SQLite store (plan §2c) — adapter #1 is held here only
+	// because New still takes what it gets.
+	eng           store.Engine
 	emb           embed.Provider
 	baseURL       string
 	namespaceHint string
@@ -54,8 +57,12 @@ func WithNamespaceHint(h string) Option {
 	}
 }
 
+// New builds a Server over a storage engine, holding it as the Engine the
+// ops program against (plan §2c). The parameter stays the concrete
+// *store.Store — adapter #1, still the only engine — so main.go and the test
+// harnesses are unchanged when later adapters arrive.
 func New(st *store.Store, emb embed.Provider, opts ...Option) *Server {
-	s := &Server{st: st, emb: emb}
+	s := &Server{eng: st, emb: emb}
 	for _, opt := range opts {
 		opt(s)
 	}

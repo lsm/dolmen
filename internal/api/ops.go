@@ -259,7 +259,11 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
-			tables, err := s.st.ListTables(ctx, normNS(req.Namespace), nil)
+			ns := normNS(req.Namespace)
+			if err := s.ensureNamespace(ctx, ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			tables, err := s.eng.ListTables(ctx, ns, nil)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -289,7 +293,7 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
-			nss, err := s.st.ListNamespaces(ctx, "", nil)
+			nss, err := s.eng.ListNamespaces(ctx, "", nil)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -318,7 +322,7 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			if err := s.st.CreateNamespace(ctx, ns, [16]byte{}); err != nil {
+			if err := s.eng.CreateNamespace(ctx, ns, [16]byte{}); err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			return map[string]any{"namespace": ns}, nil
@@ -355,7 +359,7 @@ var Ops = map[string]OpDef{
 			if normNS(req.Confirm) != ns {
 				return nil, badRequest("confirm must repeat the exact namespace name %q to drop it", ns)
 			}
-			if err := s.st.DropNamespace(ctx, ns, [16]byte{}); err != nil {
+			if err := s.eng.DropNamespace(ctx, ns, [16]byte{}); err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			return map[string]any{"dropped": ns}, nil
@@ -391,7 +395,11 @@ var Ops = map[string]OpDef{
 			if normTable(req.Confirm) != table {
 				return nil, badRequest("confirm must repeat the exact table name %q to drop it", table)
 			}
-			if err := s.st.DropTable(ctx, normNS(req.Namespace), table, store.Incarnation{}); err != nil {
+			ns := normNS(req.Namespace)
+			if err := s.ensureNamespace(ctx, ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			if err := s.eng.DropTable(ctx, ns, table, store.Incarnation{}); err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			return map[string]any{"dropped": table}, nil
@@ -461,7 +469,11 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
-			sc, count, err := s.st.DescribeTable(ctx, normNS(req.Namespace), normTable(req.Table), nil, store.Incarnation{})
+			ns := normNS(req.Namespace)
+			if err := s.ensureNamespace(ctx, ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			sc, count, err := s.eng.DescribeTable(ctx, ns, normTable(req.Table), nil, store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -525,7 +537,11 @@ var Ops = map[string]OpDef{
 					return nil, badRequest("field %q has vectorize, but this server has no usable embedding provider (none is configured, or the configured one does not report its identity); the table is not created — an operator must set the server-side DOLMEN_EMBED_* environment variables: DOLMEN_EMBED_PROVIDER=local (in-process embeddings, no external service), or DOLMEN_EMBED_PROVIDER=openai plus DOLMEN_EMBED_API_KEY (or OPENAI_API_KEY), optionally DOLMEN_EMBED_BASE_URL and DOLMEN_EMBED_MODEL; or create the field without vectorize and enable it via migrate (set_vectorize) once a provider is configured", f.Name)
 				}
 			}
-			sc, err := s.st.CreateTable(ctx, normNS(req.Namespace), normTable(req.Table), req.Fields, store.TableOpts{}, [16]byte{})
+			ns := normNS(req.Namespace)
+			if err := s.ensureNamespace(ctx, ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			sc, err := s.eng.CreateTable(ctx, ns, normTable(req.Table), req.Fields, store.TableOpts{}, [16]byte{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -656,7 +672,11 @@ var Ops = map[string]OpDef{
 			}
 			// The idempotency key rides WriteOpts — the seam's single insert
 			// path (2b folded InsertIdempotent into Insert).
-			res, err := s.st.Insert(ctx, normNS(req.Namespace), normTable(req.Table), req.Records,
+			ns := normNS(req.Namespace)
+			if err := s.ensureNamespace(ctx, ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			res, err := s.eng.Insert(ctx, ns, normTable(req.Table), req.Records,
 				store.WriteOpts{IdempotencyKey: key}, s.embedder(), nil, store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
@@ -717,7 +737,11 @@ var Ops = map[string]OpDef{
 			if len(req.On) == 0 {
 				return nil, badRequest("on must name at least one key field")
 			}
-			res, err := s.st.UpsertByKey(ctx, normNS(req.Namespace), normTable(req.Table), req.On, req.Records,
+			ns := normNS(req.Namespace)
+			if err := s.ensureNamespace(ctx, ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			res, err := s.eng.UpsertByKey(ctx, ns, normTable(req.Table), req.On, req.Records,
 				store.WriteOpts{}, s.embedder(), nil, store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
@@ -794,7 +818,11 @@ var Ops = map[string]OpDef{
 			if err := decodeData(body, &req); err != nil {
 				return nil, err
 			}
-			res, err := s.st.Query(ctx, normNS(req.Namespace), req.SQL, req.Args, [16]byte{},
+			ns := normNS(req.Namespace)
+			if err := s.ensureNamespace(ctx, ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			res, err := s.eng.Query(ctx, ns, req.SQL, req.Args, [16]byte{},
 				store.Page{Offset: req.Offset, Limit: req.Limit})
 			if err != nil {
 				return nil, wrapStoreErr(err)
@@ -875,7 +903,11 @@ var Ops = map[string]OpDef{
 			if req.Query == "" {
 				return nil, badRequest("query must not be empty")
 			}
-			res, err := s.st.SearchFulltext(ctx, normNS(req.Namespace), normTable(req.Table), req.Query, req.Filter, req.Args,
+			ns := normNS(req.Namespace)
+			if err := s.ensureNamespace(ctx, ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			res, err := s.eng.SearchFulltext(ctx, ns, normTable(req.Table), req.Query, req.Filter, req.Args,
 				req.IncludeHidden, nil, store.Incarnation{}, store.Page{Offset: req.Offset, Limit: limit(req.Limit)})
 			if err != nil {
 				return nil, wrapStoreErr(err)
@@ -997,7 +1029,11 @@ var Ops = map[string]OpDef{
 				// The validation runs against the TableState snapshot (§6.2):
 				// vectorize field present, embed-space identity pinned — before
 				// the provider is called (2b folded ValidateVectorSearch here).
-				sc, _, err := s.st.TableState(ctx, normNS(req.Namespace), normTable(req.Table), nil)
+				ns := normNS(req.Namespace)
+				if err := s.ensureNamespace(ctx, ns); err != nil {
+					return nil, wrapStoreErr(err)
+				}
+				sc, _, err := s.eng.TableState(ctx, ns, normTable(req.Table), nil)
 				if err != nil {
 					return nil, wrapStoreErr(err)
 				}
@@ -1027,6 +1063,9 @@ var Ops = map[string]OpDef{
 					}
 					vec[i] = float32(x)
 				}
+				if err := s.ensureNamespace(ctx, normNS(req.Namespace)); err != nil {
+					return nil, wrapStoreErr(err)
+				}
 			default:
 				return nil, badRequest("pass either text or vector")
 			}
@@ -1034,7 +1073,7 @@ var Ops = map[string]OpDef{
 			if req.Text != "" {
 				queryIdentity = s.emb.Identity()
 			}
-			res, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table), store.VectorQuery{
+			res, err := s.eng.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table), store.VectorQuery{
 				Column:     column,
 				Vec:        vec,
 				EmbedModel: queryIdentity,
@@ -1106,7 +1145,11 @@ var Ops = map[string]OpDef{
 			if err != nil {
 				return nil, err
 			}
-			res, err := s.st.Delete(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args, store.DeleteOptions{
+			ns := normNS(req.Namespace)
+			if err := s.ensureNamespace(ctx, ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			res, err := s.eng.Delete(ctx, ns, normTable(req.Table), req.Filter, req.Args, store.DeleteOptions{
 				DryRun:  dryRun,
 				Limit:   limit,
 				Confirm: confirm,
@@ -1163,7 +1206,11 @@ var Ops = map[string]OpDef{
 			if err := decodeData(body, &req); err != nil {
 				return nil, err
 			}
-			res, err := s.st.Update(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args, req.Set,
+			ns := normNS(req.Namespace)
+			if err := s.ensureNamespace(ctx, ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			res, err := s.eng.Update(ctx, ns, normTable(req.Table), req.Filter, req.Args, req.Set,
 				s.embedder(), nil, store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
@@ -1215,7 +1262,11 @@ var Ops = map[string]OpDef{
 			if err := decodeData(body, &req); err != nil {
 				return nil, err
 			}
-			res, err := s.st.Upsert(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args, req.Set,
+			ns := normNS(req.Namespace)
+			if err := s.ensureNamespace(ctx, ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			res, err := s.eng.Upsert(ctx, ns, normTable(req.Table), req.Filter, req.Args, req.Set,
 				store.WriteOpts{}, s.embedder(), nil, store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
@@ -1383,15 +1434,19 @@ var Ops = map[string]OpDef{
 				}
 				ver = *req.ExpectedVersion
 			}
+			ns := normNS(req.Namespace)
+			if err := s.ensureNamespace(ctx, ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
 			if req.DryRun {
-				plan, err := s.st.PlanMigration(ctx, normNS(req.Namespace), normTable(req.Table), req.Changes, s.embedder(),
+				plan, err := s.eng.PlanMigration(ctx, ns, normTable(req.Table), req.Changes, s.embedder(),
 					store.Incarnation{Version: int64(ver)}, nil, store.Incarnation{})
 				if err != nil {
 					return nil, wrapStoreErr(err)
 				}
 				return map[string]any{"table": plan.Table, "dry_run": true, "plan": plan}, nil
 			}
-			sc, err := s.st.Migrate(ctx, normNS(req.Namespace), normTable(req.Table), req.Changes, s.embedder(),
+			sc, err := s.eng.Migrate(ctx, ns, normTable(req.Table), req.Changes, s.embedder(),
 				store.Incarnation{Version: int64(ver)})
 			if err != nil {
 				return nil, wrapStoreErr(err)
@@ -1440,13 +1495,32 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
-			ms, err := s.st.ListMigrations(ctx, normNS(req.Namespace), normTable(req.Table), store.Incarnation{})
+			ns := normNS(req.Namespace)
+			if err := s.ensureNamespace(ctx, ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			ms, err := s.eng.ListMigrations(ctx, ns, normTable(req.Table), store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			return map[string]any{"migrations": ms}, nil
 		},
 	},
+}
+
+// ensureNamespace creates ns when absent, treating already-exists as success.
+// The engine never creates a namespace implicitly (§6.2's global rule, literal
+// since 2b retired ns()'s create-on-open), so the op layer — the layer that
+// knows auth is off — makes v0.2.0's create-on-first-use explicit on the
+// dispatch paths that side effect used to cover: the wire contract is
+// byte-identical, now through an explicit call. TODO(7e): make the ensure
+// mode-dependent — under auth: on a missing namespace is not_found, not a
+// silently created tenant.
+func (s *Server) ensureNamespace(ctx context.Context, ns string) error {
+	if err := s.eng.CreateNamespace(ctx, ns, [16]byte{}); err != nil && !strings.Contains(err.Error(), "already exists") {
+		return err
+	}
+	return nil
 }
 
 type insertReq struct {

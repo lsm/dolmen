@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"fmt"
+	"net/http"
 	"sync"
 	"testing"
 )
@@ -184,4 +185,58 @@ func checkOK(status int, body map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("status %d: %v", status, body)
 	}
 	return body["data"].(map[string]any), nil
+}
+
+// TestConcurrentFirstUse pins create-on-first-use under contention: when many
+// requests are the first to use the same missing namespace at once, every one
+// observes the v0.2.0 answer — 404 naming the missing table — never a 5xx
+// from pools closed underneath it. The O_EXCL loser of the implicit
+// CreateNamespace (the op layer's ensureNamespace) must wait for the winner's
+// initialization rather than race it; run under -race this also exercises the
+// store's reserve-evict-init lock span.
+func TestConcurrentFirstUse(t *testing.T) {
+	h := newHarness(t)
+
+	const goroutines = 24
+	const iterations = 5
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				status, body := h.httpCall("insert", map[string]any{
+					"namespace": "firstrace", "table": "t",
+					"records":   []map[string]any{{"a": "x"}},
+				})
+				if status != http.StatusNotFound {
+					t.Errorf("concurrent first-use insert: status %d, want 404: %v", status, body)
+					return
+				}
+				errObj, _ := body["error"].(map[string]any)
+				if errObj == nil || errObj["code"] != "not_found" {
+					t.Errorf("concurrent first-use insert: expected a not_found envelope, got %v", body)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	// First use materialized the namespace exactly once, and it lists empty.
+	data := h.mustHTTP("list_namespaces", map[string]any{})
+	nss, _ := data["namespaces"].([]any)
+	found := false
+	for _, ns := range nss {
+		if ns == "firstrace" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("namespace firstrace must exist after concurrent first use: %v", nss)
+	}
+	tables := h.mustHTTP("list_tables", map[string]any{"namespace": "firstrace"})
+	if ts, _ := tables["tables"].([]any); len(ts) != 0 {
+		t.Fatalf("a freshly created namespace lists no tables: %v", ts)
+	}
 }
