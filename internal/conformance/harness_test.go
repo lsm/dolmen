@@ -80,6 +80,36 @@ func (p *fakeProvider) embeddedTexts() []string {
 	return append([]string(nil), p.texts...)
 }
 
+// harnessMode is one point of the conformance matrix (spec §8.2): how the
+// booted server is configured to treat identity. authOff is the only mode
+// today — the v0.2.0 server, no auth wiring, identity ignored — so the
+// struct is deliberately almost empty: later slices add mode values by
+// extending it here, not by reworking the harness.
+type harnessMode struct {
+	// name identifies the mode in failure messages ("off", later "gateway"
+	// and "native+keys").
+	name string
+
+	// The future auth server options (spec §1.2–1.4, §8.2) ride here as
+	// placeholder fields, each commented with the slice that activates it:
+	//
+	// authOn           bool     // DOLMEN_AUTH=on — activated by 7b (gateway mode)
+	// trustedProxies   []string // DOLMEN_TRUSTED_PROXIES — activated by 7b
+	// adminKey         string   // DOLMEN_ADMIN_KEY — activated by 7b
+	// oidcIssuer       string   // DOLMEN_AUTH_OIDC_ISSUER — activated by 10g (native+keys mode)
+	// oidcClientID     string   // DOLMEN_AUTH_OIDC_CLIENT_ID — activated by 10g
+	// oidcClientSecret string   // DOLMEN_AUTH_OIDC_CLIENT_SECRET — activated by 10g
+}
+
+// authOff is the matrix's first mode: today's server, which must keep
+// passing the v0.2.0 contract byte for byte (spec §8.1).
+var authOff = harnessMode{name: "off"}
+
+// off reports whether the mode is auth:off — the server ignores identity
+// entirely. There is no other mode yet; 7b replaces this with the real
+// switch.
+func (m harnessMode) off() bool { return m.name == "off" }
+
 // harness is one dolmen server exposed over both transports, wired exactly
 // like main.go: OriginGuard over a mux with /mcp on the MCP server and / on
 // the API handler. It keeps the data directory so tests can reopen the store
@@ -90,6 +120,9 @@ type harness struct {
 	srv *httptest.Server
 	st  *store.Store
 	emb *fakeProvider
+	// mode is how the booted server treats identity (spec §8.2). It is set
+	// once at construction and survives reopen(): a restart keeps its mode.
+	mode harnessMode
 
 	httpURL string // .../v1
 	mcpURL  string // .../mcp
@@ -97,12 +130,28 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	return newHarnessAt(t, t.TempDir(), &fakeProvider{})
+	return newHarnessMode(t, authOff)
+}
+
+// newHarnessMode boots a server at one point of the conformance matrix
+// (spec §8.2). Tests that do not care about the mode — the whole existing
+// suite — go through newHarness, which selects authOff, so that suite is
+// itself the proof the mode boot path stays v0.2.0-faithful.
+func newHarnessMode(t *testing.T, mode harnessMode) *harness {
+	t.Helper()
+	return newHarnessAtMode(t, t.TempDir(), &fakeProvider{}, mode)
 }
 
 func newHarnessAt(t *testing.T, dir string, emb *fakeProvider) *harness {
 	t.Helper()
-	h := &harness{t: t, dir: dir, emb: emb}
+	return newHarnessAtMode(t, dir, emb, authOff)
+}
+
+// newHarnessAtMode is the one constructor that builds a harness; the others
+// are mode and convenience shorthands over it.
+func newHarnessAtMode(t *testing.T, dir string, emb *fakeProvider, mode harnessMode) *harness {
+	t.Helper()
+	h := &harness{t: t, dir: dir, emb: emb, mode: mode}
 	h.start()
 	return h
 }
@@ -114,6 +163,11 @@ func (h *harness) start() {
 		h.t.Fatalf("open store: %v", err)
 	}
 	h.st = st
+	// The mode's auth server options apply here as their slices activate:
+	// 7b wires DOLMEN_AUTH / trusted proxies / the admin key around apiSrv,
+	// 10g adds the OIDC source. authOff configures nothing — the wiring
+	// below is exactly v0.2.0's, which is what §8.1's byte-for-byte rule
+	// pins.
 	apiSrv := api.New(st, embed.Provider(h.emb))
 	mcpSrv := mcp.New(apiSrv, nil)
 	mux := http.NewServeMux()
@@ -156,16 +210,122 @@ func (h *harness) httpCall(op string, body any) (int, map[string]any) {
 	if err != nil {
 		h.t.Fatalf("marshal %s body: %v", op, err)
 	}
-	res, err := http.Post(h.httpURL+"/"+op, "application/json", bytes.NewReader(raw))
-	if err != nil {
-		h.t.Fatalf("post /v1/%s: %v", op, err)
-	}
+	res := h.postWithHeaders(h.httpURL+"/"+op, raw, nil)
 	defer res.Body.Close()
 	var out map[string]any
 	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
 		h.t.Fatalf("decode /v1/%s response: %v", op, err)
 	}
 	return res.StatusCode, out
+}
+
+// identity is a principal a test acts as, in the forms the auth sources
+// assert it (spec §1.1, §1.3): the X-Dolmen header pair a trusted proxy
+// sets, and/or a bearer key (an API key or the admin key). The helpers send
+// exactly what a well-behaved source would; an empty identity asserts
+// nothing and is the anonymous call.
+type identity struct {
+	principal string
+	groups    []string
+	bearer    string
+}
+
+// headers returns the HTTP headers asserting id the way its sources would.
+func (id identity) headers() map[string]string {
+	h := map[string]string{}
+	if id.principal != "" {
+		h["X-Dolmen-Principal"] = id.principal
+	}
+	if len(id.groups) > 0 {
+		h["X-Dolmen-Groups"] = strings.Join(id.groups, ",")
+	}
+	if id.bearer != "" {
+		h["Authorization"] = "Bearer " + id.bearer
+	}
+	return h
+}
+
+// leakStrings returns the identity strings that must never surface in an
+// auth:off response: the principal, every group, and the bearer.
+func (id identity) leakStrings() []string {
+	out := make([]string, 0, len(id.groups)+2)
+	for _, s := range append([]string{id.principal, id.bearer}, id.groups...) {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// httpCallAs is httpCall carrying an identity: the assertion headers a
+// gateway or key holder would send are attached, so tests can speak as a
+// principal the moment later slices give the server something to do with
+// one. Under auth:off the identity is still sent — the pinned invariant is
+// that the server ignores it (assertIdentityIgnored) — so a mode
+// misconfiguration fails in these helpers, not in whatever test trips over
+// it first.
+func (h *harness) httpCallAs(id identity, op string, body any) (int, map[string]any) {
+	h.t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		h.t.Fatalf("marshal %s body: %v", op, err)
+	}
+	res := h.postWithHeaders(h.httpURL+"/"+op, raw, id.headers())
+	defer res.Body.Close()
+	var out map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		h.t.Fatalf("decode /v1/%s response: %v", op, err)
+	}
+	if h.mode.off() {
+		h.assertIdentityIgnored(id, "/v1/"+op, raw, res.StatusCode, out)
+	}
+	return res.StatusCode, out
+}
+
+// assertIdentityIgnored is the auth:off half of the identity-carrying
+// helpers (spec §8.3, invariant 4: send the headers, assert no principal
+// anywhere). The call may fail only for the operation's own reasons — the
+// auth statuses are the tell: 401 does not exist under off, and a 403 today
+// is only the origin guard's, which these calls (no Origin header) cannot
+// trip — and no identity string may appear in the response unless the
+// request body itself carried it.
+func (h *harness) assertIdentityIgnored(id identity, what string, reqBody []byte, status int, payload any) {
+	h.t.Helper()
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		h.t.Fatalf("%s: auth:off server answered identity with status %d — identity must be ignored in off mode", what, status)
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		h.t.Fatalf("%s: marshal response for identity check: %v", what, err)
+	}
+	res, req := string(raw), string(reqBody)
+	for _, s := range id.leakStrings() {
+		if strings.Contains(req, s) {
+			continue // the test's own payload carried the string, not the identity
+		}
+		if strings.Contains(res, s) {
+			h.t.Fatalf("%s: auth:off response surfaces identity %q: %s", what, s, res)
+		}
+	}
+}
+
+// postWithHeaders POSTs a JSON body with optional extra headers attached
+// (identity-carrying calls). A transport failure fails the test.
+func (h *harness) postWithHeaders(url string, body []byte, hdr map[string]string) *http.Response {
+	h.t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		h.t.Fatalf("new request %s: %v", url, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		h.t.Fatalf("post %s: %v", url, err)
+	}
+	return res
 }
 
 // httpCallRaw is httpCall for pre-encoded bodies (malformed JSON cases).
@@ -240,6 +400,28 @@ func (h *harness) mcpCall(op string, args any) mcpResult {
 	})
 }
 
+// mcpCallAs is mcpCall carrying an identity (see httpCallAs): the same
+// assertion headers ride the JSON-RPC POST to /mcp, and under auth:off the
+// server must ignore them over this transport too.
+func (h *harness) mcpCallAs(id identity, op string, args any) mcpResult {
+	h.t.Helper()
+	res := h.rpcHeaders(id.headers(), map[string]any{
+		"jsonrpc": "2.0",
+		"id":      mcpNextID(),
+		"method":  "tools/call",
+		"params":  map[string]any{"name": op, "arguments": args},
+	})
+	if h.mode.off() {
+		argsRaw, _ := json.Marshal(args)
+		for _, payload := range []map[string]any{res.proto, res.result} {
+			if payload != nil {
+				h.assertIdentityIgnored(id, "tools/call "+op, argsRaw, res.status, payload)
+			}
+		}
+	}
+	return res
+}
+
 func mcpNextID() int {
 	mcpCallID++
 	return mcpCallID
@@ -248,14 +430,18 @@ func mcpNextID() int {
 // rpc sends one JSON-RPC message to /mcp.
 func (h *harness) rpc(msg any) mcpResult {
 	h.t.Helper()
+	return h.rpcHeaders(nil, msg)
+}
+
+// rpcHeaders is rpc with assertion headers attached (identity-carrying MCP
+// calls; see mcpCallAs).
+func (h *harness) rpcHeaders(hdr map[string]string, msg any) mcpResult {
+	h.t.Helper()
 	raw, err := json.Marshal(msg)
 	if err != nil {
 		h.t.Fatalf("marshal rpc: %v", err)
 	}
-	res, err := http.Post(h.mcpURL, "application/json", bytes.NewReader(raw))
-	if err != nil {
-		h.t.Fatalf("post /mcp: %v", err)
-	}
+	res := h.postWithHeaders(h.mcpURL, raw, hdr)
 	defer res.Body.Close()
 	if res.StatusCode == http.StatusAccepted {
 		return mcpResult{status: res.StatusCode}
