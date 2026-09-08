@@ -250,7 +250,9 @@ type Engine interface {
 	// identity pinned) and embeds BEFORE calling SearchVector — preserving
 	// today's error precedence, where an invalid query never reaches the
 	// embedding provider. q carries the query vector (raw or freshly
-	// embedded), its space identity, and the filter.
+	// embedded), its space identity, and the filter. The result's Execution
+	// reports the path that served this query (§7) — exact even on an
+	// ANN-capable engine that fell back for this one query.
 	SearchVector(ctx context.Context, ns, table string, q VectorQuery, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (SearchResult, error)
 
 	// Capabilities is the engine's static self-description (§6.2): the
@@ -494,10 +496,18 @@ type QueryResult struct {
 // mismatch, a non-finite component, or a non-BLOB an out-of-band writer left
 // in the column — so those rows are absent from Rows and a nonzero count
 // means the search is partial (vector searches only; zero for full-text).
+// Execution names the path that served the search (§7): SearchVector MUST
+// set it — exact or ann — including when an ANN-capable engine falls back to
+// exact for this one query (an index still building, a scoped query that
+// cannot be safely prefiltered); Capabilities is static and cannot describe
+// per-query fallbacks, and §7's per-response execution field is emitted from
+// here, never invented above the seam. Zero ("") on fulltext results — the
+// execution-path concept is vector-only (§7).
 type SearchResult struct {
 	Rows           []map[string]any
 	Truncated      bool
 	SkippedVectors int
+	Execution      VectorExecution
 }
 
 // VectorQuery is one vector-search request (§6.2, §7). Column selects the
