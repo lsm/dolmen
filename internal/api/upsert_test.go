@@ -11,6 +11,7 @@ import (
 
 func mustCreateUsers(t *testing.T, base string) {
 	t.Helper()
+	mustNS(t, base, "app")
 	code, res := post(t, base, "create_table", map[string]any{
 		"namespace": "app",
 		"table":     "users",
@@ -54,6 +55,7 @@ func keySet(keys ...string) map[string]bool {
 // idempotency applies (an idempotent insert), and never required.
 func TestWriteOpsShareResponseShape(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "app")
 	mustCreateUsers(t, srv.URL)
 
 	// plain insert: no update branch exists and without a key nothing replays
@@ -153,6 +155,7 @@ func TestWriteOpsShareResponseShape(t *testing.T) {
 
 func TestUpsertByKeyOverHTTP(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "app")
 	mustCreateUsers(t, srv.URL)
 
 	code, res := post(t, srv.URL, "upsert_by_key", map[string]any{
@@ -208,6 +211,7 @@ func TestUpsertByKeyOverHTTP(t *testing.T) {
 
 func TestInsertIdempotencyOverHTTP(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "app")
 	mustCreateUsers(t, srv.URL)
 
 	body := map[string]any{
@@ -294,6 +298,7 @@ func TestInsertIdempotencyKeySchemaParity(t *testing.T) {
 	}
 
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "app")
 	mustCreateUsers(t, srv.URL)
 	code, res := post(t, srv.URL, "insert", map[string]any{
 		"namespace": "app", "table": "users",
@@ -347,6 +352,7 @@ func TestUpsertByKeySchemaParity(t *testing.T) {
 
 func TestUpsertByKeyValidationOverHTTP(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "app")
 	mustCreateUsers(t, srv.URL)
 
 	cases := []struct {

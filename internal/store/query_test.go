@@ -143,6 +143,7 @@ func TestQuerySemicolonLiteralRoundTrip(t *testing.T) {
 
 func TestInsertEmptyRecordDefaultValues(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "opts", []schema.Field{
 		{Name: "x", Type: schema.String},
@@ -167,6 +168,7 @@ func TestInsertEmptyRecordDefaultValues(t *testing.T) {
 
 func TestInferCreateInsertRoundTrip(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	samples := []map[string]any{
 		{"flag": true, "note": "unknown"},
@@ -193,6 +195,7 @@ func TestInferCreateInsertRoundTrip(t *testing.T) {
 
 func TestInferCreateAcceptsSanitizedNames(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	samples := []map[string]any{
 		{"1st": "one", "my-field": "two", "ID": "three", "created_at": "four", "Name": "Alice", "name": "Bob"},
@@ -205,6 +208,7 @@ func TestInferCreateAcceptsSanitizedNames(t *testing.T) {
 
 func TestJSONFieldStringScalarsAreValidJSON(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "jf", []schema.Field{
 		{Name: "v", Type: schema.JSON},
@@ -250,6 +254,7 @@ func TestZeroVectorTypedInQuery(t *testing.T) {
 
 func TestIntegerPrecisionPreserved(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "prec", []schema.Field{
 		{Name: "n", Type: schema.Number},
@@ -272,6 +277,7 @@ func TestIntegerPrecisionPreserved(t *testing.T) {
 
 func TestQueryResultCap(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "cap", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -305,6 +311,7 @@ func TestQueryResultCap(t *testing.T) {
 
 func TestTruncationFlagAccuracy(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "exact", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -329,6 +336,7 @@ func TestTruncationFlagAccuracy(t *testing.T) {
 
 func TestQueryByteBudget(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "bigvals", []schema.Field{
 		{Name: "v", Type: schema.Text},
@@ -352,6 +360,7 @@ func TestQueryByteBudget(t *testing.T) {
 
 func TestOversizedFirstQueryRowRejected(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "any", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -365,6 +374,7 @@ func TestOversizedFirstQueryRowRejected(t *testing.T) {
 
 func TestNonFiniteQueryValueRejected(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "nf", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -378,6 +388,7 @@ func TestNonFiniteQueryValueRejected(t *testing.T) {
 
 func TestDuplicateColumnLabelsRejected(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "dup", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -397,6 +408,7 @@ func TestDuplicateColumnLabelsRejected(t *testing.T) {
 
 func TestOversizedColumnLabelRejected(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "lbl", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -411,6 +423,7 @@ func TestOversizedColumnLabelRejected(t *testing.T) {
 
 func TestMalformedQueryIsInvalidRequest(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "mq", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -427,6 +440,7 @@ func TestMalformedQueryIsInvalidRequest(t *testing.T) {
 
 func TestEscapeHeavyStringsBudgeted(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "esc", []schema.Field{
 		{Name: "v", Type: schema.Text},
@@ -456,6 +470,7 @@ func TestEncodedSizeCoversMandatoryEscapes(t *testing.T) {
 
 func TestQueryStepErrorsAreInvalidRequests(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "step", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -469,6 +484,7 @@ func TestQueryStepErrorsAreInvalidRequests(t *testing.T) {
 
 func TestLabelBytesEscapeAware(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "lbl2", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -494,6 +510,7 @@ func TestLabelBytesEscapeAware(t *testing.T) {
 
 func TestCumulativeBudgetBeforeNormalization(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "cum", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -507,6 +524,7 @@ func TestCumulativeBudgetBeforeNormalization(t *testing.T) {
 
 func TestJSONFieldAcceptsJSONNumbers(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "jn", []schema.Field{
 		{Name: "payload", Type: schema.JSON},
@@ -529,6 +547,7 @@ func TestJSONFieldAcceptsJSONNumbers(t *testing.T) {
 
 func TestJSONStringScalarsKeepType(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "js", []schema.Field{
 		{Name: "v", Type: schema.JSON},
@@ -553,6 +572,7 @@ func TestJSONStringScalarsKeepType(t *testing.T) {
 
 func TestQueryAllowsKeywordTableNames(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	// SQL keyword table names predate the keyword reservation, so simulate the
 	// legacy tables through the namespace connection like the grandfathering
@@ -868,6 +888,7 @@ func TestQueryTokenizesVariablesAtomically(t *testing.T) {
 // guard must keep serving them while rejecting new reserved-named tables.
 func TestQueryAllowsGrandfatheredReservedNames(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	n, err := st.ns("test")
 	if err != nil {
@@ -911,6 +932,7 @@ func TestQueryAllowsGrandfatheredReservedNames(t *testing.T) {
 
 func TestQueryPaginationAndTruncatedFlag(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "page", []schema.Field{
 		{Name: "v", Type: schema.Number},
@@ -964,6 +986,7 @@ func TestQueryPaginationAndTruncatedFlag(t *testing.T) {
 
 func TestQueryExactLimitNotTruncated(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "exact5", []schema.Field{
 		{Name: "v", Type: schema.String},
@@ -988,6 +1011,7 @@ func TestQueryExactLimitNotTruncated(t *testing.T) {
 
 func TestQueryTrailingLineComment(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "comm", []schema.Field{
 		{Name: "v", Type: schema.Number},
@@ -1013,6 +1037,7 @@ func TestQueryTrailingLineComment(t *testing.T) {
 
 func TestQueryValuesStatement(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 
 	rows, truncated, err := st.Query(ctx, "test", "WITH x(v) AS (VALUES (1),(2),(3)) VALUES (1),(2),(3)", nil, 0, 2)
@@ -1037,6 +1062,7 @@ func TestQueryValuesStatement(t *testing.T) {
 
 func TestQueryUnterminatedBlockComment(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	rows, truncated, err := st.Query(ctx, "test", "SELECT 1 AS n /* unterminated block comment", nil, 0, 1)
 	if err != nil {
@@ -1049,6 +1075,7 @@ func TestQueryUnterminatedBlockComment(t *testing.T) {
 
 func TestQueryBlockCommentInsideQuotedIdentifier(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	rows, _, err := st.Query(ctx, "test", "SELECT 42 AS \"/*literal\"", nil, 0, 1)
 	if err != nil {

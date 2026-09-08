@@ -22,34 +22,39 @@ func searchLimit(n int) int {
 	return n
 }
 
-func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string, offset, limit int, includeHidden bool, filter string, args []any) ([]map[string]any, bool, error) {
+// SearchFulltext executes a full-text search (§6.2, §7). includeHidden must
+// cross the seam: truncated is computed against the projected response-byte
+// budget inside the engine. TODO(9d): scope and scopeIncarnation are ignored
+// while auth is off — a non-nil scope will filter visible rows.
+func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string, filter string, args []any, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (SearchResult, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
-		return nil, false, err
+		return SearchResult{}, err
 	}
 	tx, err := n.ro.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, false, err
+		return SearchResult{}, err
 	}
 	defer tx.Rollback()
 	sc, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
-		return nil, false, err
+		return SearchResult{}, err
 	}
 	if len(sc.FTSFields()) == 0 {
-		return nil, false, invalidf("table %s has no fulltext fields", table)
+		return SearchResult{}, invalidf("table %s has no fulltext fields", table)
 	}
-	limit = searchLimit(limit)
+	limit := searchLimit(page.Limit)
+	offset := page.Offset
 	if offset < 0 {
-		return nil, false, invalidf("offset must be non-negative")
+		return SearchResult{}, invalidf("offset must be non-negative")
 	}
 	filter = strings.TrimSpace(filter)
 	if filter != "" {
 		if strings.Contains(filter, ";") {
-			return nil, false, invalidf("multiple statements are not allowed in filter")
+			return SearchResult{}, invalidf("multiple statements are not allowed in filter")
 		}
 		if len(args) > 100 {
-			return nil, false, invalidf("too many filter arguments")
+			return SearchResult{}, invalidf("too many filter arguments")
 		}
 		for i, a := range args {
 			args[i] = normalizeArg(a)
@@ -59,7 +64,7 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 	// Fetch limit+1 ids so we can tell the caller whether more results exist.
 	stmt := fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? ORDER BY rank, rowid LIMIT ? OFFSET ?`,
 		q(ftsTable(table)), ftsTable(table))
-	qargs := []any{query, limit + 1, offset}
+	qargs := []any{match, limit + 1, offset}
 	// classify attributes a failure of the combined query (at issue or during
 	// iteration): without a filter it is the store's own FTS-query error; with
 	// one, both user expressions have been validated by the probes below, so
@@ -80,35 +85,35 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 		probe, err := tx.QueryContext(ctx,
 			fmt.Sprintf(`SELECT 1 FROM %s WHERE %s LIMIT 0`, q(table), filter), args...)
 		if err != nil {
-			return nil, false, NewFilterError(filter, err)
+			return SearchResult{}, NewFilterError(filter, err)
 		}
 		probe.Close()
 		probe, err = tx.QueryContext(ctx,
-			fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? LIMIT 1`, q(ftsTable(table)), ftsTable(table)), query)
+			fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? LIMIT 1`, q(ftsTable(table)), ftsTable(table)), match)
 		if err != nil {
-			return nil, false, fmt.Errorf("%w: %w", ErrInvalid, err)
+			return SearchResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 		}
 		probe.Close()
 		stmt = fulltextFilterStmt(table, filter, len(args))
 		qargs = make([]any, 0, len(args)+3)
 		qargs = append(qargs, args...)
-		qargs = append(qargs, query, limit+1, offset)
+		qargs = append(qargs, match, limit+1, offset)
 	}
 	rows, err := tx.QueryContext(ctx, stmt, qargs...)
 	if err != nil {
-		return nil, false, classify(err)
+		return SearchResult{}, classify(err)
 	}
 	defer rows.Close()
 	var ids []int64
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			return nil, false, err
+			return SearchResult{}, err
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, false, classify(err)
+		return SearchResult{}, classify(err)
 	}
 	// The (limit+1)th id is only a look-ahead for truncated — never fetch it,
 	// or an invalid value in that row would fail the whole page instead of
@@ -119,9 +124,9 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, query string,
 	}
 	out, complete, err := fetchByIDs(ctx, tx, table, ids, projectionFromSchema(sc, includeHidden))
 	if err != nil {
-		return nil, false, err
+		return SearchResult{}, err
 	}
-	return out, hasMore || !complete, nil
+	return SearchResult{Rows: out, Truncated: hasMore || !complete}, nil
 }
 
 // fulltextFilterStmt is the filtered FTS candidate query. The filter
@@ -262,7 +267,11 @@ type DeleteResult struct {
 	Changes ChangeRange
 }
 
-func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []any, opts DeleteOptions) (DeleteResult, error) {
+// Delete removes rows matching the filter (§6.2), enforcing the safety
+// threshold inside the delete transaction. TODO(9d): scope and
+// scopeIncarnation are ignored while auth is off — a non-nil scope will
+// filter which rows may be matched.
+func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation) (DeleteResult, error) {
 	where = strings.TrimSpace(where)
 	if where == "" {
 		return DeleteResult{}, invalidf("filter is required (pass \"1=1\" to delete everything)")

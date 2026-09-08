@@ -24,20 +24,28 @@ type UpsertResult struct {
 // Update sets the given fields on every row matching the SQL WHERE expression,
 // validating values against the table schema and keeping search indexes
 // consistent: full-text rows are reindexed when an indexed field changes, and
-// rows are re-embedded when a vectorized field changes.
-func (s *Store) Update(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder) (int64, error) {
+// rows are re-embedded when a vectorized field changes (§6.2). TODO(9d):
+// scope and scopeIncarnation are ignored while auth is off — a non-nil scope
+// will filter which rows may be matched.
+func (s *Store) Update(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (UpdateResult, error) {
 	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, false)
 	if err != nil {
-		return 0, err
+		return UpdateResult{}, err
 	}
-	return res.Updated, nil
+	return UpdateResult{Updated: res.Updated}, nil
 }
 
 // Upsert updates every row matching the SQL WHERE expression; when no row
 // matches, set is inserted as a new record instead (and must then satisfy
-// required fields).
-func (s *Store) Upsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder) (UpsertResult, error) {
-	return s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, true)
+// required fields) (§6.2). TODO(9h): opts, scope, and scopeIncarnation are
+// ignored while auth is off — slice 9h stamps the insert branches with
+// opts.Owner and applies the scope.
+func (s *Store) Upsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
+	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, true)
+	if err != nil {
+		return InsertResult{}, err
+	}
+	return InsertResult{Ids: res.Ids, Inserted: res.Inserted, Updated: res.Updated}, nil
 }
 
 func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, allowInsert bool) (UpsertResult, error) {

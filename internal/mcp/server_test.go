@@ -80,6 +80,7 @@ func rpc(t *testing.T, url string, body any) (int, map[string]any) {
 
 func TestMCPUpdateUpsertTools(t *testing.T) {
 	url := newMCPServer(t).URL + "/mcp"
+	mustMCPNS(t, url, "agents")
 
 	code, res := rpc(t, url, map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -150,6 +151,7 @@ func TestInitializeIncludesInstructions(t *testing.T) {
 
 func TestMCPProtocol(t *testing.T) {
 	url := newMCPServer(t).URL + "/mcp"
+	mustMCPNS(t, url, "agents")
 
 	code, res := rpc(t, url, map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -429,6 +431,7 @@ func TestInitializeRequiresClientInfoAndCapabilities(t *testing.T) {
 
 func TestToolsCallRequiresName(t *testing.T) {
 	url := newMCPServer(t).URL + "/mcp"
+	mustMCPNS(t, url, "x")
 	code, res := rpc(t, url, map[string]any{
 		"jsonrpc": "2.0", "id": 12, "method": "tools/call",
 		"params": map[string]any{"arguments": map[string]any{"namespace": "x"}},
@@ -735,6 +738,7 @@ func TestMetaParamsValidated(t *testing.T) {
 
 func TestToolsCallMetaValidated(t *testing.T) {
 	url := newMCPServer(t).URL + "/mcp"
+	mustMCPNS(t, url, "x")
 	for _, params := range []string{`{"name":"ping","_meta":1}`, `{"name":"list_tables","_meta":{"progressToken":true}}`} {
 		body := `{"jsonrpc":"2.0","id":70,"method":"tools/call","params":` + params + `}`
 		res, err := http.Post(url, "application/json", strings.NewReader(body))
@@ -843,6 +847,7 @@ func TestMCPOriginAndContentTypeGuard(t *testing.T) {
 
 func TestMCPToolErrorReturnsStableEnvelope(t *testing.T) {
 	url := newMCPServer(t).URL + "/mcp"
+	mustMCPNS(t, url, "x")
 
 	body := map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -1052,6 +1057,7 @@ func TestToolHintSemantics(t *testing.T) {
 
 func TestToolsCallReturnsStructuredContent(t *testing.T) {
 	url := newMCPServer(t).URL + "/mcp"
+	mustMCPNS(t, url, "agents")
 	call := func(id int, name string, arguments map[string]any) map[string]any {
 		t.Helper()
 		code, res := rpc(t, url, map[string]any{
@@ -1135,6 +1141,7 @@ func TestToolsCallReturnsStructuredContent(t *testing.T) {
 
 func TestToolsCallVectorSearchStructuredContent(t *testing.T) {
 	url := newMCPServer(t).URL + "/mcp"
+	mustMCPNS(t, url, "agents")
 	call := func(id int, name string, arguments map[string]any) map[string]any {
 		t.Helper()
 		code, res := rpc(t, url, map[string]any{
@@ -1183,6 +1190,7 @@ func TestToolsCallVectorSearchStructuredContent(t *testing.T) {
 
 func TestToolsCallErrorOmitsStructuredContent(t *testing.T) {
 	url := newMCPServer(t).URL + "/mcp"
+	mustMCPNS(t, url, "agents")
 	code, res := rpc(t, url, map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
 		"params": map[string]any{"name": "describe_table", "arguments": map[string]any{
@@ -1237,8 +1245,35 @@ func callTool(t *testing.T, url, name string, args map[string]any) map[string]an
 	return out
 }
 
+// mustMCPNS creates the namespace through the tools/call surface, tolerating
+// an existing one: the store stopped creating namespaces on first use (slice
+// 2b's §6.2 rule), so fixtures that relied on create-on-open create
+// explicitly.
+func mustMCPNS(t *testing.T, url, ns string) {
+	t.Helper()
+	code, res := rpc(t, url, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": "create_namespace", "arguments": map[string]any{"namespace": ns}},
+	})
+	if code != 200 {
+		t.Fatalf("create_namespace %s status %d: %v", ns, code, res)
+	}
+	result, _ := res["result"].(map[string]any)
+	if result["isError"] == true {
+		text := ""
+		if content, ok := result["content"].([]any); ok && len(content) > 0 {
+			text, _ = content[0].(map[string]any)["text"].(string)
+		}
+		if strings.Contains(text, "already exists") {
+			return
+		}
+		t.Fatalf("create_namespace %s failed: %v", ns, res)
+	}
+}
+
 func TestMCPTypedReadContract(t *testing.T) {
 	url := newMCPServer(t).URL + "/mcp"
+	mustMCPNS(t, url, "typed")
 	code, _ := rpc(t, url, map[string]any{
 		"jsonrpc": "2.0", "id": 0, "method": "initialize",
 		"params": map[string]any{
@@ -1479,6 +1514,7 @@ func TestToolErrorEmbedderUnavailable(t *testing.T) {
 	apiSrv := api.New(st, failing)
 	srv := httptest.NewServer(New(apiSrv, nil))
 	t.Cleanup(srv.Close)
+	mustMCPNS(t, srv.URL, "app")
 
 	code, res := rpc(t, srv.URL, map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",

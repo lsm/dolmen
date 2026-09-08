@@ -9,7 +9,7 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-func mustUpsertByKey(t *testing.T, st *Store, keyFields []string, records []map[string]any) ([]int64, int, int) {
+func mustUpsertByKey(t *testing.T, st legacyStore, keyFields []string, records []map[string]any) ([]int64, int, int) {
 	t.Helper()
 	ids, inserted, updated, err := st.UpsertByKey(context.Background(), "test", "notes", keyFields, records, testEmbed)
 	if err != nil {
@@ -199,6 +199,7 @@ func TestUpsertByKeyKeyFieldValidation(t *testing.T) {
 
 func TestUpsertByKeyRequiredOnlyOnInsertPath(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	fields := noteFields()
 	fields[2].Required = true // score
@@ -290,6 +291,7 @@ func vectorizedKeyTableFields() []schema.Field {
 
 func TestUpsertByKeyReEmbedsVectorizedField(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "vec", vectorizedKeyTableFields()); err != nil {
 		t.Fatalf("create: %v", err)
@@ -335,6 +337,7 @@ func TestUpsertByKeyReEmbedsVectorizedField(t *testing.T) {
 
 func TestUpsertByKeyClearsEmbeddingWhenTextEmptied(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "vec", vectorizedKeyTableFields()); err != nil {
 		t.Fatalf("create: %v", err)
@@ -359,6 +362,7 @@ func TestUpsertByKeyClearsEmbeddingWhenTextEmptied(t *testing.T) {
 
 func TestUpsertByKeyKeepsEmbeddingWhenFieldAbsent(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "vec", vectorizedKeyTableFields()); err != nil {
 		t.Fatalf("create: %v", err)
@@ -392,6 +396,7 @@ func TestUpsertByKeyKeepsEmbeddingWhenFieldAbsent(t *testing.T) {
 
 func TestUpsertByKeyRejectsProviderChange(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "vec", vectorizedKeyTableFields()); err != nil {
 		t.Fatalf("create: %v", err)
@@ -410,6 +415,7 @@ func TestUpsertByKeyRejectsProviderChange(t *testing.T) {
 
 func TestUpsertByKeyLegacyKeywordKeyField(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 
 	// A table whose key field is a legacy keyword name ("order") must remain

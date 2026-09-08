@@ -49,8 +49,9 @@ func TestInsertIdempotentSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	mustCreateNotes(t, st)
-	ids1, replayed, err := st.InsertIdempotent(ctx, "test", "notes",
+	ls := legacy(st)
+	mustCreateNotes(t, ls)
+	ids1, replayed, err := ls.InsertIdempotent(ctx, "test", "notes",
 		[]map[string]any{{"title": "durable", "score": 2}}, testEmbed, "restart-key")
 	if err != nil || replayed {
 		t.Fatalf("first insert: %v replayed=%v", err, replayed)
@@ -64,7 +65,8 @@ func TestInsertIdempotentSurvivesRestart(t *testing.T) {
 		t.Fatalf("reopen: %v", err)
 	}
 	defer st2.Close()
-	ids2, replayed, err := st2.InsertIdempotent(ctx, "test", "notes",
+	ls2 := legacy(st2)
+	ids2, replayed, err := ls2.InsertIdempotent(ctx, "test", "notes",
 		[]map[string]any{{"title": "durable", "score": 2}}, testEmbed, "restart-key")
 	if err != nil {
 		t.Fatalf("retry after restart: %v", err)
@@ -75,7 +77,7 @@ func TestInsertIdempotentSurvivesRestart(t *testing.T) {
 	if len(ids2) != 1 || ids2[0] != ids1[0] {
 		t.Fatalf("retry after restart must return the original ids, got %v want %v", ids2, ids1)
 	}
-	rows, _, err := st2.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil, 0, 0)
+	rows, _, err := ls2.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
@@ -214,7 +216,8 @@ func TestInsertIdempotentConcurrentWritersReplay(t *testing.T) {
 		t.Fatalf("open st2: %v", err)
 	}
 	defer st2.Close()
-	mustCreateNotes(t, st1)
+	ls1, ls2 := legacy(st1), legacy(st2)
+	mustCreateNotes(t, ls1)
 
 	const writers = 8
 	rec := []map[string]any{{"title": "raced", "score": 1}}
@@ -230,12 +233,12 @@ func TestInsertIdempotentConcurrentWritersReplay(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			st := st1
+			w := ls1
 			if i%2 == 1 {
-				st = st2
+				w = ls2
 			}
 			<-start
-			ids, replayed, err := st.InsertIdempotent(ctx, "test", "notes", rec, testEmbed, "race-key")
+			ids, replayed, err := w.InsertIdempotent(ctx, "test", "notes", rec, testEmbed, "race-key")
 			if len(ids) == 1 {
 				out[i] = outcome{id: ids[0], replayed: replayed, err: err}
 				return
@@ -264,7 +267,7 @@ func TestInsertIdempotentConcurrentWritersReplay(t *testing.T) {
 		t.Fatalf("exactly one writer should insert, got %d", inserted)
 	}
 
-	rows, _, err := st1.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil, 0, 0)
+	rows, _, err := ls1.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}

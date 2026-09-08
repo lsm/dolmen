@@ -183,6 +183,9 @@ func TestMCPInputSchemasMatchOpenAPIRequestSchemas(t *testing.T) {
 // migrated table and backfill. This is the functional acceptance for issue #119.
 func TestMigrateAddFieldDefaultMatchesHTTPAndMCP(t *testing.T) {
 	_, apiURL, mcpURL := newDualServer(t)
+	if out := postJSON(t, apiURL+"/create_namespace", map[string]any{"namespace": "p"}); !out["ok"].(bool) {
+		t.Fatalf("create_namespace failed: %v", out)
+	}
 
 	// Set up an identical table on both sides using the HTTP API.
 	createHTTP := map[string]any{

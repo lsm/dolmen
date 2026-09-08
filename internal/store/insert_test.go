@@ -23,8 +23,9 @@ func fakeEmbed(ctx context.Context, texts []string) ([][]float32, error) {
 
 var testEmbed = Embedder{Embed: fakeEmbed, Identity: "fake-space"}
 
-func mustInsertNotes(t *testing.T, st *Store) []int64 {
+func mustInsertNotes(t *testing.T, st legacyStore) []int64 {
 	t.Helper()
+	mustNS(t, st, "test")
 	ids, err := st.Insert(context.Background(), "test", "notes", []map[string]any{
 		{"title": "first note", "body": "the dolmen stores stone tables", "score": 5, "done": true, "tags": []any{"a", "b"}, "emb": []any{1.0, 0, 0, 0}},
 		{"title": "second note", "body": "agents keep their memory here", "score": 3, "done": false, "emb": []any{0, 1.0, 0, 0}},
@@ -83,6 +84,7 @@ func TestCaseVariantKeyCollisionRejected(t *testing.T) {
 
 func TestProviderDimChangeRejected(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	if _, err := st.CreateTable(context.Background(), "test", "dims", []schema.Field{
 		{Name: "s", Type: schema.String, Vectorize: true},
 	}); err != nil {
@@ -106,6 +108,7 @@ func TestProviderDimChangeRejected(t *testing.T) {
 
 func TestVectorFloat32OverflowRejected(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	if _, err := st.CreateTable(context.Background(), "test", "overflow", []schema.Field{
 		{Name: "v", Type: schema.Vector, Dim: 1},
 	}); err != nil {
@@ -118,6 +121,7 @@ func TestVectorFloat32OverflowRejected(t *testing.T) {
 
 func TestValidationRunsBeforeEmbedding(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	calls := 0
 	counting := Embedder{Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
 		calls++
@@ -141,6 +145,7 @@ func TestValidationRunsBeforeEmbedding(t *testing.T) {
 
 func TestInsertRejectsEmptyIdentityAgainstRecordedSpace(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "anon", []schema.Field{
 		{Name: "s", Type: schema.String, Vectorize: true},
@@ -158,6 +163,7 @@ func TestInsertRejectsEmptyIdentityAgainstRecordedSpace(t *testing.T) {
 
 func TestInsertRejectsZeroDimEmbeddings(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "zero", []schema.Field{
 		{Name: "s", Type: schema.String, Vectorize: true},
@@ -184,6 +190,7 @@ func TestInsertRejectsZeroDimEmbeddings(t *testing.T) {
 
 func TestInsertAcceptsInferredNumericKinds(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	type score int32
 	samples := []map[string]any{
@@ -205,6 +212,7 @@ func TestInsertAcceptsInferredNumericKinds(t *testing.T) {
 
 func TestInsertRequiresIdentityForFirstEmbedding(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "firstid", []schema.Field{
 		{Name: "s", Type: schema.String, Vectorize: true},
@@ -219,6 +227,7 @@ func TestInsertRequiresIdentityForFirstEmbedding(t *testing.T) {
 
 func TestInsertRejectsNonFiniteProviderVectors(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "nfv", []schema.Field{
 		{Name: "s", Type: schema.String, Vectorize: true},
@@ -241,6 +250,7 @@ func TestInsertRejectsNonFiniteProviderVectors(t *testing.T) {
 
 func TestInsertAcceptsInferredStringRepresentations(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	type label string
 	type flag bool
@@ -259,6 +269,7 @@ func TestInsertAcceptsInferredStringRepresentations(t *testing.T) {
 
 func TestInsertRejectsInvalidTimestamps(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "ts", []schema.Field{
 		{Name: "at", Type: schema.Timestamp},
@@ -279,6 +290,7 @@ func TestInsertRejectsInvalidTimestamps(t *testing.T) {
 
 func TestInsertAcceptsValidTimestampVariants(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "ts", []schema.Field{
 		{Name: "at", Type: schema.Timestamp},
@@ -302,6 +314,7 @@ func TestInsertAcceptsValidTimestampVariants(t *testing.T) {
 
 func TestInsertAcceptsTimeTimeValuesForTimestamp(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "ts", []schema.Field{
 		{Name: "at", Type: schema.Timestamp},
@@ -318,6 +331,7 @@ func TestInsertAcceptsTimeTimeValuesForTimestamp(t *testing.T) {
 
 func TestInsertStoresCanonicalTimestampValues(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "ts", []schema.Field{
 		{Name: "at", Type: schema.Timestamp},
@@ -346,6 +360,7 @@ func TestInsertStoresCanonicalTimestampValues(t *testing.T) {
 
 func TestInsertAcceptsMarshalableJSONValues(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	samples := []map[string]any{
 		{"tags": []string{"a", "b"}, "meta": map[string]string{"k": "v"}, "st": struct{ N int }{N: 3}},

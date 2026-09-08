@@ -632,10 +632,26 @@ func (h *harness) outOfBand(ns string, fn func(db *sqlDB) error) {
 	}
 }
 
+// ensureNS creates the namespace when absent, treating already-exists as
+// success: the store stopped creating namespaces on first use (slice 2b's
+// §6.2 rule — engines never create implicitly), so fixtures that relied on
+// create-on-open create explicitly here.
+func (h *harness) ensureNS(ns string) {
+	h.t.Helper()
+	if status, out := h.httpCall("create_namespace", map[string]any{"namespace": ns}); status != http.StatusOK {
+		errEnv, _ := out["error"].(map[string]any)
+		msg, _ := errEnv["message"].(string)
+		if !strings.Contains(msg, "already exists") {
+			h.t.Fatalf("create namespace %s: status %d %v", ns, status, out)
+		}
+	}
+}
+
 // seedTable creates ns.table with fields over HTTP, failing the test on
 // anything but success.
 func (h *harness) seedTable(ns, table string, fields []map[string]any) map[string]any {
 	h.t.Helper()
+	h.ensureNS(ns)
 	return h.mustHTTP("create_table", map[string]any{
 		"namespace": ns,
 		"table":     table,

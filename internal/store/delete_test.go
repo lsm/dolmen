@@ -111,6 +111,7 @@ func TestDeleteDefaultLimitAllowsSmall(t *testing.T) {
 
 func TestDeleteDefaultLimitRequiresConfirm(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 
 	if _, err := st.CreateTable(ctx, "test", "big", []schema.Field{

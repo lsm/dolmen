@@ -148,28 +148,33 @@ func hasStatementSeparator(sql string) bool {
 	return false
 }
 
-func (s *Store) Query(ctx context.Context, nsName, query string, args []any, offset, limit int) ([]map[string]any, bool, error) {
+// Query executes a read-only SELECT/WITH statement (§6.2, §4.4). It takes no
+// scope: the API layer gates raw SQL by table-wide read. TODO(8c): nsGen is
+// ignored while auth is off — slice 8c verifies the namespace-lifetime guard
+// atomically with execution.
+func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsGen [16]byte, page Page) (QueryResult, error) {
 	trimmed := strings.TrimRight(strings.TrimSpace(query), ";")
 	trimmed = stripUnterminatedBlockComment(trimmed)
 	if !queryStartRe.MatchString(strings.TrimSpace(query)) {
-		return nil, false, invalidf("only read-only SELECT/WITH statements are allowed")
+		return QueryResult{}, invalidf("only read-only SELECT/WITH statements are allowed")
 	}
 	if hasStatementSeparator(trimmed) {
-		return nil, false, invalidf("multiple statements are not allowed")
+		return QueryResult{}, invalidf("multiple statements are not allowed")
 	}
 	if len(args) > 100 {
-		return nil, false, invalidf("too many query parameters")
+		return QueryResult{}, invalidf("too many query parameters")
 	}
-	limit = queryLimit(limit)
+	limit := queryLimit(page.Limit)
+	offset := page.Offset
 	if offset < 0 {
-		return nil, false, invalidf("offset must be non-negative")
+		return QueryResult{}, invalidf("offset must be non-negative")
 	}
 	for i, a := range args {
 		args[i] = normalizeArg(a)
 	}
 	n, err := s.ns(nsName)
 	if err != nil {
-		return nil, false, err
+		return QueryResult{}, err
 	}
 	// One read snapshot covers the registry read, validation, and execution:
 	// otherwise a concurrent DropTable of a grandfathered pragma_*/dbstat
@@ -177,15 +182,15 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, off
 	// absent physical table to its built-in eponymous virtual table.
 	tx, err := n.ro.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, false, err
+		return QueryResult{}, err
 	}
 	defer tx.Rollback()
 	registered, err := registeredTables(ctx, tx)
 	if err != nil {
-		return nil, false, err
+		return QueryResult{}, err
 	}
 	if err := validateQueryTables(trimmed, registered); err != nil {
-		return nil, false, err
+		return QueryResult{}, err
 	}
 	paginated := trimmed + "\nLIMIT ? OFFSET ?"
 	args = append(args, limit+1, offset)
@@ -221,7 +226,7 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, off
 						for _, c := range cols {
 							if seen[c] {
 								probe.Close()
-								return nil, false, invalidf("duplicate column label %q in query result; use AS aliases", c)
+								return QueryResult{}, invalidf("duplicate column label %q in query result; use AS aliases", c)
 							}
 							seen[c] = true
 						}
@@ -239,16 +244,20 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, off
 			}
 		}
 		if err != nil {
-			return nil, false, NewQueryError(trimmed, err)
+			return QueryResult{}, NewQueryError(trimmed, err)
 		}
 	}
 	defer rows.Close()
 
 	proj, err := s.nsProjection(ctx, tx, paginated)
 	if err != nil {
-		return nil, false, err
+		return QueryResult{}, err
 	}
-	return rowsToMaps(rows, proj, limit)
+	rowsOut, truncated, err := rowsToMaps(rows, proj, limit)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	return QueryResult{Rows: rowsOut, Truncated: truncated}, nil
 }
 
 const (

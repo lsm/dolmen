@@ -259,7 +259,7 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
-			tables, err := s.st.ListTables(ctx, normNS(req.Namespace))
+			tables, err := s.st.ListTables(ctx, normNS(req.Namespace), nil)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -289,7 +289,7 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
-			nss, err := s.st.ListNamespaces()
+			nss, err := s.st.ListNamespaces(ctx, "", nil)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -318,7 +318,7 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			if err := s.st.CreateNamespace(ns); err != nil {
+			if err := s.st.CreateNamespace(ctx, ns, [16]byte{}); err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			return map[string]any{"namespace": ns}, nil
@@ -355,7 +355,7 @@ var Ops = map[string]OpDef{
 			if normNS(req.Confirm) != ns {
 				return nil, badRequest("confirm must repeat the exact namespace name %q to drop it", ns)
 			}
-			if err := s.st.DropNamespace(ns); err != nil {
+			if err := s.st.DropNamespace(ctx, ns, [16]byte{}); err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			return map[string]any{"dropped": ns}, nil
@@ -391,7 +391,7 @@ var Ops = map[string]OpDef{
 			if normTable(req.Confirm) != table {
 				return nil, badRequest("confirm must repeat the exact table name %q to drop it", table)
 			}
-			if err := s.st.DropTable(ctx, normNS(req.Namespace), table); err != nil {
+			if err := s.st.DropTable(ctx, normNS(req.Namespace), table, store.Incarnation{}); err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			return map[string]any{"dropped": table}, nil
@@ -461,7 +461,7 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
-			sc, count, err := s.st.DescribeTable(ctx, normNS(req.Namespace), normTable(req.Table))
+			sc, count, err := s.st.DescribeTable(ctx, normNS(req.Namespace), normTable(req.Table), nil, store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -525,7 +525,7 @@ var Ops = map[string]OpDef{
 					return nil, badRequest("field %q has vectorize, but this server has no usable embedding provider (none is configured, or the configured one does not report its identity); the table is not created — an operator must set the server-side DOLMEN_EMBED_* environment variables: DOLMEN_EMBED_PROVIDER=local (in-process embeddings, no external service), or DOLMEN_EMBED_PROVIDER=openai plus DOLMEN_EMBED_API_KEY (or OPENAI_API_KEY), optionally DOLMEN_EMBED_BASE_URL and DOLMEN_EMBED_MODEL; or create the field without vectorize and enable it via migrate (set_vectorize) once a provider is configured", f.Name)
 				}
 			}
-			sc, err := s.st.CreateTable(ctx, normNS(req.Namespace), normTable(req.Table), req.Fields)
+			sc, err := s.st.CreateTable(ctx, normNS(req.Namespace), normTable(req.Table), req.Fields, store.TableOpts{}, [16]byte{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -654,22 +654,21 @@ var Ops = map[string]OpDef{
 				}
 				key = k
 			}
-			if key != "" {
-				ids, replayed, err := s.st.InsertIdempotent(ctx, normNS(req.Namespace), normTable(req.Table), req.Records, s.embedder(), key)
-				if err != nil {
-					return nil, wrapStoreErr(err)
-				}
-				inserted := len(ids)
-				if replayed {
-					inserted = 0
-				}
-				return map[string]any{"ids": ids, "inserted": inserted, "replayed": replayed}, nil
-			}
-			ids, err := s.st.Insert(ctx, normNS(req.Namespace), normTable(req.Table), req.Records, s.embedder())
+			// The idempotency key rides WriteOpts — the seam's single insert
+			// path (2b folded InsertIdempotent into Insert).
+			res, err := s.st.Insert(ctx, normNS(req.Namespace), normTable(req.Table), req.Records,
+				store.WriteOpts{IdempotencyKey: key}, s.embedder(), nil, store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"ids": ids, "inserted": len(ids)}, nil
+			if key != "" {
+				inserted := len(res.Ids)
+				if res.Replayed {
+					inserted = 0
+				}
+				return map[string]any{"ids": res.Ids, "inserted": inserted, "replayed": res.Replayed}, nil
+			}
+			return map[string]any{"ids": res.Ids, "inserted": len(res.Ids)}, nil
 		},
 	},
 	"upsert_by_key": {
@@ -718,11 +717,12 @@ var Ops = map[string]OpDef{
 			if len(req.On) == 0 {
 				return nil, badRequest("on must name at least one key field")
 			}
-			ids, inserted, updated, err := s.st.UpsertByKey(ctx, normNS(req.Namespace), normTable(req.Table), req.On, req.Records, s.embedder())
+			res, err := s.st.UpsertByKey(ctx, normNS(req.Namespace), normTable(req.Table), req.On, req.Records,
+				store.WriteOpts{}, s.embedder(), nil, store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"ids": ids, "inserted": inserted, "updated": updated}, nil
+			return map[string]any{"ids": res.Ids, "inserted": res.Inserted, "updated": res.Updated}, nil
 		},
 	},
 	"query": {
@@ -794,11 +794,12 @@ var Ops = map[string]OpDef{
 			if err := decodeData(body, &req); err != nil {
 				return nil, err
 			}
-			rows, truncated, err := s.st.Query(ctx, normNS(req.Namespace), req.SQL, req.Args, req.Offset, req.Limit)
+			res, err := s.st.Query(ctx, normNS(req.Namespace), req.SQL, req.Args, [16]byte{},
+				store.Page{Offset: req.Offset, Limit: req.Limit})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"rows": rows, "row_count": len(rows), "truncated": truncated}, nil
+			return map[string]any{"rows": res.Rows, "row_count": len(res.Rows), "truncated": res.Truncated}, nil
 		},
 	},
 	"search_fulltext": {
@@ -874,11 +875,12 @@ var Ops = map[string]OpDef{
 			if req.Query == "" {
 				return nil, badRequest("query must not be empty")
 			}
-			results, truncated, err := s.st.SearchFulltext(ctx, normNS(req.Namespace), normTable(req.Table), req.Query, req.Offset, limit(req.Limit), req.IncludeHidden, req.Filter, req.Args)
+			res, err := s.st.SearchFulltext(ctx, normNS(req.Namespace), normTable(req.Table), req.Query, req.Filter, req.Args,
+				req.IncludeHidden, nil, store.Incarnation{}, store.Page{Offset: req.Offset, Limit: limit(req.Limit)})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"results": results, "truncated": truncated}, nil
+			return map[string]any{"results": res.Rows, "truncated": res.Truncated}, nil
 		},
 	},
 	"search_vector": {
@@ -984,6 +986,7 @@ var Ops = map[string]OpDef{
 			if req.Text != "" && len(req.Vector) > 0 {
 				return nil, badRequest("pass either text or vector, not both")
 			}
+			column := strings.ToLower(strings.TrimSpace(req.Column))
 			var vec []float32
 			switch {
 			case req.Text != "":
@@ -991,8 +994,14 @@ var Ops = map[string]OpDef{
 				// vectorize field and a missing provider are different failures with
 				// different fixes (migrate the table vs operator DOLMEN_EMBED_* config),
 				// so each must be reported as itself — not whichever check runs first.
-				if err := s.st.ValidateVectorSearch(ctx, normNS(req.Namespace), normTable(req.Table),
-					strings.ToLower(strings.TrimSpace(req.Column)), true, s.emb.Identity()); err != nil {
+				// The validation runs against the TableState snapshot (§6.2):
+				// vectorize field present, embed-space identity pinned — before
+				// the provider is called (2b folded ValidateVectorSearch here).
+				sc, _, err := s.st.TableState(ctx, normNS(req.Namespace), normTable(req.Table), nil)
+				if err != nil {
+					return nil, wrapStoreErr(err)
+				}
+				if err := store.ValidateVectorQuery(sc, normTable(req.Table), column, s.emb.Identity()); err != nil {
 					return nil, wrapStoreErr(err)
 				}
 				if s.emb.Identity() == "" {
@@ -1025,13 +1034,18 @@ var Ops = map[string]OpDef{
 			if req.Text != "" {
 				queryIdentity = s.emb.Identity()
 			}
-			res, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table),
-				strings.ToLower(strings.TrimSpace(req.Column)), vec, queryIdentity, req.Offset, limit(req.Limit), req.IncludeHidden,
-				req.Filter, req.Args, req.MinScore)
+			res, err := s.st.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table), store.VectorQuery{
+				Column:     column,
+				Vec:        vec,
+				EmbedModel: queryIdentity,
+				Filter:     req.Filter,
+				Args:       req.Args,
+				MinScore:   req.MinScore,
+			}, req.IncludeHidden, nil, store.Incarnation{}, store.Page{Offset: req.Offset, Limit: limit(req.Limit)})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "skipped_vectors": res.Skipped}, nil
+			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "skipped_vectors": res.SkippedVectors}, nil
 		},
 	},
 	"delete": {
@@ -1096,7 +1110,7 @@ var Ops = map[string]OpDef{
 				DryRun:  dryRun,
 				Limit:   limit,
 				Confirm: confirm,
-			})
+			}, nil, store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -1149,11 +1163,12 @@ var Ops = map[string]OpDef{
 			if err := decodeData(body, &req); err != nil {
 				return nil, err
 			}
-			updated, err := s.st.Update(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args, req.Set, s.embedder())
+			res, err := s.st.Update(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args, req.Set,
+				s.embedder(), nil, store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"updated": updated}, nil
+			return map[string]any{"updated": res.Updated}, nil
 		},
 	},
 	"upsert": {
@@ -1200,7 +1215,8 @@ var Ops = map[string]OpDef{
 			if err := decodeData(body, &req); err != nil {
 				return nil, err
 			}
-			res, err := s.st.Upsert(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args, req.Set, s.embedder())
+			res, err := s.st.Upsert(ctx, normNS(req.Namespace), normTable(req.Table), req.Filter, req.Args, req.Set,
+				store.WriteOpts{}, s.embedder(), nil, store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -1368,13 +1384,15 @@ var Ops = map[string]OpDef{
 				ver = *req.ExpectedVersion
 			}
 			if req.DryRun {
-				plan, err := s.st.PlanMigration(ctx, normNS(req.Namespace), normTable(req.Table), req.Changes, s.embedder(), ver)
+				plan, err := s.st.PlanMigration(ctx, normNS(req.Namespace), normTable(req.Table), req.Changes, s.embedder(),
+					store.Incarnation{Version: int64(ver)}, nil, store.Incarnation{})
 				if err != nil {
 					return nil, wrapStoreErr(err)
 				}
 				return map[string]any{"table": plan.Table, "dry_run": true, "plan": plan}, nil
 			}
-			sc, err := s.st.Migrate(ctx, normNS(req.Namespace), normTable(req.Table), req.Changes, s.embedder(), ver)
+			sc, err := s.st.Migrate(ctx, normNS(req.Namespace), normTable(req.Table), req.Changes, s.embedder(),
+				store.Incarnation{Version: int64(ver)})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -1422,7 +1440,7 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
-			ms, err := s.st.ListMigrations(ctx, normNS(req.Namespace), normTable(req.Table))
+			ms, err := s.st.ListMigrations(ctx, normNS(req.Namespace), normTable(req.Table), store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}

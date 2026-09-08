@@ -29,6 +29,7 @@ func defaultFields() []schema.Field {
 
 func TestCreateTableDefaultValidation(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 
 	cases := []struct {
@@ -79,6 +80,7 @@ func TestCreateTableDefaultValidation(t *testing.T) {
 
 func TestInsertAppliesDeclaredDefaults(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "things", defaultFields()); err != nil {
 		t.Fatalf("create: %v", err)
@@ -153,6 +155,7 @@ func TestInsertAppliesDeclaredDefaults(t *testing.T) {
 
 func TestInsertDefaultsFeedFulltextIndex(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "notes", []schema.Field{
 		{Name: "body", Type: schema.Text, Fulltext: true, Default: "standard operating procedure"},
@@ -173,6 +176,7 @@ func TestInsertDefaultsFeedFulltextIndex(t *testing.T) {
 
 func TestNumericDefaultExactAcrossSchemaReload(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	big := "9007199254740993" // 2^53+1: inexact through float64
 	if _, err := st.CreateTable(ctx, "test", "exact", []schema.Field{
@@ -182,10 +186,11 @@ func TestNumericDefaultExactAcrossSchemaReload(t *testing.T) {
 	}
 	// A fresh Store forces the schema_json round-trip; describe must report
 	// the default exactly as declared, not the nearest float64.
-	st2, err := Open(st.dir)
+	raw2, err := Open(st.dir)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
+	st2 := legacy(raw2)
 	defer st2.Close()
 	sc, _, err := st2.DescribeTable(ctx, "test", "exact")
 	if err != nil {
@@ -209,6 +214,7 @@ func TestNumericDefaultExactAcrossSchemaReload(t *testing.T) {
 
 func TestUpsertPathsApplyDefaults(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "items", []schema.Field{
 		{Name: "sku", Type: schema.String},
@@ -291,6 +297,7 @@ func TestMigrateRejectsFieldLevelDefault(t *testing.T) {
 
 func TestInsertRetryAfterDefaultedFieldDropped(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "docs", []schema.Field{
 		{Name: "body", Type: schema.Text, Vectorize: true},

@@ -21,6 +21,7 @@ import (
 
 func TestEndToEndHTTP(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "skills")
 
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "skills",
@@ -100,6 +101,7 @@ func TestEndToEndHTTP(t *testing.T) {
 
 func TestMigrateSetValueRequiredOverHTTP(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "m")
 	code, _ := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "m",
 		"table":     "t",
@@ -128,6 +130,7 @@ func TestMigrateSetValueRequiredOverHTTP(t *testing.T) {
 
 func TestMigrateUnknownChangeKeyErrors(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "mv")
 	code, _ := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "mv",
 		"table":     "t",
@@ -251,6 +254,7 @@ func TestMigrateUnknownChangeKeyErrors(t *testing.T) {
 
 func TestSearchVectorBothFormsRejected(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "x")
 	code, res := post(t, srv.URL, "search_vector", map[string]any{
 		"namespace": "x",
 		"table":     "t",
@@ -309,12 +313,17 @@ func TestSearchVectorRawVectorIgnoresProviderIdentity(t *testing.T) {
 		},
 		Identity: "space-a",
 	}
+	// The direct store setup below predates the HTTP server, so create the
+	// namespace through the store itself — ns() no longer creates implicitly.
+	if err := st.CreateNamespace(context.Background(), "mix", [16]byte{}); err != nil {
+		t.Fatalf("create ns: %v", err)
+	}
 	if _, err := st.CreateTable(context.Background(), "mix", "t", []schema.Field{
 		{Name: "s", Type: schema.Text, Vectorize: true},
-	}); err != nil {
+	}, store.TableOpts{}, [16]byte{}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := st.Insert(context.Background(), "mix", "t", []map[string]any{{"s": "hello"}}, spaceA); err != nil {
+	if _, err := st.Insert(context.Background(), "mix", "t", []map[string]any{{"s": "hello"}}, store.WriteOpts{}, spaceA, nil, store.Incarnation{}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	srv := httptest.NewServer(New(st, fakeEmb{}).Handler())
@@ -352,6 +361,7 @@ func TestSearchVectorMultiEmbedResultRejected(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	srv := httptest.NewServer(New(st, multiEmb{}).Handler())
+	mustNS(t, srv.URL, "mt")
 	t.Cleanup(srv.Close)
 	code, _ := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "mt",
@@ -428,12 +438,13 @@ func vectorSearchWithProvider(t *testing.T, p interface {
 	t.Cleanup(func() { st.Close() })
 	srv := httptest.NewServer(New(st, p).Handler())
 	t.Cleanup(srv.Close)
+	mustNS(t, srv.URL, "p")
 	// create_table rejects vectorize when the provider cannot embed (a blank
 	// identity included), so create through the store: these tests exercise
 	// search_vector against an already-committed vectorized schema.
 	if _, err := st.CreateTable(context.Background(), "p", "t", []schema.Field{
 		{Name: "s", Type: schema.Text, Vectorize: true},
-	}); err != nil {
+	}, store.TableOpts{}, [16]byte{}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	code, _ := post(t, srv.URL, "search_vector", map[string]any{
@@ -456,6 +467,7 @@ func TestSearchVectorZeroDimEmbedRejected(t *testing.T) {
 
 func TestSearchVectorTextRejectedForCallerProvidedVectors(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "rv")
 	code, _ := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "rv",
 		"table":     "t",
@@ -537,6 +549,7 @@ func TestSearchVectorTextErrorsDisambiguated(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	srv := httptest.NewServer(New(st, fakeEmb{}).Handler())
+	mustNS(t, srv.URL, "dis")
 	t.Cleanup(srv.Close)
 	if code, _ := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "dis", "table": "rawcols",
@@ -597,9 +610,12 @@ func TestSearchVectorTextErrorsDisambiguated(t *testing.T) {
 	// and create through the store: a vectorized table can still legitimately
 	// exist on a provider-less server (it predates the provider's removal),
 	// which is exactly the case (b) must keep serving.
+	if err := stNone.CreateNamespace(context.Background(), "dis", [16]byte{}); err != nil {
+		t.Fatalf("create ns: %v", err)
+	}
 	if _, err := stNone.CreateTable(context.Background(), "dis", "vec", []schema.Field{
 		{Name: "s", Type: schema.Text, Vectorize: true},
-	}); err != nil {
+	}, store.TableOpts{}, [16]byte{}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	code, res = post(t, srvNone.URL, "search_vector", map[string]any{
@@ -658,10 +674,10 @@ func TestSearchVectorTextErrorsDisambiguated(t *testing.T) {
 	}
 	if _, err := st.CreateTable(context.Background(), "dis", "moved", []schema.Field{
 		{Name: "s", Type: schema.String, Vectorize: true},
-	}); err != nil {
+	}, store.TableOpts{}, [16]byte{}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := st.Insert(context.Background(), "dis", "moved", []map[string]any{{"s": "hello"}}, spaceA); err != nil {
+	if _, err := st.Insert(context.Background(), "dis", "moved", []map[string]any{{"s": "hello"}}, store.WriteOpts{}, spaceA, nil, store.Incarnation{}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	code, res = post(t, srv.URL, "search_vector", map[string]any{
@@ -704,6 +720,7 @@ func TestCreateTableRejectsVectorizeWithoutProvider(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	srv := httptest.NewServer(New(st, embed.None{}).Handler())
+	mustNS(t, srv.URL, "prov")
 	t.Cleanup(srv.Close)
 
 	// (a) vectorize on a provider-less server: rejected at creation time with
@@ -739,7 +756,9 @@ func TestCreateTableRejectsVectorizeWithoutProvider(t *testing.T) {
 	}
 
 	// (c) a provider-ful server keeps creating vectorized tables.
-	if code, _ := post(t, newTestServer(t).URL, "create_table", map[string]any{
+	srvP := newTestServer(t)
+	mustNS(t, srvP.URL, "prov")
+	if code, _ := post(t, srvP.URL, "create_table", map[string]any{
 		"namespace": "prov", "table": "notes",
 		"fields": []map[string]any{{"name": "body", "type": "text", "vectorize": true}},
 	}); code != 200 {
@@ -775,6 +794,7 @@ func TestMigrateSetVectorizeRequiresProvider(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	srv := httptest.NewServer(New(st, embed.None{}).Handler())
+	mustNS(t, srv.URL, "prov")
 	t.Cleanup(srv.Close)
 	if code, _ := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "prov", "table": "notes",
@@ -828,6 +848,7 @@ func TestSearchVectorReportsSkippedVectors(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	srv := httptest.NewServer(New(st, fakeEmb{}).Handler())
+	mustNS(t, srv.URL, "sk")
 	t.Cleanup(srv.Close)
 	code, _ := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "sk",
@@ -931,6 +952,7 @@ func TestSearchVectorEmptyEmbedResultRejected(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 	srv := httptest.NewServer(New(st, emptyEmb{}).Handler())
+	mustNS(t, srv.URL, "e")
 	t.Cleanup(srv.Close)
 	code, _ := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "e",
@@ -950,6 +972,7 @@ func TestSearchVectorEmptyEmbedResultRejected(t *testing.T) {
 
 func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "skills")
 
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "skills",
@@ -1105,6 +1128,7 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 
 func TestUpsertInsertPathRequiresRequiredFields(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "req")
 	code, _ := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "req",
 		"table":     "t",
@@ -1282,6 +1306,7 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 
 func TestSemicolonInsideQuotesAllowedAtAPI(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "ns")
 
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "ns",
@@ -1340,6 +1365,8 @@ func TestSemicolonInsideQuotesAllowedAtAPI(t *testing.T) {
 
 func TestDeleteSafetyHTTP(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "safety")
+	mustNS(t, srv.URL, "safety2")
 
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "safety",
@@ -1507,6 +1534,7 @@ func assertTypedHTTPRow(t *testing.T, row map[string]any, wantEmbedding bool) {
 
 func TestTypedReadContractHTTP(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "typed")
 
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "typed",
@@ -1623,6 +1651,7 @@ func TestTypedReadContractHTTP(t *testing.T) {
 
 func TestQueryPaginationOverHTTP(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "page")
 
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "page",
@@ -1679,6 +1708,7 @@ func TestQueryPaginationOverHTTP(t *testing.T) {
 
 func TestMigrateDryRunAndVersionContractOverHTTP(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "mg")
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "mg",
 		"table":     "t",
@@ -1791,6 +1821,7 @@ func TestMigrateDryRunAndVersionContractOverHTTP(t *testing.T) {
 
 func TestListMigrationsOverHTTP(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "hist")
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "hist",
 		"table":     "t",
@@ -1832,6 +1863,7 @@ func TestListMigrationsOverHTTP(t *testing.T) {
 
 func TestMigrateDefaultRejectedForWrongTypeOverHTTP(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "co")
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "co",
 		"table":     "t",
@@ -1859,6 +1891,7 @@ func TestMigrateDefaultRejectedForWrongTypeOverHTTP(t *testing.T) {
 
 func TestMigrateJSONDefaultAllowsNestedNulls(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "jn")
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "jn",
 		"table":     "t",
@@ -1921,6 +1954,7 @@ func TestMigrateJSONDefaultAllowsNestedNulls(t *testing.T) {
 
 func TestMigrateJSONDefaultAllowsRootArrayNulls(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "ran")
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "ran",
 		"table":     "t",
@@ -1957,6 +1991,7 @@ func TestMigrateJSONDefaultAllowsRootArrayNulls(t *testing.T) {
 
 func TestListMigrationsRecordsExplicitFalseValues(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "vf")
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "vf",
 		"table":     "t",
@@ -1992,6 +2027,7 @@ func TestListMigrationsRecordsExplicitFalseValues(t *testing.T) {
 
 func TestListMigrationsOmitsValueOnNonFlagChanges(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "nv")
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "nv",
 		"table":     "t",
@@ -2029,6 +2065,7 @@ func TestListMigrationsOmitsValueOnNonFlagChanges(t *testing.T) {
 
 func TestMigrateRejectsValueOnNonFlagChanges(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "rv")
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "rv",
 		"table":     "t",
@@ -2060,6 +2097,7 @@ func TestMigrateRejectsValueOnNonFlagChanges(t *testing.T) {
 
 func TestSearchVectorFilterAndMinScoreOverHTTP(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "skills")
 
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "skills",
@@ -2169,6 +2207,7 @@ func TestSearchVectorFilterAndMinScoreOverHTTP(t *testing.T) {
 
 func TestSearchFulltextFilterOverHTTP(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "skills")
 
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "skills",
@@ -2273,6 +2312,7 @@ func TestSearchFulltextFilterOverHTTP(t *testing.T) {
 
 func TestCreateTableDefaultsEndToEnd(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "e2e")
 
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "e2e",
@@ -2441,6 +2481,7 @@ func TestDescribeServerEmbeddingStatus(t *testing.T) {
 
 func TestDescribeServerRejectsUnknownProperties(t *testing.T) {
 	srv := newTestServer(t)
+	mustNS(t, srv.URL, "x")
 	code, res := post(t, srv.URL, "describe_server", map[string]any{"namespace": "x"})
 	if code != 400 {
 		t.Fatalf("unknown input property must 400, got %d %v", code, res)

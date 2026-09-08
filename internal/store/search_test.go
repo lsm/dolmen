@@ -50,6 +50,7 @@ func TestFulltextSearchAndDeleteCascade(t *testing.T) {
 
 func TestLargeDeleteUsesNoInParameterLists(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 
 	if _, err := st.CreateTable(ctx, "test", "big", []schema.Field{
@@ -175,6 +176,7 @@ func TestMalformedFTSQueryIsInvalidRequest(t *testing.T) {
 
 func TestSearchByteBudget(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "bigsearch", []schema.Field{
 		{Name: "v", Type: schema.Text, Fulltext: true},
@@ -198,6 +200,7 @@ func TestSearchByteBudget(t *testing.T) {
 
 func TestSearchLabelBudget(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	needle := strings.Repeat("f", 64)
 	fields := []schema.Field{{Name: needle, Type: schema.String, Fulltext: true}, {Name: "payload", Type: schema.Text}}
@@ -308,6 +311,7 @@ func TestSearchFulltextFilter(t *testing.T) {
 // with the FTS rank used for ordering — the filter's rank is the table's.
 func TestSearchFulltextFilterWithRankField(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "ftsrnk", []schema.Field{
 		{Name: "title", Type: schema.String, Fulltext: true},
@@ -417,6 +421,7 @@ func TestSearchFulltextFilterPlanLooksUpRowsPerHit(t *testing.T) {
 // offset/limit/truncated then page within that restricted set.
 func TestSearchFulltextFilterKeepsRankOrderAndPagination(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "ftsfilt", []schema.Field{
 		{Name: "title", Type: schema.String, Fulltext: true},
@@ -492,6 +497,7 @@ func TestSearchFulltextFilterKeepsRankOrderAndPagination(t *testing.T) {
 
 func TestFulltextPaginationAndTruncatedFlag(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "ftspage", []schema.Field{
 		{Name: "title", Type: schema.String, Fulltext: true},
@@ -533,6 +539,7 @@ func TestFulltextPaginationAndTruncatedFlag(t *testing.T) {
 
 func TestFulltextSentinelRowNeverFailsThePage(t *testing.T) {
 	st := openStore(t)
+	mustNS(t, st, "test")
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "test", "ftssent", []schema.Field{
 		{Name: "title", Type: schema.String, Fulltext: true},
