@@ -146,6 +146,12 @@ Changes:
   stubs** — a single not-yet-implemented error (`Capabilities` returns the zero value) — so
   `var _ Engine = (*Store)(nil)` compiles from this slice on; each later slice swaps its stub
   for the real body, and no signature ever changes (2a's pin holds).
+- `Store.ns()` stops creating namespaces **in this slice** (missing = `ErrNotFound`): the
+  §6.2 global rule — engines never create implicitly — becomes literally true the moment the
+  interface exists. The seam must not work by adapter #1 violating its own contract (a
+  conforming replacement engine would turn implicit auth-off creation into `not_found`).
+  Store-test fixtures that relied on create-on-open call `CreateNamespace` explicitly
+  (contained churn); the op layer's compensating `ensureNamespace` helper lands with 2c.
 
 Files: `internal/store/store.go`, `lifecycle.go`, `insert.go`, `update.go`, `upsert_key.go`,
 `search.go`, `vector.go`, `query.go`, `migrate.go`, `internal/api/ops.go` (call-site
@@ -168,6 +174,10 @@ Changes:
   `Engine` variable), still passing zero-value guards and nil scopes (auth is off everywhere
   until Lane B).
 - `embedder()` helper unchanged.
+- Op-layer `ensureNamespace` helper (`CreateNamespace` with already-exists treated as success)
+  wired into the dispatch paths v0.2.0 served through implicit creation — the byte-identical
+  claim now holds through an explicit call, not through `ns()`'s retired side effect (2b);
+  7e later makes the ensure mode-dependent.
 
 Files: `internal/api/server.go`, `internal/api/ops.go` (mechanical call-site updates).
 
@@ -606,22 +616,22 @@ Files: `internal/conformance/` (new
 Acceptance: the full sweep runs green in `make test`; op-count table-driven so new ops join
 automatically; the auth:on extension pinned (auth-off byte-identical).
 
-### 7e. Namespace-creation gating above the seam
+### 7e. Namespace-creation gating becomes mode-dependent
 **Spec:** §2 (implicit creation disabled under auth:on), §6.2 global rule · **Dep:** 7b
 
-Goal: the create-on-open era ends **at the seam** — the op layer owns the policy.
+Goal: the ensure that preserved v0.2.0 semantics since the seam extraction (2b retired
+`ns()`'s create-on-open; 2c's explicit `ensureNamespace` kept auth-off behavior
+byte-identical through the seam) becomes mode-dependent — the op layer owns the policy.
 
 Changes:
-- `Store.ns()` stops creating: missing namespace = `ErrNotFound` (the §6.2 global rule becomes
-  literally true in adapter #1).
-- Op-layer `ensureNamespace` helper: under `auth: off` the dispatch path ensures existence before
-  engine ops (v0.2.0 semantics preserved through an explicit call — `CreateNamespace` with
-  already-exists treated as success); under `auth: on` no ensure — `not_found` **after**
-  authorization (order matters, §2).
-- The 2b legacy wrappers that tests use collapse into explicit ensures where tests relied on
-  implicit creation (contained churn via the helper).
+- The `ensureNamespace` helper splits by mode: under `auth: off` the dispatch path ensures
+  existence before engine ops exactly as before; under `auth: on` no ensure — `not_found`
+  **after** authorization (order matters, §2).
+- The 2b legacy adapter's explicit-creation test fixtures are unaffected; any remaining
+  implicit creations in api-layer tests collapse into explicit ensures (contained churn via
+  the helper).
 
-Files: `internal/store/store.go` (ns), `internal/api/` (dispatch helper + op call sites),
+Files: `internal/api/` (dispatch helper + op call sites),
 store tests (mechanical ensure additions).
 
 Acceptance: auth-off conformance byte-identical (implicit creation still works through the op
@@ -811,7 +821,7 @@ Acceptance: guard tests for every "last admin" shape incl. the group-grant decoy
 failure messages pinned.
 
 ### 8e. Grants bind lifetime keys
-**Spec:** §3.4 (lifetime identity) · **Dep:** 8a, 4a, 7b
+**Spec:** §3.4 (lifetime identity) · **Dep:** 8a, 4a, 7b, 8b
 
 Goal: a grant names the incarnation it was minted against; resurrected names inherit nothing.
 
@@ -820,8 +830,13 @@ Changes:
   grants the full `(nsGen, Table, DropGen)` — `nsGen` alone cannot distinguish a same-named
   successor recreated inside the same namespace (§3.4; `Version` excluded); namespace grants
   record the namespace's nsGen; ancestor grants the ancestor's nsGen; `*` records nothing.
-  `grant`/`revoke` verify current-generation currency atomically at mutation (mismatch = 409,
-  re-read re-issue).
+  `grant`/`revoke` verify current-generation currency atomically at mutation — a **fresh**
+  engine lifetime read inside the same registry/drop serialization boundary as the mutation
+  itself (never merely the pre-mutation `NamespaceState`/`TableState` snapshot, which cannot
+  prove currency at commit time: a request paused across another replica's full
+  drop → tombstone-cleanup → recreate cycle would otherwise see neither a pending tombstone
+  nor an existing row and plant a predecessor-bound row, §3.4's insert-path rule);
+  mismatch = 409, re-read, re-issue.
 - The `AuthBinding` verification paths land with 8c — which depends on this slice — so
   grant-based authorization is lifetime-bound from its first enforcing revision: targeted
   grants mismatch successors; inherited grants verify the ancestor's generation while receiving
