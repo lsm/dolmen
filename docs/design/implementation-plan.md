@@ -772,6 +772,11 @@ Changes:
   the revaluation implicit at every return; 5d is a dependency so the op exists), so a
   request blocked before a revocation never returns committed changes under stale initial
   authorization.
+- `WriteOpts.TableWideRead` is populated from the verb resolution at the insert/upsert call
+  sites from activation — it is a resolver output, and 9h's legacy-domain fallback requires
+  it from the first enforcing revision: a table-wide reader retrying an auth-off insert
+  after enabling auth must replay the legacy record, never duplicate it (§4.3/§6.2; the
+  flag cannot wait for 9d's scope work, which lands after the mode boots).
 
 Files: `internal/api/auth.go`, `internal/api/ops.go` (dispatch), `internal/api/sse.go` (the
 standing-read gate and live re-evaluation live in the handler), `internal/store/engine.go`,
