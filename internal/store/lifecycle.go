@@ -182,11 +182,20 @@ func (s *Store) TableState(ctx context.Context, nsName, table string, auth []Aut
 	if err != nil {
 		return nil, Incarnation{}, err
 	}
-	sc, err := loadSchema(ctx, n.ro, nsName, table)
+	// One read snapshot for the schema and the drop generation: two autocommit
+	// reads could straddle a concurrent drop + same-name recreate and pair the
+	// predecessor's schema with the successor's DropGen — the snapshot this
+	// read hands out must describe exactly one table lifetime.
+	tx, err := n.ro.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, Incarnation{}, err
 	}
-	dropGen, err := tableGen(ctx, n.ro, table)
+	defer tx.Rollback()
+	sc, err := loadSchema(ctx, tx, nsName, table)
+	if err != nil {
+		return nil, Incarnation{}, err
+	}
+	dropGen, err := tableGen(ctx, tx, table)
 	if err != nil {
 		return nil, Incarnation{}, err
 	}

@@ -313,6 +313,11 @@ func TestSearchVectorRawVectorIgnoresProviderIdentity(t *testing.T) {
 		},
 		Identity: "space-a",
 	}
+	// The direct store setup below predates the HTTP server, so create the
+	// namespace through the store itself — ns() no longer creates implicitly.
+	if err := st.CreateNamespace(context.Background(), "mix", [16]byte{}); err != nil {
+		t.Fatalf("create ns: %v", err)
+	}
 	if _, err := st.CreateTable(context.Background(), "mix", "t", []schema.Field{
 		{Name: "s", Type: schema.Text, Vectorize: true},
 	}, store.TableOpts{}, [16]byte{}); err != nil {
@@ -322,7 +327,6 @@ func TestSearchVectorRawVectorIgnoresProviderIdentity(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 	srv := httptest.NewServer(New(st, fakeEmb{}).Handler())
-	mustNS(t, srv.URL, "mix")
 	t.Cleanup(srv.Close)
 	code, res := post(t, srv.URL, "search_vector", map[string]any{
 		"namespace": "mix",

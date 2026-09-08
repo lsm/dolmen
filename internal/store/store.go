@@ -167,6 +167,13 @@ func dsn(path string, readonly bool) string {
 	if readonly {
 		q.Add("mode", "ro")
 	} else {
+		// rw, not SQLite's default rwc: ns() checks the file exists before
+		// opening, but the writable pool's connections are established lazily —
+		// a namespace dropped between the stat and the first use would
+		// otherwise be silently recreated by an rwc open (and the registry DDL
+		// would materialize it), violating the no-implicit-creation contract.
+		// rw makes the open itself fail instead.
+		q.Add("mode", "rw")
 		q.Add("_pragma", "journal_mode(WAL)")
 		q.Add("_pragma", "synchronous(NORMAL)")
 		// Writes take the lock at BEGIN, not at the first write: with a
