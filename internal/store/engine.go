@@ -191,7 +191,9 @@ type Engine interface {
 	// §6.2, §9.3), cursor-aware so the seam itself provides §9.3's atomic
 	// register-and-replay: the engine registers the listener and fixes the
 	// replay boundary at the registration point as ONE coordinated operation.
-	// See ChangeReplay for the replay contract and the notify gating.
+	// See ChangeReplay for the replay contract and the notify gating. The
+	// second return value cancels the registration: it releases the listener
+	// and stops notify delivery, so a client disconnect cancels cleanly.
 	//
 	// liveAuthz runs BEFORE queue admission, and it is LIVE: the engine calls
 	// it before enqueueing each record, passing the record's target table —
@@ -215,7 +217,7 @@ type Engine interface {
 	// its bounded-time contract via internal scanning — surfaced through
 	// Capabilities like every other engine capability; notification is never
 	// the durability mechanism.
-	Listen(ctx context.Context, ns, table string, from Cursor, nsGen [16]byte, liveAuthz func(table string) (scope *RowScope, inc Incarnation, ok bool), notify func(ChangeRecord)) (*ChangeReplay, cancel func(), error)
+	Listen(ctx context.Context, ns, table string, from Cursor, nsGen [16]byte, liveAuthz func(table string) (scope *RowScope, inc Incarnation, ok bool), notify func(ChangeRecord)) (*ChangeReplay, func(), error)
 
 	// Query executes a read-only SELECT/WITH statement (§6.2, §4.4). It takes
 	// NO scope: the API layer gates raw SQL by table-wide read, which is
