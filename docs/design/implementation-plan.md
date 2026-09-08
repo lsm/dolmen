@@ -766,7 +766,9 @@ Changes:
 Files: `internal/api/auth.go`, `internal/api/ops.go` (dispatch), `internal/api/sse.go` (the
 standing-read gate and live re-evaluation live in the handler), `internal/store/engine.go`,
 and the concrete operation files that carry the in-transaction checks — `lifecycle.go`,
-`store.go`, `insert.go`, `update.go`, `upsert_key.go`, `search.go`, `vector.go`, `query.go`,
+`store.go`, `nsgen.go` (`NamespaceState` is where bindings BOOTSTRAP later guards: a stale
+namespace or ancestor grant must be verified there, never allowed to acquire a recreated
+successor's fresh nsGen through the ignored `auth` argument), `insert.go`, `update.go`, `upsert_key.go`, `search.go`, `vector.go`, `query.go`,
 `migrate.go`, `changelog.go`, `getrows.go` (2b's ignored guard parameters become enforced
 here; the interface file alone activates nothing; 5a is a dependency so `getrows.go` exists
 to be guarded) — plus `internal/api/openapi.go` and `internal/mcp/server.go` for the
@@ -825,7 +827,11 @@ Changes:
   grants mismatch successors; inherited grants verify the ancestor's generation while receiving
   the target's current one.
 
-Files: `internal/store/grants.go`, `internal/api/auth.go`; tests.
+Files: `internal/store/grants.go`, `internal/api/auth.go`, `internal/api/ops.go` (the
+`grant`/`revoke` call sites obtain the `NamespaceState`/`TableState` snapshot and invoke the
+registry — the authorized target lifetime is passed into both mutation paths there; without
+them the currency check either breaks compilation after the signature change or stays
+name-based and can plant a stale predecessor-bound row); tests.
 
 Acceptance: drop-and-recreate a namespace/table; the old grant neither authorizes nor blocks the
 successor — pinned at store level here; the gateway-mode pin rides with 7d's fixtures (post-8d,
