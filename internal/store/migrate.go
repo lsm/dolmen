@@ -42,6 +42,15 @@ type MigrationPlan struct {
 	FulltextReindexRows int64               `json:"fulltext_reindex_rows"`
 	ClearsEmbeddings    bool                `json:"clears_embeddings"`
 	EmbedRows           int64               `json:"embed_rows"`
+	// Expected is the table incarnation this plan was planned against,
+	// captured by the same planning snapshot (spec §6.2's plan→apply
+	// binding): surfaced in the dry-run response as the opaque
+	// expected_incarnation token and rejected on mismatch by a later apply.
+	// A caller that instead re-read TableState to learn the incarnation
+	// races a migration or drop/recreate and binds the plan to the wrong
+	// lifetime. Excluded from JSON — the raw lifetime key never serializes;
+	// the public token is derived above the seam.
+	Expected Incarnation `json:"-"`
 }
 
 // querier is the read surface both planning contexts offer: a write
