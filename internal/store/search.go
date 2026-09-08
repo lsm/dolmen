@@ -252,10 +252,14 @@ type DeleteOptions struct {
 }
 
 // DeleteResult reports how many rows matched the filter and how many were
-// actually deleted (zero when DryRun is true).
+// actually deleted (zero when DryRun is true), plus the change-log cursor
+// range the delete's transaction minted (§6.2 of the design spec: every
+// write result carries one; zero when the transaction minted no records,
+// e.g. a dry run or a delete that matched nothing).
 type DeleteResult struct {
 	Matched int64
 	Deleted int64
+	Changes ChangeRange
 }
 
 func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []any, opts DeleteOptions) (DeleteResult, error) {
