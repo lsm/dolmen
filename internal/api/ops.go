@@ -1385,14 +1385,14 @@ var Ops = map[string]OpDef{
 			}
 			if req.DryRun {
 				plan, err := s.st.PlanMigration(ctx, normNS(req.Namespace), normTable(req.Table), req.Changes, s.embedder(),
-					store.Incarnation{Version: ver}, nil, store.Incarnation{})
+					store.Incarnation{Version: int64(ver)}, nil, store.Incarnation{})
 				if err != nil {
 					return nil, wrapStoreErr(err)
 				}
 				return map[string]any{"table": plan.Table, "dry_run": true, "plan": plan}, nil
 			}
 			sc, err := s.st.Migrate(ctx, normNS(req.Namespace), normTable(req.Table), req.Changes, s.embedder(),
-				store.Incarnation{Version: ver})
+				store.Incarnation{Version: int64(ver)})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}

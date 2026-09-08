@@ -39,7 +39,11 @@ func TestEngineMethodSetMatchesStore(t *testing.T) {
 		for j := 0; j < want.NumIn(); j++ {
 			args = append(args, want.In(j))
 		}
-		want = reflect.FuncOf(args, want.Out(), false)
+		outs := make([]reflect.Type, want.NumOut())
+		for j := 0; j < want.NumOut(); j++ {
+			outs[j] = want.Out(j)
+		}
+		want = reflect.FuncOf(args, outs, false)
 		if cm.Type != want {
 			t.Fatalf("%s drifted from the Engine signature: store %s, engine %s", m.Name, cm.Type, want)
 		}
