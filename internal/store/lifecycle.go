@@ -51,6 +51,18 @@ func (s *Store) CreateNamespace(ctx context.Context, nsName string, parentNsGen 
 		return err
 	}
 	path := s.nsPath(nsName)
+	// Reservation, eviction, and initialization hold one lock span. The O_EXCL
+	// loser of a concurrent CreateNamespace returns already-exists and
+	// proceeds straight to ns() (the op layer's ensureNamespace treats
+	// already-exists as success); an open that slipped between this
+	// reservation and the evict would cache pools the evict then closes
+	// underneath its in-flight request — sql: database is closed, a 500.
+	// Under the lock the loser's ns() can only observe the finished namespace
+	// through the cache. Another process cannot be coordinated (the
+	// DropNamespace caveat): its reservation cannot evict this process's
+	// pools, and SQLite's own locking serializes the registry DDL.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if os.IsExist(err) {
@@ -63,11 +75,9 @@ func (s *Store) CreateNamespace(ctx context.Context, nsName string, parentNsGen 
 		return err
 	}
 	// A cached entry here is stale (its file was removed out-of-band); evict
-	// it so ns() initializes the fresh file instead of serving dead pools.
-	s.mu.Lock()
+	// it so lockedNS initializes the fresh file instead of serving dead pools.
 	s.evict(nsName)
-	s.mu.Unlock()
-	if _, err := s.ns(nsName); err != nil {
+	if _, err := s.lockedNS(nsName); err != nil {
 		// Un-reserve so a failed init doesn't wedge the name behind a
 		// zero-byte file.
 		_ = os.Remove(path)
