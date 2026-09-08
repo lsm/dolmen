@@ -195,18 +195,26 @@ type Engine interface {
 	// second return value cancels the registration: it releases the listener
 	// and stops notify delivery, so a client disconnect cancels cleanly.
 	//
-	// liveAuthz runs BEFORE queue admission, and it is LIVE: the engine calls
-	// it before enqueueing each record, passing the record's target table —
-	// the API layer's re-resolver returns the caller's CURRENT RowScope and
-	// the Incarnation the authorization for THAT table was resolved against
-	// (a grant revoked or narrowed mid-stream takes effect at the next event),
-	// or ok=false, which teaching-closes the stream. The per-record table
-	// parameter is what makes namespace-wide listeners correct: authorization
+	// liveAuthz runs BEFORE a record reaches the caller, and it is LIVE: the
+	// engine consults it before exposing each record — enqueuing it for live
+	// delivery or returning it on a replay page — passing the record's
+	// target table. The API layer's re-resolver returns the caller's CURRENT
+	// RowScope and the Incarnation the authorization for THAT table was
+	// resolved against (a grant revoked or narrowed mid-stream takes effect
+	// at the next event), or ok=false, which teaching-closes the stream —
+	// during replay exactly as during live delivery: closed fires with the
+	// revocation cause, Next reports done, and no further records are
+	// exposed. Replay pages are therefore filtered through the same
+	// per-record scope/Owner-label/lifetime rules as live records (§9.3:
+	// every event is filtered through the caller's visible set — replay
+	// included, never a trust-the-cursor firehose), so foreign records never
+	// appear in a replay page either. The per-record table parameter is what
+	// makes namespace-wide listeners correct: authorization
 	// is resolved per target, never once for the whole stream. The engine
 	// stays grant-blind: it filters by the returned scope and the record's
 	// Owner label and — for table-filtered feeds — atomically compares the
 	// returned incarnation with the record's Lifetime, so a drop/recreate
-	// between callback and admission cannot carry a stale unscoped decision
+	// between callback and exposure cannot carry a stale unscoped decision
 	// onto the successor's records. Namespace-wide feeds make no per-record
 	// table-lifetime comparison (their replay spans table lifetimes by
 	// design); they revalidate the namespace authorization and nsGen instead.
@@ -436,10 +444,12 @@ type ChangeRange struct {
 }
 
 // ChangeReplay is the paged replay half of a Listen registration (§6.2,
-// §9.3). Replay is paged with the same conventions as ChangesSince, never one
-// slice — an old-but-retained cursor must not let a client force an
-// unbounded allocation — preserving the atomic registration boundary
-// throughout.
+// §9.3). Replay is paged with the same conventions as ChangesSince —
+// authorization included: every replay record passes the session's liveAuthz
+// before Next exposes it, so §9.3's per-event visible-set rule holds for the
+// replay half exactly as for live delivery — never one slice, because an
+// old-but-retained cursor must not let a client force an unbounded
+// allocation, and preserving the atomic registration boundary throughout.
 //
 // The engine does not invoke the session's notify callback until Next has
 // drained the replay (reported done): records committing in the interim
