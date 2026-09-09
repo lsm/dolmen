@@ -27,7 +27,10 @@ func invalidf(format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{ErrInvalid}, args...)...)
 }
 
-var nsRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+// nsSegmentRe matches ONE segment of a namespace path (§5.1) — v0.2.0's
+// single-segment grammar, unchanged. validateNSPath composes 1–3 of these
+// into a path; ListNamespaces matches it against a depth-1 file stem.
+var nsSegmentRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 type Store struct {
 	dir string
@@ -78,7 +81,7 @@ func (s *Store) Close() error {
 // idempotent, so opening a file that exists but predates a registry table
 // still upgrades it in place.
 func (s *Store) ns(name string) (*nsDB, error) {
-	if err := validateNS(name); err != nil {
+	if err := validateNSPath(name); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
@@ -93,12 +96,22 @@ func (s *Store) lockedNS(name string) (*nsDB, error) {
 	if n, ok := s.nss[name]; ok {
 		return n, nil
 	}
+	if err := s.verifyNSDirs(name); err != nil {
+		return nil, err
+	}
 	path := s.nsPath(name)
-	if _, err := os.Stat(path); err != nil {
+	// Lstat, not Stat, and a regular file or nothing: a symlink at the
+	// namespace's own name is not a namespace, and opening one would read
+	// and write whatever it points at, outside s.dir.
+	fi, err := os.Lstat(path)
+	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("%w: namespace %s", ErrNotFound, name)
 		}
 		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, invalidf("namespace %s: %s is not a regular file", name, path)
 	}
 	rw, err := sql.Open("sqlite", dsn(path, false))
 	if err != nil {

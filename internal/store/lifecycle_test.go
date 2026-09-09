@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -83,6 +84,257 @@ func TestNamespaceListCreateDrop(t *testing.T) {
 	}
 	if len(tables) != 0 {
 		t.Fatalf("recreated namespace must be empty, got %v", tables)
+	}
+}
+
+// TestValidateNSPathGrammar pins §5.1: 1–3 segments of the v0.2.0 single-name
+// grammar, no empty segments.
+func TestValidateNSPathGrammar(t *testing.T) {
+	valid := []string{
+		"a",
+		"a_b-c9",
+		"a/b",
+		"ab-/cd_ef",
+		"a/b/c",
+	}
+	for _, ns := range valid {
+		if err := validateNSPath(ns); err != nil {
+			t.Errorf("validateNSPath(%q) = %v, want nil", ns, err)
+		}
+	}
+	invalid := []string{
+		"",
+		"/a",
+		"a/",
+		"a//b",
+		"a/b/",
+		// Depth is capped at 3 namespace segments.
+		"w/x/y/z",
+		"w/x/y/z/v",
+		"A/b",
+		"a/B",
+		"-a/b",
+		"a/../b",
+		"a/b./c",
+		`a\b`,
+		// A segment longer than the 64-char cap.
+		strings.Repeat("x", 65),
+		"a/" + strings.Repeat("y", 65),
+	}
+	for _, ns := range invalid {
+		if err := validateNSPath(ns); !errors.Is(err, ErrInvalid) {
+			t.Errorf("validateNSPath(%q) = %v, want ErrInvalid", ns, err)
+		}
+	}
+}
+
+// TestNestedNamespaceLayout pins §5.2: a/b/c is <data>/a/b/c.db, the parent
+// directories appear on first child creation, a.db coexists with the a/
+// subtree, and the cache keys by full path.
+func TestNestedNamespaceLayout(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+
+	// The child chain needs no depth-1 or depth-2 namespace to exist first:
+	// creating a/b/c directly makes a/ and a/b/ on the way (§5.2, "created on
+	// first child creation").
+	if err := st.CreateNamespace("a/b/c"); err != nil {
+		t.Fatalf("create a/b/c: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(st.dir, "a", "b", "c.db")); err != nil {
+		t.Fatalf("a/b/c must materialize at <data>/a/b/c.db: %v", err)
+	}
+
+	// A namespace and its subtree coexist: a.db beside the a/ directory.
+	if err := st.CreateNamespace("a"); err != nil {
+		t.Fatalf("create a: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(st.dir, "a.db")); err != nil {
+		t.Fatalf("depth-1 a must materialize at <data>/a.db, exactly v0.2.0's layout: %v", err)
+	}
+	if err := st.CreateNamespace("a/b"); err != nil {
+		t.Fatalf("create a/b beside a.db: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(st.dir, "a", "b.db")); err != nil {
+		t.Fatalf("a/b must materialize at <data>/a/b.db: %v", err)
+	}
+	if err := st.CreateNamespace("a/b"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("duplicate nested create must fail with ErrInvalid, got %v", err)
+	}
+
+	// The cache keys by full path: three namespaces, three databases, no
+	// collision between a and its subtree even under one table name.
+	for _, ns := range []string{"a", "a/b", "a/b/c"} {
+		if _, err := st.CreateTable(ctx, ns, "notes", noteFields()); err != nil {
+			t.Fatalf("create table in %s: %v", ns, err)
+		}
+		if _, err := st.Insert(ctx, ns, "notes", []map[string]any{{"title": "row in " + ns}}, testEmbed); err != nil {
+			t.Fatalf("insert into %s: %v", ns, err)
+		}
+	}
+	for _, ns := range []string{"a", "a/b", "a/b/c"} {
+		if _, ok := st.nss[ns]; !ok {
+			t.Fatalf("cache must hold a separate entry keyed by full path %q", ns)
+		}
+		rows, _, err := st.Query(ctx, ns, "SELECT title FROM notes", nil, 0, 0)
+		if err != nil {
+			t.Fatalf("query %s: %v", ns, err)
+		}
+		if len(rows) != 1 || rows[0]["title"] != "row in "+ns {
+			t.Fatalf("namespace %s must see only its own row, got %v", ns, rows)
+		}
+	}
+
+	// Listing stays depth-1 until slice 3b: only a.db is reported.
+	nss, err := st.ListNamespaces()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(nss) != 1 || nss[0] != "a" {
+		t.Fatalf("depth-1 listing must report only [a] until 3b, got %v", nss)
+	}
+}
+
+// TestNestedNamespaceOpenNeverCreates pins the §6.2 global rule at depth > 1:
+// opening a missing namespace is ErrNotFound and leaves no directory behind,
+// and every entry point rejects invalid paths before touching the filesystem.
+func TestNestedNamespaceOpenNeverCreates(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+
+	if _, err := st.ListTables(ctx, "ghost/child"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("opening a missing child must 404, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(st.dir, "ghost")); !os.IsNotExist(err) {
+		t.Fatalf("opening a missing namespace must not create its parent directory, stat err = %v", err)
+	}
+
+	for _, ns := range []string{"a/b/c/d", "/a", "a//b", "A/b", ""} {
+		if err := st.CreateNamespace(ns); !errors.Is(err, ErrInvalid) {
+			t.Errorf("CreateNamespace(%q) = %v, want ErrInvalid", ns, err)
+		}
+		if err := st.DropNamespace(ns); !errors.Is(err, ErrInvalid) {
+			t.Errorf("DropNamespace(%q) = %v, want ErrInvalid", ns, err)
+		}
+		if _, err := st.ListTables(ctx, ns); !errors.Is(err, ErrInvalid) {
+			t.Errorf("ListTables(%q) = %v, want ErrInvalid", ns, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(st.dir, "a")); !os.IsNotExist(err) {
+		t.Fatalf("rejected paths must not create directories, stat err = %v", err)
+	}
+}
+
+// TestDropNestedNamespace pins the drop at depth > 1: the nested .db and its
+// WAL sidecars go, the parent namespace and the directory survive, and the
+// child name is reusable.
+func TestDropNestedNamespace(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustNS(t, st, "a")
+	mustNS(t, st, "a/b")
+	if _, err := st.CreateTable(ctx, "a/b", "notes", noteFields()); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if _, err := st.Insert(ctx, "a/b", "notes", []map[string]any{{"title": "wal row"}}, testEmbed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	if err := st.DropNamespace("a/b"); err != nil {
+		t.Fatalf("drop nested: %v", err)
+	}
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if _, err := os.Stat(filepath.Join(st.dir, "a", "b.db"+suffix)); !os.IsNotExist(err) {
+			t.Fatalf("a/b.db%s must be gone after drop, stat err = %v", suffix, err)
+		}
+	}
+	if _, ok := st.nss["a/b"]; ok {
+		t.Fatal("drop must evict the nested namespace's cached connections")
+	}
+	// v0.2.0 semantics never remove directories, and the parent namespace is
+	// untouched by its child's drop.
+	if _, err := os.Stat(filepath.Join(st.dir, "a")); err != nil {
+		t.Fatalf("the a/ directory must survive its child's drop: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(st.dir, "a.db")); err != nil {
+		t.Fatalf("the parent namespace's own database must survive: %v", err)
+	}
+
+	// The child name is reusable and starts empty.
+	if err := st.CreateNamespace("a/b"); err != nil {
+		t.Fatalf("recreate dropped child: %v", err)
+	}
+	tables, err := st.ListTables(ctx, "a/b")
+	if err != nil {
+		t.Fatalf("list tables on recreated child: %v", err)
+	}
+	if len(tables) != 0 {
+		t.Fatalf("recreated child must be empty, got %v", tables)
+	}
+}
+
+// TestNamespacePathSymlinkContainment pins the physical half of containment:
+// the segment grammar bars "." and "/" lexically, verifyNSDirs and the
+// regular-file check bar a planted symlink from steering namespace I/O out
+// of the data directory — creating, opening, and dropping all refuse.
+func TestNamespacePathSymlinkContainment(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	outside := t.TempDir()
+
+	// A planted intermediate symlink: <data>/a -> outside.
+	if err := os.Symlink(outside, filepath.Join(st.dir, "a")); err != nil {
+		t.Fatalf("plant symlink: %v", err)
+	}
+	if err := st.CreateNamespace("a/b"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("create through a symlinked parent must fail with ErrInvalid, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "b.db")); !os.IsNotExist(err) {
+		t.Fatalf("the refused create must not write outside the data directory, stat err = %v", err)
+	}
+
+	// Opening and dropping an external file reachable through the symlink
+	// are refused too — with the file present, so refusal is observable as
+	// the file's survival, not just a 404.
+	external := filepath.Join(outside, "b.db")
+	if err := os.WriteFile(external, nil, 0o600); err != nil {
+		t.Fatalf("plant external file: %v", err)
+	}
+	if _, err := st.ListTables(ctx, "a/b"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("open through a symlinked parent must fail with ErrInvalid, got %v", err)
+	}
+	if err := st.DropNamespace("a/b"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("drop through a symlinked parent must fail with ErrInvalid, got %v", err)
+	}
+	if _, err := os.Stat(external); err != nil {
+		t.Fatalf("the refused drop must not remove the external file: %v", err)
+	}
+
+	// The namespace's own name is held to the same rule: a symlink named
+	// like a namespace database is not a namespace.
+	if err := os.Symlink(external, filepath.Join(st.dir, "link.db")); err != nil {
+		t.Fatalf("plant file symlink: %v", err)
+	}
+	if _, err := st.ListTables(ctx, "link"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("opening a symlinked namespace file must fail with ErrInvalid, got %v", err)
+	}
+	if err := st.DropNamespace("link"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("dropping a symlinked namespace file must fail with ErrInvalid, got %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(st.dir, "link.db")); err != nil {
+		t.Fatalf("the refused drop must leave the symlink itself alone: %v", err)
+	}
+
+	// Listing applies the same rule: a symlink named like a namespace database
+	// has a valid stem and is not a directory, but it must not be listed — a
+	// listed namespace must be one the store can open (this store's only
+	// entries are the two planted symlinks, so the list is empty).
+	nss, err := st.ListNamespaces()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(nss) != 0 {
+		t.Fatalf("listing must exclude entries the store would refuse to open, got %v", nss)
 	}
 }
 
