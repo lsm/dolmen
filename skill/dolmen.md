@@ -289,9 +289,11 @@ changes_since(namespace="research", cursor=<next_cursor>)   # exactly the new co
 Sleep until something changes — the poll-replacement pattern (one tool call per wait, the server holds it, timeout is an empty page plus the cursor to re-wait from, never an error):
 
 ```
-page = wait_for(namespace="research")                       # no cursor: start at the head; get next_cursor
+page = wait_for(namespace="research", timeout_ms=0)         # immediate: pin the head (a fresh head start
+                                                             # has nothing to deliver — an empty page)
 while working:
-    page = wait_for(namespace="research", cursor=page.next_cursor)   # blocks up to 30s
-    for change in page.changes:                              # empty page = nothing happened: just re-wait
+    page = wait_for(namespace="research", cursor=page.next_cursor)   # blocks up to 30s (default)
+    for change in page.changes:                              # every page is processed before the next
         read the row: query(sql="SELECT * FROM notes WHERE id = ?", args=[change.row_id])
+    # an empty page means nothing happened: just re-wait
 ```

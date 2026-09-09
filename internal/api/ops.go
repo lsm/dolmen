@@ -1471,6 +1471,14 @@ var Ops = map[string]OpDef{
 			// two checks is caught by the next check or that final one, so a
 			// sub-tick timeout can never wrongly return empty.
 			deadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
+			// validated is earned by the first successful read: only then
+			// has the engine resolved the cursor, checked the feed (an
+			// expired or cross-feed cursor, a missing table), and pinned the
+			// boundary the response would carry. Before it, a starved read
+			// must error — an empty page over a feed that was never seen
+			// would mask those teaching errors into a quiet wait, and the
+			// client would believe itself current while missing everything.
+			validated := false
 			for {
 				// Every read runs under the wait's remaining budget, floored
 				// at one tick so a timeout_ms-0 poll and the final re-check
@@ -1499,18 +1507,20 @@ var Ops = map[string]OpDef{
 					cancel()
 				}
 				if err != nil {
-					// A read that outlived its budget is the wait timing
-					// out while the engine was busy — the empty-page
-					// contract, not a failure (§9.2): the page carries the
-					// cursor the caller arrived with (cursor is "" only
-					// before a bare start's uncapped first read, which has
-					// no budget to outlive). A canceled parent context —
-					// the caller gone — is not a timeout and still errors.
-					if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil && cursor != "" {
+					// A read that outlived its budget AFTER the feed was
+					// validated is the wait timing out while the engine was
+					// busy — the empty-page contract, not a failure (§9.2):
+					// the page carries the last pinned boundary, and the
+					// caller re-waits from it gap-free. A canceled parent
+					// context — the caller gone — is not a timeout and
+					// still errors, and an unvalidated read never earns the
+					// timeout page (see validated).
+					if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil && validated {
 						return renderChanges(nil, store.Cursor(cursor)), nil
 					}
 					return nil, err
 				}
+				validated = true
 				if len(records) > 0 {
 					return renderChanges(records, next), nil
 				}
