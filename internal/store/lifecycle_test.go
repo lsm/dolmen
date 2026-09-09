@@ -371,6 +371,14 @@ func TestListNamespacesPrefix(t *testing.T) {
 		t.Fatalf("chmod a/: %v", err)
 	}
 	t.Cleanup(func() { os.Chmod(blocked, 0o700) })
+	// The denial needs an environment where chmod actually denies
+	// traversal: on Windows chmod only toggles the read-only attribute
+	// (directories stay searchable), and root ignores mode bits — there
+	// the production behavior is correct but the error cannot be produced.
+	// Probe the denial itself and skip where it does not take.
+	if _, err := os.Lstat(filepath.Join(blocked, "b")); err == nil {
+		t.Skip("chmod does not deny traversal here (Windows or root); the loud-error pin needs a denying environment")
+	}
 	if _, err := st4.Store.ListNamespaces(ctx, "a/b/c", nil); err == nil {
 		t.Fatal("a prefix through an inaccessible component must surface its stat error, not list empty")
 	}
