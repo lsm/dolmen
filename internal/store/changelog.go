@@ -283,12 +283,16 @@ func mintCursorToken(ctx context.Context, db cursorDB, now time.Time, position i
 // A successful resolve also refreshes the PRESENTED token's deadline — a
 // legitimate retry must not die because the first response was lost — by
 // updating issued_at in place; the cap cannot move with it, because
-// chain_start is immutable per chain. That refresh is also the atomic
-// existence re-check: on the shared rw pool the SELECT and the UPDATE are
-// separate statements, and a concurrent pruneChanges may delete the token —
-// and the records it can still reach — between them. An UPDATE that matched
-// zero rows means exactly that: the position must not be honored, or replay
-// would be shortened under a live cursor (§9.3).
+// chain_start is immutable per chain. The refresh is MONOTONIC (MAX of the
+// stored and supplied stamps): duplicate requests resolving the same token
+// concurrently capture different nows, and an older now landing last must
+// not move the refreshed deadline backward — a retry near the retention
+// boundary would otherwise expire earlier than promised. The UPDATE is also
+// the atomic existence re-check: on the shared rw pool the SELECT and the
+// UPDATE are separate statements, and a concurrent pruneChanges may delete
+// the token — and the records it can still reach — between them. An UPDATE
+// that matched zero rows means exactly that: the position must not be
+// honored, or replay would be shortened under a live cursor (§9.3).
 func resolveCursorToken(ctx context.Context, db cursorDB, now time.Time, retention time.Duration, tok Cursor, feedTable string) (cursorRow, error) {
 	var row cursorRow
 	err := db.QueryRowContext(ctx,
@@ -314,7 +318,7 @@ func resolveCursorToken(ctx context.Context, db cursorDB, now time.Time, retenti
 		}
 	}
 	res, err := db.ExecContext(ctx,
-		`UPDATE _dolmen_cursor_tokens SET issued_at = ? WHERE token = ?`,
+		`UPDATE _dolmen_cursor_tokens SET issued_at = MAX(issued_at, ?) WHERE token = ?`,
 		now.UnixMilli(), row.Token)
 	if err != nil {
 		return cursorRow{}, err

@@ -380,6 +380,40 @@ func TestResolveRefreshesPresentedToken(t *testing.T) {
 	}
 }
 
+// TestResolveRefreshIsMonotonic: duplicate requests resolving the same token
+// capture different nows; when an older now lands last, the stored issued_at
+// must keep the newer stamp — a backward refresh would shorten the promised
+// deadline and expire a boundary retry early (§9.3).
+func TestResolveRefreshIsMonotonic(t *testing.T) {
+	st := openChangeStore(t)
+	ctx := context.Background()
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	const r = time.Hour
+	t0 := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
+	tok, err := mintCursorToken(ctx, n.rw, t0, 2, "", nil)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	if _, err := resolveCursorToken(ctx, n.rw, t0.Add(30*time.Minute), r, tok, ""); err != nil {
+		t.Fatalf("newer resolve: %v", err)
+	}
+	// The duplicate with the older now lands after the newer one.
+	if _, err := resolveCursorToken(ctx, n.rw, t0.Add(10*time.Minute), r, tok, ""); err != nil {
+		t.Fatalf("older resolve: %v", err)
+	}
+	var issued int64
+	if err := n.ro.QueryRowContext(ctx,
+		`SELECT issued_at FROM _dolmen_cursor_tokens WHERE token = ?`, string(tok)).Scan(&issued); err != nil {
+		t.Fatalf("read issued_at: %v", err)
+	}
+	if want := t0.Add(30 * time.Minute).UnixMilli(); issued != want {
+		t.Fatalf("issued_at after the older duplicate = %d, want the newer stamp %d — the refresh must never move backward", issued, want)
+	}
+}
+
 // TestPruneChangesIsAgeBounded: records older than the 2R hold go, younger
 // ones stay — age alone decides, never a count or byte cap (§9.3). Tokens die
 // past their own deadline or their chain's cap, whichever comes first: a
