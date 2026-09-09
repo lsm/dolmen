@@ -476,14 +476,13 @@ func (e *stalledChangesEngine) ChangesSince(ctx context.Context, ns, table strin
 }
 
 // TestWaitForReadsBoundedByDeadline: the bounded-time contract holds even
-// when feed reads queue behind a stalled engine. Every read carries the
-// wait's remaining budget (floored at one tick), and only a read that
-// follows a SUCCESSFUL one — a validated feed, a pinned boundary — may
-// translate its expiry into the empty timeout page; a starved FIRST read
-// errors instead of promising "empty" over a feed it never saw (an expired
-// or cross-feed cursor must never be masked into a quiet wait). The one
-// uncapped read is a bare start's boundary establishment, which waits out
-// the stall to answer with a minted head cursor (§9.2, §9.3).
+// when feed reads queue behind a stalled engine. EVERY read — including a
+// bare start's boundary-establishing one — carries the wait's remaining
+// budget (floored at one tick), and only a read that follows a SUCCESSFUL
+// one — a validated feed, a pinned boundary — may translate its expiry into
+// the empty timeout page; a starved FIRST read (cursor or bare start alike)
+// errors instead of promising "empty" over a feed it never saw: an expired
+// or cross-feed cursor must never be masked into a quiet wait (§9.2, §9.3).
 func TestWaitForReadsBoundedByDeadline(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -505,15 +504,6 @@ func TestWaitForReadsBoundedByDeadline(t *testing.T) {
 		call("create_table", `{"namespace":"rt","table":"notes","fields":[{"name":"title","type":"string"}]}`)
 		call("insert", `{"namespace":"rt","table":"notes","records":[{"title":"a"}]}`)
 	}
-	// The head cursor is minted through the unblocked engine — the token
-	// the stalled waits resume from.
-	_, head, err := st.ChangesSince(context.Background(), "rt", "", "", [16]byte{}, nil, store.Incarnation{}, store.Page{})
-	if err != nil {
-		t.Fatalf("mint head cursor: %v", err)
-	}
-	if head == "" {
-		t.Fatal("no head cursor")
-	}
 
 	// A validated wait whose LATER read starves: the first read is instant
 	// (feed validated, boundary pinned), the second queues behind the
@@ -522,6 +512,16 @@ func TestWaitForReadsBoundedByDeadline(t *testing.T) {
 	// at the stall.
 	validated := &Server{eng: &stalledChangesEngine{Engine: st, stall: stall, fastReads: 1}, emb: fakeEmb{}}
 	seed(validated)
+	// The head cursor is minted through the unblocked engine — AFTER
+	// seeding (the namespace must exist) — and is the token the stalled
+	// waits resume from.
+	_, head, err := st.ChangesSince(context.Background(), "rt", "", "", [16]byte{}, nil, store.Incarnation{}, store.Page{})
+	if err != nil {
+		t.Fatalf("mint head cursor: %v", err)
+	}
+	if head == "" {
+		t.Fatal("no head cursor")
+	}
 	start := time.Now()
 	res, err := validated.Dispatch(context.Background(), "wait_for",
 		[]byte(fmt.Sprintf(`{"namespace":"rt","cursor":%q,"timeout_ms":800}`, head)))
@@ -542,9 +542,9 @@ func TestWaitForReadsBoundedByDeadline(t *testing.T) {
 	// A starved FIRST read never earns the timeout page: nothing validated
 	// the cursor or the feed, so an empty page would mask an expired or
 	// cross-feed cursor's teaching error into a quiet wait — it errors,
-	// promptly, instead.
+	// promptly, instead. Same namespace (already seeded — create_table is
+	// not idempotent), fresh wrapper whose every read stalls.
 	unvalidated := &Server{eng: &stalledChangesEngine{Engine: st, stall: stall}, emb: fakeEmb{}}
-	seed(unvalidated)
 	start = time.Now()
 	res, err = unvalidated.Dispatch(context.Background(), "wait_for",
 		[]byte(fmt.Sprintf(`{"namespace":"rt","cursor":%q,"timeout_ms":0}`, head)))
@@ -555,19 +555,17 @@ func TestWaitForReadsBoundedByDeadline(t *testing.T) {
 		t.Fatalf("starved first read held %v — the tick floor must bound it, not the stall", held)
 	}
 
-	// A bare start's boundary-establishing read is the uncapped one: the
-	// call waits out the stall and still answers with a minted head cursor.
+	// A bare start's boundary-establishing read is bounded by the SAME
+	// budget (§9.2's bound is unconditional): behind a stalled engine it
+	// errors within the tick floor rather than blocking until the writer
+	// finishes — no feed was seen, so no head cursor may be promised.
 	start = time.Now()
 	res, err = unvalidated.Dispatch(context.Background(), "wait_for", []byte(`{"namespace":"rt","timeout_ms":0}`))
-	if err != nil {
-		t.Fatalf("bare start behind a stalled engine errored: %v", err)
+	if err == nil {
+		t.Fatalf("starved bare start returned a page (%v) — an unestablished boundary must not be answered with a timeout page", res)
 	}
-	page = res.(map[string]any)
-	if got, _ := page["next_cursor"].(string); got == "" {
-		t.Fatal("bare start returned no head cursor behind a stalled engine")
-	}
-	if held := time.Since(start); held < stall-100*time.Millisecond {
-		t.Fatalf("bare start returned after %v — it must wait for its boundary read, not skip it", held)
+	if held := time.Since(start); held > 1200*time.Millisecond {
+		t.Fatalf("starved bare start held %v — the budget must bound it, not the stall", held)
 	}
 }
 

@@ -1480,41 +1480,35 @@ var Ops = map[string]OpDef{
 			// client would believe itself current while missing everything.
 			validated := false
 			for {
-				// Every read runs under the wait's remaining budget, floored
-				// at one tick so a timeout_ms-0 poll and the final re-check
-				// stay genuine reads instead of already-expired contexts: a
+				// Every read — including a bare start's boundary-establishing
+				// one — runs under the wait's remaining budget, floored at
+				// one tick so a timeout_ms-0 poll and the final re-check stay
+				// genuine reads instead of already-expired contexts: a
 				// namespace has ONE writable connection, and a concurrent
 				// write or migration holding it must not stretch the call
-				// past its bound — the read aborts at the budget (the pool
-				// wait honors its context) and the wall bound is timeout_ms
-				// plus at most one tick. The exception is a bare start's
-				// first read (cursor is "" only there — every completed read
-				// pins a minted token): §9.3 requires the response to carry
-				// a minted head cursor, which cannot exist until a read
-				// completes, so that one boundary-establishing read waits
-				// for the engine exactly like a plain changes_since would.
-				readCtx := ctx
-				var cancel context.CancelFunc
-				if cursor != "" {
-					budget := time.Until(deadline)
-					if budget < waitForPollTick {
-						budget = waitForPollTick
-					}
-					readCtx, cancel = context.WithTimeout(ctx, budget)
+				// past its bound (§9.2's bound is unconditional) — the read
+				// aborts at the budget (the pool wait honors its context)
+				// and the wall bound is timeout_ms plus at most one tick. A
+				// bare start that cannot establish its boundary within the
+				// budget errors like any other unvalidated read: no feed was
+				// seen, so no empty page may be promised; the caller retries
+				// and mints the head when the engine answers.
+				budget := time.Until(deadline)
+				if budget < waitForPollTick {
+					budget = waitForPollTick
 				}
+				readCtx, cancel := context.WithTimeout(ctx, budget)
 				records, next, err := runChangesSince(readCtx, s, ns, table, cursor, limit)
-				if cancel != nil {
-					cancel()
-				}
+				cancel()
 				if err != nil {
 					// A read that outlived its budget AFTER the feed was
 					// validated is the wait timing out while the engine was
 					// busy — the empty-page contract, not a failure (§9.2):
 					// the page carries the last pinned boundary, and the
-					// caller re-waits from it gap-free. A canceled parent
-					// context — the caller gone — is not a timeout and
-					// still errors, and an unvalidated read never earns the
-					// timeout page (see validated).
+					// caller re-waits from it gap-free. Before any successful
+					// read the error stands — no feed was seen, so no empty
+					// page may be answered. A canceled parent context (the
+					// caller gone) is not a timeout and errors too.
 					if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil && validated {
 						return renderChanges(nil, store.Cursor(cursor)), nil
 					}
