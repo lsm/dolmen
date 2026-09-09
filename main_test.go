@@ -275,7 +275,7 @@ func TestLoadConfig(t *testing.T) {
 		{
 			name:    "invalid change retention from the environment is rejected",
 			args:    []string{},
-			env:     map[string]string{"DOLMEN_EMBED_PROVIDER": "none", "DOLMEN_CHANGE_RETENTION": "90m"},
+			env:     map[string]string{"DOLMEN_EMBED_PROVIDER": "none", "DOLMEN_CHANGE_RETENTION": "45m"},
 			wantErr: "must be 0 (disable pruning) or between 1h and 2160h",
 		},
 		{
