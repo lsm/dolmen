@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lsm/dolmen/internal/api"
 	"github.com/lsm/dolmen/internal/embed"
@@ -71,6 +72,7 @@ func TestLoadConfig(t *testing.T) {
 				AllowedOrigins:     nil,
 				Embed:              embedConfig{Provider: "local"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				ChangeRetention:    168 * time.Hour,
 			},
 		},
 		{
@@ -83,6 +85,7 @@ func TestLoadConfig(t *testing.T) {
 				AllowedOrigins:     nil,
 				Embed:              embedConfig{Provider: "local"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				ChangeRetention:    168 * time.Hour,
 			},
 		},
 		{
@@ -98,6 +101,7 @@ func TestLoadConfig(t *testing.T) {
 				Prefix:             "/dolmen",
 				Embed:              embedConfig{Provider: "none"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				ChangeRetention:    168 * time.Hour,
 			},
 		},
 		{
@@ -112,6 +116,7 @@ func TestLoadConfig(t *testing.T) {
 				Prefix:             "/dolmen",
 				Embed:              embedConfig{Provider: "none"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				ChangeRetention:    168 * time.Hour,
 			},
 		},
 		{
@@ -132,6 +137,7 @@ func TestLoadConfig(t *testing.T) {
 				Prefix:             "/dolmen",
 				Embed:              embedConfig{Provider: "none"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				ChangeRetention:    168 * time.Hour,
 			},
 		},
 		{
@@ -157,6 +163,7 @@ func TestLoadConfig(t *testing.T) {
 					APIKey:   "secret",
 				},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				ChangeRetention:    168 * time.Hour,
 			},
 		},
 		{
@@ -174,6 +181,7 @@ func TestLoadConfig(t *testing.T) {
 					APIKey:   "fallback",
 				},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				ChangeRetention:    168 * time.Hour,
 			},
 		},
 		{
@@ -192,6 +200,7 @@ func TestLoadConfig(t *testing.T) {
 					APIKey:   "",
 				},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				ChangeRetention:    168 * time.Hour,
 			},
 		},
 		{
@@ -199,6 +208,75 @@ func TestLoadConfig(t *testing.T) {
 			args:    []string{},
 			env:     map[string]string{"DOLMEN_EMBED_PROVIDER": "foo"},
 			wantErr: "unknown embedding provider",
+		},
+		{
+			name: "change retention zero disables pruning",
+			args: []string{"-change-retention", "0"},
+			env:  map[string]string{"DOLMEN_EMBED_PROVIDER": "none"},
+			want: &config{
+				Addr:               "127.0.0.1:8790",
+				DataDir:            "data",
+				AllowedOrigins:     nil,
+				Embed:              embedConfig{Provider: "none"},
+				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				ChangeRetention:    0,
+			},
+		},
+		{
+			name: "change retention from the environment",
+			args: []string{},
+			env:  map[string]string{"DOLMEN_EMBED_PROVIDER": "none", "DOLMEN_CHANGE_RETENTION": "48h"},
+			want: &config{
+				Addr:               "127.0.0.1:8790",
+				DataDir:            "data",
+				AllowedOrigins:     nil,
+				Embed:              embedConfig{Provider: "none"},
+				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				ChangeRetention:    48 * time.Hour,
+			},
+		},
+		{
+			name: "change retention bounds are inclusive",
+			args: []string{"-change-retention", "1h"},
+			env:  map[string]string{"DOLMEN_EMBED_PROVIDER": "none", "DOLMEN_CHANGE_RETENTION": "2160h"},
+			want: &config{
+				Addr:               "127.0.0.1:8790",
+				DataDir:            "data",
+				AllowedOrigins:     nil,
+				Embed:              embedConfig{Provider: "none"},
+				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				ChangeRetention:    time.Hour,
+			},
+		},
+		{
+			name:    "change retention below the floor is rejected",
+			args:    []string{"-change-retention", "30m"},
+			env:     map[string]string{"DOLMEN_EMBED_PROVIDER": "none"},
+			wantErr: "must be 0 (disable pruning) or between 1h and 2160h",
+		},
+		{
+			name:    "change retention above the ceiling is rejected",
+			args:    []string{"-change-retention", "2200h"},
+			env:     map[string]string{"DOLMEN_EMBED_PROVIDER": "none"},
+			wantErr: "must be 0 (disable pruning) or between 1h and 2160h",
+		},
+		{
+			name:    "negative change retention is rejected",
+			args:    []string{"-change-retention", "-1h"},
+			env:     map[string]string{"DOLMEN_EMBED_PROVIDER": "none"},
+			wantErr: "must be 0 (disable pruning) or between 1h and 2160h",
+		},
+		{
+			name:    "unparseable change retention is rejected",
+			args:    []string{"-change-retention", "forever"},
+			env:     map[string]string{"DOLMEN_EMBED_PROVIDER": "none"},
+			wantErr: `invalid change retention "forever"`,
+		},
+		{
+			name:    "invalid change retention from the environment is rejected",
+			args:    []string{},
+			env:     map[string]string{"DOLMEN_EMBED_PROVIDER": "none", "DOLMEN_CHANGE_RETENTION": "90m"},
+			wantErr: "must be 0 (disable pruning) or between 1h and 2160h",
 		},
 		{
 			name: "local provider with an invalid model is rejected",

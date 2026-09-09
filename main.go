@@ -130,6 +130,7 @@ type config struct {
 	BaseURL            string
 	Prefix             string
 	SkillNamespaceHint string
+	ChangeRetention    time.Duration
 }
 
 type embedConfig struct {
@@ -152,6 +153,9 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	showVersion := fs.Bool("version", false, "print version and exit")
 	publicBaseURL := fs.String("base-url", envOr("DOLMEN_BASE_URL", "", getenv), "public base URL for skills and MCP links (default: use request Host)")
 	prefix := fs.String("prefix", envOr("DOLMEN_PREFIX", "", getenv), "mount all endpoints under this URL prefix (pass-through proxy)")
+	// A string flag, not fs.Duration: the default comes from the environment
+	// either way, and one parse path validates flag and env identically.
+	changeRetention := fs.String("change-retention", envOr("DOLMEN_CHANGE_RETENTION", "168h", getenv), "change-log retention: 0 disables pruning (records and cursors never expire); otherwise 1h to 2160h")
 
 	fs.Usage = func() {
 		fmt.Fprint(out, "Usage: dolmen [flags]\n\nFlags:\n")
@@ -195,6 +199,13 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		return nil, &printedError{err}
 	}
 
+	retention, err := parseChangeRetention(*changeRetention)
+	if err != nil {
+		fmt.Fprintf(out, "config: %v\n", err)
+		fs.Usage()
+		return nil, &printedError{err}
+	}
+
 	skillNamespaceHint := envOr("DOLMEN_SKILL_NAMESPACE_HINT", skill.DefaultNamespaceHint, getenv)
 	prefixValue := skill.NormalizePrefix(*prefix)
 
@@ -214,6 +225,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		BaseURL:            *publicBaseURL,
 		Prefix:             prefixValue,
 		SkillNamespaceHint: skillNamespaceHint,
+		ChangeRetention:    retention,
 		Embed: embedConfig{
 			Provider: provider,
 			BaseURL:  baseURL,
@@ -222,6 +234,23 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		},
 		Version: *showVersion,
 	}, nil
+}
+
+// parseChangeRetention validates the change-log retention knob (§9.2/§9.3:
+// -change-retention / DOLMEN_CHANGE_RETENTION): 0 disables pruning — cursors
+// never expire and records accumulate — and any other value must fall in
+// 1h–2160h. Out-of-range values are startup-rejected, never silently
+// clamped: a typo'd "1m" must not quietly discard a week of backlog, and
+// "9999h" must not quietly retain forever.
+func parseChangeRetention(raw string) (time.Duration, error) {
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid change retention %q: %w", raw, err)
+	}
+	if d == 0 || (d >= time.Hour && d <= 2160*time.Hour) {
+		return d, nil
+	}
+	return 0, fmt.Errorf("invalid change retention %q: must be 0 (disable pruning) or between 1h and 2160h", raw)
 }
 
 func envOr(key, fallback string, getenv func(string) string) string {
@@ -238,6 +267,7 @@ func printEnvHelp(out io.Writer) {
 		{"DOLMEN_ALLOWED_ORIGINS", "comma-separated allowed HTTP origins for CORS"},
 		{"DOLMEN_BASE_URL", "public base URL for skills and MCP links (default: use request Host)"},
 		{"DOLMEN_SKILL_NAMESPACE_HINT", "hint text rendered into skill markdown"},
+		{"DOLMEN_CHANGE_RETENTION", "change-log retention: 0 disables pruning, else 1h to 2160h (default 168h)"},
 		{"", ""},
 		{"DOLMEN_EMBED_PROVIDER", "embedding provider: none, local (default), or openai"},
 		{"DOLMEN_EMBED_MODEL", "model name or absolute model-directory path"},
