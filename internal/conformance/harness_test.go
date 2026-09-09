@@ -505,9 +505,11 @@ func (h *harness) mustMCP(op string, args any) map[string]any {
 }
 
 // volatileRe matches the documented server-assigned timestamps: created_at on
-// every row and "at" on migration history entries. They are the only values
-// allowed to differ between two servers given identical inputs.
-var volatileKeys = map[string]bool{"created_at": true, "at": true}
+// every row and "at" on migration history entries — plus the change-log's
+// cursor tokens (cursor, next_cursor): fresh opaque randomness per issuance
+// (§9.3). These are the only values allowed to differ between two servers
+// given identical inputs.
+var volatileKeys = map[string]bool{"created_at": true, "at": true, "cursor": true, "next_cursor": true}
 
 // createdAtRe is the documented created_at shape: a UTC millisecond
 // RFC3339 timestamp (SQLite strftime('%Y-%m-%dT%H:%M:%fZ','now')).
@@ -530,6 +532,17 @@ func maskVolatile(t *testing.T, v any) any {
 				s, ok := val.(string)
 				if !ok || !createdAtRe.MatchString(s) {
 					t.Errorf("created_at %v does not match the documented UTC millisecond RFC3339 shape", val)
+					row[k] = "<volatile>"
+					continue
+				}
+			}
+			if k == "cursor" || k == "next_cursor" {
+				// Masked randomness still has a documented shape: a non-empty
+				// opaque token. Masking unconditionally would let a vanished
+				// cursor compare equal on both transports.
+				s, ok := val.(string)
+				if !ok || s == "" {
+					t.Errorf("%s %v does not match the documented opaque non-empty cursor shape", k, val)
 					row[k] = "<volatile>"
 					continue
 				}
