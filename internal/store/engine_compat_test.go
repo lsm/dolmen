@@ -50,17 +50,14 @@ func TestEngineMethodSetMatchesStore(t *testing.T) {
 	}
 }
 
-// TestEngineStubsNotImplemented pins the 2b stub contract: the five Engine
-// methods whose bodies arrive in later slices (NamespaceState 4a,
-// Capabilities 4d, GetRows 5a, ChangesSince 5c, Listen 6b) report
-// not-implemented rather than half-working, and Capabilities returns the
-// zero value — a stub must never be mistaken for a real self-description.
+// TestEngineStubsNotImplemented pins the 2b stub contract: the four Engine
+// methods whose bodies arrive in later slices (Capabilities 4d, GetRows 5a,
+// ChangesSince 5c, Listen 6b) report not-implemented rather than
+// half-working, and Capabilities returns the zero value — a stub must never
+// be mistaken for a real self-description.
 func TestEngineStubsNotImplemented(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
-	if _, err := st.NamespaceState(ctx, "test", nil); !errors.Is(err, errNotImplemented) {
-		t.Errorf("NamespaceState = %v, want errNotImplemented", err)
-	}
 	if _, err := st.GetRows(ctx, "test", "t", nil, nil, Incarnation{}); !errors.Is(err, errNotImplemented) {
 		t.Errorf("GetRows = %v, want errNotImplemented", err)
 	}

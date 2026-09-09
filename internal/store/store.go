@@ -124,6 +124,14 @@ func (s *Store) lockedNS(name string) (*nsDB, error) {
 			return nil, fmt.Errorf("init namespace %s: %w", name, err)
 		}
 	}
+	// The creation id is minted as part of this same init path, so a
+	// namespace file that predates _dolmen_meta (see the comment above) is
+	// upgraded in place with a fresh id, and every later read —
+	// NamespaceState, TableState — may assume the row exists.
+	if err := ensureNSGen(rw); err != nil {
+		rw.Close()
+		return nil, fmt.Errorf("init namespace %s: %w", name, err)
+	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		rw.Close()
 		return nil, fmt.Errorf("cannot secure namespace db %s (owner-only permissions): %w", path, err)
@@ -177,6 +185,15 @@ var registryDDL = []string{
 	`CREATE TABLE IF NOT EXISTS _dolmen_drop_gen(
 		table_name TEXT PRIMARY KEY,
 		gen INTEGER NOT NULL
+	)`,
+	// _dolmen_meta holds the namespace's singleton values. nsgen is the
+	// namespace's creation id (§3.4): 16 crypto-random bytes minted once at
+	// first init (ensureNSGen) and immutable for the namespace's lifetime —
+	// DropNamespace deletes it with the file, so a recreated namespace mints
+	// a fresh one and an id never repeats across namespace lifetimes.
+	`CREATE TABLE IF NOT EXISTS _dolmen_meta(
+		key TEXT PRIMARY KEY,
+		value BLOB
 	)`,
 }
 
