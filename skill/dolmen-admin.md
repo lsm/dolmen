@@ -188,8 +188,9 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
 - `read_rows` is the by-id fetch: pass `"ids": [...]` (the ids a write returned, a query projected,
   or a feed carried), get the full rows back — each found row once, in ascending id order, typed
   like every other read. Missing ids are simply absent (`row_count` counts what came back), never
-  an error; at most 1,000 ids per request. Prefer it over `query` whenever the ids are already in
-  hand — no SQL to write, no filter to get wrong.
+  an error; `truncated: true` means the response budget dropped rows that DO exist — retry with
+  fewer ids (it never fires for missing ids); at most 1,000 ids per request. Prefer it over
+  `query` whenever the ids are already in hand — no SQL to write, no filter to get wrong.
 - `capabilities` reports the engine's static surface: `vector_execution` (`exact` or `ann`),
   `ann_recall_bound` (`null` when exact — a number in (0,1] iff `ann`), `notifications`, and
   `subscribe`. Field names and types are pinned across conforming engines; check it before

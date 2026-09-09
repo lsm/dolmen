@@ -508,7 +508,7 @@ Skill distribution is built into the server. `GET /skills` returns a JSON manife
 | `list_tables` | Tables in a namespace |
 | `describe_server` | Server's embedding provider status — provider (`none` / `local` / `openai`), model, the identity that pins vectorized tables, and whether server-side embedding is usable; read-only, no secrets |
 | `describe_table` | Schema, version, row count |
-| `read_rows` | Fetch rows by id — each found row once, ascending id order; missing ids are simply absent (never an error); at most 1,000 ids per request |
+| `read_rows` | Fetch rows by id — each found row once, ascending id order; missing ids are simply absent (never an error); `truncated` is true only when the response budget dropped rows for existing ids (retry with fewer); at most 1,000 ids per request |
 | `capabilities` | The engine's static capability surface — `vector_execution` (`exact` / `ann`), `ann_recall_bound` (explicit `null` when exact), `notifications`, `subscribe`; reported verbatim |
 | `create_table` | Typed fields with `fulltext` / `vector` / `vectorize` / `enum` / `default` annotations (`enum` restricts a string field to a closed vocabulary; `default` is stored by inserts that omit the field) |
 | `infer_schema` | Propose fields from sample records (creates nothing) |

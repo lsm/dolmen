@@ -3,7 +3,10 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/schema"
 )
 
 func mustGetRowsNotes(t *testing.T) legacyStore {
@@ -33,6 +36,37 @@ func TestGetRowsReturnsRequestedIDs(t *testing.T) {
 	}
 	if res.Rows[0]["title"] != "first note" || res.Rows[1]["title"] != "third note" {
 		t.Fatalf("rows must carry their fields: %v", res.Rows)
+	}
+	if res.Truncated {
+		t.Fatalf("a page under the response budget must not report truncated: %v", res)
+	}
+}
+
+// TestGetRowsBudgetTruncation pins the truncation signal (§6.2's projected
+// response-byte budget): rows that exist but would exceed the budget are
+// dropped from the page with Truncated=true — the caller can tell a dropped
+// existing row from an absent id, which is the whole point of the flag.
+func TestGetRowsBudgetTruncation(t *testing.T) {
+	st := openStore(t)
+	mustNS(t, st, "test")
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "bigrows", []schema.Field{
+		{Name: "v", Type: schema.Text},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	chunk := strings.Repeat("x", 12<<20)
+	for i := 0; i < 4; i++ {
+		if _, err := st.Insert(ctx, "test", "bigrows", []map[string]any{{"v": chunk}}, testEmbed); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+	res, err := st.GetRows(ctx, "test", "bigrows", []int64{1, 2, 3, 4}, nil, Incarnation{})
+	if err != nil {
+		t.Fatalf("GetRows: %v", err)
+	}
+	if len(res.Rows) != 2 || !res.Truncated {
+		t.Fatalf("byte budget should cap the page at 2 of 4 12MiB rows with truncated=true, got %d rows truncated=%v", len(res.Rows), res.Truncated)
 	}
 }
 

@@ -821,6 +821,7 @@ var Ops = map[string]OpDef{
 			"carried, and get the full rows back. The plain by-id read — no SQL to write, no namespace-wide gate to hold. " +
 			"ids address a set: each found row appears once, in ascending id order, " +
 			"and ids that are missing are simply absent from the response — never an error; row_count reports how many came back. " +
+			"truncated is true only when the response budget dropped rows for existing ids (retry with fewer ids) — it never fires for missing ids. " +
 			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array) " +
 			"and omit the hidden _embedding column. At most " + strconv.Itoa(store.MaxReadRowsIDs) + " ids per request.",
 		InputSchema: map[string]any{
@@ -845,7 +846,8 @@ var Ops = map[string]OpDef{
 				"items":       map[string]any{"type": "object", "description": "Row keyed by field name"},
 			},
 			"row_count": prop("integer", "Number of rows returned (ids that were missing are absent, never an error)"),
-		}, "rows", "row_count"),
+			"truncated": prop("boolean", "True when the response budget dropped rows for existing ids — retry with fewer ids; never true for missing ids"),
+		}, "rows", "row_count", "truncated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req readRowsReq
 			if err := decode(body, &req); err != nil {
@@ -859,7 +861,7 @@ var Ops = map[string]OpDef{
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"rows": res.Rows, "row_count": len(res.Rows)}, nil
+			return map[string]any{"rows": res.Rows, "row_count": len(res.Rows), "truncated": res.Truncated}, nil
 		},
 	},
 	"query": {

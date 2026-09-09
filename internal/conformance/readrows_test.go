@@ -52,8 +52,11 @@ func TestReadRowsContract(t *testing.T) {
 	if first["title"] != "first" || first["flag"] != true {
 		t.Fatalf("rows must carry their typed fields: %v", first)
 	}
-	if meta, ok := first["meta"].(map[string]any); !ok || meta["k"] != nil {
-		t.Fatalf("json field must decode as an object: %v", first["meta"])
+	if meta, ok := first["meta"].(map[string]any); !ok || meta["k"] != float64(1) {
+		t.Fatalf("json field must decode as the object stored, got %T %v", first["meta"], first["meta"])
+	}
+	if data["truncated"] != false {
+		t.Fatalf("truncated must be present and false for a complete page, got %v", data["truncated"])
 	}
 
 	// Empty id set: a well-formed no-op — an empty rows array, never null.
