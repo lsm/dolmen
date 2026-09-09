@@ -121,6 +121,10 @@ type harness struct {
 	srv *httptest.Server
 	st  *store.Store
 	emb *fakeProvider
+	// api is the op/api server both transports share. Handler-direct
+	// fixtures — the subscribe SSE stream while its route stays unregistered
+	// (plan 6a) — reach for its HTTP-surface handlers directly.
+	api *api.Server
 	// mode is how the booted server treats identity (spec §8.2). It is set
 	// once at construction and survives reopen(): a restart keeps its mode.
 	mode harnessMode
@@ -184,6 +188,7 @@ func (h *harness) start() {
 	// below is exactly v0.2.0's, which is what §8.1's byte-for-byte rule
 	// pins.
 	apiSrv := api.New(st, embed.Provider(h.emb))
+	h.api = apiSrv
 	mcpSrv := mcp.New(apiSrv, nil)
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcpSrv)
