@@ -658,3 +658,37 @@ func TestChangesSinceRegistryWaitHonorsContext(t *testing.T) {
 		t.Fatalf("bounded read held %v behind the lock — the deadline must bound it", held)
 	}
 }
+
+// TestNsCtxInitializationHonorsContext: a cache-missing first open carries
+// the caller's context through the registry DDL and the nsgen transaction
+// (lockedNSCtx) — an already-expired context fails fast in the
+// initialization itself instead of waiting out SQLite's busy_timeout behind
+// another process's write lock.
+func TestNsCtxInitializationHonorsContext(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if err := st.CreateNamespace(context.Background(), "test", [16]byte{}); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	// A second store instance starts with an empty namespace cache, so the
+	// open runs the full first-touch initialization path.
+	st2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open second store: %v", err)
+	}
+	defer st2.Close()
+
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := st2.nsCtx(expired, "test"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("first open with an expired context = %v, want context.Canceled — the DDL must honor the context", err)
+	}
+	// The same store opens the namespace fine with a live context.
+	if _, err := st2.nsCtx(context.Background(), "test"); err != nil {
+		t.Fatalf("open with a live context: %v", err)
+	}
+}

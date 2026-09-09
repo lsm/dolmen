@@ -189,10 +189,12 @@ func (s *Store) ns(name string) (*nsDB, error) {
 }
 
 // nsCtx is ns for callers whose context bounds the registry wait: the
-// acquire is context-aware (ctxMutex), so a bounded read — wait_for's poll
-// loop — aborts at its deadline instead of queueing behind a long holder
-// (a drop_namespace draining its pools), where a plain mutex wait would
-// sit past every bound.
+// acquire is context-aware (ctxMutex) and a cache-missing first open
+// carries the context through its initialization (lockedNSCtx), so a
+// bounded read — wait_for's poll loop — aborts at its deadline instead of
+// queueing behind a long holder (a drop_namespace draining its pools) or
+// waiting out SQLite's busy_timeout behind another process's write lock,
+// where a plain mutex wait or context-free SQL would sit past every bound.
 func (s *Store) nsCtx(ctx context.Context, name string) (*nsDB, error) {
 	if err := validateNSPath(name); err != nil {
 		return nil, err
@@ -201,13 +203,23 @@ func (s *Store) nsCtx(ctx context.Context, name string) (*nsDB, error) {
 		return nil, err
 	}
 	defer s.mu.Unlock()
-	return s.lockedNS(name)
+	return s.lockedNSCtx(ctx, name)
 }
 
 // lockedNS is ns() for a caller already holding s.mu: CreateNamespace
 // reserves, evicts, and initializes under one lock span, so a concurrent
 // first-use open can never interleave with them.
 func (s *Store) lockedNS(name string) (*nsDB, error) {
+	return s.lockedNSCtx(context.Background(), name)
+}
+
+// lockedNSCtx is lockedNS with the caller's context carried through the
+// FIRST-OPEN initialization: the registry DDL and the nsgen transaction use
+// the context-aware SQL methods, so a bounded read that misses the cache
+// (the first wait_for after a restart) aborts at its deadline instead of
+// waiting out the DSN's busy_timeout behind another process's write lock —
+// the filesystem steps (Lstat, Chmod) have no wait to honor.
+func (s *Store) lockedNSCtx(ctx context.Context, name string) (*nsDB, error) {
 	if n, ok := s.nss[name]; ok {
 		return n, nil
 	}
@@ -234,7 +246,7 @@ func (s *Store) lockedNS(name string) (*nsDB, error) {
 	}
 	rw.SetMaxOpenConns(1)
 	for _, ddl := range registryDDL {
-		if _, err := rw.Exec(ddl); err != nil {
+		if _, err := rw.ExecContext(ctx, ddl); err != nil {
 			rw.Close()
 			return nil, fmt.Errorf("init namespace %s: %w", name, err)
 		}
@@ -243,7 +255,7 @@ func (s *Store) lockedNS(name string) (*nsDB, error) {
 	// namespace file that predates _dolmen_meta (see the comment above) is
 	// upgraded in place with a fresh id, and every later read —
 	// NamespaceState, TableState — may assume the row exists.
-	if err := ensureNSGen(rw); err != nil {
+	if err := ensureNSGen(ctx, rw); err != nil {
 		rw.Close()
 		return nil, fmt.Errorf("init namespace %s: %w", name, err)
 	}
