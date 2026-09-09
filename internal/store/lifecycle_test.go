@@ -273,6 +273,59 @@ func TestDropNestedNamespace(t *testing.T) {
 	}
 }
 
+// TestNamespacePathSymlinkContainment pins the physical half of containment:
+// the segment grammar bars "." and "/" lexically, verifyNSDirs and the
+// regular-file check bar a planted symlink from steering namespace I/O out
+// of the data directory — creating, opening, and dropping all refuse.
+func TestNamespacePathSymlinkContainment(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	outside := t.TempDir()
+
+	// A planted intermediate symlink: <data>/a -> outside.
+	if err := os.Symlink(outside, filepath.Join(st.dir, "a")); err != nil {
+		t.Fatalf("plant symlink: %v", err)
+	}
+	if err := st.CreateNamespace("a/b"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("create through a symlinked parent must fail with ErrInvalid, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "b.db")); !os.IsNotExist(err) {
+		t.Fatalf("the refused create must not write outside the data directory, stat err = %v", err)
+	}
+
+	// Opening and dropping an external file reachable through the symlink
+	// are refused too — with the file present, so refusal is observable as
+	// the file's survival, not just a 404.
+	external := filepath.Join(outside, "b.db")
+	if err := os.WriteFile(external, nil, 0o600); err != nil {
+		t.Fatalf("plant external file: %v", err)
+	}
+	if _, err := st.ListTables(ctx, "a/b"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("open through a symlinked parent must fail with ErrInvalid, got %v", err)
+	}
+	if err := st.DropNamespace("a/b"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("drop through a symlinked parent must fail with ErrInvalid, got %v", err)
+	}
+	if _, err := os.Stat(external); err != nil {
+		t.Fatalf("the refused drop must not remove the external file: %v", err)
+	}
+
+	// The namespace's own name is held to the same rule: a symlink named
+	// like a namespace database is not a namespace.
+	if err := os.Symlink(external, filepath.Join(st.dir, "link.db")); err != nil {
+		t.Fatalf("plant file symlink: %v", err)
+	}
+	if _, err := st.ListTables(ctx, "link"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("opening a symlinked namespace file must fail with ErrInvalid, got %v", err)
+	}
+	if err := st.DropNamespace("link"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("dropping a symlinked namespace file must fail with ErrInvalid, got %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(st.dir, "link.db")); err != nil {
+		t.Fatalf("the refused drop must leave the symlink itself alone: %v", err)
+	}
+}
+
 func TestDropNamespaceSurvivesRestartWithWAL(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()

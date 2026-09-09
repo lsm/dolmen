@@ -54,16 +54,6 @@ func (s *Store) CreateNamespace(ctx context.Context, nsName string, parentNsGen 
 		return err
 	}
 	path := s.nsPath(nsName)
-	// A child namespace's parent directory is created here, on first child
-	// creation (§5.2) — never on open: CreateNamespace is the only creation
-	// path (ns() opens, it does not create), so the first creation of a/b
-	// while a exists as a.db must not depend on any other path having made
-	// <data>/a/. MkdirAll is idempotent, so concurrent creators still race
-	// only on the O_EXCL open below. Depth-1 namespaces have no parent
-	// directory to make beyond s.dir itself, which Open already created.
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
 	// Reservation, eviction, and initialization hold one lock span. The O_EXCL
 	// loser of a concurrent CreateNamespace returns already-exists and
 	// proceeds straight to ns() (the op layer's ensureNamespace treats
@@ -76,6 +66,21 @@ func (s *Store) CreateNamespace(ctx context.Context, nsName string, parentNsGen 
 	// pools, and SQLite's own locking serializes the registry DDL.
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A child namespace's parent directory is created here, on first child
+	// creation (§5.2) — never on open: CreateNamespace is the only creation
+	// path (ns() opens, it does not create), so the first creation of a/b
+	// while a exists as a.db must not depend on any other path having made
+	// <data>/a/. verifyNSDirs first refuses a symlinked component, then
+	// MkdirAll creates what is missing (idempotent, so concurrent creators
+	// still race only on the O_EXCL open below). Depth-1 namespaces have no
+	// parent directory to make beyond s.dir itself, which Open already
+	// created.
+	if err := s.verifyNSDirs(nsName); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if os.IsExist(err) {
@@ -119,7 +124,16 @@ func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte
 	path := s.nsPath(nsName)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := os.Stat(path); err != nil {
+	if err := s.verifyNSDirs(nsName); err != nil {
+		return err
+	}
+	// Lstat, not Stat, and a regular file or nothing: a symlink at the
+	// namespace's own name is not a namespace (opening one would read and
+	// write through it), and the removal below must be reachable only for a
+	// file the store itself created — the symlinked-parent case that would
+	// delete an external file is refused by verifyNSDirs above.
+	fi, err := os.Lstat(path)
+	if err != nil {
 		if os.IsNotExist(err) {
 			// The file was removed out-of-band (or never existed): close the
 			// stale cached pools rather than orphaning them — Close() only
@@ -128,6 +142,9 @@ func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte
 			return fmt.Errorf("%w: namespace %s", ErrNotFound, nsName)
 		}
 		return err
+	}
+	if !fi.Mode().IsRegular() {
+		return invalidf("namespace %s: %s is not a regular file", nsName, path)
 	}
 	// ro first: the rw connection is the one that checkpoints and clears the
 	// WAL on its final close. Close errors are advisory here — the file
@@ -284,6 +301,37 @@ func validateNSPath(name string) error {
 	for _, seg := range segs {
 		if !nsSegmentRe.MatchString(seg) {
 			return invalidf("invalid namespace %q: every segment must match ^[a-z0-9][a-z0-9_-]{0,63}$ (no empty segments — leading, trailing, or double slashes)", name)
+		}
+	}
+	return nil
+}
+
+// verifyNSDirs enforces filesystem containment for a namespace path: every
+// directory component below s.dir — <data>/a, <data>/a/b for a/b/c — must be
+// a real directory, never a symlink or anything else. validateNSPath bars
+// "." and "/" lexically; this bars them physically: a planted `a ->
+// /outside` inside the data directory would otherwise let namespace I/O
+// follow it out of s.dir — CreateNamespace writing, ns() reading, and
+// DropNamespace removing files the store never owned. Components that do
+// not exist yet are fine: nothing can exist below a missing component, and
+// the caller either creates them (CreateNamespace's MkdirAll) or reports
+// ErrNotFound on the file itself.
+func (s *Store) verifyNSDirs(name string) error {
+	segs := strings.Split(name, "/")
+	cur := s.dir
+	for _, seg := range segs[:len(segs)-1] {
+		cur = filepath.Join(cur, seg)
+		fi, err := os.Lstat(cur)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !fi.IsDir() {
+			// Lstat on a symlink-to-directory reports the link, not the
+			// directory, so this catches it.
+			return invalidf("invalid namespace %q: %s is not a directory", name, cur)
 		}
 	}
 	return nil

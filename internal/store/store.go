@@ -96,12 +96,22 @@ func (s *Store) lockedNS(name string) (*nsDB, error) {
 	if n, ok := s.nss[name]; ok {
 		return n, nil
 	}
+	if err := s.verifyNSDirs(name); err != nil {
+		return nil, err
+	}
 	path := s.nsPath(name)
-	if _, err := os.Stat(path); err != nil {
+	// Lstat, not Stat, and a regular file or nothing: a symlink at the
+	// namespace's own name is not a namespace, and opening one would read
+	// and write whatever it points at, outside s.dir.
+	fi, err := os.Lstat(path)
+	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("%w: namespace %s", ErrNotFound, name)
 		}
 		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, invalidf("namespace %s: %s is not a regular file", name, path)
 	}
 	rw, err := sql.Open("sqlite", dsn(path, false))
 	if err != nil {
