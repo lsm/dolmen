@@ -309,11 +309,10 @@ func TestSubscribeReplayThenLive(t *testing.T) {
 func TestSubscribeWriteDuringReplayExactlyOnce(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
-	backlog := make([]any, 1200)
-	for i := range backlog {
-		backlog[i] = map[string]any{"title": "b"}
-	}
-	h.mustHTTP("insert", map[string]any{"namespace": "rt", "table": "notes", "records": backlog})
+	// 1200 backlog records, seeded in two calls (the per-call record cap is
+	// 1000): contiguous commits, one boundary.
+	insertBulk(t, h, 1000)
+	insertBulk(t, h, 200)
 
 	s := h.subscribeLive(t, url.Values{"namespace": {"rt"}, "cursor": {"begin"}})
 
@@ -352,6 +351,24 @@ func TestSubscribeWriteDuringReplayExactlyOnce(t *testing.T) {
 		t.Fatalf("delivered %d distinct rows, want 1202 (1200 backlog + 2 live)", len(seen))
 	}
 	s.close()
+}
+
+// insertBulk seeds count "b"-titled notes over HTTP in per-call-cap-sized
+// chunks.
+func insertBulk(t *testing.T, h *harness, count int) {
+	t.Helper()
+	for count > 0 {
+		size := count
+		if size > 1000 {
+			size = 1000
+		}
+		records := make([]any, size)
+		for i := range records {
+			records[i] = map[string]any{"title": "b"}
+		}
+		h.mustHTTP("insert", map[string]any{"namespace": "rt", "table": "notes", "records": records})
+		count -= size
+	}
 }
 
 // TestSubscribeCursorForms: the two pinned cursor forms beside a resume
@@ -577,11 +594,14 @@ func TestSubscribeShapeErrors(t *testing.T) {
 		t.Fatalf("invalid namespace code = %v, want invalid_request", errEnv["code"])
 	}
 
-	// The stream is GET-only.
+	// The stream is GET-only. The JSON content-type gets the request past
+	// OriginGuard's POST content-type check (a 415 before the handler) and
+	// to the handler's own method check.
 	req, err := http.NewRequest(http.MethodPost, h.srv.URL+"/v1/subscribe?namespace=rt", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
+	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("post subscribe: %v", err)
@@ -643,14 +663,13 @@ func TestSubscribeOverflowCloseFrame(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
 	// A bare start: the replay is empty, the drainer runs immediately, and
-	// the unread socket is the slow drain.
+	// the unread socket is the slow drain. The flood is sized past the
+	// buffer bound PLUS whatever the kernel's socket buffers absorb before
+	// the drainer's writes backpressure (a non-reading peer's window closes
+	// early, but the margin keeps the fixture off kernel tuning).
 	s := h.subscribeLive(t, url.Values{"namespace": {"rt"}})
-
-	bulk := make([]any, 9000)
-	for i := range bulk {
-		bulk[i] = map[string]any{"title": "flood"}
-	}
-	h.mustHTTP("insert", map[string]any{"namespace": "rt", "table": "notes", "records": bulk})
+	const flood = 20000
+	insertBulk(t, h, flood)
 
 	// Read to the terminal: change frames until the close, never an error.
 	changes := 0
@@ -665,7 +684,7 @@ func TestSubscribeOverflowCloseFrame(t *testing.T) {
 		default:
 			t.Fatalf("unexpected %q event mid-overflow: %s", f.event, f.data)
 		}
-		if changes > 9000 {
+		if changes > flood {
 			t.Fatalf("delivered %d change frames with no overflow close — the bound never tripped", changes)
 		}
 	}

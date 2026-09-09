@@ -200,10 +200,11 @@ type listenSession struct {
 	notify    func(ChangeRecord)
 	closedFn  func(cause error)
 
-	// Registration-fixed replay state — immutable once Listen returns.
+	// Registration-fixed replay state — immutable once Listen returns,
+	// except the chain, which rotates at its retention cap (chainFor).
 	position int64        // resume position P: the client's `from`, resolved
 	boundary int64        // registration boundary R: replay is (P, R], live is > R
-	chain    *cursorChain // the page chain every token the session mints rides
+	chain    *cursorChain // the page chain every token the session mints rides; guarded by mu once live
 	feed     *changeFeed  // nil on the namespace feed; the table feed's labels at registration
 
 	mu              sync.Mutex
@@ -512,7 +513,7 @@ func (sess *listenSession) readBatch(ctx context.Context) ([]loggedChange, int64
 	sess.mu.Lock()
 	from := sess.liveRead
 	sess.mu.Unlock()
-	query, args := changePageSQL(from, 0, MaxChangesPageLimit, sess.feed)
+	query, args := changePageSQL(from, nil, MaxChangesPageLimit, sess.feed)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, 0, sess.fillErr(err)
@@ -539,7 +540,7 @@ func (sess *listenSession) mint(ctx context.Context, now time.Time, admitted []l
 		return nil, "", err
 	}
 	defer tx.Rollback()
-	records, next, err := mintChangeCursors(ctx, tx, now, admitted, resume, "", sess.table, sess.chain)
+	records, next, err := mintChangeCursors(ctx, tx, now, admitted, resume, "", sess.table, sess.chainFor(now, resume))
 	if err != nil {
 		return nil, "", err
 	}
@@ -550,6 +551,29 @@ func (sess *listenSession) mint(ctx context.Context, now time.Time, admitted []l
 		return nil, "", err
 	}
 	return records, next, nil
+}
+
+// chainFor returns the chain this mint rides, rotating it once the current
+// one is past its absolute cap (§9.3): a token minted on a capped chain is
+// born expired — resolve rejects anything past chain_start + 2R, and this
+// very transaction's prune would delete it — so a stream held longer than
+// 2R would hand its client dead cursors. A fresh chain roots at the
+// current position, exactly the chain a client resubscribing from here
+// starts itself: the old backlog the cap exists to bound stays bounded,
+// and every delivered cursor stays resolvable. Retention 0 has no caps and
+// never rotates.
+func (sess *listenSession) chainFor(now time.Time, resume int64) *cursorChain {
+	if sess.s.changeRetention <= 0 {
+		return sess.chain
+	}
+	rms := int64(sess.s.changeRetention / time.Millisecond)
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if now.UnixMilli() < sess.chain.Start+2*rms {
+		return sess.chain
+	}
+	sess.chain = newCursorChain(now, resume)
+	return sess.chain
 }
 
 // fillErr maps a fill failure onto the session's close causes: a namespace
@@ -657,13 +681,17 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// The page read: (position, boundary] under the registration labels —
 	// the labels and the boundary are registration-fixed, so a drop or
 	// recreate committing mid-replay can neither narrow this range nor mix
-	// a successor's records into it.
+	// a successor's records into it. The boundary is ALWAYS bounded, even
+	// when it is 0 (the empty log's head): a commit landing before the
+	// caller's first Next is live-only — the filler already queued it — and
+	// an unbounded read here would replay it too (§6.2's exactly-once).
 	now := time.Now()
 	tx, err := sess.n.rw.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, "", false, err
 	}
-	query, args := changePageSQL(sess.position, sess.boundary, MaxChangesPageLimit, sess.feed)
+	boundary := sess.boundary
+	query, args := changePageSQL(sess.position, &boundary, MaxChangesPageLimit, sess.feed)
 	rows, qerr := tx.QueryContext(ctx, query, args...)
 	var scanned []loggedChange
 	if qerr == nil {

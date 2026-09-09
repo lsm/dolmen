@@ -105,13 +105,81 @@ func listenOn(t *testing.T, st *Store, table string, from Cursor, notify func(Ch
 }
 
 // insertNotesErr is insertNotes for goroutines the test cannot Fatalf on:
-// the error crosses back to the test goroutine instead.
+// the error crosses back to the test goroutine instead. Large counts are
+// chunked to the per-call record cap — the boundary math only needs the
+// commits to land, and every chunk mints contiguous seqs.
 func insertNotesErr(st *Store, n int) (InsertResult, error) {
-	recs := make([]map[string]any, n)
-	for i := range recs {
-		recs[i] = map[string]any{"title": string(rune('a' + i%26)), "score": i + 1}
+	ctx := context.Background()
+	var out InsertResult
+	for n > 0 {
+		size := n
+		if size > MaxRecordsPerInsert {
+			size = MaxRecordsPerInsert
+		}
+		recs := make([]map[string]any, size)
+		for i := range recs {
+			recs[i] = map[string]any{"title": string(rune('a' + i%26)), "score": i + 1}
+		}
+		res, err := st.Insert(ctx, "test", "notes", recs, WriteOpts{}, Embedder{}, nil, Incarnation{})
+		if err != nil {
+			return out, err
+		}
+		out.Ids = append(out.Ids, res.Ids...)
+		out.Changes.Count += res.Changes.Count
+		n -= size
 	}
-	return st.Insert(context.Background(), "test", "notes", recs, WriteOpts{}, Embedder{}, nil, Incarnation{})
+	return out, nil
+}
+
+// insertNotesChunked is insertNotesErr for the test goroutine (fail-fast).
+func insertNotesChunked(t *testing.T, st *Store, n int) []int64 {
+	t.Helper()
+	res, err := insertNotesErr(st, n)
+	if err != nil {
+		t.Fatalf("insert %d notes: %v", n, err)
+	}
+	return res.Ids
+}
+
+// seedOwnerChanges writes change records directly, each carrying an owner
+// label — the out-of-band fixture for scoped admission, which no public
+// write path can mint yet (every path passes nil owners until slice 9c
+// stamps them). Rows carry the namespace's and table's current lifetime
+// labels so the feed filters match them, and mint now.
+func seedOwnerChanges(t *testing.T, st *Store, nsName, table string, owners []string) {
+	t.Helper()
+	ctx := context.Background()
+	n, err := st.ns(nsName)
+	if err != nil {
+		t.Fatalf("open %s: %v", nsName, err)
+	}
+	tx, err := n.rw.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback()
+	nsGen, err := readNSGen(ctx, tx)
+	if err != nil {
+		t.Fatalf("read nsgen: %v", err)
+	}
+	gen, err := tableGen(ctx, tx, table)
+	if err != nil {
+		t.Fatalf("read drop gen: %v", err)
+	}
+	for i, owner := range owners {
+		var labeled any
+		if owner != "" {
+			labeled = owner
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO _dolmen_changes(table_name, row_id, kind, owner, nsgen, drop_gen) VALUES(?,?,?,?,?,?)`,
+			table, int64(i+1), string(ChangeInsert), labeled, nsGen[:], gen); err != nil {
+			t.Fatalf("seed change row %d: %v", i+1, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
 }
 
 // TestListenReplayThenLive: the core shape — a session holding a cursor
@@ -224,7 +292,7 @@ func TestListenExactlyOnceAcrossBoundary(t *testing.T) {
 // the registration boundary (§6.2).
 func TestListenPagedReplayDoneContract(t *testing.T) {
 	st := openChangeStore(t)
-	insertNotes(t, st, 2*MaxChangesPageLimit+500)
+	insertNotesChunked(t, st, 2*MaxChangesPageLimit+500)
 
 	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
 	defer cancel()
@@ -350,52 +418,45 @@ func TestListenCancelReleasesListener(t *testing.T) {
 // TestListenLiveAuthzAdmission: per-event authorization runs BEFORE queue
 // admission and is LIVE (§6.2): a scope filters by the record's Owner label,
 // an Empty scope sees nothing, and ok=false teaching-closes the stream —
-// during replay exactly as during live delivery.
+// during replay exactly as during live delivery. Owner-labeled records are
+// seeded out-of-band (seedOwnerChanges): no public write path stamps the
+// change record's owner until slice 9c, and the live half's filter — the
+// same admit — is pinned against real writes, whose records are unlabeled
+// and therefore invisible to any scoped viewer.
 func TestListenLiveAuthzAdmission(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
-	insertAs := func(n int, owner string) InsertResult {
-		recs := make([]map[string]any, n)
-		for i := range recs {
-			recs[i] = map[string]any{"title": "t", "score": i + 1}
-		}
-		res, err := st.Insert(ctx, "test", "notes", recs, WriteOpts{Owner: owner}, Embedder{}, nil, Incarnation{})
-		if err != nil {
-			t.Fatalf("insert as %s: %v", owner, err)
-		}
-		return res
-	}
-	aliceBacklog := insertAs(2, "alice") // the replayed backlog, owner-stamped
-	insertAs(2, "bob")                   // invisible to alice
+	seedOwnerChanges(t, st, "test", "notes", []string{"alice", "alice", "bob"})
 
-	// A scoped viewer sees exactly their own rows, in both halves.
-	live := newLiveLog()
+	// A scoped viewer sees exactly their own rows on the replay half.
 	scoped := func(string) (*RowScope, Incarnation, bool) {
 		return &RowScope{Owner: "alice"}, Incarnation{}, true
 	}
-	replay, cancel, err := st.Listen(ctx, "test", "", CursorBegin, [16]byte{}, scoped, live.notify, nil)
+	replay, cancel, err := st.Listen(ctx, "test", "", CursorBegin, [16]byte{}, scoped, newLiveLog().notify, nil)
 	if err != nil {
 		t.Fatalf("scoped listen: %v", err)
 	}
-	defer cancel()
-	replaySet := rowSet(drainReplay(t, replay))
-	for _, id := range aliceBacklog.Ids {
-		if replaySet[id] != 1 {
-			t.Fatalf("scoped replay: alice's row %d appeared %d times, want 1", id, replaySet[id])
-		}
-	}
-	if len(replaySet) != len(aliceBacklog.Ids) {
-		t.Fatalf("scoped replay delivered %d rows, want alice's %d only", len(replaySet), len(aliceBacklog.Ids))
-	}
-	freshAlice := insertAs(1, "alice")
-	insertAs(1, "bob")
-	delivered := live.waitN(t, 1)
-	if delivered[0].RowID != freshAlice.Ids[0] {
-		t.Fatalf("scoped live delivered row %d, want alice's %d only", delivered[0].RowID, freshAlice.Ids[0])
+	if got := rowIDsOf(drainReplay(t, replay)); len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("scoped replay delivered %v, want alice's rows [1 2] only", got)
 	}
 	cancel()
 
-	// An Empty scope sees nothing at all.
+	// The live half through the same gate: real writes mint unlabeled
+	// records, which a scoped viewer must never see.
+	scopedLive := newLiveLog()
+	replay, cancel, err = st.Listen(ctx, "test", "", "", [16]byte{}, scoped, scopedLive.notify, nil)
+	if err != nil {
+		t.Fatalf("scoped live listen: %v", err)
+	}
+	defer cancel()
+	drainReplay(t, replay)
+	insertNotes(t, st, 2)
+	time.Sleep(100 * time.Millisecond)
+	if n := scopedLive.count(); n != 0 {
+		t.Fatalf("scoped live delivered %d unlabeled records, want 0 — a scope never admits an unlabeled row", n)
+	}
+
+	// An Empty scope sees nothing at all, replay and live alike.
 	empty := newLiveLog()
 	emptyScope := func(string) (*RowScope, Incarnation, bool) {
 		return &RowScope{Empty: true}, Incarnation{}, true
@@ -548,18 +609,15 @@ func TestListenNamespaceDropEndsSession(t *testing.T) {
 func TestListenFilteredFullPageKeepsPaging(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
-	insertAs := func(n int, owner string) {
-		recs := make([]map[string]any, n)
-		for i := range recs {
-			recs[i] = map[string]any{"title": "t", "score": i + 1}
-		}
-		if _, err := st.Insert(ctx, "test", "notes", recs, WriteOpts{Owner: owner}, Embedder{}, nil, Incarnation{}); err != nil {
-			t.Fatalf("insert as %s: %v", owner, err)
-		}
+	// A full page of foreign records, then the subscriber's own — seeded
+	// out-of-band, because no public write path stamps change-record owners
+	// until 9c.
+	owners := make([]string, 0, MaxChangesPageLimit+2)
+	for i := 0; i < MaxChangesPageLimit; i++ {
+		owners = append(owners, "bob")
 	}
-	// A full page of foreign records, then the subscriber's own.
-	insertAs(MaxChangesPageLimit, "bob")
-	insertAs(2, "alice")
+	owners = append(owners, "alice", "alice")
+	seedOwnerChanges(t, st, "test", "notes", owners)
 
 	scoped := func(string) (*RowScope, Incarnation, bool) {
 		return &RowScope{Owner: "alice"}, Incarnation{}, true
@@ -595,6 +653,96 @@ func TestListenFilteredFullPageKeepsPaging(t *testing.T) {
 	}
 	if _, _, done, err = replay.Next(ctx); err != nil || !done {
 		t.Fatalf("boundary call = err %v, done %v, want nil, true", err, done)
+	}
+}
+
+// TestListenZeroBoundaryIsBounded: registering over an EMPTY log fixes the
+// boundary at 0 — a real bound, not "unbounded". A commit landing before the
+// caller's first Next is live-only (the filler already queued it), and the
+// replay half must deliver nothing: the boundary is what keeps the two
+// halves disjoint (§6.2's exactly-once).
+func TestListenZeroBoundaryIsBounded(t *testing.T) {
+	st := openChangeStore(t)
+	ctx := context.Background()
+
+	live := newLiveLog()
+	replay, cancel := listenOn(t, st, "", "", live.notify, nil)
+	defer cancel()
+
+	fresh := insertNotes(t, st, 2) // commits before the first Next call
+	records, _, done, err := replay.Next(ctx)
+	if err != nil {
+		t.Fatalf("replay Next: %v", err)
+	}
+	if len(records) != 0 || !done {
+		t.Fatalf("replay over a zero boundary delivered %d records, done=%v, want 0, true — the pre-Next commits are live-only", len(records), done)
+	}
+	delivered := live.waitN(t, 2)
+	if got := rowIDsOf(delivered); got[0] != fresh.Ids[0] || got[1] != fresh.Ids[1] {
+		t.Fatalf("live delivered %v, want %v exactly once", got, fresh.Ids)
+	}
+}
+
+// TestListenChainRotatesBeforeCap: a session held past its chain's absolute
+// cap (chain_start + 2R, §9.3) rotates to a fresh chain rooted at the
+// current position — tokens minted on a capped chain are born expired, and
+// every cursor the stream delivers must stay resolvable.
+func TestListenChainRotatesBeforeCap(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir, WithChangeRetention(40*time.Millisecond))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	ctx := context.Background()
+	if err := st.CreateNamespace(ctx, "test", [16]byte{}); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	if _, err := st.CreateTable(ctx, "test", "notes", noteFields(), TableOpts{}, [16]byte{}); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	live := newLiveLog()
+	replay, cancel := listenOn(t, st, "", "", live.notify, nil)
+	defer cancel()
+	drainReplay(t, replay)
+
+	time.Sleep(150 * time.Millisecond) // past chain_start + 2R
+	insertNotes(t, st, 1)
+	rec := live.waitN(t, 1)[0]
+	cancel()
+
+	if _, _, err := st.ChangesSince(ctx, "test", "", rec.Cursor, [16]byte{}, nil, Incarnation{}, Page{}); err != nil {
+		t.Fatalf("the delivered cursor no longer resolves (a capped chain minted a dead token): %v", err)
+	}
+}
+
+// TestListenCloseEndsSessions: Store.Close wakes every idle session — the
+// engine-shutdown close §6.2 promises — instead of stranding sleeping pumps
+// and stream clients on pools that will never serve another commit.
+func TestListenCloseEndsSessions(t *testing.T) {
+	st := openChangeStore(t)
+	ctx := context.Background()
+	closedCause := make(chan error, 1)
+
+	replay, cancel, err := st.Listen(ctx, "test", "", CursorBegin, [16]byte{}, nil, newLiveLog().notify,
+		func(cause error) { closedCause <- cause })
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer cancel()
+	drainReplay(t, replay)
+
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	select {
+	case cause := <-closedCause:
+		if !errors.Is(cause, ErrListenLifetimeEnded) {
+			t.Fatalf("close cause = %v, want ErrListenLifetimeEnded", cause)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close never ended the idle session")
 	}
 }
 

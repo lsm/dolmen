@@ -481,14 +481,15 @@ func changeFeedOf(ctx context.Context, tx *sql.Tx, nsName, table string) (*chang
 }
 
 // changePageSQL builds the change-log page read: records in (from, to] in
-// seq order (to <= 0: unbounded), restricted to one table lifetime's records
-// when feed is non-nil, capped at limit.
-func changePageSQL(from, to int64, limit int, feed *changeFeed) (string, []any) {
+// seq order (to nil: unbounded — a pointer because a boundary of 0 is a real
+// bound, the empty log's head, and must never widen the read), restricted to
+// one table lifetime's records when feed is non-nil, capped at limit.
+func changePageSQL(from int64, to *int64, limit int, feed *changeFeed) (string, []any) {
 	q := `SELECT seq, table_name, row_id, kind, owner, nsgen, drop_gen FROM _dolmen_changes WHERE seq > ?`
 	args := []any{from}
-	if to > 0 {
+	if to != nil {
 		q += ` AND seq <= ?`
-		args = append(args, to)
+		args = append(args, *to)
 	}
 	if feed != nil {
 		q += ` AND table_name = ? AND drop_gen = ? AND nsgen = ?`
@@ -662,7 +663,7 @@ func (s *Store) ChangesSince(ctx context.Context, nsName, table string, from Cur
 	// identically. The page is capped at MaxChangesPageLimit, so the buffer
 	// is bounded by the same contract that bounds the response.
 	limit := changesPageLimit(page.Limit)
-	query, args := changePageSQL(position, 0, limit, feed)
+	query, args := changePageSQL(position, nil, limit, feed)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, "", err

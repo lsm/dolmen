@@ -162,8 +162,8 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 
 func (s *Store) Close() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	var first error
+	names := make([]string, 0, len(s.nss))
 	for name, n := range s.nss {
 		if err := n.rw.Close(); err != nil && first == nil {
 			first = err
@@ -172,7 +172,21 @@ func (s *Store) Close() error {
 			first = err
 		}
 		delete(s.nss, name)
+		names = append(names, name)
 	}
+	// Pools first, then the wake: an idle Listen session's pumps sleep on
+	// their condition variable and only a wake (a commit, a drop, this) can
+	// reach them, and the engine-shutdown close §6.2 promises must fire
+	// (notify.go) — clients waiting on a terminal signal, and the pump
+	// goroutines, must not be stranded by a silent pool close. Woken after
+	// the close, each session's next fill fails against the dead binding
+	// and ends with the teaching lifetime cause. The wake runs under s.mu
+	// in the store's one lock direction (s.mu → notifyMu → the session's
+	// mu); it does no database work.
+	for _, name := range names {
+		s.wakeListenSessions(name)
+	}
+	s.mu.Unlock()
 	return first
 }
 
