@@ -328,8 +328,8 @@ var Ops = map[string]OpDef{
 	},
 	"create_namespace": {
 		Description: "Create an empty namespace. A namespace is a path of 1-3 segments (a/b/c), each " +
-			"lowercase [a-z0-9_-] up to 64 chars; parents need not exist as namespaces — creating a " +
-			"child makes its parent directories. Namespaces are also created implicitly on first use, " +
+			"1-64 chars: a leading letter or digit, then [a-z0-9_-]. Parents need not exist as " +
+			"namespaces — creating a child makes its parent directories. Namespaces are also created implicitly on first use, " +
 			"so this is only needed to reserve a name up front or to fail loudly when the name is taken. " +
 			"Creates no tables — follow with create_table.",
 		InputSchema: map[string]any{
@@ -355,7 +355,8 @@ var Ops = map[string]OpDef{
 	},
 	"drop_namespace": {
 		Description: "Drop a namespace and every table in it, deleting its SQLite file and WAL sidecars. " +
-			"Irreversible. confirm must repeat the exact namespace name — a guard against dropping the wrong one. " +
+			"Irreversible. confirm must repeat the namespace name — a guard against dropping the wrong one " +
+			"(it normalizes like the namespace itself, so case and surrounding whitespace don't matter). " +
 			"In-flight requests on the namespace finish first (or fail); any later use of the same name recreates " +
 			"the namespace empty. The server closes its own connections before deleting, but other processes " +
 			"holding the file open (a second dolmen, a backup tool) are not detected — coordinate drops within one server.",
@@ -366,7 +367,7 @@ var Ops = map[string]OpDef{
 				"namespace": nsProp("Namespace to drop"),
 				"confirm": map[string]any{
 					"type":        "string",
-					"description": "Safety guard: repeat the exact namespace name here to confirm the irreversible drop",
+					"description": "Safety guard: repeat the namespace name here to confirm the irreversible drop (normalized like the namespace itself)",
 					"minLength":   1,
 				},
 			},

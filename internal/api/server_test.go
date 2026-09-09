@@ -579,6 +579,28 @@ func TestNormNSPerSegment(t *testing.T) {
 	}
 }
 
+// TestEveryNamespaceSurfaceCarriesPathPattern walks the whole op registry:
+// every namespace request property — and list_namespaces' prefix, the one
+// namespace-shaped input that is not a "namespace" property — must declare
+// the store's namespace-path pattern. The shared nsProp helper makes drift
+// unlikely; this pins that no op can grow an inline pattern of its own.
+func TestEveryNamespaceSurfaceCarriesPathPattern(t *testing.T) {
+	for name, def := range Ops {
+		props, _ := def.InputSchema["properties"].(map[string]any)
+		if ns, ok := props["namespace"].(map[string]any); ok {
+			if ns["pattern"] != store.NSPathPattern() {
+				t.Errorf("%s: namespace property must carry the namespace-path pattern, got %v", name, ns["pattern"])
+			}
+		}
+		if name == "list_namespaces" {
+			prefix, ok := props["prefix"].(map[string]any)
+			if !ok || prefix["pattern"] != store.NSPathPattern() {
+				t.Errorf("list_namespaces: prefix must carry the namespace-path pattern, got %v", props["prefix"])
+			}
+		}
+	}
+}
+
 func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 	srv := newTestServer(t)
 	res, err := http.Get(srv.URL + "/v1/list_tables")

@@ -189,8 +189,8 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
   columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
 - `drop_table` / `drop_namespace` are irreversible deletions (rows, search indexes, schema, history);
-  both require `confirm` to repeat the exact name being dropped. Prefer `delete` unless the table or
-  namespace itself must go.
+  both require `confirm` to repeat the name being dropped (normalized like the name itself — case and
+  surrounding whitespace don't matter). Prefer `delete` unless the table or namespace itself must go.
 - `list_migrations` reads that history: a table's recorded migrations, newest first, with the exact
   changes and timestamps — check it after `migrate` to confirm what changed; the newest entry's
   `to_version` is the current schema version.

@@ -238,6 +238,22 @@ func TestNamespaceDeepPathLifecycle(t *testing.T) {
 	msg, _ := errObj["message"].(string)
 	wantMessage(t, "over-depth namespace names the depth rule", msg, `1-3 segments`)
 
+	// Normalization never silently repairs an empty segment: " ACME / / Prod "
+	// canonicalizes per segment to "acme//prod", which validation rejects. The
+	// wire behavior is pinned here because normNS alone round-trips the input —
+	// a future cleanup that drops empty segments would otherwise pass every
+	// unit test while turning this 400 into a silently created acme/prod.
+	status, body = h.httpCall("create_namespace", map[string]any{"namespace": " ACME / / Prod "})
+	if status != http.StatusBadRequest {
+		t.Fatalf("empty-segment namespace: status %d, want 400: %v", status, body)
+	}
+	errObj, _ = body["error"].(map[string]any)
+	if errObj == nil || errObj["code"] != "invalid_request" {
+		t.Fatalf("empty-segment namespace: expected an invalid_request envelope, got %v", body)
+	}
+	msg, _ = errObj["message"].(string)
+	wantMessage(t, "empty-segment namespace names the rule", msg, `no empty segments`)
+
 	// Drop child then parent: creating acme as a namespace of its own
 	// leaves the parent refusing to drop over its child; the child drops
 	// with confirm carrying the path (normalized like the namespace
