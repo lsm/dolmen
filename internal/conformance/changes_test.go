@@ -287,6 +287,23 @@ func TestChangesSinceLimitContract(t *testing.T) {
 	if status, _ := h.httpCall("changes_since", map[string]any{"namespace": "rt", "cursor": "begin", "limit": 1000}); status != http.StatusOK {
 		t.Fatalf("limit 1000 rejected — the maximum is inclusive")
 	}
+
+	// Explicitly empty selectors are invalid_request, never read as the
+	// omitted field: "" cursor would silently swap a resume for a bare head
+	// start (skipping the caller's backlog) and "" table would silently widen
+	// the feed — and the input schema declares minLength 1, which the server
+	// must enforce itself.
+	for _, field := range []string{"cursor", "table"} {
+		for _, empty := range []any{"", "   "} {
+			status, out := h.httpCall("changes_since", map[string]any{"namespace": "rt", field: empty})
+			if status != http.StatusBadRequest {
+				t.Fatalf("%s %q: status = %d %v, want 400", field, empty, status, out)
+			}
+			if errEnv, _ := out["error"].(map[string]any); errEnv["code"] != "invalid_request" {
+				t.Fatalf("%s %q: error code = %v, want invalid_request", field, empty, errEnv["code"])
+			}
+		}
+	}
 }
 
 // TestChangesSinceTableFeedContract: the optional table filter selects only

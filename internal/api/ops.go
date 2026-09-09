@@ -1274,6 +1274,28 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
+			// Every optional selector is presence-observed and rejects its
+			// explicit empty form: an empty cursor read as the omitted field
+			// would silently swap a resume for a bare head start (skipping
+			// the caller's backlog), an empty table would silently widen the
+			// feed to the whole namespace, and both would contradict the
+			// input schema's minLength — the server enforces what it declares.
+			cursor := ""
+			if len(req.Cursor) > 0 {
+				var s string
+				if err := json.Unmarshal(req.Cursor, &s); err != nil || strings.TrimSpace(s) == "" {
+					return nil, badRequest("cursor must be a non-empty opaque token, or the literal \"begin\" — omit the field to start at the current head")
+				}
+				cursor = s
+			}
+			table := ""
+			if len(req.Table) > 0 {
+				var s string
+				if err := json.Unmarshal(req.Table, &s); err != nil || normTable(s) == "" {
+					return nil, badRequest("table must be a non-empty table name — omit the field for the namespace-wide feed")
+				}
+				table = normTable(s)
+			}
 			limit := store.DefaultChangesPageLimit
 			if len(req.Limit) > 0 {
 				var n int
@@ -1286,7 +1308,7 @@ var Ops = map[string]OpDef{
 			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			records, next, err := s.eng.ChangesSince(ctx, ns, normTable(req.Table), store.Cursor(req.Cursor),
+			records, next, err := s.eng.ChangesSince(ctx, ns, table, store.Cursor(cursor),
 				[16]byte{}, nil, store.Incarnation{}, store.Page{Limit: limit})
 			if err != nil {
 				// The teaching errors carry their own catch-up path, and stay
@@ -1796,17 +1818,18 @@ type queryReq struct {
 	Limit     int    `json:"limit"`
 }
 
-// changesSinceReq carries changes_since's request. Cursor is the plain string
-// form: "" (omitted) starts at the current head, the literal "begin" at the
-// retained-history boundary, anything else is an opaque token. Limit is
-// RawMessage so presence is observable — the contract rejects an explicit
-// out-of-range value (outside 1–1000) rather than defaulting or clamping it.
-// Nulls are rejected up front by decode's sweep, cursor and table included:
-// a null coerced to the omitted field would change what the call means.
+// changesSinceReq carries changes_since's request. Every optional field is
+// RawMessage so presence is observable and its explicit empty form is
+// rejected rather than read as the omitted field: "" cursor would silently
+// swap a resume for a bare head start, "" table would silently widen the
+// feed to the namespace, and an out-of-range limit (outside 1–1000) must be
+// invalid_request, not defaulted or clamped. Nulls are rejected up front by
+// decode's sweep for the same reason — a null coerced to the omitted field
+// would change what the call means.
 type changesSinceReq struct {
 	Namespace string          `json:"namespace"`
-	Table     string          `json:"table"`
-	Cursor    string          `json:"cursor"`
+	Table     json.RawMessage `json:"table"`
+	Cursor    json.RawMessage `json:"cursor"`
 	Limit     json.RawMessage `json:"limit"`
 }
 
