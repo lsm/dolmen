@@ -447,11 +447,14 @@ func TestWaitForTimeoutBoundDeclared(t *testing.T) {
 // connection wait until its context fires, then fails with the context's
 // error — database/sql's pool wait honors its context exactly this way.
 // fastReads makes the first N reads instant, so a fixture can validate the
-// feed first and then starve a later read (0 stalls every read).
+// feed first and then starve a later read (0 stalls every read). stallNS
+// does the same to CreateNamespace — the registry-lock wait namespace setup
+// cannot preempt.
 type stalledChangesEngine struct {
 	store.Engine
 	stall     time.Duration
 	fastReads int
+	stallNS   time.Duration
 
 	mu    sync.Mutex
 	reads int
@@ -473,6 +476,17 @@ func (e *stalledChangesEngine) ChangesSince(ctx context.Context, ns, table strin
 		}
 	}
 	return e.Engine.ChangesSince(ctx, ns, table, from, nsGen, scope, scopeIncarnation, page)
+}
+
+func (e *stalledChangesEngine) CreateNamespace(ctx context.Context, ns string, parentNsGen [16]byte) error {
+	if e.stallNS > 0 {
+		select {
+		case <-time.After(e.stallNS):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return e.Engine.CreateNamespace(ctx, ns, parentNsGen)
 }
 
 // TestWaitForReadsBoundedByDeadline: the bounded-time contract holds even
@@ -566,6 +580,42 @@ func TestWaitForReadsBoundedByDeadline(t *testing.T) {
 	}
 	if held := time.Since(start); held > 1200*time.Millisecond {
 		t.Fatalf("starved bare start held %v — the budget must bound it, not the stall", held)
+	}
+}
+
+// TestWaitForSetupBoundedByDeadline: the wait's clock covers namespace
+// setup, not only the feed reads — setup waits on the store's registry lock
+// (a concurrent drop_namespace holds it while draining in-flight
+// connections), which no context can preempt, so wait_for races setup
+// against its budget and errors at the floor instead of blocking: §9.2's
+// bound applies to every phase of the call.
+func TestWaitForSetupBoundedByDeadline(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	// Seed through a plain server: only the stalled server's wait_for call
+	// meets the stalled setup.
+	plain := &Server{eng: st, emb: fakeEmb{}}
+	for _, step := range []struct{ op, body string }{
+		{"create_namespace", `{"namespace":"rt"}`},
+		{"create_table", `{"namespace":"rt","table":"notes","fields":[{"name":"title","type":"string"}]}`},
+	} {
+		if _, err := plain.Dispatch(context.Background(), step.op, []byte(step.body)); err != nil {
+			t.Fatalf("%s: %v", step.op, err)
+		}
+	}
+	const stallNS = 1500 * time.Millisecond
+	srv := &Server{eng: &stalledChangesEngine{Engine: st, stallNS: stallNS}, emb: fakeEmb{}}
+
+	start := time.Now()
+	res, err := srv.Dispatch(context.Background(), "wait_for", []byte(`{"namespace":"rt","timeout_ms":0}`))
+	if err == nil {
+		t.Fatalf("setup stalled behind the registry lock returned a page (%v) — nothing was validated, so the budget's expiry must error, not answer", res)
+	}
+	if held := time.Since(start); held > 1200*time.Millisecond {
+		t.Fatalf("stalled setup held %v — the tick floor must bound the call, not the lock wait", held)
 	}
 }
 

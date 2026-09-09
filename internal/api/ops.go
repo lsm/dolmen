@@ -282,6 +282,19 @@ const (
 	waitForPollTick         = 250 * time.Millisecond
 )
 
+// waitBudget returns the time left on a wait's deadline, floored at one
+// poll tick: budgeted phases (namespace setup, feed reads) must never be
+// handed an already-spent budget, or they would abort before doing any work
+// at all — timeout_ms 0's conditional poll and the final re-check under the
+// deadline are genuine work. The call's wall bound stays timeout_ms plus at
+// most one tick per floored phase.
+func waitBudget(deadline time.Time) time.Duration {
+	if d := time.Until(deadline); d > waitForPollTick {
+		return d
+	}
+	return waitForPollTick
+}
+
 // parseChangesFeed decodes the change-feed selectors changes_since and
 // wait_for share. Every optional field is presence-observed and rejects its
 // explicit empty form: an empty cursor read as the omitted field would
@@ -1452,8 +1465,30 @@ var Ops = map[string]OpDef{
 				timeoutMS = n
 			}
 			ns := normNS(req.Namespace)
-			if err := s.ensureNamespace(ctx, ns); err != nil {
-				return nil, wrapStoreErr(err)
+			// The wait's clock starts BEFORE namespace setup: setup is
+			// engine work too (CreateNamespace takes the store's registry
+			// lock and initializes the db, and a concurrent drop_namespace
+			// holds that lock while it drains in-flight connections — a
+			// wait Go's mutexes will not preempt), so §9.2's bound must
+			// cover it like a read. The bounded context makes setup's
+			// context-aware work abort at the budget, and the select
+			// abandons the call there even while the lock is held: the
+			// goroutine finishes and exits once the lock frees — its work
+			// fails fast on the expired context, and the buffered channel
+			// takes the result. Nothing was validated, so the budget's
+			// expiry is an error here, never a timeout page.
+			deadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
+			setupCtx, cancelSetup := context.WithTimeout(ctx, waitBudget(deadline))
+			defer cancelSetup()
+			setupDone := make(chan error, 1)
+			go func() { setupDone <- s.ensureNamespace(setupCtx, ns) }()
+			select {
+			case err := <-setupDone:
+				if err != nil {
+					return nil, wrapStoreErr(err)
+				}
+			case <-setupCtx.Done():
+				return nil, wrapStoreErr(setupCtx.Err())
 			}
 			// The degraded-mode long-poll (§9.2 layer 2, §9.3): a bounded
 			// loop over the one interface surface — ChangesSince — so
@@ -1470,7 +1505,6 @@ var Ops = map[string]OpDef{
 			// by one more after the last tick — a commit landing between any
 			// two checks is caught by the next check or that final one, so a
 			// sub-tick timeout can never wrongly return empty.
-			deadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
 			// validated is earned by the first successful read: only then
 			// has the engine resolved the cursor, checked the feed (an
 			// expired or cross-feed cursor, a missing table), and pinned the
@@ -1481,23 +1515,16 @@ var Ops = map[string]OpDef{
 			validated := false
 			for {
 				// Every read — including a bare start's boundary-establishing
-				// one — runs under the wait's remaining budget, floored at
-				// one tick so a timeout_ms-0 poll and the final re-check stay
-				// genuine reads instead of already-expired contexts: a
-				// namespace has ONE writable connection, and a concurrent
-				// write or migration holding it must not stretch the call
-				// past its bound (§9.2's bound is unconditional) — the read
-				// aborts at the budget (the pool wait honors its context)
-				// and the wall bound is timeout_ms plus at most one tick. A
-				// bare start that cannot establish its boundary within the
-				// budget errors like any other unvalidated read: no feed was
-				// seen, so no empty page may be promised; the caller retries
-				// and mints the head when the engine answers.
-				budget := time.Until(deadline)
-				if budget < waitForPollTick {
-					budget = waitForPollTick
-				}
-				readCtx, cancel := context.WithTimeout(ctx, budget)
+				// one — runs under waitBudget(deadline): a namespace has ONE
+				// writable connection, and a concurrent write or migration
+				// holding it must not stretch the call past its bound
+				// (§9.2's bound is unconditional) — the read aborts at the
+				// budget, because the pool wait honors its context. A bare
+				// start that cannot establish its boundary within the budget
+				// errors like any other unvalidated read: no feed was seen,
+				// so no empty page may be promised; the caller retries and
+				// mints the head when the engine answers.
+				readCtx, cancel := context.WithTimeout(ctx, waitBudget(deadline))
 				records, next, err := runChangesSince(readCtx, s, ns, table, cursor, limit)
 				cancel()
 				if err != nil {
