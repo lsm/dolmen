@@ -1203,6 +1203,11 @@ var Ops = map[string]OpDef{
 			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "skipped_vectors": res.SkippedVectors}, nil
 		},
 	},
+	// TODO(5a/9d): the description teaches re-reading changed rows by id via
+	// query; switch the wording to read_rows when it lands (§9.3 pins it as
+	// the row_access-safe id-addressed path — query's namespace-wide read
+	// gate would strand a create-only subscriber's ids). Same note applies to
+	// the changes_since guidance in skill/dolmen.md.
 	"changes_since": {
 		Description: "Replay the namespace's durable change log: the changes committed after a cursor, " +
 			"in commit order, as one bounded page plus the next cursor — the polling-friendly half of dolmen's " +
@@ -1261,8 +1266,12 @@ var Ops = map[string]OpDef{
 			"next_cursor": prop("string", "Opaque token at the page's end; pass it as cursor to continue gap-free (an empty page still carries it)"),
 		}, "changes", "next_cursor"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			// decode, not decodeData: this request has no field where a null
+			// could be legitimate, and a null cursor coerced to the omitted
+			// form would silently swap a resume for a bare head start — the
+			// client would believe it replayed its backlog and skip it all.
 			var req changesSinceReq
-			if err := decodeData(body, &req); err != nil {
+			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
 			limit := store.DefaultChangesPageLimit
@@ -1791,8 +1800,9 @@ type queryReq struct {
 // form: "" (omitted) starts at the current head, the literal "begin" at the
 // retained-history boundary, anything else is an opaque token. Limit is
 // RawMessage so presence is observable — the contract rejects an explicit
-// out-of-range value (outside 1–1000) rather than defaulting or clamping it,
-// and `null` is a type error, not the omitted field.
+// out-of-range value (outside 1–1000) rather than defaulting or clamping it.
+// Nulls are rejected up front by decode's sweep, cursor and table included:
+// a null coerced to the omitted field would change what the call means.
 type changesSinceReq struct {
 	Namespace string          `json:"namespace"`
 	Table     string          `json:"table"`

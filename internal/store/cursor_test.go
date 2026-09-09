@@ -105,9 +105,12 @@ func TestChangeHead(t *testing.T) {
 }
 
 // TestChangeBeginBoundary pins the "begin" boundary formula table-driven
-// (§9.3): with retention R > 0 the boundary is the newest record strictly
-// older than R before the call — everything after it has full page-chain
-// headroom (M ≥ T−R), everything before it is skipped; when nothing qualifies
+// (§9.3): with retention R > 0 the boundary is the seq before the EARLIEST
+// in-window record (MIN(seq) WHERE at >= now−R, minus 1) — everything after
+// it has full page-chain headroom (M ≥ T−R). Under disordered `at` stamps
+// (a clock step between commits) this formulation over-delivers interleaved
+// out-of-window records rather than skipping in-window history — the
+// out-of-window-MAX phrasing it replaced could skip; when nothing qualifies
 // the boundary is the head (a bare start). With R = 0 the formulas must NOT
 // apply — the boundary is the oldest retained record itself.
 func TestChangeBeginBoundary(t *testing.T) {
