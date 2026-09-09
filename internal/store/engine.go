@@ -577,16 +577,18 @@ type EngineCapabilities struct {
 // Capabilities is the SQLite adapter's self-description, real since slice 4d
 // (§6.2, §7): SearchVector executes brute-force exact — the conformance
 // reference path — so vector_execution is "exact" and ann_recall_bound is
-// explicitly null, never omitted. Notifications and subscribe stay FALSE
-// until Listen's body lands (6b flips both, together with the SSE route):
-// the capability answers "is Listen implemented?", and this engine's
-// post-commit registry (notify.go) is internal plumbing with no public
-// surface yet — advertising it would promise waiters an API the stub cannot
-// serve. A conforming engine must never report a capability it does not
-// have, whatever the cost of saying false.
+// explicitly null, never omitted. Notifications and subscribe flipped to
+// true with Listen's body (6b, together with the /v1/subscribe route): the
+// registry (notify.go) now backs waiters and live streams, and the
+// capability surface, the registered route, and the implemented listener
+// changed together, never contradicting each other. A conforming engine must
+// never report a capability it does not have, whatever the cost of saying
+// false.
 func (s *Store) Capabilities() EngineCapabilities {
 	return EngineCapabilities{
 		VectorExecution: VectorExact,
 		ANNRecallBound:  nil,
+		Notifications:   true,
+		Subscribe:       true,
 	}
 }

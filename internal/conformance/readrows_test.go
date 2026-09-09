@@ -112,15 +112,16 @@ func TestReadRowsIDCapEnforced(t *testing.T) {
 // TestCapabilitiesShapePinned pins the capabilities op (§2, §6.2): the
 // engine's self-description serialized verbatim — the four pinned fields,
 // exact and ann_recall_bound explicitly null for adapter #1, over both
-// transports byte-identical.
+// transports byte-identical. notifications and subscribe are true since 6b:
+// Listen's body, the SSE route, and the capability surface changed together.
 func TestCapabilitiesShapePinned(t *testing.T) {
 	h := newHarness(t)
 
 	want := map[string]any{
 		"vector_execution": "exact",
 		"ann_recall_bound": nil,
-		"notifications":    false,
-		"subscribe":        false,
+		"notifications":    true,
+		"subscribe":        true,
 	}
 	data := h.mustHTTP("capabilities", map[string]any{})
 	assertJSONEqual(t, "capabilities", data, want)

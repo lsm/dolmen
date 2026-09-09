@@ -340,6 +340,15 @@ func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte
 			return fmt.Errorf("drop namespace %s: %w", nsName, err)
 		}
 	}
+	// The dropped namespace can mint no further commits, so nothing else
+	// would ever wake its live sessions — nudge them here, still under s.mu,
+	// which is safe because the nudge only flags (notifyMu, then each
+	// session's own mu — the one direction the store's lock graph already
+	// has; no database access rides this path). Each woken session's next
+	// fill ends it against the dead binding (notify.go): a recreated
+	// successor is a different namespace with a restarted sequence, and a
+	// predecessor's stream must never follow into it (§9.3).
+	s.wakeListenSessions(nsName)
 	return nil
 }
 
@@ -414,7 +423,15 @@ func (s *Store) DropTable(ctx context.Context, nsName, table string, inc Incarna
 		 ON CONFLICT(table_name) DO UPDATE SET gen = gen + 1`, table); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// A table feed on the dropped table ends here (its lifetime ended — a
+	// same-named successor is a different feed), and it needs the nudge: the
+	// dropped table can mint no further commits to wake it with. Namespace
+	// feeds on the namespace are nudged too and sail on unaffected.
+	s.wakeListenSessions(nsName)
+	return nil
 }
 
 // TableState is the one-snapshot read the API layer resolves scopes and

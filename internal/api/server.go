@@ -484,6 +484,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/skills", s.handleSkillsManifest)
 	mux.HandleFunc("/skills/", s.handleSkill)
 	mux.HandleFunc("/v1/openapi.json", s.handleOpenAPI)
+	// The subscribe stream — its own mux entry, not a child of /v1/'s op
+	// dispatch: subscribe is an HTTP-surface capability like /mcp (§9.2), and
+	// the stream joins the public surface here, in the same slice as the
+	// Listen body and the capability flip (6b), so a discovered route always
+	// serves its specified live-stream behavior.
+	mux.HandleFunc("/v1/subscribe", s.HandleSubscribe)
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
 		// Assign the request id before any error path so every response,
 		// envelope, and log line carries one — echoed when the client sent

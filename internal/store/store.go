@@ -108,9 +108,13 @@ type Store struct {
 	// notifyMu guards listeners, the per-namespace post-commit registry
 	// (notify.go, §9.3) — its own mutex, never s.mu: write-path dispatch
 	// must not contend with namespace open/evict, and a listener's fn runs
-	// outside every lock.
-	notifyMu  sync.Mutex
-	listeners map[string][]*commitListener
+	// outside every lock. It also guards listenSessions, the live Listen
+	// sessions' lifecycle registry (6b): a drop's lifecycle wake and the
+	// sessions' registration/cancel bookkeeping share the lock so neither
+	// can interleave with the other.
+	notifyMu       sync.Mutex
+	listeners      map[string][]*commitListener
+	listenSessions map[string][]*listenSession
 
 	// changeRetention is the change log's retention bound R (§9.3): the
 	// shared knob for cursor-token expiry and record pruning, fixed at Open —
@@ -204,6 +208,17 @@ func (s *Store) nsCtx(ctx context.Context, name string) (*nsDB, error) {
 	}
 	defer s.mu.Unlock()
 	return s.lockedNSCtx(ctx, name)
+}
+
+// nsEvicted reports whether the namespace is no longer served by the
+// instance want was opened as — dropped and evicted, or replaced by a
+// recreated successor. Listen sessions bind to the instance they registered
+// on (notify.go): a live read through a dead or superseded pool ends the
+// session, never streams a successor's records through it.
+func (s *Store) nsEvicted(name string, want *nsDB) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nss[name] != want
 }
 
 // lockedNS is ns() for a caller already holding s.mu: CreateNamespace
