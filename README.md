@@ -679,7 +679,7 @@ Every row has two implicit columns:
 
 | Resource | Limit | Behavior when exceeded |
 |---|---|---|
-| Namespace name | `^[a-z0-9][a-z0-9_-]{0,63}$` (max 64 chars) | rejected |
+| Namespace path | 1–3 segments (`a/b/c`), each `^[a-z0-9][a-z0-9_-]{0,63}$` (max 64 chars per segment) | rejected |
 | Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
 | Records per `insert` / `upsert_by_key` | 1,000 | rejected |
@@ -716,9 +716,10 @@ Coercion and validation rules:
   partial `set` maps and only reject setting a required field to `null`.
 - `query` only accepts `SELECT` or `WITH` statements, rejects embedded semicolons (no multiple
   statements), and binds at most 100 `args`.
-- On direct `/v1` requests, namespace and table names are trimmed and lowercased before validation,
-  so `namespace: " Production "` silently operates on `production`. The MCP tool schemas require
-  already-canonical names, so schema-validating clients must send trimmed lowercase names.
+- On direct `/v1` requests, namespace paths and table names are trimmed and lowercased before
+  validation — a namespace per segment, so `namespace: " Production / EU "` silently operates on
+  `production/eu`. The MCP tool schemas require already-canonical names, so schema-validating
+  clients must send trimmed lowercase names.
 - `insert` with an `idempotency_key`: the same key and the same records replay the original ids; the
   same key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes.
 - `search_vector` with `text` requires a provider and searches only the server-managed `_embedding`

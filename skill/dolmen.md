@@ -223,7 +223,7 @@ The optional `filter` parameter is separate from the MATCH `query`: it is regula
 
 | Resource | Limit | Behavior |
 |---|---|---|
-| Namespace name | `^[a-z0-9][a-z0-9_-]{0,63}$` (max 64 chars) | rejected |
+| Namespace path | 1–3 segments (`a/b/c`), each `^[a-z0-9][a-z0-9_-]{0,63}$` (max 64 chars per segment) | rejected |
 | Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
 | Records per `insert` | 1,000 | rejected |
@@ -245,7 +245,7 @@ Validation notes:
 - Unknown field keys are rejected. Missing or `null` required fields are rejected on `insert`. Fields
   may carry a declared `default` (shown by `describe_table`): an insert omitting such a field stores
   the default instead of NULL; an explicit `null` still stores NULL.
-- Namespace and table names are trimmed and lowercased before validation on direct `/v1` requests, so `"namespace":" Production "` operates on `production`. The MCP tool schemas require already-canonical names — always send trimmed lowercase names.
+- Namespace paths and table names are trimmed and lowercased before validation on direct `/v1` requests — a namespace per segment, so `"namespace":" Production / EU "` operates on `production/eu`. The MCP tool schemas require already-canonical names — always send trimmed lowercase names.
 - `query` accepts only `SELECT`/`WITH`, rejects embedded semicolons (trailing semicolons are accepted), and binds at most 100 `args`.
 - `search_vector` with `text` requires a provider and searches only the server-managed `_embedding` column produced by a `vectorize: true` field — the provider identity must match the one that embedded the table, and a `text` query naming a declared `vector` column is rejected. Searches with a caller-supplied `vector` need no provider and are not checked against any embedding space — only you know which model produced the stored and query vectors. The built-in `local` provider is enabled by default; `describe_server` reports the active provider, its identity, and whether server-side embedding is usable.
 - `insert` with an `idempotency_key`: the same key + same records replays the original ids; the same key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes.

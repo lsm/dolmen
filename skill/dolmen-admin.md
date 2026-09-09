@@ -189,8 +189,8 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
   columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
 - `drop_table` / `drop_namespace` are irreversible deletions (rows, search indexes, schema, history);
-  both require `confirm` to repeat the exact name being dropped. Prefer `delete` unless the table or
-  namespace itself must go.
+  both require `confirm` to repeat the name being dropped (normalized like the name itself — case and
+  surrounding whitespace don't matter). Prefer `delete` unless the table or namespace itself must go.
 - `list_migrations` reads that history: a table's recorded migrations, newest first, with the exact
   changes and timestamps — check it after `migrate` to confirm what changed; the newest entry's
   `to_version` is the current schema version.
@@ -419,7 +419,7 @@ A complete call, previewed first:
 
 | Resource | Limit | Behavior |
 |---|---|---|
-| Namespace name | `^[a-z0-9][a-z0-9_-]{0,63}$` (max 64 chars) | rejected |
+| Namespace path | 1–3 segments (`a/b/c`), each `^[a-z0-9][a-z0-9_-]{0,63}$` (max 64 chars per segment) | rejected |
 | Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
 | Records per `insert` / `upsert_by_key` | 1,000 | rejected |
@@ -450,9 +450,10 @@ Validation notes:
   `describe_table`) stores it when an insert omits the field; an explicit `null` still stores NULL.
   Create-time defaults apply to future inserts; `add_field`'s `default` is a one-time backfill for
   existing rows and does not change later inserts.
-- Namespace and table names are trimmed and lowercased before validation on direct `/v1` requests,
-  so `"namespace":" Production "` operates on `production`. The MCP tool schemas require
-  already-canonical names — always send trimmed lowercase names.
+- Namespace paths and table names are trimmed and lowercased before validation on direct `/v1`
+  requests — a namespace per segment, so `"namespace":" Production / EU "` operates on
+  `production/eu`. The MCP tool schemas require already-canonical names — always send trimmed
+  lowercase names.
 - `query` accepts only `SELECT`/`WITH`, rejects embedded semicolons (trailing semicolons are accepted),
   and binds at most 100 `args`.
 - `search_vector` with `text` requires a provider and searches only the server-managed `_embedding`

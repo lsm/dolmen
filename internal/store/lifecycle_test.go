@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -91,6 +92,13 @@ func TestNamespaceListCreateDrop(t *testing.T) {
 // TestValidateNSPathGrammar pins §5.1: 1–3 segments of the v0.2.0 single-name
 // grammar, no empty segments.
 func TestValidateNSPathGrammar(t *testing.T) {
+	// The same corpus runs through NSPathPattern: the JSON Schema pattern
+	// the API's namespace surfaces declare must agree with the validator it
+	// mirrors — every admitted path matches, every rejected one does not.
+	// Single segments ("a", "a_b-c9") sit in the valid list, which is the
+	// additive edge: v0.2.0's whole grammar still matches the widened
+	// pattern (§8.1).
+	pattern := regexp.MustCompile(NSPathPattern())
 	valid := []string{
 		"a",
 		"a_b-c9",
@@ -101,6 +109,9 @@ func TestValidateNSPathGrammar(t *testing.T) {
 	for _, ns := range valid {
 		if err := validateNSPath(ns); err != nil {
 			t.Errorf("validateNSPath(%q) = %v, want nil", ns, err)
+		}
+		if !pattern.MatchString(ns) {
+			t.Errorf("NSPathPattern must match the valid path %q", ns)
 		}
 	}
 	invalid := []string{
@@ -125,6 +136,9 @@ func TestValidateNSPathGrammar(t *testing.T) {
 	for _, ns := range invalid {
 		if err := validateNSPath(ns); !errors.Is(err, ErrInvalid) {
 			t.Errorf("validateNSPath(%q) = %v, want ErrInvalid", ns, err)
+		}
+		if pattern.MatchString(ns) {
+			t.Errorf("NSPathPattern must reject the invalid path %q", ns)
 		}
 	}
 }

@@ -154,3 +154,126 @@ func TestNamespaceTreeListingAndLeafOnlyDrops(t *testing.T) {
 	data = h.mustHTTP("list_namespaces", map[string]any{})
 	assertJSONEqual(t, "post-drop listing", data["namespaces"], []any{"acme2", "edge-x", "edge", "zeta"})
 }
+
+// TestNamespaceDeepPathLifecycle pins slice 3c's API surface: the schema
+// surfaces accept the path form and request normalization is per segment
+// (§5.1). A table is created under a two-segment namespace through the op
+// layer — create_table's implicit ensure makes acme/prod (and the acme/
+// directory) without acme ever existing as a namespace — written and read
+// back, listed through the prefix, and dropped child-first: the deep-path
+// lifecycle end to end. Depth-1 namespaces are untouched by every step
+// (the widened patterns still match them — §8.1's additive rule; the rest
+// of the suite pins that world byte for byte).
+func TestNamespaceDeepPathLifecycle(t *testing.T) {
+	h := newHarness(t)
+
+	// Create under a path: the created table reports the path as its
+	// namespace, the row count of a fresh table is zero.
+	data := h.mustHTTP("create_table", map[string]any{
+		"namespace": "acme/prod",
+		"table":     "findings",
+		"fields":    []map[string]any{{"name": "title", "type": "string"}},
+	})
+	tbl, _ := data["table"].(map[string]any)
+	if tbl["namespace"] != "acme/prod" {
+		t.Fatalf("created table reports its namespace path, got %v", tbl["namespace"])
+	}
+
+	// Rows go in and come back through the deep path, over both transports.
+	h.mustHTTP("insert", map[string]any{
+		"namespace": "acme/prod",
+		"table":     "findings",
+		"records":   []map[string]any{{"title": "auth flow"}},
+	})
+	sc := h.mustMCP("query", map[string]any{
+		"namespace": "acme/prod",
+		"sql":       "SELECT title FROM findings",
+	})
+	if rc, _ := sc["row_count"].(float64); rc != 1 {
+		t.Fatalf("deep-path query row_count, want 1: %v", sc)
+	}
+	rows, _ := sc["rows"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("deep-path query rows, want 1: %v", sc["rows"])
+	}
+	if row, _ := rows[0].(map[string]any); row["title"] != "auth flow" {
+		t.Fatalf("deep-path query row, want the inserted title: %v", rows[0])
+	}
+
+	// Per-segment normalization (§5.1): v0.2.0's trim-and-lowercase, per
+	// segment — the padded, cased path names the same namespace over the
+	// direct wire, and over MCP the same way (the schemas advertise
+	// canonical names; the server still normalizes what it is handed).
+	data = h.mustHTTP("describe_table", map[string]any{"namespace": " ACME / Prod ", "table": "findings"})
+	tbl, _ = data["table"].(map[string]any)
+	if tbl["namespace"] != "acme/prod" {
+		t.Fatalf("normalized describe_table reports the canonical path, got %v", tbl["namespace"])
+	}
+	if rc, _ := data["row_count"].(float64); rc != 1 {
+		t.Fatalf("normalized describe_table reaches the same table, want 1 row: %v", data)
+	}
+	sc = h.mustMCP("list_tables", map[string]any{"namespace": "ACME/prod"})
+	assertJSONEqual(t, "normalized MCP list_tables", sc["tables"], []any{"findings"})
+
+	// Listing with a prefix reports the deep namespace; acme itself was
+	// never created, so the subtree holds only acme/prod.
+	data = h.mustHTTP("list_namespaces", map[string]any{"prefix": "acme"})
+	assertJSONEqual(t, "deep-path prefix listing", data["namespaces"], []any{"acme/prod"})
+
+	// The grammar still bounds the surface: an over-depth path is
+	// invalid_request through the op layer, the validator's message naming
+	// the depth rule.
+	status, body := h.httpCall("create_table", map[string]any{
+		"namespace": "a/b/c/d",
+		"table":     "t",
+		"fields":    []map[string]any{{"name": "x", "type": "string"}},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("over-depth namespace: status %d, want 400: %v", status, body)
+	}
+	errObj, _ := body["error"].(map[string]any)
+	if errObj == nil || errObj["code"] != "invalid_request" {
+		t.Fatalf("over-depth namespace: expected an invalid_request envelope, got %v", body)
+	}
+	msg, _ := errObj["message"].(string)
+	wantMessage(t, "over-depth namespace names the depth rule", msg, `1-3 segments`)
+
+	// Normalization never silently repairs an empty segment: " A / / B "
+	// canonicalizes per segment to "a//b", which validation rejects. The wire
+	// behavior is pinned here because normNS alone round-trips the input — a
+	// future cleanup that drops empty segments would otherwise pass every unit
+	// test while silently creating a/b here (a and b do not exist yet at this
+	// point, so the status, code, and message assertions all carry weight).
+	status, body = h.httpCall("create_namespace", map[string]any{"namespace": " A / / B "})
+	if status != http.StatusBadRequest {
+		t.Fatalf("empty-segment namespace: status %d, want 400: %v", status, body)
+	}
+	errObj, _ = body["error"].(map[string]any)
+	if errObj == nil || errObj["code"] != "invalid_request" {
+		t.Fatalf("empty-segment namespace: expected an invalid_request envelope, got %v", body)
+	}
+	msg, _ = errObj["message"].(string)
+	wantMessage(t, "empty-segment namespace names the rule", msg, `no empty segments`)
+
+	// Drop child then parent: creating acme as a namespace of its own
+	// leaves the parent refusing to drop over its child; the child drops
+	// with confirm carrying the path (normalized like the namespace
+	// itself), and the parent then drops cleanly.
+	h.ensureNS("acme")
+	data = h.mustHTTP("list_namespaces", map[string]any{"prefix": "acme"})
+	assertJSONEqual(t, "parent exists alongside child", data["namespaces"], []any{"acme", "acme/prod"})
+	status, body = h.httpCall("drop_namespace", map[string]any{"namespace": "acme", "confirm": "acme"})
+	if status != http.StatusBadRequest {
+		t.Fatalf("parent drop with live child: status %d, want 400: %v", status, body)
+	}
+	errObj, _ = body["error"].(map[string]any)
+	if errObj == nil || errObj["code"] != "invalid_request" {
+		t.Fatalf("parent drop with live child: expected an invalid_request envelope, got %v", body)
+	}
+	msg, _ = errObj["message"].(string)
+	wantMessage(t, "parent drop names its 1 descendant", msg, `namespace acme has 1 descendant namespace`)
+	h.mustHTTP("drop_namespace", map[string]any{"namespace": "acme/prod", "confirm": " ACME/PROD "})
+	h.mustHTTP("drop_namespace", map[string]any{"namespace": "acme", "confirm": "acme"})
+	data = h.mustHTTP("list_namespaces", map[string]any{})
+	assertJSONEqual(t, "post-drop listing", data["namespaces"], []any{})
+}

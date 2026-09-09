@@ -515,8 +515,8 @@ func TestNamespaceAndTablePatternsDeclared(t *testing.T) {
 		}
 		props := def.InputSchema["properties"].(map[string]any)
 		ns := props["namespace"].(map[string]any)
-		if ns["pattern"] != `^[a-z0-9][a-z0-9_-]{0,63}$` {
-			t.Fatalf("%s: namespace must carry the store ns pattern, got %v", op, ns["pattern"])
+		if ns["pattern"] != store.NSPathPattern() {
+			t.Fatalf("%s: namespace must carry the store namespace-path pattern, got %v", op, ns["pattern"])
 		}
 		if op == "list_tables" {
 			continue
@@ -551,6 +551,52 @@ func TestNamespaceAndTablePatternsDeclared(t *testing.T) {
 		if len(notAnyOf) != 2 {
 			t.Fatalf("%s: table must exclude only __fts and sqlite_, got %v", op, table["not"])
 
+		}
+	}
+}
+
+// TestNormNSPerSegment pins §5.1's request normalization: v0.2.0's trim and
+// lowercase, applied per segment now that a namespace is a path. Whitespace
+// around the separators themselves is canonicalized away, not rejected —
+// validation follows normalization and still rejects genuinely empty
+// segments and other grammar violations.
+func TestNormNSPerSegment(t *testing.T) {
+	for in, want := range map[string]string{
+		"acme":              "acme",
+		"  Acme  ":          "acme",
+		"acme/prod":         "acme/prod",
+		" Acme / Prod ":     "acme/prod",
+		"ACME/Prod/EU":      "acme/prod/eu",
+		"a_b-c9/X-Y":        "a_b-c9/x-y",
+		// A segment that trims to nothing stays an empty segment: normNS
+		// canonicalizes, validateNSPath rejects — here it just round-trips.
+		" / ": "/",
+		"":    "",
+	} {
+		if got := normNS(in); got != want {
+			t.Errorf("normNS(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestEveryNamespaceSurfaceCarriesPathPattern walks the whole op registry:
+// every namespace request property — and list_namespaces' prefix, the one
+// namespace-shaped input that is not a "namespace" property — must declare
+// the store's namespace-path pattern. The shared nsProp helper makes drift
+// unlikely; this pins that no op can grow an inline pattern of its own.
+func TestEveryNamespaceSurfaceCarriesPathPattern(t *testing.T) {
+	for name, def := range Ops {
+		props, _ := def.InputSchema["properties"].(map[string]any)
+		if ns, ok := props["namespace"].(map[string]any); ok {
+			if ns["pattern"] != store.NSPathPattern() {
+				t.Errorf("%s: namespace property must carry the namespace-path pattern, got %v", name, ns["pattern"])
+			}
+		}
+		if name == "list_namespaces" {
+			prefix, ok := props["prefix"].(map[string]any)
+			if !ok || prefix["pattern"] != store.NSPathPattern() {
+				t.Errorf("list_namespaces: prefix must carry the namespace-path pattern, got %v", props["prefix"])
+			}
 		}
 	}
 }
