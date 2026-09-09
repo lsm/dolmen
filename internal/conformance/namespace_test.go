@@ -58,23 +58,27 @@ func TestNamespaceCreatedOnFirstUse(t *testing.T) {
 }
 
 // TestNamespaceTreeListingAndLeafOnlyDrops pins slice 3b's tree contract on
-// the wire: list_namespaces reports the whole nested tree sorted by full
-// path (no prefix — the v0.2.0 request, answered with v0.2.0's response
-// shape), the additive prefix (§5.3) filters to the prefix's subtree, and
-// drop_namespace refuses a namespace with descendants (§5.4) naming the
-// count — child-first drops succeed down to the leaf.
+// the wire: list_namespaces reports the whole nested tree in database-
+// filename order — v0.2.0's os.ReadDir order, byte-identical on a
+// depth-1-only store (no prefix — the v0.2.0 request, answered with
+// v0.2.0's response shape), the additive prefix (§5.3) filters to the
+// prefix's subtree, and drop_namespace refuses a namespace with
+// descendants (§5.4) naming the count — child-first drops succeed down to
+// the leaf.
 func TestNamespaceTreeListingAndLeafOnlyDrops(t *testing.T) {
 	h := newHarness(t)
 
-	for _, ns := range []string{"acme", "acme/prod", "acme/prod/eu", "acme/stage", "acme2", "zeta"} {
+	// edge/edge-x pin the order on the one pair where it visibly matters:
+	// v0.2.0's ReadDir ordered edge-x.db before edge.db ('-' < '.').
+	for _, ns := range []string{"acme", "acme/prod", "acme/prod/eu", "acme/stage", "acme2", "edge", "edge-x", "zeta"} {
 		h.ensureNS(ns)
 	}
 
 	// No prefix (the v0.2.0 request, byte-identical in shape): every
-	// namespace depth 1–3, sorted lexicographically by full path.
+	// namespace depth 1–3, in database-filename order.
 	data := h.mustHTTP("list_namespaces", map[string]any{})
 	assertJSONEqual(t, "full recursive listing", data["namespaces"],
-		[]any{"acme", "acme/prod", "acme/prod/eu", "acme/stage", "acme2", "zeta"})
+		[]any{"acme", "acme/prod", "acme/prod/eu", "acme/stage", "acme2", "edge-x", "edge", "zeta"})
 
 	// Prefix: the recursive subtree, the prefix itself included, and
 	// stem-siblings (acme2) excluded.
@@ -141,12 +145,12 @@ func TestNamespaceTreeListingAndLeafOnlyDrops(t *testing.T) {
 	wantMessage(t, "mid-tree drop names its 1 descendant", msg, `namespace acme/prod has 1 descendant namespace`)
 	data = h.mustHTTP("list_namespaces", map[string]any{})
 	assertJSONEqual(t, "refused drops deleted nothing", data["namespaces"],
-		[]any{"acme", "acme/prod", "acme/prod/eu", "acme/stage", "acme2", "zeta"})
+		[]any{"acme", "acme/prod", "acme/prod/eu", "acme/stage", "acme2", "edge-x", "edge", "zeta"})
 
 	// Child-first drops succeed: leaf, then parents, down to the root.
 	for _, ns := range []string{"acme/prod/eu", "acme/prod", "acme/stage", "acme"} {
 		h.mustHTTP("drop_namespace", map[string]any{"namespace": ns, "confirm": ns})
 	}
 	data = h.mustHTTP("list_namespaces", map[string]any{})
-	assertJSONEqual(t, "post-drop listing", data["namespaces"], []any{"acme2", "zeta"})
+	assertJSONEqual(t, "post-drop listing", data["namespaces"], []any{"acme2", "edge-x", "edge", "zeta"})
 }

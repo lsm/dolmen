@@ -198,12 +198,13 @@ func TestNestedNamespaceLayout(t *testing.T) {
 }
 
 // TestListNamespacesRecursiveOrder pins §5.3's listing shape on a mixed
-// tree: every namespace depth 1–3 appears exactly once, in lexicographic
-// full-path order — which is NOT the walk's per-directory order (a/b/c
-// sorts after a/b despite "b/" < "b.db" in ReadDir order, and a-x sorts
-// before a/b because '-' < '/') — and the walk skips what the store would
-// refuse to open: over-depth files and directories, invalid-segment
-// directories, non-.db files, and symlinked names at any depth.
+// tree: every namespace depth 1–3 appears exactly once, ordered by
+// database filename (sortNS) — which is NOT bare-path order: a-x sorts
+// BEFORE a (v0.2.0's os.ReadDir ordered a-x.db ahead of a.db, '-' <
+// '.', and a depth-1 store must keep that byte order), while a/b/c
+// sorts after a/b — and the walk skips what the store would refuse to
+// open: over-depth files and directories, invalid-segment directories,
+// non-.db files, and symlinked names at any depth.
 func TestListNamespacesRecursiveOrder(t *testing.T) {
 	st := openStore(t)
 	for _, ns := range []string{"a", "a-x", "a/b", "a/b/c", "ab", "z"} {
@@ -255,9 +256,9 @@ func TestListNamespacesRecursiveOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	want := []string{"a", "a-x", "a/b", "a/b/c", "ab", "z"}
+	want := []string{"a-x", "a", "a/b", "a/b/c", "ab", "z"}
 	if !reflect.DeepEqual(nss, want) {
-		t.Fatalf("recursive listing must be %v in full-path order, got %v", want, nss)
+		t.Fatalf("recursive listing must be %v in database-filename order, got %v", want, nss)
 	}
 }
 

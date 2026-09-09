@@ -216,8 +216,9 @@ Goal: `ListNamespaces` walks the tree; the op gains optional `prefix`; drops ref
 
 Changes:
 - `ListNamespaces` recursive walk (replaces flat `ReadDir`, `lifecycle.go:18-36`); optional prefix
-  (valid path) filters to the recursive subtree; lexicographic full-path order (depth-1-only
-  stores sort identically — §5.3).
+  (valid path) filters to the recursive subtree; database-filename order (`path + ".db"` —
+  depth-1-only stores sort identically to v0.2.0, including the `a-foo.db`-before-`a.db` hyphen
+  edge that bare-path order flips — §5.3).
 - `DropNamespace` rejects a namespace with descendants (`invalid_request` naming the descendant
   count) before any eviction/deletion (`lifecycle.go:84`).
 - `list_namespaces` op accepts optional `prefix` (additive, §8.1).

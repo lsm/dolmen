@@ -292,7 +292,7 @@ var Ops = map[string]OpDef{
 		OutputSchema: outSchema(map[string]any{
 			"namespaces": map[string]any{
 				"type":        "array",
-				"description": "Namespace names, sorted lexicographically by full path",
+				"description": "Namespace names, ordered as their database filenames order them (v0.2.0's order; edge-x before edge)",
 				"items":       map[string]any{"type": "string"},
 			},
 		}, "namespaces"),

@@ -15,18 +15,18 @@ import (
 )
 
 // ListNamespaces returns every namespace under the data directory, the
-// whole tree (§5.3): depth-1 names and nested a/b/c paths alike, sorted
-// lexicographically by full path — a depth-1-only store sorts exactly as
-// v0.2.0's filename-ordered listing did. A non-empty prefix (a valid
-// namespace path) restricts the listing to that path's subtree, the prefix
-// itself included when it names a namespace; the walk then touches only
-// that path, never a sibling, so an unreadable or huge unrelated subtree
-// can neither fail nor slow it — and neither can DropNamespace's
-// descendant check, which counts through the same listing. The empty
-// prefix lists everything. The list names exactly the namespaces the store
-// can open: entries whose stem is not a valid namespace segment are
-// skipped, as is anything but a regular file (a symlink named like a
-// namespace database is one of verifyNSDirs' refusals).
+// whole tree (§5.3): depth-1 names and nested a/b/c paths alike, in
+// database-filename order (sortNS) — on a depth-1-only store, exactly
+// v0.2.0's listing, byte for byte. A non-empty prefix (a valid namespace
+// path) restricts the listing to that path's subtree, the prefix itself
+// included when it names a namespace; the walk then touches only that
+// path, never a sibling, so an unreadable or huge unrelated subtree can
+// neither fail nor slow it — and neither can DropNamespace's descendant
+// check, which counts through the same listing. The empty prefix lists
+// everything. The list names exactly the namespaces the store can open:
+// entries whose stem is not a valid namespace segment are skipped, as is
+// anything but a regular file (a symlink named like a namespace database
+// is one of verifyNSDirs' refusals).
 // TODO(8c): bindings are ignored while auth is off.
 func (s *Store) ListNamespaces(ctx context.Context, prefix string, bindings []AuthBinding) ([]string, error) {
 	var out []string
@@ -45,7 +45,7 @@ func (s *Store) ListNamespaces(ctx context.Context, prefix string, bindings []Au
 		if dir == "" {
 			// No subtree directory: the listing is the prefix's own file,
 			// if it was one.
-			sort.Strings(out)
+			sortNS(out)
 			return out, nil
 		}
 		root, at = dir, prefix
@@ -53,8 +53,18 @@ func (s *Store) ListNamespaces(ctx context.Context, prefix string, bindings []Au
 	if err := walkNamespaces(root, at, &out); err != nil {
 		return nil, err
 	}
-	sort.Strings(out)
+	sortNS(out)
 	return out, nil
+}
+
+// sortNS orders a namespace listing the way v0.2.0's os.ReadDir ordered a
+// depth-1 store — by database filename, stem+".db", generalized to full
+// paths (§5.3's depth-1 byte-identity, §8.1). Sorting the bare names is
+// NOT the same order and would break existing stores: v0.2.0 lists
+// a-foo.db before a.db ('-' sorts before '.'), so "a-foo" precedes "a",
+// while as bare paths "a" is a prefix of "a-foo" and would flip first.
+func sortNS(nss []string) {
+	sort.Slice(nss, func(i, j int) bool { return nss[i]+".db" < nss[j]+".db" })
 }
 
 // nsSubtree resolves a prefix into its listing inputs: whether the prefix
@@ -128,9 +138,10 @@ func (s *Store) nsSubtree(prefix string) (self bool, dir string, err error) {
 // prefix is the namespace path of dir's contents — "" at the
 // data-directory root, or a subtree root, which may sit AT the cap: only
 // the prefix's own file (checked by the caller) is a namespace there, so
-// the walk reports nothing and descends no further. The caller sorts:
-// ReadDir's per-directory filename order is not full-path order (a/b/c
-// sorts after a/b.db's namespace a/b, though "b" < "b.db").
+// the walk reports nothing and descends no further. The caller orders the
+// collected names (sortNS): ReadDir's per-directory filename order is not
+// a whole-tree order (a/b's b.db is collected after a/b/c's c.db, though
+// "b.db" < "c.db").
 func walkNamespaces(dir, prefix string, out *[]string) error {
 	// depth is the segment count of prefix: a file at this level names a
 	// depth+1 namespace, a directory's contents depth+2 and deeper. The
@@ -323,9 +334,9 @@ func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte
 // minus itself — the §5.4 leaf-only drop guard's number. Callers have
 // already validated the path and established the namespace's file exists;
 // the count is the listing's subtree read, so it counts exactly what a
-// re-list would report. The subtree listing sorts lexicographically, and a
-// path always sorts before its own extensions, so nsName is the first
-// entry whenever it is a namespace at all.
+// re-list would report. Under sortNS a prefix's own file orders before
+// every extension of it ("a/b.db" < "a/b/x.db": '.' < '/'), so nsName is
+// the first entry whenever it is a namespace at all.
 func (s *Store) descendants(ctx context.Context, nsName string) (int, error) {
 	nss, err := s.ListNamespaces(ctx, nsName, nil)
 	if err != nil {
