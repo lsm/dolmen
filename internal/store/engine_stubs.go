@@ -5,21 +5,14 @@ import (
 	"errors"
 )
 
-// errNotImplemented is the single placeholder error the three Engine methods
+// errNotImplemented is the single placeholder error the two Engine methods
 // whose concrete bodies arrive in later slices of the #159 plan return until
-// then (plan slice 2b): GetRows (5a), ChangesSince (5c), and Listen (6b).
-// Their signatures are pinned by the interface (2a), so each later slice
-// swaps only the body — and nothing advertises a capability the engine does
-// not have yet (Capabilities grew its real body in 4d and now reports the
-// engine's exact facts, with notifications/subscribe held false until
-// Listen's body lands in 6b).
+// then (plan slice 2b): ChangesSince (5c) and Listen (6b). Their signatures
+// are pinned by the interface (2a), so each later slice swaps only the body —
+// and nothing advertises a capability the engine does not have yet
+// (Capabilities grew its real body in 4d, GetRows in 5a; notifications and
+// subscribe stay false until Listen's body lands in 6b).
 var errNotImplemented = errors.New("not implemented by the SQLite engine yet")
-
-// GetRows is the id-addressed scoped fetch behind read_rows (§2, §6.2). Stub
-// — slice 5a implements it.
-func (s *Store) GetRows(ctx context.Context, ns, table string, ids []int64, scope *RowScope, scopeIncarnation Incarnation) (QueryResult, error) {
-	return QueryResult{}, errNotImplemented
-}
 
 // ChangesSince is the scoped replay read over the durable change log
 // (§6.2, §9.3). Stub — slice 5c implements it (with the log itself).

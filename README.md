@@ -494,7 +494,7 @@ proxy is not.
 claude mcp add --transport http dolmen http://127.0.0.1:8790/mcp
 ```
 
-The MCP server exposes the same nineteen operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
+The MCP server exposes the same twenty-one operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
 
 Skill distribution is built into the server. `GET /skills` returns a JSON manifest with links to the layered skill markdown; `GET /skills/dolmen` is the end-user skill and `GET /skills/dolmen-admin` is the developer skill. Agents should fetch the skill from the running binary instead of copying a static file.
 
@@ -508,6 +508,8 @@ Skill distribution is built into the server. `GET /skills` returns a JSON manife
 | `list_tables` | Tables in a namespace |
 | `describe_server` | Server's embedding provider status — provider (`none` / `local` / `openai`), model, the identity that pins vectorized tables, and whether server-side embedding is usable; read-only, no secrets |
 | `describe_table` | Schema, version, row count |
+| `read_rows` | Fetch rows by id — each found row once, ascending id order; missing ids are simply absent (never an error); at most 1,000 ids per request |
+| `capabilities` | The engine's static capability surface — `vector_execution` (`exact` / `ann`), `ann_recall_bound` (explicit `null` when exact), `notifications`, `subscribe`; reported verbatim |
 | `create_table` | Typed fields with `fulltext` / `vector` / `vectorize` / `enum` / `default` annotations (`enum` restricts a string field to a closed vocabulary; `default` is stored by inserts that omit the field) |
 | `infer_schema` | Propose fields from sample records (creates nothing) |
 | `insert` | Validated records; indexes and embeddings update automatically; `idempotency_key` makes retries replay the original ids |
@@ -683,6 +685,7 @@ Every row has two implicit columns:
 | Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
 | Records per `insert` / `upsert_by_key` | 1,000 | rejected |
+| Ids per `read_rows` | 1,000 | rejected |
 | Natural key fields per `upsert_by_key` | 8 | rejected |
 | Idempotency key length | 1–256 bytes; use printable ASCII (`[ -~]`); omit the field for a non-idempotent insert | empty and over-256-byte keys are rejected; the JSON Schema enforces non-empty printable ASCII for schema-validating clients |
 | Vector dimension (declared `vector` fields) | 1–4096 | rejected |

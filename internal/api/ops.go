@@ -475,6 +475,47 @@ var Ops = map[string]OpDef{
 			return map[string]any{"embedding": emb}, nil
 		},
 	},
+	"capabilities": {
+		Description: "Report the storage engine's static capabilities: vector_execution (\"exact\" or \"ann\"), " +
+			"ann_recall_bound (explicitly null when execution is exact — never omitted; a number in (0,1] iff ann, " +
+			"the guaranteed minimum recall versus the exact path), notifications (whether commit notifications are " +
+			"implemented), and subscribe (whether live streams are available). Field names and types are pinned, so " +
+			"the discovery is portable across conforming engines; unknown future fields are additive. Read-only, " +
+			"engine-reported verbatim — the single discovery surface under auth: off, and what describe_server inlines under auth: on.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"vector_execution": map[string]any{
+				"type":        "string",
+				"description": "How the engine executes vector search: exact (brute-force) or ann (approximate nearest-neighbor within the declared recall bound)",
+				"enum":        []string{string(store.VectorExact), string(store.VectorANN)},
+			},
+			"ann_recall_bound": map[string]any{
+				"description": "Guaranteed minimum recall versus the exact path over the conformance corpus: explicitly null when vector_execution is exact (never omitted), a number in (0,1] iff ann",
+				"anyOf": []any{
+					map[string]any{"type": "number"},
+					map[string]any{"type": "null"},
+				},
+			},
+			"notifications": prop("boolean", "Whether the engine implements commit notifications (wait_for)"),
+			"subscribe":     prop("boolean", "Whether the engine serves live change streams"),
+		}, "vector_execution", "ann_recall_bound", "notifications", "subscribe"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req struct{}
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			// Verbatim (§6.2): the op layer publishes EngineCapabilities as
+			// the engine reported it — pinned field names and types, no
+			// invention above the seam. The struct's json tags are the wire
+			// contract; ann_recall_bound has no omitempty, so exact engines
+			// serialize an explicit null.
+			return s.eng.Capabilities(), nil
+		},
+	},
 	"describe_table": {
 		Description: "Get the schema, version, and row count of a table.",
 		InputSchema: map[string]any{
@@ -773,6 +814,52 @@ var Ops = map[string]OpDef{
 				return nil, wrapStoreErr(err)
 			}
 			return map[string]any{"ids": res.Ids, "inserted": res.Inserted, "updated": res.Updated}, nil
+		},
+	},
+	"read_rows": {
+		Description: "Fetch rows by id: pass the row ids an insert returned, a query projected, or a change feed " +
+			"carried, and get the full rows back. The plain by-id read — no SQL to write, no namespace-wide gate to hold. " +
+			"ids address a set: each found row appears once, in ascending id order, " +
+			"and ids that are missing are simply absent from the response — never an error; row_count reports how many came back. " +
+			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array) " +
+			"and omit the hidden _embedding column. At most " + strconv.Itoa(store.MaxReadRowsIDs) + " ids per request.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace of the table"),
+				"table":     existingTableProp("Table name"),
+				"ids": map[string]any{
+					"type":        "array",
+					"description": "Row ids to fetch; each found row is returned once, in ascending id order — missing ids are simply absent",
+					"items":       map[string]any{"type": "integer"},
+					"maxItems":    store.MaxReadRowsIDs,
+				},
+			},
+			"required": []string{"namespace", "table", "ids"},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"rows": map[string]any{
+				"type":        "array",
+				"description": "The found rows in ascending id order, keyed by field name; declared fields honor their types, and the hidden _embedding column is omitted",
+				"items":       map[string]any{"type": "object", "description": "Row keyed by field name"},
+			},
+			"row_count": prop("integer", "Number of rows returned (ids that were missing are absent, never an error)"),
+		}, "rows", "row_count"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req readRowsReq
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			ns := normNS(req.Namespace)
+			if err := s.ensureNamespace(ctx, ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			res, err := s.eng.GetRows(ctx, ns, normTable(req.Table), req.Ids, nil, store.Incarnation{})
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"rows": res.Rows, "row_count": len(res.Rows)}, nil
 		},
 	},
 	"query": {
@@ -1581,6 +1668,12 @@ type upsertReq struct {
 	Table     string           `json:"table"`
 	On        []string         `json:"on"`
 	Records   []map[string]any `json:"records"`
+}
+
+type readRowsReq struct {
+	Namespace string  `json:"namespace"`
+	Table     string  `json:"table"`
+	Ids       []int64 `json:"ids"`
 }
 
 type queryReq struct {

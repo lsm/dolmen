@@ -24,6 +24,21 @@ var writeDataSchema = objectSchema(false, map[string]any{
 	"updated":  integer(0),
 }, []string{"ids", "inserted", "updated"})
 
+// capabilitiesOutSchema mirrors EngineCapabilities verbatim (§6.2): pinned
+// field names, types, and enum values, all four required — ann_recall_bound
+// is explicitly null under exact execution, never omitted.
+var capabilitiesOutSchema = objectSchema(false, map[string]any{
+	"vector_execution": map[string]any{"type": "string", "enum": []string{string(store.VectorExact), string(store.VectorANN)}},
+	"ann_recall_bound": map[string]any{
+		"anyOf": []any{
+			map[string]any{"type": "number"},
+			map[string]any{"type": "null"},
+		},
+	},
+	"notifications": propBool(),
+	"subscribe":     propBool(),
+}, []string{"vector_execution", "ann_recall_bound", "notifications", "subscribe"})
+
 var outputSchemas = map[string]map[string]any{
 	"list_tables":     objectSchema(false, map[string]any{"tables": arrayOf(map[string]any{"type": "string"})}, []string{"tables"}),
 	"describe_table":  objectSchema(false, map[string]any{"table": ref("TableSchema"), "row_count": integer(0)}, []string{"table", "row_count"}),
@@ -32,6 +47,8 @@ var outputSchemas = map[string]map[string]any{
 	"insert":          objectSchema(false, map[string]any{"ids": arrayOf(integer(1)), "inserted": integer(0), "replayed": propBool()}, []string{"ids", "inserted"}),
 	"upsert_by_key":   writeDataSchema,
 	"query":           objectSchema(false, map[string]any{"rows": arrayOf(ref("Row")), "row_count": integer(0), "truncated": propBool()}, []string{"rows", "row_count", "truncated"}),
+	"read_rows":       objectSchema(false, map[string]any{"rows": arrayOf(ref("Row")), "row_count": integer(0)}, []string{"rows", "row_count"}),
+	"capabilities":    capabilitiesOutSchema,
 	"search_fulltext": objectSchema(false, map[string]any{"results": arrayOf(ref("Row")), "truncated": propBool()}, []string{"results", "truncated"}),
 	"search_vector":   objectSchema(false, map[string]any{"results": arrayOf(ref("Row")), "truncated": propBool()}, []string{"results", "truncated"}),
 	"delete":          objectSchema(false, map[string]any{"deleted": integer(0)}, []string{"deleted"}),
