@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/schema"
@@ -438,6 +439,108 @@ func TestWaitForTimeoutBoundDeclared(t *testing.T) {
 		}
 	}
 	t.Fatalf("namespace must be a required request key, got %v", req)
+}
+
+// stalledChangesEngine stalls ChangesSince the way a concurrent write
+// holding the namespace's ONE writable connection does: the call sits in the
+// connection wait until its context fires, then fails with the context's
+// error — database/sql's pool wait honors its context exactly this way.
+type stalledChangesEngine struct {
+	store.Engine
+	stall time.Duration
+}
+
+func (e stalledChangesEngine) ChangesSince(ctx context.Context, ns, table string, from store.Cursor, nsGen [16]byte, scope *store.RowScope, scopeIncarnation store.Incarnation, page store.Page) ([]store.ChangeRecord, store.Cursor, error) {
+	select {
+	case <-time.After(e.stall):
+	case <-ctx.Done():
+		return nil, "", ctx.Err()
+	}
+	return e.Engine.ChangesSince(ctx, ns, table, from, nsGen, scope, scopeIncarnation, page)
+}
+
+// TestWaitForReadsBoundedByDeadline: the bounded-time contract holds even
+// when the feed read queues behind a stalled engine — every read carries the
+// wait's remaining budget (floored at one tick), the budget's expiry returns
+// the EMPTY page with the caller's own cursor (never an error), and the one
+// uncapped read is a bare start's boundary establishment, which waits out
+// the stall to answer with a minted head cursor (§9.2, §9.3).
+func TestWaitForReadsBoundedByDeadline(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	const stall = 1500 * time.Millisecond
+	srv := &Server{eng: stalledChangesEngine{Engine: st, stall: stall}, emb: fakeEmb{}}
+	call := func(op, body string) (any, error) {
+		return srv.Dispatch(context.Background(), op, []byte(body))
+	}
+	for op, body := range map[string]string{
+		"create_namespace": `{"namespace":"rt"}`,
+		"create_table":     `{"namespace":"rt","table":"notes","fields":[{"name":"title","type":"string"}]}`,
+		"insert":           `{"namespace":"rt","table":"notes","records":[{"title":"a"}]}`,
+	} {
+		if _, err := call(op, body); err != nil {
+			t.Fatalf("%s: %v", op, err)
+		}
+	}
+	// A head cursor minted through the unblocked engine — the token the
+	// stalled waits resume from.
+	_, head, err := st.ChangesSince(context.Background(), "rt", "", "", [16]byte{}, nil, store.Incarnation{}, store.Page{})
+	if err != nil {
+		t.Fatalf("mint head cursor: %v", err)
+	}
+	if head == "" {
+		t.Fatal("no head cursor")
+	}
+
+	// timeout_ms 0: the conditional poll caps at the tick floor, not the
+	// stall, and echoes the caller's cursor back.
+	start := time.Now()
+	res, err := call("wait_for", fmt.Sprintf(`{"namespace":"rt","cursor":%q,"timeout_ms":0}`, head))
+	if err != nil {
+		t.Fatalf("stalled conditional poll errored: %v", err)
+	}
+	page := res.(map[string]any)
+	if changes, _ := page["changes"].([]any); len(changes) != 0 {
+		t.Fatalf("stalled conditional poll = %v changes, want an empty page", len(changes))
+	}
+	if got, _ := page["next_cursor"].(string); got != string(head) {
+		t.Fatalf("stalled poll's next_cursor = %q, want the caller's cursor echoed %q", got, head)
+	}
+	if held := time.Since(start); held > 1200*time.Millisecond {
+		t.Fatalf("conditional poll held %v behind a stalled engine — the read outran its tick budget", held)
+	}
+
+	// timeout_ms 400: the remaining budget (not the floor) caps the read.
+	start = time.Now()
+	res, err = call("wait_for", fmt.Sprintf(`{"namespace":"rt","cursor":%q,"timeout_ms":400}`, head))
+	if err != nil {
+		t.Fatalf("stalled bounded wait errored: %v", err)
+	}
+	page = res.(map[string]any)
+	if got, _ := page["next_cursor"].(string); got != string(head) {
+		t.Fatalf("stalled wait's next_cursor = %q, want the caller's cursor echoed %q", got, head)
+	}
+	if held := time.Since(start); held < 380*time.Millisecond || held > 1200*time.Millisecond {
+		t.Fatalf("bounded wait held %v, want ~timeout_ms 400 even behind a stalled engine", held)
+	}
+
+	// A bare start's boundary-establishing read is the uncapped one: the
+	// call waits out the stall and still answers with a minted head cursor.
+	start = time.Now()
+	res, err = call("wait_for", `{"namespace":"rt","timeout_ms":0}`)
+	if err != nil {
+		t.Fatalf("bare start behind a stalled engine errored: %v", err)
+	}
+	page = res.(map[string]any)
+	if got, _ := page["next_cursor"].(string); got == "" {
+		t.Fatal("bare start returned no head cursor behind a stalled engine")
+	}
+	if held := time.Since(start); held < stall-100*time.Millisecond {
+		t.Fatalf("bare start returned after %v — it must wait for its boundary read, not skip it", held)
+	}
 }
 
 type blankIdentityEmb struct{}

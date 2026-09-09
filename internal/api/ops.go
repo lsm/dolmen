@@ -1472,8 +1472,43 @@ var Ops = map[string]OpDef{
 			// sub-tick timeout can never wrongly return empty.
 			deadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
 			for {
-				records, next, err := runChangesSince(ctx, s, ns, table, cursor, limit)
+				// Every read runs under the wait's remaining budget, floored
+				// at one tick so a timeout_ms-0 poll and the final re-check
+				// stay genuine reads instead of already-expired contexts: a
+				// namespace has ONE writable connection, and a concurrent
+				// write or migration holding it must not stretch the call
+				// past its bound — the read aborts at the budget (the pool
+				// wait honors its context) and the wall bound is timeout_ms
+				// plus at most one tick. The exception is a bare start's
+				// first read (cursor is "" only there — every completed read
+				// pins a minted token): §9.3 requires the response to carry
+				// a minted head cursor, which cannot exist until a read
+				// completes, so that one boundary-establishing read waits
+				// for the engine exactly like a plain changes_since would.
+				readCtx := ctx
+				var cancel context.CancelFunc
+				if cursor != "" {
+					budget := time.Until(deadline)
+					if budget < waitForPollTick {
+						budget = waitForPollTick
+					}
+					readCtx, cancel = context.WithTimeout(ctx, budget)
+				}
+				records, next, err := runChangesSince(readCtx, s, ns, table, cursor, limit)
+				if cancel != nil {
+					cancel()
+				}
 				if err != nil {
+					// A read that outlived its budget is the wait timing
+					// out while the engine was busy — the empty-page
+					// contract, not a failure (§9.2): the page carries the
+					// cursor the caller arrived with (cursor is "" only
+					// before a bare start's uncapped first read, which has
+					// no budget to outlive). A canceled parent context —
+					// the caller gone — is not a timeout and still errors.
+					if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil && cursor != "" {
+						return renderChanges(nil, store.Cursor(cursor)), nil
+					}
 					return nil, err
 				}
 				if len(records) > 0 {
