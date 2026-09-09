@@ -123,6 +123,7 @@ func TestChangeBeginBoundary(t *testing.T) {
 		{"everything within the window replays from the oldest", []time.Duration{-6 * day, -time.Hour, -time.Minute}, 7 * day, 0},
 		{"a record exactly R old still has full headroom", []time.Duration{-7 * day, -time.Hour}, 7 * day, 0},
 		{"records older than R before the call are skipped", []time.Duration{-8 * day, -6 * day, -time.Hour}, 7 * day, 1},
+		{"disordered stamps never skip in-window history", []time.Duration{-time.Hour, -30 * day}, 7 * day, 0},
 		{"nothing qualifies: begin is the current head", []time.Duration{-9 * day, -8 * day}, 7 * day, 2},
 	}
 	for _, tc := range cases {

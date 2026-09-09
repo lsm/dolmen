@@ -196,11 +196,21 @@ func changeHead(ctx context.Context, db rowQuerier) (int64, error) {
 // oldest retained record with a full page-chain of headroom. A chain begun at
 // time T caps at T+2R and each of its tokens dies at its own issuance + R,
 // while a record minted at M is held to M+2R — so every record a chain can
-// still reach satisfies M ≥ T−R, and the boundary is the newest record
-// strictly older than R before the call: everything after it is readable
-// through the whole chain, everything before it is outside every replay
-// guarantee and skipped, never replayed into a chain that pruning could then
-// break mid-page.
+// still reach satisfies M ≥ T−R, and the boundary is the FIRST record no
+// older than R before the call: it and everything after it is readable
+// through the whole chain; anything older is outside every replay guarantee
+// and skipped, never replayed into a chain that pruning could then break
+// mid-page.
+//
+// The boundary is derived from the earliest in-window record (its seq minus
+// one), never from the out-of-window prefix: `at` is a persisted wall-clock
+// stamp and can move backward between commits (a clock step, a skewed
+// writer), so out-of-window records need not form a prefix — a boundary
+// placed past a MAX of them could sit beyond an earlier in-window record and
+// silently skip guaranteed history. On an ordered log the two formulations
+// pick the same position; under disorder this one can only over-deliver
+// (interleaved out-of-window records ride the chain, retained through its
+// deadline like every other record past the origin), never skip.
 //
 // With retention disabled (R = 0) records never age out and the headroom
 // argument is vacuous — the formulas must NOT apply, or M ≥ T skips retained
@@ -210,15 +220,10 @@ func changeHead(ctx context.Context, db rowQuerier) (int64, error) {
 // window — the boundary is the current head: exactly the bare-start
 // semantics, nothing retained is readable and the chain delivers future
 // commits only.
-//
-// Records mint in seq order under the serialized write lock, so `at` never
-// decreases with seq and the non-qualifying records are a prefix; MAX over
-// that prefix is the boundary position.
 func changeBegin(ctx context.Context, db rowQuerier, now time.Time, retention time.Duration) (int64, error) {
+	// R = 0: oldest retained record; the chain resumes after it — position
+	// seq−1, which a never-pruned log makes 0.
 	if retention <= 0 {
-		// Oldest retained record: the chain resumes after it — position
-		// seq−1, which a never-pruned log makes 0. An empty log shares the
-		// bare-start position (head is also 0).
 		var oldest sql.NullInt64
 		if err := db.QueryRowContext(ctx,
 			`SELECT MIN(seq) FROM _dolmen_changes`).Scan(&oldest); err != nil {
@@ -229,13 +234,19 @@ func changeBegin(ctx context.Context, db rowQuerier, now time.Time, retention ti
 		}
 		return oldest.Int64 - 1, nil
 	}
-	var pos int64
+	// R > 0: first record inside the window, by seq — the earliest sequence
+	// whose stamp qualifies, not the newest out-of-window one (see above).
+	var first sql.NullInt64
 	if err := db.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(seq), 0) FROM _dolmen_changes WHERE at < ?`,
-		isoChangeStamp(now.Add(-retention))).Scan(&pos); err != nil {
+		`SELECT MIN(seq) FROM _dolmen_changes WHERE at >= ?`,
+		isoChangeStamp(now.Add(-retention))).Scan(&first); err != nil {
 		return 0, err
 	}
-	return pos, nil
+	if !first.Valid {
+		// Nothing retained is within the window — the bare-start position.
+		return changeHead(ctx, db)
+	}
+	return first.Int64 - 1, nil
 }
 
 // mintCursorToken stores one _dolmen_cursor_tokens row and returns its opaque
