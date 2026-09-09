@@ -385,6 +385,36 @@ func TestListNamespacesPrefix(t *testing.T) {
 	if _, err := st4.Store.ListNamespaces(ctx, "a/b", nil); err == nil {
 		t.Fatal("the inaccessible component's own subtree must fail loudly too")
 	}
+
+	// The leaf-only guard fails closed on metadata errors, never open: a
+	// readable-but-unsearchable directory (mode r without x) hands ReadDir
+	// the child's name but refuses the stat — the walk must propagate that
+	// error so the descendant count aborts the drop, instead of silently
+	// skipping the child and deleting the parent over a live subtree.
+	st5 := openStore(t)
+	mustNS(t, st5, "a")
+	mustNS(t, st5, "a/b")
+	nosearch := filepath.Join(st5.dir, "a")
+	if err := os.Chmod(nosearch, 0o400); err != nil {
+		t.Fatalf("chmod a/ readable-not-searchable: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(nosearch, 0o700) })
+	// Same capability probe as above: the pin needs the stat to be refused.
+	if _, err := os.Lstat(filepath.Join(nosearch, "b.db")); err == nil {
+		t.Skip("chmod does not refuse the entry stat here (Windows or root); the fail-closed pin needs a denying environment")
+	}
+	if _, err := st5.Store.ListNamespaces(ctx, "", nil); err == nil {
+		t.Fatal("a listing that cannot stat a visible entry must fail, not silently omit it")
+	}
+	if err := st5.DropNamespace("a"); err == nil {
+		t.Fatal("the drop must abort when the descendant count cannot be read")
+	}
+	if _, err := os.Stat(filepath.Join(st5.dir, "a.db")); err != nil {
+		t.Fatalf("the aborted drop must have deleted nothing: %v", err)
+	}
+	if _, ok := st5.nss["a"]; !ok {
+		t.Fatal("the aborted drop must have evicted nothing")
+	}
 }
 
 // TestDropNamespaceRejectsDescendants pins §5.4's leaf-only drop: a

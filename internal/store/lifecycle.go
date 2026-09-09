@@ -162,7 +162,23 @@ func walkNamespaces(dir, prefix string, out *[]string) error {
 	descend := depth+2 <= maxNSDepth
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() {
+		// One lstat decides what the entry is (Info is lstat semantics: a
+		// symlink reports the link itself, and fi.IsDir never leans on the
+		// dirent type, which some filesystems leave unknown). A vanished
+		// entry is just gone; any other metadata error propagates — an
+		// unsearchable directory (mode r without x) hands ReadDir the
+		// names but refuses the stat, and a silently skipped entry is a
+		// silently missing descendant: DropNamespace counts children
+		// through this walk and must fail closed, never undercount into
+		// deleting a parent whose child exists.
+		fi, err := e.Info()
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if fi.IsDir() {
 			if !descend || !nsSegmentRe.MatchString(name) {
 				continue
 			}
@@ -179,12 +195,9 @@ func walkNamespaces(dir, prefix string, out *[]string) error {
 		if stem == name || !nsSegmentRe.MatchString(stem) {
 			continue
 		}
-		// Info is lstat semantics: a symlink reports the link itself, so
-		// the rule below matches lockedNS's regular-file check — a listed
-		// namespace must be one the store would open, not one it refuses.
-		// An entry vanishing mid-listing is just gone.
-		fi, err := e.Info()
-		if err != nil || !fi.Mode().IsRegular() {
+		// A listed namespace must be one the store would open, not one it
+		// refuses: lockedNS's regular-file check.
+		if !fi.Mode().IsRegular() {
 			continue
 		}
 		ns := stem
@@ -334,9 +347,11 @@ func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte
 // minus itself — the §5.4 leaf-only drop guard's number. Callers have
 // already validated the path and established the namespace's file exists;
 // the count is the listing's subtree read, so it counts exactly what a
-// re-list would report. Under sortNS a prefix's own file orders before
-// every extension of it ("a/b.db" < "a/b/x.db": '.' < '/'), so nsName is
-// the first entry whenever it is a namespace at all.
+// re-list would report, and it fails closed: any error reading the
+// subtree aborts the drop rather than undercounting children away. Under
+// sortNS a prefix's own file orders before every extension of it
+// ("a/b.db" < "a/b/x.db": '.' < '/'), so nsName is the first entry
+// whenever it is a namespace at all.
 func (s *Store) descendants(ctx context.Context, nsName string) (int, error) {
 	nss, err := s.ListNamespaces(ctx, nsName, nil)
 	if err != nil {
