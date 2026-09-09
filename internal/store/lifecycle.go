@@ -14,10 +14,12 @@ import (
 )
 
 // ListNamespaces returns the namespaces that exist under the data directory,
-// sorted by name. A namespace exists when its <name>.db file does; files whose
-// stem could not be a valid namespace name are skipped, so the list matches
-// exactly what the store can open. TODO(3b): prefix is ignored while
-// namespaces are depth-1 — slice 3b's recursive walk filters to the subtree.
+// sorted by name. Listing is still depth-1 (TODO(3b)): only top-level
+// <name>.db files are reported — a nested namespace's b.db lives inside the
+// a/ directory (slice 3a's layout) and stays invisible until 3b's recursive
+// walk, which is also when prefix starts filtering to a subtree. Top-level
+// files whose stem is not a valid namespace segment are skipped, so the list
+// matches exactly what the store can open at depth 1.
 // TODO(8c): bindings are ignored while auth is off.
 func (s *Store) ListNamespaces(ctx context.Context, prefix string, bindings []AuthBinding) ([]string, error) {
 	entries, err := os.ReadDir(s.dir)
@@ -30,7 +32,7 @@ func (s *Store) ListNamespaces(ctx context.Context, prefix string, bindings []Au
 			continue
 		}
 		name := strings.TrimSuffix(e.Name(), ".db")
-		if name == e.Name() || !nsRe.MatchString(name) {
+		if name == e.Name() || !nsSegmentRe.MatchString(name) {
 			continue
 		}
 		out = append(out, name)
@@ -40,17 +42,28 @@ func (s *Store) ListNamespaces(ctx context.Context, prefix string, bindings []Au
 }
 
 // CreateNamespace creates an empty namespace — its SQLite file plus registry
-// tables — up front. Namespaces are otherwise created implicitly on first use;
-// this exists so callers can reserve a name deliberately, and it fails when
-// the namespace already exists. Reservation is atomic (O_EXCL): exactly one
-// concurrent or cross-process caller wins the name.
+// tables — up front. It is the only creation path (nothing creates a
+// namespace implicitly since slice 2b), it exists so callers can reserve a
+// name deliberately, and it fails when the namespace already exists.
+// Reservation is atomic (O_EXCL): exactly one concurrent or cross-process
+// caller wins the name.
 // TODO(8c): parentNsGen is ignored while auth is off — slice 8c verifies the
 // parent's incarnation atomically with creation.
 func (s *Store) CreateNamespace(ctx context.Context, nsName string, parentNsGen [16]byte) error {
-	if err := validateNS(nsName); err != nil {
+	if err := validateNSPath(nsName); err != nil {
 		return err
 	}
 	path := s.nsPath(nsName)
+	// A child namespace's parent directory is created here, on first child
+	// creation (§5.2) — never on open: CreateNamespace is the only creation
+	// path (ns() opens, it does not create), so the first creation of a/b
+	// while a exists as a.db must not depend on any other path having made
+	// <data>/a/. MkdirAll is idempotent, so concurrent creators still race
+	// only on the O_EXCL open below. Depth-1 namespaces have no parent
+	// directory to make beyond s.dir itself, which Open already created.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
 	// Reservation, eviction, and initialization hold one lock span. The O_EXCL
 	// loser of a concurrent CreateNamespace returns already-exists and
 	// proceeds straight to ns() (the op layer's ensureNamespace treats
@@ -100,7 +113,7 @@ func (s *Store) CreateNamespace(ctx context.Context, nsName string, parentNsGen 
 // TODO(8c): nsGen is ignored while auth is off — slice 8c verifies the
 // namespace-lifetime guard atomically with the drop.
 func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte) error {
-	if err := validateNS(nsName); err != nil {
+	if err := validateNSPath(nsName); err != nil {
 		return err
 	}
 	path := s.nsPath(nsName)
@@ -258,13 +271,30 @@ func (s *Store) evict(name string) {
 	delete(s.nss, name)
 }
 
-func validateNS(name string) error {
-	if !nsRe.MatchString(name) {
-		return invalidf("invalid namespace %q: must match ^[a-z0-9][a-z0-9_-]{0,63}$", name)
+// validateNSPath enforces the §5.1 grammar: 1–3 segments matching
+// nsSegmentRe, separated by single slashes. An empty segment — leading,
+// trailing, or doubled slash — fails the segment match, so the split alone
+// rules them out; the segment charset admits no "." or "/", so a valid path
+// can never escape s.dir through the join below.
+func validateNSPath(name string) error {
+	segs := strings.Split(name, "/")
+	if len(segs) > 3 {
+		return invalidf("invalid namespace %q: namespace paths are 1-3 segments (a/b/c), got %d", name, len(segs))
+	}
+	for _, seg := range segs {
+		if !nsSegmentRe.MatchString(seg) {
+			return invalidf("invalid namespace %q: every segment must match ^[a-z0-9][a-z0-9_-]{0,63}$ (no empty segments — leading, trailing, or double slashes)", name)
+		}
 	}
 	return nil
 }
 
+// nsPath maps a namespace path to its SQLite file — adapter #1's layout
+// (§5.2): a/b/c is <data>/a/b/c.db, and a depth-1 namespace stays exactly
+// v0.2.0's <data>/<name>.db. Callers validate through validateNSPath first,
+// which is what keeps the join inside s.dir.
 func (s *Store) nsPath(name string) string {
-	return filepath.Join(s.dir, name+".db")
+	segs := strings.Split(name, "/")
+	segs[len(segs)-1] += ".db"
+	return filepath.Join(append([]string{s.dir}, segs...)...)
 }
