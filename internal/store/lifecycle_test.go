@@ -357,6 +357,25 @@ func TestListNamespacesPrefix(t *testing.T) {
 	if got, err := st3.Store.ListNamespaces(ctx, "sym/deep", nil); err != nil || len(got) != 0 {
 		t.Fatalf("a path through a symlinked component must list empty, got %v (%v)", got, err)
 	}
+
+	// A stat error that is not plain absence is loud, never a silent empty
+	// listing: with a/ unsearchable, every path through it stats with a
+	// permission error and the namespaces below are unknowable — reporting
+	// them as absent would lie (the walk itself propagates ReadDir errors
+	// the same way).
+	st4 := openStore(t)
+	mustNS(t, st4, "a/b/c")
+	blocked := filepath.Join(st4.dir, "a")
+	if err := os.Chmod(blocked, 0o000); err != nil {
+		t.Fatalf("chmod a/: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(blocked, 0o700) })
+	if _, err := st4.Store.ListNamespaces(ctx, "a/b/c", nil); err == nil {
+		t.Fatal("a prefix through an inaccessible component must surface its stat error, not list empty")
+	}
+	if _, err := st4.Store.ListNamespaces(ctx, "a/b", nil); err == nil {
+		t.Fatal("the inaccessible component's own subtree must fail loudly too")
+	}
 }
 
 // TestDropNamespaceRejectsDescendants pins §5.4's leaf-only drop: a

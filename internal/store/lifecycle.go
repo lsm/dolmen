@@ -35,7 +35,10 @@ func (s *Store) ListNamespaces(ctx context.Context, prefix string, bindings []Au
 		if err := validateNSPath(prefix); err != nil {
 			return nil, err
 		}
-		self, dir := s.nsSubtree(prefix)
+		self, dir, err := s.nsSubtree(prefix)
+		if err != nil {
+			return nil, err
+		}
 		if self {
 			out = append(out, prefix)
 		}
@@ -65,24 +68,51 @@ func (s *Store) ListNamespaces(ctx context.Context, prefix string, bindings []Au
 // rule descends through none), so a subtree through it lists empty rather
 // than reading outside the data directory, and a file sitting where a
 // directory component should be hides the rest of the path instead of
-// erroring.
-func (s *Store) nsSubtree(prefix string) (self bool, dir string) {
+// erroring. A stat error that is not plain absence — an inaccessible
+// component — propagates instead: the subtree's namespaces are unknowable,
+// and a silent empty listing would report them as absent, which the walk
+// never does (it propagates ReadDir errors for the same reason).
+func (s *Store) nsSubtree(prefix string) (self bool, dir string, err error) {
 	segs := strings.Split(prefix, "/")
+	// statComponent is one link of the chain: isDir=false with a nil error
+	// means the component is missing or not a directory — either way
+	// nothing below it can be reached; a non-nil error is real I/O.
+	statComponent := func(path string) (bool, error) {
+		fi, statErr := os.Lstat(path)
+		if os.IsNotExist(statErr) {
+			return false, nil
+		}
+		if statErr != nil {
+			return false, statErr
+		}
+		return fi.IsDir(), nil
+	}
 	chain := s.dir
 	for _, seg := range segs[:len(segs)-1] {
 		chain = filepath.Join(chain, seg)
-		if fi, err := os.Lstat(chain); err != nil || !fi.IsDir() {
-			return false, ""
+		isDir, err := statComponent(chain)
+		if err != nil {
+			return false, "", err
+		}
+		if !isDir {
+			return false, "", nil
 		}
 	}
-	if fi, err := os.Lstat(filepath.Join(chain, segs[len(segs)-1]+".db")); err == nil && fi.Mode().IsRegular() {
+	// The prefix's own file: only its absence or regularity matters.
+	if fi, statErr := os.Lstat(filepath.Join(chain, segs[len(segs)-1]+".db")); statErr == nil && fi.Mode().IsRegular() {
 		self = true
+	} else if statErr != nil && !os.IsNotExist(statErr) {
+		return false, "", statErr
 	}
 	dir = filepath.Join(chain, segs[len(segs)-1])
-	if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() {
-		return self, ""
+	isDir, err := statComponent(dir)
+	if err != nil {
+		return self, "", err
 	}
-	return self, dir
+	if !isDir {
+		return self, "", nil
+	}
+	return self, dir, nil
 }
 
 // walkNamespaces collects the namespaces of one directory subtree into out:
