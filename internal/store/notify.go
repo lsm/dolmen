@@ -310,6 +310,11 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	if sess.boundary, err = changeHead(ctx, tx); err != nil {
 		return nil, nil, err
 	}
+	// The live read starts exactly past the boundary: everything at or
+	// before R belongs to the replay half, and the two disjoint ranges are
+	// the exactly-once guarantee itself. Set before the pumps start, so no
+	// fill can race it.
+	sess.liveRead = sess.boundary
 	if err := tx.Commit(); err != nil {
 		return nil, nil, err
 	}
