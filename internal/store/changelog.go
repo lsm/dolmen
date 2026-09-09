@@ -283,7 +283,12 @@ func mintCursorToken(ctx context.Context, db cursorDB, now time.Time, position i
 // A successful resolve also refreshes the PRESENTED token's deadline — a
 // legitimate retry must not die because the first response was lost — by
 // updating issued_at in place; the cap cannot move with it, because
-// chain_start is immutable per chain.
+// chain_start is immutable per chain. That refresh is also the atomic
+// existence re-check: on the shared rw pool the SELECT and the UPDATE are
+// separate statements, and a concurrent pruneChanges may delete the token —
+// and the records it can still reach — between them. An UPDATE that matched
+// zero rows means exactly that: the position must not be honored, or replay
+// would be shortened under a live cursor (§9.3).
 func resolveCursorToken(ctx context.Context, db cursorDB, now time.Time, retention time.Duration, tok Cursor, feedTable string) (cursorRow, error) {
 	var row cursorRow
 	err := db.QueryRowContext(ctx,
@@ -308,10 +313,18 @@ func resolveCursorToken(ctx context.Context, db cursorDB, now time.Time, retenti
 			return cursorRow{}, errCursorExpired
 		}
 	}
-	if _, err := db.ExecContext(ctx,
+	res, err := db.ExecContext(ctx,
 		`UPDATE _dolmen_cursor_tokens SET issued_at = ? WHERE token = ?`,
-		now.UnixMilli(), row.Token); err != nil {
+		now.UnixMilli(), row.Token)
+	if err != nil {
 		return cursorRow{}, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return cursorRow{}, err
+	}
+	if n == 0 {
+		return cursorRow{}, errCursorExpired
 	}
 	return row, nil
 }
@@ -333,7 +346,11 @@ func resolveCursorToken(ctx context.Context, db cursorDB, now time.Time, retenti
 // chain gap-free: at the cap its oldest records can be nearly 3R old while
 // remaining perfectly valid; pure age-R pruning would break gap-free replay
 // with a beyond-retention error or a shortened page on a perfectly valid
-// cursor.
+// cursor. The reach boundary is the chains' minimum origin, precomputed once
+// by the scalar subquery — a correlated per-record EXISTS would rescan the
+// token table for every candidate record, and both tables grow for the whole
+// retention window. With no surviving chains the minimum is NULL and every
+// age-eligible record goes.
 func pruneChanges(ctx context.Context, db cursorDB, now time.Time, retention time.Duration) error {
 	if retention <= 0 {
 		return nil
@@ -348,10 +365,8 @@ func pruneChanges(ctx context.Context, db cursorDB, now time.Time, retention tim
 	_, err := db.ExecContext(ctx,
 		`DELETE FROM _dolmen_changes
 		 WHERE at < ?
-		   AND NOT EXISTS (
-		     SELECT 1 FROM _dolmen_cursor_tokens
-		      WHERE chain_origin < _dolmen_changes.seq
-		   )`,
+		   AND seq <= COALESCE((SELECT MIN(chain_origin) FROM _dolmen_cursor_tokens),
+		                        9223372036854775807)`,
 		isoChangeStamp(now.Add(-2 * retention)))
 	return err
 }

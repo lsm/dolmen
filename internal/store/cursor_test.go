@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -575,4 +577,53 @@ func seqRange(lo, hi int64) []int64 {
 		out = append(out, i)
 	}
 	return out
+}
+
+// racingPruneDB is a cursorDB double that injects the P1 interleave
+// deterministically: between resolveCursorToken's SELECT and its refresh
+// UPDATE, a concurrent pruneChanges deletes the token. It fires once, on the
+// first UPDATE it sees, then delegates everything.
+type racingPruneDB struct {
+	db     cursorDB
+	victim string
+	fired  bool
+}
+
+func (r *racingPruneDB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return r.db.QueryRowContext(ctx, query, args...)
+}
+
+func (r *racingPruneDB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	if !r.fired && strings.HasPrefix(strings.TrimSpace(query), "UPDATE") {
+		r.fired = true
+		if _, err := r.db.ExecContext(ctx,
+			`DELETE FROM _dolmen_cursor_tokens WHERE token = ?`, r.victim); err != nil {
+			return nil, err
+		}
+	}
+	return r.db.ExecContext(ctx, query, args...)
+}
+
+// TestResolveRacingPruneReturnsExpired: a token deleted between resolve's
+// SELECT and its refresh UPDATE must resolve as expired, never as a position
+// — the affected-row count of the UPDATE is the existence re-check that
+// makes the refresh atomic against a concurrent prune.
+func TestResolveRacingPruneReturnsExpired(t *testing.T) {
+	st := openChangeStore(t)
+	ctx := context.Background()
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	tok, err := mintCursorToken(ctx, n.rw, time.Now(), 7, "notes", nil)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	raced := &racingPruneDB{db: n.rw, victim: string(tok)}
+	if _, err := resolveCursorToken(ctx, raced, time.Now(), time.Hour, tok, "notes"); !errors.Is(err, errCursorExpired) {
+		t.Fatalf("resolve under a racing prune: err = %v, want errCursorExpired — a deleted token must not resolve", err)
+	}
+	if c := countTokens(t, n); c != 0 {
+		t.Fatalf("fixture wiring: %d tokens remain, want the victim deleted", c)
+	}
 }
