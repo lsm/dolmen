@@ -33,30 +33,33 @@ const MaxIdempotencyKeyLen = 256
 // ids are committed together, durably, so a retry — even after a process
 // restart — returns the original ids (Replayed = true) instead of inserting
 // again. A key reused with a different payload is an error rather than a
-// silent replay of unrelated ids. TODO(9h): opts.Owner and
+// silent replay of unrelated ids. The result carries the ChangeRange the
+// transaction minted (§6.2, §9.3) — internal only, never in public response
+// shapes, and the zero value on an idempotency replay (the original insert
+// minted its records; the replay mints none). TODO(9h): opts.Owner and
 // opts.TableWideRead, scope, and scopeIncarnation are ignored while auth is
 // off — slice 9h stamps the owner and scopes the idempotency replay.
 func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
 	if len(opts.IdempotencyKey) > MaxIdempotencyKeyLen {
 		return InsertResult{}, invalidf("idempotency key is %d bytes (max %d)", len(opts.IdempotencyKey), MaxIdempotencyKeyLen)
 	}
-	ids, replayed, err := s.insert(ctx, nsName, table, records, emb, opts.IdempotencyKey)
+	ids, changes, replayed, err := s.insert(ctx, nsName, table, records, emb, opts.IdempotencyKey)
 	if err != nil {
 		return InsertResult{}, err
 	}
-	return InsertResult{Ids: ids, Replayed: replayed}, nil
+	return InsertResult{Ids: ids, Replayed: replayed, Changes: changes}, nil
 }
 
-func (s *Store) insert(ctx context.Context, nsName, table string, records []map[string]any, emb Embedder, idemKey string) (ids []int64, replayed bool, err error) {
+func (s *Store) insert(ctx context.Context, nsName, table string, records []map[string]any, emb Embedder, idemKey string) (ids []int64, changes ChangeRange, replayed bool, err error) {
 	if len(records) == 0 {
-		return nil, false, invalidf("no records given")
+		return nil, ChangeRange{}, false, invalidf("no records given")
 	}
 	if len(records) > MaxRecordsPerInsert {
-		return nil, false, invalidf("too many records: %d > %d per call", len(records), MaxRecordsPerInsert)
+		return nil, ChangeRange{}, false, invalidf("too many records: %d > %d per call", len(records), MaxRecordsPerInsert)
 	}
 	n, err := s.ns(nsName)
 	if err != nil {
-		return nil, false, err
+		return nil, ChangeRange{}, false, err
 	}
 	normalized := make([]map[string]any, len(records))
 	for i, rec := range records {
@@ -64,7 +67,7 @@ func (s *Store) insert(ctx context.Context, nsName, table string, records []map[
 		for k, v := range rec {
 			lk := strings.ToLower(k)
 			if _, exists := nr[lk]; exists {
-				return nil, false, invalidf("record %d: fields %q and its case variant collapse to %q; use one spelling", i, k, lk)
+				return nil, ChangeRange{}, false, invalidf("record %d: fields %q and its case variant collapse to %q; use one spelling", i, k, lk)
 			}
 			nr[lk] = v
 		}
@@ -79,11 +82,11 @@ func (s *Store) insert(ctx context.Context, nsName, table string, records []map[
 
 	for attempt := 0; ; attempt++ {
 		if attempt >= 3 {
-			return nil, false, invalidf("table schema changed concurrently; retry the insert")
+			return nil, ChangeRange{}, false, invalidf("table schema changed concurrently; retry the insert")
 		}
-		ids, replayed, done, err := s.insertAttempt(ctx, n, nsName, table, records, emb, idemKey, idemHash)
+		ids, changes, replayed, done, err := s.insertAttempt(ctx, n, nsName, table, records, emb, idemKey, idemHash)
 		if done {
-			return ids, replayed, err
+			return ids, changes, replayed, err
 		}
 	}
 }
@@ -121,7 +124,7 @@ func lookupIdem(ctx context.Context, db rowQuerier, table, key, wantHash string)
 	return ids, true, nil
 }
 
-func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, idemHash string) (ids []int64, replayed bool, done bool, err error) {
+func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, idemHash string) (ids []int64, changes ChangeRange, replayed bool, done bool, err error) {
 	// Capture the drop generation before the schema read: a drop_table landing
 	// during the embedding pause below bumps it, so the in-transaction
 	// re-check retries instead of committing into a same-named recreated
@@ -131,19 +134,19 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	// instances and processes sharing the data directory.
 	gen, err := tableGen(ctx, n.rw, table)
 	if err != nil {
-		return nil, false, true, err
+		return nil, ChangeRange{}, false, true, err
 	}
 	sc, err := loadSchema(ctx, n.rw, nsName, table)
 	if err != nil {
-		return nil, false, true, err
+		return nil, ChangeRange{}, false, true, err
 	}
 	if idemKey != "" {
 		// Fast path: a recorded key must short-circuit before any embedding
 		// work. The in-transaction check below remains the authoritative one.
 		if ids, found, err := lookupIdem(ctx, n.rw, table, idemKey, idemHash); err != nil {
-			return nil, false, true, err
+			return nil, ChangeRange{}, false, true, err
 		} else if found {
-			return ids, true, true, nil
+			return ids, ChangeRange{}, true, true, nil
 		}
 	}
 	persistMeta := sc.EmbedSpace == "" || sc.EmbedDim == 0
@@ -157,7 +160,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	for _, rec := range records {
 		for k := range rec {
 			if sc.Field(k) == nil {
-				return nil, false, true, invalidf("unknown field %q on table %s (see describe_table)", k, table)
+				return nil, ChangeRange{}, false, true, invalidf("unknown field %q on table %s (see describe_table)", k, table)
 			}
 		}
 		for _, f := range sc.Fields {
@@ -166,7 +169,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 				continue
 			}
 			if f.Required {
-				return nil, false, true, invalidf("field %q is required", f.Name)
+				return nil, ChangeRange{}, false, true, invalidf("field %q is required", f.Name)
 			}
 		}
 	}
@@ -187,7 +190,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			}
 			cv, err := coerceValue(f, v)
 			if err != nil {
-				return nil, false, true, fmt.Errorf("%w: %w", ErrInvalid, err)
+				return nil, ChangeRange{}, false, true, fmt.Errorf("%w: %w", ErrInvalid, err)
 			}
 			cols = append(cols, q(f.Name))
 			vals = append(vals, cv)
@@ -208,7 +211,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 		if len(texts) > 0 {
 			vecs, err := embedTexts(ctx, sc, table, texts, emb)
 			if err != nil {
-				return nil, false, true, err
+				return nil, ChangeRange{}, false, true, err
 			}
 			for k, i := range idx {
 				embFor[i] = vecs[k]
@@ -219,29 +222,29 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	fts := sc.FTSFields()
 	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, false, true, err
+		return nil, ChangeRange{}, false, true, err
 	}
 	defer tx.Rollback()
 
 	scTx, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
-		return nil, false, true, err
+		return nil, ChangeRange{}, false, true, err
 	}
 	txGen, err := tableGen(ctx, tx, table)
 	if err != nil {
-		return nil, false, true, err
+		return nil, ChangeRange{}, false, true, err
 	}
 	if scTx.Version != sc.Version || scTx.EmbedSpace != origEmbedSpace || scTx.EmbedDim != origEmbedDim || txGen != gen {
-		return nil, false, false, nil
+		return nil, ChangeRange{}, false, false, nil
 	}
 
 	if idemKey != "" {
 		ids, found, err := lookupIdem(ctx, tx, table, idemKey, idemHash)
 		if err != nil {
-			return nil, false, true, err
+			return nil, ChangeRange{}, false, true, err
 		}
 		if found {
-			return ids, true, true, nil
+			return ids, ChangeRange{}, true, true, nil
 		}
 	}
 
@@ -253,7 +256,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 		}
 		id, err := execInsertWithFTS(ctx, tx, table, fts, row.rec, row.cols, row.vals, vec)
 		if err != nil {
-			return nil, false, true, err
+			return nil, ChangeRange{}, false, true, err
 		}
 		ids = append(ids, id)
 	}
@@ -269,17 +272,25 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 		}
 		raw, err := json.Marshal(sc)
 		if err != nil {
-			return nil, false, true, err
+			return nil, ChangeRange{}, false, true, err
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE _dolmen_tables SET schema_json = ? WHERE name = ?`, string(raw), table); err != nil {
-			return nil, false, true, err
+			return nil, ChangeRange{}, false, true, err
 		}
+	}
+	// The change records are minted beside the rows they describe, inside
+	// this same transaction (§9.3): commit exposes rows and log together,
+	// and any failure below rolls both back together. owner stays NULL until
+	// stamping lands (slice 9c) — the insert path has no caller identity yet.
+	changes, err = mintChanges(ctx, tx, table, ChangeInsert, ids, nil)
+	if err != nil {
+		return nil, ChangeRange{}, false, true, err
 	}
 	if idemKey != "" {
 		idsJSON, err := json.Marshal(ids)
 		if err != nil {
-			return nil, false, true, err
+			return nil, ChangeRange{}, false, true, err
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO _dolmen_idempotency(table_name, key, payload_hash, ids_json) VALUES(?,?,?,?)`,
@@ -289,24 +300,24 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			// retry gets their ids — which is exactly the dedup contract.
 			if strings.Contains(err.Error(), "UNIQUE constraint failed: _dolmen_idempotency") {
 				if rerr := tx.Rollback(); rerr != nil {
-					return nil, false, true, rerr
+					return nil, ChangeRange{}, false, true, rerr
 				}
 				ids, found, lerr := lookupIdem(ctx, n.rw, table, idemKey, idemHash)
 				if lerr != nil {
-					return nil, false, true, lerr
+					return nil, ChangeRange{}, false, true, lerr
 				}
 				if !found {
-					return nil, false, true, invalidf("idempotency key %q vanished mid-insert; retry", idemKey)
+					return nil, ChangeRange{}, false, true, invalidf("idempotency key %q vanished mid-insert; retry", idemKey)
 				}
-				return ids, true, true, nil
+				return ids, ChangeRange{}, true, true, nil
 			}
-			return nil, false, true, err
+			return nil, ChangeRange{}, false, true, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, false, true, err
+		return nil, ChangeRange{}, false, true, err
 	}
-	return ids, false, true, nil
+	return ids, changes, false, true, nil
 }
 
 // applyInsertDefaults returns records with each omitted field that carries a

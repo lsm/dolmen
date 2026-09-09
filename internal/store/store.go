@@ -195,6 +195,32 @@ var registryDDL = []string{
 		key TEXT PRIMARY KEY,
 		value BLOB
 	)`,
+	// _dolmen_changes is the durable per-namespace change log (§9.3): one row
+	// per affected id, minted INSIDE the write transaction it describes
+	// (mintChanges), so there is no crash window in which an acknowledged
+	// write is missing from the log. The AUTOINCREMENT seq IS the
+	// per-namespace cursor — monotonic and gap-free by construction:
+	// sqlite_sequence updates are transactional (a rolled-back mint restores
+	// the counter) and the immediate write lock serializes writers, so one
+	// transaction's rows are always contiguous. nsgen + drop_gen are the
+	// lifetime labels (§3.4): the namespace's creation id and the table's
+	// current drop generation, so replay can select a table's CURRENT
+	// lifetime and a drop-and-recreated successor never inherits its
+	// predecessor's feed. owner is the row's authorization label (§9.3) —
+	// NULL until owner stamping lands (slice 9c); the column exists now so
+	// enabling it later needs no registry rebuild. DropTable does not purge
+	// these rows (lifetime labels, not deletion — §3.4/D24); DropNamespace
+	// deletes the log with the file, free.
+	`CREATE TABLE IF NOT EXISTS _dolmen_changes(
+		seq INTEGER PRIMARY KEY AUTOINCREMENT,
+		table_name TEXT NOT NULL,
+		row_id INTEGER NOT NULL,
+		kind TEXT NOT NULL,
+		owner TEXT,
+		nsgen BLOB NOT NULL,
+		drop_gen INTEGER NOT NULL,
+		at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+	)`,
 }
 
 func dsn(path string, readonly bool) string {
