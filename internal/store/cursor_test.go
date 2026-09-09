@@ -239,11 +239,11 @@ func TestResolveRejectsCrossFeedReuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mint: %v", err)
 	}
-	if _, err := resolveCursorToken(ctx, n.rw, now, time.Hour, tok, ""); !errors.Is(err, errCursorCrossFeed) {
-		t.Fatalf("resolving a table token on the namespace feed: err = %v, want errCursorCrossFeed", err)
+	if _, err := resolveCursorToken(ctx, n.rw, now, time.Hour, tok, ""); !errors.Is(err, ErrCursorCrossFeed) {
+		t.Fatalf("resolving a table token on the namespace feed: err = %v, want ErrCursorCrossFeed", err)
 	}
-	if _, err := resolveCursorToken(ctx, n.rw, now, time.Hour, tok, "tasks"); !errors.Is(err, errCursorCrossFeed) {
-		t.Fatalf("resolving a table token on another table's feed: err = %v, want errCursorCrossFeed", err)
+	if _, err := resolveCursorToken(ctx, n.rw, now, time.Hour, tok, "tasks"); !errors.Is(err, ErrCursorCrossFeed) {
+		t.Fatalf("resolving a table token on another table's feed: err = %v, want ErrCursorCrossFeed", err)
 	}
 	if row, err := resolveCursorToken(ctx, n.rw, now, time.Hour, tok, "notes"); err != nil || row.Position != 4 {
 		t.Fatalf("resolving on the minting feed = (%d, %v), want (4, nil)", row.Position, err)
@@ -277,8 +277,8 @@ func TestCursorTokenDeadlineAndChainCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mint unused: %v", err)
 	}
-	if _, err := resolveCursorToken(ctx, n.rw, t0.Add(r+time.Minute), r, unused, ""); !errors.Is(err, errCursorExpired) {
-		t.Fatalf("resolve past the token's own deadline: err = %v, want errCursorExpired", err)
+	if _, err := resolveCursorToken(ctx, n.rw, t0.Add(r+time.Minute), r, unused, ""); !errors.Is(err, ErrCursorExpired) {
+		t.Fatalf("resolve past the token's own deadline: err = %v, want ErrCursorExpired", err)
 	}
 
 	first, err := mintCursorToken(ctx, n.rw, t0, 3, "", nil)
@@ -307,8 +307,8 @@ func TestCursorTokenDeadlineAndChainCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mint last: %v", err)
 	}
-	if _, err := resolveCursorToken(ctx, n.rw, t0.Add(2*r+time.Minute), r, last, ""); !errors.Is(err, errCursorExpired) {
-		t.Fatalf("resolve past the chain cap with personal deadline to spare: err = %v, want errCursorExpired", err)
+	if _, err := resolveCursorToken(ctx, n.rw, t0.Add(2*r+time.Minute), r, last, ""); !errors.Is(err, ErrCursorExpired) {
+		t.Fatalf("resolve past the chain cap with personal deadline to spare: err = %v, want ErrCursorExpired", err)
 	}
 }
 
@@ -376,8 +376,8 @@ func TestResolveRefreshesPresentedToken(t *testing.T) {
 		t.Fatalf("resolve past the original deadline after refresh: %v", err)
 	}
 	// ...but never past the chain's cap.
-	if _, err := resolveCursorToken(ctx, n.rw, t0.Add(2*r+time.Minute), r, tok, ""); !errors.Is(err, errCursorExpired) {
-		t.Fatalf("resolve past the chain cap: err = %v, want errCursorExpired", err)
+	if _, err := resolveCursorToken(ctx, n.rw, t0.Add(2*r+time.Minute), r, tok, ""); !errors.Is(err, ErrCursorExpired) {
+		t.Fatalf("resolve past the chain cap: err = %v, want ErrCursorExpired", err)
 	}
 }
 
@@ -591,8 +591,8 @@ func TestSlowPageChainRidesOutPruningToTheCap(t *testing.T) {
 	// Past the cap the chain dies even though `last` was issued a minute ago
 	// — refresh cannot extend a chain past chain_start + 2R — and the next
 	// prune reaps the chain's tokens and, with them, the backlog.
-	if _, err := resolveCursorToken(ctx, n.rw, now.Add(48*time.Hour+time.Minute), r, last, ""); !errors.Is(err, errCursorExpired) {
-		t.Fatalf("resolve past the cap: err = %v, want errCursorExpired", err)
+	if _, err := resolveCursorToken(ctx, n.rw, now.Add(48*time.Hour+time.Minute), r, last, ""); !errors.Is(err, ErrCursorExpired) {
+		t.Fatalf("resolve past the cap: err = %v, want ErrCursorExpired", err)
 	}
 	if err := pruneChanges(ctx, n.rw, now.Add(49*time.Hour), r); err != nil {
 		t.Fatalf("prune at now+49h: %v", err)
@@ -655,8 +655,8 @@ func TestResolveRacingPruneReturnsExpired(t *testing.T) {
 		t.Fatalf("mint: %v", err)
 	}
 	raced := &racingPruneDB{db: n.rw, victim: string(tok)}
-	if _, err := resolveCursorToken(ctx, raced, time.Now(), time.Hour, tok, "notes"); !errors.Is(err, errCursorExpired) {
-		t.Fatalf("resolve under a racing prune: err = %v, want errCursorExpired — a deleted token must not resolve", err)
+	if _, err := resolveCursorToken(ctx, raced, time.Now(), time.Hour, tok, "notes"); !errors.Is(err, ErrCursorExpired) {
+		t.Fatalf("resolve under a racing prune: err = %v, want ErrCursorExpired — a deleted token must not resolve", err)
 	}
 	if c := countTokens(t, n); c != 0 {
 		t.Fatalf("fixture wiring: %d tokens remain, want the victim deleted", c)

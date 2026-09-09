@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -1202,6 +1203,106 @@ var Ops = map[string]OpDef{
 			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "skipped_vectors": res.SkippedVectors}, nil
 		},
 	},
+	"changes_since": {
+		Description: "Replay the namespace's durable change log: the changes committed after a cursor, " +
+			"in commit order, as one bounded page plus the next cursor — the polling-friendly half of dolmen's " +
+			"realtime surface (§9). Omit cursor to start at the current head: nothing replays, the response's " +
+			"next_cursor is the head cursor, and only subsequent commits are delivered — fresh subscribers miss " +
+			"nothing. Pass the literal \"begin\" to replay retained history from the oldest readable boundary, or " +
+			"pass the next_cursor (or any change's cursor) from a previous call to resume gap-free. " +
+			"An optional table filters the feed to that table's CURRENT lifetime — records from before a " +
+			"drop-and-recreate are never replayed; omit it for the namespace-wide feed. Each change carries only " +
+			"cursor, table, row_id, and kind (insert/update/delete): re-read current row content by id with query " +
+			"(a change is identity, never a row snapshot). A cursor that is unknown or past the change-log retention " +
+			"window (default 168h) is rejected with a teaching error: catch up by calling again with no cursor " +
+			"(current head) or with \"begin\" (retained history).",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace whose change log to replay"),
+				"table": existingTableProp("Optional table filter: replay only this table's current lifetime " +
+					"(omitted: every table in the namespace, in one commit-ordered feed)"),
+				"cursor": map[string]any{
+					"type":        "string",
+					"description": "Opaque resume token from a previous response's next_cursor or any change's cursor; the literal \"begin\" replays retained history from the oldest readable boundary; omitted starts at the current head (future commits only)",
+					"minLength":   1,
+				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Max changes per page (default 100, max 1000; values outside 1–1000 are invalid_request)",
+					"minimum":     1,
+					"maximum":     store.MaxChangesPageLimit,
+				},
+			},
+			"required": []string{"namespace"},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"changes": map[string]any{
+				"type":        "array",
+				"description": "Changes committed after the cursor, in commit order (§0.6 serial observability)",
+				"items": map[string]any{
+					"type":        "object",
+					"description": "One committed change; carries identity only, never a row snapshot",
+					"properties": map[string]any{
+						"cursor": prop("string", "Opaque token at this change's position; persist it to resume exactly after this change"),
+						"table":  prop("string", "Table the change committed in"),
+						"row_id": prop("integer", "Row the change touched (re-read its current content by id)"),
+						"kind": map[string]any{
+							"type":        "string",
+							"description": "Kind of change",
+							"enum":        []store.ChangeKind{store.ChangeInsert, store.ChangeUpdate, store.ChangeDelete},
+						},
+					},
+					"required":             []string{"cursor", "table", "row_id", "kind"},
+					"additionalProperties": false,
+				},
+			},
+			"next_cursor": prop("string", "Opaque token at the page's end; pass it as cursor to continue gap-free (an empty page still carries it)"),
+		}, "changes", "next_cursor"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req changesSinceReq
+			if err := decodeData(body, &req); err != nil {
+				return nil, err
+			}
+			limit := store.DefaultChangesPageLimit
+			if len(req.Limit) > 0 {
+				var n int
+				if err := json.Unmarshal(req.Limit, &n); err != nil || n < 1 || n > store.MaxChangesPageLimit {
+					return nil, badRequest("limit must be an integer between 1 and %d (default %d)", store.MaxChangesPageLimit, store.DefaultChangesPageLimit)
+				}
+				limit = n
+			}
+			ns := normNS(req.Namespace)
+			if err := s.ensureNamespace(ctx, ns); err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			records, next, err := s.eng.ChangesSince(ctx, ns, normTable(req.Table), store.Cursor(req.Cursor),
+				[16]byte{}, nil, store.Incarnation{}, store.Page{Limit: limit})
+			if err != nil {
+				// The teaching errors carry their own catch-up path, and stay
+				// generic on purpose: which feed or table a foreign cursor was
+				// minted for is not the caller's to learn here.
+				if errors.Is(err, store.ErrCursorExpired) {
+					return nil, badRequest("cursor is unknown or past the change-log retention window (-change-retention, default 168h); catch up by calling changes_since with no cursor to resume from the current head, or with cursor \"begin\" to replay retained history")
+				}
+				if errors.Is(err, store.ErrCursorCrossFeed) {
+					return nil, badRequest("cursor was minted on a different feed (a specific table's, or the namespace-wide feed); pass it only to the feed you received it from — honoring it elsewhere would silently skip events — or start fresh with no cursor / \"begin\"")
+				}
+				return nil, wrapStoreErr(err)
+			}
+			changes := make([]map[string]any, len(records))
+			for i, r := range records {
+				changes[i] = map[string]any{
+					"cursor": string(r.Cursor),
+					"table":  r.Table,
+					"row_id": r.RowID,
+					"kind":   string(r.Kind),
+				}
+			}
+			return map[string]any{"changes": changes, "next_cursor": string(next)}, nil
+		},
+	},
 	"delete": {
 		Description: "Delete rows matching a SQL WHERE expression (e.g. \"status = 'done'\" or \"id IN (3, 7)\"). " +
 			"Rows are also removed from search indexes. Use dry_run to preview the matched count, limit to set a safe threshold, " +
@@ -1684,6 +1785,19 @@ type queryReq struct {
 	Args      []any  `json:"args"`
 	Offset    int    `json:"offset"`
 	Limit     int    `json:"limit"`
+}
+
+// changesSinceReq carries changes_since's request. Cursor is the plain string
+// form: "" (omitted) starts at the current head, the literal "begin" at the
+// retained-history boundary, anything else is an opaque token. Limit is
+// RawMessage so presence is observable — the contract rejects an explicit
+// out-of-range value (outside 1–1000) rather than defaulting or clamping it,
+// and `null` is a type error, not the omitted field.
+type changesSinceReq struct {
+	Namespace string          `json:"namespace"`
+	Table     string          `json:"table"`
+	Cursor    string          `json:"cursor"`
+	Limit     json.RawMessage `json:"limit"`
 }
 
 type ftsReq struct {

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lsm/dolmen/internal/api"
 	"github.com/lsm/dolmen/internal/embed"
@@ -123,6 +124,9 @@ type harness struct {
 	// mode is how the booted server treats identity (spec §8.2). It is set
 	// once at construction and survives reopen(): a restart keeps its mode.
 	mode harnessMode
+	// storeOpts are extra store.Open options every (re)start applies — how
+	// realtime fixtures shrink the change-log retention for expiry tests.
+	storeOpts []store.OpenOption
 
 	httpURL string // .../v1
 	mcpURL  string // .../mcp
@@ -142,6 +146,17 @@ func newHarnessMode(t *testing.T, mode harnessMode) *harness {
 	return newHarnessAtMode(t, t.TempDir(), &fakeProvider{}, mode)
 }
 
+// newHarnessRetention boots the auth:off server with a non-default change-log
+// retention (§9.3) — the realtime expiry fixtures need a window far below the
+// deployment floor without waiting on wall-clock scales.
+func newHarnessRetention(t *testing.T, d time.Duration) *harness {
+	t.Helper()
+	h := newHarnessAtMode(t, t.TempDir(), &fakeProvider{}, authOff)
+	h.storeOpts = []store.OpenOption{store.WithChangeRetention(d)}
+	h.reopen()
+	return h
+}
+
 func newHarnessAt(t *testing.T, dir string, emb *fakeProvider) *harness {
 	t.Helper()
 	return newHarnessAtMode(t, dir, emb, authOff)
@@ -158,7 +173,7 @@ func newHarnessAtMode(t *testing.T, dir string, emb *fakeProvider, mode harnessM
 
 func (h *harness) start() {
 	h.t.Helper()
-	st, err := store.Open(h.dir)
+	st, err := store.Open(h.dir, h.storeOpts...)
 	if err != nil {
 		h.t.Fatalf("open store: %v", err)
 	}

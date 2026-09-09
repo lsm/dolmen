@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/lsm/dolmen/internal/schema"
 
@@ -53,6 +54,11 @@ func NSPathPattern() string {
 	return fmt.Sprintf(`^%s(/%s){0,%d}$`, nsSegmentSrc, nsSegmentSrc, maxNSDepth-1)
 }
 
+// DefaultChangeRetention is the change log's retention bound R (§9.3) when no
+// option overrides it — the documented -change-retention default, so a store
+// wired without options behaves exactly like a default deployment.
+const DefaultChangeRetention = 168 * time.Hour
+
 type Store struct {
 	dir string
 	mu  sync.Mutex
@@ -64,6 +70,13 @@ type Store struct {
 	// outside every lock.
 	notifyMu  sync.Mutex
 	listeners map[string][]*commitListener
+
+	// changeRetention is the change log's retention bound R (§9.3): the
+	// shared knob for cursor-token expiry and record pruning, fixed at Open —
+	// it shapes durable state (what resolve honors, what prune deletes), so
+	// it is not mid-life mutable. <= 0 disables both, an operator's disk
+	// choice, never a correctness requirement.
+	changeRetention time.Duration
 }
 
 type nsDB struct {
@@ -71,7 +84,20 @@ type nsDB struct {
 	ro *sql.DB
 }
 
-func Open(dir string) (*Store, error) {
+// OpenOption customizes a Store at open time.
+type OpenOption func(*Store)
+
+// WithChangeRetention sets the change log's retention bound R (§9.3):
+// cursor tokens expire by their issuance + R and records are pruned past the
+// 2R hold when no live page chain can reach them. 0 (or negative) disables
+// both — records accumulate and cursors never expire. The deployment-side
+// validation (0 or 1h–2160h) belongs to the binary's config layer; the engine
+// accepts whatever it is handed.
+func WithChangeRetention(d time.Duration) OpenOption {
+	return func(s *Store) { s.changeRetention = d }
+}
+
+func Open(dir string, opts ...OpenOption) (*Store, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
@@ -82,7 +108,11 @@ func Open(dir string) (*Store, error) {
 	if err := os.Chmod(abs, 0o700); err != nil {
 		return nil, fmt.Errorf("cannot secure data directory %s (owner-only permissions): %w", abs, err)
 	}
-	return &Store{dir: abs, nss: map[string]*nsDB{}}, nil
+	s := &Store{dir: abs, nss: map[string]*nsDB{}, changeRetention: DefaultChangeRetention}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
 }
 
 func (s *Store) Close() error {

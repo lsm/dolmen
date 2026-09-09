@@ -59,7 +59,7 @@ func run() error {
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
-	st, err := store.Open(cfg.DataDir)
+	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention))
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
