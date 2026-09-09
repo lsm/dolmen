@@ -211,13 +211,23 @@ func TestListNamespacesRecursiveOrder(t *testing.T) {
 	}
 	// Over-depth plants: a depth-4 database file (unreachable — its path
 	// exceeds §5.1's cap, so the walk never enters a/b/c/) and an
-	// invalid-segment directory holding a database.
+	// invalid-segment directory holding a database. The over-depth
+	// directory is also unreadable: the walk must not open it at all, so
+	// an operator's junk directory beside a/b/c.db can neither fail nor
+	// slow any listing — filtering after an eager ReadDir would fail here.
 	if err := os.MkdirAll(filepath.Join(st.dir, "a", "b", "c"), 0o700); err != nil {
 		t.Fatalf("plant depth-4 directory: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(st.dir, "a", "b", "c", "d.db"), nil, 0o600); err != nil {
 		t.Fatalf("plant depth-4 file: %v", err)
 	}
+	deep := filepath.Join(st.dir, "a", "b", "c")
+	if err := os.Chmod(deep, 0o000); err != nil {
+		t.Fatalf("chmod the depth-4 directory unreadable: %v", err)
+	}
+	// Restore readability before TempDir's cleanup (registered earlier, so
+	// it runs after this one) — RemoveAll must delete d.db inside.
+	t.Cleanup(func() { os.Chmod(deep, 0o700) })
 	if err := os.MkdirAll(filepath.Join(st.dir, "Bad Dir"), 0o700); err != nil {
 		t.Fatalf("plant invalid-segment dir: %v", err)
 	}

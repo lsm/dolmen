@@ -53,34 +53,38 @@ func (s *Store) ListNamespaces(ctx context.Context, prefix string, bindings []Au
 
 // walkNamespaces collects the namespaces of one directory subtree into out:
 // every regular <segment>.db file is a namespace, and descent continues
-// through directories named for a valid segment — never past §5.1's depth
-// cap (a namespace found there would name an over-cap path), never through
-// anything but a real directory (DirEntry.IsDir is lstat semantics: a
-// symlink reports as a link and is not descended, so the walk stays inside
-// s.dir the way verifyNSDirs keeps opens there). dir must be a directory
-// inside s.dir; prefix is the namespace path of dir's contents ("" at the
-// data-directory root). The caller sorts: ReadDir's per-directory filename
-// order is not full-path order (a/b/c sorts after a/b.db's namespace a/b,
-// though "b" < "b.db").
+// through directories named for a valid segment — only while another
+// segment still fits under §5.1's depth cap: a directory AT the cap
+// (<data>/a/b/c/ beside a/b/c.db) can hold nothing the grammar can name,
+// so the walk does not open it at all and an unreadable or huge one can
+// neither fail nor slow the listing. Descent is never through anything but
+// a real directory (DirEntry.IsDir is lstat semantics: a symlink reports
+// as a link and is not descended, so the walk stays inside s.dir the way
+// verifyNSDirs keeps opens there). dir must be a directory inside s.dir;
+// prefix is the namespace path of dir's contents ("" at the
+// data-directory root, and the recursion keeps it short of the cap, so
+// every file found names a valid path). The caller sorts: ReadDir's
+// per-directory filename order is not full-path order (a/b/c sorts after
+// a/b.db's namespace a/b, though "b" < "b.db").
 func walkNamespaces(dir, prefix string, out *[]string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
 	}
-	// depth is the segment count of prefix: a namespace found at this
-	// level has one more segment than that. Past §5.1's cap there is
-	// nothing left to find — a database file would name an over-cap path
-	// (a/b/c/d.db under a/b/c.db's namespace) and a directory could only
-	// hold such paths — so the walk reports and descends no further.
+	// depth is the segment count of prefix: a file at this level names a
+	// depth+1 namespace, a directory's contents depth+2 and deeper. The
+	// walk enters a directory only while those depths still fit the cap,
+	// which is also what keeps every emitted path valid without a
+	// per-file depth check.
 	depth := 0
 	if prefix != "" {
 		depth = strings.Count(prefix, "/") + 1
 	}
-	overDepth := depth >= maxNSDepth
+	descend := depth+2 <= maxNSDepth
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() {
-			if overDepth || !nsSegmentRe.MatchString(name) {
+			if !descend || !nsSegmentRe.MatchString(name) {
 				continue
 			}
 			child := name
@@ -90,9 +94,6 @@ func walkNamespaces(dir, prefix string, out *[]string) error {
 			if err := walkNamespaces(filepath.Join(dir, name), child, out); err != nil {
 				return err
 			}
-			continue
-		}
-		if overDepth {
 			continue
 		}
 		stem := strings.TrimSuffix(name, ".db")
