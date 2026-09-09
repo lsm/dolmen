@@ -268,9 +268,11 @@ type DeleteResult struct {
 }
 
 // Delete removes rows matching the filter (§6.2), enforcing the safety
-// threshold inside the delete transaction. TODO(9d): scope and
-// scopeIncarnation are ignored while auth is off — a non-nil scope will
-// filter which rows may be matched.
+// threshold inside the delete transaction. DeleteResult carries the
+// ChangeRange the transaction minted (§6.2, §9.3): one delete record per
+// removed row — zero on a dry run or a delete that matched nothing.
+// TODO(9d): scope and scopeIncarnation are ignored while auth is off — a
+// non-nil scope will filter which rows may be matched.
 func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation) (DeleteResult, error) {
 	where = strings.TrimSpace(where)
 	if where == "" {
@@ -348,11 +350,21 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	if err != nil {
 		return DeleteResult{}, err
 	}
+	// One delete record per removed row (§9.3), minted straight from the
+	// pre-delete id materialization — a single INSERT…SELECT, so a confirmed
+	// bulk delete (no match-count cap) never materializes its matched ids in
+	// the server (§6.2). The owner label is the deleted row's own, stamped
+	// from those pre-delete rows; it stays NULL until stamping lands (slice
+	// 9c), when the read joins the owner column onto the materialization.
+	changes, err := mintChangesFromTemp(ctx, tx, table, ChangeDelete, `_dolmen_delete_ids`)
+	if err != nil {
+		return DeleteResult{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `DROP TABLE _dolmen_delete_ids`); err != nil {
 		return DeleteResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return DeleteResult{}, err
 	}
-	return DeleteResult{Matched: matched, Deleted: deleted}, nil
+	return DeleteResult{Matched: matched, Deleted: deleted, Changes: changes}, nil
 }

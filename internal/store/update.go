@@ -13,31 +13,37 @@ import (
 
 // UpsertResult reports what an upsert did, in the shared shape every write op
 // returns: the ids of the rows the write touched — the matched rows, in id
-// order, on the update path, the new row on the insert path — and how many
-// rows each branch affected.
+// order, on the update path, the new row on the insert path — how many rows
+// each branch affected, and the ChangeRange the transaction minted (§6.2,
+// §9.3): one record per matched row on the update path, one for the new row
+// on the insert path.
 type UpsertResult struct {
 	Ids      []int64
 	Inserted int64
 	Updated  int64
+	Changes  ChangeRange
 }
 
 // Update sets the given fields on every row matching the SQL WHERE expression,
 // validating values against the table schema and keeping search indexes
 // consistent: full-text rows are reindexed when an indexed field changes, and
-// rows are re-embedded when a vectorized field changes (§6.2). TODO(9d):
-// scope and scopeIncarnation are ignored while auth is off — a non-nil scope
-// will filter which rows may be matched.
+// rows are re-embedded when a vectorized field changes (§6.2). UpdateResult
+// carries the ChangeRange the transaction minted (§6.2, §9.3) — one record
+// per matched row. TODO(9d): scope and scopeIncarnation are ignored while
+// auth is off — a non-nil scope will filter which rows may be matched.
 func (s *Store) Update(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (UpdateResult, error) {
 	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, false)
 	if err != nil {
 		return UpdateResult{}, err
 	}
-	return UpdateResult{Updated: res.Updated}, nil
+	return UpdateResult{Updated: res.Updated, Changes: res.Changes}, nil
 }
 
 // Upsert updates every row matching the SQL WHERE expression; when no row
 // matches, set is inserted as a new record instead (and must then satisfy
-// required fields) (§6.2). TODO(9h): opts, scope, and scopeIncarnation are
+// required fields) (§6.2). The result carries the ChangeRange the
+// transaction minted (§6.2, §9.3): one record per matched row, or one insert
+// record on the insert path. TODO(9h): opts, scope, and scopeIncarnation are
 // ignored while auth is off — slice 9h stamps the insert branches with
 // opts.Owner and applies the scope.
 func (s *Store) Upsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
@@ -45,7 +51,7 @@ func (s *Store) Upsert(ctx context.Context, nsName, table, where string, args []
 	if err != nil {
 		return InsertResult{}, err
 	}
-	return InsertResult{Ids: res.Ids, Inserted: res.Inserted, Updated: res.Updated}, nil
+	return InsertResult{Ids: res.Ids, Inserted: res.Inserted, Updated: res.Updated, Changes: res.Changes}, nil
 }
 
 func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, allowInsert bool) (UpsertResult, error) {
@@ -220,6 +226,19 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 			}
 			result.Ids = ids
 		}
+		// One change record per matched row (§9.3), minted straight from the
+		// materialized id set — the rows the UPDATE affected, resolved against
+		// pre-update state. The mint is a single INSERT…SELECT out of the temp
+		// table: the matched ids never round-trip through the server, so a
+		// bulk update (no match-count cap) cannot grow memory with the table
+		// (§6.2) — only the scalar range crosses back. owner stays NULL until
+		// stamping lands (slice 9c); it will then be read per row inside the
+		// SELECT, since the label is the row's own, never the writer's.
+		changes, err := mintChangesFromTemp(ctx, tx, table, ChangeUpdate, `_dolmen_update_ids`)
+		if err != nil {
+			return UpsertResult{}, err
+		}
+		result.Changes = changes
 	case allowInsert:
 		icols := cols
 		ivals := vals
@@ -262,6 +281,11 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 		}
 		result.Inserted = 1
 		result.Ids = []int64{id}
+		// The insert branch mints its record like every row-insert path (§9.3);
+		// owner stays NULL until stamping lands (slice 9c).
+		if result.Changes, err = mintChanges(ctx, tx, table, ChangeInsert, []int64{id}, nil); err != nil {
+			return UpsertResult{}, err
+		}
 	}
 
 	if persistMeta && (result.Updated > 0 || result.Inserted > 0) {

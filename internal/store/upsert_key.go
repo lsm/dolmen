@@ -19,9 +19,11 @@ const MaxKeyFields = 8
 // keep their values); otherwise the record is inserted and must satisfy
 // required fields. Repeating the call converges instead of duplicating rows,
 // making it the retry-safe write path for agents. ids align with records; an
-// updated record reports the existing row's id (§6.2). TODO(9h): opts, scope,
-// and scopeIncarnation are ignored while auth is off — slice 9h stamps the
-// insert branches with opts.Owner and applies the scope.
+// updated record reports the existing row's id (§6.2). The result carries the
+// ChangeRange the transaction minted (§6.2, §9.3): one record per
+// record-branch, insert or update, minted beside the write it describes.
+// TODO(9h): opts, scope, and scopeIncarnation are ignored while auth is off —
+// slice 9h stamps the insert branches with opts.Owner and applies the scope.
 func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
 	if len(records) == 0 {
 		return InsertResult{}, invalidf("no records given")
@@ -55,12 +57,12 @@ func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields
 		if attempt >= 3 {
 			return InsertResult{}, invalidf("table schema changed concurrently; retry the upsert")
 		}
-		ids, inserted, updated, done, err := s.upsertKeyAttempt(ctx, n, nsName, table, keyFields, records, emb)
+		ids, inserted, updated, changes, done, err := s.upsertKeyAttempt(ctx, n, nsName, table, keyFields, records, emb)
 		if done {
 			if err != nil {
 				return InsertResult{}, err
 			}
-			return InsertResult{Ids: ids, Inserted: int64(inserted), Updated: int64(updated)}, nil
+			return InsertResult{Ids: ids, Inserted: int64(inserted), Updated: int64(updated), Changes: changes}, nil
 		}
 	}
 }
@@ -136,7 +138,7 @@ func matchByKey(ctx context.Context, tx *sql.Tx, table string, keyFields []strin
 	return 0, nil
 }
 
-func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table string, keyFields []string, records []map[string]any, emb Embedder) (ids []int64, inserted, updated int, done bool, err error) {
+func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table string, keyFields []string, records []map[string]any, emb Embedder) (ids []int64, inserted, updated int, changes ChangeRange, done bool, err error) {
 	// Capture the drop generation before the schema read, for the same
 	// reason as insertAttempt: the embedding pause below must not be able to
 	// straddle a drop + recreate and commit a stale plan into the successor.
@@ -144,11 +146,11 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 	// and processes sharing the data directory.
 	gen, err := tableGen(ctx, n.rw, table)
 	if err != nil {
-		return nil, 0, 0, true, err
+		return nil, 0, 0, ChangeRange{}, true, err
 	}
 	sc, err := loadSchema(ctx, n.rw, nsName, table)
 	if err != nil {
-		return nil, 0, 0, true, err
+		return nil, 0, 0, ChangeRange{}, true, err
 	}
 	persistMeta := sc.EmbedSpace == "" || sc.EmbedDim == 0
 	origEmbedSpace := sc.EmbedSpace
@@ -158,12 +160,12 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 	for i, name := range keyFields {
 		f := sc.Field(name)
 		if f == nil {
-			return nil, 0, 0, true, invalidf("key field %q is not a field of table %s (see describe_table)", name, table)
+			return nil, 0, 0, ChangeRange{}, true, invalidf("key field %q is not a field of table %s (see describe_table)", name, table)
 		}
 		switch f.Type {
 		case schema.String, schema.Text, schema.Number, schema.Boolean, schema.Timestamp:
 		default:
-			return nil, 0, 0, true, invalidf("key field %q has type %s; natural keys must be string, text, number, boolean, or timestamp fields (vector and json values do not compare reliably)", name, f.Type)
+			return nil, 0, 0, ChangeRange{}, true, invalidf("key field %q has type %s; natural keys must be string, text, number, boolean, or timestamp fields (vector and json values do not compare reliably)", name, f.Type)
 		}
 		keyDefs[i] = f
 	}
@@ -171,7 +173,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 	for _, rec := range records {
 		for k := range rec {
 			if sc.Field(k) == nil {
-				return nil, 0, 0, true, invalidf("unknown field %q on table %s (see describe_table)", k, table)
+				return nil, 0, 0, ChangeRange{}, true, invalidf("unknown field %q on table %s (see describe_table)", k, table)
 			}
 		}
 	}
@@ -188,7 +190,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 			}
 			cv, err := coerceValue(f, v)
 			if err != nil {
-				return nil, 0, 0, true, fmt.Errorf("%w: %w", ErrInvalid, err)
+				return nil, 0, 0, ChangeRange{}, true, fmt.Errorf("%w: %w", ErrInvalid, err)
 			}
 			for j, kd := range keyDefs {
 				if kd.Name == f.Name {
@@ -200,7 +202,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 		}
 		for j, kd := range keyDefs {
 			if p.keyVals[j] == nil {
-				return nil, 0, 0, true, invalidf("record %d: key field %q must be present and non-null (NULL never matches an existing row, so the record would always insert)", i, kd.Name)
+				return nil, 0, 0, ChangeRange{}, true, invalidf("record %d: key field %q must be present and non-null (NULL never matches an existing row, so the record would always insert)", i, kd.Name)
 			}
 		}
 		p.cols = cols
@@ -230,7 +232,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 		if len(texts) > 0 {
 			vecs, err := embedTexts(ctx, sc, table, texts, emb)
 			if err != nil {
-				return nil, 0, 0, true, err
+				return nil, 0, 0, ChangeRange{}, true, err
 			}
 			for k, i := range idx {
 				embFor[i] = vecs[k]
@@ -241,32 +243,35 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 	fts := sc.FTSFields()
 	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, 0, 0, true, err
+		return nil, 0, 0, ChangeRange{}, true, err
 	}
 	defer tx.Rollback()
 
 	scTx, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
-		return nil, 0, 0, true, err
+		return nil, 0, 0, ChangeRange{}, true, err
 	}
 	txGen, err := tableGen(ctx, tx, table)
 	if err != nil {
-		return nil, 0, 0, true, err
+		return nil, 0, 0, ChangeRange{}, true, err
 	}
 	if scTx.Version != sc.Version || scTx.EmbedSpace != origEmbedSpace || scTx.EmbedDim != origEmbedDim || txGen != gen {
-		return nil, 0, 0, false, nil
+		return nil, 0, 0, ChangeRange{}, false, nil
 	}
 
 	// Match and write per record, inside the transaction: rows inserted earlier
 	// in the batch are visible to later records sharing the same key, and a
 	// write landing between the schema load and this point cannot split one
-	// record into two rows.
+	// record into two rows. The branch ids are collected alongside, one list
+	// per kind, so the change records below can be minted per branch.
 	ids = make([]int64, 0, len(records))
+	insertIDs := make([]int64, 0, len(records))
+	updateIDs := make([]int64, 0, len(records))
 	for i := range plans {
 		p := plans[i]
 		matchID, err := matchByKey(ctx, tx, table, keyFields, keyDefs, p.keyVals, i)
 		if err != nil {
-			return nil, 0, 0, true, err
+			return nil, 0, 0, ChangeRange{}, true, err
 		}
 		if matchID == 0 {
 			// An unmatched record inserts, so omitted fields with declared
@@ -283,7 +288,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 				}
 				cv, err := coerceValue(f, f.Default)
 				if err != nil {
-					return nil, 0, 0, true, fmt.Errorf("%w: %w", ErrInvalid, err)
+					return nil, 0, 0, ChangeRange{}, true, fmt.Errorf("%w: %w", ErrInvalid, err)
 				}
 				p.rec[f.Name] = f.Default
 				p.cols = append(p.cols, q(f.Name))
@@ -295,7 +300,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 					continue
 				}
 				if f.Required {
-					return nil, 0, 0, true, invalidf("record %d: field %q is required (no existing row matched the natural key, so this record inserts)", i, f.Name)
+					return nil, 0, 0, ChangeRange{}, true, invalidf("record %d: field %q is required (no existing row matched the natural key, so this record inserts)", i, f.Name)
 				}
 			}
 			var vec []float32
@@ -304,9 +309,10 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 			}
 			id, err := execInsertWithFTS(ctx, tx, table, fts, p.rec, p.cols, p.vals, vec)
 			if err != nil {
-				return nil, 0, 0, true, err
+				return nil, 0, 0, ChangeRange{}, true, err
 			}
 			ids = append(ids, id)
+			insertIDs = append(insertIDs, id)
 			inserted++
 			continue
 		}
@@ -316,7 +322,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 				continue
 			}
 			if v, present := p.rec[f.Name]; present && v == nil {
-				return nil, 0, 0, true, invalidf("record %d: field %q is required and cannot be set to null", i, f.Name)
+				return nil, 0, 0, ChangeRange{}, true, invalidf("record %d: field %q is required and cannot be set to null", i, f.Name)
 			}
 		}
 		uCols := p.cols
@@ -337,15 +343,16 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 			if _, err := tx.ExecContext(ctx,
 				fmt.Sprintf(`UPDATE %s SET %s WHERE id = ?`, q(table), strings.Join(set, ", ")),
 				uVals...); err != nil {
-				return nil, 0, 0, true, fmt.Errorf("update %s: %w", table, err)
+				return nil, 0, 0, ChangeRange{}, true, fmt.Errorf("update %s: %w", table, err)
 			}
 			if len(fts) > 0 {
 				if err := reindexFTSRow(ctx, tx, table, fts, matchID); err != nil {
-					return nil, 0, 0, true, err
+					return nil, 0, 0, ChangeRange{}, true, err
 				}
 			}
 		}
 		ids = append(ids, matchID)
+		updateIDs = append(updateIDs, matchID)
 		updated++
 	}
 
@@ -361,17 +368,42 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 		}
 		raw, err := json.Marshal(sc)
 		if err != nil {
-			return nil, 0, 0, true, err
+			return nil, 0, 0, ChangeRange{}, true, err
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE _dolmen_tables SET schema_json = ? WHERE name = ?`, string(raw), table); err != nil {
-			return nil, 0, 0, true, err
+			return nil, 0, 0, ChangeRange{}, true, err
+		}
+	}
+	// One change record per record-branch, minted beside the writes they
+	// describe (§9.3): all inserts, then all updates. Each mint is contiguous,
+	// and both run inside this one transaction — nothing can interleave — so
+	// the combined range is contiguous too. owner stays NULL until stamping
+	// lands (slice 9c); the update-branch labels will then be read from the
+	// rows themselves, never taken from the caller.
+	if len(insertIDs) > 0 {
+		rng, err := mintChanges(ctx, tx, table, ChangeInsert, insertIDs, nil)
+		if err != nil {
+			return nil, 0, 0, ChangeRange{}, true, err
+		}
+		changes = rng
+	}
+	if len(updateIDs) > 0 {
+		rng, err := mintChanges(ctx, tx, table, ChangeUpdate, updateIDs, nil)
+		if err != nil {
+			return nil, 0, 0, ChangeRange{}, true, err
+		}
+		if changes.Count == 0 {
+			changes = rng
+		} else {
+			changes.Last = rng.Last
+			changes.Count += rng.Count
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, 0, 0, true, err
+		return nil, 0, 0, ChangeRange{}, true, err
 	}
-	return ids, inserted, updated, true, nil
+	return ids, inserted, updated, changes, true, nil
 }
 
 // reindexFTSRow rebuilds one row's full-text entry from its current base-table

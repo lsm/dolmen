@@ -92,7 +92,7 @@ func (l legacyStore) Upsert(ctx context.Context, nsName, table, where string, ar
 	if err != nil {
 		return UpsertResult{}, err
 	}
-	return UpsertResult{Ids: res.Ids, Inserted: res.Inserted, Updated: res.Updated}, nil
+	return UpsertResult{Ids: res.Ids, Inserted: res.Inserted, Updated: res.Updated, Changes: res.Changes}, nil
 }
 
 func (l legacyStore) Update(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder) (int64, error) {

@@ -69,3 +69,44 @@ func mintChanges(ctx context.Context, tx *sql.Tx, table string, kind ChangeKind,
 	}
 	return ChangeRange{First: first, Last: last, Count: int64(len(ids))}, nil
 }
+
+// mintChangesFromTemp is mintChanges for the writes whose affected rows the
+// transaction already materialized into a temp id table — _dolmen_update_ids
+// for updates and upserts, _dolmen_delete_ids for deletes. The mint is a
+// single INSERT…SELECT out of that table: the ids never round-trip through
+// the server, so a bulk update or confirmed delete — which has no match-count
+// cap — cannot consume memory proportional to the table when the request
+// itself was O(1) (§6.2). Only the scalar ChangeRange crosses back, and it is
+// reconstructed from the statement's row count and last-insert id without
+// reading a single row back: one statement assigns the AUTOINCREMENT seqs
+// contiguously in insertion order, so the two scalars pin the whole range.
+// Rows are minted in id order, like every other path; an empty temp table
+// mints nothing and returns the zero range.
+func mintChangesFromTemp(ctx context.Context, tx *sql.Tx, table string, kind ChangeKind, temp string) (ChangeRange, error) {
+	gen, err := tableGen(ctx, tx, table)
+	if err != nil {
+		return ChangeRange{}, err
+	}
+	nsGen, err := readNSGen(ctx, tx)
+	if err != nil {
+		return ChangeRange{}, err
+	}
+	res, err := tx.ExecContext(ctx,
+		fmt.Sprintf(`INSERT INTO _dolmen_changes(table_name, row_id, kind, owner, nsgen, drop_gen) SELECT ?, id, ?, NULL, ?, ? FROM %s ORDER BY id`, temp),
+		table, string(kind), nsGen[:], gen)
+	if err != nil {
+		return ChangeRange{}, fmt.Errorf("mint change records for %s: %w", table, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return ChangeRange{}, err
+	}
+	if n == 0 {
+		return ChangeRange{}, nil
+	}
+	last, err := res.LastInsertId()
+	if err != nil {
+		return ChangeRange{}, err
+	}
+	return ChangeRange{First: last - n + 1, Last: last, Count: n}, nil
+}
