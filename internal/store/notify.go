@@ -19,12 +19,24 @@ import (
 // listener's concern — the wake carries the table and the ChangeRange, and
 // the range alone is all a waiter needs to re-scan (§6.2: waiters are woken
 // with the range, never a materialized record slice).
+//
+// The registry is deliberately NOT namespace-lifecycle-aware: a wake is
+// advisory and carries no lifetime binding, so listeners registered before
+// a DropNamespace may be woken by a recreated successor's commits. That is
+// harmless under §9.3 — the waiter's authorized re-scan of the durable log,
+// never the wake itself, is what delivers records — and 6b's Listen binds
+// its sessions to nsGen and cancels them at drop.
 
 // commitListener is one registered waiter. dead is set by its cancel func
 // before the listener leaves the registry and re-checked immediately before
-// every invocation, so once cancel returns no LATER dispatch selects it; a
-// dispatch already inside fn when cancel runs still completes — the
-// in-flight allowance session teardown (6b) relies on.
+// every invocation, so once cancel returns, a dispatch that has not yet
+// passed that check will never invoke fn. What cancel does NOT guarantee is
+// the end of in-flight dispatch: one already inside fn completes, and one
+// that passed its dead-check just before cancel may still ENTER fn after
+// cancel returned — the check and the call are two steps, and dispatch holds
+// no lock across them. A 6b session teardown must treat fn as possibly
+// running until it can prove quiescence; releasing what fn captures on
+// cancel's return alone is a use-after-free.
 type commitListener struct {
 	fn   func(table string, changes ChangeRange)
 	dead atomic.Bool
@@ -33,6 +45,14 @@ type commitListener struct {
 // onCommit registers fn as a post-commit listener for ns and returns its
 // cancel function. Cancel is idempotent and safe to call concurrently with
 // dispatch. Until Listen lands (6b) the only registrants are tests.
+//
+// fn runs synchronously on the writing goroutine, after its commit, and must
+// honor three rules the registry cannot enforce: it may be entered
+// CONCURRENTLY by several writers committing to the same namespace, so it
+// must be safe for simultaneous invocation; it must not runtime.Goexit
+// (t.Fatal — recover cannot catch it, and the write's goroutine would die
+// mid-response); and it must not synchronously write to the same namespace,
+// which re-enters dispatch and recurses without bound.
 func (s *Store) onCommit(ns string, fn func(table string, changes ChangeRange)) func() {
 	l := &commitListener{fn: fn}
 	s.notifyMu.Lock()
