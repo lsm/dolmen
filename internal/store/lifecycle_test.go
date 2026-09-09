@@ -324,6 +324,18 @@ func TestNamespacePathSymlinkContainment(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(st.dir, "link.db")); err != nil {
 		t.Fatalf("the refused drop must leave the symlink itself alone: %v", err)
 	}
+
+	// Listing applies the same rule: a symlink named like a namespace database
+	// has a valid stem and is not a directory, but it must not be listed — a
+	// listed namespace must be one the store can open (this store's only
+	// entries are the two planted symlinks, so the list is empty).
+	nss, err := st.ListNamespaces()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(nss) != 0 {
+		t.Fatalf("listing must exclude entries the store would refuse to open, got %v", nss)
+	}
 }
 
 func TestDropNamespaceSurvivesRestartWithWAL(t *testing.T) {

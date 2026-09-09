@@ -18,8 +18,10 @@ import (
 // <name>.db files are reported — a nested namespace's b.db lives inside the
 // a/ directory (slice 3a's layout) and stays invisible until 3b's recursive
 // walk, which is also when prefix starts filtering to a subtree. Top-level
-// files whose stem is not a valid namespace segment are skipped, so the list
-// matches exactly what the store can open at depth 1.
+// entries whose stem is not a valid namespace segment are skipped, as is
+// anything but a regular file (a symlink named like a namespace database is
+// one of verifyNSDirs' refusals), so the list names exactly the namespaces
+// the store can open at depth 1.
 // TODO(8c): bindings are ignored while auth is off.
 func (s *Store) ListNamespaces(ctx context.Context, prefix string, bindings []AuthBinding) ([]string, error) {
 	entries, err := os.ReadDir(s.dir)
@@ -33,6 +35,14 @@ func (s *Store) ListNamespaces(ctx context.Context, prefix string, bindings []Au
 		}
 		name := strings.TrimSuffix(e.Name(), ".db")
 		if name == e.Name() || !nsSegmentRe.MatchString(name) {
+			continue
+		}
+		// Info is lstat semantics: a symlink reports the link itself, so
+		// the rule below matches lockedNS's regular-file check — a listed
+		// namespace must be one the store would open, not one it refuses.
+		// An entry vanishing mid-listing is just gone.
+		fi, err := e.Info()
+		if err != nil || !fi.Mode().IsRegular() {
 			continue
 		}
 		out = append(out, name)
