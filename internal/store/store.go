@@ -42,6 +42,13 @@ type Store struct {
 	dir string
 	mu  sync.Mutex
 	nss map[string]*nsDB
+
+	// notifyMu guards listeners, the per-namespace post-commit registry
+	// (notify.go, §9.3) — its own mutex, never s.mu: write-path dispatch
+	// must not contend with namespace open/evict, and a listener's fn runs
+	// outside every lock.
+	notifyMu  sync.Mutex
+	listeners map[string][]*commitListener
 }
 
 type nsDB struct {

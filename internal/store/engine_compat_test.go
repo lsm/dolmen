@@ -50,11 +50,10 @@ func TestEngineMethodSetMatchesStore(t *testing.T) {
 	}
 }
 
-// TestEngineStubsNotImplemented pins the 2b stub contract: the four Engine
-// methods whose bodies arrive in later slices (Capabilities 4d, GetRows 5a,
-// ChangesSince 5c, Listen 6b) report not-implemented rather than
-// half-working, and Capabilities returns the zero value — a stub must never
-// be mistaken for a real self-description.
+// TestEngineStubsNotImplemented pins the 2b stub contract: the three Engine
+// methods whose bodies arrive in later slices (GetRows 5a, ChangesSince 5c,
+// Listen 6b) report not-implemented rather than half-working — a stub must
+// never be mistaken for a real implementation.
 func TestEngineStubsNotImplemented(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
@@ -67,7 +66,27 @@ func TestEngineStubsNotImplemented(t *testing.T) {
 	if _, _, err := st.Listen(ctx, "test", "", "", [16]byte{}, nil, nil, nil); !errors.Is(err, errNotImplemented) {
 		t.Errorf("Listen = %v, want errNotImplemented", err)
 	}
-	if got := (EngineCapabilities{}); got != st.Capabilities() {
-		t.Errorf("Capabilities = %+v, want the zero value", st.Capabilities())
+}
+
+// TestCapabilities pins the SQLite engine's 4d self-description (§6.2, §7):
+// vector search executes exact — ann_recall_bound explicitly null, never
+// omitted — and notifications/subscribe stay false until Listen's body lands
+// (6b flips both with the SSE route). The post-commit registry (notify.go)
+// is internal plumbing; the capability answers "is Listen implemented?",
+// and a stub must not be advertised as the real thing.
+func TestCapabilities(t *testing.T) {
+	st := openStore(t)
+	got := st.Capabilities()
+	if got.VectorExecution != VectorExact {
+		t.Errorf("VectorExecution = %q, want %q (brute-force exact, §7)", got.VectorExecution, VectorExact)
+	}
+	if got.ANNRecallBound != nil {
+		t.Errorf("ANNRecallBound = %v, want explicit null under exact execution", *got.ANNRecallBound)
+	}
+	if got.Notifications {
+		t.Error("Notifications = true, want false until Listen is implemented (6b)")
+	}
+	if got.Subscribe {
+		t.Error("Subscribe = true, want false until live streams are implemented (6b)")
 	}
 }

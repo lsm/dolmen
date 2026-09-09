@@ -5,14 +5,14 @@ import (
 	"errors"
 )
 
-// errNotImplemented is the single placeholder error the four Engine methods
+// errNotImplemented is the single placeholder error the three Engine methods
 // whose concrete bodies arrive in later slices of the #159 plan return until
-// then (plan slice 2b): Capabilities (4d), GetRows (5a), ChangesSince (5c),
-// and Listen (6b). Their signatures are pinned by the interface (2a), so
-// each later slice swaps only the body — and nothing advertises a capability
-// the engine does not have yet (Capabilities reports the zero value for the
-// same reason: the stub must not be mistaken for a real "exact engine"
-// self-description).
+// then (plan slice 2b): GetRows (5a), ChangesSince (5c), and Listen (6b).
+// Their signatures are pinned by the interface (2a), so each later slice
+// swaps only the body — and nothing advertises a capability the engine does
+// not have yet (Capabilities grew its real body in 4d and now reports the
+// engine's exact facts, with notifications/subscribe held false until
+// Listen's body lands in 6b).
 var errNotImplemented = errors.New("not implemented by the SQLite engine yet")
 
 // GetRows is the id-addressed scoped fetch behind read_rows (§2, §6.2). Stub
@@ -31,10 +31,4 @@ func (s *Store) ChangesSince(ctx context.Context, ns, table string, from Cursor,
 // slice 6b implements it.
 func (s *Store) Listen(ctx context.Context, ns, table string, from Cursor, nsGen [16]byte, liveAuthz func(table string) (scope *RowScope, inc Incarnation, ok bool), notify func(ChangeRecord), closed func(cause error)) (*ChangeReplay, func(), error) {
 	return nil, nil, errNotImplemented
-}
-
-// Capabilities is the engine's static self-description (§6.2). Stub — slice
-// 4d replaces the zero value with the real facts.
-func (s *Store) Capabilities() EngineCapabilities {
-	return EngineCapabilities{}
 }
