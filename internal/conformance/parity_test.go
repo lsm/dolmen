@@ -67,6 +67,11 @@ func parityScript() []parityStep {
 			"namespace": ns,
 			"sql":       "SELECT id, title, tag, score, flag, meta, vec FROM docs ORDER BY id",
 		}, false},
+		// Unsorted ids with a missing one: the response is the found rows in
+		// ascending id order, the missing id simply absent (§2).
+		{"read_rows", "read_rows", map[string]any{
+			"namespace": ns, "table": "docs", "ids": []any{3, 999, 1},
+		}, false},
 		{"search_fulltext", "search_fulltext", map[string]any{
 			"namespace": ns, "table": "docs", "query": "bug OR crash",
 		}, false},
@@ -104,6 +109,7 @@ func parityScript() []parityStep {
 		{"drop_table", "drop_table", map[string]any{"namespace": ns, "table": "docs", "confirm": "docs"}, false},
 		{"list_namespaces", "list_namespaces", map[string]any{}, false},
 		{"describe_server", "describe_server", map[string]any{}, false},
+		{"capabilities", "capabilities", map[string]any{}, false},
 		{"drop_namespace", "drop_namespace", map[string]any{"namespace": ns, "confirm": ns}, false},
 	}
 }
@@ -188,6 +194,13 @@ func TestTransportParityErrorEnvelope(t *testing.T) {
 		"records": []map[string]any{{"title": "one"}},
 	})
 
+	// §2's read_rows id cap: a body well under the byte limit can still name
+	// too many ids — the cap is the request's own, not the envelope's.
+	tooManyIDs := make([]any, 1001)
+	for i := range tooManyIDs {
+		tooManyIDs[i] = float64(i + 1)
+	}
+
 	cases := []struct {
 		name   string
 		op     string
@@ -195,6 +208,7 @@ func TestTransportParityErrorEnvelope(t *testing.T) {
 		status int
 	}{
 		{"missing table", "describe_table", map[string]any{"namespace": "errp", "table": "nope"}, 404},
+		{"read_rows over the id cap", "read_rows", map[string]any{"namespace": "errp", "table": "t", "ids": tooManyIDs}, 400},
 		{"unknown request field", "list_tables", map[string]any{"namespace": "errp", "extra": 1}, 400},
 		{"null option value", "list_tables", map[string]any{"namespace": nil}, 400},
 		{"bad sql", "query", map[string]any{"namespace": "errp", "sql": "SELECT nope FROM t"}, 400},

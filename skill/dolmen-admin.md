@@ -185,6 +185,16 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
 - `create_namespace` is only for reserving a name up front (or failing loudly if it is taken) —
   namespaces are otherwise created implicitly on first use, and it creates no tables.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
+- `read_rows` is the by-id fetch: pass `"ids": [...]` (the ids a write returned, a query projected,
+  or a feed carried), get the full rows back — each found row once, in ascending id order, typed
+  like every other read. Missing ids are simply absent (`row_count` counts what came back), never
+  an error; `truncated: true` means the response budget dropped rows that DO exist — retry with
+  fewer ids (it never fires for missing ids); at most 1,000 ids per request. Prefer it over
+  `query` whenever the ids are already in hand — no SQL to write, no filter to get wrong.
+- `capabilities` reports the engine's static surface: `vector_execution` (`exact` or `ann`),
+  `ann_recall_bound` (`null` when exact — a number in (0,1] iff `ann`), `notifications`, and
+  `subscribe`. Field names and types are pinned across conforming engines; check it before
+  relying on approximate vector search or live streams.
 - `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's
   columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
@@ -210,11 +220,11 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
   inserting again).
 - Every table has implicit `id` and `created_at` columns; `SELECT *` includes them.
 - Retried writes must not duplicate rows: pass `idempotency_key` (any unique string) to `insert`, or use `upsert_by_key` with `"on": [field, ...]` naming the record's natural key (e.g. email, url) when the data identifies itself.
-- Results honor declared field types in every read (`query`, `search_fulltext`, `search_vector`):
+- Results honor declared field types in every read (`query`, `read_rows`, `search_fulltext`, `search_vector`):
   `boolean` → `true`/`false`, `json` → the decoded value, `vector` → a number array, SQL `NULL` →
   `null`. In `query`, coercion is by result-column label (aliases count as their label); labels that
   match no declared field fall back to raw values (blobs as base64).
-- The hidden `_embedding` column (from `vectorize`) is excluded from `SELECT *` and search results;
+- The hidden `_embedding` column (from `vectorize`) is excluded from `SELECT *`, search results, and `read_rows`;
   reference it in the SQL (outside string literals and comments) or pass `include_hidden: true` to a
   search when you really need it.
 - Vector search results carry `_score` (cosine similarity; higher is closer).
@@ -423,6 +433,7 @@ A complete call, previewed first:
 | Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
 | Records per `insert` / `upsert_by_key` | 1,000 | rejected |
+| Ids per `read_rows` | 1,000 | rejected |
 | Natural key fields per `upsert_by_key` | 8 | rejected |
 | Idempotency key length | 1–256 bytes; use printable ASCII; omit the field for a non-idempotent insert | empty and over-256-byte keys are rejected; the JSON Schema enforces non-empty printable ASCII for schema-validating clients |
 | Vector dimension (declared `vector` fields) | 1–4096 | rejected |

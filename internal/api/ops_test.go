@@ -390,6 +390,27 @@ func TestInsertBatchBoundsDeclared(t *testing.T) {
 	}
 }
 
+// TestReadRowsIDBoundDeclared pins the input schema to the seam's id cap
+// (§2): schema-validating clients see the same 1..MaxReadRowsIDs bound the
+// engine enforces on direct /v1 calls.
+func TestReadRowsIDBoundDeclared(t *testing.T) {
+	def, ok := Ops["read_rows"]
+	if !ok {
+		t.Fatal("read_rows op missing")
+	}
+	ids := def.InputSchema["properties"].(map[string]any)["ids"].(map[string]any)
+	if ids["maxItems"] != store.MaxReadRowsIDs {
+		t.Fatalf("ids must declare the cap %d the engine enforces, got %v", store.MaxReadRowsIDs, ids)
+	}
+	req, _ := def.InputSchema["required"].([]string)
+	for _, r := range req {
+		if r == "ids" {
+			return
+		}
+	}
+	t.Fatalf("ids must be a required request key, got %v", req)
+}
+
 type blankIdentityEmb struct{}
 
 func (blankIdentityEmb) Name() string      { return "blank" }
