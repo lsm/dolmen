@@ -285,7 +285,7 @@ var Ops = map[string]OpDef{
 				"prefix": map[string]any{
 					"type":        "string",
 					"description": "Namespace path whose recursive subtree is listed (the path itself included); omit to list every namespace",
-					"pattern":     `^[a-z0-9][a-z0-9_-]{0,63}(/[a-z0-9][a-z0-9_-]{0,63}){0,2}$`,
+					"pattern":     store.NSPathPattern(),
 				},
 			},
 		},
@@ -327,7 +327,9 @@ var Ops = map[string]OpDef{
 		},
 	},
 	"create_namespace": {
-		Description: "Create an empty namespace. Namespaces are also created implicitly on first use, " +
+		Description: "Create an empty namespace. A namespace is a path of 1-3 segments (a/b/c), each " +
+			"lowercase [a-z0-9_-] up to 64 chars; parents need not exist as namespaces — creating a " +
+			"child makes its parent directories. Namespaces are also created implicitly on first use, " +
 			"so this is only needed to reserve a name up front or to fail loudly when the name is taken. " +
 			"Creates no tables — follow with create_table.",
 		InputSchema: map[string]any{

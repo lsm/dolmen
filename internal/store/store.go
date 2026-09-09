@@ -27,16 +27,31 @@ func invalidf(format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{ErrInvalid}, args...)...)
 }
 
-// nsSegmentRe matches ONE segment of a namespace path (§5.1) — v0.2.0's
-// single-segment grammar, unchanged. validateNSPath composes 1–3 of these
-// into a path; the listing walk matches it against file stems and against
-// the directory names it descends through.
-var nsSegmentRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+// nsSegmentSrc is ONE namespace-path segment's grammar (§5.1) — v0.2.0's
+// single-segment grammar, unchanged — unanchored so NSPathPattern can
+// compose segments into the path form.
+const nsSegmentSrc = `[a-z0-9][a-z0-9_-]{0,63}`
+
+// nsSegmentRe matches ONE segment of a namespace path (§5.1). validateNSPath
+// composes 1–3 of these into a path; the listing walk matches it against file
+// stems and against the directory names it descends through.
+var nsSegmentRe = regexp.MustCompile(`^` + nsSegmentSrc + `$`)
 
 // maxNSDepth is §5.1's namespace depth cap: a path is 1–3 segments
 // (a/b/c). validateNSPath enforces it at every entry point; the listing
 // walk uses it to bound descent.
 const maxNSDepth = 3
+
+// NSPathPattern is §5.1's namespace-path grammar as a JSON Schema pattern:
+// 1–maxNSDepth nsSegmentSrc segments joined by single slashes, so an empty
+// segment — leading, trailing, or doubled slashes — fails to match. The
+// API's namespace surfaces (nsProp, list_namespaces' prefix, the OpenAPI
+// TableSchema) declare it so schema-validating clients accept exactly the
+// paths validateNSPath admits; a single segment still matches, which keeps
+// the widened surfaces additive to v0.2.0's contract (§8.1).
+func NSPathPattern() string {
+	return fmt.Sprintf(`^%s(/%s){0,%d}$`, nsSegmentSrc, nsSegmentSrc, maxNSDepth-1)
+}
 
 type Store struct {
 	dir string

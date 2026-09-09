@@ -215,11 +215,16 @@ func fieldItemSchema(desc string, withDefault bool) map[string]any {
 	}
 }
 
+// nsProp describes a namespace request property. The pattern is the full
+// §5.1 path grammar — a single segment still matches it, so widening the
+// declared surface from v0.2.0's single-segment pattern is schema-additive:
+// schema-validating clients that sent valid v0.2.0 names still do, and now
+// paths (a/b/c) pass too.
 func nsProp(desc string) map[string]any {
 	return map[string]any{
 		"type":        "string",
 		"description": desc,
-		"pattern":     `^[a-z0-9][a-z0-9_-]{0,63}$`,
+		"pattern":     store.NSPathPattern(),
 	}
 }
 
@@ -384,8 +389,17 @@ func rejectNulls(path string, v any) error {
 	return nil
 }
 
+// normNS canonicalizes a namespace path the way v0.2.0 canonicalized a
+// name: trimmed and lowercased, per segment (§5.1) — " Acme / Prod " and
+// "acme/prod" name the same namespace on direct /v1 calls. A segment that
+// trims to nothing stays an empty segment; validation, which follows
+// normalization, rejects it there.
 func normNS(ns string) string {
-	return strings.ToLower(strings.TrimSpace(ns))
+	segs := strings.Split(ns, "/")
+	for i, seg := range segs {
+		segs[i] = strings.ToLower(strings.TrimSpace(seg))
+	}
+	return strings.Join(segs, "/")
 }
 
 func normTable(t string) string {

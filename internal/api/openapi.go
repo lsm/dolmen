@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/lsm/dolmen/internal/schema"
+	"github.com/lsm/dolmen/internal/store"
 	"github.com/lsm/dolmen/internal/version"
 	"github.com/lsm/dolmen/skill"
 )
@@ -139,7 +140,7 @@ func components() map[string]any {
 				"default": map[string]any{"description": "Value stored when an insert omits the field; exactly as declared (present when set)"},
 			}, []string{"name", "type"}),
 			"TableSchema": objectSchema(false, map[string]any{
-				"namespace":   stringProp(`^[a-z0-9][a-z0-9_-]{0,63}$`),
+				"namespace":   stringProp(store.NSPathPattern()),
 				"name":        stringProp(`^[a-z][a-z0-9_]{0,63}$`),
 				"version":     intProp(1, 0),
 				"fields":      arrayOf(ref("Field")),
