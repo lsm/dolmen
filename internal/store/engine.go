@@ -56,7 +56,7 @@ type Engine interface {
 	// atomically with the listing (§6.2, §5.3): visibility granted by a
 	// binding bound to a predecessor namespace lifetime must not surface a
 	// recreated successor. prefix restricts the listing to that path's subtree
-	// ("" lists all, in lexicographic full-path order).
+	// ("" lists all, in database-filename order — path + ".db", §5.3).
 	ListNamespaces(ctx context.Context, prefix string, bindings []AuthBinding) ([]string, error)
 
 	// CreateNamespace creates an empty namespace (§6.2). parentNsGen binds

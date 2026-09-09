@@ -992,8 +992,11 @@ v0.2.0's layout — no migration, no behavior change for existing data directori
 
 `list_namespaces` gains an optional `prefix` (a valid namespace path). With it: only namespaces
 **under** that prefix, recursively. Without: all namespaces. Response shape is unchanged —
-`{"namespaces": [...]}`, sorted lexicographically by full path (a depth-1-only store sorts
-identically to v0.2.0). With `auth: on`, both forms list only the caller's visible namespaces
+`{"namespaces": [...]}`, each namespace ordered by its database filename (`path + ".db"`), which
+is exactly v0.2.0's `os.ReadDir` order on a depth-1-only store — including the hyphen edge, where
+`a-foo.db` sorts before `a.db` (`'-' < '.'`) and bare-path order would not (sorted 2026-09-09:
+review caught the two requirements diverging on that pair; §8.1's byte-identity wins). With
+`auth: on`, both forms list only the caller's visible namespaces
 (§2). The `prefix` parameter is additive to the auth-off contract: v0.2.0 requests (no `prefix`)
 behave identically (§8.1).
 

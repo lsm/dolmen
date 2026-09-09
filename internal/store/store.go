@@ -29,8 +29,14 @@ func invalidf(format string, args ...any) error {
 
 // nsSegmentRe matches ONE segment of a namespace path (§5.1) — v0.2.0's
 // single-segment grammar, unchanged. validateNSPath composes 1–3 of these
-// into a path; ListNamespaces matches it against a depth-1 file stem.
+// into a path; the listing walk matches it against file stems and against
+// the directory names it descends through.
 var nsSegmentRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
+// maxNSDepth is §5.1's namespace depth cap: a path is 1–3 segments
+// (a/b/c). validateNSPath enforces it at every entry point; the listing
+// walk uses it to bound descent.
+const maxNSDepth = 3
 
 type Store struct {
 	dir string

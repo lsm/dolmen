@@ -275,25 +275,48 @@ var Ops = map[string]OpDef{
 	},
 	"list_namespaces": {
 		Description: "List the namespaces on this server (one isolated SQLite file per namespace). " +
-			"Use it to see which namespaces already exist before creating or reusing one.",
+			"Use it to see which namespaces already exist before creating or reusing one. " +
+			"An optional prefix (a namespace path) restricts the listing to that path's subtree, " +
+			"recursively, the prefix itself included; omit it to list everything.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
-			"properties":           map[string]any{},
+			"properties": map[string]any{
+				"prefix": map[string]any{
+					"type":        "string",
+					"description": "Namespace path whose recursive subtree is listed (the path itself included); omit to list every namespace",
+					"pattern":     `^[a-z0-9][a-z0-9_-]{0,63}(/[a-z0-9][a-z0-9_-]{0,63}){0,2}$`,
+				},
+			},
 		},
 		OutputSchema: outSchema(map[string]any{
 			"namespaces": map[string]any{
 				"type":        "array",
-				"description": "Namespace names under the data directory, sorted",
+				"description": "Namespace names, ordered as their database filenames order them (v0.2.0's order; edge-x before edge)",
 				"items":       map[string]any{"type": "string"},
 			},
 		}, "namespaces"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
-			var req struct{}
+			var req listNamespacesReq
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
-			nss, err := s.eng.ListNamespaces(ctx, "", nil)
+			// A present prefix must name a path: an explicitly empty or
+			// whitespace-only value is a request error, not the omitted
+			// field — silently listing everything would mask the caller's
+			// own bug (the idempotency_key rule, same shape).
+			prefix := ""
+			if len(req.Prefix) > 0 {
+				var p string
+				if err := json.Unmarshal(req.Prefix, &p); err != nil {
+					return nil, badRequest("prefix must be a string")
+				}
+				if p = normNS(p); p == "" {
+					return nil, badRequest("prefix must not be empty — omit the field to list every namespace (an empty prefix would silently list everything)")
+				}
+				prefix = p
+			}
+			nss, err := s.eng.ListNamespaces(ctx, prefix, nil)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -1533,6 +1556,15 @@ type insertReq struct {
 type dropNamespaceReq struct {
 	Namespace string `json:"namespace"`
 	Confirm   string `json:"confirm"`
+}
+
+// listNamespacesReq carries list_namespaces' one optional key: prefix, the
+// namespace path whose recursive subtree is listed (omitted — lists every
+// namespace). RawMessage so presence is observable: an explicitly empty
+// prefix is rejected, not read as the omitted field. Additive to v0.2.0's
+// empty request (§8.1).
+type listNamespacesReq struct {
+	Prefix json.RawMessage `json:"prefix"`
 }
 
 type dropTableReq struct {

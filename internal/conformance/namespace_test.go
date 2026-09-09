@@ -56,3 +56,101 @@ func TestNamespaceCreatedOnFirstUse(t *testing.T) {
 		t.Fatalf("a freshly created namespace lists no tables: %v", ts)
 	}
 }
+
+// TestNamespaceTreeListingAndLeafOnlyDrops pins slice 3b's tree contract on
+// the wire: list_namespaces reports the whole nested tree in database-
+// filename order — v0.2.0's os.ReadDir order, byte-identical on a
+// depth-1-only store (no prefix — the v0.2.0 request, answered with
+// v0.2.0's response shape), the additive prefix (§5.3) filters to the
+// prefix's subtree, and drop_namespace refuses a namespace with
+// descendants (§5.4) naming the count — child-first drops succeed down to
+// the leaf.
+func TestNamespaceTreeListingAndLeafOnlyDrops(t *testing.T) {
+	h := newHarness(t)
+
+	// edge/edge-x pin the order on the one pair where it visibly matters:
+	// v0.2.0's ReadDir ordered edge-x.db before edge.db ('-' < '.').
+	for _, ns := range []string{"acme", "acme/prod", "acme/prod/eu", "acme/stage", "acme2", "edge", "edge-x", "zeta"} {
+		h.ensureNS(ns)
+	}
+
+	// No prefix (the v0.2.0 request, byte-identical in shape): every
+	// namespace depth 1–3, in database-filename order.
+	data := h.mustHTTP("list_namespaces", map[string]any{})
+	assertJSONEqual(t, "full recursive listing", data["namespaces"],
+		[]any{"acme", "acme/prod", "acme/prod/eu", "acme/stage", "acme2", "edge-x", "edge", "zeta"})
+
+	// Prefix: the recursive subtree, the prefix itself included, and
+	// stem-siblings (acme2) excluded.
+	data = h.mustHTTP("list_namespaces", map[string]any{"prefix": "acme"})
+	assertJSONEqual(t, "prefix listing", data["namespaces"],
+		[]any{"acme", "acme/prod", "acme/prod/eu", "acme/stage"})
+	data = h.mustHTTP("list_namespaces", map[string]any{"prefix": "acme/prod"})
+	assertJSONEqual(t, "deep prefix listing", data["namespaces"],
+		[]any{"acme/prod", "acme/prod/eu"})
+	// A prefix is a namespace input and normalizes like one: same listing
+	// through MCP's structuredContent as over HTTP.
+	sc := h.mustMCP("list_namespaces", map[string]any{"prefix": " ACME "})
+	assertJSONEqual(t, "normalized MCP prefix listing", sc["namespaces"],
+		[]any{"acme", "acme/prod", "acme/prod/eu", "acme/stage"})
+	data = h.mustHTTP("list_namespaces", map[string]any{"prefix": "ghost"})
+	assertJSONEqual(t, "absent prefix listing", data["namespaces"], []any{})
+
+	// An invalid prefix is invalid_request naming the path grammar — never
+	// a silent empty listing.
+	status, body := h.httpCall("list_namespaces", map[string]any{"prefix": "acme/prod/eu/deep"})
+	if status != http.StatusBadRequest {
+		t.Fatalf("over-depth prefix: status %d, want 400: %v", status, body)
+	}
+	errObj, _ := body["error"].(map[string]any)
+	if errObj == nil || errObj["code"] != "invalid_request" {
+		t.Fatalf("over-depth prefix: expected an invalid_request envelope, got %v", body)
+	}
+
+	// A present-but-empty prefix is a request error too, not the omitted
+	// field: silently listing everything would mask the caller's own bug.
+	// (decode's null probe rejects "prefix": null as every other null.)
+	for _, prefix := range []string{"", "   "} {
+		status, body = h.httpCall("list_namespaces", map[string]any{"prefix": prefix})
+		if status != http.StatusBadRequest {
+			t.Fatalf("empty prefix %q: status %d, want 400: %v", prefix, status, body)
+		}
+		errObj, _ = body["error"].(map[string]any)
+		if errObj == nil || errObj["code"] != "invalid_request" {
+			t.Fatalf("empty prefix %q: expected an invalid_request envelope, got %v", prefix, body)
+		}
+	}
+
+	// §5.4: dropping a namespace with descendants is refused, the message
+	// naming the count; nothing was dropped.
+	status, body = h.httpCall("drop_namespace", map[string]any{"namespace": "acme", "confirm": "acme"})
+	if status != http.StatusBadRequest {
+		t.Fatalf("parent drop: status %d, want 400: %v", status, body)
+	}
+	errObj, _ = body["error"].(map[string]any)
+	if errObj == nil || errObj["code"] != "invalid_request" {
+		t.Fatalf("parent drop: expected an invalid_request envelope, got %v", body)
+	}
+	msg, _ := errObj["message"].(string)
+	wantMessage(t, "parent drop names the descendant count", msg, `namespace acme has 3 descendant namespaces`)
+	status, body = h.httpCall("drop_namespace", map[string]any{"namespace": "acme/prod", "confirm": "acme/prod"})
+	if status != http.StatusBadRequest {
+		t.Fatalf("mid-tree drop must be refused: %d %v", status, body)
+	}
+	errObj, _ = body["error"].(map[string]any)
+	if errObj == nil || errObj["code"] != "invalid_request" {
+		t.Fatalf("mid-tree drop: expected an invalid_request envelope, got %v", body)
+	}
+	msg, _ = errObj["message"].(string)
+	wantMessage(t, "mid-tree drop names its 1 descendant", msg, `namespace acme/prod has 1 descendant namespace`)
+	data = h.mustHTTP("list_namespaces", map[string]any{})
+	assertJSONEqual(t, "refused drops deleted nothing", data["namespaces"],
+		[]any{"acme", "acme/prod", "acme/prod/eu", "acme/stage", "acme2", "edge-x", "edge", "zeta"})
+
+	// Child-first drops succeed: leaf, then parents, down to the root.
+	for _, ns := range []string{"acme/prod/eu", "acme/prod", "acme/stage", "acme"} {
+		h.mustHTTP("drop_namespace", map[string]any{"namespace": ns, "confirm": ns})
+	}
+	data = h.mustHTTP("list_namespaces", map[string]any{})
+	assertJSONEqual(t, "post-drop listing", data["namespaces"], []any{"acme2", "edge-x", "edge", "zeta"})
+}

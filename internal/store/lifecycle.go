@@ -7,48 +7,206 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-// ListNamespaces returns the namespaces that exist under the data directory,
-// sorted by name. Listing is still depth-1 (TODO(3b)): only top-level
-// <name>.db files are reported — a nested namespace's b.db lives inside the
-// a/ directory (slice 3a's layout) and stays invisible until 3b's recursive
-// walk, which is also when prefix starts filtering to a subtree. Top-level
+// ListNamespaces returns every namespace under the data directory, the
+// whole tree (§5.3): depth-1 names and nested a/b/c paths alike, in
+// database-filename order (sortNS) — on a depth-1-only store, exactly
+// v0.2.0's listing, byte for byte. A non-empty prefix (a valid namespace
+// path) restricts the listing to that path's subtree, the prefix itself
+// included when it names a namespace; the walk then touches only that
+// path, never a sibling, so an unreadable or huge unrelated subtree can
+// neither fail nor slow it — and neither can DropNamespace's descendant
+// check, which counts through the same listing. The empty prefix lists
+// everything. The list names exactly the namespaces the store can open:
 // entries whose stem is not a valid namespace segment are skipped, as is
-// anything but a regular file (a symlink named like a namespace database is
-// one of verifyNSDirs' refusals), so the list names exactly the namespaces
-// the store can open at depth 1.
+// anything but a regular file (a symlink named like a namespace database
+// is one of verifyNSDirs' refusals).
 // TODO(8c): bindings are ignored while auth is off.
 func (s *Store) ListNamespaces(ctx context.Context, prefix string, bindings []AuthBinding) ([]string, error) {
-	entries, err := os.ReadDir(s.dir)
-	if err != nil {
+	var out []string
+	root, at := s.dir, "" // the full walk: everything under the data directory
+	if prefix != "" {
+		if err := validateNSPath(prefix); err != nil {
+			return nil, err
+		}
+		self, dir, err := s.nsSubtree(prefix)
+		if err != nil {
+			return nil, err
+		}
+		if self {
+			out = append(out, prefix)
+		}
+		if dir == "" {
+			// No subtree directory: the listing is the prefix's own file,
+			// if it was one.
+			sortNS(out)
+			return out, nil
+		}
+		root, at = dir, prefix
+	}
+	if err := walkNamespaces(root, at, &out); err != nil {
 		return nil, err
 	}
-	var out []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := strings.TrimSuffix(e.Name(), ".db")
-		if name == e.Name() || !nsSegmentRe.MatchString(name) {
-			continue
-		}
-		// Info is lstat semantics: a symlink reports the link itself, so
-		// the rule below matches lockedNS's regular-file check — a listed
-		// namespace must be one the store would open, not one it refuses.
-		// An entry vanishing mid-listing is just gone.
-		fi, err := e.Info()
-		if err != nil || !fi.Mode().IsRegular() {
-			continue
-		}
-		out = append(out, name)
-	}
-	// os.ReadDir already orders entries by filename.
+	sortNS(out)
 	return out, nil
+}
+
+// sortNS orders a namespace listing the way v0.2.0's os.ReadDir ordered a
+// depth-1 store — by database filename, stem+".db", generalized to full
+// paths (§5.3's depth-1 byte-identity, §8.1). Sorting the bare names is
+// NOT the same order and would break existing stores: v0.2.0 lists
+// a-foo.db before a.db ('-' sorts before '.'), so "a-foo" precedes "a",
+// while as bare paths "a" is a prefix of "a-foo" and would flip first.
+func sortNS(nss []string) {
+	sort.Slice(nss, func(i, j int) bool { return nss[i]+".db" < nss[j]+".db" })
+}
+
+// nsSubtree resolves a prefix into its listing inputs: whether the prefix
+// itself is a namespace (its <seg>.db is a regular file in its parent
+// directory), and the directory its descendants live under (<data>/a/b/c
+// for a/b/c), "" when that directory does not exist. The component chain
+// is walked one directory at a time — every stat lands on a path whose
+// parents are already verified real directories — and stops at the first
+// component that is missing or not a real directory: a symlink is never
+// followed (verifyNSDirs refuses opens through one, and the walk's IsDir
+// rule descends through none), so a subtree through it lists empty rather
+// than reading outside the data directory, and a file sitting where a
+// directory component should be hides the rest of the path instead of
+// erroring. A stat error that is not plain absence — an inaccessible
+// component — propagates instead: the subtree's namespaces are unknowable,
+// and a silent empty listing would report them as absent, which the walk
+// never does (it propagates ReadDir errors for the same reason).
+func (s *Store) nsSubtree(prefix string) (self bool, dir string, err error) {
+	segs := strings.Split(prefix, "/")
+	// statComponent is one link of the chain: isDir=false with a nil error
+	// means the component is missing or not a directory — either way
+	// nothing below it can be reached; a non-nil error is real I/O.
+	statComponent := func(path string) (bool, error) {
+		fi, statErr := os.Lstat(path)
+		if os.IsNotExist(statErr) {
+			return false, nil
+		}
+		if statErr != nil {
+			return false, statErr
+		}
+		return fi.IsDir(), nil
+	}
+	chain := s.dir
+	for _, seg := range segs[:len(segs)-1] {
+		chain = filepath.Join(chain, seg)
+		isDir, err := statComponent(chain)
+		if err != nil {
+			return false, "", err
+		}
+		if !isDir {
+			return false, "", nil
+		}
+	}
+	// The prefix's own file: only its absence or regularity matters.
+	if fi, statErr := os.Lstat(filepath.Join(chain, segs[len(segs)-1]+".db")); statErr == nil && fi.Mode().IsRegular() {
+		self = true
+	} else if statErr != nil && !os.IsNotExist(statErr) {
+		return false, "", statErr
+	}
+	dir = filepath.Join(chain, segs[len(segs)-1])
+	isDir, err := statComponent(dir)
+	if err != nil {
+		return self, "", err
+	}
+	if !isDir {
+		return self, "", nil
+	}
+	return self, dir, nil
+}
+
+// walkNamespaces collects the namespaces of one directory subtree into out:
+// every regular <segment>.db file is a namespace, and descent continues
+// through directories named for a valid segment — only while another
+// segment still fits under §5.1's depth cap: a directory AT the cap
+// (<data>/a/b/c/ beside a/b/c.db) can hold nothing the grammar can name,
+// so the walk does not open it at all and an unreadable or huge one can
+// neither fail nor slow the listing. Descent is never through anything but
+// a real directory (DirEntry.IsDir is lstat semantics: a symlink reports
+// as a link and is not descended, so the walk stays inside s.dir the way
+// verifyNSDirs keeps opens there). dir must be a directory inside s.dir;
+// prefix is the namespace path of dir's contents — "" at the
+// data-directory root, or a subtree root, which may sit AT the cap: only
+// the prefix's own file (checked by the caller) is a namespace there, so
+// the walk reports nothing and descends no further. The caller orders the
+// collected names (sortNS): ReadDir's per-directory filename order is not
+// a whole-tree order (a/b's b.db is collected after a/b/c's c.db, though
+// "b.db" < "c.db").
+func walkNamespaces(dir, prefix string, out *[]string) error {
+	// depth is the segment count of prefix: a file at this level names a
+	// depth+1 namespace, a directory's contents depth+2 and deeper. The
+	// walk enters a directory only while those depths still fit the cap,
+	// which is also what keeps every emitted path valid without a
+	// per-file depth check.
+	depth := 0
+	if prefix != "" {
+		depth = strings.Count(prefix, "/") + 1
+	}
+	if depth >= maxNSDepth {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	descend := depth+2 <= maxNSDepth
+	for _, e := range entries {
+		name := e.Name()
+		// One lstat decides what the entry is (Info is lstat semantics: a
+		// symlink reports the link itself, and fi.IsDir never leans on the
+		// dirent type, which some filesystems leave unknown). A vanished
+		// entry is just gone; any other metadata error propagates — an
+		// unsearchable directory (mode r without x) hands ReadDir the
+		// names but refuses the stat, and a silently skipped entry is a
+		// silently missing descendant: DropNamespace counts children
+		// through this walk and must fail closed, never undercount into
+		// deleting a parent whose child exists.
+		fi, err := e.Info()
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if fi.IsDir() {
+			if !descend || !nsSegmentRe.MatchString(name) {
+				continue
+			}
+			child := name
+			if prefix != "" {
+				child = prefix + "/" + name
+			}
+			if err := walkNamespaces(filepath.Join(dir, name), child, out); err != nil {
+				return err
+			}
+			continue
+		}
+		stem := strings.TrimSuffix(name, ".db")
+		if stem == name || !nsSegmentRe.MatchString(stem) {
+			continue
+		}
+		// A listed namespace must be one the store would open, not one it
+		// refuses: lockedNS's regular-file check.
+		if !fi.Mode().IsRegular() {
+			continue
+		}
+		ns := stem
+		if prefix != "" {
+			ns = prefix + "/" + stem
+		}
+		*out = append(*out, ns)
+	}
+	return nil
 }
 
 // CreateNamespace creates an empty namespace — its SQLite file plus registry
@@ -119,7 +277,9 @@ func (s *Store) CreateNamespace(ctx context.Context, nsName string, parentNsGen 
 // sidecars are deleted. The drop waits for in-flight requests on the
 // namespace to finish (unboundedly — see evict); requests that arrive after
 // the drop fail or — like any later use of the name — recreate the namespace
-// empty.
+// empty. A namespace with descendants is not dropped: the request is refused
+// (invalid) naming the descendant count — children are dropped first, never
+// deleted implicitly (§5.4).
 //
 // The caveat from the stop-server-and-delete era still applies across
 // processes: another process holding the namespace file open (a second
@@ -156,6 +316,21 @@ func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte
 	if !fi.Mode().IsRegular() {
 		return invalidf("namespace %s: %s is not a regular file", nsName, path)
 	}
+	// Leaf-only (§5.4): a drop never deletes a subtree by accident. A
+	// namespace with descendants is refused — the error naming the
+	// descendant count, before anything is evicted or deleted. The count
+	// runs under s.mu, so within one server a concurrent child creation
+	// cannot slip between it and the deletion (another process can — the
+	// standing cross-process caveat above).
+	if n, err := s.descendants(ctx, nsName); err != nil {
+		return err
+	} else if n > 0 {
+		what := "descendant namespaces"
+		if n == 1 {
+			what = "descendant namespace"
+		}
+		return invalidf("namespace %s has %d %s — drop the children first", nsName, n, what)
+	}
 	// ro first: the rw connection is the one that checkpoints and clears the
 	// WAL on its final close. Close errors are advisory here — the file
 	// removal below is the outcome that matters.
@@ -166,6 +341,27 @@ func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte
 		}
 	}
 	return nil
+}
+
+// descendants counts the namespaces strictly below nsName — its subtree
+// minus itself — the §5.4 leaf-only drop guard's number. Callers have
+// already validated the path and established the namespace's file exists;
+// the count is the listing's subtree read, so it counts exactly what a
+// re-list would report, and it fails closed: any error reading the
+// subtree aborts the drop rather than undercounting children away. Under
+// sortNS a prefix's own file orders before every extension of it
+// ("a/b.db" < "a/b/x.db": '.' < '/'), so nsName is the first entry
+// whenever it is a namespace at all.
+func (s *Store) descendants(ctx context.Context, nsName string) (int, error) {
+	nss, err := s.ListNamespaces(ctx, nsName, nil)
+	if err != nil {
+		return 0, err
+	}
+	n := len(nss)
+	if n > 0 && nss[0] == nsName {
+		n-- // the subtree includes the prefix itself
+	}
+	return n, nil
 }
 
 // DropTable removes a table and everything dolmen tracks alongside it: the
@@ -309,7 +505,7 @@ func (s *Store) evict(name string) {
 // can never escape s.dir through the join below.
 func validateNSPath(name string) error {
 	segs := strings.Split(name, "/")
-	if len(segs) > 3 {
+	if len(segs) > maxNSDepth {
 		return invalidf("invalid namespace %q: namespace paths are 1-3 segments (a/b/c), got %d", name, len(segs))
 	}
 	for _, seg := range segs {
