@@ -364,7 +364,13 @@ func resolveCursorToken(ctx context.Context, db cursorDB, now time.Time, retenti
 // 0 disables pruning entirely — records and tokens accumulate.
 //
 // Tokens are pruned once past their own deadline (issued_at + R) or their
-// chain's absolute cap (chain_start + 2R), whichever comes first.
+// chain's absolute cap (chain_start + 2R), whichever comes first. The two
+// predicates run as separate sargable DELETEs — issued_at < now−R and
+// chain_start < now−2R, each served by its index — because pruning rides
+// every changes_since call under the namespace's write lock, and a token
+// table that accumulates a row per poll for a whole retention window must
+// not be full-scanned per call (the arithmetic `col + R < now` forms would
+// defeat the indexes; the subtracted-cutoff forms are the same inequality).
 //
 // Records are pruned when older than the 2R hold AND beyond the reach of
 // every surviving chain: a chain retains everything past its origin through
@@ -375,9 +381,10 @@ func resolveCursorToken(ctx context.Context, db cursorDB, now time.Time, retenti
 // remaining perfectly valid; pure age-R pruning would break gap-free replay
 // with a beyond-retention error or a shortened page on a perfectly valid
 // cursor. The reach boundary is the chains' minimum origin, precomputed once
-// by the scalar subquery — a correlated per-record EXISTS would rescan the
-// token table for every candidate record, and both tables grow for the whole
-// retention window. With no surviving chains the minimum is NULL and every
+// by the scalar subquery (the chain_origin index serves MIN as a leftmost-key
+// seek — a correlated per-record EXISTS would rescan the token table for
+// every candidate record, and both tables grow for the whole retention
+// window). With no surviving chains the minimum is NULL and every
 // age-eligible record goes.
 func pruneChanges(ctx context.Context, db cursorDB, now time.Time, retention time.Duration) error {
 	if retention <= 0 {
@@ -386,8 +393,11 @@ func pruneChanges(ctx context.Context, db cursorDB, now time.Time, retention tim
 	rms := int64(retention / time.Millisecond)
 	nowMs := now.UnixMilli()
 	if _, err := db.ExecContext(ctx,
-		`DELETE FROM _dolmen_cursor_tokens WHERE issued_at + ? < ? OR chain_start + 2 * ? < ?`,
-		rms, nowMs, rms, nowMs); err != nil {
+		`DELETE FROM _dolmen_cursor_tokens WHERE issued_at < ?`, nowMs-rms); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx,
+		`DELETE FROM _dolmen_cursor_tokens WHERE chain_start < ?`, nowMs-2*rms); err != nil {
 		return err
 	}
 	_, err := db.ExecContext(ctx,
@@ -395,7 +405,7 @@ func pruneChanges(ctx context.Context, db cursorDB, now time.Time, retention tim
 		 WHERE at < ?
 		   AND seq <= COALESCE((SELECT MIN(chain_origin) FROM _dolmen_cursor_tokens),
 		                        9223372036854775807)`,
-		isoChangeStamp(now.Add(-2 * retention)))
+		isoChangeStamp(now.Add(-2*retention)))
 	return err
 }
 

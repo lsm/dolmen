@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -484,5 +485,94 @@ func TestChangesSincePrunesWithRetention(t *testing.T) {
 	}
 	if got := changeSeqs(t, n); !eqSeqs(got, []int64{3}) {
 		t.Fatalf("records after the read = %v, want [3]: the two past-hold records are unreachable and pruned", got)
+	}
+}
+
+// TestChangesLogLookupsIndexed pins the indexing the replay path must keep
+// (codex P1 round on #203): the table-filtered page read and every pruning
+// predicate are served by indexes, not scans. All of this work runs inside
+// the namespace's single write transaction on every changes_since call —
+// with only the seq primary key, a quiet table polled in a busy namespace
+// rescans an ever-growing tail of unrelated changes, the age prune full-scans
+// a log whose records are all younger than the hold, and the token prune and
+// reach-boundary lookup full-scan a token table that accumulates a row per
+// poll for a whole retention window. EXPLAIN QUERY PLAN is the pin: if a
+// future DDL edit drops an index, the plan names the scan and this fails.
+func TestChangesLogLookupsIndexed(t *testing.T) {
+	st := openChangeStore(t)
+	ctx := context.Background()
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	nsGen, err := readNSGen(ctx, n.ro)
+	if err != nil {
+		t.Fatalf("read nsgen: %v", err)
+	}
+	cases := []struct {
+		name  string
+		query string
+		args  []any
+		want  string // index name the plan must use
+	}{
+		{
+			"table feed page read",
+			`SELECT seq, table_name, row_id, kind, owner, nsgen, drop_gen FROM _dolmen_changes
+			 WHERE seq > ? AND table_name = ? AND drop_gen = ? AND nsgen = ? ORDER BY seq LIMIT ?`,
+			[]any{int64(0), "notes", int64(0), nsGen[:], 100},
+			"_dolmen_changes_table_feed",
+		},
+		{
+			"token deadline prune",
+			`DELETE FROM _dolmen_cursor_tokens WHERE issued_at < ?`,
+			[]any{int64(0)},
+			"_dolmen_cursor_tokens_issued_at",
+		},
+		{
+			"token cap prune",
+			`DELETE FROM _dolmen_cursor_tokens WHERE chain_start < ?`,
+			[]any{int64(0)},
+			"_dolmen_cursor_tokens_chain_start",
+		},
+		{
+			"reach boundary",
+			`SELECT MIN(chain_origin) FROM _dolmen_cursor_tokens`,
+			nil,
+			"_dolmen_cursor_tokens_chain_origin",
+		},
+		{
+			"record age prune",
+			`DELETE FROM _dolmen_changes
+			 WHERE at < ?
+			   AND seq <= COALESCE((SELECT MIN(chain_origin) FROM _dolmen_cursor_tokens),
+			                        9223372036854775807)`,
+			[]any{isoChangeStamp(time.Now())},
+			"_dolmen_changes_at",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := n.ro.QueryContext(ctx, `EXPLAIN QUERY PLAN `+tc.query, tc.args...)
+			if err != nil {
+				t.Fatalf("explain: %v", err)
+			}
+			defer rows.Close()
+			var plan strings.Builder
+			for rows.Next() {
+				var id, parent, notused int
+				var detail string
+				if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+					t.Fatalf("scan plan row: %v", err)
+				}
+				plan.WriteString(detail)
+				plan.WriteString("\n")
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("iterate plan: %v", err)
+			}
+			if !strings.Contains(plan.String(), tc.want) {
+				t.Fatalf("query plan does not use %s — the replay path would scan under the write lock:\n%s", tc.want, plan.String())
+			}
+		})
 	}
 }
