@@ -326,6 +326,17 @@ func validateNSPath(name string) error {
 // not exist yet are fine: nothing can exist below a missing component, and
 // the caller either creates them (CreateNamespace's MkdirAll) or reports
 // ErrNotFound on the file itself.
+//
+// This is one walk, not a held guard: a same-UID process racing the data
+// directory can swap a verified component for a symlink before the caller's
+// next filesystem call. That race lives under the store's standing
+// cross-process caveat (DropNamespace's doc) — namespace mutation is
+// coordinated within one server, and the directory's contents are trusted
+// between operations, never merely at check time. No-follow fd-relative
+// traversal here would not change that: SQLite's VFS opens the database by
+// path on every pooled connection, so the read/write path cannot be closed
+// at this call site. What the walk buys is the static case, deterministically:
+// a pre-existing symlinked layout fails loudly instead of being followed.
 func (s *Store) verifyNSDirs(name string) error {
 	segs := strings.Split(name, "/")
 	cur := s.dir
