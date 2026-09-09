@@ -221,6 +221,43 @@ var registryDDL = []string{
 		drop_gen INTEGER NOT NULL,
 		at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 	)`,
+	// _dolmen_cursor_tokens is the coordinated-storage cursor mapping (§9.3):
+	// a client-facing cursor token is a random string, and THIS row — not any
+	// position-derived encoding — is what it maps back to. The client never
+	// sees position-derived bytes, so the opacity rules hold trivially: no
+	// order to reveal (a filtered feed's gaps stay invisible), no equality to
+	// compare across polls (every issuance is fresh randomness), no length to
+	// grow at an encoding boundary. Living in the namespace db makes the
+	// mapping durable across restarts (a restart must not invalidate clients'
+	// cursors) and shared by every process on the deployment, and its
+	// namespace-lifetime binding is inherent — it dies with the file (§5.4),
+	// so a recreated namespace's restarted sequence can never be silently
+	// skipped by a predecessor's token.
+	//
+	// Columns: position is the log seq the token resumes AFTER (0 = before
+	// everything, head = future commits only). issued_at (unix ms) anchors the
+	// per-token deadline, now ≤ issued_at + R. feed_table binds the token to
+	// the feed it was minted on ('' = the unfiltered namespace feed); resolve
+	// rejects cross-feed reuse instead of honoring a foreign position, which
+	// would silently skip the other feed's events. The chain_* columns carry
+	// the page chain: chain_id groups a begin/head start and every next-page
+	// token it mints; chain_origin is the chain's fixed resume origin — the
+	// begin-boundary semantics preserved unchanged across the chain; and
+	// chain_start (unix ms) is set once at chain creation and inherited by
+	// every token in the chain, anchoring the absolute cap chain_start + 2R.
+	// The cap reads chain_start, never the oldest surviving token row —
+	// pruning removes old rows, and a cap derived from them would drift with
+	// pruning, letting repeated paging retain an old backlog past the
+	// retention bound.
+	`CREATE TABLE IF NOT EXISTS _dolmen_cursor_tokens(
+		token TEXT PRIMARY KEY,
+		position INTEGER NOT NULL,
+		issued_at INTEGER NOT NULL,
+		chain_id TEXT NOT NULL,
+		chain_origin INTEGER NOT NULL,
+		chain_start INTEGER NOT NULL,
+		feed_table TEXT NOT NULL DEFAULT ''
+	)`,
 }
 
 func dsn(path string, readonly bool) string {
