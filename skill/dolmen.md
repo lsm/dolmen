@@ -294,6 +294,8 @@ page = wait_for(namespace="research", timeout_ms=0)         # immediate: pin the
 while working:
     page = wait_for(namespace="research", cursor=page.next_cursor)   # blocks up to 30s (default)
     for change in page.changes:                              # every page is processed before the next
-        read the row: query(sql="SELECT * FROM notes WHERE id = ?", args=[change.row_id])
+        # change.table names the table the commit landed in — server-validated, and table names
+        # cannot be ?-bound, so interpolating the feed's own value (never caller input) is correct:
+        read the row: query(namespace="research", sql=f"SELECT * FROM {change.table} WHERE id = ?", args=[change.row_id])
     # an empty page means nothing happened: just re-wait
 ```
