@@ -218,24 +218,27 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 		result.Updated = updated
 		// Upsert reports the ids of the rows it touched; plain update reports
 		// only the count. The ids are read inside the transaction, so they are
-		// exactly the rows the UPDATE above affected — and they are also what
-		// the change records below are minted for.
-		ids, err := selectTempIDs(ctx, tx, `_dolmen_update_ids`)
-		if err != nil {
-			return UpsertResult{}, err
-		}
+		// exactly the rows the UPDATE above affected.
 		if allowInsert {
+			ids, err := selectUpdateIDs(ctx, tx)
+			if err != nil {
+				return UpsertResult{}, err
+			}
 			result.Ids = ids
 		}
-		// One change record per matched row (§9.3), minted from the
+		// One change record per matched row (§9.3), minted straight from the
 		// materialized id set — the rows the UPDATE affected, resolved against
-		// pre-update state. owner stays NULL until stamping lands (slice 9c);
-		// it will be read per row from the materialized rows, since the label
-		// is the row's own, never the writer's.
-		result.Changes, err = mintChanges(ctx, tx, table, ChangeUpdate, ids, nil)
+		// pre-update state. The mint is a single INSERT…SELECT out of the temp
+		// table: the matched ids never round-trip through the server, so a
+		// bulk update (no match-count cap) cannot grow memory with the table
+		// (§6.2) — only the scalar range crosses back. owner stays NULL until
+		// stamping lands (slice 9c); it will then be read per row inside the
+		// SELECT, since the label is the row's own, never the writer's.
+		changes, err := mintChangesFromTemp(ctx, tx, table, ChangeUpdate, `_dolmen_update_ids`)
 		if err != nil {
 			return UpsertResult{}, err
 		}
+		result.Changes = changes
 	case allowInsert:
 		icols := cols
 		ivals := vals
@@ -308,12 +311,10 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 	return result, nil
 }
 
-// selectTempIDs reads the ids a write materialized into its temp id set —
-// _dolmen_update_ids for updates and upserts, _dolmen_delete_ids for deletes
-// — in id order: the exact rows the write affected, and therefore the ids its
-// change records are minted for.
-func selectTempIDs(ctx context.Context, tx *sql.Tx, temp string) ([]int64, error) {
-	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT id FROM %s ORDER BY id`, temp))
+// selectUpdateIDs reads the matched-row ids from the materialized update set,
+// in id order, so an upsert can report exactly the rows it touched.
+func selectUpdateIDs(ctx context.Context, tx *sql.Tx) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM _dolmen_update_ids ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}

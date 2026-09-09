@@ -350,16 +350,13 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	if err != nil {
 		return DeleteResult{}, err
 	}
-	// One delete record per removed row (§9.3), minted from the materialized
-	// id set — the ids the filter resolved to before any row was removed. The
-	// owner label is the deleted row's own, stamped from those pre-delete
-	// rows; it stays NULL until stamping lands (slice 9c), when the read
-	// joins the owner column onto the materialization.
-	delIDs, err := selectTempIDs(ctx, tx, `_dolmen_delete_ids`)
-	if err != nil {
-		return DeleteResult{}, err
-	}
-	changes, err := mintChanges(ctx, tx, table, ChangeDelete, delIDs, nil)
+	// One delete record per removed row (§9.3), minted straight from the
+	// pre-delete id materialization — a single INSERT…SELECT, so a confirmed
+	// bulk delete (no match-count cap) never materializes its matched ids in
+	// the server (§6.2). The owner label is the deleted row's own, stamped
+	// from those pre-delete rows; it stays NULL until stamping lands (slice
+	// 9c), when the read joins the owner column onto the materialization.
+	changes, err := mintChangesFromTemp(ctx, tx, table, ChangeDelete, `_dolmen_delete_ids`)
 	if err != nil {
 		return DeleteResult{}, err
 	}
