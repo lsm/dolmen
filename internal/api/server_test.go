@@ -300,8 +300,8 @@ func TestInferSchemaSampleBoundsDeclared(t *testing.T) {
 }
 
 func TestAllOpSchemasClosedToUnknownProperties(t *testing.T) {
-	if len(Ops) != 22 {
-		t.Fatalf("expected the twenty-two ops, got %d", len(Ops))
+	if len(Ops) != 23 {
+		t.Fatalf("expected the twenty-three ops, got %d", len(Ops))
 	}
 	for name, def := range Ops {
 		if def.InputSchema["additionalProperties"] != false {

@@ -518,6 +518,7 @@ Skill distribution is built into the server. `GET /skills` returns a JSON manife
 | `search_fulltext` | FTS5 MATCH over `fulltext` fields, relevance-ordered, typed results; optional `filter` + `args` restrict rows before ranking |
 | `search_vector` | Cosine KNN; `text` (server embeds; searches only the vectorize `_embedding` space) or raw `vector` (any vector column, caller owns the space); optional `filter` + `args` and `min_score` threshold; results carry `_score` and `skipped_vectors` |
 | `changes_since` | Replay the namespace's durable change log: changes committed after a cursor, in commit order, as a bounded page plus `next_cursor`. No cursor = start at the current head (future commits only); `"begin"` = retained history; optional `table` filters to that table's current lifetime. Changes carry `cursor`/`table`/`row_id`/`kind` only |
+| `wait_for` | Long-poll the change feed: block until a change commits after the cursor or `timeout_ms` elapses (default 30000, max 60000, `0` = immediate conditional poll), then return exactly a `changes_since` page. A timeout is an empty page carrying the unchanged `next_cursor` — never an error; pass it back in to keep waiting |
 | `delete` | WHERE-filtered delete, cascades to search indexes |
 | `drop_table` | Drop a table — rows, search index, schema, history, idempotency keys; `confirm` must repeat the name |
 | `update` | WHERE-filtered field update; reindexes full-text rows and re-embeds changed vectorized fields |

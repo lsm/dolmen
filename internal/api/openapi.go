@@ -39,6 +39,19 @@ var capabilitiesOutSchema = objectSchema(false, map[string]any{
 	"subscribe":     propBool(),
 }, []string{"vector_execution", "ann_recall_bound", "notifications", "subscribe"})
 
+// changesOutSchema is the page shape the feed ops share (§9.2: wait_for's
+// response has changes_since's exact semantics) — on wait_for's timeout the
+// changes array is empty and next_cursor carries the unchanged boundary.
+var changesOutSchema = objectSchema(false, map[string]any{
+	"changes": arrayOf(objectSchema(false, map[string]any{
+		"cursor": stringProp(""),
+		"table":  stringProp(`^[a-z][a-z0-9_]{0,63}$`),
+		"row_id": integer(1),
+		"kind":   map[string]any{"type": "string", "enum": []string{"insert", "update", "delete"}},
+	}, []string{"cursor", "table", "row_id", "kind"})),
+	"next_cursor": stringProp(""),
+}, []string{"changes", "next_cursor"})
+
 var outputSchemas = map[string]map[string]any{
 	"list_tables":     objectSchema(false, map[string]any{"tables": arrayOf(map[string]any{"type": "string"})}, []string{"tables"}),
 	"describe_table":  objectSchema(false, map[string]any{"table": ref("TableSchema"), "row_count": integer(0)}, []string{"table", "row_count"}),
@@ -51,19 +64,12 @@ var outputSchemas = map[string]map[string]any{
 	"capabilities":    capabilitiesOutSchema,
 	"search_fulltext": objectSchema(false, map[string]any{"results": arrayOf(ref("Row")), "truncated": propBool()}, []string{"results", "truncated"}),
 	"search_vector":   objectSchema(false, map[string]any{"results": arrayOf(ref("Row")), "truncated": propBool()}, []string{"results", "truncated"}),
-	"changes_since": objectSchema(false, map[string]any{
-		"changes": arrayOf(objectSchema(false, map[string]any{
-			"cursor": stringProp(""),
-			"table":  stringProp(`^[a-z][a-z0-9_]{0,63}$`),
-			"row_id": integer(1),
-			"kind":   map[string]any{"type": "string", "enum": []string{"insert", "update", "delete"}},
-		}, []string{"cursor", "table", "row_id", "kind"})),
-		"next_cursor": stringProp(""),
-	}, []string{"changes", "next_cursor"}),
-	"delete":  objectSchema(false, map[string]any{"deleted": integer(0)}, []string{"deleted"}),
-	"update":  objectSchema(false, map[string]any{"updated": integer(0)}, []string{"updated"}),
-	"upsert":  writeDataSchema,
-	"migrate": objectSchema(false, map[string]any{"table": ref("TableSchema")}, []string{"table"}),
+	"changes_since":   changesOutSchema,
+	"wait_for":        changesOutSchema,
+	"delete":          objectSchema(false, map[string]any{"deleted": integer(0)}, []string{"deleted"}),
+	"update":          objectSchema(false, map[string]any{"updated": integer(0)}, []string{"updated"}),
+	"upsert":          writeDataSchema,
+	"migrate":         objectSchema(false, map[string]any{"table": ref("TableSchema")}, []string{"table"}),
 }
 
 func init() {

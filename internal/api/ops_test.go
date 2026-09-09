@@ -411,6 +411,35 @@ func TestReadRowsIDBoundDeclared(t *testing.T) {
 	t.Fatalf("ids must be a required request key, got %v", req)
 }
 
+// TestWaitForTimeoutBoundDeclared pins wait_for's declared timeout_ms bounds
+// to the constants dispatch enforces: a schema-validating client that trusts
+// the schema must never have the server reject (or, worse, default) a value
+// the schema admitted. The default itself (30000) is dispatch-side — the
+// schema declares only the valid range, and the description names both.
+func TestWaitForTimeoutBoundDeclared(t *testing.T) {
+	def, ok := Ops["wait_for"]
+	if !ok {
+		t.Fatal("wait_for op missing")
+	}
+	props := def.InputSchema["properties"].(map[string]any)
+	timeout := props["timeout_ms"].(map[string]any)
+	if timeout["minimum"] != 0 || timeout["maximum"] != maxWaitForTimeoutMS {
+		t.Fatalf("timeout_ms must declare the enforced 0–%d range, got %v", maxWaitForTimeoutMS, timeout)
+	}
+	// limit rides the same shared page contract as changes_since.
+	limit := props["limit"].(map[string]any)
+	if limit["minimum"] != 1 || limit["maximum"] != store.MaxChangesPageLimit {
+		t.Fatalf("limit must declare the enforced 1–%d range, got %v", store.MaxChangesPageLimit, limit)
+	}
+	req, _ := def.InputSchema["required"].([]string)
+	for _, r := range req {
+		if r == "namespace" {
+			return
+		}
+	}
+	t.Fatalf("namespace must be a required request key, got %v", req)
+}
+
 type blankIdentityEmb struct{}
 
 func (blankIdentityEmb) Name() string      { return "blank" }

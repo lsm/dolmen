@@ -88,6 +88,9 @@ func parityScript() []parityStep {
 		{"changes_since", "changes_since", map[string]any{
 			"namespace": ns, "table": "docs", "cursor": "begin",
 		}, false},
+		{"wait_for", "wait_for", map[string]any{
+			"namespace": ns, "table": "docs", "cursor": "begin", "timeout_ms": 0,
+		}, false},
 		{"describe_table", "describe_table", map[string]any{"namespace": ns, "table": "docs"}, false},
 		{"migrate", "migrate", map[string]any{
 			"namespace": ns, "table": "docs", "expected_version": 1,
