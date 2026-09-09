@@ -69,6 +69,7 @@ var toolAnnotations = map[string]map[string]any{
 	"read_rows":       {"title": "Read rows by id", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"search_fulltext": {"title": "Full-text search", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"search_vector":   {"title": "Vector search", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
+	"changes_since":   {"title": "Changes since", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
 	"delete":          {"title": "Delete rows", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false},
 	"update":          {"title": "Update rows", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
 	"upsert":          {"title": "Upsert by filter", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},

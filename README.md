@@ -494,7 +494,7 @@ proxy is not.
 claude mcp add --transport http dolmen http://127.0.0.1:8790/mcp
 ```
 
-The MCP server exposes the same twenty-one operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
+The MCP server exposes the same twenty-two operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
 
 Skill distribution is built into the server. `GET /skills` returns a JSON manifest with links to the layered skill markdown; `GET /skills/dolmen` is the end-user skill and `GET /skills/dolmen-admin` is the developer skill. Agents should fetch the skill from the running binary instead of copying a static file.
 
@@ -517,6 +517,7 @@ Skill distribution is built into the server. `GET /skills` returns a JSON manife
 | `query` | Read-only SQL (SELECT/WITH), parameter binding via `args`, typed results |
 | `search_fulltext` | FTS5 MATCH over `fulltext` fields, relevance-ordered, typed results; optional `filter` + `args` restrict rows before ranking |
 | `search_vector` | Cosine KNN; `text` (server embeds; searches only the vectorize `_embedding` space) or raw `vector` (any vector column, caller owns the space); optional `filter` + `args` and `min_score` threshold; results carry `_score` and `skipped_vectors` |
+| `changes_since` | Replay the namespace's durable change log: changes committed after a cursor, in commit order, as a bounded page plus `next_cursor`. No cursor = start at the current head (future commits only); `"begin"` = retained history; optional `table` filters to that table's current lifetime. Changes carry `cursor`/`table`/`row_id`/`kind` only |
 | `delete` | WHERE-filtered delete, cascades to search indexes |
 | `drop_table` | Drop a table — rows, search index, schema, history, idempotency keys; `confirm` must repeat the name |
 | `update` | WHERE-filtered field update; reindexes full-text rows and re-embeds changed vectorized fields |

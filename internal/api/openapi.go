@@ -51,10 +51,19 @@ var outputSchemas = map[string]map[string]any{
 	"capabilities":    capabilitiesOutSchema,
 	"search_fulltext": objectSchema(false, map[string]any{"results": arrayOf(ref("Row")), "truncated": propBool()}, []string{"results", "truncated"}),
 	"search_vector":   objectSchema(false, map[string]any{"results": arrayOf(ref("Row")), "truncated": propBool()}, []string{"results", "truncated"}),
-	"delete":          objectSchema(false, map[string]any{"deleted": integer(0)}, []string{"deleted"}),
-	"update":          objectSchema(false, map[string]any{"updated": integer(0)}, []string{"updated"}),
-	"upsert":          writeDataSchema,
-	"migrate":         objectSchema(false, map[string]any{"table": ref("TableSchema")}, []string{"table"}),
+	"changes_since": objectSchema(false, map[string]any{
+		"changes": arrayOf(objectSchema(false, map[string]any{
+			"cursor": stringProp(""),
+			"table":  stringProp(`^[a-z][a-z0-9_]{0,63}$`),
+			"row_id": integer(1),
+			"kind":   map[string]any{"type": "string", "enum": []string{"insert", "update", "delete"}},
+		}, []string{"cursor", "table", "row_id", "kind"})),
+		"next_cursor": stringProp(""),
+	}, []string{"changes", "next_cursor"}),
+	"delete":  objectSchema(false, map[string]any{"deleted": integer(0)}, []string{"deleted"}),
+	"update":  objectSchema(false, map[string]any{"updated": integer(0)}, []string{"updated"}),
+	"upsert":  writeDataSchema,
+	"migrate": objectSchema(false, map[string]any{"table": ref("TableSchema")}, []string{"table"}),
 }
 
 func init() {

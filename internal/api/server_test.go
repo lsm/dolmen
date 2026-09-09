@@ -300,8 +300,8 @@ func TestInferSchemaSampleBoundsDeclared(t *testing.T) {
 }
 
 func TestAllOpSchemasClosedToUnknownProperties(t *testing.T) {
-	if len(Ops) != 21 {
-		t.Fatalf("expected the twenty-one ops, got %d", len(Ops))
+	if len(Ops) != 22 {
+		t.Fatalf("expected the twenty-two ops, got %d", len(Ops))
 	}
 	for name, def := range Ops {
 		if def.InputSchema["additionalProperties"] != false {
@@ -562,12 +562,12 @@ func TestNamespaceAndTablePatternsDeclared(t *testing.T) {
 // segments and other grammar violations.
 func TestNormNSPerSegment(t *testing.T) {
 	for in, want := range map[string]string{
-		"acme":              "acme",
-		"  Acme  ":          "acme",
-		"acme/prod":         "acme/prod",
-		" Acme / Prod ":     "acme/prod",
-		"ACME/Prod/EU":      "acme/prod/eu",
-		"a_b-c9/X-Y":        "a_b-c9/x-y",
+		"acme":          "acme",
+		"  Acme  ":      "acme",
+		"acme/prod":     "acme/prod",
+		" Acme / Prod ": "acme/prod",
+		"ACME/Prod/EU":  "acme/prod/eu",
+		"a_b-c9/X-Y":    "a_b-c9/x-y",
 		// A segment that trims to nothing stays an empty segment: normNS
 		// canonicalizes, validateNSPath rejects — here it just round-trips.
 		" / ": "/",

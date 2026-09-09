@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/lsm/dolmen/internal/schema"
 
@@ -53,6 +54,11 @@ func NSPathPattern() string {
 	return fmt.Sprintf(`^%s(/%s){0,%d}$`, nsSegmentSrc, nsSegmentSrc, maxNSDepth-1)
 }
 
+// DefaultChangeRetention is the change log's retention bound R (§9.3) when no
+// option overrides it — the documented -change-retention default, so a store
+// wired without options behaves exactly like a default deployment.
+const DefaultChangeRetention = 168 * time.Hour
+
 type Store struct {
 	dir string
 	mu  sync.Mutex
@@ -64,6 +70,13 @@ type Store struct {
 	// outside every lock.
 	notifyMu  sync.Mutex
 	listeners map[string][]*commitListener
+
+	// changeRetention is the change log's retention bound R (§9.3): the
+	// shared knob for cursor-token expiry and record pruning, fixed at Open —
+	// it shapes durable state (what resolve honors, what prune deletes), so
+	// it is not mid-life mutable. <= 0 disables both, an operator's disk
+	// choice, never a correctness requirement.
+	changeRetention time.Duration
 }
 
 type nsDB struct {
@@ -71,7 +84,20 @@ type nsDB struct {
 	ro *sql.DB
 }
 
-func Open(dir string) (*Store, error) {
+// OpenOption customizes a Store at open time.
+type OpenOption func(*Store)
+
+// WithChangeRetention sets the change log's retention bound R (§9.3):
+// cursor tokens expire by their issuance + R and records are pruned past the
+// 2R hold when no live page chain can reach them. 0 (or negative) disables
+// both — records accumulate and cursors never expire. The deployment-side
+// validation (0 or 1h–2160h) belongs to the binary's config layer; the engine
+// accepts whatever it is handed.
+func WithChangeRetention(d time.Duration) OpenOption {
+	return func(s *Store) { s.changeRetention = d }
+}
+
+func Open(dir string, opts ...OpenOption) (*Store, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
@@ -82,7 +108,11 @@ func Open(dir string) (*Store, error) {
 	if err := os.Chmod(abs, 0o700); err != nil {
 		return nil, fmt.Errorf("cannot secure data directory %s (owner-only permissions): %w", abs, err)
 	}
-	return &Store{dir: abs, nss: map[string]*nsDB{}}, nil
+	s := &Store{dir: abs, nss: map[string]*nsDB{}, changeRetention: DefaultChangeRetention}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
 }
 
 func (s *Store) Close() error {
@@ -286,6 +316,26 @@ var registryDDL = []string{
 		chain_start INTEGER NOT NULL,
 		feed_table TEXT NOT NULL DEFAULT ''
 	)`,
+	// _dolmen_changes_table_feed serves ChangesSince's table-filtered page
+	// read (slice 5c): the lifetime equality (table_name, drop_gen, nsgen)
+	// with seq ordered inside it. Without it the lookup rides the seq
+	// primary key past every unrelated table's records — a quiet table
+	// polled in a busy namespace rescans an ever-growing tail of foreign
+	// changes inside the namespace's single write transaction.
+	`CREATE INDEX IF NOT EXISTS _dolmen_changes_table_feed
+		ON _dolmen_changes(table_name, drop_gen, nsgen, seq)`,
+	// _dolmen_changes_at serves the retention prune's age predicate: a log
+	// whose records are all younger than the 2R hold is the common case, and
+	// the prune runs on every changes_since call — an unindexed `at < ?`
+	// would full-scan the log and delete nothing, under the write lock.
+	`CREATE INDEX IF NOT EXISTS _dolmen_changes_at ON _dolmen_changes(at)`,
+	// The cursor-token prune's predicates (issued_at, chain_start) and the
+	// reach boundary MIN(chain_origin): tokens accumulate one-plus per poll
+	// for a whole retention window, and every changes_since call prunes —
+	// without these indexes each call full-scans the whole token table.
+	`CREATE INDEX IF NOT EXISTS _dolmen_cursor_tokens_issued_at ON _dolmen_cursor_tokens(issued_at)`,
+	`CREATE INDEX IF NOT EXISTS _dolmen_cursor_tokens_chain_start ON _dolmen_cursor_tokens(chain_start)`,
+	`CREATE INDEX IF NOT EXISTS _dolmen_cursor_tokens_chain_origin ON _dolmen_cursor_tokens(chain_origin)`,
 }
 
 func dsn(path string, readonly bool) string {

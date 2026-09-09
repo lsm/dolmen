@@ -125,20 +125,20 @@ func mintChangesFromTemp(ctx context.Context, tx *sql.Tx, table string, kind Cha
 // proven parts.
 
 var (
-	// errCursorExpired is the engine-internal shape of §9.3's beyond-retention
+	// ErrCursorExpired is the engine's shape of §9.3's beyond-retention
 	// error: the presented token is unknown, pruned, past its own deadline,
 	// or past its chain's absolute cap — either way it names no position. The
-	// op layer (slice 5c) maps it to the explicit teaching error naming the
-	// catch-up path; whether it fires is a function of the client's own token
-	// age alone, never of what the log contains.
-	errCursorExpired = errors.New("cursor token is unknown or past retention")
+	// op layer maps it to the explicit teaching error naming the catch-up
+	// path; whether it fires is a function of the client's own token age
+	// alone, never of what the log contains.
+	ErrCursorExpired = errors.New("cursor token is unknown or past retention")
 
-	// errCursorCrossFeed: the token was minted on a different feed (another
+	// ErrCursorCrossFeed: the token was minted on a different feed (another
 	// table's, or the unfiltered namespace feed) than the one it was resolved
 	// against. Cross-feed reuse is rejected, never honored as a position —
 	// honoring it would silently skip the target feed's events behind the
 	// foreign feed's cursor (§9.3).
-	errCursorCrossFeed = errors.New("cursor token belongs to a different feed")
+	ErrCursorCrossFeed = errors.New("cursor token belongs to a different feed")
 )
 
 // cursorDB is the handle the cursor helpers run against: resolution refreshes
@@ -262,11 +262,7 @@ func mintCursorToken(ctx context.Context, db cursorDB, now time.Time, position i
 		return "", fmt.Errorf("mint cursor token: %w", err)
 	}
 	if chain == nil {
-		var cid [cursorTokenBytes]byte
-		if _, err := rand.Read(cid[:]); err != nil {
-			return "", fmt.Errorf("mint cursor chain id: %w", err)
-		}
-		chain = &cursorChain{ID: hex.EncodeToString(cid[:]), Origin: position, Start: now.UnixMilli()}
+		chain = newCursorChain(now, position)
 	}
 	tok := Cursor(hex.EncodeToString(raw[:]))
 	if _, err := db.ExecContext(ctx,
@@ -275,6 +271,23 @@ func mintCursorToken(ctx context.Context, db cursorDB, now time.Time, position i
 		return "", err
 	}
 	return tok, nil
+}
+
+// newCursorChain mints a NEW chain's identity, rooted at the resume position:
+// Origin carries the begin-boundary (or head) semantics every token minted on
+// the chain inherits, and Start anchors the absolute cap chain_start + 2R
+// (§9.3). ChangesSince builds the chain up front so every mint of the call —
+// each record's cursor and the next-page token — rides one identity; nil-chain
+// mints (5b helpers, tests) construct their own through this same path.
+func newCursorChain(now time.Time, position int64) *cursorChain {
+	var cid [cursorTokenBytes]byte
+	if _, err := rand.Read(cid[:]); err != nil {
+		// Unreachable in practice (a broken entropy source fails the token
+		// mint first); an empty id still groups the chain, only less
+		// observably.
+		return &cursorChain{Origin: position, Start: now.UnixMilli()}
+	}
+	return &cursorChain{ID: hex.EncodeToString(cid[:]), Origin: position, Start: now.UnixMilli()}
 }
 
 // resolveCursorToken maps an opaque token back to its position and chain,
@@ -310,22 +323,22 @@ func resolveCursorToken(ctx context.Context, db cursorDB, now time.Time, retenti
 		`SELECT token, position, issued_at, chain_id, chain_origin, chain_start, feed_table FROM _dolmen_cursor_tokens WHERE token = ?`,
 		string(tok)).Scan(&row.Token, &row.Position, &row.IssuedAt, &row.ChainID, &row.ChainOrigin, &row.ChainStart, &row.FeedTable)
 	if errors.Is(err, sql.ErrNoRows) {
-		return cursorRow{}, errCursorExpired
+		return cursorRow{}, ErrCursorExpired
 	}
 	if err != nil {
 		return cursorRow{}, err
 	}
 	if row.FeedTable != feedTable {
-		return cursorRow{}, fmt.Errorf("%w: minted for feed %q, resolved for feed %q", errCursorCrossFeed, row.FeedTable, feedTable)
+		return cursorRow{}, fmt.Errorf("%w: minted for feed %q, resolved for feed %q", ErrCursorCrossFeed, row.FeedTable, feedTable)
 	}
 	if retention > 0 {
 		nowMs := now.UnixMilli()
 		rms := int64(retention / time.Millisecond)
 		if nowMs > row.IssuedAt+rms {
-			return cursorRow{}, errCursorExpired
+			return cursorRow{}, ErrCursorExpired
 		}
 		if nowMs > row.ChainStart+2*rms {
-			return cursorRow{}, errCursorExpired
+			return cursorRow{}, ErrCursorExpired
 		}
 	}
 	res, err := db.ExecContext(ctx,
@@ -339,7 +352,7 @@ func resolveCursorToken(ctx context.Context, db cursorDB, now time.Time, retenti
 		return cursorRow{}, err
 	}
 	if n == 0 {
-		return cursorRow{}, errCursorExpired
+		return cursorRow{}, ErrCursorExpired
 	}
 	return row, nil
 }
@@ -351,7 +364,13 @@ func resolveCursorToken(ctx context.Context, db cursorDB, now time.Time, retenti
 // 0 disables pruning entirely — records and tokens accumulate.
 //
 // Tokens are pruned once past their own deadline (issued_at + R) or their
-// chain's absolute cap (chain_start + 2R), whichever comes first.
+// chain's absolute cap (chain_start + 2R), whichever comes first. The two
+// predicates run as separate sargable DELETEs — issued_at < now−R and
+// chain_start < now−2R, each served by its index — because pruning rides
+// every changes_since call under the namespace's write lock, and a token
+// table that accumulates a row per poll for a whole retention window must
+// not be full-scanned per call (the arithmetic `col + R < now` forms would
+// defeat the indexes; the subtracted-cutoff forms are the same inequality).
 //
 // Records are pruned when older than the 2R hold AND beyond the reach of
 // every surviving chain: a chain retains everything past its origin through
@@ -362,9 +381,10 @@ func resolveCursorToken(ctx context.Context, db cursorDB, now time.Time, retenti
 // remaining perfectly valid; pure age-R pruning would break gap-free replay
 // with a beyond-retention error or a shortened page on a perfectly valid
 // cursor. The reach boundary is the chains' minimum origin, precomputed once
-// by the scalar subquery — a correlated per-record EXISTS would rescan the
-// token table for every candidate record, and both tables grow for the whole
-// retention window. With no surviving chains the minimum is NULL and every
+// by the scalar subquery (the chain_origin index serves MIN as a leftmost-key
+// seek — a correlated per-record EXISTS would rescan the token table for
+// every candidate record, and both tables grow for the whole retention
+// window). With no surviving chains the minimum is NULL and every
 // age-eligible record goes.
 func pruneChanges(ctx context.Context, db cursorDB, now time.Time, retention time.Duration) error {
 	if retention <= 0 {
@@ -373,8 +393,11 @@ func pruneChanges(ctx context.Context, db cursorDB, now time.Time, retention tim
 	rms := int64(retention / time.Millisecond)
 	nowMs := now.UnixMilli()
 	if _, err := db.ExecContext(ctx,
-		`DELETE FROM _dolmen_cursor_tokens WHERE issued_at + ? < ? OR chain_start + 2 * ? < ?`,
-		rms, nowMs, rms, nowMs); err != nil {
+		`DELETE FROM _dolmen_cursor_tokens WHERE issued_at < ?`, nowMs-rms); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx,
+		`DELETE FROM _dolmen_cursor_tokens WHERE chain_start < ?`, nowMs-2*rms); err != nil {
 		return err
 	}
 	_, err := db.ExecContext(ctx,
@@ -382,7 +405,7 @@ func pruneChanges(ctx context.Context, db cursorDB, now time.Time, retention tim
 		 WHERE at < ?
 		   AND seq <= COALESCE((SELECT MIN(chain_origin) FROM _dolmen_cursor_tokens),
 		                        9223372036854775807)`,
-		isoChangeStamp(now.Add(-2 * retention)))
+		isoChangeStamp(now.Add(-2*retention)))
 	return err
 }
 
@@ -392,4 +415,204 @@ func pruneChanges(ctx context.Context, db cursorDB, now time.Time, retention tim
 // identical shapes make lexicographic order chronological.
 func isoChangeStamp(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05.000") + "Z"
+}
+
+// ---------------------------------------------------------------------------
+// ChangesSince — slice 5c, the replay op assembled from the 5b helpers.
+
+// Page bounds for the change-log reads (§9.3): limit default 100, max 1000 —
+// pinned like search pagination so the replay-bounding rules are enforceable
+// against a bounded page and conforming adapters agree on the bounds. The op
+// layer REJECTS outside 1–1000 (invalid_request); the engine clamps, per
+// Page's conventions.
+const (
+	DefaultChangesPageLimit = 100
+	MaxChangesPageLimit     = 1000
+)
+
+func changesPageLimit(n int) int {
+	if n <= 0 {
+		return DefaultChangesPageLimit
+	}
+	if n > MaxChangesPageLimit {
+		return MaxChangesPageLimit
+	}
+	return n
+}
+
+// ChangesSince is the scoped replay read over the engine-owned durable change
+// log (§6.2, §9.3): records in cursor (seq) order after the resume position,
+// as one bounded page plus the next cursor. Everything the call touches —
+// token resolution (which refreshes the presented token's deadline), the page
+// read, the per-record and next-page token mints, and opportunistic retention
+// pruning — runs inside ONE write transaction, the namespace's rw pool with
+// its immediate lock: the page and its cursors commit together (a crash never
+// returns records whose cursors were never stored), no concurrent prune can
+// interleave between the resolve and the mints (the 5b helpers each defend
+// against that separately; one transaction removes the windows entirely), and
+// the read sees exactly one log snapshot.
+//
+// The resume position comes from `from` (§9.3's pinned forms): the zero cursor
+// is the CURRENT HEAD — a fresh subscriber wants future events only, so the
+// first page is empty by construction and carries the head cursor as its
+// next_cursor; the CursorBegin sentinel starts at the retained-history
+// boundary (changeBegin); anything else is an opaque token resolved through
+// the mapping table, with feed binding, own deadline, and chain cap enforced
+// before the position is honored (ErrCursorExpired / ErrCursorCrossFeed).
+// A fresh start builds a NEW page chain rooted at its position, so every
+// token this call mints inherits the same origin (the boundary/head
+// semantics) and cap anchor.
+//
+// table != "" selects the table feed: only records of the table's CURRENT
+// lifetime are delivered — the per-record lifetime labels (nsgen + drop_gen,
+// §3.4) compared against the table's current generation, so a caller on a
+// recreated same-named successor never replays the predecessor's records,
+// even from a cursor minted before the drop. The table must exist
+// (ErrNotFound, the §6.2 no-implicit-anything rule). table == "" is the
+// namespace feed: the namespace's own recorded history, every table
+// lifetime included — its readers held namespace read throughout.
+//
+// Each returned record carries its OWN cursor — a fresh token at the record's
+// position, so a client persisting its last-delivered cursor resumes exactly
+// after it, and consecutive visible records yield unrelated tokens (the
+// opacity rules: a filtered feed's gaps stay invisible). next_cursor maps to
+// the last delivered record's position, or to the resume position on an empty
+// page. Public projections expose cursor/table/row_id/kind only; Owner and
+// Lifetime are internal metadata for the authz-era visible-set filtering.
+//
+// TODO(8c): nsGen is ignored while auth is off — slice 8c verifies the
+// namespace-lifetime guard atomically with the read, exactly like Query.
+// TODO(9d): scope and scopeIncarnation are ignored while auth is off —
+// slice 9d filters records through the caller's visible set via the Owner
+// label and binds the scope's incarnation.
+func (s *Store) ChangesSince(ctx context.Context, nsName, table string, from Cursor, nsGen [16]byte, scope *RowScope, scopeIncarnation Incarnation, page Page) ([]ChangeRecord, Cursor, error) {
+	n, err := s.ns(nsName)
+	if err != nil {
+		return nil, "", err
+	}
+	now := time.Now()
+	tx, err := n.rw.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	defer tx.Rollback()
+
+	// The table feed's current-lifetime filter: the table must exist, and the
+	// labels a record must carry to belong to this lifetime are read in the
+	// same snapshot as the page — a drop-and-recreate committing elsewhere
+	// cannot mix a predecessor's records into the successor's feed.
+	var lifetime struct {
+		nsgen   [16]byte
+		dropGen int64
+	}
+	query := `SELECT seq, table_name, row_id, kind, owner, nsgen, drop_gen FROM _dolmen_changes WHERE seq > ?`
+	if table != "" {
+		if _, err := loadSchema(ctx, tx, nsName, table); err != nil {
+			return nil, "", err
+		}
+		if lifetime.dropGen, err = tableGen(ctx, tx, table); err != nil {
+			return nil, "", err
+		}
+		if lifetime.nsgen, err = readNSGen(ctx, tx); err != nil {
+			return nil, "", err
+		}
+		query += ` AND table_name = ? AND drop_gen = ? AND nsgen = ?`
+	}
+
+	// The resume position and its page chain.
+	var position int64
+	var chain *cursorChain
+	switch {
+	case from == "":
+		if position, err = changeHead(ctx, tx); err != nil {
+			return nil, "", err
+		}
+		chain = newCursorChain(now, position)
+	case from == CursorBegin:
+		if position, err = changeBegin(ctx, tx, now, s.changeRetention); err != nil {
+			return nil, "", err
+		}
+		chain = newCursorChain(now, position)
+	default:
+		var row cursorRow
+		if row, err = resolveCursorToken(ctx, tx, now, s.changeRetention, from, table); err != nil {
+			return nil, "", err
+		}
+		position = row.Position
+		chain = &cursorChain{ID: row.ChainID, Origin: row.ChainOrigin, Start: row.ChainStart}
+	}
+
+	// The bounded page. Records are drained before any token is minted — the
+	// page is capped at MaxChangesPageLimit, so the buffer is bounded by the
+	// same contract that bounds the response.
+	limit := changesPageLimit(page.Limit)
+	args := []any{position}
+	if table != "" {
+		args = append(args, table, lifetime.dropGen, lifetime.nsgen[:])
+	}
+	rows, err := tx.QueryContext(ctx, query+` ORDER BY seq LIMIT ?`, append(args, limit)...)
+	if err != nil {
+		return nil, "", err
+	}
+	type loggedChange struct {
+		rec ChangeRecord
+		seq int64
+	}
+	scanned := make([]loggedChange, 0, limit)
+	for rows.Next() {
+		var lc loggedChange
+		var owner sql.NullString
+		var gen []byte
+		if err := rows.Scan(&lc.seq, &lc.rec.Table, &lc.rec.RowID, &lc.rec.Kind, &owner, &gen, &lc.rec.Lifetime.DropGen); err != nil {
+			rows.Close()
+			return nil, "", err
+		}
+		if len(gen) != 16 {
+			rows.Close()
+			return nil, "", fmt.Errorf("corrupt change record %d: nsgen is %d bytes, want 16", lc.seq, len(gen))
+		}
+		copy(lc.rec.Lifetime.NsGen[:], gen)
+		lc.rec.Lifetime.Table = lc.rec.Table
+		lc.rec.Owner = owner.String
+		scanned = append(scanned, lc)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, "", err
+	}
+	rows.Close()
+
+	// Mint the cursors: one per record at the record's position, then the
+	// next-page token at the last delivered position (the resume position on
+	// an empty page) — all on the one chain, so a client may persist either a
+	// record's cursor or next_cursor and resume gap-free.
+	records := make([]ChangeRecord, len(scanned))
+	for i := range scanned {
+		tok, err := mintCursorToken(ctx, tx, now, scanned[i].seq, table, chain)
+		if err != nil {
+			return nil, "", err
+		}
+		scanned[i].rec.Cursor = tok
+		records[i] = scanned[i].rec
+	}
+	nextPos := position
+	if len(scanned) > 0 {
+		nextPos = scanned[len(scanned)-1].seq
+	}
+	next, err := mintCursorToken(ctx, tx, now, nextPos, table, chain)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Retention moves with the read: by the time this runs, the call's own
+	// chain row is in the mapping table, so pruning sees it and keeps every
+	// record it can still reach (pruneChanges consults the durable chain
+	// rows, never age alone).
+	if err := pruneChanges(ctx, tx, now, s.changeRetention); err != nil {
+		return nil, "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, "", err
+	}
+	return records, next, nil
 }
