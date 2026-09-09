@@ -314,6 +314,49 @@ func TestListNamespacesPrefix(t *testing.T) {
 			t.Errorf("ListNamespaces(prefix %q) = %v, want ErrInvalid", prefix, err)
 		}
 	}
+
+	// The subtree walk starts inside the prefix's path and never touches a
+	// sibling: an unreadable directory elsewhere under the data directory —
+	// an operator's staging area — can neither fail nor slow an unrelated
+	// subtree listing, and the leaf-only drop guard, which counts
+	// descendants through the same listing, inherits the isolation.
+	st3 := openStore(t)
+	mustNS(t, st3, "a/b")
+	locked := filepath.Join(st3.dir, "locked")
+	if err := os.MkdirAll(locked, 0o700); err != nil {
+		t.Fatalf("plant locked sibling: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "junk.db"), nil, 0o600); err != nil {
+		t.Fatalf("plant junk database: %v", err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatalf("chmod locked sibling: %v", err)
+	}
+	// Restore readability before TempDir's cleanup (registered earlier, so
+	// it runs after this one) — RemoveAll must delete the junk inside.
+	t.Cleanup(func() { os.Chmod(locked, 0o700) })
+	if got, err := st3.Store.ListNamespaces(ctx, "a", nil); err != nil || !reflect.DeepEqual(got, []string{"a/b"}) {
+		t.Fatalf("subtree listing must not touch the unreadable sibling, got %v (%v)", got, err)
+	}
+	if got, err := st3.Store.ListNamespaces(ctx, "a/b", nil); err != nil || !reflect.DeepEqual(got, []string{"a/b"}) {
+		t.Fatalf("leaf listing beside the unreadable sibling, got %v (%v)", got, err)
+	}
+
+	// A symlinked component is followed by nothing: the subtree through it
+	// lists empty, never the outside directory's contents.
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "leak.db"), nil, 0o600); err != nil {
+		t.Fatalf("plant external database: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(st3.dir, "sym")); err != nil {
+		t.Fatalf("plant symlinked component: %v", err)
+	}
+	if got, err := st3.Store.ListNamespaces(ctx, "sym", nil); err != nil || len(got) != 0 {
+		t.Fatalf("a symlinked subtree component must list empty, got %v (%v)", got, err)
+	}
+	if got, err := st3.Store.ListNamespaces(ctx, "sym/deep", nil); err != nil || len(got) != 0 {
+		t.Fatalf("a path through a symlinked component must list empty, got %v (%v)", got, err)
+	}
 }
 
 // TestDropNamespaceRejectsDescendants pins §5.4's leaf-only drop: a

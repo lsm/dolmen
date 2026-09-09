@@ -19,36 +19,70 @@ import (
 // lexicographically by full path — a depth-1-only store sorts exactly as
 // v0.2.0's filename-ordered listing did. A non-empty prefix (a valid
 // namespace path) restricts the listing to that path's subtree, the prefix
-// itself included when it names a namespace; the empty prefix lists
-// everything. The list names exactly the namespaces the store can open:
-// entries whose stem is not a valid namespace segment are skipped, as is
-// anything but a regular file (a symlink named like a namespace database is
-// one of verifyNSDirs' refusals).
+// itself included when it names a namespace; the walk then touches only
+// that path, never a sibling, so an unreadable or huge unrelated subtree
+// can neither fail nor slow it — and neither can DropNamespace's
+// descendant check, which counts through the same listing. The empty
+// prefix lists everything. The list names exactly the namespaces the store
+// can open: entries whose stem is not a valid namespace segment are
+// skipped, as is anything but a regular file (a symlink named like a
+// namespace database is one of verifyNSDirs' refusals).
 // TODO(8c): bindings are ignored while auth is off.
 func (s *Store) ListNamespaces(ctx context.Context, prefix string, bindings []AuthBinding) ([]string, error) {
+	var out []string
+	root, at := s.dir, "" // the full walk: everything under the data directory
 	if prefix != "" {
 		if err := validateNSPath(prefix); err != nil {
 			return nil, err
 		}
+		self, dir := s.nsSubtree(prefix)
+		if self {
+			out = append(out, prefix)
+		}
+		if dir == "" {
+			// No subtree directory: the listing is the prefix's own file,
+			// if it was one.
+			sort.Strings(out)
+			return out, nil
+		}
+		root, at = dir, prefix
 	}
-	var out []string
-	if err := walkNamespaces(s.dir, "", &out); err != nil {
+	if err := walkNamespaces(root, at, &out); err != nil {
 		return nil, err
 	}
 	sort.Strings(out)
-	if prefix == "" {
-		return out, nil
-	}
-	// The subtree of a prefix is the prefix itself plus everything below
-	// it; the segment boundary ("/") keeps sibling stems like "ab" or
-	// "a-b" out of a prefix "a" listing.
-	filtered := out[:0]
-	for _, ns := range out {
-		if ns == prefix || strings.HasPrefix(ns, prefix+"/") {
-			filtered = append(filtered, ns)
+	return out, nil
+}
+
+// nsSubtree resolves a prefix into its listing inputs: whether the prefix
+// itself is a namespace (its <seg>.db is a regular file in its parent
+// directory), and the directory its descendants live under (<data>/a/b/c
+// for a/b/c), "" when that directory does not exist. The component chain
+// is walked one directory at a time — every stat lands on a path whose
+// parents are already verified real directories — and stops at the first
+// component that is missing or not a real directory: a symlink is never
+// followed (verifyNSDirs refuses opens through one, and the walk's IsDir
+// rule descends through none), so a subtree through it lists empty rather
+// than reading outside the data directory, and a file sitting where a
+// directory component should be hides the rest of the path instead of
+// erroring.
+func (s *Store) nsSubtree(prefix string) (self bool, dir string) {
+	segs := strings.Split(prefix, "/")
+	chain := s.dir
+	for _, seg := range segs[:len(segs)-1] {
+		chain = filepath.Join(chain, seg)
+		if fi, err := os.Lstat(chain); err != nil || !fi.IsDir() {
+			return false, ""
 		}
 	}
-	return filtered, nil
+	if fi, err := os.Lstat(filepath.Join(chain, segs[len(segs)-1]+".db")); err == nil && fi.Mode().IsRegular() {
+		self = true
+	}
+	dir = filepath.Join(chain, segs[len(segs)-1])
+	if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() {
+		return self, ""
+	}
+	return self, dir
 }
 
 // walkNamespaces collects the namespaces of one directory subtree into out:
@@ -61,16 +95,13 @@ func (s *Store) ListNamespaces(ctx context.Context, prefix string, bindings []Au
 // a real directory (DirEntry.IsDir is lstat semantics: a symlink reports
 // as a link and is not descended, so the walk stays inside s.dir the way
 // verifyNSDirs keeps opens there). dir must be a directory inside s.dir;
-// prefix is the namespace path of dir's contents ("" at the
-// data-directory root, and the recursion keeps it short of the cap, so
-// every file found names a valid path). The caller sorts: ReadDir's
-// per-directory filename order is not full-path order (a/b/c sorts after
-// a/b.db's namespace a/b, though "b" < "b.db").
+// prefix is the namespace path of dir's contents — "" at the
+// data-directory root, or a subtree root, which may sit AT the cap: only
+// the prefix's own file (checked by the caller) is a namespace there, so
+// the walk reports nothing and descends no further. The caller sorts:
+// ReadDir's per-directory filename order is not full-path order (a/b/c
+// sorts after a/b.db's namespace a/b, though "b" < "b.db").
 func walkNamespaces(dir, prefix string, out *[]string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
 	// depth is the segment count of prefix: a file at this level names a
 	// depth+1 namespace, a directory's contents depth+2 and deeper. The
 	// walk enters a directory only while those depths still fit the cap,
@@ -79,6 +110,13 @@ func walkNamespaces(dir, prefix string, out *[]string) error {
 	depth := 0
 	if prefix != "" {
 		depth = strings.Count(prefix, "/") + 1
+	}
+	if depth >= maxNSDepth {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
 	}
 	descend := depth+2 <= maxNSDepth
 	for _, e := range entries {
