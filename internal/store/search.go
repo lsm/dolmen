@@ -366,5 +366,9 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	if err := tx.Commit(); err != nil {
 		return DeleteResult{}, err
 	}
+	// §9.3: notification happens after commit — rows and log are durable
+	// before any waiter wakes (a dry run returned above without a write; a
+	// delete that matched nothing wakes nobody).
+	s.notifyCommitted(nsName, table, changes)
 	return DeleteResult{Matched: matched, Deleted: deleted, Changes: changes}, nil
 }

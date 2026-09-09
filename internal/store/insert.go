@@ -317,6 +317,10 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	if err := tx.Commit(); err != nil {
 		return nil, ChangeRange{}, false, true, err
 	}
+	// §9.3: notification happens after commit — rows and log are durable
+	// before any waiter wakes (the idempotent-race replay above returned
+	// before this point and wakes nobody: it minted nothing).
+	s.notifyCommitted(nsName, table, changes)
 	return ids, changes, false, true, nil
 }
 

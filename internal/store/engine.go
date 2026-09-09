@@ -570,3 +570,20 @@ type EngineCapabilities struct {
 	// Subscribe reports whether streams are available.
 	Subscribe bool `json:"subscribe"`
 }
+
+// Capabilities is the SQLite adapter's self-description, real since slice 4d
+// (§6.2, §7): SearchVector executes brute-force exact — the conformance
+// reference path — so vector_execution is "exact" and ann_recall_bound is
+// explicitly null, never omitted. Notifications and subscribe stay FALSE
+// until Listen's body lands (6b flips both, together with the SSE route):
+// the capability answers "is Listen implemented?", and this engine's
+// post-commit registry (notify.go) is internal plumbing with no public
+// surface yet — advertising it would promise waiters an API the stub cannot
+// serve. A conforming engine must never report a capability it does not
+// have, whatever the cost of saying false.
+func (s *Store) Capabilities() EngineCapabilities {
+	return EngineCapabilities{
+		VectorExecution: VectorExact,
+		ANNRecallBound:  nil,
+	}
+}

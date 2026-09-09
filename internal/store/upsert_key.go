@@ -403,6 +403,9 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 	if err := tx.Commit(); err != nil {
 		return nil, 0, 0, ChangeRange{}, true, err
 	}
+	// §9.3: notification happens after commit — rows and log are durable
+	// before any waiter wakes.
+	s.notifyCommitted(nsName, table, changes)
 	return ids, inserted, updated, changes, true, nil
 }
 

@@ -308,6 +308,9 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 	if err := tx.Commit(); err != nil {
 		return UpsertResult{}, err
 	}
+	// §9.3: notification happens after commit — rows and log are durable
+	// before any waiter wakes (a zero range, matched nothing, wakes nobody).
+	s.notifyCommitted(nsName, table, result.Changes)
 	return result, nil
 }
 
