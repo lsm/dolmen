@@ -301,7 +301,22 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
-			nss, err := s.eng.ListNamespaces(ctx, normNS(req.Prefix), nil)
+			// A present prefix must name a path: an explicitly empty or
+			// whitespace-only value is a request error, not the omitted
+			// field — silently listing everything would mask the caller's
+			// own bug (the idempotency_key rule, same shape).
+			prefix := ""
+			if len(req.Prefix) > 0 {
+				var p string
+				if err := json.Unmarshal(req.Prefix, &p); err != nil {
+					return nil, badRequest("prefix must be a string")
+				}
+				if p = normNS(p); p == "" {
+					return nil, badRequest("prefix must not be empty — omit the field to list every namespace (an empty prefix would silently list everything)")
+				}
+				prefix = p
+			}
+			nss, err := s.eng.ListNamespaces(ctx, prefix, nil)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -1544,10 +1559,12 @@ type dropNamespaceReq struct {
 }
 
 // listNamespacesReq carries list_namespaces' one optional key: prefix, the
-// namespace path whose recursive subtree is listed ("" — omitted — lists
-// every namespace). Additive to v0.2.0's empty request (§8.1).
+// namespace path whose recursive subtree is listed (omitted — lists every
+// namespace). RawMessage so presence is observable: an explicitly empty
+// prefix is rejected, not read as the omitted field. Additive to v0.2.0's
+// empty request (§8.1).
 type listNamespacesReq struct {
-	Prefix string `json:"prefix"`
+	Prefix json.RawMessage `json:"prefix"`
 }
 
 type dropTableReq struct {

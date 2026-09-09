@@ -103,6 +103,20 @@ func TestNamespaceTreeListingAndLeafOnlyDrops(t *testing.T) {
 		t.Fatalf("over-depth prefix: expected an invalid_request envelope, got %v", body)
 	}
 
+	// A present-but-empty prefix is a request error too, not the omitted
+	// field: silently listing everything would mask the caller's own bug.
+	// (decode's null probe rejects "prefix": null as every other null.)
+	for _, prefix := range []string{"", "   "} {
+		status, body = h.httpCall("list_namespaces", map[string]any{"prefix": prefix})
+		if status != http.StatusBadRequest {
+			t.Fatalf("empty prefix %q: status %d, want 400: %v", prefix, status, body)
+		}
+		errObj, _ = body["error"].(map[string]any)
+		if errObj == nil || errObj["code"] != "invalid_request" {
+			t.Fatalf("empty prefix %q: expected an invalid_request envelope, got %v", prefix, body)
+		}
+	}
+
 	// §5.4: dropping a namespace with descendants is refused, the message
 	// naming the count; nothing was dropped.
 	status, body = h.httpCall("drop_namespace", map[string]any{"namespace": "acme", "confirm": "acme"})
