@@ -275,25 +275,33 @@ var Ops = map[string]OpDef{
 	},
 	"list_namespaces": {
 		Description: "List the namespaces on this server (one isolated SQLite file per namespace). " +
-			"Use it to see which namespaces already exist before creating or reusing one.",
+			"Use it to see which namespaces already exist before creating or reusing one. " +
+			"An optional prefix (a namespace path) restricts the listing to that path's subtree, " +
+			"recursively, the prefix itself included; omit it to list everything.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
-			"properties":           map[string]any{},
+			"properties": map[string]any{
+				"prefix": map[string]any{
+					"type":        "string",
+					"description": "Namespace path whose recursive subtree is listed (the path itself included); omit to list every namespace",
+					"pattern":     `^[a-z0-9][a-z0-9_-]{0,63}(/[a-z0-9][a-z0-9_-]{0,63}){0,2}$`,
+				},
+			},
 		},
 		OutputSchema: outSchema(map[string]any{
 			"namespaces": map[string]any{
 				"type":        "array",
-				"description": "Namespace names under the data directory, sorted",
+				"description": "Namespace names, sorted lexicographically by full path",
 				"items":       map[string]any{"type": "string"},
 			},
 		}, "namespaces"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
-			var req struct{}
+			var req listNamespacesReq
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
-			nss, err := s.eng.ListNamespaces(ctx, "", nil)
+			nss, err := s.eng.ListNamespaces(ctx, normNS(req.Prefix), nil)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -1533,6 +1541,13 @@ type insertReq struct {
 type dropNamespaceReq struct {
 	Namespace string `json:"namespace"`
 	Confirm   string `json:"confirm"`
+}
+
+// listNamespacesReq carries list_namespaces' one optional key: prefix, the
+// namespace path whose recursive subtree is listed ("" — omitted — lists
+// every namespace). Additive to v0.2.0's empty request (§8.1).
+type listNamespacesReq struct {
+	Prefix string `json:"prefix"`
 }
 
 type dropTableReq struct {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -185,16 +186,178 @@ func TestNestedNamespaceLayout(t *testing.T) {
 		}
 	}
 
-	// Listing stays depth-1 until slice 3b: only a.db is reported.
+	// 3b's recursive listing reports the whole tree in full-path order:
+	// a, a/b, a/b/c (§5.3).
 	nss, err := st.ListNamespaces()
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(nss) != 1 || nss[0] != "a" {
-		t.Fatalf("depth-1 listing must report only [a] until 3b, got %v", nss)
+	if len(nss) != 3 || nss[0] != "a" || nss[1] != "a/b" || nss[2] != "a/b/c" {
+		t.Fatalf("recursive listing must report [a a/b a/b/c], got %v", nss)
 	}
 }
 
+// TestListNamespacesRecursiveOrder pins §5.3's listing shape on a mixed
+// tree: every namespace depth 1–3 appears exactly once, in lexicographic
+// full-path order — which is NOT the walk's per-directory order (a/b/c
+// sorts after a/b despite "b/" < "b.db" in ReadDir order, and a-x sorts
+// before a/b because '-' < '/') — and the walk skips what the store would
+// refuse to open: over-depth files and directories, invalid-segment
+// directories, non-.db files, and symlinked names at any depth.
+func TestListNamespacesRecursiveOrder(t *testing.T) {
+	st := openStore(t)
+	for _, ns := range []string{"a", "a-x", "a/b", "a/b/c", "ab", "z"} {
+		mustNS(t, st, ns)
+	}
+	// Over-depth plants: a depth-4 database file (unreachable — its path
+	// exceeds §5.1's cap, so the walk never enters a/b/c/) and an
+	// invalid-segment directory holding a database.
+	if err := os.MkdirAll(filepath.Join(st.dir, "a", "b", "c"), 0o700); err != nil {
+		t.Fatalf("plant depth-4 directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(st.dir, "a", "b", "c", "d.db"), nil, 0o600); err != nil {
+		t.Fatalf("plant depth-4 file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(st.dir, "Bad Dir"), 0o700); err != nil {
+		t.Fatalf("plant invalid-segment dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(st.dir, "Bad Dir", "x.db"), nil, 0o600); err != nil {
+		t.Fatalf("plant database in invalid-segment dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(st.dir, "plain.txt"), nil, 0o600); err != nil {
+		t.Fatalf("plant non-database file: %v", err)
+	}
+	// A symlinked directory is not descended (IsDir is lstat semantics), so
+	// a database planted behind it — outside the data directory — never
+	// surfaces; a symlinked database beside real ones is not listed.
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "leak.db"), nil, 0o600); err != nil {
+		t.Fatalf("plant external database: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(st.dir, "linkdir")); err != nil {
+		t.Fatalf("plant directory symlink: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "leak.db"), filepath.Join(st.dir, "a", "leak.db")); err != nil {
+		t.Fatalf("plant file symlink: %v", err)
+	}
+
+	nss, err := st.ListNamespaces()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	want := []string{"a", "a-x", "a/b", "a/b/c", "ab", "z"}
+	if !reflect.DeepEqual(nss, want) {
+		t.Fatalf("recursive listing must be %v in full-path order, got %v", want, nss)
+	}
+}
+
+// TestListNamespacesPrefix pins §5.3's optional prefix: the listing becomes
+// the prefix's recursive subtree, the prefix itself included; a prefix that
+// names no namespace still lists its descendants; an absent or invalid
+// prefix lists nothing / fails, and a sibling sharing only a stem ("ab"
+// under prefix "a") stays out.
+func TestListNamespacesPrefix(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	for _, ns := range []string{"a", "a/b", "a/b/c", "ab", "other"} {
+		mustNS(t, st, ns)
+	}
+
+	list := func(prefix string) []string {
+		t.Helper()
+		nss, err := st.Store.ListNamespaces(ctx, prefix, nil)
+		if err != nil {
+			t.Fatalf("list prefix %q: %v", prefix, err)
+		}
+		return nss
+	}
+	if got := list(""); !reflect.DeepEqual(got, []string{"a", "a/b", "a/b/c", "ab", "other"}) {
+		t.Fatalf("empty prefix lists everything in order, got %v", got)
+	}
+	if got := list("a"); !reflect.DeepEqual(got, []string{"a", "a/b", "a/b/c"}) {
+		t.Fatalf("prefix a lists its subtree including itself, not the ab sibling, got %v", got)
+	}
+	if got := list("a/b"); !reflect.DeepEqual(got, []string{"a/b", "a/b/c"}) {
+		t.Fatalf("prefix a/b lists [a/b a/b/c], got %v", got)
+	}
+	if got := list("a/b/c"); !reflect.DeepEqual(got, []string{"a/b/c"}) {
+		t.Fatalf("prefix a/b/c lists [a/b/c], got %v", got)
+	}
+	if got := list("other"); !reflect.DeepEqual(got, []string{"other"}) {
+		t.Fatalf("prefix other lists [other], got %v", got)
+	}
+	if got := list("nope"); len(got) != 0 {
+		t.Fatalf("absent prefix lists nothing, got %v", got)
+	}
+
+	// A prefix that is not itself a namespace still lists its descendants:
+	// the subtree is a path filter, not an existence claim.
+	st2 := openStore(t)
+	mustNS(t, st2, "p/q")
+	if got, err := st2.Store.ListNamespaces(ctx, "p", nil); err != nil || !reflect.DeepEqual(got, []string{"p/q"}) {
+		t.Fatalf("prefix p over a child-only tree must list [p/q], got %v (%v)", got, err)
+	}
+
+	// The prefix is held to the same §5.1 grammar as any namespace path.
+	for _, prefix := range []string{"A", "/a", "a/", "a//b", "a/b/c/d", "a/b/c/d/e"} {
+		if _, err := st.Store.ListNamespaces(ctx, prefix, nil); !errors.Is(err, ErrInvalid) {
+			t.Errorf("ListNamespaces(prefix %q) = %v, want ErrInvalid", prefix, err)
+		}
+	}
+}
+
+// TestDropNamespaceRejectsDescendants pins §5.4's leaf-only drop: a
+// namespace with descendants is refused — ErrInvalid naming the descendant
+// count — before anything is evicted or deleted; the children go first
+// (child-first drops succeed down to the leaf), a leftover empty directory
+// from an already-dropped child blocks nothing, and a name whose file is
+// gone reports not_found even when descendants exist.
+func TestDropNamespaceRejectsDescendants(t *testing.T) {
+	st := openStore(t)
+	for _, ns := range []string{"a", "a/b", "a/b/c"} {
+		mustNS(t, st, ns)
+	}
+
+	err := st.DropNamespace("a")
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("dropping a parent must fail with ErrInvalid, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "2 descendant namespaces") {
+		t.Fatalf("the refusal must name the descendant count, got %q", err.Error())
+	}
+	err = st.DropNamespace("a/b")
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "1 descendant namespace") {
+		t.Fatalf("dropping a/b must fail naming its 1 descendant, got %v", err)
+	}
+	// The refused drops evicted and deleted nothing: the tree is intact
+	// (the listing — which opens nothing — would also catch a deleted
+	// file, and the cache would catch an evicted entry).
+	nss, lerr := st.ListNamespaces()
+	if lerr != nil || !reflect.DeepEqual(nss, []string{"a", "a/b", "a/b/c"}) {
+		t.Fatalf("refused drops must leave the tree intact, got %v (%v)", nss, lerr)
+	}
+	if _, ok := st.nss["a"]; !ok {
+		t.Fatal("refused drop must not evict the namespace's cached connections")
+	}
+
+	// Child-first: the leaf drops, then its parent (the now-empty a/
+	// directory left by a/b's drop is not a descendant), then the root.
+	for _, ns := range []string{"a/b/c", "a/b", "a"} {
+		if err := st.DropNamespace(ns); err != nil {
+			t.Fatalf("child-first drop of %s: %v", ns, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(st.dir, "a")); err != nil {
+		t.Fatalf("the empty a/ directory must survive (drops never remove directories): %v", err)
+	}
+
+	// A name with descendants but no file of its own is not a namespace:
+	// not_found, not the descendant refusal.
+	mustNS(t, st, "x/y")
+	if err = st.DropNamespace("x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("drop of a file-less name must 404, got %v", err)
+	}
+}
 // TestNestedNamespaceOpenNeverCreates pins the §6.2 global rule at depth > 1:
 // opening a missing namespace is ErrNotFound and leaves no directory behind,
 // and every entry point rejects invalid paths before touching the filesystem.

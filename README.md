@@ -502,9 +502,9 @@ Skill distribution is built into the server. `GET /skills` returns a JSON manife
 
 | Tool | Purpose |
 |---|---|
-| `list_namespaces` | Namespaces on this server |
+| `list_namespaces` | Namespaces on this server; an optional `prefix` (a namespace path) lists only that path's subtree, recursively |
 | `create_namespace` | Reserve a namespace up front (creation is implicit on first use otherwise) |
-| `drop_namespace` | Delete a namespace and all its tables; `confirm` must repeat the name |
+| `drop_namespace` | Delete a namespace and all its tables; `confirm` must repeat the name; a namespace with child namespaces is refused — drop the children first |
 | `list_tables` | Tables in a namespace |
 | `describe_server` | Server's embedding provider status — provider (`none` / `local` / `openai`), model, the identity that pins vectorized tables, and whether server-side embedding is usable; read-only, no secrets |
 | `describe_table` | Schema, version, row count |
@@ -527,7 +527,9 @@ Skill distribution is built into the server. `GET /skills` returns a JSON manife
 - **Namespace = one SQLite file** (`data/<ns>.db`, WAL). Isolation is physical. Lifecycle is managed
   over the API: `list_namespaces`, `create_namespace`, and `drop_namespace` (which closes the server's
   own connections, then deletes the file and its WAL sidecars — `confirm` must repeat the namespace
-  name, and any later use of the name recreates the namespace empty). Safety caveat: drop coordinates
+  name, and any later use of the name recreates the namespace empty; a namespace with child
+  namespaces is refused, the error naming the descendant count — children are dropped first, never
+  deleted implicitly). Safety caveat: drop coordinates
   only within one server — another process holding the file open (a second dolmen instance, a backup
   tool) is not detected, and racing in-flight requests on the namespace may fail, so quiesce writers
   before dropping. A small registry inside each file holds table schemas, versions, and a migration
