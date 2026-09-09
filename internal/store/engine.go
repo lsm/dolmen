@@ -377,7 +377,10 @@ type DeleteOpts = DeleteOptions
 // retained-history boundary. Engines map tokens to internal positions on
 // resume and mint fresh ones per issuance, so consecutive visible records
 // yield tokens indistinguishable from adjacent ones and no foreign commit is
-// observable through cursor arithmetic.
+// observable through cursor arithmetic. An EMPTY page is not an issuance —
+// the position did not move — so the caller's own presented token may be
+// returned unchanged (its deadline refreshed by the resolve), keeping a
+// polling wait from minting a durable row per poll.
 type Cursor string
 
 // CursorBegin is the sentinel requesting retained history from the oldest

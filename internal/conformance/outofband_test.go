@@ -25,4 +25,10 @@ func (s *sqlDB) Exec(query string, args ...any) (sql.Result, error) {
 	return s.db.Exec(query, args...)
 }
 
+// QueryRow answers read-only fixture queries (counting rows a wait must not
+// mint).
+func (s *sqlDB) QueryRow(query string, args ...any) *sql.Row {
+	return s.db.QueryRow(query, args...)
+}
+
 func (s *sqlDB) Close() error { return s.db.Close() }

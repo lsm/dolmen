@@ -202,6 +202,36 @@ func TestWaitForCursorResumeChain(t *testing.T) {
 	}
 }
 
+// TestWaitForIdleLoopMintsNothing: the documented wait loop's intermediate
+// polls mint nothing durable — an empty page re-presents the caller's own
+// cursor (an unchanged position is not an issuance) — so a sleeping agent's
+// waits never grow the cursor-token table. A wait long enough to run
+// several poll ticks leaves the row count exactly where it was.
+func TestWaitForIdleLoopMintsNothing(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
+	countTokens := func() int {
+		var c int
+		h.outOfBand("rt", func(db *sqlDB) error {
+			return db.QueryRow(`SELECT count(*) FROM _dolmen_cursor_tokens`).Scan(&c)
+		})
+		return c
+	}
+
+	head := nextCursorOf(t, h.mustHTTP("wait_for", map[string]any{"namespace": "rt", "timeout_ms": 0}))
+	before := countTokens()
+	data := h.mustHTTP("wait_for", map[string]any{"namespace": "rt", "cursor": head, "timeout_ms": 700})
+	if got := changesOf(t, data); len(got) != 0 {
+		t.Fatalf("quiet wait delivered %d changes, want an empty page", len(got))
+	}
+	if next := nextCursorOf(t, data); next != head {
+		t.Fatalf("idle wait swapped cursors %q → %q — an empty page must re-present the caller's own", head, next)
+	}
+	if after := countTokens(); after != before {
+		t.Fatalf("idle wait grew the token table %d → %d — intermediate polls must mint nothing", before, after)
+	}
+}
+
 // TestWaitForNeverCreatesNamespace: a wait never creates its namespace —
 // §6.2's engine rule (never create implicitly) held at the op layer, where
 // a data op's create-on-first-use would instead turn a typo'd name into a

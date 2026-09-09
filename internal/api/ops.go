@@ -1476,35 +1476,6 @@ var Ops = map[string]OpDef{
 			// implicitly) serves the wait better: a missing namespace is
 			// not_found from the first read, and the caller creates first.
 			deadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
-			// readOnce races one page read against its budget. The budget
-			// context bounds everything context-aware (the connection-pool
-			// wait, the SQL), but the store's registry mutex — held long by
-			// a draining drop_namespace — is preemptible by no context, so
-			// the select is what guarantees §9.2's wall bound even behind
-			// that lock. An abandoned read has no side effects to fear:
-			// once the lock frees it fails fast on the expired context or
-			// reports the namespace gone — it can only read and mint, never
-			// create.
-			readOnce := func() ([]store.ChangeRecord, store.Cursor, error) {
-				readCtx, cancel := context.WithTimeout(ctx, waitBudget(deadline))
-				defer cancel()
-				type outcome struct {
-					records []store.ChangeRecord
-					next    store.Cursor
-					err     error
-				}
-				done := make(chan outcome, 1)
-				go func() {
-					records, next, err := runChangesSince(readCtx, s, ns, table, cursor, limit)
-					done <- outcome{records, next, err}
-				}()
-				select {
-				case o := <-done:
-					return o.records, o.next, o.err
-				case <-readCtx.Done():
-					return nil, "", readCtx.Err()
-				}
-			}
 			// The degraded-mode long-poll (§9.2 layer 2, §9.3): a bounded
 			// loop over the one interface surface — ChangesSince — so
 			// dispatch never asserts the concrete store and wait_for never
@@ -1538,7 +1509,18 @@ var Ops = map[string]OpDef{
 			// engine answers.
 			validated := false
 			for {
-				records, next, err := readOnce()
+				// The read runs synchronously under waitBudget(deadline):
+				// every part of it honors the context — the registry lock
+				// acquire (nsCtx), the connection-pool wait, the SQL — so
+				// the deadline genuinely bounds the call with nothing
+				// abandoned behind a lock. (The engine side of this
+				// contract is nsCtx's context-aware acquire: a draining
+				// drop_namespace can hold the registry lock past any
+				// budget, and a raced goroutine would only stack one
+				// blocked goroutine per retry.)
+				readCtx, cancel := context.WithTimeout(ctx, waitBudget(deadline))
+				records, next, err := runChangesSince(readCtx, s, ns, table, cursor, limit)
+				cancel()
 				if err != nil {
 					// A read that outlived its budget AFTER the feed was
 					// validated is the wait timing out while the engine was

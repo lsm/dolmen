@@ -576,3 +576,85 @@ func TestChangesLogLookupsIndexed(t *testing.T) {
 		})
 	}
 }
+
+// TestChangesSinceEmptyPollMintsNothing: an empty page is not an issuance —
+// the caller's own token comes back unchanged — so a polling waiter (the
+// 250 ms wait_for loop) mints no durable row per poll; otherwise an idle
+// waiter would add hundreds of thousands of token rows a day. A real page
+// still mints fresh cursors.
+func TestChangesSinceEmptyPollMintsNothing(t *testing.T) {
+	st := openChangeStore(t)
+	ctx := context.Background()
+	insertNotes(t, st, 2)
+	_, head, err := st.ChangesSince(ctx, "test", "", "", [16]byte{}, nil, Incarnation{}, Page{})
+	if err != nil {
+		t.Fatalf("bare start: %v", err)
+	}
+
+	countTokens := func() int {
+		n, err := st.ns("test")
+		if err != nil {
+			t.Fatalf("ns: %v", err)
+		}
+		var c int
+		if err := n.ro.QueryRowContext(ctx, `SELECT count(*) FROM _dolmen_cursor_tokens`).Scan(&c); err != nil {
+			t.Fatalf("count tokens: %v", err)
+		}
+		return c
+	}
+	before := countTokens()
+	for i := 0; i < 5; i++ {
+		records, next, err := st.ChangesSince(ctx, "test", "", head, [16]byte{}, nil, Incarnation{}, Page{})
+		if err != nil {
+			t.Fatalf("quiet poll %d: %v", i, err)
+		}
+		if len(records) != 0 {
+			t.Fatalf("quiet poll %d delivered %d records", i, len(records))
+		}
+		if next != head {
+			t.Fatalf("empty poll minted a new token (%q ≠ %q) — an empty page must re-present the caller's own", next, head)
+		}
+	}
+	if after := countTokens(); after != before {
+		t.Fatalf("5 quiet polls grew the token table %d → %d — an empty poll must mint nothing", before, after)
+	}
+
+	// A commit makes the next page real again: fresh per-record and
+	// next-page cursors issue on the same chain.
+	insertNotes(t, st, 1)
+	records, next, err := st.ChangesSince(ctx, "test", "", head, [16]byte{}, nil, Incarnation{}, Page{})
+	if err != nil {
+		t.Fatalf("poll after commit: %v", err)
+	}
+	if len(records) != 1 || records[0].Cursor == head {
+		t.Fatalf("page after commit = %+v — a real page carries a fresh per-record cursor", records)
+	}
+	if next == head {
+		t.Fatal("non-empty page must mint a fresh next-page token")
+	}
+}
+
+// TestChangesSinceRegistryWaitHonorsContext: the feed read's registry-lock
+// acquire is context-aware (nsCtx over ctxMutex) — a bounded caller aborts
+// at its deadline even while another holder keeps the lock, the way a
+// drop_namespace draining its pools would, instead of queueing past every
+// bound the way a plain mutex wait must.
+func TestChangesSinceRegistryWaitHonorsContext(t *testing.T) {
+	st := openChangeStore(t)
+	insertNotes(t, st, 1)
+	st.mu.Lock() // stand in for a draining drop_namespace
+	bounded, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, _, err := st.ChangesSince(bounded, "test", "", "", [16]byte{}, nil, Incarnation{}, Page{})
+	st.mu.Unlock()
+	if err == nil {
+		t.Fatal("read behind a held registry lock succeeded — the context must bound the acquire")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("bounded read error = %v, want context deadline exceeded", err)
+	}
+	if held := time.Since(start); held > 500*time.Millisecond {
+		t.Fatalf("bounded read held %v behind the lock — the deadline must bound it", held)
+	}
+}
