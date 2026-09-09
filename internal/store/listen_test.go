@@ -539,6 +539,65 @@ func TestListenNamespaceDropEndsSession(t *testing.T) {
 	}
 }
 
+// TestListenFilteredFullPageKeepsPaging: exhaustion keys on the scanned
+// range, not the admitted page — a full page whose every record the live
+// authorization filtered out is not the replay boundary, and ending replay
+// there would strand the caller's own visible records behind a page it can
+// never turn (§6.2: replay pages are filtered through liveAuthz exactly
+// like live delivery).
+func TestListenFilteredFullPageKeepsPaging(t *testing.T) {
+	st := openChangeStore(t)
+	ctx := context.Background()
+	insertAs := func(n int, owner string) {
+		recs := make([]map[string]any, n)
+		for i := range recs {
+			recs[i] = map[string]any{"title": "t", "score": i + 1}
+		}
+		if _, err := st.Insert(ctx, "test", "notes", recs, WriteOpts{Owner: owner}, Embedder{}, nil, Incarnation{}); err != nil {
+			t.Fatalf("insert as %s: %v", owner, err)
+		}
+	}
+	// A full page of foreign records, then the subscriber's own.
+	insertAs(MaxChangesPageLimit, "bob")
+	insertAs(2, "alice")
+
+	scoped := func(string) (*RowScope, Incarnation, bool) {
+		return &RowScope{Owner: "alice"}, Incarnation{}, true
+	}
+	replay, cancel, err := st.Listen(ctx, "test", "", CursorBegin, [16]byte{}, scoped, func(ChangeRecord) {}, nil)
+	if err != nil {
+		t.Fatalf("scoped listen: %v", err)
+	}
+	defer cancel()
+
+	// Page one admits nothing but is FULL — done must stay false.
+	records, _, done, err := replay.Next(ctx)
+	if err != nil {
+		t.Fatalf("filtered page one: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("filtered page one admitted %d records, want 0", len(records))
+	}
+	if done {
+		t.Fatal("a fully filtered FULL page reported done — the caller's own records behind it would be stranded")
+	}
+	// Page two carries alice's records; the following call reports the
+	// boundary.
+	records, _, done, err = replay.Next(ctx)
+	if err != nil {
+		t.Fatalf("page two: %v", err)
+	}
+	if got := rowIDsOf(records); len(got) != 2 {
+		t.Fatalf("page two = %v, want alice's 2 records", got)
+	}
+	if done {
+		t.Fatal("the final records' page reported done — the FOLLOWING call reports the boundary")
+	}
+	if _, _, done, err = replay.Next(ctx); err != nil || !done {
+		t.Fatalf("boundary call = err %v, done %v, want nil, true", err, done)
+	}
+}
+
 // TestListenRegistrationErrors: the cursor family and the feed targets fail
 // at REGISTRATION — inside the atomic operation — never half-way into a
 // session (§6.2): unknown tokens, cross-feed reuse, a missing table, a

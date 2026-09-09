@@ -82,11 +82,17 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// From here the response IS the stream: the headers go out and flush
-	// immediately, and every later failure is an in-stream error event.
+	// immediately, and every later failure is an in-stream error event. The
+	// flush is load-bearing: a fresh subscription with no replay backlog
+	// writes no frame until its first live commit, and an unflushed header
+	// line would leave the client's stream establishment (http.Client.Do, an
+	// EventSource open) waiting on a response the handler is already
+	// serving — the subscriber could never reach the code that commits.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Request-Id", reqID)
 	w.WriteHeader(http.StatusOK)
+	sseFlush(w)
 	st := &sseStream{w: w}
 
 	ns := normNS(q.Get("namespace"))

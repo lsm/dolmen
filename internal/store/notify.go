@@ -249,15 +249,24 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	}
 	sess.cond = sync.NewCond(&sess.mu)
 
-	// Atomic register-and-replay, ordering half one: the listener joins the
-	// registry BEFORE the boundary transaction runs (see the session comment
-	// for the exactly-once argument). Failure past this point must leave the
-	// registry as it found it.
+	// Atomic register-and-replay, ordering half one: the listener joins BOTH
+	// registries — the commit wake (onCommit) and the lifecycle wake
+	// (listenSessions) — BEFORE the boundary transaction runs (see the
+	// session comment for the exactly-once argument). Lifecycle registration
+	// cannot wait for the pumps: a drop committing between the boundary
+	// transaction and a later track would snapshot a map without this
+	// session, and a dropped target mints no further commit to wake it —
+	// the session would sleep forever. Registered here, a drop either fails
+	// the boundary transaction outright or lands a wake the first fill
+	// observes. Failure past this point must leave both registries as they
+	// were found.
 	sess.unregister = s.onCommit(nsName, sess.wake)
+	s.trackSession(sess)
 	committed := false
 	defer func() {
 		if !committed {
 			sess.unregister()
+			s.untrackSession(sess)
 		}
 	}()
 
@@ -323,7 +332,6 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	sess.pumps.Add(2)
 	go sess.fill()
 	go sess.drain()
-	s.trackSession(sess)
 	return &ChangeReplay{Next: sess.next}, sess.cancel, nil
 }
 
@@ -333,8 +341,10 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 // session with, yet a dropped namespace's streams must end at the drop
 // (notify.go's binding note), so DropNamespace and DropTable nudge every
 // session of the namespace and each session's next fill decides its own
-// fate. notifyMu — the same lock as the commit registry — keeps a lifecycle
-// wake from interleaving with registration/cancel bookkeeping.
+// fate. Listen tracks BEFORE its boundary transaction runs, so a drop
+// racing the registration still lands its nudge. notifyMu — the same lock
+// as the commit registry — keeps a lifecycle wake from interleaving with
+// registration/cancel bookkeeping.
 func (s *Store) trackSession(sess *listenSession) {
 	s.notifyMu.Lock()
 	defer s.notifyMu.Unlock()
@@ -691,7 +701,13 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	}
 
 	sess.mu.Lock()
-	sess.replayExhausted = len(scanned) < MaxChangesPageLimit
+	// Exhaustion keys on the SCANNED range, never on the admitted page: a
+	// full page whose every record the authorization filtered out is not the
+	// boundary — visible records may still sit before it, and ending replay
+	// on an empty admitted page would strand them behind a page the caller
+	// will never turn.
+	short := len(scanned) < MaxChangesPageLimit
+	sess.replayExhausted = short
 	if len(scanned) > 0 {
 		sess.position = scanned[len(scanned)-1].seq
 	}
@@ -703,9 +719,12 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	if dead {
 		return nil, next, true, nil
 	}
-	// An empty page IS the boundary — the caller is already at the
-	// registration point and notify takes over from here.
-	if len(records) == 0 {
+	// A short scanned page with nothing to expose IS the boundary — the
+	// caller is already at the registration point and notify takes over
+	// from here. A short page with records reports done=false (the final
+	// records; the FOLLOWING call reports the boundary, §6.2), and a full
+	// page pages on — even one the filter emptied.
+	if short && len(records) == 0 {
 		sess.markReplayDone()
 		return nil, next, true, nil
 	}
