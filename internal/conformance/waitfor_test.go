@@ -202,6 +202,34 @@ func TestWaitForCursorResumeChain(t *testing.T) {
 	}
 }
 
+// TestWaitForNeverCreatesNamespace: a wait never creates its namespace —
+// §6.2's engine rule (never create implicitly) held at the op layer, where
+// a data op's create-on-first-use would instead turn a typo'd name into a
+// silent forever-empty wait, and an abandoned wait could even resurrect a
+// namespace a concurrent drop just deleted. A missing namespace is
+// not_found on both transports, and it stays missing.
+func TestWaitForNeverCreatesNamespace(t *testing.T) {
+	h := newHarness(t)
+	status, out := h.httpCall("wait_for", map[string]any{"namespace": "ghost", "timeout_ms": 0})
+	if status != http.StatusNotFound {
+		t.Fatalf("missing-namespace wait status = %d %v, want 404", status, out)
+	}
+	if errEnv, _ := out["error"].(map[string]any); errEnv["code"] != "not_found" {
+		t.Fatalf("missing-namespace wait code = %v, want not_found", errEnv["code"])
+	}
+	res := h.mcpCall("wait_for", map[string]any{"namespace": "ghost", "timeout_ms": 0})
+	if !res.isError() {
+		t.Fatalf("MCP missing-namespace wait must be a tool error, got %+v", res)
+	}
+	if env := res.toolError(); env["code"] != "not_found" {
+		t.Fatalf("MCP missing-namespace wait code = %v, want not_found", env["code"])
+	}
+	nss, _ := h.mustHTTP("list_namespaces", map[string]any{})["namespaces"].([]any)
+	if len(nss) != 0 {
+		t.Fatalf("wait_for created namespaces: %v", nss)
+	}
+}
+
 // TestWaitForTimeoutContract: timeout_ms valid 0–60000 inclusive — outside,
 // wrong-typed, or null is invalid_request on both transports, and the shared
 // feed selectors (limit bounds, non-empty cursor) validate through wait_for's

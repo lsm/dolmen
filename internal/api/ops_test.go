@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -442,19 +443,18 @@ func TestWaitForTimeoutBoundDeclared(t *testing.T) {
 	t.Fatalf("namespace must be a required request key, got %v", req)
 }
 
-// stalledChangesEngine stalls ChangesSince the way a concurrent write
-// holding the namespace's ONE writable connection does: the call sits in the
-// connection wait until its context fires, then fails with the context's
-// error — database/sql's pool wait honors its context exactly this way.
+// stalledChangesEngine stalls ChangesSince the way engine contention does.
+// The default stall mimics the connection-pool wait (context-honoring: the
+// call fails with the context's error the moment it fires — database/sql's
+// pool wait honors its context exactly this way); stallIgnoresCtx mimics the
+// store's registry mutex instead, which NO context can preempt mid-wait.
 // fastReads makes the first N reads instant, so a fixture can validate the
-// feed first and then starve a later read (0 stalls every read). stallNS
-// does the same to CreateNamespace — the registry-lock wait namespace setup
-// cannot preempt.
+// feed first and then starve a later read (0 stalls every read).
 type stalledChangesEngine struct {
 	store.Engine
-	stall     time.Duration
-	fastReads int
-	stallNS   time.Duration
+	stall           time.Duration
+	fastReads       int
+	stallIgnoresCtx bool
 
 	mu    sync.Mutex
 	reads int
@@ -469,24 +469,18 @@ func (e *stalledChangesEngine) ChangesSince(ctx context.Context, ns, table strin
 	}
 	e.mu.Unlock()
 	if stall > 0 {
-		select {
-		case <-time.After(stall):
-		case <-ctx.Done():
-			return nil, "", ctx.Err()
+		if e.stallIgnoresCtx {
+			// The mutex shape: nothing fires until the lock frees.
+			time.Sleep(stall)
+		} else {
+			select {
+			case <-time.After(stall):
+			case <-ctx.Done():
+				return nil, "", ctx.Err()
+			}
 		}
 	}
 	return e.Engine.ChangesSince(ctx, ns, table, from, nsGen, scope, scopeIncarnation, page)
-}
-
-func (e *stalledChangesEngine) CreateNamespace(ctx context.Context, ns string, parentNsGen [16]byte) error {
-	if e.stallNS > 0 {
-		select {
-		case <-time.After(e.stallNS):
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return e.Engine.CreateNamespace(ctx, ns, parentNsGen)
 }
 
 // TestWaitForReadsBoundedByDeadline: the bounded-time contract holds even
@@ -583,20 +577,21 @@ func TestWaitForReadsBoundedByDeadline(t *testing.T) {
 	}
 }
 
-// TestWaitForSetupBoundedByDeadline: the wait's clock covers namespace
-// setup, not only the feed reads — setup waits on the store's registry lock
-// (a concurrent drop_namespace holds it while draining in-flight
-// connections), which no context can preempt, so wait_for races setup
-// against its budget and errors at the floor instead of blocking: §9.2's
-// bound applies to every phase of the call.
-func TestWaitForSetupBoundedByDeadline(t *testing.T) {
+// TestWaitForBoundBehindNonPreemptibleLock: the store's registry mutex
+// (held long by a draining drop_namespace) is preemptible by no context, so
+// wait_for RACES each read against its budget — with the engine stalled in
+// a lock-shaped wait that ignores its context, timeout_ms 0 still errors
+// within the tick floor instead of blocking out the stall. And a wait never
+// creates its namespace: a missing one is not_found and stays missing —
+// an abandoned or failed wait must never resurrect a dropped namespace.
+func TestWaitForBoundBehindNonPreemptibleLock(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
 	// Seed through a plain server: only the stalled server's wait_for call
-	// meets the stalled setup.
+	// meets the stall.
 	plain := &Server{eng: st, emb: fakeEmb{}}
 	for _, step := range []struct{ op, body string }{
 		{"create_namespace", `{"namespace":"rt"}`},
@@ -606,16 +601,29 @@ func TestWaitForSetupBoundedByDeadline(t *testing.T) {
 			t.Fatalf("%s: %v", step.op, err)
 		}
 	}
-	const stallNS = 1500 * time.Millisecond
-	srv := &Server{eng: &stalledChangesEngine{Engine: st, stallNS: stallNS}, emb: fakeEmb{}}
+	const stall = 1500 * time.Millisecond
+	srv := &Server{eng: &stalledChangesEngine{Engine: st, stall: stall, stallIgnoresCtx: true}, emb: fakeEmb{}}
 
 	start := time.Now()
 	res, err := srv.Dispatch(context.Background(), "wait_for", []byte(`{"namespace":"rt","timeout_ms":0}`))
 	if err == nil {
-		t.Fatalf("setup stalled behind the registry lock returned a page (%v) — nothing was validated, so the budget's expiry must error, not answer", res)
+		t.Fatalf("a read stalled behind a non-preemptible lock returned a page (%v) — the watchdog must bound the call, not the lock wait", res)
 	}
 	if held := time.Since(start); held > 1200*time.Millisecond {
-		t.Fatalf("stalled setup held %v — the tick floor must bound the call, not the lock wait", held)
+		t.Fatalf("stalled read held %v — the tick floor must bound the call, not the lock wait", held)
+	}
+
+	// A missing namespace is not_found, never created by the wait.
+	_, err = plain.Dispatch(context.Background(), "wait_for", []byte(`{"namespace":"ghost","timeout_ms":0}`))
+	if err == nil {
+		t.Fatal("wait_for on a missing namespace succeeded — it must be not_found, not a silent empty wait")
+	}
+	var apiErr *Error
+	if !errors.As(err, &apiErr) || apiErr.Code != ErrCodeNotFound {
+		t.Fatalf("missing-namespace wait error = %v, want not_found", err)
+	}
+	if _, err := st.ListTables(context.Background(), "ghost", nil); err == nil {
+		t.Fatal("wait_for created the missing namespace — a wait never creates")
 	}
 }
 
