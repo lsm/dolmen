@@ -225,17 +225,17 @@ func (s *Store) DropTable(ctx context.Context, nsName, table string, inc Incarna
 // validates text vector queries with (§6.2): the schema together with the
 // Incarnation a later scoped call must pass back. The read never creates a
 // namespace implicitly (see ns). TODO(8c): auth bindings are ignored while
-// auth is off. TODO(4a): NsGen is zero until namespaces carry a persisted
-// creation id — slice 4a's NamespaceState mints it and this read returns it.
+// auth is off.
 func (s *Store) TableState(ctx context.Context, nsName, table string, auth []AuthBinding) (*schema.TableSchema, Incarnation, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
 		return nil, Incarnation{}, err
 	}
-	// One read snapshot for the schema and the drop generation: two autocommit
-	// reads could straddle a concurrent drop + same-name recreate and pair the
-	// predecessor's schema with the successor's DropGen — the snapshot this
-	// read hands out must describe exactly one table lifetime.
+	// One read snapshot for the schema, the drop generation, and the creation
+	// id: two autocommit reads could straddle a concurrent drop + same-name
+	// recreate and pair the predecessor's schema with the successor's DropGen
+	// — the snapshot this read hands out must describe exactly one table
+	// lifetime, of exactly one namespace lifetime.
 	tx, err := n.ro.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, Incarnation{}, err
@@ -249,7 +249,11 @@ func (s *Store) TableState(ctx context.Context, nsName, table string, auth []Aut
 	if err != nil {
 		return nil, Incarnation{}, err
 	}
-	return sc, Incarnation{Table: table, Version: int64(sc.Version), DropGen: dropGen}, nil
+	gen, err := readNSGen(ctx, tx)
+	if err != nil {
+		return nil, Incarnation{}, err
+	}
+	return sc, Incarnation{NsGen: gen, Table: table, Version: int64(sc.Version), DropGen: dropGen}, nil
 }
 
 // tableGen returns the persisted drop generation for a table name (0 when it

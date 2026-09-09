@@ -5,21 +5,15 @@ import (
 	"errors"
 )
 
-// errNotImplemented is the single placeholder error the five Engine methods
+// errNotImplemented is the single placeholder error the four Engine methods
 // whose concrete bodies arrive in later slices of the #159 plan return until
-// then (plan slice 2b): NamespaceState (4a), Capabilities (4d), GetRows (5a),
-// ChangesSince (5c), and Listen (6b). Their signatures are pinned by the
-// interface (2a), so each later slice swaps only the body — and nothing
-// advertises a capability the engine does not have yet (Capabilities reports
-// the zero value for the same reason: the stub must not be mistaken for a
-// real "exact engine" self-description).
+// then (plan slice 2b): Capabilities (4d), GetRows (5a), ChangesSince (5c),
+// and Listen (6b). Their signatures are pinned by the interface (2a), so
+// each later slice swaps only the body — and nothing advertises a capability
+// the engine does not have yet (Capabilities reports the zero value for the
+// same reason: the stub must not be mistaken for a real "exact engine"
+// self-description).
 var errNotImplemented = errors.New("not implemented by the SQLite engine yet")
-
-// NamespaceState returns the namespace's creation id (§6.2). Stub — slice 4a
-// mints and persists the id and returns it here.
-func (s *Store) NamespaceState(ctx context.Context, ns string, auth []AuthBinding) ([16]byte, error) {
-	return [16]byte{}, errNotImplemented
-}
 
 // GetRows is the id-addressed scoped fetch behind read_rows (§2, §6.2). Stub
 // — slice 5a implements it.
