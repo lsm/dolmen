@@ -505,3 +505,84 @@ func TestListenDrainFiresPendingDrainCloseAtEmptyQueue(t *testing.T) {
 	}
 	sess.cancel() // idempotent teardown; also waits the drain out
 }
+
+// TestListenLifetimeEndDrainsPredecessorBatch is Δ3's pin (codex P1 on
+// #220, thread r3983157270): an event committed on the predecessor
+// lifetime, then a drop that takes the write connection before the fill's
+// read — the fill's batch scans UNDER THE REGISTRATION LABELS first, so
+// the committed record queues and DELIVERS before ErrListenLifetimeEnded
+// closes the session. The check-first ordering lost exactly this record:
+// a reconnect on the old feed's cursor can never recover it.
+func TestListenLifetimeEndDrainsPredecessorBatch(t *testing.T) {
+	st := openChangeStore(t)
+	ctx := context.Background()
+	insertNotes(t, st, 1) // the predecessor's committed event, seq 1
+
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("open test: %v", err)
+	}
+	// The registration labels, as a table-feed registration fixes them —
+	// captured BEFORE the drop ends the lifetime.
+	tx, err := n.rw.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("labels tx: %v", err)
+	}
+	feed, err := changeFeedOf(ctx, tx, "test", "notes")
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("labels: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("labels commit: %v", err)
+	}
+	// The drop: the table's lifetime ends AFTER the commit.
+	if err := st.DropTable(ctx, "test", "notes", Incarnation{}); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+
+	delivered := make(chan int64, 1)
+	closedCause := make(chan error, 1)
+	sess := testSession(func(cause error) { closedCause <- cause })
+	sess.s, sess.n = st, n
+	sess.feed = feed
+	sess.chain = newCursorChain(time.Now(), 0)
+
+	// The fill's next batch — the exact racing read the finding describes —
+	// must queue the predecessor record AND arm the queue-owned close.
+	if _, err := sess.fillBatch(); err != nil {
+		t.Fatalf("fillBatch: %v", err)
+	}
+	sess.mu.Lock()
+	queued := len(sess.queue)
+	armed := sess.pendingDrainClose
+	sess.replayDone = true // the boundary call has completed: the drainer runs
+	sess.mu.Unlock()
+	if queued != 1 {
+		t.Fatalf("queue held %d records, want the predecessor's 1 committed event", queued)
+	}
+	if !errors.Is(armed, ErrListenLifetimeEnded) {
+		t.Fatalf("queue-owned terminal = %v, want ErrListenLifetimeEnded", armed)
+	}
+	sess.notify = func(r ChangeRecord) { delivered <- r.RowID }
+	sess.pumps.Add(1)
+	go sess.drain()
+
+	select {
+	case id := <-delivered:
+		if id != 1 {
+			t.Fatalf("delivered row %d, want the predecessor's row 1", id)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the predecessor's committed event never delivered — lost to the lifetime end")
+	}
+	select {
+	case cause := <-closedCause:
+		if !errors.Is(cause, ErrListenLifetimeEnded) {
+			t.Fatalf("lifetime-end close cause = %v, want ErrListenLifetimeEnded", cause)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("lifetime end never closed the session after the prefix drained")
+	}
+	sess.cancel() // idempotent teardown; also waits the drain out
+}

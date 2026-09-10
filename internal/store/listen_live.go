@@ -80,22 +80,24 @@ func (sess *listenSession) pump() {
 // with Next and the write paths, so its transactions serialize with them;
 // it never holds sess.mu across database work. A queue past
 // listenQueueBound is one terminal it reports for pump to end the session
-// with — the teaching close.
+// with — the teaching close — and a target whose lifetime ended under the
+// session ends it through the queue-owned close (readBatch), after the
+// predecessor's committed records have paged through.
 func (sess *listenSession) fill() error {
 	for {
 		sess.mu.Lock()
 		for !sess.dead && !sess.woken {
 			sess.cond.Wait()
 		}
-		if sess.dead {
-			sess.mu.Unlock()
-			return nil
-		}
+		closing := sess.dead || sess.pendingClose != nil || sess.pendingDrainClose != nil // isClosing's check, inline under the held lock
 		sess.woken = false
 		sess.mu.Unlock()
+		if closing {
+			return nil
+		}
 
 		for {
-			if sess.isDead() {
+			if sess.isClosing() {
 				return nil
 			}
 			read, ferr := sess.fillBatch()
@@ -109,12 +111,23 @@ func (sess *listenSession) fill() error {
 	}
 }
 
+// isClosing reports whether the session must take no further reads: it is
+// dead, or a terminal is parked. A parked queue-owned terminal means the
+// feed's world already ended under the session (its armer says which
+// way) — a later fill must read nothing further; the drainer delivers the
+// admitted prefix and fires the parked close at the empty queue.
+func (sess *listenSession) isClosing() bool {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.dead || sess.pendingClose != nil || sess.pendingDrainClose != nil
+}
+
 // fillBatch reads one bounded batch of live records and queues them.
 // liveRead advances past every record read, visible or not: an invisible
 // record is delivered never, but its position is consumed exactly once.
 func (sess *listenSession) fillBatch() (read int, err error) {
 	ctx := sess.ctx // the session's scope: cancel aborts in-flight database work, not just future reads
-	scanned, rerr := sess.readBatch(ctx)
+	scanned, ended, rerr := sess.readBatch(ctx)
 	if rerr != nil {
 		return 0, rerr
 	}
@@ -123,9 +136,22 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 		sess.liveRead = scanned[len(scanned)-1].seq
 	}
 	sess.queue = append(sess.queue, scanned...)
-	over := len(sess.queue) > listenQueueBound
+	if ended {
+		// The feed's target ended under the session — but the scan ran
+		// FIRST, under the registration labels, so the predecessor
+		// lifetime's already-committed records queued like any other
+		// batch. The close is queue-owned: the drainer delivers this final
+		// predecessor batch, then fires ErrListenLifetimeEnded at the
+		// empty queue — the already-committed events deliver, never lose
+		// to the check-then-scan window (Δ3, codex P1 on #220).
+		sess.pendingDrainClose = ErrListenLifetimeEnded
+	}
 	sess.cond.Broadcast()
 	sess.mu.Unlock()
+	if ended {
+		return 0, nil // read 0: the fill's batch loop ends; the drain owns the close
+	}
+	over := len(sess.queue) > listenQueueBound
 	if over {
 		// The teaching reconnect: the stream ends and the client resumes
 		// from its last delivered cursor — the durable log is the catch-up
@@ -138,42 +164,50 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 }
 
 // readBatch is the live half's read transaction: seq in (liveRead, head]
-// in order, one bounded page, with a table feed's registration-label
-// filter and a current-lifetime check — a target that moved under the
-// session ends it (a drop, or a drop-and-recreate: a same-named successor
-// is a different feed) instead of silently narrowing.
-func (sess *listenSession) readBatch(ctx context.Context) ([]loggedChange, error) {
+// in order, one bounded page, under the table feed's registration-label
+// filter. The current-lifetime check runs AFTER the scan, in the same
+// transaction: the labels a session reads under are registration-fixed,
+// so a predecessor lifetime's records still match them after a drop (or
+// a drop-and-recreate: a same-named successor is a different feed)
+// commits — scanning first is what delivers those records instead of
+// losing them when the drop takes the write connection ahead of the
+// fill (Δ3, codex P1 on #220: the check-first ordering closed the
+// session with events after liveRead never queued, and a reconnect on
+// the old feed cannot recover them).
+func (sess *listenSession) readBatch(ctx context.Context) (scanned []loggedChange, lifetimeEnded bool, err error) {
 	tx, err := sess.n.rw.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, sess.fillErr(err)
+		return nil, false, sess.fillErr(err)
 	}
 	defer tx.Rollback()
-	if sess.feed != nil {
-		current, ferr := changeFeedOf(ctx, tx, sess.nsName, sess.feed.table)
-		if ferr != nil {
-			return nil, sess.fillErr(ferr)
-		}
-		if current.nsgen != sess.feed.nsgen || current.dropGen != sess.feed.dropGen {
-			return nil, ErrListenLifetimeEnded
-		}
-	}
 	sess.mu.Lock()
 	from := sess.liveRead
 	sess.mu.Unlock()
 	query, args := changePageSQL(from, nil, MaxChangesPageLimit, sess.feed)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, sess.fillErr(err)
+		return nil, false, sess.fillErr(err)
 	}
-	scanned, err := scanChangePage(rows)
+	scanned, err = scanChangePage(rows)
 	rows.Close()
 	if err != nil {
-		return nil, sess.fillErr(err)
+		return nil, false, sess.fillErr(err)
+	}
+	if sess.feed != nil {
+		current, ferr := changeFeedOf(ctx, tx, sess.nsName, sess.feed.table)
+		switch {
+		case ferr != nil && errors.Is(ferr, ErrNotFound):
+			lifetimeEnded = true // the table is gone: a drop ended this feed
+		case ferr != nil:
+			return nil, false, sess.fillErr(ferr)
+		case current.nsgen != sess.feed.nsgen || current.dropGen != sess.feed.dropGen:
+			lifetimeEnded = true // a same-named successor is a different feed
+		}
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, sess.fillErr(err)
+		return nil, false, sess.fillErr(err)
 	}
-	return scanned, nil
+	return scanned, lifetimeEnded, nil
 }
 
 // fillErr maps a fill failure onto the session's close causes: a
