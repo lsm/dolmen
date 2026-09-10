@@ -11,11 +11,12 @@ import (
 // later guarantee hangs off that fixing: the replay covers seq in (P, R]
 // under the registered labels, so a drop or a same-name recreate committing
 // mid-replay can neither narrow the range nor mix a successor's records
-// into it (§9.3). The live half grows across the next slices of the 6b
-// stack: the flag-only wake and the quiescing teardown are here (r6a);
-// the fill pump that pages the durable log into the session's queue, the
-// drain that delivers it, and the queue's bound follow — together they
-// make the concatenation replay-then-live exactly-once.
+// into it (§9.3). The live half grows across the slices of the 6b stack:
+// the flag-only wake and the quiescing teardown (r6a), then the registry
+// join that orders replay against live commits (r6b); the fill pump that
+// pages the durable log into the session's queue, the drain that
+// delivers it, and the queue's bound follow — together they make the
+// concatenation replay-then-live exactly-once.
 type listenSession struct {
 	s      *Store
 	n      *nsDB // the namespace instance registered on — never a successor's
