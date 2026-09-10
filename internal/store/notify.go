@@ -209,7 +209,7 @@ type listenSession struct {
 
 	mu              sync.Mutex
 	cond            *sync.Cond
-	queue           []ChangeRecord // bounded by listenQueueBound, in seq order
+	queue           []loggedChange // bounded by listenQueueBound, in seq order; cursors mint at delivery
 	liveRead        int64          // last live position read from the log, visible or not
 	woken           bool
 	replayDone      bool // Next has drained the replay: the drainer may deliver
@@ -218,6 +218,7 @@ type listenSession struct {
 	dead            bool
 	pendingClose    error // a terminal parked until its serialization point (below): fired from a pump's quiescent exit
 	replayActive    bool  // a replay page is in flight: a parked close must not cut past it
+	notifyActive    bool  // a delivery is in flight (mint + notify): same rule
 
 	closedOnce sync.Once
 	cancelOnce sync.Once
@@ -424,18 +425,18 @@ func (sess *listenSession) fill() {
 			if sess.isDead() {
 				return
 			}
-			visible, read, ferr := sess.fillBatch()
+			batch, read, ferr := sess.fillBatch()
 			if ferr != nil {
 				sess.end(ferr)
 				return
 			}
-			if len(visible) > 0 {
+			if len(batch) > 0 {
 				sess.mu.Lock()
 				if sess.dead { // ended while the batch was in flight
 					sess.mu.Unlock()
 					return
 				}
-				sess.queue = append(sess.queue, visible...)
+				sess.queue = append(sess.queue, batch...)
 				over := len(sess.queue) > listenQueueBound
 				sess.cond.Broadcast()
 				sess.mu.Unlock()
@@ -454,15 +455,13 @@ func (sess *listenSession) fill() {
 // fillBatch reads one bounded batch of live records, admits each through
 // the session's live authorization OUTSIDE any transaction (the 9d
 // re-resolver may itself read through this engine; invoking caller code
-// inside the namespace's write lock could deadlock against it), then mints
-// the admitted records' cursors and prunes retention in a second
-// transaction. liveRead advances past every record read, visible or not: an
-// invisible record is delivered never, but its position is consumed exactly
-// once.
-func (sess *listenSession) fillBatch() (visible []ChangeRecord, read int, err error) {
+// inside the namespace's write lock could deadlock against it). The admitted
+// records queue WITHOUT cursors — tokens are minted at delivery (drain).
+// liveRead advances past every record read, visible or not: an invisible
+// record is delivered never, but its position is consumed exactly once.
+func (sess *listenSession) fillBatch() (admitted []loggedChange, read int, err error) {
 	ctx := context.Background() // the pump outlives the request; cancel is its stop signal
-	now := time.Now()
-	scanned, from, rerr := sess.readBatch(ctx)
+	scanned, _, rerr := sess.readBatch(ctx)
 	if rerr != nil {
 		return nil, 0, rerr
 	}
@@ -472,7 +471,6 @@ func (sess *listenSession) fillBatch() (visible []ChangeRecord, read int, err er
 	}
 	sess.mu.Unlock()
 
-	var admitted []loggedChange
 	revoked := false
 	for _, lc := range scanned {
 		vis, rev := sess.admit(lc.rec)
@@ -487,32 +485,23 @@ func (sess *listenSession) fillBatch() (visible []ChangeRecord, read int, err er
 	if revoked {
 		// The admitted prefix is DELIVERED before the close: liveRead has
 		// consumed those positions, and a revocation takes effect at the
-		// next event, not retroactively. Mint the prefix, queue it, and arm
-		// a pending close — the drainer fires it once the queue empties, so
-		// closed never precedes a record it admitted (§6.2's exposure rule).
-		// An empty prefix closes through the same path.
-		var queued []ChangeRecord
-		if len(admitted) > 0 {
-			var merr error
-			if queued, _, merr = sess.mint(ctx, now, admitted, from); merr != nil {
-				return nil, 0, sess.fillErr(merr)
-			}
-		}
+		// next event, not retroactively. Queue it and arm a pending close —
+		// the drainer mints and delivers the prefix, then fires the close
+		// from its quiescent exit, so closed never precedes a record it
+		// admitted (§6.2's exposure rule). An empty prefix closes through
+		// the same path.
 		sess.mu.Lock()
-		sess.queue = append(sess.queue, queued...)
+		sess.queue = append(sess.queue, admitted...)
 		sess.pendingClose = ErrListenRevoked
 		sess.cond.Broadcast()
 		sess.mu.Unlock()
 		return nil, 0, nil
 	}
-	if len(admitted) == 0 {
-		return nil, len(scanned), nil // nothing visible: no tokens, no second transaction
-	}
-	records, _, merr := sess.mint(ctx, now, admitted, from)
-	if merr != nil {
-		return nil, 0, sess.fillErr(merr)
-	}
-	return records, len(scanned), nil
+	// Nothing is minted on the fill path: live records carry their cursors
+	// minted at DELIVERY (drain), on the chain current at that moment — a
+	// queued record never holds a token that a rotation or its prune could
+	// orphan while it waits behind a slow subscriber (§9.3's chain cap).
+	return admitted, len(scanned), nil
 }
 
 // readBatch is the live half's read transaction: seq in (liveRead, head] in
@@ -691,11 +680,32 @@ func (sess *listenSession) drain() {
 			sess.end(cause)
 			return
 		}
-		rec := sess.queue[0]
+		lc := sess.queue[0]
 		sess.queue = sess.queue[1:]
+		sess.notifyActive = true
 		sess.mu.Unlock()
 
-		sess.notify(rec)
+		// The record's cursor is minted HERE, at delivery: the token rides
+		// the chain current at this moment, so a queued record never holds
+		// a cursor a rotation could orphan while it waited behind a slow
+		// subscriber (§9.3's chain cap), and every delivered cursor is as
+		// fresh as its delivery. notifyActive covers the whole
+		// mint-and-deliver span: a parked close cannot fire between them.
+		tok, merr := sess.mintOne(context.Background(), time.Now(), lc.seq)
+		if merr != nil {
+			sess.mu.Lock()
+			sess.notifyActive = false
+			sess.cond.Broadcast()
+			sess.mu.Unlock()
+			sess.end(sess.fillErr(merr))
+			return
+		}
+		lc.rec.Cursor = tok
+		sess.notify(lc.rec)
+		sess.mu.Lock()
+		sess.notifyActive = false
+		sess.cond.Broadcast()
+		sess.mu.Unlock()
 	}
 }
 
@@ -726,7 +736,13 @@ func (sess *listenSession) recoverPump(half string) {
 // next marks the page in flight and defers to page: a terminal parked while
 // the page runs (an overflow, a dropped feed target — end() from either
 // pump) waits for the page instead of cutting past it, so closed never
-// precedes records this call is about to expose (§6.2's exposure rule).
+// precedes records this call is about to expose (§6.2's exposure rule). A
+// page whose session ended before the flag clears — the end parked or fired
+// while the page was building — is omitted: nothing follows the terminal.
+// An end landing after the clear fires concurrently with the return, a seam
+// Go cannot close across a function boundary; the API layer's terminal
+// discipline closes it client-side (the handler's page frames are ordered
+// before its flush by construction).
 func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bool, error) {
 	sess.mu.Lock()
 	sess.replayActive = true
@@ -735,7 +751,11 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	sess.mu.Lock()
 	sess.replayActive = false
 	sess.cond.Broadcast()
+	omit := sess.dead && len(records) > 0
 	sess.mu.Unlock()
+	if omit {
+		return nil, next, true, nil
+	}
 	return records, next, done, err
 }
 
@@ -885,17 +905,39 @@ func (sess *listenSession) fireClosed(cause error) {
 	})
 }
 
+// mintOne mints a single live record's cursor at its delivery (drain): the
+// token rides the chain current at delivery time, never one a rotation
+// could have orphaned while the record sat queued. No pruning here — the
+// per-delivery transaction stays one insert; page mints (next) carry the
+// opportunistic pruning for the session.
+func (sess *listenSession) mintOne(ctx context.Context, now time.Time, seq int64) (Cursor, error) {
+	tx, err := sess.n.rw.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	tok, err := mintCursorToken(ctx, tx, now, seq, sess.table, sess.chainFor(now, seq))
+	if err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return tok, nil
+}
+
 // flushParkedClose fires a parked terminal from a pump's exit path, once no
-// replay page is in flight. The park is the exposure rule's serialization
-// point (§6.2): closed must never precede a record the session already
-// handed out, and a page minted while the session was ending may still be
-// returning — the parked close waits for the page rather than cutting past
-// it, and an in-flight notify has returned before its pump reaches this
-// deferred flush. The FIRST cause parked wins; later ends are already
-// absorbed by the dead flag.
+// replay page and no delivery is in flight. The park is the exposure rule's
+// serialization point (§6.2): closed must never precede a record the session
+// already handed out — an in-flight notify has returned before its pump
+// reaches this deferred flush, and the other pump's flush waits out the
+// delivery flag — and a page minted while the session was ending may still
+// be returning, so the parked close waits for it rather than cutting past
+// it. The FIRST cause parked wins; later ends are already absorbed by the
+// dead flag.
 func (sess *listenSession) flushParkedClose() {
 	sess.mu.Lock()
-	for sess.replayActive {
+	for sess.replayActive || sess.notifyActive {
 		sess.cond.Wait()
 	}
 	cause := sess.pendingClose

@@ -351,7 +351,12 @@ func TestListenBareStartIsLiveOnly(t *testing.T) {
 // TestListenOverflowTeachingClose: a subscriber that stops draining while
 // its own visible commits keep landing overflows the bounded buffer, and the
 // engine ends the session with the teaching reconnect cause — not a hang,
-// not a silent drop (§6.2: the log is durable; the buffer never is).
+// not a silent drop (§6.2: the log is durable; the buffer never is). The
+// close fires only once the in-flight delivery returns (the exposure rule:
+// closed never precedes a record), so the fixture releases the stuck
+// subscriber AFTER the overflow has parked the close — a live slow client
+// unblocks its read eventually, and that is exactly when the teaching
+// arrives.
 func TestListenOverflowTeachingClose(t *testing.T) {
 	st := openChangeStore(t)
 	block := make(chan struct{}) // the slowest possible subscriber
@@ -362,11 +367,7 @@ func TestListenOverflowTeachingClose(t *testing.T) {
 		<-block // the subscriber reads nothing until the test releases it
 		live.notify(rec)
 	}, func(cause error) { closedCause <- cause })
-	// Registered in this order so LIFO teardown releases the stuck drainer
-	// (close(block)) BEFORE cancel waits for it to exit — a failure path that
-	// skips the explicit close must not hang the test binary.
 	defer cancel()
-	defer close(block)
 	drainReplay(t, replay)
 
 	// One bulk commit past the bound: fill batches stack the queue while the
@@ -374,6 +375,12 @@ func TestListenOverflowTeachingClose(t *testing.T) {
 	if _, err := insertNotesErr(st, listenQueueBound+MaxChangesPageLimit); err != nil {
 		t.Fatalf("bulk write: %v", err)
 	}
+	// Give the filler time to stack the queue past the bound and park the
+	// overflow close behind the stuck delivery, then release the subscriber:
+	// the delivery returns, the drainer stops on dead, and the parked close
+	// fires from its quiescent exit.
+	time.Sleep(1 * time.Second)
+	close(block)
 
 	select {
 	case cause := <-closedCause:
@@ -382,6 +389,9 @@ func TestListenOverflowTeachingClose(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("no overflow close: the bounded buffer never tripped")
+	}
+	if n := live.count(); n > listenQueueBound+MaxChangesPageLimit {
+		t.Fatalf("%d records delivered through an overflowed buffer", n)
 	}
 }
 
