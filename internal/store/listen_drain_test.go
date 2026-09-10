@@ -219,3 +219,35 @@ func TestListenPanickingNotifyEndsSession(t *testing.T) {
 	}
 	sess.cancel()
 }
+
+// TestListenNotifyToleratesCancelFromCallback: notify is caller code
+// with the same reentrancy as closedFn — a natural callback is cancel
+// itself, the documented idempotent teardown (a subscriber unsubscribing
+// on the record that completes it). The delivery bracket is notify's
+// no-self-wait window: a cancel running inside the callback must not
+// join the drain goroutine it is running ON (no goroutine can wait
+// itself out) — it declines the join while notifyActive is up, exactly
+// as the firing carve-out does for closedFn (codex P1 on #228).
+func TestListenNotifyToleratesCancelFromCallback(t *testing.T) {
+	st := openChangeStore(t)
+	cancelled := make(chan struct{})
+
+	var cancel func()
+	replay, cancel := listenOn(t, st, "", "", func(ChangeRecord) {
+		cancel() // the reentrancy hazard itself, run synchronously
+		close(cancelled)
+	}, nil)
+	defer cancel()
+
+	// The boundary call releases the drainer before any delivery.
+	if _, _, done, err := replay.Next(context.Background()); err != nil || !done {
+		t.Fatalf("boundary Next = err %v, done %v, want nil error, done=true", err, done)
+	}
+	insertNotes(t, st, 1)
+
+	select {
+	case <-cancelled:
+	case <-time.After(20 * time.Second):
+		t.Fatal("notify→cancel deadlocked: the cancel joined the drain goroutine it ran on")
+	}
+}

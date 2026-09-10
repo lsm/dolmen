@@ -83,7 +83,10 @@ type listenSession struct {
 	// a live record never interleaves into a caller's page turn.
 	// notifyActive brackets a delivery's mint-and-notify span: the
 	// parked-close machinery (the next slice) waits it out rather than
-	// firing a terminal between a record and its notify.
+	// firing a terminal between a record and its notify, and cancel
+	// declines its quiescence join for exactly the bracket — notify is
+	// caller code that may reenter cancel, and no goroutine can wait
+	// itself out.
 	replayDone   bool
 	replayActive bool
 	notifyActive bool
@@ -170,20 +173,24 @@ func (sess *listenSession) fireClosed(cause error) {
 // cancel is the returned teardown: it ends the session without a closed
 // callback. The registry entry comes out first (no new wakes can arrive),
 // end's broadcast then reaches a parked pump, and when no terminal fire
-// is pending pumps.Wait returns only after the session's goroutines have
-// exited — the use-after-free rule from notify.go's listener contract.
-// The join sits OUTSIDE the once, and must: a once body holding a pump
-// join would make a closedFn that reenters cancel block on the once
-// behind a joiner waiting on that very pump — the two wait on each other.
-// Out here the reentrant caller spends the once on teardown alone — which
-// never parks — or finds it spent, and skips the join: firing is up
-// (raised with dead in end, before the callback runs) and no goroutine
-// can wait itself out. The residue, then, is any cancel that observes
-// firing — a terminal fire pending or in flight, possibly not yet
-// started, and possibly THIS cancel's own caller; notify.go's in-flight
-// rule, applied to the terminal callback: treat closedFn as possibly
-// running, and know that once it returns, the pump's remainder touches
-// nothing of the caller's. Idempotent.
+// and no delivery is pending pumps.Wait returns only after the session's
+// goroutines have exited — the use-after-free rule from notify.go's
+// listener contract. The join sits OUTSIDE the once, and must: a once
+// body holding a pump join would make a reentrant cancel block on the
+// once behind a joiner waiting on that very pump — the two wait on each
+// other. Out here the reentrant caller spends the once on teardown alone
+// — which never parks — or finds it spent, and skips the join: one of
+// the two no-self-wait windows is up and no goroutine can wait itself
+// out. The windows: firing — a terminal fire pending or in flight
+// (raised with dead in end, before the callback runs) — and notifyActive
+// — a delivery's mint-and-notify span, which runs notify, caller code
+// with the same reentrancy as closedFn (a subscriber unsubscribing on
+// the record that completes it is the natural callback). The residue,
+// then, is any cancel that observes either window — the callback may be
+// pending, running, or THIS cancel's own caller; notify.go's in-flight
+// rule, applied to both callbacks: treat it as possibly running, and
+// know that once it returns, the pump's remainder touches nothing of the
+// caller's. Idempotent.
 func (sess *listenSession) cancel() {
 	sess.cancelOnce.Do(func() {
 		if sess.unregister != nil {
@@ -192,9 +199,9 @@ func (sess *listenSession) cancel() {
 		sess.end(nil)
 	})
 	sess.mu.Lock()
-	firing := sess.firing
+	busy := sess.firing || sess.notifyActive
 	sess.mu.Unlock()
-	if !firing {
+	if !busy {
 		sess.pumps.Wait()
 	}
 }
