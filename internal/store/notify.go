@@ -455,7 +455,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// mint evaluated against the stale start would keep the already-expired
 	// chain and stamp every cursor on it — tokens born dead at return, an
 	// immediate resume rejected (chainFor rotates on the actual mint time).
-	records, next, merr := sess.mint(ctx, time.Now(), admitted, sess.position)
+	records, next, merr := sess.mint(ctx, admitted, sess.position)
 	if merr != nil {
 		return nil, "", false, merr
 	}
@@ -527,12 +527,18 @@ func (sess *listenSession) admit(rec ChangeRecord) (visible, revoked bool) {
 // pruning — matching ChangesSince's mint-then-prune shape so every replay
 // path refreshes chains identically. The next-page token is the replay's
 // standing resume cursor.
-func (sess *listenSession) mint(ctx context.Context, now time.Time, admitted []loggedChange, resume int64) ([]ChangeRecord, Cursor, error) {
+func (sess *listenSession) mint(ctx context.Context, admitted []loggedChange, resume int64) ([]ChangeRecord, Cursor, error) {
 	tx, err := sess.n.rw.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, "", err
 	}
 	defer tx.Rollback()
+	// now is captured AFTER the transaction is held — the same rule as
+	// registration: BeginTx can queue behind the namespace's single write
+	// connection, and stamps from before the wait would hand the caller
+	// cursors whose issuance is already expired (and evaluate chain
+	// rotation against a stale, pre-cap time).
+	now := time.Now()
 	records, next, err := mintChangeCursors(ctx, tx, now, admitted, resume, "", sess.table, sess.chainFor(now, resume))
 	if err != nil {
 		return nil, "", err
