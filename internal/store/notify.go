@@ -279,16 +279,18 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	if sess.boundary, err = changeHead(ctx, tx); err != nil {
 		return nil, nil, err
 	}
-	// The loss-check baseline, in the same snapshot: the rows the log
-	// ACTUALLY retains in (P, R] — not the span arithmetic, because pruning
-	// deletes by age and clock-stepped stamps can leave holes a begin
-	// registration legitimately replays around (changeBegin selects the
-	// first retained record, whatever sits missing beside it). Only rows
-	// removed AFTER this count are the session's to lose.
+	// The loss-check baseline, in the same snapshot: the feed's rows the
+	// log ACTUALLY retains in (P, R] — not the span arithmetic, because
+	// pruning deletes by age and clock-stepped stamps can leave holes a
+	// begin registration legitimately replays around (changeBegin selects
+	// the first retained record, whatever sits missing beside it), and not
+	// the whole namespace's, because a table feed's promise is only its own
+	// records — an unrelated table's aged row deleted later must not read
+	// as this feed's loss. Only rows removed AFTER this count are the
+	// session's to lose.
 	if sess.position < sess.boundary {
-		if err = tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM _dolmen_changes WHERE seq > ? AND seq <= ?`,
-			sess.position, sess.boundary).Scan(&sess.outstanding); err != nil {
+		cq, cargs := changeCountSQL(sess.position, sess.boundary, sess.feed)
+		if err = tx.QueryRowContext(ctx, cq, cargs...).Scan(&sess.outstanding); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -329,6 +331,13 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	records, next, done, err := sess.page(ctx)
 	sess.mu.Lock()
 	omit := sess.dead && len(records) > 0
+	if omit {
+		// Roll the standing cursor back with the return value: page's
+		// dead-guard cannot cover a cancellation landing between its
+		// publication and this check, and Resume must never expose a
+		// position past records the caller never received.
+		sess.nextCursor = resume
+	}
 	sess.mu.Unlock()
 	if omit {
 		// The omitted page's own cursor points PAST records the caller never
@@ -376,9 +385,8 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// boundary promised.
 	var kept int64
 	if sess.position < sess.boundary {
-		if err = tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM _dolmen_changes WHERE seq > ? AND seq <= ?`,
-			sess.position, sess.boundary).Scan(&kept); err != nil {
+		cq, cargs := changeCountSQL(sess.position, sess.boundary, sess.feed)
+		if err = tx.QueryRowContext(ctx, cq, cargs...).Scan(&kept); err != nil {
 			return nil, "", false, err
 		}
 		if kept != sess.outstanding {
@@ -395,18 +403,19 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	}
 	// The baseline's bookkeeping half: the rows this page consumed — the
 	// count measured at page start minus what remains past the page's last
-	// scanned seq, both inside this transaction's snapshot — come off the
-	// promise. A deletion anywhere in the outstanding range after
-	// registration shows up at the next page's baseline check as a
-	// shortfall (the terminal page's own entry check already covered the
-	// empty case).
+	// scanned seq, both inside this transaction's snapshot — measured here
+	// but applied BELOW, only with the page's other progress after the
+	// mint succeeds: a failed mint (the Next context expiring under a slow
+	// liveAuthz callback) leaves position and cursor at the pre-page
+	// boundary, and a prematurely reduced promise would make the retried
+	// page's recount read as loss.
+	var consumed int64
 	if qerr == nil && len(scanned) > 0 && sess.position < sess.boundary {
 		last := scanned[len(scanned)-1].seq
 		var remaining int64
-		if qerr = tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM _dolmen_changes WHERE seq > ? AND seq <= ?`,
-			last, sess.boundary).Scan(&remaining); qerr == nil {
-			sess.outstanding -= kept - remaining
+		cq, cargs := changeCountSQL(last, sess.boundary, sess.feed)
+		if qerr = tx.QueryRowContext(ctx, cq, cargs...).Scan(&remaining); qerr == nil {
+			consumed = kept - remaining
 		}
 	}
 	if qerr == nil {
@@ -461,13 +470,15 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// A session that died under this page (the caller's cancel from another
 	// goroutine, an engine end) keeps its PRE-page standing cursor: next
 	// omits the records, and Resume must not teach a position past records
-	// the caller never received.
+	// the caller never received. The consumed count applies here too — only
+	// with progress that actually committed.
 	if !sess.dead {
 		sess.replayExhausted = short
 		if len(scanned) > 0 {
 			sess.position = scanned[len(scanned)-1].seq
 		}
 		sess.nextCursor = next
+		sess.outstanding -= consumed
 	}
 	sess.mu.Unlock()
 	// A short scanned page with nothing to expose IS the boundary — the
