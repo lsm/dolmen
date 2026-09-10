@@ -182,6 +182,41 @@ func TestListenCancelReleasesPump(t *testing.T) {
 	cancel() // idempotent
 }
 
+// TestListenCancelUnblocksParkedFill: the pump's reads run on the
+// session's own scope, not Background — a fill waiting in BeginTx behind
+// the namespace's single write connection must be released by cancel
+// (end cancels the scope BEFORE pumps.Wait), or a caller tearing down
+// mid-read blocks on it indefinitely.
+func TestListenCancelUnblocksParkedFill(t *testing.T) {
+	st := openChangeStore(t)
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("open test: %v", err)
+	}
+	hold, err := n.rw.BeginTx(context.Background(), nil) // the single write connection, held
+	if err != nil {
+		t.Fatalf("hold rw: %v", err)
+	}
+	defer hold.Rollback()
+
+	sess := testSession(nil)
+	sess.n = n
+	sess.pumps.Add(1)
+	go sess.fill()
+	sess.wake("notes", ChangeRange{First: 1, Last: 1, Count: 1}) // the pump takes the flag and parks in BeginTx
+
+	done := make(chan struct{})
+	go func() {
+		sess.cancel()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancel blocked on a fill parked in BeginTx — end must cancel the session scope before pumps.Wait")
+	}
+}
+
 // TestListenFillQueuesCommits pins the producer directly through the
 // session's queue: commits after registration land there through the real
 // write path — the wake, the fill's page of the durable log, and the
@@ -195,6 +230,7 @@ func TestListenFillQueuesCommits(t *testing.T) {
 		flight: make(chan struct{}, 1),
 	}
 	sess.cond = sync.NewCond(&sess.mu)
+	sess.ctx, sess.ctxCancel = context.WithCancel(context.Background())
 	n, err := st.ns("test")
 	if err != nil {
 		t.Fatalf("open test: %v", err)

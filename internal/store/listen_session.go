@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 )
@@ -50,6 +51,12 @@ type listenSession struct {
 	queue    []loggedChange // the interim queue: the fill pump's paged commits, awaiting the drain slice's delivery
 	liveRead int64          // the live half's durable-log position: everything ≤ it is queued
 
+	// The pumps' scope: derived from the caller's context, canceled at
+	// end — a session being torn down must not wait out an in-flight
+	// read inside cancel.
+	ctx       context.Context
+	ctxCancel context.CancelFunc
+
 	nextCursor      Cursor // the standing resume cursor, fixed at registration
 	replayExhausted bool   // a page reached the registration boundary: the replay is done (the final publish sets it)
 	dead            bool
@@ -81,6 +88,7 @@ func (sess *listenSession) end(cause error) {
 		return
 	}
 	sess.dead = true
+	sess.ctxCancel() // the pumps' in-flight database work — cancel must not wait out a blocked read
 	sess.cond.Broadcast()
 	sess.mu.Unlock()
 	if cause != nil {

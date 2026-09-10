@@ -55,6 +55,10 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	// The live half's signal, wired at construction so every end (caller
 	// cancel included) can broadcast a parked pump out of cond.Wait.
 	sess.cond = sync.NewCond(&sess.mu)
+	// The pumps outlive this call; their cancellation scope is the session
+	// itself, derived from the caller's context (the handler passes one
+	// that ends with the client OR the server's shutdown).
+	sess.ctx, sess.ctxCancel = context.WithCancel(ctx)
 	// The registry join comes BEFORE the boundary transaction — the
 	// register-and-replay ordering (§6.2): the boundary read runs under
 	// the namespace's write lock, so any commit that takes a seq AFTER

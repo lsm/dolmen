@@ -75,7 +75,7 @@ func (sess *listenSession) fill() {
 // liveRead advances past every record read, visible or not: an invisible
 // record is delivered never, but its position is consumed exactly once.
 func (sess *listenSession) fillBatch() (read int, err error) {
-	ctx := context.Background() // the pump outlives the request; cancel is its stop signal
+	ctx := sess.ctx // the session's scope: cancel aborts in-flight database work, not just future reads
 	scanned, rerr := sess.readBatch(ctx)
 	if rerr != nil {
 		return 0, rerr

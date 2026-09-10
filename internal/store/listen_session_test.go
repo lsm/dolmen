@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -20,6 +21,7 @@ import (
 func testSession(closed func(error)) *listenSession {
 	sess := &listenSession{nsName: "test", table: "notes", closedFn: closed}
 	sess.cond = sync.NewCond(&sess.mu)
+	sess.ctx, sess.ctxCancel = context.WithCancel(context.Background())
 	return sess
 }
 
