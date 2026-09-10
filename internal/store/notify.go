@@ -589,8 +589,8 @@ func (sess *listenSession) protectQueue(from int64) {
 	if head-1 < origin {
 		origin = head - 1
 	}
-	sess.chain = newCursorChain(now, origin)
-	chain = sess.chain
+	replacement := newCursorChain(now, origin)
+	chain = replacement
 	sess.mu.Unlock()
 	ctx := sess.ctx
 	tx, err := sess.n.rw.BeginTx(ctx, nil)
@@ -605,7 +605,17 @@ func (sess *listenSession) protectQueue(from int64) {
 	}
 	if err := tx.Commit(); err != nil {
 		slog.Error("listen queue protection: commit", "namespace", sess.nsName, "err", err)
+		return
 	}
+	// Publish the replacement ONLY now that its protective token is
+	// durable: a transient begin/mint/commit failure left published would
+	// point the session at a fresh chain with no token — every later poll
+	// would see its young Start and skip protection, and once the old
+	// chain expired a pruner could delete the queued rows. On failure the
+	// old chain stays current and the next fill retries inside the margin.
+	sess.mu.Lock()
+	sess.chain = replacement
+	sess.mu.Unlock()
 }
 
 // isClosing reports whether the session must take no further reads: it is
@@ -828,7 +838,7 @@ func (sess *listenSession) readBatch(ctx context.Context) ([]loggedChange, int64
 // pruning — the shared tail of both session halves, matching ChangesSince's
 // mint-then-prune shape so every replay path refreshes chains identically.
 // The next-page token matters to the replay half; the live half's records
-func (sess *listenSession) mint(ctx context.Context, admitted []loggedChange, resume int64) ([]ChangeRecord, Cursor, error) {
+func (sess *listenSession) mint(ctx context.Context, admitted []loggedChange, resume int64, scannedLast int64, scannedCount int) ([]ChangeRecord, Cursor, error) {
 	tx, err := sess.n.rw.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, "", err
@@ -846,16 +856,16 @@ func (sess *listenSession) mint(ctx context.Context, admitted []loggedChange, re
 	// long — in that gap another reader's prune may have deleted the
 	// expired chain and the scanned, age-eligible rows. Minting tokens for
 	// deleted positions would hand the caller cached records whose cursors
-	// resolve over a gutted log; the recount (the promise, pre-consumption)
-	// fails loudly instead, and the caller reconnects from its last
-	// delivered cursor.
-	if sess.position < sess.boundary {
-		cq, cargs := changeCountSQL(sess.position, sess.boundary, sess.feed)
+	// resolve over a gutted log. The recheck is BOUNDED to what the page
+	// consumed — the full outstanding tail is verified before the scan (the
+	// page's entry check), not counted again per mint.
+	if scannedCount > 0 {
+		cq, cargs := changeCountSQL(resume, scannedLast, sess.feed)
 		var kept int64
 		if err := tx.QueryRowContext(ctx, cq, cargs...).Scan(&kept); err != nil {
 			return nil, "", err
 		}
-		if kept != sess.outstanding {
+		if kept != int64(scannedCount) {
 			return nil, "", fmt.Errorf("listen replay: %w", ErrCursorExpired)
 		}
 	}
@@ -944,6 +954,7 @@ func (sess *listenSession) fillErr(err error) error {
 // cannot carry a stale unscoped decision onto the successor's records.
 // Namespace-wide feeds make no per-record lifetime comparison (their replay
 // spans table lifetimes by design, §9.3); the namespace's own lifetime is
+// the session binding the live half enforces.
 func (sess *listenSession) admit(rec ChangeRecord) (visible, revoked bool) {
 	if sess.liveAuthz == nil {
 		return true, false
@@ -972,7 +983,13 @@ func (sess *listenSession) drain() {
 	defer sess.recoverPump("drain")
 	for {
 		sess.mu.Lock()
-		for !sess.dead && (!sess.replayDone || (len(sess.queue) == 0 && sess.pendingClose == nil && sess.pendingDrainClose == nil)) {
+		// Live delivery is gated on the boundary call having COMPLETED —
+		// not merely on replayDone being set — and on no page still being
+		// in flight: replayDone flips inside next()'s locked publish, so
+		// the caller has its final result by the time this goroutine can
+		// proceed, and replayActive holds off delivery while any later
+		// page (the caller keeps paging past done) is being decided.
+		for !sess.dead && (!sess.replayDone || sess.replayActive || (len(sess.queue) == 0 && sess.pendingClose == nil && sess.pendingDrainClose == nil)) {
 			sess.cond.Wait()
 		}
 		if sess.dead {
@@ -1067,13 +1084,31 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// Mark the page IN FLIGHT for its whole span — read, authorization,
 	// mint: a parked close (overflow, a dropped target, shutdown) must not
 	// fire from a pump's quiescent exit while this page can still expose
-	// records (§6.2's exposure rule; flushParkedClose waits on the flag).
+	// records (§6.2's exposure rule; flushParkedClose waits on the flag),
+	// and the drainer must not deliver past the boundary while the final
+	// page is still being decided. The clear rides a DEFER so a panicking
+	// liveAuthz cannot strand the flag and wedge every parked close (and
+	// cancel's pump wait) behind it.
 	sess.replayActive = true
 	sess.mu.Unlock()
-	records, next, done, progress, err := sess.page(ctx)
+	records, next, done, progress, err := func() (a []ChangeRecord, b Cursor, c bool, d pageProgress, e error) {
+		defer func() {
+			sess.mu.Lock()
+			sess.replayActive = false
+			sess.cond.Broadcast()
+			sess.mu.Unlock()
+		}()
+		return sess.page(ctx)
+	}()
 	sess.mu.Lock()
-	sess.replayActive = false
-	sess.cond.Broadcast()
+	// done with no error — from ANY path, including the exhausted-entry
+	// boundary call that carries zero progress — means the replay is over:
+	// release the drainer HERE, inside the caller's own final word (never
+	// mid-page), before the branches below decide what to publish.
+	if done && err == nil {
+		sess.replayDone = true
+		sess.cond.Broadcast()
+	}
 	// Publish or drop the page's progress HERE, under one lock, after the
 	// omission decision is final: publishing inside page left a window
 	// where a concurrent Resume() observed the post-page cursor and the
@@ -1083,6 +1118,8 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		// stays at the PRE-page boundary — the omitted page's own cursor
 		// points past records the caller never receives, and Resume must
 		// never teach that position.
+		sess.replayDone = true // the session is over; release any drainer
+		sess.cond.Broadcast()
 		sess.mu.Unlock()
 		return nil, resume, true, nil
 	}
@@ -1111,7 +1148,8 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	dead, exhausted := sess.dead, sess.replayExhausted
 	sess.mu.Unlock()
 	if dead || exhausted {
-		sess.markReplayDone()
+		// done=true flows to next(), whose locked publish performs the
+		// replay-done transition — never here, mid-page.
 		return nil, sess.cursor(), true, pageProgress{}, nil
 	}
 
@@ -1167,16 +1205,11 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// mint succeeds: a failed mint (the Next context expiring under a slow
 	// liveAuthz callback) leaves position and cursor at the pre-page
 	// boundary, and a prematurely reduced promise would make the retried
-	// page's recount read as loss.
-	var consumed int64
-	if qerr == nil && len(scanned) > 0 && sess.position < sess.boundary {
-		last := scanned[len(scanned)-1].seq
-		var remaining int64
-		cq, cargs := changeCountSQL(last, sess.boundary, sess.feed)
-		if qerr = tx.QueryRowContext(ctx, cq, cargs...).Scan(&remaining); qerr == nil {
-			consumed = kept - remaining
-		}
-	}
+	// page's recount read as loss. The consumed count is the SCAN ITSELF —
+	// every scanned feed row is consumed exactly once; the outstanding
+	// baseline is fully verified before the scan, so no per-page recount
+	// of the tail is needed here.
+	consumed := int64(len(scanned))
 	if qerr == nil {
 		qerr = tx.Commit()
 	}
@@ -1214,7 +1247,11 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// mint evaluated against the stale start would keep the already-expired
 	// chain and stamp every cursor on it — tokens born dead at return, an
 	// immediate resume rejected (chainFor rotates on the actual mint time).
-	records, next, merr := sess.mint(ctx, admitted, sess.position)
+	var mLast int64
+	if len(scanned) > 0 {
+		mLast = scanned[len(scanned)-1].seq
+	}
+	records, next, merr := sess.mint(ctx, admitted, sess.position, mLast, len(scanned))
 	if merr != nil {
 		return nil, "", false, pageProgress{}, merr
 	}
@@ -1240,7 +1277,6 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// records; the FOLLOWING call reports the boundary, §6.2), and a full
 	// page pages on — even one the filter emptied.
 	if short && len(records) == 0 {
-		sess.markReplayDone()
 		return nil, next, true, progress, nil
 	}
 	return records, next, false, progress, nil
@@ -1253,24 +1289,6 @@ type pageProgress struct {
 	scannedLast int64
 	next        Cursor
 	consumed    int64
-}
-
-// admit is the live per-event authorization gate (§6.2): it runs BEFORE a
-// record is exposed, against the record's own target table. visible reports
-// whether the record may reach the caller; revoked reports that the
-// authorization itself ended the stream — ok=false is a teaching close,
-// never a silent skip. The engine stays grant-blind: it filters by the
-// returned scope and the record's Owner label, and — on a table feed —
-// compares the returned incarnation with the record's Lifetime, so a
-// drop-and-recreate between the re-resolver's answer and admission cannot
-// carry a stale unscoped decision onto the successor's records.
-// Namespace-wide feeds make no per-record lifetime comparison (their replay
-// spans table lifetimes by design, §9.3); the namespace's own lifetime is
-func (sess *listenSession) markReplayDone() {
-	sess.mu.Lock()
-	sess.replayDone = true
-	sess.cond.Broadcast()
-	sess.mu.Unlock()
 }
 
 // cursor returns the replay's latest next-page cursor — what a caller that
