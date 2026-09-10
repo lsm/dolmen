@@ -2,19 +2,22 @@ package store
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 )
 
-// Slice 6b (r6a–r6c): the live half's scaffolding, its registry wiring,
-// then its producer. Commits wake the fill pump and the pump pages the
-// durable log into the session's queue; the drain that delivers the
-// queue and the bound that caps it land in the next slice. The pinned
-// contracts: the wake is flag-only, registration holds a registry entry
-// for exactly the session's life, the boundary holds against interim
-// commits, cancel releases an idle pump, and commits land in the queue
-// through the real write path.
+// Slice 6b (r6a–r6d): the live half's scaffolding, its registry wiring,
+// its producer, then its bound. Commits wake the fill pump, the pump
+// pages the durable log into the session's queue, and the bound caps it
+// with a teaching close; the drain that delivers the queue lands in the
+// next slice. The pinned contracts: the wake is flag-only, registration
+// holds a registry entry for exactly the session's life, the boundary
+// holds against interim commits, cancel releases an idle pump, commits
+// land in the queue through the real write path, and a subscriber whose
+// own traffic outruns the drain meets ErrListenOverflow — never a hang,
+// never a silent drop.
 
 // TestListenWakeIsFlagOnly pins BOTH halves of the wake contract: it runs
 // on COMMITTING writers' goroutines, so it may only raise the flag and
@@ -256,4 +259,56 @@ func TestListenFillQueuesCommits(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+// TestListenOverflowTeachingClose: a subscriber whose own visible traffic
+// outruns the queue meets the teaching close — ErrListenOverflow, never a
+// hang, never a silent drop (§6.2: the log is durable; the buffer never
+// is). Nothing drains in this slice, so bulk commits past the bound trip
+// it deterministically.
+func TestListenOverflowTeachingClose(t *testing.T) {
+	st := openChangeStore(t)
+	closedCause := make(chan error, 1)
+
+	_, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, func(cause error) { closedCause <- cause })
+	defer cancel()
+
+	// Bulk commits past the bound: the filler's batches stack the queue
+	// while nothing drains.
+	if _, err := insertNotesChunkedErr(st, listenQueueBound+MaxChangesPageLimit); err != nil {
+		t.Fatalf("bulk write: %v", err)
+	}
+	select {
+	case cause := <-closedCause:
+		if !errors.Is(cause, ErrListenOverflow) {
+			t.Fatalf("overflow close cause = %v, want ErrListenOverflow", cause)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("no overflow close: the bounded queue never tripped")
+	}
+}
+
+// insertNotesChunkedErr is insertNotes for large counts, chunked to the
+// per-call record cap.
+func insertNotesChunkedErr(st *Store, n int) (InsertResult, error) {
+	ctx := context.Background()
+	var out InsertResult
+	for n > 0 {
+		size := n
+		if size > MaxRecordsPerInsert {
+			size = MaxRecordsPerInsert
+		}
+		recs := make([]map[string]any, size)
+		for i := range recs {
+			recs[i] = map[string]any{"title": "a", "score": i + 1}
+		}
+		res, err := st.Insert(ctx, "test", "notes", recs, WriteOpts{}, Embedder{}, nil, Incarnation{})
+		if err != nil {
+			return out, err
+		}
+		out.Ids = append(out.Ids, res.Ids...)
+		out.Changes.Count += res.Changes.Count
+		n -= size
+	}
+	return out, nil
 }

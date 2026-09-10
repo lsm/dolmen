@@ -12,9 +12,26 @@ import (
 // SQLite serializes writers through the same rw connection, so its commit
 // necessarily observes the registration — making replay (P, R] and live
 // > R disjoint by construction, §6.2's exactly-once). The fill pump
-// pages the durable log on every wake into the interim queue. The queue
-// bound and its overflow teaching close, the drain (delivery), and the
-// handoff gating land in the following slices.
+// pages the durable log on every wake into the interim queue, and the
+// bound caps it: a subscriber whose own traffic outruns its drain meets
+// the overflow teaching close. The drain (delivery) and the handoff
+// gating land in the following slices.
+
+// listenQueueBound caps the records buffered for one subscriber: the
+// interim commits landing while the replay drains, plus live records
+// queued behind a slow client (§6.2). It is deliberately a multiple of
+// the page bound — a single bulk commit the size of a page must not
+// overflow a fresh subscriber — and only records the page actually
+// scanned ever occupy it, so it can be tripped by nothing but the
+// subscriber's own traffic.
+const listenQueueBound = 8 * MaxChangesPageLimit
+
+// ErrListenOverflow is the teaching close for a subscriber whose own
+// visible traffic outran its drain: the session's bounded buffer filled
+// (§6.2, §9.3). The stream ends and the client resumes from its last
+// persisted cursor — the durable log is the durability mechanism; the
+// buffer never is.
+var ErrListenOverflow = errors.New("subscription buffer overflow: the subscriber drained slower than commits arrived")
 
 // ErrListenLifetimeEnded closes a session whose feed target ended under
 // it: the subscribed table was dropped (a table feed follows ONE table
@@ -40,7 +57,8 @@ func (sess *listenSession) wake(table string, changes ChangeRange) {
 // fill is the live read half: on every wake it pages the durable log
 // forward from liveRead and queues what it finds. It shares the rw pool
 // with Next and the write paths, so its transactions serialize with them;
-// it never holds sess.mu across database work.
+// it never holds sess.mu across database work. A queue past
+// listenQueueBound ends the session with the teaching close.
 func (sess *listenSession) fill() {
 	defer sess.pumps.Done()
 	for {
@@ -85,8 +103,16 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 		sess.liveRead = scanned[len(scanned)-1].seq
 	}
 	sess.queue = append(sess.queue, scanned...)
+	over := len(sess.queue) > listenQueueBound
 	sess.cond.Broadcast()
 	sess.mu.Unlock()
+	if over {
+		// The teaching reconnect: the stream ends and the client resumes
+		// from its last delivered cursor — the durable log is the catch-up
+		// path; the buffer never was the durability mechanism.
+		sess.end(ErrListenOverflow)
+		return 0, nil
+	}
 	return len(scanned), nil
 }
 
