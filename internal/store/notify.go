@@ -290,7 +290,7 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	if err := tx.Commit(); err != nil {
 		return nil, nil, err
 	}
-	return &ChangeReplay{Next: sess.next}, sess.cancel, nil
+	return &ChangeReplay{Next: sess.next, Resume: sess.cursor}, sess.cancel, nil
 }
 
 // next pages the replay half: records in (position, boundary] in cursor
@@ -335,7 +335,6 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// when it is 0 (the empty log's head): a commit landing before the
 	// caller's first Next is the live half's to deliver, and an unbounded
 	// read here would replay it too (§6.2's exactly-once).
-	now := time.Now()
 	tx, err := sess.n.rw.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, "", false, err
@@ -393,6 +392,24 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 			qerr = fmt.Errorf("listen replay: %w", ErrCursorExpired)
 		}
 	}
+	// The missing-tail half: a SHORT scan is the replay's last word (this
+	// page or the following one reports done) only if the log itself still
+	// holds the whole outstanding range. For a table feed a short or empty
+	// page can be legitimate — the range's surviving rows belong to other
+	// tables — but rows MISSING from the span mean pruning deleted the
+	// promised tail out from under the replay (every outstanding record
+	// aged behind a future-stamped survivor at or before the position,
+	// where the head check above passes); the exact-span count decides
+	// between the two. Full scans page on and re-verify, so only the
+	// terminal page needs the whole-range check.
+	if qerr == nil && len(scanned) < MaxChangesPageLimit && sess.position < sess.boundary {
+		var kept int64
+		if qerr = tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM _dolmen_changes WHERE seq > ? AND seq <= ?`,
+			sess.position, sess.boundary).Scan(&kept); qerr == nil && kept != sess.boundary-sess.position {
+			qerr = fmt.Errorf("listen replay: %w", ErrCursorExpired)
+		}
+	}
 	if qerr == nil {
 		qerr = tx.Commit()
 	}
@@ -425,7 +442,12 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		return nil, sess.cursor(), true, nil
 	}
 
-	records, next, merr := sess.mint(ctx, now, admitted, sess.position)
+	// The mint runs on FRESH time, not the page's start: the read and the
+	// admission callbacks above can span the chain's retention cap, and a
+	// mint evaluated against the stale start would keep the already-expired
+	// chain and stamp every cursor on it — tokens born dead at return, an
+	// immediate resume rejected (chainFor rotates on the actual mint time).
+	records, next, merr := sess.mint(ctx, time.Now(), admitted, sess.position)
 	if merr != nil {
 		return nil, "", false, merr
 	}

@@ -523,3 +523,82 @@ func TestListenReplayInteriorHoleFailsLoudly(t *testing.T) {
 		t.Fatalf("holey replay Next = %v, want ErrCursorExpired — an interior hole must fail loudly, not skip the missing seq", err)
 	}
 }
+
+// TestListenReplayMissingTailFailsLoudly: the empty-scan blind spot of the
+// hole checks — pruning can remove every outstanding row while a
+// future-stamped row at or before the position survives (a clock step), so
+// the head check passes, the scan pages nothing, and the span COUNT never
+// ran. The terminal empty page verifies the whole outstanding range
+// exactly: rows missing from the promised tail fail loudly, never a done
+// that silently omits them.
+func TestListenReplayMissingTailFailsLoudly(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir, WithChangeRetention(40*time.Millisecond))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	ctx := context.Background()
+	if err := st.CreateNamespace(ctx, "test", [16]byte{}); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	if _, err := st.CreateTable(ctx, "test", "notes", noteFields(), TableOpts{}, [16]byte{}); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	// Seq 1 is stamped 100ms AHEAD of the seed (a clock step): at prune time
+	// it is younger than the 2R deletion cutoff (survives) yet older than
+	// the R window (so the pruning reader's empty window roots its chain at
+	// the head, freeing seqs 2 and 3 for deletion behind it).
+	seedStampedChanges(t, st, "notes", []time.Time{time.Now().Add(100 * time.Millisecond), time.Now().Add(-200 * time.Millisecond), time.Now().Add(-200 * time.Millisecond)})
+
+	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
+	defer cancel()
+	time.Sleep(150 * time.Millisecond) // the session's chains expire; seqs 2-3 become prunable
+	if _, _, err := st.ChangesSince(ctx, "test", "", CursorBegin, [16]byte{}, nil, Incarnation{}, Page{}); err != nil {
+		t.Fatalf("changes_since: %v", err)
+	}
+
+	// The first page is short (one survivor) and the promised tail is gone:
+	// the page must say so instead of reporting the replay complete.
+	if _, _, _, err := replay.Next(ctx); !errors.Is(err, ErrCursorExpired) {
+		t.Fatalf("missing-tail Next = %v, want ErrCursorExpired — a pruned tail must fail loudly, not page short and report done", err)
+	}
+}
+
+// TestListenMintsOnFreshTime: the mint runs on the time it mints, not the
+// page's start — the read and the admission callbacks can span the chain's
+// retention cap, and a stale timestamp would keep the already-expired chain
+// and stamp born-dead cursors an immediate resume rejects.
+func TestListenMintsOnFreshTime(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir, WithChangeRetention(40*time.Millisecond))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	ctx := context.Background()
+	if err := st.CreateNamespace(ctx, "test", [16]byte{}); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	if _, err := st.CreateTable(ctx, "test", "notes", noteFields(), TableOpts{}, [16]byte{}); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	insertNotes(t, st, 2)
+
+	// Admission slower than the chain cap: the page starts before
+	// chain_start+2R and mints well past it.
+	slow := func(string) (*RowScope, Incarnation, bool) {
+		time.Sleep(60 * time.Millisecond)
+		return nil, Incarnation{}, true
+	}
+	replay, cancel, err := st.Listen(ctx, "test", "", CursorBegin, [16]byte{}, slow, func(ChangeRecord) {}, nil)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer cancel()
+	for _, rec := range drainReplay(t, replay) {
+		if _, _, err := st.ChangesSince(ctx, "test", "", rec.Cursor, [16]byte{}, nil, Incarnation{}, Page{}); err != nil {
+			t.Fatalf("cursor minted across the chain cap does not resolve: %v", err)
+		}
+	}
+}
