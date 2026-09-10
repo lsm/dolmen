@@ -12,10 +12,10 @@ import (
 // under the registered labels, so a drop or a same-name recreate committing
 // mid-replay can neither narrow the range nor mix a successor's records
 // into it (§9.3). The live half grows across the slices of the 6b stack:
-// the flag-only wake and the quiescing teardown (r6a), then the registry
-// join that orders replay against live commits (r6b); the fill pump that
-// pages the durable log into the session's queue, the drain that
-// delivers it, and the queue's bound follow — together they make the
+// the flag-only wake and the quiescing teardown (r6a), the registry join
+// that orders replay against live commits (r6b), and the fill pump that
+// pages the durable log into the session's queue (r6c); the drain that
+// delivers it and the queue's bound follow — together they make the
 // concatenation replay-then-live exactly-once.
 type listenSession struct {
 	s      *Store
@@ -46,6 +46,9 @@ type listenSession struct {
 	woken      bool           // the registry's flag: a commit landed; the pump clears it as it takes the work
 	pumps      sync.WaitGroup // the session's own goroutines; cancel waits it empty before returning
 	unregister func()         // leaves the commit registry; nil when the session never joined (the direct fixtures)
+
+	queue    []loggedChange // the interim queue: the fill pump's paged commits, awaiting the drain slice's delivery
+	liveRead int64          // the live half's durable-log position: everything ≤ it is queued
 
 	nextCursor      Cursor // the standing resume cursor, fixed at registration
 	replayExhausted bool   // a page reached the registration boundary: the replay is done (the final publish sets it)
@@ -83,6 +86,15 @@ func (sess *listenSession) end(cause error) {
 	if cause != nil {
 		sess.fireClosed(cause)
 	}
+}
+
+// isDead is the pump's between-batches check: one lock, no broadcast, so
+// a fill loop between pages observes a cancel without re-entering the
+// wait.
+func (sess *listenSession) isDead() bool {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.dead
 }
 
 // fireClosed invokes the terminal callback at most once, with the end's

@@ -1,16 +1,20 @@
 package store
 
 import (
+	"context"
+	"sync"
 	"testing"
 	"time"
 )
 
-// Slice 6b (r6a, r6b): the live half's scaffolding, then its registry
-// wiring. The observable contracts: the wake is flag-only (it runs on
-// committing writers' goroutines), cancel quiesces a session with a
-// parked pump — unregister, broadcast, wait — instead of blocking on
-// it, registration holds a registry entry for exactly the session's
-// life, and a real commit dispatches into the wake.
+// Slice 6b (r6a–r6c): the live half's scaffolding, its registry wiring,
+// then its producer. Commits wake the fill pump and the pump pages the
+// durable log into the session's queue; the drain that delivers the
+// queue and the bound that caps it land in the next slice. The pinned
+// contracts: the wake is flag-only, registration holds a registry entry
+// for exactly the session's life, the boundary holds against interim
+// commits, cancel releases an idle pump, and commits land in the queue
+// through the real write path.
 
 // TestListenWakeIsFlagOnly pins BOTH halves of the wake contract: it runs
 // on COMMITTING writers' goroutines, so it may only raise the flag and
@@ -122,5 +126,98 @@ func TestListenCommitRaisesWakeFlag(t *testing.T) {
 	defer sess.mu.Unlock()
 	if !sess.woken {
 		t.Fatal("a committed write left the wake flag unset — dispatch is not wired to the session")
+	}
+}
+
+// TestListenBoundaryHoldsAgainstCommits: a commit landing while the replay
+// is still draining is absorbed by the queue (the producer half's exactly-
+// once contribution): the replay still delivers exactly the backlog, the
+// boundary R fixed at registration — nothing the interim commit added leaks
+// into it (§6.2).
+func TestListenBoundaryHoldsAgainstCommits(t *testing.T) {
+	st := openChangeStore(t)
+	backlog := insertNotes(t, st, 3)
+
+	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
+	defer cancel()
+	replayed := drainReplay(t, replay)
+	if got := rowIDsOf(replayed); len(got) != 3 || got[0] != backlog.Ids[0] || got[2] != backlog.Ids[2] {
+		t.Fatalf("replay delivered rows %v, want the 3-record backlog %v", got, backlog.Ids)
+	}
+
+	// Commits after the drained boundary land in the queue, not the
+	// replay: the replay's range was fixed at registration, and a further
+	// Next reports the (unchanged) boundary.
+	insertNotes(t, st, 5)
+	records, _, done, err := replay.Next(context.Background())
+	if err != nil {
+		t.Fatalf("post-drain Next: %v", err)
+	}
+	if len(records) != 0 || !done {
+		t.Fatalf("post-drain Next = %d records, done=%v, want 0, true — the boundary held", len(records), done)
+	}
+}
+
+// TestListenCancelReleasesPump: cancel wakes an IDLE pump through the real
+// Listen path (the normal case — no commit ever arrived), waits it out,
+// and returns: the use-after-free rule from notify.go's listener contract,
+// and the exact shape of r5's review finding (end must broadcast before
+// the wait).
+func TestListenCancelReleasesPump(t *testing.T) {
+	st := openChangeStore(t)
+
+	_, cancel := listenOn(t, st, "", "", func(ChangeRecord) {}, nil)
+	// No commit, no wake: the pump sleeps in cond.Wait. cancel must wake
+	// it, not block on it.
+	done := make(chan struct{})
+	go func() {
+		cancel()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancel blocked on an idle pump — end() must broadcast before pumps.Wait")
+	}
+	cancel() // idempotent
+}
+
+// TestListenFillQueuesCommits pins the producer directly through the
+// session's queue: commits after registration land there through the real
+// write path — the wake, the fill's page of the durable log, and the
+// append — which is what a later drain delivers from.
+func TestListenFillQueuesCommits(t *testing.T) {
+	st := openChangeStore(t)
+	backlog := insertNotes(t, st, 3)
+
+	sess := &listenSession{
+		s: st, nsName: "test",
+		flight: make(chan struct{}, 1),
+	}
+	sess.cond = sync.NewCond(&sess.mu)
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("open test: %v", err)
+	}
+	sess.n = n
+	sess.liveRead = int64(len(backlog.Ids)) // past the backlog
+	sess.unregister = st.onCommit("test", sess.wake)
+	sess.pumps.Add(1)
+	go sess.fill()
+	defer sess.cancel()
+
+	insertNotes(t, st, 2)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		sess.mu.Lock()
+		got := len(sess.queue)
+		sess.mu.Unlock()
+		if got == 2 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("queue held %d records, want the 2 committed", got)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
