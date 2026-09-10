@@ -193,6 +193,11 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	// its boundary (next's replayDone publish), so a caller that never
 	// pages — or is still paging — never has a live record interleave into
 	// its page turns (§6.2's replay-then-live concatenation).
+	// The pumps own every parked cause from here on (flushParkedClose at
+	// their counted exits); before this point, end fires inline.
+	sess.mu.Lock()
+	sess.pumpsLaunched = true
+	sess.mu.Unlock()
 	sess.pumps.Add(2)
 	go sess.pump()  // pump, not fill: the terminal fires once, outside fill's loop
 	go sess.drain() // drain: delivery, gated on the replay's boundary call

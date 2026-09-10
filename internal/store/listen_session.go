@@ -61,8 +61,15 @@ type listenSession struct {
 	// pendingDrainClose is the queue-OWNED variant: a terminal whose
 	// already-queued prefix must deliver first, fired only by the drainer
 	// once the queue empties.
-	pendingClose      error // parked by end; fired by a pump's deferred flush
+	pendingClose      error // parked by end; fired by a pump's deferred flush (or inline on a never-launched session)
 	pendingDrainClose error // armed by the queue's owner; fired by the drainer at the empty queue
+
+	// pumpsLaunched is set once, under mu, at Listen's launch site: after
+	// it, the pumps' deferred flushes own every parked cause; before it
+	// (the direct fixtures, a session whose goroutines never started) no
+	// flush can ever run, so end fires inline — the direct-end path's
+	// fire contract holds either way.
+	pumpsLaunched bool
 
 	// firing is raised by fireClosed, under mu, immediately before the
 	// closedFn callback runs, and lowered once it returns: it brackets
@@ -127,7 +134,10 @@ func (sess *listenSession) cursor() Cursor {
 // quiescent exit (flushParkedClose), never inline on the end caller: a
 // terminal must not precede a record the session already handed out, and
 // the engine halves end sessions from mid-loop positions where a delivery
-// or a page can still be in flight. A nil cause is the caller's cancel:
+// or a page can still be in flight. The ONE exception is the
+// never-launched session (the direct fixtures): with no pump ever
+// reaching a deferred flush, the fire happens inline — nothing can be in
+// flight without a drain. A nil cause is the caller's cancel:
 // the caller already knows, and closed never fires for it (§6.2).
 // Idempotent; the first end wins. The broadcast is load-bearing for the
 // live half: a parked pump sleeps in cond.Wait holding nothing, and only
@@ -157,6 +167,18 @@ func (sess *listenSession) end(cause error) {
 	}
 	sess.ctxCancel() // the pumps' in-flight database work — cancel must not wait out a blocked read
 	sess.cond.Broadcast()
+	if cause != nil && !sess.pumpsLaunched {
+		// The never-launched session (the direct fixtures): no pump will
+		// ever reach a deferred flush, so the fire happens HERE — no
+		// delivery bracket can exist without a drain, and no page is in
+		// flight in the sequential fixture world. The first parked cause
+		// is the one that fires.
+		cause = sess.pendingClose
+		sess.pendingClose = nil
+		sess.mu.Unlock()
+		sess.fireClosed(cause)
+		return
+	}
 	sess.mu.Unlock()
 }
 
