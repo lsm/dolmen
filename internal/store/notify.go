@@ -338,32 +338,36 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	sess.mu.Lock()
 	resume := sess.nextCursor // the PRE-page boundary: what an omitted page must hand back
 	sess.mu.Unlock()
-	records, next, done, err := sess.page(ctx)
+	records, next, done, progress, err := sess.page(ctx)
 	sess.mu.Lock()
-	omit := sess.dead && len(records) > 0
-	if omit {
-		// Roll the standing cursor back with the return value: page's
-		// dead-guard cannot cover a cancellation landing between its
-		// publication and this check, and Resume must never expose a
-		// position past records the caller never received.
-		sess.nextCursor = resume
-	}
-	sess.mu.Unlock()
-	if omit {
-		// The omitted page's own cursor points PAST records the caller never
-		// receives — handing it back would teach a resume that skips them.
-		// The pre-page boundary is the honest position.
+	// Publish or drop the page's progress HERE, under one lock, after the
+	// omission decision is final: publishing inside page left a window
+	// where a concurrent Resume() observed the post-page cursor and the
+	// omission then rolled it back — a returned cursor cannot be retracted.
+	if sess.dead && len(records) > 0 {
+		// The page is omitted: nothing advances, and the standing cursor
+		// stays at the PRE-page boundary — the omitted page's own cursor
+		// points past records the caller never receives, and Resume must
+		// never teach that position.
+		sess.mu.Unlock()
 		return nil, resume, true, nil
 	}
+	sess.replayExhausted = progress.short
+	if progress.scannedLast > 0 {
+		sess.position = progress.scannedLast
+	}
+	sess.nextCursor = progress.next
+	sess.outstanding -= progress.consumed
+	sess.mu.Unlock()
 	return records, next, done, err
 }
 
-func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bool, error) {
+func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bool, pageProgress, error) {
 	sess.mu.Lock()
 	dead, exhausted := sess.dead, sess.replayExhausted
 	sess.mu.Unlock()
 	if dead || exhausted {
-		return nil, sess.cursor(), true, nil
+		return nil, sess.cursor(), true, pageProgress{}, nil
 	}
 
 	// The page read: (position, boundary] under the registration labels —
@@ -375,7 +379,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// read here would replay it too (§6.2's exactly-once).
 	tx, err := sess.n.rw.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, "", false, err
+		return nil, "", false, pageProgress{}, err
 	}
 	// The namespace's write pool is a single connection: a transaction that
 	// returns without committing or rolling back holds it, and every later
@@ -397,10 +401,10 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	if sess.position < sess.boundary {
 		cq, cargs := changeCountSQL(sess.position, sess.boundary, sess.feed)
 		if err = tx.QueryRowContext(ctx, cq, cargs...).Scan(&kept); err != nil {
-			return nil, "", false, err
+			return nil, "", false, pageProgress{}, err
 		}
 		if kept != sess.outstanding {
-			return nil, "", false, fmt.Errorf("listen replay: %w", ErrCursorExpired)
+			return nil, "", false, pageProgress{}, fmt.Errorf("listen replay: %w", ErrCursorExpired)
 		}
 	}
 	boundary := sess.boundary
@@ -432,7 +436,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		qerr = tx.Commit()
 	}
 	if qerr != nil {
-		return nil, "", false, qerr
+		return nil, "", false, pageProgress{}, qerr
 	}
 
 	// Admit outside the transaction, through the same live authorization
@@ -457,7 +461,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	}
 	if revoked {
 		sess.end(ErrListenRevoked)
-		return nil, sess.cursor(), true, nil
+		return nil, sess.cursor(), true, pageProgress{}, nil
 	}
 
 	// The mint runs on FRESH time, not the page's start: the read and the
@@ -467,7 +471,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// immediate resume rejected (chainFor rotates on the actual mint time).
 	records, next, merr := sess.mint(ctx, admitted, sess.position)
 	if merr != nil {
-		return nil, "", false, merr
+		return nil, "", false, pageProgress{}, merr
 	}
 
 	// Exhaustion keys on the SCANNED range, never on the admitted page: a
@@ -476,30 +480,33 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// on an empty admitted page would strand them behind a page the caller
 	// will never turn.
 	short := len(scanned) < MaxChangesPageLimit
-	sess.mu.Lock()
-	// A session that died under this page (the caller's cancel from another
-	// goroutine, an engine end) keeps its PRE-page standing cursor: next
-	// omits the records, and Resume must not teach a position past records
-	// the caller never received. The consumed count applies here too — only
-	// with progress that actually committed.
-	if !sess.dead {
-		sess.replayExhausted = short
-		if len(scanned) > 0 {
-			sess.position = scanned[len(scanned)-1].seq
-		}
-		sess.nextCursor = next
-		sess.outstanding -= consumed
+	// Page progress stays UNPUBLISHED here: a concurrent Resume() between
+	// this point and next()'s dead-check could observe a post-page cursor
+	// that the omission then rolls back — a returned cursor cannot be
+	// retracted. next() publishes (or drops) the page's progress under one
+	// lock, after the omission decision is final.
+	progress := pageProgress{short: short, next: next, consumed: consumed}
+	if len(scanned) > 0 {
+		progress.scannedLast = scanned[len(scanned)-1].seq
 	}
-	sess.mu.Unlock()
 	// A short scanned page with nothing to expose IS the boundary — the
 	// replay is done, and the live half (6b's next change) takes over from
 	// here. A short page with records reports done=false (the final
 	// records; the FOLLOWING call reports the boundary, §6.2), and a full
 	// page pages on — even one the filter emptied.
 	if short && len(records) == 0 {
-		return nil, next, true, nil
+		return nil, next, true, progress, nil
 	}
-	return records, next, false, nil
+	return records, next, false, progress, nil
+}
+
+// pageProgress is a completed page's unpublished session advance, applied
+// by next() only when the page is delivered.
+type pageProgress struct {
+	short       bool
+	scannedLast int64
+	next        Cursor
+	consumed    int64
 }
 
 // admit is the live per-event authorization gate (§6.2): it runs BEFORE a
