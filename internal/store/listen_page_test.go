@@ -349,3 +349,28 @@ func TestListenReplayMissingTailFailsLoudly(t *testing.T) {
 		t.Fatalf("missing-tail Next = %v, want ErrCursorExpired — a pruned tail must fail loudly, not report done", err)
 	}
 }
+
+// TestListenChainRotatesBeforeCap: a session held past its chain's absolute
+// cap (chain_start + 2R, §9.3) rotates to a fresh chain rooted at the
+// current position — tokens minted on a capped chain are born expired, and
+// every cursor the replay delivers must stay resolvable.
+func TestListenChainRotatesBeforeCap(t *testing.T) {
+	st := openStampedStore(t)
+	ctx := context.Background()
+	insertNotes(t, st, 2)
+
+	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
+	defer cancel()
+
+	time.Sleep(150 * time.Millisecond) // past chain_start + 2R; no prune ran
+	replayed := drainReplay(t, replay)
+	if len(replayed) != 2 {
+		t.Fatalf("replay delivered %d records, want the 2-record backlog", len(replayed))
+	}
+	for _, rec := range replayed {
+		if _, _, err := st.ChangesSince(ctx, "test", "", rec.Cursor, [16]byte{}, nil, Incarnation{}, Page{}); err != nil {
+			t.Fatalf("the delivered cursor no longer resolves (a capped chain minted a dead token): %v", err)
+		}
+	}
+	cancel()
+}

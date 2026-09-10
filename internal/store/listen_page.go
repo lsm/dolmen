@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -96,22 +97,13 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// (holes included — pruning deletes by age, and clock-stepped at stamps
 	// leave gaps that a begin registration legitimately replays around),
 	// and each page verifies the log still holds exactly that many rows in
-	// its outstanding range BEFORE scanning — a span count over the
-	// already-pruned log would be tautological (scan and count see the same
-	// shrunken world), so only the full tail reveals a pre-scan deletion in
-	// time to stop the page from serving records past the hole. Loss is the
-	// cursor-expiry teaching error for the caller to reconnect from its
+	// its outstanding range BEFORE scanning (verifyRetained — the full
+	// tail, never a span the scan itself would make tautological). Loss is
+	// the cursor-expiry teaching error for the caller to reconnect from its
 	// last delivered cursor — never a short page reported as done, which
 	// would silently omit records the boundary promised.
-	if sess.position < sess.boundary {
-		var tail int64
-		cq, cargs := changeCountSQL(sess.position, sess.boundary, sess.feed)
-		if err := tx.QueryRowContext(ctx, cq, cargs...).Scan(&tail); err != nil {
-			return nil, "", false, pageProgress{}, err
-		}
-		if tail != sess.outstanding {
-			return nil, "", false, pageProgress{}, fmt.Errorf("listen replay: %w", ErrCursorExpired)
-		}
+	if err := sess.verifyRetained(ctx, tx, sess.position, sess.boundary, sess.outstanding); err != nil {
+		return nil, "", false, pageProgress{}, err
 	}
 	boundary := sess.boundary
 	query, args := changePageSQL(sess.position, &boundary, MaxChangesPageLimit, sess.feed)
@@ -194,16 +186,11 @@ func (sess *listenSession) mint(ctx context.Context, admitted []loggedChange, re
 	// cursors resolve over a gutted log; the recount, bounded to exactly
 	// what the page consumed, fails loudly instead.
 	if scannedCount > 0 {
-		cq, cargs := changeCountSQL(resume, scannedLast, sess.feed)
-		var kept int64
-		if err := tx.QueryRowContext(ctx, cq, cargs...).Scan(&kept); err != nil {
+		if err := sess.verifyRetained(ctx, tx, resume, scannedLast, int64(scannedCount)); err != nil {
 			return nil, "", err
 		}
-		if kept != int64(scannedCount) {
-			return nil, "", fmt.Errorf("listen replay: %w", ErrCursorExpired)
-		}
 	}
-	records, next, err := mintChangeCursors(ctx, tx, now, admitted, resume, "", sess.table, sess.chain)
+	records, next, err := mintChangeCursors(ctx, tx, now, admitted, resume, "", sess.table, sess.chainFor(now, resume))
 	if err != nil {
 		return nil, "", err
 	}
@@ -237,4 +224,88 @@ func (sess *listenSession) lockNext(ctx context.Context) error {
 }
 
 // flightToken is the single flight permit (a value, not a constant: struct{}{} is not a constant expression).
+// chainFor follows below (r5).
 var flightToken = struct{}{}
+
+// chainFor returns the chain this mint rides. A token's life is bounded
+// twice — its own issued_at + R, and its chain's absolute cap
+// chain_start + 2R (§9.3) — so a mint in the chain's SECOND R stamps
+// tokens whose chain cap lands before their own expiry: valid at the
+// check, dead shortly after (and the mint's own work — up to a page of
+// token inserts, the prune, the commit — can itself cross the cap between
+// the check and the insertions). The rotation boundary is therefore the
+// chain's FIRST R: every mint rides a chain with at least R of headroom,
+// exactly the token's own TTL, so the chain cap never expires a token
+// before its own expiry does. A fresh chain roots at the current position,
+// exactly the chain a client resubscribing from here starts itself: the
+// old backlog the cap exists to bound stays bounded, and every delivered
+// cursor stays resolvable for its full promised life. Retention 0 has no
+// caps and never rotates.
+//
+// While the replay is still draining, a rotation's origin floors at the
+// replay's outstanding position: a chain rooted at a later position would
+// let the same transaction's prune delete age-eligible records the replay
+// has not yet paged — silently shortening the gap-free resume the chain
+// exists to protect. Once the replay is exhausted the floor lifts; nothing
+// below the current position remains to protect.
+func (sess *listenSession) chainFor(now time.Time, resume int64) *cursorChain {
+	if sess.s.changeRetention <= 0 {
+		return sess.chain
+	}
+	rms := int64(sess.s.changeRetention / time.Millisecond)
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if now.UnixMilli() < sess.chain.Start+rms {
+		return sess.chain
+	}
+	origin := resume
+	if !sess.replayExhausted && sess.position < origin {
+		origin = sess.position
+	}
+	sess.chain = newCursorChain(now, origin)
+	return sess.chain
+}
+
+// verifyRetained recounts, in one query, whether the log still holds
+// what was promised (the registration baseline, or a page's consumed
+// span). Three facts about its cost and design, recorded where the next
+// reader lives:
+//
+//  1. COST — the count is O(rows in (from, to]) and runs in the
+//     namespace's single-connection write transaction: an entry check
+//     walks the full outstanding tail per page (quadratic over the
+//     replay), and the registration baseline adds one more full scan.
+//     Preview posture: correctness over scan cost (the engineering-preview
+//     goal defers performance), and the quadratic term is bounded by the
+//     retention window and page count.
+//
+//  2. WHY NOT BOUNDED — recounting only a span the caller is about to
+//     scan is TAUTOLOGICAL for deletions that predate the scan (scan and
+//     count see the same already-pruned log), so a pre-scan deletion in
+//     the unconsumed tail goes undetected until pages have served records
+//     past the hole. The bounded variant was implemented and reviewed on
+//     the predecessor stack and proved unsound (interior-hole and
+//     exact-tile omissions); only the full tail (or a consumed span
+//     revalidated in a LATER transaction than its scan — the mint's
+//     recheck) detects loss soundly on this storage shape.
+//
+//  3. THE O(1) PATH — a deletion-generation column on _dolmen_changes
+//     (bumped by pruneChanges) would make loss detection a single
+//     generation comparison per page: registration records the
+//     generation, each page verifies it unchanged. A schema change, so a
+//     future slice of its own (demand-gated, recorded on issue #189) —
+//     not a correctness hotfix here.
+func (sess *listenSession) verifyRetained(ctx context.Context, tx *sql.Tx, from, to, promised int64) error {
+	if from >= to || promised == 0 {
+		return nil
+	}
+	cq, cargs := changeCountSQL(from, to, sess.feed)
+	var kept int64
+	if err := tx.QueryRowContext(ctx, cq, cargs...).Scan(&kept); err != nil {
+		return err
+	}
+	if kept != promised {
+		return fmt.Errorf("listen replay: %w", ErrCursorExpired)
+	}
+	return nil
+}
