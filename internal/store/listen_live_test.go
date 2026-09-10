@@ -316,21 +316,26 @@ func TestListenOverflowCloseToleratesCancelFromCallback(t *testing.T) {
 	}
 }
 
-// TestListenCancelDuringFiringCallback: a cancel arriving while the
-// terminal callback's body is executing cannot join it — the callback may
-// itself be that cancel's caller, and the two are indistinguishable to
-// cancel. So cancel returns (notify.go's in-flight rule, applied to the
-// terminal callback: treat a firing closedFn as possibly running), and the
-// pump exits on its own once the callback returns — its remainder touches
-// nothing of the caller's. Everywhere OUTSIDE the callback body, cancel
-// still waits the pump out: the count spans the whole goroutine.
+// TestListenCancelDuringFiringCallback: the terminal callback parked
+// mid-body is the one window cancel cannot join — the callback may itself
+// be that cancel's caller, and the two are indistinguishable to cancel —
+// so an external cancel returns (notify.go's in-flight rule, applied to
+// the terminal callback: treat a firing closedFn as possibly running),
+// and the callback's own reentrant cancel returns too (the once body holds
+// no join, so it can never block behind a joiner). Everywhere outside the
+// callback body, cancel still waits the pump out: the count spans the
+// whole goroutine.
 func TestListenCancelDuringFiringCallback(t *testing.T) {
 	st := openChangeStore(t)
 	firing := make(chan struct{})
+	reentered := make(chan struct{})
 	release := make(chan struct{})
 
-	_, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, func(cause error) {
+	var cancel func()
+	_, cancel = listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, func(cause error) {
 		close(firing)
+		cancel() // reentrant, while parked below: must return — no self-wait
+		close(reentered)
 		<-release // park mid-callback: the one window cancel cannot join
 	})
 	defer cancel()
@@ -346,13 +351,18 @@ func TestListenCancelDuringFiringCallback(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		cancel()
+		cancel() // external, while the callback body is parked
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		t.Fatal("cancel blocked on a firing terminal callback — a goroutine cannot wait itself out")
+		t.Fatal("external cancel blocked on a firing terminal callback — the in-flight rule lets it return")
+	}
+	select {
+	case <-reentered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("reentrant cancel blocked inside the parked callback — the once body must hold no join")
 	}
 	close(release)
 	cancel() // idempotent

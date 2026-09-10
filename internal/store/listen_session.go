@@ -51,10 +51,12 @@ type listenSession struct {
 	queue    []loggedChange // the interim queue: the fill pump's paged commits, awaiting the drain slice's delivery
 	liveRead int64          // the live half's durable-log position: everything ≤ it is queued
 
-	// firing is set only while closedFn is executing (fireClosed): the one
-	// window in which a pump goroutine may be running caller code that
-	// calls cancel back. A goroutine cannot wait itself out, so cancel
-	// declines the join for exactly that window — see cancel.
+	// firing is raised by end, in the same critical section as dead (a
+	// terminal end WILL run closedFn), and lowered by fireClosed once the
+	// callback returns: it brackets the one window in which a pump goroutine
+	// may be running caller code that calls cancel back. A goroutine cannot
+	// wait itself out, so cancel declines the join for exactly that
+	// window — see cancel.
 	firing bool
 
 	// The pumps' scope: derived from the caller's context, canceled at
@@ -94,6 +96,15 @@ func (sess *listenSession) end(cause error) {
 		return
 	}
 	sess.dead = true
+	// The firing flag rides the SAME critical section as dead: a terminal
+	// end will run closedFn, so a cancel that can observe the session dead
+	// must observe the fire pending too — the join decision and callback
+	// entry are one atomic step. A window between them lets an external
+	// cancel decide to join a pump that then runs a callback reentering
+	// cancel, and the two wait on each other.
+	if cause != nil && sess.closedFn != nil {
+		sess.firing = true
+	}
 	sess.ctxCancel() // the pumps' in-flight database work — cancel must not wait out a blocked read
 	sess.cond.Broadcast()
 	sess.mu.Unlock()
@@ -114,9 +125,10 @@ func (sess *listenSession) isDead() bool {
 // fireClosed invokes the terminal callback at most once, with the end's
 // cause. The callback is caller code, so a panic is recovered and logged —
 // deliverCommit's write-path rule, applied here: the session is already
-// ending, and a panicking close must not take the process down. The firing
-// flag brackets the invocation: the callback may itself call cancel, which
-// can never wait out the goroutine running it.
+// ending, and a panicking close must not take the process down. end raised
+// the firing flag atomically with dead; fireClosed lowers it once the
+// callback returns — the callback may itself call cancel, which can never
+// wait out the goroutine running it.
 func (sess *listenSession) fireClosed(cause error) {
 	sess.closedOnce.Do(func() {
 		defer func() {
@@ -126,9 +138,6 @@ func (sess *listenSession) fireClosed(cause error) {
 			}
 		}()
 		if sess.closedFn != nil {
-			sess.mu.Lock()
-			sess.firing = true
-			sess.mu.Unlock()
 			defer func() {
 				sess.mu.Lock()
 				sess.firing = false
@@ -144,24 +153,27 @@ func (sess *listenSession) fireClosed(cause error) {
 // first (no new wakes can arrive), end's broadcast then reaches a parked
 // pump, and pumps.Wait returns only after the session's goroutines have
 // exited — the use-after-free rule from notify.go's listener contract.
-// The one thing it cannot join is a closedFn already executing: that
-// callback may be the very caller of cancel (closedFn carries no
-// reentrancy restriction), and no goroutine can wait itself out. So a
-// cancel landing while the callback body runs returns without it —
-// notify.go's in-flight rule, applied to the terminal callback: treat a
-// firing closedFn as possibly running, and know that once it returns, the
-// pump's remainder touches nothing of the caller's. Idempotent.
+// The join sits OUTSIDE the once, and must: a once body holding a pump
+// join would make a closedFn that reenters cancel block on the once
+// behind a joiner waiting on that very pump — the two wait on each other.
+// Out here the reentrant caller finds the once spent and, because the
+// callback body sets firing (atomically with dead, in end), skips the
+// join: no goroutine can wait itself out. The one residue is a cancel
+// landing while the callback body already runs — notify.go's in-flight
+// rule, applied to the terminal callback: treat a firing closedFn as
+// possibly running, and know that once it returns, the pump's remainder
+// touches nothing of the caller's. Idempotent.
 func (sess *listenSession) cancel() {
 	sess.cancelOnce.Do(func() {
 		if sess.unregister != nil {
 			sess.unregister()
 		}
 		sess.end(nil)
-		sess.mu.Lock()
-		firing := sess.firing
-		sess.mu.Unlock()
-		if !firing {
-			sess.pumps.Wait()
-		}
 	})
+	sess.mu.Lock()
+	firing := sess.firing
+	sess.mu.Unlock()
+	if !firing {
+		sess.pumps.Wait()
+	}
 }
