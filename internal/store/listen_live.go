@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-// The live half — slices 6b (r6a, r6b). Listen joins the commit registry
+// The live half — slices 6b (r6a–r6d). Listen joins the commit registry
 // BEFORE its boundary transaction (the register-and-replay ordering: a
 // record can only take seq > R by committing after that transaction —
 // SQLite serializes writers through the same rw connection, so its commit
@@ -21,9 +21,14 @@ import (
 // interim commits landing while the replay drains, plus live records
 // queued behind a slow client (§6.2). It is deliberately a multiple of
 // the page bound — a single bulk commit the size of a page must not
-// overflow a fresh subscriber — and only records the page actually
-// scanned ever occupy it, so it can be tripped by nothing but the
-// subscriber's own traffic.
+// overflow a fresh subscriber. What the page scanned occupies the queue,
+// visible or not: exact for table feeds (the SQL feed filter) and, while
+// auth is off, for namespace feeds too (liveAuthz is nil, nothing is
+// invisible) — so the bound is tripped by nothing but the subscriber's
+// own traffic. Once scoping lands, keeping foreign records OUT of the
+// queue is the admission gate's §6.2 promise (engine.go's Listen
+// contract), never the bound's — see TODO(9d) on the loss baseline for
+// the analogous pre-filter count.
 const listenQueueBound = 8 * MaxChangesPageLimit
 
 // ErrListenOverflow is the teaching close for a subscriber whose own
