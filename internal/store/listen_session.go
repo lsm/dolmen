@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"log/slog"
 	"sync"
 )
@@ -38,22 +37,14 @@ type listenSession struct {
 	chain       *cursorChain // the page chain every token the session mints rides
 	feed        *changeFeed  // nil on the namespace feed; the table feed's labels at registration
 
-	mu         sync.Mutex
-	nextCursor Cursor // the standing resume cursor, fixed at registration
-	dead       bool
+	mu              sync.Mutex
+	flight         chan struct{} // the single-flight permit for Next: one page+publish in the air at a time, acquired cancellably (listen_page.go)
+	nextCursor      Cursor // the standing resume cursor, fixed at registration
+	replayExhausted bool   // a page reached the registration boundary: the replay is done (the final publish sets it)
+	dead            bool
 
 	closedOnce sync.Once
 	cancelOnce sync.Once
-}
-
-// next pages the replay. In this slice the replay read is the registration
-// boundary itself: the standing cursor is already at R (bare and begin
-// starts resolve P, the boundary transaction fixes R, and the page read
-// that walks (P, R] lands with the replay-page slice of the 6b stack), so
-// the first call reports done with the standing cursor and the live half —
-// when it lands — takes over from here.
-func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bool, error) {
-	return nil, sess.cursor(), true, nil
 }
 
 // cursor returns the session's standing resume cursor — what a caller that
