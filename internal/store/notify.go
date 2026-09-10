@@ -400,23 +400,17 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// registration found. The loss check is a BASELINE, not span arithmetic:
 	// registration counted the rows the log actually retains in (P, R]
 	// (holes included — pruning deletes by age, and clock-stepped at stamps
-	// leave gaps that a begin registration legitimately replays around),
-	// and each page verifies the log still holds exactly that many rows in
-	// its outstanding range. Only rows removed AFTER the boundary was fixed
-	// count as loss, and that loss is the cursor-expiry teaching error for
-	// the caller to reconnect from its last delivered cursor — never a
-	// short page reported as done, which would silently omit records the
-	// boundary promised.
-	var kept int64
-	if sess.position < sess.boundary {
-		cq, cargs := changeCountSQL(sess.position, sess.boundary, sess.feed)
-		if err = tx.QueryRowContext(ctx, cq, cargs...).Scan(&kept); err != nil {
-			return nil, "", false, pageProgress{}, err
-		}
-		if kept != sess.outstanding {
-			return nil, "", false, pageProgress{}, fmt.Errorf("listen replay: %w", ErrCursorExpired)
-		}
-	}
+	// leave gaps that a begin registration legitimately replays around).
+	// The per-page verification is BOUNDED — a full-tail count on every
+	// page (and again in the mint) would revisit the whole outstanding
+	// range per page, quadratic over the replay and all of it on the
+	// namespace's single write connection — so a page verifies only what it
+	// consumed (below, against its scan), and the page that claims to reach
+	// the boundary — the SHORT scan, the replay's last word — carries the
+	// one full-tail recount as the backstop. Loss is the cursor-expiry
+	// teaching error for the caller to reconnect from its last delivered
+	// cursor — never a short page reported as done, which would silently
+	// omit records the boundary promised.
 	boundary := sess.boundary
 	query, args := changePageSQL(sess.position, &boundary, MaxChangesPageLimit, sess.feed)
 	rows, qerr := tx.QueryContext(ctx, query, args...)
@@ -432,14 +426,24 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// mint succeeds: a failed mint (the Next context expiring under a slow
 	// liveAuthz callback) leaves position and cursor at the pre-page
 	// boundary, and a prematurely reduced promise would make the retried
-	// page's recount read as loss.
-	var consumed int64
-	if qerr == nil && len(scanned) > 0 && sess.position < sess.boundary {
-		last := scanned[len(scanned)-1].seq
-		var remaining int64
-		cq, cargs := changeCountSQL(last, sess.boundary, sess.feed)
-		if qerr = tx.QueryRowContext(ctx, cq, cargs...).Scan(&remaining); qerr == nil {
-			consumed = kept - remaining
+	// page's recount read as loss. The consumed count is the SCAN ITSELF —
+	// every scanned feed row is consumed exactly once, no recount needed.
+	consumed := int64(len(scanned))
+	// The terminal page's full-tail BACKSTOP: a short scan claims the
+	// boundary, so this is the replay's last word — the one place the
+	// whole outstanding tail is recounted (per-page checks are bounded to
+	// the consumed span). A full page pages on; its tail is verified when
+	// the page that reaches the boundary runs this check.
+	short := len(scanned) < MaxChangesPageLimit
+	var scannedLast int64
+	if len(scanned) > 0 {
+		scannedLast = scanned[len(scanned)-1].seq
+	}
+	if qerr == nil && short && sess.position < sess.boundary {
+		var tail int64
+		cq, cargs := changeCountSQL(sess.position, sess.boundary, sess.feed)
+		if qerr = tx.QueryRowContext(ctx, cq, cargs...).Scan(&tail); qerr == nil && tail != sess.outstanding {
+			qerr = fmt.Errorf("listen replay: %w", ErrCursorExpired)
 		}
 	}
 	if qerr == nil {
@@ -479,7 +483,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// mint evaluated against the stale start would keep the already-expired
 	// chain and stamp every cursor on it — tokens born dead at return, an
 	// immediate resume rejected (chainFor rotates on the actual mint time).
-	records, next, merr := sess.mint(ctx, admitted, sess.position)
+	records, next, merr := sess.mint(ctx, admitted, sess.position, scannedLast, len(scanned))
 	if merr != nil {
 		return nil, "", false, pageProgress{}, merr
 	}
@@ -489,13 +493,12 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// boundary — visible records may still sit before it, and ending replay
 	// on an empty admitted page would strand them behind a page the caller
 	// will never turn.
-	short := len(scanned) < MaxChangesPageLimit
 	// Page progress stays UNPUBLISHED here: a concurrent Resume() between
 	// this point and next()'s dead-check could observe a post-page cursor
 	// that the omission then rolls back — a returned cursor cannot be
 	// retracted. next() publishes (or drops) the page's progress under one
 	// lock, after the omission decision is final.
-	progress := pageProgress{short: short, next: next, consumed: consumed}
+	progress := pageProgress{short: short, next: next, consumed: consumed, scannedCount: len(scanned)}
 	if len(scanned) > 0 {
 		progress.scannedLast = scanned[len(scanned)-1].seq
 	}
@@ -513,10 +516,11 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 // pageProgress is a completed page's unpublished session advance, applied
 // by next() only when the page is delivered.
 type pageProgress struct {
-	short       bool
-	scannedLast int64
-	next        Cursor
-	consumed    int64
+	short        bool
+	scannedLast  int64
+	scannedCount int
+	next         Cursor
+	consumed     int64
 }
 
 // admit is the live per-event authorization gate (§6.2): it runs BEFORE a
@@ -554,7 +558,7 @@ func (sess *listenSession) admit(rec ChangeRecord) (visible, revoked bool) {
 // pruning — matching ChangesSince's mint-then-prune shape so every replay
 // path refreshes chains identically. The next-page token is the replay's
 // standing resume cursor.
-func (sess *listenSession) mint(ctx context.Context, admitted []loggedChange, resume int64) ([]ChangeRecord, Cursor, error) {
+func (sess *listenSession) mint(ctx context.Context, admitted []loggedChange, resume int64, scannedLast int64, scannedCount int) ([]ChangeRecord, Cursor, error) {
 	tx, err := sess.n.rw.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, "", err
@@ -572,16 +576,16 @@ func (sess *listenSession) mint(ctx context.Context, admitted []loggedChange, re
 	// long — in that gap another reader's prune may have deleted the
 	// expired chain and the scanned, age-eligible rows. Minting tokens for
 	// deleted positions would hand the caller cached records whose cursors
-	// resolve over a gutted log; the recount (the promise, pre-consumption)
-	// fails loudly instead, and the caller reconnects from its last
-	// delivered cursor.
-	if sess.position < sess.boundary {
-		cq, cargs := changeCountSQL(sess.position, sess.boundary, sess.feed)
+	// resolve over a gutted log. The recheck is BOUNDED to what the page
+	// consumed — the full outstanding tail is counted once at registration
+	// and once at the terminal page, not per page.
+	if scannedCount > 0 {
+		cq, cargs := changeCountSQL(resume, scannedLast, sess.feed)
 		var kept int64
 		if err := tx.QueryRowContext(ctx, cq, cargs...).Scan(&kept); err != nil {
 			return nil, "", err
 		}
-		if kept != sess.outstanding {
+		if kept != int64(scannedCount) {
 			return nil, "", fmt.Errorf("listen replay: %w", ErrCursorExpired)
 		}
 	}
