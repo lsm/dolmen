@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -172,10 +171,11 @@ type listenSession struct {
 
 	// Registration-fixed replay state — immutable once Listen returns,
 	// except the chain, which rotates at its retention cap (chainFor).
-	position int64        // resume position P: the client's `from`, resolved
-	boundary int64        // registration boundary R: the replay is (P, R]
-	chain    *cursorChain // the page chain every token the session mints rides; guarded by mu (chainFor)
-	feed     *changeFeed  // nil on the namespace feed; the table feed's labels at registration
+	position    int64        // resume position P: the client's `from`, resolved
+	boundary    int64        // registration boundary R: the replay is (P, R]
+	outstanding int64        // loss-check baseline: rows the log retained in (P, R] AT REGISTRATION — holes included; the pages' promise
+	chain       *cursorChain // the page chain every token the session mints rides; guarded by mu (chainFor)
+	feed        *changeFeed  // nil on the namespace feed; the table feed's labels at registration
 
 	mu              sync.Mutex
 	replayExhausted bool
@@ -218,12 +218,18 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 		liveAuthz: liveAuthz, notify: notify, closedFn: closed,
 	}
 
-	now := time.Now()
 	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer tx.Rollback()
+	// now is captured AFTER the transaction is held: BeginTx can queue
+	// behind the namespace's single write connection for as long as its
+	// current holder takes, and a timestamp from before that wait would
+	// mint the standing cursor with issuance and chain start already stale
+	// — or refresh a presented token against a time from before it truly
+	// expired — leaving the returned resume cursor dead on arrival.
+	now := time.Now()
 
 	// The table feed's target, fixed at registration: the table exists now,
 	// and the labels pin WHICH lifetime the feed follows for its whole life —
@@ -272,6 +278,19 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	// serial-observability point (§0.6).
 	if sess.boundary, err = changeHead(ctx, tx); err != nil {
 		return nil, nil, err
+	}
+	// The loss-check baseline, in the same snapshot: the rows the log
+	// ACTUALLY retains in (P, R] — not the span arithmetic, because pruning
+	// deletes by age and clock-stepped stamps can leave holes a begin
+	// registration legitimately replays around (changeBegin selects the
+	// first retained record, whatever sits missing beside it). Only rows
+	// removed AFTER this count are the session's to lose.
+	if sess.position < sess.boundary {
+		if err = tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM _dolmen_changes WHERE seq > ? AND seq <= ?`,
+			sess.position, sess.boundary).Scan(&sess.outstanding); err != nil {
+			return nil, nil, err
+		}
 	}
 	// The standing resume cursor is fixed HERE, at registration, so a session
 	// that ends before its first Next — cancelled by its caller, or ended by
@@ -344,28 +363,25 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// write or replay against the namespace blocks indefinitely. The defer
 	// makes every path below release it (a no-op after Commit).
 	defer tx.Rollback()
-	// A replay must never SILENTLY shorten. The change log mints one row per
-	// record under the single rw writer, so seqs are contiguous at mint:
-	// every seq in (P, R] existed when registration read the boundary. Rows
-	// leave only through retention pruning, which deletes by AGE — and at
-	// stamps are not seq-ordered after a clock step (changeBegin's
-	// out-of-order rule), so deletions need not form an oldest-first prefix.
-	// Two checks hold the promise while the range is outstanding: the log's
-	// oldest remaining record must sit at P+1 (an empty log, or one pruned
-	// past P, has lost the head of the range), and — below, over the span
-	// this page just consumed — every seq must still be present (an interior
-	// hole where an aged middle record was pruned behind a future-stamped
-	// neighbor). Either failure is the cursor-expiry teaching error, for the
-	// caller to reconnect from its last delivered cursor — never a short
-	// page reported as done, which would silently omit records the boundary
-	// promised.
+	// A replay must never SILENTLY shorten — but it must equally accept what
+	// registration found. The loss check is a BASELINE, not span arithmetic:
+	// registration counted the rows the log actually retains in (P, R]
+	// (holes included — pruning deletes by age, and clock-stepped at stamps
+	// leave gaps that a begin registration legitimately replays around),
+	// and each page verifies the log still holds exactly that many rows in
+	// its outstanding range. Only rows removed AFTER the boundary was fixed
+	// count as loss, and that loss is the cursor-expiry teaching error for
+	// the caller to reconnect from its last delivered cursor — never a
+	// short page reported as done, which would silently omit records the
+	// boundary promised.
+	var kept int64
 	if sess.position < sess.boundary {
-		var oldest sql.NullInt64
 		if err = tx.QueryRowContext(ctx,
-			`SELECT MIN(seq) FROM _dolmen_changes`).Scan(&oldest); err != nil {
+			`SELECT COUNT(*) FROM _dolmen_changes WHERE seq > ? AND seq <= ?`,
+			sess.position, sess.boundary).Scan(&kept); err != nil {
 			return nil, "", false, err
 		}
-		if !oldest.Valid || oldest.Int64 > sess.position+1 {
+		if kept != sess.outstanding {
 			return nil, "", false, fmt.Errorf("listen replay: %w", ErrCursorExpired)
 		}
 	}
@@ -377,37 +393,20 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		scanned, qerr = scanChangePage(rows)
 		rows.Close()
 	}
-	// The interior-hole half of the expiry check above, over exactly the
-	// span this page consumed: the span was minted contiguously, so every
-	// seq in (position, last] must still be present — anything less means
-	// pruning deleted inside the promised range (a clock-stepped at stamp
-	// aged a middle record out behind fresher neighbors), and delivering
-	// the page would silently skip the missing seqs.
-	if qerr == nil && len(scanned) > 0 {
+	// The baseline's bookkeeping half: the rows this page consumed — the
+	// count measured at page start minus what remains past the page's last
+	// scanned seq, both inside this transaction's snapshot — come off the
+	// promise. A deletion anywhere in the outstanding range after
+	// registration shows up at the next page's baseline check as a
+	// shortfall (the terminal page's own entry check already covered the
+	// empty case).
+	if qerr == nil && len(scanned) > 0 && sess.position < sess.boundary {
 		last := scanned[len(scanned)-1].seq
-		var kept int64
+		var remaining int64
 		if qerr = tx.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM _dolmen_changes WHERE seq > ? AND seq <= ?`,
-			sess.position, last).Scan(&kept); qerr == nil && kept != last-sess.position {
-			qerr = fmt.Errorf("listen replay: %w", ErrCursorExpired)
-		}
-	}
-	// The missing-tail half: a SHORT scan is the replay's last word (this
-	// page or the following one reports done) only if the log itself still
-	// holds the whole outstanding range. For a table feed a short or empty
-	// page can be legitimate — the range's surviving rows belong to other
-	// tables — but rows MISSING from the span mean pruning deleted the
-	// promised tail out from under the replay (every outstanding record
-	// aged behind a future-stamped survivor at or before the position,
-	// where the head check above passes); the exact-span count decides
-	// between the two. Full scans page on and re-verify, so only the
-	// terminal page needs the whole-range check.
-	if qerr == nil && len(scanned) < MaxChangesPageLimit && sess.position < sess.boundary {
-		var kept int64
-		if qerr = tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM _dolmen_changes WHERE seq > ? AND seq <= ?`,
-			sess.position, sess.boundary).Scan(&kept); qerr == nil && kept != sess.boundary-sess.position {
-			qerr = fmt.Errorf("listen replay: %w", ErrCursorExpired)
+			last, sess.boundary).Scan(&remaining); qerr == nil {
+			sess.outstanding -= kept - remaining
 		}
 	}
 	if qerr == nil {
@@ -452,18 +451,24 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		return nil, "", false, merr
 	}
 
-	sess.mu.Lock()
 	// Exhaustion keys on the SCANNED range, never on the admitted page: a
 	// full page whose every record the authorization filtered out is not the
 	// boundary — visible records may still sit before it, and ending replay
 	// on an empty admitted page would strand them behind a page the caller
 	// will never turn.
 	short := len(scanned) < MaxChangesPageLimit
-	sess.replayExhausted = short
-	if len(scanned) > 0 {
-		sess.position = scanned[len(scanned)-1].seq
+	sess.mu.Lock()
+	// A session that died under this page (the caller's cancel from another
+	// goroutine, an engine end) keeps its PRE-page standing cursor: next
+	// omits the records, and Resume must not teach a position past records
+	// the caller never received.
+	if !sess.dead {
+		sess.replayExhausted = short
+		if len(scanned) > 0 {
+			sess.position = scanned[len(scanned)-1].seq
+		}
+		sess.nextCursor = next
 	}
-	sess.nextCursor = next
 	sess.mu.Unlock()
 	// A short scanned page with nothing to expose IS the boundary — the
 	// replay is done, and the live half (6b's next change) takes over from

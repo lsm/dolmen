@@ -602,3 +602,50 @@ func TestListenMintsOnFreshTime(t *testing.T) {
 		}
 	}
 }
+
+// TestListenBeginAcceptsPreExistingGaps: the loss check is a BASELINE, not
+// span arithmetic. A clock step can leave a hole BEFORE registration (a
+// future-stamped survivor beside aged neighbors, pruned by a reader whose
+// chain roots past them); a begin registration selects the first retained
+// record and legitimately replays AROUND that hole — every retained record
+// in (P, R] delivers, no teaching error, because only rows removed AFTER
+// the boundary was fixed are the session's to lose.
+func TestListenBeginAcceptsPreExistingGaps(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir, WithChangeRetention(40*time.Millisecond))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	ctx := context.Background()
+	if err := st.CreateNamespace(ctx, "test", [16]byte{}); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	if _, err := st.CreateTable(ctx, "test", "notes", noteFields(), TableOpts{}, [16]byte{}); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	// Seq 1 is stamped an hour ahead and seq 4 a beat ahead (both survive the
+	// prune and sit in the retention window); seqs 2 and 3 are aged. A bare
+	// reader after the chains expire roots
+	// its chain at the head, freeing seqs 2 and 3 for deletion behind the
+	// future-stamped survivor — a pre-existing hole between 1 and 4.
+	seedStampedChanges(t, st, "notes", []time.Time{
+		time.Now().Add(time.Hour),
+		time.Now().Add(-200 * time.Millisecond),
+		time.Now().Add(-200 * time.Millisecond),
+		time.Now().Add(200 * time.Millisecond),
+	})
+	time.Sleep(150 * time.Millisecond)
+	if _, _, err := st.ChangesSince(ctx, "test", "", "", [16]byte{}, nil, Incarnation{}, Page{}); err != nil {
+		t.Fatalf("changes_since: %v", err)
+	}
+
+	// begin registration: P floors at the first retained record (seq 1),
+	// the hole at 2-3 sits INSIDE (P, R], and the replay must deliver
+	// exactly the retained rows around it.
+	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
+	defer cancel()
+	if got := rowIDsOf(drainReplay(t, replay)); len(got) != 2 || got[0] != 1 || got[1] != 4 {
+		t.Fatalf("gap-tolerant replay delivered %v, want the retained rows [1 4] around the pre-existing hole", got)
+	}
+}
