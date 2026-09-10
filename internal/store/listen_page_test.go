@@ -305,13 +305,13 @@ func TestListenReplayOutlivesRetention(t *testing.T) {
 // hole before the page serves past it.
 func TestListenReplayInteriorHoleFailsLoudly(t *testing.T) {
 	st := openStampedStore(t)
-	// Seq 1 is stamped 100ms ahead (survives every prune, in-window); seqs
-	// 2 and 3 are aged. A bare reader roots its fresh chain at the head,
-	// freeing seqs 2-3 for deletion behind the future-stamped survivor.
+	// Seqs 1 and 3 are stamped ahead (survive every prune, in-window); only
+	// the MIDDLE seq 2 is aged. A bare reader's prune deletes exactly seq 2,
+	// leaving surviving rows on both sides — the interior-hole shape.
 	seedStampedChanges(t, st, "notes", []time.Time{
 		time.Now().Add(100 * time.Millisecond),
 		time.Now().Add(-200 * time.Millisecond),
-		time.Now().Add(-200 * time.Millisecond),
+		time.Now().Add(100 * time.Millisecond),
 	})
 
 	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)

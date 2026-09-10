@@ -150,7 +150,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	short := len(scanned) < MaxChangesPageLimit
 	// Page progress stays UNPUBLISHED here — next() applies it after the
 	// omission decision is final.
-	progress := pageProgress{short: short, next: next, consumed: consumed, scannedLast: mLast, scannedCount: len(scanned)}
+	progress := pageProgress{short: short, next: next, consumed: consumed, scannedLast: mLast}
 	// A short scanned page with nothing to expose IS the boundary — the
 	// replay is done, and the live half (a later slice) takes over from
 	// here. A short page with records reports done=false (the final
@@ -165,11 +165,10 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 // pageProgress is a completed page's unpublished session advance, applied
 // by next() only when the page is delivered.
 type pageProgress struct {
-	short        bool
-	scannedLast  int64
-	scannedCount int
-	next         Cursor
-	consumed     int64
+	short       bool
+	scannedLast int64
+	next        Cursor
+	consumed    int64
 }
 
 // mint writes one transaction of cursor mints plus opportunistic retention
@@ -187,6 +186,23 @@ func (sess *listenSession) mint(ctx context.Context, admitted []loggedChange, re
 	// connection, and stamps from before the wait would hand the caller
 	// cursors whose issuance is already expired.
 	now := time.Now()
+	// The consumed span REVALIDATED here, under the mint's own write lock:
+	// the page's entry check verified the full tail in its read
+	// transaction, but the mint runs in a LATER one — a queued writer's
+	// prune can land in the gap and delete rows this page scanned. Minting
+	// tokens for deleted positions would hand the caller records whose
+	// cursors resolve over a gutted log; the recount, bounded to exactly
+	// what the page consumed, fails loudly instead.
+	if scannedCount > 0 {
+		cq, cargs := changeCountSQL(resume, scannedLast, sess.feed)
+		var kept int64
+		if err := tx.QueryRowContext(ctx, cq, cargs...).Scan(&kept); err != nil {
+			return nil, "", err
+		}
+		if kept != int64(scannedCount) {
+			return nil, "", fmt.Errorf("listen replay: %w", ErrCursorExpired)
+		}
+	}
 	records, next, err := mintChangeCursors(ctx, tx, now, admitted, resume, "", sess.table, sess.chain)
 	if err != nil {
 		return nil, "", err
