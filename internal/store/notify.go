@@ -401,16 +401,26 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// registration counted the rows the log actually retains in (P, R]
 	// (holes included — pruning deletes by age, and clock-stepped at stamps
 	// leave gaps that a begin registration legitimately replays around).
-	// The per-page verification is BOUNDED — a full-tail count on every
-	// page (and again in the mint) would revisit the whole outstanding
-	// range per page, quadratic over the replay and all of it on the
-	// namespace's single write connection — so a page verifies only what it
-	// consumed (below, against its scan), and the page that claims to reach
-	// the boundary — the SHORT scan, the replay's last word — carries the
-	// one full-tail recount as the backstop. Loss is the cursor-expiry
+	// Each page verifies the baseline BEFORE scanning: a span count over
+	// the already-pruned log is tautological (scan and count see the same
+	// shrunken world), so only the full outstanding tail reveals a
+	// pre-scan deletion in time to stop the page from serving records
+	// past a hole. The mint then re-verifies the consumed span atomically
+	// with minting (the admission-gap hazard). Loss is the cursor-expiry
 	// teaching error for the caller to reconnect from its last delivered
 	// cursor — never a short page reported as done, which would silently
-	// omit records the boundary promised.
+	// omit records the boundary promised. The full-tail count per page is
+	// the honest cost of that guarantee on this storage shape.
+	if sess.position < sess.boundary {
+		var tail int64
+		cq, cargs := changeCountSQL(sess.position, sess.boundary, sess.feed)
+		if err = tx.QueryRowContext(ctx, cq, cargs...).Scan(&tail); err != nil {
+			return nil, "", false, pageProgress{}, err
+		}
+		if tail != sess.outstanding {
+			return nil, "", false, pageProgress{}, fmt.Errorf("listen replay: %w", ErrCursorExpired)
+		}
+	}
 	boundary := sess.boundary
 	query, args := changePageSQL(sess.position, &boundary, MaxChangesPageLimit, sess.feed)
 	rows, qerr := tx.QueryContext(ctx, query, args...)
@@ -429,22 +439,11 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// page's recount read as loss. The consumed count is the SCAN ITSELF —
 	// every scanned feed row is consumed exactly once, no recount needed.
 	consumed := int64(len(scanned))
-	// The terminal page's full-tail BACKSTOP: a short scan claims the
-	// boundary, so this is the replay's last word — the one place the
-	// whole outstanding tail is recounted (per-page checks are bounded to
-	// the consumed span). A full page pages on; its tail is verified when
-	// the page that reaches the boundary runs this check.
+	// The page's shape, kept for the progress record below.
 	short := len(scanned) < MaxChangesPageLimit
 	var scannedLast int64
 	if len(scanned) > 0 {
 		scannedLast = scanned[len(scanned)-1].seq
-	}
-	if qerr == nil && short && sess.position < sess.boundary {
-		var tail int64
-		cq, cargs := changeCountSQL(sess.position, sess.boundary, sess.feed)
-		if qerr = tx.QueryRowContext(ctx, cq, cargs...).Scan(&tail); qerr == nil && tail != sess.outstanding {
-			qerr = fmt.Errorf("listen replay: %w", ErrCursorExpired)
-		}
 	}
 	if qerr == nil {
 		qerr = tx.Commit()
