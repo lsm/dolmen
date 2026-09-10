@@ -352,6 +352,16 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		sess.mu.Unlock()
 		return nil, resume, true, nil
 	}
+	if err != nil || progress.next == "" {
+		// The page did not COMPLETE (a canceled Next context, a mint
+		// failure, the teaching expiry, revocation, or an early exhausted
+		// entry): its progress is a zero value, and publishing it would
+		// wipe the standing cursor with "" — a later Resume() would teach
+		// a bare-head restart that skips the entire undelivered backlog.
+		// State stays at the last completed page.
+		sess.mu.Unlock()
+		return records, next, done, err
+	}
 	sess.replayExhausted = progress.short
 	if progress.scannedLast > 0 {
 		sess.position = progress.scannedLast
