@@ -261,8 +261,14 @@ func (s *Store) CreateNamespace(ctx context.Context, nsName string, parentNsGen 
 		return err
 	}
 	// A cached entry here is stale (its file was removed out-of-band); evict
-	// it so lockedNS initializes the fresh file instead of serving dead pools.
+	// it so lockedNS initializes the fresh file instead of serving dead
+	// pools, and wake the namespace's live sessions — an idle predecessor
+	// session's pools just died, and while the successor's first commit
+	// would wake it anyway, the session must end against its dead binding
+	// NOW (a predecessor's stream never follows into the successor, §9.3)
+	// rather than sleeping until traffic happens to arrive.
 	s.evict(nsName)
+	s.wakeListenSessions(nsName)
 	if _, err := s.lockedNS(nsName); err != nil {
 		// Un-reserve so a failed init doesn't wedge the name behind a
 		// zero-byte file.

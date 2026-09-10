@@ -216,7 +216,8 @@ type listenSession struct {
 	replayExhausted bool
 	nextCursor      Cursor
 	dead            bool
-	pendingClose    error // a close waiting on the queue to drain (revocation with an admitted live prefix)
+	pendingClose    error // a terminal parked until its serialization point (below): fired from a pump's quiescent exit
+	replayActive    bool  // a replay page is in flight: a parked close must not cut past it
 
 	closedOnce sync.Once
 	cancelOnce sync.Once
@@ -405,6 +406,7 @@ func (sess *listenSession) wake(table string, changes ChangeRange) {
 // and any fill failure.
 func (sess *listenSession) fill() {
 	defer sess.pumps.Done()
+	defer sess.flushParkedClose()
 	defer sess.recoverPump("fill")
 	for {
 		sess.mu.Lock()
@@ -667,6 +669,7 @@ func (sess *listenSession) admit(rec ChangeRecord) (visible, revoked bool) {
 // precedes a record the session already admitted.
 func (sess *listenSession) drain() {
 	defer sess.pumps.Done()
+	defer sess.flushParkedClose()
 	defer sess.recoverPump("drain")
 	for {
 		sess.mu.Lock()
@@ -680,6 +683,11 @@ func (sess *listenSession) drain() {
 		if len(sess.queue) == 0 {
 			cause := sess.pendingClose
 			sess.mu.Unlock()
+			// end() is idempotent-safe here: the cause is already parked, so
+			// this only flips dead and lets the deferred flushParkedClose
+			// fire it from this goroutine's quiescent exit — after any
+			// in-flight notify returned, and waiting out an active replay
+			// page.
 			sess.end(cause)
 			return
 		}
@@ -715,7 +723,23 @@ func (sess *listenSession) recoverPump(half string) {
 // revocation: the closed callback has already fired, and nothing may be
 // exposed after it (§6.2); the omitted records re-deliver on the caller's
 // reconnect from its last cursor.
+// next marks the page in flight and defers to page: a terminal parked while
+// the page runs (an overflow, a dropped feed target — end() from either
+// pump) waits for the page instead of cutting past it, so closed never
+// precedes records this call is about to expose (§6.2's exposure rule).
 func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bool, error) {
+	sess.mu.Lock()
+	sess.replayActive = true
+	sess.mu.Unlock()
+	records, next, done, err := sess.page(ctx)
+	sess.mu.Lock()
+	sess.replayActive = false
+	sess.cond.Broadcast()
+	sess.mu.Unlock()
+	return records, next, done, err
+}
+
+func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bool, error) {
 	sess.mu.Lock()
 	dead, exhausted := sess.dead, sess.replayExhausted
 	sess.mu.Unlock()
@@ -844,16 +868,42 @@ func (sess *listenSession) end(cause error) {
 		return
 	}
 	sess.dead = true
+	if cause != nil && sess.pendingClose == nil {
+		sess.pendingClose = cause
+	}
 	sess.cond.Broadcast()
 	sess.mu.Unlock()
-	if cause == nil {
-		return
-	}
+}
+
+// fireClosed invokes the terminal callback at most once, with the parked
+// cause.
+func (sess *listenSession) fireClosed(cause error) {
 	sess.closedOnce.Do(func() {
 		if sess.closedFn != nil {
 			sess.closedFn(cause)
 		}
 	})
+}
+
+// flushParkedClose fires a parked terminal from a pump's exit path, once no
+// replay page is in flight. The park is the exposure rule's serialization
+// point (§6.2): closed must never precede a record the session already
+// handed out, and a page minted while the session was ending may still be
+// returning — the parked close waits for the page rather than cutting past
+// it, and an in-flight notify has returned before its pump reaches this
+// deferred flush. The FIRST cause parked wins; later ends are already
+// absorbed by the dead flag.
+func (sess *listenSession) flushParkedClose() {
+	sess.mu.Lock()
+	for sess.replayActive {
+		sess.cond.Wait()
+	}
+	cause := sess.pendingClose
+	sess.pendingClose = nil
+	sess.mu.Unlock()
+	if cause != nil {
+		sess.fireClosed(cause)
+	}
 }
 
 // cancel is the returned teardown: it unregisters the listener, ends the
