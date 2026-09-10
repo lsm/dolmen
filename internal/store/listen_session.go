@@ -168,13 +168,19 @@ func (sess *listenSession) end(cause error) {
 	sess.ctxCancel() // the pumps' in-flight database work — cancel must not wait out a blocked read
 	sess.cond.Broadcast()
 	if cause != nil && !sess.pumpsLaunched {
-		// The never-launched session (the direct fixtures): no pump will
-		// ever reach a deferred flush, so the fire happens HERE — no
-		// delivery bracket can exist without a drain, and no page is in
-		// flight in the sequential fixture world. The first parked cause
-		// is the one that fires.
+		// The not-via-Listen world: no production launch marked the
+		// session, so no pump's deferred flush is guaranteed — the fire
+		// happens HERE. It still honors the exposure rule: a
+		// directly-launched pump (a fixture that skipped Listen) can be
+		// mid-delivery or mid-page, so the inline fire waits the same
+		// brackets the flush does; the genuinely never-launched session
+		// has no drain and the wait is a no-op. The first parked cause is
+		// the one that fires.
 		cause = sess.pendingClose
 		sess.pendingClose = nil
+		for sess.replayActive || sess.notifyActive {
+			sess.cond.Wait()
+		}
 		sess.mu.Unlock()
 		sess.fireClosed(cause)
 		return
@@ -189,13 +195,18 @@ func (sess *listenSession) end(cause error) {
 // before its pump reaches this deferred flush, and the other pump's flush
 // waits out the delivery flag — and a page minted while the session was
 // ending may still be returning, so the parked close waits for it rather
-// than cutting past it. The FIRST cause parked wins; later ends are
-// already absorbed by the dead flag. The flush runs on the counted pump
-// — before its pumps.Done — so cancel either waits out the whole fire
-// or, inside the callback itself, declines the join on the firing flag.
+// than cutting past it. The wait exists to serialize the FIRE: with
+// nothing parked (a caller-initiated cancel arms no cause) it is skipped,
+// keeping teardown off unrelated replay work — a Next blocked on its own
+// context behind the namespace's write connection must not hang cancel
+// when no callback is owed (codex P2 on #229, thread r3984531845). The
+// FIRST cause parked wins; later ends are already absorbed by the dead
+// flag. The flush runs on the counted pump — before its pumps.Done — so
+// cancel either waits out the whole fire or, inside the callback itself,
+// declines the join on the firing flag.
 func (sess *listenSession) flushParkedClose() {
 	sess.mu.Lock()
-	for sess.replayActive || sess.notifyActive {
+	for sess.pendingClose != nil && (sess.replayActive || sess.notifyActive) {
 		sess.cond.Wait()
 	}
 	cause := sess.pendingClose

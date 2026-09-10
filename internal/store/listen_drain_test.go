@@ -410,6 +410,23 @@ func TestListenExternalCancelJoinsPendingFire(t *testing.T) {
 	}()
 	<-inFlight // the delivery is parked mid-notify
 	close(goEnd)
+	// The engine end must WIN the dead race: once it has flipped dead,
+	// its cause is parked (atomically with the flip) and a cancel can no
+	// longer suppress the fire with its own nil-cause end. Waiting on
+	// dead here makes the cancel's arrival deterministic.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		sess.mu.Lock()
+		died := sess.dead
+		sess.mu.Unlock()
+		if died {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the engine end never landed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	cancelReturned := make(chan struct{})
 	go func() {
@@ -458,7 +475,10 @@ func TestListenDrainFiresPendingDrainCloseAtEmptyQueue(t *testing.T) {
 	sess.s, sess.n = st, n
 	sess.chain = newCursorChain(time.Now(), 0)
 	sess.notify = func(r ChangeRecord) { delivered <- r.RowID }
-	sess.queue = []loggedChange{{seq: 1}, {seq: 2}}
+	sess.queue = []loggedChange{
+		{seq: 1, rec: ChangeRecord{RowID: 1}},
+		{seq: 2, rec: ChangeRecord{RowID: 2}},
+	}
 	sess.replayDone = true
 	sess.pendingDrainClose = ErrListenLifetimeEnded // the armer's stand-in; the armer itself lands with Δ3
 	sess.pumps.Add(1)
