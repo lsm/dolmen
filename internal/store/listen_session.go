@@ -83,10 +83,10 @@ type listenSession struct {
 	// a live record never interleaves into a caller's page turn.
 	// notifyActive brackets a delivery's mint-and-notify span: the
 	// parked-close machinery (the next slice) waits it out rather than
-	// firing a terminal between a record and its notify, and cancel
-	// declines its quiescence join for exactly the bracket — notify is
-	// caller code that may reenter cancel, and no goroutine can wait
-	// itself out.
+	// firing a terminal between a record and its notify, and an external
+	// cancel's quiescence join spans it — the callback has returned
+	// before cancel does (notify itself carries the caller rule cancel
+	// documents: never cancel synchronously from inside it).
 	replayDone   bool
 	replayActive bool
 	notifyActive bool
@@ -190,24 +190,30 @@ func (sess *listenSession) fireClosed(cause error) {
 // cancel is the returned teardown: it ends the session without a closed
 // callback. The registry entry comes out first (no new wakes can arrive),
 // end's broadcast then reaches a parked pump, and when no terminal fire
-// and no delivery is pending pumps.Wait returns only after the session's
-// goroutines have exited — the use-after-free rule from notify.go's
-// listener contract. The join sits OUTSIDE the once, and must: a once
-// body holding a pump join would make a reentrant cancel block on the
-// once behind a joiner waiting on that very pump — the two wait on each
-// other. Out here the reentrant caller spends the once on teardown alone
-// — which never parks — or finds it spent, and skips the join: one of
-// the two no-self-wait windows is up and no goroutine can wait itself
-// out. The windows: firing — a terminal fire pending or in flight
-// (raised with dead in end, before the callback runs) — and notifyActive
-// — a delivery's mint-and-notify span, which runs notify, caller code
-// with the same reentrancy as closedFn (a subscriber unsubscribing on
-// the record that completes it is the natural callback). The residue,
-// then, is any cancel that observes either window — the callback may be
-// pending, running, or THIS cancel's own caller; notify.go's in-flight
-// rule, applied to both callbacks: treat it as possibly running, and
-// know that once it returns, the pump's remainder touches nothing of the
-// caller's. Idempotent.
+// is pending pumps.Wait returns only after the session's goroutines have
+// exited — the use-after-free rule from notify.go's listener contract:
+// once cancel returns, no callback will ever run again. The join sits
+// OUTSIDE the once, and must: a once body holding a pump join would make
+// a closedFn that reenters cancel block on the once behind a joiner
+// waiting on that very pump — the two wait on each other. Out here the
+// reentrant caller spends the once on teardown alone — which never parks
+// — or finds it spent, and skips the join on the FIRING flag: a terminal
+// fire pending or in flight, a ONE-TIME window at the session's end,
+// raised with dead in end before the callback runs (the residue: treat
+// closedFn as possibly running; once it returns, the pump's remainder
+// touches nothing of the caller's).
+//
+// notify gets NO carve-out, though it is caller code with the same
+// reentrancy: a delivery bracket is CONTINUOUS on a busy stream, so a
+// notifyActive term would void the quiescence guarantee for every
+// external cancel — no session-wide flag distinguishes the callback's
+// own goroutine from an outside joiner, and the guarantee is the
+// contract (codex P1s on #228, threads r3984073040/r3984335493). The
+// rule is therefore the caller's, as the reference states it: cancel
+// must not be called synchronously from inside notify — the wait would
+// sit on the calling goroutine's own pump. A notify that unsubscribes
+// defers (`go cancel()`) or cancels after its callback returns; an
+// external cancel waits any in-flight delivery out. Idempotent.
 func (sess *listenSession) cancel() {
 	sess.cancelOnce.Do(func() {
 		if sess.unregister != nil {
@@ -216,9 +222,9 @@ func (sess *listenSession) cancel() {
 		sess.end(nil)
 	})
 	sess.mu.Lock()
-	busy := sess.firing || sess.notifyActive
+	firing := sess.firing
 	sess.mu.Unlock()
-	if !busy {
+	if !firing {
 		sess.pumps.Wait()
 	}
 }

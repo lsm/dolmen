@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -220,22 +221,26 @@ func TestListenPanickingNotifyEndsSession(t *testing.T) {
 	sess.cancel()
 }
 
-// TestListenNotifyToleratesCancelFromCallback: notify is caller code
-// with the same reentrancy as closedFn — a natural callback is cancel
-// itself, the documented idempotent teardown (a subscriber unsubscribing
-// on the record that completes it). The delivery bracket is notify's
-// no-self-wait window: a cancel running inside the callback must not
-// join the drain goroutine it is running ON (no goroutine can wait
-// itself out) — it declines the join while notifyActive is up, exactly
-// as the firing carve-out does for closedFn (codex P1 on #228).
-func TestListenNotifyToleratesCancelFromCallback(t *testing.T) {
+// TestListenNotifyDefersCancel: notify is caller code, and a natural
+// callback is teardown — but cancel must not be called SYNCHRONOUSLY from
+// inside it: the quiescence join would sit on the calling goroutine's
+// own pump (no goroutine can wait itself out), and carving the delivery
+// bracket out of the join would void external cancel's guarantee —
+// deliveries are continuous on a busy stream (codex P1s on #228,
+// threads r3984073040/r3984335493). The documented pattern is the
+// deferred one: `go cancel()` tears the session down without the
+// self-join, and no further record delivers after it lands.
+func TestListenNotifyDefersCancel(t *testing.T) {
 	st := openChangeStore(t)
-	cancelled := make(chan struct{})
+	toredown := make(chan struct{})
+	var unsubscribe sync.Once
 
 	var cancel func()
 	replay, cancel := listenOn(t, st, "", "", func(ChangeRecord) {
-		cancel() // the reentrancy hazard itself, run synchronously
-		close(cancelled)
+		// The documented pattern: deferred, never synchronous — a second
+		// record may still race the teardown landing, so the unsubscribe
+		// arms once.
+		unsubscribe.Do(func() { go cancel(); close(toredown) })
 	}, nil)
 	defer cancel()
 
@@ -243,12 +248,79 @@ func TestListenNotifyToleratesCancelFromCallback(t *testing.T) {
 	if _, _, done, err := replay.Next(context.Background()); err != nil || !done {
 		t.Fatalf("boundary Next = err %v, done %v, want nil error, done=true", err, done)
 	}
-	insertNotes(t, st, 1)
+	insertNotes(t, st, 2)
 
 	select {
-	case <-cancelled:
+	case <-toredown:
 	case <-time.After(20 * time.Second):
-		t.Fatal("notify→cancel deadlocked: the cancel joined the drain goroutine it ran on")
+		t.Fatal("no delivery arrived to unsubscribe on")
+	}
+	// The teardown landed: the replay reports done once the session ends,
+	// and neither callback ever deadlocks.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		_, _, done, err := replay.Next(context.Background())
+		if err != nil {
+			t.Fatalf("post-teardown Next: %v", err)
+		}
+		if done {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("replay never reported done after the teardown")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestListenExternalCancelWaitsInFlightDelivery: the quiescence
+// guarantee is the contract — an EXTERNAL cancel, called while a
+// delivery is mid-notify, returns only after the callback has returned
+// and the drain goroutine has exited: never delivery after cancel
+// returned, never use-after-free of state the caller releases there
+// (codex P1 on #228, thread r3984335493).
+func TestListenExternalCancelWaitsInFlightDelivery(t *testing.T) {
+	st := openChangeStore(t)
+
+	inFlight := make(chan struct{}, 1)
+	returned := make(chan struct{})
+	release := make(chan struct{})
+	replay, cancel := listenOn(t, st, "", "", func(ChangeRecord) {
+		inFlight <- struct{}{}
+		<-release // park mid-notify: the external cancel must wait this out
+		close(returned)
+	}, nil)
+
+	// The boundary call releases the drainer before any delivery.
+	if _, _, done, err := replay.Next(context.Background()); err != nil || !done {
+		t.Fatalf("boundary Next = err %v, done %v, want nil error, done=true", err, done)
+	}
+	insertNotes(t, st, 1)
+	<-inFlight
+
+	cancelReturned := make(chan struct{})
+	go func() {
+		cancel() // external: from outside the session's goroutines
+		close(cancelReturned)
+	}()
+	select {
+	case <-cancelReturned:
+		t.Fatal("external cancel returned while the in-flight notify was still parked — the quiescence guarantee torn")
+	case <-returned:
+		t.Fatal("ordering markers raced: the callback returned before release")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	close(release) // the callback returns; the join may complete now
+	select {
+	case <-cancelReturned:
+	case <-time.After(20 * time.Second):
+		t.Fatal("external cancel never returned after the delivery drained")
+	}
+	select {
+	case <-returned:
+	default:
+		t.Fatal("cancel returned before the in-flight callback did")
 	}
 }
 

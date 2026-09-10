@@ -70,11 +70,12 @@ func (sess *listenSession) mintOne(ctx context.Context, seq int64) (Cursor, erro
 // replay has fully reported. notifyActive brackets each delivery's whole
 // mint-and-notify span, so the parked-close machinery (the next slice)
 // can wait out an in-flight delivery instead of firing a terminal
-// between a mint and its notify — and so a notify that reenters cancel
-// finds its no-self-wait window: the callback runs on this goroutine,
-// and no goroutine can wait itself out, so cancel declines the join for
-// exactly the bracket (the firing carve-out's rule, applied to the
-// notification callback). A mint failure is a teaching end — the record
+// between a mint and its notify, and an external cancel's quiescence
+// join spans the bracket: cancel returns only after the in-flight
+// callback has. notify itself carries the caller rule cancel documents —
+// it must not call cancel synchronously (the join would sit on this very
+// goroutine); a notify that unsubscribes defers (`go cancel()`). A mint
+// failure is a teaching end — the record
 // the client is about to be handed must still resolve — and the session
 // ends with the wrapped cause, on this counted goroutine (r6d's rule:
 // the fire rides the pump through teardown).
