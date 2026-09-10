@@ -695,3 +695,18 @@ func (s *Store) ChangesSince(ctx context.Context, nsName, table string, from Cur
 	}
 	return records, next, nil
 }
+
+// changeCountSQL builds the Listen loss-check's count: the feed's records
+// in (from, to] under the same lifetime predicates changePageSQL scans
+// under, so a table feed's promise counts only its own records — an
+// unrelated table's aged row deleted later must not read as this feed's
+// loss.
+func changeCountSQL(from, to int64, feed *changeFeed) (string, []any) {
+	q := `SELECT COUNT(*) FROM _dolmen_changes WHERE seq > ? AND seq <= ?`
+	args := []any{from, to}
+	if feed != nil {
+		q += ` AND table_name = ? AND drop_gen = ? AND nsgen = ?`
+		args = append(args, feed.table, feed.dropGen, feed.nsgen[:])
+	}
+	return q, args
+}

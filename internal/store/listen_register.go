@@ -108,6 +108,31 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	if sess.boundary, err = changeHead(ctx, tx); err != nil {
 		return nil, nil, err
 	}
+	// The loss-check baseline, in the same snapshot: the feed's rows the
+	// log ACTUALLY retains in (P, R] — not the span arithmetic, because
+	// pruning deletes by age and clock-stepped at stamps can leave holes a
+	// begin registration legitimately replays around (changeBegin selects
+	// the first retained record, whatever sits missing beside it), and not
+	// the whole namespace's, because a table feed's promise is only its own
+	// records. Only rows removed AFTER this count are the session's to
+	// lose.
+	//
+	// TODO(9d): the count covers every FEED row, including rows a scoped
+	// viewer can never receive — a hidden aged row deleted mid-session
+	// currently reads as loss even when the visible backlog is intact
+	// (§9.3 says foreign traffic must never evict a scoped reader).
+	// Filtering the count needs a side-effect-free view of the current
+	// scope; re-invoking liveAuthz is NOT it — the admission callback is
+	// per-event by contract (§6.2), and extra invocations from the counting
+	// path perturb re-resolvers that sequence or audit on calls. The 9d
+	// scope-resolver contract should expose the predicate; until then, with
+	// auth off, liveAuthz is nil everywhere but tests.
+	if sess.position < sess.boundary {
+		cq, cargs := changeCountSQL(sess.position, sess.boundary, sess.feed)
+		if err = tx.QueryRowContext(ctx, cq, cargs...).Scan(&sess.outstanding); err != nil {
+			return nil, nil, err
+		}
+	}
 	// The standing resume cursor is fixed HERE, at registration, so a
 	// session that ends before its first Next — cancelled by its caller, or
 	// ended by the engine once the live half lands (an overflow of its own

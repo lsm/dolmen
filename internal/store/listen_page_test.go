@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Slice 6b (r3): the replay-page read. The fixtures drive the real write
@@ -211,5 +213,139 @@ func TestListenNextSingleFlight(t *testing.T) {
 		if n != 1 {
 			t.Fatalf("row %d delivered %d times across concurrent Next calls, want exactly 1", id, n)
 		}
+	}
+}
+
+// seedStampedChanges seeds change records with explicit at stamps — the
+// fixture for clock-stepped pruning scenarios, which no public write path
+// can produce.
+func seedStampedChanges(t *testing.T, st *Store, table string, ats []time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("open test: %v", err)
+	}
+	tx, err := n.rw.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback()
+	nsGen, err := readNSGen(ctx, tx)
+	if err != nil {
+		t.Fatalf("read nsgen: %v", err)
+	}
+	gen, err := tableGen(ctx, tx, table)
+	if err != nil {
+		t.Fatalf("read drop gen: %v", err)
+	}
+	for i, at := range ats {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO _dolmen_changes(table_name, row_id, kind, owner, nsgen, drop_gen, at) VALUES(?,?,?,?,?,?,?)`,
+			table, int64(i+1), string(ChangeInsert), nil, nsGen[:], gen, isoChangeStamp(at)); err != nil {
+			t.Fatalf("seed change row %d: %v", i+1, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}
+
+// openStampedStore is the retention-store fixture for the loss tests: a
+// 40ms retention, the test namespace, and the notes table.
+func openStampedStore(t *testing.T) *Store {
+	t.Helper()
+	dir := t.TempDir()
+	st, err := Open(dir, WithChangeRetention(40*time.Millisecond))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	ctx := context.Background()
+	if err := st.CreateNamespace(ctx, "test", [16]byte{}); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	if _, err := st.CreateTable(ctx, "test", "notes", noteFields(), TableOpts{}, [16]byte{}); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	return st
+}
+
+// pruneWithReader runs a bare changes_since — a reader whose mint roots a
+// fresh chain at the head, freeing the aged rows behind it for deletion.
+func pruneWithReader(t *testing.T, st *Store) {
+	t.Helper()
+	if _, _, err := st.ChangesSince(context.Background(), "test", "", "", [16]byte{}, nil, Incarnation{}, Page{}); err != nil {
+		t.Fatalf("changes_since: %v", err)
+	}
+}
+
+// TestListenReplayOutlivesRetention: a replay left idle past its chain's
+// retention cap fails LOUDLY, never silently short. Another reader's prune
+// has deleted the aged backlog; the next page reports the cursor-expiry
+// teaching error instead of a short page reported as done.
+func TestListenReplayOutlivesRetention(t *testing.T) {
+	st := openStampedStore(t)
+	insertNotes(t, st, 3)
+
+	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
+	defer cancel()
+	time.Sleep(150 * time.Millisecond) // chains expire; rows age past 2R
+	pruneWithReader(t, st)
+
+	if _, _, _, err := replay.Next(context.Background()); !errors.Is(err, ErrCursorExpired) {
+		t.Fatalf("aged-out replay Next = %v, want ErrCursorExpired — a pruned backlog must fail loudly, not page short and report done", err)
+	}
+}
+
+// TestListenReplayInteriorHoleFailsLoudly: pruning deletes by age, and at
+// stamps are not seq-ordered after a clock step — an aged MIDDLE record can
+// be deleted behind fresher neighbors, and a span count over the scanned
+// range alone would be tautological. The full-tail entry check catches the
+// hole before the page serves past it.
+func TestListenReplayInteriorHoleFailsLoudly(t *testing.T) {
+	st := openStampedStore(t)
+	// Seq 1 is stamped 100ms ahead (survives every prune, in-window); seqs
+	// 2 and 3 are aged. A bare reader roots its fresh chain at the head,
+	// freeing seqs 2-3 for deletion behind the future-stamped survivor.
+	seedStampedChanges(t, st, "notes", []time.Time{
+		time.Now().Add(100 * time.Millisecond),
+		time.Now().Add(-200 * time.Millisecond),
+		time.Now().Add(-200 * time.Millisecond),
+	})
+
+	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
+	defer cancel()
+	time.Sleep(150 * time.Millisecond)
+	pruneWithReader(t, st)
+
+	if _, _, _, err := replay.Next(context.Background()); !errors.Is(err, ErrCursorExpired) {
+		t.Fatalf("holey replay Next = %v, want ErrCursorExpired — an interior hole must fail loudly, not skip the missing seq", err)
+	}
+}
+
+// TestListenReplayMissingTailFailsLoudly: pruning removes the aged TAIL rows
+// while a future-stamped head row survives, so the scan still finds the
+// head and a span count over the scanned range stays tautological. The
+// full-tail entry count sees the loss: the baseline promised three, the
+// tail holds one.
+func TestListenReplayMissingTailFailsLoudly(t *testing.T) {
+	st := openStampedStore(t)
+	// Seq 1 future-stamped (in-window at registration, survives every
+	// prune — begin resolves P below it); seqs 2-3 aged, prunable behind
+	// the survivor.
+	seedStampedChanges(t, st, "notes", []time.Time{
+		time.Now().Add(100 * time.Millisecond),
+		time.Now().Add(-200 * time.Millisecond),
+		time.Now().Add(-200 * time.Millisecond),
+	})
+
+	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
+	defer cancel()
+	time.Sleep(150 * time.Millisecond)
+	pruneWithReader(t, st)
+
+	if _, _, _, err := replay.Next(context.Background()); !errors.Is(err, ErrCursorExpired) {
+		t.Fatalf("missing-tail Next = %v, want ErrCursorExpired — a pruned tail must fail loudly, not report done", err)
 	}
 }

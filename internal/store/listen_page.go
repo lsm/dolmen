@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -89,6 +90,29 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// write or replay against the namespace blocks indefinitely. The defer
 	// makes every path below release it (a no-op after Commit).
 	defer tx.Rollback()
+	// A replay must never SILENTLY shorten — but it must equally accept what
+	// registration found. The loss check is a BASELINE, not span arithmetic:
+	// registration counted the rows the log actually retains in (P, R]
+	// (holes included — pruning deletes by age, and clock-stepped at stamps
+	// leave gaps that a begin registration legitimately replays around),
+	// and each page verifies the log still holds exactly that many rows in
+	// its outstanding range BEFORE scanning — a span count over the
+	// already-pruned log would be tautological (scan and count see the same
+	// shrunken world), so only the full tail reveals a pre-scan deletion in
+	// time to stop the page from serving records past the hole. Loss is the
+	// cursor-expiry teaching error for the caller to reconnect from its
+	// last delivered cursor — never a short page reported as done, which
+	// would silently omit records the boundary promised.
+	if sess.position < sess.boundary {
+		var tail int64
+		cq, cargs := changeCountSQL(sess.position, sess.boundary, sess.feed)
+		if err := tx.QueryRowContext(ctx, cq, cargs...).Scan(&tail); err != nil {
+			return nil, "", false, pageProgress{}, err
+		}
+		if tail != sess.outstanding {
+			return nil, "", false, pageProgress{}, fmt.Errorf("listen replay: %w", ErrCursorExpired)
+		}
+	}
 	boundary := sess.boundary
 	query, args := changePageSQL(sess.position, &boundary, MaxChangesPageLimit, sess.feed)
 	rows, qerr := tx.QueryContext(ctx, query, args...)
