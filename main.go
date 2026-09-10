@@ -89,6 +89,13 @@ func run() error {
 		Handler:           api.OriginGuard(router, cfg.AllowedOrigins),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	// Graceful shutdown must reach the subscribe streams: Shutdown waits for
+	// in-flight handlers but never cancels their request contexts, so a
+	// healthy SSE subscriber would otherwise sit in its live wait until the
+	// five-second deadline below expired — every restart with a subscriber
+	// connected would end in context deadline exceeded. The api server ends
+	// its streams itself when Shutdown fires (api.Server.Shutdown).
+	httpSrv.RegisterOnShutdown(apiSrv.Shutdown)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

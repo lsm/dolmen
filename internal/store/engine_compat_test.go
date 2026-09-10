@@ -50,9 +50,9 @@ func TestEngineMethodSetMatchesStore(t *testing.T) {
 }
 
 // TestListenRequiresNotify pins the one precondition on Listen's now-real
-// body (6b retires the 2b stub): a nil notify callback is refused up front —
-// a session that could never deliver a record must not mint cursors or run
-// pages behind a caller that passed nothing to invoke.
+// body (6b retired the 2b stub): a nil notify callback is refused up front —
+// a session that could never deliver a record must not register a listener,
+// mint cursors, or run pumps behind a caller that passed nothing to invoke.
 func TestListenRequiresNotify(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
@@ -61,12 +61,11 @@ func TestListenRequiresNotify(t *testing.T) {
 	}
 }
 
-// TestCapabilities pins the SQLite engine's 4d self-description (§6.2, §7):
+// TestCapabilities pins the SQLite engine's self-description (§6.2, §7):
 // vector search executes exact — ann_recall_bound explicitly null, never
-// omitted — and notifications/subscribe stay false until Listen's body lands
-// (6b flips both with the SSE route). The post-commit registry (notify.go)
-// is internal plumbing; the capability answers "is Listen implemented?",
-// and a stub must not be advertised as the real thing.
+// omitted — and notifications/subscribe are true since 6b: Listen's body,
+// the SSE route, and the capability surface changed together, never
+// contradicting each other.
 func TestCapabilities(t *testing.T) {
 	st := openStore(t)
 	got := st.Capabilities()
@@ -76,10 +75,10 @@ func TestCapabilities(t *testing.T) {
 	if got.ANNRecallBound != nil {
 		t.Errorf("ANNRecallBound = %v, want explicit null under exact execution", *got.ANNRecallBound)
 	}
-	if got.Notifications {
-		t.Error("Notifications = true, want false until Listen is implemented (6b)")
+	if !got.Notifications {
+		t.Error("Notifications = false, want true (Listen implemented since 6b)")
 	}
-	if got.Subscribe {
-		t.Error("Subscribe = true, want false until live streams are implemented (6b)")
+	if !got.Subscribe {
+		t.Error("Subscribe = false, want true (live streams implemented since 6b)")
 	}
 }

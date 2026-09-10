@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/schema"
@@ -31,6 +32,13 @@ type Server struct {
 	baseURL       string
 	namespaceHint string
 	prefix        string
+
+	// done closes when Shutdown fires — the server-shutdown signal long-lived
+	// streams select on (see Shutdown). A channel (not a context) because the
+	// signal has exactly one meaning: streams should flush their terminal and
+	// return; shutdownOnce makes firing it idempotent.
+	done         chan struct{}
+	shutdownOnce sync.Once
 }
 
 // Option customizes a Server.
@@ -62,11 +70,29 @@ func WithNamespaceHint(h string) Option {
 // *store.Store — adapter #1, still the only engine — so main.go and the test
 // harnesses are unchanged when later adapters arrive.
 func New(st *store.Store, emb embed.Provider, opts ...Option) *Server {
-	s := &Server{eng: st, emb: emb}
+	s := &Server{eng: st, emb: emb, done: make(chan struct{})}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
+}
+
+// Shutdown signals the server is stopping so its long-lived streams end
+// themselves. It exists because http.Server.Shutdown waits for in-flight
+// handlers but never cancels their request contexts: a subscribe stream
+// holding a healthy connection open would sit in its live wait until every
+// shutdown deadline expired, turning each graceful restart into a
+// deadline-exceeded error. Main wires this through
+// http.Server.RegisterOnShutdown, so the signal fires exactly when graceful
+// shutdown begins. Idempotent; streams that never see it are still torn down
+// by the engine when the store closes (notify.go's Close wake).
+func (s *Server) Shutdown() {
+	s.shutdownOnce.Do(func() { close(s.done) })
+}
+
+// shuttingDown is the streams' read on the shutdown signal.
+func (s *Server) shuttingDown() <-chan struct{} {
+	return s.done
 }
 
 type OpDef struct {
@@ -484,6 +510,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/skills", s.handleSkillsManifest)
 	mux.HandleFunc("/skills/", s.handleSkill)
 	mux.HandleFunc("/v1/openapi.json", s.handleOpenAPI)
+	// The subscribe stream — its own mux entry, not a child of /v1/'s op
+	// dispatch: subscribe is an HTTP-surface capability like /mcp (§9.2), and
+	// the stream joins the public surface here, in the same slice as the
+	// Listen body and the capability flip (6b), so a discovered route always
+	// serves its specified live-stream behavior.
+	mux.HandleFunc("/v1/subscribe", s.HandleSubscribe)
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
 		// Assign the request id before any error path so every response,
 		// envelope, and log line carries one — echoed when the client sent
