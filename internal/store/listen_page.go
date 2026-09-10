@@ -26,7 +26,16 @@ import (
 // and publishing it would wipe the standing cursor with "" and teach a
 // later Resume a bare-head restart that skips the entire undelivered
 // backlog. State stays at the last completed page.
+//
+// A dedicated single-flight mutex serializes concurrent Next calls for the
+// page AND the publish as one unit: two interleaved callers would both
+// scan from the same sess.position (duplicate records), and a slower
+// earlier call could publish its position after a later one's, regressing
+// Resume. nextMu sits OUTSIDE mu so the page's database work holds only
+// the flight lock — sess.mu remains the short-held state lock.
 func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bool, error) {
+	sess.nextMu.Lock()
+	defer sess.nextMu.Unlock()
 	sess.mu.Lock()
 	resume := sess.nextCursor // the PRE-page boundary: what an omitted page must hand back
 	sess.mu.Unlock()

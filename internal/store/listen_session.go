@@ -38,6 +38,7 @@ type listenSession struct {
 	feed        *changeFeed  // nil on the namespace feed; the table feed's labels at registration
 
 	mu              sync.Mutex
+	nextMu          sync.Mutex // single-flight for Next: one page+publish in the air at a time (listen_page.go)
 	nextCursor      Cursor // the standing resume cursor, fixed at registration
 	replayExhausted bool   // a page reached the registration boundary: the replay is done (the final publish sets it)
 	dead            bool

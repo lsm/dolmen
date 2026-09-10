@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"sync"
 	"testing"
 )
 
@@ -160,5 +161,55 @@ func TestListenResumeCursorReplaysBacklog(t *testing.T) {
 	defer cancel2()
 	if got := rowIDsOf(drainReplay(t, replay2)); len(got) != 2 || got[0] != backlog.Ids[0] || got[1] != backlog.Ids[1] {
 		t.Fatalf("resume replayed %v, want the full backlog %v", got, backlog.Ids)
+	}
+}
+
+// TestListenNextSingleFlight: concurrent Next calls on one session are
+// serialized as page+publish units — every record delivers exactly once,
+// and the published position never regresses. Without the flight lock, two
+// callers scan the same sess.position and duplicate the page; a slower
+// earlier caller then publishes its position over a later one's.
+func TestListenNextSingleFlight(t *testing.T) {
+	st := openChangeStore(t)
+	insertNotes(t, st, 20)
+
+	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
+	defer cancel()
+
+	const callers = 4
+	var wg sync.WaitGroup
+	results := make([][]ChangeRecord, callers)
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for {
+				records, _, done, err := replay.Next(context.Background())
+				if err != nil {
+					t.Errorf("caller %d Next: %v", i, err)
+					return
+				}
+				results[i] = append(results[i], records...)
+				if done {
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	seen := map[int64]int{}
+	for _, r := range results {
+		for _, rec := range r {
+			seen[rec.RowID]++
+		}
+	}
+	if len(seen) != 20 {
+		t.Fatalf("concurrent paging delivered %d distinct rows, want all 20", len(seen))
+	}
+	for id, n := range seen {
+		if n != 1 {
+			t.Fatalf("row %d delivered %d times across concurrent Next calls, want exactly 1", id, n)
+		}
 	}
 }
