@@ -6,15 +6,37 @@ import (
 	"fmt"
 )
 
-// The live half — slices 6b (r6a, r6b). Listen joins the commit registry
+// The live half — slices 6b (r6a–r6d). Listen joins the commit registry
 // BEFORE its boundary transaction (the register-and-replay ordering: a
 // record can only take seq > R by committing after that transaction —
 // SQLite serializes writers through the same rw connection, so its commit
 // necessarily observes the registration — making replay (P, R] and live
 // > R disjoint by construction, §6.2's exactly-once). The fill pump
-// pages the durable log on every wake into the interim queue. The queue
-// bound and its overflow teaching close, the drain (delivery), and the
-// handoff gating land in the following slices.
+// pages the durable log on every wake into the interim queue, and the
+// bound caps it: a subscriber whose own traffic outruns its drain meets
+// the overflow teaching close. The drain (delivery) and the handoff
+// gating land in the following slices.
+
+// listenQueueBound caps the records buffered for one subscriber: the
+// interim commits landing while the replay drains, plus live records
+// queued behind a slow client (§6.2). It is deliberately a multiple of
+// the page bound — a single bulk commit the size of a page must not
+// overflow a fresh subscriber. What the page scanned occupies the queue,
+// visible or not: exact for table feeds (the SQL feed filter) and, while
+// auth is off, for namespace feeds too (liveAuthz is nil, nothing is
+// invisible) — so the bound is tripped by nothing but the subscriber's
+// own traffic. Once scoping lands, keeping foreign records OUT of the
+// queue is the admission gate's §6.2 promise (engine.go's Listen
+// contract), never the bound's — see TODO(9d) on the loss baseline for
+// the analogous pre-filter count.
+const listenQueueBound = 8 * MaxChangesPageLimit
+
+// ErrListenOverflow is the teaching close for a subscriber whose own
+// visible traffic outran its drain: the session's bounded buffer filled
+// (§6.2, §9.3). The stream ends and the client resumes from its last
+// persisted cursor — the durable log is the durability mechanism; the
+// buffer never is.
+var ErrListenOverflow = errors.New("subscription buffer overflow: the subscriber drained slower than commits arrived")
 
 // ErrListenLifetimeEnded closes a session whose feed target ended under
 // it: the subscribed table was dropped (a table feed follows ONE table
@@ -37,12 +59,28 @@ func (sess *listenSession) wake(table string, changes ChangeRange) {
 	sess.mu.Unlock()
 }
 
+// pump is the registered goroutine: fill until a terminal, then end the
+// session with it. The count spans the WHOLE goroutine — the terminal
+// teardown included — so a cancel that joins the session waits out
+// end(cause) and the closedFn it fires: a caller freeing what closedFn
+// captures the moment cancel returns is the use-after-free rule from
+// notify.go's listener contract. The one exception a counted pump cannot
+// honor is a closedFn that itself calls cancel — no goroutine can wait
+// itself out — and that is what the firing flag carves out (fireClosed).
+func (sess *listenSession) pump() {
+	defer sess.pumps.Done()
+	if cause := sess.fill(); cause != nil {
+		sess.end(cause)
+	}
+}
+
 // fill is the live read half: on every wake it pages the durable log
 // forward from liveRead and queues what it finds. It shares the rw pool
 // with Next and the write paths, so its transactions serialize with them;
-// it never holds sess.mu across database work.
-func (sess *listenSession) fill() {
-	defer sess.pumps.Done()
+// it never holds sess.mu across database work. A queue past
+// listenQueueBound is one terminal it reports for pump to end the session
+// with — the teaching close.
+func (sess *listenSession) fill() error {
 	for {
 		sess.mu.Lock()
 		for !sess.dead && !sess.woken {
@@ -50,19 +88,18 @@ func (sess *listenSession) fill() {
 		}
 		if sess.dead {
 			sess.mu.Unlock()
-			return
+			return nil
 		}
 		sess.woken = false
 		sess.mu.Unlock()
 
 		for {
 			if sess.isDead() {
-				return
+				return nil
 			}
 			read, ferr := sess.fillBatch()
 			if ferr != nil {
-				sess.end(ferr)
-				return
+				return ferr
 			}
 			if read < MaxChangesPageLimit {
 				break // drained to the head; wait for the next wake
@@ -85,8 +122,17 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 		sess.liveRead = scanned[len(scanned)-1].seq
 	}
 	sess.queue = append(sess.queue, scanned...)
+	over := len(sess.queue) > listenQueueBound
 	sess.cond.Broadcast()
 	sess.mu.Unlock()
+	if over {
+		// The teaching reconnect: the stream ends and the client resumes
+		// from its last delivered cursor — the durable log is the catch-up
+		// path; the buffer never was the durability mechanism. Reported,
+		// not fired: pump ends the session with it at one fire point,
+		// outside this loop.
+		return 0, ErrListenOverflow
+	}
 	return len(scanned), nil
 }
 

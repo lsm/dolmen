@@ -15,10 +15,10 @@ import (
 // transaction, so a record can only take seq > R by committing after
 // the join (the register-and-replay ordering; the replay-page read and
 // loss baseline landed with r3/r4, the join with r6b). The fill pump the
-// wake feeds launches here (r6c); the drain that delivers its queue
-// through notify and the queue's bound land in the following slices —
-// until then a drained registration reports done and notify is never
-// invoked.
+// wake feeds launches here (r6c), and the queue it fills is bounded, with
+// the overflow teaching close (r6d); the drain that delivers the queue
+// through notify lands in the following slices — until then a drained
+// registration reports done and notify is never invoked.
 
 // Listen implements the engine-declared notification capability (§6.2, §9.3):
 // registration fixes the replay boundary and the feed's labels as ONE
@@ -29,8 +29,7 @@ import (
 // cancel; the returned cancel is idempotent.
 //
 // TODO(6b-live): the remaining live half — the drain that delivers the
-// pump's queue through notify, the queue bound and its overflow teaching
-// close, and the admission gate — is 6b's next slice.
+// pump's queue through notify, and the admission gate — is 6b's next slice.
 // TODO(9d): while auth is off the SSE handler passes a nil liveAuthz (no
 // per-event filter); the admission rules are live the moment a slice
 // wires a real re-resolver in.
@@ -59,6 +58,11 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	// itself, derived from the caller's context (the handler passes one
 	// that ends with the client OR the server's shutdown).
 	sess.ctx, sess.ctxCancel = context.WithCancel(ctx)
+	// TODO(7): a parent-context death currently surfaces through the fill
+	// error path — closed fires with the wrapped cause — while the Listen
+	// contract says closed never fires for a caller-initiated end; the
+	// handler slice must classify it (the connection is gone by then
+	// anyway).
 	// The registry join comes BEFORE the boundary transaction — the
 	// register-and-replay ordering (§6.2): the boundary read runs under
 	// the namespace's write lock, so any commit that takes a seq AFTER
@@ -185,6 +189,6 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	}
 	committed = true // the session owns its registry entry now; cancel removes it
 	sess.pumps.Add(1)
-	go sess.fill()
+	go sess.pump() // pump, not fill: the terminal fires once, outside fill's loop
 	return &ChangeReplay{Next: sess.next, Resume: sess.cursor}, sess.cancel, nil
 }
