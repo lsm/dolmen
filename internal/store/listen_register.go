@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -46,6 +47,9 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 		liveAuthz: liveAuthz, notify: notify, closedFn: closed,
 		flight: make(chan struct{}, 1),
 	}
+	// The live half's signal, wired at construction so every end (caller
+	// cancel included) can broadcast a parked pump out of cond.Wait.
+	sess.cond = sync.NewCond(&sess.mu)
 
 	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {
@@ -153,4 +157,3 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	}
 	return &ChangeReplay{Next: sess.next, Resume: sess.cursor}, sess.cancel, nil
 }
-

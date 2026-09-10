@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -13,9 +14,13 @@ import (
 // cancel is idempotent.
 
 // testSession is a minimal session for the lifecycle pins: only the fields
-// these tests read.
+// these tests read. The cond is wired the way registration wires it —
+// end's broadcast dereferences it, so a session without one would panic
+// on its first teardown.
 func testSession(closed func(error)) *listenSession {
-	return &listenSession{nsName: "test", table: "notes", closedFn: closed}
+	sess := &listenSession{nsName: "test", table: "notes", closedFn: closed}
+	sess.cond = sync.NewCond(&sess.mu)
+	return sess
 }
 
 // TestSessionCancelNeverCloses: cancel is the caller's teardown — closed
