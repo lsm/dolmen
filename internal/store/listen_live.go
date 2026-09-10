@@ -55,15 +55,16 @@ func (sess *listenSession) wake(table string, changes ChangeRange) {
 }
 
 // pump is the registered goroutine: fill until a terminal, then end the
-// session with it. The order is load-bearing: end fires closedFn
-// synchronously, and closedFn is caller code with no reentrancy
-// restriction — a natural callback is cancel, the documented idempotent
-// teardown, whose pumps.Wait must never find the goroutine it runs on
-// still counted, or the pump would wait on itself.
+// session with it. The count spans the WHOLE goroutine — the terminal
+// teardown included — so a cancel that joins the session waits out
+// end(cause) and the closedFn it fires: a caller freeing what closedFn
+// captures the moment cancel returns is the use-after-free rule from
+// notify.go's listener contract. The one exception a counted pump cannot
+// honor is a closedFn that itself calls cancel — no goroutine can wait
+// itself out — and that is what the firing flag carves out (fireClosed).
 func (sess *listenSession) pump() {
-	cause := sess.fill()
-	sess.pumps.Done() // leave the count BEFORE the callback can cancel us
-	if cause != nil {
+	defer sess.pumps.Done()
+	if cause := sess.fill(); cause != nil {
 		sess.end(cause)
 	}
 }
@@ -122,9 +123,9 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 	if over {
 		// The teaching reconnect: the stream ends and the client resumes
 		// from its last delivered cursor — the durable log is the catch-up
-		// path; the buffer never was the durability mechanism. Reported as
-		// the terminal, not fired here: pump ends the session only after
-		// this goroutine has left the pumps count.
+		// path; the buffer never was the durability mechanism. Reported,
+		// not fired: pump ends the session with it at one fire point,
+		// outside this loop.
 		return 0, ErrListenOverflow
 	}
 	return len(scanned), nil

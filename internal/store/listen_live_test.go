@@ -290,10 +290,11 @@ func TestListenOverflowTeachingClose(t *testing.T) {
 
 // TestListenOverflowCloseToleratesCancelFromCallback: closedFn is caller
 // code with no reentrancy restriction, and a natural callback is cancel —
-// the documented idempotent teardown, which waits pumps empty. The overflow
-// close therefore must not fire the callback on a counted pump goroutine,
-// or cancel's pumps.Wait waits on itself (r6d's review found exactly this
-// deadlock); pump leaves the count before ending the session.
+// the documented idempotent teardown, which joins the session's goroutines.
+// The pump stays counted through the terminal fire (cancel's quiescence
+// guarantee), so what keeps this safe is the firing flag: a cancel running
+// inside the callback body must not join the goroutine it is running ON —
+// no goroutine can wait itself out (r6d's review found the deadlock).
 func TestListenOverflowCloseToleratesCancelFromCallback(t *testing.T) {
 	st := openChangeStore(t)
 	cancelled := make(chan struct{})
@@ -313,6 +314,48 @@ func TestListenOverflowCloseToleratesCancelFromCallback(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("overflow close deadlocked: cancel from closedFn waited on the pump it ran on")
 	}
+}
+
+// TestListenCancelDuringFiringCallback: a cancel arriving while the
+// terminal callback's body is executing cannot join it — the callback may
+// itself be that cancel's caller, and the two are indistinguishable to
+// cancel. So cancel returns (notify.go's in-flight rule, applied to the
+// terminal callback: treat a firing closedFn as possibly running), and the
+// pump exits on its own once the callback returns — its remainder touches
+// nothing of the caller's. Everywhere OUTSIDE the callback body, cancel
+// still waits the pump out: the count spans the whole goroutine.
+func TestListenCancelDuringFiringCallback(t *testing.T) {
+	st := openChangeStore(t)
+	firing := make(chan struct{})
+	release := make(chan struct{})
+
+	_, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, func(cause error) {
+		close(firing)
+		<-release // park mid-callback: the one window cancel cannot join
+	})
+	defer cancel()
+
+	if _, err := insertNotesChunkedErr(st, listenQueueBound+MaxChangesPageLimit); err != nil {
+		t.Fatalf("bulk write: %v", err)
+	}
+	select {
+	case <-firing:
+	case <-time.After(20 * time.Second):
+		t.Fatal("no overflow close: the bounded queue never tripped")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		cancel()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancel blocked on a firing terminal callback — a goroutine cannot wait itself out")
+	}
+	close(release)
+	cancel() // idempotent
 }
 
 // insertNotesChunkedErr is insertNotes for large counts, chunked to the
