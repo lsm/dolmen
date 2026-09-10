@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"reflect"
 	"testing"
 )
@@ -50,16 +49,17 @@ func TestEngineMethodSetMatchesStore(t *testing.T) {
 	}
 }
 
-// TestEngineStubsNotImplemented pins the 2b stub contract: the one Engine
-// method whose body arrives in a later slice (Listen 6b) reports
-// not-implemented rather than half-working — a stub must never be mistaken
-// for a real implementation. (Capabilities grew its real body in 4d, GetRows
-// in 5a, ChangesSince in 5c — see TestCapabilities below.)
-func TestEngineStubsNotImplemented(t *testing.T) {
+// TestListenRequiresNotify pins the one precondition on Listen's now-real
+// body (6b retires the 2b stub): a nil notify callback is refused up
+// front — a session that could never deliver a record must not mint
+// cursors behind a caller that passed nothing to invoke.
+
+
+func TestListenRequiresNotify(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
-	if _, _, err := st.Listen(ctx, "test", "", "", [16]byte{}, nil, nil, nil); !errors.Is(err, errNotImplemented) {
-		t.Errorf("Listen = %v, want errNotImplemented", err)
+	if _, _, err := st.Listen(ctx, "test", "", "", [16]byte{}, nil, nil, nil); err == nil {
+		t.Error("Listen with nil notify = nil error, want rejection")
 	}
 }
 

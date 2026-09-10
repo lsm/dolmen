@@ -472,6 +472,14 @@ type ChangeReplay struct {
 	// records — the registration boundary — after which notify delivers live
 	// records. Engines must set Next.
 	Next func(ctx context.Context) (records []ChangeRecord, next Cursor, done bool, err error)
+
+	// Resume returns the replay's standing cursor — the exact position a
+	// caller that stops paging, or never pages, resumes from: the
+	// registration-minted cursor before the first page, then each served
+	// page's boundary. The handler's terminal frames carry it so a stream
+	// ended before its first page still teaches a reconnect that skips
+	// nothing. Engines must set it.
+	Resume func() Cursor
 }
 
 // InsertResult is the shared outcome of the record-writing paths (§6.2):
