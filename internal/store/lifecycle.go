@@ -335,20 +335,22 @@ func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte
 	// WAL on its final close. Close errors are advisory here — the file
 	// removal below is the outcome that matters.
 	s.evict(nsName)
+	// The dropped namespace can mint no further commits, so nothing else
+	// would ever wake its live sessions — nudge them here, immediately after
+	// the eviction (a failure in the file removal below returns early, and
+	// the sessions must not sleep on pools that are already gone), still
+	// under s.mu, which is safe because the nudge only flags (notifyMu, then
+	// each session's own mu — the one direction the store's lock graph
+	// already has; no database access rides this path). Each woken session's
+	// next fill ends it against the dead binding (notify.go): a recreated
+	// successor is a different namespace with a restarted sequence, and a
+	// predecessor's stream must never follow into it (§9.3).
+	s.wakeListenSessions(nsName)
 	for _, p := range []string{path, path + "-wal", path + "-shm"} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("drop namespace %s: %w", nsName, err)
 		}
 	}
-	// The dropped namespace can mint no further commits, so nothing else
-	// would ever wake its live sessions — nudge them here, still under s.mu,
-	// which is safe because the nudge only flags (notifyMu, then each
-	// session's own mu — the one direction the store's lock graph already
-	// has; no database access rides this path). Each woken session's next
-	// fill ends it against the dead binding (notify.go): a recreated
-	// successor is a different namespace with a restarted sequence, and a
-	// predecessor's stream must never follow into it (§9.3).
-	s.wakeListenSessions(nsName)
 	return nil
 }
 

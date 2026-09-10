@@ -114,7 +114,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		// means the subscriber is gone — the stream stops writing, and the
 		// handler's select tears the session down (cancel must not be called
 		// from here: it waits for this very goroutine).
-		st.change(rec)
+		st.changeLive(rec)
 	}
 	closed := func(cause error) {
 		st.armTerminal(func() {
@@ -232,11 +232,14 @@ type closeRecipe struct {
 // writes between the three goroutines a live subscription runs — the handler
 // (replay pages), the engine's notify (change frames), and its closed
 // callback — and keeps the terminal LAST. A terminal frame armed by closed
-// is flushed by the handler's goroutine only after its in-flight frames
-// drain, so no change frame can ever follow the stream's last word; while a
-// terminal is armed every change write is refused, so the engine's drainer
-// stops too. After any write fails the subscriber is gone; every later write
-// (terminal included) is skipped so a dead connection cannot spin the pumps.
+// is flushed by the handler's goroutine only after its own in-flight frames
+// drain, so no change frame can ever follow the stream's last word. The two
+// change writers carry different duties once a terminal is armed: the
+// handler may keep finishing its current page (those frames precede ITS
+// flush by construction), while the drainer must stop immediately (its
+// frames could otherwise race past the flush). After any write fails the
+// subscriber is gone; every later write (terminal included) is skipped so a
+// dead connection cannot spin the pumps.
 type sseStream struct {
 	mu       sync.Mutex
 	w        http.ResponseWriter
@@ -245,13 +248,13 @@ type sseStream struct {
 	terminal func()       // armed by closed, flushed once by the handler
 }
 
-// change writes one change frame, updating the resume cursor it carries.
-// It reports false once the subscriber is gone or the terminal is armed —
-// the caller stops writing either way.
+// change writes one change frame on the handler's goroutine (the replay
+// pages), updating the resume cursor it carries. It reports false once the
+// subscriber is gone.
 func (st *sseStream) change(rec store.ChangeRecord) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if st.dead || st.terminal != nil {
+	if st.dead {
 		return false
 	}
 	if !sseEvent(st.w, "change", sseChange{
@@ -265,6 +268,29 @@ func (st *sseStream) change(rec store.ChangeRecord) bool {
 	}
 	st.last = rec.Cursor
 	return true
+}
+
+// changeLive writes one change frame from the engine's drainer. Unlike the
+// handler's own writes, it must refuse once a terminal is armed: the
+// drainer's frames have no ordering relationship to the handler's flush, and
+// a change frame after the stream's last word would corrupt the terminal's
+// teaching.
+func (st *sseStream) changeLive(rec store.ChangeRecord) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.dead || st.terminal != nil {
+		return
+	}
+	if !sseEvent(st.w, "change", sseChange{
+		Cursor: string(rec.Cursor),
+		Table:  rec.Table,
+		RowID:  rec.RowID,
+		Kind:   string(rec.Kind),
+	}) {
+		st.dead = true
+		return
+	}
+	st.last = rec.Cursor
 }
 
 // armTerminal records the stream's last word without writing it — the

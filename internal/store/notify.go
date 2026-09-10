@@ -557,11 +557,19 @@ func (sess *listenSession) mint(ctx context.Context, now time.Time, admitted []l
 // one is past its absolute cap (§9.3): a token minted on a capped chain is
 // born expired — resolve rejects anything past chain_start + 2R, and this
 // very transaction's prune would delete it — so a stream held longer than
-// 2R would hand its client dead cursors. A fresh chain roots at the
-// current position, exactly the chain a client resubscribing from here
-// starts itself: the old backlog the cap exists to bound stays bounded,
-// and every delivered cursor stays resolvable. Retention 0 has no caps and
-// never rotates.
+// 2R would hand its client dead cursors. A fresh chain roots at the current
+// position, exactly the chain a client resubscribing from here starts
+// itself: the old backlog the cap exists to bound stays bounded, and every
+// delivered cursor stays resolvable. Retention 0 has no caps and never
+// rotates.
+//
+// While the replay is still draining, a rotation's origin floors at the
+// replay's outstanding position: the live half mints first (its fills run
+// during replay), and a chain rooted at the live position would let the
+// same transaction's prune delete age-eligible records the replay has not
+// yet paged — silently shortening the gap-free resume the chain exists to
+// protect. Once the replay is exhausted the floor lifts; nothing below the
+// live position remains to protect.
 func (sess *listenSession) chainFor(now time.Time, resume int64) *cursorChain {
 	if sess.s.changeRetention <= 0 {
 		return sess.chain
@@ -572,7 +580,11 @@ func (sess *listenSession) chainFor(now time.Time, resume int64) *cursorChain {
 	if now.UnixMilli() < sess.chain.Start+2*rms {
 		return sess.chain
 	}
-	sess.chain = newCursorChain(now, resume)
+	origin := resume
+	if !sess.replayExhausted && sess.position < origin {
+		origin = sess.position
+	}
+	sess.chain = newCursorChain(now, origin)
 	return sess.chain
 }
 
@@ -710,12 +722,14 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// Admit outside the transaction, like fillBatch: revocation ends the
 	// session (closed carries the cause), invisibility drops the record from
 	// the page. Records admitted before a revocation in the same page are
-	// still exposed; the revoked one never is.
+	// still exposed — they were admitted, and the caller's terminal framing
+	// keeps them ordered before the close; the revoked one never is.
 	var admitted []loggedChange
+	revoked := false
 	for _, lc := range scanned {
-		vis, revoked := sess.admit(lc.rec)
-		if revoked {
-			sess.end(ErrListenRevoked)
+		vis, rev := sess.admit(lc.rec)
+		if rev {
+			revoked = true
 			break
 		}
 		if vis {
@@ -735,17 +749,15 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// on an empty admitted page would strand them behind a page the caller
 	// will never turn.
 	short := len(scanned) < MaxChangesPageLimit
-	sess.replayExhausted = short
+	sess.replayExhausted = short || revoked
 	if len(scanned) > 0 {
 		sess.position = scanned[len(scanned)-1].seq
 	}
 	sess.nextCursor = next
-	dead = sess.dead
 	sess.mu.Unlock()
-	// A session ended under the page drops it: the closed callback has
-	// already carried the cause, and records must not follow the terminal.
-	if dead {
-		return nil, next, true, nil
+	if revoked {
+		sess.end(ErrListenRevoked)
+		return records, next, true, nil
 	}
 	// A short scanned page with nothing to expose IS the boundary — the
 	// caller is already at the registration point and notify takes over

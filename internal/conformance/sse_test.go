@@ -326,11 +326,14 @@ func TestSubscribeWriteDuringReplayExactlyOnce(t *testing.T) {
 	duringIDs := during["ids"].([]any)
 
 	// The stream must deliver the whole backlog then the two live events —
-	// in cursor order, with no duplication of the boundary window.
-	seen := map[float64]int{}
+	// in cursor order, with no duplication of the boundary window. The
+	// setup's first frame consumed row 1, so this loop reads the remaining
+	// 1199 backlog rows (indices 0..1198) and then the 2 live events, which
+	// must not appear before the replay has fully drained.
+	seen := map[float64]int{1: 1}
 	liveSeen := 0
 	duringSet := map[float64]bool{duringIDs[0].(float64): true, duringIDs[1].(float64): true}
-	for total := 0; total < 1202; total++ {
+	for total := 0; total < 1201; total++ {
 		triple := sseChangeOf(t, s.next("change frame"))
 		id := triple[1].(float64)
 		seen[id]++
@@ -339,7 +342,7 @@ func TestSubscribeWriteDuringReplayExactlyOnce(t *testing.T) {
 		}
 		if duringSet[id] {
 			liveSeen++
-			if total < 1200 {
+			if total < 1199 {
 				t.Fatalf("the mid-replay commit (row %v) was delivered at position %d, before the replay drained — live delivery is gated on the drained boundary", id, total)
 			}
 		}
@@ -653,56 +656,51 @@ func TestSubscribeRouteRegistered(t *testing.T) {
 	}
 }
 
-// TestSubscribeOverflowCloseFrame: a subscriber that drains slower than its
-// own visible commits arrive gets the teaching close — the reconnect recipe
-// carrying the last delivered cursor — and the stream ends there (§6.2: the
-// durable log is the catch-up path; the buffer never is). The subscriber
-// stops reading while one bulk commit lands, so the engine's bounded buffer
-// — not the client — is what gives.
-func TestSubscribeOverflowCloseFrame(t *testing.T) {
+// TestSubscribeCloseFrameTeaching: an engine-ended stream closes with the
+// teaching frame — the cause's reconnect recipe plus the last delivered
+// cursor — and the stream ends there, terminal-last (§6.2). The trigger here
+// is the lifetime end (a dropped table mid-feed), the deterministic member
+// of the close family; the overflow member is pinned at the engine level
+// (internal/store's TestListenOverflowTeachingClose) because a genuinely
+// slow SSE drain cannot be forced from the client side — loopback kernel
+// buffers auto-tune past any flood a fixture can afford, so the bounded
+// buffer legitimately never trips over HTTP in a test.
+func TestSubscribeCloseFrameTeaching(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
-	// A bare start: the replay is empty, the drainer runs immediately, and
-	// the unread socket is the slow drain. The flood is sized past the
-	// buffer bound PLUS whatever the kernel's socket buffers absorb before
-	// the drainer's writes backpressure (a non-reading peer's window closes
-	// early, but the margin keeps the fixture off kernel tuning).
-	s := h.subscribeLive(t, url.Values{"namespace": {"rt"}})
-	const flood = 20000
-	insertBulk(t, h, flood)
+	inserted := h.mustHTTP("insert", map[string]any{
+		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "x"}},
+	})
 
-	// Read to the terminal: change frames until the close, never an error.
-	changes := 0
-	var closeData map[string]any
-	for closeData == nil {
-		f := s.next("a frame after the flood")
-		switch f.event {
-		case "change":
-			changes++
-		case "close":
-			closeData = frameData(t, f)
-		default:
-			t.Fatalf("unexpected %q event mid-overflow: %s", f.event, f.data)
-		}
-		if changes > flood {
-			t.Fatalf("delivered %d change frames with no overflow close — the bound never tripped", changes)
-		}
+	s := h.subscribeLive(t, url.Values{"namespace": {"rt"}, "table": {"notes"}, "cursor": {"begin"}})
+	if got, w := sseChangeOf(t, s.next("replayed change")), [3]any{"notes", inserted["ids"].([]any)[0], "insert"}; got != w {
+		t.Fatalf("replayed change = %v, want %v", got, w)
 	}
+
+	// The feed's table lifetime ends under the stream: the engine closes
+	// with the teaching cause, the handler flushes the close frame after its
+	// in-flight frames, and the stream ends.
+	h.mustHTTP("drop_table", map[string]any{"namespace": "rt", "table": "notes", "confirm": "notes"})
+
+	f := s.next("the close frame")
+	if f.event != "close" {
+		t.Fatalf("frame after the drop = %q event (%s), want close", f.event, f.data)
+	}
+	closeData := frameData(t, f)
 	reason, _ := closeData["reason"].(string)
-	for _, teach := range []string{"overflow", "cursor"} {
+	for _, teach := range []string{"dropped", "reconnect"} {
 		if !strings.Contains(reason, teach) {
 			t.Fatalf("close reason %q does not teach the reconnect path (%q missing)", reason, teach)
 		}
 	}
 	cursor, _ := closeData["cursor"].(string)
 	if cursor == "" {
-		t.Fatalf("overflow close carries no resume cursor: %v", closeData)
+		t.Fatalf("close frame carries no resume cursor — the client must be able to reconnect from its last delivered change: %v", closeData)
 	}
 	if len(closeData) != 2 {
 		t.Fatalf("close frame carries fields beyond cursor/reason: %v", closeData)
 	}
-	// The close is terminal: the stream ends.
-	s.waitEnded("the overflow close frame")
+	s.waitEnded("the teaching close frame")
 }
 
 // TestSubscribeDisconnectReleasesListener: a client disconnect mid-stream
