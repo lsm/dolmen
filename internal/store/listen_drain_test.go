@@ -373,3 +373,69 @@ func TestListenCloseWaitsInFlightDelivery(t *testing.T) {
 		t.Fatal("the waiting close never fired after the delivery returned")
 	}
 }
+
+// TestListenExternalCancelJoinsPendingFire: the firing carve-out covers
+// exactly the closedFn callback's EXECUTION — never the interval where an
+// engine end WAITS a blocked delivery before firing. An external cancel
+// arriving in that interval takes the quiescence join: it returns only
+// after the in-flight notify returned AND the fire completed on the
+// counted pump (codex P1 on #228, thread r3984384330).
+func TestListenExternalCancelJoinsPendingFire(t *testing.T) {
+	st := openChangeStore(t)
+	insertNotes(t, st, 1)
+
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("open test: %v", err)
+	}
+	inFlight := make(chan struct{}, 1)
+	release := make(chan struct{})
+	goEnd := make(chan struct{})
+	closedFired := make(chan error, 1)
+	sess := testSession(func(cause error) { closedFired <- cause })
+	sess.s, sess.n = st, n
+	sess.chain = newCursorChain(time.Now(), 0)
+	sess.notify = func(ChangeRecord) {
+		inFlight <- struct{}{}
+		<-release // park mid-notify: the engine end parks behind it
+	}
+	sess.queue = []loggedChange{{seq: 1}}
+	sess.replayDone = true
+	sess.pumps.Add(2)
+	go sess.drain()
+	go func() { // the engine end, on a counted pump as the engine shapes it
+		defer sess.pumps.Done()
+		<-goEnd
+		sess.end(ErrListenOverflow) // parks WAITING the bracket; firing stays down
+	}()
+	<-inFlight // the delivery is parked mid-notify
+	close(goEnd)
+
+	cancelReturned := make(chan struct{})
+	go func() {
+		sess.cancel() // external: joins the pending fire
+		close(cancelReturned)
+	}()
+	select {
+	case <-cancelReturned:
+		t.Fatal("cancel returned while the fire was still pending — the carve-out covered a wait, not the callback")
+	case cause := <-closedFired:
+		t.Fatalf("the fire landed (%v) before the blocked delivery returned", cause)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	close(release) // the delivery returns; the end's wait wakes and fires
+	select {
+	case cause := <-closedFired:
+		if !errors.Is(cause, ErrListenOverflow) {
+			t.Fatalf("pending fire cause = %v, want ErrListenOverflow", cause)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the pending fire never landed after the delivery returned")
+	}
+	select {
+	case <-cancelReturned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the joined cancel never returned after the teardown drained")
+	}
+}

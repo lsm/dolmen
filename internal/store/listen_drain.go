@@ -84,13 +84,16 @@ func (sess *listenSession) drain() {
 	defer sess.recoverPump("drain")
 	for {
 		sess.mu.Lock()
-		// Live delivery is gated on the boundary call having COMPLETED —
-		// not merely on the boundary being reached — and on no page still
-		// being in flight: replayDone flips inside next()'s locked
-		// publish, so the caller has its final result by the time this
-		// goroutine can proceed, and replayActive holds off delivery
-		// while any later page (the caller keeps paging past done) is
-		// being decided.
+		// Live delivery is gated on the boundary call's publish and on no
+		// page still being in flight: replayDone flips inside next()'s
+		// locked publish — the last serialized step of the caller's
+		// boundary call — and replayActive holds off delivery while any
+		// later page (the caller keeps paging past done) is being
+		// decided. The first live callback may still arrive in the
+		// boundary call's return window: every gate the engine could hold
+		// releases there, notify runs on this engine goroutine by design,
+		// and the replay's records were all returned by the prior call —
+		// the concatenation's cursor order is unaffected.
 		for !sess.dead && (!sess.replayDone || sess.replayActive || len(sess.queue) == 0) {
 			sess.cond.Wait()
 		}

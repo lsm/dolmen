@@ -53,12 +53,14 @@ type listenSession struct {
 	queue    []loggedChange // the interim queue: the fill pump's paged commits, delivered one at a time by the drain
 	liveRead int64          // the live half's durable-log position: everything ≤ it is queued
 
-	// firing is raised by end, in the same critical section as dead (a
-	// terminal end WILL run closedFn), and lowered by fireClosed once the
-	// callback returns: it brackets the one window in which a pump goroutine
-	// may be running caller code that calls cancel back. A goroutine cannot
-	// wait itself out, so cancel declines the join for exactly that
-	// window — see cancel.
+	// firing is raised by fireClosed, under mu, immediately before the
+	// closedFn callback runs, and lowered once it returns: it brackets
+	// exactly the one window in which a pump goroutine may be running
+	// caller code that calls cancel back — the callback's own execution,
+	// never a pending fire (end's pre-callback wait runs with the flag
+	// down, so an external cancel behind a blocked delivery still joins).
+	// A goroutine cannot wait itself out, so cancel declines the join for
+	// exactly that window — see cancel.
 	firing bool
 
 	// The pumps' scope: derived from the caller's context, canceled at
@@ -74,19 +76,25 @@ type listenSession struct {
 	dead            bool
 
 	// The replay→live handoff, published by next() under mu. replayDone
-	// is the drainer's gate: the boundary call has COMPLETED and its
-	// result reached the caller — flipped in next()'s locked publish,
-	// never mid-page, so an in-flight drainer can never deliver past a
-	// boundary the caller has not yet seen. replayActive marks a page in
-	// flight for its whole span: the drainer holds off while any page —
-	// including a post-done call the handler makes — is being decided, so
-	// a live record never interleaves into a caller's page turn.
-	// notifyActive brackets a delivery's mint-and-notify span: the
-	// parked-close machinery (the next slice) waits it out rather than
-	// firing a terminal between a record and its notify, and an external
-	// cancel's quiescence join spans it — the callback has returned
-	// before cancel does (notify itself carries the caller rule cancel
-	// documents: never cancel synchronously from inside it).
+	// is the drainer's gate: it flips in next()'s locked publish — the
+	// last serialized step of the caller's boundary call, never mid-page
+	// — so no later page can interleave and no record delivers past a
+	// boundary a page is still deciding. The first live callback may
+	// still arrive in the boundary call's RETURN window: every gate the
+	// engine could hold (this lock, the flight permit) releases in that
+	// same window, and notify always runs on an engine goroutine, so the
+	// caller's replay-to-live transition is concurrent by design — the
+	// replay's own records were all returned by the final-records page,
+	// and the concatenation's cursor order is unaffected. replayActive
+	// marks a page in flight for its whole span: the drainer holds off
+	// while any page — including a post-done call the handler makes — is
+	// being decided, so a live record never interleaves into a caller's
+	// page turn. notifyActive brackets a delivery's mint-and-notify span:
+	// the parked-close machinery (the next slice) waits it out rather
+	// than firing a terminal between a record and its notify, and an
+	// external cancel's quiescence join spans it — the callback has
+	// returned before cancel does (notify itself carries the caller rule
+	// cancel documents: never cancel synchronously from inside it).
 	replayDone   bool
 	replayActive bool
 	notifyActive bool
@@ -125,15 +133,6 @@ func (sess *listenSession) end(cause error) {
 		return
 	}
 	sess.dead = true
-	// The firing flag rides the SAME critical section as dead: a terminal
-	// end will run closedFn, so a cancel that can observe the session dead
-	// must observe the fire pending too — the join decision and callback
-	// entry are one atomic step. A window between them lets an external
-	// cancel decide to join a pump that then runs a callback reentering
-	// cancel, and the two wait on each other.
-	if cause != nil && sess.closedFn != nil {
-		sess.firing = true
-	}
 	sess.ctxCancel() // the pumps' in-flight database work — cancel must not wait out a blocked read
 	sess.cond.Broadcast()
 	if cause != nil {
@@ -141,7 +140,13 @@ func (sess *listenSession) end(cause error) {
 		// delivery (its mint included) has returned. cond.Wait parks here
 		// holding nothing — the bracket's clear broadcasts — and the
 		// parked pumps above were already reached by end's broadcast, so
-		// this wait cannot strand a teardown.
+		// this wait cannot strand a teardown. The wait runs with firing
+		// DOWN: the flag brackets exactly the closedFn callback's
+		// EXECUTION (raised in fireClosed, under mu, before the callback
+		// runs), so a cancel arriving while the fire merely WAITS — here,
+		// behind a blocked notify — still takes the quiescence join and
+		// returns only after the whole teardown; the carve-out never
+		// covers a pending fire (codex P1 on #228, thread r3984384330).
 		for sess.notifyActive {
 			sess.cond.Wait()
 		}
@@ -164,10 +169,15 @@ func (sess *listenSession) isDead() bool {
 // fireClosed invokes the terminal callback at most once, with the end's
 // cause. The callback is caller code, so a panic is recovered and logged —
 // deliverCommit's write-path rule, applied here: the session is already
-// ending, and a panicking close must not take the process down. end raised
-// the firing flag atomically with dead; fireClosed lowers it once the
-// callback returns — the callback may itself call cancel, which can never
-// wait out the goroutine running it.
+// ending, and a panicking close must not take the process down. firing
+// raises HERE, under mu, immediately before the callback runs, and lowers
+// once it returns: the flag brackets exactly the callback's EXECUTION —
+// the one window a cancel cannot join, because the callback may itself be
+// that cancel's caller (no goroutine waits itself out). The raise and any
+// join decision serialize on mu, so a cancel that reads firing=false has
+// taken the join and waits the fire out on the counted pump; a pending
+// fire — one still waiting its bracket — is never covered (codex P1 on
+// #228, thread r3984384330).
 func (sess *listenSession) fireClosed(cause error) {
 	sess.closedOnce.Do(func() {
 		defer func() {
@@ -177,6 +187,9 @@ func (sess *listenSession) fireClosed(cause error) {
 			}
 		}()
 		if sess.closedFn != nil {
+			sess.mu.Lock()
+			sess.firing = true
+			sess.mu.Unlock()
 			defer func() {
 				sess.mu.Lock()
 				sess.firing = false
