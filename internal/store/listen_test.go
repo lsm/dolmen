@@ -413,3 +413,40 @@ func TestListenRegistrationErrors(t *testing.T) {
 		t.Fatal("nil notify = nil error, want rejection")
 	}
 }
+
+// TestListenReplayOutlivesRetention: a replay left idle past its chain's
+// retention cap fails LOUDLY, never silently short. Another reader's prune
+// has since deleted the aged backlog (retention moves with the reads; no
+// session pins the log forever, §9.3); the next page reports the
+// cursor-expiry teaching error instead of a short page reported as done —
+// done would silently omit records the registration boundary promised.
+func TestListenReplayOutlivesRetention(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir, WithChangeRetention(40*time.Millisecond))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	ctx := context.Background()
+	if err := st.CreateNamespace(ctx, "test", [16]byte{}); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	if _, err := st.CreateTable(ctx, "test", "notes", noteFields(), TableOpts{}, [16]byte{}); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	insertNotes(t, st, 3)
+
+	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
+	defer cancel()
+
+	time.Sleep(150 * time.Millisecond) // the backlog ages past 2R; the session's chains expire
+	// Another reader moves retention forward: its changes_since prunes the
+	// now age-eligible backlog out from under the idle replay.
+	if _, _, err := st.ChangesSince(ctx, "test", "", CursorBegin, [16]byte{}, nil, Incarnation{}, Page{}); err != nil {
+		t.Fatalf("changes_since: %v", err)
+	}
+
+	if _, _, _, err := replay.Next(ctx); !errors.Is(err, ErrCursorExpired) {
+		t.Fatalf("aged-out replay Next = %v, want ErrCursorExpired — a pruned backlog must fail loudly, not page short and report done", err)
+	}
+}

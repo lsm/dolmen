@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -202,7 +204,12 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	if notify == nil {
 		return nil, nil, invalidf("listen: notify callback is required")
 	}
-	n, err := s.ns(nsName)
+	// nsCtx, not ns: registration may queue behind s.mu — a DropNamespace
+	// draining its in-flight connections holds it, and that drain is
+	// explicitly unbounded — so the caller's context must bound both the
+	// mutex wait and a first-open initialization (the same rule
+	// ChangesSince follows).
+	n, err := s.nsCtx(ctx, nsName)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -332,6 +339,28 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	tx, err := sess.n.rw.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, "", false, err
+	}
+	// A replay must never SILENTLY shorten. The change log mints one row per
+	// record under the single rw writer — seqs are contiguous, and rows
+	// leave only through retention pruning, which deletes an oldest-first
+	// prefix (age-eligible, bounded by the oldest live chain's origin). So
+	// while the registration range (P, R] is outstanding, the log's oldest
+	// remaining record sits exactly at P+1; a larger oldest seq — or an
+	// empty log — means pruning has eaten into the promised range (a replay
+	// left idle past its chain's retention cap, §9.3: retention moves with
+	// the reads, and no session pins the log forever). Paged as a short or
+	// empty page it would report done and silently omit records the
+	// boundary promised; instead it is the cursor-expiry teaching error,
+	// for the caller to reconnect from its last delivered cursor.
+	if sess.position < sess.boundary {
+		var oldest sql.NullInt64
+		if err = tx.QueryRowContext(ctx,
+			`SELECT MIN(seq) FROM _dolmen_changes`).Scan(&oldest); err != nil {
+			return nil, "", false, err
+		}
+		if !oldest.Valid || oldest.Int64 > sess.position+1 {
+			return nil, "", false, fmt.Errorf("listen replay: %w", ErrCursorExpired)
+		}
 	}
 	boundary := sess.boundary
 	query, args := changePageSQL(sess.position, &boundary, MaxChangesPageLimit, sess.feed)
