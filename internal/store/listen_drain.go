@@ -102,6 +102,7 @@ func (sess *listenSession) drain() {
 		sess.notifyActive = true
 		sess.mu.Unlock()
 
+		var fail error
 		func() {
 			defer func() {
 				sess.mu.Lock()
@@ -111,12 +112,21 @@ func (sess *listenSession) drain() {
 			}()
 			tok, merr := sess.mintOne(sess.ctx, lc.seq)
 			if merr != nil {
-				sess.end(sess.fillErr(merr))
+				fail = sess.fillErr(merr)
 				return
 			}
 			lc.rec.Cursor = tok
 			sess.notify(lc.rec)
 		}()
+		if fail != nil {
+			// Ended OUTSIDE the bracket: end's fire waits out any delivery
+			// bracket — including, before the clear above, this
+			// goroutine's own — and no goroutine can wait itself out. The
+			// record the client is about to be handed must still resolve;
+			// the session ends with the wrapped cause.
+			sess.end(fail)
+			return
+		}
 	}
 }
 

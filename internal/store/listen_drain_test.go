@@ -251,3 +251,53 @@ func TestListenNotifyToleratesCancelFromCallback(t *testing.T) {
 		t.Fatal("notify→cancel deadlocked: the cancel joined the drain goroutine it ran on")
 	}
 }
+
+// TestListenCloseWaitsInFlightDelivery: the exposure rule is ordered BOTH
+// ways — no records delivered after closed fires, and closed never races
+// a record the session is handing out: an end landing while a delivery
+// is mid-notify (its mint already committed) waits the bracket out before
+// firing, so a consumer tearing down inside closed cannot beat the record
+// to its own callback (codex P1 on #228).
+func TestListenCloseWaitsInFlightDelivery(t *testing.T) {
+	st := openChangeStore(t)
+	closedCause := make(chan error, 1)
+
+	inFlight := make(chan ChangeRecord, 1)
+	release := make(chan struct{})
+	replay, cancel := listenOn(t, st, "", "", func(r ChangeRecord) {
+		inFlight <- r
+		<-release // park mid-notify: an engine end must wait this out
+	}, func(cause error) { closedCause <- cause })
+	defer cancel()
+
+	// The boundary call releases the drainer before any delivery.
+	if _, _, done, err := replay.Next(context.Background()); err != nil || !done {
+		t.Fatalf("boundary Next = err %v, done %v, want nil error, done=true", err, done)
+	}
+	insertNotes(t, st, 1)
+	select {
+	case <-inFlight:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no live delivery arrived to park the close against")
+	}
+
+	// Overflow ends the session while the delivery is parked mid-notify.
+	if _, err := insertNotesChunkedErr(st, listenQueueBound+MaxChangesPageLimit); err != nil {
+		t.Fatalf("bulk write: %v", err)
+	}
+	select {
+	case cause := <-closedCause:
+		t.Fatalf("closed fired with %v while a delivery was still mid-notify — the fire must wait the bracket out", cause)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	close(release) // the delivery returns; the waiting fire may land
+	select {
+	case cause := <-closedCause:
+		if !errors.Is(cause, ErrListenOverflow) {
+			t.Fatalf("close cause = %v, want ErrListenOverflow", cause)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the waiting close never fired after the delivery returned")
+	}
+}

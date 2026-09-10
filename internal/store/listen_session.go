@@ -104,13 +104,20 @@ func (sess *listenSession) cursor() Cursor {
 }
 
 // end terminates the session. A non-nil cause is an ENGINE-initiated end:
-// closed fires — once — with it. A nil cause is the caller's cancel: the
-// caller already knows, and closed never fires for it (§6.2). Idempotent;
-// the first end wins. The broadcast is load-bearing for the live half: a
-// parked pump sleeps in cond.Wait holding nothing, and only a wake or
-// this broadcast can reach it — without the broadcast, cancel's
-// pumps.Wait below would block forever on a session that never saw a
-// commit.
+// closed fires — once — with it, AFTER any in-flight delivery has
+// returned: the fire waits out the delivery bracket (notifyActive — the
+// record the mint just paid for must still reach the callback, and a
+// consumer tearing down inside closed must never race a record being
+// handed out; the contract's exposure rule is ordered BOTH ways, §6.2
+// and codex P1 on #228). The bracket's owner never ends inside it — the
+// drain's mint failure fires from outside its own bracket — so the wait
+// always makes progress once the in-flight notify returns. A nil cause
+// is the caller's cancel: the caller already knows, closed never fires
+// for it (§6.2), and it skips the wait. Idempotent; the first end wins.
+// The broadcast is load-bearing for the live half: a parked pump sleeps
+// in cond.Wait holding nothing, and only a wake or this broadcast can
+// reach it — without the broadcast, cancel's pumps.Wait below would
+// block forever on a session that never saw a commit.
 func (sess *listenSession) end(cause error) {
 	sess.mu.Lock()
 	if sess.dead {
@@ -129,6 +136,16 @@ func (sess *listenSession) end(cause error) {
 	}
 	sess.ctxCancel() // the pumps' in-flight database work — cancel must not wait out a blocked read
 	sess.cond.Broadcast()
+	if cause != nil {
+		// The delivery bracket: the fire lands only once the in-flight
+		// delivery (its mint included) has returned. cond.Wait parks here
+		// holding nothing — the bracket's clear broadcasts — and the
+		// parked pumps above were already reached by end's broadcast, so
+		// this wait cannot strand a teardown.
+		for sess.notifyActive {
+			sess.cond.Wait()
+		}
+	}
 	sess.mu.Unlock()
 	if cause != nil {
 		sess.fireClosed(cause)
