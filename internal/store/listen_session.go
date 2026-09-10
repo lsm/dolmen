@@ -53,14 +53,25 @@ type listenSession struct {
 	queue    []loggedChange // the interim queue: the fill pump's paged commits, delivered one at a time by the drain
 	liveRead int64          // the live half's durable-log position: everything ≤ it is queued
 
+	// A terminal PARKS instead of firing the moment its end lands (the
+	// exposure rule's serialization point, §6.2): closed must never precede
+	// a record the session already handed out — not an in-flight notify's
+	// record, not a page the caller is still deciding — so the cause waits
+	// for the quiescent exit of a pump goroutine (flushParkedClose).
+	// pendingDrainClose is the queue-OWNED variant: a terminal whose
+	// already-queued prefix must deliver first, fired only by the drainer
+	// once the queue empties.
+	pendingClose      error // parked by end; fired by a pump's deferred flush
+	pendingDrainClose error // armed by the queue's owner; fired by the drainer at the empty queue
+
 	// firing is raised by fireClosed, under mu, immediately before the
 	// closedFn callback runs, and lowered once it returns: it brackets
 	// exactly the one window in which a pump goroutine may be running
 	// caller code that calls cancel back — the callback's own execution,
-	// never a pending fire (end's pre-callback wait runs with the flag
-	// down, so an external cancel behind a blocked delivery still joins).
-	// A goroutine cannot wait itself out, so cancel declines the join for
-	// exactly that window — see cancel.
+	// never a pending fire (a parked cause waiting its flush runs with the
+	// flag down, so an external cancel behind a blocked delivery still
+	// joins). A goroutine cannot wait itself out, so cancel declines the
+	// join for exactly that window — see cancel.
 	firing bool
 
 	// The pumps' scope: derived from the caller's context, canceled at
@@ -112,20 +123,17 @@ func (sess *listenSession) cursor() Cursor {
 }
 
 // end terminates the session. A non-nil cause is an ENGINE-initiated end:
-// closed fires — once — with it, AFTER any in-flight delivery has
-// returned: the fire waits out the delivery bracket (notifyActive — the
-// record the mint just paid for must still reach the callback, and a
-// consumer tearing down inside closed must never race a record being
-// handed out; the contract's exposure rule is ordered BOTH ways, §6.2
-// and codex P1 on #228). The bracket's owner never ends inside it — the
-// drain's mint failure fires from outside its own bracket — so the wait
-// always makes progress once the in-flight notify returns. A nil cause
-// is the caller's cancel: the caller already knows, closed never fires
-// for it (§6.2), and it skips the wait. Idempotent; the first end wins.
-// The broadcast is load-bearing for the live half: a parked pump sleeps
-// in cond.Wait holding nothing, and only a wake or this broadcast can
-// reach it — without the broadcast, cancel's pumps.Wait below would
-// block forever on a session that never saw a commit.
+// it PARKS here — closed fires later, once, from a pump goroutine's
+// quiescent exit (flushParkedClose), never inline on the end caller: a
+// terminal must not precede a record the session already handed out, and
+// the engine halves end sessions from mid-loop positions where a delivery
+// or a page can still be in flight. A nil cause is the caller's cancel:
+// the caller already knows, and closed never fires for it (§6.2).
+// Idempotent; the first end wins. The broadcast is load-bearing for the
+// live half: a parked pump sleeps in cond.Wait holding nothing, and only
+// a wake or this broadcast can reach it — without the broadcast,
+// cancel's pumps.Wait below would block forever on a session that never
+// saw a commit.
 func (sess *listenSession) end(cause error) {
 	sess.mu.Lock()
 	if sess.dead {
@@ -133,24 +141,43 @@ func (sess *listenSession) end(cause error) {
 		return
 	}
 	sess.dead = true
+	// The park rides the SAME critical section as dead, and the first
+	// cause parked wins: the flush (from a pump's deferred, counted exit)
+	// waits out any in-flight delivery and page BEFORE firing, so the
+	// exposure rule's serialization lands at the flush — never here on
+	// the end caller. firing is NOT raised here: the flag brackets
+	// exactly the closedFn callback's execution (fireClosed raises it,
+	// under mu, immediately before the callback runs), so a cancel
+	// arriving while the fire is still PARKED — waiting its bracket
+	// behind a blocked notify — takes the quiescence join and returns
+	// only after the whole teardown; the carve-out never covers a pending
+	// fire (codex P1 on #228, thread r3984384330).
+	if cause != nil && sess.pendingClose == nil {
+		sess.pendingClose = cause
+	}
 	sess.ctxCancel() // the pumps' in-flight database work — cancel must not wait out a blocked read
 	sess.cond.Broadcast()
-	if cause != nil {
-		// The delivery bracket: the fire lands only once the in-flight
-		// delivery (its mint included) has returned. cond.Wait parks here
-		// holding nothing — the bracket's clear broadcasts — and the
-		// parked pumps above were already reached by end's broadcast, so
-		// this wait cannot strand a teardown. The wait runs with firing
-		// DOWN: the flag brackets exactly the closedFn callback's
-		// EXECUTION (raised in fireClosed, under mu, before the callback
-		// runs), so a cancel arriving while the fire merely WAITS — here,
-		// behind a blocked notify — still takes the quiescence join and
-		// returns only after the whole teardown; the carve-out never
-		// covers a pending fire (codex P1 on #228, thread r3984384330).
-		for sess.notifyActive {
-			sess.cond.Wait()
-		}
+	sess.mu.Unlock()
+}
+
+// flushParkedClose fires a parked terminal from a pump's exit path, once
+// no replay page and no delivery is in flight. The park is the exposure
+// rule's serialization point (§6.2): closed must never precede a record
+// the session already handed out — an in-flight notify has returned
+// before its pump reaches this deferred flush, and the other pump's flush
+// waits out the delivery flag — and a page minted while the session was
+// ending may still be returning, so the parked close waits for it rather
+// than cutting past it. The FIRST cause parked wins; later ends are
+// already absorbed by the dead flag. The flush runs on the counted pump
+// — before its pumps.Done — so cancel either waits out the whole fire
+// or, inside the callback itself, declines the join on the firing flag.
+func (sess *listenSession) flushParkedClose() {
+	sess.mu.Lock()
+	for sess.replayActive || sess.notifyActive {
+		sess.cond.Wait()
 	}
+	cause := sess.pendingClose
+	sess.pendingClose = nil
 	sess.mu.Unlock()
 	if cause != nil {
 		sess.fireClosed(cause)

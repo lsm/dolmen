@@ -68,19 +68,22 @@ func (sess *listenSession) mintOne(ctx context.Context, seq int64) (Cursor, erro
 // page still in flight — so the concatenation §6.2 promises arrives as
 // replay-then-live in order: nothing live reaches the caller before its
 // replay has fully reported. notifyActive brackets each delivery's whole
-// mint-and-notify span, so the parked-close machinery (the next slice)
-// can wait out an in-flight delivery instead of firing a terminal
-// between a mint and its notify, and an external cancel's quiescence
-// join spans the bracket: cancel returns only after the in-flight
-// callback has. notify itself carries the caller rule cancel documents —
-// it must not call cancel synchronously (the join would sit on this very
-// goroutine); a notify that unsubscribes defers (`go cancel()`). A mint
-// failure is a teaching end — the record
-// the client is about to be handed must still resolve — and the session
-// ends with the wrapped cause, on this counted goroutine (r6d's rule:
-// the fire rides the pump through teardown).
+// mint-and-notify span, and a parked close waits it out (never a
+// terminal between a mint and its notify); an external cancel's
+// quiescence join spans it too — cancel returns only after the in-flight
+// callback has, and notify itself carries the caller rule cancel
+// documents: it must not call cancel synchronously (the join would sit
+// on this very goroutine); a notify that unsubscribes defers
+// (`go cancel()`). A mint failure is a teaching end — the record the
+// client is about to be handed must still resolve — and the session ends
+// with the wrapped cause, parked for this counted goroutine's deferred
+// flush (r6d's rule: the fire rides the pump through teardown). The
+// drainer is also the ONLY firing point for a queue-owned terminal
+// (pendingDrainClose): the queue's admitted prefix drains first, and the
+// close moves through end() at the empty queue.
 func (sess *listenSession) drain() {
 	defer sess.pumps.Done()
+	defer sess.flushParkedClose()
 	defer sess.recoverPump("drain")
 	for {
 		sess.mu.Lock()
@@ -93,12 +96,29 @@ func (sess *listenSession) drain() {
 		// boundary call's return window: every gate the engine could hold
 		// releases there, notify runs on this engine goroutine by design,
 		// and the replay's records were all returned by the prior call —
-		// the concatenation's cursor order is unaffected.
-		for !sess.dead && (!sess.replayDone || sess.replayActive || len(sess.queue) == 0) {
+		// the concatenation's cursor order is unaffected. A parked
+		// terminal keeps the loop alive to its firing point: the
+		// queue-owned one until the prefix drains, the plain one until a
+		// pump's quiescent exit takes it.
+		for !sess.dead && (!sess.replayDone || sess.replayActive || (len(sess.queue) == 0 && sess.pendingClose == nil && sess.pendingDrainClose == nil)) {
 			sess.cond.Wait()
 		}
 		if sess.dead {
 			sess.mu.Unlock()
+			return
+		}
+		if len(sess.queue) == 0 {
+			// The queue-owned terminal: the prefix has fully drained, so
+			// this goroutine — the only legal firing point — moves it
+			// through end(), and the deferred flush fires it from this
+			// goroutine's quiescent exit.
+			cause := sess.pendingClose
+			if sess.pendingDrainClose != nil {
+				cause = sess.pendingDrainClose
+				sess.pendingDrainClose = nil
+			}
+			sess.mu.Unlock()
+			sess.end(cause)
 			return
 		}
 		lc := sess.queue[0]
