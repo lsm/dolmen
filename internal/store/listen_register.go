@@ -44,6 +44,7 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	sess := &listenSession{
 		s: s, n: n, nsName: nsName, table: table, nsGen: nsGen,
 		liveAuthz: liveAuthz, notify: notify, closedFn: closed,
+		flight: make(chan struct{}, 1),
 	}
 
 	tx, err := n.rw.BeginTx(ctx, nil)

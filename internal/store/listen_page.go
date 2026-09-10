@@ -32,10 +32,16 @@ import (
 // scan from the same sess.position (duplicate records), and a slower
 // earlier call could publish its position after a later one's, regressing
 // Resume. nextMu sits OUTSIDE mu so the page's database work holds only
-// the flight lock — sess.mu remains the short-held state lock.
+// the flight lock — sess.mu remains the short-held state lock — and the
+// serialization wait is CONTEXT-AWARE: a caller blocked behind another
+// Next's database work returns when ITS OWN context cancels rather than
+// waiting out the holder (a Background-context holder stuck behind the
+// namespace's single write connection must not strand a deadlined caller).
 func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bool, error) {
-	sess.nextMu.Lock()
-	defer sess.nextMu.Unlock()
+	if err := sess.lockNext(ctx); err != nil {
+		return nil, "", false, err
+	}
+	defer func() { <-sess.flight }()
 	sess.mu.Lock()
 	resume := sess.nextCursor // the PRE-page boundary: what an omitted page must hand back
 	sess.mu.Unlock()
@@ -169,3 +175,26 @@ func (sess *listenSession) mint(ctx context.Context, admitted []loggedChange, re
 	}
 	return records, next, nil
 }
+
+// lockNext acquires the single-flight lock or fails with the context's
+// error. The flight lock is a BUFFERED CHANNEL semaphore, not a mutex: a
+// channel receive is cancellable, so a caller blocked behind another
+// Next's database work returns when ITS OWN context cancels — without
+// spawning a goroutine per waiter (a mutex has no cancellable Lock; the
+// watcher-goroutine workaround leaked two goroutines per canceled caller
+// until the holder released).
+func (sess *listenSession) lockNext(ctx context.Context) error {
+	if ctx == nil || ctx.Done() == nil {
+		sess.flight <- flightToken
+		return nil
+	}
+	select {
+	case sess.flight <- flightToken:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// flightToken is the single flight permit (a value, not a constant: struct{}{} is not a constant expression).
+var flightToken = struct{}{}
