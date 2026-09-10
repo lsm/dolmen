@@ -287,6 +287,16 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	// the whole namespace's, because a table feed's promise is only its own
 	// records — an unrelated table's aged row deleted later must not read
 	// as this feed's loss. Only rows removed AFTER this count are the
+	// TODO(9d): the count covers every FEED row, including rows a scoped
+	// viewer can never receive — a hidden aged row deleted mid-session
+	// currently reads as loss even when the visible backlog is intact
+	// (§9.3 says foreign traffic must never evict a scoped reader).
+	// Filtering the count needs a side-effect-free view of the current
+	// scope; re-invoking liveAuthz is NOT it — the admission callback is
+	// per-event by contract (§6.2), and extra invocations from the counting
+	// path perturb re-resolvers that sequence or audit on calls. The 9d
+	// scope-resolver contract should expose the predicate; until then, with
+	// auth off, liveAuthz is nil everywhere but tests.
 	// session's to lose.
 	if sess.position < sess.boundary {
 		cq, cargs := changeCountSQL(sess.position, sess.boundary, sess.feed)
