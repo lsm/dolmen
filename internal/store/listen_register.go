@@ -185,6 +185,6 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	}
 	committed = true // the session owns its registry entry now; cancel removes it
 	sess.pumps.Add(1)
-	go sess.fill()
+	go sess.pump() // pump, not fill: the terminal callback fires off the counted goroutine
 	return &ChangeReplay{Next: sess.next, Resume: sess.cursor}, sess.cancel, nil
 }

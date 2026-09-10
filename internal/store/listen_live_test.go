@@ -205,7 +205,7 @@ func TestListenCancelUnblocksParkedFill(t *testing.T) {
 	sess := testSession(nil)
 	sess.n = n
 	sess.pumps.Add(1)
-	go sess.fill()
+	go sess.pump()
 	sess.wake("notes", ChangeRange{First: 1, Last: 1, Count: 1}) // the pump takes the flag and parks in BeginTx
 
 	done := make(chan struct{})
@@ -242,7 +242,7 @@ func TestListenFillQueuesCommits(t *testing.T) {
 	sess.liveRead = int64(len(backlog.Ids)) // past the backlog
 	sess.unregister = st.onCommit("test", sess.wake)
 	sess.pumps.Add(1)
-	go sess.fill()
+	go sess.pump()
 	defer sess.cancel()
 
 	insertNotes(t, st, 2)
@@ -285,6 +285,33 @@ func TestListenOverflowTeachingClose(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("no overflow close: the bounded queue never tripped")
+	}
+}
+
+// TestListenOverflowCloseToleratesCancelFromCallback: closedFn is caller
+// code with no reentrancy restriction, and a natural callback is cancel —
+// the documented idempotent teardown, which waits pumps empty. The overflow
+// close therefore must not fire the callback on a counted pump goroutine,
+// or cancel's pumps.Wait waits on itself (r6d's review found exactly this
+// deadlock); pump leaves the count before ending the session.
+func TestListenOverflowCloseToleratesCancelFromCallback(t *testing.T) {
+	st := openChangeStore(t)
+	cancelled := make(chan struct{})
+
+	var cancel func()
+	_, cancel = listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, func(cause error) {
+		cancel() // the reentrancy hazard itself, run synchronously
+		close(cancelled)
+	})
+	defer cancel()
+
+	if _, err := insertNotesChunkedErr(st, listenQueueBound+MaxChangesPageLimit); err != nil {
+		t.Fatalf("bulk write: %v", err)
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(20 * time.Second):
+		t.Fatal("overflow close deadlocked: cancel from closedFn waited on the pump it ran on")
 	}
 }
 

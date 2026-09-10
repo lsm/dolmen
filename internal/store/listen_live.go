@@ -54,13 +54,27 @@ func (sess *listenSession) wake(table string, changes ChangeRange) {
 	sess.mu.Unlock()
 }
 
+// pump is the registered goroutine: fill until a terminal, then end the
+// session with it. The order is load-bearing: end fires closedFn
+// synchronously, and closedFn is caller code with no reentrancy
+// restriction — a natural callback is cancel, the documented idempotent
+// teardown, whose pumps.Wait must never find the goroutine it runs on
+// still counted, or the pump would wait on itself.
+func (sess *listenSession) pump() {
+	cause := sess.fill()
+	sess.pumps.Done() // leave the count BEFORE the callback can cancel us
+	if cause != nil {
+		sess.end(cause)
+	}
+}
+
 // fill is the live read half: on every wake it pages the durable log
 // forward from liveRead and queues what it finds. It shares the rw pool
 // with Next and the write paths, so its transactions serialize with them;
 // it never holds sess.mu across database work. A queue past
-// listenQueueBound ends the session with the teaching close.
-func (sess *listenSession) fill() {
-	defer sess.pumps.Done()
+// listenQueueBound is one terminal it reports for pump to end the session
+// with — the teaching close.
+func (sess *listenSession) fill() error {
 	for {
 		sess.mu.Lock()
 		for !sess.dead && !sess.woken {
@@ -68,19 +82,18 @@ func (sess *listenSession) fill() {
 		}
 		if sess.dead {
 			sess.mu.Unlock()
-			return
+			return nil
 		}
 		sess.woken = false
 		sess.mu.Unlock()
 
 		for {
 			if sess.isDead() {
-				return
+				return nil
 			}
 			read, ferr := sess.fillBatch()
 			if ferr != nil {
-				sess.end(ferr)
-				return
+				return ferr
 			}
 			if read < MaxChangesPageLimit {
 				break // drained to the head; wait for the next wake
@@ -109,9 +122,10 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 	if over {
 		// The teaching reconnect: the stream ends and the client resumes
 		// from its last delivered cursor — the durable log is the catch-up
-		// path; the buffer never was the durability mechanism.
-		sess.end(ErrListenOverflow)
-		return 0, nil
+		// path; the buffer never was the durability mechanism. Reported as
+		// the terminal, not fired here: pump ends the session only after
+		// this goroutine has left the pumps count.
+		return 0, ErrListenOverflow
 	}
 	return len(scanned), nil
 }
