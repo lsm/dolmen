@@ -216,6 +216,7 @@ type listenSession struct {
 	replayExhausted bool
 	nextCursor      Cursor
 	dead            bool
+	pendingClose    error // a close waiting on the queue to drain (revocation with an admitted live prefix)
 
 	closedOnce sync.Once
 	cancelOnce sync.Once
@@ -470,15 +471,37 @@ func (sess *listenSession) fillBatch() (visible []ChangeRecord, read int, err er
 	sess.mu.Unlock()
 
 	var admitted []loggedChange
+	revoked := false
 	for _, lc := range scanned {
-		vis, revoked := sess.admit(lc.rec)
-		if revoked {
-			sess.end(ErrListenRevoked)
-			return nil, 0, nil
+		vis, rev := sess.admit(lc.rec)
+		if rev {
+			revoked = true
+			break
 		}
 		if vis {
 			admitted = append(admitted, lc)
 		}
+	}
+	if revoked {
+		// The admitted prefix is DELIVERED before the close: liveRead has
+		// consumed those positions, and a revocation takes effect at the
+		// next event, not retroactively. Mint the prefix, queue it, and arm
+		// a pending close — the drainer fires it once the queue empties, so
+		// closed never precedes a record it admitted (§6.2's exposure rule).
+		// An empty prefix closes through the same path.
+		var queued []ChangeRecord
+		if len(admitted) > 0 {
+			var merr error
+			if queued, _, merr = sess.mint(ctx, now, admitted, from); merr != nil {
+				return nil, 0, sess.fillErr(merr)
+			}
+		}
+		sess.mu.Lock()
+		sess.queue = append(sess.queue, queued...)
+		sess.pendingClose = ErrListenRevoked
+		sess.cond.Broadcast()
+		sess.mu.Unlock()
+		return nil, 0, nil
 	}
 	if len(admitted) == 0 {
 		return nil, len(scanned), nil // nothing visible: no tokens, no second transaction
@@ -638,17 +661,26 @@ func (sess *listenSession) admit(rec ChangeRecord) (visible, revoked bool) {
 // drained the replay (Next reported done — the §6.2 gating), then hands the
 // queued records to notify one at a time, in seq order. It holds no lock
 // across notify: a slow client delays only itself and the queue behind it,
-// never a writer, never the filler.
+// never a writer, never the filler. A close parked on the queue (a
+// revocation whose batch admitted records first) fires HERE, from this
+// goroutine, after the last queued record was delivered — closed never
+// precedes a record the session already admitted.
 func (sess *listenSession) drain() {
 	defer sess.pumps.Done()
 	defer sess.recoverPump("drain")
 	for {
 		sess.mu.Lock()
-		for !sess.dead && (!sess.replayDone || len(sess.queue) == 0) {
+		for !sess.dead && (!sess.replayDone || (len(sess.queue) == 0 && sess.pendingClose == nil)) {
 			sess.cond.Wait()
 		}
 		if sess.dead {
 			sess.mu.Unlock()
+			return
+		}
+		if len(sess.queue) == 0 {
+			cause := sess.pendingClose
+			sess.mu.Unlock()
+			sess.end(cause)
 			return
 		}
 		rec := sess.queue[0]
@@ -678,9 +710,11 @@ func (sess *listenSession) recoverPump(half string) {
 // records returns done=false; the following call returns done=true with no
 // records — the registration boundary — after which notify delivers live
 // records (an empty replay range reports done on its first call). A session
-// ended under the page — overflow, revocation found by the admission filter,
-// a feed target that moved — reports done too: the closed callback has
-// already carried the cause to the caller, and Next never contradicts it.
+// ended under the page — overflow, a feed target that moved, or a revocation
+// this page's admission found — reports done too, the page OMITTED on
+// revocation: the closed callback has already fired, and nothing may be
+// exposed after it (§6.2); the omitted records re-deliver on the caller's
+// reconnect from its last cursor.
 func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bool, error) {
 	sess.mu.Lock()
 	dead, exhausted := sess.dead, sess.replayExhausted
@@ -719,11 +753,15 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		return nil, "", false, qerr
 	}
 
-	// Admit outside the transaction, like fillBatch: revocation ends the
-	// session (closed carries the cause), invisibility drops the record from
-	// the page. Records admitted before a revocation in the same page are
-	// still exposed — they were admitted, and the caller's terminal framing
-	// keeps them ordered before the close; the revoked one never is.
+	// Admit outside the transaction, like fillBatch. A revocation found
+	// mid-page OMITS the page: closed must precede everything the caller
+	// could still consume (§6.2's exposure rule — a consumer may tear down
+	// record-processing state in its closed callback), and the omitted
+	// prefix is no loss — the caller reconnects from its last delivered
+	// cursor and the durable log re-admits those records on the new session.
+	// The live half delivers its own admitted prefix instead (the drainer's
+	// pending close): those positions are consumed there, this page's are
+	// not.
 	var admitted []loggedChange
 	revoked := false
 	for _, lc := range scanned {
@@ -735,6 +773,10 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		if vis {
 			admitted = append(admitted, lc)
 		}
+	}
+	if revoked {
+		sess.end(ErrListenRevoked)
+		return nil, sess.cursor(), true, nil
 	}
 
 	records, next, merr := sess.mint(ctx, now, admitted, sess.position)
@@ -749,16 +791,12 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// on an empty admitted page would strand them behind a page the caller
 	// will never turn.
 	short := len(scanned) < MaxChangesPageLimit
-	sess.replayExhausted = short || revoked
+	sess.replayExhausted = short
 	if len(scanned) > 0 {
 		sess.position = scanned[len(scanned)-1].seq
 	}
 	sess.nextCursor = next
 	sess.mu.Unlock()
-	if revoked {
-		sess.end(ErrListenRevoked)
-		return records, next, true, nil
-	}
 	// A short scanned page with nothing to expose IS the boundary — the
 	// caller is already at the registration point and notify takes over
 	// from here. A short page with records reports done=false (the final

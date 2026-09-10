@@ -307,8 +307,12 @@ func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte
 		if os.IsNotExist(err) {
 			// The file was removed out-of-band (or never existed): close the
 			// stale cached pools rather than orphaning them — Close() only
-			// reaches entries still in the map.
+			// reaches entries still in the map — and wake the namespace's
+			// live sessions: their pools just died, the namespace can mint
+			// no further commit to wake them, and nothing on this path ever
+			// will (the normal drop's wake note applies double here).
 			s.evict(nsName)
+			s.wakeListenSessions(nsName)
 			return fmt.Errorf("%w: namespace %s", ErrNotFound, nsName)
 		}
 		return err

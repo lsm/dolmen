@@ -470,9 +470,11 @@ func TestListenLiveAuthzAdmission(t *testing.T) {
 		t.Fatalf("empty-scope replay delivered %v, want nothing", got)
 	}
 
-	// ok=false mid-replay is a teaching close, never a silent skip: closed
-	// fires with the revocation cause and the records after the revoked one
-	// are never exposed.
+	// ok=false mid-replay is a teaching close that precedes every exposed
+	// record (§6.2: a consumer may tear down in its closed callback): the
+	// page carrying the revoked record is omitted entirely — closed fires
+	// with the cause, Next reports done, and the omitted records re-deliver
+	// on the caller's reconnect from its last cursor.
 	seen := 0
 	revokeAfterFirst := func(string) (*RowScope, Incarnation, bool) {
 		seen++
@@ -488,8 +490,8 @@ func TestListenLiveAuthzAdmission(t *testing.T) {
 		t.Fatalf("revocation listen: %v", err)
 	}
 	defer cancel()
-	if got := rowIDsOf(drainReplay(t, replay)); len(got) != 1 {
-		t.Fatalf("revoked replay delivered %v, want the 1 record admitted before revocation", got)
+	if got := rowIDsOf(drainReplay(t, replay)); len(got) != 0 {
+		t.Fatalf("revoked replay delivered %v, want nothing exposed after closed", got)
 	}
 	select {
 	case cause := <-closedCause:
@@ -498,6 +500,59 @@ func TestListenLiveAuthzAdmission(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("revocation never closed the session")
+	}
+}
+
+// TestListenLiveRevocationDeliversPrefix: a revocation found mid-LIVE-batch
+// delivers the batch's admitted prefix before the teaching close — the
+// positions are consumed, and a revocation takes effect at the next event,
+// not retroactively — with closed firing only after the last queued record
+// (§6.2's exposure rule).
+func TestListenLiveRevocationDeliversPrefix(t *testing.T) {
+	st := openChangeStore(t)
+	ctx := context.Background()
+
+	admitted := 0
+	revokeAfterTwo := func(string) (*RowScope, Incarnation, bool) {
+		admitted++
+		if admitted > 2 {
+			return nil, Incarnation{}, false
+		}
+		return &RowScope{Owner: "alice"}, Incarnation{}, true
+	}
+	live := newLiveLog()
+	closedCause := make(chan error, 1)
+	replay, cancel, err := st.Listen(ctx, "test", "", "", [16]byte{}, revokeAfterTwo, live.notify,
+		func(cause error) { closedCause <- cause })
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer cancel()
+	drainReplay(t, replay)
+
+	// Three owner-labeled records (seeded out-of-band — no public write
+	// path stamps change-record owners until 9c), then a real unlabeled
+	// write: the seed does not ride the write paths, so the commit is what
+	// wakes the filler. The batch admits the two labeled records, revokes at
+	// the third; the unlabeled record is never reached.
+	seedOwnerChanges(t, st, "test", "notes", []string{"alice", "alice", "alice"})
+	insertNotes(t, st, 1)
+
+	delivered := live.waitN(t, 2)
+	if got := rowIDsOf(delivered); len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("revoked live batch delivered prefix %v, want rows [1 2]", got)
+	}
+	select {
+	case cause := <-closedCause:
+		if !errors.Is(cause, ErrListenRevoked) {
+			t.Fatalf("revocation cause = %v, want ErrListenRevoked", cause)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("revocation never closed the session after the prefix")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := live.count(); n != 2 {
+		t.Fatalf("%d records delivered after the close, want exactly the 2-record prefix", n)
 	}
 }
 
