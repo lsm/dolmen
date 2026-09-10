@@ -450,3 +450,76 @@ func TestListenReplayOutlivesRetention(t *testing.T) {
 		t.Fatalf("aged-out replay Next = %v, want ErrCursorExpired — a pruned backlog must fail loudly, not page short and report done", err)
 	}
 }
+
+// seedStampedChanges seeds change records with explicit at stamps — the
+// out-of-band fixture for non-monotonic stamping (a clock step between
+// commits), which no public write path can produce: retention deletes by
+// age, and only a stamp older than a LATER seq's makes pruning delete an
+// interior record.
+func seedStampedChanges(t *testing.T, st *Store, table string, ats []time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("open test: %v", err)
+	}
+	tx, err := n.rw.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback()
+	nsGen, err := readNSGen(ctx, tx)
+	if err != nil {
+		t.Fatalf("read nsgen: %v", err)
+	}
+	gen, err := tableGen(ctx, tx, table)
+	if err != nil {
+		t.Fatalf("read drop gen: %v", err)
+	}
+	for i, at := range ats {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO _dolmen_changes(table_name, row_id, kind, owner, nsgen, drop_gen, at) VALUES(?,?,?,?,?,?,?)`,
+			table, int64(i+1), string(ChangeInsert), nil, nsGen[:], gen, isoChangeStamp(at)); err != nil {
+			t.Fatalf("seed change row %d: %v", i+1, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}
+
+// TestListenReplayInteriorHoleFailsLoudly: pruning deletes by age, and at
+// stamps are not seq-ordered after a clock step — so an aged MIDDLE record
+// can be deleted behind fresher neighbors, and the oldest-record check
+// alone would accept the log and silently skip the missing seq. The page
+// verifies every seq in the span it consumed; a hole is the same
+// cursor-expiry teaching error, never a delivered gap.
+func TestListenReplayInteriorHoleFailsLoudly(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir, WithChangeRetention(40*time.Millisecond))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	ctx := context.Background()
+	if err := st.CreateNamespace(ctx, "test", [16]byte{}); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	if _, err := st.CreateTable(ctx, "test", "notes", noteFields(), TableOpts{}, [16]byte{}); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	// Seq 2 carries an at stamp 200ms in the past (a clock step); seqs 1
+	// and 3 are fresh. Only seq 2 ever ages past 2R.
+	seedStampedChanges(t, st, "notes", []time.Time{time.Now(), time.Now().Add(-200 * time.Millisecond), time.Now()})
+
+	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
+	defer cancel()
+	time.Sleep(150 * time.Millisecond) // the session's chains expire; seq 2 becomes prunable
+	if _, _, err := st.ChangesSince(ctx, "test", "", CursorBegin, [16]byte{}, nil, Incarnation{}, Page{}); err != nil {
+		t.Fatalf("changes_since: %v", err)
+	}
+
+	if _, _, _, err := replay.Next(ctx); !errors.Is(err, ErrCursorExpired) {
+		t.Fatalf("holey replay Next = %v, want ErrCursorExpired — an interior hole must fail loudly, not skip the missing seq", err)
+	}
+}

@@ -340,18 +340,26 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	if err != nil {
 		return nil, "", false, err
 	}
+	// The namespace's write pool is a single connection: a transaction that
+	// returns without committing or rolling back holds it, and every later
+	// write or replay against the namespace blocks indefinitely. The defer
+	// makes every path below release it (a no-op after Commit).
+	defer tx.Rollback()
 	// A replay must never SILENTLY shorten. The change log mints one row per
-	// record under the single rw writer — seqs are contiguous, and rows
-	// leave only through retention pruning, which deletes an oldest-first
-	// prefix (age-eligible, bounded by the oldest live chain's origin). So
-	// while the registration range (P, R] is outstanding, the log's oldest
-	// remaining record sits exactly at P+1; a larger oldest seq — or an
-	// empty log — means pruning has eaten into the promised range (a replay
-	// left idle past its chain's retention cap, §9.3: retention moves with
-	// the reads, and no session pins the log forever). Paged as a short or
-	// empty page it would report done and silently omit records the
-	// boundary promised; instead it is the cursor-expiry teaching error,
-	// for the caller to reconnect from its last delivered cursor.
+	// record under the single rw writer, so seqs are contiguous at mint:
+	// every seq in (P, R] existed when registration read the boundary. Rows
+	// leave only through retention pruning, which deletes by AGE — and at
+	// stamps are not seq-ordered after a clock step (changeBegin's
+	// out-of-order rule), so deletions need not form an oldest-first prefix.
+	// Two checks hold the promise while the range is outstanding: the log's
+	// oldest remaining record must sit at P+1 (an empty log, or one pruned
+	// past P, has lost the head of the range), and — below, over the span
+	// this page just consumed — every seq must still be present (an interior
+	// hole where an aged middle record was pruned behind a future-stamped
+	// neighbor). Either failure is the cursor-expiry teaching error, for the
+	// caller to reconnect from its last delivered cursor — never a short
+	// page reported as done, which would silently omit records the boundary
+	// promised.
 	if sess.position < sess.boundary {
 		var oldest sql.NullInt64
 		if err = tx.QueryRowContext(ctx,
@@ -370,10 +378,23 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		scanned, qerr = scanChangePage(rows)
 		rows.Close()
 	}
+	// The interior-hole half of the expiry check above, over exactly the
+	// span this page consumed: the span was minted contiguously, so every
+	// seq in (position, last] must still be present — anything less means
+	// pruning deleted inside the promised range (a clock-stepped at stamp
+	// aged a middle record out behind fresher neighbors), and delivering
+	// the page would silently skip the missing seqs.
+	if qerr == nil && len(scanned) > 0 {
+		last := scanned[len(scanned)-1].seq
+		var kept int64
+		if qerr = tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM _dolmen_changes WHERE seq > ? AND seq <= ?`,
+			sess.position, last).Scan(&kept); qerr == nil && kept != last-sess.position {
+			qerr = fmt.Errorf("listen replay: %w", ErrCursorExpired)
+		}
+	}
 	if qerr == nil {
 		qerr = tx.Commit()
-	} else {
-		tx.Rollback()
 	}
 	if qerr != nil {
 		return nil, "", false, qerr
