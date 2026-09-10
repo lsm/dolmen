@@ -440,6 +440,132 @@ func changesPageLimit(n int) int {
 	return n
 }
 
+// loggedChange is one scanned change-log row: the public record plus the seq
+// its cursor must be minted at — the position never crosses the seam, so it
+// lives beside the record only between the page read and the token mints.
+type loggedChange struct {
+	rec ChangeRecord
+	seq int64
+}
+
+// changeFeed is one table feed's identity: the table plus the lifetime
+// labels a record must carry to belong to the feed — the nsgen stamped at
+// mint and the table's drop generation. A ChangesSince call reads the
+// labels fresh per page; a Listen session fixes them at registration (a
+// same-named successor is a different feed, §9.3). A nil *changeFeed is the
+// namespace-wide feed: no table filter, every lifetime included.
+type changeFeed struct {
+	table   string
+	nsgen   [16]byte
+	dropGen int64
+}
+
+// changeFeedOf validates a table feed's target inside tx and returns its
+// CURRENT lifetime labels, read in the caller's snapshot so a
+// drop-and-recreate committing elsewhere cannot mix a predecessor's records
+// into the successor's feed. A missing table is ErrNotFound — the §6.2
+// no-implicit-anything rule.
+func changeFeedOf(ctx context.Context, tx *sql.Tx, nsName, table string) (*changeFeed, error) {
+	if _, err := loadSchema(ctx, tx, nsName, table); err != nil {
+		return nil, err
+	}
+	dropGen, err := tableGen(ctx, tx, table)
+	if err != nil {
+		return nil, err
+	}
+	nsgen, err := readNSGen(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	return &changeFeed{table: table, nsgen: nsgen, dropGen: dropGen}, nil
+}
+
+// changePageSQL builds the change-log page read: records in (from, to] in
+// seq order (to nil: unbounded — a pointer because a boundary of 0 is a real
+// bound, the empty log's head, and must never widen the read), restricted to
+// one table lifetime's records when feed is non-nil, capped at limit.
+func changePageSQL(from int64, to *int64, limit int, feed *changeFeed) (string, []any) {
+	q := `SELECT seq, table_name, row_id, kind, owner, nsgen, drop_gen FROM _dolmen_changes WHERE seq > ?`
+	args := []any{from}
+	if to != nil {
+		q += ` AND seq <= ?`
+		args = append(args, *to)
+	}
+	if feed != nil {
+		q += ` AND table_name = ? AND drop_gen = ? AND nsgen = ?`
+		args = append(args, feed.table, feed.dropGen, feed.nsgen[:])
+	}
+	return q + ` ORDER BY seq LIMIT ?`, append(args, limit)
+}
+
+// scanChangePage materializes one bounded page of change records. The buffer
+// is bounded by the caller's LIMIT — the same contract that bounds every
+// public page (§9.3) — and each row's nsgen label is validated on decode: a
+// corrupt blob must never silently masquerade as a lifetime key.
+func scanChangePage(rows *sql.Rows) ([]loggedChange, error) {
+	var scanned []loggedChange
+	for rows.Next() {
+		var lc loggedChange
+		var owner sql.NullString
+		var gen []byte
+		if err := rows.Scan(&lc.seq, &lc.rec.Table, &lc.rec.RowID, &lc.rec.Kind, &owner, &gen, &lc.rec.Lifetime.DropGen); err != nil {
+			return nil, err
+		}
+		if len(gen) != 16 {
+			return nil, fmt.Errorf("corrupt change record %d: nsgen is %d bytes, want 16", lc.seq, len(gen))
+		}
+		copy(lc.rec.Lifetime.NsGen[:], gen)
+		lc.rec.Lifetime.Table = lc.rec.Table
+		lc.rec.Owner = owner.String
+		scanned = append(scanned, lc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return scanned, nil
+}
+
+// mintChangeCursors mints the page's cursors: one fresh token per record at
+// the record's position — a client persisting its last-delivered cursor
+// resumes exactly after it, and consecutive visible records yield unrelated
+// tokens (§9.3's opacity rules) — then the next-page token, all on the one
+// chain.
+//
+// The next-page cursor. An EMPTY page re-presents the caller's own token
+// (slice 5d's rule): the position did not move, so nothing new is issuable,
+// and minting fresh randomness per poll would hand a 250 ms wait_for tick a
+// durable row every time — hundreds of thousands per idle waiter per day.
+// Resolve already refreshed the token's deadline, so the echoed token
+// resumes exactly as a fresh one would. Bare and begin starts still mint
+// (the response must carry a real head/boundary token the caller did not
+// present), and fresh randomness stays the rule for every NEW position —
+// per-record cursors and non-empty pages. Callers that present no client
+// token (Listen's session halves, which page on demand rather than on a
+// poll tick) pass the empty cursor and always mint.
+func mintChangeCursors(ctx context.Context, tx *sql.Tx, now time.Time, scanned []loggedChange, resume int64, from Cursor, feedTable string, chain *cursorChain) ([]ChangeRecord, Cursor, error) {
+	records := make([]ChangeRecord, len(scanned))
+	for i := range scanned {
+		tok, err := mintCursorToken(ctx, tx, now, scanned[i].seq, feedTable, chain)
+		if err != nil {
+			return nil, "", err
+		}
+		scanned[i].rec.Cursor = tok
+		records[i] = scanned[i].rec
+	}
+	if len(scanned) == 0 && from != "" && from != CursorBegin {
+		return records, from, nil
+	}
+	nextPos := resume
+	if len(scanned) > 0 {
+		nextPos = scanned[len(scanned)-1].seq
+	}
+	next, err := mintCursorToken(ctx, tx, now, nextPos, feedTable, chain)
+	if err != nil {
+		return nil, "", err
+	}
+	return records, next, nil
+}
+
 // ChangesSince is the scoped replay read over the engine-owned durable change
 // log (§6.2, §9.3): records in cursor (seq) order after the resume position,
 // as one bounded page plus the next cursor. Everything the call touches —
@@ -501,22 +627,12 @@ func (s *Store) ChangesSince(ctx context.Context, nsName, table string, from Cur
 	// labels a record must carry to belong to this lifetime are read in the
 	// same snapshot as the page — a drop-and-recreate committing elsewhere
 	// cannot mix a predecessor's records into the successor's feed.
-	var lifetime struct {
-		nsgen   [16]byte
-		dropGen int64
-	}
-	query := `SELECT seq, table_name, row_id, kind, owner, nsgen, drop_gen FROM _dolmen_changes WHERE seq > ?`
+	var feed *changeFeed
 	if table != "" {
-		if _, err := loadSchema(ctx, tx, nsName, table); err != nil {
-			return nil, "", err
+		var ferr error
+		if feed, ferr = changeFeedOf(ctx, tx, nsName, table); ferr != nil {
+			return nil, "", ferr
 		}
-		if lifetime.dropGen, err = tableGen(ctx, tx, table); err != nil {
-			return nil, "", err
-		}
-		if lifetime.nsgen, err = readNSGen(ctx, tx); err != nil {
-			return nil, "", err
-		}
-		query += ` AND table_name = ? AND drop_gen = ? AND nsgen = ?`
 	}
 
 	// The resume position and its page chain.
@@ -542,79 +658,29 @@ func (s *Store) ChangesSince(ctx context.Context, nsName, table string, from Cur
 		chain = &cursorChain{ID: row.ChainID, Origin: row.ChainOrigin, Start: row.ChainStart}
 	}
 
-	// The bounded page. Records are drained before any token is minted — the
-	// page is capped at MaxChangesPageLimit, so the buffer is bounded by the
-	// same contract that bounds the response.
+	// The bounded page, then its cursors — assembled from the shared helpers
+	// Listen's session halves use too, so every replay path reads and mints
+	// identically. The page is capped at MaxChangesPageLimit, so the buffer
+	// is bounded by the same contract that bounds the response.
 	limit := changesPageLimit(page.Limit)
-	args := []any{position}
-	if table != "" {
-		args = append(args, table, lifetime.dropGen, lifetime.nsgen[:])
-	}
-	rows, err := tx.QueryContext(ctx, query+` ORDER BY seq LIMIT ?`, append(args, limit)...)
+	query, args := changePageSQL(position, nil, limit, feed)
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, "", err
 	}
-	type loggedChange struct {
-		rec ChangeRecord
-		seq int64
-	}
-	scanned := make([]loggedChange, 0, limit)
-	for rows.Next() {
-		var lc loggedChange
-		var owner sql.NullString
-		var gen []byte
-		if err := rows.Scan(&lc.seq, &lc.rec.Table, &lc.rec.RowID, &lc.rec.Kind, &owner, &gen, &lc.rec.Lifetime.DropGen); err != nil {
-			rows.Close()
-			return nil, "", err
-		}
-		if len(gen) != 16 {
-			rows.Close()
-			return nil, "", fmt.Errorf("corrupt change record %d: nsgen is %d bytes, want 16", lc.seq, len(gen))
-		}
-		copy(lc.rec.Lifetime.NsGen[:], gen)
-		lc.rec.Lifetime.Table = lc.rec.Table
-		lc.rec.Owner = owner.String
-		scanned = append(scanned, lc)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
+	scanned, err := scanChangePage(rows)
+	rows.Close()
+	if err != nil {
 		return nil, "", err
 	}
-	rows.Close()
 
 	// Mint the cursors: one per record at the record's position, then the
-	// next-page token at the last delivered position (the resume position on
-	// an empty page) — all on the one chain, so a client may persist either a
-	// record's cursor or next_cursor and resume gap-free.
-	records := make([]ChangeRecord, len(scanned))
-	for i := range scanned {
-		tok, err := mintCursorToken(ctx, tx, now, scanned[i].seq, table, chain)
-		if err != nil {
-			return nil, "", err
-		}
-		scanned[i].rec.Cursor = tok
-		records[i] = scanned[i].rec
-	}
-	// The next-page cursor. An EMPTY page re-presents the caller's own
-	// token: the position did not move, so nothing new is issuable, and
-	// minting fresh randomness per poll would hand a 250 ms wait_for tick
-	// a durable row every time — hundreds of thousands per idle waiter per
-	// day. Resolve already refreshed the token's deadline, so the echoed
-	// token resumes exactly as a fresh one would. Bare and begin starts
-	// still mint (the response must carry a real head/boundary token the
-	// caller did not present), and fresh randomness stays the rule for
-	// every NEW position — per-record cursors and non-empty pages.
-	var next Cursor
-	if len(scanned) == 0 && from != "" && from != CursorBegin {
-		next = from
-	} else {
-		nextPos := position
-		if len(scanned) > 0 {
-			nextPos = scanned[len(scanned)-1].seq
-		}
-		if next, err = mintCursorToken(ctx, tx, now, nextPos, table, chain); err != nil {
-			return nil, "", err
-		}
+	// next-page token — all on the one chain, so a client may persist either
+	// a record's cursor or next_cursor and resume gap-free. The presented
+	// cursor rides along for the empty-page echo (mintChangeCursors).
+	records, next, err := mintChangeCursors(ctx, tx, now, scanned, position, from, table, chain)
+	if err != nil {
+		return nil, "", err
 	}
 
 	// Retention moves with the read: by the time this runs, the call's own
