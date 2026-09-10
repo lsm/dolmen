@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 	"time"
 )
@@ -228,17 +227,13 @@ func TestListenFillQueuesCommits(t *testing.T) {
 	st := openChangeStore(t)
 	backlog := insertNotes(t, st, 3)
 
-	sess := &listenSession{
-		s: st, nsName: "test",
-		flight: make(chan struct{}, 1),
-	}
-	sess.cond = sync.NewCond(&sess.mu)
-	sess.ctx, sess.ctxCancel = context.WithCancel(context.Background())
 	n, err := st.ns("test")
 	if err != nil {
 		t.Fatalf("open test: %v", err)
 	}
-	sess.n = n
+	sess := testSession(nil)
+	sess.s, sess.n = st, n
+	sess.flight = make(chan struct{}, 1)
 	sess.liveRead = int64(len(backlog.Ids)) // past the backlog
 	sess.unregister = st.onCommit("test", sess.wake)
 	sess.pumps.Add(1)

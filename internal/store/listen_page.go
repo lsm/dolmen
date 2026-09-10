@@ -46,14 +46,40 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	defer func() { <-sess.flight }()
 	sess.mu.Lock()
 	resume := sess.nextCursor // the PRE-page boundary: what an omitted page must hand back
+	// Mark the page IN FLIGHT for its whole span — read, mint: the drainer
+	// must not deliver past the boundary while the final page is still being
+	// decided (and, once the parked-close machinery lands, a terminal must
+	// not cut past it either — §6.2's exposure rule). The clear rides a
+	// DEFER so a panicking page cannot strand the flag and wedge the
+	// drainer behind it.
+	sess.replayActive = true
 	sess.mu.Unlock()
-	records, next, done, progress, err := sess.page(ctx)
+	records, next, done, progress, err := func() (a []ChangeRecord, b Cursor, c bool, d pageProgress, e error) {
+		defer func() {
+			sess.mu.Lock()
+			sess.replayActive = false
+			sess.cond.Broadcast()
+			sess.mu.Unlock()
+		}()
+		return sess.page(ctx)
+	}()
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
+	// done with no error — from ANY path, including the exhausted-entry
+	// boundary call that carries zero progress — means the replay is over:
+	// release the drainer HERE, inside the caller's own final word (never
+	// mid-page), before the branches below decide what to publish.
+	if done && err == nil {
+		sess.replayDone = true
+		sess.cond.Broadcast()
+	}
 	if sess.dead && len(records) > 0 {
 		// The omitted page's own cursor points PAST records the caller never
 		// receives — handing it back would teach a resume that skips them.
-		// The pre-page boundary is the honest position.
+		// The pre-page boundary is the honest position. The session is over:
+		// release any drainer the same way.
+		sess.replayDone = true
+		sess.cond.Broadcast()
 		return nil, resume, true, nil
 	}
 	if err != nil || progress.next == "" {

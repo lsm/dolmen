@@ -455,10 +455,14 @@ type ChangeRange struct {
 // allocation, and preserving the atomic registration boundary throughout.
 //
 // The engine does not invoke the session's notify callback until Next has
-// drained the replay (reported done): records committing in the interim
-// buffer in a bounded queue and are delivered live afterwards, so the
-// concatenation replay-then-live is exactly cursor order and a client
-// persisting only its last-delivered cursor can never skip older records.
+// drained the replay (reported done — the release rides the boundary call
+// itself, so the first live callback may arrive in that call's return
+// window; notify always runs on an engine goroutine, making the caller's
+// replay-to-live transition concurrent by design): records committing in
+// the interim buffer in a bounded queue and are delivered live afterwards,
+// so the concatenation replay-then-live is exactly cursor order and a
+// client persisting only its last-delivered cursor can never skip older
+// records.
 // Boundary dedup across the two halves is the engine's, inside the atomic
 // registration. If the caller drains slower than writes arrive and the
 // interim buffer bounds, the engine closes the session — through Listen's
