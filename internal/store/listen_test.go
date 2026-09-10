@@ -649,3 +649,49 @@ func TestListenBeginAcceptsPreExistingGaps(t *testing.T) {
 		t.Fatalf("gap-tolerant replay delivered %v, want the retained rows [1 4] around the pre-existing hole", got)
 	}
 }
+
+// TestListenMintRevalidatesAfterSlowAdmission: the admission callbacks are
+// caller code that can span the chain cap — another reader's prune may
+// delete the scanned, age-eligible rows in that gap. The mint revalidates
+// the promise under its own write lock and fails loudly instead of handing
+// out cached records whose cursors resolve over a gutted log.
+func TestListenMintRevalidatesAfterSlowAdmission(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir, WithChangeRetention(40*time.Millisecond))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	ctx := context.Background()
+	if err := st.CreateNamespace(ctx, "test", [16]byte{}); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	if _, err := st.CreateTable(ctx, "test", "notes", noteFields(), TableOpts{}, [16]byte{}); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	// Rows young at registration (the begin window holds them, so the range
+	// is real) that age past 2R during the slow admission below; the
+	// registration chain protects them until it expires alongside.
+	insertNotes(t, st, 3)
+
+	// Admission outlives the chain cap and itself prunes: the callback is
+	// invoked between the page's read snapshot and the mint, and reading
+	// through the engine is exactly what the 9d re-resolver will do.
+	authz := func(string) (*RowScope, Incarnation, bool) {
+		time.Sleep(150 * time.Millisecond) // past chain_start + 2R
+		if _, _, err := st.ChangesSince(ctx, "test", "", CursorBegin, [16]byte{}, nil, Incarnation{}, Page{}); err == nil {
+			// its mint+prune roots a fresh chain at the head and frees the
+			// aged rows behind it
+		}
+		return nil, Incarnation{}, true
+	}
+	replay, cancel, err := st.Listen(ctx, "test", "", CursorBegin, [16]byte{}, authz, func(ChangeRecord) {}, nil)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer cancel()
+
+	if _, _, _, err := replay.Next(ctx); !errors.Is(err, ErrCursorExpired) {
+		t.Fatalf("replay across a pruning admission gap = %v, want ErrCursorExpired — the mint must revalidate the promise, not return cached records over a gutted log", err)
+	}
+}

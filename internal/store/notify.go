@@ -539,6 +539,25 @@ func (sess *listenSession) mint(ctx context.Context, admitted []loggedChange, re
 	// cursors whose issuance is already expired (and evaluate chain
 	// rotation against a stale, pre-cap time).
 	now := time.Now()
+	// The loss check REVALIDATED here, under the mint's own write lock: the
+	// page released its read snapshot before admission ran, and the
+	// authorization callbacks are caller code that can take arbitrarily
+	// long — in that gap another reader's prune may have deleted the
+	// expired chain and the scanned, age-eligible rows. Minting tokens for
+	// deleted positions would hand the caller cached records whose cursors
+	// resolve over a gutted log; the recount (the promise, pre-consumption)
+	// fails loudly instead, and the caller reconnects from its last
+	// delivered cursor.
+	if sess.position < sess.boundary {
+		cq, cargs := changeCountSQL(sess.position, sess.boundary, sess.feed)
+		var kept int64
+		if err := tx.QueryRowContext(ctx, cq, cargs...).Scan(&kept); err != nil {
+			return nil, "", err
+		}
+		if kept != sess.outstanding {
+			return nil, "", fmt.Errorf("listen replay: %w", ErrCursorExpired)
+		}
+	}
 	records, next, err := mintChangeCursors(ctx, tx, now, admitted, resume, "", sess.table, sess.chainFor(now, resume))
 	if err != nil {
 		return nil, "", err
