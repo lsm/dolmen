@@ -261,8 +261,14 @@ func (s *Store) CreateNamespace(ctx context.Context, nsName string, parentNsGen 
 		return err
 	}
 	// A cached entry here is stale (its file was removed out-of-band); evict
-	// it so lockedNS initializes the fresh file instead of serving dead pools.
+	// it so lockedNS initializes the fresh file instead of serving dead
+	// pools, and wake the namespace's live sessions — an idle predecessor
+	// session's pools just died, and while the successor's first commit
+	// would wake it anyway, the session must end against its dead binding
+	// NOW (a predecessor's stream never follows into the successor, §9.3)
+	// rather than sleeping until traffic happens to arrive.
 	s.evict(nsName)
+	s.wakeListenSessions(nsName)
 	if _, err := s.lockedNS(nsName); err != nil {
 		// Un-reserve so a failed init doesn't wedge the name behind a
 		// zero-byte file.
@@ -307,8 +313,12 @@ func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte
 		if os.IsNotExist(err) {
 			// The file was removed out-of-band (or never existed): close the
 			// stale cached pools rather than orphaning them — Close() only
-			// reaches entries still in the map.
+			// reaches entries still in the map — and wake the namespace's
+			// live sessions: their pools just died, the namespace can mint
+			// no further commit to wake them, and nothing on this path ever
+			// will (the normal drop's wake note applies double here).
 			s.evict(nsName)
+			s.wakeListenSessions(nsName)
 			return fmt.Errorf("%w: namespace %s", ErrNotFound, nsName)
 		}
 		return err
@@ -335,6 +345,17 @@ func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte
 	// WAL on its final close. Close errors are advisory here — the file
 	// removal below is the outcome that matters.
 	s.evict(nsName)
+	// The dropped namespace can mint no further commits, so nothing else
+	// would ever wake its live sessions — nudge them here, immediately after
+	// the eviction (a failure in the file removal below returns early, and
+	// the sessions must not sleep on pools that are already gone), still
+	// under s.mu, which is safe because the nudge only flags (notifyMu, then
+	// each session's own mu — the one direction the store's lock graph
+	// already has; no database access rides this path). Each woken session's
+	// next fill ends it against the dead binding (notify.go): a recreated
+	// successor is a different namespace with a restarted sequence, and a
+	// predecessor's stream must never follow into it (§9.3).
+	s.wakeListenSessions(nsName)
 	for _, p := range []string{path, path + "-wal", path + "-shm"} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("drop namespace %s: %w", nsName, err)
@@ -414,7 +435,15 @@ func (s *Store) DropTable(ctx context.Context, nsName, table string, inc Incarna
 		 ON CONFLICT(table_name) DO UPDATE SET gen = gen + 1`, table); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// A table feed on the dropped table ends here (its lifetime ended — a
+	// same-named successor is a different feed), and it needs the nudge: the
+	// dropped table can mint no further commits to wake it with. Namespace
+	// feeds on the namespace are nudged too and sail on unaffected.
+	s.wakeListenSessions(nsName)
+	return nil
 }
 
 // TableState is the one-snapshot read the API layer resolves scopes and

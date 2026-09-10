@@ -108,9 +108,16 @@ type Store struct {
 	// notifyMu guards listeners, the per-namespace post-commit registry
 	// (notify.go, §9.3) — its own mutex, never s.mu: write-path dispatch
 	// must not contend with namespace open/evict, and a listener's fn runs
-	// outside every lock.
-	notifyMu  sync.Mutex
-	listeners map[string][]*commitListener
+	// outside every lock. It also guards listenSessions, the live Listen
+	// sessions' lifecycle registry (6b): a drop's lifecycle wake and the
+	// sessions' registration/cancel bookkeeping share the lock so neither
+	// can interleave with the other. And it guards pruneNext, the
+	// read-path retention prune's per-namespace coalescing schedule
+	// (notify.go's pruneDue) — listener-side state, the same lock.
+	notifyMu       sync.Mutex
+	listeners      map[string][]*commitListener
+	listenSessions map[string][]*listenSession
+	pruneNext      map[string]time.Time
 
 	// changeRetention is the change log's retention bound R (§9.3): the
 	// shared knob for cursor-token expiry and record pruning, fixed at Open —
@@ -158,8 +165,8 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 
 func (s *Store) Close() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	var first error
+	names := make([]string, 0, len(s.nss))
 	for name, n := range s.nss {
 		if err := n.rw.Close(); err != nil && first == nil {
 			first = err
@@ -168,7 +175,21 @@ func (s *Store) Close() error {
 			first = err
 		}
 		delete(s.nss, name)
+		names = append(names, name)
 	}
+	// Pools first, then the wake: an idle Listen session's pumps sleep on
+	// their condition variable and only a wake (a commit, a drop, this) can
+	// reach them, and the engine-shutdown close §6.2 promises must fire
+	// (notify.go) — clients waiting on a terminal signal, and the pump
+	// goroutines, must not be stranded by a silent pool close. Woken after
+	// the close, each session's next fill fails against the dead binding
+	// and ends with the teaching lifetime cause. The wake runs under s.mu
+	// in the store's one lock direction (s.mu → notifyMu → the session's
+	// mu); it does no database work.
+	for _, name := range names {
+		s.wakeListenSessions(name)
+	}
+	s.mu.Unlock()
 	return first
 }
 
@@ -204,6 +225,17 @@ func (s *Store) nsCtx(ctx context.Context, name string) (*nsDB, error) {
 	}
 	defer s.mu.Unlock()
 	return s.lockedNSCtx(ctx, name)
+}
+
+// nsEvicted reports whether the namespace is no longer served by the
+// instance want was opened as — dropped and evicted, or replaced by a
+// recreated successor. Listen sessions bind to the instance they registered
+// on (notify.go): a live read through a dead or superseded pool ends the
+// session, never streams a successor's records through it.
+func (s *Store) nsEvicted(name string, want *nsDB) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nss[name] != want
 }
 
 // lockedNS is ns() for a caller already holding s.mu: CreateNamespace
