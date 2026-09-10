@@ -22,7 +22,7 @@ const nsGenKey = "nsgen"
 // lockedNS). The id is immutable once written: reopened namespaces read it
 // (readNSGen) and never re-mint, so it is stable for the namespace's
 // lifetime and fresh only after DropNamespace deleted the file.
-func ensureNSGen(rw *sql.DB) error {
+func ensureNSGen(ctx context.Context, rw *sql.DB) error {
 	// Zero is the seam's "no guard" sentinel (§6.2), so a mint that lands on
 	// it (2^-128) is redrawn rather than stored: a real namespace must never
 	// carry an id every guard would ignore.
@@ -32,18 +32,18 @@ func ensureNSGen(rw *sql.DB) error {
 			return fmt.Errorf("mint nsgen: %w", err)
 		}
 	}
-	tx, err := rw.Begin()
+	tx, err := rw.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO _dolmen_meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO NOTHING`,
 		nsGenKey, gen[:]); err != nil {
 		return err
 	}
 	var stored []byte
-	if err := tx.QueryRow(
+	if err := tx.QueryRowContext(ctx,
 		`SELECT value FROM _dolmen_meta WHERE key = ?`, nsGenKey).Scan(&stored); err != nil {
 		return err
 	}

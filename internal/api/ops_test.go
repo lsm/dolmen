@@ -4,13 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/schema"
@@ -409,6 +412,189 @@ func TestReadRowsIDBoundDeclared(t *testing.T) {
 		}
 	}
 	t.Fatalf("ids must be a required request key, got %v", req)
+}
+
+// TestWaitForTimeoutBoundDeclared pins wait_for's declared timeout_ms bounds
+// to the constants dispatch enforces: a schema-validating client that trusts
+// the schema must never have the server reject (or, worse, default) a value
+// the schema admitted. The default itself (30000) is dispatch-side — the
+// schema declares only the valid range, and the description names both.
+func TestWaitForTimeoutBoundDeclared(t *testing.T) {
+	def, ok := Ops["wait_for"]
+	if !ok {
+		t.Fatal("wait_for op missing")
+	}
+	props := def.InputSchema["properties"].(map[string]any)
+	timeout := props["timeout_ms"].(map[string]any)
+	if timeout["minimum"] != 0 || timeout["maximum"] != maxWaitForTimeoutMS {
+		t.Fatalf("timeout_ms must declare the enforced 0–%d range, got %v", maxWaitForTimeoutMS, timeout)
+	}
+	// limit rides the same shared page contract as changes_since.
+	limit := props["limit"].(map[string]any)
+	if limit["minimum"] != 1 || limit["maximum"] != store.MaxChangesPageLimit {
+		t.Fatalf("limit must declare the enforced 1–%d range, got %v", store.MaxChangesPageLimit, limit)
+	}
+	req, _ := def.InputSchema["required"].([]string)
+	for _, r := range req {
+		if r == "namespace" {
+			return
+		}
+	}
+	t.Fatalf("namespace must be a required request key, got %v", req)
+}
+
+// stalledChangesEngine stalls ChangesSince the way engine contention does:
+// the call sits in its context-honoring wait until the context fires, then
+// fails with the context's error — the shape of every part of the real read
+// path (the connection-pool wait, the SQL, and the registry lock, which is
+// context-aware since the goroutine-racing round). fastReads makes the
+// first N reads instant, so a fixture can validate the feed first and then
+// starve a later read (0 stalls every read).
+type stalledChangesEngine struct {
+	store.Engine
+	stall     time.Duration
+	fastReads int
+
+	mu    sync.Mutex
+	reads int
+}
+
+func (e *stalledChangesEngine) ChangesSince(ctx context.Context, ns, table string, from store.Cursor, nsGen [16]byte, scope *store.RowScope, scopeIncarnation store.Incarnation, page store.Page) ([]store.ChangeRecord, store.Cursor, error) {
+	e.mu.Lock()
+	e.reads++
+	stall := e.stall
+	if e.reads <= e.fastReads {
+		stall = 0
+	}
+	e.mu.Unlock()
+	if stall > 0 {
+		select {
+		case <-time.After(stall):
+		case <-ctx.Done():
+			return nil, "", ctx.Err()
+		}
+	}
+	return e.Engine.ChangesSince(ctx, ns, table, from, nsGen, scope, scopeIncarnation, page)
+}
+
+// TestWaitForReadsBoundedByDeadline: the bounded-time contract holds even
+// when feed reads queue behind a stalled engine. EVERY read — including a
+// bare start's boundary-establishing one — carries the wait's remaining
+// budget (floored at one tick), and only a read that follows a SUCCESSFUL
+// one — a validated feed, a pinned boundary — may translate its expiry into
+// the empty timeout page; a starved FIRST read (cursor or bare start alike)
+// errors instead of promising "empty" over a feed it never saw: an expired
+// or cross-feed cursor must never be masked into a quiet wait (§9.2, §9.3).
+func TestWaitForReadsBoundedByDeadline(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	const stall = 1500 * time.Millisecond
+	seed := func(srv *Server) {
+		t.Helper()
+		call := func(op, body string) {
+			t.Helper()
+			if _, err := srv.Dispatch(context.Background(), op, []byte(body)); err != nil {
+				t.Fatalf("%s: %v", op, err)
+			}
+		}
+		// Seeding is ordered — a map here randomizes iteration order and
+		// let insert race ahead of create_table on CI.
+		call("create_namespace", `{"namespace":"rt"}`)
+		call("create_table", `{"namespace":"rt","table":"notes","fields":[{"name":"title","type":"string"}]}`)
+		call("insert", `{"namespace":"rt","table":"notes","records":[{"title":"a"}]}`)
+	}
+
+	// A validated wait whose LATER read starves: the first read is instant
+	// (feed validated, boundary pinned), the second queues behind the
+	// stall, its budget expires at the deadline, and the call returns the
+	// EMPTY page carrying the pinned boundary — bounded at timeout_ms, not
+	// at the stall.
+	validated := &Server{eng: &stalledChangesEngine{Engine: st, stall: stall, fastReads: 1}, emb: fakeEmb{}}
+	seed(validated)
+	// The head cursor is minted through the unblocked engine — AFTER
+	// seeding (the namespace must exist) — and is the token the stalled
+	// waits resume from.
+	_, head, err := st.ChangesSince(context.Background(), "rt", "", "", [16]byte{}, nil, store.Incarnation{}, store.Page{})
+	if err != nil {
+		t.Fatalf("mint head cursor: %v", err)
+	}
+	if head == "" {
+		t.Fatal("no head cursor")
+	}
+	start := time.Now()
+	res, err := validated.Dispatch(context.Background(), "wait_for",
+		[]byte(fmt.Sprintf(`{"namespace":"rt","cursor":%q,"timeout_ms":800}`, head)))
+	if err != nil {
+		t.Fatalf("validated wait behind a stalled read errored: %v", err)
+	}
+	page := res.(map[string]any)
+	if changes, _ := page["changes"].([]any); len(changes) != 0 {
+		t.Fatalf("starved wait = %v changes, want an empty page", len(changes))
+	}
+	if got, _ := page["next_cursor"].(string); got == "" {
+		t.Fatal("starved wait's page carried no boundary cursor")
+	}
+	if held := time.Since(start); held < 650*time.Millisecond || held > 1450*time.Millisecond {
+		t.Fatalf("starved wait held %v, want ~timeout_ms 800 (the budget caps the read, not the stall)", held)
+	}
+
+	// A starved FIRST read never earns the timeout page: nothing validated
+	// the cursor or the feed, so an empty page would mask an expired or
+	// cross-feed cursor's teaching error into a quiet wait — it errors,
+	// promptly, instead. Same namespace (already seeded — create_table is
+	// not idempotent), fresh wrapper whose every read stalls.
+	unvalidated := &Server{eng: &stalledChangesEngine{Engine: st, stall: stall}, emb: fakeEmb{}}
+	start = time.Now()
+	res, err = unvalidated.Dispatch(context.Background(), "wait_for",
+		[]byte(fmt.Sprintf(`{"namespace":"rt","cursor":%q,"timeout_ms":0}`, head)))
+	if err == nil {
+		t.Fatalf("starved first read returned a page (%v) — an unvalidated feed must not be answered with a timeout page", res)
+	}
+	if held := time.Since(start); held > 1200*time.Millisecond {
+		t.Fatalf("starved first read held %v — the tick floor must bound it, not the stall", held)
+	}
+
+	// A bare start's boundary-establishing read is bounded by the SAME
+	// budget (§9.2's bound is unconditional): behind a stalled engine it
+	// errors within the tick floor rather than blocking until the writer
+	// finishes — no feed was seen, so no head cursor may be promised.
+	start = time.Now()
+	res, err = unvalidated.Dispatch(context.Background(), "wait_for", []byte(`{"namespace":"rt","timeout_ms":0}`))
+	if err == nil {
+		t.Fatalf("starved bare start returned a page (%v) — an unestablished boundary must not be answered with a timeout page", res)
+	}
+	if held := time.Since(start); held > 1200*time.Millisecond {
+		t.Fatalf("starved bare start held %v — the budget must bound it, not the stall", held)
+	}
+}
+
+// TestWaitForMissingNamespaceNotCreated: a wait never creates its
+// namespace — a missing one is not_found and stays missing, so an
+// abandoned or failed wait can never resurrect a dropped namespace (the
+// registry-lock half of that contract is pinned store-side, in
+// TestChangesSinceRegistryWaitHonorsContext).
+func TestWaitForMissingNamespaceNotCreated(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	plain := &Server{eng: st, emb: fakeEmb{}}
+
+	_, err = plain.Dispatch(context.Background(), "wait_for", []byte(`{"namespace":"ghost","timeout_ms":0}`))
+	if err == nil {
+		t.Fatal("wait_for on a missing namespace succeeded — it must be not_found, not a silent empty wait")
+	}
+	var apiErr *Error
+	if !errors.As(err, &apiErr) || apiErr.Code != ErrCodeNotFound {
+		t.Fatalf("missing-namespace wait error = %v, want not_found", err)
+	}
+	if _, err := st.ListTables(context.Background(), "ghost", nil); err == nil {
+		t.Fatal("wait_for created the missing namespace — a wait never creates")
+	}
 }
 
 type blankIdentityEmb struct{}

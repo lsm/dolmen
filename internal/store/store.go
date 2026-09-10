@@ -59,9 +59,50 @@ func NSPathPattern() string {
 // wired without options behaves exactly like a default deployment.
 const DefaultChangeRetention = 168 * time.Hour
 
+// ctxMutex is the store's registry lock: a one-slot channel semaphore with
+// a context-aware acquire. Plain Lock serves the paths that have no context
+// to honor (lifecycle, Close); LockCtx lets bounded callers — wait_for's
+// feed reads — abort while the lock is held, which a sync.Mutex wait never
+// can (a draining drop_namespace evicts pools under this lock and can hold
+// it for as long as its in-flight connections run).
+type ctxMutex struct {
+	ch chan struct{}
+}
+
+func newCtxMutex() ctxMutex {
+	ch := make(chan struct{}, 1)
+	ch <- struct{}{}
+	return ctxMutex{ch: ch}
+}
+
+// Lock acquires without a context, like a sync.Mutex.
+func (m *ctxMutex) Lock() {
+	<-m.ch
+}
+
+// LockCtx acquires the lock or fails with the context's error — a bounded
+// caller never queues behind a long holder past its own deadline.
+func (m *ctxMutex) LockCtx(ctx context.Context) error {
+	select {
+	case <-m.ch:
+		return nil
+	default:
+	}
+	select {
+	case <-m.ch:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *ctxMutex) Unlock() {
+	m.ch <- struct{}{}
+}
+
 type Store struct {
 	dir string
-	mu  sync.Mutex
+	mu  ctxMutex
 	nss map[string]*nsDB
 
 	// notifyMu guards listeners, the per-namespace post-commit registry
@@ -108,7 +149,7 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 	if err := os.Chmod(abs, 0o700); err != nil {
 		return nil, fmt.Errorf("cannot secure data directory %s (owner-only permissions): %w", abs, err)
 	}
-	s := &Store{dir: abs, nss: map[string]*nsDB{}, changeRetention: DefaultChangeRetention}
+	s := &Store{dir: abs, mu: newCtxMutex(), nss: map[string]*nsDB{}, changeRetention: DefaultChangeRetention}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -147,10 +188,38 @@ func (s *Store) ns(name string) (*nsDB, error) {
 	return s.lockedNS(name)
 }
 
+// nsCtx is ns for callers whose context bounds the registry wait: the
+// acquire is context-aware (ctxMutex) and a cache-missing first open
+// carries the context through its initialization (lockedNSCtx), so a
+// bounded read — wait_for's poll loop — aborts at its deadline instead of
+// queueing behind a long holder (a drop_namespace draining its pools) or
+// waiting out SQLite's busy_timeout behind another process's write lock,
+// where a plain mutex wait or context-free SQL would sit past every bound.
+func (s *Store) nsCtx(ctx context.Context, name string) (*nsDB, error) {
+	if err := validateNSPath(name); err != nil {
+		return nil, err
+	}
+	if err := s.mu.LockCtx(ctx); err != nil {
+		return nil, err
+	}
+	defer s.mu.Unlock()
+	return s.lockedNSCtx(ctx, name)
+}
+
 // lockedNS is ns() for a caller already holding s.mu: CreateNamespace
 // reserves, evicts, and initializes under one lock span, so a concurrent
 // first-use open can never interleave with them.
 func (s *Store) lockedNS(name string) (*nsDB, error) {
+	return s.lockedNSCtx(context.Background(), name)
+}
+
+// lockedNSCtx is lockedNS with the caller's context carried through the
+// FIRST-OPEN initialization: the registry DDL and the nsgen transaction use
+// the context-aware SQL methods, so a bounded read that misses the cache
+// (the first wait_for after a restart) aborts at its deadline instead of
+// waiting out the DSN's busy_timeout behind another process's write lock —
+// the filesystem steps (Lstat, Chmod) have no wait to honor.
+func (s *Store) lockedNSCtx(ctx context.Context, name string) (*nsDB, error) {
 	if n, ok := s.nss[name]; ok {
 		return n, nil
 	}
@@ -177,7 +246,7 @@ func (s *Store) lockedNS(name string) (*nsDB, error) {
 	}
 	rw.SetMaxOpenConns(1)
 	for _, ddl := range registryDDL {
-		if _, err := rw.Exec(ddl); err != nil {
+		if _, err := rw.ExecContext(ctx, ddl); err != nil {
 			rw.Close()
 			return nil, fmt.Errorf("init namespace %s: %w", name, err)
 		}
@@ -186,7 +255,7 @@ func (s *Store) lockedNS(name string) (*nsDB, error) {
 	// namespace file that predates _dolmen_meta (see the comment above) is
 	// upgraded in place with a fresh id, and every later read —
 	// NamespaceState, TableState — may assume the row exists.
-	if err := ensureNSGen(rw); err != nil {
+	if err := ensureNSGen(ctx, rw); err != nil {
 		rw.Close()
 		return nil, fmt.Errorf("init namespace %s: %w", name, err)
 	}
@@ -284,13 +353,15 @@ var registryDDL = []string{
 	// position-derived encoding — is what it maps back to. The client never
 	// sees position-derived bytes, so the opacity rules hold trivially: no
 	// order to reveal (a filtered feed's gaps stay invisible), no equality to
-	// compare across polls (every issuance is fresh randomness), no length to
-	// grow at an encoding boundary. Living in the namespace db makes the
-	// mapping durable across restarts (a restart must not invalidate clients'
-	// cursors) and shared by every process on the deployment, and its
-	// namespace-lifetime binding is inherent — it dies with the file (§5.4),
-	// so a recreated namespace's restarted sequence can never be silently
-	// skipped by a predecessor's token.
+	// compare across polls (every issuance is fresh randomness; an EMPTY page
+	// is not an issuance — ChangesSince returns the caller's own token
+	// unchanged, or a 250 ms poll would mint a durable row every tick), no
+	// length to grow at an encoding boundary. Living in the namespace db makes
+	// the mapping durable across restarts (a restart must not invalidate
+	// clients' cursors) and shared by every process on the deployment, and
+	// its namespace-lifetime binding is inherent — it dies with the file
+	// (§5.4), so a recreated namespace's restarted sequence can never be
+	// silently skipped by a predecessor's token.
 	//
 	// Columns: position is the log seq the token resumes AFTER (0 = before
 	// everything, head = future commits only). issued_at (unix ms) anchors the

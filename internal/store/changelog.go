@@ -294,7 +294,7 @@ func newCursorChain(now time.Time, position int64) *cursorChain {
 // enforcing §9.3's validity rules BEFORE the position is honored:
 //
 //   - Feed binding: the stored feed_table must equal the caller's table
-//     selector ('' = the unfiltered namespace feed). Anything else is
+//     selector (” = the unfiltered namespace feed). Anything else is
 //     cross-feed reuse — rejected, never honored.
 //
 //   - The token's own deadline: now ≤ issued_at + R. Retention 0 disables
@@ -486,7 +486,7 @@ func changesPageLimit(n int) int {
 // slice 9d filters records through the caller's visible set via the Owner
 // label and binds the scope's incarnation.
 func (s *Store) ChangesSince(ctx context.Context, nsName, table string, from Cursor, nsGen [16]byte, scope *RowScope, scopeIncarnation Incarnation, page Page) ([]ChangeRecord, Cursor, error) {
-	n, err := s.ns(nsName)
+	n, err := s.nsCtx(ctx, nsName)
 	if err != nil {
 		return nil, "", err
 	}
@@ -595,13 +595,26 @@ func (s *Store) ChangesSince(ctx context.Context, nsName, table string, from Cur
 		scanned[i].rec.Cursor = tok
 		records[i] = scanned[i].rec
 	}
-	nextPos := position
-	if len(scanned) > 0 {
-		nextPos = scanned[len(scanned)-1].seq
-	}
-	next, err := mintCursorToken(ctx, tx, now, nextPos, table, chain)
-	if err != nil {
-		return nil, "", err
+	// The next-page cursor. An EMPTY page re-presents the caller's own
+	// token: the position did not move, so nothing new is issuable, and
+	// minting fresh randomness per poll would hand a 250 ms wait_for tick
+	// a durable row every time — hundreds of thousands per idle waiter per
+	// day. Resolve already refreshed the token's deadline, so the echoed
+	// token resumes exactly as a fresh one would. Bare and begin starts
+	// still mint (the response must carry a real head/boundary token the
+	// caller did not present), and fresh randomness stays the rule for
+	// every NEW position — per-record cursors and non-empty pages.
+	var next Cursor
+	if len(scanned) == 0 && from != "" && from != CursorBegin {
+		next = from
+	} else {
+		nextPos := position
+		if len(scanned) > 0 {
+			nextPos = scanned[len(scanned)-1].seq
+		}
+		if next, err = mintCursorToken(ctx, tx, now, nextPos, table, chain); err != nil {
+			return nil, "", err
+		}
 	}
 
 	// Retention moves with the read: by the time this runs, the call's own
