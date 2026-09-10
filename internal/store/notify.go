@@ -489,8 +489,15 @@ func (sess *listenSession) fillBatch() (admitted []loggedChange, read int, err e
 		// the drainer mints and delivers the prefix, then fires the close
 		// from its quiescent exit, so closed never precedes a record it
 		// admitted (§6.2's exposure rule). An empty prefix closes through
-		// the same path.
+		// the same path. A cancellation that already ended the session
+		// (dead, under this lock) wins: no terminal is parked for a
+		// caller-initiated cancel (§6.2 — closed never fires for it), and
+		// the prefix dies with the session.
 		sess.mu.Lock()
+		if sess.dead {
+			sess.mu.Unlock()
+			return nil, 0, nil
+		}
 		sess.queue = append(sess.queue, admitted...)
 		sess.pendingClose = ErrListenRevoked
 		sess.cond.Broadcast()
@@ -896,9 +903,19 @@ func (sess *listenSession) end(cause error) {
 }
 
 // fireClosed invokes the terminal callback at most once, with the parked
-// cause.
+// cause. The callback is caller code running on a pump goroutine, so a panic
+// is recovered and logged — deliverCommit's write-path rule, applied here:
+// the session is already ending, and a panicking close must not take the
+// process down. (recoverPump alone cannot cover this: defers run in reverse,
+// and the parked-close flush sits outside the pump's own recover by design.)
 func (sess *listenSession) fireClosed(cause error) {
 	sess.closedOnce.Do(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("listen closed callback panicked; session already ending",
+					"namespace", sess.nsName, "table", sess.table, "panic", r)
+			}
+		}()
 		if sess.closedFn != nil {
 			sess.closedFn(cause)
 		}

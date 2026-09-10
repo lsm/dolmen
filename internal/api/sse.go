@@ -93,7 +93,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Request-Id", reqID)
 	w.WriteHeader(http.StatusOK)
 	sseFlush(w)
-	st := &sseStream{w: w}
+	st := &sseStream{w: w, fallback: cursor} // a terminal before any frame resumes the client exactly where it presented
 
 	ns := normNS(q.Get("namespace"))
 	if err := s.ensureNamespace(r.Context(), ns); err != nil {
@@ -118,23 +118,32 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	closed := func(cause error) {
 		st.armTerminal(func() {
+			// Under flushTerminal's lock: read the resume fields directly
+			// (the last delivered record's cursor, else the trail — the
+			// client's presented cursor or newest fully-written page
+			// boundary, so a terminal before any frame still teaches an
+			// exact resume instead of a head start that skips the backlog).
+			resume := st.last
+			if resume == "" {
+				resume = st.fallback
+			}
 			switch {
 			case errors.Is(cause, store.ErrListenOverflow):
 				// The teaching reconnect recipe (§6.2): resume from the
 				// persisted cursor — the durable log is the catch-up path;
 				// the buffer never was the durability mechanism.
 				st.closeFrame(closeRecipe{
-					Cursor: string(st.last),
+					Cursor: string(resume),
 					Reason: "subscription buffer overflow: the stream drained slower than commits arrived; reconnect with your last received cursor to catch up from the durable change log, or start fresh with no cursor / cursor=begin",
 				})
 			case errors.Is(cause, store.ErrListenLifetimeEnded):
 				st.closeFrame(closeRecipe{
-					Cursor: string(st.last),
+					Cursor: string(resume),
 					Reason: "the subscribed table or namespace was dropped mid-stream; reconnect and resubscribe — a same-named successor is a different feed",
 				})
 			case errors.Is(cause, store.ErrListenRevoked):
 				st.closeFrame(closeRecipe{
-					Cursor: string(st.last),
+					Cursor: string(resume),
 					Reason: "authorization for this stream was revoked or narrowed mid-subscription; reconnect once access is restored",
 				})
 			default:
@@ -172,11 +181,15 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	// frames. done ends the loop exactly at the boundary; a session ended
 	// under the pages (overflow, revocation, a dropped feed target) reports
 	// done too, with any not-yet-written page dropped — the armed terminal
-	// carries why, and reconnecting from the last delivered cursor recovers
-	// everything the drop skipped.
+	// carries why, and reconnecting from the resume cursor recovers
+	// everything the drop skipped. Each fully-written page advances the
+	// resume trail: the terminal reports the last DELIVERED record's cursor
+	// when frames went out, and otherwise the newest page boundary — an
+	// empty terminal cursor would send the reconnecting client to the
+	// current head and skip the undelivered backlog entirely.
 loop:
 	for {
-		records, _, done, err := replay.Next(r.Context())
+		records, next, done, err := replay.Next(r.Context())
 		if err != nil {
 			if r.Context().Err() != nil {
 				return // the subscriber went away; there is nobody to tell
@@ -189,6 +202,7 @@ loop:
 				break loop // the subscriber is gone, or the terminal is armed
 			}
 		}
+		st.advanceTrail(next)
 		if done {
 			break
 		}
@@ -244,8 +258,21 @@ type sseStream struct {
 	mu       sync.Mutex
 	w        http.ResponseWriter
 	last     store.Cursor // cursor of the last change frame written
+	fallback store.Cursor // resume trail for a terminal before any frame: the client's presented cursor, then each fully-written page's boundary
 	dead     bool         // a write failed: the subscriber is gone
 	terminal func()       // armed by closed, flushed once by the handler
+}
+
+// advanceTrail records a page boundary as the resume fallback — used only
+// when no change frame ever went out (a filtered-empty replay, a session
+// ended mid-replay): the terminal then teaches reconnection from exactly
+// where the replay stood instead of an empty cursor that would skip the
+// backlog. Called after the page's records are fully written, so the trail
+// never points past an unwritten frame.
+func (st *sseStream) advanceTrail(next store.Cursor) {
+	st.mu.Lock()
+	st.fallback = next
+	st.mu.Unlock()
 }
 
 // change writes one change frame on the handler's goroutine (the replay
