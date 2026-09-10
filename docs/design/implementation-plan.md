@@ -11,11 +11,18 @@ at the current `main`.
 
 ## Slice conventions
 
-- **Every slice is S-sized**: one focused PR, one sitting's work, lands green (`make test` —
+- **Every slice is S-sized**: one sitting's work, lands green (`make test` —
   `go vet` + `go test ./...` — **plus `make race`**, the separate target where the race
   detector actually runs, and `govulncheck`), conformance-visible where the slice has
   contract surface. The concurrency-heavy slices — notification (4d/6b), the drop cascade
   (8f/8g), grant serialization (8d/8e/10b) — must never merge on `test` alone.
+- **An S-sized slice may land as a stack**: when the code says a single PR would run past
+  ~200 production lines, the slice stays one issue and one DoD but lands as a stack of thin
+  PRs — each ≤~200 production lines (test lines don't count; the bar is review attention,
+  not volume), each with its own codex cycle and binding THUMBS_UP — merged bottom-up as
+  each verdict binds (retarget and rebase the rest; never hold the stack for one
+  synchronized merge). Plan the cut points when the slice starts, not mid-review: the
+  entries that read largest — 6b, 8c, 8f, 9d — are expected stacks.
 - **Each slice becomes one thin GitHub issue**, generated from its entry here — title, spec §ref,
   file list, acceptance. No paraphrase of the spec (the drift lesson of the closed stream issues).
 - **Additive-only**: nothing v0.2.0 accepts may change meaning (spec §8.1). Response-shape additions
@@ -477,6 +484,9 @@ Changes:
   atomically; `notify` not invoked until the replay drains to the boundary; interim commits
   buffer in a bounded queue; overflow closes the stream with the teaching reconnect recipe.
 - The SSE handler drives replay-then-live through `Listen`; client disconnect cancels cleanly.
+- Landing shape: the lane's largest slice — four stacked PRs per the stack convention
+  (changelog page/mint helper extraction → `Listen` replay half → `Listen` live half → SSE
+  wiring + route registration + capabilities flip + conformance); one issue, one DoD.
 - `GET /v1/subscribe` joins the api mux — the endpoint goes public exactly when its specified
   live-stream behavior exists (6a's handler stays handler-tested until then) — and
   `Capabilities()` flips `.subscribe` and `.notifications` to `true` in the same slice (4d
