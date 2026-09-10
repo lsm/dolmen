@@ -224,6 +224,7 @@ type listenSession struct {
 	cancelOnce sync.Once
 	pumps      sync.WaitGroup
 	unregister func()
+	delivered  atomic.Int64 // live deliveries, for periodic retention pruning
 }
 
 // Listen implements the engine-declared notification capability (§6.2, §9.3):
@@ -697,22 +698,24 @@ func (sess *listenSession) drain() {
 		// a cursor a rotation could orphan while it waited behind a slow
 		// subscriber (§9.3's chain cap), and every delivered cursor is as
 		// fresh as its delivery. notifyActive covers the whole
-		// mint-and-deliver span: a parked close cannot fire between them.
-		tok, merr := sess.mintOne(context.Background(), time.Now(), lc.seq)
-		if merr != nil {
-			sess.mu.Lock()
-			sess.notifyActive = false
-			sess.cond.Broadcast()
-			sess.mu.Unlock()
-			sess.end(sess.fillErr(merr))
-			return
-		}
-		lc.rec.Cursor = tok
-		sess.notify(lc.rec)
-		sess.mu.Lock()
-		sess.notifyActive = false
-		sess.cond.Broadcast()
-		sess.mu.Unlock()
+		// mint-and-deliver span — cleared by the defer so even a panicking
+		// notify cannot strand the flag and wedge every parked close (and
+		// cancel's pumps.Wait) behind it.
+		func() {
+			defer func() {
+				sess.mu.Lock()
+				sess.notifyActive = false
+				sess.cond.Broadcast()
+				sess.mu.Unlock()
+			}()
+			tok, merr := sess.mintOne(context.Background(), time.Now(), lc.seq)
+			if merr != nil {
+				sess.end(sess.fillErr(merr))
+				return
+			}
+			lc.rec.Cursor = tok
+			sess.notify(lc.rec)
+		}()
 	}
 }
 
@@ -753,6 +756,7 @@ func (sess *listenSession) recoverPump(half string) {
 func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bool, error) {
 	sess.mu.Lock()
 	sess.replayActive = true
+	resume := sess.nextCursor // the PRE-page boundary: what an omitted page must hand back
 	sess.mu.Unlock()
 	records, next, done, err := sess.page(ctx)
 	sess.mu.Lock()
@@ -761,7 +765,10 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	omit := sess.dead && len(records) > 0
 	sess.mu.Unlock()
 	if omit {
-		return nil, next, true, nil
+		// The omitted page's own cursor points PAST records the caller never
+		// receives — handing it back would teach a resume that skips them.
+		// The pre-page boundary is the honest position.
+		return nil, resume, true, nil
 	}
 	return records, next, done, err
 }
@@ -924,9 +931,14 @@ func (sess *listenSession) fireClosed(cause error) {
 
 // mintOne mints a single live record's cursor at its delivery (drain): the
 // token rides the chain current at delivery time, never one a rotation
-// could have orphaned while the record sat queued. No pruning here — the
-// per-delivery transaction stays one insert; page mints (next) carry the
-// opportunistic pruning for the session.
+// could have orphaned while the record sat queued. A healthy live-only
+// subscription runs no replay pages and no ChangesSince calls, so retention
+// pruning rides here every listenPruneInterval deliveries — without it, a
+// namespace served only by a long-lived stream would accumulate expired
+// token rows and age-eligible records indefinitely despite a nonzero
+// retention setting (§9.3: retention moves with the reads).
+const listenPruneInterval = 1000
+
 func (sess *listenSession) mintOne(ctx context.Context, now time.Time, seq int64) (Cursor, error) {
 	tx, err := sess.n.rw.BeginTx(ctx, nil)
 	if err != nil {
@@ -936,6 +948,11 @@ func (sess *listenSession) mintOne(ctx context.Context, now time.Time, seq int64
 	tok, err := mintCursorToken(ctx, tx, now, seq, sess.table, sess.chainFor(now, seq))
 	if err != nil {
 		return "", err
+	}
+	if sess.delivered.Add(1)%listenPruneInterval == 0 {
+		if err := pruneChanges(ctx, tx, now, sess.s.changeRetention); err != nil {
+			return "", err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return "", err
