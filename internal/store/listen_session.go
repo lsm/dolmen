@@ -15,11 +15,11 @@ import (
 // mid-replay can neither narrow the range nor mix a successor's records
 // into it (§9.3). The live half grows across the slices of the 6b stack:
 // the flag-only wake and the quiescing teardown (r6a), the registry join
-// that orders replay against live commits (r6b), the fill pump that pages
-// the durable log into the session's queue, and the bound that caps it
-// with the overflow teaching close (r6c, r6d); the drain that delivers it
-// follows — together they make the concatenation replay-then-live
-// exactly-once.
+// that orders replay against live commits (r6b), the fill pump that
+// pages the durable log into the session's queue with the bound and its
+// overflow teaching close (r6c, r6d), and the drain that delivers the
+// queue once the replay has reported its boundary (this slice) —
+// together they make the concatenation replay-then-live exactly-once.
 type listenSession struct {
 	s      *Store
 	n      *nsDB // the namespace instance registered on — never a successor's
@@ -50,7 +50,7 @@ type listenSession struct {
 	pumps      sync.WaitGroup // the session's own goroutines; cancel waits it empty before returning
 	unregister func()         // leaves the commit registry; nil when the session never joined (the direct fixtures)
 
-	queue    []loggedChange // the interim queue: the fill pump's paged commits, awaiting the drain slice's delivery
+	queue    []loggedChange // the interim queue: the fill pump's paged commits, delivered one at a time by the drain
 	liveRead int64          // the live half's durable-log position: everything ≤ it is queued
 
 	// firing is raised by end, in the same critical section as dead (a
@@ -72,6 +72,21 @@ type listenSession struct {
 	nextCursor      Cursor // the standing resume cursor, fixed at registration
 	replayExhausted bool   // a page reached the registration boundary: the replay is done (the final publish sets it)
 	dead            bool
+
+	// The replay→live handoff, published by next() under mu. replayDone
+	// is the drainer's gate: the boundary call has COMPLETED and its
+	// result reached the caller — flipped in next()'s locked publish,
+	// never mid-page, so an in-flight drainer can never deliver past a
+	// boundary the caller has not yet seen. replayActive marks a page in
+	// flight for its whole span: the drainer holds off while any page —
+	// including a post-done call the handler makes — is being decided, so
+	// a live record never interleaves into a caller's page turn.
+	// notifyActive brackets a delivery's mint-and-notify span: the
+	// parked-close machinery (the next slice) waits it out rather than
+	// firing a terminal between a record and its notify.
+	replayDone   bool
+	replayActive bool
+	notifyActive bool
 
 	closedOnce sync.Once
 	cancelOnce sync.Once

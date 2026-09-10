@@ -15,21 +15,21 @@ import (
 // transaction, so a record can only take seq > R by committing after
 // the join (the register-and-replay ordering; the replay-page read and
 // loss baseline landed with r3/r4, the join with r6b). The fill pump the
-// wake feeds launches here (r6c), and the queue it fills is bounded, with
-// the overflow teaching close (r6d); the drain that delivers the queue
-// through notify lands in the following slices — until then a drained
-// registration reports done and notify is never invoked.
+// wake feeds launches here (r6c), with the queue's bound and its overflow
+// teaching close (r6d), and the drain that delivers the queue through
+// notify once the replay has reported its boundary (this slice): notify
+// is invoked only after the boundary call, never before.
 
 // Listen implements the engine-declared notification capability (§6.2, §9.3):
 // registration fixes the replay boundary and the feed's labels as ONE
 // coordinated operation, the replay pages out through ChangeReplay.Next, and
-// — once the live half of the 6b stack lands — the session pushes live
-// records through notify after the replay drains. closed fires at most once,
-// only when the ENGINE ends the session, never for a caller-initiated
-// cancel; the returned cancel is idempotent.
+// once the caller drains it — the boundary call completes — the session
+// pushes live records through notify. closed fires at most once, only when
+// the ENGINE ends the session, never for a caller-initiated cancel; the
+// returned cancel is idempotent.
 //
-// TODO(6b-live): the remaining live half — the drain that delivers the
-// pump's queue through notify, and the admission gate — is 6b's next slice.
+// TODO(6b-live): the remaining live-half machinery — the parked-close
+// serialization and the per-event admission gate — is 6b's next slice.
 // TODO(9d): while auth is off the SSE handler passes a nil liveAuthz (no
 // per-event filter); the admission rules are live the moment a slice
 // wires a real re-resolver in.
@@ -188,7 +188,13 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 		return nil, nil, err
 	}
 	committed = true // the session owns its registry entry now; cancel removes it
-	sess.pumps.Add(1)
-	go sess.pump() // pump, not fill: the terminal fires once, outside fill's loop
+	// Two goroutines: the fill pages the durable log into the queue, the
+	// drain delivers it. The drain parks until the caller's replay reports
+	// its boundary (next's replayDone publish), so a caller that never
+	// pages — or is still paging — never has a live record interleave into
+	// its page turns (§6.2's replay-then-live concatenation).
+	sess.pumps.Add(2)
+	go sess.pump()  // pump, not fill: the terminal fires once, outside fill's loop
+	go sess.drain() // drain: delivery, gated on the replay's boundary call
 	return &ChangeReplay{Next: sess.next, Resume: sess.cursor}, sess.cancel, nil
 }

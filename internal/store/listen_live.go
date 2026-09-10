@@ -14,8 +14,8 @@ import (
 // > R disjoint by construction, §6.2's exactly-once). The fill pump
 // pages the durable log on every wake into the interim queue, and the
 // bound caps it: a subscriber whose own traffic outruns its drain meets
-// the overflow teaching close. The drain (delivery) and the handoff
-// gating land in the following slices.
+// the overflow teaching close. The drain that delivers the queue — gated
+// on the replay's boundary call — is listen_drain.go's.
 
 // listenQueueBound caps the records buffered for one subscriber: the
 // interim commits landing while the replay drains, plus live records
