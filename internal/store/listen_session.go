@@ -11,9 +11,11 @@ import (
 // later guarantee hangs off that fixing: the replay covers seq in (P, R]
 // under the registered labels, so a drop or a same-name recreate committing
 // mid-replay can neither narrow the range nor mix a successor's records
-// into it (§9.3). Later slices of the 6b stack grow the session with the
-// live half — the registry join, the fill/drain pumps, the bounded queue —
-// which is what makes the concatenation replay-then-live exactly-once.
+// into it (§9.3). The live half grows across the next slices of the 6b
+// stack: the flag-only wake and the quiescing teardown are here (r6a);
+// the fill pump that pages the durable log into the session's queue, the
+// drain that delivers it, and the queue's bound follow — together they
+// make the concatenation replay-then-live exactly-once.
 type listenSession struct {
 	s      *Store
 	n      *nsDB // the namespace instance registered on — never a successor's
@@ -37,8 +39,13 @@ type listenSession struct {
 	chain       *cursorChain // the page chain every token the session mints rides
 	feed        *changeFeed  // nil on the namespace feed; the table feed's labels at registration
 
-	mu              sync.Mutex
-	flight         chan struct{} // the single-flight permit for Next: one page+publish in the air at a time, acquired cancellably (listen_page.go)
+	mu         sync.Mutex
+	cond       *sync.Cond     // the pump's signal: a wake (a commit landed) or the end broadcast
+	flight     chan struct{}  // the single-flight permit for Next: one page+publish in the air at a time, acquired cancellably (listen_page.go)
+	woken      bool           // the registry's flag: a commit landed; the pump clears it as it takes the work
+	pumps      sync.WaitGroup // the session's own goroutines; cancel waits it empty before returning
+	unregister func()         // leaves the commit registry; nil when the session never joined (the direct fixtures)
+
 	nextCursor      Cursor // the standing resume cursor, fixed at registration
 	replayExhausted bool   // a page reached the registration boundary: the replay is done (the final publish sets it)
 	dead            bool
@@ -58,8 +65,11 @@ func (sess *listenSession) cursor() Cursor {
 // end terminates the session. A non-nil cause is an ENGINE-initiated end:
 // closed fires — once — with it. A nil cause is the caller's cancel: the
 // caller already knows, and closed never fires for it (§6.2). Idempotent;
-// the first end wins. The wait and callback rules for the pump goroutines
-// arrive with the live half of the 6b stack.
+// the first end wins. The broadcast is load-bearing for the live half: a
+// parked pump sleeps in cond.Wait holding nothing, and only a wake or
+// this broadcast can reach it — without the broadcast, cancel's
+// pumps.Wait below would block forever on a session that never saw a
+// commit.
 func (sess *listenSession) end(cause error) {
 	sess.mu.Lock()
 	if sess.dead {
@@ -67,6 +77,7 @@ func (sess *listenSession) end(cause error) {
 		return
 	}
 	sess.dead = true
+	sess.cond.Broadcast()
 	sess.mu.Unlock()
 	if cause != nil {
 		sess.fireClosed(cause)
@@ -92,14 +103,17 @@ func (sess *listenSession) fireClosed(cause error) {
 }
 
 // cancel is the returned teardown: it ends the session without a closed
-// callback. Nothing runs concurrently in this half — the session's only
-// goroutine is the caller's own Next — so quiescence is the dead flag
-// itself; the live half's registry entries and pump goroutines arrive with
-// the next slice of the 6b stack, and cancel will unregister and wait them
-// out before returning (the use-after-free rule from notify.go's listener
-// contract).
+// callback and leaves nothing of it running. The registry entry comes out
+// first (no new wakes can arrive), end's broadcast then reaches a parked
+// pump, and pumps.Wait returns only after the session's goroutines have
+// exited — the use-after-free rule from notify.go's listener contract.
+// Idempotent.
 func (sess *listenSession) cancel() {
 	sess.cancelOnce.Do(func() {
+		if sess.unregister != nil {
+			sess.unregister()
+		}
 		sess.end(nil)
+		sess.pumps.Wait()
 	})
 }
