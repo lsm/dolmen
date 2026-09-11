@@ -21,6 +21,12 @@ func waitForClose(t *testing.T, closedFired <-chan error, want error) {
 	}
 }
 
+func trackedSessions(st *Store, ns string) int {
+	st.notifyMu.Lock()
+	defer st.notifyMu.Unlock()
+	return len(st.listenSessions[ns])
+}
+
 func TestListenDropNamespaceEndsSession(t *testing.T) {
 	st := openChangeStore(t)
 	insertNotes(t, st, 2)
@@ -149,11 +155,11 @@ func TestListenCancelUntracks(t *testing.T) {
 
 	replay, cancel := listenOn(t, st, "", "", func(ChangeRecord) {}, nil)
 	drainReplay(t, replay)
-	if got := len(st.listenSessions["test"]); got != 1 {
+	if got := trackedSessions(st, "test"); got != 1 {
 		t.Fatalf("tracked sessions = %d, want 1", got)
 	}
 	cancel()
-	if got := len(st.listenSessions["test"]); got != 0 {
+	if got := trackedSessions(st, "test"); got != 0 {
 		t.Fatalf("tracked sessions after cancel = %d, want 0", got)
 	}
 }
@@ -165,10 +171,10 @@ func TestListenFailedRegistrationUntracks(t *testing.T) {
 	if _, _, err := st.Listen(context.Background(), "test", "", Cursor("not-a-token"), [16]byte{}, nil, func(ChangeRecord) {}, nil); err == nil {
 		t.Fatal("listen with a garbage cursor succeeded")
 	}
-	if got := len(st.listenSessions["test"]); got != 0 {
+	if got := trackedSessions(st, "test"); got != 0 {
 		t.Fatalf("tracked sessions after failed registration = %d, want 0", got)
 	}
-	if got := len(st.listeners["test"]); got != 0 {
+	if got := commitListenersOf(st, "test"); got != 0 {
 		t.Fatalf("commit listeners after failed registration = %d, want 0", got)
 	}
 }
@@ -192,4 +198,10 @@ func TestFillErrEvictedMapsLifetimeEnded(t *testing.T) {
 	if cause := sess.fillErr(sql.ErrConnDone); !errors.Is(cause, ErrListenLifetimeEnded) {
 		t.Fatalf("evicted pool error mapped to %v, want ErrListenLifetimeEnded", cause)
 	}
+}
+
+func commitListenersOf(st *Store, ns string) int {
+	st.notifyMu.Lock()
+	defer st.notifyMu.Unlock()
+	return len(st.listeners[ns])
 }

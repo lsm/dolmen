@@ -50,6 +50,8 @@ type listenSession struct {
 	pumps      sync.WaitGroup // the session's own goroutines; cancel waits it empty before returning
 	unregister func()         // leaves the commit registry; nil when the session never joined (the direct fixtures)
 
+	stop chan struct{}
+
 	queue    []loggedChange // the interim queue: the fill pump's paged commits, delivered one at a time by the drain
 	liveRead int64          // the live half's durable-log position: everything ≤ it is queued
 
@@ -178,6 +180,7 @@ func (sess *listenSession) endParked(cause error) bool {
 		return false
 	}
 	sess.dead = true
+	close(sess.stop)
 	// The park rides the SAME critical section as dead, and the first
 	// cause parked wins: the flush (from a pump's deferred, counted exit)
 	// waits out any in-flight delivery and page BEFORE firing, so the

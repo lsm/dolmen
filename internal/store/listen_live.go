@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // The live half — slices 6b (r6a–r6d). Listen joins the commit registry
@@ -99,6 +100,22 @@ func (sess *listenSession) pump() {
 	defer sess.recoverPump("fill")
 	if cause := sess.fill(); cause != nil {
 		sess.end(cause)
+	}
+}
+
+const listenPollInterval = 250 * time.Millisecond
+
+func (sess *listenSession) pollWake() {
+	defer sess.pumps.Done()
+	t := time.NewTicker(listenPollInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-sess.stop:
+			return
+		case <-t.C:
+			sess.wake("", ChangeRange{})
+		}
 	}
 }
 
@@ -263,7 +280,7 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 // session with events after liveRead never queued, and a reconnect on
 // the old feed cannot recover them).
 func (sess *listenSession) readBatch(ctx context.Context) (scanned []loggedChange, lifetimeEnded bool, err error) {
-	tx, err := sess.n.rw.BeginTx(ctx, nil)
+	tx, err := sess.n.ro.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, false, err
 	}
@@ -312,7 +329,7 @@ func (sess *listenSession) fillErr(err error) error {
 	if errors.Is(err, ErrNotFound) {
 		return ErrListenLifetimeEnded
 	}
-	if sess.s.nsEvicted(sess.nsName, sess.n) {
+	if sess.s != nil && sess.s.nsEvicted(sess.nsName, sess.n) {
 		return ErrListenLifetimeEnded
 	}
 	return fmt.Errorf("listen fill %s: %w", sess.nsName, err)
