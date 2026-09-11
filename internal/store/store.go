@@ -113,6 +113,7 @@ type Store struct {
 	listeners map[string][]*commitListener
 
 	listenSessions map[string][]*listenSession
+	pruneNext      map[string]time.Time
 
 	// changeRetention is the change log's retention bound R (§9.3): the
 	// shared knob for cursor-token expiry and record pruning, fixed at Open —

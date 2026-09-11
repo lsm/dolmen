@@ -3,6 +3,7 @@ package store
 import (
 	"log/slog"
 	"sync/atomic"
+	"time"
 )
 
 // Post-commit notification registry (§9.3, plan slice 4d). Change records
@@ -112,6 +113,24 @@ func (s *Store) endListenSessions(ns string, cause error) {
 	for _, sess := range sessions {
 		sess.endParked(cause)
 	}
+}
+
+const nsPruneInterval = listenPollInterval
+
+func (s *Store) pruneDue(ns string, now time.Time) bool {
+	if s.changeRetention <= 0 {
+		return false
+	}
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+	if s.pruneNext == nil {
+		s.pruneNext = map[string]time.Time{}
+	}
+	if now.Before(s.pruneNext[ns]) {
+		return false
+	}
+	s.pruneNext[ns] = now.Add(nsPruneInterval)
+	return true
 }
 
 // notifyCommitted wakes the listeners registered for ns. Every write path
