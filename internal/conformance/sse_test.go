@@ -3,6 +3,7 @@ package conformance
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -456,24 +457,41 @@ func TestSubscribeBoundaryUnderConcurrentWrites(t *testing.T) {
 	}
 	seeded := h.mustHTTP("insert", map[string]any{"namespace": "rt", "table": "notes", "records": backlog})
 
-	ids := make(chan []any, 4)
+	type batch struct {
+		ids []any
+		err error
+	}
+	batches := make(chan batch, 4)
+	release := make(chan struct{})
 	go func() {
-		defer close(ids)
+		defer close(batches)
+		<-release
 		for i := 0; i < 4; i++ {
-			res := h.mustHTTP("insert", map[string]any{
+			status, body := h.httpCall("insert", map[string]any{
 				"namespace": "rt", "table": "notes",
 				"records": []any{map[string]any{"title": "live"}},
 			})
-			ids <- res["ids"].([]any)
+			if status != http.StatusOK {
+				batches <- batch{err: fmt.Errorf("live insert %d: status %d (%v)", i, status, body)}
+				return
+			}
+			batches <- batch{ids: body["ids"].([]any)}
 		}
 	}()
 
 	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}, "cursor": {"begin"}})
+	if _, ok := r.next(10 * time.Second); !ok {
+		t.Fatal("the replay never started, so nothing races the boundary")
+	}
+	close(release)
 
 	var want []any
 	want = append(want, seeded["ids"].([]any)...)
-	for batch := range ids {
-		want = append(want, batch...)
+	for b := range batches {
+		if b.err != nil {
+			t.Fatal(b.err)
+		}
+		want = append(want, b.ids...)
 	}
 	var got []any
 	for i := 0; i < len(want); i++ {
