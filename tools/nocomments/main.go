@@ -25,7 +25,7 @@ var (
 	goDirPattern     = regexp.MustCompile(`^//go:[a-z][a-z0-9_]*([ \t].*)?\r?$`)
 	legacyBuildLine  = regexp.MustCompile(`^// \+build([ \t].*)?\r?$`)
 	linePattern      = regexp.MustCompile(`^//line([ \t].*)?\r?$`)
-	blockLinePattern = regexp.MustCompile(`^/\*line \S+:\d+(?::\d+)? ?\*/\r?$`)
+	blockLinePattern = regexp.MustCompile(`^/\*line .*:\d+(?::\d+)? ?\*/\r?$`)
 	docDirPattern    = regexp.MustCompile(`^//(go:(embed|linkname|noinline|nosplit|norace|nocheckptr|noescape|uintptrescapes|wasmimport)|export)([ \t].*)?\r?$`)
 	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]+([ \t].*)?)?\r?$`)
 	trailingSpace    = regexp.MustCompile(`[ \t]+\n`)
@@ -156,8 +156,12 @@ func blank(b []byte) bool { return len(bytes.Trim(b, " \t\r")) == 0 }
 
 func isSpace(b byte) bool { return b == ' ' || b == '\t' || b == '\n' || b == '\r' }
 
-func tidy(b []byte) []byte {
-	return blankRun.ReplaceAll(trailingSpace.ReplaceAll(b, []byte("\n")), []byte("\n\n"))
+func tidy(b []byte, collapseBlank bool) []byte {
+	b = trailingSpace.ReplaceAll(b, []byte("\n"))
+	if collapseBlank {
+		b = blankRun.ReplaceAll(b, []byte("\n\n"))
+	}
+	return b
 }
 
 func stripComments(src []byte, s *scan) []byte {
@@ -272,17 +276,27 @@ func tidyOutsideProtected(src []byte) []byte {
 		return true
 	})
 	sort.Slice(protected, func(a, b int) bool { return protected[a].start < protected[b].start })
+	lineDirAt := len(src)
+	for _, g := range f.Comments {
+		for _, c := range g.List {
+			start := tf.Offset(c.Pos())
+			text := src[start:commentEnd(src, start)]
+			if linePattern.Match(text) || blockLinePattern.Match(text) {
+				lineDirAt = min(lineDirAt, start)
+			}
+		}
+	}
 	var out []byte
 	prev := 0
 	for _, p := range protected {
 		if p.start > prev {
-			out = append(out, tidy(src[prev:p.start])...)
+			out = append(out, tidy(src[prev:p.start], p.start <= lineDirAt)...)
 		}
 		out = append(out, src[p.start:p.end]...)
 		prev = p.end
 	}
 	if prev < len(src) {
-		out = append(out, tidy(src[prev:])...)
+		out = append(out, tidy(src[prev:], false)...)
 	}
 	return out
 }

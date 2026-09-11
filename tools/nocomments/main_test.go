@@ -63,6 +63,7 @@ func TestLineCommentsCount(t *testing.T) {
 		{"package p\n\nfunc f() {\n\t// +build indented\n}\n", 1},
 		{"/*line generated.go:42*/\npackage p\n", 0},
 		{"package p\n\nvar x = /*line g.go:5*/ 1\n", 0},
+		{"package p\n\nvar x = /*line generated file.go:42*/ 1\n", 0},
 		{"/* liner note */\npackage p\n", 1},
 		{"/* lineage */\npackage p\n", 1},
 		{"package p\n\nvar (\n\t//go:generate echo x\n\tX int\n)\n", 1},
@@ -146,6 +147,7 @@ func TestStrip(t *testing.T) {
 		{"package p\n\nvar s = `a\r\nb   \n\n\nEND`\n\n// gone\n", "package p\n\nvar s = `a\r\nb   \n\n\nEND`\n"},
 		{"package p\n\n/*\n#include <x.h>\n\n\n#define X 1   \nvoid f(void);\n*/\nimport \"C\"\n\n// gone\n", "package p\n\n/*\n#include <x.h>\n\n\n#define X 1   \nvoid f(void);\n*/\nimport \"C\"\n"},
 		{"package p\n\n// #cgo CFLAGS: -DX\n/*\nint n = __LINE__;\n\n\n*/\nimport \"C\"\n\n// gone\n", "package p\n\n// #cgo CFLAGS: -DX\n/*\nint n = __LINE__;\n\n\n*/\nimport \"C\"\n"},
+		{"//line generated.go:40\n\npackage p\n\n\n\nvar x = 1\n\n// gone\n", "//line generated.go:40\n\npackage p\n\n\n\nvar x = 1\n"},
 		{"package p\n\n/*\n#include <x.h>\n*/\nimport \"C\"\n\n// gone\nvar x = 1\n", "package p\n\n/*\n#include <x.h>\n*/\nimport \"C\"\n\nvar x = 1\n"},
 	} {
 		s, err := scanSource([]byte(tc.src))
