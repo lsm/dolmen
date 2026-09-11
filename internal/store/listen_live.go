@@ -280,7 +280,7 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 // session with events after liveRead never queued, and a reconnect on
 // the old feed cannot recover them).
 func (sess *listenSession) readBatch(ctx context.Context) (scanned []loggedChange, lifetimeEnded bool, err error) {
-	tx, err := sess.n.rw.BeginTx(ctx, nil)
+	tx, err := sess.n.ro.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, false, err
 	}
