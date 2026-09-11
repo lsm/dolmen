@@ -133,3 +133,47 @@ func TestListenSymptomParkYieldsToVerdict(t *testing.T) {
 		t.Fatalf("a late end parked %v into an empty slot — no pump remains to fire it", late)
 	}
 }
+
+// The deferral barrier, pinned with the store mutex held the way a drop
+// holds it: a yielded symptom must not fire while the mutex is held, and
+// once the authoritative verdict parks under that same mutex, the fire
+// after release carries the verdict — never the incidental read error.
+func TestListenYieldedFlushDefersToTheVerdict(t *testing.T) {
+	st := openChangeStore(t)
+	fired := make(chan error, 1)
+	sess := testSession(func(cause error) { fired <- cause })
+	sess.s = st
+
+	symptom := errors.New("sql: database is closed")
+	if !sess.endYielding(symptom) {
+		t.Fatal("the first end did not arm the session")
+	}
+
+	flushDone := make(chan struct{})
+	go func() {
+		defer close(flushDone)
+		sess.flushParkedClose()
+	}()
+
+	st.mu.Lock()
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case cause := <-fired:
+		t.Fatalf("a cause fired while the store mutex was held: %v — the symptom must defer behind a drop", cause)
+	default:
+	}
+	if sess.endParked(ErrListenLifetimeEnded) {
+		t.Fatal("a second end reported itself first")
+	}
+	st.mu.Unlock()
+
+	select {
+	case cause := <-fired:
+		if !errors.Is(cause, ErrListenLifetimeEnded) {
+			t.Fatalf("fired cause = %v, want the verdict — the symptom must have deferred behind the mutex", cause)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the flush never fired after the mutex released")
+	}
+	<-flushDone
+}

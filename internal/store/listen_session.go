@@ -291,6 +291,23 @@ func (sess *listenSession) flushParkedClose() {
 	for sess.pendingClose != nil && (sess.replayActive || sess.notifyActive) {
 		sess.cond.Wait()
 	}
+	if sess.pendingClose != nil && sess.pendingCloseYield && sess.s != nil {
+		// A symptom defers behind the store mutex: DropNamespace holds it
+		// across its whole eviction-to-endListenSessions-to-removal span,
+		// so an empty pass through s.mu here blocks exactly while a drop
+		// is in flight — the drop's authoritative end replaces the
+		// symptom under the same mutex — and the fire below carries the
+		// verdict, not the incidental read error the drop's pool closure
+		// produced. A yield with no drop in flight finds the mutex
+		// uncontended and fires immediately. The flush runs in a pump's
+		// exit path holding no pool connection, so the eviction drain
+		// never waits on it; s.mu is never held waiting on pump exits;
+		// nothing nests on either side of the barrier.
+		sess.mu.Unlock()
+		sess.s.mu.Lock()
+		sess.s.mu.Unlock()
+		sess.mu.Lock()
+	}
 	cause := sess.pendingClose
 	sess.pendingClose = nil
 	sess.mu.Unlock()
