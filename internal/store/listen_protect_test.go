@@ -134,6 +134,34 @@ func TestListenProtectQueueMintsOnTheFirstObligation(t *testing.T) {
 	}
 }
 
+func TestListenProtectQueueProtectsThePoppedHead(t *testing.T) {
+	st := openChangeStore(t)
+	sess := protectedSession(t, st)
+	sess.deliveringSeq = 41
+
+	sess.protectQueue()
+
+	origins := tokenOriginsAt(t, st, 41)
+	if len(origins) != 1 || origins[0] != 40 {
+		t.Fatalf("a queue the drainer emptied by popping minted origins %v, want exactly [40] at 41", origins)
+	}
+}
+
+func TestListenProtectQueueFloorsAtThePoppedHead(t *testing.T) {
+	st := openChangeStore(t)
+	sess := protectedSession(t, st)
+	sess.deliveringSeq = 41
+	sess.queue = []loggedChange{{seq: 50, rec: ChangeRecord{RowID: 50}}}
+
+	sess.protectQueue()
+
+	origins := tokenOriginsAt(t, st, 41)
+	if len(origins) != 1 || origins[0] != 40 {
+		t.Fatalf("a queued head above the popped one minted origins %v, want exactly [40]: the lower obligation sets the floor",
+			origins)
+	}
+}
+
 func TestListenProtectQueueEmptyQueueSkips(t *testing.T) {
 	st := openChangeStore(t)
 	sess := protectedSession(t, st)

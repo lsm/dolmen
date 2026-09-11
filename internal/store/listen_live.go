@@ -370,12 +370,14 @@ func (sess *listenSession) protectQueue() {
 		return
 	}
 	sess.mu.Lock()
-	if len(sess.queue) == 0 {
-		sess.mu.Unlock()
+	head, chain := sess.deliveringSeq, sess.queueChain
+	if len(sess.queue) > 0 && (head == 0 || sess.queue[0].seq < head) {
+		head = sess.queue[0].seq
+	}
+	sess.mu.Unlock()
+	if head == 0 {
 		return
 	}
-	head, chain := sess.queue[0].seq, sess.queueChain
-	sess.mu.Unlock()
 	if chain != nil {
 		margin := rms / 2
 		if tick := 2 * int64(sess.pollInterval()/time.Millisecond); tick > margin {
