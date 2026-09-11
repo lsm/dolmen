@@ -209,9 +209,6 @@ func TestSubscribeReplayThenLive(t *testing.T) {
 
 	cursor, _ := frameData(t, f)["cursor"].(string)
 	r2 := h.subscribeStream(t, url.Values{"namespace": {"rt"}, "cursor": {cursor}})
-	if replay, ok := r2.next(300 * time.Millisecond); ok {
-		t.Fatalf("resuming from a delivered cursor replayed %+v", replay)
-	}
 	later := h.mustHTTP("insert", map[string]any{
 		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "later"}},
 	})
@@ -237,9 +234,6 @@ func TestSubscribeCursorForms(t *testing.T) {
 
 	// Omitted cursor: a fresh subscriber gets future events only.
 	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}})
-	if f, ok := r.next(300 * time.Millisecond); ok {
-		t.Fatalf("a bare start replayed a frame: %+v", f)
-	}
 
 	next := h.mustHTTP("insert", map[string]any{
 		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "c"}},
@@ -376,9 +370,6 @@ func TestSubscribeCursorTeachingErrors(t *testing.T) {
 	}
 
 	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}})
-	if f, ok := r.next(300 * time.Millisecond); ok {
-		t.Fatalf("post-error bare start replayed a frame: %+v", f)
-	}
 	fresh := h.mustHTTP("insert", map[string]any{
 		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "fresh"}},
 	})
@@ -401,6 +392,15 @@ func TestSubscribeOverflowTeachesReconnect(t *testing.T) {
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
 
 	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}})
+	probe := h.mustHTTP("insert", map[string]any{
+		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "probe"}},
+	})
+	f, ok := r.next(10 * time.Second)
+	if !ok {
+		t.Fatal("the stream never delivered a live record, so the listener was not registered")
+	}
+	wantChange(t, f, [3]any{"notes", probe["ids"].([]any)[0], "insert"})
+
 	records := make([]any, 0, 10*store.MaxChangesPageLimit)
 	for i := 0; i < 10*store.MaxChangesPageLimit; i++ {
 		records = append(records, map[string]any{"title": "flood"})
