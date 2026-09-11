@@ -30,8 +30,8 @@ var (
 	linePattern      = regexp.MustCompile(`^//line .*:\d+(?::\d+)? ?\r?$`)
 	blockLinePattern = regexp.MustCompile(`(?s)^/\*line .+:\d+(?::\d+)? ?\*/\r?$`)
 	lineScannedOnly  = regexp.MustCompile(`^//go:(build|generate|line|debug)([ \t].*)?\r?$`)
-	exportPattern    = regexp.MustCompile(`^//export([ \t].*)?\r?$`)
-	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]+)?([ \t].*)?\r?$`)
+	exportPattern    = regexp.MustCompile(`^//export( .*)?\r?$`)
+	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]*[0-9A-Za-z_-][0-9A-Za-z_,-]*)?([ \t].*)?\r?$`)
 	outputPattern    = regexp.MustCompile(`(?i)^[[:space:]]*(unordered )?output:`)
 )
 
