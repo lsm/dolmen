@@ -39,6 +39,7 @@ func TestLineCommentsCount(t *testing.T) {
 		{"package p\n\nvar x = 1 /* a /* b */ + 2 // real\n", 2},
 		{"package p\n\nvar x = 1 /* a /* b */ + 2\nvar s = \"// found\"\n", 1},
 		{"//go:build ignore\n\npackage p\n", 0},
+		{"\uFEFF//go:build impossible_tag\n\npackage p\n", 0},
 		{"package p\n\n//go:embed foo.txt\nvar embedded string\n", 0},
 		{"//go:generate stringer -type=Kind\npackage p\n", 0},
 		{"package p\n\nvar x = 1 //nolint:gocyclo\n", 0},
@@ -122,6 +123,7 @@ func TestScanRefusals(t *testing.T) {
 		{"package p\n\nvar s = `raw never closed\n", "unparseable"},
 		{"package p\n\nvar n = 1/**/.5\n", "unparseable"},
 		{"var x = 1\n", "unparseable"},
+		{"package p\n\nvar x = 1\n\uFEFF// mid-file bom\n", "unparseable"},
 	} {
 		if _, err := scanSource([]byte(tc.src)); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("scanSource(%q) err = %v, want containing %q", tc.src, err, tc.want)

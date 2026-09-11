@@ -114,6 +114,15 @@ func docGroups(f *ast.File) map[token.Pos]bool {
 	return docs
 }
 
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+func atLineStart(src []byte, start int) bool {
+	if start == 0 || src[start-1] == '\n' {
+		return true
+	}
+	return bytes.HasPrefix(src, utf8BOM) && start == len(utf8BOM)
+}
+
 func isExempt(text []byte, atLineStart, isDoc bool) bool {
 	if atLineStart && (goDirPattern.Match(text) || legacyBuildLine.Match(text) || linePattern.Match(text)) {
 		return true
@@ -142,8 +151,7 @@ func scanSource(src []byte) (*scan, error) {
 			start := tf.Offset(c.Pos())
 			end := commentEnd(src, start)
 			text := src[start:end]
-			atLineStart := fset.PositionFor(c.Pos(), false).Column == 1
-			if !isExempt(text, atLineStart, isDoc) {
+			if !isExempt(text, atLineStart(src, start), isDoc) {
 				s.comments = append(s.comments, span{start, end})
 			}
 		}
