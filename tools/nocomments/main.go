@@ -183,6 +183,7 @@ func isExempt(text []byte, atLineStart, afterBOM, isDoc bool) bool {
 
 func isGeneratedMarker(text []byte) bool {
 	for _, line := range bytes.Split(text, []byte("\n")) {
+		line = bytes.TrimSuffix(line, []byte("\r"))
 		rest, ok := bytes.CutPrefix(line, []byte("// Code generated "))
 		if !ok {
 			continue
