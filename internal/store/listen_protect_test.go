@@ -256,3 +256,27 @@ func TestListenPollPumpProtectsParkedDrainClose(t *testing.T) {
 	}
 	sess.cancel()
 }
+
+func TestListenPollIntervalClampsAtOneMillisecond(t *testing.T) {
+	nano, err := Open(t.TempDir(), WithChangeRetention(time.Nanosecond))
+	if err != nil {
+		t.Fatalf("open nano-retention store: %v", err)
+	}
+	t.Cleanup(func() { nano.Close() })
+	sess := testSession(nil)
+	sess.s = nano
+	if got := sess.pollInterval(); got != time.Millisecond {
+		t.Fatalf("nano-retention poll interval = %v, want the 1ms floor", got)
+	}
+
+	sess.pumps.Add(1)
+	go sess.pollWake()
+	time.Sleep(20 * time.Millisecond)
+	sess.mu.Lock()
+	dead := sess.dead
+	sess.mu.Unlock()
+	if dead {
+		t.Fatal("the poll pump died on a nanosecond retention — the ticker panicked and recoverPump ended a healthy session")
+	}
+	sess.cancel()
+}

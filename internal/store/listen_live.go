@@ -107,10 +107,14 @@ func (sess *listenSession) pump() {
 const listenPollInterval = 250 * time.Millisecond
 
 func (sess *listenSession) pollInterval() time.Duration {
-	if sess.s != nil && sess.s.changeRetention > 0 && sess.s.changeRetention/2 < listenPollInterval {
-		return sess.s.changeRetention / 2
+	if sess.s == nil || sess.s.changeRetention <= 0 || sess.s.changeRetention/2 >= listenPollInterval {
+		return listenPollInterval
 	}
-	return listenPollInterval
+	if d := sess.s.changeRetention / 2; d < time.Millisecond {
+		return time.Millisecond
+	} else {
+		return d
+	}
 }
 
 func (sess *listenSession) pollWake() {
