@@ -161,8 +161,11 @@ func TestListenCanceledPageLeavesSessionRetryable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the retry after a canceled page failed: %v — per-call cancellation must not end the session", err)
 	}
-	if len(records) != 2 || !done {
-		t.Fatalf("retried page = %d records, done=%v, want the full backlog and done=true", len(records), done)
+	if len(records) != 2 || done {
+		t.Fatalf("retried page = %d records, done=%v, want the full backlog with the page still open — done belongs to the empty boundary call", len(records), done)
+	}
+	if _, _, done, err := replay.Next(context.Background()); err != nil || !done {
+		t.Fatalf("the boundary call after the retry = err %v, done %v, want the empty boundary done", err, done)
 	}
 }
 
