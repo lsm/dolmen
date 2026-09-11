@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,26 +15,18 @@ import (
 
 // HandleSubscribe is §9.2 layer 3's HTTP-surface capability: a GET
 // text/event-stream that replays the namespace's durable change log from a
-// cursor in commit order and then stays open, delivering live commits. It is
-// an HTTP-surface handler like /mcp, not an Ops entry: the MCP tool surface
-// gets wait_for, whose request/response shape carries the same feed semantics
-// (§2's transport parity), while the stream is for agent hosts holding
-// connections.
+// cursor in commit order and then delivers live commits through the engine's
+// listener. It is an HTTP-surface handler like /mcp, not an Ops entry: the
+// MCP tool surface gets wait_for, whose request/response shape carries the
+// same feed semantics (§2's transport parity), while the stream is for agent
+// hosts holding connections.
 //
-// The live half is the engine's listener, not this handler's loop: Listen
-// registers the session and fixes the replay boundary as one operation
-// (§9.3's register-and-replay), ChangeReplay.Next pages out the replay, and
-// notify delivers what committed after the boundary — so a commit landing
-// during the handoff is neither duplicated nor skipped, and the handler only
-// frames what the listener hands it. Terminal frames carry the cursor the
-// stream reached, so a reconnecting client resumes exactly there.
-//
-// The route stays UNREGISTERED until 6b lands live streaming. The endpoint's
-// specified behavior is a live stream, and a client discovering a registered
+// The route joins the api mux with the registration slice, not before. The
+// endpoint's specified behavior is a live stream, and a client discovering a
 // replay-then-terminate route could mistake the terminal frame for
 // end-of-subscription and miss every subsequent commit; until then the
 // handler is exercised handler-direct only (httptest against it, never
-// through the mux), and 6b registers it on the api mux in Server.Handler.
+// through the mux).
 //
 // Query params mirror the changes_since op exactly: namespace (required),
 // table (optional filter over that table's CURRENT lifetime), and cursor (an
@@ -48,7 +41,7 @@ import (
 func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	// The stream is its own request: it carries a request id like every /v1/
 	// call, so an in-stream error envelope, the response header, and the
-	// server log line for it can be correlated. 6b's mux entry relies on this
+	// server log line for it can be correlated. The mux entry relies on this
 	// assignment happening here.
 	r = r.WithContext(WithRequestID(r.Context(), RequestIDFor(r)))
 	reqID := RequestIDFrom(r.Context())
@@ -99,32 +92,31 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		sseErrorEvent(w, wrapStoreErr(err), reqID)
 		return
 	}
-	// Both halves run on this goroutine: notify and closed fire on the
-	// listener's own goroutines, so each hands its work over a channel and
-	// the response is written from exactly one place. The sends are
-	// cancellation-guarded — a drain blocked on a subscriber that has gone
-	// away would otherwise hold the listener's teardown open, and cancel
-	// waits for that drain.
+	ctx, stop := context.WithCancel(r.Context())
+	defer stop()
 	live := make(chan store.ChangeRecord, 1)
 	ended := make(chan error, 1)
-	replay, cancel, err := s.eng.Listen(r.Context(), ns, table, cursor, [16]byte{}, nil,
+	replay, cancel, err := s.eng.Listen(ctx, ns, table, cursor, [16]byte{}, nil,
 		func(rec store.ChangeRecord) {
 			select {
 			case live <- rec:
-			case <-r.Context().Done():
+			case <-ctx.Done():
 			}
 		},
 		func(cause error) {
 			select {
 			case ended <- cause:
-			case <-r.Context().Done():
+			case <-ctx.Done():
 			}
 		})
 	if err != nil {
 		sseErrorEvent(w, subscribeErr(err), reqID)
 		return
 	}
-	defer cancel()
+	defer func() {
+		stop()
+		cancel()
+	}()
 
 	resume := replay.Resume()
 	write := func(rec store.ChangeRecord) bool {
@@ -137,19 +129,12 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// The replay half: pages in cursor order until the boundary call reports
-	// done — the last page carrying records returns done=false, the call
-	// after it returns done=true — after which notify delivers.
 	for {
-		records, _, done, nerr := replay.Next(r.Context())
+		records, _, done, nerr := replay.Next(ctx)
 		if nerr != nil {
-			if r.Context().Err() != nil {
-				return // the subscriber went away; there is nobody to tell
+			if ctx.Err() != nil {
+				return
 			}
-			// The listener may have ended the session under the replay (a
-			// dropped target, an evicted namespace), in which case the read
-			// fails with the teardown's own error and the cause the listener
-			// reported is the one that teaches: prefer it.
 			select {
 			case cause := <-ended:
 				sseEvent(w, "close", sseClose{Cursor: string(resume)})
@@ -161,7 +146,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, rec := range records {
 			if !write(rec) {
-				return // the write failed: the subscriber is gone
+				return
 			}
 		}
 		if done {
@@ -169,9 +154,6 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// The live half: keep the stream open until the listener ends it or the
-	// subscriber disconnects. A disconnect returns here, and the deferred
-	// cancel tears the session down — the listener is released.
 	for {
 		select {
 		case rec := <-live:
@@ -182,18 +164,12 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 			sseEvent(w, "close", sseClose{Cursor: string(resume)})
 			sseErrorEvent(w, subscribeErr(cause), reqID)
 			return
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-// subscribeErr maps a failure onto the stream's error frame. The cursor
-// teaching errors carry their own catch-up path, phrased for this surface —
-// reconnecting IS the catch-up call — and stay generic on purpose: which feed
-// or table a foreign cursor was minted for is not the caller's to learn here.
-// The listener's own ends teach their remedies on the same envelope, so a
-// subscriber reads one error shape whichever half ended the stream.
 func subscribeErr(err error) *Error {
 	switch {
 	case errors.Is(err, store.ErrCursorExpired):
@@ -221,10 +197,9 @@ type sseChange struct {
 	Kind   string `json:"kind"`
 }
 
-// sseClose is the terminal frame's cursor handoff: the last position the
-// stream delivered, so a client reconnecting from it skips nothing. It
-// precedes a teaching error and never follows a healthy stream — a live
-// stream has no terminal to announce.
+// sseClose is the terminal frame's cursor handoff: the position the
+// stream reached, the exact place a reconnecting client resumes from.
+
 type sseClose struct {
 	Cursor string `json:"cursor"`
 }

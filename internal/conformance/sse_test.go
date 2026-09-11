@@ -30,10 +30,6 @@ type sseFrame struct {
 	data  string
 }
 
-// sseReader consumes a stream frame by frame off its response body. Frames
-// arrive on a channel fed by a reader goroutine, so a test can bound each
-// read: a live stream ends only when the listener ends it or the subscriber
-// disconnects, and a blocking read would hang the assertion instead.
 type sseReader struct {
 	frames chan sseFrame
 }
@@ -62,8 +58,6 @@ func newSSEReader(res *http.Response) *sseReader {
 	return r
 }
 
-// next returns the next frame, or ok=false when the stream ended or the
-// deadline passed with nothing more to read.
 func (r *sseReader) next(within time.Duration) (sseFrame, bool) {
 	select {
 	case f, ok := <-r.frames:
@@ -73,8 +67,6 @@ func (r *sseReader) next(within time.Duration) (sseFrame, bool) {
 	}
 }
 
-// rest collects frames until the stream ends or the deadline passes — the
-// read a teaching-error terminal is asserted with.
 func (r *sseReader) rest(within time.Duration) []sseFrame {
 	var out []sseFrame
 	deadline := time.After(within)
@@ -91,8 +83,6 @@ func (r *sseReader) rest(within time.Duration) []sseFrame {
 	}
 }
 
-// subscribe opens a subscribe stream against the harness's handler and
-// returns the response with its frames unread.
 func (h *harness) subscribe(t *testing.T, query url.Values) *http.Response {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(h.api.HandleSubscribe))
@@ -104,8 +94,6 @@ func (h *harness) subscribe(t *testing.T, query url.Values) *http.Response {
 	return res
 }
 
-// subscribeStream is subscribe plus a bounded frame reader; the body is
-// closed at cleanup, which is also the disconnect every test ends on.
 func (h *harness) subscribeStream(t *testing.T, query url.Values) *sseReader {
 	t.Helper()
 	res := h.subscribe(t, query)
@@ -135,8 +123,6 @@ func wantFrame(t *testing.T, frames []sseFrame, i int, event string) sseFrame {
 	return frames[i]
 }
 
-// wantChange fails unless the frame is a change event, and returns its
-// (table, row_id, kind) projection.
 func wantChange(t *testing.T, f sseFrame, want [3]any) {
 	t.Helper()
 	if got := sseChangeOf(t, f); got != want {
@@ -169,11 +155,7 @@ func sseChangeOf(t *testing.T, f sseFrame) [3]any {
 
 // TestSubscribeReplayThenLive: the slice's core contract — a subscriber
 // holding a cursor receives exactly the events committed after it, in commit
-// order, and the stream then STAYS OPEN, delivering each later commit once as
-// it lands (§9.2 layer 3, §9.3's register-and-replay). The handoff is the
-// hard part: a commit landing around the boundary must be neither duplicated
-// nor skipped, which is what makes the delivered prefix concatenate with the
-// live tail without a seam.
+// order (§9.2 layer 3, §9.3).
 func TestSubscribeReplayThenLive(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
@@ -199,7 +181,6 @@ func TestSubscribeReplayThenLive(t *testing.T) {
 	defer res.Body.Close()
 	r := newSSEReader(res)
 
-	// The replay half: exactly the commits after the cursor, in order.
 	want := [][3]any{
 		{"notes", missedIDs[0], "insert"},
 		{"notes", missedIDs[1], "insert"},
@@ -212,8 +193,6 @@ func TestSubscribeReplayThenLive(t *testing.T) {
 		wantChange(t, f, w)
 	}
 
-	// The live half: a commit after the boundary arrives once, on the same
-	// open stream — no reconnect, no close frame between the halves.
 	after := h.mustHTTP("insert", map[string]any{
 		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "after"}},
 	})
@@ -223,13 +202,10 @@ func TestSubscribeReplayThenLive(t *testing.T) {
 	}
 	wantChange(t, f, [3]any{"notes", after["ids"].([]any)[0], "insert"})
 
-	// Nor twice: nothing follows until the next commit.
 	if dup, ok := r.next(300 * time.Millisecond); ok {
 		t.Fatalf("the stream delivered an unexpected or duplicate frame: %+v", dup)
 	}
 
-	// A delivered cursor is a usable resume point: resuming from it replays
-	// nothing (the boundary held) and then delivers the next commit once.
 	cursor, _ := frameData(t, f)["cursor"].(string)
 	r2 := h.subscribeStream(t, url.Values{"namespace": {"rt"}, "cursor": {cursor}})
 	if replay, ok := r2.next(300 * time.Millisecond); ok {
@@ -264,7 +240,6 @@ func TestSubscribeCursorForms(t *testing.T) {
 		t.Fatalf("a bare start replayed a frame: %+v", f)
 	}
 
-	// The next commit — and only it — arrives on that open stream.
 	next := h.mustHTTP("insert", map[string]any{
 		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "c"}},
 	})
@@ -305,7 +280,6 @@ func TestSubscribeTableFilter(t *testing.T) {
 		"namespace": "rt", "table": "tasks", "records": []any{map[string]any{"title": "t"}},
 	})
 
-	// The table feed sees only its table's events, live included.
 	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}, "table": {"notes"}, "cursor": {"begin"}})
 	f, ok := r.next(5 * time.Second)
 	if !ok {
@@ -313,7 +287,6 @@ func TestSubscribeTableFilter(t *testing.T) {
 	}
 	wantChange(t, f, [3]any{"notes", notes["ids"].([]any)[0], "insert"})
 	tableCursor, _ := frameData(t, f)["cursor"].(string)
-	// The other table's commit wakes nothing on this feed.
 	h.mustHTTP("insert", map[string]any{
 		"namespace": "rt", "table": "tasks", "records": []any{map[string]any{"title": "t2"}},
 	})
@@ -377,7 +350,6 @@ func TestSubscribeCursorTeachingErrors(t *testing.T) {
 	cursor := nextCursorOf(t, h.mustHTTP("changes_since", map[string]any{"namespace": "rt", "cursor": "begin"}))
 	time.Sleep(250 * time.Millisecond)
 
-	// The expired token: teaching error, and nothing follows it.
 	frames := h.subscribeStream(t, url.Values{"namespace": {"rt"}, "cursor": {cursor}}).rest(5 * time.Second)
 	if len(frames) != 1 {
 		t.Fatalf("beyond-retention = %d frames, want 1 error event: %+v", len(frames), frames)
@@ -402,10 +374,6 @@ func TestSubscribeCursorTeachingErrors(t *testing.T) {
 		t.Fatalf("unknown cursor code = %v, want invalid_request", errEnv["code"])
 	}
 
-	// Both catch-up paths work on the stream itself: a bare start replays
-	// nothing and picks up at the head, and begin replays from the retained
-	// boundary — a fresh commit made after the expiry, since the aged-out
-	// record is beyond every replay guarantee now.
 	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}})
 	if f, ok := r.next(300 * time.Millisecond); ok {
 		t.Fatalf("post-error bare start replayed a frame: %+v", f)
@@ -427,18 +395,10 @@ func TestSubscribeCursorTeachingErrors(t *testing.T) {
 	wantChange(t, f2, [3]any{"notes", fresh["ids"].([]any)[0], "insert"})
 }
 
-// TestSubscribeOverflowTeachesReconnect: a subscriber that cannot keep up
-// meets the bounded buffer, not an unbounded one — the listener ends the
-// stream with the overflow teaching, the terminal frame hands over the cursor
-// the stream reached, and the error event names the reconnect
-// (§6.2's teaching reconnect: the durable log is the catch-up path, the
-// buffer never was).
 func TestSubscribeOverflowTeachesReconnect(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
 
-	// Nothing replays: the stream starts at the head and simply stops reading,
-	// while commits outrun the buffer.
 	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}})
 	records := make([]any, 0, 10*store.MaxChangesPageLimit)
 	for i := 0; i < 10*store.MaxChangesPageLimit; i++ {
@@ -464,12 +424,6 @@ func TestSubscribeOverflowTeachesReconnect(t *testing.T) {
 	}
 }
 
-// TestSubscribeDisconnectLeavesServerHealthy: a subscriber that goes away —
-// the ordinary case, an agent host closing the connection — releases its
-// listener without wedging anything: the commit paths keep working and a new
-// subscription still streams. The store-level pins prove the teardown joins
-// its pumps; this is the surface's own end-to-end check that a disconnect is
-// not a leak the next request pays for.
 func TestSubscribeDisconnectLeavesServerHealthy(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
@@ -479,9 +433,8 @@ func TestSubscribeDisconnectLeavesServerHealthy(t *testing.T) {
 	if _, ok := r.next(200 * time.Millisecond); ok {
 		t.Fatal("a bare start replayed a frame")
 	}
-	res.Body.Close() // the disconnect
+	res.Body.Close()
 
-	// Writes still commit and a fresh subscription still streams them.
 	after := h.mustHTTP("insert", map[string]any{
 		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "after-disconnect"}},
 	})
@@ -491,6 +444,54 @@ func TestSubscribeDisconnectLeavesServerHealthy(t *testing.T) {
 		t.Fatal("a subscription after a disconnect never delivered the commit")
 	}
 	wantChange(t, f, [3]any{"notes", after["ids"].([]any)[0], "insert"})
+}
+
+func TestSubscribeBoundaryUnderConcurrentWrites(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
+
+	backlog := make([]any, 0, 3*store.MaxChangesPageLimit)
+	for i := 0; i < 3*store.MaxChangesPageLimit; i++ {
+		backlog = append(backlog, map[string]any{"title": "backlog"})
+	}
+	seeded := h.mustHTTP("insert", map[string]any{"namespace": "rt", "table": "notes", "records": backlog})
+
+	ids := make(chan []any, 4)
+	go func() {
+		defer close(ids)
+		for i := 0; i < 4; i++ {
+			res := h.mustHTTP("insert", map[string]any{
+				"namespace": "rt", "table": "notes",
+				"records": []any{map[string]any{"title": "live"}},
+			})
+			ids <- res["ids"].([]any)
+		}
+	}()
+
+	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}, "cursor": {"begin"}})
+
+	var want []any
+	want = append(want, seeded["ids"].([]any)...)
+	for batch := range ids {
+		want = append(want, batch...)
+	}
+	var got []any
+	for i := 0; i < len(want); i++ {
+		f, ok := r.next(30 * time.Second)
+		if !ok {
+			t.Fatalf("stream ended after %d of %d records — the boundary skipped the rest", len(got), len(want))
+		}
+		dt := frameData(t, f)
+		got = append(got, dt["row_id"])
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("record %d = %v, want %v — the boundary duplicated or reordered a record", i, got[i], want[i])
+		}
+	}
+	if extra, ok := r.next(300 * time.Millisecond); ok {
+		t.Fatalf("the stream delivered a record beyond the expected set: %+v", extra)
+	}
 }
 
 // TestSubscribeShapeErrors: request-shape failures are answered before the
