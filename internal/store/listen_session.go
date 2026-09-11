@@ -186,6 +186,19 @@ func (sess *listenSession) endParked(cause error) bool {
 	return sess.endPark(cause, false)
 }
 
+// endOnPageFailure ends the session for a page failure that is NOT the
+// caller's own per-call cancellation: a deadline on one Next attempt must
+// leave the session — and its standing cursor — retryable, exactly as a
+// cancellation before the flight permit already does. The ctx check is the
+// robust form: a failure the caller's context explains is attributed to
+// the caller, whatever the driver wrapped it in.
+func (sess *listenSession) endOnPageFailure(ctx context.Context, err error) {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	sess.endYielding(err)
+}
+
 // endYielding is the page-symptom end: a replay page whose own read failed
 // ends the session with that failure, but YIELDS to any later lifecycle
 // verdict — a drop's evict closes the pools before its endListenSessions

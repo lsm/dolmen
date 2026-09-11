@@ -114,7 +114,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	}
 	tx, err := sess.n.rw.BeginTx(ctx, nil)
 	if err != nil {
-		sess.endYielding(err)
+		sess.endOnPageFailure(ctx, err)
 		return nil, "", false, pageProgress{}, err
 	}
 	// The namespace's write pool is a single connection: a transaction that
@@ -134,7 +134,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// last delivered cursor — never a short page reported as done, which
 	// would silently omit records the boundary promised.
 	if err := sess.verifyRetained(ctx, tx, sess.position, sess.boundary, sess.outstanding); err != nil {
-		sess.endYielding(err)
+		sess.endOnPageFailure(ctx, err)
 		return nil, "", false, pageProgress{}, err
 	}
 	boundary := sess.boundary
@@ -154,7 +154,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		qerr = tx.Commit()
 	}
 	if qerr != nil {
-		sess.endYielding(qerr)
+		sess.endOnPageFailure(ctx, qerr)
 		return nil, "", false, pageProgress{}, qerr
 	}
 
@@ -175,7 +175,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	}
 	records, next, merr := sess.mint(ctx, admitted, sess.position, mLast, len(scanned))
 	if merr != nil {
-		sess.endYielding(merr)
+		sess.endOnPageFailure(ctx, merr)
 		return nil, "", false, pageProgress{}, merr
 	}
 

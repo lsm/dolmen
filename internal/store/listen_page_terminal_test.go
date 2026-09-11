@@ -138,6 +138,34 @@ func TestListenSymptomParkYieldsToVerdict(t *testing.T) {
 // holds it: a yielded symptom must not fire while the mutex is held, and
 // once the authoritative verdict parks under that same mutex, the fire
 // after release carries the verdict — never the incidental read error.
+// A per-call cancellation is the caller's, not the session's: a Next whose
+// own deadline expires mid-page returns the context error and leaves the
+// session — and its standing cursor — retryable, exactly as a cancellation
+// before the flight permit always did.
+func TestListenCanceledPageLeavesSessionRetryable(t *testing.T) {
+	st := openChangeStore(t)
+	insertNotes(t, st, 2)
+
+	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
+	defer cancel()
+
+	canceled, cancelCall := context.WithCancel(context.Background())
+	cancelCall()
+	if _, _, _, err := replay.Next(canceled); err == nil {
+		t.Fatal("a canceled Next reported success")
+	} else if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled Next error = %v, want the context error", err)
+	}
+
+	records, _, done, err := replay.Next(context.Background())
+	if err != nil {
+		t.Fatalf("the retry after a canceled page failed: %v — per-call cancellation must not end the session", err)
+	}
+	if len(records) != 2 || !done {
+		t.Fatalf("retried page = %d records, done=%v, want the full backlog and done=true", len(records), done)
+	}
+}
+
 func TestListenYieldedFlushDefersToTheVerdict(t *testing.T) {
 	st := openChangeStore(t)
 	fired := make(chan error, 1)
