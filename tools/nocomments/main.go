@@ -184,6 +184,8 @@ var scalarBuiltins = map[string]bool{
 
 func embeddableType(expr ast.Expr, qualifiers map[string]bool, dot bool) embedKind {
 	switch t := expr.(type) {
+	case *ast.ParenExpr:
+		return embeddableType(t.X, qualifiers, dot)
 	case *ast.Ident:
 		if t.Name == "string" {
 			return embedString
@@ -241,7 +243,7 @@ func goDirective(norm []byte) (string, []string, bool) {
 func validEmbedPatterns(patterns []string) bool {
 	for _, p := range patterns {
 		g, _ := strings.CutPrefix(p, "all:")
-		if _, err := path.Match(g, ""); err != nil || strings.Contains(g, `\`) {
+		if _, err := path.Match(g, ""); err != nil {
 			return false
 		}
 		for _, part := range strings.Split(g, "/") {
@@ -450,6 +452,8 @@ type exempts struct {
 	unsafe      bool
 	embed       bool
 	mainish     bool
+	header      bool
+	lineOnly    bool
 }
 
 func isExempt(raw, norm []byte, c exempts) bool {
@@ -466,11 +470,11 @@ func isExempt(raw, norm []byte, c exempts) bool {
 			return true
 		}
 	case "linkname":
-		if c.unsafe && len(c.args) >= 1 && len(c.args) <= 2 {
+		if c.unsafe && c.lineOnly && len(c.args) >= 1 && len(c.args) <= 2 {
 			return true
 		}
 	case "debug":
-		if c.mainish && validDebugArgs(c.args) {
+		if c.mainish && c.header && validDebugArgs(c.args) {
 			return true
 		}
 	case "noinline", "nosplit", "norace", "nocheckptr", "uintptrescapes", "registerparams", "nointerface":
@@ -603,6 +607,8 @@ func scanSource(src []byte, path string) (*scan, error) {
 				unsafe:      hasUnsafe,
 				embed:       hasEmbed,
 				mainish:     isMainish,
+				header:      c.Pos() < f.Package,
+				lineOnly:    blank(lineLead),
 			}) {
 				continue
 			}
