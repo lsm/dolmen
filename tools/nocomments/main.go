@@ -37,7 +37,7 @@ var (
 	headerBlankLine  = regexp.MustCompile(`\n[ \t\r]*\n`)
 	exportPattern    = regexp.MustCompile(`^//export .+\r?$`)
 	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]*[0-9A-Za-z_-][0-9A-Za-z_,-]*)?([ \t].*)?\r?$`)
-	linknamePattern  = regexp.MustCompile(`^//go:linkname([ \t].*)?\r?$`)
+	linknamePattern  = regexp.MustCompile(`^//go:linkname .+\r?$`)
 	outputPattern    = regexp.MustCompile(`(?i)^[[:space:]]*(unordered )?output:`)
 )
 
@@ -460,6 +460,9 @@ func lexCount(src []byte) int {
 			} else if i+1 < n && src[i+1] == '*' {
 				k := bytes.Index(src[i+2:], []byte("*/"))
 				if k < 0 {
+					if !isExempt(src[i:], false, false, false, false) {
+						count++
+					}
 					i = n
 				} else {
 					if !isExempt(src[i:i+k+4], false, false, false, false) {
