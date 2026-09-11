@@ -446,7 +446,7 @@ func lexCount(src []byte) int {
 				if i < limit {
 					lead := src[bytes.LastIndexByte(src[:i], '\n')+1 : i]
 					lead = bytes.TrimPrefix(lead, utf8BOM)
-					if blank(lead) && (buildTagPattern.Match(text) || debugPattern.Match(text)) {
+					if len(bytes.TrimFunc(lead, unicode.IsSpace)) == 0 && (buildTagPattern.Match(text) || debugPattern.Match(text)) {
 						exempt = true
 					}
 					if legacyBuildLine.Match(text) && headerBlankLine.Match(src[j:limit]) {
