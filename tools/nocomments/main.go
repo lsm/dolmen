@@ -348,13 +348,68 @@ func headerHasBuildConstraint(src []byte) bool {
 	return false
 }
 
-var unicodeSpace = regexp.MustCompile(`[\v\f\x85\p{Zs}\x{2028}\x{2029}]`)
+func normalizeHeaderSpace(src []byte) []byte {
+	limit := len(src)
+	pos := 0
+	if bytes.HasPrefix(src, utf8BOM) {
+		pos = len(utf8BOM)
+	}
+	bom := src[:pos]
+	for p := pos; p < limit; {
+		nl := bytes.IndexByte(src[p:], '\n')
+		var lineEnd int
+		if nl < 0 {
+			lineEnd = limit
+		} else {
+			lineEnd = p + nl
+		}
+		if line := bytes.TrimSpace(src[p:lineEnd]); bytes.HasPrefix(line, []byte("package ")) || bytes.Equal(line, []byte("package")) {
+			limit = p
+			break
+		}
+		if nl < 0 {
+			break
+		}
+		p = lineEnd + 1
+	}
+	var out []byte
+	out = append(out, bom...)
+	for p := pos; p < limit; {
+		nl := bytes.IndexByte(src[p:limit], '\n')
+		var lineEnd int
+		if nl < 0 {
+			lineEnd = limit
+		} else {
+			lineEnd = p + nl
+		}
+		line := src[p:lineEnd]
+		k, spaces := 0, 0
+		for k < len(line) {
+			r, size := utf8.DecodeRune(line[k:])
+			if r != '\n' && unicode.IsSpace(r) {
+				k += size
+				spaces++
+				continue
+			}
+			break
+		}
+		out = append(out, bytes.Repeat([]byte(" "), spaces)...)
+		out = append(out, line[k:]...)
+		if lineEnd < limit {
+			out = append(out, '\n')
+		}
+		if nl < 0 {
+			break
+		}
+		p = lineEnd + 1
+	}
+	return append(out, src[limit:]...)
+}
 
 func scanFile(src []byte, path string) (bool, *scan, error) {
 	s, err := scanSource(src, path)
 	if err != nil && headerHasBuildConstraint(src) {
-		normalized := unicodeSpace.ReplaceAll(src, []byte(" "))
-		if s2, err2 := scanSource(normalized, path); err2 == nil {
+		if s2, err2 := scanSource(normalizeHeaderSpace(src), path); err2 == nil {
 			return false, s2, nil
 		}
 		return true, nil, nil
