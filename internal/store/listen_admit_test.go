@@ -289,3 +289,108 @@ func TestListenLiveRevocationMidBatchDeliversAdmittedPrefix(t *testing.T) {
 	default:
 	}
 }
+
+func TestListenReplayFiltersForeignRecords(t *testing.T) {
+	st := openChangeStore(t)
+
+	alice, err := st.Insert(context.Background(), "test", "notes", []map[string]any{{"title": "a", "score": 1}}, WriteOpts{}, Embedder{}, nil, Incarnation{})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	bob, err := st.Insert(context.Background(), "test", "notes", []map[string]any{{"title": "b", "score": 2}}, WriteOpts{}, Embedder{}, nil, Incarnation{})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	alice2, err := st.Insert(context.Background(), "test", "notes", []map[string]any{{"title": "c", "score": 3}}, WriteOpts{}, Embedder{}, nil, Incarnation{})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	labelNotesOwners(t, st, "alice", []int64{alice.Ids[0], alice2.Ids[0]})
+	labelNotesOwners(t, st, "bob", bob.Ids)
+
+	replay, cancel, err := st.Listen(context.Background(), "test", "", CursorBegin, [16]byte{}, scopedAuthz("alice"), func(ChangeRecord) {}, nil)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer cancel()
+
+	records := drainReplay(t, replay)
+	want := []int64{alice.Ids[0], alice2.Ids[0]}
+	if ids := rowIDsOf(records); len(ids) != len(want) || ids[0] != want[0] || ids[1] != want[1] {
+		t.Fatalf("replay exposed rows %v, want only alice's %v — a foreign record crossed the replay gate", ids, want)
+	}
+}
+
+func TestListenReplayRevocationOmitsPageAndCloses(t *testing.T) {
+	st := openChangeStore(t)
+	insertNotes(t, st, 2)
+
+	closedCause := make(chan error, 1)
+	authz := func(table string) (*RowScope, Incarnation, bool) {
+		return nil, Incarnation{}, false
+	}
+	replay, cancel, err := st.Listen(context.Background(), "test", "", CursorBegin, [16]byte{}, authz, func(ChangeRecord) {}, func(cause error) { closedCause <- cause })
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer cancel()
+
+	resume := replay.Resume()
+	records, next, done, err := replay.Next(context.Background())
+	if err != nil {
+		t.Fatalf("revoked Next: %v", err)
+	}
+	if len(records) != 0 || !done {
+		t.Fatalf("revoked page = %d records, done=%v, want the omitted page: 0 records, done=true", len(records), done)
+	}
+	if next != resume {
+		t.Fatalf("revoked page cursor = %q, want the PRE-page standing cursor %q", next, resume)
+	}
+	select {
+	case cause := <-closedCause:
+		if !errors.Is(cause, ErrListenRevoked) {
+			t.Fatalf("replay revocation cause = %v, want ErrListenRevoked", cause)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("replay revocation never closed the session")
+	}
+}
+
+func TestListenReplayRevocationMidPageDiscardsAdmittedPrefix(t *testing.T) {
+	st := openChangeStore(t)
+	insertNotes(t, st, 2)
+
+	closedCause := make(chan error, 1)
+	var calls atomic.Int64
+	authz := func(table string) (*RowScope, Incarnation, bool) {
+		if calls.Add(1) >= 2 {
+			return nil, Incarnation{}, false
+		}
+		return nil, Incarnation{}, true
+	}
+	replay, cancel, err := st.Listen(context.Background(), "test", "", CursorBegin, [16]byte{}, authz, func(ChangeRecord) {}, func(cause error) { closedCause <- cause })
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer cancel()
+
+	resume := replay.Resume()
+	records, next, done, err := replay.Next(context.Background())
+	if err != nil {
+		t.Fatalf("mid-page revoked Next: %v", err)
+	}
+	if len(records) != 0 || !done {
+		t.Fatalf("mid-page revoked page = %d records, done=%v, want the omitted page: 0 records, done=true — the admitted prefix must be discarded, not exposed", len(records), done)
+	}
+	if next != resume {
+		t.Fatalf("mid-page revoked cursor = %q, want the PRE-page standing cursor %q", next, resume)
+	}
+	select {
+	case cause := <-closedCause:
+		if !errors.Is(cause, ErrListenRevoked) {
+			t.Fatalf("mid-page revocation cause = %v, want ErrListenRevoked", cause)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("mid-page revocation never closed the session")
+	}
+}

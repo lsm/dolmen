@@ -155,7 +155,18 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	if len(scanned) > 0 {
 		mLast = scanned[len(scanned)-1].seq
 	}
-	records, next, merr := sess.mint(ctx, scanned, sess.position, mLast, len(scanned))
+	var admitted []loggedChange
+	for _, lc := range scanned {
+		vis, rev := sess.admit(lc.rec)
+		if rev {
+			sess.end(ErrListenRevoked)
+			return nil, sess.cursor(), true, pageProgress{}, nil
+		}
+		if vis {
+			admitted = append(admitted, lc)
+		}
+	}
+	records, next, merr := sess.mint(ctx, admitted, sess.position, mLast, len(scanned))
 	if merr != nil {
 		return nil, "", false, pageProgress{}, merr
 	}
