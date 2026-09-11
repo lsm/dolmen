@@ -90,6 +90,7 @@ func TestLineCommentsCount(t *testing.T) {
 		{"//go:build windows\n\npackage p\n\n/* ordinary never closed\n", 1},
 		{"//go:build windows\n\npackage p\n\nvar x = (\n// real\n", 1},
 		{"\u00A0//go:build windows\n\npackage p\n\nvar x = (\n// real\n", 1},
+		{"/*line g.go:5*/\n// +build ordinary\n\npackage p\nvar x = (\n", 1},
 		{"// +build impossible_tag\n\npackage p\n", 0},
 		{"\t//go:build impossible_tag\n\npackage p\n", 0},
 		{"  // +build impossible_tag\n\npackage p\n", 0},

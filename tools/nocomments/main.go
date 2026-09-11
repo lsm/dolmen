@@ -416,6 +416,12 @@ func headerLimit(src []byte) int {
 func lexCount(src []byte) int {
 	count := 0
 	limit := headerLimit(src)
+	var headerBlocks []int
+	for k := 0; k+1 < limit; k++ {
+		if src[k] == '/' && src[k+1] == '*' {
+			headerBlocks = append(headerBlocks, k)
+		}
+	}
 	i, n := 0, len(src)
 	for i < n {
 		switch src[i] {
@@ -449,8 +455,18 @@ func lexCount(src []byte) int {
 					if len(bytes.TrimFunc(lead, unicode.IsSpace)) == 0 && (buildTagPattern.Match(text) || debugPattern.Match(text)) {
 						exempt = true
 					}
-					if legacyBuildLine.Match(text) && headerBlankLine.Match(src[j:limit]) {
-						exempt = true
+					if legacyBuildLine.Match(text) {
+						blockBefore, searchEnd := false, limit
+						for _, b := range headerBlocks {
+							if b < i {
+								blockBefore = true
+							} else if b < searchEnd {
+								searchEnd = b
+							}
+						}
+						if !blockBefore && headerBlankLine.Match(src[j:searchEnd]) {
+							exempt = true
+						}
 					}
 				}
 				if !exempt {
