@@ -56,6 +56,8 @@ func TestLineCommentsCount(t *testing.T) {
 		{"//go:embed model/*.gguf\npackage p\n", 0},
 		{"//go:build\n\npackage p\n", 0},
 		{"package p\n\nvar x = 1 //nolint:gocyclo,goconst // rationale\n", 0},
+		{"package p\n\nvar x = 1 //nolint // reason\n", 0},
+		{"package p\n\n  //go:nointerface\nfunc (t T) M() {}\n", 0},
 		{"//go:build linux\r\n\r\npackage p\r\n", 0},
 		{"//line fake.go:100:20\n//go:build impossible_tag\n\npackage p\n", 0},
 		{"// +build impossible_tag\n\npackage p\n", 0},
