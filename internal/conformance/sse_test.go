@@ -696,15 +696,17 @@ func TestSubscribeBoundaryUnderConcurrentWrites(t *testing.T) {
 	}
 	got := []any{}
 	prevCursor := ""
+	readySeen := false
 	for len(got) < len(want) {
 		f, ok := r.next(60 * time.Second)
 		if !ok {
 			t.Fatalf("stream ended after %d of %d records — the boundary skipped the rest", len(got), len(want))
 		}
-		if len(got) == len(seeded) {
+		if !readySeen && len(got) == len(seeded) {
 			if c := wantReady(t, f); c != prevCursor {
 				t.Fatalf("the boundary's ready cursor %q is not the backlog's last cursor %q — the recovery point must be what was actually delivered", c, prevCursor)
 			}
+			readySeen = true
 			continue
 		}
 		dt := frameData(t, f)
