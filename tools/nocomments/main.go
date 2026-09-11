@@ -22,17 +22,45 @@ type scan struct {
 }
 
 var (
-	goDirectivePattern = regexp.MustCompile(`^//go:(build|embed|generate)([ \t].*)?\r?$`)
-	nolintPattern      = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]+([ \t].*)?)?\r?$`)
-	trailingSpace      = regexp.MustCompile(`[ \t]+\n`)
-	blankRun           = regexp.MustCompile(`\n{3,}`)
+	buildGenPattern = regexp.MustCompile(`^//go:(build|generate)([ \t].*)?\r?$`)
+	embedPattern    = regexp.MustCompile(`^//go:embed([ \t].*)?\r?$`)
+	nolintPattern   = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]+([ \t].*)?)?\r?$`)
+	trailingSpace   = regexp.MustCompile(`[ \t]+\n`)
+	blankRun        = regexp.MustCompile(`\n{3,}`)
 )
 
 func isExempt(text []byte, atLineStart bool) bool {
-	if atLineStart && goDirectivePattern.Match(text) {
+	if atLineStart && buildGenPattern.Match(text) {
 		return true
 	}
-	return nolintPattern.Match(text)
+	return embedPattern.Match(text) || nolintPattern.Match(text)
+}
+
+func precedesImportC(src []byte, j int) bool {
+	k, n, nl := j, len(src), 0
+	for k < n && isSpace(src[k]) {
+		if src[k] == '\n' {
+			nl++
+			if nl > 1 {
+				return false
+			}
+		}
+		k++
+	}
+	if !bytes.HasPrefix(src[k:], []byte("import")) {
+		return false
+	}
+	k += len("import")
+	for k < n && isSpace(src[k]) {
+		k++
+	}
+	if k < n && src[k] == '(' {
+		k++
+		for k < n && isSpace(src[k]) {
+			k++
+		}
+	}
+	return bytes.HasPrefix(src[k:], []byte(`"C"`))
 }
 
 func die(err error) {
@@ -79,7 +107,7 @@ func scanSource(src []byte) (*scan, error) {
 				for j < n && src[j] != '\n' {
 					j++
 				}
-				if !isExempt(src[i:j], i == 0 || src[i-1] == '\n') {
+				if !isExempt(src[i:j], i == 0 || src[i-1] == '\n') && !precedesImportC(src, j) {
 					s.comments = append(s.comments, span{i, j})
 				}
 				i = j
@@ -89,8 +117,11 @@ func scanSource(src []byte) (*scan, error) {
 			if k < 0 {
 				return nil, fmt.Errorf("line %d: unterminated block comment", 1+bytes.Count(src[:i], []byte{'\n'}))
 			}
-			s.comments = append(s.comments, span{i, i + k + 4})
-			i += k + 4
+			j := i + k + 4
+			if !precedesImportC(src, j) {
+				s.comments = append(s.comments, span{i, j})
+			}
+			i = j
 		default:
 			i++
 		}
