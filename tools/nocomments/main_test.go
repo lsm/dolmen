@@ -18,12 +18,9 @@ func commentCount(t *testing.T, src string) int {
 
 func commentCountIn(t *testing.T, path, src string) int {
 	t.Helper()
-	skip, s, err := scanFile([]byte(src), path)
+	s, err := scanFile([]byte(src), path)
 	if err != nil {
 		t.Fatalf("scanFile(%q): %v", src, err)
-	}
-	if skip {
-		return 0
 	}
 	return len(s.comments)
 }

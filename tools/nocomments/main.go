@@ -862,18 +862,18 @@ func lexCount(src []byte) int {
 	return count
 }
 
-func scanFile(src []byte, path string) (bool, *scan, error) {
+func scanFile(src []byte, path string) (*scan, error) {
 	s, err := scanSource(src, path)
 	if err != nil && headerHasBuildConstraint(src) {
 		if s2, err2 := scanSource(normalizeHeaderSpace(src), path); err2 == nil {
-			return false, s2, nil
+			return s2, nil
 		}
-		return false, &scan{comments: make([]span, lexCount(src))}, nil
+		return &scan{comments: make([]span, lexCount(src))}, nil
 	}
 	if err != nil {
-		return false, nil, err
+		return nil, err
 	}
-	return false, s, nil
+	return s, nil
 }
 
 func listGoFiles() ([]string, error) {
@@ -925,12 +925,9 @@ func main() {
 	}
 	bad := 0
 	for _, f := range files {
-		skip, s, err := scanFile(srcs[f], f)
+		s, err := scanFile(srcs[f], f)
 		if err != nil {
 			die(fmt.Errorf("cannot parse %s: %w", f, err))
-		}
-		if skip {
-			continue
 		}
 		n := len(s.comments)
 		if mode == "stats" {

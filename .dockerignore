@@ -3,6 +3,7 @@
 /dist/
 /dolmen
 /dolmen.exe
+/nocomments
 *.db
 *.db-shm
 *.db-wal
