@@ -330,6 +330,23 @@ func readAllowlist(path string) (map[string]int, error) {
 	return allow, nil
 }
 
+func headerHasBuildConstraint(src []byte) bool {
+	for _, line := range bytes.Split(src, []byte("\n")) {
+		trimmed := bytes.TrimSpace(line)
+		if bytes.HasPrefix(trimmed, []byte("package ")) || bytes.Equal(trimmed, []byte("package")) {
+			return false
+		}
+		if bytes.HasPrefix(trimmed, []byte("//go:build")) {
+			return true
+		}
+		comment := bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("//")))
+		if bytes.HasPrefix(comment, []byte("+build")) {
+			return true
+		}
+	}
+	return false
+}
+
 func listGoFiles() ([]string, error) {
 	out, err := exec.Command("git", "ls-files", "-z", "--", "*.go").Output()
 	if err != nil {
@@ -376,6 +393,9 @@ func main() {
 		}
 		s, err := scanSource(src, f)
 		if err != nil {
+			if headerHasBuildConstraint(src) {
+				continue
+			}
 			die(fmt.Errorf("cannot parse %s: %w", f, err))
 		}
 		n := len(s.comments)
