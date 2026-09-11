@@ -32,8 +32,8 @@ const wsClass = `[\t\n\v\f\r\x85\p{Zs}\x{2028}\x{2029}]`
 var (
 	buildTagPattern  = regexp.MustCompile(`^//go:build(` + wsClass + `.*)?$`)
 	legacyBuildLine  = regexp.MustCompile(`^//` + wsClass + `*\+build(` + wsClass + `.*)?$`)
-	linePattern      = regexp.MustCompile(`^//line .*:[1-9][0-9]*(?::[1-9][0-9]*)?\r?$`)
-	blockLinePattern = regexp.MustCompile(`(?s)^/\*line .*:[1-9][0-9]*(?::[1-9][0-9]*)?\*/$`)
+	linePattern      = regexp.MustCompile(`^//line .*:[0-9]*[1-9][0-9]*(?::[0-9]*[1-9][0-9]*)?\r?$`)
+	blockLinePattern = regexp.MustCompile(`(?s)^/\*line .*:[0-9]*[1-9][0-9]*(?::[0-9]*[1-9][0-9]*)?\*/$`)
 	headerBlankLine  = regexp.MustCompile(`\n[ \t\r]*\n`)
 	exportPattern    = regexp.MustCompile(`^//export .+\r?$`)
 	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*(,[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*)*)?([ \t].*)?\r?$`)
@@ -242,10 +242,11 @@ func embedMultiFile(kind embedKind, patterns []string) bool {
 	}
 	uniq := map[string]bool{}
 	for _, p := range patterns {
-		if strings.ContainsAny(p, "*?[\\") {
+		g, _ := strings.CutPrefix(p, "all:")
+		if strings.ContainsAny(g, "*?[\\") {
 			return false
 		}
-		uniq[p] = true
+		uniq[g] = true
 	}
 	return len(uniq) > 1
 }
@@ -297,7 +298,7 @@ func docGroups(f *ast.File) (map[token.Pos]embedKind, map[token.Pos]bool, map[to
 						allEmbeddable = false
 					}
 				}
-				if allEmbeddable && declKind != embedUnknown && decl.Doc != nil {
+				if allEmbeddable && declKind != embedUnknown && decl.Doc != nil && !decl.Lparen.IsValid() {
 					valueDocs[decl.Doc.Pos()] = declKind
 				}
 			}
