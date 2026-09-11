@@ -130,32 +130,34 @@ func commentEnd(src []byte, start int) int {
 	return len(src)
 }
 
-func docGroups(f *ast.File) map[token.Pos]bool {
+func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool) {
 	docs := map[token.Pos]bool{}
-	mark := func(cg *ast.CommentGroup) {
+	funcDocs := map[token.Pos]bool{}
+	mark := func(m map[token.Pos]bool, cg *ast.CommentGroup) {
 		if cg != nil {
-			docs[cg.Pos()] = true
+			m[cg.Pos()] = true
 		}
 	}
 	for _, d := range f.Decls {
 		switch decl := d.(type) {
 		case *ast.GenDecl:
-			mark(decl.Doc)
+			mark(docs, decl.Doc)
 			for _, s := range decl.Specs {
 				switch sp := s.(type) {
 				case *ast.ImportSpec:
-					mark(sp.Doc)
+					mark(docs, sp.Doc)
 				case *ast.ValueSpec:
-					mark(sp.Doc)
+					mark(docs, sp.Doc)
 				case *ast.TypeSpec:
-					mark(sp.Doc)
+					mark(docs, sp.Doc)
 				}
 			}
 		case *ast.FuncDecl:
-			mark(decl.Doc)
+			mark(docs, decl.Doc)
+			mark(funcDocs, decl.Doc)
 		}
 	}
-	return docs
+	return docs, funcDocs
 }
 
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
@@ -168,7 +170,7 @@ func afterFileBOM(src []byte, start int) bool {
 	return bytes.HasPrefix(src, utf8BOM) && start == len(utf8BOM)
 }
 
-func isExempt(text []byte, atLineStart, afterBOM, isDoc, beforePackage bool) bool {
+func isExempt(text []byte, atLineStart, afterBOM, isDoc, isFuncDoc, beforePackage bool) bool {
 	if beforePackage && (atLineStart || afterBOM) && (buildTagPattern.Match(text) || legacyBuildLine.Match(text)) {
 		return true
 	}
@@ -178,7 +180,10 @@ func isExempt(text []byte, atLineStart, afterBOM, isDoc, beforePackage bool) boo
 	if atLineStart && goDirPattern.Match(text) && !buildTagPattern.Match(text) {
 		return true
 	}
-	if isDoc && (goDirPattern.Match(text) || exportPattern.Match(text)) && !lineScannedOnly.Match(text) {
+	if isDoc && goDirPattern.Match(text) && !lineScannedOnly.Match(text) {
+		return true
+	}
+	if isFuncDoc && exportPattern.Match(text) {
 		return true
 	}
 	return blockLinePattern.Match(text) || nolintPattern.Match(text)
@@ -209,13 +214,14 @@ func scanSource(src []byte, path string) (*scan, error) {
 	if strings.HasSuffix(path, "_test.go") {
 		outputs = exampleOutputs(f)
 	}
-	docs := docGroups(f)
+	docs, funcDocs := docGroups(f)
 	s := &scan{}
 	for _, g := range f.Comments {
 		if preambles[g.Pos()] || outputs[g.Pos()] {
 			continue
 		}
 		isDoc := docs[g.Pos()]
+		isFuncDoc := funcDocs[g.Pos()]
 		for _, c := range g.List {
 			start := tf.Offset(c.Pos())
 			end := commentEnd(src, start)
@@ -223,7 +229,7 @@ func scanSource(src []byte, path string) (*scan, error) {
 			if c.Pos() < f.Package && isGeneratedMarker(text) {
 				continue
 			}
-			if !isExempt(text, atLineStart(src, start), afterFileBOM(src, start), isDoc, c.Pos() < f.Package) {
+			if !isExempt(text, atLineStart(src, start), afterFileBOM(src, start), isDoc, isFuncDoc, c.Pos() < f.Package) {
 				s.comments = append(s.comments, span{start, end})
 			}
 		}

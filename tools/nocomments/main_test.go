@@ -116,6 +116,8 @@ func TestLineCommentsCount(t *testing.T) {
 		{"//line just prose\npackage p\n", 1},
 		{"package p\n\nfunc f() {\n\t//line x.go:1\n\t_ = 1\n}\n", 1},
 		{"package p\n\n//export MyFunc\nfunc MyFunc() {}\n", 0},
+		{"package p\n\n//export X\nvar X int\n", 1},
+		{"package p\n\n//export T\ntype T struct{}\n", 1},
 		{"package p\n\n//go:noinlinex\nfunc k() {}\n", 0},
 		{"package p\n\nimport \"fmt\"\n\nfunc ExampleGreeting() {\n\tfmt.Println(\"hi\")\n\n\t// Output: hi\n}\n", 0},
 		{"package p\n\nimport \"fmt\"\n\nfunc Example() {\n\tfmt.Println(1)\n\t// Output:\n\t// 1\n}\n", 0},
