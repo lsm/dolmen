@@ -181,14 +181,30 @@ func isExempt(text []byte, atLineStart, afterBOM, isDoc bool) bool {
 	return blockLinePattern.Match(text) || nolintPattern.Match(text)
 }
 
-func scanSource(src []byte) (*scan, error) {
+func isGeneratedMarker(text []byte) bool {
+	for _, line := range bytes.Split(text, []byte("\n")) {
+		rest, ok := bytes.CutPrefix(line, []byte("// Code generated "))
+		if !ok {
+			continue
+		}
+		if _, ok := bytes.CutSuffix(rest, []byte(" DO NOT EDIT.")); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func scanSource(src []byte, path string) (*scan, error) {
 	fset, f, err := parseGo(src)
 	if err != nil {
 		return nil, fmt.Errorf("unparseable: %w", err)
 	}
 	tf := fset.File(f.Package)
 	preambles := cgoPreambles(f)
-	outputs := exampleOutputs(f)
+	var outputs map[token.Pos]bool
+	if strings.HasSuffix(path, "_test.go") {
+		outputs = exampleOutputs(f)
+	}
 	docs := docGroups(f)
 	s := &scan{}
 	for _, g := range f.Comments {
@@ -200,6 +216,9 @@ func scanSource(src []byte) (*scan, error) {
 			start := tf.Offset(c.Pos())
 			end := commentEnd(src, start)
 			text := src[start:end]
+			if c.Pos() < f.Package && isGeneratedMarker(text) {
+				continue
+			}
 			if !isExempt(text, atLineStart(src, start), afterFileBOM(src, start), isDoc) {
 				s.comments = append(s.comments, span{start, end})
 			}
@@ -291,7 +310,7 @@ func main() {
 		if err != nil {
 			die(err)
 		}
-		s, err := scanSource(src)
+		s, err := scanSource(src, f)
 		if err != nil {
 			die(fmt.Errorf("cannot parse %s: %w", f, err))
 		}
