@@ -260,13 +260,16 @@ func scanSource(src []byte, path string) (*scan, error) {
 				continue
 			}
 			blockBefore := false
+			searchEnd := pkgOff
 			for _, b := range headerBlockStarts {
 				if b < start {
 					blockBefore = true
+				} else if b < searchEnd {
+					searchEnd = b
 				}
 			}
 			if c.Pos() < f.Package && !blockBefore &&
-				legacyBuildLine.Match(text) && headerBlankLine.Match(src[end:pkgOff]) {
+				legacyBuildLine.Match(text) && headerBlankLine.Match(src[end:searchEnd]) {
 				continue
 			}
 			if !isExempt(text, atLineStart(src, start), isDoc, isFuncDoc, fileImportsC(f)) {
