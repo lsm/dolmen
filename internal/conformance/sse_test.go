@@ -102,6 +102,40 @@ func (h *harness) subscribeStream(t *testing.T, query url.Values) *sseReader {
 	return newSSEReader(res)
 }
 
+func (h *harness) insertBatches(t *testing.T, ns, table string, n int) []any {
+	t.Helper()
+	var ids []any
+	for n > 0 {
+		batch := n
+		if batch > store.MaxChangesPageLimit {
+			batch = store.MaxChangesPageLimit
+		}
+		records := make([]any, 0, batch)
+		for i := 0; i < batch; i++ {
+			records = append(records, map[string]any{"title": "bulk"})
+		}
+		res := h.mustHTTP("insert", map[string]any{"namespace": ns, "table": table, "records": records})
+		ids = append(ids, res["ids"].([]any)...)
+		n -= batch
+	}
+	return ids
+}
+
+func (h *harness) flood(ns, table string, batches int, done chan<- error) {
+	for i := 0; i < batches; i++ {
+		records := make([]any, 0, store.MaxChangesPageLimit)
+		for j := 0; j < store.MaxChangesPageLimit; j++ {
+			records = append(records, map[string]any{"title": "flood"})
+		}
+		status, body := h.httpCall("insert", map[string]any{"namespace": ns, "table": table, "records": records})
+		if status != http.StatusOK {
+			done <- fmt.Errorf("flood insert %d: status %d (%v)", i, status, body)
+			return
+		}
+	}
+	done <- nil
+}
+
 // frameData decodes a frame's data line as a JSON object.
 func frameData(t *testing.T, f sseFrame) map[string]any {
 	t.Helper()
@@ -401,13 +435,13 @@ func TestSubscribeOverflowTeachesReconnect(t *testing.T) {
 	}
 	wantChange(t, f, [3]any{"notes", probe["ids"].([]any)[0], "insert"})
 
-	records := make([]any, 0, 10*store.MaxChangesPageLimit)
-	for i := 0; i < 10*store.MaxChangesPageLimit; i++ {
-		records = append(records, map[string]any{"title": "flood"})
-	}
-	h.mustHTTP("insert", map[string]any{"namespace": "rt", "table": "notes", "records": records})
+	flood := make(chan error, 1)
+	go h.flood("rt", "notes", 9, flood)
 
 	frames := r.rest(30 * time.Second)
+	if err := <-flood; err != nil {
+		t.Fatal(err)
+	}
 	if len(frames) < 2 {
 		t.Fatalf("overflowed stream = %d frames, want a cursor handoff and a teaching error: %+v", len(frames), frames)
 	}
@@ -450,11 +484,7 @@ func TestSubscribeDisconnectLeavesServerHealthy(t *testing.T) {
 func TestSubscribeNamespaceDropTeachesLifetimeEnd(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
-	backlog := make([]any, 0, 3*store.MaxChangesPageLimit)
-	for i := 0; i < 3*store.MaxChangesPageLimit; i++ {
-		backlog = append(backlog, map[string]any{"title": "backlog"})
-	}
-	h.mustHTTP("insert", map[string]any{"namespace": "rt", "table": "notes", "records": backlog})
+	h.insertBatches(t, "rt", "notes", 2*store.MaxChangesPageLimit)
 
 	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}, "cursor": {"begin"}})
 	if _, ok := r.next(10 * time.Second); !ok {
@@ -483,11 +513,7 @@ func TestSubscribeBoundaryUnderConcurrentWrites(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
 
-	backlog := make([]any, 0, 3*store.MaxChangesPageLimit)
-	for i := 0; i < 3*store.MaxChangesPageLimit; i++ {
-		backlog = append(backlog, map[string]any{"title": "backlog"})
-	}
-	seeded := h.mustHTTP("insert", map[string]any{"namespace": "rt", "table": "notes", "records": backlog})
+	seeded := h.insertBatches(t, "rt", "notes", 2*store.MaxChangesPageLimit)
 
 	type batch struct {
 		ids []any
@@ -519,7 +545,7 @@ func TestSubscribeBoundaryUnderConcurrentWrites(t *testing.T) {
 	close(release)
 
 	var want []any
-	want = append(want, seeded["ids"].([]any)...)
+	want = append(want, seeded...)
 	for b := range batches {
 		if b.err != nil {
 			t.Fatal(b.err)
