@@ -42,60 +42,103 @@ func tokenOriginsAt(t *testing.T, st *Store, position int64) (origins []int64) {
 func TestListenProtectQueueNoopInsideMargin(t *testing.T) {
 	st := openChangeStore(t)
 	sess := protectedSession(t, st)
-	sess.chain = newCursorChain(time.Now(), 0)
+	epoch := newCursorChain(time.Now(), 9)
+	sess.queueChain = epoch
 	sess.queue = []loggedChange{{seq: 10, rec: ChangeRecord{RowID: 10}}, {seq: 11, rec: ChangeRecord{RowID: 11}}}
-	sess.liveRead = 11
-	sess.replayExhausted = true
 
-	sess.protectQueue(false)
+	sess.protectQueue()
 
 	if got := len(tokenOriginsAt(t, st, 10)); got != 0 {
-		t.Fatalf("protectQueue minted %d tokens on a comfortably-inside chain, want 0", got)
+		t.Fatalf("protectQueue minted %d tokens on a comfortably-inside epoch, want 0", got)
 	}
 	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	if sess.chain.Start < time.Now().Add(-time.Minute).UnixMilli() {
-		t.Fatal("protectQueue rotated a chain comfortably inside its cap")
+	kept := sess.queueChain
+	sess.mu.Unlock()
+	if kept != epoch {
+		t.Fatal("protectQueue replaced an epoch comfortably inside its cap")
 	}
 }
 
-func TestListenProtectQueueRotatesNearCap(t *testing.T) {
+func TestListenProtectQueueRefreshesNearCap(t *testing.T) {
 	st := openChangeStore(t)
 	sess := protectedSession(t, st)
-	sess.chain = newCursorChain(time.Now().Add(-st.changeRetention+100*time.Millisecond), 0)
+	sess.queueChain = newCursorChain(time.Now().Add(-st.changeRetention+100*time.Millisecond), 9)
 	sess.queue = []loggedChange{{seq: 10, rec: ChangeRecord{RowID: 10}}, {seq: 11, rec: ChangeRecord{RowID: 11}}}
-	sess.liveRead = 11
-	sess.replayExhausted = true
-	sess.position = 2
 
-	sess.protectQueue(false)
+	sess.protectQueue()
 
 	origins := tokenOriginsAt(t, st, 10)
 	if len(origins) != 1 || origins[0] != 9 {
 		t.Fatalf("protective token origins = %v, want exactly [9] (strictly below the queue head)", origins)
 	}
 	sess.mu.Lock()
-	rotated := sess.chain
+	refreshed := sess.queueChain
 	sess.mu.Unlock()
-	if rotated == nil || rotated.Start < time.Now().Add(-time.Minute).UnixMilli() {
-		t.Fatal("protectQueue left the near-cap chain current")
+	if refreshed == nil || refreshed.Start < time.Now().Add(-time.Minute).UnixMilli() {
+		t.Fatal("protectQueue left a near-cap chain current")
+	}
+}
+
+func TestListenProtectQueuePinsBelowTheQueueHeadNotTheReplayPosition(t *testing.T) {
+	st := openChangeStore(t)
+	sess := protectedSession(t, st)
+	sess.position = 1
+	sess.liveRead = 41
+	sess.replayExhausted = false
+	sess.queue = []loggedChange{{seq: 40, rec: ChangeRecord{RowID: 40}}, {seq: 41, rec: ChangeRecord{RowID: 41}}}
+
+	sess.protectQueue()
+
+	origins := tokenOriginsAt(t, st, 40)
+	if len(origins) != 1 || origins[0] != 39 {
+		t.Fatalf("protective token origins = %v, want exactly [39]: a stalled replay must not drag the queue's root down to its position",
+			origins)
+	}
+}
+
+func TestListenProtectQueueMintsOnTheFirstObligation(t *testing.T) {
+	st := openChangeStore(t)
+	sess := protectedSession(t, st)
+	sess.queue = []loggedChange{{seq: 7, rec: ChangeRecord{RowID: 7}}}
+
+	sess.protectQueue()
+
+	origins := tokenOriginsAt(t, st, 7)
+	if len(origins) != 1 || origins[0] != 6 {
+		t.Fatalf("first-batch protection origins = %v, want exactly [6]", origins)
 	}
 }
 
 func TestListenProtectQueueEmptyQueueSkips(t *testing.T) {
 	st := openChangeStore(t)
 	sess := protectedSession(t, st)
-	sess.chain = newCursorChain(time.Now().Add(-st.changeRetention), 0)
+	sess.queueChain = newCursorChain(time.Now().Add(-2*st.changeRetention), 4)
 	sess.liveRead = 5
-	before := sess.chain
 
-	sess.protectQueue(false)
+	sess.protectQueue()
 
-	if sess.chain != before {
-		t.Fatal("protectQueue rotated with nothing queued to protect")
-	}
 	if got := len(tokenOriginsAt(t, st, 5)); got != 0 {
 		t.Fatalf("empty-queue protectQueue minted %d tokens, want 0", got)
+	}
+}
+
+func TestListenProtectQueueLeavesTheDeliveryChainAlone(t *testing.T) {
+	st := openChangeStore(t)
+	sess := protectedSession(t, st)
+	delivery := newCursorChain(time.Now().Add(-st.changeRetention/2), 3)
+	sess.chain = delivery
+	sess.queue = []loggedChange{{seq: 5, rec: ChangeRecord{RowID: 5}}}
+
+	sess.protectQueue()
+
+	sess.mu.Lock()
+	chain, epoch := sess.chain, sess.queueChain
+	sess.mu.Unlock()
+	if chain != delivery {
+		t.Fatal("protectQueue replaced the delivery chain; its absolute cap must stay anchored")
+	}
+	if epoch == nil || epoch == delivery {
+		t.Fatal("the queued prefix must ride a protective chain of its own")
 	}
 }
 
@@ -112,14 +155,52 @@ func TestListenProtectQueueRetentionZeroSkips(t *testing.T) {
 		t.Fatalf("create table: %v", err)
 	}
 	sess := protectedSession(t, st)
-	sess.chain = newCursorChain(time.Now(), 0)
 	sess.queue = []loggedChange{{seq: 3, rec: ChangeRecord{RowID: 3}}}
-	sess.liveRead = 3
 
-	sess.protectQueue(false)
+	sess.protectQueue()
 
 	if got := len(tokenOriginsAt(t, st, 3)); got != 0 {
 		t.Fatalf("retention-0 store minted %d protective tokens, want 0", got)
+	}
+}
+
+func TestListenProtectQueueNegativeRetentionSkips(t *testing.T) {
+	st, err := Open(t.TempDir(), WithChangeRetention(-time.Hour))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	sess := testSession(nil)
+	sess.s = st
+	sess.queue = []loggedChange{{seq: 1, rec: ChangeRecord{RowID: 1}}}
+
+	sess.protectQueue()
+
+	sess.mu.Lock()
+	chain := sess.queueChain
+	sess.mu.Unlock()
+	if chain != nil {
+		t.Fatal("a disabling retention minted a protective token no prune would ever reclaim")
+	}
+}
+
+func TestListenProtectQueueSubMillisecondRetentionSkips(t *testing.T) {
+	st, err := Open(t.TempDir(), WithChangeRetention(time.Nanosecond))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	sess := testSession(nil)
+	sess.s = st
+	sess.queue = []loggedChange{{seq: 1, rec: ChangeRecord{RowID: 1}}}
+
+	sess.protectQueue()
+
+	sess.mu.Lock()
+	epoch := sess.queueChain
+	sess.mu.Unlock()
+	if epoch != nil {
+		t.Fatal("sub-millisecond retention admitted a protective epoch no refresh cadence can keep alive")
 	}
 }
 
@@ -149,11 +230,8 @@ func TestListenProtectQueueSurvivesPrune(t *testing.T) {
 
 	seedStampedChanges(t, st, "notes", []time.Time{old, old, old})
 	sess := protectedSession(t, st)
-	sess.chain = newCursorChain(time.Now(), 0)
 	sess.queue = []loggedChange{{seq: 5, rec: ChangeRecord{RowID: 2}}, {seq: 6, rec: ChangeRecord{RowID: 3}}}
-	sess.liveRead = 6
-	sess.replayExhausted = true
-	sess.protectQueue(false)
+	sess.protectQueue()
 
 	tx, err = n.rw.BeginTx(ctx, nil)
 	if err != nil {
@@ -170,7 +248,7 @@ func TestListenProtectQueueSurvivesPrune(t *testing.T) {
 	}
 }
 
-func TestListenChainForFloorsAtQueueHead(t *testing.T) {
+func TestListenChainForFloorsBelowQueueHead(t *testing.T) {
 	st := openChangeStore(t)
 	sess := protectedSession(t, st)
 	sess.chain = &cursorChain{ID: "old", Origin: 0, Start: time.Now().Add(-2 * st.changeRetention).UnixMilli()}
@@ -179,24 +257,8 @@ func TestListenChainForFloorsAtQueueHead(t *testing.T) {
 
 	chain := sess.chainFor(time.Now(), 100)
 
-	if chain.Origin != 40 {
-		t.Fatalf("rotated chain rooted at %d, want the queue head 40", chain.Origin)
-	}
-}
-
-func TestListenProtectQueueForceMintsInsideMargin(t *testing.T) {
-	st := openChangeStore(t)
-	sess := protectedSession(t, st)
-	sess.chain = newCursorChain(time.Now(), 0)
-	sess.queue = []loggedChange{{seq: 7, rec: ChangeRecord{RowID: 7}}}
-	sess.liveRead = 7
-	sess.replayExhausted = true
-
-	sess.protectQueue(true)
-
-	origins := tokenOriginsAt(t, st, 7)
-	if len(origins) != 1 || origins[0] != 6 {
-		t.Fatalf("forced protection origins = %v, want exactly [6] inside a fresh chain's margin", origins)
+	if chain.Origin != 39 {
+		t.Fatalf("rotated chain rooted at %d, want strictly below the queue head (39)", chain.Origin)
 	}
 }
 
@@ -229,10 +291,8 @@ func TestListenPollPumpProtectsParkedDrainClose(t *testing.T) {
 	}
 	sess := testSession(nil)
 	sess.s, sess.n = st, n
-	sess.chain = newCursorChain(time.Now(), 0)
 	sess.queue = []loggedChange{{seq: 1, rec: ChangeRecord{RowID: 1}}, {seq: 2, rec: ChangeRecord{RowID: 2}}}
 	sess.liveRead = 2
-	sess.replayExhausted = true
 	sess.pendingDrainClose = ErrListenLifetimeEnded
 
 	sess.pumps.Add(1)
