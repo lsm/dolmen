@@ -52,7 +52,7 @@ func TestListenPollPumpStopsAtEnd(t *testing.T) {
 	st := openChangeStore(t)
 
 	replay, cancel := listenOn(t, st, "", "", func(ChangeRecord) {}, nil)
-	sess := st.listenSessions["test"][0]
+	sess := trackedSnapshot(st, "test")[0]
 	drainReplay(t, replay)
 
 	done := make(chan struct{})
@@ -70,4 +70,10 @@ func TestListenPollPumpStopsAtEnd(t *testing.T) {
 	default:
 		t.Fatal("end left the poll pump's stop channel open")
 	}
+}
+
+func trackedSnapshot(st *Store, ns string) []*listenSession {
+	st.notifyMu.Lock()
+	defer st.notifyMu.Unlock()
+	return append([]*listenSession(nil), st.listenSessions[ns]...)
 }

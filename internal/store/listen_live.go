@@ -329,7 +329,7 @@ func (sess *listenSession) fillErr(err error) error {
 	if errors.Is(err, ErrNotFound) {
 		return ErrListenLifetimeEnded
 	}
-	if sess.s.nsEvicted(sess.nsName, sess.n) {
+	if sess.s != nil && sess.s.nsEvicted(sess.nsName, sess.n) {
 		return ErrListenLifetimeEnded
 	}
 	return fmt.Errorf("listen fill %s: %w", sess.nsName, err)
