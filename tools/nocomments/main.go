@@ -34,6 +34,7 @@ var (
 	headerBlankLine  = regexp.MustCompile(`\n[ \t\r]*\n`)
 	exportPattern    = regexp.MustCompile(`^//export .+\r?$`)
 	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]*[0-9A-Za-z_-][0-9A-Za-z_,-]*)?([ \t].*)?\r?$`)
+	linknamePattern  = regexp.MustCompile(`^//go:linkname([ \t].*)?\r?$`)
 	outputPattern    = regexp.MustCompile(`(?i)^[[:space:]]*(unordered )?output:`)
 )
 
@@ -201,7 +202,7 @@ func isExempt(text []byte, atLineStart, isDoc, isFuncDoc, isCgo bool) bool {
 	if isFuncDoc && isCgo && exportPattern.Match(text) {
 		return true
 	}
-	return blockLinePattern.Match(text) || nolintPattern.Match(text)
+	return blockLinePattern.Match(text) || nolintPattern.Match(text) || linknamePattern.Match(text)
 }
 
 func isGeneratedMarker(text []byte) bool {

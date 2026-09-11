@@ -111,6 +111,7 @@ func TestLineCommentsCount(t *testing.T) {
 		{"package p\n\n/*\n#include <stdlib.h>\n*/\n\nimport \"C\"\n", 1},
 		{"package p\n\n/* plain doc */\nimport \"os\"\n", 1},
 		{"package p\n\n//go:linkname foo bar\nvar x = 1\n", 0},
+		{"package p\n\n  //go:linkname local remote\n\nvar local int\n", 0},
 		{"package p\n\nfunc f() {\n\t//go:noinline\n\t_ = 1\n}\n", 1},
 		{"package p\n\n//go:nosplit\nfunc g() {}\n", 0},
 		{"package p\n\n//go:uintptrescapes\nfunc h() {}\n", 0},
