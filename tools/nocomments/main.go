@@ -26,21 +26,21 @@ type scan struct{ comments []span }
 const wsClass = `[\t\n\v\f\r\x85\p{Zs}\x{2028}\x{2029}]`
 
 var (
-	funcPragmaPattern = regexp.MustCompile(`^(?://go:(?:noinline|nosplit|norace|nocheckptr|uintptrescapes|registerparams|nointerface)\r?$|//go:wasmexport [^\r\n]+|//go:wasmimport \S+ [^\r\n]+)$`)
-	noescapePattern   = regexp.MustCompile(`^//go:noescape$`)
-	embedPattern      = regexp.MustCompile(`^//go:embed [^\r\n]+$`)
-	generatePattern   = regexp.MustCompile(`^//go:generate[ \t].+\r?$`)
-	bareGenerate      = regexp.MustCompile(`^//go:generate[ \t]*\r?$`)
-	buildTagPattern   = regexp.MustCompile(`^//go:build(` + wsClass + `.*)?$`)
-	legacyBuildLine   = regexp.MustCompile(`^//` + wsClass + `*\+build(` + wsClass + `.*)?$`)
-	linePattern       = regexp.MustCompile(`^//line .*:[1-9][0-9]*(?::[1-9][0-9]*)?$`)
-	blockLinePattern  = regexp.MustCompile(`(?s)^/\*line .*:[1-9][0-9]*(?::[1-9][0-9]*)?\*/$`)
-	debugPattern      = regexp.MustCompile(`^//go:debug[ \t]+([A-Za-z0-9_.-]+=[A-Za-z0-9_.-]*)([ \t]+[A-Za-z0-9_.-]+=[A-Za-z0-9_.-]*)*$`)
-	headerBlankLine   = regexp.MustCompile(`\n[ \t\r]*\n`)
-	exportPattern     = regexp.MustCompile(`^//export .+\r?$`)
-	nolintPattern     = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*(,[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*)*)?([ \t].*)?\r?$`)
-	linknamePattern   = regexp.MustCompile(`^//go:linkname \S+( \S+)?$`)
-	outputPattern     = regexp.MustCompile(`(?i)^[[:space:]]*(unordered )?output:`)
+	funcPragmaPattern     = regexp.MustCompile(`^(?://go:(?:noinline|nosplit|norace|nocheckptr|uintptrescapes|registerparams|nointerface)\r?$|//go:wasmexport [^\r\n]+)$`)
+	bodylessPragmaPattern = regexp.MustCompile(`^//go:(?:noescape$|wasmimport \S+ \S+)$`)
+	embedPattern          = regexp.MustCompile(`^//go:embed [^\r\n]+$`)
+	generatePattern       = regexp.MustCompile(`^//go:generate[ \t].+\r?$`)
+	bareGenerate          = regexp.MustCompile(`^//go:generate[ \t]*\r?$`)
+	buildTagPattern       = regexp.MustCompile(`^//go:build(` + wsClass + `.*)?$`)
+	legacyBuildLine       = regexp.MustCompile(`^//` + wsClass + `*\+build(` + wsClass + `.*)?$`)
+	linePattern           = regexp.MustCompile(`^//line .*:[1-9][0-9]*(?::[1-9][0-9]*)?$`)
+	blockLinePattern      = regexp.MustCompile(`(?s)^/\*line .*:[1-9][0-9]*(?::[1-9][0-9]*)?\*/$`)
+	debugPattern          = regexp.MustCompile(`^//go:debug[ \t]+([A-Za-z0-9_.-]+=[A-Za-z0-9_.-]*)([ \t]+[A-Za-z0-9_.-]+=[A-Za-z0-9_.-]*)*$`)
+	headerBlankLine       = regexp.MustCompile(`\n[ \t\r]*\n`)
+	exportPattern         = regexp.MustCompile(`^//export .+\r?$`)
+	nolintPattern         = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*(,[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*)*)?([ \t].*)?\r?$`)
+	linknamePattern       = regexp.MustCompile(`^//go:linkname \S+( \S+)?$`)
+	outputPattern         = regexp.MustCompile(`(?i)^[[:space:]]*(unordered )?output:`)
 )
 
 func die(err error) {
@@ -176,7 +176,7 @@ func blank(b []byte) bool { return len(bytes.Trim(b, " \t\r")) == 0 }
 
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
-func fileImportsC(f *ast.File) bool {
+func fileImports(f *ast.File, want string) bool {
 	for _, d := range f.Decls {
 		gd, ok := d.(*ast.GenDecl)
 		if !ok || gd.Tok != token.IMPORT {
@@ -185,7 +185,7 @@ func fileImportsC(f *ast.File) bool {
 		for _, spec := range gd.Specs {
 			imp, ok := spec.(*ast.ImportSpec)
 			if ok {
-				if path, err := strconv.Unquote(imp.Path.Value); err == nil && path == "C" {
+				if path, err := strconv.Unquote(imp.Path.Value); err == nil && path == want {
 					return true
 				}
 			}
@@ -194,7 +194,7 @@ func fileImportsC(f *ast.File) bool {
 	return false
 }
 
-func isExempt(raw, norm []byte, atLineStart, isValueDoc, isFuncDoc, isBodylessDoc, isCgo bool) bool {
+func isExempt(raw, norm []byte, atLineStart, isValueDoc, isFuncDoc, isBodylessDoc, isCgo, hasUnsafe bool) bool {
 	if atLineStart && linePattern.Match(raw) {
 		return true
 	}
@@ -204,7 +204,7 @@ func isExempt(raw, norm []byte, atLineStart, isValueDoc, isFuncDoc, isBodylessDo
 	if isFuncDoc && funcPragmaPattern.Match(norm) {
 		return true
 	}
-	if isBodylessDoc && noescapePattern.Match(norm) {
+	if isBodylessDoc && bodylessPragmaPattern.Match(norm) {
 		return true
 	}
 	if isValueDoc && embedPattern.Match(norm) {
@@ -213,7 +213,7 @@ func isExempt(raw, norm []byte, atLineStart, isValueDoc, isFuncDoc, isBodylessDo
 	if isFuncDoc && isCgo && exportPattern.Match(norm) {
 		return true
 	}
-	return blockLinePattern.Match(raw) || nolintPattern.Match(norm) || linknamePattern.Match(norm)
+	return blockLinePattern.Match(raw) || nolintPattern.Match(norm) || (hasUnsafe && linknamePattern.Match(norm))
 }
 
 func isGeneratedMarker(text []byte) bool {
@@ -294,7 +294,7 @@ func scanSource(src []byte, path string) (*scan, error) {
 				legacyBuildLine.Match(raw) && headerBlankLine.Match(src[end:searchEnd]) {
 				continue
 			}
-			if !isExempt(raw, norm, atLineStart(src, start), isValueDoc, isFuncDoc, isBodylessDoc, fileImportsC(f)) {
+			if !isExempt(raw, norm, atLineStart(src, start), isValueDoc, isFuncDoc, isBodylessDoc, fileImports(f, "C"), fileImports(f, "unsafe")) {
 				s.comments = append(s.comments, span{start, end})
 			}
 		}
@@ -341,22 +341,42 @@ func readAllowlist(path string) (map[string]int, error) {
 	return allow, nil
 }
 
-func headerHasBuildConstraint(src []byte) bool {
+func forEachHeaderLine(src []byte, fn func(trimmed []byte)) {
 	src = bytes.TrimPrefix(src, utf8BOM)
+	inBlock := false
 	for _, line := range bytes.Split(src, []byte("\n")) {
-		trimmed := bytes.TrimSpace(line)
-		if bytes.HasPrefix(trimmed, []byte("package ")) || bytes.Equal(trimmed, []byte("package")) {
-			return false
+		if !inBlock {
+			trimmed := bytes.TrimSpace(line)
+			if bytes.HasPrefix(trimmed, []byte("package ")) || bytes.Equal(trimmed, []byte("package")) {
+				return
+			}
+			fn(trimmed)
 		}
+		opens := bytes.Count(line, []byte("/*"))
+		closes := bytes.Count(line, []byte("*/"))
+		if inBlock {
+			if closes > opens {
+				inBlock = false
+			}
+		} else if opens > closes {
+			inBlock = true
+		}
+	}
+}
+
+func headerHasBuildConstraint(src []byte) bool {
+	found := false
+	forEachHeaderLine(src, func(trimmed []byte) {
 		if bytes.HasPrefix(trimmed, []byte("//go:build")) {
-			return true
+			found = true
+			return
 		}
 		comment := bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("//")))
 		if bytes.HasPrefix(comment, []byte("+build")) {
-			return true
+			found = true
 		}
-	}
-	return false
+	})
+	return found
 }
 
 func normalizeHeaderSpace(src []byte) []byte {
@@ -400,27 +420,32 @@ func normalizeHeaderSpace(src []byte) []byte {
 }
 
 func headerLimit(src []byte) int {
-	pos := 0
+	bom := 0
 	if bytes.HasPrefix(src, utf8BOM) {
-		pos = len(utf8BOM)
+		bom = len(utf8BOM)
 	}
-	for p := pos; p < len(src); {
-		nl := bytes.IndexByte(src[p:], '\n')
-		var lineEnd int
-		if nl < 0 {
-			lineEnd = len(src)
-		} else {
-			lineEnd = p + nl
+	limit := len(src)
+	p := bom
+	inBlock := false
+	for _, line := range bytes.Split(src[bom:], []byte("\n")) {
+		lineStart := p
+		if !inBlock {
+			if trimmed := bytes.TrimSpace(line); bytes.HasPrefix(trimmed, []byte("package ")) || bytes.Equal(trimmed, []byte("package")) {
+				return lineStart
+			}
 		}
-		if line := bytes.TrimSpace(src[p:lineEnd]); bytes.HasPrefix(line, []byte("package ")) || bytes.Equal(line, []byte("package")) {
-			return p
+		opens := bytes.Count(line, []byte("/*"))
+		closes := bytes.Count(line, []byte("*/"))
+		if inBlock {
+			if closes > opens {
+				inBlock = false
+			}
+		} else if opens > closes {
+			inBlock = true
 		}
-		if nl < 0 {
-			return len(src)
-		}
-		p = lineEnd + 1
+		p += len(line) + 1
 	}
-	return len(src)
+	return limit
 }
 
 func lexCount(src []byte) int {
@@ -459,7 +484,7 @@ func lexCount(src []byte) int {
 				}
 				raw := src[i:j]
 				norm := bytes.ReplaceAll(raw, []byte("\r"), nil)
-				exempt := isExempt(raw, norm, atLineStart(src, i), false, false, false, false)
+				exempt := isExempt(raw, norm, atLineStart(src, i), false, false, false, false, false)
 				if i < limit {
 					lead := src[bytes.LastIndexByte(src[:i], '\n')+1 : i]
 					lead = bytes.TrimPrefix(lead, utf8BOM)
@@ -487,13 +512,13 @@ func lexCount(src []byte) int {
 			} else if i+1 < n && src[i+1] == '*' {
 				k := bytes.Index(src[i+2:], []byte("*/"))
 				if k < 0 {
-					if !isExempt(src[i:], bytes.ReplaceAll(src[i:], []byte("\r"), nil), false, false, false, false, false) {
+					if !isExempt(src[i:], bytes.ReplaceAll(src[i:], []byte("\r"), nil), false, false, false, false, false, false) {
 						count++
 					}
 					i = n
 				} else {
 					span := src[i : i+k+4]
-					if !isExempt(span, bytes.ReplaceAll(span, []byte("\r"), nil), false, false, false, false, false) {
+					if !isExempt(span, bytes.ReplaceAll(span, []byte("\r"), nil), false, false, false, false, false, false) {
 						count++
 					}
 					i += k + 4
