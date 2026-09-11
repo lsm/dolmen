@@ -108,6 +108,12 @@ func TestListenSymptomParkYieldsToVerdict(t *testing.T) {
 	if got := sess.endCause(); !errors.Is(got, symptom) {
 		t.Fatalf("parked cause = %v, want the symptom", got)
 	}
+	// The pump's cancellation symptom — induced by the page symptom's own
+	// ctxCancel — is a report, not a verdict: it must not displace.
+	sess.endYielding(context.Canceled)
+	if got := sess.endCause(); !errors.Is(got, symptom) {
+		t.Fatalf("parked cause after the pump's cancellation report = %v, want the page's symptom still", got)
+	}
 	if sess.endParked(ErrListenLifetimeEnded) {
 		t.Fatal("a second end reported itself first")
 	}
