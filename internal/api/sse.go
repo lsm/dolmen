@@ -80,21 +80,14 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		cursor = store.Cursor(c)
 	}
 
-	// From here the response IS the stream: the headers go out and flush
-	// immediately, and every later failure is an in-stream error event.
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Request-Id", reqID)
-	w.WriteHeader(http.StatusOK)
-	sseFlush(w)
-
 	ns := normNS(q.Get("namespace"))
-	if err := s.ensureNamespace(r.Context(), ns); err != nil {
+	ctx, stop := context.WithCancel(r.Context())
+	defer stop()
+	if err := s.ensureNamespace(ctx, ns); err != nil {
+		sseOpenStream(w, reqID)
 		sseErrorEvent(w, wrapStoreErr(err), reqID)
 		return
 	}
-	ctx, stop := context.WithCancel(r.Context())
-	defer stop()
 	live := make(chan store.ChangeRecord, 1)
 	ended := make(chan error, 1)
 	replay, cancel, err := s.eng.Listen(ctx, ns, table, cursor, [16]byte{}, nil,
@@ -110,6 +103,12 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 			case <-ctx.Done():
 			}
 		})
+	// The response opens only once the listener is registered: a client that
+	// observes the open stream must know its subscription exists, or a commit
+	// it makes immediately after that observation could land before the
+	// boundary and never be delivered. Registration failures still open the
+	// stream first, so every in-stream failure keeps one shape.
+	sseOpenStream(w, reqID)
 	if err != nil {
 		sseErrorEvent(w, subscribeErr(err), reqID)
 		return
@@ -140,6 +139,8 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 			case cause := <-ended:
 				sseEvent(w, "close", sseClose{Cursor: string(resume)})
 				sseErrorEvent(w, subscribeErr(cause), reqID)
+			case <-ctx.Done():
+				return
 			case <-time.After(2 * time.Second):
 				sseEvent(w, "close", sseClose{Cursor: string(resume)})
 				sseErrorEvent(w, subscribeErr(nerr), reqID)
@@ -179,6 +180,14 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func sseOpenStream(w http.ResponseWriter, reqID string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Request-Id", reqID)
+	w.WriteHeader(http.StatusOK)
+	sseFlush(w)
 }
 
 func subscribeErr(err error) *Error {
