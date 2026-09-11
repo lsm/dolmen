@@ -57,6 +57,7 @@ func TestLineCommentsCount(t *testing.T) {
 		{"//go:build\n\npackage p\n", 0},
 		{"package p\n\nvar x = 1 //nolint:gocyclo,goconst // rationale\n", 0},
 		{"//go:build linux\r\n\r\npackage p\r\n", 0},
+		{"//line fake.go:100:20\n//go:build impossible_tag\n\npackage p\n", 0},
 		{"package p\n\nvar x = 1 //nolint:gocyclo\r\n", 0},
 		{"// plain crlf comment\r\npackage p\r\n", 1},
 		{"package p\n\nfunc f() {\n\t//go:generate echo ignored\n}\n", 1},
@@ -135,6 +136,7 @@ func TestStrip(t *testing.T) {
 		{"package p\n\nvar x = 1 // gone\r\n", "package p\n\nvar x = 1\n"},
 		{"package p\n\nvar s = `a\r\nb   \n\n\nEND`\n\n// gone\n", "package p\n\nvar s = `a\r\nb   \n\n\nEND`\n"},
 		{"package p\n\n/*\n#include <x.h>\n\n\n#define X 1   \nvoid f(void);\n*/\nimport \"C\"\n\n// gone\n", "package p\n\n/*\n#include <x.h>\n\n\n#define X 1   \nvoid f(void);\n*/\nimport \"C\"\n"},
+		{"package p\n\n// #cgo CFLAGS: -DX\n/*\nint n = __LINE__;\n\n\n*/\nimport \"C\"\n\n// gone\n", "package p\n\n// #cgo CFLAGS: -DX\n/*\nint n = __LINE__;\n\n\n*/\nimport \"C\"\n"},
 		{"package p\n\n/*\n#include <x.h>\n*/\nimport \"C\"\n\n// gone\nvar x = 1\n", "package p\n\n/*\n#include <x.h>\n*/\nimport \"C\"\n\nvar x = 1\n"},
 	} {
 		s, err := scanSource([]byte(tc.src))

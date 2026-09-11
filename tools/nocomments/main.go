@@ -103,7 +103,7 @@ func scanSource(src []byte) (*scan, error) {
 			start := tf.Offset(c.Pos())
 			end := commentEnd(src, start)
 			text := src[start:end]
-			atLineStart := fset.Position(c.Pos()).Column == 1
+			atLineStart := fset.PositionFor(c.Pos(), false).Column == 1
 			if !isExempt(text, atLineStart, isDoc) {
 				s.comments = append(s.comments, span{start, end})
 			}
@@ -253,7 +253,13 @@ func tidyOutsideProtected(src []byte) []byte {
 	for _, g := range f.Comments {
 		if preambles[g.Pos()] {
 			start := tf.Offset(g.Pos())
-			protected = append(protected, span{start, commentEnd(src, start)})
+			end := start
+			for _, c := range g.List {
+				if e := commentEnd(src, tf.Offset(c.Pos())); e > end {
+					end = e
+				}
+			}
+			protected = append(protected, span{start, end})
 		}
 	}
 	ast.Inspect(f, func(n ast.Node) bool {
