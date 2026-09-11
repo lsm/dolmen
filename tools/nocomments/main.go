@@ -172,7 +172,15 @@ const (
 	embedBytes
 	embedString
 	embedFiles
+	embedNamed
 )
+
+var scalarBuiltins = map[string]bool{
+	"bool": true, "int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
+	"uintptr": true, "float32": true, "float64": true, "complex64": true, "complex128": true,
+	"byte": true, "rune": true, "error": true, "any": true, "comparable": true,
+}
 
 func embeddableType(expr ast.Expr, qualifiers map[string]bool, dot bool) embedKind {
 	switch t := expr.(type) {
@@ -183,14 +191,23 @@ func embeddableType(expr ast.Expr, qualifiers map[string]bool, dot bool) embedKi
 		if dot && t.Name == "FS" {
 			return embedFiles
 		}
+		if !scalarBuiltins[t.Name] {
+			return embedNamed
+		}
 	case *ast.ArrayType:
-		if elt, ok := t.Elt.(*ast.Ident); ok && t.Len == nil && (elt.Name == "byte" || elt.Name == "uint8") {
-			return embedBytes
+		if elt, ok := t.Elt.(*ast.Ident); ok && t.Len == nil {
+			if elt.Name == "byte" || elt.Name == "uint8" {
+				return embedBytes
+			}
+			if !scalarBuiltins[elt.Name] {
+				return embedNamed
+			}
 		}
 	case *ast.SelectorExpr:
 		if pkg, ok := t.X.(*ast.Ident); ok && qualifiers[pkg.Name] && t.Sel.Name == "FS" {
 			return embedFiles
 		}
+		return embedNamed
 	}
 	return embedUnknown
 }
@@ -425,6 +442,7 @@ type exempts struct {
 	args        []string
 	valueDoc    bool
 	valueKind   embedKind
+	embedArgs   []string
 	funcDoc     bool
 	bareFunc    bool
 	bodylessDoc bool
@@ -444,7 +462,7 @@ func isExempt(raw, norm []byte, c exempts) bool {
 			return true
 		}
 	case "embed":
-		if c.valueDoc && c.embed && len(c.args) > 0 && validEmbedPatterns(c.args) && !embedMultiFile(c.valueKind, c.args) {
+		if c.valueDoc && c.embed && len(c.args) > 0 && validEmbedPatterns(c.args) && !embedMultiFile(c.valueKind, c.embedArgs) {
 			return true
 		}
 	case "linkname":
@@ -523,6 +541,17 @@ func scanSource(src []byte, path string) (*scan, error) {
 		if preambles[g.Pos()] || outputs[g.Pos()] {
 			continue
 		}
+		kind := valueDocs[g.Pos()]
+		var embedArgs []string
+		if kind != embedUnknown && hasEmbed {
+			for _, c := range g.List {
+				start := tf.Offset(c.Pos())
+				norm := bytes.ReplaceAll(src[start:commentEnd(src, start)], []byte("\r"), nil)
+				if name, args, ok := goDirective(norm); ok && name == "embed" {
+					embedArgs = append(embedArgs, args...)
+				}
+			}
+		}
 		for _, c := range g.List {
 			start := tf.Offset(c.Pos())
 			end := commentEnd(src, start)
@@ -564,8 +593,9 @@ func scanSource(src []byte, path string) (*scan, error) {
 				atLineStart: atLineStart(src, start),
 				directive:   name,
 				args:        args,
-				valueDoc:    valueDocs[g.Pos()] != embedUnknown,
-				valueKind:   valueDocs[g.Pos()],
+				valueDoc:    kind != embedUnknown,
+				valueKind:   kind,
+				embedArgs:   embedArgs,
 				funcDoc:     funcDocs[g.Pos()],
 				bareFunc:    bareFuncDocs[g.Pos()],
 				bodylessDoc: bodylessDocs[g.Pos()],
