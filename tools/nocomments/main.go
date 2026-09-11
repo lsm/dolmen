@@ -22,7 +22,7 @@ type scan struct {
 }
 
 var (
-	exemptPattern = regexp.MustCompile(`^//(go:(build|embed|generate)|nolint)\b`)
+	exemptPattern = regexp.MustCompile(`^//(go:(build|embed|generate)([ \t].*)?|nolint(:[0-9A-Za-z_,-]+([ \t].*)?)?)\r?$`)
 	trailingSpace = regexp.MustCompile(`[ \t]+\n`)
 	blankRun      = regexp.MustCompile(`\n{3,}`)
 )
@@ -92,6 +92,8 @@ func scanSource(src []byte) (*scan, error) {
 
 func blank(b []byte) bool { return len(bytes.Trim(b, " \t\r")) == 0 }
 
+func isSpace(b byte) bool { return b == ' ' || b == '\t' || b == '\n' || b == '\r' }
+
 func tidy(b []byte) []byte {
 	return blankRun.ReplaceAll(trailingSpace.ReplaceAll(b, []byte("\n")), []byte("\n\n"))
 }
@@ -117,6 +119,9 @@ func stripComments(src []byte, s *scan) []byte {
 	prev := 0
 	for _, r := range removals {
 		out = append(out, src[prev:r.start]...)
+		if len(out) > 0 && r.end < len(src) && !isSpace(out[len(out)-1]) && !isSpace(src[r.end]) {
+			out = append(out, ' ')
+		}
 		prev = r.end
 	}
 	out = append(out, src[prev:]...)
@@ -214,12 +219,17 @@ func listGoFiles(wide bool) ([]string, error) {
 	if wide {
 		args = append(args, "--cached", "--others", "--exclude-standard")
 	}
-	args = append(args, "--", "*.go")
+	args = append(args, "-z", "--", "*.go")
 	out, err := exec.Command("git", args...).Output()
 	if err != nil {
 		return nil, fmt.Errorf("git ls-files: %w", err)
 	}
-	files := strings.Fields(string(out))
+	files := []string{}
+	for _, f := range bytes.Split(out, []byte{0}) {
+		if len(f) > 0 {
+			files = append(files, string(f))
+		}
+	}
 	sort.Strings(files)
 	return files, nil
 }
