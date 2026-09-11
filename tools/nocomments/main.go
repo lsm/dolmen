@@ -161,20 +161,11 @@ func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool) {
 	return docs, funcDocs
 }
 
-var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
-
 func atLineStart(src []byte, start int) bool {
 	return start == 0 || src[start-1] == '\n'
 }
 
-func afterFileBOM(src []byte, start int) bool {
-	return bytes.HasPrefix(src, utf8BOM) && start == len(utf8BOM)
-}
-
-func isExempt(text []byte, atLineStart, afterBOM, isDoc, isFuncDoc, beforePackage bool) bool {
-	if beforePackage && (atLineStart || afterBOM) && buildTagPattern.Match(text) {
-		return true
-	}
+func isExempt(text []byte, atLineStart, isDoc, isFuncDoc bool) bool {
 	if atLineStart && linePattern.Match(text) {
 		return true
 	}
@@ -210,6 +201,19 @@ func scanSource(src []byte, path string) (*scan, error) {
 		return nil, fmt.Errorf("unparseable: %w", err)
 	}
 	tf := fset.File(f.Package)
+	pkgOff := tf.Offset(f.Package)
+	headerHasBlock := false
+	for _, g := range f.Comments {
+		if g.Pos() >= f.Package {
+			break
+		}
+		for _, c := range g.List {
+			start := tf.Offset(c.Pos())
+			if !bytes.HasPrefix(src[start:], []byte("//")) {
+				headerHasBlock = true
+			}
+		}
+	}
 	preambles := cgoPreambles(f)
 	var outputs map[token.Pos]bool
 	if strings.HasSuffix(path, "_test.go") {
@@ -230,11 +234,14 @@ func scanSource(src []byte, path string) (*scan, error) {
 			if c.Pos() < f.Package && isGeneratedMarker(text) {
 				continue
 			}
-			if (atLineStart(src, start) || afterFileBOM(src, start)) && c.Pos() < f.Package &&
-				legacyBuildLine.Match(text) && headerBlankLine.Match(src[end:tf.Offset(f.Package)]) {
+			if c.Pos() < f.Package && buildTagPattern.Match(text) {
 				continue
 			}
-			if !isExempt(text, atLineStart(src, start), afterFileBOM(src, start), isDoc, isFuncDoc, c.Pos() < f.Package) {
+			if c.Pos() < f.Package && !headerHasBlock &&
+				legacyBuildLine.Match(text) && headerBlankLine.Match(src[end:pkgOff]) {
+				continue
+			}
+			if !isExempt(text, atLineStart(src, start), isDoc, isFuncDoc) {
 				s.comments = append(s.comments, span{start, end})
 			}
 		}
