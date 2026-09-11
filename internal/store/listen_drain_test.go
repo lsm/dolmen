@@ -794,9 +794,12 @@ func TestListenEndedFeedDrainsUnderBackpressure(t *testing.T) {
 	sess.feed = feed
 	sess.chain = newCursorChain(time.Now(), 0)
 	sess.notify = func(r ChangeRecord) {
+		sess.mu.Lock()
+		q := len(sess.queue)
+		sess.mu.Unlock()
 		mu.Lock()
 		delivered++
-		if q := len(sess.queue); q > peak {
+		if q > peak {
 			peak = q
 		}
 		mu.Unlock()
