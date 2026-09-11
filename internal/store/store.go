@@ -175,7 +175,7 @@ func (s *Store) Close() error {
 		names = append(names, name)
 	}
 	for _, name := range names {
-		s.wakeListenSessions(name)
+		s.endListenSessions(name, ErrListenLifetimeEnded)
 	}
 	return first
 }

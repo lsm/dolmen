@@ -263,7 +263,7 @@ func (s *Store) CreateNamespace(ctx context.Context, nsName string, parentNsGen 
 	// A cached entry here is stale (its file was removed out-of-band); evict
 	// it so lockedNS initializes the fresh file instead of serving dead pools.
 	s.evict(nsName)
-	s.wakeListenSessions(nsName)
+	s.endListenSessions(nsName, ErrListenLifetimeEnded)
 	if _, err := s.lockedNS(nsName); err != nil {
 		// Un-reserve so a failed init doesn't wedge the name behind a
 		// zero-byte file.
