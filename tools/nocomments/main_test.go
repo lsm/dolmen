@@ -27,50 +27,57 @@ func TestLineCommentsCount(t *testing.T) {
 	}{
 		{"package p\n\nvar x = 1\n", 0},
 		{"package p\n// line\nvar x = 1 // trailing\n", 2},
-		{"// Foo does things.\nfunc Foo() {}\n", 1},
-		{"/* one */ var x = 1 /* two */\n", 2},
-		{"/* // inert */ var x = 1\n", 1},
-		{"// /* inert\nvar x = 1\n", 1},
+		{"// Foo does things.\npackage p\n", 1},
+		{"package p\n\n/* one */ var x = 1 /* two */\n", 2},
+		{"package p\n\n/* // inert */ var x = 1\n", 1},
+		{"// /* inert\npackage p\n", 1},
 		{"package p\n\nvar s = \"// not a comment /* nor this */\"\n", 0},
 		{"package p\n\nvar s = `// not a comment\n/* nor this */`\n", 0},
-		{"package p\n\nvar c = '/'\nvar d = '//'\nvar u = 'ሴ'\n", 0},
+		{"package p\n\nvar c = '/'\nvar u = 'ሴ'\n", 0},
 		{"package p\n\nvar e = '\\n'\nvar q = '\\''\nvar b = '\\\\'\n", 0},
-		{"var x = 1 /* a /* b */ + 2\n", 1},
-		{"//go:generate: explanation\n", 1},
-		{"//nolint-anything\n", 1},
-		{"//nolint:\n", 1},
-		{"//nolint:foo!\n", 1},
-		{"//go:generate mockgen -source a.go\n", 0},
-		{"//go:build linux && !darwin\n", 0},
-		{"//go:embed model/*.gguf\n", 0},
-		{"//go:build\n", 0},
-		{"var x = 1 //nolint:gocyclo,goconst // rationale\n", 0},
-		{"//go:build linux\r\n\r\npackage p\r\n", 0},
-		{"var x = 1 //nolint:gocyclo\r\n", 0},
-		{"func f() {\n\t//go:generate echo ignored\n}\n", 1},
-		{"var x = 1 //go:generate echo\n", 1},
-		{"func f() {\n\t//nolint:gocyclo\n}\n", 0},
-		{"package p\n\nvar (\n\t//go:embed data.txt\n\tS string\n)\n", 0},
-		{"var x = 1 //go:embed data.txt\n", 0},
-		{"/*\n#include <stdlib.h>\n*/\nimport \"C\"\n", 0},
-		{"// #include <stdio.h>\nimport \"C\"\n", 0},
-		{"/*\n#include <stdlib.h>\n*/\nimport (\n\t\"C\"\n)\n", 0},
-		{"/*\n#include <stdlib.h>\n*/\n\nimport \"C\"\n", 1},
-		{"/* plain doc */\nimport \"os\"\n", 1},
-		{"// plain crlf comment\r\npackage p\r\n", 1},
-		{"var x = 1 /* a /* b */ + 2 // real\n", 2},
-		{"var x = 1 /* a /* b */ + 2\nvar s = \"// found\"\n", 1},
+		{"package p\n\nvar x = 1 /* a /* b */ + 2\n", 1},
+		{"package p\n\nvar x = 1 /* a /* b */ + 2 // real\n", 2},
+		{"package p\n\nvar x = 1 /* a /* b */ + 2\nvar s = \"// found\"\n", 1},
 		{"//go:build ignore\n\npackage p\n", 0},
 		{"package p\n\n//go:embed foo.txt\nvar embedded string\n", 0},
-		{"package p\n\n//go:generate stringer -type=Kind\n", 0},
+		{"//go:generate stringer -type=Kind\npackage p\n", 0},
 		{"package p\n\nvar x = 1 //nolint:gocyclo\n", 0},
 		{"package p\n\nvar x = 1 //nolint\n", 0},
 		{"package p\n\nvar x = 1 // go:build\n", 1},
 		{"package p\n\nvar x = 1 //go:buildozer\n", 1},
 		{"package p\n\nvar x = 1 //nolintx\n", 1},
 		{"package p\n\n/*nolint*/\n", 1},
-		{"x := \"abc\n// counted\n", 1},
-		{"var s = `raw never closed // also not a comment\n", 0},
+		{"//go:generate: explanation\npackage p\n", 1},
+		{"//nolint-anything\npackage p\n", 1},
+		{"//nolint:\npackage p\n", 1},
+		{"//nolint:foo!\npackage p\n", 1},
+		{"//go:generate mockgen -source a.go\npackage p\n", 0},
+		{"//go:build linux && !darwin\n\npackage p\n", 0},
+		{"//go:embed model/*.gguf\npackage p\n", 0},
+		{"//go:build\n\npackage p\n", 0},
+		{"package p\n\nvar x = 1 //nolint:gocyclo,goconst // rationale\n", 0},
+		{"//go:build linux\r\n\r\npackage p\r\n", 0},
+		{"package p\n\nvar x = 1 //nolint:gocyclo\r\n", 0},
+		{"// plain crlf comment\r\npackage p\r\n", 1},
+		{"package p\n\nfunc f() {\n\t//go:generate echo ignored\n}\n", 1},
+		{"package p\n\nvar x = 1 //go:generate echo\n", 1},
+		{"package p\n\nfunc f() {\n\t//nolint:gocyclo\n}\n", 0},
+		{"package p\n\nvar (\n\t//go:embed data.txt\n\tS string\n)\n", 0},
+		{"package p\n\nvar x = 1 //go:embed data.txt\n", 0},
+		{"package p\n\n/*\n#include <stdlib.h>\n*/\nimport \"C\"\n", 0},
+		{"package p\n\n// #include <stdio.h>\nimport \"C\"\n", 0},
+		{"package p\n\n// #cgo CFLAGS: -DX\n// #include <x.h>\nimport \"C\"\n", 0},
+		{"package p\n\n/*\n#include <stdlib.h>\n*/\nimport (\n\t\"C\"\n)\n", 0},
+		{"package p\n\n/*\n#include <stdlib.h>\n*/\n\nimport \"C\"\n", 1},
+		{"package p\n\n/* plain doc */\nimport \"os\"\n", 1},
+		{"package p\n\n//go:linkname foo bar\nvar x = 1\n", 0},
+		{"package p\n\nfunc f() {\n\t//go:noinline\n\t_ = 1\n}\n", 0},
+		{"package p\n\n//go:nosplit\nfunc g() {}\n", 0},
+		{"package p\n\n//go:uintptrescapes\nfunc h() {}\n", 0},
+		{"//line file.go:10\npackage p\n", 0},
+		{"package p\n\nfunc f() {\n\t//line x.go:1\n\t_ = 1\n}\n", 1},
+		{"package p\n\n//export MyFunc\nfunc MyFunc() {}\n", 0},
+		{"package p\n\n//go:noinlinex\nfunc k() {}\n", 1},
 	} {
 		if got := commentCount(t, tc.src); got != tc.want {
 			t.Errorf("scanSource(%q) counted %d comments, want %d", tc.src, got, tc.want)
@@ -78,24 +85,20 @@ func TestLineCommentsCount(t *testing.T) {
 	}
 }
 
-func TestScanErrors(t *testing.T) {
+func TestScanRefusals(t *testing.T) {
 	for _, tc := range []struct {
 		src  string
 		want string
 	}{
-		{"var x = 1 /* never closed\n", "unterminated block comment"},
-		{"/* a /* b */ + 2 /* still open\n", "unterminated block comment"},
+		{"package p\n\nvar x = 1 /* never closed\n", "unparseable"},
+		{"package p\n\nvar s = \"abc\n", "unparseable"},
+		{"package p\n\nvar s = `raw never closed\n", "unparseable"},
+		{"package p\n\nvar n = 1/**/.5\n", "unparseable"},
+		{"var x = 1\n", "unparseable"},
 	} {
 		if _, err := scanSource([]byte(tc.src)); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("scanSource(%q) err = %v, want containing %q", tc.src, err, tc.want)
 		}
-	}
-}
-
-func TestScanErrorLine(t *testing.T) {
-	_, err := scanSource([]byte("package p\n\nvar x = 1 /* open\n"))
-	if err == nil || !strings.Contains(err.Error(), "line 3") {
-		t.Errorf("err = %v, want line 3", err)
 	}
 }
 
@@ -114,15 +117,14 @@ func TestStrip(t *testing.T) {
 		{"package p\n\nvar s = \"keep // this\" // gone\n", "package p\n\nvar s = \"keep // this\"\n"},
 		{"package p\n\nvar x = 1 // gone  \t\nvar y = 2\n", "package p\n\nvar x = 1\nvar y = 2\n"},
 		{"package p\n\nvar/**/x = 1\n", "package p\n\nvar x = 1\n"},
-		{"package p\n\nx := 1 /*\n*/ y := 2\n", "package p\n\nx := 1\ny := 2\n"},
-		{"package p\n\nx := 1 /*\n*/\ny := 2\n", "package p\n\nx := 1\ny := 2\n"},
-		{"package p\n\nx := 1 /* no newline */ y := 2\n", "package p\n\nx := 1 y := 2\n"},
-		{"package p\n\nx := b</**/>= 2\n", "package p\n\nx := b< >= 2\n"},
-		{"package p\n\nn := 1/**/.5\n", "package p\n\nn := 1 .5\n"},
-		{"package p\n\nch := make/**/(chan int)\n", "package p\n\nch := make (chan int)\n"},
+		{"package p\n\nfunc f() {\n\tx := 1 /*\n*/ y := 2\n}\n", "package p\n\nfunc f() {\n\tx := 1\ny := 2\n}\n"},
+		{"package p\n\nfunc f() {\n\tx := 1 /*\n*/\n\ty := 2\n}\n", "package p\n\nfunc f() {\n\tx := 1\n\ty := 2\n}\n"},
+		{"package p\n\nfunc f() {\n\tx := 1 /* tight */+2\n}\n", "package p\n\nfunc f() {\n\tx := 1 +2\n}\n"},
+		{"package p\n\nvar ch = make/**/(chan int)\n", "package p\n\nvar ch = make (chan int)\n"},
 		{"package p\n\nvar s = \"a\"/**/ + \"b\"\n", "package p\n\nvar s = \"a\" + \"b\"\n"},
 		{"// header\n// lines\n\npackage p\n", "package p\n"},
 		{"package p\n\nvar s = `x`\n\n// gone\n", "package p\n\nvar s = `x`\n"},
+		{"package p\n\n/*\n#include <x.h>\n*/\nimport \"C\"\n\n// gone\nvar x = 1\n", "package p\n\n/*\n#include <x.h>\n*/\nimport \"C\"\n\nvar x = 1\n"},
 	} {
 		s, err := scanSource([]byte(tc.src))
 		if err != nil {

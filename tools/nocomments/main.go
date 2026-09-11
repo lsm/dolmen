@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"regexp"
@@ -16,117 +19,84 @@ const allowlistPath = "scripts/no-comments-allowlist.txt"
 
 type span struct{ start, end int }
 
-type scan struct {
-	comments []span
-	literals []span
-}
+type scan struct{ comments []span }
 
 var (
 	buildGenPattern = regexp.MustCompile(`^//go:(build|generate)([ \t].*)?\r?$`)
-	embedPattern    = regexp.MustCompile(`^//go:embed([ \t].*)?\r?$`)
+	linePattern     = regexp.MustCompile(`^//line([ \t].*)?\r?$`)
+	anyDirPattern   = regexp.MustCompile(`^//(go:(embed|linkname|noinline|nosplit|uintptrescapes)|export)([ \t].*)?\r?$`)
 	nolintPattern   = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]+([ \t].*)?)?\r?$`)
 	trailingSpace   = regexp.MustCompile(`[ \t]+\n`)
 	blankRun        = regexp.MustCompile(`\n{3,}`)
 )
-
-func isExempt(text []byte, atLineStart bool) bool {
-	if atLineStart && buildGenPattern.Match(text) {
-		return true
-	}
-	return embedPattern.Match(text) || nolintPattern.Match(text)
-}
-
-func precedesImportC(src []byte, j int) bool {
-	k, n, nl := j, len(src), 0
-	for k < n && isSpace(src[k]) {
-		if src[k] == '\n' {
-			nl++
-			if nl > 1 {
-				return false
-			}
-		}
-		k++
-	}
-	if !bytes.HasPrefix(src[k:], []byte("import")) {
-		return false
-	}
-	k += len("import")
-	for k < n && isSpace(src[k]) {
-		k++
-	}
-	if k < n && src[k] == '(' {
-		k++
-		for k < n && isSpace(src[k]) {
-			k++
-		}
-	}
-	return bytes.HasPrefix(src[k:], []byte(`"C"`))
-}
 
 func die(err error) {
 	fmt.Fprintln(os.Stderr, "nocomments:", err)
 	os.Exit(2)
 }
 
+func parseGo(src []byte) (*token.FileSet, *ast.File, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "src.go", src, parser.ParseComments)
+	if err != nil {
+		return nil, nil, err
+	}
+	return fset, f, nil
+}
+
+func cgoPreambles(f *ast.File) map[token.Pos]bool {
+	exempt := map[token.Pos]bool{}
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok != token.IMPORT {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			imp, ok := spec.(*ast.ImportSpec)
+			if !ok {
+				continue
+			}
+			if path, err := strconv.Unquote(imp.Path.Value); err == nil && path == "C" {
+				for _, cg := range []*ast.CommentGroup{gd.Doc, imp.Doc} {
+					if cg != nil {
+						exempt[cg.Pos()] = true
+					}
+				}
+			}
+		}
+	}
+	return exempt
+}
+
 func scanSource(src []byte) (*scan, error) {
+	fset, f, err := parseGo(src)
+	if err != nil {
+		return nil, fmt.Errorf("unparseable: %w", err)
+	}
+	tf := fset.File(f.Package)
+	preambles := cgoPreambles(f)
 	s := &scan{}
-	i, n := 0, len(src)
-	for i < n {
-		switch src[i] {
-		case '"', '\'':
-			q, j := src[i], i+1
-			for j < n && src[j] != q && src[j] != '\n' {
-				if src[j] == '\\' && j+1 < n && src[j+1] != '\n' {
-					j++
-				}
-				j++
+	for _, g := range f.Comments {
+		if preambles[g.Pos()] {
+			continue
+		}
+		for _, c := range g.List {
+			start, end := tf.Offset(c.Pos()), tf.Offset(c.End())
+			text := src[start:end]
+			atLineStart := fset.Position(c.Pos()).Column == 1
+			if !isExempt(text, atLineStart) {
+				s.comments = append(s.comments, span{start, end})
 			}
-			if j < n && src[j] == q {
-				j++
-			}
-			s.literals = append(s.literals, span{i, j})
-			i = j
-		case '`':
-			k := bytes.IndexByte(src[i+1:], '`')
-			if k < 0 {
-				j := n
-				s.literals = append(s.literals, span{i, j})
-				i = j
-				continue
-			}
-			j := i + k + 2
-			s.literals = append(s.literals, span{i, j})
-			i = j
-		case '/':
-			if i+1 >= n || (src[i+1] != '/' && src[i+1] != '*') {
-				i++
-				continue
-			}
-			if src[i+1] == '/' {
-				j := i + 2
-				for j < n && src[j] != '\n' {
-					j++
-				}
-				if !isExempt(src[i:j], i == 0 || src[i-1] == '\n') && !precedesImportC(src, j) {
-					s.comments = append(s.comments, span{i, j})
-				}
-				i = j
-				continue
-			}
-			k := bytes.Index(src[i+2:], []byte("*/"))
-			if k < 0 {
-				return nil, fmt.Errorf("line %d: unterminated block comment", 1+bytes.Count(src[:i], []byte{'\n'}))
-			}
-			j := i + k + 4
-			if !precedesImportC(src, j) {
-				s.comments = append(s.comments, span{i, j})
-			}
-			i = j
-		default:
-			i++
 		}
 	}
 	return s, nil
+}
+
+func isExempt(text []byte, atLineStart bool) bool {
+	if atLineStart && (buildGenPattern.Match(text) || linePattern.Match(text)) {
+		return true
+	}
+	return anyDirPattern.Match(text) || nolintPattern.Match(text)
 }
 
 func blank(b []byte) bool { return len(bytes.Trim(b, " \t\r")) == 0 }
@@ -199,13 +169,21 @@ func expandRange(src []byte, r span) span {
 }
 
 func tidyOutsideLiterals(src []byte) []byte {
-	res, err := scanSource(src)
+	fset, f, err := parseGo(src)
 	if err != nil {
 		return src
 	}
+	tf := fset.File(f.Package)
+	var literals []span
+	ast.Inspect(f, func(n ast.Node) bool {
+		if lit, ok := n.(*ast.BasicLit); ok {
+			literals = append(literals, span{tf.Offset(lit.Pos()), tf.Offset(lit.End())})
+		}
+		return true
+	})
 	var out []byte
 	prev := 0
-	for _, l := range res.literals {
+	for _, l := range literals {
 		if l.start > prev {
 			out = append(out, tidy(src[prev:l.start])...)
 		}
@@ -305,7 +283,7 @@ func main() {
 		}
 		s, err := scanSource(src)
 		if err != nil {
-			die(fmt.Errorf("cannot lex %s: %w", f, err))
+			die(fmt.Errorf("cannot parse %s: %w", f, err))
 		}
 		n := len(s.comments)
 		switch mode {
