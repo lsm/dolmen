@@ -106,10 +106,17 @@ func (sess *listenSession) pump() {
 
 const listenPollInterval = 250 * time.Millisecond
 
+func (sess *listenSession) pollInterval() time.Duration {
+	if sess.s != nil && sess.s.changeRetention > 0 && sess.s.changeRetention/2 < listenPollInterval {
+		return sess.s.changeRetention / 2
+	}
+	return listenPollInterval
+}
+
 func (sess *listenSession) pollWake() {
 	defer sess.pumps.Done()
 	defer sess.recoverPump("poll")
-	t := time.NewTicker(listenPollInterval)
+	t := time.NewTicker(sess.pollInterval())
 	defer t.Stop()
 	for {
 		select {
@@ -117,6 +124,7 @@ func (sess *listenSession) pollWake() {
 			return
 		case <-t.C:
 			sess.wake("", ChangeRange{})
+			sess.protectQueue(false)
 		}
 	}
 }
@@ -199,12 +207,16 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 			sess.mu.Unlock()
 			return 0, nil
 		}
+		wasEmpty := len(sess.queue) == 0
 		sess.queue = append(sess.queue, admitted...)
 		if sess.pendingDrainClose == nil {
 			sess.pendingDrainClose = ErrListenRevoked
 		}
 		sess.cond.Broadcast()
 		sess.mu.Unlock()
+		if wasEmpty && len(admitted) > 0 {
+			sess.protectQueue(true)
+		}
 		return 0, nil
 	}
 	sess.mu.Lock()
@@ -228,14 +240,12 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 	// the drainer frees capacity below the bound, then pages on: the
 	// predecessor still delivers in full before the close arms at the
 	// short tail — only its arrival in memory is chunked, never past
-	// bound + one page (codex P1 on #230, thread r3984838673).
-	forcePark := wasEmpty
+	// bound + one page (codex P1 on #230, thread r3984838673). The
+	// queue's durable protection does NOT ride this park — the poll
+	// pump's standing refresh owns it (pollWake), which is what keeps a
+	// queue parked past the fill's own exit protected too.
 	for over && ended && !sess.dead {
 		sess.cond.Wait()
-		sess.mu.Unlock()
-		sess.protectQueue(forcePark)
-		forcePark = false
-		sess.mu.Lock()
 		over = len(sess.queue) > listenQueueBound
 	}
 	dead := sess.dead // read under the lock the wait (or the fall-through) still holds

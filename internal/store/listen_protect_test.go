@@ -199,3 +199,64 @@ func TestListenProtectQueueForceMintsInsideMargin(t *testing.T) {
 		t.Fatalf("forced protection origins = %v, want exactly [6] inside a fresh chain's margin", origins)
 	}
 }
+
+func TestListenPollIntervalShrinksBelowRetention(t *testing.T) {
+	st := openChangeStore(t)
+	sess := protectedSession(t, st)
+	if got := sess.pollInterval(); got != listenPollInterval {
+		t.Fatalf("default-retention poll interval = %v, want %v", got, listenPollInterval)
+	}
+
+	short, err := Open(t.TempDir(), WithChangeRetention(40*time.Millisecond))
+	if err != nil {
+		t.Fatalf("open short-retention store: %v", err)
+	}
+	t.Cleanup(func() { short.Close() })
+	n2, err := short.ns("test")
+	if err != nil {
+		t.Fatalf("open test: %v", err)
+	}
+	s2 := testSession(nil)
+	s2.s, s2.n = short, n2
+	if got := s2.pollInterval(); got != 20*time.Millisecond {
+		t.Fatalf("short-retention poll interval = %v, want 20ms (R/2)", got)
+	}
+}
+
+func TestListenPollPumpProtectsParkedDrainClose(t *testing.T) {
+	st := openStampedStore(t)
+	old := time.Now().Add(-200 * time.Millisecond)
+	seedStampedChanges(t, st, "notes", []time.Time{old, old, old})
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("open test: %v", err)
+	}
+	sess := testSession(nil)
+	sess.s, sess.n = st, n
+	sess.chain = newCursorChain(time.Now(), 0)
+	sess.queue = []loggedChange{{seq: 1, rec: ChangeRecord{RowID: 1}}, {seq: 2, rec: ChangeRecord{RowID: 2}}}
+	sess.liveRead = 2
+	sess.replayExhausted = true
+	sess.pendingDrainClose = ErrListenLifetimeEnded
+
+	sess.pumps.Add(1)
+	go sess.pollWake()
+	time.Sleep(150 * time.Millisecond)
+	sess.endParked(nil)
+
+	ctx := context.Background()
+	tx, err := n.rw.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := pruneChanges(ctx, tx, time.Now(), st.changeRetention); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if seqs := changeSeqs(t, n); len(seqs) != 2 {
+		t.Fatalf("parked drain-close prefix after ticks + prune = %v, want both rows", seqs)
+	}
+	sess.cancel()
+}
