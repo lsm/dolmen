@@ -18,7 +18,7 @@ func commentCount(t *testing.T, src string) int {
 
 func commentCountIn(t *testing.T, path, src string) int {
 	t.Helper()
-	skip, s, err := scanFile([]byte(src), path, nil)
+	skip, s, err := scanFile([]byte(src), path)
 	if err != nil {
 		t.Fatalf("scanFile(%q): %v", src, err)
 	}
@@ -144,7 +144,7 @@ func TestLineCommentsCount(t *testing.T) {
 		{"package p\n\n/* plain doc */\nimport \"os\"\n", 1},
 		{"package p\n\n//go:linkname foo bar\nvar x = 1\n", 1},
 		{"package p\n\nimport _ \"unsafe\"\n\n//go:linkname foo bar\nvar foo int\n", 0},
-		{"package p\n\nimport _ \"unsafe\"\n\n//go:linkname missing remote\nvar x = 1\n", 1},
+		{"package p\n\nimport _ \"unsafe\"\n\n//go:linkname missing remote\nvar x = 1\n", 0},
 		{"package p\n\nvar (\n\t//go:embed data\n\tA string\n\tB = \"x\"\n)\n", 1},
 		{"package p\n\nimport _ \"embed\"\n\nvar (\n\t//go:embed data\n\tA string\n\tB = \"x\"\n)\n", 0},
 		{"package p\n\n  //go:linkname local remote\n\nvar local int\n", 1},
@@ -154,15 +154,18 @@ func TestLineCommentsCount(t *testing.T) {
 		{"//go:debug x509sha1=1\npackage main\n", 0},
 		{"//go:debug madeup=1\npackage main\n", 1},
 		{"//go:debug default=go1.24\npackage main\n", 0},
-		{"package p\n\nimport _ \"unsafe\"\n\n//go:linkname T remote.T\ntype T int\n", 1},
-		{"package p\n\nimport _ \"unsafe\"\n\n//go:linkname K remote.K\nconst K = 1\n", 1},
+		{"package p\n\nimport _ \"unsafe\"\n\n//go:linkname T remote.T\ntype T int\n", 0},
+		{"package p\n\nimport _ \"unsafe\"\n\n//go:linkname K remote.K\nconst K = 1\n", 0},
 		{"package p\n\nimport _ \"embed\"\n\n//go:embed x\nvar A, B string\n", 1},
 		{"package p\n\nimport _ \"embed\"\n\n//go:embed x\nvar A int\n", 1},
 		{"package p\n\nimport e \"embed\"\n\n//go:embed x\nvar A e.FS\n", 0},
 		{"package p\n\nimport . \"embed\"\n\n//go:embed x\nvar A FS\n", 0},
 		{"//go:debug default=go1.25.1\npackage main\n", 0},
 		{"//go:debug default=gobad\npackage main\n", 1},
-		{"package p\n\nimport _ \"unsafe\"\n\n//go:linkname _ remote.X\nvar _ int\n", 1},
+		{"package p\n\nimport _ \"unsafe\"\n\n//go:linkname _ remote.X\nvar _ int\n", 0},
+		{"package p\n\nimport _ \"unsafe\"\n\n//go:linkname a b c\nvar a int\n", 1},
+		{"package p\n\nimport _ \"unsafe\"\n\n//go:linkname\nvar a int\n", 1},
+		{"package p\n\nimport _ \"unsafe\"\n\n//go:linkname \"a remote.A\nvar a int\n", 1},
 		{"package p\n\nimport _ \"embed\"\n\n//go:embed   \nvar A string\n", 1},
 		{"package p\n\nimport _ \"embed\"\n\n//go:embed ../x\nvar A string\n", 1},
 		{"package p\n\nimport c \"C\"\n\n//export F\nfunc F() {}\n", 1},
@@ -179,7 +182,7 @@ func TestLineCommentsCount(t *testing.T) {
 		{"package p\n\n//go:noinline\nvar x = 1\n", 1},
 		{"package p\n\n//go:embed data.txt\nfunc f() {}\n", 1},
 		{"//go:bu\rild impossible_tag\n\npackage p\n", 1},
-		{"//go:ge\rnerate echo\npackage p\n", 1},
+		{"//go:ge\rnerate echo\npackage p\n", 0},
 		{"package p\n\nvar x = 1 //noli\rnt:errcheck\n", 0},
 		{"  //go:debug panicnil=1\npackage main\n", 0},
 		{"package main\n\n//go:debug x=1\nvar x int\n", 1},
@@ -251,7 +254,7 @@ func TestScanRefusals(t *testing.T) {
 		{"var x = 1\n", "unparseable"},
 		{"package p\n\nvar x = 1\n\uFEFF// mid-file bom\n", "unparseable"},
 	} {
-		if _, err := scanSource([]byte(tc.src), "src.go", nil); err == nil || !strings.Contains(err.Error(), tc.want) {
+		if _, err := scanSource([]byte(tc.src), "src.go"); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("scanSource(%q) err = %v, want containing %q", tc.src, err, tc.want)
 		}
 	}

@@ -8,10 +8,12 @@ import (
 	"go/build/constraint"
 	"go/parser"
 	"go/token"
+	"go/version"
 	"os"
 	"os/exec"
-	"path/filepath"
+	"path"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,22 +30,14 @@ type scan struct{ comments []span }
 const wsClass = `[\t\n\v\f\r\x85\p{Zs}\x{2028}\x{2029}]`
 
 var (
-	funcPragmaPattern     = regexp.MustCompile(`^//go:(?:noinline|nosplit|norace|nocheckptr|uintptrescapes|registerparams|nointerface)$`)
-	bodylessPragmaPattern = regexp.MustCompile(`^//go:(?:noescape$|wasmimport[ \t]+\S+[ \t]+\S+[ \t]*$)`)
-	wasmexportPattern     = regexp.MustCompile(`^//go:wasmexport[ \t]+\S+[ \t]*$`)
-	embedPattern          = regexp.MustCompile(`^//go:embed [^\r\n]+$`)
-	generatePattern       = regexp.MustCompile(`^//go:generate[ \t].+\r?$`)
-	bareGenerate          = regexp.MustCompile(`^//go:generate[ \t]*\r?$`)
-	buildTagPattern       = regexp.MustCompile(`^//go:build(` + wsClass + `.*)?$`)
-	legacyBuildLine       = regexp.MustCompile(`^//` + wsClass + `*\+build(` + wsClass + `.*)?$`)
-	linePattern           = regexp.MustCompile(`^//line .*:[1-9][0-9]*(?::[1-9][0-9]*)?\r?$`)
-	blockLinePattern      = regexp.MustCompile(`(?s)^/\*line .*:[1-9][0-9]*(?::[1-9][0-9]*)?\*/$`)
-	debugPattern          = regexp.MustCompile(`^//go:debug[ \t]+[A-Za-z0-9_.-]+=[^ \t\r\n,]*$`)
-	headerBlankLine       = regexp.MustCompile(`\n[ \t\r]*\n`)
-	exportPattern         = regexp.MustCompile(`^//export .+\r?$`)
-	nolintPattern         = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*(,[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*)*)?([ \t].*)?\r?$`)
-	linknamePattern       = regexp.MustCompile(`^//go:linkname[ \t]+\S+(?:[ \t]+\S+)?[ \t]*$`)
-	outputPattern         = regexp.MustCompile(`(?i)^[[:space:]]*(unordered )?output:`)
+	buildTagPattern  = regexp.MustCompile(`^//go:build(` + wsClass + `.*)?$`)
+	legacyBuildLine  = regexp.MustCompile(`^//` + wsClass + `*\+build(` + wsClass + `.*)?$`)
+	linePattern      = regexp.MustCompile(`^//line .*:[1-9][0-9]*(?::[1-9][0-9]*)?\r?$`)
+	blockLinePattern = regexp.MustCompile(`(?s)^/\*line .*:[1-9][0-9]*(?::[1-9][0-9]*)?\*/$`)
+	headerBlankLine  = regexp.MustCompile(`\n[ \t\r]*\n`)
+	exportPattern    = regexp.MustCompile(`^//export .+\r?$`)
+	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*(,[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*)*)?([ \t].*)?\r?$`)
+	outputPattern    = regexp.MustCompile(`(?i)^[[:space:]]*(unordered )?output:`)
 )
 
 func die(err error) {
@@ -171,32 +165,69 @@ func embedQualifiers(f *ast.File) (map[string]bool, bool) {
 	return qualifiers, dot
 }
 
-func embeddableType(expr ast.Expr, qualifiers map[string]bool, dot bool) bool {
+type embedKind int
+
+const (
+	embedUnknown embedKind = iota
+	embedBytes
+	embedString
+	embedFiles
+)
+
+func embeddableType(expr ast.Expr, qualifiers map[string]bool, dot bool) embedKind {
 	switch t := expr.(type) {
 	case *ast.Ident:
-		return t.Name == "string" || (dot && t.Name == "FS")
+		if t.Name == "string" {
+			return embedString
+		}
+		if dot && t.Name == "FS" {
+			return embedFiles
+		}
 	case *ast.ArrayType:
-		if elt, ok := t.Elt.(*ast.Ident); ok {
-			return t.Len == nil && elt.Name == "byte"
+		if elt, ok := t.Elt.(*ast.Ident); ok && t.Len == nil && (elt.Name == "byte" || elt.Name == "uint8") {
+			return embedBytes
 		}
 	case *ast.SelectorExpr:
-		if pkg, ok := t.X.(*ast.Ident); ok {
-			return qualifiers[pkg.Name] && t.Sel.Name == "FS"
+		if pkg, ok := t.X.(*ast.Ident); ok && qualifiers[pkg.Name] && t.Sel.Name == "FS" {
+			return embedFiles
 		}
 	}
-	return false
+	return embedUnknown
 }
 
-func validEmbedPatterns(norm []byte) bool {
-	fields := strings.Fields(string(norm[len("//go:embed"):]))
-	if len(fields) == 0 {
-		return false
+var goDirectives = map[string]bool{
+	"generate": true, "embed": true, "linkname": true, "debug": true,
+	"noinline": true, "nosplit": true, "norace": true, "nocheckptr": true,
+	"uintptrescapes": true, "registerparams": true, "nointerface": true,
+	"noescape": true, "wasmimport": true, "wasmexport": true,
+}
+
+func goDirective(norm []byte) (string, []string, bool) {
+	d, ok := ast.ParseDirective(0, string(norm))
+	if !ok || d.Tool != "go" || !goDirectives[d.Name] {
+		return "", nil, false
 	}
-	for _, p := range fields {
-		if strings.HasPrefix(p, "/") || strings.Contains(p, `\`) {
+	if end := 2 + len(d.Tool) + 1 + len(d.Name); end < len(norm) && norm[end] != ' ' && norm[end] != '\t' {
+		return "", nil, false
+	}
+	parsed, err := d.ParseArgs()
+	if err != nil {
+		return "", nil, false
+	}
+	args := make([]string, 0, len(parsed))
+	for _, a := range parsed {
+		args = append(args, a.Arg)
+	}
+	return d.Name, args, true
+}
+
+func validEmbedPatterns(patterns []string) bool {
+	for _, p := range patterns {
+		g, _ := strings.CutPrefix(p, "all:")
+		if _, err := path.Match(g, ""); err != nil || strings.Contains(g, `\`) {
 			return false
 		}
-		for _, part := range strings.Split(p, "/") {
+		for _, part := range strings.Split(g, "/") {
 			if part == "" || part == "." || part == ".." {
 				return false
 			}
@@ -205,12 +236,29 @@ func validEmbedPatterns(norm []byte) bool {
 	return true
 }
 
-func embeddableSpec(sp *ast.ValueSpec, qualifiers map[string]bool, dot bool) bool {
-	return len(sp.Names) == 1 && embeddableType(sp.Type, qualifiers, dot)
+func embedMultiFile(kind embedKind, patterns []string) bool {
+	if kind != embedString && kind != embedBytes {
+		return false
+	}
+	uniq := map[string]bool{}
+	for _, p := range patterns {
+		if strings.ContainsAny(p, "*?[\\") {
+			return false
+		}
+		uniq[p] = true
+	}
+	return len(uniq) > 1
 }
 
-func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]string) {
-	valueDocs := map[token.Pos]bool{}
+func embeddableSpec(sp *ast.ValueSpec, qualifiers map[string]bool, dot bool) embedKind {
+	if len(sp.Names) != 1 {
+		return embedUnknown
+	}
+	return embeddableType(sp.Type, qualifiers, dot)
+}
+
+func docGroups(f *ast.File) (map[token.Pos]embedKind, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]string) {
+	valueDocs := map[token.Pos]embedKind{}
 	funcDocs := map[token.Pos]bool{}
 	bodylessDocs := map[token.Pos]bool{}
 	bodiedDocs := map[token.Pos]bool{}
@@ -227,16 +275,30 @@ func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool, map[token.P
 		case *ast.GenDecl:
 			if decl.Tok == token.VAR {
 				allEmbeddable := true
+				declKind := embedUnknown
 				for _, s := range decl.Specs {
 					sp, ok := s.(*ast.ValueSpec)
-					if !ok || len(sp.Values) > 0 || !embeddableSpec(sp, qualifiers, dot) {
+					if !ok || len(sp.Values) > 0 {
 						allEmbeddable = false
 						continue
 					}
-					mark(valueDocs, sp.Doc)
+					k := embeddableSpec(sp, qualifiers, dot)
+					if k == embedUnknown {
+						allEmbeddable = false
+						continue
+					}
+					if sp.Doc != nil {
+						valueDocs[sp.Doc.Pos()] = k
+					}
+					if declKind == embedUnknown {
+						declKind = k
+					} else if declKind != k {
+						declKind = embedUnknown
+						allEmbeddable = false
+					}
 				}
-				if allEmbeddable {
-					mark(valueDocs, decl.Doc)
+				if allEmbeddable && declKind != embedUnknown && decl.Doc != nil {
+					valueDocs[decl.Doc.Pos()] = declKind
 				}
 			}
 		case *ast.FuncDecl:
@@ -286,45 +348,6 @@ func fileImports(f *ast.File, want string) bool {
 	return false
 }
 
-var knownOS = map[string]bool{"aix": true, "android": true, "darwin": true, "dragonfly": true, "freebsd": true, "hurd": true, "illumos": true, "ios": true, "js": true, "linux": true, "nacl": true, "netbsd": true, "openbsd": true, "plan9": true, "solaris": true, "wasip1": true, "windows": true, "zos": true}
-var knownArch = map[string]bool{"386": true, "amd64": true, "amd64p32": true, "arm": true, "armbe": true, "arm64": true, "arm64be": true, "loong64": true, "mips": true, "mipsle": true, "mips64": true, "mips64le": true, "mips64p32": true, "mips64p32le": true, "ppc": true, "ppc64": true, "ppc64le": true, "riscv": true, "riscv64": true, "s390": true, "s390x": true, "sparc": true, "sparc64": true, "wasm": true}
-
-func fileTags(path string, f *ast.File) []string {
-	tags := map[string]bool{}
-	base := filepath.Base(path)
-	if i := strings.Index(base, "_"); i >= 0 {
-		l := strings.Split(base[i:], "_")
-		if n := len(l); n > 0 && l[n-1] == "test" {
-			l = l[:n-1]
-		}
-		n := len(l)
-		if n >= 2 && knownOS[l[n-2]] && knownArch[l[n-1]] {
-			tags[l[n-2]] = true
-			tags[l[n-1]] = true
-		} else if n >= 1 && (knownOS[l[n-1]] || knownArch[l[n-1]]) {
-			tags[l[n-1]] = true
-		}
-	}
-	for _, g := range f.Comments {
-		if g.Pos() >= f.Package {
-			break
-		}
-		for _, c := range g.List {
-			if x, err := constraint.Parse(strings.TrimSpace(c.Text)); err == nil {
-				if b, ok := x.(*constraint.TagExpr); ok {
-					tags[b.Tag] = true
-				}
-			}
-		}
-	}
-	out := make([]string, 0, len(tags))
-	for t := range tags {
-		out = append(out, t)
-	}
-	sort.Strings(out)
-	return out
-}
-
 func fileImportsUnrenamed(f *ast.File, want string) bool {
 	for _, d := range f.Decls {
 		gd, ok := d.(*ast.GenDecl)
@@ -364,17 +387,26 @@ func init() {
 
 var godebugDefaultPattern = regexp.MustCompile(`^go[1-9][0-9]*(\.[0-9]+)*([a-z]+[0-9]*)?$`)
 
-func validDebugSettings(norm []byte) bool {
-	if !debugPattern.Match(norm) {
+func validDebugArgs(args []string) bool {
+	if len(args) != 1 {
 		return false
 	}
-	setting := strings.TrimSpace(string(norm[len("//go:debug"):]))
-	eq := strings.IndexByte(setting, '=')
-	k, v := setting[:eq], setting[eq+1:]
+	k, v, ok := strings.Cut(args[0], "=")
+	if !ok || strings.ContainsAny(v, ", \t") {
+		return false
+	}
 	if k == "default" {
-		return godebugDefaultPattern.MatchString(v)
+		return godebugDefaultPattern.MatchString(v) && !versionTooNew(v)
 	}
 	return godebugKeys[k]
+}
+
+func versionTooNew(v string) bool {
+	cur := runtime.Version()
+	if !version.IsValid(v) || !version.IsValid(cur) {
+		return false
+	}
+	return version.Compare(v, cur) > 0
 }
 
 func validBuildConstraint(raw []byte) bool {
@@ -386,62 +418,60 @@ func validBuildConstraint(raw []byte) bool {
 	return err == nil
 }
 
-func linknameNames(f *ast.File) map[string]bool {
-	names := map[string]bool{}
-	for _, d := range f.Decls {
-		switch decl := d.(type) {
-		case *ast.GenDecl:
-			if decl.Tok != token.VAR {
-				continue
-			}
-			for _, s := range decl.Specs {
-				if sp, ok := s.(*ast.ValueSpec); ok {
-					for _, n := range sp.Names {
-						if n.Name != "_" {
-							names[n.Name] = true
-						}
-					}
-				}
-			}
-		case *ast.FuncDecl:
-			if decl.Recv == nil {
-				if decl.Name.Name != "_" {
-					names[decl.Name.Name] = true
-				}
-			}
-		}
-	}
-	return names
-}
-
 type exempts struct {
 	atLineStart bool
+	directive   string
+	args        []string
 	valueDoc    bool
+	valueKind   embedKind
 	funcDoc     bool
+	bareFunc    bool
 	bodylessDoc bool
-	cgo         bool
+	bodiedDoc   bool
 	unsafe      bool
 	embed       bool
-	linkname    bool
+	mainish     bool
 }
 
 func isExempt(raw, norm []byte, c exempts) bool {
 	if c.atLineStart && linePattern.Match(raw) {
 		return true
 	}
-	if c.atLineStart && generatePattern.Match(raw) && !bareGenerate.Match(raw) {
-		return true
+	switch c.directive {
+	case "generate":
+		if c.atLineStart && len(c.args) > 0 {
+			return true
+		}
+	case "embed":
+		if c.valueDoc && c.embed && len(c.args) > 0 && validEmbedPatterns(c.args) && !embedMultiFile(c.valueKind, c.args) {
+			return true
+		}
+	case "linkname":
+		if c.unsafe && len(c.args) >= 1 && len(c.args) <= 2 {
+			return true
+		}
+	case "debug":
+		if c.mainish && validDebugArgs(c.args) {
+			return true
+		}
+	case "noinline", "nosplit", "norace", "nocheckptr", "uintptrescapes", "registerparams", "nointerface":
+		if c.funcDoc && len(c.args) == 0 {
+			return true
+		}
+	case "noescape":
+		if c.bodylessDoc && len(c.args) == 0 {
+			return true
+		}
+	case "wasmimport":
+		if c.bodylessDoc && len(c.args) == 2 {
+			return true
+		}
+	case "wasmexport":
+		if c.bareFunc && c.bodiedDoc && len(c.args) == 1 {
+			return true
+		}
 	}
-	if c.funcDoc && funcPragmaPattern.Match(norm) {
-		return true
-	}
-	if c.bodylessDoc && bodylessPragmaPattern.Match(norm) {
-		return true
-	}
-	if c.valueDoc && c.embed && embedPattern.Match(norm) && validEmbedPatterns(norm) {
-		return true
-	}
-	return blockLinePattern.Match(raw) || nolintPattern.Match(norm) || (c.unsafe && c.linkname && linknamePattern.Match(norm))
+	return blockLinePattern.Match(raw) || nolintPattern.Match(norm)
 }
 
 func isGeneratedMarker(text []byte) bool {
@@ -458,13 +488,10 @@ func isGeneratedMarker(text []byte) bool {
 	return false
 }
 
-func scanSource(src []byte, path string, names map[string]bool) (*scan, error) {
+func scanSource(src []byte, path string) (*scan, error) {
 	fset, f, err := parseGo(src)
 	if err != nil {
 		return nil, fmt.Errorf("unparseable: %w", err)
-	}
-	if names == nil {
-		names = linknameNames(f)
 	}
 	tf := fset.File(f.Package)
 	pkgOff := tf.Offset(f.Package)
@@ -510,12 +537,6 @@ func scanSource(src []byte, path string, names map[string]bool) (*scan, error) {
 			if c.Pos() < f.Package && blank(lineLead) && validBuildConstraint(raw) {
 				continue
 			}
-			if bareFuncDocs[g.Pos()] && bodiedDocs[g.Pos()] && wasmexportPattern.Match(norm) {
-				continue
-			}
-			if c.Pos() < f.Package && isMainish && validDebugSettings(norm) {
-				continue
-			}
 			blockBefore := false
 			searchEnd := pkgOff
 			for _, b := range headerBlockStarts {
@@ -534,21 +555,23 @@ func scanSource(src []byte, path string, names map[string]bool) (*scan, error) {
 					continue
 				}
 			}
-			linknameOK := false
-			if hasUnsafe && linknamePattern.Match(norm) {
-				if local := strings.Fields(string(bytes.TrimPrefix(norm, []byte("//go:linkname")))); len(local) > 0 && names[local[0]] {
-					linknameOK = true
-				}
+			name, args, isDirective := goDirective(norm)
+			if !isDirective {
+				name, args = "", nil
 			}
 			if isExempt(raw, norm, exempts{
 				atLineStart: atLineStart(src, start),
-				valueDoc:    valueDocs[g.Pos()],
+				directive:   name,
+				args:        args,
+				valueDoc:    valueDocs[g.Pos()] != embedUnknown,
+				valueKind:   valueDocs[g.Pos()],
 				funcDoc:     funcDocs[g.Pos()],
+				bareFunc:    bareFuncDocs[g.Pos()],
 				bodylessDoc: bodylessDocs[g.Pos()],
-				cgo:         isCgo,
+				bodiedDoc:   bodiedDocs[g.Pos()],
 				unsafe:      hasUnsafe,
 				embed:       hasEmbed,
-				linkname:    linknameOK,
+				mainish:     isMainish,
 			}) {
 				continue
 			}
@@ -749,7 +772,11 @@ func lexCount(src []byte) int {
 				}
 				raw := src[i:j]
 				norm := bytes.ReplaceAll(raw, []byte("\r"), nil)
-				exempt := isExempt(raw, norm, exempts{atLineStart: atLineStart(src, i)})
+				name, args, isDirective := goDirective(norm)
+				if !isDirective {
+					name, args = "", nil
+				}
+				exempt := isExempt(raw, norm, exempts{atLineStart: atLineStart(src, i), directive: name, args: args})
 				if i < limit {
 					lead := src[bytes.LastIndexByte(src[:i], '\n')+1 : i]
 					lead = bytes.TrimPrefix(lead, utf8BOM)
@@ -798,10 +825,10 @@ func lexCount(src []byte) int {
 	return count
 }
 
-func scanFile(src []byte, path string, names map[string]bool) (bool, *scan, error) {
-	s, err := scanSource(src, path, names)
+func scanFile(src []byte, path string) (bool, *scan, error) {
+	s, err := scanSource(src, path)
 	if err != nil && headerHasBuildConstraint(src) {
-		if s2, err2 := scanSource(normalizeHeaderSpace(src), path, names); err2 == nil {
+		if s2, err2 := scanSource(normalizeHeaderSpace(src), path); err2 == nil {
 			return false, s2, nil
 		}
 		return false, &scan{comments: make([]span, lexCount(src))}, nil
@@ -844,9 +871,6 @@ func main() {
 	if err != nil {
 		die(err)
 	}
-	type pkgKey struct{ dir, pkg, tag string }
-	namesBy := map[pkgKey]map[string]bool{}
-	tagOf := map[string]string{}
 	srcs := map[string][]byte{}
 	for _, f := range files {
 		src, err := os.ReadFile(f)
@@ -854,38 +878,6 @@ func main() {
 			die(err)
 		}
 		srcs[f] = src
-		_, ast, err := parseGo(src)
-		if err != nil {
-			continue
-		}
-		key := pkgKey{filepath.Dir(f), ast.Name.Name, strings.Join(fileTags(f, ast), ",")}
-		if namesBy[key] == nil {
-			namesBy[key] = map[string]bool{}
-		}
-		for n := range linknameNames(ast) {
-			namesBy[key][n] = true
-		}
-		tagOf[f] = key.tag
-	}
-	pkgOf := map[string]string{}
-	pkgOfNames := map[string]map[string]bool{}
-	for _, f := range files {
-		dir := filepath.Dir(f)
-		pkg := ""
-		if _, ast, err := parseGo(srcs[f]); err == nil {
-			pkg = ast.Name.Name
-		}
-		merged := map[string]bool{}
-		for _, tag := range []string{tagOf[f], ""} {
-			for n := range namesBy[pkgKey{dir, pkg, tag}] {
-				merged[n] = true
-			}
-		}
-		key := dir + "\x00" + pkg + "\x00" + tagOf[f]
-		if _, seen := pkgOfNames[key]; !seen {
-			pkgOfNames[key] = merged
-		}
-		pkgOf[f] = key
 	}
 
 	allow := map[string]int{}
@@ -896,7 +888,7 @@ func main() {
 	}
 	bad := 0
 	for _, f := range files {
-		skip, s, err := scanFile(srcs[f], f, pkgOfNames[pkgOf[f]])
+		skip, s, err := scanFile(srcs[f], f)
 		if err != nil {
 			die(fmt.Errorf("cannot parse %s: %w", f, err))
 		}
