@@ -123,6 +123,7 @@ func (sess *listenSession) drain() {
 		}
 		lc := sess.queue[0]
 		sess.queue = sess.queue[1:]
+		sess.deliveringSeq = lc.seq
 		sess.notifyActive = true
 		sess.mu.Unlock()
 
@@ -130,6 +131,7 @@ func (sess *listenSession) drain() {
 		func() {
 			defer func() {
 				sess.mu.Lock()
+				sess.deliveringSeq = 0
 				sess.notifyActive = false
 				sess.cond.Broadcast()
 				sess.mu.Unlock()

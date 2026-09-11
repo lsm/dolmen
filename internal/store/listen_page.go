@@ -299,8 +299,8 @@ func (sess *listenSession) chainFor(now time.Time, resume int64) *cursorChain {
 	if !sess.replayExhausted && sess.position < origin {
 		origin = sess.position
 	}
-	if len(sess.queue) > 0 && sess.queue[0].seq-1 < origin {
-		origin = sess.queue[0].seq - 1
+	if floor := sess.lowestOwedLocked(); floor > 0 && floor-1 < origin {
+		origin = floor - 1
 	}
 	sess.chain = newCursorChain(now, origin)
 	return sess.chain
