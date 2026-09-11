@@ -36,52 +36,137 @@ func scopedAuthz(owner string) func(table string) (*RowScope, Incarnation, bool)
 	}
 }
 
-func TestListenLiveAdmissionFiltersForeignRecords(t *testing.T) {
-	st := openChangeStore(t)
+func TestListenAdmitDecisions(t *testing.T) {
+	ownGen := [16]byte{1}
+	foreignGen := [16]byte{2}
+	rec := ChangeRecord{Table: "notes", Owner: "alice", Lifetime: Lifetime{NsGen: ownGen, Table: "notes"}}
+	authzOf := func(scope *RowScope, inc Incarnation, ok bool) func(string) (*RowScope, Incarnation, bool) {
+		return func(string) (*RowScope, Incarnation, bool) { return scope, inc, ok }
+	}
+	cases := []struct {
+		name     string
+		nsFeed   bool
+		resolver func(string) (*RowScope, Incarnation, bool)
+		record   ChangeRecord
+		visible  bool
+		revoked  bool
+	}{
+		{"granted-unscoped", false, authzOf(nil, Incarnation{}, true), rec, true, false},
+		{"own-scope", false, authzOf(&RowScope{Owner: "alice"}, Incarnation{}, true), rec, true, false},
+		{"foreign-scope", false, authzOf(&RowScope{Owner: "bob"}, Incarnation{}, true), rec, false, false},
+		{"empty-scope", false, authzOf(&RowScope{Empty: true}, Incarnation{}, true), rec, false, false},
+		{"revoked", false, authzOf(nil, Incarnation{}, false), rec, false, true},
+		{"own-nsGen-nsFeed", true, authzOf(nil, Incarnation{NsGen: ownGen}, true), rec, true, false},
+		{"foreign-nsGen-nsFeed", true, authzOf(nil, Incarnation{NsGen: foreignGen}, true), rec, false, false},
+		{"own-nsGen-tableFeed", false, authzOf(nil, Incarnation{NsGen: ownGen}, true), rec, true, false},
+		{"foreign-nsGen-tableFeed", false, authzOf(nil, Incarnation{NsGen: foreignGen}, true), rec, false, false},
+		{"zero-inc-nsFeed-admits", true, authzOf(nil, Incarnation{}, true), rec, true, false},
+	}
+	for _, tc := range cases {
+		sess := testSession(nil)
+		if !tc.nsFeed {
+			sess.table = "notes"
+		} else {
+			sess.table = ""
+		}
+		sess.liveAuthz = tc.resolver
+		visible, revoked := sess.admit(tc.record)
+		if visible != tc.visible || revoked != tc.revoked {
+			t.Fatalf("admit(%s) = visible %v, revoked %v; want %v, %v", tc.name, visible, revoked, tc.visible, tc.revoked)
+		}
+	}
 
-	got := make(chan ChangeRecord, 4)
-	replay, cancel, err := st.Listen(context.Background(), "test", "", "", [16]byte{}, scopedAuthz("alice"), func(r ChangeRecord) { got <- r }, nil)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
+	ownLifetime := ChangeRecord{Table: "notes", Lifetime: Lifetime{NsGen: ownGen, Table: "notes", DropGen: 3}}
+	incMatch := Incarnation{NsGen: ownGen, Table: "notes", DropGen: 3}
+	incDrop := Incarnation{NsGen: ownGen, Table: "notes", DropGen: 4}
+	incTable := Incarnation{NsGen: ownGen, Table: "other", DropGen: 3}
+	tableSess := func(inc Incarnation) *listenSession {
+		sess := testSession(nil)
+		sess.table = "notes"
+		sess.liveAuthz = authzOf(nil, inc, true)
+		return sess
 	}
-	defer cancel()
-	if _, _, done, err := replay.Next(context.Background()); err != nil || !done {
-		t.Fatalf("boundary Next = err %v, done %v, want nil error, done=true", err, done)
+	if visible, _ := tableSess(incMatch).admit(ownLifetime); !visible {
+		t.Fatal("a matching incarnation must admit on a table feed")
 	}
+	if visible, _ := tableSess(incDrop).admit(ownLifetime); visible {
+		t.Fatal("a drop-generation mismatch must hide on a table feed")
+	}
+	if visible, _ := tableSess(incTable).admit(ownLifetime); visible {
+		t.Fatal("a table mismatch must hide on a table feed")
+	}
+	nsSess := tableSess(incTable)
+	nsSess.table = ""
+	if visible, _ := nsSess.admit(ownLifetime); !visible {
+		t.Fatal("a namespace feed spans table lifetimes — a table mismatch alone must admit")
+	}
+
+	nilSess := testSession(nil)
+	if visible, revoked := nilSess.admit(rec); !visible || revoked {
+		t.Fatalf("nil liveAuthz = visible %v, revoked %v; want true, false", visible, revoked)
+	}
+}
+
+func TestListenLiveAdmissionFiltersForeignRecordsAndConsumesInvisible(t *testing.T) {
+	st := openChangeStore(t)
 
 	alice, err := st.Insert(context.Background(), "test", "notes", []map[string]any{{"title": "a", "score": 1}}, WriteOpts{}, Embedder{}, nil, Incarnation{})
 	if err != nil {
-		t.Fatalf("insert alice: %v", err)
+		t.Fatalf("insert: %v", err)
 	}
 	bob, err := st.Insert(context.Background(), "test", "notes", []map[string]any{{"title": "b", "score": 2}, {"title": "c", "score": 3}}, WriteOpts{}, Embedder{}, nil, Incarnation{})
 	if err != nil {
-		t.Fatalf("insert bob: %v", err)
+		t.Fatalf("insert: %v", err)
 	}
-	alice2, err := st.Insert(context.Background(), "test", "notes", []map[string]any{{"title": "d", "score": 4}}, WriteOpts{}, Embedder{}, nil, Incarnation{})
-	if err != nil {
-		t.Fatalf("insert alice2: %v", err)
-	}
-	labelNotesOwners(t, st, "alice", []int64{alice.Ids[0], alice2.Ids[0]})
+	labelNotesOwners(t, st, "alice", alice.Ids)
 	labelNotesOwners(t, st, "bob", bob.Ids)
 
-	seen := 0
-	want := []int64{alice.Ids[0], alice2.Ids[0]}
-	for seen < len(want) {
-		select {
-		case r := <-got:
-			if r.RowID != want[seen] {
-				t.Fatalf("live record row %d delivered, want %d — a foreign record crossed the gate", r.RowID, want[seen])
-			}
-			seen++
-		case <-time.After(10 * time.Second):
-			t.Fatalf("only %d of %d own records delivered", seen, len(want))
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("open test: %v", err)
+	}
+	delivered := make(chan int64, 2)
+	sess := testSession(nil)
+	sess.s, sess.n = st, n
+	sess.chain = newCursorChain(time.Now(), 0)
+	sess.liveAuthz = scopedAuthz("alice")
+	sess.notify = func(r ChangeRecord) { delivered <- r.RowID }
+	sess.replayDone = true
+
+	read, err := sess.fillBatch()
+	if err != nil {
+		t.Fatalf("fillBatch: %v", err)
+	}
+	if read != 3 {
+		t.Fatalf("fillBatch read %d, want all 3 scanned positions consumed", read)
+	}
+	sess.mu.Lock()
+	queued := len(sess.queue)
+	liveRead := sess.liveRead
+	sess.mu.Unlock()
+	if queued != 1 {
+		t.Fatalf("queue held %d records, want only alice's 1 — foreign records crossed the gate", queued)
+	}
+	if liveRead != 3 {
+		t.Fatalf("liveRead = %d, want 3 — invisible positions must be consumed exactly once", liveRead)
+	}
+
+	sess.pumps.Add(1)
+	go sess.drain()
+	select {
+	case id := <-delivered:
+		if id != alice.Ids[0] {
+			t.Fatalf("delivered row %d, want alice's row %d", id, alice.Ids[0])
 		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the admitted record never delivered")
 	}
 	select {
-	case r := <-got:
-		t.Fatalf("extra delivery row %d after the subscriber's own records — foreign traffic crossed the gate", r.RowID)
+	case id := <-delivered:
+		t.Fatalf("foreign record row %d delivered — the gate must hide it", id)
 	case <-time.After(200 * time.Millisecond):
 	}
+	sess.cancel()
 }
 
 func TestListenLiveAdmissionEmptyScopeDeliversNothing(t *testing.T) {
@@ -107,32 +192,6 @@ func TestListenLiveAdmissionEmptyScopeDeliversNothing(t *testing.T) {
 	}
 	if replay.Resume() == "" {
 		t.Fatal("the session lost its standing cursor while idling behind an empty scope")
-	}
-}
-
-func TestListenLiveAdmissionIncarnationMismatchHidesRecords(t *testing.T) {
-	st := openChangeStore(t)
-
-	got := make(chan ChangeRecord, 2)
-	replay, cancel, err := st.Listen(context.Background(), "test", "notes", "", [16]byte{}, func(table string) (*RowScope, Incarnation, bool) {
-		return nil, Incarnation{NsGen: [16]byte{0xff}, Table: table}, true
-	}, func(r ChangeRecord) { got <- r }, nil)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer cancel()
-	if _, _, done, err := replay.Next(context.Background()); err != nil || !done {
-		t.Fatalf("boundary Next = err %v, done %v, want nil error, done=true", err, done)
-	}
-
-	insertNotes(t, st, 2)
-	select {
-	case r := <-got:
-		t.Fatalf("record row %d delivered across a mismatched incarnation — a stale decision crossed onto foreign records", r.RowID)
-	case <-time.After(300 * time.Millisecond):
-	}
-	if replay.Resume() == "" {
-		t.Fatal("the session lost its standing cursor while idling behind a mismatched incarnation")
 	}
 }
 

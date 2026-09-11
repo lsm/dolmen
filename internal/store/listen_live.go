@@ -60,9 +60,14 @@ func (sess *listenSession) admit(rec ChangeRecord) (visible, revoked bool) {
 	if scope != nil && (scope.Empty || scope.Owner != rec.Owner) {
 		return false, false
 	}
-	if sess.table != "" && inc != (Incarnation{}) {
-		if (Lifetime{NsGen: inc.NsGen, Table: inc.Table, DropGen: inc.DropGen}) != rec.Lifetime {
+	if inc != (Incarnation{}) {
+		if inc.NsGen != rec.Lifetime.NsGen {
 			return false, false
+		}
+		if sess.table != "" {
+			if inc.Table != rec.Lifetime.Table || inc.DropGen != rec.Lifetime.DropGen {
+				return false, false
+			}
 		}
 	}
 	return true, false
