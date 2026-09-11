@@ -142,6 +142,21 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 	// over-limit moment the drainer already shrank past.
 	over := len(sess.queue) > listenQueueBound
 	short := len(scanned) < MaxChangesPageLimit
+	// An ENDED feed drains its predecessor backlog under BACKPRESSURE,
+	// not around the bound: the backlog is not size-bounded (retention
+	// may be disabled, and time-based retention caps age, never volume),
+	// so queueing it whole could exhaust process memory — and the
+	// overflow teaching close is the wrong terminal against a dropped
+	// target, whose reconnect remedy cannot succeed. The fill parks until
+	// the drainer frees capacity below the bound, then pages on: the
+	// predecessor still delivers in full before the close arms at the
+	// short tail — only its arrival in memory is chunked, never past
+	// bound + one page (codex P1 on #230, thread r3984838673).
+	for over && ended && !sess.dead {
+		sess.cond.Wait()
+		over = len(sess.queue) > listenQueueBound
+	}
+	dead := sess.dead // read under the lock the wait (or the fall-through) still holds
 	if ended && short {
 		// The feed's target ended under the session — and the scan, run
 		// FIRST under the registration labels, has reached the feed's
@@ -158,6 +173,9 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 	}
 	sess.cond.Broadcast()
 	sess.mu.Unlock()
+	if dead {
+		return 0, nil // the backpressure outlived the session: nothing more is ours to read
+	}
 	if ended && short {
 		return 0, nil // read 0: the fill's batch loop ends; the drain owns the close
 	}
@@ -166,14 +184,12 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 		// from its last delivered cursor — the durable log is the catch-up
 		// path; the buffer never was the durability mechanism. Reported,
 		// not fired: pump ends the session with it at one fire point,
-		// outside this loop. An ENDED page never trips it: the feed is
-		// dead, the overflow's remedy (reconnect and catch up) is
-		// impossible against a dropped target, and the predecessor
-		// backlog the fill is draining is finite, committed, and
-		// retention-bounded — the lifetime close at the short tail is the
-		// honest terminal, whatever the backlog's size (fresh-context
-		// adversarial pass on #230; the overflow-trip variant stranded
-		// 99% of a 10k backlog behind an unreconnectable close).
+		// outside this loop. An ended feed never takes it — the backpressure
+		// above holds the bound, and the lifetime close at the short tail
+		// is the honest terminal against a dropped target (the
+		// overflow-trip variant closed a 10k backlog with one record
+		// delivered, behind a reconnect that cannot succeed — fresh-context
+		// adversarial pass on #230).
 		return 0, ErrListenOverflow
 	}
 	return len(scanned), nil

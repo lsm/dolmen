@@ -656,18 +656,19 @@ func TestListenLifetimeEndDrainsFullPages(t *testing.T) {
 	sess.cancel() // idempotent teardown; also waits the pumps out
 }
 
-// TestListenLifetimeEndPagesPastTheBound: an ENDED page never trips the
-// overflow bound — the feed is dead, the overflow's reconnect remedy is
-// impossible against a dropped target, and the finite, committed
-// predecessor backlog drains in full before the lifetime close arms at
-// its short tail (fresh-context adversarial pass on #230: the
-// overflow-trip variant closed a 10k backlog with 1 record delivered).
-// The fill side alone is pinned here (no drainer): the queue grows past
-// the bound and the close arms, with no overflow end fired.
-func TestListenLifetimeEndPagesPastTheBound(t *testing.T) {
+// TestListenEndedFeedParksAtTheBound: an ENDED feed drains its
+// predecessor backlog under BACKPRESSURE, never around the queue bound —
+// the backlog is not size-bounded (retention off, or any volume inside a
+// time window), so queueing it whole could exhaust process memory, while
+// the overflow close would teach a reconnect that cannot succeed against
+// a dropped target (codex P1 on #230, thread r3984838673). With no
+// drainer freeing capacity, the fill PARKS at bound + one page — the
+// memory contract held, no overflow end fired — and cancel still
+// returns: the parked fill exits on end's broadcast (teardown liveness).
+func TestListenEndedFeedParksAtTheBound(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
-	total := listenQueueBound + MaxChangesPageLimit + 5
+	total := listenQueueBound + 2*MaxChangesPageLimit
 	if _, err := insertNotesChunkedErr(st, total); err != nil {
 		t.Fatalf("bulk backlog: %v", err)
 	}
@@ -701,31 +702,127 @@ func TestListenLifetimeEndPagesPastTheBound(t *testing.T) {
 	sess.wake("notes", ChangeRange{})
 	go sess.pump()
 
-	deadline := time.Now().Add(60 * time.Second)
+	// The fill reaches the bound and parks: no drainer is freeing
+	// capacity, so the queue must stabilize at bound + one page — the
+	// whole backlog (2 pages past the bound) must NOT materialize.
+	reach := time.Now().Add(60 * time.Second)
 	for {
 		sess.mu.Lock()
 		queued := len(sess.queue)
-		armed := sess.pendingDrainClose
 		dead := sess.dead
 		sess.mu.Unlock()
 		if dead {
-			select {
-			case cause := <-closedCause:
-				t.Fatalf("session ended with %v — an ended page tripped the overflow bound", cause)
-			default:
-			}
-			t.Fatalf("session died mid-drain with %d of %d queued", queued, total)
+			t.Fatalf("session died mid-drain at %d queued — the overflow close fired on an ended feed", queued)
 		}
-		if queued == total && armed != nil {
-			if !errors.Is(armed, ErrListenLifetimeEnded) {
-				t.Fatalf("armed close = %v, want ErrListenLifetimeEnded", armed)
-			}
-			break
+		if queued > listenQueueBound {
+			break // the batch that crossed the bound is in; the fill parks behind it
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("fill stalled at %d of %d queued, armed=%v", queued, total, armed)
+		if time.Now().After(reach) {
+			t.Fatalf("fill never reached the bound (queued=%d)", queued)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	sess.cancel() // idempotent teardown; the queue-owned close stays unfired with no drainer
+	time.Sleep(300 * time.Millisecond) // any unbounded paging would keep growing here
+	sess.mu.Lock()
+	queued := len(sess.queue)
+	dead := sess.dead
+	sess.mu.Unlock()
+	if dead {
+		t.Fatal("session died while parked at the bound")
+	}
+	if queued > listenQueueBound+MaxChangesPageLimit {
+		t.Fatalf("queue held %d records, want the fill parked at ≤ bound+page (%d) — the ended feed bypassed the bound", queued, listenQueueBound+MaxChangesPageLimit)
+	}
+	select {
+	case cause := <-closedCause:
+		t.Fatalf("closed fired with %v while the fill was parked — the overflow close must not take an ended feed", cause)
+	default:
+	}
+
+	// Teardown liveness: the parked fill exits on end's broadcast.
+	done := make(chan struct{})
+	go func() {
+		sess.cancel()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("cancel never returned — the backpressure wait outlived the session")
+	}
+}
+
+// TestListenEndedFeedDrainsUnderBackpressure: the mechanism's full
+// promise end to end — an ended feed whose backlog crosses the queue
+// bound delivers EVERY predecessor record (the fill parks at the bound,
+// the drainer frees capacity, the fill resumes) before
+// ErrListenLifetimeEnded fires at the empty queue. The queue never
+// exceeds bound + one page while it does.
+func TestListenEndedFeedDrainsUnderBackpressure(t *testing.T) {
+	st := openChangeStore(t)
+	ctx := context.Background()
+	total := listenQueueBound + MaxChangesPageLimit + 5
+	if _, err := insertNotesChunkedErr(st, total); err != nil {
+		t.Fatalf("bulk backlog: %v", err)
+	}
+
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("open test: %v", err)
+	}
+	tx, err := n.rw.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("labels tx: %v", err)
+	}
+	feed, err := changeFeedOf(ctx, tx, "test", "notes")
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("labels: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("labels commit: %v", err)
+	}
+	if err := st.DropTable(ctx, "test", "notes", Incarnation{}); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+
+	var mu sync.Mutex
+	peak, delivered := 0, 0
+	closedCause := make(chan error, 1)
+	sess := testSession(func(cause error) { closedCause <- cause })
+	sess.s, sess.n = st, n
+	sess.feed = feed
+	sess.chain = newCursorChain(time.Now(), 0)
+	sess.notify = func(r ChangeRecord) {
+		mu.Lock()
+		delivered++
+		if q := len(sess.queue); q > peak {
+			peak = q
+		}
+		mu.Unlock()
+	}
+	sess.replayDone = true
+	sess.pumps.Add(2)
+	sess.wake("notes", ChangeRange{})
+	go sess.pump()
+	go sess.drain()
+
+	select {
+	case cause := <-closedCause:
+		if !errors.Is(cause, ErrListenLifetimeEnded) {
+			t.Fatalf("close cause = %v, want ErrListenLifetimeEnded", cause)
+		}
+	case <-time.After(120 * time.Second):
+		t.Fatal("the lifetime close never fired under backpressure")
+	}
+	mu.Lock()
+	got, ceiling := delivered, peak
+	mu.Unlock()
+	if got != total {
+		t.Fatalf("delivered %d of %d predecessor records — the backpressure lost part of the backlog", got, total)
+	}
+	if ceiling > listenQueueBound+MaxChangesPageLimit {
+		t.Fatalf("queue peaked at %d, want ≤ bound+page (%d) — the bound was bypassed", ceiling, listenQueueBound+MaxChangesPageLimit)
+	}
+	sess.cancel() // idempotent teardown; also waits the pumps out
 }
