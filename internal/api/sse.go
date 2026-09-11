@@ -14,11 +14,19 @@ import (
 
 // HandleSubscribe is §9.2 layer 3's HTTP-surface capability: a GET
 // text/event-stream that replays the namespace's durable change log from a
-// cursor in commit order and then closes — the replay half. It is an
-// HTTP-surface handler like /mcp, not an Ops entry: the MCP tool surface gets
-// wait_for, whose request/response shape carries the same feed semantics
+// cursor in commit order and then stays open, delivering live commits. It is
+// an HTTP-surface handler like /mcp, not an Ops entry: the MCP tool surface
+// gets wait_for, whose request/response shape carries the same feed semantics
 // (§2's transport parity), while the stream is for agent hosts holding
 // connections.
+//
+// The live half is the engine's listener, not this handler's loop: Listen
+// registers the session and fixes the replay boundary as one operation
+// (§9.3's register-and-replay), ChangeReplay.Next pages out the replay, and
+// notify delivers what committed after the boundary — so a commit landing
+// during the handoff is neither duplicated nor skipped, and the handler only
+// frames what the listener hands it. Terminal frames carry the cursor the
+// stream reached, so a reconnecting client resumes exactly there.
 //
 // The route stays UNREGISTERED until 6b lands live streaming. The endpoint's
 // specified behavior is a live stream, and a client discovering a registered
@@ -91,49 +99,115 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		sseErrorEvent(w, wrapStoreErr(err), reqID)
 		return
 	}
-	from := cursor
+	// Both halves run on this goroutine: notify and closed fire on the
+	// listener's own goroutines, so each hands its work over a channel and
+	// the response is written from exactly one place. The sends are
+	// cancellation-guarded — a drain blocked on a subscriber that has gone
+	// away would otherwise hold the listener's teardown open, and cancel
+	// waits for that drain.
+	live := make(chan store.ChangeRecord, 1)
+	ended := make(chan error, 1)
+	replay, cancel, err := s.eng.Listen(r.Context(), ns, table, cursor, [16]byte{}, nil,
+		func(rec store.ChangeRecord) {
+			select {
+			case live <- rec:
+			case <-r.Context().Done():
+			}
+		},
+		func(cause error) {
+			select {
+			case ended <- cause:
+			case <-r.Context().Done():
+			}
+		})
+	if err != nil {
+		sseErrorEvent(w, subscribeErr(err), reqID)
+		return
+	}
+	defer cancel()
+
+	resume := replay.Resume()
+	write := func(rec store.ChangeRecord) bool {
+		resume = rec.Cursor
+		return sseEvent(w, "change", sseChange{
+			Cursor: string(rec.Cursor),
+			Table:  rec.Table,
+			RowID:  rec.RowID,
+			Kind:   string(rec.Kind),
+		})
+	}
+
+	// The replay half: pages in cursor order until the boundary call reports
+	// done — the last page carrying records returns done=false, the call
+	// after it returns done=true — after which notify delivers.
 	for {
-		records, next, err := s.eng.ChangesSince(r.Context(), ns, table, from,
-			[16]byte{}, nil, store.Incarnation{}, store.Page{Limit: store.MaxChangesPageLimit})
-		if err != nil {
+		records, _, done, nerr := replay.Next(r.Context())
+		if nerr != nil {
 			if r.Context().Err() != nil {
 				return // the subscriber went away; there is nobody to tell
 			}
-			// The cursor teaching errors carry their own catch-up path,
-			// phrased for this surface — reconnecting IS the catch-up call.
-			// They stay generic on purpose: which feed or table a foreign
-			// cursor was minted for is not the caller's to learn here.
-			if errors.Is(err, store.ErrCursorExpired) {
-				sseErrorEvent(w, badRequest("cursor is unknown or past the change-log retention window (-change-retention, default 168h); catch up by reconnecting with no cursor to resume from the current head, or with cursor=begin to replay retained history"), reqID)
-				return
+			// The listener may have ended the session under the replay (a
+			// dropped target, an evicted namespace), in which case the read
+			// fails with the teardown's own error and the cause the listener
+			// reported is the one that teaches: prefer it.
+			select {
+			case cause := <-ended:
+				sseEvent(w, "close", sseClose{Cursor: string(resume)})
+				sseErrorEvent(w, subscribeErr(cause), reqID)
+			default:
+				sseErrorEvent(w, subscribeErr(nerr), reqID)
 			}
-			if errors.Is(err, store.ErrCursorCrossFeed) {
-				sseErrorEvent(w, badRequest("cursor was minted on a different feed (a specific table's, or the namespace-wide feed); pass it only to the feed you received it from — honoring it elsewhere would silently skip events — or start fresh with no cursor / cursor=begin"), reqID)
-				return
-			}
-			sseErrorEvent(w, wrapStoreErr(err), reqID)
 			return
 		}
 		for _, rec := range records {
-			if !sseEvent(w, "change", sseChange{
-				Cursor: string(rec.Cursor),
-				Table:  rec.Table,
-				RowID:  rec.RowID,
-				Kind:   string(rec.Kind),
-			}) {
+			if !write(rec) {
 				return // the write failed: the subscriber is gone
 			}
 		}
-		// A short page means the backlog is drained; the close frame carries
-		// the boundary cursor so a client persisting it resumes exactly here.
-		// (A backlog growing faster than it drains keeps the loop catching up
-		// — inherent to replay; 6b's live streaming holds the stream open
-		// instead.)
-		if len(records) < store.MaxChangesPageLimit {
-			sseEvent(w, "close", sseClose{Cursor: string(next)})
+		if done {
+			break
+		}
+	}
+
+	// The live half: keep the stream open until the listener ends it or the
+	// subscriber disconnects. A disconnect returns here, and the deferred
+	// cancel tears the session down — the listener is released.
+	for {
+		select {
+		case rec := <-live:
+			if !write(rec) {
+				return
+			}
+		case cause := <-ended:
+			sseEvent(w, "close", sseClose{Cursor: string(resume)})
+			sseErrorEvent(w, subscribeErr(cause), reqID)
+			return
+		case <-r.Context().Done():
 			return
 		}
-		from = next
+	}
+}
+
+// subscribeErr maps a failure onto the stream's error frame. The cursor
+// teaching errors carry their own catch-up path, phrased for this surface —
+// reconnecting IS the catch-up call — and stay generic on purpose: which feed
+// or table a foreign cursor was minted for is not the caller's to learn here.
+// The listener's own ends teach their remedies on the same envelope, so a
+// subscriber reads one error shape whichever half ended the stream.
+func subscribeErr(err error) *Error {
+	switch {
+	case errors.Is(err, store.ErrCursorExpired):
+		return badRequest("cursor is unknown or past the change-log retention window (-change-retention, default 168h); catch up by reconnecting with no cursor to resume from the current head, or with cursor=begin to replay retained history")
+	case errors.Is(err, store.ErrCursorCrossFeed):
+		return badRequest("cursor was minted on a different feed (a specific table's, or the namespace-wide feed); pass it only to the feed you received it from — honoring it elsewhere would silently skip events — or start fresh with no cursor / cursor=begin")
+	case errors.Is(err, store.ErrListenOverflow):
+		return badRequest("subscription buffer overflow: commits arrived faster than this stream drained them; reconnect from the cursor in the preceding close frame — the durable log is the catch-up path, the buffer never was")
+	case errors.Is(err, store.ErrListenLifetimeEnded):
+		return badRequest("the subscription's target ended (a dropped table, or a dropped or replaced namespace); reconnect against the current target — a same-named successor is a different feed")
+	case errors.Is(err, store.ErrListenRevoked):
+		return badRequest("subscription authorization was revoked; reconnect once authorization is restored")
+	default:
+		return wrapStoreErr(err)
 	}
 }
 
@@ -147,9 +221,10 @@ type sseChange struct {
 	Kind   string `json:"kind"`
 }
 
-// sseClose is the replay half's terminal frame: the cursor at the replay
-// boundary, the exact position a reconnecting client resumes from. 6b
-// replaces this frame with live streaming.
+// sseClose is the terminal frame's cursor handoff: the last position the
+// stream delivered, so a client reconnecting from it skips nothing. It
+// precedes a teaching error and never follows a healthy stream — a live
+// stream has no terminal to announce.
 type sseClose struct {
 	Cursor string `json:"cursor"`
 }
