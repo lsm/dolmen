@@ -114,6 +114,10 @@ func TestLineCommentsCount(t *testing.T) {
 		{"package p\n\nimport \"fmt\"\n\nfunc Example() {\n\tfmt.Println(1)\n\t// Unordered output:\n\t// one\n\t// two\n}\n", 0},
 		{"package p\n\nimport \"fmt\"\n\nfunc Example() {\n\t// Output: buried\n\tfmt.Println(1)\n\t// note\n}\n", 2},
 		{"package p\n\nimport \"fmt\"\n\nfunc f() {\n\tfmt.Println(1)\n\t// Output: not an example\n}\n", 1},
+		{"package p\n\nimport \"fmt\"\n\nfunc Example() {\n\tfmt.Println(1)\n\t/* Output: 1 */\n}\n", 0},
+		{"package p\n\nimport \"fmt\"\n\nfunc Example() {\n\tfmt.Println(1)\n\t//\n\t// Output: 1\n}\n", 0},
+		{"package p\n\nimport \"fmt\"\n\nfunc Examplefoo() {\n\tfmt.Println(1)\n\t// Output: 1\n}\n", 1},
+		{"package p\n\nimport \"fmt\"\n\nfunc Example(x int) {\n\tfmt.Println(x)\n\t// Output: 1\n}\n", 1},
 	} {
 		if got := commentCount(t, tc.src); got != tc.want {
 			t.Errorf("scanSource(%q) counted %d comments, want %d", tc.src, got, tc.want)

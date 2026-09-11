@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 const allowlistPath = "scripts/no-comments-allowlist.txt"
@@ -30,7 +32,7 @@ var (
 	lineScannedOnly  = regexp.MustCompile(`^//go:(build|generate|line|debug)([ \t].*)?\r?$`)
 	exportPattern    = regexp.MustCompile(`^//export([ \t].*)?\r?$`)
 	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]+)?([ \t].*)?\r?$`)
-	outputPattern    = regexp.MustCompile(`(?i)^//[ \t]*(unordered )?output:`)
+	outputPattern    = regexp.MustCompile(`(?i)^[[:space:]]*(unordered )?output:`)
 )
 
 func die(err error) {
@@ -75,11 +77,28 @@ func cgoPreambles(f *ast.File) map[token.Pos]bool {
 	return exempt
 }
 
-func exampleOutputs(f *ast.File, tf *token.File, src []byte) map[token.Pos]bool {
+func isTestName(name, prefix string) bool {
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	if len(name) == len(prefix) {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(name[len(prefix):])
+	return !unicode.IsLower(r)
+}
+
+func exampleOutputs(f *ast.File) map[token.Pos]bool {
 	exempt := map[token.Pos]bool{}
 	for _, d := range f.Decls {
 		fd, ok := d.(*ast.FuncDecl)
-		if !ok || fd.Body == nil || fd.Recv != nil || !strings.HasPrefix(fd.Name.Name, "Example") {
+		if !ok || fd.Recv != nil || fd.Body == nil || !isTestName(fd.Name.Name, "Example") {
+			continue
+		}
+		if p := fd.Type.Params; len(p.List) != 0 {
+			continue
+		}
+		if r := fd.Type.Results; r != nil && len(r.List) != 0 {
 			continue
 		}
 		var last *ast.CommentGroup
@@ -91,8 +110,7 @@ func exampleOutputs(f *ast.File, tf *token.File, src []byte) map[token.Pos]bool 
 		if last == nil {
 			continue
 		}
-		start := tf.Offset(last.List[0].Pos())
-		if outputPattern.Match(src[start:commentEnd(src, start)]) {
+		if outputPattern.MatchString(last.Text()) {
 			exempt[last.Pos()] = true
 		}
 	}
@@ -170,7 +188,7 @@ func scanSource(src []byte) (*scan, error) {
 	}
 	tf := fset.File(f.Package)
 	preambles := cgoPreambles(f)
-	outputs := exampleOutputs(f, tf, src)
+	outputs := exampleOutputs(f)
 	docs := docGroups(f)
 	s := &scan{}
 	for _, g := range f.Comments {
