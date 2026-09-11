@@ -35,13 +35,13 @@ var (
 	bareGenerate          = regexp.MustCompile(`^//go:generate[ \t]*\r?$`)
 	buildTagPattern       = regexp.MustCompile(`^//go:build(` + wsClass + `.*)?$`)
 	legacyBuildLine       = regexp.MustCompile(`^//` + wsClass + `*\+build(` + wsClass + `.*)?$`)
-	linePattern           = regexp.MustCompile(`^//line .*:[1-9][0-9]*(?::[1-9][0-9]*)?$`)
+	linePattern           = regexp.MustCompile(`^//line .*:[1-9][0-9]*(?::[1-9][0-9]*)?\r?$`)
 	blockLinePattern      = regexp.MustCompile(`(?s)^/\*line .*:[1-9][0-9]*(?::[1-9][0-9]*)?\*/$`)
 	debugPattern          = regexp.MustCompile(`^//go:debug[ \t]+[A-Za-z0-9_.-]+=[A-Za-z0-9_.-]*$`)
 	headerBlankLine       = regexp.MustCompile(`\n[ \t\r]*\n`)
 	exportPattern         = regexp.MustCompile(`^//export .+\r?$`)
 	nolintPattern         = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*(,[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*)*)?([ \t].*)?\r?$`)
-	linknamePattern       = regexp.MustCompile(`^//go:linkname \S+( \S+)?$`)
+	linknamePattern       = regexp.MustCompile(`^//go:linkname[ \t]+\S+(?:[ \t]+\S+)?[ \t]*$`)
 	outputPattern         = regexp.MustCompile(`(?i)^[[:space:]]*(unordered )?output:`)
 )
 
@@ -140,11 +140,12 @@ func commentEnd(src []byte, start int) int {
 	return len(src)
 }
 
-func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]string) {
+func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]string) {
 	valueDocs := map[token.Pos]bool{}
 	funcDocs := map[token.Pos]bool{}
 	bodylessDocs := map[token.Pos]bool{}
 	bodiedDocs := map[token.Pos]bool{}
+	bareFuncDocs := map[token.Pos]bool{}
 	funcNames := map[token.Pos]string{}
 	mark := func(m map[token.Pos]bool, cg *ast.CommentGroup) {
 		if cg != nil {
@@ -155,17 +156,31 @@ func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool, map[token.P
 		switch decl := d.(type) {
 		case *ast.GenDecl:
 			if decl.Tok == token.VAR {
-				mark(valueDocs, decl.Doc)
-			}
-			for _, s := range decl.Specs {
-				if sp, ok := s.(*ast.ValueSpec); ok && decl.Tok == token.VAR {
-					mark(valueDocs, sp.Doc)
+				initFree := true
+				for _, s := range decl.Specs {
+					if sp, ok := s.(*ast.ValueSpec); !ok || len(sp.Values) > 0 {
+						initFree = false
+					}
+				}
+				if initFree {
+					mark(valueDocs, decl.Doc)
+					for _, s := range decl.Specs {
+						if sp, ok := s.(*ast.ValueSpec); ok {
+							mark(valueDocs, sp.Doc)
+						}
+					}
 				}
 			}
 		case *ast.FuncDecl:
 			mark(funcDocs, decl.Doc)
 			if decl.Doc != nil {
 				funcNames[decl.Doc.Pos()] = decl.Name.Name
+			}
+			if decl.Recv != nil {
+				break
+			}
+			if decl.Doc != nil {
+				bareFuncDocs[decl.Doc.Pos()] = true
 			}
 			if decl.Body == nil {
 				mark(bodylessDocs, decl.Doc)
@@ -174,7 +189,7 @@ func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool, map[token.P
 			}
 		}
 	}
-	return valueDocs, funcDocs, bodylessDocs, bodiedDocs, funcNames
+	return valueDocs, funcDocs, bodylessDocs, bodiedDocs, bareFuncDocs, funcNames
 }
 
 func atLineStart(src []byte, start int) bool {
@@ -307,7 +322,7 @@ func scanSource(src []byte, path string) (*scan, error) {
 	if strings.HasSuffix(path, "_test.go") {
 		outputs = exampleOutputs(f)
 	}
-	valueDocs, funcDocs, bodylessDocs, bodiedDocs, funcNames := docGroups(f)
+	valueDocs, funcDocs, bodylessDocs, bodiedDocs, bareFuncDocs, funcNames := docGroups(f)
 	isCgo := fileImports(f, "C")
 	hasUnsafe := fileImports(f, "unsafe")
 	hasEmbed := fileImports(f, "embed")
@@ -332,7 +347,7 @@ func scanSource(src []byte, path string) (*scan, error) {
 			if c.Pos() < f.Package && blank(lineLead) && validBuildConstraint(raw) {
 				continue
 			}
-			if bodiedDocs[g.Pos()] && wasmexportPattern.Match(norm) {
+			if bareFuncDocs[g.Pos()] && bodiedDocs[g.Pos()] && wasmexportPattern.Match(norm) {
 				continue
 			}
 			if c.Pos() < f.Package && isMainish && validDebugSettings(norm) {
@@ -351,7 +366,7 @@ func scanSource(src []byte, path string) (*scan, error) {
 				legacyBuildLine.Match(raw) && headerBlankLine.Match(src[end:searchEnd]) {
 				continue
 			}
-			if funcDocs[g.Pos()] && isCgo && exportPattern.Match(norm) {
+			if bareFuncDocs[g.Pos()] && isCgo && exportPattern.Match(norm) {
 				if name := strings.TrimSpace(string(bytes.TrimPrefix(norm, []byte("//export ")))); name == funcNames[g.Pos()] {
 					continue
 				}
