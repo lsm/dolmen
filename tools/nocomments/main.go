@@ -22,12 +22,14 @@ type span struct{ start, end int }
 type scan struct{ comments []span }
 
 var (
-	goDirPattern  = regexp.MustCompile(`^//go:[a-z][a-z0-9_]*([ \t].*)?\r?$`)
-	linePattern   = regexp.MustCompile(`^//line([ \t].*)?\r?$`)
-	exportPattern = regexp.MustCompile(`^//export([ \t].*)?\r?$`)
-	nolintPattern = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]+([ \t].*)?)?\r?$`)
-	trailingSpace = regexp.MustCompile(`[ \t]+\n`)
-	blankRun      = regexp.MustCompile(`\n{3,}`)
+	goDirPattern     = regexp.MustCompile(`^//go:[a-z][a-z0-9_]*([ \t].*)?\r?$`)
+	legacyBuildLine  = regexp.MustCompile(`^// \+build([ \t].*)?\r?$`)
+	linePattern      = regexp.MustCompile(`^//line([ \t].*)?\r?$`)
+	blockLinePattern = regexp.MustCompile(`^/\*line \S+:\d+(?::\d+)? ?\*/\r?$`)
+	docDirPattern    = regexp.MustCompile(`^//(go:(embed|linkname|noinline|nosplit|norace|nocheckptr|noescape|uintptrescapes|wasmimport)|export)([ \t].*)?\r?$`)
+	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]+([ \t].*)?)?\r?$`)
+	trailingSpace    = regexp.MustCompile(`[ \t]+\n`)
+	blankRun         = regexp.MustCompile(`\n{3,}`)
 )
 
 func die(err error) {
@@ -141,13 +143,13 @@ func docGroups(f *ast.File) map[token.Pos]bool {
 }
 
 func isExempt(text []byte, atLineStart, isDoc bool) bool {
-	if atLineStart && (goDirPattern.Match(text) || linePattern.Match(text)) {
+	if atLineStart && (goDirPattern.Match(text) || legacyBuildLine.Match(text) || linePattern.Match(text)) {
 		return true
 	}
-	if isDoc && (goDirPattern.Match(text) || exportPattern.Match(text)) {
+	if isDoc && docDirPattern.Match(text) {
 		return true
 	}
-	return nolintPattern.Match(text)
+	return blockLinePattern.Match(text) || nolintPattern.Match(text)
 }
 
 func blank(b []byte) bool { return len(bytes.Trim(b, " \t\r")) == 0 }
