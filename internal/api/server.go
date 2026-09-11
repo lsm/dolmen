@@ -31,6 +31,7 @@ type Server struct {
 	baseURL       string
 	namespaceHint string
 	prefix        string
+	holdReplay    func()
 }
 
 // Option customizes a Server.
@@ -67,6 +68,16 @@ func New(st *store.Store, emb embed.Provider, opts ...Option) *Server {
 		opt(s)
 	}
 	return s
+}
+
+// HoldReplay parks the subscribe stream's replay loop between pages: f is
+// called after each replay page has been written, and the stream holds
+// there until f returns. Conformance-only; production code must never set
+// it — the seam exists so the replay-race fixtures can hold the handler
+// provably mid-replay while a racing call commits, which no buffer sizing
+// can guarantee on every runner.
+func (s *Server) HoldReplay(f func()) {
+	s.holdReplay = f
 }
 
 type OpDef struct {

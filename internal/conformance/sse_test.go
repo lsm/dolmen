@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -492,16 +493,17 @@ func TestSubscribeDisconnectLeavesServerHealthy(t *testing.T) {
 	wantChange(t, f, [3]any{"notes", after["ids"].([]any)[0], "insert"})
 }
 
-// replayRaceBacklog is the backlog the two replay-race fixtures seed. It
-// must keep the handler provably inside replay when the racing call
-// commits: a two-page backlog fits whole in the buffers between handler
-// and client, so the handler could finish replay first and the race would
-// pass vacuously. Two independent bounds hold at this size — capacity (the
-// backlog dwarfs every buffer ahead of the async reader, so the handler
-// cannot have absorbed it) and speed (~10^5 marshal+write+flush syscalls
-// cannot complete inside the milliseconds the racing call takes to commit).
-// The conformance layer drives the handler over HTTP and carries no
-// server-side seam to hold Replay.Next, so the bound is physics, not a hook.
+// replayRaceBacklog is the backlog the two replay-race fixtures seed. The
+// races are pinned by the conformance-only ReplayHold seam (api.Server's
+// HoldReplay), which parks the handler between replay pages while the
+// racing call commits — deterministic on every runner. Buffer arithmetic
+// cannot pin them: it was once claimed a 40-page backlog "dwarfs every
+// buffer between handler and client", but the CI runner's tcp_rmem ceiling
+// (32 MiB) lets the client receive buffer autotune past this backlog whole,
+// so the handler can finish replay before the racing call commits and the
+// race passes vacuously. Each page of a 40-page backlog is still real
+// streaming work for the parked handler to resume into; no correctness
+// claim rides on the sizing.
 const replayRaceBacklog = 40 * store.MaxChangesPageLimit
 
 func TestSubscribeNamespaceDropTeachesLifetimeEnd(t *testing.T) {
@@ -509,14 +511,25 @@ func TestSubscribeNamespaceDropTeachesLifetimeEnd(t *testing.T) {
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
 	h.insertBatches(t, "rt", "notes", replayRaceBacklog)
 
+	held := make(chan struct{})
+	resume := make(chan struct{})
+	var pageOne sync.Once
+	h.api.HoldReplay(func() {
+		pageOne.Do(func() { close(held) })
+		<-resume
+	})
+
 	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}, "cursor": {"begin"}})
-	if _, ok := r.next(10 * time.Second); !ok {
-		t.Fatal("the replay never started, so the drop does not race it")
+	select {
+	case <-held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the replay never reached its first page boundary, so the drop has nothing to race")
 	}
 	status, body := h.httpCall("drop_namespace", map[string]any{"namespace": "rt", "confirm": "rt"})
 	if status != http.StatusOK {
 		t.Fatalf("drop namespace: status %d (%v)", status, body)
 	}
+	close(resume)
 
 	frames := r.rest(15 * time.Second)
 	if len(frames) < 2 {
@@ -533,12 +546,11 @@ func TestSubscribeNamespaceDropTeachesLifetimeEnd(t *testing.T) {
 }
 
 // TestSubscribeBoundaryUnderConcurrentWrites: the exactly-once property at
-// the replay→live handoff while commits race the stream. The writer is
-// released on the first client-visible replay frame, which proves
-// registration; the replayRaceBacklog sizing then guarantees replay is
-// still streaming when the writer's commits land (see the const's bounds),
-// so the four live records must arrive exactly once, after the whole
-// backlog, in commit order — and nothing beyond.
+// the replay→live handoff while commits race the stream. The ReplayHold
+// seam parks the handler between replay pages — post-registration, provably
+// mid-backlog — and the writer's four commits land while it is parked, so
+// the live records must arrive exactly once, after the whole backlog, in
+// commit order — and nothing beyond.
 func TestSubscribeBoundaryUnderConcurrentWrites(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
@@ -550,10 +562,17 @@ func TestSubscribeBoundaryUnderConcurrentWrites(t *testing.T) {
 		err error
 	}
 	batches := make(chan batch, 4)
-	release := make(chan struct{})
+	writerDone := make(chan struct{})
+	held := make(chan struct{})
+	var pageOne sync.Once
+	h.api.HoldReplay(func() {
+		pageOne.Do(func() { close(held) })
+		<-writerDone
+	})
 	go func() {
 		defer close(batches)
-		<-release
+		defer close(writerDone)
+		<-held
 		for i := 0; i < 4; i++ {
 			data, err := h.httpData("insert", map[string]any{
 				"namespace": "rt", "table": "notes",
@@ -573,11 +592,11 @@ func TestSubscribeBoundaryUnderConcurrentWrites(t *testing.T) {
 	}()
 
 	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}, "cursor": {"begin"}})
-	first, ok := r.next(10 * time.Second)
-	if !ok {
-		t.Fatal("the replay never started, so nothing races the boundary")
+	select {
+	case <-held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the replay never reached its first page boundary, so nothing races the boundary")
 	}
-	close(release)
 
 	var want []any
 	want = append(want, seeded...)
@@ -587,7 +606,7 @@ func TestSubscribeBoundaryUnderConcurrentWrites(t *testing.T) {
 		}
 		want = append(want, b.ids...)
 	}
-	got := []any{frameData(t, first)["row_id"]}
+	got := []any{}
 	for i := len(got); i < len(want); i++ {
 		f, ok := r.next(60 * time.Second)
 		if !ok {

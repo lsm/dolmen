@@ -157,6 +157,9 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		if done {
 			break
 		}
+		if s.holdReplay != nil {
+			s.holdReplay()
+		}
 	}
 
 	for {
