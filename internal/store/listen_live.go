@@ -307,7 +307,7 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 // session with events after liveRead never queued, and a reconnect on
 // the old feed cannot recover them).
 func (sess *listenSession) readBatch(ctx context.Context) (scanned []loggedChange, lifetimeEnded bool, err error) {
-	prune := sess.s.pruneDue(sess.nsName, time.Now())
+	prune := sess.s != nil && sess.s.pruneDue(sess.nsName, time.Now())
 	var tx *sql.Tx
 	if prune {
 		tx, err = sess.n.rw.BeginTx(ctx, nil)
