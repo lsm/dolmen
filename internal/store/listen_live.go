@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -171,6 +172,7 @@ func (sess *listenSession) isClosing() bool {
 // record is delivered never, but its position is consumed exactly once.
 func (sess *listenSession) fillBatch() (read int, err error) {
 	ctx := sess.ctx // the session's scope: cancel aborts in-flight database work, not just future reads
+	sess.protectQueue()
 	scanned, ended, rerr := sess.readBatch(ctx)
 	if rerr != nil {
 		return 0, sess.fillErr(rerr)
@@ -333,4 +335,53 @@ func (sess *listenSession) fillErr(err error) error {
 		return ErrListenLifetimeEnded
 	}
 	return fmt.Errorf("listen fill %s: %w", sess.nsName, err)
+}
+
+func (sess *listenSession) protectQueue() {
+	if sess.s.changeRetention <= 0 {
+		return
+	}
+	sess.mu.Lock()
+	var head int64
+	if len(sess.queue) > 0 {
+		head = sess.queue[0].seq
+	}
+	start := sess.chain.Start
+	sess.mu.Unlock()
+	if head == 0 {
+		return
+	}
+	rms := int64(sess.s.changeRetention / time.Millisecond)
+	now := time.Now()
+	if now.UnixMilli() < start+rms-int64(listenPollInterval/time.Millisecond) {
+		return
+	}
+	sess.mu.Lock()
+	origin := sess.liveRead
+	if !sess.replayExhausted && sess.position < origin {
+		origin = sess.position
+	}
+	if head-1 < origin {
+		origin = head - 1
+	}
+	replacement := newCursorChain(now, origin)
+	sess.mu.Unlock()
+	ctx := sess.ctx
+	tx, err := sess.n.rw.BeginTx(ctx, nil)
+	if err != nil {
+		slog.Error("listen queue protection: begin", "namespace", sess.nsName, "err", err)
+		return
+	}
+	defer tx.Rollback()
+	if _, err := mintCursorToken(ctx, tx, now, head, sess.table, replacement); err != nil {
+		slog.Error("listen queue protection: mint", "namespace", sess.nsName, "err", err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		slog.Error("listen queue protection: commit", "namespace", sess.nsName, "err", err)
+		return
+	}
+	sess.mu.Lock()
+	sess.chain = replacement
+	sess.mu.Unlock()
 }
