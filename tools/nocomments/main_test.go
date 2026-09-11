@@ -109,6 +109,11 @@ func TestLineCommentsCount(t *testing.T) {
 		{"package p\n\nfunc f() {\n\t//line x.go:1\n\t_ = 1\n}\n", 1},
 		{"package p\n\n//export MyFunc\nfunc MyFunc() {}\n", 0},
 		{"package p\n\n//go:noinlinex\nfunc k() {}\n", 0},
+		{"package p\n\nimport \"fmt\"\n\nfunc ExampleGreeting() {\n\tfmt.Println(\"hi\")\n\n\t// Output: hi\n}\n", 0},
+		{"package p\n\nimport \"fmt\"\n\nfunc Example() {\n\tfmt.Println(1)\n\t// Output:\n\t// 1\n}\n", 0},
+		{"package p\n\nimport \"fmt\"\n\nfunc Example() {\n\tfmt.Println(1)\n\t// Unordered output:\n\t// one\n\t// two\n}\n", 0},
+		{"package p\n\nimport \"fmt\"\n\nfunc Example() {\n\t// Output: buried\n\tfmt.Println(1)\n\t// note\n}\n", 2},
+		{"package p\n\nimport \"fmt\"\n\nfunc f() {\n\tfmt.Println(1)\n\t// Output: not an example\n}\n", 1},
 	} {
 		if got := commentCount(t, tc.src); got != tc.want {
 			t.Errorf("scanSource(%q) counted %d comments, want %d", tc.src, got, tc.want)

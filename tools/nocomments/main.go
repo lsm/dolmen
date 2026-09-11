@@ -30,6 +30,7 @@ var (
 	lineScannedOnly  = regexp.MustCompile(`^//go:(build|generate|line|debug)([ \t].*)?\r?$`)
 	exportPattern    = regexp.MustCompile(`^//export([ \t].*)?\r?$`)
 	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]+)?([ \t].*)?\r?$`)
+	outputPattern    = regexp.MustCompile(`(?i)^//[ \t]*(unordered )?output:`)
 )
 
 func die(err error) {
@@ -69,6 +70,30 @@ func cgoPreambles(f *ast.File) map[token.Pos]bool {
 					}
 				}
 			}
+		}
+	}
+	return exempt
+}
+
+func exampleOutputs(f *ast.File, tf *token.File, src []byte) map[token.Pos]bool {
+	exempt := map[token.Pos]bool{}
+	for _, d := range f.Decls {
+		fd, ok := d.(*ast.FuncDecl)
+		if !ok || fd.Body == nil || fd.Recv != nil || !strings.HasPrefix(fd.Name.Name, "Example") {
+			continue
+		}
+		var last *ast.CommentGroup
+		for _, g := range f.Comments {
+			if g.Pos() > fd.Body.Lbrace && g.End() < fd.Body.Rbrace {
+				last = g
+			}
+		}
+		if last == nil {
+			continue
+		}
+		start := tf.Offset(last.List[0].Pos())
+		if outputPattern.Match(src[start:commentEnd(src, start)]) {
+			exempt[last.Pos()] = true
 		}
 	}
 	return exempt
@@ -145,10 +170,11 @@ func scanSource(src []byte) (*scan, error) {
 	}
 	tf := fset.File(f.Package)
 	preambles := cgoPreambles(f)
+	outputs := exampleOutputs(f, tf, src)
 	docs := docGroups(f)
 	s := &scan{}
 	for _, g := range f.Comments {
-		if preambles[g.Pos()] {
+		if preambles[g.Pos()] || outputs[g.Pos()] {
 			continue
 		}
 		isDoc := docs[g.Pos()]
