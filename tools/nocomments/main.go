@@ -22,10 +22,18 @@ type scan struct {
 }
 
 var (
-	exemptPattern = regexp.MustCompile(`^//(go:(build|embed|generate)([ \t].*)?|nolint(:[0-9A-Za-z_,-]+([ \t].*)?)?)\r?$`)
-	trailingSpace = regexp.MustCompile(`[ \t]+\n`)
-	blankRun      = regexp.MustCompile(`\n{3,}`)
+	goDirectivePattern = regexp.MustCompile(`^//go:(build|embed|generate)([ \t].*)?\r?$`)
+	nolintPattern      = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]+([ \t].*)?)?\r?$`)
+	trailingSpace      = regexp.MustCompile(`[ \t]+\n`)
+	blankRun           = regexp.MustCompile(`\n{3,}`)
 )
+
+func isExempt(text []byte, atLineStart bool) bool {
+	if atLineStart && goDirectivePattern.Match(text) {
+		return true
+	}
+	return nolintPattern.Match(text)
+}
 
 func die(err error) {
 	fmt.Fprintln(os.Stderr, "nocomments:", err)
@@ -71,7 +79,7 @@ func scanSource(src []byte) (*scan, error) {
 				for j < n && src[j] != '\n' {
 					j++
 				}
-				if !exemptPattern.Match(src[i:j]) {
+				if !isExempt(src[i:j], i == 0 || src[i-1] == '\n') {
 					s.comments = append(s.comments, span{i, j})
 				}
 				i = j
@@ -119,7 +127,9 @@ func stripComments(src []byte, s *scan) []byte {
 	prev := 0
 	for _, r := range removals {
 		out = append(out, src[prev:r.start]...)
-		if len(out) > 0 && r.end < len(src) && !isSpace(out[len(out)-1]) && !isSpace(src[r.end]) {
+		if bytes.IndexByte(src[r.start:r.end], '\n') >= 0 {
+			out = append(out, '\n')
+		} else if len(out) > 0 && r.end < len(src) && !isSpace(out[len(out)-1]) && !isSpace(src[r.end]) {
 			out = append(out, ' ')
 		}
 		prev = r.end
