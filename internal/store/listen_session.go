@@ -219,12 +219,11 @@ func (sess *listenSession) endCauseLocked() error {
 
 func (sess *listenSession) endPark(cause error, yields bool) bool {
 	sess.mu.Lock()
-	if sess.dead {
-		sess.mu.Unlock()
-		return false
+	first := !sess.dead
+	if first {
+		sess.dead = true
+		close(sess.stop)
 	}
-	sess.dead = true
-	close(sess.stop)
 	// The park rides the SAME critical section as dead, and the first
 	// cause parked wins: the flush (from a pump's deferred, counted exit)
 	// waits out any in-flight delivery and page BEFORE firing, so the
@@ -241,20 +240,34 @@ func (sess *listenSession) endPark(cause error, yields bool) bool {
 	// a session whose Listen is still mid-registration owes no callback
 	// at all if that registration then fails (end's inline exception is
 	// for the never-launched fixture world, decided by the session's own
-	// goroutines). The one exception to first-wins: a YIELDED park is a
-	// page symptom, not a verdict, and an authoritative end replaces it —
-	// the drop's lifetime teaching must survive an incidental read error
-	// that parked first behind the eviction drain.
+	// goroutines).
+	//
+	// The park rules, stated once: the FIRST end parks its cause — a
+	// verdict or a page symptom — and arms the teardown (stop, cancel,
+	// broadcast, once). A LATER authoritative end may REPLACE a symptom
+	// still parked: the drop's evict closes the pools before its
+	// endListenSessions runs, so an incidental read error can park first
+	// while the lifetime teaching is still behind the eviction drain, and
+	// the verdict must survive it. A later end never parks into an EMPTY
+	// slot — empty after the flush means the cause has already fired, and
+	// nothing remains to deliver a fresh park.
 	if cause != nil {
-		if sess.pendingClose == nil || (yields == false && sess.pendingCloseYield) {
+		if first && sess.pendingClose == nil {
 			sess.pendingClose = cause
 			sess.pendingCloseYield = yields
+		} else if !first && !yields && sess.pendingClose != nil && sess.pendingCloseYield {
+			sess.pendingClose = cause
+			sess.pendingCloseYield = false
 		}
 	}
-	sess.ctxCancel() // the pumps' in-flight database work — cancel must not wait out a blocked read
-	sess.cond.Broadcast()
+	if first {
+		sess.ctxCancel() // the pumps' in-flight database work — cancel must not wait out a blocked read
+		sess.cond.Broadcast()
+		sess.mu.Unlock()
+		return true
+	}
 	sess.mu.Unlock()
-	return true
+	return false
 }
 
 // flushParkedClose fires a parked terminal from a pump's exit path, once

@@ -68,8 +68,8 @@ func TestListenEarlyEndCarriesResumeCursor(t *testing.T) {
 	cancel() // ends the session before its first page
 
 	_, resume, done, err := replay.Next(context.Background())
-	if err != nil {
-		t.Fatalf("early-end Next: %v", err)
+	if !errors.Is(err, errListenEnded) {
+		t.Fatalf("early-end Next = %v, want the ended marker — clean done must mean provably alive", err)
 	}
 	if !done {
 		t.Fatal("early-end Next reported done=false, want true")
@@ -146,7 +146,7 @@ func TestListenCancelNeverCloses(t *testing.T) {
 		t.Fatalf("closed fired on caller cancel with %v", cause)
 	default:
 	}
-	if _, _, done, err := replay.Next(context.Background()); err != nil || !done {
-		t.Fatalf("Next after cancel = err %v, done %v, want nil error, done=true", err, done)
+	if _, _, done, err := replay.Next(context.Background()); !errors.Is(err, errListenEnded) || !done {
+		t.Fatalf("Next after cancel = err %v, done %v, want the ended marker and done=true", err, done)
 	}
 }

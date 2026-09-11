@@ -90,3 +90,46 @@ func TestListenReplayLossReturnsTeachingAsError(t *testing.T) {
 		t.Fatal("the loss never fired the closed callback")
 	}
 }
+
+// The symptom-yields-to-verdict park rule, pinned at the session level: a
+// page's incidental error parks first (evict closed the pools behind a
+// drop whose endListenSessions has not run), and the drop's later
+// authoritative end must displace it — the subscriber is taught the
+// lifetime end, never the database noise. And once the flush has taken a
+// cause (the slot is empty), a later end parks nothing: no pump remains
+// to fire a fresh park.
+func TestListenSymptomParkYieldsToVerdict(t *testing.T) {
+	sess := testSession(nil)
+
+	symptom := errors.New("sql: database is closed")
+	if !sess.endYielding(symptom) {
+		t.Fatal("the first end did not arm the session")
+	}
+	if got := sess.endCause(); !errors.Is(got, symptom) {
+		t.Fatalf("parked cause = %v, want the symptom", got)
+	}
+	if sess.endParked(ErrListenLifetimeEnded) {
+		t.Fatal("a second end reported itself first")
+	}
+	if got := sess.endCause(); !errors.Is(got, ErrListenLifetimeEnded) {
+		t.Fatalf("parked cause after the verdict = %v, want ErrListenLifetimeEnded — the symptom must yield", got)
+	}
+
+	fired := testSession(nil)
+	if !fired.endParked(ErrListenOverflow) {
+		t.Fatal("the first end did not arm the session")
+	}
+	fired.mu.Lock()
+	fired.pendingClose = nil // the flush took it: the cause has fired
+	fired.mu.Unlock()
+	if fired.endParked(ErrListenLifetimeEnded) {
+		t.Fatal("a second end reported itself first")
+	}
+	fired.mu.Lock()
+	late := fired.pendingClose
+	fired.pendingCloseYield = false
+	fired.mu.Unlock()
+	if late != nil {
+		t.Fatalf("a late end parked %v into an empty slot — no pump remains to fire it", late)
+	}
+}

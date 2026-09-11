@@ -255,11 +255,14 @@ func TestListenNotifyDefersCancel(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("no delivery arrived to unsubscribe on")
 	}
-	// The teardown landed: the replay reports done once the session ends,
-	// and neither callback ever deadlocks.
+	// The teardown landed: the replay reports the session's end once it
+	// lands, and neither callback ever deadlocks.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		_, _, done, err := replay.Next(context.Background())
+		if errors.Is(err, errListenEnded) {
+			break
+		}
 		if err != nil {
 			t.Fatalf("post-teardown Next: %v", err)
 		}
@@ -267,7 +270,7 @@ func TestListenNotifyDefersCancel(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("replay never reported done after the teardown")
+			t.Fatal("replay never reported its end after the teardown")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

@@ -152,8 +152,8 @@ func TestListenResumeCursorReplaysBacklog(t *testing.T) {
 	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
 	cancel() // the standing cursor is fixed at registration; Next after cancel still teaches it
 	_, resume, _, err := replay.Next(context.Background())
-	if err != nil {
-		t.Fatalf("first Next: %v", err)
+	if !errors.Is(err, errListenEnded) {
+		t.Fatalf("first Next = %v, want the ended marker — the cursor teaches on regardless", err)
 	}
 	if resume == "" {
 		t.Fatal("no resume cursor from the first page")

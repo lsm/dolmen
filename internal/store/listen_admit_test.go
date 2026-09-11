@@ -337,8 +337,8 @@ func TestListenReplayRevocationOmitsPageAndCloses(t *testing.T) {
 
 	resume := replay.Resume()
 	records, next, done, err := replay.Next(context.Background())
-	if err != nil {
-		t.Fatalf("revoked Next: %v", err)
+	if !errors.Is(err, ErrListenRevoked) {
+		t.Fatalf("revoked Next = %v, want ErrListenRevoked as the error — clean done must mean provably alive", err)
 	}
 	if len(records) != 0 || !done {
 		t.Fatalf("revoked page = %d records, done=%v, want the omitted page: 0 records, done=true", len(records), done)
@@ -376,8 +376,8 @@ func TestListenReplayRevocationMidPageDiscardsAdmittedPrefix(t *testing.T) {
 
 	resume := replay.Resume()
 	records, next, done, err := replay.Next(context.Background())
-	if err != nil {
-		t.Fatalf("mid-page revoked Next: %v", err)
+	if !errors.Is(err, ErrListenRevoked) {
+		t.Fatalf("mid-page revoked Next = %v, want ErrListenRevoked as the error — clean done must mean provably alive", err)
 	}
 	if len(records) != 0 || !done {
 		t.Fatalf("mid-page revoked page = %d records, done=%v, want the omitted page: 0 records, done=true — the admitted prefix must be discarded, not exposed", len(records), done)
