@@ -166,6 +166,10 @@ func atLineStart(src []byte, start int) bool {
 	return start == 0 || src[start-1] == '\n'
 }
 
+func blank(b []byte) bool { return len(bytes.Trim(b, " \t\r")) == 0 }
+
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
 func fileImportsC(f *ast.File) bool {
 	for _, d := range f.Decls {
 		gd, ok := d.(*ast.GenDecl)
@@ -201,8 +205,8 @@ func isExempt(text []byte, atLineStart, isDoc, isFuncDoc, isCgo bool) bool {
 }
 
 func isGeneratedMarker(text []byte) bool {
+	text = bytes.ReplaceAll(text, []byte("\r"), nil)
 	for _, line := range bytes.Split(text, []byte("\n")) {
-		line = bytes.TrimSuffix(line, []byte("\r"))
 		rest, ok := bytes.CutPrefix(line, []byte("// Code generated "))
 		if !ok {
 			continue
@@ -253,7 +257,11 @@ func scanSource(src []byte, path string) (*scan, error) {
 			if c.Pos() < f.Package && isGeneratedMarker(text) {
 				continue
 			}
-			if c.Pos() < f.Package && buildTagPattern.Match(text) {
+			lineLead := src[bytes.LastIndexByte(src[:start], '\n')+1 : start]
+			if bytes.HasPrefix(lineLead, utf8BOM) {
+				lineLead = lineLead[len(utf8BOM):]
+			}
+			if c.Pos() < f.Package && blank(lineLead) && buildTagPattern.Match(text) {
 				continue
 			}
 			if c.Pos() < f.Package && debugPattern.Match(text) {
