@@ -84,6 +84,7 @@ func TestLineCommentsCount(t *testing.T) {
 		{"//go:build impossible_tag\n\npackage p\n", 0},
 		{"\u00A0//go:build impossible_tag\n\npackage p\n\n//go:generate\u00A0echo\nvar x = 1\n", 1},
 		{"//go:generate\npackage p\n", 1},
+		{"//go:generate \npackage p\n", 1},
 		{"//go:build windows\n\npackage p\n\nvar x = (\n// real\n", 1},
 		{"// +build impossible_tag\n\npackage p\n", 0},
 		{"\t//go:build impossible_tag\n\npackage p\n", 0},

@@ -27,7 +27,7 @@ const wsClass = `[\t\n\v\f\r\x85\p{Zs}\x{2028}\x{2029}]`
 
 var (
 	goDirPattern     = regexp.MustCompile(`^//go:[a-z][a-z0-9_]*([ \t].*)?\r?$`)
-	bareGenerate     = regexp.MustCompile(`^//go:generate\r?$`)
+	bareGenerate     = regexp.MustCompile(`^//go:generate[ \t]*\r?$`)
 	buildTagPattern  = regexp.MustCompile(`^//go:build(` + wsClass + `.*)?$`)
 	legacyBuildLine  = regexp.MustCompile(`^//` + wsClass + `*\+build(` + wsClass + `.*)?$`)
 	linePattern      = regexp.MustCompile(`^//line .*:\d+(?::\d+)? ?\r?$`)
