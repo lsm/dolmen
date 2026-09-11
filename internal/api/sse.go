@@ -161,9 +161,18 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case cause := <-ended:
-			sseEvent(w, "close", sseClose{Cursor: string(resume)})
-			sseErrorEvent(w, subscribeErr(cause), reqID)
-			return
+			for {
+				select {
+				case rec := <-live:
+					if !write(rec) {
+						return
+					}
+				default:
+					sseEvent(w, "close", sseClose{Cursor: string(resume)})
+					sseErrorEvent(w, subscribeErr(cause), reqID)
+					return
+				}
+			}
 		case <-ctx.Done():
 			return
 		}

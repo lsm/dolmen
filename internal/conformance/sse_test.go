@@ -480,7 +480,8 @@ func TestSubscribeBoundaryUnderConcurrentWrites(t *testing.T) {
 	}()
 
 	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}, "cursor": {"begin"}})
-	if _, ok := r.next(10 * time.Second); !ok {
+	first, ok := r.next(10 * time.Second)
+	if !ok {
 		t.Fatal("the replay never started, so nothing races the boundary")
 	}
 	close(release)
@@ -493,8 +494,8 @@ func TestSubscribeBoundaryUnderConcurrentWrites(t *testing.T) {
 		}
 		want = append(want, b.ids...)
 	}
-	var got []any
-	for i := 0; i < len(want); i++ {
+	got := []any{frameData(t, first)["row_id"]}
+	for i := len(got); i < len(want); i++ {
 		f, ok := r.next(30 * time.Second)
 		if !ok {
 			t.Fatalf("stream ended after %d of %d records — the boundary skipped the rest", len(got), len(want))
