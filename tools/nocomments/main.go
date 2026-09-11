@@ -28,7 +28,7 @@ var (
 	buildTagPattern  = regexp.MustCompile(`^//go:build([ \t].*)?\r?$`)
 	legacyBuildLine  = regexp.MustCompile(`^//[ \t]*\+build([ \t].*)?\r?$`)
 	linePattern      = regexp.MustCompile(`^//line .*:\d+(?::\d+)? ?\r?$`)
-	blockLinePattern = regexp.MustCompile(`^/\*line .*:\d+(?::\d+)? ?\*/\r?$`)
+	blockLinePattern = regexp.MustCompile(`(?s)^/\*line .+:\d+(?::\d+)? ?\*/\r?$`)
 	lineScannedOnly  = regexp.MustCompile(`^//go:(build|generate|line|debug)([ \t].*)?\r?$`)
 	exportPattern    = regexp.MustCompile(`^//export([ \t].*)?\r?$`)
 	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]+)?([ \t].*)?\r?$`)
@@ -168,11 +168,14 @@ func afterFileBOM(src []byte, start int) bool {
 	return bytes.HasPrefix(src, utf8BOM) && start == len(utf8BOM)
 }
 
-func isExempt(text []byte, atLineStart, afterBOM, isDoc bool) bool {
-	if (atLineStart || afterBOM) && (buildTagPattern.Match(text) || legacyBuildLine.Match(text)) {
+func isExempt(text []byte, atLineStart, afterBOM, isDoc, beforePackage bool) bool {
+	if beforePackage && (atLineStart || afterBOM) && (buildTagPattern.Match(text) || legacyBuildLine.Match(text)) {
 		return true
 	}
-	if atLineStart && (goDirPattern.Match(text) || linePattern.Match(text)) {
+	if atLineStart && linePattern.Match(text) {
+		return true
+	}
+	if atLineStart && goDirPattern.Match(text) && !buildTagPattern.Match(text) {
 		return true
 	}
 	if isDoc && (goDirPattern.Match(text) || exportPattern.Match(text)) && !lineScannedOnly.Match(text) {
@@ -220,7 +223,7 @@ func scanSource(src []byte, path string) (*scan, error) {
 			if c.Pos() < f.Package && isGeneratedMarker(text) {
 				continue
 			}
-			if !isExempt(text, atLineStart(src, start), afterFileBOM(src, start), isDoc) {
+			if !isExempt(text, atLineStart(src, start), afterFileBOM(src, start), isDoc, c.Pos() < f.Package) {
 				s.comments = append(s.comments, span{start, end})
 			}
 		}
