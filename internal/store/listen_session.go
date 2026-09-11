@@ -41,7 +41,8 @@ type listenSession struct {
 	boundary    int64        // registration boundary R: the replay is (P, R]
 	outstanding int64        // loss-check baseline: rows the log retained in (P, R] AT REGISTRATION — holes included; the pages' promise
 	chain       *cursorChain // the page chain every token the session mints rides
-	feed        *changeFeed  // nil on the namespace feed; the table feed's labels at registration
+	queueChain  *cursorChain
+	feed        *changeFeed // nil on the namespace feed; the table feed's labels at registration
 
 	mu         sync.Mutex
 	cond       *sync.Cond     // the pump's signal: a wake (a commit landed) or the end broadcast
