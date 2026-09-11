@@ -57,7 +57,11 @@ func cgoPreambles(f *ast.File) map[token.Pos]bool {
 				continue
 			}
 			if path, err := strconv.Unquote(imp.Path.Value); err == nil && path == "C" {
-				for _, cg := range []*ast.CommentGroup{gd.Doc, imp.Doc} {
+				docs := []*ast.CommentGroup{imp.Doc}
+				if len(gd.Specs) == 1 {
+					docs = append(docs, gd.Doc)
+				}
+				for _, cg := range docs {
 					if cg != nil {
 						exempt[cg.Pos()] = true
 					}
@@ -185,7 +189,7 @@ func stripComments(src []byte, s *scan) []byte {
 		prev = r.end
 	}
 	out = append(out, src[prev:]...)
-	out = tidyOutsideLiterals(out)
+	out = tidyOutsideProtected(out)
 	out = bytes.TrimLeft(out, "\n")
 	out = bytes.TrimRight(out, "\n")
 	if len(out) > 0 {
@@ -215,27 +219,59 @@ func expandRange(src []byte, r span) span {
 	return span{lineStart, end}
 }
 
-func tidyOutsideLiterals(src []byte) []byte {
+func literalEnd(src []byte, start int) int {
+	switch src[start] {
+	case '`':
+		if e := bytes.IndexByte(src[start+1:], '`'); e >= 0 {
+			return start + e + 2
+		}
+		return len(src)
+	case '"', '\'':
+		q, i := src[start], start+1
+		for i < len(src) && src[i] != q && src[i] != '\n' {
+			if src[i] == '\\' && i+1 < len(src) && src[i+1] != '\n' {
+				i++
+			}
+			i++
+		}
+		if i < len(src) && src[i] == q {
+			i++
+		}
+		return i
+	}
+	return start + 1
+}
+
+func tidyOutsideProtected(src []byte) []byte {
 	fset, f, err := parseGo(src)
 	if err != nil {
 		return src
 	}
 	tf := fset.File(f.Package)
-	var literals []span
+	preambles := cgoPreambles(f)
+	var protected []span
+	for _, g := range f.Comments {
+		if preambles[g.Pos()] {
+			start := tf.Offset(g.Pos())
+			protected = append(protected, span{start, commentEnd(src, start)})
+		}
+	}
 	ast.Inspect(f, func(n ast.Node) bool {
 		if lit, ok := n.(*ast.BasicLit); ok {
-			literals = append(literals, span{tf.Offset(lit.Pos()), tf.Offset(lit.End())})
+			start := tf.Offset(lit.Pos())
+			protected = append(protected, span{start, literalEnd(src, start)})
 		}
 		return true
 	})
+	sort.Slice(protected, func(a, b int) bool { return protected[a].start < protected[b].start })
 	var out []byte
 	prev := 0
-	for _, l := range literals {
-		if l.start > prev {
-			out = append(out, tidy(src[prev:l.start])...)
+	for _, p := range protected {
+		if p.start > prev {
+			out = append(out, tidy(src[prev:p.start])...)
 		}
-		out = append(out, src[l.start:l.end]...)
-		prev = l.end
+		out = append(out, src[p.start:p.end]...)
+		prev = p.end
 	}
 	if prev < len(src) {
 		out = append(out, tidy(src[prev:])...)

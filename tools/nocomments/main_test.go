@@ -68,6 +68,8 @@ func TestLineCommentsCount(t *testing.T) {
 		{"package p\n\n// #include <stdio.h>\nimport \"C\"\n", 0},
 		{"package p\n\n// #cgo CFLAGS: -DX\n// #include <x.h>\nimport \"C\"\n", 0},
 		{"package p\n\n/*\n#include <stdlib.h>\n*/\nimport (\n\t\"C\"\n)\n", 0},
+		{"package p\n\n/* not a preamble above a multi-spec block */\nimport (\n\t\"C\"\n\t_ \"fmt\"\n)\n", 1},
+		{"package p\n\nimport (\n\t// #include <stdio.h>\n\t\"C\"\n\t_ \"fmt\"\n)\n", 0},
 		{"package p\n\n/*\n#include <stdlib.h>\n*/\n\nimport \"C\"\n", 1},
 		{"package p\n\n/* plain doc */\nimport \"os\"\n", 1},
 		{"package p\n\n//go:linkname foo bar\nvar x = 1\n", 0},
@@ -131,6 +133,8 @@ func TestStrip(t *testing.T) {
 		{"package p\n\nvar s = `x`\n\n// gone\n", "package p\n\nvar s = `x`\n"},
 		{"package p\n\nvar x = 1 + /* a\r\nb */ 2\n", "package p\n\nvar x = 1 +\n2\n"},
 		{"package p\n\nvar x = 1 // gone\r\n", "package p\n\nvar x = 1\n"},
+		{"package p\n\nvar s = `a\r\nb   \n\n\nEND`\n\n// gone\n", "package p\n\nvar s = `a\r\nb   \n\n\nEND`\n"},
+		{"package p\n\n/*\n#include <x.h>\n\n\n#define X 1   \nvoid f(void);\n*/\nimport \"C\"\n\n// gone\n", "package p\n\n/*\n#include <x.h>\n\n\n#define X 1   \nvoid f(void);\n*/\nimport \"C\"\n"},
 		{"package p\n\n/*\n#include <x.h>\n*/\nimport \"C\"\n\n// gone\nvar x = 1\n", "package p\n\n/*\n#include <x.h>\n*/\nimport \"C\"\n\nvar x = 1\n"},
 	} {
 		s, err := scanSource([]byte(tc.src))
