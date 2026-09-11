@@ -141,24 +141,72 @@ func commentEnd(src []byte, start int) int {
 	return len(src)
 }
 
-func embeddableType(expr ast.Expr) bool {
+func embedQualifiers(f *ast.File) (map[string]bool, bool) {
+	qualifiers := map[string]bool{}
+	dot := false
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok != token.IMPORT {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			imp, ok := spec.(*ast.ImportSpec)
+			if !ok {
+				continue
+			}
+			if path, err := strconv.Unquote(imp.Path.Value); err != nil || path != "embed" {
+				continue
+			}
+			name := "embed"
+			if imp.Name != nil {
+				name = imp.Name.Name
+			}
+			if name == "." {
+				dot = true
+			} else if name != "_" {
+				qualifiers[name] = true
+			}
+		}
+	}
+	return qualifiers, dot
+}
+
+func embeddableType(expr ast.Expr, qualifiers map[string]bool, dot bool) bool {
 	switch t := expr.(type) {
 	case *ast.Ident:
-		return t.Name == "string"
+		return t.Name == "string" || (dot && t.Name == "FS")
 	case *ast.ArrayType:
 		if elt, ok := t.Elt.(*ast.Ident); ok {
 			return t.Len == nil && elt.Name == "byte"
 		}
 	case *ast.SelectorExpr:
 		if pkg, ok := t.X.(*ast.Ident); ok {
-			return pkg.Name == "embed" && t.Sel.Name == "FS"
+			return qualifiers[pkg.Name] && t.Sel.Name == "FS"
 		}
 	}
 	return false
 }
 
-func embeddableSpec(sp *ast.ValueSpec) bool {
-	return len(sp.Names) == 1 && embeddableType(sp.Type)
+func validEmbedPatterns(norm []byte) bool {
+	fields := strings.Fields(string(norm[len("//go:embed"):]))
+	if len(fields) == 0 {
+		return false
+	}
+	for _, p := range fields {
+		if strings.HasPrefix(p, "/") || strings.Contains(p, `\`) {
+			return false
+		}
+		for _, part := range strings.Split(p, "/") {
+			if part == "" || part == "." || part == ".." {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func embeddableSpec(sp *ast.ValueSpec, qualifiers map[string]bool, dot bool) bool {
+	return len(sp.Names) == 1 && embeddableType(sp.Type, qualifiers, dot)
 }
 
 func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]string) {
@@ -173,6 +221,7 @@ func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool, map[token.P
 			m[cg.Pos()] = true
 		}
 	}
+	qualifiers, dot := embedQualifiers(f)
 	for _, d := range f.Decls {
 		switch decl := d.(type) {
 		case *ast.GenDecl:
@@ -180,7 +229,7 @@ func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool, map[token.P
 				allEmbeddable := true
 				for _, s := range decl.Specs {
 					sp, ok := s.(*ast.ValueSpec)
-					if !ok || len(sp.Values) > 0 || !embeddableSpec(sp) {
+					if !ok || len(sp.Values) > 0 || !embeddableSpec(sp, qualifiers, dot) {
 						allEmbeddable = false
 						continue
 					}
@@ -237,6 +286,63 @@ func fileImports(f *ast.File, want string) bool {
 	return false
 }
 
+var knownOS = map[string]bool{"aix": true, "android": true, "darwin": true, "dragonfly": true, "freebsd": true, "hurd": true, "illumos": true, "ios": true, "js": true, "linux": true, "nacl": true, "netbsd": true, "openbsd": true, "plan9": true, "solaris": true, "wasip1": true, "windows": true, "zos": true}
+var knownArch = map[string]bool{"386": true, "amd64": true, "amd64p32": true, "arm": true, "armbe": true, "arm64": true, "arm64be": true, "loong64": true, "mips": true, "mipsle": true, "mips64": true, "mips64le": true, "mips64p32": true, "mips64p32le": true, "ppc": true, "ppc64": true, "ppc64le": true, "riscv": true, "riscv64": true, "s390": true, "s390x": true, "sparc": true, "sparc64": true, "wasm": true}
+
+func fileTags(path string, f *ast.File) []string {
+	tags := map[string]bool{}
+	base := filepath.Base(path)
+	if i := strings.Index(base, "_"); i >= 0 {
+		l := strings.Split(base[i:], "_")
+		if n := len(l); n > 0 && l[n-1] == "test" {
+			l = l[:n-1]
+		}
+		n := len(l)
+		if n >= 2 && knownOS[l[n-2]] && knownArch[l[n-1]] {
+			tags[l[n-2]] = true
+			tags[l[n-1]] = true
+		} else if n >= 1 && (knownOS[l[n-1]] || knownArch[l[n-1]]) {
+			tags[l[n-1]] = true
+		}
+	}
+	for _, g := range f.Comments {
+		if g.Pos() >= f.Package {
+			break
+		}
+		for _, c := range g.List {
+			if x, err := constraint.Parse(strings.TrimSpace(c.Text)); err == nil {
+				if b, ok := x.(*constraint.TagExpr); ok {
+					tags[b.Tag] = true
+				}
+			}
+		}
+	}
+	out := make([]string, 0, len(tags))
+	for t := range tags {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func fileImportsUnrenamed(f *ast.File, want string) bool {
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok != token.IMPORT {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			imp, ok := spec.(*ast.ImportSpec)
+			if ok && imp.Name == nil {
+				if path, err := strconv.Unquote(imp.Path.Value); err == nil && path == want {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 var godebugKeys = map[string]bool{}
 
 func init() {
@@ -256,7 +362,7 @@ func init() {
 	}
 }
 
-var godebugDefaultPattern = regexp.MustCompile(`^go[1-9][0-9]*(\.[0-9]+)?$`)
+var godebugDefaultPattern = regexp.MustCompile(`^go[1-9][0-9]*(\.[0-9]+)*([a-z]+[0-9]*)?$`)
 
 func validDebugSettings(norm []byte) bool {
 	if !debugPattern.Match(norm) {
@@ -291,13 +397,17 @@ func linknameNames(f *ast.File) map[string]bool {
 			for _, s := range decl.Specs {
 				if sp, ok := s.(*ast.ValueSpec); ok {
 					for _, n := range sp.Names {
-						names[n.Name] = true
+						if n.Name != "_" {
+							names[n.Name] = true
+						}
 					}
 				}
 			}
 		case *ast.FuncDecl:
 			if decl.Recv == nil {
-				names[decl.Name.Name] = true
+				if decl.Name.Name != "_" {
+					names[decl.Name.Name] = true
+				}
 			}
 		}
 	}
@@ -328,7 +438,7 @@ func isExempt(raw, norm []byte, c exempts) bool {
 	if c.bodylessDoc && bodylessPragmaPattern.Match(norm) {
 		return true
 	}
-	if c.valueDoc && c.embed && embedPattern.Match(norm) {
+	if c.valueDoc && c.embed && embedPattern.Match(norm) && validEmbedPatterns(norm) {
 		return true
 	}
 	return blockLinePattern.Match(raw) || nolintPattern.Match(norm) || (c.unsafe && c.linkname && linknamePattern.Match(norm))
@@ -376,7 +486,7 @@ func scanSource(src []byte, path string, names map[string]bool) (*scan, error) {
 		outputs = exampleOutputs(f)
 	}
 	valueDocs, funcDocs, bodylessDocs, bodiedDocs, bareFuncDocs, funcNames := docGroups(f)
-	isCgo := fileImports(f, "C")
+	isCgo := fileImportsUnrenamed(f, "C")
 	hasUnsafe := fileImports(f, "unsafe")
 	hasEmbed := fileImports(f, "embed")
 	isMainish := f.Name.Name == "main" || strings.HasSuffix(path, "_test.go")
@@ -748,27 +858,14 @@ func main() {
 		if err != nil {
 			continue
 		}
-		tag := ""
-		for _, g := range ast.Comments {
-			if g.Pos() >= ast.Package {
-				break
-			}
-			for _, c := range g.List {
-				if x, err2 := constraint.Parse(strings.TrimSpace(c.Text)); err2 == nil {
-					if b, ok := x.(*constraint.TagExpr); ok {
-						tag = b.Tag
-					}
-				}
-			}
-		}
-		key := pkgKey{filepath.Dir(f), ast.Name.Name, tag}
+		key := pkgKey{filepath.Dir(f), ast.Name.Name, strings.Join(fileTags(f, ast), ",")}
 		if namesBy[key] == nil {
 			namesBy[key] = map[string]bool{}
 		}
 		for n := range linknameNames(ast) {
 			namesBy[key][n] = true
 		}
-		tagOf[f] = tag
+		tagOf[f] = key.tag
 	}
 	pkgOf := map[string]string{}
 	pkgOfNames := map[string]map[string]bool{}
