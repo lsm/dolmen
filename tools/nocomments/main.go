@@ -26,19 +26,20 @@ type scan struct{ comments []span }
 const wsClass = `[\t\n\v\f\r\x85\p{Zs}\x{2028}\x{2029}]`
 
 var (
-	funcPragmaPattern = regexp.MustCompile(`^(?://go:(?:noinline|nosplit|norace|nocheckptr|noescape|uintptrescapes|registerparams|nointerface)\r?$|//go:wasmexport [^\r\n]+|//go:wasmimport \S+ [^\r\n]+)$`)
+	funcPragmaPattern = regexp.MustCompile(`^(?://go:(?:noinline|nosplit|norace|nocheckptr|uintptrescapes|registerparams|nointerface)\r?$|//go:wasmexport [^\r\n]+|//go:wasmimport \S+ [^\r\n]+)$`)
+	noescapePattern   = regexp.MustCompile(`^//go:noescape$`)
 	embedPattern      = regexp.MustCompile(`^//go:embed [^\r\n]+$`)
 	generatePattern   = regexp.MustCompile(`^//go:generate[ \t].+\r?$`)
 	bareGenerate      = regexp.MustCompile(`^//go:generate[ \t]*\r?$`)
 	buildTagPattern   = regexp.MustCompile(`^//go:build(` + wsClass + `.*)?$`)
 	legacyBuildLine   = regexp.MustCompile(`^//` + wsClass + `*\+build(` + wsClass + `.*)?$`)
-	linePattern       = regexp.MustCompile(`^//line .*:\d+(?::\d)?$`)
-	blockLinePattern  = regexp.MustCompile(`(?s)^/\*line .*:\d+(?::\d)?\*/$`)
+	linePattern       = regexp.MustCompile(`^//line .*:[1-9][0-9]*(?::[1-9][0-9]*)?$`)
+	blockLinePattern  = regexp.MustCompile(`(?s)^/\*line .*:[1-9][0-9]*(?::[1-9][0-9]*)?\*/$`)
 	debugPattern      = regexp.MustCompile(`^//go:debug[ \t]+([A-Za-z0-9_.-]+=[A-Za-z0-9_.-]*)([ \t]+[A-Za-z0-9_.-]+=[A-Za-z0-9_.-]*)*$`)
 	headerBlankLine   = regexp.MustCompile(`\n[ \t\r]*\n`)
 	exportPattern     = regexp.MustCompile(`^//export .+\r?$`)
 	nolintPattern     = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*(,[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*)*)?([ \t].*)?\r?$`)
-	linknamePattern   = regexp.MustCompile(`^//go:linkname [^\r\n]+\r?$`)
+	linknamePattern   = regexp.MustCompile(`^//go:linkname \S+( \S+)?$`)
 	outputPattern     = regexp.MustCompile(`(?i)^[[:space:]]*(unordered )?output:`)
 )
 
@@ -137,9 +138,10 @@ func commentEnd(src []byte, start int) int {
 	return len(src)
 }
 
-func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool) {
+func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool) {
 	valueDocs := map[token.Pos]bool{}
 	funcDocs := map[token.Pos]bool{}
+	bodylessDocs := map[token.Pos]bool{}
 	mark := func(m map[token.Pos]bool, cg *ast.CommentGroup) {
 		if cg != nil {
 			m[cg.Pos()] = true
@@ -158,9 +160,12 @@ func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool) {
 			}
 		case *ast.FuncDecl:
 			mark(funcDocs, decl.Doc)
+			if decl.Body == nil {
+				mark(bodylessDocs, decl.Doc)
+			}
 		}
 	}
-	return valueDocs, funcDocs
+	return valueDocs, funcDocs, bodylessDocs
 }
 
 func atLineStart(src []byte, start int) bool {
@@ -189,7 +194,7 @@ func fileImportsC(f *ast.File) bool {
 	return false
 }
 
-func isExempt(raw, norm []byte, atLineStart, isValueDoc, isFuncDoc, isCgo bool) bool {
+func isExempt(raw, norm []byte, atLineStart, isValueDoc, isFuncDoc, isBodylessDoc, isCgo bool) bool {
 	if atLineStart && linePattern.Match(raw) {
 		return true
 	}
@@ -197,6 +202,9 @@ func isExempt(raw, norm []byte, atLineStart, isValueDoc, isFuncDoc, isCgo bool) 
 		return true
 	}
 	if isFuncDoc && funcPragmaPattern.Match(norm) {
+		return true
+	}
+	if isBodylessDoc && noescapePattern.Match(norm) {
 		return true
 	}
 	if isValueDoc && embedPattern.Match(norm) {
@@ -246,7 +254,7 @@ func scanSource(src []byte, path string) (*scan, error) {
 	if strings.HasSuffix(path, "_test.go") {
 		outputs = exampleOutputs(f)
 	}
-	valueDocs, funcDocs := docGroups(f)
+	valueDocs, funcDocs, bodylessDocs := docGroups(f)
 	s := &scan{}
 	for _, g := range f.Comments {
 		if preambles[g.Pos()] || outputs[g.Pos()] {
@@ -254,6 +262,7 @@ func scanSource(src []byte, path string) (*scan, error) {
 		}
 		isValueDoc := valueDocs[g.Pos()]
 		isFuncDoc := funcDocs[g.Pos()]
+		isBodylessDoc := bodylessDocs[g.Pos()]
 		for _, c := range g.List {
 			start := tf.Offset(c.Pos())
 			end := commentEnd(src, start)
@@ -285,7 +294,7 @@ func scanSource(src []byte, path string) (*scan, error) {
 				legacyBuildLine.Match(raw) && headerBlankLine.Match(src[end:searchEnd]) {
 				continue
 			}
-			if !isExempt(raw, norm, atLineStart(src, start), isValueDoc, isFuncDoc, fileImportsC(f)) {
+			if !isExempt(raw, norm, atLineStart(src, start), isValueDoc, isFuncDoc, isBodylessDoc, fileImportsC(f)) {
 				s.comments = append(s.comments, span{start, end})
 			}
 		}
@@ -450,7 +459,7 @@ func lexCount(src []byte) int {
 				}
 				raw := src[i:j]
 				norm := bytes.ReplaceAll(raw, []byte("\r"), nil)
-				exempt := isExempt(raw, norm, atLineStart(src, i), false, false, false)
+				exempt := isExempt(raw, norm, atLineStart(src, i), false, false, false, false)
 				if i < limit {
 					lead := src[bytes.LastIndexByte(src[:i], '\n')+1 : i]
 					lead = bytes.TrimPrefix(lead, utf8BOM)
@@ -478,13 +487,13 @@ func lexCount(src []byte) int {
 			} else if i+1 < n && src[i+1] == '*' {
 				k := bytes.Index(src[i+2:], []byte("*/"))
 				if k < 0 {
-					if !isExempt(src[i:], bytes.ReplaceAll(src[i:], []byte("\r"), nil), false, false, false, false) {
+					if !isExempt(src[i:], bytes.ReplaceAll(src[i:], []byte("\r"), nil), false, false, false, false, false) {
 						count++
 					}
 					i = n
 				} else {
 					span := src[i : i+k+4]
-					if !isExempt(span, bytes.ReplaceAll(span, []byte("\r"), nil), false, false, false, false) {
+					if !isExempt(span, bytes.ReplaceAll(span, []byte("\r"), nil), false, false, false, false, false) {
 						count++
 					}
 					i += k + 4
