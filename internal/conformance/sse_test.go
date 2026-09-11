@@ -121,15 +121,26 @@ func (h *harness) insertBatches(t *testing.T, ns, table string, n int) []any {
 	return ids
 }
 
+func (h *harness) httpData(op string, body any) (map[string]any, error) {
+	status, out := h.httpCall(op, body)
+	if status != http.StatusOK || out["ok"] != true {
+		return nil, fmt.Errorf("/v1/%s failed: status %d %v", op, status, out)
+	}
+	data, ok := out["data"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("/v1/%s returned no data object: %v", op, out)
+	}
+	return data, nil
+}
+
 func (h *harness) flood(ns, table string, batches int, done chan<- error) {
 	for i := 0; i < batches; i++ {
 		records := make([]any, 0, store.MaxChangesPageLimit)
 		for j := 0; j < store.MaxChangesPageLimit; j++ {
 			records = append(records, map[string]any{"title": "flood"})
 		}
-		status, body := h.httpCall("insert", map[string]any{"namespace": ns, "table": table, "records": records})
-		if status != http.StatusOK {
-			done <- fmt.Errorf("flood insert %d: status %d (%v)", i, status, body)
+		if _, err := h.httpData("insert", map[string]any{"namespace": ns, "table": table, "records": records}); err != nil {
+			done <- fmt.Errorf("flood insert %d: %w", i, err)
 			return
 		}
 	}
@@ -525,15 +536,20 @@ func TestSubscribeBoundaryUnderConcurrentWrites(t *testing.T) {
 		defer close(batches)
 		<-release
 		for i := 0; i < 4; i++ {
-			status, body := h.httpCall("insert", map[string]any{
+			data, err := h.httpData("insert", map[string]any{
 				"namespace": "rt", "table": "notes",
 				"records": []any{map[string]any{"title": "live"}},
 			})
-			if status != http.StatusOK {
-				batches <- batch{err: fmt.Errorf("live insert %d: status %d (%v)", i, status, body)}
+			if err != nil {
+				batches <- batch{err: fmt.Errorf("live insert %d: %w", i, err)}
 				return
 			}
-			batches <- batch{ids: body["ids"].([]any)}
+			ids, ok := data["ids"].([]any)
+			if !ok {
+				batches <- batch{err: fmt.Errorf("live insert %d: no ids in %v", i, data)}
+				return
+			}
+			batches <- batch{ids: ids}
 		}
 	}()
 
