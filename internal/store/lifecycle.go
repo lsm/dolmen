@@ -333,12 +333,15 @@ func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte
 		}
 		return invalidf("namespace %s has %d %s — drop the children first", nsName, n, what)
 	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("drop namespace %s: %w", nsName, err)
+	}
 	// ro first: the rw connection is the one that checkpoints and clears the
-	// WAL on its final close. Close errors are advisory here — the file
+	// WAL on its final close. Close errors are advisory here — the sidecar
 	// removal below is the outcome that matters.
 	s.evict(nsName)
 	s.wakeListenSessions(nsName)
-	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+	for _, p := range []string{path + "-wal", path + "-shm"} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("drop namespace %s: %w", nsName, err)
 		}

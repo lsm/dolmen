@@ -84,6 +84,61 @@ func TestListenRecreateEndsPredecessorSession(t *testing.T) {
 	cancel()
 }
 
+func TestListenFailedDropKeepsSessionsLive(t *testing.T) {
+	dir := t.TempDir()
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	if err := st.CreateNamespace(context.Background(), "test", [16]byte{}); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	if _, err := st.CreateTable(context.Background(), "test", "notes", noteFields(), TableOpts{}, [16]byte{}); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	insertNotes(t, st, 1)
+
+	closedFired := make(chan error, 1)
+	got := make(chan ChangeRecord, 2)
+	replay, cancel := listenOn(t, st, "", "", func(r ChangeRecord) { got <- r }, func(cause error) { closedFired <- cause })
+	drainReplay(t, replay)
+
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod dir read-only: %v", err)
+	}
+	dropErr := st.DropNamespace(context.Background(), "test", [16]byte{})
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("chmod dir back: %v", err)
+	}
+	if dropErr == nil {
+		t.Skip("drop succeeded despite the read-only directory — privileges bypass the removal failure this test needs")
+	}
+
+	select {
+	case cause := <-closedFired:
+		t.Fatalf("a failed drop closed the session with %v", cause)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	insertNotes(t, st, 1)
+	select {
+	case r := <-got:
+		if r.RowID != int64(2) {
+			t.Fatalf("record after the failed drop arrived at row %d, want 2", r.RowID)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the session stopped delivering after a failed drop")
+	}
+
+	if err := st.DropNamespace(context.Background(), "test", [16]byte{}); err != nil {
+		t.Fatalf("drop after restoring permissions: %v", err)
+	}
+	waitForClose(t, closedFired, ErrListenLifetimeEnded)
+	cancel()
+}
+
 func TestListenCancelUntracks(t *testing.T) {
 	st := openChangeStore(t)
 	insertNotes(t, st, 1)
