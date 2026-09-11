@@ -23,6 +23,7 @@ type scan struct{ comments []span }
 
 var (
 	goDirPattern     = regexp.MustCompile(`^//go:[a-z][a-z0-9_]*([ \t].*)?\r?$`)
+	buildTagPattern  = regexp.MustCompile(`^//go:build([ \t].*)?\r?$`)
 	legacyBuildLine  = regexp.MustCompile(`^//[ \t]*\+build([ \t].*)?\r?$`)
 	linePattern      = regexp.MustCompile(`^//line .*:\d+(?::\d+)? ?\r?$`)
 	blockLinePattern = regexp.MustCompile(`^/\*line .*:\d+(?::\d+)? ?\*/\r?$`)
@@ -117,14 +118,18 @@ func docGroups(f *ast.File) map[token.Pos]bool {
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 func atLineStart(src []byte, start int) bool {
-	if start == 0 || src[start-1] == '\n' {
-		return true
-	}
+	return start == 0 || src[start-1] == '\n'
+}
+
+func afterFileBOM(src []byte, start int) bool {
 	return bytes.HasPrefix(src, utf8BOM) && start == len(utf8BOM)
 }
 
-func isExempt(text []byte, atLineStart, isDoc bool) bool {
-	if atLineStart && (goDirPattern.Match(text) || legacyBuildLine.Match(text) || linePattern.Match(text)) {
+func isExempt(text []byte, atLineStart, afterBOM, isDoc bool) bool {
+	if (atLineStart || afterBOM) && (buildTagPattern.Match(text) || legacyBuildLine.Match(text)) {
+		return true
+	}
+	if atLineStart && (goDirPattern.Match(text) || linePattern.Match(text)) {
 		return true
 	}
 	if isDoc && (goDirPattern.Match(text) || exportPattern.Match(text)) && !lineScannedOnly.Match(text) {
@@ -151,7 +156,7 @@ func scanSource(src []byte) (*scan, error) {
 			start := tf.Offset(c.Pos())
 			end := commentEnd(src, start)
 			text := src[start:end]
-			if !isExempt(text, atLineStart(src, start), isDoc) {
+			if !isExempt(text, atLineStart(src, start), afterFileBOM(src, start), isDoc) {
 				s.comments = append(s.comments, span{start, end})
 			}
 		}
