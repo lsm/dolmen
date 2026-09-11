@@ -1,4 +1,4 @@
-# dolmen#231 ratchet seed: path:count, per-file max over main and the in-flight 6b PR heads (#209 #210 #211 #230) at seed time; the one-time strip slice deletes this file
+# dolmen#231 ratchet seed: path:count, per-file max over main and the in-flight PR heads (#237 #211 #210 #209) at seed time; the one-time strip slice deletes this file
 cmd/pack-model/main.go:30
 cmd/pack-model/main_test.go:13
 internal/api/envelope.go:56
@@ -62,13 +62,13 @@ internal/store/lifecycle.go:248
 internal/store/lifecycle_test.go:150
 internal/store/listen_drain.go:69
 internal/store/listen_drain_test.go:145
-internal/store/listen_live.go:122
+internal/store/listen_live.go:127
 internal/store/listen_live_test.go:89
 internal/store/listen_page.go:160
 internal/store/listen_page_test.go:66
-internal/store/listen_register.go:113
+internal/store/listen_register.go:114
 internal/store/listen_register_test.go:34
-internal/store/listen_session.go:177
+internal/store/listen_session.go:180
 internal/store/listen_session_test.go:26
 internal/store/listen_test.go:252
 internal/store/migrate.go:114
