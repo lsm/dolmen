@@ -310,7 +310,7 @@ func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte
 			// stale cached pools rather than orphaning them — Close() only
 			// reaches entries still in the map.
 			s.evict(nsName)
-			s.wakeListenSessions(nsName)
+			s.endListenSessions(nsName, ErrListenLifetimeEnded)
 			return fmt.Errorf("%w: namespace %s", ErrNotFound, nsName)
 		}
 		return err
@@ -333,14 +333,15 @@ func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte
 		}
 		return invalidf("namespace %s has %d %s — drop the children first", nsName, n, what)
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("drop namespace %s: %w", nsName, err)
-	}
 	// ro first: the rw connection is the one that checkpoints and clears the
-	// WAL on its final close. Close errors are advisory here — the sidecar
+	// WAL on its final close. Close errors are advisory here — the file
 	// removal below is the outcome that matters.
 	s.evict(nsName)
-	s.wakeListenSessions(nsName)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		s.endListenSessions(nsName, fmt.Errorf("listen: namespace %s evicted but its drop failed: %w", nsName, err))
+		return fmt.Errorf("drop namespace %s: %w", nsName, err)
+	}
+	s.endListenSessions(nsName, ErrListenLifetimeEnded)
 	for _, p := range []string{path + "-wal", path + "-shm"} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("drop namespace %s: %w", nsName, err)

@@ -84,7 +84,7 @@ func TestListenRecreateEndsPredecessorSession(t *testing.T) {
 	cancel()
 }
 
-func TestListenFailedDropKeepsSessionsLive(t *testing.T) {
+func TestListenFailedDropEndsWithEngineCause(t *testing.T) {
 	dir := t.TempDir()
 	t.Cleanup(func() { os.Chmod(dir, 0o755) })
 	st, err := Open(dir)
@@ -101,8 +101,7 @@ func TestListenFailedDropKeepsSessionsLive(t *testing.T) {
 	insertNotes(t, st, 1)
 
 	closedFired := make(chan error, 1)
-	got := make(chan ChangeRecord, 2)
-	replay, cancel := listenOn(t, st, "", "", func(r ChangeRecord) { got <- r }, func(cause error) { closedFired <- cause })
+	replay, cancel := listenOn(t, st, "", "", func(ChangeRecord) {}, func(cause error) { closedFired <- cause })
 	drainReplay(t, replay)
 
 	if err := os.Chmod(dir, 0o500); err != nil {
@@ -118,25 +117,30 @@ func TestListenFailedDropKeepsSessionsLive(t *testing.T) {
 
 	select {
 	case cause := <-closedFired:
-		t.Fatalf("a failed drop closed the session with %v", cause)
-	case <-time.After(200 * time.Millisecond):
-	}
-
-	insertNotes(t, st, 1)
-	select {
-	case r := <-got:
-		if r.RowID != int64(2) {
-			t.Fatalf("record after the failed drop arrived at row %d, want 2", r.RowID)
+		if cause == nil {
+			t.Fatal("failed drop closed the session with a nil cause")
+		}
+		if errors.Is(cause, ErrListenLifetimeEnded) {
+			t.Fatalf("a namespace that still exists taught the lifetime end: %v", cause)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("the session stopped delivering after a failed drop")
+		t.Fatal("the failed drop left the session on closed pools with no terminal")
+	}
+	cancel()
+
+	closedAgain := make(chan error, 1)
+	replay2, cancel2 := listenOn(t, st, "", "", func(ChangeRecord) {}, func(cause error) { closedAgain <- cause })
+	drainReplay(t, replay2)
+	cancel2()
+	select {
+	case cause := <-closedAgain:
+		t.Fatalf("a fresh registration on the surviving namespace closed with %v", cause)
+	default:
 	}
 
 	if err := st.DropNamespace(context.Background(), "test", [16]byte{}); err != nil {
 		t.Fatalf("drop after restoring permissions: %v", err)
 	}
-	waitForClose(t, closedFired, ErrListenLifetimeEnded)
-	cancel()
 }
 
 func TestListenCancelUntracks(t *testing.T) {

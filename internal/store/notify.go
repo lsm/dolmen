@@ -105,6 +105,15 @@ func (s *Store) wakeListenSessions(ns string) {
 	}
 }
 
+func (s *Store) endListenSessions(ns string, cause error) {
+	s.notifyMu.Lock()
+	sessions := append([]*listenSession(nil), s.listenSessions[ns]...)
+	s.notifyMu.Unlock()
+	for _, sess := range sessions {
+		sess.endParked(cause)
+	}
+}
+
 // notifyCommitted wakes the listeners registered for ns. Every write path
 // invokes it after tx.Commit() returns (§9.3: notification happens after
 // commit) — synchronously, on the write's own goroutine, so when the write
