@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"os"
@@ -26,8 +27,9 @@ type scan struct{ comments []span }
 const wsClass = `[\t\n\v\f\r\x85\p{Zs}\x{2028}\x{2029}]`
 
 var (
-	funcPragmaPattern     = regexp.MustCompile(`^(?://go:(?:noinline|nosplit|norace|nocheckptr|uintptrescapes|registerparams|nointerface)\r?$|//go:wasmexport [^\r\n]+)$`)
-	bodylessPragmaPattern = regexp.MustCompile(`^//go:(?:noescape$|wasmimport \S+ \S+)$`)
+	funcPragmaPattern     = regexp.MustCompile(`^//go:(?:noinline|nosplit|norace|nocheckptr|uintptrescapes|registerparams|nointerface)$`)
+	bodylessPragmaPattern = regexp.MustCompile(`^//go:(?:noescape$|wasmimport[ \t]+\S+[ \t]+\S+[ \t]*$)`)
+	wasmexportPattern     = regexp.MustCompile(`^//go:wasmexport[ \t]+\S+[ \t]*$`)
 	embedPattern          = regexp.MustCompile(`^//go:embed [^\r\n]+$`)
 	generatePattern       = regexp.MustCompile(`^//go:generate[ \t].+\r?$`)
 	bareGenerate          = regexp.MustCompile(`^//go:generate[ \t]*\r?$`)
@@ -35,7 +37,7 @@ var (
 	legacyBuildLine       = regexp.MustCompile(`^//` + wsClass + `*\+build(` + wsClass + `.*)?$`)
 	linePattern           = regexp.MustCompile(`^//line .*:[1-9][0-9]*(?::[1-9][0-9]*)?$`)
 	blockLinePattern      = regexp.MustCompile(`(?s)^/\*line .*:[1-9][0-9]*(?::[1-9][0-9]*)?\*/$`)
-	debugPattern          = regexp.MustCompile(`^//go:debug[ \t]+([A-Za-z0-9_.-]+=[A-Za-z0-9_.-]*)([ \t]+[A-Za-z0-9_.-]+=[A-Za-z0-9_.-]*)*$`)
+	debugPattern          = regexp.MustCompile(`^//go:debug[ \t]+[A-Za-z0-9_.-]+=[A-Za-z0-9_.-]*$`)
 	headerBlankLine       = regexp.MustCompile(`\n[ \t\r]*\n`)
 	exportPattern         = regexp.MustCompile(`^//export .+\r?$`)
 	nolintPattern         = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*(,[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*)*)?([ \t].*)?\r?$`)
@@ -138,10 +140,12 @@ func commentEnd(src []byte, start int) int {
 	return len(src)
 }
 
-func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool) {
+func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]string) {
 	valueDocs := map[token.Pos]bool{}
 	funcDocs := map[token.Pos]bool{}
 	bodylessDocs := map[token.Pos]bool{}
+	bodiedDocs := map[token.Pos]bool{}
+	funcNames := map[token.Pos]string{}
 	mark := func(m map[token.Pos]bool, cg *ast.CommentGroup) {
 		if cg != nil {
 			m[cg.Pos()] = true
@@ -160,12 +164,17 @@ func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool, map[token.P
 			}
 		case *ast.FuncDecl:
 			mark(funcDocs, decl.Doc)
+			if decl.Doc != nil {
+				funcNames[decl.Doc.Pos()] = decl.Name.Name
+			}
 			if decl.Body == nil {
 				mark(bodylessDocs, decl.Doc)
+			} else {
+				mark(bodiedDocs, decl.Doc)
 			}
 		}
 	}
-	return valueDocs, funcDocs, bodylessDocs
+	return valueDocs, funcDocs, bodylessDocs, bodiedDocs, funcNames
 }
 
 func atLineStart(src []byte, start int) bool {
@@ -194,26 +203,70 @@ func fileImports(f *ast.File, want string) bool {
 	return false
 }
 
-func isExempt(raw, norm []byte, atLineStart, isValueDoc, isFuncDoc, isBodylessDoc, isCgo, hasUnsafe bool) bool {
-	if atLineStart && linePattern.Match(raw) {
+var godebugKeys = map[string]bool{}
+
+func init() {
+	for _, k := range []string{
+		"allowmultiplevcs", "asynctimerchan", "containermaxprocs", "cryptocustomrand", "dataindependenttiming",
+		"decoratemappings", "embedfollowsymlinks", "execerrdot", "fips140", "fips140ems", "gocachehash",
+		"gocachetest", "gocacheverify", "gotestjsonbuildtext", "gotypesalias", "htmlmetacontenturlescape",
+		"http2client", "http2debug", "http2server", "httpcookiemaxnum", "httplaxcontentlength", "httpmuxgo121",
+		"httpservecontentkeepheaders", "installgoroot", "jstmpllitinterp", "multipartfiles", "multipartmaxheaders",
+		"multipartmaxparts", "multipathtcp", "netdns", "netedns0", "panicnil", "randautoseed", "randseednop",
+		"rsa1024min", "tarinsecurepath", "tls10server", "tls3des", "tlsmaxrsasize", "tlsmlkem", "tlsrsakex",
+		"tlssecpmlkem", "tlssha1", "tlsunsafeekm", "updatemaxprocs", "urlmaxqueryparams", "urlstrictcolons",
+		"winreadlinkvolume", "winsymlink", "x509keypairleaf", "x509negativeserial", "x509rsacrt", "x509sha1",
+		"x509sha256skid", "x509usefallbackroots", "x509usepolicies", "zipinsecurepath",
+	} {
+		godebugKeys[k] = true
+	}
+}
+
+func validDebugSettings(norm []byte) bool {
+	if !debugPattern.Match(norm) {
+		return false
+	}
+	setting := strings.TrimSpace(string(norm[len("//go:debug"):]))
+	k := setting[:strings.IndexByte(setting, '=')]
+	return godebugKeys[k]
+}
+
+func validBuildConstraint(raw []byte) bool {
+	line := strings.TrimSpace(string(raw))
+	if !buildTagPattern.Match(raw) {
+		return false
+	}
+	_, err := constraint.Parse(line)
+	return err == nil
+}
+
+type exempts struct {
+	atLineStart bool
+	valueDoc    bool
+	funcDoc     bool
+	bodylessDoc bool
+	cgo         bool
+	unsafe      bool
+	embed       bool
+}
+
+func isExempt(raw, norm []byte, c exempts) bool {
+	if c.atLineStart && linePattern.Match(raw) {
 		return true
 	}
-	if atLineStart && generatePattern.Match(raw) && !bareGenerate.Match(raw) {
+	if c.atLineStart && generatePattern.Match(raw) && !bareGenerate.Match(raw) {
 		return true
 	}
-	if isFuncDoc && funcPragmaPattern.Match(norm) {
+	if c.funcDoc && funcPragmaPattern.Match(norm) {
 		return true
 	}
-	if isBodylessDoc && bodylessPragmaPattern.Match(norm) {
+	if c.bodylessDoc && bodylessPragmaPattern.Match(norm) {
 		return true
 	}
-	if isValueDoc && embedPattern.Match(norm) {
+	if c.valueDoc && c.embed && embedPattern.Match(norm) {
 		return true
 	}
-	if isFuncDoc && isCgo && exportPattern.Match(norm) {
-		return true
-	}
-	return blockLinePattern.Match(raw) || nolintPattern.Match(norm) || (hasUnsafe && linknamePattern.Match(norm))
+	return blockLinePattern.Match(raw) || nolintPattern.Match(norm) || (c.unsafe && linknamePattern.Match(norm))
 }
 
 func isGeneratedMarker(text []byte) bool {
@@ -254,15 +307,16 @@ func scanSource(src []byte, path string) (*scan, error) {
 	if strings.HasSuffix(path, "_test.go") {
 		outputs = exampleOutputs(f)
 	}
-	valueDocs, funcDocs, bodylessDocs := docGroups(f)
+	valueDocs, funcDocs, bodylessDocs, bodiedDocs, funcNames := docGroups(f)
+	isCgo := fileImports(f, "C")
+	hasUnsafe := fileImports(f, "unsafe")
+	hasEmbed := fileImports(f, "embed")
+	isMainish := f.Name.Name == "main" || strings.HasSuffix(path, "_test.go")
 	s := &scan{}
 	for _, g := range f.Comments {
 		if preambles[g.Pos()] || outputs[g.Pos()] {
 			continue
 		}
-		isValueDoc := valueDocs[g.Pos()]
-		isFuncDoc := funcDocs[g.Pos()]
-		isBodylessDoc := bodylessDocs[g.Pos()]
 		for _, c := range g.List {
 			start := tf.Offset(c.Pos())
 			end := commentEnd(src, start)
@@ -275,10 +329,13 @@ func scanSource(src []byte, path string) (*scan, error) {
 			if bytes.HasPrefix(lineLead, utf8BOM) {
 				lineLead = lineLead[len(utf8BOM):]
 			}
-			if c.Pos() < f.Package && blank(lineLead) && buildTagPattern.Match(raw) {
+			if c.Pos() < f.Package && blank(lineLead) && validBuildConstraint(raw) {
 				continue
 			}
-			if c.Pos() < f.Package && (f.Name.Name == "main" || strings.HasSuffix(path, "_test.go")) && debugPattern.Match(norm) {
+			if bodiedDocs[g.Pos()] && wasmexportPattern.Match(norm) {
+				continue
+			}
+			if c.Pos() < f.Package && isMainish && validDebugSettings(norm) {
 				continue
 			}
 			blockBefore := false
@@ -294,9 +351,23 @@ func scanSource(src []byte, path string) (*scan, error) {
 				legacyBuildLine.Match(raw) && headerBlankLine.Match(src[end:searchEnd]) {
 				continue
 			}
-			if !isExempt(raw, norm, atLineStart(src, start), isValueDoc, isFuncDoc, isBodylessDoc, fileImports(f, "C"), fileImports(f, "unsafe")) {
-				s.comments = append(s.comments, span{start, end})
+			if funcDocs[g.Pos()] && isCgo && exportPattern.Match(norm) {
+				if name := strings.TrimSpace(string(bytes.TrimPrefix(norm, []byte("//export ")))); name == funcNames[g.Pos()] {
+					continue
+				}
 			}
+			if isExempt(raw, norm, exempts{
+				atLineStart: atLineStart(src, start),
+				valueDoc:    valueDocs[g.Pos()],
+				funcDoc:     funcDocs[g.Pos()],
+				bodylessDoc: bodylessDocs[g.Pos()],
+				cgo:         isCgo,
+				unsafe:      hasUnsafe,
+				embed:       hasEmbed,
+			}) {
+				continue
+			}
+			s.comments = append(s.comments, span{start, end})
 		}
 	}
 	return s, nil
@@ -341,6 +412,31 @@ func readAllowlist(path string) (map[string]int, error) {
 	return allow, nil
 }
 
+func updateBlockState(line []byte, inBlock bool) bool {
+	i := 0
+	for i < len(line) {
+		if inBlock {
+			k := bytes.Index(line[i:], []byte("*/"))
+			if k < 0 {
+				return true
+			}
+			i += k + 2
+			inBlock = false
+			continue
+		}
+		if bytes.HasPrefix(line[i:], []byte("//")) {
+			return false
+		}
+		if bytes.HasPrefix(line[i:], []byte("/*")) {
+			inBlock = true
+			i += 2
+			continue
+		}
+		i++
+	}
+	return inBlock
+}
+
 func forEachHeaderLine(src []byte, fn func(trimmed []byte)) {
 	src = bytes.TrimPrefix(src, utf8BOM)
 	inBlock := false
@@ -352,15 +448,7 @@ func forEachHeaderLine(src []byte, fn func(trimmed []byte)) {
 			}
 			fn(trimmed)
 		}
-		opens := bytes.Count(line, []byte("/*"))
-		closes := bytes.Count(line, []byte("*/"))
-		if inBlock {
-			if closes > opens {
-				inBlock = false
-			}
-		} else if opens > closes {
-			inBlock = true
-		}
+		inBlock = updateBlockState(line, inBlock)
 	}
 }
 
@@ -434,15 +522,7 @@ func headerLimit(src []byte) int {
 				return lineStart
 			}
 		}
-		opens := bytes.Count(line, []byte("/*"))
-		closes := bytes.Count(line, []byte("*/"))
-		if inBlock {
-			if closes > opens {
-				inBlock = false
-			}
-		} else if opens > closes {
-			inBlock = true
-		}
+		inBlock = updateBlockState(line, inBlock)
 		p += len(line) + 1
 	}
 	return limit
@@ -484,11 +564,11 @@ func lexCount(src []byte) int {
 				}
 				raw := src[i:j]
 				norm := bytes.ReplaceAll(raw, []byte("\r"), nil)
-				exempt := isExempt(raw, norm, atLineStart(src, i), false, false, false, false, false)
+				exempt := isExempt(raw, norm, exempts{atLineStart: atLineStart(src, i)})
 				if i < limit {
 					lead := src[bytes.LastIndexByte(src[:i], '\n')+1 : i]
 					lead = bytes.TrimPrefix(lead, utf8BOM)
-					if len(bytes.TrimFunc(lead, unicode.IsSpace)) == 0 && buildTagPattern.Match(raw) {
+					if len(bytes.TrimFunc(lead, unicode.IsSpace)) == 0 && validBuildConstraint(raw) {
 						exempt = true
 					}
 					if legacyBuildLine.Match(raw) {
@@ -512,13 +592,13 @@ func lexCount(src []byte) int {
 			} else if i+1 < n && src[i+1] == '*' {
 				k := bytes.Index(src[i+2:], []byte("*/"))
 				if k < 0 {
-					if !isExempt(src[i:], bytes.ReplaceAll(src[i:], []byte("\r"), nil), false, false, false, false, false, false) {
+					if !isExempt(src[i:], bytes.ReplaceAll(src[i:], []byte("\r"), nil), exempts{}) {
 						count++
 					}
 					i = n
 				} else {
 					span := src[i : i+k+4]
-					if !isExempt(span, bytes.ReplaceAll(span, []byte("\r"), nil), false, false, false, false, false, false) {
+					if !isExempt(span, bytes.ReplaceAll(span, []byte("\r"), nil), exempts{}) {
 						count++
 					}
 					i += k + 4
