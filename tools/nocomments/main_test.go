@@ -150,6 +150,7 @@ func TestLineCommentsCount(t *testing.T) {
 		{"package p\n\n//go:uintptrescapes\nfunc h() {}\n", 0},
 		{"//go:debug x509sha1=1\npackage main\n", 0},
 		{"//go:debug madeup=1\npackage main\n", 1},
+		{"//go:debug netdns=go+2\npackage main\n", 0},
 		{"//go:debug panicnil=1 asynctimerchan=1\npackage main\n", 1},
 		{"//go:debug panicnil=1\npackage p\n", 0},
 		{"//go:debug\u00A0panicnil=1\npackage main\n", 1},

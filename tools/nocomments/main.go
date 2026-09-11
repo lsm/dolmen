@@ -37,7 +37,7 @@ var (
 	legacyBuildLine       = regexp.MustCompile(`^//` + wsClass + `*\+build(` + wsClass + `.*)?$`)
 	linePattern           = regexp.MustCompile(`^//line .*:[1-9][0-9]*(?::[1-9][0-9]*)?\r?$`)
 	blockLinePattern      = regexp.MustCompile(`(?s)^/\*line .*:[1-9][0-9]*(?::[1-9][0-9]*)?\*/$`)
-	debugPattern          = regexp.MustCompile(`^//go:debug[ \t]+[A-Za-z0-9_.-]+=[A-Za-z0-9_.-]*$`)
+	debugPattern          = regexp.MustCompile(`^//go:debug[ \t]+[A-Za-z0-9_.-]+=[^ \t\r\n,]*$`)
 	headerBlankLine       = regexp.MustCompile(`\n[ \t\r]*\n`)
 	exportPattern         = regexp.MustCompile(`^//export .+\r?$`)
 	nolintPattern         = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*(,[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*)*)?([ \t].*)?\r?$`)
