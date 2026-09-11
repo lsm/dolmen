@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -306,7 +307,13 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 // session with events after liveRead never queued, and a reconnect on
 // the old feed cannot recover them).
 func (sess *listenSession) readBatch(ctx context.Context) (scanned []loggedChange, lifetimeEnded bool, err error) {
-	tx, err := sess.n.ro.BeginTx(ctx, nil)
+	prune := sess.s != nil && sess.s.pruneDue(sess.nsName, time.Now())
+	var tx *sql.Tx
+	if prune {
+		tx, err = sess.n.rw.BeginTx(ctx, nil)
+	} else {
+		tx, err = sess.n.ro.BeginTx(ctx, nil)
+	}
 	if err != nil {
 		return nil, false, err
 	}
@@ -333,6 +340,16 @@ func (sess *listenSession) readBatch(ctx context.Context) (scanned []loggedChang
 			return nil, false, ferr
 		case current.nsgen != sess.feed.nsgen || current.dropGen != sess.feed.dropGen:
 			lifetimeEnded = true // a same-named successor is a different feed
+		}
+	}
+	if prune {
+		if len(scanned) > 0 {
+			if _, err := mintCursorToken(ctx, tx, time.Now(), from, sess.table, sess.chainFor(time.Now(), from)); err != nil {
+				return nil, false, err
+			}
+		}
+		if err := pruneChanges(ctx, tx, time.Now(), sess.s.changeRetention); err != nil {
+			return nil, false, err
 		}
 	}
 	if err := tx.Commit(); err != nil {

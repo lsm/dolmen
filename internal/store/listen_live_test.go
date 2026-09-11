@@ -235,6 +235,7 @@ func TestListenFillQueuesCommits(t *testing.T) {
 	sess.s, sess.n = st, n
 	sess.flight = make(chan struct{}, 1)
 	sess.liveRead = int64(len(backlog.Ids)) // past the backlog
+	sess.chain = newCursorChain(time.Now(), sess.liveRead)
 	sess.unregister = st.onCommit("test", sess.wake)
 	sess.pumps.Add(1)
 	go sess.pump()

@@ -205,3 +205,136 @@ func commitListenersOf(st *Store, ns string) int {
 	defer st.notifyMu.Unlock()
 	return len(st.listeners[ns])
 }
+
+func TestListenCloseReachesBackpressureParkedSession(t *testing.T) {
+	st := openChangeStore(t)
+	ctx := context.Background()
+	total := listenQueueBound + 2*MaxChangesPageLimit
+	if _, err := insertNotesChunkedErr(st, total); err != nil {
+		t.Fatalf("bulk backlog: %v", err)
+	}
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("open test: %v", err)
+	}
+	tx, err := n.rw.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("labels tx: %v", err)
+	}
+	feed, err := changeFeedOf(ctx, tx, "test", "notes")
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("labels: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("labels commit: %v", err)
+	}
+	if err := st.DropTable(ctx, "test", "notes", Incarnation{}); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+
+	closedCause := make(chan error, 1)
+	sess := testSession(func(cause error) { closedCause <- cause })
+	sess.s, sess.n = st, n
+	sess.feed = feed
+	sess.chain = newCursorChain(time.Now(), 0)
+	st.trackSession(sess)
+	sess.pumps.Add(1)
+	sess.wake("notes", ChangeRange{})
+	go sess.pump()
+
+	reach := time.Now().Add(60 * time.Second)
+	for {
+		sess.mu.Lock()
+		queued := len(sess.queue)
+		sess.mu.Unlock()
+		if queued > listenQueueBound {
+			break
+		}
+		if time.Now().After(reach) {
+			t.Fatalf("fill never reached the bound (queued=%d)", queued)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	select {
+	case cause := <-closedCause:
+		if !errors.Is(cause, ErrListenLifetimeEnded) {
+			t.Fatalf("parked session closed with %v, want ErrListenLifetimeEnded", cause)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close's wake left the backpressure-parked session with no terminal")
+	}
+	sess.cancel()
+}
+
+func TestListenRecreateReachesBackpressureParkedSession(t *testing.T) {
+	st := openChangeStore(t)
+	ctx := context.Background()
+	total := listenQueueBound + 2*MaxChangesPageLimit
+	if _, err := insertNotesChunkedErr(st, total); err != nil {
+		t.Fatalf("bulk backlog: %v", err)
+	}
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("open test: %v", err)
+	}
+	tx, err := n.rw.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("labels tx: %v", err)
+	}
+	feed, err := changeFeedOf(ctx, tx, "test", "notes")
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("labels: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("labels commit: %v", err)
+	}
+	if err := st.DropTable(ctx, "test", "notes", Incarnation{}); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+
+	closedCause := make(chan error, 1)
+	sess := testSession(func(cause error) { closedCause <- cause })
+	sess.s, sess.n = st, n
+	sess.feed = feed
+	sess.chain = newCursorChain(time.Now(), 0)
+	st.trackSession(sess)
+	sess.pumps.Add(1)
+	sess.wake("notes", ChangeRange{})
+	go sess.pump()
+
+	reach := time.Now().Add(60 * time.Second)
+	for {
+		sess.mu.Lock()
+		queued := len(sess.queue)
+		sess.mu.Unlock()
+		if queued > listenQueueBound {
+			break
+		}
+		if time.Now().After(reach) {
+			t.Fatalf("fill never reached the bound (queued=%d)", queued)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := os.Remove(st.nsPath("test")); err != nil {
+		t.Fatalf("remove namespace file out-of-band: %v", err)
+	}
+	if err := st.CreateNamespace(ctx, "test", [16]byte{}); err != nil {
+		t.Fatalf("recreate namespace: %v", err)
+	}
+	select {
+	case cause := <-closedCause:
+		if !errors.Is(cause, ErrListenLifetimeEnded) {
+			t.Fatalf("parked session closed with %v, want ErrListenLifetimeEnded", cause)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("CreateNamespace's stale-entry path left the backpressure-parked session with no terminal")
+	}
+	sess.cancel()
+}
