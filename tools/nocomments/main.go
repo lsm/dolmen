@@ -26,19 +26,18 @@ type scan struct{ comments []span }
 const wsClass = `[\t\n\v\f\r\x85\p{Zs}\x{2028}\x{2029}]`
 
 var (
-	goDirPattern     = regexp.MustCompile(`^//go:[a-z][a-z0-9_]*([ \t].*)?\r?$`)
+	goDirPattern     = regexp.MustCompile(`^//go:(noinline|nosplit|norace|nocheckptr|noescape|uintptrescapes|registerparams|nointerface)\r?$|//go:(embed|wasmexport) [^\r\n]+|//go:wasmimport [^\s]+ [^\r\n]+`)
 	generatePattern  = regexp.MustCompile(`^//go:generate[ \t].+\r?$`)
 	bareGenerate     = regexp.MustCompile(`^//go:generate[ \t]*\r?$`)
 	buildTagPattern  = regexp.MustCompile(`^//go:build(` + wsClass + `.*)?$`)
 	legacyBuildLine  = regexp.MustCompile(`^//` + wsClass + `*\+build(` + wsClass + `.*)?$`)
 	linePattern      = regexp.MustCompile(`^//line .*:\d+(?::\d+)? ?\r?$`)
 	blockLinePattern = regexp.MustCompile(`(?s)^/\*line .*:\d+(?::\d+)? ?\*/\r?$`)
-	lineScannedOnly  = regexp.MustCompile(`^//go:(build|generate|line|debug)([ \t].*)?\r?$`)
-	debugPattern     = regexp.MustCompile(`^//go:debug([ \t].*)?\r?$`)
+	debugPattern     = regexp.MustCompile(`^//go:debug(` + wsClass + `.*)?$`)
 	headerBlankLine  = regexp.MustCompile(`\n[ \t\r]*\n`)
 	exportPattern    = regexp.MustCompile(`^//export .+\r?$`)
-	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]*[0-9A-Za-z_][0-9A-Za-z_,-]*)?([ \t].*)?\r?$`)
-	linknamePattern  = regexp.MustCompile(`^//go:linkname .+\r?$`)
+	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*(,[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*)*)?([ \t].*)?\r?$`)
+	linknamePattern  = regexp.MustCompile(`^//go:linkname [^\r\n]+\r?$`)
 	outputPattern    = regexp.MustCompile(`(?i)^[[:space:]]*(unordered )?output:`)
 )
 
@@ -200,10 +199,10 @@ func isExempt(text []byte, atLineStart, isDoc, isFuncDoc, isCgo bool) bool {
 	if atLineStart && generatePattern.Match(text) && !bareGenerate.Match(text) {
 		return true
 	}
-	if isDoc && goDirPattern.Match(text) && !lineScannedOnly.Match(text) {
+	if isDoc && goDirPattern.Match(text) {
 		return true
 	}
-	if isFuncDoc && isCgo && exportPattern.Match(text) {
+	if isFuncDoc && isCgo && exportPattern.Match(bytes.ReplaceAll(text, []byte("\r"), nil)) {
 		return true
 	}
 	return blockLinePattern.Match(text) || nolintPattern.Match(text) || linknamePattern.Match(text)
