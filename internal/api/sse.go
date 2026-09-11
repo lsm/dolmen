@@ -39,6 +39,8 @@ import (
 // missing table, engine failures — arrives as an SSE error event carrying the
 // standard error envelope inside, because an open text/event-stream response
 // can no longer carry an HTTP status.
+const sseWriteDeadline = 10 * time.Second
+
 func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	// The stream is its own request: it carries a request id like every /v1/
 	// call, so an in-stream error envelope, the response header, and the
@@ -119,8 +121,13 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	resume := replay.Resume()
+	rc := http.NewResponseController(w)
+	arm := func() {
+		rc.SetWriteDeadline(time.Now().Add(sseWriteDeadline))
+	}
 	write := func(rec store.ChangeRecord) bool {
 		resume = rec.Cursor
+		arm()
 		return sseEvent(w, "change", sseChange{
 			Cursor: string(rec.Cursor),
 			Table:  rec.Table,
@@ -137,11 +144,13 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 			}
 			select {
 			case cause := <-ended:
+				arm()
 				sseEvent(w, "close", sseClose{Cursor: string(resume)})
 				sseErrorEvent(w, subscribeErr(cause), reqID)
 			case <-ctx.Done():
 				return
 			case <-time.After(2 * time.Second):
+				arm()
 				sseEvent(w, "close", sseClose{Cursor: string(resume)})
 				sseErrorEvent(w, subscribeErr(nerr), reqID)
 			}
@@ -171,6 +180,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 				default:
+					arm()
 					sseEvent(w, "close", sseClose{Cursor: string(resume)})
 					sseErrorEvent(w, subscribeErr(cause), reqID)
 					return
