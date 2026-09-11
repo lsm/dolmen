@@ -58,8 +58,9 @@ func TestListenAdmitDecisions(t *testing.T) {
 		{"revoked", false, authzOf(nil, Incarnation{}, false), rec, false, true},
 		{"own-nsGen-nsFeed", true, authzOf(nil, Incarnation{NsGen: ownGen}, true), rec, true, false},
 		{"foreign-nsGen-nsFeed", true, authzOf(nil, Incarnation{NsGen: foreignGen}, true), rec, false, false},
-		{"own-nsGen-tableFeed", false, authzOf(nil, Incarnation{NsGen: ownGen}, true), rec, true, false},
-		{"foreign-nsGen-tableFeed", false, authzOf(nil, Incarnation{NsGen: foreignGen}, true), rec, false, false},
+		{"own-lifetime-tableFeed", false, authzOf(nil, Incarnation{NsGen: ownGen, Table: "notes"}, true), rec, true, false},
+		{"foreign-nsGen-tableFeed", false, authzOf(nil, Incarnation{NsGen: foreignGen, Table: "notes"}, true), rec, false, false},
+		{"partial-inc-tableFeed-hides", false, authzOf(nil, Incarnation{NsGen: ownGen}, true), rec, false, false},
 		{"zero-inc-nsFeed-admits", true, authzOf(nil, Incarnation{}, true), rec, true, false},
 	}
 	for _, tc := range cases {
