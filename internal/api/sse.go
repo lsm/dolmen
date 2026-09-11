@@ -121,13 +121,8 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	resume := replay.Resume()
-	rc := http.NewResponseController(w)
-	arm := func() {
-		rc.SetWriteDeadline(time.Now().Add(sseWriteDeadline))
-	}
 	write := func(rec store.ChangeRecord) bool {
 		resume = rec.Cursor
-		arm()
 		return sseEvent(w, "change", sseChange{
 			Cursor: string(rec.Cursor),
 			Table:  rec.Table,
@@ -144,13 +139,11 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 			}
 			select {
 			case cause := <-ended:
-				arm()
 				sseEvent(w, "close", sseClose{Cursor: string(resume)})
 				sseErrorEvent(w, subscribeErr(cause), reqID)
 			case <-ctx.Done():
 				return
 			case <-time.After(2 * time.Second):
-				arm()
 				sseEvent(w, "close", sseClose{Cursor: string(resume)})
 				sseErrorEvent(w, subscribeErr(nerr), reqID)
 			}
@@ -180,7 +173,6 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 				default:
-					arm()
 					sseEvent(w, "close", sseClose{Cursor: string(resume)})
 					sseErrorEvent(w, subscribeErr(cause), reqID)
 					return
@@ -196,8 +188,11 @@ func sseOpenStream(w http.ResponseWriter, reqID string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Request-Id", reqID)
+	rc := http.NewResponseController(w)
+	rc.SetWriteDeadline(time.Now().Add(sseWriteDeadline))
 	w.WriteHeader(http.StatusOK)
 	sseFlush(w)
+	rc.SetWriteDeadline(time.Time{})
 }
 
 func subscribeErr(err error) *Error {
@@ -244,11 +239,14 @@ func sseEvent(w http.ResponseWriter, event string, data any) bool {
 	if err != nil {
 		return false
 	}
-	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload); err != nil {
-		return false
+	rc := http.NewResponseController(w)
+	rc.SetWriteDeadline(time.Now().Add(sseWriteDeadline))
+	_, werr := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload)
+	if werr == nil {
+		sseFlush(w)
 	}
-	sseFlush(w)
-	return true
+	rc.SetWriteDeadline(time.Time{})
+	return werr == nil
 }
 
 // sseErrorEvent delivers a teaching or failure error as the stream's error
