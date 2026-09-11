@@ -347,6 +347,17 @@ func headerHasBuildConstraint(src []byte) bool {
 	return false
 }
 
+func scanFile(src []byte, path string) (bool, *scan, error) {
+	s, err := scanSource(src, path)
+	if err != nil {
+		if headerHasBuildConstraint(src) {
+			return true, nil, nil
+		}
+		return false, nil, err
+	}
+	return false, s, nil
+}
+
 func listGoFiles() ([]string, error) {
 	out, err := exec.Command("git", "ls-files", "-z", "--", "*.go").Output()
 	if err != nil {
@@ -391,12 +402,12 @@ func main() {
 		if err != nil {
 			die(err)
 		}
-		s, err := scanSource(src, f)
+		skip, s, err := scanFile(src, f)
 		if err != nil {
-			if headerHasBuildConstraint(src) {
-				continue
-			}
 			die(fmt.Errorf("cannot parse %s: %w", f, err))
+		}
+		if skip {
+			continue
 		}
 		n := len(s.comments)
 		if mode == "stats" {
