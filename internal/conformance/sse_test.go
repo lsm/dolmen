@@ -447,6 +447,38 @@ func TestSubscribeDisconnectLeavesServerHealthy(t *testing.T) {
 	wantChange(t, f, [3]any{"notes", after["ids"].([]any)[0], "insert"})
 }
 
+func TestSubscribeNamespaceDropTeachesLifetimeEnd(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
+	backlog := make([]any, 0, 3*store.MaxChangesPageLimit)
+	for i := 0; i < 3*store.MaxChangesPageLimit; i++ {
+		backlog = append(backlog, map[string]any{"title": "backlog"})
+	}
+	h.mustHTTP("insert", map[string]any{"namespace": "rt", "table": "notes", "records": backlog})
+
+	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}, "cursor": {"begin"}})
+	if _, ok := r.next(10 * time.Second); !ok {
+		t.Fatal("the replay never started, so the drop does not race it")
+	}
+	status, body := h.httpCall("drop_namespace", map[string]any{"namespace": "rt", "confirm": "rt"})
+	if status != http.StatusOK {
+		t.Fatalf("drop namespace: status %d (%v)", status, body)
+	}
+
+	frames := r.rest(15 * time.Second)
+	if len(frames) < 2 {
+		t.Fatalf("dropped-target stream = %d frames, want a cursor handoff and a teaching error: %+v", len(frames), frames)
+	}
+	errEnv := wantFrameError(t, frames, len(frames)-1)
+	if msg, _ := errEnv["message"].(string); !strings.Contains(msg, "target ended") {
+		t.Fatalf("dropped-target terminal %q does not teach the lifetime end — the incidental read error was framed instead", msg)
+	}
+	handoff := wantFrame(t, frames, len(frames)-2, "close")
+	if cursor, _ := frameData(t, handoff)["cursor"].(string); cursor == "" {
+		t.Fatalf("the terminal carried no resume cursor: %+v", handoff)
+	}
+}
+
 func TestSubscribeBoundaryUnderConcurrentWrites(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})

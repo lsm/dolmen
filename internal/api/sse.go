@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -139,7 +140,8 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 			case cause := <-ended:
 				sseEvent(w, "close", sseClose{Cursor: string(resume)})
 				sseErrorEvent(w, subscribeErr(cause), reqID)
-			default:
+			case <-time.After(2 * time.Second):
+				sseEvent(w, "close", sseClose{Cursor: string(resume)})
 				sseErrorEvent(w, subscribeErr(nerr), reqID)
 			}
 			return
