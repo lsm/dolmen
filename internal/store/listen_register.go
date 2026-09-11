@@ -54,6 +54,7 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	// The live half's signal, wired at construction so every end (caller
 	// cancel included) can broadcast a parked pump out of cond.Wait.
 	sess.cond = sync.NewCond(&sess.mu)
+	sess.stop = make(chan struct{})
 	// The pumps outlive this call; their cancellation scope is the session
 	// itself, derived from the caller's context (the handler passes one
 	// that ends with the client OR the server's shutdown).
@@ -201,8 +202,9 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	sess.mu.Lock()
 	sess.pumpsLaunched = true
 	sess.mu.Unlock()
-	sess.pumps.Add(2)
-	go sess.pump()  // pump, not fill: the terminal fires once, outside fill's loop
-	go sess.drain() // drain: delivery, gated on the replay's boundary call
+	sess.pumps.Add(3)
+	go sess.pump()     // pump, not fill: the terminal fires once, outside fill's loop
+	go sess.drain()    // drain: delivery, gated on the replay's boundary call
+	go sess.pollWake() // the poll fallback: the log, never the wake, is the guarantee
 	return &ChangeReplay{Next: sess.next, Resume: sess.cursor}, sess.cancel, nil
 }

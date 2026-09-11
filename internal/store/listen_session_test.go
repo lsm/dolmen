@@ -21,6 +21,7 @@ import (
 func testSession(closed func(error)) *listenSession {
 	sess := &listenSession{nsName: "test", table: "notes", closedFn: closed}
 	sess.cond = sync.NewCond(&sess.mu)
+	sess.stop = make(chan struct{})
 	sess.ctx, sess.ctxCancel = context.WithCancel(context.Background())
 	return sess
 }

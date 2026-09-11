@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // The live half — slices 6b (r6a–r6d). Listen joins the commit registry
@@ -99,6 +100,22 @@ func (sess *listenSession) pump() {
 	defer sess.recoverPump("fill")
 	if cause := sess.fill(); cause != nil {
 		sess.end(cause)
+	}
+}
+
+const listenPollInterval = 250 * time.Millisecond
+
+func (sess *listenSession) pollWake() {
+	defer sess.pumps.Done()
+	t := time.NewTicker(listenPollInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-sess.stop:
+			return
+		case <-t.C:
+			sess.wake("", ChangeRange{})
+		}
 	}
 }
 
