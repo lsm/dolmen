@@ -47,6 +47,27 @@ var ErrListenOverflow = errors.New("subscription buffer overflow: the subscriber
 // the successor (§9.3's cursor-lifetime rule, applied to streams).
 var ErrListenLifetimeEnded = errors.New("subscription target's lifetime ended")
 
+var ErrListenRevoked = errors.New("subscription authorization revoked")
+
+func (sess *listenSession) admit(rec ChangeRecord) (visible, revoked bool) {
+	if sess.liveAuthz == nil {
+		return true, false
+	}
+	scope, inc, ok := sess.liveAuthz(rec.Table)
+	if !ok {
+		return false, true
+	}
+	if scope != nil && (scope.Empty || scope.Owner != rec.Owner) {
+		return false, false
+	}
+	if sess.table != "" && inc != (Incarnation{}) {
+		if (Lifetime{NsGen: inc.NsGen, Table: inc.Table, DropGen: inc.DropGen}) != rec.Lifetime {
+			return false, false
+		}
+	}
+	return true, false
+}
+
 // wake is the registry callback: it runs on COMMITTING writers' goroutines,
 // so it does nothing but raise the fill flag — no database access, no
 // filtering, no client I/O. The wake is the latency half only; the durable
@@ -70,6 +91,7 @@ func (sess *listenSession) wake(table string, changes ChangeRange) {
 func (sess *listenSession) pump() {
 	defer sess.pumps.Done()
 	defer sess.flushParkedClose()
+	defer sess.recoverPump("fill")
 	if cause := sess.fill(); cause != nil {
 		sess.end(cause)
 	}
@@ -131,11 +153,40 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 	if rerr != nil {
 		return 0, rerr
 	}
+	var admitted []loggedChange
+	revoked := false
+	for _, lc := range scanned {
+		vis, rev := sess.admit(lc.rec)
+		if rev {
+			revoked = true
+			break
+		}
+		if vis {
+			admitted = append(admitted, lc)
+		}
+	}
+	if revoked {
+		sess.mu.Lock()
+		if len(scanned) > 0 {
+			sess.liveRead = scanned[len(scanned)-1].seq
+		}
+		if sess.dead {
+			sess.mu.Unlock()
+			return 0, nil
+		}
+		sess.queue = append(sess.queue, admitted...)
+		if sess.pendingDrainClose == nil {
+			sess.pendingDrainClose = ErrListenRevoked
+		}
+		sess.cond.Broadcast()
+		sess.mu.Unlock()
+		return 0, nil
+	}
 	sess.mu.Lock()
 	if len(scanned) > 0 {
 		sess.liveRead = scanned[len(scanned)-1].seq
 	}
-	sess.queue = append(sess.queue, scanned...)
+	sess.queue = append(sess.queue, admitted...)
 	// The bound is measured INSIDE the critical section: the broadcast
 	// below can wake the drainer, which pops the queue under this same
 	// lock — an unlocked len() races the slice header and may miss an
