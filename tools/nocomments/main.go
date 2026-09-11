@@ -26,7 +26,7 @@ type scan struct{ comments []span }
 const wsClass = `[\t\n\v\f\r\x85\p{Zs}\x{2028}\x{2029}]`
 
 var (
-	goDirPattern     = regexp.MustCompile(`^//go:(noinline|nosplit|norace|nocheckptr|noescape|uintptrescapes|registerparams|nointerface)\r?$|//go:(embed|wasmexport) [^\r\n]+|//go:wasmimport [^\s]+ [^\r\n]+`)
+	goDirPattern     = regexp.MustCompile(`^(?://go:(?:noinline|nosplit|norace|nocheckptr|noescape|uintptrescapes|registerparams|nointerface)|//go:(?:embed|wasmexport) [^\r\n]+|//go:wasmimport \S+ [^\r\n]+)\r?$`)
 	generatePattern  = regexp.MustCompile(`^//go:generate[ \t].+\r?$`)
 	bareGenerate     = regexp.MustCompile(`^//go:generate[ \t]*\r?$`)
 	buildTagPattern  = regexp.MustCompile(`^//go:build(` + wsClass + `.*)?$`)
