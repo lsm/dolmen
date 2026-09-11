@@ -586,3 +586,146 @@ func TestListenLifetimeEndDrainsPredecessorBatch(t *testing.T) {
 	}
 	sess.cancel() // idempotent teardown; also waits the drain out
 }
+
+// TestListenLifetimeEndDrainsFullPages: a predecessor backlog spanning
+// MORE than one page must drain COMPLETELY before the lifetime close —
+// a full page with ended does not arm; the fill keeps paging the
+// registration-fixed feed until its short tail, and only that final
+// batch's close arms (codex P1 on #230, thread r3984677145).
+func TestListenLifetimeEndDrainsFullPages(t *testing.T) {
+	st := openChangeStore(t)
+	ctx := context.Background()
+	total := 2*MaxChangesPageLimit + 5
+	if _, err := insertNotesChunkedErr(st, total); err != nil {
+		t.Fatalf("bulk backlog: %v", err)
+	}
+
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("open test: %v", err)
+	}
+	// The registration labels, captured BEFORE the drop ends the lifetime.
+	tx, err := n.rw.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("labels tx: %v", err)
+	}
+	feed, err := changeFeedOf(ctx, tx, "test", "notes")
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("labels: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("labels commit: %v", err)
+	}
+	if err := st.DropTable(ctx, "test", "notes", Incarnation{}); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+
+	var mu sync.Mutex
+	delivered := 0
+	closedCause := make(chan error, 1)
+	sess := testSession(func(cause error) { closedCause <- cause })
+	sess.s, sess.n = st, n
+	sess.feed = feed
+	sess.chain = newCursorChain(time.Now(), 0)
+	sess.notify = func(r ChangeRecord) {
+		mu.Lock()
+		delivered++
+		mu.Unlock()
+	}
+	sess.replayDone = true
+	sess.pumps.Add(2)
+	sess.wake("notes", ChangeRange{}) // the drop raced the pump: take the work now
+	go sess.pump()
+	go sess.drain()
+
+	select {
+	case cause := <-closedCause:
+		if !errors.Is(cause, ErrListenLifetimeEnded) {
+			t.Fatalf("close cause = %v, want ErrListenLifetimeEnded", cause)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("the lifetime close never fired")
+	}
+	mu.Lock()
+	got := delivered
+	mu.Unlock()
+	if got != total {
+		t.Fatalf("delivered %d of %d predecessor records before the close — a full page armed early and stranded the tail", got, total)
+	}
+	sess.cancel() // idempotent teardown; also waits the pumps out
+}
+
+// TestListenLifetimeEndPagesPastTheBound: an ENDED page never trips the
+// overflow bound — the feed is dead, the overflow's reconnect remedy is
+// impossible against a dropped target, and the finite, committed
+// predecessor backlog drains in full before the lifetime close arms at
+// its short tail (fresh-context adversarial pass on #230: the
+// overflow-trip variant closed a 10k backlog with 1 record delivered).
+// The fill side alone is pinned here (no drainer): the queue grows past
+// the bound and the close arms, with no overflow end fired.
+func TestListenLifetimeEndPagesPastTheBound(t *testing.T) {
+	st := openChangeStore(t)
+	ctx := context.Background()
+	total := listenQueueBound + MaxChangesPageLimit + 5
+	if _, err := insertNotesChunkedErr(st, total); err != nil {
+		t.Fatalf("bulk backlog: %v", err)
+	}
+
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("open test: %v", err)
+	}
+	tx, err := n.rw.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("labels tx: %v", err)
+	}
+	feed, err := changeFeedOf(ctx, tx, "test", "notes")
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("labels: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("labels commit: %v", err)
+	}
+	if err := st.DropTable(ctx, "test", "notes", Incarnation{}); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+
+	closedCause := make(chan error, 1)
+	sess := testSession(func(cause error) { closedCause <- cause })
+	sess.s, sess.n = st, n
+	sess.feed = feed
+	sess.chain = newCursorChain(time.Now(), 0)
+	sess.pumps.Add(1)
+	sess.wake("notes", ChangeRange{})
+	go sess.pump()
+
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		sess.mu.Lock()
+		queued := len(sess.queue)
+		armed := sess.pendingDrainClose
+		dead := sess.dead
+		sess.mu.Unlock()
+		if dead {
+			select {
+			case cause := <-closedCause:
+				t.Fatalf("session ended with %v — an ended page tripped the overflow bound", cause)
+			default:
+			}
+			t.Fatalf("session died mid-drain with %d of %d queued", queued, total)
+		}
+		if queued == total && armed != nil {
+			if !errors.Is(armed, ErrListenLifetimeEnded) {
+				t.Fatalf("armed close = %v, want ErrListenLifetimeEnded", armed)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("fill stalled at %d of %d queued, armed=%v", queued, total, armed)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	sess.cancel() // idempotent teardown; the queue-owned close stays unfired with no drainer
+}

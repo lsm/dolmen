@@ -136,28 +136,44 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 		sess.liveRead = scanned[len(scanned)-1].seq
 	}
 	sess.queue = append(sess.queue, scanned...)
-	if ended {
-		// The feed's target ended under the session — but the scan ran
-		// FIRST, under the registration labels, so the predecessor
-		// lifetime's already-committed records queued like any other
-		// batch. The close is queue-owned: the drainer delivers this final
-		// predecessor batch, then fires ErrListenLifetimeEnded at the
-		// empty queue — the already-committed events deliver, never lose
-		// to the check-then-scan window (Δ3, codex P1 on #220).
+	// The bound is measured INSIDE the critical section: the broadcast
+	// below can wake the drainer, which pops the queue under this same
+	// lock — an unlocked len() races the slice header and may miss an
+	// over-limit moment the drainer already shrank past.
+	over := len(sess.queue) > listenQueueBound
+	short := len(scanned) < MaxChangesPageLimit
+	if ended && short {
+		// The feed's target ended under the session — and the scan, run
+		// FIRST under the registration labels, has reached the feed's
+		// SHORT tail: every predecessor record this session owes has
+		// queued. The close is queue-owned: the drainer delivers the
+		// final predecessor batch, then fires ErrListenLifetimeEnded at
+		// the empty queue. A FULL page with ended does NOT arm — more
+		// predecessor records remain behind it, and the fill keeps
+		// paging them (read = the page bound) until the short tail arms
+		// the close; arming early would strand every later batch behind
+		// isClosing (codex P1 on #230, thread r3984677145; Δ3 itself was
+		// codex P1 on #220).
 		sess.pendingDrainClose = ErrListenLifetimeEnded
 	}
 	sess.cond.Broadcast()
 	sess.mu.Unlock()
-	if ended {
+	if ended && short {
 		return 0, nil // read 0: the fill's batch loop ends; the drain owns the close
 	}
-	over := len(sess.queue) > listenQueueBound
-	if over {
+	if over && !ended {
 		// The teaching reconnect: the stream ends and the client resumes
 		// from its last delivered cursor — the durable log is the catch-up
 		// path; the buffer never was the durability mechanism. Reported,
 		// not fired: pump ends the session with it at one fire point,
-		// outside this loop.
+		// outside this loop. An ENDED page never trips it: the feed is
+		// dead, the overflow's remedy (reconnect and catch up) is
+		// impossible against a dropped target, and the predecessor
+		// backlog the fill is draining is finite, committed, and
+		// retention-bounded — the lifetime close at the short tail is the
+		// honest terminal, whatever the backlog's size (fresh-context
+		// adversarial pass on #230; the overflow-trip variant stranded
+		// 99% of a 10k backlog behind an unreconnectable close).
 		return 0, ErrListenOverflow
 	}
 	return len(scanned), nil
