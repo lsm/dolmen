@@ -138,6 +138,10 @@ func TestLineCommentsCount(t *testing.T) {
 		{"package p\n\n//go:nosplit\nfunc g() {}\n", 0},
 		{"package p\n\n//go:uintptrescapes\nfunc h() {}\n", 0},
 		{"//go:debug madvdontneed=1\npackage main\n", 0},
+		{"//go:debug panicnil=1\npackage p\n", 0},
+		{"//go:debug\u00A0panicnil=1\npackage main\n", 1},
+		{"//go:de\rbug panicnil=1\npackage main\n", 0},
+		{"package p\n\nvar x = 1 //noli\rnt:errcheck\n", 0},
 		{"  //go:debug panicnil=1\npackage main\n", 0},
 		{"package main\n\n//go:debug x=1\nvar x int\n", 1},
 		{"//go:norace\npackage p\n", 1},
@@ -180,6 +184,9 @@ func TestLineCommentsCount(t *testing.T) {
 	}
 	if got := commentCountIn(t, "src.go", "package p\n\nimport \"fmt\"\n\nfunc Example() {\n\tfmt.Println(1)\n\t// Output: 1\n}\n"); got != 1 {
 		t.Errorf("non-test file example output counted %d, want 1", got)
+	}
+	if got := commentCountIn(t, "src.go", "//go:debug panicnil=1\npackage p\n"); got != 1 {
+		t.Errorf("library file debug directive counted %d, want 1", got)
 	}
 }
 

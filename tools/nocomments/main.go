@@ -33,7 +33,7 @@ var (
 	legacyBuildLine  = regexp.MustCompile(`^//` + wsClass + `*\+build(` + wsClass + `.*)?$`)
 	linePattern      = regexp.MustCompile(`^//line .*:\d+(?::\d+)? ?\r?$`)
 	blockLinePattern = regexp.MustCompile(`(?s)^/\*line .*:\d+(?::\d+)? ?\*/\r?$`)
-	debugPattern     = regexp.MustCompile(`^//go:debug(` + wsClass + `.*)?$`)
+	debugPattern     = regexp.MustCompile(`^//go:debug([ \t].*)?$`)
 	headerBlankLine  = regexp.MustCompile(`\n[ \t\r]*\n`)
 	exportPattern    = regexp.MustCompile(`^//export .+\r?$`)
 	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*(,[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*)*)?([ \t].*)?\r?$`)
@@ -257,7 +257,7 @@ func scanSource(src []byte, path string) (*scan, error) {
 		for _, c := range g.List {
 			start := tf.Offset(c.Pos())
 			end := commentEnd(src, start)
-			text := src[start:end]
+			text := bytes.ReplaceAll(src[start:end], []byte("\r"), nil)
 			if c.Pos() < f.Package && isGeneratedMarker(text) {
 				continue
 			}
@@ -268,7 +268,7 @@ func scanSource(src []byte, path string) (*scan, error) {
 			if c.Pos() < f.Package && blank(lineLead) && buildTagPattern.Match(text) {
 				continue
 			}
-			if c.Pos() < f.Package && debugPattern.Match(text) {
+			if c.Pos() < f.Package && (f.Name.Name == "main" || strings.HasSuffix(path, "_test.go")) && debugPattern.Match(text) {
 				continue
 			}
 			blockBefore := false
@@ -447,7 +447,7 @@ func lexCount(src []byte) int {
 				for j < n && src[j] != '\n' {
 					j++
 				}
-				text := src[i:j]
+				text := bytes.ReplaceAll(src[i:j], []byte("\r"), nil)
 				exempt := isExempt(text, atLineStart(src, i), false, false, false)
 				if i < limit {
 					lead := src[bytes.LastIndexByte(src[:i], '\n')+1 : i]
