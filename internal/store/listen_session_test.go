@@ -66,13 +66,19 @@ func TestSessionEndFiresClosedOnce(t *testing.T) {
 
 // TestSessionClosedPanicRecovered: the terminal callback is caller code —
 // a panicking close must not take the process down (deliverCommit's
-// write-path rule, applied to the session).
+// write-path rule, applied to the session). The direct end (a
+// never-launched session) fires inline, so the callback provably RAN.
 func TestSessionClosedPanicRecovered(t *testing.T) {
-	sess := testSession(func(error) { panic("boom") })
+	ran := false
+	sess := testSession(func(error) { ran = true; panic("boom") })
 	sess.end(errors.New("cause"))
-	// Reaching here at all is the pin: fireClosed recovered.
+	// Reaching here at all is the pin: fireClosed recovered — and the
+	// callback actually fired on the direct-end path.
 	if !sess.dead {
 		t.Fatal("session not dead after the panicking close")
+	}
+	if !ran {
+		t.Fatal("the direct end never fired closedFn — the parked cause had no flusher")
 	}
 }
 

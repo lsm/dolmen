@@ -410,6 +410,23 @@ func TestListenExternalCancelJoinsPendingFire(t *testing.T) {
 	}()
 	<-inFlight // the delivery is parked mid-notify
 	close(goEnd)
+	// The engine end must WIN the dead race: once it has flipped dead,
+	// its cause is parked (atomically with the flip) and a cancel can no
+	// longer suppress the fire with its own nil-cause end. Waiting on
+	// dead here makes the cancel's arrival deterministic.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		sess.mu.Lock()
+		died := sess.dead
+		sess.mu.Unlock()
+		if died {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the engine end never landed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	cancelReturned := make(chan struct{})
 	go func() {
@@ -438,4 +455,53 @@ func TestListenExternalCancelJoinsPendingFire(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the joined cancel never returned after the teardown drained")
 	}
+}
+
+// TestListenDrainFiresPendingDrainCloseAtEmptyQueue: the queue-owned
+// terminal — armed by the queue's owner (a lifetime end, a revocation)
+// once its admitted prefix has queued — fires from the drainer at the
+// EMPTY queue, after every queued record has delivered, never before.
+func TestListenDrainFiresPendingDrainCloseAtEmptyQueue(t *testing.T) {
+	st := openChangeStore(t)
+	insertNotes(t, st, 2)
+
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("open test: %v", err)
+	}
+	delivered := make(chan int64, 2)
+	closedCause := make(chan error, 1)
+	sess := testSession(func(cause error) { closedCause <- cause })
+	sess.s, sess.n = st, n
+	sess.chain = newCursorChain(time.Now(), 0)
+	sess.notify = func(r ChangeRecord) { delivered <- r.RowID }
+	sess.queue = []loggedChange{
+		{seq: 1, rec: ChangeRecord{RowID: 1}},
+		{seq: 2, rec: ChangeRecord{RowID: 2}},
+	}
+	sess.replayDone = true
+	sess.pendingDrainClose = ErrListenLifetimeEnded // the armer's stand-in; the armer itself lands with Δ3
+	sess.pumps.Add(1)
+	go sess.drain()
+
+	// Both queued records deliver BEFORE the close: the prefix drains.
+	for i := 0; i < 2; i++ {
+		select {
+		case id := <-delivered:
+			if id != int64(1+i) {
+				t.Fatalf("queued record delivered out of order: row %d, want %d", id, 1+i)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("queued record %d never delivered before the close", i)
+		}
+	}
+	select {
+	case cause := <-closedCause:
+		if !errors.Is(cause, ErrListenLifetimeEnded) {
+			t.Fatalf("queue-owned close cause = %v, want ErrListenLifetimeEnded", cause)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("queue-owned terminal never fired at the empty queue")
+	}
+	sess.cancel() // idempotent teardown; also waits the drain out
 }

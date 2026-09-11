@@ -61,14 +61,15 @@ func (sess *listenSession) wake(table string, changes ChangeRange) {
 
 // pump is the registered goroutine: fill until a terminal, then end the
 // session with it. The count spans the WHOLE goroutine — the terminal
-// teardown included — so a cancel that joins the session waits out
-// end(cause) and the closedFn it fires: a caller freeing what closedFn
+// teardown included — so a cancel that joins the session waits out the
+// parked close the deferred flush fires: a caller freeing what closedFn
 // captures the moment cancel returns is the use-after-free rule from
 // notify.go's listener contract. The one exception a counted pump cannot
 // honor is a closedFn that itself calls cancel — no goroutine can wait
 // itself out — and that is what the firing flag carves out (fireClosed).
 func (sess *listenSession) pump() {
 	defer sess.pumps.Done()
+	defer sess.flushParkedClose()
 	if cause := sess.fill(); cause != nil {
 		sess.end(cause)
 	}
