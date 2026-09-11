@@ -24,12 +24,10 @@ type scan struct{ comments []span }
 var (
 	goDirPattern     = regexp.MustCompile(`^//go:[a-z][a-z0-9_]*([ \t].*)?\r?$`)
 	legacyBuildLine  = regexp.MustCompile(`^// \+build([ \t].*)?\r?$`)
-	linePattern      = regexp.MustCompile(`^//line([ \t].*)?\r?$`)
+	linePattern      = regexp.MustCompile(`^//line .*:\d+(?::\d+)? ?\r?$`)
 	blockLinePattern = regexp.MustCompile(`^/\*line .*:\d+(?::\d+)? ?\*/\r?$`)
 	docDirPattern    = regexp.MustCompile(`^//(go:(embed|linkname|noinline|nosplit|norace|nocheckptr|noescape|uintptrescapes|wasmimport)|export)([ \t].*)?\r?$`)
 	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]+([ \t].*)?)?\r?$`)
-	trailingSpace    = regexp.MustCompile(`[ \t]+\n`)
-	blankRun         = regexp.MustCompile(`\n{3,}`)
 )
 
 func die(err error) {
@@ -87,33 +85,6 @@ func commentEnd(src []byte, start int) int {
 	return len(src)
 }
 
-func scanSource(src []byte) (*scan, error) {
-	fset, f, err := parseGo(src)
-	if err != nil {
-		return nil, fmt.Errorf("unparseable: %w", err)
-	}
-	tf := fset.File(f.Package)
-	preambles := cgoPreambles(f)
-	docs := docGroups(f)
-	s := &scan{}
-	for _, g := range f.Comments {
-		if preambles[g.Pos()] {
-			continue
-		}
-		isDoc := docs[g.Pos()]
-		for _, c := range g.List {
-			start := tf.Offset(c.Pos())
-			end := commentEnd(src, start)
-			text := src[start:end]
-			atLineStart := fset.PositionFor(c.Pos(), false).Column == 1
-			if !isExempt(text, atLineStart, isDoc) {
-				s.comments = append(s.comments, span{start, end})
-			}
-		}
-	}
-	return s, nil
-}
-
 func docGroups(f *ast.File) map[token.Pos]bool {
 	docs := map[token.Pos]bool{}
 	mark := func(cg *ast.CommentGroup) {
@@ -152,153 +123,31 @@ func isExempt(text []byte, atLineStart, isDoc bool) bool {
 	return blockLinePattern.Match(text) || nolintPattern.Match(text)
 }
 
-func blank(b []byte) bool { return len(bytes.Trim(b, " \t\r")) == 0 }
-
-func isSpace(b byte) bool { return b == ' ' || b == '\t' || b == '\n' || b == '\r' }
-
-func tidy(b []byte, collapseBlank bool) []byte {
-	b = trailingSpace.ReplaceAll(b, []byte("\n"))
-	if collapseBlank {
-		b = blankRun.ReplaceAll(b, []byte("\n\n"))
-	}
-	return b
-}
-
-func stripComments(src []byte, s *scan) []byte {
-	if len(s.comments) == 0 {
-		return src
-	}
-	rs := make([]span, len(s.comments))
-	for k, c := range s.comments {
-		rs[k] = expandRange(src, c)
-	}
-	sort.Slice(rs, func(a, b int) bool { return rs[a].start < rs[b].start })
-	var removals []span
-	for _, r := range rs {
-		if k := len(removals); k > 0 && r.start <= removals[k-1].end {
-			removals[k-1].end = max(removals[k-1].end, r.end)
-			continue
-		}
-		removals = append(removals, r)
-	}
-	var out []byte
-	prev := 0
-	for _, r := range removals {
-		out = append(out, src[prev:r.start]...)
-		if bytes.IndexByte(src[r.start:r.end], '\n') >= 0 {
-			if (len(out) == 0 || out[len(out)-1] != '\n') && (r.end >= len(src) || src[r.end] != '\n') {
-				out = append(out, '\n')
-			}
-		} else if len(out) > 0 && r.end < len(src) && !isSpace(out[len(out)-1]) && !isSpace(src[r.end]) {
-			out = append(out, ' ')
-		}
-		prev = r.end
-	}
-	out = append(out, src[prev:]...)
-	out = tidyOutsideProtected(out)
-	out = bytes.TrimLeft(out, "\n")
-	out = bytes.TrimRight(out, "\n")
-	if len(out) > 0 {
-		out = append(out, '\n')
-	}
-	return out
-}
-
-func expandRange(src []byte, r span) span {
-	lineStart := bytes.LastIndexByte(src[:r.start], '\n') + 1
-	nl := bytes.IndexByte(src[r.end:], '\n')
-	if nl < 0 {
-		nl = len(src) - r.end
-	}
-	lineEnd := r.end + nl
-	if !blank(src[lineStart:r.start]) || !blank(src[r.end:lineEnd]) {
-		e := r.end
-		for e < len(src) && (src[e] == ' ' || src[e] == '\t') {
-			e++
-		}
-		return span{r.start, e}
-	}
-	end := lineEnd
-	if end < len(src) {
-		end++
-	}
-	return span{lineStart, end}
-}
-
-func literalEnd(src []byte, start int) int {
-	switch src[start] {
-	case '`':
-		if e := bytes.IndexByte(src[start+1:], '`'); e >= 0 {
-			return start + e + 2
-		}
-		return len(src)
-	case '"', '\'':
-		q, i := src[start], start+1
-		for i < len(src) && src[i] != q && src[i] != '\n' {
-			if src[i] == '\\' && i+1 < len(src) && src[i+1] != '\n' {
-				i++
-			}
-			i++
-		}
-		if i < len(src) && src[i] == q {
-			i++
-		}
-		return i
-	}
-	return start + 1
-}
-
-func tidyOutsideProtected(src []byte) []byte {
+func scanSource(src []byte) (*scan, error) {
 	fset, f, err := parseGo(src)
 	if err != nil {
-		return src
+		return nil, fmt.Errorf("unparseable: %w", err)
 	}
 	tf := fset.File(f.Package)
 	preambles := cgoPreambles(f)
-	var protected []span
+	docs := docGroups(f)
+	s := &scan{}
 	for _, g := range f.Comments {
 		if preambles[g.Pos()] {
-			start := tf.Offset(g.Pos())
-			end := start
-			for _, c := range g.List {
-				if e := commentEnd(src, tf.Offset(c.Pos())); e > end {
-					end = e
-				}
-			}
-			protected = append(protected, span{start, end})
+			continue
 		}
-	}
-	ast.Inspect(f, func(n ast.Node) bool {
-		if lit, ok := n.(*ast.BasicLit); ok {
-			start := tf.Offset(lit.Pos())
-			protected = append(protected, span{start, literalEnd(src, start)})
-		}
-		return true
-	})
-	sort.Slice(protected, func(a, b int) bool { return protected[a].start < protected[b].start })
-	lineDirAt := len(src)
-	for _, g := range f.Comments {
+		isDoc := docs[g.Pos()]
 		for _, c := range g.List {
 			start := tf.Offset(c.Pos())
-			text := src[start:commentEnd(src, start)]
-			if linePattern.Match(text) || blockLinePattern.Match(text) {
-				lineDirAt = min(lineDirAt, start)
+			end := commentEnd(src, start)
+			text := src[start:end]
+			atLineStart := fset.PositionFor(c.Pos(), false).Column == 1
+			if !isExempt(text, atLineStart, isDoc) {
+				s.comments = append(s.comments, span{start, end})
 			}
 		}
 	}
-	var out []byte
-	prev := 0
-	for _, p := range protected {
-		if p.start > prev {
-			out = append(out, tidy(src[prev:p.start], p.start <= lineDirAt)...)
-		}
-		out = append(out, src[p.start:p.end]...)
-		prev = p.end
-	}
-	if prev < len(src) {
-		out = append(out, tidy(src[prev:], false)...)
-	}
-	return out
+	return s, nil
 }
 
 func judge(file string, count int, allow map[string]int) string {
@@ -340,13 +189,8 @@ func readAllowlist(path string) (map[string]int, error) {
 	return allow, nil
 }
 
-func listGoFiles(wide bool) ([]string, error) {
-	args := []string{"ls-files"}
-	if wide {
-		args = append(args, "--cached", "--others", "--exclude-standard")
-	}
-	args = append(args, "-z", "--", "*.go")
-	out, err := exec.Command("git", args...).Output()
+func listGoFiles() ([]string, error) {
+	out, err := exec.Command("git", "ls-files", "-z", "--", "*.go").Output()
 	if err != nil {
 		return nil, fmt.Errorf("git ls-files: %w", err)
 	}
@@ -361,7 +205,7 @@ func listGoFiles(wide bool) ([]string, error) {
 }
 
 func main() {
-	mode := "write"
+	mode := ""
 	for _, a := range os.Args[1:] {
 		switch a {
 		case "--check", "--stats":
@@ -370,7 +214,10 @@ func main() {
 			die(fmt.Errorf("unknown flag %q", a))
 		}
 	}
-	files, err := listGoFiles(mode == "write")
+	if mode == "" {
+		die(fmt.Errorf("usage: nocomments --check | --stats"))
+	}
+	files, err := listGoFiles()
 	if err != nil {
 		die(err)
 	}
@@ -391,24 +238,15 @@ func main() {
 			die(fmt.Errorf("cannot parse %s: %w", f, err))
 		}
 		n := len(s.comments)
-		switch mode {
-		case "stats":
+		if mode == "stats" {
 			if n > 0 {
 				fmt.Printf("%s:%d\n", f, n)
 			}
-		case "check":
-			if msg := judge(f, n, allow); msg != "" {
-				fmt.Println(msg)
-				bad++
-			}
-		default:
-			if n == 0 {
-				continue
-			}
-			if err := os.WriteFile(f, stripComments(src, s), 0o644); err != nil {
-				die(err)
-			}
-			fmt.Printf("stripped %s (%d comments)\n", f, n)
+			continue
+		}
+		if msg := judge(f, n, allow); msg != "" {
+			fmt.Println(msg)
+			bad++
 		}
 	}
 	if mode == "check" {

@@ -93,6 +93,7 @@ func TestLineCommentsCount(t *testing.T) {
 		{"package p\n\n//go:wasmimport env host1\nfunc w() {}\n", 0},
 		{"package p\n\n  //go:noescape\nfunc i() {}\n", 0},
 		{"//line file.go:10\npackage p\n", 0},
+		{"//line just prose\npackage p\n", 1},
 		{"package p\n\nfunc f() {\n\t//line x.go:1\n\t_ = 1\n}\n", 1},
 		{"package p\n\n//export MyFunc\nfunc MyFunc() {}\n", 0},
 		{"package p\n\n//go:noinlinex\nfunc k() {}\n", 0},
@@ -117,62 +118,6 @@ func TestScanRefusals(t *testing.T) {
 		if _, err := scanSource([]byte(tc.src)); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("scanSource(%q) err = %v, want containing %q", tc.src, err, tc.want)
 		}
-	}
-}
-
-func TestStrip(t *testing.T) {
-	for _, tc := range []struct {
-		src, want string
-	}{
-		{"package p\n\n// gone\nvar x = 1\n", "package p\n\nvar x = 1\n"},
-		{"package p\n\nvar x = 1 // gone\nvar y = 2\n", "package p\n\nvar x = 1\nvar y = 2\n"},
-		{"package p\n\nvar x = 1 /* gone */ + 2\n", "package p\n\nvar x = 1 + 2\n"},
-		{"package p\n\n/*\n * gone\n */\nvar x = 1\n", "package p\n\nvar x = 1\n"},
-		{"package p\n\nvar a = 1\n// one\n// two\nvar b = 2\n", "package p\n\nvar a = 1\nvar b = 2\n"},
-		{"package p\n\nvar a = 1\n\n// one\n\n// two\n\nvar b = 2\n", "package p\n\nvar a = 1\n\nvar b = 2\n"},
-		{"//go:build ignore\n\n// gone\npackage p\n", "//go:build ignore\n\npackage p\n"},
-		{"package p\n\nvar s = `keep // this\n\n\nand this`\n\n// gone\n", "package p\n\nvar s = `keep // this\n\n\nand this`\n"},
-		{"package p\n\nvar s = \"keep // this\" // gone\n", "package p\n\nvar s = \"keep // this\"\n"},
-		{"package p\n\nvar x = 1 // gone  \t\nvar y = 2\n", "package p\n\nvar x = 1\nvar y = 2\n"},
-		{"package p\n\nvar/**/x = 1\n", "package p\n\nvar x = 1\n"},
-		{"package p\n\nfunc f() {\n\tx := 1 /*\n*/ y := 2\n}\n", "package p\n\nfunc f() {\n\tx := 1\ny := 2\n}\n"},
-		{"package p\n\nfunc f() {\n\tx := 1 /*\n*/\n\ty := 2\n}\n", "package p\n\nfunc f() {\n\tx := 1\n\ty := 2\n}\n"},
-		{"package p\n\nfunc f() {\n\tx := 1 /* tight */+2\n}\n", "package p\n\nfunc f() {\n\tx := 1 +2\n}\n"},
-		{"package p\n\nvar ch = make/**/(chan int)\n", "package p\n\nvar ch = make (chan int)\n"},
-		{"package p\n\nvar s = \"a\"/**/ + \"b\"\n", "package p\n\nvar s = \"a\" + \"b\"\n"},
-		{"// header\n// lines\n\npackage p\n", "package p\n"},
-		{"package p\n\nvar s = `x`\n\n// gone\n", "package p\n\nvar s = `x`\n"},
-		{"package p\n\nvar x = 1 + /* a\r\nb */ 2\n", "package p\n\nvar x = 1 +\n2\n"},
-		{"package p\n\nvar x = 1 // gone\r\n", "package p\n\nvar x = 1\n"},
-		{"package p\n\nvar s = `a\r\nb   \n\n\nEND`\n\n// gone\n", "package p\n\nvar s = `a\r\nb   \n\n\nEND`\n"},
-		{"package p\n\n/*\n#include <x.h>\n\n\n#define X 1   \nvoid f(void);\n*/\nimport \"C\"\n\n// gone\n", "package p\n\n/*\n#include <x.h>\n\n\n#define X 1   \nvoid f(void);\n*/\nimport \"C\"\n"},
-		{"package p\n\n// #cgo CFLAGS: -DX\n/*\nint n = __LINE__;\n\n\n*/\nimport \"C\"\n\n// gone\n", "package p\n\n// #cgo CFLAGS: -DX\n/*\nint n = __LINE__;\n\n\n*/\nimport \"C\"\n"},
-		{"//line generated.go:40\n\npackage p\n\n\n\nvar x = 1\n\n// gone\n", "//line generated.go:40\n\npackage p\n\n\n\nvar x = 1\n"},
-		{"package p\n\n/*\n#include <x.h>\n*/\nimport \"C\"\n\n// gone\nvar x = 1\n", "package p\n\n/*\n#include <x.h>\n*/\nimport \"C\"\n\nvar x = 1\n"},
-	} {
-		s, err := scanSource([]byte(tc.src))
-		if err != nil {
-			t.Fatalf("scanSource(%q): %v", tc.src, err)
-		}
-		if got := string(stripComments([]byte(tc.src), s)); got != tc.want {
-			t.Errorf("strip(%q)\n= %q\nwant %q", tc.src, got, tc.want)
-		}
-	}
-}
-
-func TestStripIdempotent(t *testing.T) {
-	src := "package p\n\n// one\nvar x = 1 /* two */\nvar s = `// raw\n/* raw */`\n// three\n"
-	s, err := scanSource([]byte(src))
-	if err != nil {
-		t.Fatal(err)
-	}
-	once := stripComments([]byte(src), s)
-	s2, err := scanSource(once)
-	if err != nil {
-		t.Fatalf("rescan: %v", err)
-	}
-	if twice := stripComments(once, s2); string(twice) != string(once) {
-		t.Errorf("strip not idempotent:\nonce  = %q\ntwice = %q", once, twice)
 	}
 }
 
