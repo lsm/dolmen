@@ -108,6 +108,7 @@ const listenPollInterval = 250 * time.Millisecond
 
 func (sess *listenSession) pollWake() {
 	defer sess.pumps.Done()
+	defer sess.recoverPump("poll")
 	t := time.NewTicker(listenPollInterval)
 	defer t.Stop()
 	for {
