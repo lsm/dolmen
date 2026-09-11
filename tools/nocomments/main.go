@@ -23,10 +23,12 @@ type span struct{ start, end int }
 
 type scan struct{ comments []span }
 
+const wsClass = `[\t\n\v\f\r\x85\p{Zs}\x{2028}\x{2029}]`
+
 var (
 	goDirPattern     = regexp.MustCompile(`^//go:[a-z][a-z0-9_]*([ \t].*)?\r?$`)
-	buildTagPattern  = regexp.MustCompile(`^//go:build([ \t].*)?\r?$`)
-	legacyBuildLine  = regexp.MustCompile(`^//[ \t]*\+build([ \t].*)?\r?$`)
+	buildTagPattern  = regexp.MustCompile(`^//go:build(` + wsClass + `.*)?$`)
+	legacyBuildLine  = regexp.MustCompile(`^//` + wsClass + `*\+build(` + wsClass + `.*)?$`)
 	linePattern      = regexp.MustCompile(`^//line .*:\d+(?::\d+)? ?\r?$`)
 	blockLinePattern = regexp.MustCompile(`(?s)^/\*line .+:\d+(?::\d+)? ?\*/\r?$`)
 	lineScannedOnly  = regexp.MustCompile(`^//go:(build|generate|line|debug)([ \t].*)?\r?$`)
