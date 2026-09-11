@@ -22,12 +22,12 @@ type span struct{ start, end int }
 type scan struct{ comments []span }
 
 var (
-	buildGenPattern = regexp.MustCompile(`^//go:(build|generate)([ \t].*)?\r?$`)
-	linePattern     = regexp.MustCompile(`^//line([ \t].*)?\r?$`)
-	anyDirPattern   = regexp.MustCompile(`^//(go:(embed|linkname|noinline|nosplit|uintptrescapes)|export)([ \t].*)?\r?$`)
-	nolintPattern   = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]+([ \t].*)?)?\r?$`)
-	trailingSpace   = regexp.MustCompile(`[ \t]+\n`)
-	blankRun        = regexp.MustCompile(`\n{3,}`)
+	goDirPattern  = regexp.MustCompile(`^//go:[a-z][a-z0-9_]*([ \t].*)?\r?$`)
+	linePattern   = regexp.MustCompile(`^//line([ \t].*)?\r?$`)
+	exportPattern = regexp.MustCompile(`^//export([ \t].*)?\r?$`)
+	nolintPattern = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]+([ \t].*)?)?\r?$`)
+	trailingSpace = regexp.MustCompile(`[ \t]+\n`)
+	blankRun      = regexp.MustCompile(`\n{3,}`)
 )
 
 func die(err error) {
@@ -68,6 +68,19 @@ func cgoPreambles(f *ast.File) map[token.Pos]bool {
 	return exempt
 }
 
+func commentEnd(src []byte, start int) int {
+	if bytes.HasPrefix(src[start:], []byte("//")) {
+		if e := bytes.IndexByte(src[start:], '\n'); e >= 0 {
+			return start + e
+		}
+		return len(src)
+	}
+	if rel := bytes.Index(src[start+2:], []byte("*/")); rel >= 0 {
+		return start + rel + 4
+	}
+	return len(src)
+}
+
 func scanSource(src []byte) (*scan, error) {
 	fset, f, err := parseGo(src)
 	if err != nil {
@@ -75,16 +88,19 @@ func scanSource(src []byte) (*scan, error) {
 	}
 	tf := fset.File(f.Package)
 	preambles := cgoPreambles(f)
+	docs := docGroups(f)
 	s := &scan{}
 	for _, g := range f.Comments {
 		if preambles[g.Pos()] {
 			continue
 		}
+		isDoc := docs[g.Pos()]
 		for _, c := range g.List {
-			start, end := tf.Offset(c.Pos()), tf.Offset(c.End())
+			start := tf.Offset(c.Pos())
+			end := commentEnd(src, start)
 			text := src[start:end]
 			atLineStart := fset.Position(c.Pos()).Column == 1
-			if !isExempt(text, atLineStart) {
+			if !isExempt(text, atLineStart, isDoc) {
 				s.comments = append(s.comments, span{start, end})
 			}
 		}
@@ -92,11 +108,42 @@ func scanSource(src []byte) (*scan, error) {
 	return s, nil
 }
 
-func isExempt(text []byte, atLineStart bool) bool {
-	if atLineStart && (buildGenPattern.Match(text) || linePattern.Match(text)) {
+func docGroups(f *ast.File) map[token.Pos]bool {
+	docs := map[token.Pos]bool{}
+	mark := func(cg *ast.CommentGroup) {
+		if cg != nil {
+			docs[cg.Pos()] = true
+		}
+	}
+	for _, d := range f.Decls {
+		switch decl := d.(type) {
+		case *ast.GenDecl:
+			mark(decl.Doc)
+			for _, s := range decl.Specs {
+				switch sp := s.(type) {
+				case *ast.ImportSpec:
+					mark(sp.Doc)
+				case *ast.ValueSpec:
+					mark(sp.Doc)
+				case *ast.TypeSpec:
+					mark(sp.Doc)
+				}
+			}
+		case *ast.FuncDecl:
+			mark(decl.Doc)
+		}
+	}
+	return docs
+}
+
+func isExempt(text []byte, atLineStart, isDoc bool) bool {
+	if atLineStart && (goDirPattern.Match(text) || linePattern.Match(text)) {
 		return true
 	}
-	return anyDirPattern.Match(text) || nolintPattern.Match(text)
+	if isDoc && (goDirPattern.Match(text) || exportPattern.Match(text)) {
+		return true
+	}
+	return nolintPattern.Match(text)
 }
 
 func blank(b []byte) bool { return len(bytes.Trim(b, " \t\r")) == 0 }

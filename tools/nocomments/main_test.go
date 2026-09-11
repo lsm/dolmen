@@ -63,7 +63,7 @@ func TestLineCommentsCount(t *testing.T) {
 		{"package p\n\nvar x = 1 //go:generate echo\n", 1},
 		{"package p\n\nfunc f() {\n\t//nolint:gocyclo\n}\n", 0},
 		{"package p\n\nvar (\n\t//go:embed data.txt\n\tS string\n)\n", 0},
-		{"package p\n\nvar x = 1 //go:embed data.txt\n", 0},
+		{"package p\n\nvar x = 1 //go:embed data.txt\n", 1},
 		{"package p\n\n/*\n#include <stdlib.h>\n*/\nimport \"C\"\n", 0},
 		{"package p\n\n// #include <stdio.h>\nimport \"C\"\n", 0},
 		{"package p\n\n// #cgo CFLAGS: -DX\n// #include <x.h>\nimport \"C\"\n", 0},
@@ -71,13 +71,18 @@ func TestLineCommentsCount(t *testing.T) {
 		{"package p\n\n/*\n#include <stdlib.h>\n*/\n\nimport \"C\"\n", 1},
 		{"package p\n\n/* plain doc */\nimport \"os\"\n", 1},
 		{"package p\n\n//go:linkname foo bar\nvar x = 1\n", 0},
-		{"package p\n\nfunc f() {\n\t//go:noinline\n\t_ = 1\n}\n", 0},
+		{"package p\n\nfunc f() {\n\t//go:noinline\n\t_ = 1\n}\n", 1},
 		{"package p\n\n//go:nosplit\nfunc g() {}\n", 0},
 		{"package p\n\n//go:uintptrescapes\nfunc h() {}\n", 0},
+		{"//go:debug madvdontneed=1\npackage main\n", 0},
+		{"//go:norace\npackage p\n", 0},
+		{"package p\n\n//go:noescape\nfunc e() {}\n", 0},
+		{"package p\n\n//go:wasmimport env host1\nfunc w() {}\n", 0},
+		{"package p\n\n  //go:noescape\nfunc i() {}\n", 0},
 		{"//line file.go:10\npackage p\n", 0},
 		{"package p\n\nfunc f() {\n\t//line x.go:1\n\t_ = 1\n}\n", 1},
 		{"package p\n\n//export MyFunc\nfunc MyFunc() {}\n", 0},
-		{"package p\n\n//go:noinlinex\nfunc k() {}\n", 1},
+		{"package p\n\n//go:noinlinex\nfunc k() {}\n", 0},
 	} {
 		if got := commentCount(t, tc.src); got != tc.want {
 			t.Errorf("scanSource(%q) counted %d comments, want %d", tc.src, got, tc.want)
@@ -124,6 +129,8 @@ func TestStrip(t *testing.T) {
 		{"package p\n\nvar s = \"a\"/**/ + \"b\"\n", "package p\n\nvar s = \"a\" + \"b\"\n"},
 		{"// header\n// lines\n\npackage p\n", "package p\n"},
 		{"package p\n\nvar s = `x`\n\n// gone\n", "package p\n\nvar s = `x`\n"},
+		{"package p\n\nvar x = 1 + /* a\r\nb */ 2\n", "package p\n\nvar x = 1 +\n2\n"},
+		{"package p\n\nvar x = 1 // gone\r\n", "package p\n\nvar x = 1\n"},
 		{"package p\n\n/*\n#include <x.h>\n*/\nimport \"C\"\n\n// gone\nvar x = 1\n", "package p\n\n/*\n#include <x.h>\n*/\nimport \"C\"\n\nvar x = 1\n"},
 	} {
 		s, err := scanSource([]byte(tc.src))
