@@ -90,7 +90,8 @@ type listenSession struct {
 	ctx       context.Context
 	ctxCancel context.CancelFunc
 
-	delivered atomic.Int64 // live deliveries, for periodic retention pruning (listen_drain.go)
+	delivered     atomic.Int64 // live deliveries, for periodic retention pruning (listen_drain.go)
+	deliveringSeq int64
 
 	nextCursor      Cursor // the standing resume cursor, fixed at registration
 	replayExhausted bool   // a page reached the registration boundary: the replay is done (the final publish sets it)
