@@ -212,12 +212,8 @@ func TestListenPollIntervalShrinksBelowRetention(t *testing.T) {
 		t.Fatalf("open short-retention store: %v", err)
 	}
 	t.Cleanup(func() { short.Close() })
-	n2, err := short.ns("test")
-	if err != nil {
-		t.Fatalf("open test: %v", err)
-	}
 	s2 := testSession(nil)
-	s2.s, s2.n = short, n2
+	s2.s = short
 	if got := s2.pollInterval(); got != 20*time.Millisecond {
 		t.Fatalf("short-retention poll interval = %v, want 20ms (R/2)", got)
 	}
@@ -255,8 +251,8 @@ func TestListenPollPumpProtectsParkedDrainClose(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
-	if seqs := changeSeqs(t, n); len(seqs) != 2 {
-		t.Fatalf("parked drain-close prefix after ticks + prune = %v, want both rows", seqs)
+	if seqs := changeSeqs(t, n); len(seqs) < 2 || seqs[0] != 1 || seqs[1] != 2 {
+		t.Fatalf("parked drain-close prefix after ticks + prune = %v, want the queued rows 1 and 2 retained", seqs)
 	}
 	sess.cancel()
 }
