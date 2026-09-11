@@ -30,6 +30,7 @@ var (
 	linePattern      = regexp.MustCompile(`^//line .*:\d+(?::\d+)? ?\r?$`)
 	blockLinePattern = regexp.MustCompile(`(?s)^/\*line .+:\d+(?::\d+)? ?\*/\r?$`)
 	lineScannedOnly  = regexp.MustCompile(`^//go:(build|generate|line|debug)([ \t].*)?\r?$`)
+	debugPattern     = regexp.MustCompile(`^//go:debug([ \t].*)?\r?$`)
 	headerBlankLine  = regexp.MustCompile(`\n[ \t\r]*\n`)
 	exportPattern    = regexp.MustCompile(`^//export .+\r?$`)
 	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]*[0-9A-Za-z_-][0-9A-Za-z_,-]*)?([ \t].*)?\r?$`)
@@ -165,17 +166,35 @@ func atLineStart(src []byte, start int) bool {
 	return start == 0 || src[start-1] == '\n'
 }
 
-func isExempt(text []byte, atLineStart, isDoc, isFuncDoc bool) bool {
+func fileImportsC(f *ast.File) bool {
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok != token.IMPORT {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			imp, ok := spec.(*ast.ImportSpec)
+			if ok {
+				if path, err := strconv.Unquote(imp.Path.Value); err == nil && path == "C" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func isExempt(text []byte, atLineStart, isDoc, isFuncDoc, isCgo bool) bool {
 	if atLineStart && linePattern.Match(text) {
 		return true
 	}
-	if atLineStart && goDirPattern.Match(text) && !buildTagPattern.Match(text) {
+	if atLineStart && goDirPattern.Match(text) && !buildTagPattern.Match(text) && !debugPattern.Match(text) {
 		return true
 	}
 	if isDoc && goDirPattern.Match(text) && !lineScannedOnly.Match(text) {
 		return true
 	}
-	if isFuncDoc && exportPattern.Match(text) {
+	if isFuncDoc && isCgo && exportPattern.Match(text) {
 		return true
 	}
 	return blockLinePattern.Match(text) || nolintPattern.Match(text)
@@ -202,7 +221,7 @@ func scanSource(src []byte, path string) (*scan, error) {
 	}
 	tf := fset.File(f.Package)
 	pkgOff := tf.Offset(f.Package)
-	headerHasBlock := false
+	var headerBlockStarts []int
 	for _, g := range f.Comments {
 		if g.Pos() >= f.Package {
 			break
@@ -210,7 +229,7 @@ func scanSource(src []byte, path string) (*scan, error) {
 		for _, c := range g.List {
 			start := tf.Offset(c.Pos())
 			if !bytes.HasPrefix(src[start:], []byte("//")) {
-				headerHasBlock = true
+				headerBlockStarts = append(headerBlockStarts, start)
 			}
 		}
 	}
@@ -237,11 +256,20 @@ func scanSource(src []byte, path string) (*scan, error) {
 			if c.Pos() < f.Package && buildTagPattern.Match(text) {
 				continue
 			}
-			if c.Pos() < f.Package && !headerHasBlock &&
+			if c.Pos() < f.Package && debugPattern.Match(text) {
+				continue
+			}
+			blockBefore := false
+			for _, b := range headerBlockStarts {
+				if b < start {
+					blockBefore = true
+				}
+			}
+			if c.Pos() < f.Package && !blockBefore &&
 				legacyBuildLine.Match(text) && headerBlankLine.Match(src[end:pkgOff]) {
 				continue
 			}
-			if !isExempt(text, atLineStart(src, start), isDoc, isFuncDoc) {
+			if !isExempt(text, atLineStart(src, start), isDoc, isFuncDoc, fileImportsC(f)) {
 				s.comments = append(s.comments, span{start, end})
 			}
 		}
