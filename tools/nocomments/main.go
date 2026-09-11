@@ -128,7 +128,9 @@ func stripComments(src []byte, s *scan) []byte {
 	for _, r := range removals {
 		out = append(out, src[prev:r.start]...)
 		if bytes.IndexByte(src[r.start:r.end], '\n') >= 0 {
-			out = append(out, '\n')
+			if (len(out) == 0 || out[len(out)-1] != '\n') && (r.end >= len(src) || src[r.end] != '\n') {
+				out = append(out, '\n')
+			}
 		} else if len(out) > 0 && r.end < len(src) && !isSpace(out[len(out)-1]) && !isSpace(src[r.end]) {
 			out = append(out, ' ')
 		}
