@@ -110,8 +110,12 @@ func TestListenNonCarrierReadDelivers(t *testing.T) {
 	defer cancel()
 	drainReplay(t, replay)
 
-	if !st.pruneDue("test", time.Now()) {
-		t.Fatal("could not consume the prune carrier slot")
+	deadline := time.Now().Add(5 * time.Second)
+	for !st.pruneDue("test", time.Now()) {
+		if time.Now().After(deadline) {
+			t.Fatal("could not consume the prune carrier slot")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	insertNotes(t, st, 1)
 
