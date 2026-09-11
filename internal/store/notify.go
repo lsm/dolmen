@@ -75,6 +75,45 @@ func (s *Store) onCommit(ns string, fn func(table string, changes ChangeRange)) 
 	}
 }
 
+func (s *Store) trackSession(sess *listenSession) {
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+	if s.listenSessions == nil {
+		s.listenSessions = map[string][]*listenSession{}
+	}
+	s.listenSessions[sess.nsName] = append(s.listenSessions[sess.nsName], sess)
+}
+
+func (s *Store) untrackSession(sess *listenSession) {
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+	sessions := s.listenSessions[sess.nsName]
+	for i, cand := range sessions {
+		if cand == sess {
+			s.listenSessions[sess.nsName] = append(sessions[:i], sessions[i+1:]...)
+			break
+		}
+	}
+}
+
+func (s *Store) wakeListenSessions(ns string) {
+	s.notifyMu.Lock()
+	sessions := append([]*listenSession(nil), s.listenSessions[ns]...)
+	s.notifyMu.Unlock()
+	for _, sess := range sessions {
+		sess.wake("", ChangeRange{})
+	}
+}
+
+func (s *Store) endListenSessions(ns string, cause error) {
+	s.notifyMu.Lock()
+	sessions := append([]*listenSession(nil), s.listenSessions[ns]...)
+	s.notifyMu.Unlock()
+	for _, sess := range sessions {
+		sess.endParked(cause)
+	}
+}
+
 // notifyCommitted wakes the listeners registered for ns. Every write path
 // invokes it after tx.Commit() returns (§9.3: notification happens after
 // commit) — synchronously, on the write's own goroutine, so when the write

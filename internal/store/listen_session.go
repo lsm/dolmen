@@ -145,10 +145,37 @@ func (sess *listenSession) cursor() Cursor {
 // cancel's pumps.Wait below would block forever on a session that never
 // saw a commit.
 func (sess *listenSession) end(cause error) {
+	first := sess.endParked(cause)
+	if cause == nil || !first {
+		return
+	}
+	sess.mu.Lock()
+	if sess.pumpsLaunched || sess.pendingClose == nil {
+		sess.mu.Unlock()
+		return
+	}
+	// The not-via-Listen world: no production launch marked the
+	// session, so no pump's deferred flush is guaranteed — the fire
+	// happens HERE. It still honors the exposure rule: a
+	// directly-launched pump (a fixture that skipped Listen) can be
+	// mid-delivery or mid-page, so the inline fire waits the same
+	// brackets the flush does; the genuinely never-launched session
+	// has no drain and the wait is a no-op. The first parked cause is
+	// the one that fires.
+	cause = sess.pendingClose
+	sess.pendingClose = nil
+	for sess.replayActive || sess.notifyActive {
+		sess.cond.Wait()
+	}
+	sess.mu.Unlock()
+	sess.fireClosed(cause)
+}
+
+func (sess *listenSession) endParked(cause error) bool {
 	sess.mu.Lock()
 	if sess.dead {
 		sess.mu.Unlock()
-		return
+		return false
 	}
 	sess.dead = true
 	// The park rides the SAME critical section as dead, and the first
@@ -161,31 +188,20 @@ func (sess *listenSession) end(cause error) {
 	// arriving while the fire is still PARKED — waiting its bracket
 	// behind a blocked notify — takes the quiescence join and returns
 	// only after the whole teardown; the carve-out never covers a pending
-	// fire (codex P1 on #228, thread r3984384330).
+	// fire (codex P1 on #228, thread r3984384330). endParked alone —
+	// what the store's lifecycle events call — never fires inline: it
+	// runs under the namespace lock, where caller code must not run, and
+	// a session whose Listen is still mid-registration owes no callback
+	// at all if that registration then fails (end's inline exception is
+	// for the never-launched fixture world, decided by the session's own
+	// goroutines).
 	if cause != nil && sess.pendingClose == nil {
 		sess.pendingClose = cause
 	}
 	sess.ctxCancel() // the pumps' in-flight database work — cancel must not wait out a blocked read
 	sess.cond.Broadcast()
-	if cause != nil && !sess.pumpsLaunched {
-		// The not-via-Listen world: no production launch marked the
-		// session, so no pump's deferred flush is guaranteed — the fire
-		// happens HERE. It still honors the exposure rule: a
-		// directly-launched pump (a fixture that skipped Listen) can be
-		// mid-delivery or mid-page, so the inline fire waits the same
-		// brackets the flush does; the genuinely never-launched session
-		// has no drain and the wait is a no-op. The first parked cause is
-		// the one that fires.
-		cause = sess.pendingClose
-		sess.pendingClose = nil
-		for sess.replayActive || sess.notifyActive {
-			sess.cond.Wait()
-		}
-		sess.mu.Unlock()
-		sess.fireClosed(cause)
-		return
-	}
 	sess.mu.Unlock()
+	return true
 }
 
 // flushParkedClose fires a parked terminal from a pump's exit path, once
@@ -280,6 +296,9 @@ func (sess *listenSession) fireClosed(cause error) {
 // external cancel waits any in-flight delivery out. Idempotent.
 func (sess *listenSession) cancel() {
 	sess.cancelOnce.Do(func() {
+		if sess.s != nil {
+			sess.s.untrackSession(sess)
+		}
 		if sess.unregister != nil {
 			sess.unregister()
 		}
