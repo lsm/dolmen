@@ -72,7 +72,7 @@ func cgoPreambles(f *ast.File) map[token.Pos]bool {
 			if !ok {
 				continue
 			}
-			if path, err := strconv.Unquote(imp.Path.Value); err == nil && path == "C" {
+			if path, err := strconv.Unquote(imp.Path.Value); err == nil && path == "C" && imp.Name == nil {
 				docs := []*ast.CommentGroup{imp.Doc}
 				if len(gd.Specs) == 1 {
 					docs = append(docs, gd.Doc)
@@ -141,6 +141,26 @@ func commentEnd(src []byte, start int) int {
 	return len(src)
 }
 
+func embeddableType(expr ast.Expr) bool {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name == "string"
+	case *ast.ArrayType:
+		if elt, ok := t.Elt.(*ast.Ident); ok {
+			return t.Len == nil && elt.Name == "byte"
+		}
+	case *ast.SelectorExpr:
+		if pkg, ok := t.X.(*ast.Ident); ok {
+			return pkg.Name == "embed" && t.Sel.Name == "FS"
+		}
+	}
+	return false
+}
+
+func embeddableSpec(sp *ast.ValueSpec) bool {
+	return len(sp.Names) == 1 && embeddableType(sp.Type)
+}
+
 func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]bool, map[token.Pos]string) {
 	valueDocs := map[token.Pos]bool{}
 	funcDocs := map[token.Pos]bool{}
@@ -157,16 +177,16 @@ func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool, map[token.P
 		switch decl := d.(type) {
 		case *ast.GenDecl:
 			if decl.Tok == token.VAR {
-				allInitFree := true
+				allEmbeddable := true
 				for _, s := range decl.Specs {
 					sp, ok := s.(*ast.ValueSpec)
-					if !ok || len(sp.Values) > 0 {
-						allInitFree = false
+					if !ok || len(sp.Values) > 0 || !embeddableSpec(sp) {
+						allEmbeddable = false
 						continue
 					}
 					mark(valueDocs, sp.Doc)
 				}
-				if allInitFree {
+				if allEmbeddable {
 					mark(valueDocs, decl.Doc)
 				}
 			}
@@ -236,12 +256,18 @@ func init() {
 	}
 }
 
+var godebugDefaultPattern = regexp.MustCompile(`^go[1-9][0-9]*(\.[0-9]+)?$`)
+
 func validDebugSettings(norm []byte) bool {
 	if !debugPattern.Match(norm) {
 		return false
 	}
 	setting := strings.TrimSpace(string(norm[len("//go:debug"):]))
-	k := setting[:strings.IndexByte(setting, '=')]
+	eq := strings.IndexByte(setting, '=')
+	k, v := setting[:eq], setting[eq+1:]
+	if k == "default" {
+		return godebugDefaultPattern.MatchString(v)
+	}
 	return godebugKeys[k]
 }
 
@@ -254,19 +280,19 @@ func validBuildConstraint(raw []byte) bool {
 	return err == nil
 }
 
-func topLevelNames(f *ast.File) map[string]bool {
+func linknameNames(f *ast.File) map[string]bool {
 	names := map[string]bool{}
 	for _, d := range f.Decls {
 		switch decl := d.(type) {
 		case *ast.GenDecl:
+			if decl.Tok != token.VAR {
+				continue
+			}
 			for _, s := range decl.Specs {
-				switch sp := s.(type) {
-				case *ast.ValueSpec:
+				if sp, ok := s.(*ast.ValueSpec); ok {
 					for _, n := range sp.Names {
 						names[n.Name] = true
 					}
-				case *ast.TypeSpec:
-					names[sp.Name.Name] = true
 				}
 			}
 		case *ast.FuncDecl:
@@ -328,7 +354,7 @@ func scanSource(src []byte, path string, names map[string]bool) (*scan, error) {
 		return nil, fmt.Errorf("unparseable: %w", err)
 	}
 	if names == nil {
-		names = topLevelNames(f)
+		names = linknameNames(f)
 	}
 	tf := fset.File(f.Package)
 	pkgOff := tf.Offset(f.Package)
@@ -708,26 +734,63 @@ func main() {
 	if err != nil {
 		die(err)
 	}
-	pkgNames := map[string]map[string]bool{}
-	pkgOf := map[string]string{}
+	type pkgKey struct{ dir, pkg, tag string }
+	namesBy := map[pkgKey]map[string]bool{}
+	tagOf := map[string]string{}
+	srcs := map[string][]byte{}
 	for _, f := range files {
 		src, err := os.ReadFile(f)
 		if err != nil {
 			die(err)
 		}
+		srcs[f] = src
 		_, ast, err := parseGo(src)
 		if err != nil {
 			continue
 		}
-		key := filepath.Dir(f) + "\x00" + ast.Name.Name
-		if pkgNames[key] == nil {
-			pkgNames[key] = map[string]bool{}
+		tag := ""
+		for _, g := range ast.Comments {
+			if g.Pos() >= ast.Package {
+				break
+			}
+			for _, c := range g.List {
+				if x, err2 := constraint.Parse(strings.TrimSpace(c.Text)); err2 == nil {
+					if b, ok := x.(*constraint.TagExpr); ok {
+						tag = b.Tag
+					}
+				}
+			}
 		}
-		for n := range topLevelNames(ast) {
-			pkgNames[key][n] = true
+		key := pkgKey{filepath.Dir(f), ast.Name.Name, tag}
+		if namesBy[key] == nil {
+			namesBy[key] = map[string]bool{}
+		}
+		for n := range linknameNames(ast) {
+			namesBy[key][n] = true
+		}
+		tagOf[f] = tag
+	}
+	pkgOf := map[string]string{}
+	pkgOfNames := map[string]map[string]bool{}
+	for _, f := range files {
+		dir := filepath.Dir(f)
+		pkg := ""
+		if _, ast, err := parseGo(srcs[f]); err == nil {
+			pkg = ast.Name.Name
+		}
+		merged := map[string]bool{}
+		for _, tag := range []string{tagOf[f], ""} {
+			for n := range namesBy[pkgKey{dir, pkg, tag}] {
+				merged[n] = true
+			}
+		}
+		key := dir + "\x00" + pkg + "\x00" + tagOf[f]
+		if _, seen := pkgOfNames[key]; !seen {
+			pkgOfNames[key] = merged
 		}
 		pkgOf[f] = key
 	}
+
 	allow := map[string]int{}
 	if mode == "check" {
 		if allow, err = readAllowlist(allowlistPath); err != nil {
@@ -736,11 +799,7 @@ func main() {
 	}
 	bad := 0
 	for _, f := range files {
-		src, err := os.ReadFile(f)
-		if err != nil {
-			die(err)
-		}
-		skip, s, err := scanFile(src, f, pkgNames[pkgOf[f]])
+		skip, s, err := scanFile(srcs[f], f, pkgOfNames[pkgOf[f]])
 		if err != nil {
 			die(fmt.Errorf("cannot parse %s: %w", f, err))
 		}
