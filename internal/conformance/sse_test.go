@@ -492,10 +492,22 @@ func TestSubscribeDisconnectLeavesServerHealthy(t *testing.T) {
 	wantChange(t, f, [3]any{"notes", after["ids"].([]any)[0], "insert"})
 }
 
+// replayRaceBacklog is the backlog the two replay-race fixtures seed. It
+// must keep the handler provably inside replay when the racing call
+// commits: a two-page backlog fits whole in the buffers between handler
+// and client, so the handler could finish replay first and the race would
+// pass vacuously. Two independent bounds hold at this size — capacity (the
+// backlog dwarfs every buffer ahead of the async reader, so the handler
+// cannot have absorbed it) and speed (~10^5 marshal+write+flush syscalls
+// cannot complete inside the milliseconds the racing call takes to commit).
+// The conformance layer drives the handler over HTTP and carries no
+// server-side seam to hold Replay.Next, so the bound is physics, not a hook.
+const replayRaceBacklog = 40 * store.MaxChangesPageLimit
+
 func TestSubscribeNamespaceDropTeachesLifetimeEnd(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
-	h.insertBatches(t, "rt", "notes", 2*store.MaxChangesPageLimit)
+	h.insertBatches(t, "rt", "notes", replayRaceBacklog)
 
 	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}, "cursor": {"begin"}})
 	if _, ok := r.next(10 * time.Second); !ok {
@@ -523,21 +535,15 @@ func TestSubscribeNamespaceDropTeachesLifetimeEnd(t *testing.T) {
 // TestSubscribeBoundaryUnderConcurrentWrites: the exactly-once property at
 // the replay→live handoff while commits race the stream. The writer is
 // released on the first client-visible replay frame, which proves
-// registration but by itself not that replay is still active — a small
-// backlog could stream to completion inside the reader's buffers before the
-// writer's commits land, and the test would pass vacuously. The backlog is
-// therefore sized far past every buffer between handler and client (40 ×
-// the page limit ≈ 4.4 MB of frames, well over the socket buffers, and
-// ~10^5 syscall-bound writes the handler cannot finish in the milliseconds
-// the four inserts take), so the commits provably land while replay is
-// still streaming in every schedule. A server-side hook to hold Replay.Next
-// would pin the same window, but the conformance layer drives the handler
-// over HTTP and carries no such seam.
+// registration; the replayRaceBacklog sizing then guarantees replay is
+// still streaming when the writer's commits land (see the const's bounds),
+// so the four live records must arrive exactly once, after the whole
+// backlog, in commit order — and nothing beyond.
 func TestSubscribeBoundaryUnderConcurrentWrites(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
 
-	seeded := h.insertBatches(t, "rt", "notes", 40*store.MaxChangesPageLimit)
+	seeded := h.insertBatches(t, "rt", "notes", replayRaceBacklog)
 
 	type batch struct {
 		ids []any
