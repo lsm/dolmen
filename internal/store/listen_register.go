@@ -203,8 +203,8 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	sess.pumpsLaunched = true
 	sess.mu.Unlock()
 	sess.pumps.Add(3)
-	go sess.pump()     // pump, not fill: the terminal fires once, outside fill's loop
-	go sess.drain()    // drain: delivery, gated on the replay's boundary call
-	go sess.pollWake() // the poll fallback: the log, never the wake, is the guarantee
+	go sess.pump()  // pump, not fill: the terminal fires once, outside fill's loop
+	go sess.drain() // drain: delivery, gated on the replay's boundary call
+	go sess.pollWake()
 	return &ChangeReplay{Next: sess.next, Resume: sess.cursor}, sess.cancel, nil
 }
