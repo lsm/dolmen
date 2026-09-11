@@ -315,6 +315,22 @@ func TestListenChainForFloorsBelowQueueHead(t *testing.T) {
 	}
 }
 
+func TestListenChainForFloorsBelowThePoppedHead(t *testing.T) {
+	st := openChangeStore(t)
+	sess := protectedSession(t, st)
+	sess.chain = &cursorChain{ID: "old", Origin: 0, Start: time.Now().Add(-2 * st.changeRetention).UnixMilli()}
+	sess.deliveringSeq = 40
+	sess.queue = []loggedChange{{seq: 41, rec: ChangeRecord{RowID: 41}}}
+	sess.replayExhausted = true
+
+	chain := sess.chainFor(time.Now(), 40)
+
+	if chain.Origin != 39 {
+		t.Fatalf("rotated chain rooted at %d, want strictly below the popped head (39): the floor covers the in-flight record, not just the queue",
+			chain.Origin)
+	}
+}
+
 func TestListenPollIntervalShrinksBelowRetention(t *testing.T) {
 	st := openChangeStore(t)
 	sess := protectedSession(t, st)

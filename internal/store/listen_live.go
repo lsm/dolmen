@@ -361,6 +361,14 @@ func (sess *listenSession) fillErr(err error) error {
 	return fmt.Errorf("listen fill %s: %w", sess.nsName, err)
 }
 
+func (sess *listenSession) lowestOwedLocked() int64 {
+	floor := sess.deliveringSeq
+	if len(sess.queue) > 0 && (floor == 0 || sess.queue[0].seq < floor) {
+		floor = sess.queue[0].seq
+	}
+	return floor
+}
+
 func (sess *listenSession) protectQueue() {
 	if sess.s == nil {
 		return
@@ -370,12 +378,9 @@ func (sess *listenSession) protectQueue() {
 		return
 	}
 	sess.mu.Lock()
-	head, chain := sess.deliveringSeq, sess.queueChain
-	if len(sess.queue) > 0 && (head == 0 || sess.queue[0].seq < head) {
-		head = sess.queue[0].seq
-	}
+	floor, chain := sess.lowestOwedLocked(), sess.queueChain
 	sess.mu.Unlock()
-	if head == 0 {
+	if floor == 0 {
 		return
 	}
 	if chain != nil {
@@ -395,8 +400,8 @@ func (sess *listenSession) protectQueue() {
 	}
 	defer tx.Rollback()
 	now := time.Now()
-	replacement := newCursorChain(now, head-1)
-	if _, err := mintCursorToken(ctx, tx, now, head, sess.table, replacement); err != nil {
+	replacement := newCursorChain(now, floor-1)
+	if _, err := mintCursorToken(ctx, tx, now, floor, sess.table, replacement); err != nil {
 		slog.Error("listen queue protection: mint", "namespace", sess.nsName, "err", err)
 		return
 	}
