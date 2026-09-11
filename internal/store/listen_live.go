@@ -173,7 +173,7 @@ func (sess *listenSession) isClosing() bool {
 // record is delivered never, but its position is consumed exactly once.
 func (sess *listenSession) fillBatch() (read int, err error) {
 	ctx := sess.ctx // the session's scope: cancel aborts in-flight database work, not just future reads
-	sess.protectQueue()
+	sess.protectQueue(false)
 	scanned, ended, rerr := sess.readBatch(ctx)
 	if rerr != nil {
 		return 0, sess.fillErr(rerr)
@@ -211,6 +211,7 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 	if len(scanned) > 0 {
 		sess.liveRead = scanned[len(scanned)-1].seq
 	}
+	wasEmpty := len(sess.queue) == 0
 	sess.queue = append(sess.queue, admitted...)
 	// The bound is measured INSIDE the critical section: the broadcast
 	// below can wake the drainer, which pops the queue under this same
@@ -228,8 +229,13 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 	// predecessor still delivers in full before the close arms at the
 	// short tail — only its arrival in memory is chunked, never past
 	// bound + one page (codex P1 on #230, thread r3984838673).
+	forcePark := wasEmpty
 	for over && ended && !sess.dead {
 		sess.cond.Wait()
+		sess.mu.Unlock()
+		sess.protectQueue(forcePark)
+		forcePark = false
+		sess.mu.Lock()
 		over = len(sess.queue) > listenQueueBound
 	}
 	dead := sess.dead // read under the lock the wait (or the fall-through) still holds
@@ -249,6 +255,9 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 	}
 	sess.cond.Broadcast()
 	sess.mu.Unlock()
+	if wasEmpty && len(admitted) > 0 && !dead {
+		sess.protectQueue(true)
+	}
 	if dead {
 		return 0, nil // the backpressure outlived the session: nothing more is ours to read
 	}
@@ -338,8 +347,8 @@ func (sess *listenSession) fillErr(err error) error {
 	return fmt.Errorf("listen fill %s: %w", sess.nsName, err)
 }
 
-func (sess *listenSession) protectQueue() {
-	if sess.s.changeRetention <= 0 {
+func (sess *listenSession) protectQueue(force bool) {
+	if sess.s == nil || sess.s.changeRetention <= 0 {
 		return
 	}
 	sess.mu.Lock()
@@ -347,16 +356,26 @@ func (sess *listenSession) protectQueue() {
 	if len(sess.queue) > 0 {
 		head = sess.queue[0].seq
 	}
-	start := sess.chain.Start
+	var start int64
+	if sess.chain != nil {
+		start = sess.chain.Start
+	}
 	sess.mu.Unlock()
 	if head == 0 {
 		return
 	}
 	rms := int64(sess.s.changeRetention / time.Millisecond)
-	now := time.Now()
-	if now.UnixMilli() < start+rms-int64(listenPollInterval/time.Millisecond) {
+	if !force && time.Now().UnixMilli() < start+rms-int64(listenPollInterval/time.Millisecond) {
 		return
 	}
+	ctx := sess.ctx
+	tx, err := sess.n.rw.BeginTx(ctx, nil)
+	if err != nil {
+		slog.Error("listen queue protection: begin", "namespace", sess.nsName, "err", err)
+		return
+	}
+	defer tx.Rollback()
+	now := time.Now()
 	sess.mu.Lock()
 	origin := sess.liveRead
 	if !sess.replayExhausted && sess.position < origin {
@@ -367,13 +386,6 @@ func (sess *listenSession) protectQueue() {
 	}
 	replacement := newCursorChain(now, origin)
 	sess.mu.Unlock()
-	ctx := sess.ctx
-	tx, err := sess.n.rw.BeginTx(ctx, nil)
-	if err != nil {
-		slog.Error("listen queue protection: begin", "namespace", sess.nsName, "err", err)
-		return
-	}
-	defer tx.Rollback()
 	if _, err := mintCursorToken(ctx, tx, now, head, sess.table, replacement); err != nil {
 		slog.Error("listen queue protection: mint", "namespace", sess.nsName, "err", err)
 		return

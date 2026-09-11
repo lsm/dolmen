@@ -47,7 +47,7 @@ func TestListenProtectQueueNoopInsideMargin(t *testing.T) {
 	sess.liveRead = 11
 	sess.replayExhausted = true
 
-	sess.protectQueue()
+	sess.protectQueue(false)
 
 	if got := len(tokenOriginsAt(t, st, 10)); got != 0 {
 		t.Fatalf("protectQueue minted %d tokens on a comfortably-inside chain, want 0", got)
@@ -68,7 +68,7 @@ func TestListenProtectQueueRotatesNearCap(t *testing.T) {
 	sess.replayExhausted = true
 	sess.position = 2
 
-	sess.protectQueue()
+	sess.protectQueue(false)
 
 	origins := tokenOriginsAt(t, st, 10)
 	if len(origins) != 1 || origins[0] != 9 {
@@ -89,7 +89,7 @@ func TestListenProtectQueueEmptyQueueSkips(t *testing.T) {
 	sess.liveRead = 5
 	before := sess.chain
 
-	sess.protectQueue()
+	sess.protectQueue(false)
 
 	if sess.chain != before {
 		t.Fatal("protectQueue rotated with nothing queued to protect")
@@ -116,7 +116,7 @@ func TestListenProtectQueueRetentionZeroSkips(t *testing.T) {
 	sess.queue = []loggedChange{{seq: 3, rec: ChangeRecord{RowID: 3}}}
 	sess.liveRead = 3
 
-	sess.protectQueue()
+	sess.protectQueue(false)
 
 	if got := len(tokenOriginsAt(t, st, 3)); got != 0 {
 		t.Fatalf("retention-0 store minted %d protective tokens, want 0", got)
@@ -153,7 +153,7 @@ func TestListenProtectQueueSurvivesPrune(t *testing.T) {
 	sess.queue = []loggedChange{{seq: 5, rec: ChangeRecord{RowID: 2}}, {seq: 6, rec: ChangeRecord{RowID: 3}}}
 	sess.liveRead = 6
 	sess.replayExhausted = true
-	sess.protectQueue()
+	sess.protectQueue(false)
 
 	tx, err = n.rw.BeginTx(ctx, nil)
 	if err != nil {
@@ -181,5 +181,21 @@ func TestListenChainForFloorsAtQueueHead(t *testing.T) {
 
 	if chain.Origin != 40 {
 		t.Fatalf("rotated chain rooted at %d, want the queue head 40", chain.Origin)
+	}
+}
+
+func TestListenProtectQueueForceMintsInsideMargin(t *testing.T) {
+	st := openChangeStore(t)
+	sess := protectedSession(t, st)
+	sess.chain = newCursorChain(time.Now(), 0)
+	sess.queue = []loggedChange{{seq: 7, rec: ChangeRecord{RowID: 7}}}
+	sess.liveRead = 7
+	sess.replayExhausted = true
+
+	sess.protectQueue(true)
+
+	origins := tokenOriginsAt(t, st, 7)
+	if len(origins) != 1 || origins[0] != 6 {
+		t.Fatalf("forced protection origins = %v, want exactly [6] inside a fresh chain's margin", origins)
 	}
 }
