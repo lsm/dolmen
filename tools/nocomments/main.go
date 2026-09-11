@@ -27,16 +27,17 @@ const wsClass = `[\t\n\v\f\r\x85\p{Zs}\x{2028}\x{2029}]`
 
 var (
 	goDirPattern     = regexp.MustCompile(`^//go:[a-z][a-z0-9_]*([ \t].*)?\r?$`)
+	generatePattern  = regexp.MustCompile(`^//go:generate[ \t].+\r?$`)
 	bareGenerate     = regexp.MustCompile(`^//go:generate[ \t]*\r?$`)
 	buildTagPattern  = regexp.MustCompile(`^//go:build(` + wsClass + `.*)?$`)
 	legacyBuildLine  = regexp.MustCompile(`^//` + wsClass + `*\+build(` + wsClass + `.*)?$`)
 	linePattern      = regexp.MustCompile(`^//line .*:\d+(?::\d+)? ?\r?$`)
-	blockLinePattern = regexp.MustCompile(`(?s)^/\*line .+:\d+(?::\d+)? ?\*/\r?$`)
+	blockLinePattern = regexp.MustCompile(`(?s)^/\*line .*:\d+(?::\d+)? ?\*/\r?$`)
 	lineScannedOnly  = regexp.MustCompile(`^//go:(build|generate|line|debug)([ \t].*)?\r?$`)
 	debugPattern     = regexp.MustCompile(`^//go:debug([ \t].*)?\r?$`)
 	headerBlankLine  = regexp.MustCompile(`\n[ \t\r]*\n`)
 	exportPattern    = regexp.MustCompile(`^//export .+\r?$`)
-	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]*[0-9A-Za-z_-][0-9A-Za-z_,-]*)?([ \t].*)?\r?$`)
+	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]*[0-9A-Za-z_][0-9A-Za-z_,-]*)?([ \t].*)?\r?$`)
 	linknamePattern  = regexp.MustCompile(`^//go:linkname .+\r?$`)
 	outputPattern    = regexp.MustCompile(`(?i)^[[:space:]]*(unordered )?output:`)
 )
@@ -196,7 +197,7 @@ func isExempt(text []byte, atLineStart, isDoc, isFuncDoc, isCgo bool) bool {
 	if atLineStart && linePattern.Match(text) {
 		return true
 	}
-	if atLineStart && goDirPattern.Match(text) && !buildTagPattern.Match(text) && !debugPattern.Match(text) && !bareGenerate.Match(text) {
+	if atLineStart && generatePattern.Match(text) && !bareGenerate.Match(text) {
 		return true
 	}
 	if isDoc && goDirPattern.Match(text) && !lineScannedOnly.Match(text) {
