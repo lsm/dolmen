@@ -114,6 +114,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	}
 	tx, err := sess.n.rw.BeginTx(ctx, nil)
 	if err != nil {
+		sess.endYielding(err)
 		return nil, "", false, pageProgress{}, err
 	}
 	// The namespace's write pool is a single connection: a transaction that
