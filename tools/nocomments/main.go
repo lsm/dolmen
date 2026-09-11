@@ -27,6 +27,7 @@ const wsClass = `[\t\n\v\f\r\x85\p{Zs}\x{2028}\x{2029}]`
 
 var (
 	goDirPattern     = regexp.MustCompile(`^//go:[a-z][a-z0-9_]*([ \t].*)?\r?$`)
+	bareGenerate     = regexp.MustCompile(`^//go:generate\r?$`)
 	buildTagPattern  = regexp.MustCompile(`^//go:build(` + wsClass + `.*)?$`)
 	legacyBuildLine  = regexp.MustCompile(`^//` + wsClass + `*\+build(` + wsClass + `.*)?$`)
 	linePattern      = regexp.MustCompile(`^//line .*:\d+(?::\d+)? ?\r?$`)
@@ -195,7 +196,7 @@ func isExempt(text []byte, atLineStart, isDoc, isFuncDoc, isCgo bool) bool {
 	if atLineStart && linePattern.Match(text) {
 		return true
 	}
-	if atLineStart && goDirPattern.Match(text) && !buildTagPattern.Match(text) && !debugPattern.Match(text) {
+	if atLineStart && goDirPattern.Match(text) && !buildTagPattern.Match(text) && !debugPattern.Match(text) && !bareGenerate.Match(text) {
 		return true
 	}
 	if isDoc && goDirPattern.Match(text) && !lineScannedOnly.Match(text) {
@@ -349,32 +350,14 @@ func headerHasBuildConstraint(src []byte) bool {
 }
 
 func normalizeHeaderSpace(src []byte) []byte {
-	limit := len(src)
-	pos := 0
-	if bytes.HasPrefix(src, utf8BOM) {
-		pos = len(utf8BOM)
-	}
-	bom := src[:pos]
-	for p := pos; p < limit; {
-		nl := bytes.IndexByte(src[p:], '\n')
-		var lineEnd int
-		if nl < 0 {
-			lineEnd = limit
-		} else {
-			lineEnd = p + nl
-		}
-		if line := bytes.TrimSpace(src[p:lineEnd]); bytes.HasPrefix(line, []byte("package ")) || bytes.Equal(line, []byte("package")) {
-			limit = p
-			break
-		}
-		if nl < 0 {
-			break
-		}
-		p = lineEnd + 1
-	}
+	limit := headerLimit(src)
 	var out []byte
-	out = append(out, bom...)
-	for p := pos; p < limit; {
+	start := 0
+	if bytes.HasPrefix(src, utf8BOM) {
+		start = len(utf8BOM)
+		out = append(out, utf8BOM...)
+	}
+	for p := start; p < limit; {
 		nl := bytes.IndexByte(src[p:limit], '\n')
 		var lineEnd int
 		if nl < 0 {
@@ -406,13 +389,101 @@ func normalizeHeaderSpace(src []byte) []byte {
 	return append(out, src[limit:]...)
 }
 
+func headerLimit(src []byte) int {
+	pos := 0
+	if bytes.HasPrefix(src, utf8BOM) {
+		pos = len(utf8BOM)
+	}
+	for p := pos; p < len(src); {
+		nl := bytes.IndexByte(src[p:], '\n')
+		var lineEnd int
+		if nl < 0 {
+			lineEnd = len(src)
+		} else {
+			lineEnd = p + nl
+		}
+		if line := bytes.TrimSpace(src[p:lineEnd]); bytes.HasPrefix(line, []byte("package ")) || bytes.Equal(line, []byte("package")) {
+			return p
+		}
+		if nl < 0 {
+			return len(src)
+		}
+		p = lineEnd + 1
+	}
+	return len(src)
+}
+
+func lexCount(src []byte) int {
+	count := 0
+	limit := headerLimit(src)
+	i, n := 0, len(src)
+	for i < n {
+		switch src[i] {
+		case '"', '\'':
+			q, j := src[i], i+1
+			for j < n && src[j] != q && src[j] != '\n' {
+				if src[j] == '\\' && j+1 < n && src[j+1] != '\n' {
+					j++
+				}
+				j++
+			}
+			i = j + 1
+		case '`':
+			k := bytes.IndexByte(src[i+1:], '`')
+			if k < 0 {
+				i = n
+			} else {
+				i += k + 2
+			}
+		case '/':
+			if i+1 < n && src[i+1] == '/' {
+				j := i + 2
+				for j < n && src[j] != '\n' {
+					j++
+				}
+				text := src[i:j]
+				exempt := isExempt(text, atLineStart(src, i), false, false, false)
+				if i < limit {
+					lead := src[bytes.LastIndexByte(src[:i], '\n')+1 : i]
+					lead = bytes.TrimPrefix(lead, utf8BOM)
+					if blank(lead) && (buildTagPattern.Match(text) || debugPattern.Match(text)) {
+						exempt = true
+					}
+					if legacyBuildLine.Match(text) && headerBlankLine.Match(src[j:limit]) {
+						exempt = true
+					}
+				}
+				if !exempt {
+					count++
+				}
+				i = j
+			} else if i+1 < n && src[i+1] == '*' {
+				k := bytes.Index(src[i+2:], []byte("*/"))
+				if k < 0 {
+					i = n
+				} else {
+					if !isExempt(src[i:i+k+4], false, false, false, false) {
+						count++
+					}
+					i += k + 4
+				}
+			} else {
+				i++
+			}
+		default:
+			i++
+		}
+	}
+	return count
+}
+
 func scanFile(src []byte, path string) (bool, *scan, error) {
 	s, err := scanSource(src, path)
 	if err != nil && headerHasBuildConstraint(src) {
 		if s2, err2 := scanSource(normalizeHeaderSpace(src), path); err2 == nil {
 			return false, s2, nil
 		}
-		return true, nil, nil
+		return false, &scan{comments: make([]span, lexCount(src))}, nil
 	}
 	if err != nil {
 		return false, nil, err
