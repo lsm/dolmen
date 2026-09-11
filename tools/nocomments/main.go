@@ -30,7 +30,8 @@ var (
 	linePattern      = regexp.MustCompile(`^//line .*:\d+(?::\d+)? ?\r?$`)
 	blockLinePattern = regexp.MustCompile(`(?s)^/\*line .+:\d+(?::\d+)? ?\*/\r?$`)
 	lineScannedOnly  = regexp.MustCompile(`^//go:(build|generate|line|debug)([ \t].*)?\r?$`)
-	exportPattern    = regexp.MustCompile(`^//export( .*)?\r?$`)
+	headerBlankLine  = regexp.MustCompile(`\n[ \t\r]*\n`)
+	exportPattern    = regexp.MustCompile(`^//export .+\r?$`)
 	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]*[0-9A-Za-z_-][0-9A-Za-z_,-]*)?([ \t].*)?\r?$`)
 	outputPattern    = regexp.MustCompile(`(?i)^[[:space:]]*(unordered )?output:`)
 )
@@ -171,7 +172,7 @@ func afterFileBOM(src []byte, start int) bool {
 }
 
 func isExempt(text []byte, atLineStart, afterBOM, isDoc, isFuncDoc, beforePackage bool) bool {
-	if beforePackage && (atLineStart || afterBOM) && (buildTagPattern.Match(text) || legacyBuildLine.Match(text)) {
+	if beforePackage && (atLineStart || afterBOM) && buildTagPattern.Match(text) {
 		return true
 	}
 	if atLineStart && linePattern.Match(text) {
@@ -227,6 +228,10 @@ func scanSource(src []byte, path string) (*scan, error) {
 			end := commentEnd(src, start)
 			text := src[start:end]
 			if c.Pos() < f.Package && isGeneratedMarker(text) {
+				continue
+			}
+			if (atLineStart(src, start) || afterFileBOM(src, start)) && c.Pos() < f.Package &&
+				legacyBuildLine.Match(text) && headerBlankLine.Match(src[end:tf.Offset(f.Package)]) {
 				continue
 			}
 			if !isExempt(text, atLineStart(src, start), afterFileBOM(src, start), isDoc, isFuncDoc, c.Pos() < f.Package) {
