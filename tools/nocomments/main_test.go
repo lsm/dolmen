@@ -94,6 +94,7 @@ func TestLineCommentsCount(t *testing.T) {
 		{"//go:norace\npackage p\n", 0},
 		{"package p\n\n//go:noescape\nfunc e() {}\n", 0},
 		{"package p\n\n//go:wasmimport env host1\nfunc w() {}\n", 0},
+		{"package p\n\n  //go:wasmexport hello\nfunc x() {}\n", 0},
 		{"package p\n\n  //go:noescape\nfunc i() {}\n", 0},
 		{"//line file.go:10\npackage p\n", 0},
 		{"//line just prose\npackage p\n", 1},

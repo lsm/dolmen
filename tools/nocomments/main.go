@@ -26,7 +26,7 @@ var (
 	legacyBuildLine  = regexp.MustCompile(`^//[ \t]*\+build([ \t].*)?\r?$`)
 	linePattern      = regexp.MustCompile(`^//line .*:\d+(?::\d+)? ?\r?$`)
 	blockLinePattern = regexp.MustCompile(`^/\*line .*:\d+(?::\d+)? ?\*/\r?$`)
-	docDirPattern    = regexp.MustCompile(`^//(go:(embed|linkname|noinline|nosplit|norace|nocheckptr|noescape|uintptrescapes|wasmimport)|export)([ \t].*)?\r?$`)
+	docDirPattern    = regexp.MustCompile(`^//(go:(embed|linkname|noinline|nosplit|norace|nocheckptr|noescape|uintptrescapes|wasmimport|wasmexport)|export)([ \t].*)?\r?$`)
 	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]+([ \t].*)?)?\r?$`)
 )
 
