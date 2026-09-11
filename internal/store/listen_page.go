@@ -73,12 +73,14 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		sess.replayDone = true
 		sess.cond.Broadcast()
 	}
-	if sess.dead && len(records) > 0 {
-		// The omitted page's own cursor points PAST records the caller never
-		// receives — handing it back would teach a resume that skips them.
-		// The pre-page boundary is the honest position. The session is over:
-		// release any drainer the same way, and report death as the cause —
-		// clean done is provable aliveness, never a death in disguise.
+	if sess.dead {
+		// A death that lands while a page was being decided is the error to
+		// report, whatever the page found: records the caller will not
+		// receive are withheld — and their cursors with them, so the
+		// pre-page boundary stays the honest resume position — and an EMPTY
+		// boundary page (an overflow ending the session exactly as it
+		// completes) is just as dead. Clean done is provable aliveness,
+		// never a death in disguise.
 		sess.replayDone = true
 		sess.cond.Broadcast()
 		return nil, resume, true, sess.endCauseLocked()
