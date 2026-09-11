@@ -26,19 +26,20 @@ type scan struct{ comments []span }
 const wsClass = `[\t\n\v\f\r\x85\p{Zs}\x{2028}\x{2029}]`
 
 var (
-	goDirPattern     = regexp.MustCompile(`^(?://go:(?:noinline|nosplit|norace|nocheckptr|noescape|uintptrescapes|registerparams|nointerface)|//go:(?:embed|wasmexport) [^\r\n]+|//go:wasmimport \S+ [^\r\n]+)\r?$`)
-	generatePattern  = regexp.MustCompile(`^//go:generate[ \t].+\r?$`)
-	bareGenerate     = regexp.MustCompile(`^//go:generate[ \t]*\r?$`)
-	buildTagPattern  = regexp.MustCompile(`^//go:build(` + wsClass + `.*)?$`)
-	legacyBuildLine  = regexp.MustCompile(`^//` + wsClass + `*\+build(` + wsClass + `.*)?$`)
-	linePattern      = regexp.MustCompile(`^//line .*:\d+(?::\d+)? ?\r?$`)
-	blockLinePattern = regexp.MustCompile(`(?s)^/\*line .*:\d+(?::\d+)? ?\*/\r?$`)
-	debugPattern     = regexp.MustCompile(`^//go:debug([ \t].*)?$`)
-	headerBlankLine  = regexp.MustCompile(`\n[ \t\r]*\n`)
-	exportPattern    = regexp.MustCompile(`^//export .+\r?$`)
-	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*(,[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*)*)?([ \t].*)?\r?$`)
-	linknamePattern  = regexp.MustCompile(`^//go:linkname [^\r\n]+\r?$`)
-	outputPattern    = regexp.MustCompile(`(?i)^[[:space:]]*(unordered )?output:`)
+	funcPragmaPattern = regexp.MustCompile(`^(?://go:(?:noinline|nosplit|norace|nocheckptr|noescape|uintptrescapes|registerparams|nointerface)\r?$|//go:wasmexport [^\r\n]+|//go:wasmimport \S+ [^\r\n]+)$`)
+	embedPattern      = regexp.MustCompile(`^//go:embed [^\r\n]+$`)
+	generatePattern   = regexp.MustCompile(`^//go:generate[ \t].+\r?$`)
+	bareGenerate      = regexp.MustCompile(`^//go:generate[ \t]*\r?$`)
+	buildTagPattern   = regexp.MustCompile(`^//go:build(` + wsClass + `.*)?$`)
+	legacyBuildLine   = regexp.MustCompile(`^//` + wsClass + `*\+build(` + wsClass + `.*)?$`)
+	linePattern       = regexp.MustCompile(`^//line .*:\d+(?::\d)?$`)
+	blockLinePattern  = regexp.MustCompile(`(?s)^/\*line .*:\d+(?::\d)?\*/$`)
+	debugPattern      = regexp.MustCompile(`^//go:debug[ \t]+([A-Za-z0-9_.-]+=[A-Za-z0-9_.-]+)([ \t]+[A-Za-z0-9_.-]+=[A-Za-z0-9_.-]+)*$`)
+	headerBlankLine   = regexp.MustCompile(`\n[ \t\r]*\n`)
+	exportPattern     = regexp.MustCompile(`^//export .+\r?$`)
+	nolintPattern     = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*(,[0-9A-Za-z_]+(-[0-9A-Za-z_]+)*)*)?([ \t].*)?\r?$`)
+	linknamePattern   = regexp.MustCompile(`^//go:linkname [^\r\n]+\r?$`)
+	outputPattern     = regexp.MustCompile(`(?i)^[[:space:]]*(unordered )?output:`)
 )
 
 func die(err error) {
@@ -137,7 +138,7 @@ func commentEnd(src []byte, start int) int {
 }
 
 func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool) {
-	docs := map[token.Pos]bool{}
+	valueDocs := map[token.Pos]bool{}
 	funcDocs := map[token.Pos]bool{}
 	mark := func(m map[token.Pos]bool, cg *ast.CommentGroup) {
 		if cg != nil {
@@ -147,23 +148,19 @@ func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool) {
 	for _, d := range f.Decls {
 		switch decl := d.(type) {
 		case *ast.GenDecl:
-			mark(docs, decl.Doc)
+			if decl.Tok == token.VAR {
+				mark(valueDocs, decl.Doc)
+			}
 			for _, s := range decl.Specs {
-				switch sp := s.(type) {
-				case *ast.ImportSpec:
-					mark(docs, sp.Doc)
-				case *ast.ValueSpec:
-					mark(docs, sp.Doc)
-				case *ast.TypeSpec:
-					mark(docs, sp.Doc)
+				if sp, ok := s.(*ast.ValueSpec); ok && decl.Tok == token.VAR {
+					mark(valueDocs, sp.Doc)
 				}
 			}
 		case *ast.FuncDecl:
-			mark(docs, decl.Doc)
 			mark(funcDocs, decl.Doc)
 		}
 	}
-	return docs, funcDocs
+	return valueDocs, funcDocs
 }
 
 func atLineStart(src []byte, start int) bool {
@@ -192,14 +189,17 @@ func fileImportsC(f *ast.File) bool {
 	return false
 }
 
-func isExempt(raw, norm []byte, atLineStart, isDoc, isFuncDoc, isCgo bool) bool {
+func isExempt(raw, norm []byte, atLineStart, isValueDoc, isFuncDoc, isCgo bool) bool {
 	if atLineStart && linePattern.Match(raw) {
 		return true
 	}
 	if atLineStart && generatePattern.Match(raw) && !bareGenerate.Match(raw) {
 		return true
 	}
-	if isDoc && goDirPattern.Match(norm) {
+	if isFuncDoc && funcPragmaPattern.Match(norm) {
+		return true
+	}
+	if isValueDoc && embedPattern.Match(norm) {
 		return true
 	}
 	if isFuncDoc && isCgo && exportPattern.Match(norm) {
@@ -246,13 +246,13 @@ func scanSource(src []byte, path string) (*scan, error) {
 	if strings.HasSuffix(path, "_test.go") {
 		outputs = exampleOutputs(f)
 	}
-	docs, funcDocs := docGroups(f)
+	valueDocs, funcDocs := docGroups(f)
 	s := &scan{}
 	for _, g := range f.Comments {
 		if preambles[g.Pos()] || outputs[g.Pos()] {
 			continue
 		}
-		isDoc := docs[g.Pos()]
+		isValueDoc := valueDocs[g.Pos()]
 		isFuncDoc := funcDocs[g.Pos()]
 		for _, c := range g.List {
 			start := tf.Offset(c.Pos())
@@ -285,7 +285,7 @@ func scanSource(src []byte, path string) (*scan, error) {
 				legacyBuildLine.Match(raw) && headerBlankLine.Match(src[end:searchEnd]) {
 				continue
 			}
-			if !isExempt(raw, norm, atLineStart(src, start), isDoc, isFuncDoc, fileImportsC(f)) {
+			if !isExempt(raw, norm, atLineStart(src, start), isValueDoc, isFuncDoc, fileImportsC(f)) {
 				s.comments = append(s.comments, span{start, end})
 			}
 		}
