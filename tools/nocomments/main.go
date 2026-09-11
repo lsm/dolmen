@@ -10,6 +10,7 @@ import (
 	"go/token"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -156,19 +157,17 @@ func docGroups(f *ast.File) (map[token.Pos]bool, map[token.Pos]bool, map[token.P
 		switch decl := d.(type) {
 		case *ast.GenDecl:
 			if decl.Tok == token.VAR {
-				initFree := true
+				allInitFree := true
 				for _, s := range decl.Specs {
-					if sp, ok := s.(*ast.ValueSpec); !ok || len(sp.Values) > 0 {
-						initFree = false
+					sp, ok := s.(*ast.ValueSpec)
+					if !ok || len(sp.Values) > 0 {
+						allInitFree = false
+						continue
 					}
+					mark(valueDocs, sp.Doc)
 				}
-				if initFree {
+				if allInitFree {
 					mark(valueDocs, decl.Doc)
-					for _, s := range decl.Specs {
-						if sp, ok := s.(*ast.ValueSpec); ok {
-							mark(valueDocs, sp.Doc)
-						}
-					}
 				}
 			}
 		case *ast.FuncDecl:
@@ -255,6 +254,30 @@ func validBuildConstraint(raw []byte) bool {
 	return err == nil
 }
 
+func topLevelNames(f *ast.File) map[string]bool {
+	names := map[string]bool{}
+	for _, d := range f.Decls {
+		switch decl := d.(type) {
+		case *ast.GenDecl:
+			for _, s := range decl.Specs {
+				switch sp := s.(type) {
+				case *ast.ValueSpec:
+					for _, n := range sp.Names {
+						names[n.Name] = true
+					}
+				case *ast.TypeSpec:
+					names[sp.Name.Name] = true
+				}
+			}
+		case *ast.FuncDecl:
+			if decl.Recv == nil {
+				names[decl.Name.Name] = true
+			}
+		}
+	}
+	return names
+}
+
 type exempts struct {
 	atLineStart bool
 	valueDoc    bool
@@ -263,6 +286,7 @@ type exempts struct {
 	cgo         bool
 	unsafe      bool
 	embed       bool
+	linkname    bool
 }
 
 func isExempt(raw, norm []byte, c exempts) bool {
@@ -281,7 +305,7 @@ func isExempt(raw, norm []byte, c exempts) bool {
 	if c.valueDoc && c.embed && embedPattern.Match(norm) {
 		return true
 	}
-	return blockLinePattern.Match(raw) || nolintPattern.Match(norm) || (c.unsafe && linknamePattern.Match(norm))
+	return blockLinePattern.Match(raw) || nolintPattern.Match(norm) || (c.unsafe && c.linkname && linknamePattern.Match(norm))
 }
 
 func isGeneratedMarker(text []byte) bool {
@@ -298,10 +322,13 @@ func isGeneratedMarker(text []byte) bool {
 	return false
 }
 
-func scanSource(src []byte, path string) (*scan, error) {
+func scanSource(src []byte, path string, names map[string]bool) (*scan, error) {
 	fset, f, err := parseGo(src)
 	if err != nil {
 		return nil, fmt.Errorf("unparseable: %w", err)
+	}
+	if names == nil {
+		names = topLevelNames(f)
 	}
 	tf := fset.File(f.Package)
 	pkgOff := tf.Offset(f.Package)
@@ -371,6 +398,12 @@ func scanSource(src []byte, path string) (*scan, error) {
 					continue
 				}
 			}
+			linknameOK := false
+			if hasUnsafe && linknamePattern.Match(norm) {
+				if local := strings.Fields(string(bytes.TrimPrefix(norm, []byte("//go:linkname")))); len(local) > 0 && names[local[0]] {
+					linknameOK = true
+				}
+			}
 			if isExempt(raw, norm, exempts{
 				atLineStart: atLineStart(src, start),
 				valueDoc:    valueDocs[g.Pos()],
@@ -379,6 +412,7 @@ func scanSource(src []byte, path string) (*scan, error) {
 				cgo:         isCgo,
 				unsafe:      hasUnsafe,
 				embed:       hasEmbed,
+				linkname:    linknameOK,
 			}) {
 				continue
 			}
@@ -628,10 +662,10 @@ func lexCount(src []byte) int {
 	return count
 }
 
-func scanFile(src []byte, path string) (bool, *scan, error) {
-	s, err := scanSource(src, path)
+func scanFile(src []byte, path string, names map[string]bool) (bool, *scan, error) {
+	s, err := scanSource(src, path, names)
 	if err != nil && headerHasBuildConstraint(src) {
-		if s2, err2 := scanSource(normalizeHeaderSpace(src), path); err2 == nil {
+		if s2, err2 := scanSource(normalizeHeaderSpace(src), path, names); err2 == nil {
 			return false, s2, nil
 		}
 		return false, &scan{comments: make([]span, lexCount(src))}, nil
@@ -674,6 +708,26 @@ func main() {
 	if err != nil {
 		die(err)
 	}
+	pkgNames := map[string]map[string]bool{}
+	pkgOf := map[string]string{}
+	for _, f := range files {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			die(err)
+		}
+		_, ast, err := parseGo(src)
+		if err != nil {
+			continue
+		}
+		key := filepath.Dir(f) + "\x00" + ast.Name.Name
+		if pkgNames[key] == nil {
+			pkgNames[key] = map[string]bool{}
+		}
+		for n := range topLevelNames(ast) {
+			pkgNames[key][n] = true
+		}
+		pkgOf[f] = key
+	}
 	allow := map[string]int{}
 	if mode == "check" {
 		if allow, err = readAllowlist(allowlistPath); err != nil {
@@ -686,7 +740,7 @@ func main() {
 		if err != nil {
 			die(err)
 		}
-		skip, s, err := scanFile(src, f)
+		skip, s, err := scanFile(src, f, pkgNames[pkgOf[f]])
 		if err != nil {
 			die(fmt.Errorf("cannot parse %s: %w", f, err))
 		}

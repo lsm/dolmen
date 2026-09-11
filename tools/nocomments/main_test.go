@@ -18,7 +18,7 @@ func commentCount(t *testing.T, src string) int {
 
 func commentCountIn(t *testing.T, path, src string) int {
 	t.Helper()
-	skip, s, err := scanFile([]byte(src), path)
+	skip, s, err := scanFile([]byte(src), path, nil)
 	if err != nil {
 		t.Fatalf("scanFile(%q): %v", src, err)
 	}
@@ -143,7 +143,10 @@ func TestLineCommentsCount(t *testing.T) {
 		{"package p\n\n/*\n#include <stdlib.h>\n*/\n\nimport \"C\"\n", 1},
 		{"package p\n\n/* plain doc */\nimport \"os\"\n", 1},
 		{"package p\n\n//go:linkname foo bar\nvar x = 1\n", 1},
-		{"package p\n\nimport _ \"unsafe\"\n\n//go:linkname foo bar\nvar x = 1\n", 0},
+		{"package p\n\nimport _ \"unsafe\"\n\n//go:linkname foo bar\nvar foo int\n", 0},
+		{"package p\n\nimport _ \"unsafe\"\n\n//go:linkname missing remote\nvar x = 1\n", 1},
+		{"package p\n\nvar (\n\t//go:embed data\n\tA string\n\tB = \"x\"\n)\n", 1},
+		{"package p\n\nimport _ \"embed\"\n\nvar (\n\t//go:embed data\n\tA string\n\tB = \"x\"\n)\n", 0},
 		{"package p\n\n  //go:linkname local remote\n\nvar local int\n", 1},
 		{"package p\n\nfunc f() {\n\t//go:noinline\n\t_ = 1\n}\n", 1},
 		{"package p\n\n//go:nosplit\nfunc g() {}\n", 0},
@@ -234,7 +237,7 @@ func TestScanRefusals(t *testing.T) {
 		{"var x = 1\n", "unparseable"},
 		{"package p\n\nvar x = 1\n\uFEFF// mid-file bom\n", "unparseable"},
 	} {
-		if _, err := scanSource([]byte(tc.src), "src.go"); err == nil || !strings.Contains(err.Error(), tc.want) {
+		if _, err := scanSource([]byte(tc.src), "src.go", nil); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("scanSource(%q) err = %v, want containing %q", tc.src, err, tc.want)
 		}
 	}
