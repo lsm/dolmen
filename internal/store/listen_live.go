@@ -376,8 +376,14 @@ func (sess *listenSession) protectQueue() {
 	}
 	head, chain := sess.queue[0].seq, sess.queueChain
 	sess.mu.Unlock()
-	if chain != nil && time.Now().UnixMilli() < chain.Start+rms-int64(listenPollInterval/time.Millisecond) {
-		return
+	if chain != nil {
+		margin := rms / 2
+		if tick := 2 * int64(sess.pollInterval()/time.Millisecond); tick > margin {
+			margin = tick
+		}
+		if time.Now().UnixMilli() < chain.Start+rms-margin {
+			return
+		}
 	}
 	ctx := sess.ctx
 	tx, err := sess.n.rw.BeginTx(ctx, nil)

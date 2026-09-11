@@ -79,6 +79,31 @@ func TestListenProtectQueueRefreshesNearCap(t *testing.T) {
 	}
 }
 
+func TestListenProtectQueueRenewsOffTheTickGrid(t *testing.T) {
+	st, err := Open(t.TempDir(), WithChangeRetention(501*time.Millisecond))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	if err := st.CreateNamespace(context.Background(), "test", [16]byte{}); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	if _, err := st.CreateTable(context.Background(), "test", "notes", noteFields(), TableOpts{}, [16]byte{}); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	sess := protectedSession(t, st)
+	sess.queueChain = newCursorChain(time.Now().Add(-listenPollInterval), 9)
+	sess.queue = []loggedChange{{seq: 10, rec: ChangeRecord{RowID: 10}}}
+
+	sess.protectQueue()
+
+	origins := tokenOriginsAt(t, st, 10)
+	if len(origins) != 1 || origins[0] != 9 {
+		t.Fatalf("protective token origins = %v, want exactly [9]: the renewal is sampled a tick early, not a millisecond before expiry",
+			origins)
+	}
+}
+
 func TestListenProtectQueuePinsBelowTheQueueHeadNotTheReplayPosition(t *testing.T) {
 	st := openChangeStore(t)
 	sess := protectedSession(t, st)
