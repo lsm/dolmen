@@ -192,20 +192,20 @@ func fileImportsC(f *ast.File) bool {
 	return false
 }
 
-func isExempt(text []byte, atLineStart, isDoc, isFuncDoc, isCgo bool) bool {
-	if atLineStart && linePattern.Match(text) {
+func isExempt(raw, norm []byte, atLineStart, isDoc, isFuncDoc, isCgo bool) bool {
+	if atLineStart && linePattern.Match(raw) {
 		return true
 	}
-	if atLineStart && generatePattern.Match(text) && !bareGenerate.Match(text) {
+	if atLineStart && generatePattern.Match(raw) && !bareGenerate.Match(raw) {
 		return true
 	}
-	if isDoc && goDirPattern.Match(text) {
+	if isDoc && goDirPattern.Match(norm) {
 		return true
 	}
-	if isFuncDoc && isCgo && exportPattern.Match(bytes.ReplaceAll(text, []byte("\r"), nil)) {
+	if isFuncDoc && isCgo && exportPattern.Match(norm) {
 		return true
 	}
-	return blockLinePattern.Match(text) || nolintPattern.Match(text) || linknamePattern.Match(text)
+	return blockLinePattern.Match(raw) || nolintPattern.Match(norm) || linknamePattern.Match(norm)
 }
 
 func isGeneratedMarker(text []byte) bool {
@@ -257,18 +257,19 @@ func scanSource(src []byte, path string) (*scan, error) {
 		for _, c := range g.List {
 			start := tf.Offset(c.Pos())
 			end := commentEnd(src, start)
-			text := bytes.ReplaceAll(src[start:end], []byte("\r"), nil)
-			if c.Pos() < f.Package && isGeneratedMarker(text) {
+			raw := src[start:end]
+			norm := bytes.ReplaceAll(raw, []byte("\r"), nil)
+			if c.Pos() < f.Package && isGeneratedMarker(norm) {
 				continue
 			}
 			lineLead := src[bytes.LastIndexByte(src[:start], '\n')+1 : start]
 			if bytes.HasPrefix(lineLead, utf8BOM) {
 				lineLead = lineLead[len(utf8BOM):]
 			}
-			if c.Pos() < f.Package && blank(lineLead) && buildTagPattern.Match(text) {
+			if c.Pos() < f.Package && blank(lineLead) && buildTagPattern.Match(raw) {
 				continue
 			}
-			if c.Pos() < f.Package && (f.Name.Name == "main" || strings.HasSuffix(path, "_test.go")) && debugPattern.Match(text) {
+			if c.Pos() < f.Package && (f.Name.Name == "main" || strings.HasSuffix(path, "_test.go")) && debugPattern.Match(norm) {
 				continue
 			}
 			blockBefore := false
@@ -281,10 +282,10 @@ func scanSource(src []byte, path string) (*scan, error) {
 				}
 			}
 			if c.Pos() < f.Package && !blockBefore &&
-				legacyBuildLine.Match(text) && headerBlankLine.Match(src[end:searchEnd]) {
+				legacyBuildLine.Match(raw) && headerBlankLine.Match(src[end:searchEnd]) {
 				continue
 			}
-			if !isExempt(text, atLineStart(src, start), isDoc, isFuncDoc, fileImportsC(f)) {
+			if !isExempt(raw, norm, atLineStart(src, start), isDoc, isFuncDoc, fileImportsC(f)) {
 				s.comments = append(s.comments, span{start, end})
 			}
 		}
@@ -447,15 +448,16 @@ func lexCount(src []byte) int {
 				for j < n && src[j] != '\n' {
 					j++
 				}
-				text := bytes.ReplaceAll(src[i:j], []byte("\r"), nil)
-				exempt := isExempt(text, atLineStart(src, i), false, false, false)
+				raw := src[i:j]
+				norm := bytes.ReplaceAll(raw, []byte("\r"), nil)
+				exempt := isExempt(raw, norm, atLineStart(src, i), false, false, false)
 				if i < limit {
 					lead := src[bytes.LastIndexByte(src[:i], '\n')+1 : i]
 					lead = bytes.TrimPrefix(lead, utf8BOM)
-					if len(bytes.TrimFunc(lead, unicode.IsSpace)) == 0 && (buildTagPattern.Match(text) || debugPattern.Match(text)) {
+					if len(bytes.TrimFunc(lead, unicode.IsSpace)) == 0 && buildTagPattern.Match(raw) {
 						exempt = true
 					}
-					if legacyBuildLine.Match(text) {
+					if legacyBuildLine.Match(raw) {
 						blockBefore, searchEnd := false, limit
 						for _, b := range headerBlocks {
 							if b < i {
@@ -476,12 +478,13 @@ func lexCount(src []byte) int {
 			} else if i+1 < n && src[i+1] == '*' {
 				k := bytes.Index(src[i+2:], []byte("*/"))
 				if k < 0 {
-					if !isExempt(src[i:], false, false, false, false) {
+					if !isExempt(src[i:], bytes.ReplaceAll(src[i:], []byte("\r"), nil), false, false, false, false) {
 						count++
 					}
 					i = n
 				} else {
-					if !isExempt(src[i:i+k+4], false, false, false, false) {
+					span := src[i : i+k+4]
+					if !isExempt(span, bytes.ReplaceAll(span, []byte("\r"), nil), false, false, false, false) {
 						count++
 					}
 					i += k + 4

@@ -141,6 +141,8 @@ func TestLineCommentsCount(t *testing.T) {
 		{"//go:debug panicnil=1\npackage p\n", 0},
 		{"//go:debug\u00A0panicnil=1\npackage main\n", 1},
 		{"//go:de\rbug panicnil=1\npackage main\n", 0},
+		{"//go:bu\rild impossible_tag\n\npackage p\n", 1},
+		{"//go:ge\rnerate echo\npackage p\n", 1},
 		{"package p\n\nvar x = 1 //noli\rnt:errcheck\n", 0},
 		{"  //go:debug panicnil=1\npackage main\n", 0},
 		{"package main\n\n//go:debug x=1\nvar x int\n", 1},
