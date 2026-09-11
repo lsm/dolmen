@@ -137,15 +137,19 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 			if ctx.Err() != nil {
 				return
 			}
+			// The store guarantees the terminal cause: every session
+			// death — a dropped target behind its eviction drain, a
+			// revocation, a failed page — ends the session with its
+			// cause and the closed callback fires it, however long the
+			// drain takes. No timer: one that expired first would frame
+			// the incidental read error instead of the teaching, and
+			// the wait is sound without one.
 			select {
 			case cause := <-ended:
 				sseEvent(w, "close", sseCursor{Cursor: string(resume)})
 				sseErrorEvent(w, subscribeErr(cause), reqID)
 			case <-ctx.Done():
 				return
-			case <-time.After(2 * time.Second):
-				sseEvent(w, "close", sseCursor{Cursor: string(resume)})
-				sseErrorEvent(w, subscribeErr(nerr), reqID)
 			}
 			return
 		}
@@ -164,30 +168,15 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	if s.holdReplay != nil {
 		s.holdReplay()
 	}
-	// A replay can also end with a CLEAN done: a session that died
-	// mid-replay — a dropped target, a revoked grant — reports its last
-	// page as done with no error, the cause riding the ended channel
-	// alone. Sample it before claiming the live phase: a cause that has
-	// arrived takes the terminal path instead, so the ready frame never
-	// fires on a target that already ended. Residual: a death landing in
-	// the window between this sample and a naturally completing final
-	// page can still see ready before the terminal — truthful and
-	// harmless, every promised record delivered and the tracked cursor
-	// correct, the terminal following with the teaching.
-	select {
-	case cause := <-ended:
-		sseEvent(w, "close", sseCursor{Cursor: string(resume)})
-		sseErrorEvent(w, subscribeErr(cause), reqID)
-		return
-	default:
-	}
 	// The ready frame is the recovery point a fresh subscriber holds from
 	// the moment the stream goes live: everything up to this cursor has
 	// been delivered on this stream, and reconnecting with it resumes
 	// exactly here — the last replayed record's cursor, or the
 	// registration head when replay was empty. A stream that ends during
-	// replay never gets one; its terminal close frame carries the reached
-	// cursor instead.
+	// replay never gets one — clean done from the store means provably
+	// alive, every death returning its cause as the replay error and
+	// taking the terminal path instead — and a terminal stream's close
+	// frame carries the reached cursor.
 	if !sseEvent(w, "ready", sseCursor{Cursor: string(resume)}) {
 		return
 	}

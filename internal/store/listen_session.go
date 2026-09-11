@@ -2,10 +2,16 @@ package store
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 )
+
+// errListenEnded marks a Next on a dead session whose parked cause the
+// flush has already fired — the real cause rides the closed callback, and
+// the caller's terminal wait observes it there.
+var errListenEnded = errors.New("listen: the subscription ended")
 
 // listenSession is one Listen registration. Registration (listen_register.go)
 // fixes the resume position P, the replay boundary R, the page chain, and
@@ -65,6 +71,7 @@ type listenSession struct {
 	// already-queued prefix must deliver first, fired only by the drainer
 	// once the queue empties.
 	pendingClose      error // parked by end; fired by a pump's deferred flush (or inline on a never-launched session)
+	pendingCloseYield bool  // the parked cause is a page symptom, not a lifecycle verdict — an authoritative end may replace it
 	pendingDrainClose error // armed by the queue's owner; fired by the drainer at the empty queue
 
 	// pumpsLaunched is set once, under mu, at Listen's launch site: after
@@ -176,6 +183,34 @@ func (sess *listenSession) end(cause error) {
 }
 
 func (sess *listenSession) endParked(cause error) bool {
+	return sess.endPark(cause, false)
+}
+
+// endYielding is the page-symptom end: a replay page whose own read failed
+// ends the session with that failure, but YIELDS to any later lifecycle
+// verdict — a drop's evict closes the pools before its endListenSessions
+// runs, so the page's incidental read error can park FIRST while the
+// lifetime teaching is still behind the eviction drain; the symptom must
+// not eat the verdict. endPark's replace rule does the deferring.
+func (sess *listenSession) endYielding(cause error) bool {
+	return sess.endPark(cause, true)
+}
+
+// endCause reports the cause a dead session ended with — the parked one
+// when the flush has not fired it yet, otherwise the generic marker: a
+// flushed cause rides the closed callback, whose delivery the caller's
+// terminal wait observes. Callers use it to return death as an error
+// rather than a clean done: clean done means provably alive.
+func (sess *listenSession) endCause() error {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if sess.pendingClose != nil {
+		return sess.pendingClose
+	}
+	return errListenEnded
+}
+
+func (sess *listenSession) endPark(cause error, yields bool) bool {
 	sess.mu.Lock()
 	if sess.dead {
 		sess.mu.Unlock()
@@ -199,9 +234,15 @@ func (sess *listenSession) endParked(cause error) bool {
 	// a session whose Listen is still mid-registration owes no callback
 	// at all if that registration then fails (end's inline exception is
 	// for the never-launched fixture world, decided by the session's own
-	// goroutines).
-	if cause != nil && sess.pendingClose == nil {
-		sess.pendingClose = cause
+	// goroutines). The one exception to first-wins: a YIELDED park is a
+	// page symptom, not a verdict, and an authoritative end replaces it —
+	// the drop's lifetime teaching must survive an incidental read error
+	// that parked first behind the eviction drain.
+	if cause != nil {
+		if sess.pendingClose == nil || (yields == false && sess.pendingCloseYield) {
+			sess.pendingClose = cause
+			sess.pendingCloseYield = yields
+		}
 	}
 	sess.ctxCancel() // the pumps' in-flight database work — cancel must not wait out a blocked read
 	sess.cond.Broadcast()

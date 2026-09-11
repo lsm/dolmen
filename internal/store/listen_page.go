@@ -77,10 +77,11 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		// The omitted page's own cursor points PAST records the caller never
 		// receives — handing it back would teach a resume that skips them.
 		// The pre-page boundary is the honest position. The session is over:
-		// release any drainer the same way.
+		// release any drainer the same way, and report death as the cause —
+		// clean done is provable aliveness, never a death in disguise.
 		sess.replayDone = true
 		sess.cond.Broadcast()
-		return nil, resume, true, nil
+		return nil, resume, true, sess.endCause()
 	}
 	if err != nil || progress.next == "" {
 		return records, next, done, err
@@ -105,7 +106,10 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	sess.mu.Lock()
 	dead, exhausted := sess.dead, sess.replayExhausted
 	sess.mu.Unlock()
-	if dead || exhausted {
+	if dead {
+		return nil, sess.cursor(), true, pageProgress{}, sess.endCause()
+	}
+	if exhausted {
 		return nil, sess.cursor(), true, pageProgress{}, nil
 	}
 	tx, err := sess.n.rw.BeginTx(ctx, nil)
@@ -129,6 +133,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// last delivered cursor — never a short page reported as done, which
 	// would silently omit records the boundary promised.
 	if err := sess.verifyRetained(ctx, tx, sess.position, sess.boundary, sess.outstanding); err != nil {
+		sess.endYielding(err)
 		return nil, "", false, pageProgress{}, err
 	}
 	boundary := sess.boundary
@@ -148,6 +153,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		qerr = tx.Commit()
 	}
 	if qerr != nil {
+		sess.endYielding(qerr)
 		return nil, "", false, pageProgress{}, qerr
 	}
 
@@ -160,7 +166,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		vis, rev := sess.admit(lc.rec)
 		if rev {
 			sess.end(ErrListenRevoked)
-			return nil, sess.cursor(), true, pageProgress{}, nil
+			return nil, sess.cursor(), true, pageProgress{}, sess.endCause()
 		}
 		if vis {
 			admitted = append(admitted, lc)
@@ -168,6 +174,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	}
 	records, next, merr := sess.mint(ctx, admitted, sess.position, mLast, len(scanned))
 	if merr != nil {
+		sess.endYielding(merr)
 		return nil, "", false, pageProgress{}, merr
 	}
 
