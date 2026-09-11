@@ -465,6 +465,11 @@ func TestSubscribeCursorTeachingErrors(t *testing.T) {
 	}
 
 	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}})
+	fr, ok := r.next(5 * time.Second)
+	if !ok {
+		t.Fatal("the post-error stream never opened its live phase")
+	}
+	wantReady(t, fr)
 	fresh := h.mustHTTP("insert", map[string]any{
 		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "fresh"}},
 	})
@@ -612,6 +617,11 @@ func TestSubscribeNamespaceDropTeachesLifetimeEnd(t *testing.T) {
 	frames := r.rest(15 * time.Second)
 	if len(frames) < 2 {
 		t.Fatalf("dropped-target stream = %d frames, want a cursor handoff and a teaching error: %+v", len(frames), frames)
+	}
+	for _, f := range frames {
+		if f.event == "ready" {
+			t.Fatalf("a stream whose target ended mid-replay emitted a ready frame — the boundary must sample the terminal before claiming its live phase: %+v", f)
+		}
 	}
 	errEnv := wantFrameError(t, frames, len(frames)-1)
 	if msg, _ := errEnv["message"].(string); !strings.Contains(msg, "target ended") {

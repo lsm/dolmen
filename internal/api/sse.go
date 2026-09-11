@@ -164,6 +164,23 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	if s.holdReplay != nil {
 		s.holdReplay()
 	}
+	// A replay can also end with a CLEAN done: a session that died
+	// mid-replay — a dropped target, a revoked grant — reports its last
+	// page as done with no error, the cause riding the ended channel
+	// alone. Sample it before claiming the live phase: a cause that has
+	// arrived takes the terminal path instead, so the ready frame never
+	// fires on a target that already ended. Residual: a death landing in
+	// the window between this sample and a naturally completing final
+	// page can still see ready before the terminal — truthful and
+	// harmless, every promised record delivered and the tracked cursor
+	// correct, the terminal following with the teaching.
+	select {
+	case cause := <-ended:
+		sseEvent(w, "close", sseCursor{Cursor: string(resume)})
+		sseErrorEvent(w, subscribeErr(cause), reqID)
+		return
+	default:
+	}
 	// The ready frame is the recovery point a fresh subscriber holds from
 	// the moment the stream goes live: everything up to this cursor has
 	// been delivered on this stream, and reconnecting with it resumes
