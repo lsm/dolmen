@@ -178,12 +178,12 @@ func TestListenYieldedFlushDefersToTheVerdict(t *testing.T) {
 	}
 
 	flushDone := make(chan struct{})
+	st.mu.Lock()
 	go func() {
 		defer close(flushDone)
 		sess.flushParkedClose()
 	}()
 
-	st.mu.Lock()
 	time.Sleep(50 * time.Millisecond)
 	select {
 	case cause := <-fired:
