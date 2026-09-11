@@ -26,7 +26,8 @@ var (
 	legacyBuildLine  = regexp.MustCompile(`^//[ \t]*\+build([ \t].*)?\r?$`)
 	linePattern      = regexp.MustCompile(`^//line .*:\d+(?::\d+)? ?\r?$`)
 	blockLinePattern = regexp.MustCompile(`^/\*line .*:\d+(?::\d+)? ?\*/\r?$`)
-	docDirPattern    = regexp.MustCompile(`^//(go:(embed|linkname|noinline|nosplit|norace|nocheckptr|noescape|uintptrescapes|wasmimport|wasmexport|nointerface)|export)([ \t].*)?\r?$`)
+	lineScannedOnly  = regexp.MustCompile(`^//go:(build|generate|line|debug)([ \t].*)?\r?$`)
+	exportPattern    = regexp.MustCompile(`^//export([ \t].*)?\r?$`)
 	nolintPattern    = regexp.MustCompile(`^//nolint(:[0-9A-Za-z_,-]+)?([ \t].*)?\r?$`)
 )
 
@@ -117,7 +118,7 @@ func isExempt(text []byte, atLineStart, isDoc bool) bool {
 	if atLineStart && (goDirPattern.Match(text) || legacyBuildLine.Match(text) || linePattern.Match(text)) {
 		return true
 	}
-	if isDoc && docDirPattern.Match(text) {
+	if isDoc && (goDirPattern.Match(text) || exportPattern.Match(text)) && !lineScannedOnly.Match(text) {
 		return true
 	}
 	return blockLinePattern.Match(text) || nolintPattern.Match(text)
