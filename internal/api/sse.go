@@ -139,12 +139,12 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 			}
 			select {
 			case cause := <-ended:
-				sseEvent(w, "close", sseClose{Cursor: string(resume)})
+				sseEvent(w, "close", sseCursor{Cursor: string(resume)})
 				sseErrorEvent(w, subscribeErr(cause), reqID)
 			case <-ctx.Done():
 				return
 			case <-time.After(2 * time.Second):
-				sseEvent(w, "close", sseClose{Cursor: string(resume)})
+				sseEvent(w, "close", sseCursor{Cursor: string(resume)})
 				sseErrorEvent(w, subscribeErr(nerr), reqID)
 			}
 			return
@@ -161,6 +161,19 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 			s.holdReplay()
 		}
 	}
+	if s.holdReplay != nil {
+		s.holdReplay()
+	}
+	// The ready frame is the recovery point a fresh subscriber holds from
+	// the moment the stream goes live: everything up to this cursor has
+	// been delivered on this stream, and reconnecting with it resumes
+	// exactly here — the last replayed record's cursor, or the
+	// registration head when replay was empty. A stream that ends during
+	// replay never gets one; its terminal close frame carries the reached
+	// cursor instead.
+	if !sseEvent(w, "ready", sseCursor{Cursor: string(resume)}) {
+		return
+	}
 
 	for {
 		select {
@@ -176,7 +189,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 				default:
-					sseEvent(w, "close", sseClose{Cursor: string(resume)})
+					sseEvent(w, "close", sseCursor{Cursor: string(resume)})
 					sseErrorEvent(w, subscribeErr(cause), reqID)
 					return
 				}
@@ -225,10 +238,12 @@ type sseChange struct {
 	Kind   string `json:"kind"`
 }
 
-// sseClose is the terminal frame's cursor handoff: the position the
-// stream reached, the exact place a reconnecting client resumes from.
+// sseCursor is the single-field cursor carrier both synchronization frames
+// use — ready at the replay→live boundary, close at the terminal — so a
+// reconnecting client reads one recovery shape from every handoff the
+// stream offers.
 
-type sseClose struct {
+type sseCursor struct {
 	Cursor string `json:"cursor"`
 }
 

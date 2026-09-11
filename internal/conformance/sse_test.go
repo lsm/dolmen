@@ -200,6 +200,21 @@ func sseChangeOf(t *testing.T, f sseFrame) [3]any {
 	return [3]any{m["table"], m["row_id"], m["kind"]}
 }
 
+// wantReady fails unless f is the ready synchronization frame and returns
+// the cursor it carries — the recovery point a client persists the moment
+// the stream goes live.
+func wantReady(t *testing.T, f sseFrame) string {
+	t.Helper()
+	if f.event != "ready" {
+		t.Fatalf("frame = %q event, want the ready synchronization frame: %+v", f.event, f)
+	}
+	cursor, _ := frameData(t, f)["cursor"].(string)
+	if cursor == "" {
+		t.Fatalf("the ready frame carries no cursor: %+v", f)
+	}
+	return cursor
+}
+
 // TestSubscribeReplayThenLive: the slice's core contract — a subscriber
 // holding a cursor receives exactly the events committed after it, in commit
 // order (§9.2 layer 3, §9.3).
@@ -232,12 +247,22 @@ func TestSubscribeReplayThenLive(t *testing.T) {
 		{"notes", missedIDs[0], "insert"},
 		{"notes", missedIDs[1], "insert"},
 	}
+	var lastReplay sseFrame
 	for i, w := range want {
 		f, ok := r.next(5 * time.Second)
 		if !ok {
 			t.Fatalf("replay change %d never arrived on the stream", i)
 		}
 		wantChange(t, f, w)
+		lastReplay = f
+	}
+	lastCursor, _ := frameData(t, lastReplay)["cursor"].(string)
+	fr, ok := r.next(5 * time.Second)
+	if !ok {
+		t.Fatal("the replay→live boundary never sent its ready frame")
+	}
+	if c := wantReady(t, fr); c != lastCursor {
+		t.Fatalf("the ready frame's cursor %q is not the last replayed record's cursor %q — the recovery point must be what was actually delivered", c, lastCursor)
 	}
 
 	after := h.mustHTTP("insert", map[string]any{
@@ -255,6 +280,11 @@ func TestSubscribeReplayThenLive(t *testing.T) {
 
 	cursor, _ := frameData(t, f)["cursor"].(string)
 	r2 := h.subscribeStream(t, url.Values{"namespace": {"rt"}, "cursor": {cursor}})
+	fr2, ok := r2.next(5 * time.Second)
+	if !ok {
+		t.Fatal("the resumed stream never opened its live phase")
+	}
+	wantReady(t, fr2)
 	later := h.mustHTTP("insert", map[string]any{
 		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "later"}},
 	})
@@ -278,8 +308,14 @@ func TestSubscribeCursorForms(t *testing.T) {
 	})
 	firstIDs := first["ids"].([]any)
 
-	// Omitted cursor: a fresh subscriber gets future events only.
+	// Omitted cursor: a fresh subscriber gets future events only — and its
+	// recovery cursor up front, before any event exists to carry one.
 	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}})
+	fr, ok := r.next(5 * time.Second)
+	if !ok {
+		t.Fatal("the bare-start stream never sent its ready frame")
+	}
+	wantReady(t, fr)
 
 	next := h.mustHTTP("insert", map[string]any{
 		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "c"}},
@@ -290,7 +326,8 @@ func TestSubscribeCursorForms(t *testing.T) {
 	}
 	wantChange(t, f, [3]any{"notes", next["ids"].([]any)[0], "insert"})
 
-	// begin: the whole retained backlog, in commit order.
+	// begin: the whole retained backlog, in commit order, then the
+	// boundary's ready frame.
 	r2 := h.subscribeStream(t, url.Values{"namespace": {"rt"}, "cursor": {"begin"}})
 	want := [][3]any{
 		{"notes", firstIDs[0], "insert"},
@@ -304,6 +341,11 @@ func TestSubscribeCursorForms(t *testing.T) {
 		}
 		wantChange(t, f, w)
 	}
+	fr2, ok := r2.next(5 * time.Second)
+	if !ok {
+		t.Fatal("the begin replay's boundary never sent its ready frame")
+	}
+	wantReady(t, fr2)
 }
 
 // TestSubscribeTableFilter: the optional table parameter selects that
@@ -328,6 +370,13 @@ func TestSubscribeTableFilter(t *testing.T) {
 	}
 	wantChange(t, f, [3]any{"notes", notes["ids"].([]any)[0], "insert"})
 	tableCursor, _ := frameData(t, f)["cursor"].(string)
+	fr, ok := r.next(5 * time.Second)
+	if !ok {
+		t.Fatal("the table feed's boundary never sent its ready frame")
+	}
+	if c := wantReady(t, fr); c != tableCursor {
+		t.Fatalf("the table feed's ready cursor %q is not its last replayed record's cursor %q", c, tableCursor)
+	}
 	h.mustHTTP("insert", map[string]any{
 		"namespace": "rt", "table": "tasks", "records": []any{map[string]any{"title": "t2"}},
 	})
@@ -433,27 +482,54 @@ func TestSubscribeCursorTeachingErrors(t *testing.T) {
 	wantChange(t, f2, [3]any{"notes", fresh["ids"].([]any)[0], "insert"})
 }
 
+// TestSubscribeOverflowTeachesReconnect: commits beyond the listener's
+// queue bound end the stream with the overflow teaching and a resume
+// cursor. The overflow is forced, not hoped for: the ReplayHold seam parks
+// the handler at the replay→live boundary with the listener registered but
+// nothing accepted, so the probe plus nine flood pages (9002 records)
+// exceed everything the session can absorb (an 8-page queue, one record in
+// flight to the handler's channel, one parked callback) and the overflow
+// fires while the handler is provably parked.
 func TestSubscribeOverflowTeachesReconnect(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
 
+	held := make(chan struct{})
+	resume := make(chan struct{})
+	var boundary sync.Once
+	h.api.HoldReplay(func() {
+		boundary.Do(func() { close(held) })
+		<-resume
+	})
+
 	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}})
+	select {
+	case <-held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stream never reached its replay boundary, so the overflow cannot be forced")
+	}
 	probe := h.mustHTTP("insert", map[string]any{
 		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "probe"}},
 	})
-	f, ok := r.next(10 * time.Second)
-	if !ok {
-		t.Fatal("the stream never delivered a live record, so the listener was not registered")
-	}
-	wantChange(t, f, [3]any{"notes", probe["ids"].([]any)[0], "insert"})
-
 	flood := make(chan error, 1)
 	go h.flood("rt", "notes", 9, flood)
-
-	frames := r.rest(30 * time.Second)
 	if err := <-flood; err != nil {
 		t.Fatal(err)
 	}
+	close(resume)
+
+	f, ok := r.next(10 * time.Second)
+	if !ok {
+		t.Fatal("the released stream never delivered its ready frame")
+	}
+	wantReady(t, f)
+	f, ok = r.next(10 * time.Second)
+	if !ok {
+		t.Fatal("the released stream never delivered the record parked in the handler's channel")
+	}
+	wantChange(t, f, [3]any{"notes", probe["ids"].([]any)[0], "insert"})
+
+	frames := r.rest(15 * time.Second)
 	if len(frames) < 2 {
 		t.Fatalf("overflowed stream = %d frames, want a cursor handoff and a teaching error: %+v", len(frames), frames)
 	}
@@ -477,20 +553,22 @@ func TestSubscribeDisconnectLeavesServerHealthy(t *testing.T) {
 
 	res := h.subscribe(t, url.Values{"namespace": {"rt"}})
 	r := newSSEReader(res)
-	if _, ok := r.next(200 * time.Millisecond); ok {
-		t.Fatal("a bare start replayed a frame")
+	f, ok := r.next(5 * time.Second)
+	if !ok {
+		t.Fatal("a bare start never sent its ready frame — the fresh subscriber is left without a recovery cursor")
 	}
+	wantReady(t, f)
 	res.Body.Close()
 
 	after := h.mustHTTP("insert", map[string]any{
 		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "after-disconnect"}},
 	})
 	r2 := h.subscribeStream(t, url.Values{"namespace": {"rt"}, "cursor": {"begin"}})
-	f, ok := r2.next(5 * time.Second)
+	f2, ok := r2.next(5 * time.Second)
 	if !ok {
 		t.Fatal("a subscription after a disconnect never delivered the commit")
 	}
-	wantChange(t, f, [3]any{"notes", after["ids"].([]any)[0], "insert"})
+	wantChange(t, f2, [3]any{"notes", after["ids"].([]any)[0], "insert"})
 }
 
 // replayRaceBacklog is the backlog the two replay-race fixtures seed. The
@@ -607,13 +685,21 @@ func TestSubscribeBoundaryUnderConcurrentWrites(t *testing.T) {
 		want = append(want, b.ids...)
 	}
 	got := []any{}
-	for i := len(got); i < len(want); i++ {
+	prevCursor := ""
+	for len(got) < len(want) {
 		f, ok := r.next(60 * time.Second)
 		if !ok {
 			t.Fatalf("stream ended after %d of %d records — the boundary skipped the rest", len(got), len(want))
 		}
+		if len(got) == len(seeded) {
+			if c := wantReady(t, f); c != prevCursor {
+				t.Fatalf("the boundary's ready cursor %q is not the backlog's last cursor %q — the recovery point must be what was actually delivered", c, prevCursor)
+			}
+			continue
+		}
 		dt := frameData(t, f)
 		got = append(got, dt["row_id"])
+		prevCursor, _ = dt["cursor"].(string)
 	}
 	for i := range want {
 		if got[i] != want[i] {
