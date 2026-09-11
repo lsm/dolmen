@@ -331,6 +331,7 @@ func readAllowlist(path string) (map[string]int, error) {
 }
 
 func headerHasBuildConstraint(src []byte) bool {
+	src = bytes.TrimPrefix(src, utf8BOM)
 	for _, line := range bytes.Split(src, []byte("\n")) {
 		trimmed := bytes.TrimSpace(line)
 		if bytes.HasPrefix(trimmed, []byte("package ")) || bytes.Equal(trimmed, []byte("package")) {
