@@ -280,8 +280,10 @@ func (sess *listenSession) fireClosed(cause error) {
 // external cancel waits any in-flight delivery out. Idempotent.
 func (sess *listenSession) cancel() {
 	sess.cancelOnce.Do(func() {
-		if sess.unregister != nil {
+		if sess.s != nil {
 			sess.s.untrackSession(sess)
+		}
+		if sess.unregister != nil {
 			sess.unregister()
 		}
 		sess.end(nil)

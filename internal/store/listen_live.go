@@ -156,7 +156,7 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 	ctx := sess.ctx // the session's scope: cancel aborts in-flight database work, not just future reads
 	scanned, ended, rerr := sess.readBatch(ctx)
 	if rerr != nil {
-		return 0, rerr
+		return 0, sess.fillErr(rerr)
 	}
 	var admitted []loggedChange
 	revoked := false
@@ -265,7 +265,7 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 func (sess *listenSession) readBatch(ctx context.Context) (scanned []loggedChange, lifetimeEnded bool, err error) {
 	tx, err := sess.n.rw.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, false, sess.fillErr(err)
+		return nil, false, err
 	}
 	defer tx.Rollback()
 	sess.mu.Lock()
@@ -274,12 +274,12 @@ func (sess *listenSession) readBatch(ctx context.Context) (scanned []loggedChang
 	query, args := changePageSQL(from, nil, MaxChangesPageLimit, sess.feed)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, false, sess.fillErr(err)
+		return nil, false, err
 	}
 	scanned, err = scanChangePage(rows)
 	rows.Close()
 	if err != nil {
-		return nil, false, sess.fillErr(err)
+		return nil, false, err
 	}
 	if sess.feed != nil {
 		current, ferr := changeFeedOf(ctx, tx, sess.nsName, sess.feed.table)
@@ -287,13 +287,13 @@ func (sess *listenSession) readBatch(ctx context.Context) (scanned []loggedChang
 		case ferr != nil && errors.Is(ferr, ErrNotFound):
 			lifetimeEnded = true // the table is gone: a drop ended this feed
 		case ferr != nil:
-			return nil, false, sess.fillErr(ferr)
+			return nil, false, ferr
 		case current.nsgen != sess.feed.nsgen || current.dropGen != sess.feed.dropGen:
 			lifetimeEnded = true // a same-named successor is a different feed
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, false, sess.fillErr(err)
+		return nil, false, err
 	}
 	return scanned, lifetimeEnded, nil
 }
@@ -303,7 +303,11 @@ func (sess *listenSession) readBatch(ctx context.Context) (scanned []loggedChang
 // served by a different instance than the session registered on (dropped
 // and evicted, replaced by a recreated successor) — is the teaching
 // lifetime end; everything else is an engine failure the caller sees
-// verbatim.
+// verbatim. The eviction check takes s.mu, which a DropNamespace's evict
+// holds while waiting out this namespace's open connections — so callers
+// must hold NO transaction of the namespace's pools when they map through
+// here (readBatch returns raw errors for exactly that reason; codex P1 on
+// #236, thread r3985954997).
 func (sess *listenSession) fillErr(err error) error {
 	if errors.Is(err, ErrNotFound) {
 		return ErrListenLifetimeEnded
