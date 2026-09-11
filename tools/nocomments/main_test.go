@@ -142,6 +142,7 @@ func TestLineCommentsCount(t *testing.T) {
 		{"//go:debug\u00A0panicnil=1\npackage main\n", 1},
 		{"//go:de\rbug panicnil=1\npackage main\n", 0},
 		{"//go:debug prose\npackage main\n", 1},
+		{"//go:debug panicnil=\npackage main\n", 0},
 		{"//go:build windows\n\npackage p\n\n//line f.go:10 \nvar x = 1\n", 1},
 		{"//go:build windows\n\npackage p\n\nvar x = /*line f.go:10 */ 1\n", 1},
 		{"package p\n\n//go:noinline\nvar x = 1\n", 1},
