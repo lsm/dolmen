@@ -72,10 +72,13 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	// a commit that raced it unwitnessed by both halves. A registration
 	// that fails past this point takes the entry back out on its way down.
 	sess.unregister = s.onCommit(nsName, sess.wake)
+	s.trackSession(sess)
 	committed := false
 	defer func() {
 		if !committed {
+			sess.ctxCancel()
 			sess.unregister()
+			s.untrackSession(sess)
 		}
 	}()
 

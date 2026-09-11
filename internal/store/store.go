@@ -112,6 +112,8 @@ type Store struct {
 	notifyMu  sync.Mutex
 	listeners map[string][]*commitListener
 
+	listenSessions map[string][]*listenSession
+
 	// changeRetention is the change log's retention bound R (§9.3): the
 	// shared knob for cursor-token expiry and record pruning, fixed at Open —
 	// it shapes durable state (what resolve honors, what prune deletes), so
@@ -160,6 +162,7 @@ func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var first error
+	names := make([]string, 0, len(s.nss))
 	for name, n := range s.nss {
 		if err := n.rw.Close(); err != nil && first == nil {
 			first = err
@@ -168,8 +171,18 @@ func (s *Store) Close() error {
 			first = err
 		}
 		delete(s.nss, name)
+		names = append(names, name)
+	}
+	for _, name := range names {
+		s.wakeListenSessions(name)
 	}
 	return first
+}
+
+func (s *Store) nsEvicted(name string, want *nsDB) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nss[name] != want
 }
 
 // ns opens the namespace's databases. It never creates: a namespace exists

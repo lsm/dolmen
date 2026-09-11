@@ -263,6 +263,7 @@ func (s *Store) CreateNamespace(ctx context.Context, nsName string, parentNsGen 
 	// A cached entry here is stale (its file was removed out-of-band); evict
 	// it so lockedNS initializes the fresh file instead of serving dead pools.
 	s.evict(nsName)
+	s.wakeListenSessions(nsName)
 	if _, err := s.lockedNS(nsName); err != nil {
 		// Un-reserve so a failed init doesn't wedge the name behind a
 		// zero-byte file.
@@ -309,6 +310,7 @@ func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte
 			// stale cached pools rather than orphaning them — Close() only
 			// reaches entries still in the map.
 			s.evict(nsName)
+			s.wakeListenSessions(nsName)
 			return fmt.Errorf("%w: namespace %s", ErrNotFound, nsName)
 		}
 		return err
@@ -335,6 +337,7 @@ func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte
 	// WAL on its final close. Close errors are advisory here — the file
 	// removal below is the outcome that matters.
 	s.evict(nsName)
+	s.wakeListenSessions(nsName)
 	for _, p := range []string{path, path + "-wal", path + "-shm"} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("drop namespace %s: %w", nsName, err)
@@ -414,7 +417,11 @@ func (s *Store) DropTable(ctx context.Context, nsName, table string, inc Incarna
 		 ON CONFLICT(table_name) DO UPDATE SET gen = gen + 1`, table); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.wakeListenSessions(nsName)
+	return nil
 }
 
 // TableState is the one-snapshot read the API layer resolves scopes and

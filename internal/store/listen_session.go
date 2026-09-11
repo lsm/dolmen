@@ -281,6 +281,7 @@ func (sess *listenSession) fireClosed(cause error) {
 func (sess *listenSession) cancel() {
 	sess.cancelOnce.Do(func() {
 		if sess.unregister != nil {
+			sess.s.untrackSession(sess)
 			sess.unregister()
 		}
 		sess.end(nil)

@@ -299,12 +299,16 @@ func (sess *listenSession) readBatch(ctx context.Context) (scanned []loggedChang
 }
 
 // fillErr maps a fill failure onto the session's close causes: a
-// namespace the read can no longer find is the teaching lifetime end;
-// everything else is an engine failure the caller sees verbatim. (The
-// evicted-pool variant — dropped and evicted, or replaced by a recreated
-// successor — lands with the pool-paths slice's nsEvicted helper.)
+// namespace the read can no longer find — gone from the registry, or
+// served by a different instance than the session registered on (dropped
+// and evicted, replaced by a recreated successor) — is the teaching
+// lifetime end; everything else is an engine failure the caller sees
+// verbatim.
 func (sess *listenSession) fillErr(err error) error {
 	if errors.Is(err, ErrNotFound) {
+		return ErrListenLifetimeEnded
+	}
+	if sess.s.nsEvicted(sess.nsName, sess.n) {
 		return ErrListenLifetimeEnded
 	}
 	return fmt.Errorf("listen fill %s: %w", sess.nsName, err)
