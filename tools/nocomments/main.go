@@ -347,12 +347,18 @@ func headerHasBuildConstraint(src []byte) bool {
 	return false
 }
 
+var unicodeSpace = regexp.MustCompile(`[\v\f\x85\p{Zs}\x{2028}\x{2029}]`)
+
 func scanFile(src []byte, path string) (bool, *scan, error) {
 	s, err := scanSource(src, path)
-	if err != nil {
-		if headerHasBuildConstraint(src) {
-			return true, nil, nil
+	if err != nil && headerHasBuildConstraint(src) {
+		normalized := unicodeSpace.ReplaceAll(src, []byte(" "))
+		if s2, err2 := scanSource(normalized, path); err2 == nil {
+			return false, s2, nil
 		}
+		return true, nil, nil
+	}
+	if err != nil {
 		return false, nil, err
 	}
 	return false, s, nil
