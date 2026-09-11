@@ -191,7 +191,7 @@ func sseOpenStream(w http.ResponseWriter, reqID string) {
 	rc := http.NewResponseController(w)
 	rc.SetWriteDeadline(time.Now().Add(sseWriteDeadline))
 	w.WriteHeader(http.StatusOK)
-	sseFlush(w)
+	rc.Flush()
 	rc.SetWriteDeadline(time.Time{})
 }
 
@@ -232,8 +232,10 @@ type sseClose struct {
 // sseEvent frames one server-sent event — named event, single-line JSON
 // data, blank-line terminator — and flushes it immediately: a stream frame
 // held in a buffer is a frame the subscriber has not received. It reports
-// false when the write failed (the subscriber disconnected), so the caller
-// can stop instead of spinning on a dead connection.
+// false when the write or the flush failed (the subscriber disconnected —
+// a small frame can sit in net/http's buffer and die only at the flush,
+// so the flush error is part of the frame's success), so the caller can
+// stop instead of spinning on a dead connection.
 func sseEvent(w http.ResponseWriter, event string, data any) bool {
 	payload, err := sseJSON(data)
 	if err != nil {
@@ -242,11 +244,9 @@ func sseEvent(w http.ResponseWriter, event string, data any) bool {
 	rc := http.NewResponseController(w)
 	rc.SetWriteDeadline(time.Now().Add(sseWriteDeadline))
 	_, werr := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload)
-	if werr == nil {
-		sseFlush(w)
-	}
+	ferr := rc.Flush()
 	rc.SetWriteDeadline(time.Time{})
-	return werr == nil
+	return werr == nil && ferr == nil
 }
 
 // sseErrorEvent delivers a teaching or failure error as the stream's error
@@ -282,13 +282,4 @@ func sseJSON(v any) ([]byte, error) {
 		return nil, err
 	}
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
-}
-
-// sseFlush pushes buffered frames to the wire. Every ResponseWriter the
-// server hands an HTTP/1.1 handler implements http.Flusher; the assert keeps
-// an exotic test double from panicking on it.
-func sseFlush(w http.ResponseWriter) {
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
-	}
 }
