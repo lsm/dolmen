@@ -81,7 +81,7 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		// clean done is provable aliveness, never a death in disguise.
 		sess.replayDone = true
 		sess.cond.Broadcast()
-		return nil, resume, true, sess.endCause()
+		return nil, resume, true, sess.endCauseLocked()
 	}
 	if err != nil || progress.next == "" {
 		return records, next, done, err

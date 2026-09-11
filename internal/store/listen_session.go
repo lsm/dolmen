@@ -204,6 +204,13 @@ func (sess *listenSession) endYielding(cause error) bool {
 func (sess *listenSession) endCause() error {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
+	return sess.endCauseLocked()
+}
+
+// endCauseLocked is endCause for a caller already holding sess.mu —
+// next()'s publish section reads the cause inside its own critical
+// section, where the locking variant would self-deadlock.
+func (sess *listenSession) endCauseLocked() error {
 	if sess.pendingClose != nil {
 		return sess.pendingClose
 	}
