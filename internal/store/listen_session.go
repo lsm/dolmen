@@ -217,15 +217,6 @@ func (sess *listenSession) flushParkedClose() {
 	}
 }
 
-// isDead is the pump's between-batches check: one lock, no broadcast, so
-// a fill loop between pages observes a cancel without re-entering the
-// wait.
-func (sess *listenSession) isDead() bool {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	return sess.dead
-}
-
 // fireClosed invokes the terminal callback at most once, with the end's
 // cause. The callback is caller code, so a panic is recovered and logged —
 // deliverCommit's write-path rule, applied here: the session is already
