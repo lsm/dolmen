@@ -307,6 +307,50 @@ func TestMigrateRejectsFieldLevelDefault(t *testing.T) {
 	}
 }
 
+func TestMigrateGrandfathersLegacyNowDefault(t *testing.T) {
+	st := openStore(t)
+	mustNS(t, st, "test")
+	ctx := context.Background()
+	sc, err := st.CreateTable(ctx, "test", "legacy", []schema.Field{
+		{Name: "title", Type: schema.String},
+		{Name: "tag", Type: schema.String, Default: "draft"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	sc.Field("tag").Default = schema.NowDefault
+	raw, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	if _, err := n.rw.ExecContext(ctx,
+		`UPDATE _dolmen_tables SET schema_json = ? WHERE name = ?`, string(raw), "legacy"); err != nil {
+		t.Fatalf("inject pre-release schema: %v", err)
+	}
+
+	if _, err := st.Migrate(ctx, "test", "legacy", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "extra", Type: schema.String}},
+	}, Embedder{}, 1); err != nil {
+		t.Fatalf("migrate on a legacy now()-defaulted table must succeed: %v", err)
+	}
+
+	ids, err := st.Insert(ctx, "test", "legacy", []map[string]any{{"title": "x"}}, Embedder{})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, _, err := st.Query(ctx, "test", "SELECT tag FROM legacy WHERE id = ?", []any{ids[0]}, 0, 0)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("query: %v rows=%d", err, len(rows))
+	}
+	if rows[0]["tag"] != schema.NowDefault {
+		t.Fatalf("the legacy static default must keep storing the literal, got %v", rows[0]["tag"])
+	}
+}
+
 func TestInsertRetryAfterDefaultedFieldDropped(t *testing.T) {
 	st := openStore(t)
 	mustNS(t, st, "test")

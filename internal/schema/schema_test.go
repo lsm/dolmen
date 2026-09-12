@@ -111,6 +111,25 @@ func TestValidateNowDefaultTimestampOnly(t *testing.T) {
 	}
 }
 
+func TestValidateForMigrationGrandfathersLegacyNowDefault(t *testing.T) {
+	old := []Field{{Name: "tag", Type: String, Default: NowDefault}}
+	carried := []Field{{Name: "tag", Type: String, Default: NowDefault}, {Name: "extra", Type: String}}
+	if err := ValidateForMigration(carried, old); err != nil {
+		t.Fatalf("a carried pre-now()-release default must stay migratable: %v", err)
+	}
+	if err := ValidateForMigration([]Field{{Name: "tag", Type: String, Default: NowDefault}}, nil); err == nil {
+		t.Fatal("a newly declared now() default on a string field must be rejected even under migration validation")
+	}
+	renamed := []Field{{Name: "moved", Type: String, Default: NowDefault}}
+	if err := ValidateForMigration(renamed, old); err == nil {
+		t.Fatal("renaming must not smuggle the legacy now() default onto a new field name")
+	}
+	changed := []Field{{Name: "tag", Type: String, Default: "plain"}}
+	if err := ValidateForMigration(changed, old); err != nil {
+		t.Fatalf("a carried field that no longer declares now() must validate normally: %v", err)
+	}
+}
+
 func TestEnumAllowsExactMatch(t *testing.T) {
 	f := Field{Name: "severity", Type: String, Enum: []string{"SEV0", "SEV1"}}
 	if !EnumAllows(f.Enum, "SEV0") || !EnumAllows(f.Enum, "SEV1") {
