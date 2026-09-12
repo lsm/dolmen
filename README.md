@@ -503,7 +503,7 @@ Skill distribution is built into the server. `GET /skills` returns a JSON manife
 | Tool | Purpose |
 |---|---|
 | `list_namespaces` | Namespaces on this server; an optional `prefix` (a namespace path) lists only that path's subtree, recursively |
-| `create_namespace` | Reserve a namespace up front (creation is implicit on first use otherwise) |
+| `create_namespace` | Reserve a namespace up front (data ops create implicitly on first use otherwise; `wait_for` and the `subscribe` stream never create — a missing namespace is `not_found`) |
 | `drop_namespace` | Delete a namespace and all its tables; `confirm` must repeat the name; a namespace with child namespaces is refused — drop the children first |
 | `list_tables` | Tables in a namespace |
 | `describe_server` | Server's embedding provider status — provider (`none` / `local` / `openai`), model, the identity that pins vectorized tables, and whether server-side embedding is usable; read-only, no secrets |
@@ -531,7 +531,9 @@ Skill distribution is built into the server. `GET /skills` returns a JSON manife
 - **Namespace = one SQLite file** (`data/<ns>.db`, WAL). Isolation is physical. Lifecycle is managed
   over the API: `list_namespaces`, `create_namespace`, and `drop_namespace` (which closes the server's
   own connections, then deletes the file and its WAL sidecars — `confirm` must repeat the namespace
-  name, and any later use of the name recreates the namespace empty; a namespace with child
+  name, and any later data-op use of the name recreates the namespace empty (the realtime reads —
+  `wait_for`, the `subscribe` stream (`/v1/subscribe`) — answer `not_found` until it is recreated);
+  a namespace with child
   namespaces is refused, the error naming the descendant count — children are dropped first, never
   deleted implicitly). Safety caveat: drop coordinates
   only within one server — another process holding the file open (a second dolmen instance, a backup
@@ -575,8 +577,9 @@ Skill distribution is built into the server. `GET /skills` returns a JSON manife
 - **Embeddings** are pluggable: `none` (caller supplies vectors), `local` (built-in in-process
   inference via [rembed](https://github.com/rostamlabs/rembed) — pure Go, no cgo, model weights
   cached under the data dir), or any OpenAI-compatible endpoint.
-- Namespaces are created implicitly on first use (one file per name; `create_namespace` just reserves
-  the name up front); tables are not — call `create_table` before inserting, `drop_table` (confirm-guarded)
+- Namespaces are created implicitly on first use by the data ops (one file per name; `create_namespace`
+  just reserves the name up front) — `wait_for` and the `subscribe` stream never create, answering
+  `not_found`; tables are not — call `create_table` before inserting, `drop_table` (confirm-guarded)
   to remove one completely. No other management surface to operate.
 
 Storage sits behind the store layer, so engines like DuckDB-over-Parquet or Iceberg-over-S3 can be

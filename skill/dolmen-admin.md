@@ -183,7 +183,8 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
   Both the English default and the multilingual model (`intfloat/multilingual-e5-small`) ship as
   release tarballs.
 - `create_namespace` is only for reserving a name up front (or failing loudly if it is taken) —
-  namespaces are otherwise created implicitly on first use, and it creates no tables.
+  namespaces are otherwise created implicitly on first use by the data ops (`wait_for` and the
+  `subscribe` stream answer `not_found` instead), and it creates no tables.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
 - `read_rows` is the by-id fetch: pass `"ids": [...]` (the ids a write returned, a query projected,
   or a feed carried), get the full rows back — each found row once, in ascending id order, typed
