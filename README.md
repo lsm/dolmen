@@ -541,9 +541,11 @@ The frame protocol — named events whose `data` is one compact JSON line:
 - `event: error`, `data: {"ok":false,"error":{"code","message","request_id"}}` — the terminal
   frame: the standard error envelope. Nothing follows it.
 
-There is no heartbeat — an idle stream sends nothing after `ready`. Detect a dead connection
-with a transport-level read timeout, or use `wait_for` when quiet must be detectable within a
-bound.
+Between change deliveries an idle stream sends a `: keepalive` comment frame every 20 seconds —
+an SSE comment line with no event name and no data, ignored by every event parser, carrying no
+cursor and never advancing one. Treat it as liveness: a connection that delivers neither a
+change nor a keepalive for a couple of intervals (~40 s) is dead — close it and reconnect from
+your last cursor.
 
 Every server-initiated terminal is a `close` frame followed by a teaching `error` event whose
 message is the recipe; registration failures — an unknown or foreign cursor, a missing namespace,

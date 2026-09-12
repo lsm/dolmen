@@ -170,9 +170,12 @@ Each frame is a named event (`event: <name>`) whose `data` is one compact JSON l
 | `close` | `{"cursor":"..."}` | Sent before every server-initiated terminal, carrying the last-delivered cursor — the reconnect token. |
 | `error` | `{"ok":false,"error":{"code","message","request_id"}}` | The terminal frame: the standard error envelope as the event data. Nothing follows it. |
 
-An idle stream is silent — there is no heartbeat after `ready`. Detect a dead connection with
-your transport's own read timeout, or pair the stream with `wait_for` (whose timeout bounds
-staleness) when quiet must be detectable.
+An idle stream is not silent: between change deliveries the server sends a `: keepalive`
+comment frame every 20 seconds (the 15–30 s heartbeat band's chosen point). It is an SSE
+comment line — no event name, no data — so every event parser ignores it, and it never carries
+or advances the cursor; only `change` frames do. Treat keepalive receipt as liveness: a
+connection that delivers neither a change nor a keepalive for a couple of intervals (~40 s) is
+dead — close it and reconnect from your last cursor.
 
 ### Terminal causes and their recipes
 

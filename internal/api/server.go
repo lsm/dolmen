@@ -33,6 +33,7 @@ type Server struct {
 	namespaceHint      string
 	prefix             string
 	maxSubscriptionAge time.Duration
+	keepaliveInterval  time.Duration
 	holdReplay         func()
 }
 
@@ -59,6 +60,12 @@ func WithMaxSubscriptionAge(d time.Duration) Option {
 	}
 }
 
+func WithKeepaliveInterval(d time.Duration) Option {
+	return func(s *Server) {
+		s.keepaliveInterval = d
+	}
+}
+
 // WithNamespaceHint sets the namespace guidance rendered into skills.
 func WithNamespaceHint(h string) Option {
 	return func(s *Server) {
@@ -71,7 +78,7 @@ func WithNamespaceHint(h string) Option {
 // *store.Store — adapter #1, still the only engine — so main.go and the test
 // harnesses are unchanged when later adapters arrive.
 func New(st *store.Store, emb embed.Provider, opts ...Option) *Server {
-	s := &Server{eng: st, emb: emb}
+	s := &Server{eng: st, emb: emb, keepaliveInterval: defaultKeepaliveInterval}
 	for _, opt := range opts {
 		opt(s)
 	}
