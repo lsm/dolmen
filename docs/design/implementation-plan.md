@@ -17,9 +17,10 @@ at the current `main`.
   contract surface. The concurrency-heavy slices — notification (4d/6b), the drop cascade
   (8f/8g), grant serialization (8d/8e/10b) — must never merge on `test` alone.
 - **An S-sized slice may land as a stack**: when the code says a single PR would run past
-  ~200 production lines, the slice stays one issue and one DoD but lands as a stack of thin
-  PRs — each ≤~200 production lines (test lines don't count; the bar is review attention,
-  not volume), each with its own codex cycle and binding THUMBS_UP — merged bottom-up as
+  ~100 production lines, the slice stays one issue and one DoD but lands as a stack of thin
+  PRs — each under ~100 production lines, ~150 the hard ceiling (test lines don't count; the
+  bar is review attention, not volume), each with its own codex cycle and binding THUMBS_UP —
+  merged bottom-up as
   each verdict binds (retarget and rebase the rest; never hold the stack for one
   synchronized merge). Plan the cut points when the slice starts, not mid-review: the
   entries that read largest — 6b, 8c, 8f, 9d — are expected stacks.
@@ -484,9 +485,12 @@ Changes:
   atomically; `notify` not invoked until the replay drains to the boundary; interim commits
   buffer in a bounded queue; overflow closes the stream with the teaching reconnect recipe.
 - The SSE handler drives replay-then-live through `Listen`; client disconnect cancels cleanly.
-- Landing shape: the lane's largest slice — four stacked PRs per the stack convention
-  (changelog page/mint helper extraction → `Listen` replay half → `Listen` live half → SSE
-  wiring + route registration + capabilities flip + conformance); one issue, one DoD.
+- Landing shape: as landed, not as planned — after the helper extraction and the replay
+  half's reviewed relanding, the slice finished as 15 PRs across three child containers
+  (queue bound + overflow teaching close; drain loop + admission gates; lifecycle registry +
+  poll pump + queue protection + retention ride + SSE live wiring + route and capabilities
+  flip), the SSE-wiring and surface scopes absorbed by the lifecycle container; one issue,
+  one DoD.
 - `GET /v1/subscribe` joins the api mux — the endpoint goes public exactly when its specified
   live-stream behavior exists (6a's handler stays handler-tested until then) — and
   `Capabilities()` flips `.subscribe` and `.notifications` to `true` in the same slice (4d
