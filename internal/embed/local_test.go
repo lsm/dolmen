@@ -210,50 +210,65 @@ func TestLocalCached(t *testing.T) {
 		t.Fatalf("an index whose weight_map names no shards must not report cached")
 	}
 
-	seedMeta := func(dir string, weights map[string]string) {
+	seedModelDir := func(slug string, files map[string]string) {
 		t.Helper()
+		dir := filepath.Join(dataDir, localModelDir, "org--"+slug)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
-		for name, body := range map[string]string{
+		all := map[string]string{
 			"config.json":           `{"model_type": "bert"}`,
 			"tokenizer_config.json": `{}`,
 			"modules.json":          `[]`,
 			"vocab.txt":             "[PAD]\n",
-		} {
-			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+		}
+		for name, body := range files {
+			all[name] = body
+		}
+		for name, body := range all {
+			path := filepath.Join(dir, name)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+			}
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 				t.Fatalf("write %s: %v", name, err)
 			}
 		}
-		for name, body := range weights {
-			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
-				t.Fatalf("write %s: %v", name, err)
-			}
+	}
+	denseModules := `[{"path": "", "type": "sentence_transformers.models.Transformer"}, {"path": "2_Dense", "type": "sentence_transformers.models.Dense"}]`
+	family := []struct {
+		slug  string
+		want  bool
+		files map[string]string
+	}{
+		{"valid", true, map[string]string{"model.safetensors": "weights"}},
+		{"emptyweights", false, map[string]string{"model.safetensors": ""}},
+		{"emptyshard", false, map[string]string{
+			"model.safetensors.index.json":     `{"weight_map": {"layer.0": "model-00001-of-00001.safetensors"}}`,
+			"model-00001-of-00001.safetensors": "",
+		}},
+		{"aliasshard", false, map[string]string{
+			"model.safetensors.index.json": `{"weight_map": {"layer.0": "vocab.txt"}}`,
+		}},
+		{"emptydense", false, map[string]string{
+			"model.safetensors":         "weights",
+			"modules.json":              denseModules,
+			"2_Dense/config.json":       `{}`,
+			"2_Dense/model.safetensors": "",
+		}},
+		{"validdense", true, map[string]string{
+			"model.safetensors":         "weights",
+			"modules.json":              denseModules,
+			"2_Dense/config.json":       `{}`,
+			"2_Dense/model.safetensors": "dense weights",
+		}},
+		{"emptytok", false, map[string]string{"vocab.txt": ""}},
+	}
+	for _, tc := range family {
+		seedModelDir(tc.slug, tc.files)
+		if got := (&Local{Model: "org/" + tc.slug, CacheRoot: filepath.Join(dataDir, localModelDir)}).Cached(); got != tc.want {
+			t.Fatalf("family %s: Cached = %v, want %v", tc.slug, got, tc.want)
 		}
-	}
-	cacheRoot := filepath.Join(dataDir, localModelDir)
-
-	emptyWeights := filepath.Join(cacheRoot, "org--emptyweights")
-	seedMeta(emptyWeights, map[string]string{"model.safetensors": ""})
-	if (&Local{Model: "org/emptyweights", CacheRoot: cacheRoot}).Cached() {
-		t.Fatalf("a zero-byte model.safetensors must not report cached")
-	}
-
-	emptyShard := filepath.Join(cacheRoot, "org--emptyshard")
-	seedMeta(emptyShard, map[string]string{
-		"model.safetensors.index.json":     `{"weight_map": {"layer.0": "model-00001-of-00001.safetensors"}}`,
-		"model-00001-of-00001.safetensors": "",
-	})
-	if (&Local{Model: "org/emptyshard", CacheRoot: cacheRoot}).Cached() {
-		t.Fatalf("a zero-byte shard must not report cached")
-	}
-
-	aliasShard := filepath.Join(cacheRoot, "org--aliasshard")
-	seedMeta(aliasShard, map[string]string{
-		"model.safetensors.index.json": `{"weight_map": {"layer.0": "vocab.txt"}}`,
-	})
-	if (&Local{Model: "org/aliasshard", CacheRoot: cacheRoot}).Cached() {
-		t.Fatalf("a weight_map naming a non-safetensors file must not report cached")
 	}
 
 	// An absolute model-directory path is its own cache, held to the same

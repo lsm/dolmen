@@ -242,13 +242,18 @@ func seededCacheDir(cacheRoot, model string) string {
 // must not fall back to the Hub (it cannot: a directory load is exactly
 // what is on disk). A partial cache — an interrupted download or tar
 // extraction — fails here, as does a directory that is no model at all.
+func fileNonEmpty(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && !fi.IsDir() && fi.Size() > 0
+}
+
 func completeModelDir(dir string) bool {
 	// Loading a directory means loading exactly what is on disk: rembed
 	// cannot fall back to the Hub for a file a partial cache is missing
 	// (an interrupted download or tar extraction), so every artifact its
 	// directory load needs must already be present.
 	for _, f := range []string{"config.json", "tokenizer_config.json", "modules.json"} {
-		if fi, err := os.Stat(filepath.Join(dir, f)); err != nil || fi.IsDir() {
+		if !fileNonEmpty(filepath.Join(dir, f)) {
 			return false
 		}
 	}
@@ -279,12 +284,12 @@ func completeModelDir(dir string) bool {
 	}
 	tokFiles, probe := TokenizerFiles(hf.ModelType, tc.TokenizerClass)
 	if probe {
-		if fi, err := os.Stat(filepath.Join(dir, "sentencepiece.bpe.model")); err == nil && !fi.IsDir() {
+		if fileNonEmpty(filepath.Join(dir, "sentencepiece.bpe.model")) {
 			tokFiles = nil
 		}
 	}
 	for _, f := range tokFiles {
-		if fi, err := os.Stat(filepath.Join(dir, f)); err != nil || fi.IsDir() {
+		if !fileNonEmpty(filepath.Join(dir, f)) {
 			return false
 		}
 	}
@@ -302,7 +307,7 @@ func completeModelDir(dir string) bool {
 	// size, so a tar extraction interrupted mid-file cannot pass as a
 	// complete cache. Caches without a manifest (written by rembed's own
 	// atomic-rename downloader) rely on the checks above.
-	if fi, err := os.Stat(filepath.Join(dir, CacheManifestName)); err == nil && !fi.IsDir() {
+	if fileNonEmpty(filepath.Join(dir, CacheManifestName)) {
 		manifestRaw, err := os.ReadFile(filepath.Join(dir, CacheManifestName))
 		if err != nil {
 			return false
@@ -325,12 +330,12 @@ func completeModelDir(dir string) bool {
 	// A single-file model has model.safetensors; sharded models have an
 	// index plus one or more shard files. The index alone is not enough.
 	single := filepath.Join(dir, "model.safetensors")
-	if fi, err := os.Stat(single); err == nil && !fi.IsDir() && fi.Size() > 0 {
+	if fileNonEmpty(single) {
 		return true
 	}
 
 	idx := filepath.Join(dir, "model.safetensors.index.json")
-	if fi, err := os.Stat(idx); err != nil || fi.IsDir() {
+	if !fileNonEmpty(idx) {
 		return false
 	}
 	idxRaw, err := os.ReadFile(idx)
@@ -355,7 +360,7 @@ func completeModelDir(dir string) bool {
 			continue
 		}
 		seen[shard] = struct{}{}
-		if fi, err := os.Stat(filepath.Join(dir, shard)); err != nil || fi.IsDir() || fi.Size() == 0 {
+		if !fileNonEmpty(filepath.Join(dir, shard)) {
 			return false
 		}
 	}
@@ -434,11 +439,11 @@ func moduleArtifactsComplete(dir string) bool {
 		seen[m.Path] = struct{}{}
 
 		sub := filepath.Join(dir, m.Path)
-		if fi, err := os.Stat(filepath.Join(sub, "config.json")); err != nil || fi.IsDir() {
+		if !fileNonEmpty(filepath.Join(sub, "config.json")) {
 			return false
 		}
 		if strings.HasSuffix(m.Type, ".Dense") {
-			if fi, err := os.Stat(filepath.Join(sub, "model.safetensors")); err != nil || fi.IsDir() {
+			if !fileNonEmpty(filepath.Join(sub, "model.safetensors")) {
 				return false
 			}
 		}
