@@ -108,6 +108,14 @@ func TestGoldenErrorContract(t *testing.T) {
 		{"multiple statements rejected", "query", map[string]any{"namespace": "errc", "sql": "SELECT 1; SELECT 2"}, 400, "invalid_request", `multiple statements are not allowed`},
 		{"fts syntax error", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "don't"}, 400, "invalid_request", `fts5: syntax error`},
 		{"fts unknown column filter", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "nocol:x"}, 400, "invalid_request", `column "nocol" not found`},
+		{"fts syntax error with filter", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "don't", "filter": "id > 0"}, 400, "invalid_request", `fts5: syntax error`},
+		{"fts gate substring in query", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "SQLITE_-x"}, 400, "invalid_request", `query "SQLITE_-x": FTS5 parses a bare "-".*double-quoted`},
+		{"fts misuse framing in query", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "misuse at line 1 -x"}, 400, "invalid_request", `query "misuse at line 1 -x": FTS5 parses a bare "-".*double-quoted`},
+		{"field name echoing gate substring", "create_table", map[string]any{
+			"namespace": "errc", "table": "gate",
+			"fields": []map[string]any{{"name": "SQLITE_X", "type": "string"}},
+		}, 400, "invalid_request", `invalid field name "SQLITE_X": must start with a lowercase letter`},
+		{"namespace echoing gate substring", "list_tables", map[string]any{"namespace": "misuse at line"}, 400, "invalid_request", `invalid namespace "misuse at line"`},
 
 		// --- query_error (execution failures) ------------------------------------
 		// `SELECT (` is caught earlier by the statement-shape guard
@@ -127,6 +135,14 @@ func TestGoldenErrorContract(t *testing.T) {
 			"namespace": "errc", "table": "t", "idempotency_key": "diverge-1",
 			"records": []map[string]any{{"title": "two"}},
 		}, 400, "conflict", `idempotency key .* was already recorded for a different insert.*re-send the identical body`},
+		{"idempotency gate substring setup", "insert", map[string]any{
+			"namespace": "errc", "table": "t", "idempotency_key": "diverge-SQLITE_2",
+			"records": []map[string]any{{"title": "one"}},
+		}, 200, "", ""},
+		{"idempotency gate substring replay", "insert", map[string]any{
+			"namespace": "errc", "table": "t", "idempotency_key": "diverge-SQLITE_2",
+			"records": []map[string]any{{"title": "two"}},
+		}, 400, "conflict", `idempotency key "diverge-SQLITE_2" was already recorded for a different insert.*re-send the identical body`},
 	}
 
 	for _, c := range cases {

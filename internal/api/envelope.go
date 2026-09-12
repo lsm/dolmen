@@ -141,16 +141,11 @@ var (
 	filePathRe = regexp.MustCompile(`(^|[^A-Za-z0-9:|\\/.\-_])(?:[A-Za-z]:)?(?:[\\/]+[A-Za-z0-9_.\-]+(?:[ \t]+[A-Za-z0-9_.\-]+)*)+[\\/]*`)
 )
 
-// redactStoreMsg removes internal paths and raw SQLite internals from a store
-// error message while preserving the hand-written, client-helpful strings.
+// redactStoreMsg removes internal paths from a store error message; SQLite
+// internals are redacted in the store, where they arise, not by gating here.
 func redactStoreMsg(msg string) string {
 	if msg == "" {
 		return "invalid request"
-	}
-	if strings.Contains(msg, "SQL logic error:") ||
-		strings.Contains(msg, "SQLITE_") ||
-		strings.Contains(msg, "misuse at line") {
-		return store.RedactSQLMessage(msg)
 	}
 	return strings.TrimSpace(redactPaths(msg))
 }
@@ -167,8 +162,8 @@ func isConflict(msg string) bool {
 		strings.Contains(msg, "matches multiple")
 }
 
-// wrapStoreErr maps store errors to stable API errors. It redacts raw SQLite
-// internals and internal file paths from client-facing messages.
+// wrapStoreErr maps store errors to stable API errors. It redacts internal
+// file paths from client-facing messages.
 func wrapStoreErr(err error) *Error {
 	if err == nil {
 		return nil
@@ -203,7 +198,12 @@ func wrapStoreErr(err error) *Error {
 		if isConflict(err.Error()) {
 			code = ErrCodeConflict
 		}
-		return &Error{Status: http.StatusBadRequest, Code: code, Message: msg, Cause: err}
+		cause := err
+		var r *store.RedactedSQLite
+		if errors.As(err, &r) {
+			cause = r.Cause()
+		}
+		return &Error{Status: http.StatusBadRequest, Code: code, Message: msg, Cause: cause}
 	}
 	// A local model that cannot load (most often its first-use download
 	// failing) is an operator-actionable condition, not an unexpected bug:

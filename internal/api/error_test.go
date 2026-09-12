@@ -187,6 +187,51 @@ func TestRedactStoreMsgRedactsFilePaths(t *testing.T) {
 	}
 }
 
+func TestRedactStoreMsgKeepsEchoedGateSubstrings(t *testing.T) {
+	err := fmt.Errorf("%w: idempotency key %q was already recorded for a different insert into %s; for a retry, re-send the identical body with the same key (a client-regenerated timestamp or nonce is the classic cause; a fresh key would insert a duplicate); for a genuinely new insert, use a fresh key",
+		store.ErrInvalid, "SQLITE_-x", "t")
+	apiErr := wrapStoreErr(err)
+	if apiErr == nil {
+		t.Fatal("expected wrapped error")
+	}
+	if apiErr.Code != ErrCodeConflict {
+		t.Fatalf("expected conflict code, got %v", apiErr.Code)
+	}
+	if !strings.Contains(apiErr.Message, `idempotency key "SQLITE_-x" was already recorded for a different insert`) {
+		t.Fatalf("teaching text must survive the echoed gate substring, got %q", apiErr.Message)
+	}
+
+	err = fmt.Errorf("%w: query %q: FTS5 parses a bare \"-\" as a column filter, so a hyphenated term must be double-quoted (e.g. \"money-back\"); to exclude a term, write NOT between words",
+		store.ErrInvalid, "misuse at line 1 -x")
+	apiErr = wrapStoreErr(err)
+	if apiErr == nil {
+		t.Fatal("expected wrapped error")
+	}
+	if !strings.Contains(apiErr.Message, "must be double-quoted") {
+		t.Fatalf("quoting remediation must survive the echoed gate substring, got %q", apiErr.Message)
+	}
+	for _, rewritten := range []string{"the SQL could not be executed", "invalid use of SQL"} {
+		if apiErr.Message == rewritten {
+			t.Fatalf("message was wholly rewritten to %q", rewritten)
+		}
+	}
+}
+
+func TestWrapStoreErrLogsRawSQLiteCause(t *testing.T) {
+	raw := errors.New("database is locked (5) (SQLITE_BUSY)")
+	err := fmt.Errorf("%w: %w", store.ErrInvalid, store.NewRedactedSQLite(raw))
+	apiErr := wrapStoreErr(err)
+	if apiErr == nil {
+		t.Fatal("expected wrapped error")
+	}
+	if apiErr.Message != "the SQL could not be executed" {
+		t.Fatalf("public message must stay sanitized, got %q", apiErr.Message)
+	}
+	if apiErr.Cause == nil || apiErr.Cause.Error() != raw.Error() {
+		t.Fatalf("log cause must carry the raw driver error, got %v", apiErr.Cause)
+	}
+}
+
 // TestRedactPathsCoversSpacesInPaths pins the redaction of paths whose
 // components contain spaces — a model cache under a user directory
 // ("C:\Users\Jane Doe\models") must redact whole, never leaking a trailing

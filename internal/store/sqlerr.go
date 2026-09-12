@@ -176,3 +176,18 @@ func RedactSQLMessage(raw string) string {
 	}
 	return msg
 }
+
+type RedactedSQLite struct {
+	msg   string
+	cause error
+}
+
+func (e *RedactedSQLite) Error() string { return e.msg }
+
+func (e *RedactedSQLite) Unwrap() error { return e.cause }
+
+func (e *RedactedSQLite) Cause() error { return e.cause }
+
+func NewRedactedSQLite(err error) error {
+	return &RedactedSQLite{msg: RedactSQLMessage(err.Error()), cause: err}
+}
