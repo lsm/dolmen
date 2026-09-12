@@ -20,14 +20,9 @@ import (
 // listener. It is an HTTP-surface handler like /mcp, not an Ops entry: the
 // MCP tool surface gets wait_for, whose request/response shape carries the
 // same feed semantics (§2's transport parity), while the stream is for agent
-// hosts holding connections.
-//
-// The route joins the api mux with the registration slice, not before. The
-// endpoint's specified behavior is a live stream, and a client discovering a
-// replay-then-terminate route could mistake the terminal frame for
-// end-of-subscription and miss every subsequent commit; until then the
-// handler is exercised handler-direct only (httptest against it, never
-// through the mux).
+// hosts holding connections. The route is registered on the api mux at
+// /v1/subscribe; the conformance suite also exercises the handler directly
+// (httptest against it) to pin behaviors independent of routing.
 //
 // Query params mirror the changes_since op exactly: namespace (required),
 // table (optional filter over that table's CURRENT lifetime), and cursor (an

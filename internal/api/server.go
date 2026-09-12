@@ -496,6 +496,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/skills", s.handleSkillsManifest)
 	mux.HandleFunc("/skills/", s.handleSkill)
 	mux.HandleFunc("/v1/openapi.json", s.handleOpenAPI)
+	// The subscribe stream is its own GET surface, not an op under /v1/'s
+	// JSON dispatch: an exact-match pattern keeps it out of the prefix
+	// handler below, whose envelope-and-status contract a text/event-stream
+	// response cannot honor (§9.2 layer 3).
+	mux.HandleFunc("/v1/subscribe", s.HandleSubscribe)
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
 		// Assign the request id before any error path so every response,
 		// envelope, and log line carries one — echoed when the client sent

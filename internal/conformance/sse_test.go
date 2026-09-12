@@ -795,22 +795,59 @@ func decodeBody(t *testing.T, res *http.Response) map[string]any {
 	return out
 }
 
-// TestSubscribeRouteUnregistered: no route joins the api mux yet — the
-// endpoint goes public with its registration slice, and subscribe is never
-// an Ops entry (§9.2: the stream is an HTTP-surface capability like /mcp; the
-// MCP surface gets wait_for).
-func TestSubscribeRouteUnregistered(t *testing.T) {
+// TestSubscribeRouteRegistered: the route is live on the api mux — GET
+// /v1/subscribe opens the stream through the full server stack (OriginGuard
+// over the mux) and serves replay-then-live like the handler-direct fixtures
+// — and subscribe is still never an Ops entry (§9.2: the stream is an
+// HTTP-surface capability like /mcp; the MCP surface gets wait_for).
+func TestSubscribeRouteRegistered(t *testing.T) {
 	h := newHarness(t)
-	res, err := http.Get(h.srv.URL + "/v1/subscribe?namespace=rt")
+	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
+	seeded := h.insertBatches(t, "rt", "notes", 2)
+
+	res, err := http.Get(h.srv.URL + "/v1/subscribe?namespace=rt&cursor=begin")
 	if err != nil {
 		t.Fatalf("get /v1/subscribe: %v", err)
 	}
-	body := decodeBody(t, res)
-	if res.StatusCode != http.StatusNotFound {
-		t.Fatalf("/v1/subscribe status = %d, want 404 (%v)", res.StatusCode, body)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("/v1/subscribe status = %d, want 200", res.StatusCode)
 	}
-	if errEnv, _ := body["error"].(map[string]any); errEnv["code"] != "not_found" {
-		t.Fatalf("/v1/subscribe code = %v, want not_found", errEnv["code"])
+	if ct := res.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("/v1/subscribe content-type = %q, want text/event-stream", ct)
+	}
+	r := newSSEReader(res)
+	for i, id := range seeded {
+		f, ok := r.next(5 * time.Second)
+		if !ok {
+			t.Fatalf("routed stream replay %d never arrived", i)
+		}
+		wantChange(t, f, [3]any{"notes", id, "insert"})
+	}
+	fr, ok := r.next(5 * time.Second)
+	if !ok {
+		t.Fatal("the routed stream's boundary never sent its ready frame")
+	}
+	wantReady(t, fr)
+	live := h.mustHTTP("insert", map[string]any{
+		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "live"}},
+	})
+	f, ok := r.next(5 * time.Second)
+	if !ok {
+		t.Fatal("a commit after the routed stream opened never reached it")
+	}
+	wantChange(t, f, [3]any{"notes", live["ids"].([]any)[0], "insert"})
+
+	res2, err := http.Post(h.srv.URL+"/v1/subscribe?namespace=rt", "", nil)
+	if err != nil {
+		t.Fatalf("post /v1/subscribe: %v", err)
+	}
+	res2.Body.Close()
+	if res2.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("post /v1/subscribe status = %d, want 405", res2.StatusCode)
+	}
+	if allow := res2.Header.Get("Allow"); allow != http.MethodGet {
+		t.Fatalf("post /v1/subscribe Allow = %q, want GET", allow)
 	}
 	for _, name := range api.OpNames() {
 		if name == "subscribe" {
