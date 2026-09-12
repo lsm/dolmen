@@ -23,3 +23,13 @@ jobs:
         run: go vet ./...
       - name: Test
         run: CGO_ENABLED=1 go test -race ./...
+
+  no-comments:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: check: no-comments
+        run: go run ./tools/nocomment --check
