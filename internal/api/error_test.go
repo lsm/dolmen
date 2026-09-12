@@ -230,8 +230,10 @@ func TestEmbedderUnavailableMessageNamesModelSafely(t *testing.T) {
 			t.Fatalf("directory model leaked %q into the public message, got %q", leak, dir.Message)
 		}
 	}
-	if !strings.Contains(dir.Message, "configured local model directory") {
-		t.Fatalf("directory model must be described generically, got %q", dir.Message)
+	for _, want := range []string{"configured local model directory", "retry the request", "complete model"} {
+		if !strings.Contains(dir.Message, want) {
+			t.Fatalf("directory model message must name %q, got %q", want, dir.Message)
+		}
 	}
 }
 
