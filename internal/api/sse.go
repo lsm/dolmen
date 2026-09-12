@@ -36,6 +36,8 @@ import (
 // can no longer carry an HTTP status.
 const sseWriteDeadline = 10 * time.Second
 
+const defaultKeepaliveInterval = 20 * time.Second
+
 func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	// The stream is its own request: it carries a request id like every /v1/
 	// call, so an in-stream error envelope, the response header, and the
@@ -189,6 +191,12 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var keepalive <-chan time.Time
+	if s.keepaliveInterval > 0 {
+		ticker := time.NewTicker(s.keepaliveInterval)
+		defer ticker.Stop()
+		keepalive = ticker.C
+	}
 	for {
 		select {
 		case rec := <-live:
@@ -198,6 +206,10 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		case cause := <-ended:
 			closeWith(subscribeErr(cause))
 			return
+		case <-keepalive:
+			if !sseComment(w, ": keepalive") {
+				return
+			}
 		case <-ctx.Done():
 			if !errors.Is(context.Cause(ctx), store.ErrListenAged) {
 				return
@@ -206,6 +218,15 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func sseComment(w http.ResponseWriter, text string) bool {
+	rc := http.NewResponseController(w)
+	rc.SetWriteDeadline(time.Now().Add(sseWriteDeadline))
+	_, werr := fmt.Fprintf(w, "%s\n\n", text)
+	ferr := rc.Flush()
+	rc.SetWriteDeadline(time.Time{})
+	return werr == nil && ferr == nil
 }
 
 func sseOpenStream(w http.ResponseWriter, reqID string) {
