@@ -498,9 +498,12 @@ func TestCreateTableDefaultConstraintsDeclared(t *testing.T) {
 	if !ok {
 		t.Fatalf("now() guard must be an if/then rule, got %v", allOf[6])
 	}
-	nowIfType, ok := nowRule["if"].(map[string]any)["properties"].(map[string]any)["type"].(map[string]any)
-	if !ok || nowIfType["not"].(map[string]any)["const"] != string(schema.Timestamp) {
-		t.Fatalf(`now() guard must key on "type" not const timestamp, got %v`, nowRule["if"])
+	nowNot, ok := nowRule["if"].(map[string]any)["not"].(map[string]any)
+	if !ok || nowNot["required"].([]string)[0] != "type" {
+		t.Fatalf(`now() guard must fire unless type is present-and-timestamp, got %v`, nowRule["if"])
+	}
+	if nowNot["properties"].(map[string]any)["type"].(map[string]any)["const"] != string(schema.Timestamp) {
+		t.Fatalf(`now() guard must except only type=timestamp, got %v`, nowRule["if"])
 	}
 	nowThenDefault, ok := nowRule["then"].(map[string]any)["properties"].(map[string]any)["default"].(map[string]any)
 	if !ok || nowThenDefault["not"].(map[string]any)["const"] != schema.NowDefault {

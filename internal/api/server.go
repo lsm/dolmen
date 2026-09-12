@@ -225,8 +225,10 @@ func fieldItemSchema(desc string, withDefault bool) map[string]any {
 			},
 			map[string]any{
 				"if": map[string]any{
-					"properties": map[string]any{"type": map[string]any{"not": map[string]any{"const": string(schema.Timestamp)}}},
-					"required":   []string{"type"},
+					"not": map[string]any{
+						"properties": map[string]any{"type": map[string]any{"const": string(schema.Timestamp)}},
+						"required":   []string{"type"},
+					},
 				},
 				"then": map[string]any{
 					"properties": map[string]any{"default": map[string]any{"not": map[string]any{"const": schema.NowDefault}}},
