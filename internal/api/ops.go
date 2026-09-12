@@ -565,9 +565,13 @@ var Ops = map[string]OpDef{
 		Description: "Report the server's embedding provider status read-only: provider (none, local, openai), " +
 			"model, the identity string that pins vectorized tables to this provider and model, and whether " +
 			"server-side embedding is usable (creating vectorize fields, embedding search_vector text queries). " +
+			"For the local provider, model_cached reports whether the model weights are already in the server's " +
+			"model cache: false means the first vectorized write or text search downloads the model from the " +
+			"Hugging Face Hub, which can fail transiently — retry the request, or pre-seed the cache. " +
 			"Call it to answer those questions without attempting a write or a text search. Status only — " +
-			"no secrets are exposed, and the provider is not called: usable reflects configuration, so an endpoint " +
-			"that is down or rejects the request still fails at first use, not here.",
+			"no secrets are exposed, no embedding is run, and no network request is made: usable reflects " +
+			"configuration, so an endpoint that is down or rejects the request still fails at first use, " +
+			"not here.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -578,10 +582,11 @@ var Ops = map[string]OpDef{
 				"type":        "object",
 				"description": "Server-side embedding provider status",
 				"properties": map[string]any{
-					"provider": prop("string", "Active embedding provider: none, local (in-process, no external service), or openai (external OpenAI-compatible endpoint)"),
-					"model":    prop("string", "Configured model name (present when the provider reports one)"),
-					"identity": prop("string", "Identity string that pins vectorized tables to this provider and model — the value a table's embed_space must match for inserts and text searches (present when the provider reports one; absent means vectorize and text queries are rejected until an operator configures the server)"),
-					"usable":   prop("boolean", "Whether server-side embedding is currently usable (creating vectorize fields, embedding text queries): true when the provider is configured and reports its identity; configuration status only — the provider is not called"),
+					"provider":     prop("string", "Active embedding provider: none, local (in-process, no external service), or openai (external OpenAI-compatible endpoint)"),
+					"model":        prop("string", "Configured model name (present when the provider reports one)"),
+					"identity":     prop("string", "Identity string that pins vectorized tables to this provider and model — the value a table's embed_space must match for inserts and text searches (present when the provider reports one; absent means vectorize and text queries are rejected until an operator configures the server)"),
+					"usable":       prop("boolean", "Whether server-side embedding is currently usable (creating vectorize fields, embedding text queries): true when the provider is configured and reports its identity; configuration status only — the provider is not called, so a local model that is not yet cached (model_cached false) still downloads on first use rather than failing here"),
+					"model_cached": prop("boolean", "Whether the model weights are already in the server's model cache, so no download is needed (local provider only; absent for none and openai): false means the first vectorized write or text search downloads the model from the Hugging Face Hub, which can fail transiently — retry the request (a failed write rolls back and consumes no idempotency key) or pre-seed the cache; an embedder_unavailable error carries the same guidance"),
 				},
 				"required":             []string{"provider", "usable"},
 				"additionalProperties": false,
@@ -601,6 +606,9 @@ var Ops = map[string]OpDef{
 			}
 			if id := s.emb.Identity(); id != "" {
 				emb["identity"] = id
+			}
+			if c, ok := s.emb.(interface{ Cached() bool }); ok {
+				emb["model_cached"] = c.Cached()
 			}
 			return map[string]any{"embedding": emb}, nil
 		},

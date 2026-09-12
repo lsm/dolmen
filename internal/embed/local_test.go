@@ -201,6 +201,13 @@ func TestLocalCached(t *testing.T) {
 	}
 }
 
+func TestLoadErrorCacheDirName(t *testing.T) {
+	le := &LoadError{Model: "sentence-transformers/all-MiniLM-L6-v2", Err: errors.New("429")}
+	if got := le.CacheDirName(); got != "sentence-transformers--all-MiniLM-L6-v2" {
+		t.Fatalf("CacheDirName: got %q want the org--name cache layout", got)
+	}
+}
+
 func TestLocalEmbedLazyRetryAndSuccess(t *testing.T) {
 	calls := 0
 	boom := errors.New("boom")

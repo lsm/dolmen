@@ -65,6 +65,8 @@ func (e *LoadError) Unwrap() error { return e.Err }
 // layout and must not be echoed to clients.
 func (e *LoadError) IsHubID() bool { return localModelIDRe.MatchString(e.Model) }
 
+func (e *LoadError) CacheDirName() string { return modelCacheDirName(e.Model) }
+
 // Local embeds in-process via rembed — pure Go inference, no cgo, no ONNX
 // Runtime — so vectorize works with zero external endpoints. Weights are
 // never in the binary: the model downloads from the Hugging Face Hub on
