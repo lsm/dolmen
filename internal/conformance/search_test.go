@@ -89,6 +89,18 @@ func TestSearchFulltextSyntaxAcceptReject(t *testing.T) {
 		})
 	}
 
+	status, body := h.httpCall("search_fulltext", map[string]any{
+		"namespace": "fts", "table": "t", "query": "money-back",
+	})
+	if status != 400 {
+		t.Fatalf("status %d, want 400: %v", status, body)
+	}
+	msg, _ := envelopeOf(t, body)["message"].(string)
+	want := `query "money-back": FTS5 parses a bare "-" as a column filter, so a hyphenated term must be double-quoted (e.g. "money-back"); to exclude a term, write NOT between words`
+	if msg != want {
+		t.Fatalf("bare hyphenated term must teach the quoting fix:\n got %s\nwant %s", msg, want)
+	}
+
 	// Ranking: BM25 relevance with stable id tie-breaking; more relevant
 	// documents (more matches in the indexed fields) come first.
 	data = h.mustHTTP("search_fulltext", map[string]any{
