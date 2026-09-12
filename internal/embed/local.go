@@ -121,11 +121,13 @@ func (l *Local) Identity() string {
 
 // Cached reports whether the model weights are already on disk. A test stub
 // (Open != nil) is treated as cached so tests do not trigger the warning.
+func (l *Local) HubModel() bool { return localModelIDRe.MatchString(l.Model) }
+
 func (l *Local) Cached() bool {
 	if l.Open != nil {
 		return true
 	}
-	if localModelIDRe.MatchString(l.Model) {
+	if l.HubModel() {
 		return seededCacheDir(l.CacheRoot, l.Model) != ""
 	}
 	// An absolute model-directory path is its own cache.
