@@ -195,7 +195,7 @@ keyword recall over space-less CJK text, fall back to vector search over an embe
 - `title:payment` — only in the `title` fulltext field.
 - `{title body}:payment` — any of those fields.
 - `"foo bar"` — phrase (adjacent tokens, matched on stems). Phrases match token adjacency, not literal punctuation.
-- `"foo-bar"` — double-quote terms that contain spaces or punctuation; bare `foo-bar` is parsed as multiple terms and usually errors.
+- `"foo-bar"` — double-quote terms that contain spaces or punctuation; bare `foo-bar` is read by FTS5 as a column filter and errors.
 - `pay*` — prefix match, applied to the stemmed term (`pay*` → `pai*`).
 - `NEAR(payment refund)` — proximity search (default near span). Use the group form
   `NEAR(term1 term2 ...)`; `term1 NEAR(term2)` is parsed as an implicit `AND` and does not enforce proximity.

@@ -174,6 +174,36 @@ func TestMalformedFTSQueryIsInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestBareHyphenatedFTSTermTeachesQuoting(t *testing.T) {
+	st := openStore(t)
+	mustCreateNotes(t, st)
+	for _, q := range []string{"money-back", "e-mail AND money-back", "2024-01-02", "note - extra"} {
+		_, _, err := st.SearchFulltext(context.Background(), "test", "notes", q, 0, 10, false, "", nil)
+		if err == nil || !errors.Is(err, ErrInvalid) {
+			t.Fatalf("query %q: expected bare hyphenated term to classify as invalid request, got %v", q, err)
+		}
+		want := fmt.Sprintf(`invalid request: query %q: FTS5 parses a bare "-" as a column filter, so a hyphenated term must be double-quoted (e.g. "money-back"); to exclude a term, write NOT between words`, q)
+		if err.Error() != want {
+			t.Fatalf("query %q message:\n got %s\nwant %s", q, err.Error(), want)
+		}
+	}
+}
+
+func TestFTSQuotedHyphenAndColumnFiltersStillAccepted(t *testing.T) {
+	st := openStore(t)
+	mustCreateNotes(t, st)
+	mustInsertNotes(t, st)
+	for _, q := range []string{`"first note"`, `-title : dolmen`, `-title:dolmen`, `-title:dolmen AND -body:note`, `-"title":dolmen`, `-{"title"}:dolmen`, `-"title" : dolmen`} {
+		rows, _, err := st.SearchFulltext(context.Background(), "test", "notes", q, 0, 10, false, "", nil)
+		if err != nil {
+			t.Fatalf("query %q: %v", q, err)
+		}
+		if len(rows) == 0 {
+			t.Fatalf("query %q: expected matches, got none", q)
+		}
+	}
+}
+
 func TestSearchByteBudget(t *testing.T) {
 	st := openStore(t)
 	mustNS(t, st, "test")

@@ -22,6 +22,59 @@ func searchLimit(n int) int {
 	return n
 }
 
+func ftsWordByte(c byte) bool {
+	switch c {
+	case '"', '(', ')', '{', '}', ':', ',', '+', '-', '*', '^':
+		return false
+	}
+	return c > ' '
+}
+
+func bareHyphenTerm(match string) bool {
+	inq := false
+	for i := 0; i < len(match); i++ {
+		switch c := match[i]; {
+		case c == '"':
+			inq = !inq
+		case c == '-' && !inq:
+			j := i + 1
+			for j < len(match) && match[j] <= ' ' {
+				j++
+			}
+			k := j
+			if k < len(match) && match[k] == '{' {
+				k++
+				for k < len(match) && match[k] != '}' {
+					k++
+				}
+				if k < len(match) {
+					k++
+				}
+			} else if k < len(match) && match[k] == '"' {
+				k++
+				for k < len(match) && match[k] != '"' {
+					k++
+				}
+				if k < len(match) {
+					k++
+				}
+			} else {
+				for k < len(match) && ftsWordByte(match[k]) {
+					k++
+				}
+			}
+			for k < len(match) && match[k] <= ' ' {
+				k++
+			}
+			if k >= len(match) || match[k] != ':' {
+				return true
+			}
+			i = k
+		}
+	}
+	return false
+}
+
 // SearchFulltext executes a full-text search (§6.2, §7). includeHidden must
 // cross the seam: truncated is computed against the projected response-byte
 // budget inside the engine. TODO(9d): scope and scopeIncarnation are ignored
@@ -42,6 +95,9 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 	}
 	if len(sc.FTSFields()) == 0 {
 		return SearchResult{}, invalidf("table %s has no fulltext fields", table)
+	}
+	if bareHyphenTerm(match) {
+		return SearchResult{}, invalidf(`query %q: FTS5 parses a bare "-" as a column filter, so a hyphenated term must be double-quoted (e.g. "money-back"); to exclude a term, write NOT between words`, match)
 	}
 	limit := searchLimit(page.Limit)
 	offset := page.Offset
