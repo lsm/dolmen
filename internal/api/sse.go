@@ -80,11 +80,6 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	ns := normNS(q.Get("namespace"))
 	ctx, stop := context.WithCancel(r.Context())
 	defer stop()
-	if err := s.ensureNamespace(ctx, ns); err != nil {
-		sseOpenStream(w, reqID)
-		sseErrorEvent(w, wrapStoreErr(err), reqID)
-		return
-	}
 	if s.maxSubscriptionAge > 0 {
 		var ageStop context.CancelFunc
 		ctx, ageStop = context.WithTimeoutCause(ctx, s.maxSubscriptionAge, store.ErrListenAged)

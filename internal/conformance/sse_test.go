@@ -487,6 +487,40 @@ func TestSubscribeCursorTeachingErrors(t *testing.T) {
 	wantChange(t, f2, [3]any{"notes", fresh["ids"].([]any)[0], "insert"})
 }
 
+func TestSubscribeNeverCreatesNamespace(t *testing.T) {
+	h := newHarness(t)
+
+	frames := h.subscribeStream(t, url.Values{"namespace": {"ghost"}}).rest(5 * time.Second)
+	if len(frames) != 1 {
+		t.Fatalf("missing-namespace subscribe = %d frames, want 1 error event: %+v", len(frames), frames)
+	}
+	errEnv := wantFrameError(t, frames, 0)
+	if errEnv["code"] != "not_found" {
+		t.Fatalf("missing-namespace subscribe code = %v, want not_found", errEnv["code"])
+	}
+
+	status, out := h.httpCall("wait_for", map[string]any{"namespace": "ghost", "timeout_ms": 0})
+	if status != http.StatusNotFound {
+		t.Fatalf("missing-namespace wait status = %d %v, want 404", status, out)
+	}
+	if wEnv, _ := out["error"].(map[string]any); wEnv["code"] != errEnv["code"] || wEnv["message"] != errEnv["message"] {
+		t.Fatalf("realtime surfaces disagree on the missing namespace: subscribe %v, wait_for %v", errEnv, wEnv)
+	}
+
+	nss, _ := h.mustHTTP("list_namespaces", map[string]any{})["namespaces"].([]any)
+	if len(nss) != 0 {
+		t.Fatalf("subscribe created namespaces: %v", nss)
+	}
+
+	h.ensureNS("ghost")
+	r := h.subscribeStream(t, url.Values{"namespace": {"ghost"}})
+	f, ok := r.next(5 * time.Second)
+	if !ok {
+		t.Fatal("subscribe to the created namespace never went live")
+	}
+	wantReady(t, f)
+}
+
 // TestSubscribeOverflowTeachesReconnect: commits beyond the listener's
 // queue bound end the stream with the overflow teaching and a resume
 // cursor. The overflow is forced, not hoped for: the ReplayHold seam parks
