@@ -131,69 +131,100 @@ func TestServeStdioFraming(t *testing.T) {
 	}
 }
 
-func TestServeStdioSlowCallDoesNotBlockReadLoop(t *testing.T) {
-	s := newStdioServer(t)
+type stdioSession struct {
+	t    *testing.T
+	s    *Server
+	inW  io.WriteCloser
+	br   *bufio.Reader
+	done chan error
+}
+
+func newStdioSession(t *testing.T, s *Server) *stdioSession {
+	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
-	done := make(chan error, 1)
-	go func() { done <- s.ServeStdio(context.Background(), inR, outW) }()
-	br := bufio.NewReader(outR)
-	sendLine := func(line string) {
-		t.Helper()
-		if _, err := inW.Write([]byte(line + "\n")); err != nil {
-			t.Fatalf("write stdin: %v", err)
-		}
+	x := &stdioSession{t: t, s: s, inW: inW, br: bufio.NewReader(outR), done: make(chan error, 1)}
+	go func() { x.done <- s.ServeStdio(context.Background(), inR, outW) }()
+	return x
+}
+
+func (x *stdioSession) send(line string) {
+	x.t.Helper()
+	if _, err := x.inW.Write([]byte(line + "\n")); err != nil {
+		x.t.Fatalf("write stdin: %v", err)
 	}
-	readMsg := func() map[string]any {
-		t.Helper()
-		ch := make(chan string, 1)
-		go func() {
-			line, err := br.ReadString('\n')
-			if err != nil {
-				ch <- ""
-				return
-			}
-			ch <- line
-		}()
-		select {
-		case line := <-ch:
-			if line == "" {
-				t.Fatal("stdout closed before the expected response")
-			}
-			var m map[string]any
-			if err := json.Unmarshal([]byte(line), &m); err != nil {
-				t.Fatalf("stdout line is not JSON: %q", line)
-			}
-			return m
-		case <-time.After(15 * time.Second):
-			t.Fatal("no response within 15s")
-			return nil
-		}
+}
+
+func (x *stdioSession) sendCall(id, op string, args map[string]any) {
+	x.t.Helper()
+	raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": map[string]any{"name": op, "arguments": args}})
+	if err != nil {
+		x.t.Fatalf("marshal call: %v", err)
 	}
-	call := func(id, op string, args map[string]any) string {
-		t.Helper()
-		raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": map[string]any{"name": op, "arguments": args}})
+	x.send(string(raw))
+}
+
+func (x *stdioSession) recv() map[string]any {
+	x.t.Helper()
+	ch := make(chan string, 1)
+	go func() {
+		line, err := x.br.ReadString('\n')
 		if err != nil {
-			t.Fatalf("marshal call: %v", err)
+			ch <- ""
+			return
 		}
-		return string(raw)
+		ch <- line
+	}()
+	select {
+	case line := <-ch:
+		if line == "" {
+			x.t.Fatal("stdout closed before the expected response")
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			x.t.Fatalf("stdout line is not JSON: %q", line)
+		}
+		return m
+	case <-time.After(15 * time.Second):
+		x.t.Fatal("no response within 15s")
+		return nil
 	}
+}
 
-	sendLine(call("b-ns", "create_namespace", map[string]any{"namespace": "slow"}))
-	if m := readMsg(); m["id"] != "b-ns" || m["result"] == nil {
-		t.Fatalf("create_namespace failed: %v", m)
+func (x *stdioSession) close() error {
+	x.t.Helper()
+	x.inW.Close()
+	select {
+	case err := <-x.done:
+		return err
+	case <-time.After(15 * time.Second):
+		x.t.Fatal("ServeStdio did not return after stdin EOF")
+		return nil
 	}
-	sendLine(call("b-table", "create_table", map[string]any{
-		"namespace": "slow", "table": "t",
+}
+
+func (x *stdioSession) seedTable(ns string) {
+	x.t.Helper()
+	x.sendCall("seed-ns-"+ns, "create_namespace", map[string]any{"namespace": ns})
+	if m := x.recv(); m["id"] != "seed-ns-"+ns || m["result"] == nil {
+		x.t.Fatalf("create_namespace failed: %v", m)
+	}
+	x.sendCall("seed-table-"+ns, "create_table", map[string]any{
+		"namespace": ns, "table": "t",
 		"fields": []map[string]any{{"name": "title", "type": "string"}},
-	}))
-	if m := readMsg(); m["id"] != "b-table" || m["result"] == nil {
-		t.Fatalf("create_table failed: %v", m)
+	})
+	if m := x.recv(); m["id"] != "seed-table-"+ns || m["result"] == nil {
+		x.t.Fatalf("create_table failed: %v", m)
 	}
+}
 
-	sendLine(call("b-wait", "wait_for", map[string]any{"namespace": "slow", "table": "t", "timeout_ms": 2500}))
-	sendLine(`{"jsonrpc":"2.0","id":"b-ping","method":"ping"}`)
-	first, second := readMsg(), readMsg()
+func TestServeStdioSlowCallDoesNotBlockReadLoop(t *testing.T) {
+	x := newStdioSession(t, newStdioServer(t))
+	x.seedTable("slow")
+
+	x.sendCall("b-wait", "wait_for", map[string]any{"namespace": "slow", "table": "t", "timeout_ms": 2500})
+	x.send(`{"jsonrpc":"2.0","id":"b-ping","method":"ping"}`)
+	first, second := x.recv(), x.recv()
 	if first["id"] != "b-ping" {
 		t.Fatalf("the ping sent behind a slow wait_for must be answered first (the read loop must stay responsive); first response was for %v", first["id"])
 	}
@@ -201,14 +232,29 @@ func TestServeStdioSlowCallDoesNotBlockReadLoop(t *testing.T) {
 		t.Fatalf("second response must be the wait_for result, got id %v", second["id"])
 	}
 
-	inW.Close()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("ServeStdio: %v", err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("ServeStdio did not return after stdin EOF")
+	if err := x.close(); err != nil {
+		t.Fatalf("ServeStdio: %v", err)
+	}
+}
+
+func TestServeStdioCancellationNotification(t *testing.T) {
+	x := newStdioSession(t, newStdioServer(t))
+	x.seedTable("cancel")
+
+	x.sendCall("c-wait", "wait_for", map[string]any{"namespace": "cancel", "table": "t", "timeout_ms": 15000})
+	time.Sleep(400 * time.Millisecond)
+	start := time.Now()
+	x.send(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"c-wait"}}`)
+	m := x.recv()
+	if m["id"] != "c-wait" {
+		t.Fatalf("expected the cancelled request's response, got %v", m)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("the cancellation notification must abort the in-flight wait (response after %v; the 15s timeout would still be running)", elapsed)
+	}
+
+	if err := x.close(); err != nil {
+		t.Fatalf("ServeStdio: %v", err)
 	}
 }
 

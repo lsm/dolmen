@@ -26,10 +26,58 @@ type stdioLine struct {
 	err  error
 }
 
+type stdioCancels struct {
+	mu   sync.Mutex
+	byID map[string]context.CancelFunc
+}
+
+func newStdioCancels() *stdioCancels {
+	return &stdioCancels{byID: map[string]context.CancelFunc{}}
+}
+
+func (c *stdioCancels) add(key string, cancel context.CancelFunc) {
+	c.mu.Lock()
+	c.byID[key] = cancel
+	c.mu.Unlock()
+}
+
+func (c *stdioCancels) remove(key string) {
+	c.mu.Lock()
+	delete(c.byID, key)
+	c.mu.Unlock()
+}
+
+func (c *stdioCancels) cancel(key string) bool {
+	c.mu.Lock()
+	cancel, ok := c.byID[key]
+	c.mu.Unlock()
+	if ok {
+		cancel()
+	}
+	return ok
+}
+
+func cancelledRequestKey(raw []byte) string {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var params struct {
+		RequestID any `json:"requestId"`
+	}
+	if err := dec.Decode(&params); err != nil || params.RequestID == nil {
+		return ""
+	}
+	key, err := json.Marshal(params.RequestID)
+	if err != nil {
+		return ""
+	}
+	return string(key)
+}
+
 func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) error {
 	enc := json.NewEncoder(out)
 	enc.SetEscapeHTML(false)
 	instr := s.stdioInstructions()
+	cancels := newStdioCancels()
 	var writeMu sync.Mutex
 	writeErr := make(chan error, 1)
 	write := func(resp map[string]any) {
@@ -95,12 +143,22 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 				continue
 			}
 			if len(msg.ID) == 0 {
+				if msg.Method == "notifications/cancelled" {
+					if key := cancelledRequestKey(msg.Params); key != "" {
+						cancels.cancel(key)
+					}
+				}
 				continue
 			}
+			key := string(msg.ID)
+			reqCtx, cancelReq := context.WithCancel(ctx)
+			cancels.add(key, cancelReq)
 			inflight.Add(1)
 			go func(msg rpcMessage) {
 				defer inflight.Done()
-				result, rpcErr := s.handle(api.WithRequestID(ctx, api.NewRequestID()), msg, instr)
+				defer cancels.remove(key)
+				defer cancelReq()
+				result, rpcErr := s.handle(api.WithRequestID(reqCtx, api.NewRequestID()), msg, instr)
 				resp := rpcResultEnvelope(msg.ID, result)
 				if rpcErr != nil {
 					resp = rpcErrorEnvelope(msg.ID, rpcErr.Code, rpcErr.Message)
