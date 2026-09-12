@@ -131,6 +131,7 @@ type harness struct {
 	// storeOpts are extra store.Open options every (re)start applies — how
 	// realtime fixtures shrink the change-log retention for expiry tests.
 	storeOpts []store.OpenOption
+	apiOpts   []api.Option
 
 	httpURL string // .../v1
 	mcpURL  string // .../mcp
@@ -161,6 +162,14 @@ func newHarnessRetention(t *testing.T, d time.Duration) *harness {
 	return h
 }
 
+func newHarnessAge(t *testing.T, d time.Duration) *harness {
+	t.Helper()
+	h := newHarnessAtMode(t, t.TempDir(), &fakeProvider{}, authOff)
+	h.apiOpts = []api.Option{api.WithMaxSubscriptionAge(d)}
+	h.reopen()
+	return h
+}
+
 func newHarnessAt(t *testing.T, dir string, emb *fakeProvider) *harness {
 	t.Helper()
 	return newHarnessAtMode(t, dir, emb, authOff)
@@ -187,7 +196,7 @@ func (h *harness) start() {
 	// 10g adds the OIDC source. authOff configures nothing — the wiring
 	// below is exactly v0.2.0's, which is what §8.1's byte-for-byte rule
 	// pins.
-	apiSrv := api.New(st, embed.Provider(h.emb))
+	apiSrv := api.New(st, embed.Provider(h.emb), h.apiOpts...)
 	h.api = apiSrv
 	mcpSrv := mcp.New(apiSrv, nil)
 	mux := http.NewServeMux()

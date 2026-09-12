@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/schema"
@@ -26,12 +27,13 @@ type Server struct {
 	// eng is the storage seam: the ops layer programs against Engine, never
 	// the concrete SQLite store (plan §2c) — adapter #1 is held here only
 	// because New still takes what it gets.
-	eng           store.Engine
-	emb           embed.Provider
-	baseURL       string
-	namespaceHint string
-	prefix        string
-	holdReplay    func()
+	eng                store.Engine
+	emb                embed.Provider
+	baseURL            string
+	namespaceHint      string
+	prefix             string
+	maxSubscriptionAge time.Duration
+	holdReplay         func()
 }
 
 // Option customizes a Server.
@@ -48,6 +50,12 @@ func WithBaseURL(u string) Option {
 func WithPrefix(p string) Option {
 	return func(s *Server) {
 		s.prefix = skill.NormalizePrefix(p)
+	}
+}
+
+func WithMaxSubscriptionAge(d time.Duration) Option {
+	return func(s *Server) {
+		s.maxSubscriptionAge = d
 	}
 }
 

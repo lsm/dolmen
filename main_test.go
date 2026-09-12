@@ -73,6 +73,7 @@ func TestLoadConfig(t *testing.T) {
 				Embed:              embedConfig{Provider: "local"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
+				MaxSubscriptionAge: 30 * time.Minute,
 			},
 		},
 		{
@@ -86,6 +87,7 @@ func TestLoadConfig(t *testing.T) {
 				Embed:              embedConfig{Provider: "local"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
+				MaxSubscriptionAge: 30 * time.Minute,
 			},
 		},
 		{
@@ -102,6 +104,7 @@ func TestLoadConfig(t *testing.T) {
 				Embed:              embedConfig{Provider: "none"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
+				MaxSubscriptionAge: 30 * time.Minute,
 			},
 		},
 		{
@@ -117,6 +120,7 @@ func TestLoadConfig(t *testing.T) {
 				Embed:              embedConfig{Provider: "none"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
+				MaxSubscriptionAge: 30 * time.Minute,
 			},
 		},
 		{
@@ -138,6 +142,7 @@ func TestLoadConfig(t *testing.T) {
 				Embed:              embedConfig{Provider: "none"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
+				MaxSubscriptionAge: 30 * time.Minute,
 			},
 		},
 		{
@@ -164,6 +169,7 @@ func TestLoadConfig(t *testing.T) {
 				},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
+				MaxSubscriptionAge: 30 * time.Minute,
 			},
 		},
 		{
@@ -182,6 +188,7 @@ func TestLoadConfig(t *testing.T) {
 				},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
+				MaxSubscriptionAge: 30 * time.Minute,
 			},
 		},
 		{
@@ -201,6 +208,7 @@ func TestLoadConfig(t *testing.T) {
 				},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
+				MaxSubscriptionAge: 30 * time.Minute,
 			},
 		},
 		{
@@ -220,6 +228,7 @@ func TestLoadConfig(t *testing.T) {
 				Embed:              embedConfig{Provider: "none"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    0,
+				MaxSubscriptionAge: 30 * time.Minute,
 			},
 		},
 		{
@@ -233,6 +242,7 @@ func TestLoadConfig(t *testing.T) {
 				Embed:              embedConfig{Provider: "none"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    48 * time.Hour,
+				MaxSubscriptionAge: 30 * time.Minute,
 			},
 		},
 		{
@@ -246,6 +256,7 @@ func TestLoadConfig(t *testing.T) {
 				Embed:              embedConfig{Provider: "none"},
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    time.Hour,
+				MaxSubscriptionAge: 30 * time.Minute,
 			},
 		},
 		{
@@ -277,6 +288,78 @@ func TestLoadConfig(t *testing.T) {
 			args:    []string{},
 			env:     map[string]string{"DOLMEN_EMBED_PROVIDER": "none", "DOLMEN_CHANGE_RETENTION": "45m"},
 			wantErr: "must be 0 (disable pruning) or between 1h and 2160h",
+		},
+		{
+			name: "max subscription age zero disables the bound",
+			args: []string{"-max-subscription-age", "0"},
+			env:  map[string]string{"DOLMEN_EMBED_PROVIDER": "none"},
+			want: &config{
+				Addr:               "127.0.0.1:8790",
+				DataDir:            "data",
+				AllowedOrigins:     nil,
+				Embed:              embedConfig{Provider: "none"},
+				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				ChangeRetention:    168 * time.Hour,
+				MaxSubscriptionAge: 0,
+			},
+		},
+		{
+			name: "max subscription age from the environment",
+			args: []string{},
+			env:  map[string]string{"DOLMEN_EMBED_PROVIDER": "none", "DOLMEN_MAX_SUBSCRIPTION_AGE": "5m"},
+			want: &config{
+				Addr:               "127.0.0.1:8790",
+				DataDir:            "data",
+				AllowedOrigins:     nil,
+				Embed:              embedConfig{Provider: "none"},
+				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				ChangeRetention:    168 * time.Hour,
+				MaxSubscriptionAge: 5 * time.Minute,
+			},
+		},
+		{
+			name: "max subscription age bounds are inclusive",
+			args: []string{"-max-subscription-age", "24h"},
+			env:  map[string]string{"DOLMEN_EMBED_PROVIDER": "none", "DOLMEN_MAX_SUBSCRIPTION_AGE": "1s"},
+			want: &config{
+				Addr:               "127.0.0.1:8790",
+				DataDir:            "data",
+				AllowedOrigins:     nil,
+				Embed:              embedConfig{Provider: "none"},
+				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				ChangeRetention:    168 * time.Hour,
+				MaxSubscriptionAge: 24 * time.Hour,
+			},
+		},
+		{
+			name:    "max subscription age below the floor is rejected",
+			args:    []string{"-max-subscription-age", "500ms"},
+			env:     map[string]string{"DOLMEN_EMBED_PROVIDER": "none"},
+			wantErr: "must be 0 (disable the bound) or between 1s and 24h",
+		},
+		{
+			name:    "max subscription age above the ceiling is rejected",
+			args:    []string{"-max-subscription-age", "25h"},
+			env:     map[string]string{"DOLMEN_EMBED_PROVIDER": "none"},
+			wantErr: "must be 0 (disable the bound) or between 1s and 24h",
+		},
+		{
+			name:    "negative max subscription age is rejected",
+			args:    []string{"-max-subscription-age", "-1s"},
+			env:     map[string]string{"DOLMEN_EMBED_PROVIDER": "none"},
+			wantErr: "must be 0 (disable the bound) or between 1s and 24h",
+		},
+		{
+			name:    "unparseable max subscription age is rejected",
+			args:    []string{"-max-subscription-age", "soon"},
+			env:     map[string]string{"DOLMEN_EMBED_PROVIDER": "none"},
+			wantErr: `invalid max subscription age "soon"`,
+		},
+		{
+			name:    "invalid max subscription age from the environment is rejected",
+			args:    []string{},
+			env:     map[string]string{"DOLMEN_EMBED_PROVIDER": "none", "DOLMEN_MAX_SUBSCRIPTION_AGE": "10ms"},
+			wantErr: "must be 0 (disable the bound) or between 1s and 24h",
 		},
 		{
 			name: "local provider with an invalid model is rejected",

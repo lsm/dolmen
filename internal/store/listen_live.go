@@ -52,6 +52,8 @@ var ErrListenLifetimeEnded = errors.New("subscription target's lifetime ended")
 
 var ErrListenRevoked = errors.New("subscription authorization revoked")
 
+var ErrListenAged = errors.New("subscription reached the configured age bound")
+
 func (sess *listenSession) admit(rec ChangeRecord) (visible, revoked bool) {
 	if sess.liveAuthz == nil {
 		return true, false
@@ -134,10 +136,22 @@ func (sess *listenSession) pollWake() {
 		case <-sess.stop:
 			return
 		case <-t.C:
+			if c := sess.explicitCause(); c != nil {
+				sess.end(c)
+				return
+			}
 			sess.wake("", ChangeRange{})
 			sess.protectQueue()
 		}
 	}
+}
+
+func (sess *listenSession) explicitCause() error {
+	c := context.Cause(sess.ctx)
+	if c == nil || errors.Is(c, context.DeadlineExceeded) || errors.Is(c, context.Canceled) {
+		return nil
+	}
+	return c
 }
 
 // fill is the live read half: on every wake it pages the durable log
@@ -375,6 +389,9 @@ func (sess *listenSession) readBatch(ctx context.Context) (scanned []loggedChang
 // here (readBatch returns raw errors for exactly that reason; codex P1 on
 // #236, thread r3985954997).
 func (sess *listenSession) fillErr(err error) error {
+	if c := sess.explicitCause(); c != nil {
+		return c
+	}
 	if errors.Is(err, ErrNotFound) {
 		return ErrListenLifetimeEnded
 	}
