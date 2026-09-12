@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -67,47 +68,147 @@ func TestServeStdioFraming(t *testing.T) {
 	if len(msgs) != 8 {
 		t.Fatalf("got %d responses, want 8 (notification and blank lines produce none): %+v", len(msgs), msgs)
 	}
-	type want struct {
-		id      any
-		code    float64
-		message string
-	}
-	cases := []want{
-		{"i1", 0, ""},
-		{"i2", 0, ""},
-		{nil, -32700, "invalid JSON"},
-		{nil, -32600, "request id must be a string or number"},
-		{"i3", -32600, "expected a JSON-RPC 2.0 request"},
-		{"i4", -32601, `unknown method "nope"`},
-		{"i5", -32602, `unknown tool "no_such_tool"`},
-	}
-	for i, c := range cases {
-		if got := msgs[i]["id"]; !reflect.DeepEqual(got, c.id) {
-			t.Errorf("response %d id %v, want %v", i, got, c.id)
+	byID := map[string]map[string]any{}
+	nullID := []map[string]any{}
+	for _, m := range msgs {
+		if m["jsonrpc"] != "2.0" {
+			t.Fatalf("every response must carry jsonrpc 2.0: %+v", m)
 		}
-		if c.code == 0 {
-			if msgs[i]["result"] == nil {
-				t.Errorf("response %d must carry a result: %+v", i, msgs[i])
+		if id, ok := m["id"].(string); ok {
+			if _, dup := byID[id]; dup {
+				t.Fatalf("duplicate response for id %q", id)
 			}
+			byID[id] = m
 			continue
 		}
-		e, ok := msgs[i]["error"].(map[string]any)
+		if m["id"] != nil {
+			t.Fatalf("unexpected id %v", m["id"])
+		}
+		nullID = append(nullID, m)
+	}
+	for _, id := range []string{"i1", "i2", "i3", "i4", "i5", "i6"} {
+		if byID[id] == nil {
+			t.Fatalf("missing response for id %q: %+v", id, msgs)
+		}
+	}
+	if len(nullID) != 2 {
+		t.Fatalf("expected exactly 2 null-id error responses (invalid JSON, invalid id), got %+v", nullID)
+	}
+	nullErrs := map[float64]bool{}
+	for _, m := range nullID {
+		e, ok := m["error"].(map[string]any)
 		if !ok {
-			t.Fatalf("response %d must carry a JSON-RPC error: %+v", i, msgs[i])
+			t.Fatalf("null-id response must carry a JSON-RPC error: %+v", m)
 		}
-		if e["code"] != c.code || e["message"] != c.message {
-			t.Errorf("response %d error %v/%v, want %v/%v", i, e["code"], e["message"], c.code, c.message)
-		}
-		if msgs[i]["jsonrpc"] != "2.0" {
-			t.Errorf("response %d must carry jsonrpc 2.0: %+v", i, msgs[i])
+		nullErrs[e["code"].(float64)] = true
+	}
+	if !nullErrs[-32700] || !nullErrs[-32600] {
+		t.Fatalf("null-id errors must be one -32700 and one -32600, got %+v", nullID)
+	}
+	for _, id := range []string{"i1", "i2"} {
+		if byID[id]["result"] == nil {
+			t.Fatalf("%s must succeed: %+v", id, byID[id])
 		}
 	}
-	last := msgs[7]["result"].(map[string]any)
-	if last["isError"] != false {
-		t.Fatalf("tools/call list_namespaces must succeed: %+v", last)
+	i3 := byID["i3"]["error"].(map[string]any)
+	if i3["code"] != float64(-32600) || i3["message"] != "expected a JSON-RPC 2.0 request" {
+		t.Fatalf("i3 error %v", i3)
 	}
-	if _, ok := last["structuredContent"].(map[string]any); !ok {
-		t.Fatalf("tools/call result must carry structuredContent: %+v", last)
+	i4 := byID["i4"]["error"].(map[string]any)
+	if i4["code"] != float64(-32601) || i4["message"] != `unknown method "nope"` {
+		t.Fatalf("i4 error %v", i4)
+	}
+	i5 := byID["i5"]["error"].(map[string]any)
+	if i5["code"] != float64(-32602) || i5["message"] != `unknown tool "no_such_tool"` {
+		t.Fatalf("i5 error %v", i5)
+	}
+	tool := byID["i6"]["result"].(map[string]any)
+	if tool["isError"] != false {
+		t.Fatalf("tools/call list_namespaces must succeed: %+v", tool)
+	}
+	if _, ok := tool["structuredContent"].(map[string]any); !ok {
+		t.Fatalf("tools/call result must carry structuredContent: %+v", tool)
+	}
+}
+
+func TestServeStdioSlowCallDoesNotBlockReadLoop(t *testing.T) {
+	s := newStdioServer(t)
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- s.ServeStdio(context.Background(), inR, outW) }()
+	br := bufio.NewReader(outR)
+	sendLine := func(line string) {
+		t.Helper()
+		if _, err := inW.Write([]byte(line + "\n")); err != nil {
+			t.Fatalf("write stdin: %v", err)
+		}
+	}
+	readMsg := func() map[string]any {
+		t.Helper()
+		ch := make(chan string, 1)
+		go func() {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				ch <- ""
+				return
+			}
+			ch <- line
+		}()
+		select {
+		case line := <-ch:
+			if line == "" {
+				t.Fatal("stdout closed before the expected response")
+			}
+			var m map[string]any
+			if err := json.Unmarshal([]byte(line), &m); err != nil {
+				t.Fatalf("stdout line is not JSON: %q", line)
+			}
+			return m
+		case <-time.After(15 * time.Second):
+			t.Fatal("no response within 15s")
+			return nil
+		}
+	}
+	call := func(id, op string, args map[string]any) string {
+		t.Helper()
+		raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": map[string]any{"name": op, "arguments": args}})
+		if err != nil {
+			t.Fatalf("marshal call: %v", err)
+		}
+		return string(raw)
+	}
+
+	sendLine(call("b-ns", "create_namespace", map[string]any{"namespace": "slow"}))
+	if m := readMsg(); m["id"] != "b-ns" || m["result"] == nil {
+		t.Fatalf("create_namespace failed: %v", m)
+	}
+	sendLine(call("b-table", "create_table", map[string]any{
+		"namespace": "slow", "table": "t",
+		"fields": []map[string]any{{"name": "title", "type": "string"}},
+	}))
+	if m := readMsg(); m["id"] != "b-table" || m["result"] == nil {
+		t.Fatalf("create_table failed: %v", m)
+	}
+
+	sendLine(call("b-wait", "wait_for", map[string]any{"namespace": "slow", "table": "t", "timeout_ms": 2500}))
+	sendLine(`{"jsonrpc":"2.0","id":"b-ping","method":"ping"}`)
+	first, second := readMsg(), readMsg()
+	if first["id"] != "b-ping" {
+		t.Fatalf("the ping sent behind a slow wait_for must be answered first (the read loop must stay responsive); first response was for %v", first["id"])
+	}
+	if second["id"] != "b-wait" {
+		t.Fatalf("second response must be the wait_for result, got id %v", second["id"])
+	}
+
+	inW.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ServeStdio: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("ServeStdio did not return after stdin EOF")
 	}
 }
 

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/lsm/dolmen/internal/api"
 	"github.com/lsm/dolmen/internal/version"
@@ -16,6 +18,8 @@ import (
 )
 
 const stdioMaxLine = 32 << 20
+
+const stdioDrainTimeout = 5 * time.Second
 
 type stdioLine struct {
 	data []byte
@@ -26,6 +30,30 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 	enc := json.NewEncoder(out)
 	enc.SetEscapeHTML(false)
 	instr := s.stdioInstructions()
+	var writeMu sync.Mutex
+	writeErr := make(chan error, 1)
+	write := func(resp map[string]any) {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		if err := enc.Encode(resp); err != nil {
+			select {
+			case writeErr <- err:
+			default:
+			}
+		}
+	}
+	var inflight sync.WaitGroup
+	drain := func() {
+		drained := make(chan struct{})
+		go func() {
+			inflight.Wait()
+			close(drained)
+		}()
+		select {
+		case <-drained:
+		case <-time.After(stdioDrainTimeout):
+		}
+	}
 	lines := make(chan stdioLine)
 	go func() {
 		defer close(lines)
@@ -41,35 +69,44 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 	for {
 		select {
 		case <-ctx.Done():
+			drain()
 			return nil
+		case err := <-writeErr:
+			drain()
+			return err
 		case line, ok := <-lines:
 			if !ok {
+				drain()
 				return nil
 			}
 			if line.err != nil {
 				if errors.Is(line.err, bufio.ErrTooLong) {
-					_ = enc.Encode(rpcErrorEnvelope(nil, jsonRPCParseError, fmt.Sprintf("stdio line exceeds the %d MiB limit", stdioMaxLine>>20)))
+					write(rpcErrorEnvelope(nil, jsonRPCParseError, fmt.Sprintf("stdio line exceeds the %d MiB limit", stdioMaxLine>>20)))
 				}
 				return fmt.Errorf("read stdin: %w", line.err)
 			}
-			msg, msgErr := parseMessage(bytes.TrimSpace(line.data))
+			trimmed := bytes.TrimSpace(line.data)
+			if len(trimmed) == 0 {
+				continue
+			}
+			msg, msgErr := parseMessage(trimmed)
 			if msgErr != nil {
-				if err := enc.Encode(rpcErrorEnvelope(msgErr.ID, msgErr.Code, msgErr.Message)); err != nil {
-					return err
-				}
+				write(rpcErrorEnvelope(msgErr.ID, msgErr.Code, msgErr.Message))
 				continue
 			}
 			if len(msg.ID) == 0 {
 				continue
 			}
-			result, rpcErr := s.handle(api.WithRequestID(ctx, api.NewRequestID()), msg, instr)
-			resp := rpcResultEnvelope(msg.ID, result)
-			if rpcErr != nil {
-				resp = rpcErrorEnvelope(msg.ID, rpcErr.Code, rpcErr.Message)
-			}
-			if err := enc.Encode(resp); err != nil {
-				return err
-			}
+			inflight.Add(1)
+			go func(msg rpcMessage) {
+				defer inflight.Done()
+				result, rpcErr := s.handle(api.WithRequestID(ctx, api.NewRequestID()), msg, instr)
+				resp := rpcResultEnvelope(msg.ID, result)
+				if rpcErr != nil {
+					resp = rpcErrorEnvelope(msg.ID, rpcErr.Code, rpcErr.Message)
+				}
+				write(resp)
+			}(msg)
 		}
 	}
 }
