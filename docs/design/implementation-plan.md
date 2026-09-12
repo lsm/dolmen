@@ -485,8 +485,8 @@ Changes:
   atomically; `notify` not invoked until the replay drains to the boundary; interim commits
   buffer in a bounded queue; overflow closes the stream with the teaching reconnect recipe.
 - The SSE handler drives replay-then-live through `Listen`; client disconnect cancels cleanly.
-- Landing shape: as landed, not as planned — after the helper extraction and the replay
-  half's reviewed relanding, the slice finished as 15 PRs across three child containers
+- Landing shape: as landed, not as planned — after the helper extraction and the reviewed
+  relanding that followed it, the slice finished as 15 PRs across three child containers
   (queue bound + overflow teaching close; drain loop + admission gates; lifecycle registry +
   poll pump + queue protection + retention ride + SSE live wiring + route and capabilities
   flip), the SSE-wiring and surface scopes absorbed by the lifecycle container; one issue,
