@@ -60,9 +60,12 @@ no user is available to re-run it, use the JSON-RPC fallback below instead.
 
 Every tool in this skill is also a plain HTTP operation: `POST /v1/{operation}` with the tool's input
 as the JSON body (`Content-Type: application/json`). Responses are enveloped — success is
-`{"ok":true,"data":...}` and failure is `{"ok":false,"error":{"code","message"}}` with a stable
-machine-readable `code` (`invalid_request`, `not_found`, `query_error`, `conflict`, `forbidden`,
-`embedder_unavailable`, `internal_error`). The full list of operations and their request schemas is in the OpenAPI document (`GET /v1/openapi.json`).
+`{"ok":true,"data":...}` and failure is `{"ok":false,"error":{"code","message","request_id"}}`
+with a stable machine-readable `code` (`invalid_request`, `not_found`, `query_error`, `conflict`,
+`forbidden`, `embedder_unavailable`, `internal_error`); `request_id` is the request's
+`X-Request-Id` header when one was sent, otherwise a server-generated id, echoed back as the
+`X-Request-Id` response header — when a message says the underlying cause is in the server log
+under this id, this is the id. The full list of operations and their request schemas is in the OpenAPI document (`GET /v1/openapi.json`).
 
 Insert a record:
 
@@ -121,7 +124,89 @@ curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0",
 ```
 
 A failed call is not an HTTP error: the result carries `"isError":true` and the error object
-(`{"code","message"}`) as JSON text in `content[0].text`.
+(`{"code","message","request_id"}`) as JSON text in `content[0].text`.
+
+## Live changes: the subscribe stream (SSE)
+
+`GET /v1/subscribe` is `wait_for`'s push counterpart: one long-lived `text/event-stream` connection
+that replays the namespace's durable change log from a cursor and then delivers every live commit
+as it happens. It is HTTP-only — there is no MCP tool for it (`wait_for` carries the same feed
+semantics request/response); use it when your host holds connections (dashboards, watchers), and
+`wait_for` when you are a one-shot agent. `capabilities`'s `subscribe` field reports whether the
+server offers it.
+
+Bash:
+
+```bash
+base="{{ .BaseURL }}"
+curl -sN "${base%/}/v1/subscribe?namespace=research"
+```
+
+Query parameters — the same contract as `changes_since` (names are trimmed and lowercased like
+every `/v1` call):
+
+- `namespace` (required) — the feed to subscribe to. A namespace that does not exist is an
+  in-stream `not_found` error: the stream never creates one, like `wait_for` and unlike the
+  data ops.
+- `table` (optional) — filter to that table's feed. An explicitly empty value is rejected — omit
+  the parameter for the namespace-wide feed. A table-filtered feed has its own cursors.
+- `cursor` (optional) — an opaque resume token or the literal `begin`. Omitted = start at the
+  current head (future commits only). An explicitly empty value is rejected.
+
+Request-shape failures (wrong method, an omitted `namespace` parameter, an empty `table` or
+`cursor` value) are ordinary HTTP errors — the standard envelope — before any stream bytes go
+out; everything
+the stream discovers afterwards arrives as an in-stream `error` event, because an open
+`text/event-stream` response can no longer carry an HTTP status.
+
+### Frames
+
+Each frame is a named event (`event: <name>`) whose `data` is one compact JSON line:
+
+| Event | `data` | Meaning |
+|---|---|---|
+| `ready` | `{"cursor":"..."}` | The replay→live boundary. Replayed `change` frames (when resuming behind the head) arrive first, then `ready`, then live frames. Its cursor is the last replayed change's cursor, or the head at registration when nothing replayed — the resume point a fresh subscriber holds; reconnecting with it continues exactly there, gap-free. A stream that ends during replay never reaches `ready`; its `close` frame carries the reached cursor instead. |
+| `change` | `{"cursor":"...","table":"...","row_id":N,"kind":"insert\|update\|delete"}` | One changed row per frame — a batch write (multi-record `insert`, filter-matched `update`/`delete`) mints one change-log record per affected row — delivered in commit order; the same four-field identity projection as `changes_since` changes. Re-read the row by id (`read_rows`, or `query` with a `WHERE id = ?`); a `delete` change names a row that is already gone. |
+| `close` | `{"cursor":"..."}` | Sent before every server-initiated terminal, carrying the last-delivered cursor — the reconnect token. |
+| `error` | `{"ok":false,"error":{"code","message","request_id"}}` | The terminal frame: the standard error envelope as the event data. Nothing follows it. |
+
+An idle stream is silent — there is no heartbeat after `ready`. Detect a dead connection with
+your transport's own read timeout, or pair the stream with `wait_for` (whose timeout bounds
+staleness) when quiet must be detectable.
+
+### Terminal causes and their recipes
+
+Every server-initiated terminal is a `close` frame followed by a teaching `error` event;
+registration failures — an unknown or foreign cursor, a missing namespace, a missing table —
+send only the `error` event, since nothing was delivered. The messages are the recipes, verbatim:
+
+- Unknown or expired cursor: `cursor is unknown or past the change-log retention window
+  (-change-retention, default 168h); catch up by reconnecting with no cursor to resume from the
+  current head, or with cursor=begin to replay retained history`
+- Cursor from another feed: `cursor was minted on a different feed (a specific table's, or the
+  namespace-wide feed); pass it only to the feed you received it from — honoring it elsewhere
+  would silently skip events — or start fresh with no cursor / cursor=begin`
+- Buffer overflow: `subscription buffer overflow: commits arrived faster than this stream drained
+  them; reconnect from the cursor in the preceding close frame — the durable log is the catch-up
+  path, the buffer never was`
+- Target ended: `the subscription's target ended (a dropped table, or a dropped or replaced
+  namespace); reconnect against the current target — a same-named successor is a different feed`
+- Authorization revoked: `subscription authorization was revoked; reconnect once authorization is
+  restored`
+- Subscription age bound: `subscription reached the maximum subscription age
+  (-max-subscription-age, default 30m); reconnect from the cursor in the preceding close frame to
+  resume exactly where this stream ended — the fresh connection re-asserts your credentials`
+
+Recovery is one rule for the cursor-reusable terminals — buffer overflow, revoked, age bound:
+reconnect with the `close` frame's cursor (or the newest you hold, from `ready` or the last
+`change`, when the connection died without one) and the new stream replays everything after it,
+then goes live — no gaps, no duplicates. Target ended is the close-bearing exception: the feed
+you were reading is gone (a dropped table's feed, or a dropped/replaced namespace whose cursor
+store was deleted with it), so its cursor cannot resume anything — reconnect against the current
+target and establish a fresh cursor (no cursor, or `cursor=begin`), as its message says; a
+same-named successor is a different feed. The registration failures are the other exception:
+their cursor was rejected — reconnect with no cursor (head) or `cursor=begin`, never the
+rejected token.
 
 ## Working rules
 
@@ -151,8 +236,9 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
 - `search_vector` has two query forms with different reach: `text` (server embeds it) searches only the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`; `vector` (raw numbers) searches any `vector` column, and only you know which embedding space produced both the stored and the query vectors, so keep them from the same model.
   **Rows whose `vectorize` source is `null`/empty/missing have `_embedding` `null` and are silently excluded from any `search_vector` that searches `_embedding` (a `text` query, or a raw `vector` query with `column` omitted or set to `_embedding`). If recall matters, call `query` with `SELECT COUNT(*) FROM <table_name> WHERE _embedding IS NULL AND (<same filter>)` (substitute the table name; bind the same `args`; drop the `AND (...)` clause when no filter is used) to find unembedded rows eligible for the search; if you compare counts instead, do it against `SELECT COUNT(*) FROM <table_name> WHERE <same filter>` after exhausting all pages with `min_score` unset (omit the WHERE clause when no filter is used).**
 - `skipped_vectors` in a `search_vector` response counts stored vectors that were corrupt or dimension-mismatched and could not be scored; **it does not count rows with a `null`/empty/missing `vectorize` source — those rows are silently excluded and will not raise `skipped_vectors`.**
-- `changes_since` replays a namespace's durable change log instead of polling tables: each call returns the changes committed after the cursor plus `next_cursor`. Omit `cursor` to start at the current head (nothing replays; keep the returned `next_cursor` and later calls deliver only new commits), or pass `"begin"` to replay retained history. An optional `table` filters to that table. Changes carry `cursor`/`table`/`row_id`/`kind` only — re-read row content by id with `query` (`SELECT * FROM <table> WHERE id = ?`). A cursor older than the change-log retention window (default 7d) is rejected with an error telling you to restart from the head (omit `cursor`) or `"begin"`; cursors are per-feed, so a cursor from a `table`-filtered call only works on that same feed.
+- `changes_since` replays a namespace's durable change log instead of polling tables: each call returns the changes committed after the cursor plus `next_cursor`. Omit `cursor` to start at the current head (nothing replays; keep the returned `next_cursor` and later calls deliver only new commits), or pass `"begin"` to replay retained history. An optional `table` filters to that table. Changes carry `cursor`/`table`/`row_id`/`kind` only — re-read row content by id with `query` (`SELECT * FROM <table> WHERE id = ?`). A cursor older than the change-log retention window (default 7d) is rejected with an error telling you to restart from the head (omit `cursor`) or `"begin"`; cursors are per-feed, so a cursor from a `table`-filtered call only works on that same feed. Cursor tokens are minted per emission: a change re-read later carries a fresh token for the same commit, so the same commit yields different tokens on different reads — while a read that emits nothing returns the cursor you passed unchanged (the `wait_for` idle contract). Treat a token as a resume handle, never as an event id — and no frame field is one either: the same row updated twice yields two changes with identical `table`/`row_id`/`kind`. No stable per-event identifier is exposed; make processing idempotent and persist the cursor atomically with your side effects instead of deduplicating on frame content.
 - `wait_for` REPLACES polling: one call blocks server-side until a change commits after the cursor (or `timeout_ms` elapses, default 30000, max 60000), then returns exactly a `changes_since` page. A timeout is an **empty page plus the unchanged `next_cursor` — never an error**: pass `next_cursor` straight back into the next `wait_for` and loop. `timeout_ms: 0` is a cheap conditional poll (returns immediately). Same feed semantics as `changes_since` (`cursor` resume, `"begin"`, optional `table` filter); never re-derive the head between waits — always resume from the returned cursor. Unlike the data ops, a wait never creates its namespace — a missing one is `not_found` (create it first, then wait).
+- `GET /v1/subscribe?namespace=...` is the stream counterpart of `wait_for` — HTTP-only (`text/event-stream`, no MCP tool): replay the log from `cursor`/`"begin"`/the head, then live `change` frames, one per changed row, in commit order. `ready` (replay→live boundary) and `close` (before every server-initiated terminal) carry cursors — resume from the `close` cursor after overflow/revoked/age-bound, and start fresh (no cursor, or `begin`) after target-ended or a rejected cursor. See "Live changes: the subscribe stream" above.
 
 ## Agent-critical caveats
 
