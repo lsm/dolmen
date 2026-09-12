@@ -10,17 +10,6 @@ import (
 	"testing"
 )
 
-// Slice 4d: the post-commit notification registry (§9.3). Listeners wake
-// after commit only — a listener that reads the change log from inside its
-// callback, through the namespace's separate read pool, must find the minted
-// records already visible, which is only possible once tx.Commit() returned.
-// A panicking listener can never fail the write it observes (recovered,
-// logged, remaining listeners still run); a write that minted no records
-// wakes nobody; and the registry is safe under concurrent writes and
-// registration churn — the race-detector contract for this slice.
-
-// notifyObs is what one listener wake records: the notified table+range, and
-// what a fresh read of the log saw at wake time — the "after commit" proof.
 type notifyObs struct {
 	table   string
 	changes ChangeRange
@@ -32,14 +21,10 @@ func TestNotifyWakesAfterCommitOnly(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
 
-	var mu sync.Mutex // guards observed: the listener runs on the write goroutine
+	var mu sync.Mutex
 	var observed []notifyObs
 	cancel := st.onCommit("test", func(table string, changes ChangeRange) {
-		// Read the log through the read pool — a connection the write
-		// transaction never held. Had this wake fired before commit, the
-		// range's records would be invisible here (SQLite never exposes
-		// another connection's in-flight transaction); seeing them proves
-		// commit preceded the wake.
+
 		n, err := st.ns("test")
 		if err != nil {
 			mu.Lock()
@@ -62,7 +47,6 @@ func TestNotifyWakesAfterCommitOnly(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	// The wake is synchronous with the write: it has already run.
 	mu.Lock()
 	defer mu.Unlock()
 	if len(observed) != 1 {
@@ -94,11 +78,6 @@ func TestNotifyWakesAfterCommitOnly(t *testing.T) {
 	}
 }
 
-// TestNotifyZeroRangeWakesNobody: a write that minted no records never moved
-// the log head, so waking a waiter would only send it re-scanning into
-// nothing. Pinned on both zero-range shapes: a filter that matches nothing,
-// and an idempotent replay (the original insert already woke for the same
-// records).
 func TestNotifyZeroRangeWakesNobody(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -119,7 +98,6 @@ func TestNotifyZeroRangeWakesNobody(t *testing.T) {
 		t.Fatalf("wakes after insert = %d, want 1", got)
 	}
 
-	// Update matching nothing: no records minted, no wake.
 	upd, err := st.Update(ctx, "test", "notes", "title = 'nope'", nil, map[string]any{"score": 9}, Embedder{}, nil, Incarnation{})
 	if err != nil {
 		t.Fatalf("update matching nothing: %v", err)
@@ -131,7 +109,6 @@ func TestNotifyZeroRangeWakesNobody(t *testing.T) {
 		t.Fatalf("wakes after zero-range update = %d, want 1 (no wake)", got)
 	}
 
-	// Idempotent replay: the original insert's wake stands, the replay adds none.
 	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{{"title": "b"}}, WriteOpts{IdempotencyKey: "k1"}, Embedder{}, nil, Incarnation{}); err != nil {
 		t.Fatalf("insert with idempotency key: %v", err)
 	}
@@ -150,9 +127,6 @@ func TestNotifyZeroRangeWakesNobody(t *testing.T) {
 	}
 }
 
-// TestNotifyEveryWritePathWakes: all four write paths — insert, upsert_by_key,
-// update/upsert, delete — notify with the range their transaction minted,
-// once per commit, in write order.
 func TestNotifyEveryWritePathWakes(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -205,9 +179,6 @@ func TestNotifyEveryWritePathWakes(t *testing.T) {
 	}
 }
 
-// TestNotifyListenerPanicCannotFailWrite: the panic is recovered and logged,
-// the write — already committed — returns success with its row in place, and
-// listeners registered after the panicking one still run.
 func TestNotifyListenerPanicCannotFailWrite(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -222,8 +193,6 @@ func TestNotifyListenerPanicCannotFailWrite(t *testing.T) {
 	})
 	defer cancelOk()
 
-	// Capture the default logger's output to pin the "logged" half of the
-	// acceptance.
 	var buf bytes.Buffer
 	old := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
@@ -243,7 +212,6 @@ func TestNotifyListenerPanicCannotFailWrite(t *testing.T) {
 		t.Errorf("panic not logged: log = %q", msg)
 	}
 
-	// The row is really there: the write committed despite the panic.
 	n, err := st.ns("test")
 	if err != nil {
 		t.Fatalf("ns: %v", err)
@@ -257,8 +225,6 @@ func TestNotifyListenerPanicCannotFailWrite(t *testing.T) {
 	}
 }
 
-// TestNotifyCancelStopsDelivery: after cancel returns, no later dispatch
-// selects the listener — the registration handle 6b's session teardown holds.
 func TestNotifyCancelStopsDelivery(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -269,7 +235,7 @@ func TestNotifyCancelStopsDelivery(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 	cancel()
-	cancel() // idempotent
+	cancel()
 
 	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{{"title": "b"}}, WriteOpts{}, Embedder{}, nil, Incarnation{}); err != nil {
 		t.Fatalf("insert after cancel: %v", err)
@@ -279,8 +245,6 @@ func TestNotifyCancelStopsDelivery(t *testing.T) {
 	}
 }
 
-// TestNotifyPerNamespace: the registry is per-namespace — a write to one
-// namespace never wakes another namespace's waiters.
 func TestNotifyPerNamespace(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -308,10 +272,6 @@ func TestNotifyPerNamespace(t *testing.T) {
 	}
 }
 
-// TestNotifyConcurrentWritesAndRegistration is the race-slice test: all four
-// write paths committing concurrently while listener registration churns on
-// the same namespace. Every write succeeds; the steady listener — registered
-// once, never cancelled — wakes exactly once per non-empty write.
 func TestNotifyConcurrentWritesAndRegistration(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -329,9 +289,6 @@ func TestNotifyConcurrentWritesAndRegistration(t *testing.T) {
 	})
 	defer cancel()
 
-	// Registration churn: listeners come and go while writes land — the
-	// registry mutex and the dead-flag are what keep this race-free. Stops
-	// only after the writers finish, so no dispatch outlives the test.
 	var churnWG sync.WaitGroup
 	stop := make(chan struct{})
 	for i := 0; i < 3; i++ {
@@ -349,8 +306,6 @@ func TestNotifyConcurrentWritesAndRegistration(t *testing.T) {
 		}()
 	}
 
-	// Writers on disjoint title prefixes, so concurrent filters never touch
-	// each other's rows. Every call mints at least one record.
 	var writerWG sync.WaitGroup
 	errs := make(chan error, 4)
 	for w := 0; w < 4; w++ {
@@ -359,7 +314,7 @@ func TestNotifyConcurrentWritesAndRegistration(t *testing.T) {
 			defer writerWG.Done()
 			var err error
 			switch w {
-			case 0: // insert path
+			case 0:
 				for i := 0; i < perWriter; i++ {
 					if _, err = st.Insert(ctx, "test", "notes", []map[string]any{
 						{"title": fmt.Sprintf("w%d-%d", w, i)},
@@ -368,7 +323,7 @@ func TestNotifyConcurrentWritesAndRegistration(t *testing.T) {
 						return
 					}
 				}
-			case 1: // upsert_by_key path: the first call inserts, the rest update
+			case 1:
 				for i := 0; i < perWriter; i++ {
 					if _, err = st.UpsertByKey(ctx, "test", "notes", []string{"title"}, []map[string]any{
 						{"title": fmt.Sprintf("w%d-key", w), "score": float64(i)},
@@ -377,7 +332,7 @@ func TestNotifyConcurrentWritesAndRegistration(t *testing.T) {
 						return
 					}
 				}
-			case 2: // update path
+			case 2:
 				for i := 0; i < perWriter; i++ {
 					if _, err = st.Insert(ctx, "test", "notes", []map[string]any{
 						{"title": fmt.Sprintf("w%d-%d", w, i)},
@@ -392,7 +347,7 @@ func TestNotifyConcurrentWritesAndRegistration(t *testing.T) {
 						return
 					}
 				}
-			case 3: // delete path
+			case 3:
 				for i := 0; i < perWriter; i++ {
 					if _, err = st.Insert(ctx, "test", "notes", []map[string]any{
 						{"title": fmt.Sprintf("w%d-%d", w, i)},
@@ -421,17 +376,12 @@ func TestNotifyConcurrentWritesAndRegistration(t *testing.T) {
 		}
 	}
 
-	// w0/w1 commit perWriter writes each; w2/w3 commit two non-empty writes
-	// per iteration (insert + update, insert + delete) — 6 × perWriter.
 	const wantWakes = 6 * perWriter
 	if got := steady.Load(); got != wantWakes {
 		t.Fatalf("steady listener woke %d times, want %d (once per non-empty write)", got, wantWakes)
 	}
 }
 
-// readChangesInRange reads the committed change records with seq in
-// [changes.First, changes.Last] — the listener-side "what is durable right
-// now" view.
 func readChangesInRange(t *testing.T, n *nsDB, changes ChangeRange) ([]changeRow, error) {
 	t.Helper()
 	rows, err := n.ro.QueryContext(context.Background(),

@@ -265,7 +265,6 @@ func TestSearchFulltextFilter(t *testing.T) {
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
 
-	// Filter to rows whose title matches a bound parameter.
 	rows, _, err := st.SearchFulltext(ctx, "test", "notes", "note", 0, 10, false, "title = ?", []any{"first note"})
 	if err != nil {
 		t.Fatalf("filtered fts: %v", err)
@@ -274,7 +273,6 @@ func TestSearchFulltextFilter(t *testing.T) {
 		t.Fatalf("expected one filtered hit, got %v", rows)
 	}
 
-	// Filter on a numeric metadata column.
 	rows, _, err = st.SearchFulltext(ctx, "test", "notes", "note", 0, 10, false, "score >= 3", nil)
 	if err != nil {
 		t.Fatalf("numeric filter fts: %v", err)
@@ -283,7 +281,6 @@ func TestSearchFulltextFilter(t *testing.T) {
 		t.Fatalf("expected 2 hits with score >= 3, got %v", rows)
 	}
 
-	// The filter sees the base table under its own name, like search_vector's.
 	rows, _, err = st.SearchFulltext(ctx, "test", "notes", "note", 0, 10, false, "notes.done = 1", nil)
 	if err != nil {
 		t.Fatalf("qualified filter fts: %v", err)
@@ -292,7 +289,6 @@ func TestSearchFulltextFilter(t *testing.T) {
 		t.Fatalf("expected the done row, got %v", rows)
 	}
 
-	// Filter with no matches returns empty, not an error.
 	rows, _, err = st.SearchFulltext(ctx, "test", "notes", "note", 0, 10, false, "title = ?", []any{"missing"})
 	if err != nil {
 		t.Fatalf("zero-match filter fts: %v", err)
@@ -301,7 +297,6 @@ func TestSearchFulltextFilter(t *testing.T) {
 		t.Fatalf("expected 0 hits for missing filter, got %v", rows)
 	}
 
-	// A null bind argument is accepted and simply matches nothing here.
 	rows, _, err = st.SearchFulltext(ctx, "test", "notes", "note", 0, 10, false, "title = ?", []any{nil})
 	if err != nil {
 		t.Fatalf("null bind filter fts: %v", err)
@@ -310,9 +305,6 @@ func TestSearchFulltextFilter(t *testing.T) {
 		t.Fatalf("expected 0 hits for null title bind, got %v", rows)
 	}
 
-	// Numbered placeholders (?NNN) bind from args with the same numbering the
-	// filter has standalone, like search_vector's filter — the internal MATCH
-	// and pagination parameters must not shift them.
 	rows, _, err = st.SearchFulltext(ctx, "test", "notes", "note", 0, 10, false, "score >= ?1", []any{3})
 	if err != nil {
 		t.Fatalf("numbered bind filter fts: %v", err)
@@ -328,7 +320,6 @@ func TestSearchFulltextFilter(t *testing.T) {
 		t.Fatalf("pagination must bind correctly alongside ?1: %d rows truncated=%v", len(rows), truncated)
 	}
 
-	// Malicious/invalid filters are rejected like search_vector's filter.
 	if _, _, err := st.SearchFulltext(ctx, "test", "notes", "note", 0, 10, false, "1=1; DROP TABLE notes", nil); err == nil {
 		t.Fatal("expected semicolon in filter to be rejected")
 	}
@@ -337,8 +328,6 @@ func TestSearchFulltextFilter(t *testing.T) {
 	}
 }
 
-// A base-table field named rank (allowed when not fulltext) must not collide
-// with the FTS rank used for ordering — the filter's rank is the table's.
 func TestSearchFulltextFilterWithRankField(t *testing.T) {
 	st := openStore(t)
 	mustNS(t, st, "test")
@@ -364,9 +353,6 @@ func TestSearchFulltextFilterWithRankField(t *testing.T) {
 	}
 }
 
-// Failures must be attributed to the expression that caused them: a malformed
-// MATCH with a valid filter stays an FTS-query error, and a malformed filter
-// with a valid MATCH reports the filter.
 func TestSearchFulltextFilterErrorClassification(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
@@ -389,8 +375,6 @@ func TestSearchFulltextFilterErrorClassification(t *testing.T) {
 		t.Fatalf("malformed filter must carry the filter wording, got %v", err)
 	}
 
-	// A filter that compiles but fails while evaluating a real row is still a
-	// filter failure, not a MATCH failure.
 	_, _, err = st.SearchFulltext(ctx, "test", "notes", "note", 0, 10, false, `json_extract(title, '$.x') = 1`, nil)
 	if err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected runtime filter failure to classify as invalid request, got %v", err)
@@ -400,9 +384,6 @@ func TestSearchFulltextFilterErrorClassification(t *testing.T) {
 	}
 }
 
-// The filtered query must check the filter with one primary-key lookup per
-// FTS hit, not by scanning (or materializing the matches of) the base table —
-// an unselective filter must not turn a selective MATCH into O(table).
 func TestSearchFulltextFilterPlanLooksUpRowsPerHit(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
@@ -435,8 +416,7 @@ func TestSearchFulltextFilterPlanLooksUpRowsPerHit(t *testing.T) {
 		if d == seek {
 			found = true
 		}
-		// The FTS side renders as "SCAN notes__fts VIRTUAL TABLE INDEX" —
-		// that prefix must not hide a scan of the base table itself.
+
 		if strings.HasPrefix(d, "SCAN notes") && !strings.HasPrefix(d, "SCAN notes__fts") {
 			t.Fatalf("filtered search must not scan the base table, plan: %v", details)
 		}
@@ -446,9 +426,6 @@ func TestSearchFulltextFilterPlanLooksUpRowsPerHit(t *testing.T) {
 	}
 }
 
-// The filter must restrict the result set without reordering it: a filtered
-// page is exactly the unfiltered ranking with non-matching rows removed, and
-// offset/limit/truncated then page within that restricted set.
 func TestSearchFulltextFilterKeepsRankOrderAndPagination(t *testing.T) {
 	st := openStore(t)
 	mustNS(t, st, "test")
@@ -459,7 +436,7 @@ func TestSearchFulltextFilterKeepsRankOrderAndPagination(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	// Varied needle density so BM25 ranks the rows differently.
+
 	records := []map[string]any{
 		{"title": "needle", "keep": false},
 		{"title": "needle needle", "keep": true},
@@ -505,7 +482,6 @@ func TestSearchFulltextFilterKeepsRankOrderAndPagination(t *testing.T) {
 		t.Fatalf("no pagination expected within one page, got truncated=%v", truncated)
 	}
 
-	// Pagination and truncated still work within the filtered set.
 	rows, truncated, err = st.SearchFulltext(ctx, "test", "ftsfilt", "needle", 0, 2, false, "keep = 1", nil)
 	if err != nil {
 		t.Fatalf("filtered page 0: %v", err)
@@ -584,8 +560,7 @@ func TestFulltextSentinelRowNeverFailsThePage(t *testing.T) {
 	}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	// The (limit+1)th match carries a blob beyond the response budget: it is
-	// only a look-ahead for truncated, so it must never be materialized.
+
 	n, err := st.ns("test")
 	if err != nil {
 		t.Fatalf("ns: %v", err)

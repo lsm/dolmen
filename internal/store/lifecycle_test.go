@@ -43,7 +43,7 @@ func TestNamespaceListCreateDrop(t *testing.T) {
 		t.Fatalf("drop of invalid name must fail with ErrInvalid, got %v", err)
 	}
 
-	mustCreateNotes(t, st) // creates namespace "test" explicitly, with a WAL
+	mustCreateNotes(t, st)
 	nss, err = st.ListNamespaces()
 	if err != nil {
 		t.Fatalf("list: %v", err)
@@ -76,7 +76,6 @@ func TestNamespaceListCreateDrop(t *testing.T) {
 		t.Fatalf("expected [alpha] after drop, got %v", nss)
 	}
 
-	// The name is reusable: recreated empty, none of the old tables.
 	if err := st.CreateNamespace("test"); err != nil {
 		t.Fatalf("recreate dropped namespace: %v", err)
 	}
@@ -89,15 +88,8 @@ func TestNamespaceListCreateDrop(t *testing.T) {
 	}
 }
 
-// TestValidateNSPathGrammar pins §5.1: 1–3 segments of the v0.2.0 single-name
-// grammar, no empty segments.
 func TestValidateNSPathGrammar(t *testing.T) {
-	// The same corpus runs through NSPathPattern: the JSON Schema pattern
-	// the API's namespace surfaces declare must agree with the validator it
-	// mirrors — every admitted path matches, every rejected one does not.
-	// Single segments ("a", "a_b-c9") sit in the valid list, which is the
-	// additive edge: v0.2.0's whole grammar still matches the widened
-	// pattern (§8.1).
+
 	pattern := regexp.MustCompile(NSPathPattern())
 	valid := []string{
 		"a",
@@ -120,7 +112,7 @@ func TestValidateNSPathGrammar(t *testing.T) {
 		"a/",
 		"a//b",
 		"a/b/",
-		// Depth is capped at 3 namespace segments.
+
 		"w/x/y/z",
 		"w/x/y/z/v",
 		"A/b",
@@ -129,7 +121,7 @@ func TestValidateNSPathGrammar(t *testing.T) {
 		"a/../b",
 		"a/b./c",
 		`a\b`,
-		// A segment longer than the 64-char cap.
+
 		strings.Repeat("x", 65),
 		"a/" + strings.Repeat("y", 65),
 	}
@@ -143,16 +135,10 @@ func TestValidateNSPathGrammar(t *testing.T) {
 	}
 }
 
-// TestNestedNamespaceLayout pins §5.2: a/b/c is <data>/a/b/c.db, the parent
-// directories appear on first child creation, a.db coexists with the a/
-// subtree, and the cache keys by full path.
 func TestNestedNamespaceLayout(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
 
-	// The child chain needs no depth-1 or depth-2 namespace to exist first:
-	// creating a/b/c directly makes a/ and a/b/ on the way (§5.2, "created on
-	// first child creation").
 	if err := st.CreateNamespace("a/b/c"); err != nil {
 		t.Fatalf("create a/b/c: %v", err)
 	}
@@ -160,7 +146,6 @@ func TestNestedNamespaceLayout(t *testing.T) {
 		t.Fatalf("a/b/c must materialize at <data>/a/b/c.db: %v", err)
 	}
 
-	// A namespace and its subtree coexist: a.db beside the a/ directory.
 	if err := st.CreateNamespace("a"); err != nil {
 		t.Fatalf("create a: %v", err)
 	}
@@ -177,8 +162,6 @@ func TestNestedNamespaceLayout(t *testing.T) {
 		t.Fatalf("duplicate nested create must fail with ErrInvalid, got %v", err)
 	}
 
-	// The cache keys by full path: three namespaces, three databases, no
-	// collision between a and its subtree even under one table name.
 	for _, ns := range []string{"a", "a/b", "a/b/c"} {
 		if _, err := st.CreateTable(ctx, ns, "notes", noteFields()); err != nil {
 			t.Fatalf("create table in %s: %v", ns, err)
@@ -200,8 +183,6 @@ func TestNestedNamespaceLayout(t *testing.T) {
 		}
 	}
 
-	// 3b's recursive listing reports the whole tree in full-path order:
-	// a, a/b, a/b/c (§5.3).
 	nss, err := st.ListNamespaces()
 	if err != nil {
 		t.Fatalf("list: %v", err)
@@ -211,25 +192,12 @@ func TestNestedNamespaceLayout(t *testing.T) {
 	}
 }
 
-// TestListNamespacesRecursiveOrder pins §5.3's listing shape on a mixed
-// tree: every namespace depth 1–3 appears exactly once, ordered by
-// database filename (sortNS) — which is NOT bare-path order: a-x sorts
-// BEFORE a (v0.2.0's os.ReadDir ordered a-x.db ahead of a.db, '-' <
-// '.', and a depth-1 store must keep that byte order), while a/b/c
-// sorts after a/b — and the walk skips what the store would refuse to
-// open: over-depth files and directories, invalid-segment directories,
-// non-.db files, and symlinked names at any depth.
 func TestListNamespacesRecursiveOrder(t *testing.T) {
 	st := openStore(t)
 	for _, ns := range []string{"a", "a-x", "a/b", "a/b/c", "ab", "z"} {
 		mustNS(t, st, ns)
 	}
-	// Over-depth plants: a depth-4 database file (unreachable — its path
-	// exceeds §5.1's cap, so the walk never enters a/b/c/) and an
-	// invalid-segment directory holding a database. The over-depth
-	// directory is also unreadable: the walk must not open it at all, so
-	// an operator's junk directory beside a/b/c.db can neither fail nor
-	// slow any listing — filtering after an eager ReadDir would fail here.
+
 	if err := os.MkdirAll(filepath.Join(st.dir, "a", "b", "c"), 0o700); err != nil {
 		t.Fatalf("plant depth-4 directory: %v", err)
 	}
@@ -240,8 +208,7 @@ func TestListNamespacesRecursiveOrder(t *testing.T) {
 	if err := os.Chmod(deep, 0o000); err != nil {
 		t.Fatalf("chmod the depth-4 directory unreadable: %v", err)
 	}
-	// Restore readability before TempDir's cleanup (registered earlier, so
-	// it runs after this one) — RemoveAll must delete d.db inside.
+
 	t.Cleanup(func() { os.Chmod(deep, 0o700) })
 	if err := os.MkdirAll(filepath.Join(st.dir, "Bad Dir"), 0o700); err != nil {
 		t.Fatalf("plant invalid-segment dir: %v", err)
@@ -252,9 +219,7 @@ func TestListNamespacesRecursiveOrder(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(st.dir, "plain.txt"), nil, 0o600); err != nil {
 		t.Fatalf("plant non-database file: %v", err)
 	}
-	// A symlinked directory is not descended (IsDir is lstat semantics), so
-	// a database planted behind it — outside the data directory — never
-	// surfaces; a symlinked database beside real ones is not listed.
+
 	outside := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "leak.db"), nil, 0o600); err != nil {
 		t.Fatalf("plant external database: %v", err)
@@ -276,11 +241,6 @@ func TestListNamespacesRecursiveOrder(t *testing.T) {
 	}
 }
 
-// TestListNamespacesPrefix pins §5.3's optional prefix: the listing becomes
-// the prefix's recursive subtree, the prefix itself included; a prefix that
-// names no namespace still lists its descendants; an absent or invalid
-// prefix lists nothing / fails, and a sibling sharing only a stem ("ab"
-// under prefix "a") stays out.
 func TestListNamespacesPrefix(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
@@ -315,26 +275,18 @@ func TestListNamespacesPrefix(t *testing.T) {
 		t.Fatalf("absent prefix lists nothing, got %v", got)
 	}
 
-	// A prefix that is not itself a namespace still lists its descendants:
-	// the subtree is a path filter, not an existence claim.
 	st2 := openStore(t)
 	mustNS(t, st2, "p/q")
 	if got, err := st2.Store.ListNamespaces(ctx, "p", nil); err != nil || !reflect.DeepEqual(got, []string{"p/q"}) {
 		t.Fatalf("prefix p over a child-only tree must list [p/q], got %v (%v)", got, err)
 	}
 
-	// The prefix is held to the same §5.1 grammar as any namespace path.
 	for _, prefix := range []string{"A", "/a", "a/", "a//b", "a/b/c/d", "a/b/c/d/e"} {
 		if _, err := st.Store.ListNamespaces(ctx, prefix, nil); !errors.Is(err, ErrInvalid) {
 			t.Errorf("ListNamespaces(prefix %q) = %v, want ErrInvalid", prefix, err)
 		}
 	}
 
-	// The subtree walk starts inside the prefix's path and never touches a
-	// sibling: an unreadable directory elsewhere under the data directory —
-	// an operator's staging area — can neither fail nor slow an unrelated
-	// subtree listing, and the leaf-only drop guard, which counts
-	// descendants through the same listing, inherits the isolation.
 	st3 := openStore(t)
 	mustNS(t, st3, "a/b")
 	locked := filepath.Join(st3.dir, "locked")
@@ -347,8 +299,7 @@ func TestListNamespacesPrefix(t *testing.T) {
 	if err := os.Chmod(locked, 0o000); err != nil {
 		t.Fatalf("chmod locked sibling: %v", err)
 	}
-	// Restore readability before TempDir's cleanup (registered earlier, so
-	// it runs after this one) — RemoveAll must delete the junk inside.
+
 	t.Cleanup(func() { os.Chmod(locked, 0o700) })
 	if got, err := st3.Store.ListNamespaces(ctx, "a", nil); err != nil || !reflect.DeepEqual(got, []string{"a/b"}) {
 		t.Fatalf("subtree listing must not touch the unreadable sibling, got %v (%v)", got, err)
@@ -357,8 +308,6 @@ func TestListNamespacesPrefix(t *testing.T) {
 		t.Fatalf("leaf listing beside the unreadable sibling, got %v (%v)", got, err)
 	}
 
-	// A symlinked component is followed by nothing: the subtree through it
-	// lists empty, never the outside directory's contents.
 	outside := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "leak.db"), nil, 0o600); err != nil {
 		t.Fatalf("plant external database: %v", err)
@@ -373,11 +322,6 @@ func TestListNamespacesPrefix(t *testing.T) {
 		t.Fatalf("a path through a symlinked component must list empty, got %v (%v)", got, err)
 	}
 
-	// A stat error that is not plain absence is loud, never a silent empty
-	// listing: with a/ unsearchable, every path through it stats with a
-	// permission error and the namespaces below are unknowable — reporting
-	// them as absent would lie (the walk itself propagates ReadDir errors
-	// the same way).
 	st4 := openStore(t)
 	mustNS(t, st4, "a/b/c")
 	blocked := filepath.Join(st4.dir, "a")
@@ -385,11 +329,7 @@ func TestListNamespacesPrefix(t *testing.T) {
 		t.Fatalf("chmod a/: %v", err)
 	}
 	t.Cleanup(func() { os.Chmod(blocked, 0o700) })
-	// The denial needs an environment where chmod actually denies
-	// traversal: on Windows chmod only toggles the read-only attribute
-	// (directories stay searchable), and root ignores mode bits — there
-	// the production behavior is correct but the error cannot be produced.
-	// Probe the denial itself and skip where it does not take.
+
 	if _, err := os.Lstat(filepath.Join(blocked, "b")); err == nil {
 		t.Skip("chmod does not deny traversal here (Windows or root); the loud-error pin needs a denying environment")
 	}
@@ -400,11 +340,6 @@ func TestListNamespacesPrefix(t *testing.T) {
 		t.Fatal("the inaccessible component's own subtree must fail loudly too")
 	}
 
-	// The leaf-only guard fails closed on metadata errors, never open: a
-	// readable-but-unsearchable directory (mode r without x) hands ReadDir
-	// the child's name but refuses the stat — the walk must propagate that
-	// error so the descendant count aborts the drop, instead of silently
-	// skipping the child and deleting the parent over a live subtree.
 	st5 := openStore(t)
 	mustNS(t, st5, "a")
 	mustNS(t, st5, "a/b")
@@ -413,7 +348,7 @@ func TestListNamespacesPrefix(t *testing.T) {
 		t.Fatalf("chmod a/ readable-not-searchable: %v", err)
 	}
 	t.Cleanup(func() { os.Chmod(nosearch, 0o700) })
-	// Same capability probe as above: the pin needs the stat to be refused.
+
 	if _, err := os.Lstat(filepath.Join(nosearch, "b.db")); err == nil {
 		t.Skip("chmod does not refuse the entry stat here (Windows or root); the fail-closed pin needs a denying environment")
 	}
@@ -431,12 +366,6 @@ func TestListNamespacesPrefix(t *testing.T) {
 	}
 }
 
-// TestDropNamespaceRejectsDescendants pins §5.4's leaf-only drop: a
-// namespace with descendants is refused — ErrInvalid naming the descendant
-// count — before anything is evicted or deleted; the children go first
-// (child-first drops succeed down to the leaf), a leftover empty directory
-// from an already-dropped child blocks nothing, and a name whose file is
-// gone reports not_found even when descendants exist.
 func TestDropNamespaceRejectsDescendants(t *testing.T) {
 	st := openStore(t)
 	for _, ns := range []string{"a", "a/b", "a/b/c"} {
@@ -454,9 +383,7 @@ func TestDropNamespaceRejectsDescendants(t *testing.T) {
 	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "1 descendant namespace") {
 		t.Fatalf("dropping a/b must fail naming its 1 descendant, got %v", err)
 	}
-	// The refused drops evicted and deleted nothing: the tree is intact
-	// (the listing — which opens nothing — would also catch a deleted
-	// file, and the cache would catch an evicted entry).
+
 	nss, lerr := st.ListNamespaces()
 	if lerr != nil || !reflect.DeepEqual(nss, []string{"a", "a/b", "a/b/c"}) {
 		t.Fatalf("refused drops must leave the tree intact, got %v (%v)", nss, lerr)
@@ -465,8 +392,6 @@ func TestDropNamespaceRejectsDescendants(t *testing.T) {
 		t.Fatal("refused drop must not evict the namespace's cached connections")
 	}
 
-	// Child-first: the leaf drops, then its parent (the now-empty a/
-	// directory left by a/b's drop is not a descendant), then the root.
 	for _, ns := range []string{"a/b/c", "a/b", "a"} {
 		if err := st.DropNamespace(ns); err != nil {
 			t.Fatalf("child-first drop of %s: %v", ns, err)
@@ -476,16 +401,12 @@ func TestDropNamespaceRejectsDescendants(t *testing.T) {
 		t.Fatalf("the empty a/ directory must survive (drops never remove directories): %v", err)
 	}
 
-	// A name with descendants but no file of its own is not a namespace:
-	// not_found, not the descendant refusal.
 	mustNS(t, st, "x/y")
 	if err = st.DropNamespace("x"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("drop of a file-less name must 404, got %v", err)
 	}
 }
-// TestNestedNamespaceOpenNeverCreates pins the §6.2 global rule at depth > 1:
-// opening a missing namespace is ErrNotFound and leaves no directory behind,
-// and every entry point rejects invalid paths before touching the filesystem.
+
 func TestNestedNamespaceOpenNeverCreates(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
@@ -513,9 +434,6 @@ func TestNestedNamespaceOpenNeverCreates(t *testing.T) {
 	}
 }
 
-// TestDropNestedNamespace pins the drop at depth > 1: the nested .db and its
-// WAL sidecars go, the parent namespace and the directory survive, and the
-// child name is reusable.
 func TestDropNestedNamespace(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
@@ -539,8 +457,7 @@ func TestDropNestedNamespace(t *testing.T) {
 	if _, ok := st.nss["a/b"]; ok {
 		t.Fatal("drop must evict the nested namespace's cached connections")
 	}
-	// v0.2.0 semantics never remove directories, and the parent namespace is
-	// untouched by its child's drop.
+
 	if _, err := os.Stat(filepath.Join(st.dir, "a")); err != nil {
 		t.Fatalf("the a/ directory must survive its child's drop: %v", err)
 	}
@@ -548,7 +465,6 @@ func TestDropNestedNamespace(t *testing.T) {
 		t.Fatalf("the parent namespace's own database must survive: %v", err)
 	}
 
-	// The child name is reusable and starts empty.
 	if err := st.CreateNamespace("a/b"); err != nil {
 		t.Fatalf("recreate dropped child: %v", err)
 	}
@@ -561,16 +477,11 @@ func TestDropNestedNamespace(t *testing.T) {
 	}
 }
 
-// TestNamespacePathSymlinkContainment pins the physical half of containment:
-// the segment grammar bars "." and "/" lexically, verifyNSDirs and the
-// regular-file check bar a planted symlink from steering namespace I/O out
-// of the data directory — creating, opening, and dropping all refuse.
 func TestNamespacePathSymlinkContainment(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
 	outside := t.TempDir()
 
-	// A planted intermediate symlink: <data>/a -> outside.
 	if err := os.Symlink(outside, filepath.Join(st.dir, "a")); err != nil {
 		t.Fatalf("plant symlink: %v", err)
 	}
@@ -581,9 +492,6 @@ func TestNamespacePathSymlinkContainment(t *testing.T) {
 		t.Fatalf("the refused create must not write outside the data directory, stat err = %v", err)
 	}
 
-	// Opening and dropping an external file reachable through the symlink
-	// are refused too — with the file present, so refusal is observable as
-	// the file's survival, not just a 404.
 	external := filepath.Join(outside, "b.db")
 	if err := os.WriteFile(external, nil, 0o600); err != nil {
 		t.Fatalf("plant external file: %v", err)
@@ -598,8 +506,6 @@ func TestNamespacePathSymlinkContainment(t *testing.T) {
 		t.Fatalf("the refused drop must not remove the external file: %v", err)
 	}
 
-	// The namespace's own name is held to the same rule: a symlink named
-	// like a namespace database is not a namespace.
 	if err := os.Symlink(external, filepath.Join(st.dir, "link.db")); err != nil {
 		t.Fatalf("plant file symlink: %v", err)
 	}
@@ -613,10 +519,6 @@ func TestNamespacePathSymlinkContainment(t *testing.T) {
 		t.Fatalf("the refused drop must leave the symlink itself alone: %v", err)
 	}
 
-	// Listing applies the same rule: a symlink named like a namespace database
-	// has a valid stem and is not a directory, but it must not be listed — a
-	// listed namespace must be one the store can open (this store's only
-	// entries are the two planted symlinks, so the list is empty).
 	nss, err := st.ListNamespaces()
 	if err != nil {
 		t.Fatalf("list: %v", err)
@@ -681,28 +583,18 @@ func TestDropNamespaceWithConcurrentWriters(t *testing.T) {
 					return
 				default:
 				}
-				// Errors are expected once the drop lands (the table, then the
-				// namespace, vanish underneath the writers); what must not
-				// happen is a deadlock, a panic, or the drop failing.
+
 				_, _ = st.Insert(ctx, "test", "notes", []map[string]any{{"title": "racing"}}, testEmbed)
 			}
 		}()
 	}
-	time.Sleep(20 * time.Millisecond) // let the writers engage
+	time.Sleep(20 * time.Millisecond)
 	if err := st.DropNamespace("test"); err != nil {
 		t.Fatalf("drop under concurrency must succeed, got %v", err)
 	}
 	close(stop)
 	wg.Wait()
 
-	// The dropped name must be reusable and the old table must not survive.
-	// 2b retired implicit recreation (nothing recreates the name underneath
-	// the writers anymore — 2c's ensureNamespace restores that at the op
-	// layer), so recreate explicitly and require the fresh namespace to be
-	// fully usable. A straggler connection from the evicted pools closing
-	// after the namespace's recreation deletes its WAL sidecars by path,
-	// leaving the new pools poisoned (read-only opens then fail with disk I/O
-	// errors) — evict drains precisely to prevent that.
 	if err := st.CreateNamespace("test"); err != nil {
 		t.Fatalf("recreate dropped namespace: %v", err)
 	}
@@ -780,8 +672,6 @@ func TestDropTable(t *testing.T) {
 		t.Fatal("drop generation must be persisted at 1")
 	}
 
-	// Recreating the name starts fresh: version 1, and the dropped table's
-	// idempotency key does not replay the old ids.
 	if _, err := st.CreateTable(ctx, "test", "notes", noteFields()); err != nil {
 		t.Fatalf("recreate: %v", err)
 	}
@@ -823,9 +713,6 @@ func TestDropTableRemovesSearch(t *testing.T) {
 	}
 }
 
-// pausingEmbedder returns an embedder whose first call blocks until released
-// (letting a test drop + recreate the table mid-embed), then behaves like
-// fakeEmbed for this and all later calls — as the insert retry loop requires.
 func pausingEmbedder() (Embedder, func(), func()) {
 	paused := make(chan struct{})
 	release := make(chan struct{})
@@ -839,9 +726,6 @@ func pausingEmbedder() (Embedder, func(), func()) {
 	}, func() { <-paused }, func() { close(release) }
 }
 
-// recreatedFields is noteFields with score flipped from number to boolean: a
-// recreate under the same name and version that a stale write must not accept
-// (0.9 coerces cleanly against the old number field, not the new boolean one).
 func recreatedFields() []schema.Field {
 	f := noteFields()
 	for i := range f {
@@ -870,8 +754,6 @@ func TestDropTableDuringInsertEmbedPause(t *testing.T) {
 		done <- outcome{ids, err}
 	}()
 
-	// The insert has read the schema and is mid-embed: drop and recreate the
-	// table under the same name, same version, different field types.
 	waitPaused()
 	if err := st.DropTable(ctx, "test", "notes"); err != nil {
 		t.Fatalf("drop: %v", err)
@@ -881,8 +763,6 @@ func TestDropTableDuringInsertEmbedPause(t *testing.T) {
 	}
 	release()
 
-	// The stale attempt must be discarded, not committed: the retry
-	// re-validates against the recreated table and rejects the record.
 	out := <-done
 	if out.err == nil {
 		t.Fatalf("stale insert must not commit into the recreated table, got ids %v", out.ids)
@@ -941,9 +821,6 @@ func TestDropTableDuringUpsertByKeyEmbedPause(t *testing.T) {
 	}
 }
 
-// The drop generation is persisted, so the guard also holds when a second
-// Store instance (or a second server process) sharing the data directory
-// performs the drop + recreate while this instance's write is mid-embedding.
 func TestDropTableBySecondStoreInstanceDuringEmbedPause(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
@@ -1024,9 +901,8 @@ func TestCreateNamespaceConcurrentReservation(t *testing.T) {
 func TestNamespaceFileRemovedOutOfBand(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
-	mustCreateNotes(t, st) // namespace "test" is open and cached
+	mustCreateNotes(t, st)
 
-	// Simulate an operator deleting the file under a live server.
 	if err := os.Remove(filepath.Join(st.dir, "test.db")); err != nil {
 		t.Fatalf("out-of-band remove: %v", err)
 	}
@@ -1037,7 +913,6 @@ func TestNamespaceFileRemovedOutOfBand(t *testing.T) {
 		t.Fatal("stale cache entry must be evicted (pools closed, not orphaned)")
 	}
 
-	// The name is creatable again and starts fresh.
 	if err := st.CreateNamespace("test"); err != nil {
 		t.Fatalf("recreate: %v", err)
 	}
@@ -1050,17 +925,11 @@ func TestNamespaceFileRemovedOutOfBand(t *testing.T) {
 	}
 }
 
-// The drop must not complete while a transaction holds one of the
-// namespace's connections: the paths stay reserved until the straggler's
-// final close, so its WAL-sidecar unlink cannot hit the next incarnation.
-// Update on a vectorized field re-embeds inside the write transaction, so a
-// pausing embedder pins the namespace's only rw connection deterministically.
 func TestDropNamespaceWaitsForInFlightTransaction(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
 	mustCreateNotes(t, st)
-	// The update below must match a row: with none, it skips embedding
-	// entirely and nothing holds the connection.
+
 	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{{"title": "seed"}}, testEmbed); err != nil {
 		t.Fatalf("seed insert: %v", err)
 	}
@@ -1071,7 +940,7 @@ func TestDropNamespaceWaitsForInFlightTransaction(t *testing.T) {
 		_, err := st.Update(ctx, "test", "notes", "id > 0", nil, map[string]any{"body": "held open"}, emb)
 		updated <- err
 	}()
-	waitPaused() // the update now holds the rw connection inside its tx
+	waitPaused()
 
 	dropped := make(chan error, 1)
 	go func() { dropped <- st.DropNamespace("test") }()
@@ -1079,7 +948,7 @@ func TestDropNamespaceWaitsForInFlightTransaction(t *testing.T) {
 	case err := <-dropped:
 		t.Fatalf("drop must wait for the in-flight transaction, returned early with %v", err)
 	case <-time.After(150 * time.Millisecond):
-		// still waiting, as it must
+
 	}
 
 	release()

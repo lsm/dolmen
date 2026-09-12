@@ -73,9 +73,6 @@ func tableOutSchema(desc string) map[string]any {
 	}
 }
 
-// changeOutSchema describes a recorded migration change (history entries and
-// plans), mirroring the migrate input shape including add_field defaults and
-// the explicit value set_* changes always record.
 func changeOutSchema(desc string) map[string]any {
 	return map[string]any{
 		"type":        "object",
@@ -140,13 +137,6 @@ func planOutSchema(desc string) map[string]any {
 	}
 }
 
-// writeOutSchema builds the response shape the write ops (insert, upsert,
-// upsert_by_key) share: the ids of the rows the write touched, how many rows
-// were inserted, and how many were updated. Keys are shared across ops so a
-// client handles every write alike — a key appears only where it can be
-// meaningful: updated is omitted where a write cannot update (insert), and
-// replayed — returned only by an idempotency-keyed insert — is optional
-// because the same op serves plain inserts too.
 func writeOutSchema(withUpdated, withReplayed bool) map[string]any {
 	props := map[string]any{
 		"ids": map[string]any{
@@ -167,10 +157,6 @@ func writeOutSchema(withUpdated, withReplayed bool) map[string]any {
 	return outSchema(props, required...)
 }
 
-// changesPageOutSchema builds the response shape the feed ops share (§9.2:
-// wait_for's response has changes_since's exact page semantics) — one bounded
-// page of identity-only change records plus the next cursor. On wait_for's
-// timeout the page is empty and next_cursor carries the unchanged boundary.
 func changesPageOutSchema() map[string]any {
 	return outSchema(map[string]any{
 		"changes": map[string]any{
@@ -197,10 +183,6 @@ func changesPageOutSchema() map[string]any {
 	}, "changes", "next_cursor")
 }
 
-// migrateChangeKeys lists the keys each migrate op accepts at change level, in
-// the order unknown-key errors quote them. add_field is the only op that takes
-// a field definition, nested under "field"; every other op names an existing
-// field with a plain string.
 var migrateChangeKeys = map[string][]string{
 	schema.OpAddField:     {"op", "field", "default"},
 	schema.OpRenameField:  {"op", "from", "to"},
@@ -210,9 +192,6 @@ var migrateChangeKeys = map[string][]string{
 	schema.OpSetEnum:      {"op", "name", "enum"},
 }
 
-// migrateFieldDefKeys are the field-definition properties that belong inside a
-// change's "field" object. Seeing one at change level means the caller
-// flattened add_field's nesting, so the error says where they go.
 var migrateFieldDefKeys = map[string]bool{
 	"name":      true,
 	"type":      true,
@@ -222,11 +201,6 @@ var migrateFieldDefKeys = map[string]bool{
 	"required":  true,
 }
 
-// validateMigrateChanges checks each change's keys against the op it names.
-// It runs on the raw decoded maps before the typed decode, whose
-// DisallowUnknownFields would otherwise surface a misplaced key as a bare
-// `json: unknown field "type"` — with no listing of the op's valid keys and no
-// hint that add_field nests its field definition under "field".
 func validateMigrateChanges(changes []map[string]any) error {
 	for i, ch := range changes {
 		rawOp, present := ch["op"]
@@ -270,24 +244,12 @@ func validateMigrateChanges(changes []map[string]any) error {
 	return nil
 }
 
-// wait_for's long-poll bound (§9.2 layer 2): timeout_ms default and ceiling,
-// and the poll cadence of the degraded-mode loop below. The ceiling is the
-// contract's, not a deployment setting — an agent host needing a longer hold
-// uses subscribe (§9.3); the tick is how the bounded-time contract holds
-// without the notification capability (6b's Listen may shorten latency inside
-// the engine — invisible above this loop).
 const (
 	defaultWaitForTimeoutMS = 30000
 	maxWaitForTimeoutMS     = 60000
 	waitForPollTick         = 250 * time.Millisecond
 )
 
-// waitBudget returns the time left on a wait's deadline, floored at one
-// poll tick: budgeted phases (namespace setup, feed reads) must never be
-// handed an already-spent budget, or they would abort before doing any work
-// at all — timeout_ms 0's conditional poll and the final re-check under the
-// deadline are genuine work. The call's wall bound stays timeout_ms plus at
-// most one tick per floored phase.
 func waitBudget(deadline time.Time) time.Duration {
 	if d := time.Until(deadline); d > waitForPollTick {
 		return d
@@ -295,15 +257,6 @@ func waitBudget(deadline time.Time) time.Duration {
 	return waitForPollTick
 }
 
-// parseChangesFeed decodes the change-feed selectors changes_since and
-// wait_for share. Every optional field is presence-observed and rejects its
-// explicit empty form: an empty cursor read as the omitted field would
-// silently swap a resume for a bare head start (skipping the caller's
-// backlog), an empty table would silently widen the feed to the whole
-// namespace, and an out-of-range limit (outside 1–1000) must be
-// invalid_request, not defaulted or clamped — the input schemas both ops
-// declare say exactly this, and the server enforces what it declares. Nulls
-// are rejected up front by decode's sweep for the same reason.
 func parseChangesFeed(tableRaw, cursorRaw, limitRaw json.RawMessage) (table, cursor string, limit int, err error) {
 	if len(cursorRaw) > 0 {
 		var s string
@@ -330,17 +283,11 @@ func parseChangesFeed(tableRaw, cursorRaw, limitRaw json.RawMessage) (table, cur
 	return table, cursor, limit, nil
 }
 
-// runChangesSince is one change-feed page read: the exact body changes_since
-// serves and wait_for's poll loop re-runs (§9.2 layer 2 — wait_for's response
-// IS this page's semantics), shared so the two ops can never drift. Errors
-// come back already op-mapped.
 func runChangesSince(ctx context.Context, s *Server, ns, table, cursor string, limit int) ([]store.ChangeRecord, store.Cursor, error) {
 	records, next, err := s.eng.ChangesSince(ctx, ns, table, store.Cursor(cursor),
 		[16]byte{}, nil, store.Incarnation{}, store.Page{Limit: limit})
 	if err != nil {
-		// The teaching errors carry their own catch-up path, and stay
-		// generic on purpose: which feed or table a foreign cursor was
-		// minted for is not the caller's to learn here.
+
 		if errors.Is(err, store.ErrCursorExpired) {
 			return nil, "", badRequest("cursor is unknown or past the change-log retention window (-change-retention, default 168h); catch up by calling changes_since with no cursor to resume from the current head, or with cursor \"begin\" to replay retained history")
 		}
@@ -352,9 +299,6 @@ func runChangesSince(ctx context.Context, s *Server, ns, table, cursor string, l
 	return records, next, nil
 }
 
-// renderChanges projects change records as the public page both feed ops
-// return: identity only — cursor/table/row_id/kind. Owner and Lifetime are
-// internal authorization labels that never cross the seam (§9.3).
 func renderChanges(records []store.ChangeRecord, next store.Cursor) map[string]any {
 	changes := make([]map[string]any, len(records))
 	for i, r := range records {
@@ -431,10 +375,7 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
-			// A present prefix must name a path: an explicitly empty or
-			// whitespace-only value is a request error, not the omitted
-			// field — silently listing everything would mask the caller's
-			// own bug (the idempotency_key rule, same shape).
+
 			prefix := ""
 			if len(req.Prefix) > 0 {
 				var p string
@@ -650,11 +591,7 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
-			// Verbatim (§6.2): the op layer publishes EngineCapabilities as
-			// the engine reported it — pinned field names and types, no
-			// invention above the seam. The struct's json tags are the wire
-			// contract; ann_recall_bound has no omitempty, so exact engines
-			// serialize an explicit null.
+
 			return s.eng.Capabilities(), nil
 		},
 	},
@@ -731,12 +668,7 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
-			// A vectorized table on a server that cannot embed is unwritable:
-			// without this check the failure surfaces only at the first insert,
-			// after the schema has committed. Report the fields' own errors
-			// first (malformed vectorize is the caller's to fix, the provider
-			// is the operator's) — the same table-shape-before-provider
-			// ordering search_vector uses.
+
 			if s.emb.Identity() == "" {
 				for _, f := range req.Fields {
 					if !f.Vectorize {
@@ -851,9 +783,7 @@ var Ops = map[string]OpDef{
 					"description": fmt.Sprintf("Unique client-chosen key that makes the insert safe to retry (replays return the original ids; reusing a key for different records is rejected). Printable ASCII, 1-%d bytes — maxLength and the server both count bytes, so use ASCII tokens (uuid/ulid/hash) rather than multi-byte characters", store.MaxIdempotencyKeyLen),
 					"minLength":   1,
 					"maxLength":   store.MaxIdempotencyKeyLen,
-					// JSON Schema maxLength counts characters; the store counts
-					// bytes. Restricting to printable ASCII makes the two
-					// identical, so schema-valid keys are always accepted.
+
 					"pattern": fmt.Sprintf(`^[ -~]{1,%d}$`, store.MaxIdempotencyKeyLen),
 				},
 			},
@@ -881,8 +811,7 @@ var Ops = map[string]OpDef{
 				}
 				key = k
 			}
-			// The idempotency key rides WriteOpts — the seam's single insert
-			// path (2b folded InsertIdempotent into Insert).
+
 			ns := normNS(req.Namespace)
 			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
@@ -1029,10 +958,7 @@ var Ops = map[string]OpDef{
 					"description": "Read-only SQL (SELECT/WITH), at most " + strconv.Itoa(store.MaxQueryRunes) + " characters",
 					"minLength":   1,
 					"maxLength":   store.MaxQueryRunes,
-					// Anchored to a SELECT/WITH prefix only; semicolons are
-					// permitted so quoted literals like 'a;b' pass a strict
-					// MCP client. The store's quote-aware guard rejects
-					// genuine multi-statement input.
+
 					"pattern": `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b[\s\S]*$`,
 				},
 				"args": map[string]any{
@@ -1281,13 +1207,7 @@ var Ops = map[string]OpDef{
 			var vec []float32
 			switch {
 			case req.Text != "":
-				// Validate the table's shape before checking the provider: a missing
-				// vectorize field and a missing provider are different failures with
-				// different fixes (migrate the table vs operator DOLMEN_EMBED_* config),
-				// so each must be reported as itself — not whichever check runs first.
-				// The validation runs against the TableState snapshot (§6.2):
-				// vectorize field present, embed-space identity pinned — before
-				// the provider is called (2b folded ValidateVectorSearch here).
+
 				ns := normNS(req.Namespace)
 				if err := s.ensureNamespace(ctx, ns); err != nil {
 					return nil, wrapStoreErr(err)
@@ -1302,10 +1222,7 @@ var Ops = map[string]OpDef{
 				if s.emb.Identity() == "" {
 					return nil, badRequest("text queries are embedded server-side, but this server has no usable embedding provider (none is configured, or the configured one does not report its identity); an operator must set the server-side DOLMEN_EMBED_* environment variables: DOLMEN_EMBED_PROVIDER=local (in-process embeddings, no external service), or DOLMEN_EMBED_PROVIDER=openai plus DOLMEN_EMBED_API_KEY (or OPENAI_API_KEY), optionally DOLMEN_EMBED_BASE_URL and DOLMEN_EMBED_MODEL")
 				}
-				// Query-side embedding: EmbedQuery, not Embed, so models with
-				// an asymmetric retrieval contract (the e5 family) get their
-				// "query: " prefix instead of the "passage: " one stored rows
-				// get.
+
 				qv, err := s.emb.EmbedQuery(ctx, req.Text)
 				if err != nil {
 					return nil, wrapStoreErr(err)
@@ -1346,11 +1263,7 @@ var Ops = map[string]OpDef{
 			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "skipped_vectors": res.SkippedVectors}, nil
 		},
 	},
-	// TODO(5a/9d): the description teaches re-reading changed rows by id via
-	// query; switch the wording to read_rows when it lands (§9.3 pins it as
-	// the row_access-safe id-addressed path — query's namespace-wide read
-	// gate would strand a create-only subscriber's ids). Same note applies to
-	// the changes_since guidance in skill/dolmen.md.
+
 	"changes_since": {
 		Description: "Replay the namespace's durable change log: the changes committed after a cursor, " +
 			"in commit order, as one bounded page plus the next cursor — the polling-friendly half of dolmen's " +
@@ -1387,21 +1300,12 @@ var Ops = map[string]OpDef{
 		},
 		OutputSchema: changesPageOutSchema(),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
-			// decode, not decodeData: this request has no field where a null
-			// could be legitimate, and a null cursor coerced to the omitted
-			// form would silently swap a resume for a bare head start — the
-			// client would believe it replayed its backlog and skip it all.
+
 			var req changesSinceReq
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
-			// Every optional selector is presence-observed and rejects its
-			// explicit empty form (parseChangesFeed): an empty cursor read as
-			// the omitted field would silently swap a resume for a bare head
-			// start (skipping the caller's backlog), an empty table would
-			// silently widen the feed to the whole namespace, and both would
-			// contradict the input schema's minLength — the server enforces
-			// what it declares.
+
 			table, cursor, limit, err := parseChangesFeed(req.Table, req.Cursor, req.Limit)
 			if err != nil {
 				return nil, err
@@ -1459,10 +1363,7 @@ var Ops = map[string]OpDef{
 		},
 		OutputSchema: changesPageOutSchema(),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
-			// decode, not decodeData: no field here has a legitimate null —
-			// a null cursor or timeout coerced to the omitted form would
-			// change what the caller believes it replayed or how long it
-			// believes it waited.
+
 			var req waitForReq
 			if err := decode(body, &req); err != nil {
 				return nil, err
@@ -1480,70 +1381,17 @@ var Ops = map[string]OpDef{
 				timeoutMS = n
 			}
 			ns := normNS(req.Namespace)
-			// No ensureNamespace here, unlike the data ops: a wait never
-			// CREATES its namespace. Creating on a miss would resurrect a
-			// namespace a concurrent drop just deleted — an abandoned setup
-			// goroutine cannot be stopped inside the store's registry lock,
-			// and CreateNamespace does not recheck its context after
-			// acquiring it — and it would turn a typo'd namespace into a
-			// silent forever-empty wait. §6.2's engine rule (never create
-			// implicitly) serves the wait better: a missing namespace is
-			// not_found from the first read, and the caller creates first.
+
 			deadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
-			// The degraded-mode long-poll (§9.2 layer 2, §9.3): a bounded
-			// loop over the one interface surface — ChangesSince — so
-			// dispatch never asserts the concrete store and wait_for never
-			// depends on the notification capability (once Listen lands the
-			// engine may shorten latency internally; nothing above this loop
-			// can tell). Each iteration is a full page read — it resolves
-			// the cursor, mints fresh tokens, and prunes retention — so the
-			// empty page's next_cursor always names the boundary to resume
-			// from. The boundary is pinned by the first read: a bare start
-			// fixes the head ONCE (§9.3's fresh-subscriber semantics —
-			// re-deriving the head each tick would skip a commit that lands
-			// mid-wait), and the read that finds nothing is always followed
-			// by one more after the last tick — a commit landing between any
-			// two checks is caught by the next check or that final one, so a
-			// sub-tick timeout can never wrongly return empty.
-			// validated is earned by the first successful read: only then
-			// has the engine resolved the cursor, checked the feed (an
-			// expired or cross-feed cursor, a missing table), and pinned the
-			// boundary the response would carry. Before it, a starved read
-			// must error — an empty page over a feed that was never seen
-			// would mask those teaching errors into a quiet wait, and the
-			// client would believe itself current while missing everything.
-			// Every read — including a bare start's boundary-establishing
-			// one — runs under waitBudget(deadline): a namespace has ONE
-			// writable connection, and a concurrent write or migration
-			// holding it must not stretch the call past its bound (§9.2's
-			// bound is unconditional). A bare start that cannot establish
-			// its boundary within the budget errors like any other
-			// unvalidated read: no feed was seen, so no empty page may be
-			// promised; the caller retries and mints the head when the
-			// engine answers.
+
 			validated := false
 			for {
-				// The read runs synchronously under waitBudget(deadline):
-				// every part of it honors the context — the registry lock
-				// acquire (nsCtx), the connection-pool wait, the SQL — so
-				// the deadline genuinely bounds the call with nothing
-				// abandoned behind a lock. (The engine side of this
-				// contract is nsCtx's context-aware acquire: a draining
-				// drop_namespace can hold the registry lock past any
-				// budget, and a raced goroutine would only stack one
-				// blocked goroutine per retry.)
+
 				readCtx, cancel := context.WithTimeout(ctx, waitBudget(deadline))
 				records, next, err := runChangesSince(readCtx, s, ns, table, cursor, limit)
 				cancel()
 				if err != nil {
-					// A read that outlived its budget AFTER the feed was
-					// validated is the wait timing out while the engine was
-					// busy — the empty-page contract, not a failure (§9.2):
-					// the page carries the last pinned boundary, and the
-					// caller re-waits from it gap-free. Before any successful
-					// read the error stands — no feed was seen, so no empty
-					// page may be answered. A canceled parent context (the
-					// caller gone) is not a timeout and errors too.
+
 					if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil && validated {
 						return renderChanges(nil, store.Cursor(cursor)), nil
 					}
@@ -1553,16 +1401,13 @@ var Ops = map[string]OpDef{
 				if len(records) > 0 {
 					return renderChanges(records, next), nil
 				}
-				// Timeout — or timeout_ms 0's single conditional poll: the
-				// empty page carries the unchanged cursor and is NEVER an
-				// error (§9.2).
+
 				cursor = string(next)
 				remaining := time.Until(deadline)
 				if remaining <= 0 {
 					return renderChanges(records, next), nil
 				}
-				// Hold one tick, never past the deadline, and abandon the
-				// wait the moment the caller goes away.
+
 				tick := waitForPollTick
 				if remaining < tick {
 					tick = remaining
@@ -1996,14 +1841,6 @@ var Ops = map[string]OpDef{
 	},
 }
 
-// ensureNamespace creates ns when absent, treating already-exists as success.
-// The engine never creates a namespace implicitly (§6.2's global rule, literal
-// since 2b retired ns()'s create-on-open), so the op layer — the layer that
-// knows auth is off — makes v0.2.0's create-on-first-use explicit on the
-// dispatch paths that side effect used to cover: the wire contract is
-// byte-identical, now through an explicit call. TODO(7e): make the ensure
-// mode-dependent — under auth: on a missing namespace is not_found, not a
-// silently created tenant.
 func (s *Server) ensureNamespace(ctx context.Context, ns string) error {
 	if err := s.eng.CreateNamespace(ctx, ns, [16]byte{}); err != nil && !strings.Contains(err.Error(), "already exists") {
 		return err
@@ -2023,11 +1860,6 @@ type dropNamespaceReq struct {
 	Confirm   string `json:"confirm"`
 }
 
-// listNamespacesReq carries list_namespaces' one optional key: prefix, the
-// namespace path whose recursive subtree is listed (omitted — lists every
-// namespace). RawMessage so presence is observable: an explicitly empty
-// prefix is rejected, not read as the omitted field. Additive to v0.2.0's
-// empty request (§8.1).
 type listNamespacesReq struct {
 	Prefix json.RawMessage `json:"prefix"`
 }
@@ -2059,14 +1891,6 @@ type queryReq struct {
 	Limit     int    `json:"limit"`
 }
 
-// changesSinceReq carries changes_since's request. Every optional field is
-// RawMessage so presence is observable and its explicit empty form is
-// rejected rather than read as the omitted field: "" cursor would silently
-// swap a resume for a bare head start, "" table would silently widen the
-// feed to the namespace, and an out-of-range limit (outside 1–1000) must be
-// invalid_request, not defaulted or clamped. Nulls are rejected up front by
-// decode's sweep for the same reason — a null coerced to the omitted field
-// would change what the call means.
 type changesSinceReq struct {
 	Namespace string          `json:"namespace"`
 	Table     json.RawMessage `json:"table"`
@@ -2074,11 +1898,6 @@ type changesSinceReq struct {
 	Limit     json.RawMessage `json:"limit"`
 }
 
-// waitForReq carries wait_for's request: changes_since's selectors plus the
-// long-poll bound. The same presence rules hold (see changesSinceReq) — and
-// timeout_ms is presence-observed with the same care: a wrong or defaulted
-// timeout would change how long the caller believes the contract held the
-// wait, and an explicit null is a request error, never the omitted field.
 type waitForReq struct {
 	Namespace string          `json:"namespace"`
 	Table     json.RawMessage `json:"table"`

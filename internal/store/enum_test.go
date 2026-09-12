@@ -9,8 +9,6 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-// enumPtr builds a *[]string for Change.Enum literals in tests. The slice is
-// always non-nil so an empty list marshals as [] (the clearing form), not null.
 func enumPtr(vals ...string) *[]string {
 	v := make([]string, len(vals))
 	copy(v, vals)
@@ -48,20 +46,19 @@ func TestEnumCreateTableValidation(t *testing.T) {
 	}); err == nil || !strings.Contains(err.Error(), `field "title": enum lists duplicate value "a"`) {
 		t.Fatalf("duplicate enum values must be rejected, got %v", err)
 	}
-	// The schemas promise minLength-1 values; the server rejects the same.
+
 	if _, err := st.CreateTable(ctx, "test", "bad_empty_val", []schema.Field{
 		{Name: "title", Type: schema.String, Enum: []string{""}},
 	}); err == nil || !strings.Contains(err.Error(), `field "title": enum values must not be empty strings`) {
 		t.Fatalf("empty enum value must be rejected, got %v", err)
 	}
-	// A declared default must be an enum member; the rejection happens at
-	// create time, not at the first defaulted insert.
+
 	if _, err := st.CreateTable(ctx, "test", "bad_default", []schema.Field{
 		{Name: "severity", Type: schema.String, Enum: []string{"SEV0", "SEV1"}, Default: "SEV9"},
 	}); err == nil || !strings.Contains(err.Error(), `field "severity": value "SEV9" is not one of the allowed enum values (SEV0, SEV1)`) {
 		t.Fatalf("non-member default must be rejected at create, got %v", err)
 	}
-	// A member default is accepted and stored by inserts that omit the field.
+
 	if _, err := st.CreateTable(ctx, "test", "good_default", []schema.Field{
 		{Name: "title", Type: schema.String},
 		{Name: "severity", Type: schema.String, Enum: []string{"SEV0", "SEV1"}, Default: "SEV1"},
@@ -104,14 +101,12 @@ func TestEnumInsertRejectsNonMember(t *testing.T) {
 		}
 	}
 
-	// Values match exactly — no case folding either way.
 	if _, err := st.Insert(ctx, "test", "incidents", []map[string]any{
 		{"title": "lowercased", "severity": "sev1"},
 	}, testEmbed); err == nil || !strings.Contains(err.Error(), `"sev1"`) {
 		t.Fatalf("lowercased value must be rejected as written, got %v", err)
 	}
 
-	// A member value is stored exactly as written.
 	ids, err := st.Insert(ctx, "test", "incidents", []map[string]any{
 		{"title": "ok", "severity": "SEV2"},
 	}, testEmbed)
@@ -126,16 +121,12 @@ func TestEnumInsertRejectsNonMember(t *testing.T) {
 		t.Fatalf("member value must be stored as written, got %v", rows[0]["severity"])
 	}
 
-	// An explicit null clears an optional enum field; only required-ness (not
-	// the enum) governs null.
 	if _, err := st.Insert(ctx, "test", "incidents", []map[string]any{
 		{"title": "cleared", "severity": nil},
 	}, testEmbed); err != nil {
 		t.Fatalf("explicit null must pass the enum: %v", err)
 	}
 
-	// The schema round-trips through schema_json: reopen and the enum still
-	// rejects.
 	if err := st.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -163,7 +154,6 @@ func TestEnumUpdateAndUpsertPaths(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	// update set
 	if _, err := st.Update(ctx, "test", "incidents", "id = ?", []any{ids[0]}, map[string]any{"severity": "urgent"}, testEmbed); err == nil ||
 		!strings.Contains(err.Error(), `field "severity": value "urgent" is not one of the allowed enum values (SEV0, SEV1, SEV2, SEV3)`) {
 		t.Fatalf("update with non-member must be rejected with the pinned message, got %v", err)
@@ -172,18 +162,16 @@ func TestEnumUpdateAndUpsertPaths(t *testing.T) {
 		t.Fatalf("update with member: %v", err)
 	}
 
-	// upsert set (matched update path)
 	if _, err := st.Upsert(ctx, "test", "incidents", "id = ?", []any{ids[0]}, map[string]any{"severity": "zzz"}, testEmbed); err == nil ||
 		!strings.Contains(err.Error(), `"zzz"`) {
 		t.Fatalf("upsert set with non-member must be rejected, got %v", err)
 	}
-	// upsert unmatched insert path
+
 	if _, err := st.Upsert(ctx, "test", "incidents", "id = ?", []any{999999}, map[string]any{"title": "two", "severity": "nope"}, testEmbed); err == nil ||
 		!strings.Contains(err.Error(), `"nope"`) {
 		t.Fatalf("upsert insert path must reject non-members, got %v", err)
 	}
 
-	// upsert_by_key: update path (existing key) and insert path (new key)
 	if _, _, _, err := st.UpsertByKey(ctx, "test", "incidents", []string{"title"}, []map[string]any{
 		{"title": "one", "severity": "bad"},
 	}, testEmbed); err == nil || !strings.Contains(err.Error(), `"bad"`) {
@@ -194,7 +182,7 @@ func TestEnumUpdateAndUpsertPaths(t *testing.T) {
 	}, testEmbed); err == nil || !strings.Contains(err.Error(), `"bad2"`) {
 		t.Fatalf("upsert_by_key insert path must reject non-members, got %v", err)
 	}
-	// ...and accepts members on both paths.
+
 	if _, _, _, err := st.UpsertByKey(ctx, "test", "incidents", []string{"title"}, []map[string]any{
 		{"title": "one", "severity": "SEV3"},
 		{"title": "four", "severity": "SEV0"},
@@ -207,7 +195,7 @@ func TestEnumSetEnumLifecycle(t *testing.T) {
 	st := openStore(t)
 	mustNS(t, st, "test")
 	ctx := context.Background()
-	// No enum at first: free strings land, including typos.
+
 	if _, err := st.CreateTable(ctx, "test", "incidents", []schema.Field{
 		{Name: "title", Type: schema.String},
 		{Name: "severity", Type: schema.String},
@@ -222,22 +210,19 @@ func TestEnumSetEnumLifecycle(t *testing.T) {
 		t.Fatalf("insert free strings: %v", err)
 	}
 
-	// Constraining a field verifies every stored value: the typo blocks the
-	// change with its count.
 	_, err := st.Migrate(ctx, "test", "incidents", []schema.Change{
 		{Op: schema.OpSetEnum, Name: "severity", Enum: enumPtr("SEV0", "SEV1")},
 	}, testEmbed, 1)
 	if err == nil || !strings.Contains(err.Error(), `"opn" is stored by 1 rows`) {
 		t.Fatalf("constraining over a non-member value must be rejected with the count, got %v", err)
 	}
-	// dry_run runs the same verification.
+
 	if _, err := st.PlanMigration(ctx, "test", "incidents", []schema.Change{
 		{Op: schema.OpSetEnum, Name: "severity", Enum: enumPtr("SEV0", "SEV1")},
 	}, testEmbed, 1); err == nil || !strings.Contains(err.Error(), `"opn" is stored by 1 rows`) {
 		t.Fatalf("dry_run must run the same verification, got %v", err)
 	}
 
-	// Fix the typo, then the enum applies and bumps the version.
 	if _, err := st.Update(ctx, "test", "incidents", "title = 'c'", nil, map[string]any{"severity": "SEV2"}, testEmbed); err != nil {
 		t.Fatalf("fix typo: %v", err)
 	}
@@ -253,27 +238,25 @@ func TestEnumSetEnumLifecycle(t *testing.T) {
 	if f := sc.Field("severity"); f == nil || len(f.Enum) != 3 || f.Enum[2] != "SEV2" {
 		t.Fatalf("schema must carry the new enum, got %+v", sc.Field("severity"))
 	}
-	// Old values now outside the vocabulary are rejected.
+
 	if _, err := st.Insert(ctx, "test", "incidents", []map[string]any{
 		{"title": "d", "severity": "SEV3"},
 	}, testEmbed); err == nil || !strings.Contains(err.Error(), "(SEV0, SEV1, SEV2)") {
 		t.Fatalf("post-narrowing write must be rejected, got %v", err)
 	}
 
-	// Removing a value rows still use is rejected naming value and count.
 	if _, err := st.Migrate(ctx, "test", "incidents", []schema.Change{
 		{Op: schema.OpSetEnum, Name: "severity", Enum: enumPtr("SEV0")},
 	}, testEmbed, 2); err == nil || !strings.Contains(err.Error(), `"SEV1" is stored by 2 rows`) {
 		t.Fatalf("removing an in-use value must be rejected with the count, got %v", err)
 	}
-	// Adding a value is always safe.
+
 	if _, err := st.Migrate(ctx, "test", "incidents", []schema.Change{
 		{Op: schema.OpSetEnum, Name: "severity", Enum: enumPtr("SEV0", "SEV1", "SEV2", "SEV3")},
 	}, testEmbed, 2); err != nil {
 		t.Fatalf("adding a value must be safe: %v", err)
 	}
 
-	// An explicit empty array removes the constraint.
 	sc, err = st.Migrate(ctx, "test", "incidents", []schema.Change{
 		{Op: schema.OpSetEnum, Name: "severity", Enum: enumPtr()},
 	}, testEmbed, 3)
@@ -289,8 +272,6 @@ func TestEnumSetEnumLifecycle(t *testing.T) {
 		t.Fatalf("writes must be unconstrained after clearing: %v", err)
 	}
 
-	// History records the exact changes — including the empty clearing array —
-	// and they replay through migrate.
 	ms, err := st.ListMigrations(ctx, "test", "incidents")
 	if err != nil {
 		t.Fatalf("list migrations: %v", err)
@@ -321,13 +302,12 @@ func TestEnumSetEnumValidation(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	// set_enum on a non-string field.
 	if _, err := st.Migrate(ctx, "test", "incidents", []schema.Change{
 		{Op: schema.OpSetEnum, Name: "title", Enum: enumPtr("a")},
 	}, testEmbed, 1); err == nil || !strings.Contains(err.Error(), `field "title": enum is only allowed on string fields (this field has type text)`) {
 		t.Fatalf("set_enum on text field must be rejected, got %v", err)
 	}
-	// A new vocabulary must not have duplicates or empty values.
+
 	if _, err := st.Migrate(ctx, "test", "incidents", []schema.Change{
 		{Op: schema.OpSetEnum, Name: "severity", Enum: enumPtr("SEV0", "SEV0")},
 	}, testEmbed, 1); err == nil || !strings.Contains(err.Error(), `duplicate value "SEV0"`) {
@@ -338,13 +318,13 @@ func TestEnumSetEnumValidation(t *testing.T) {
 	}, testEmbed, 1); err == nil || !strings.Contains(err.Error(), `enum values must not be empty strings`) {
 		t.Fatalf("empty-string vocabulary must be rejected, got %v", err)
 	}
-	// A declared default must survive the new vocabulary.
+
 	if _, err := st.Migrate(ctx, "test", "incidents", []schema.Change{
 		{Op: schema.OpSetEnum, Name: "severity", Enum: enumPtr("SEV1", "SEV2")},
 	}, testEmbed, 1); err == nil || !strings.Contains(err.Error(), `the declared default "SEV0" is not in the new enum (SEV1, SEV2)`) {
 		t.Fatalf("dropping the default value must be rejected, got %v", err)
 	}
-	// enum on a non-set_enum op, and set_enum without one.
+
 	if _, err := st.Migrate(ctx, "test", "incidents", []schema.Change{
 		{Op: schema.OpDropField, Name: "severity", Enum: enumPtr("SEV1")},
 	}, testEmbed, 1); err == nil || !strings.Contains(err.Error(), "enum is only allowed on set_enum") {
@@ -355,7 +335,7 @@ func TestEnumSetEnumValidation(t *testing.T) {
 	}, testEmbed, 1); err == nil || !strings.Contains(err.Error(), "set_enum requires an explicit enum array") {
 		t.Fatalf("set_enum without an enum array must be rejected, got %v", err)
 	}
-	// set_enum is not destructive: expected_version is not required (0 passes).
+
 	if _, err := st.Migrate(ctx, "test", "incidents", []schema.Change{
 		{Op: schema.OpSetEnum, Name: "severity", Enum: enumPtr("SEV0", "SEV1", "SEV2")},
 	}, testEmbed, 0); err != nil {
@@ -376,7 +356,6 @@ func TestEnumAddFieldAndOrthogonality(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	// add_field can declare an enum; its backfill default must be a member.
 	if _, err := st.Migrate(ctx, "test", "notes", []schema.Change{
 		{Op: schema.OpAddField, Field: &schema.Field{Name: "status", Type: schema.String, Enum: []string{"open", "done"}}, Default: "closed"},
 	}, testEmbed, 1); err == nil || !strings.Contains(err.Error(), `field "status": value "closed" is not one of the allowed enum values (open, done)`) {
@@ -391,13 +370,12 @@ func TestEnumAddFieldAndOrthogonality(t *testing.T) {
 	if f := sc.Field("status"); f == nil || len(f.Enum) != 2 {
 		t.Fatalf("added field must carry its enum, got %+v", sc.Field("status"))
 	}
-	// Backfilled rows hold the default; later writes are constrained.
+
 	if _, err := st.Update(ctx, "test", "notes", "1=1", nil, map[string]any{"status": "finished"}, testEmbed); err == nil ||
 		!strings.Contains(err.Error(), `(open, done)`) {
 		t.Fatalf("update on added enum field must be constrained, got %v", err)
 	}
 
-	// enum is orthogonal to fulltext: a string field can carry both.
 	if _, err := st.Migrate(ctx, "test", "notes", []schema.Change{
 		{Op: schema.OpAddField, Field: &schema.Field{Name: "bucket", Type: schema.String, Enum: []string{"a", "b"}, Fulltext: true}},
 	}, testEmbed, 2); err != nil {

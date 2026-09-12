@@ -6,18 +6,8 @@ import (
 	"testing"
 )
 
-// Slice 2b: *Store satisfies Engine. The assertion is the slice's
-// compile-time proof, and it is the compile-drift guard: 2a pinned the
-// interface ("later slices add implementations, never parameters"), so any
-// re-signature of either side — exactly what the pin forbids — breaks this
-// file's compilation instead of surfacing as a mismatch elsewhere.
 var _ Engine = (*Store)(nil)
 
-// TestEngineMethodSetMatchesStore is the runtime twin of the assertion above:
-// every Engine method exists on *Store with the identical type, and a drift
-// is reported naming the method (a change that still satisfies the interface
-// through promotion, e.g. a method moved to an embedded type, trips this
-// reflection check).
 func TestEngineMethodSetMatchesStore(t *testing.T) {
 	eng := reflect.TypeOf((*Engine)(nil)).Elem()
 	concrete := reflect.TypeOf(&Store{})
@@ -30,8 +20,7 @@ func TestEngineMethodSetMatchesStore(t *testing.T) {
 		if !ok {
 			t.Fatalf("*Store is missing Engine method %s", m.Name)
 		}
-		// The concrete method's type carries *Store as its first (receiver)
-		// argument; the interface's does not — prepend it before comparing.
+
 		want := m.Type
 		args := make([]reflect.Type, 0, want.NumIn()+1)
 		args = append(args, concrete)
@@ -49,12 +38,6 @@ func TestEngineMethodSetMatchesStore(t *testing.T) {
 	}
 }
 
-// TestListenRequiresNotify pins the one precondition on Listen's now-real
-// body (6b retires the 2b stub): a nil notify callback is refused up
-// front — a session that could never deliver a record must not mint
-// cursors behind a caller that passed nothing to invoke.
-
-
 func TestListenRequiresNotify(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
@@ -63,12 +46,6 @@ func TestListenRequiresNotify(t *testing.T) {
 	}
 }
 
-// TestCapabilities pins the SQLite engine's 4d self-description (§6.2, §7):
-// vector search executes exact — ann_recall_bound explicitly null, never
-// omitted — and notifications/subscribe stay false until Listen's body lands
-// (6b flips both with the SSE route). The post-commit registry (notify.go)
-// is internal plumbing; the capability answers "is Listen implemented?",
-// and a stub must not be advertised as the real thing.
 func TestCapabilities(t *testing.T) {
 	st := openStore(t)
 	got := st.Capabilities()

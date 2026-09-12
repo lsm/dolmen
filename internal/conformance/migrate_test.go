@@ -5,8 +5,6 @@ import (
 	"time"
 )
 
-// Migration guards: expected_version preconditions, dry_run purity (no
-// writes, no provider calls), and the list_migrations audit trail.
 func TestMigrateExpectedVersionGuard(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("mig", "t", []map[string]any{
@@ -14,7 +12,6 @@ func TestMigrateExpectedVersionGuard(t *testing.T) {
 		{"name": "body", "type": "text"},
 	})
 
-	// Correct expected_version applies.
 	out := h.mustHTTP("migrate", map[string]any{
 		"namespace": "mig", "table": "t", "expected_version": 1,
 		"changes": []map[string]any{{"op": "set_fulltext", "name": "title", "value": true}},
@@ -23,7 +20,6 @@ func TestMigrateExpectedVersionGuard(t *testing.T) {
 		t.Fatalf("version after migrate: %v", table["version"])
 	}
 
-	// Stale expected_version conflicts with 409 and the documented shape.
 	status, body := h.httpCall("migrate", map[string]any{
 		"namespace": "mig", "table": "t", "expected_version": 1,
 		"changes": []map[string]any{{"op": "set_fulltext", "name": "body", "value": true}},
@@ -38,13 +34,11 @@ func TestMigrateExpectedVersionGuard(t *testing.T) {
 	wantMessage(t, "version conflict", errObj["message"].(string),
 		`version conflict on mig\.t: schema is at version 2, expected 1`)
 
-	// A current expected_version applies again.
 	h.mustHTTP("migrate", map[string]any{
 		"namespace": "mig", "table": "t", "expected_version": 2,
 		"changes": []map[string]any{{"op": "set_fulltext", "name": "body", "value": true}},
 	})
 
-	// Destructive ops require expected_version outright.
 	for _, changes := range [][]map[string]any{
 		{{"op": "rename_field", "from": "body", "to": "content"}},
 		{{"op": "drop_field", "name": "body"}},
@@ -59,7 +53,6 @@ func TestMigrateExpectedVersionGuard(t *testing.T) {
 			`destructive changes require expected_version`)
 	}
 
-	// A conflict on a destructive op is the 409, not the missing-version 400.
 	status, body = h.httpCall("migrate", map[string]any{
 		"namespace": "mig", "table": "t", "expected_version": 1,
 		"changes": []map[string]any{{"op": "drop_field", "name": "body"}},
@@ -69,8 +62,6 @@ func TestMigrateExpectedVersionGuard(t *testing.T) {
 	}
 }
 
-// dry_run purity: a preview makes no writes (schema version, rows, migration
-// history unchanged) and no embedding provider calls.
 func TestMigrateDryRunPurity(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("mig2", "t", []map[string]any{
@@ -92,8 +83,6 @@ func TestMigrateDryRunPurity(t *testing.T) {
 		},
 	})
 
-	// The plan shape: dry_run true, from/to versions, prospective table, and
-	// the reported row-level work.
 	if plan["dry_run"] != true {
 		t.Fatalf("plan must report dry_run true: %v", plan)
 	}
@@ -110,14 +99,11 @@ func TestMigrateDryRunPurity(t *testing.T) {
 	if int64val(t, "embed_rows", p["embed_rows"]) != 2 {
 		t.Fatalf("enabling vectorize would embed both rows: %v", p["embed_rows"])
 	}
-	// Enabling vectorize for the first time clears nothing — the column was
-	// empty. (Disabling an existing vectorize field is what clears.)
+
 	if p["clears_embeddings"] != false {
 		t.Fatalf("first-time set_vectorize must not claim cleared embeddings: %v", p["clears_embeddings"])
 	}
-	// The returned table is the prospective schema: version bumped AND the
-	// fields the changes would produce — the added status field and the
-	// vectorize annotation on body — not the current fields relabeled.
+
 	table := plan["table"].(map[string]any)
 	if int64val(t, "prospective version", table["version"]) != 2 {
 		t.Fatalf("prospective table must show the bumped version: %v", table["version"])
@@ -133,12 +119,11 @@ func TestMigrateDryRunPurity(t *testing.T) {
 	if prospective["body"]["vectorize"] != true {
 		t.Fatalf("prospective schema must show the vectorize annotation: %v", prospective["body"])
 	}
-	// The same prospective table also rides the plan object.
+
 	if _, ok := p["table"]; !ok {
 		t.Fatalf("plan must carry the prospective table: %v", p)
 	}
 
-	// Purity: nothing changed.
 	after := h.mustHTTP("describe_table", map[string]any{"namespace": "mig2", "table": "t"})
 	assertJSONEqual(t, "schema unchanged by dry_run", after, before)
 	histAfter := h.mustHTTP("list_migrations", map[string]any{"namespace": "mig2", "table": "t"})
@@ -146,7 +131,7 @@ func TestMigrateDryRunPurity(t *testing.T) {
 	if got := h.emb.callCount(); got != embedsBefore {
 		t.Fatalf("dry_run must not call the embedder: %d calls before, %d after", embedsBefore, got)
 	}
-	// The default was not backfilled.
+
 	rows := h.mustHTTP("query", map[string]any{
 		"namespace": "mig2", "sql": "SELECT * FROM t",
 	})["rows"].([]any)
@@ -155,8 +140,6 @@ func TestMigrateDryRunPurity(t *testing.T) {
 	}
 }
 
-// The audit trail: every applied migration is recorded newest first with its
-// exact changes; the newest to_version is the current schema version.
 func TestMigrateAuditTrail(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("mig3", "t", []map[string]any{
@@ -167,7 +150,6 @@ func TestMigrateAuditTrail(t *testing.T) {
 		"records": []map[string]any{{"title": "seed"}},
 	})
 
-	// Creating the table is version 1 and predates the log.
 	hist := h.mustHTTP("list_migrations", map[string]any{"namespace": "mig3", "table": "t"})
 	if len(hist["migrations"].([]any)) != 0 {
 		t.Fatalf("fresh table has no migration history: %v", hist)
@@ -190,7 +172,6 @@ func TestMigrateAuditTrail(t *testing.T) {
 		t.Fatalf("two migrations recorded, got %v", hist)
 	}
 
-	// Newest first.
 	newest := ms[0].(map[string]any)
 	if int64val(t, "newest from", newest["from_version"]) != 2 || int64val(t, "newest to", newest["to_version"]) != 3 {
 		t.Fatalf("newest entry: %v", newest)
@@ -198,7 +179,7 @@ func TestMigrateAuditTrail(t *testing.T) {
 	if at, ok := newest["at"].(string); !ok || !rfc3339ish(at) {
 		t.Fatalf("migration timestamp must be RFC3339: %v", newest["at"])
 	}
-	// The recorded change is the exact input, replayable through migrate.
+
 	change := newest["changes"].([]any)[0].(map[string]any)
 	if change["op"] != "rename_field" || change["from"] != "status" || change["to"] != "state" {
 		t.Fatalf("recorded rename: %v", change)
@@ -213,13 +194,11 @@ func TestMigrateAuditTrail(t *testing.T) {
 		t.Fatalf("recorded add_field must keep its default: %v", added)
 	}
 
-	// The add_field default was backfilled into the existing row.
 	row := h.mustHTTP("query", map[string]any{
 		"namespace": "mig3", "sql": "SELECT state FROM t",
 	})["rows"].([]any)[0].(map[string]any)
 	assertJSONEqual(t, "backfilled default", row["state"], "open")
 
-	// drop_table erases the history with the table.
 	h.mustHTTP("drop_table", map[string]any{"namespace": "mig3", "table": "t", "confirm": "t"})
 	h.seedTable("mig3", "t", []map[string]any{{"name": "title", "type": "string"}})
 	hist = h.mustHTTP("list_migrations", map[string]any{"namespace": "mig3", "table": "t"})
@@ -228,9 +207,6 @@ func TestMigrateAuditTrail(t *testing.T) {
 	}
 }
 
-// rfc3339ish reports whether s parses as RFC3339 with sub-second precision
-// allowed — the documented audit-trail timestamp form. A real parse, not a
-// punctuation check, so a regressed serializer fails the contract.
 func rfc3339ish(s string) bool {
 	_, err := time.Parse(time.RFC3339Nano, s)
 	return err == nil

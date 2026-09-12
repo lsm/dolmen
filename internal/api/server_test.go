@@ -73,10 +73,6 @@ func post(t *testing.T, base, op string, body any) (int, map[string]any) {
 	return res.StatusCode, decoded
 }
 
-// mustNS creates the namespace over HTTP, tolerating an existing one. The
-// store stopped creating namespaces on first use (slice 2b's §6.2 rule), so
-// test fixtures that relied on create-on-open create explicitly; the op
-// layer's compensating ensureNamespace lands with 2c.
 func mustNS(t *testing.T, base, ns string) {
 	t.Helper()
 	code, res := post(t, base, "create_namespace", map[string]any{"namespace": ns})
@@ -209,7 +205,6 @@ func TestCORSPreflight(t *testing.T) {
 		t.Fatalf("preflight for disallowed origin must be 403, got %d", res.StatusCode)
 	}
 
-	// Actual cross-origin POST must expose the echoed X-Request-Id.
 	raw, _ := json.Marshal(map[string]any{"namespace": "cors"})
 	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/v1/list_tables", bytes.NewReader(raw))
 	req.Header.Set("Content-Type", "application/json")
@@ -450,8 +445,7 @@ func TestCreateTableEnumConstraintDeclared(t *testing.T) {
 	if _, ok := enum["items"].(map[string]any)["minLength"]; !ok {
 		t.Fatalf("enum values must be non-empty strings, got %v", enum["items"])
 	}
-	// enum is string-only; an omitted type defaults to string, so the guard
-	// fires only when a type is present and is not string.
+
 	rule, ok := items["allOf"].([]any)[3].(map[string]any)
 	if !ok {
 		t.Fatalf("enum type guard must be the fourth conditional constraint, got %v", items["allOf"])
@@ -509,8 +503,7 @@ func TestCreateTableDefaultConstraintsDeclared(t *testing.T) {
 	if !ok || nowThenDefault["not"].(map[string]any)["const"] != schema.NowDefault {
 		t.Fatalf(`non-timestamp types must reject the "now()" default const, got %v`, nowRule["then"])
 	}
-	// add_field's backfill default lives on the change, so migrate's field
-	// object must not declare one.
+
 	migrateItems := Ops["migrate"].InputSchema["properties"].(map[string]any)["changes"].(map[string]any)["items"].(map[string]any)
 	changeProps := migrateItems["properties"].(map[string]any)
 	fieldProps := changeProps["field"].(map[string]any)["properties"].(map[string]any)
@@ -559,7 +552,7 @@ func TestNamespaceAndTablePatternsDeclared(t *testing.T) {
 			}
 			continue
 		}
-		// describe_table and other existing-table ops allow legacy keyword/reserved names.
+
 		if table["pattern"] != `^[a-z][a-z0-9_]{0,63}$` {
 			t.Fatalf("%s: table must carry the base identifier pattern for legacy names, got %v", op, table["pattern"])
 		}
@@ -570,11 +563,6 @@ func TestNamespaceAndTablePatternsDeclared(t *testing.T) {
 	}
 }
 
-// TestNormNSPerSegment pins §5.1's request normalization: v0.2.0's trim and
-// lowercase, applied per segment now that a namespace is a path. Whitespace
-// around the separators themselves is canonicalized away, not rejected —
-// validation follows normalization and still rejects genuinely empty
-// segments and other grammar violations.
 func TestNormNSPerSegment(t *testing.T) {
 	for in, want := range map[string]string{
 		"acme":          "acme",
@@ -583,8 +571,7 @@ func TestNormNSPerSegment(t *testing.T) {
 		" Acme / Prod ": "acme/prod",
 		"ACME/Prod/EU":  "acme/prod/eu",
 		"a_b-c9/X-Y":    "a_b-c9/x-y",
-		// A segment that trims to nothing stays an empty segment: normNS
-		// canonicalizes, validateNSPath rejects — here it just round-trips.
+
 		" / ": "/",
 		"":    "",
 	} {
@@ -594,11 +581,6 @@ func TestNormNSPerSegment(t *testing.T) {
 	}
 }
 
-// TestEveryNamespaceSurfaceCarriesPathPattern walks the whole op registry:
-// every namespace request property — and list_namespaces' prefix, the one
-// namespace-shaped input that is not a "namespace" property — must declare
-// the store's namespace-path pattern. The shared nsProp helper makes drift
-// unlikely; this pins that no op can grow an inline pattern of its own.
 func TestEveryNamespaceSurfaceCarriesPathPattern(t *testing.T) {
 	for name, def := range Ops {
 		props, _ := def.InputSchema["properties"].(map[string]any)
@@ -777,7 +759,6 @@ func TestCreateTableRejectsSQLKeywordFieldAndTable(t *testing.T) {
 	srv := newTestServer(t)
 	mustNS(t, srv.URL, "skills")
 
-	// Field named "order" is a SQLite/SQL keyword and must be rejected.
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "skills",
 		"table":     "findings",
@@ -794,7 +775,6 @@ func TestCreateTableRejectsSQLKeywordFieldAndTable(t *testing.T) {
 		t.Fatalf("expected error to suggest an alternative, got %v", res)
 	}
 
-	// Table named "select" is a SQLite/SQL keyword and must be rejected.
 	code, res = post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "skills",
 		"table":     "select",

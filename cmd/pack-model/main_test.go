@@ -29,7 +29,7 @@ func TestPackageDefaultModelLayout(t *testing.T) {
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Expect /repo/resolve/<rev>/<file>
+
 		if !strings.Contains(r.URL.Path, "/resolve/pinned/") {
 			http.NotFound(w, r)
 			return
@@ -84,7 +84,7 @@ func TestPackageDefaultModelLayout(t *testing.T) {
 			t.Fatalf("tar: %v", err)
 		}
 		found[hdr.Name] = hdr.Size
-		// Sanity: files should be non-empty.
+
 		if hdr.Size == 0 {
 			t.Fatalf("empty file in tar: %s", hdr.Name)
 		}
@@ -108,9 +108,6 @@ func TestPackageDefaultModelLayout(t *testing.T) {
 		t.Fatalf("unexpected tar entries: %v", found)
 	}
 
-	// The size manifest must record every model file with its exact size, so
-	// an interrupted extraction leaves either a missing file or one whose
-	// size disagrees with it.
 	var manifest map[string]int64
 	if err := json.Unmarshal(manifestRaw, &manifest); err != nil {
 		t.Fatalf("parse %s: %v", manifestName, err)
@@ -198,15 +195,11 @@ func TestPackageShardedWeights(t *testing.T) {
 		}
 		count++
 	}
-	if count != len(files)+1 { // model files plus the size manifest
+	if count != len(files)+1 {
 		t.Fatalf("expected %d tar entries, got %d", len(files)+1, count)
 	}
 }
 
-// TestPackageMultilingualE5Layout pins the file selection for the
-// multilingual-e5-small release asset: model_type bert with a SentencePiece
-// tokenizer (no vocab.txt), so the packer must probe sentencepiece.bpe.model
-// and skip the bert vocab entirely.
 func TestPackageMultilingualE5Layout(t *testing.T) {
 	files := map[string][]byte{
 		"config.json":             []byte(`{"model_type": "bert", "hidden_size": 384}`),
@@ -216,8 +209,6 @@ func TestPackageMultilingualE5Layout(t *testing.T) {
 		"modules.json":            []byte(`[]`),
 		"model.safetensors":       []byte("fake safetensors weights"),
 	}
-	// vocab.txt must NOT be fetched: absent from the fake hub, a bert-model
-	// fetch of it would fail the test.
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.URL.Path, "/resolve/pinned/") {
@@ -309,7 +300,7 @@ func TestFetchChecksXLinkedEtag(t *testing.T) {
 			w.Write(data)
 			return
 		}
-		// First redirect: simulate the HF 302 to the CDN.
+
 		w.Header().Set("X-Linked-Etag", `"`+want+`"`)
 		w.Header().Set("X-Linked-Size", fmt.Sprintf("%d", len(data)))
 		w.Header().Set("Location", base+"/cdn/model.safetensors")

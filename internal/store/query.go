@@ -24,13 +24,6 @@ func normalizeArg(v any) any {
 
 var queryStartRe = regexp.MustCompile(`(?i)\A\s*(select|with)\b`)
 
-// stripUnterminatedBlockComment removes a trailing /* block comment that is
-// not closed before end-of-input. SQLite allows unterminated block comments to
-// run to EOF, so appending pagination after one would place the LIMIT clause
-// inside the comment. We strip the comment (which does not affect query
-// semantics) and trim trailing whitespace so the pagination clause is appended
-// to a complete statement. Strings and identifiers are skipped so a literal
-// `/*` inside a quoted value is not treated as a comment.
 func stripUnterminatedBlockComment(s string) string {
 	var (
 		inString, inLineComment, inBlockComment bool
@@ -104,18 +97,14 @@ func stripUnterminatedBlockComment(s string) string {
 	return s
 }
 
-// hasStatementSeparator reports whether sql contains a semicolon outside
-// string literals, quoted identifiers, and comments — the only semicolons
-// SQLite treats as statement terminators. Quoted or commented ones are
-// content (WHERE title = 'a;b'), not a second statement.
 func hasStatementSeparator(sql string) bool {
-	var closing byte // 0 outside quotes; otherwise the mark closing the current quote
+	var closing byte
 	for i := 0; i < len(sql); i++ {
 		c := sql[i]
 		if closing != 0 {
 			if c == closing {
 				if c != ']' && i+1 < len(sql) && sql[i+1] == c {
-					i++ // doubled quote mark escapes itself
+					i++
 					continue
 				}
 				closing = 0
@@ -130,13 +119,13 @@ func hasStatementSeparator(sql string) bool {
 		case ';':
 			return true
 		case '-':
-			if i+1 < len(sql) && sql[i+1] == '-' { // line comment
+			if i+1 < len(sql) && sql[i+1] == '-' {
 				for i < len(sql) && sql[i] != '\n' {
 					i++
 				}
 			}
 		case '/':
-			if i+1 < len(sql) && sql[i+1] == '*' { // block comment
+			if i+1 < len(sql) && sql[i+1] == '*' {
 				i++
 				for i+1 < len(sql) && !(sql[i] == '*' && sql[i+1] == '/') {
 					i++
@@ -148,10 +137,6 @@ func hasStatementSeparator(sql string) bool {
 	return false
 }
 
-// Query executes a read-only SELECT/WITH statement (§6.2, §4.4). It takes no
-// scope: the API layer gates raw SQL by table-wide read. TODO(8c): nsGen is
-// ignored while auth is off — slice 8c verifies the namespace-lifetime guard
-// atomically with execution.
 func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsGen [16]byte, page Page) (QueryResult, error) {
 	trimmed := strings.TrimRight(strings.TrimSpace(query), ";")
 	trimmed = stripUnterminatedBlockComment(trimmed)
@@ -176,10 +161,7 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsG
 	if err != nil {
 		return QueryResult{}, err
 	}
-	// One read snapshot covers the registry read, validation, and execution:
-	// otherwise a concurrent DropTable of a grandfathered pragma_*/dbstat
-	// table could commit between them, and SQLite would resolve the now-
-	// absent physical table to its built-in eponymous virtual table.
+
 	tx, err := n.ro.BeginTx(ctx, nil)
 	if err != nil {
 		return QueryResult{}, err
@@ -195,31 +177,16 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsG
 	paginated := trimmed + "\nLIMIT ? OFFSET ?"
 	args = append(args, limit+1, offset)
 
-	// Most SELECT/WITH statements accept a trailing LIMIT on a fresh line.
-	// Put the LIMIT on its own line so a trailing `--` line comment does not
-	// swallow the placeholders. Statements that still reject LIMIT (e.g.
-	// VALUES, some compound statements) are transparently wrapped in a
-	// subquery on a retry, preserving the original labels and duplicate
-	// detection for plain SELECTs.
 	rows, err := tx.QueryContext(ctx, paginated, args...)
 	if err != nil {
-		// A missing table fails the wrapped form the same way, so only retry
-		// statements that reject a trailing LIMIT (VALUES, some compounds) in
-		// a subquery. When the retry also fails the statement is invalid on
-		// its own — a statement that merely rejects a trailing LIMIT succeeds
-		// via the retry — so re-classify against the caller's statement as
-		// written: it fails at prepare time, before any rows are read.
+
 		first := err
 		userArgs := args[:len(args)-2]
 		if !strings.Contains(first.Error(), "no such table") {
 			wrapped := "SELECT * FROM (\n" + trimmed + "\n)\nLIMIT ? OFFSET ?"
 			rows, err = tx.QueryContext(ctx, wrapped, args...)
 			if err == nil {
-				// SQLite disambiguates duplicate labels in a subquery (a, a:1),
-				// which would silently rename keys the unwrapped form rejects
-				// as duplicates. Validate the caller's own labels — prepare-time
-				// metadata, no rows are read — so the duplicate-label contract
-				// survives the retry.
+
 				if probe, perr := tx.QueryContext(ctx, trimmed, userArgs...); perr == nil {
 					if cols, cerr := probe.Columns(); cerr == nil {
 						seen := make(map[string]bool, len(cols))
@@ -306,7 +273,7 @@ scan:
 			break
 		}
 		if i == pageLimit {
-			// We fetched the (limit+1)th row, so there are more rows available.
+
 			hasMore = true
 			break
 		}

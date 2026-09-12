@@ -11,12 +11,6 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-// UpsertResult reports what an upsert did, in the shared shape every write op
-// returns: the ids of the rows the write touched — the matched rows, in id
-// order, on the update path, the new row on the insert path — how many rows
-// each branch affected, and the ChangeRange the transaction minted (§6.2,
-// §9.3): one record per matched row on the update path, one for the new row
-// on the insert path.
 type UpsertResult struct {
 	Ids      []int64
 	Inserted int64
@@ -24,13 +18,6 @@ type UpsertResult struct {
 	Changes  ChangeRange
 }
 
-// Update sets the given fields on every row matching the SQL WHERE expression,
-// validating values against the table schema and keeping search indexes
-// consistent: full-text rows are reindexed when an indexed field changes, and
-// rows are re-embedded when a vectorized field changes (§6.2). UpdateResult
-// carries the ChangeRange the transaction minted (§6.2, §9.3) — one record
-// per matched row. TODO(9d): scope and scopeIncarnation are ignored while
-// auth is off — a non-nil scope will filter which rows may be matched.
 func (s *Store) Update(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (UpdateResult, error) {
 	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, false)
 	if err != nil {
@@ -39,13 +26,6 @@ func (s *Store) Update(ctx context.Context, nsName, table, where string, args []
 	return UpdateResult{Updated: res.Updated, Changes: res.Changes}, nil
 }
 
-// Upsert updates every row matching the SQL WHERE expression; when no row
-// matches, set is inserted as a new record instead (and must then satisfy
-// required fields) (§6.2). The result carries the ChangeRange the
-// transaction minted (§6.2, §9.3): one record per matched row, or one insert
-// record on the insert path. TODO(9h): opts, scope, and scopeIncarnation are
-// ignored while auth is off — slice 9h stamps the insert branches with
-// opts.Owner and applies the scope.
 func (s *Store) Upsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
 	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, true)
 	if err != nil {
@@ -98,7 +78,6 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 		}
 	}
 
-	// Coerce in schema order so the generated SET clause is deterministic.
 	cols := make([]string, 0, len(set))
 	vals := make([]any, 0, len(set))
 	coerced := make(map[string]any, len(set))
@@ -136,8 +115,6 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 		}
 	}
 
-	// Materialize matching ids first so the filter is evaluated exactly once,
-	// against the pre-update state (mirrors Delete).
 	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS temp._dolmen_update_ids`); err != nil {
 		return UpsertResult{}, err
 	}
@@ -150,9 +127,6 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 		return UpsertResult{}, err
 	}
 
-	// An unmatched upsert inserts: validate the candidate record before
-	// embedding it, so a record that can never be inserted (missing required
-	// field) fails deterministically instead of paying for an embedding.
 	if allowInsert && matched == 0 {
 		for _, f := range sc.Fields {
 			v, present := set[f.Name]
@@ -165,9 +139,6 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 		}
 	}
 
-	// Embed only when there is work that needs the vector: matched rows to
-	// re-embed, or an upsert insert about to run. A zero-match update skips
-	// the embedding provider entirely.
 	persistMeta := false
 	var vec []float32
 	if vf != nil && (matched > 0 || allowInsert) {
@@ -216,9 +187,7 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 			}
 		}
 		result.Updated = updated
-		// Upsert reports the ids of the rows it touched; plain update reports
-		// only the count. The ids are read inside the transaction, so they are
-		// exactly the rows the UPDATE above affected.
+
 		if allowInsert {
 			ids, err := selectUpdateIDs(ctx, tx)
 			if err != nil {
@@ -226,14 +195,7 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 			}
 			result.Ids = ids
 		}
-		// One change record per matched row (§9.3), minted straight from the
-		// materialized id set — the rows the UPDATE affected, resolved against
-		// pre-update state. The mint is a single INSERT…SELECT out of the temp
-		// table: the matched ids never round-trip through the server, so a
-		// bulk update (no match-count cap) cannot grow memory with the table
-		// (§6.2) — only the scalar range crosses back. owner stays NULL until
-		// stamping lands (slice 9c); it will then be read per row inside the
-		// SELECT, since the label is the row's own, never the writer's.
+
 		changes, err := mintChangesFromTemp(ctx, tx, table, ChangeUpdate, `_dolmen_update_ids`)
 		if err != nil {
 			return UpsertResult{}, err
@@ -242,9 +204,7 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 	case allowInsert:
 		icols := cols
 		ivals := vals
-		// The unmatched upsert inserts, so fields omitted from set with
-		// declared defaults store them (on the update path unspecified fields
-		// keep their values instead).
+
 		for _, f := range sc.Fields {
 			if _, present := set[f.Name]; present {
 				continue
@@ -282,8 +242,7 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 		}
 		result.Inserted = 1
 		result.Ids = []int64{id}
-		// The insert branch mints its record like every row-insert path (§9.3);
-		// owner stays NULL until stamping lands (slice 9c).
+
 		if result.Changes, err = mintChanges(ctx, tx, table, ChangeInsert, []int64{id}, nil); err != nil {
 			return UpsertResult{}, err
 		}
@@ -309,14 +268,11 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 	if err := tx.Commit(); err != nil {
 		return UpsertResult{}, err
 	}
-	// §9.3: notification happens after commit — rows and log are durable
-	// before any waiter wakes (a zero range, matched nothing, wakes nobody).
+
 	s.notifyCommitted(nsName, table, result.Changes)
 	return result, nil
 }
 
-// selectUpdateIDs reads the matched-row ids from the materialized update set,
-// in id order, so an upsert can report exactly the rows it touched.
 func selectUpdateIDs(ctx context.Context, tx *sql.Tx) ([]int64, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM _dolmen_update_ids ORDER BY id`)
 	if err != nil {
@@ -368,8 +324,6 @@ func embedForUpdate(ctx context.Context, sc *schema.TableSchema, table, text str
 	return v, nil
 }
 
-// reindexFTSRows rebuilds full-text rows for the ids in _dolmen_update_ids
-// from the current base-table values.
 func reindexFTSRows(ctx context.Context, tx *sql.Tx, table string, fts []schema.Field) error {
 	cols := make([]string, len(fts))
 	sel := make([]string, len(fts))
@@ -385,7 +339,6 @@ func reindexFTSRows(ctx context.Context, tx *sql.Tx, table string, fts []schema.
 	return err
 }
 
-// insertFTSRow adds the full-text row for a freshly inserted record.
 func insertFTSRow(ctx context.Context, tx *sql.Tx, table string, fts []schema.Field, id int64, rec map[string]any) error {
 	fcols := make([]string, len(fts))
 	fvals := make([]any, len(fts)+1)

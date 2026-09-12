@@ -6,17 +6,8 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-// legacyStore carries the pre-Engine arities of *Store's methods (plan slice
-// 2b). Go cannot overload methods, so *Store cannot keep both the old shapes
-// and the Engine signatures under one name: the old arities moved here, each
-// delegating to the Engine-shaped method with zero-value guards (auth is off
-// everywhere until Lane B). Store tests wrap their constructor once —
-// legacy(openStore(t)) — and their direct call sites keep compiling
-// unchanged. The adapter is deleted in 7e/9i, when the api layer supplies
-// real values and the remaining callers move to the interface.
 type legacyStore struct{ *Store }
 
-// legacy wraps a *Store in the old-arity adapter.
 func legacy(s *Store) legacyStore { return legacyStore{s} }
 
 func (l legacyStore) ListNamespaces() ([]string, error) {
@@ -64,10 +55,6 @@ func (l legacyStore) Insert(ctx context.Context, nsName, table string, records [
 	return res.Ids, err
 }
 
-// InsertIdempotent keeps the concrete-only retry-safe insert the Engine folds
-// into Insert (WriteOpts.IdempotencyKey), including its empty-key rejection:
-// at the Engine seam an empty key is a plain insert, so the guard lives here
-// with the old arity's callers.
 func (l legacyStore) InsertIdempotent(ctx context.Context, nsName, table string, records []map[string]any, emb Embedder, key string) (ids []int64, replayed bool, err error) {
 	if key == "" {
 		return nil, false, invalidf("idempotency key must not be empty")
@@ -135,8 +122,6 @@ func (l legacyStore) SearchVector(ctx context.Context, nsName, table, column str
 	return VectorSearchResult{Rows: res.Rows, Truncated: res.Truncated, Skipped: res.SkippedVectors}, nil
 }
 
-// ValidateVectorSearch keeps the concrete-only pre-embed validation the
-// Engine folds into the TableState snapshot (ValidateVectorQuery).
 func (l legacyStore) ValidateVectorSearch(ctx context.Context, nsName, table, column string, textQuery bool, embedIdentity string) error {
 	sc, _, err := l.Store.TableState(ctx, nsName, table, nil)
 	if err != nil {

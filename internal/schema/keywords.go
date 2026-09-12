@@ -1,8 +1,5 @@
 package schema
 
-// sqlKeywords is the set of SQLite reserved words that cannot be used as
-// unquoted identifiers in SQL. Names in this set are rejected for both field
-// and table names even though they match the identifier syntax.
 var sqlKeywords = map[string]bool{
 	"abort":             true,
 	"action":            true,

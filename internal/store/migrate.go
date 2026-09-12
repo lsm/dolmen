@@ -13,9 +13,6 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-// VersionConflictError reports a migrate whose expected_version precondition
-// failed: the table's schema already moved past the version the caller planned
-// against. Re-describe the table and re-plan on the current version.
 type VersionConflictError struct {
 	Namespace       string
 	Table           string
@@ -27,9 +24,6 @@ func (e *VersionConflictError) Error() string {
 	return fmt.Sprintf("version conflict on %s.%s: schema is at version %d, expected %d; re-describe the table and re-plan against the current version", e.Namespace, e.Table, e.CurrentVersion, e.ExpectedVersion)
 }
 
-// MigrationPlan is the prospective outcome of a migration: the schema the table
-// would have, which changes destroy data or contracts, and the row-level work
-// (default backfills, index rebuilds, embedding calls) applying it would do.
 type MigrationPlan struct {
 	DryRun              bool                `json:"dry_run"`
 	FromVersion         int                 `json:"from_version"`
@@ -42,20 +36,10 @@ type MigrationPlan struct {
 	FulltextReindexRows int64               `json:"fulltext_reindex_rows"`
 	ClearsEmbeddings    bool                `json:"clears_embeddings"`
 	EmbedRows           int64               `json:"embed_rows"`
-	// Expected is the table incarnation this plan was planned against,
-	// captured by the same planning snapshot (spec §6.2's plan→apply
-	// binding): surfaced in the dry-run response as the opaque
-	// expected_incarnation token and rejected on mismatch by a later apply.
-	// A caller that instead re-read TableState to learn the incarnation
-	// races a migration or drop/recreate and binds the plan to the wrong
-	// lifetime. Excluded from JSON — the raw lifetime key never serializes;
-	// the public token is derived above the seam.
+
 	Expected Incarnation `json:"-"`
 }
 
-// querier is the read surface both planning contexts offer: a write
-// transaction when applying (so plans are built on the locked, version-checked
-// schema) and the read-only connection when dry-running.
 type querier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
@@ -63,9 +47,6 @@ type querier interface {
 
 type migrationStep func(ctx context.Context, tx *sql.Tx) error
 
-// migrationWork carries everything Migrate executes plus everything
-// PlanMigration reports; both are produced by the same builder so dry-run and
-// apply can never disagree about what a change list does.
 type migrationWork struct {
 	cur              *schema.TableSchema
 	steps            []migrationStep
@@ -74,11 +55,6 @@ type migrationWork struct {
 	vectorizeChanged bool
 }
 
-// Migrate applies a change list, verifying expected (the full Incarnation the
-// plan was made against) inside the apply exactly as PlanMigration does
-// (§6.2). TODO(8c): only expected.Version is verified while auth is off —
-// slice 8c checks the whole Incarnation (the version alone cannot
-// distinguish a same-named successor recreated at version 1, §4.3).
 func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expected Incarnation) (*schema.TableSchema, error) {
 	expectedVersion := int(expected.Version)
 	if len(changes) == 0 {
@@ -127,9 +103,7 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 	if w.vectorizeChanged {
 		newVec := vectorizeField(cur.Fields)
 		if newVec != nil {
-			// The planner may have already re-baselined cur's embedding
-			// metadata to the prospective provider, so compare against the
-			// schema as it was before the migration.
+
 			modelChanged := old.EmbedSpace != "" && emb.Identity != "" && old.EmbedSpace != emb.Identity
 			if old.VectorizeField() != nil || modelChanged {
 				if _, err := tx.ExecContext(ctx,
@@ -230,17 +204,6 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 	return cur, nil
 }
 
-// PlanMigration validates a change list and reports what applying it would do,
-// with zero side effects: it runs on the read-only connection, writes nothing,
-// and never calls the embedding provider. The schema load, the version check,
-// and every planning query share one read transaction, so a concurrent
-// migration can never yield mixed estimates — the dry-run either sees the
-// version it expects or fails the precondition. It applies the same
-// expected_version precondition as Migrate so a stale plan fails the preview
-// instead of the apply. TODO(8c): only expected.Version is verified while
-// auth is off — slice 8c checks the whole Incarnation, and scope/
-// scopeIncarnation then bound the plan's DISCLOSURE counts to the caller's
-// visible set (validation stays table-wide).
 func (s *Store) PlanMigration(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expected Incarnation, scope *RowScope, scopeIncarnation Incarnation) (*MigrationPlan, error) {
 	expectedVersion := int(expected.Version)
 	if len(changes) == 0 {
@@ -285,10 +248,6 @@ func checkExpectedVersion(nsName, table string, expected int, old *schema.TableS
 	return nil
 }
 
-// planMigration builds the prospective schema, the executable DDL steps, and
-// the plan summary for a change list. It is the single validation path shared
-// by dry-run (querier = read-only connection) and apply (querier = the write
-// transaction, after the version check).
 func planMigration(ctx context.Context, db querier, nsName, table string, old *schema.TableSchema, changes []schema.Change, emb Embedder, expectedVersion int) (*migrationWork, error) {
 	fields := make([]schema.Field, len(old.Fields))
 	copy(fields, old.Fields)
@@ -314,17 +273,11 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 		return nil, invalidf("field %q not found", name)
 	}
 
-	// physicalName maps each field's prospective name to the column the
-	// database has right now ("" for fields this migration adds): estimate
-	// queries run before any DDL step, so they must address current columns,
-	// not names this migration creates. Tracking field identity rather than
-	// chaining renames keeps vacated-name reuse and rename cycles resolvable.
 	physicalName := map[string]string{}
 	for _, f := range old.Fields {
 		physicalName[f.Name] = f.Name
 	}
-	// defaults holds add_field backfill values keyed by the added field's
-	// current prospective name (moved on rename).
+
 	defaults := map[string]any{}
 
 	for i, ch := range changes {
@@ -348,9 +301,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			if ch.Field == nil {
 				return nil, invalidf("add_field needs a field object")
 			}
-			// A field-level default would ride into the persisted schema and
-			// change insert behavior — add_field's default is a one-time
-			// backfill and lives on the change itself.
+
 			if ch.Field.Default != nil {
 				return nil, invalidf("changes[%d]: add_field takes default on the change (\"default\": ...), not inside field; a field default would silently change future inserts", i)
 			}
@@ -366,14 +317,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			if len(cur.Fields) >= MaxFieldsPerTable {
 				return nil, invalidf("migration would leave %d fields (max %d; ALTERs run in request order, so adds cannot exceed the cap even when later drops reduce the final count)", len(cur.Fields)+1, MaxFieldsPerTable)
 			}
-			// A required column needs its default in the DDL: SQLite refuses
-			// ADD COLUMN ... NOT NULL without one, and dolmen inserts must
-			// supply required fields anyway, so that default never reaches
-			// future rows through the API. An optional column must NOT carry
-			// a persistent default — later inserts omitting the field would
-			// silently receive the backfill (and desync FTS/embedding
-			// indexing, which reads the request record) — so it backfills
-			// with a one-time UPDATE instead.
+
 			defSQL := ""
 			var defVal any
 			if ch.Default != nil {
@@ -381,16 +325,11 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				if err != nil {
 					return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 				}
-				// Non-finite floats survive coercion but cannot render as a
-				// SQL literal (dry-run would pass and apply would fail) and
-				// have no honest backfill meaning — reject them outright.
+
 				if fv, isFloat := cv.(float64); isFloat && (math.IsNaN(fv) || math.IsInf(fv, 0)) {
 					return nil, invalidf("field %q: default must be a finite number", f.Name)
 				}
-				// A NUL byte cannot appear in SQL text, so a required
-				// default carrying one would fail the ALTER at apply time
-				// after a clean dry-run — and a NUL stored via the optional
-				// backfill path would confuse FTS. Reject both outright.
+
 				if sv, isStr := cv.(string); isStr && strings.ContainsRune(sv, 0) {
 					return nil, invalidf("field %q: default must not contain NUL bytes", f.Name)
 				}
@@ -416,9 +355,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			}
 			cur.Fields = append(cur.Fields, f)
 			physicalName[f.Name] = ""
-			// Store the coerced value: estimates must judge non-emptiness the
-			// way apply will (a numeric default on a text field arrives from
-			// the API as json.Number and coerces to a non-empty string).
+
 			defaults[f.Name] = defVal
 			if f.Fulltext {
 				rebuildFTSNeeded = true
@@ -538,10 +475,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				f.Fulltext = *ch.Value
 				rebuildFTSNeeded = true
 			} else if *ch.Value {
-				// Re-asserting fulltext=true on an already-indexed field
-				// rebuilds the index under the engine's current tokenizer —
-				// the reindex path for tables created before stemming became
-				// the default.
+
 				rebuildFTSNeeded = true
 			}
 			plan.Operations = append(plan.Operations, fmt.Sprintf("set_fulltext %s = %t", ch.Name, *ch.Value))
@@ -573,7 +507,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			if f.Type != schema.String {
 				return nil, invalidf("field %q: enum is only allowed on string fields (this field has type %s)", f.Name, f.Type)
 			}
-			// Copy so the prospective schema never aliases the caller's slice.
+
 			vals := make([]string, len(*ch.Enum))
 			copy(vals, *ch.Enum)
 			if len(vals) > 0 {
@@ -581,16 +515,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 					return nil, invalidf("%s", err)
 				}
 			}
-			// Every value already stored in the column must survive the new
-			// vocabulary: a row holding a non-member value would be stranded —
-			// readable, but no write could ever re-store it, and the schema
-			// would claim a vocabulary the data does not honor. This covers
-			// narrowing an existing enum and constraining a previously free
-			// field alike (for that field every stored value is checked, not
-			// just ones the old enum listed). Clearing (an empty list) removes
-			// the vocabulary, so every stored value is valid by definition and
-			// nothing is verified. Count under the physical column name; a
-			// field added earlier in this change list has no rows yet.
+
 			if len(vals) > 0 {
 				if phys := physicalName[f.Name]; phys != "" {
 					rows, err := db.QueryContext(ctx,
@@ -627,23 +552,19 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 					}
 				}
 			}
-			// A declared default must remain a member: inserts and unmatched
-			// upserts re-coerce it through the enum on every use.
+
 			if f.Default != nil {
 				if s, ok := storedString(f.Default); ok && !schema.EnumAllows(vals, s) {
 					return nil, invalidf("field %q: the declared default %q is not in the new enum (%s); keep the value, or pick a default among the allowed values", f.Name, s, strings.Join(vals, ", "))
 				}
 			}
-			// Same for a backfill default an earlier add_field in this change
-			// list carries: its UPDATE runs at apply time, after this check.
+
 			if dv := defaults[f.Name]; dv != nil {
 				if s, ok := dv.(string); ok && !schema.EnumAllows(vals, s) {
 					return nil, invalidf("field %q: the add_field backfill default %q is not in the new enum (%s); keep the value, or pick a backfill among the allowed values", f.Name, s, strings.Join(vals, ", "))
 				}
 			}
-			// An empty list removes the constraint: store it as nil so the
-			// prospective field list validates (a field-level empty enum is a
-			// declaration error; only set_enum may clear).
+
 			if len(vals) > 0 {
 				f.Enum = vals
 			} else {
@@ -668,11 +589,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 
 	plan.RebuildFulltext = rebuildFTSNeeded
 	if rebuildFTSNeeded {
-		// Mirror repopulateFTS's predicate: only rows with at least one
-		// non-NULL indexed field are inserted into the rebuilt index. Columns
-		// added by this migration do not exist yet, so an added fulltext
-		// field contributes exactly its default's presence; existing fields
-		// count under their physical (possibly pre-rename) names.
+
 		var preds []string
 		for _, f := range ftsFields(cur.Fields) {
 			if phys := physicalName[f.Name]; phys == "" {
@@ -705,13 +622,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			}
 			modelChanged := cur.EmbedSpace != "" && emb.Identity != "" && cur.EmbedSpace != emb.Identity
 			plan.ClearsEmbeddings = old.VectorizeField() != nil || modelChanged
-			// Every enable path re-embeds all rows carrying non-empty text:
-			// either there is no _embedding column yet, or the column is being
-			// cleared (field or model switch) — so count the texts, not the
-			// currently-unembedded rows. Count under the physical column the
-			// database has now: a field added by this migration has no stored
-			// texts yet (only its non-empty default embeds), and a renamed one
-			// still lives under its pre-migration name until the DDL steps run.
+
 			if phys := physicalName[newVec.Name]; phys == "" {
 				if s, ok := defaults[newVec.Name].(string); ok && s != "" {
 					n, err := countRows(ctx, db, table)
@@ -728,11 +639,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				}
 				plan.EmbedRows = n
 			}
-			// Prospective embedding metadata: apply re-baselines to the
-			// active provider and re-derives the dimension during backfill,
-			// so the previewed schema must not keep the old space (and a
-			// dimension the provider may not reproduce). EmbedDim 0 (omitted)
-			// marks the dimension as to-be-derived.
+
 			cur.EmbedSpace = emb.Identity
 			cur.EmbedDim = 0
 		} else if old.VectorizeField() != nil {
@@ -752,9 +659,6 @@ func countRows(ctx context.Context, db querier, table string) (int64, error) {
 	return n, err
 }
 
-// sqlLiteral renders a coerced default as a constant SQL literal for
-// ALTER TABLE ... DEFAULT — the one place dolmen interpolates values into DDL,
-// so every branch must stay a literal SQLite accepts (never an expression).
 func sqlLiteral(v any) (string, error) {
 	switch x := v.(type) {
 	case string:
@@ -770,7 +674,6 @@ func sqlLiteral(v any) (string, error) {
 	}
 }
 
-// describeValue renders a default for the plan's operation list.
 func describeValue(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {

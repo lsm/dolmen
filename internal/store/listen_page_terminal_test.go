@@ -8,13 +8,6 @@ import (
 	"time"
 )
 
-// The strengthened replay terminal contract: Next never reports a dead
-// session as a clean done — every death returns its cause as the replay
-// error, so clean done means provably alive. The two pins below are the
-// in-page deaths the handler cannot see coming; the drop's
-// evict-before-end ordering is pinned at the conformance layer, where the
-// teaching framing is the observable.
-
 func TestListenReplayRevocationReturnsCauseAsError(t *testing.T) {
 	st := openChangeStore(t)
 	insertNotes(t, st, 2)
@@ -91,13 +84,6 @@ func TestListenReplayLossReturnsTeachingAsError(t *testing.T) {
 	}
 }
 
-// The symptom-yields-to-verdict park rule, pinned at the session level: a
-// page's incidental error parks first (evict closed the pools behind a
-// drop whose endListenSessions has not run), and the drop's later
-// authoritative end must displace it — the subscriber is taught the
-// lifetime end, never the database noise. And once the flush has taken a
-// cause (the slot is empty), a later end parks nothing: no pump remains
-// to fire a fresh park.
 func TestListenSymptomParkYieldsToVerdict(t *testing.T) {
 	sess := testSession(nil)
 
@@ -108,8 +94,7 @@ func TestListenSymptomParkYieldsToVerdict(t *testing.T) {
 	if got := sess.endCause(); !errors.Is(got, symptom) {
 		t.Fatalf("parked cause = %v, want the symptom", got)
 	}
-	// The pump's cancellation symptom — induced by the page symptom's own
-	// ctxCancel — is a report, not a verdict: it must not displace.
+
 	sess.endYielding(context.Canceled)
 	if got := sess.endCause(); !errors.Is(got, symptom) {
 		t.Fatalf("parked cause after the pump's cancellation report = %v, want the page's symptom still", got)
@@ -126,7 +111,7 @@ func TestListenSymptomParkYieldsToVerdict(t *testing.T) {
 		t.Fatal("the first end did not arm the session")
 	}
 	fired.mu.Lock()
-	fired.pendingClose = nil // the flush took it: the cause has fired
+	fired.pendingClose = nil
 	fired.mu.Unlock()
 	if fired.endParked(ErrListenLifetimeEnded) {
 		t.Fatal("a second end reported itself first")
@@ -140,14 +125,6 @@ func TestListenSymptomParkYieldsToVerdict(t *testing.T) {
 	}
 }
 
-// The deferral barrier, pinned with the store mutex held the way a drop
-// holds it: a yielded symptom must not fire while the mutex is held, and
-// once the authoritative verdict parks under that same mutex, the fire
-// after release carries the verdict — never the incidental read error.
-// A per-call cancellation is the caller's, not the session's: a Next whose
-// own deadline expires mid-page returns the context error and leaves the
-// session — and its standing cursor — retryable, exactly as a cancellation
-// before the flight permit always did.
 func TestListenCanceledPageLeavesSessionRetryable(t *testing.T) {
 	st := openChangeStore(t)
 	insertNotes(t, st, 2)

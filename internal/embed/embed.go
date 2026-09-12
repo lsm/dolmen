@@ -19,35 +19,16 @@ import (
 type Provider interface {
 	Name() string
 	Identity() string
-	// ModelName reports the configured model name — status surface for
-	// describe_server; empty when the provider has no model to name.
+
 	ModelName() string
-	// Embed embeds stored-row text (the passage side of the retrieval
-	// contract): inserts, updates, and migrate backfills. Symmetric models
-	// embed the text as-is; e5-family models get their passage prefix
-	// prepended here.
+
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
-	// EmbedQuery embeds search text (the query side). Asymmetric models —
-	// the e5 family — need their query prefix here; callers cannot supply
-	// it themselves, because dolmen embeds exactly the text the request
-	// carried and a hand-prefixed query would double the prefix.
+
 	EmbedQuery(ctx context.Context, text string) ([]float32, error)
 }
 
-// e5NameRe matches the e5 embedding-model family by the model's own name
-// segment: e5-large-v2, multilingual-e5-small, intfloat--multilingual-e5-small.
-// The e5 retrieval contract is asymmetric — the models were trained with
-// "query: " / "passage: " role prefixes — and dolmen embeds stored rows and
-// search text through different calls, so the prefixes are added server-side
-// rather than silently degrading ranking for every caller.
 var e5NameRe = regexp.MustCompile(`(?i)(?:^|[-_])e5(?:[-_]|$)`)
 
-// e5Prefixes reports the role prefixes the basic e5 contract requires for
-// model, or empty strings when the model does not follow it. Only the
-// model's own name segment decides (filepath.Base) — an org name or parent
-// directory containing "e5" must not — and instruct-tuned variants
-// (e5-mistral-7b-instruct, multilingual-e5-large-instruct) are excluded:
-// they take task instructions, not these prefixes.
 func e5Prefixes(model string) (query, passage string) {
 	name := filepath.Base(model)
 	if !e5NameRe.MatchString(name) || strings.Contains(strings.ToLower(name), "instruct") {
@@ -56,11 +37,6 @@ func e5Prefixes(model string) (query, passage string) {
 	return "query: ", "passage: "
 }
 
-// identityMarker returns "#e5" when dolmen applies the e5 prefix contract to
-// model, "" otherwise. The marker versions the embedding identity: tables
-// embedded before prefixes were applied carry the unmarked identity, so an
-// upgraded server rejects them (and re-embeds via migrate) instead of
-// silently mixing prefixed and raw vectors in one space.
 func identityMarker(model string) string {
 	if query, _ := e5Prefixes(model); query != "" {
 		return "#e5"
@@ -68,24 +44,14 @@ func identityMarker(model string) string {
 	return ""
 }
 
-// escapeIdentityReference percent-escapes "%" and "#" — the marker's lead
-// byte — so an escaped model reference can never contain the bytes dolmen
-// appends after it.
 func escapeIdentityReference(model string) string {
 	return strings.NewReplacer("%", "%25", "#", "%23").Replace(model)
 }
 
-// identityLegacy reports whether the model renders in the identity namespace
-// dolmen has always used — the raw reference, byte for byte. Every other
-// identity (one carrying the e5 marker, or needing the escaped form) is
-// emitted in a versioned namespace instead, so it can never equal an
-// identity an earlier build recorded for a different model.
 func identityLegacy(model string) bool {
 	return identityMarker(model) == "" && !strings.ContainsAny(model, "%#")
 }
 
-// prefixAll returns texts with prefix prepended to each; the empty prefix
-// returns texts unchanged.
 func prefixAll(prefix string, texts []string) []string {
 	if prefix == "" {
 		return texts
@@ -128,25 +94,6 @@ func (o *OpenAI) Name() string { return "openai" }
 
 func (o *OpenAI) ModelName() string { return o.Model }
 
-// Identity pins tables to this endpoint and model. The base URL is stripped
-// of HTTP userinfo (user:pass@): credentials authenticate requests to the
-// endpoint, they do not name the embedding space, and the identity flows into
-// describe_server responses and stored embed_space values, which must never
-// expose secrets. A base URL that does not parse keeps its raw (trailing-slash
-// trimmed) form — it cannot complete an HTTP request either, so it carries no
-// working credentials to leak.
-// Identity pins tables to this endpoint and model. Model names are
-// endpoint-defined and unrestricted, so anything beyond the legacy
-// raw-verbatim form — the e5 marker, or percent-escaping for a model
-// containing "%" or "#" — versions the provider tag itself: "openai/v2|".
-// Legacy identities always begin "openai|", and the two tags differ at byte
-// 7, so no endpoint-defined model name can bridge the formats. The base URL
-// is stripped of HTTP userinfo (user:pass@): credentials authenticate
-// requests to the endpoint, they do not name the embedding space, and the
-// identity flows into describe_server responses and stored embed_space
-// values, which must never expose secrets. A base URL that does not parse
-// keeps its raw (trailing-slash trimmed) form — it cannot complete an HTTP
-// request either, so it carries no working credentials to leak.
 func (o *OpenAI) Identity() string {
 	provider, model := o.Name(), o.Model
 	if !identityLegacy(model) {
@@ -162,14 +109,11 @@ func (o *OpenAI) Identity() string {
 	return provider + "|" + u.String() + "|" + model
 }
 
-// Embed embeds stored-row text, prepending the e5 passage prefix for
-// e5-family models — endpoints embed exactly the input they are sent.
 func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	_, passage := e5Prefixes(o.Model)
 	return o.embed(ctx, texts, passage)
 }
 
-// EmbedQuery embeds one search text, prepending the e5 query prefix.
 func (o *OpenAI) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
 	query, _ := e5Prefixes(o.Model)
 	vecs, err := o.embed(ctx, []string{text}, query)
@@ -280,10 +224,6 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
-// NewProvider returns an embedding provider for the given configuration.
-// Valid providers are "none" (or ""), "local" (in-process inference via
-// rembed; dataDir is where the model cache lands), and "openai" (any
-// OpenAI-compatible endpoint).
 func NewProvider(provider, baseURL, model, apiKey, dataDir string) (Provider, error) {
 	switch strings.ToLower(provider) {
 	case "", "none":

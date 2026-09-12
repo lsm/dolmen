@@ -1,5 +1,3 @@
-// Package skill bundles dolmen's layered skill markdown, renders it at serve
-// time, and produces the JSON manifest agents use to pick the right layer.
 package skill
 
 import (
@@ -21,10 +19,8 @@ var dolmenRaw []byte
 //go:embed dolmen-admin.md
 var adminRaw []byte
 
-// DefaultNamespaceHint is rendered when DOLMEN_SKILL_NAMESPACE_HINT is not set.
 const DefaultNamespaceHint = "Everything lives in a namespace (an isolated database). Pick one namespace per project or user and stay in it. If this server is shared, the team that runs it will tell you which namespace to use; for a personal server, `default` is fine."
 
-// Context is the data passed to every skill template at serve time.
 type Context struct {
 	BaseURL       string
 	MCPURL        string
@@ -32,7 +28,6 @@ type Context struct {
 	NamespaceHint string
 }
 
-// ErrNotFound is returned when a skill name is not known.
 var ErrNotFound = errors.New("unknown skill")
 
 type skill struct {
@@ -70,7 +65,6 @@ func init() {
 	}
 }
 
-// Manifest is the JSON discovery document at GET /skills.
 type Manifest struct {
 	Name        string          `json:"name"`
 	Version     string          `json:"version"`
@@ -81,7 +75,6 @@ type Manifest struct {
 	LayerPicker string          `json:"layer_picker"`
 }
 
-// ManifestSkill describes one skill in the manifest.
 type ManifestSkill struct {
 	Name     string `json:"name"`
 	Audience string `json:"audience"`
@@ -97,7 +90,6 @@ var (
 		`Pick the right skill for this client from {{.BaseURL}}/skills, then connect to {{.MCPURL}} and begin by listing and describing tables. {{.NamespaceHint}}`))
 )
 
-// Render returns the rendered markdown for the named skill using ctx.
 func Render(name string, ctx Context) ([]byte, error) {
 	s, ok := byName[name]
 	if !ok {
@@ -110,7 +102,6 @@ func Render(name string, ctx Context) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// ManifestJSON returns the JSON manifest for the current deployment.
 func ManifestJSON(ctx Context) ([]byte, error) {
 	picker, err := renderString(layerPickerTpl, ctx)
 	if err != nil {
@@ -135,19 +126,15 @@ func ManifestJSON(ctx Context) ([]byte, error) {
 	return json.MarshalIndent(m, "", "  ")
 }
 
-// MCPInstructions returns the short usage summary for the MCP initialize result.
 func MCPInstructions(ctx Context) string {
 	s, err := renderString(mcpInstructionsTpl, ctx)
 	if err != nil {
-		// The static instructions template should never fail; fall back to a plain string.
+
 		return fmt.Sprintf("Pick the right skill from %s/skills, then connect to %s.", ctx.BaseURL, ctx.MCPURL)
 	}
 	return s
 }
 
-// ETag returns a strong ETag for a named resource. It is derived from the
-// version and the rendered body so that configuration changes (base URL,
-// namespace hint) as well as version upgrades invalidate cached responses.
 func ETag(name, version string, body []byte) string {
 	h := sha256.New()
 	_, _ = h.Write([]byte(version + "\n" + name + "\n"))
@@ -155,14 +142,6 @@ func ETag(name, version string, body []byte) string {
 	return "\"" + hex.EncodeToString(h.Sum(nil)[:16]) + "\""
 }
 
-// BaseURLFor resolves the public base URL from the configured value, falling
-// back to the request's scheme and host. It trims any trailing slash.
-//
-// Forwarded headers are parsed as comma-separated hop chains; the first
-// (client-facing) value is used so the generated public URL reflects what the
-// outermost trusted proxy saw, rather than a concatenation of every hop. When
-// X-Forwarded-Prefix is present, the first value is canonicalized (leading
-// slash, no trailing slash) and appended to the auto-detected base.
 func BaseURLFor(r *http.Request, configured string) string {
 	if configured != "" {
 		return strings.TrimRight(configured, "/")
@@ -185,8 +164,6 @@ func BaseURLFor(r *http.Request, configured string) string {
 	return scheme + "://" + host + prefix
 }
 
-// forwardedFirst returns the first non-empty, trimmed value in a
-// comma-separated header chain (e.g. X-Forwarded-Proto or X-Forwarded-Host).
 func forwardedFirst(v string) string {
 	for _, p := range strings.Split(v, ",") {
 		p = strings.TrimSpace(p)
@@ -197,10 +174,6 @@ func forwardedFirst(v string) string {
 	return v
 }
 
-// ContextFor builds a full render context from a request and configuration.
-// The server prefix (e.g. "/dolmen") is appended to the public base URL unless
-// the base already ends with it, which prevents double-prefixing when both
-// X-Forwarded-Prefix and -prefix are in use.
 func ContextFor(r *http.Request, configuredBaseURL, namespaceHint, version, prefix string) Context {
 	if namespaceHint == "" {
 		namespaceHint = DefaultNamespaceHint
@@ -214,8 +187,6 @@ func ContextFor(r *http.Request, configuredBaseURL, namespaceHint, version, pref
 	}
 }
 
-// publicBase appends a server prefix to an already-resolved base URL.
-// It returns the base unchanged when the prefix is empty or is already present.
 func publicBase(base, prefix string) string {
 	prefix = NormalizePrefix(prefix)
 	if prefix == "" || strings.HasSuffix(base, prefix) {
@@ -224,9 +195,6 @@ func publicBase(base, prefix string) string {
 	return base + prefix
 }
 
-// NormalizePrefix canonicalizes a URL path prefix: it trims whitespace and
-// trailing slashes, adds a leading slash when one is missing, and returns an
-// empty string for empty or root prefixes.
 func NormalizePrefix(v string) string {
 	v = strings.TrimSpace(v)
 	v = strings.TrimRight(v, "/")

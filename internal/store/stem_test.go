@@ -7,10 +7,6 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-// Porter stemming is the default for fulltext indexes (#147): plural and
-// inflected query terms match their indexed singulars, phrases and prefix
-// terms operate on stems, and the derivation boundary porter does not cross
-// (suffix-stripper, not lemmatizer) stays as documented.
 func TestFulltextStemming(t *testing.T) {
 	st := openStore(t)
 	mustNS(t, st, "test")
@@ -28,7 +24,6 @@ func TestFulltextStemming(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	// The issue's core trap: inflected queries match the indexed singular.
 	for _, q := range []string{"payment", "payments", "refund", "refunds", "refunded"} {
 		rows, _, err := st.SearchFulltext(ctx, "test", "stems", q, 0, 10, false, "", nil)
 		if err != nil {
@@ -39,7 +34,6 @@ func TestFulltextStemming(t *testing.T) {
 		}
 	}
 
-	// Phrases match on stems: each word is stemmed before adjacency matching.
 	rows, _, err := st.SearchFulltext(ctx, "test", "stems", `"payments were"`, 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("phrase on stems: %v", err)
@@ -48,9 +42,6 @@ func TestFulltextStemming(t *testing.T) {
 		t.Fatalf(`stemmed phrase "payments were" must match: %v`, rows)
 	}
 
-	// Prefix queries operate on stems: pay* stems to pai*, so it does not
-	// reach payment (whose stem is payment) — and neither does the inflected
-	// "paying" (stem pai), because porter strips suffixes, not derivations.
 	for _, q := range []string{"pay*", "paying"} {
 		rows, _, err := st.SearchFulltext(ctx, "test", "stems", q, 0, 10, false, "", nil)
 		if err != nil {
@@ -68,9 +59,6 @@ func TestFulltextStemming(t *testing.T) {
 		t.Fatalf("prefix over payment's own stem must match: %v", rows)
 	}
 
-	// Stemming is English-focused: an uninterrupted CJK run is untouched by
-	// the stemmer and still indexed as one opaque token (#106) — whole-run
-	// terms match, interior runs silently do not.
 	rows, _, err = st.SearchFulltext(ctx, "test", "stems", "付款网关已退款", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("search CJK run: %v", err)
@@ -87,9 +75,6 @@ func TestFulltextStemming(t *testing.T) {
 	}
 }
 
-// Tables indexed before stemming became the default keep their exact-token
-// index and keep working; re-asserting set_fulltext = true rebuilds the index
-// under the engine's current tokenizer (#147).
 func TestFulltextReindexViaSetFulltext(t *testing.T) {
 	st := openStore(t)
 	mustNS(t, st, "test")
@@ -105,7 +90,6 @@ func TestFulltextReindexViaSetFulltext(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	// Rewind the shadow index to the pre-stemming exact-token format.
 	n, err := st.ns("test")
 	if err != nil {
 		t.Fatalf("ns: %v", err)
@@ -121,7 +105,6 @@ func TestFulltextReindexViaSetFulltext(t *testing.T) {
 		t.Fatalf("populate legacy fts: %v", err)
 	}
 
-	// The old index keeps working — exact tokens still match...
 	rows, _, err := st.SearchFulltext(ctx, "test", "legacy", "payment", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("exact-token search: %v", err)
@@ -129,7 +112,7 @@ func TestFulltextReindexViaSetFulltext(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("exact-token index must keep matching: %v", rows)
 	}
-	// ...while inflected queries miss, as before the change.
+
 	rows, _, err = st.SearchFulltext(ctx, "test", "legacy", "payments", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("inflected search on old index: %v", err)
@@ -138,7 +121,6 @@ func TestFulltextReindexViaSetFulltext(t *testing.T) {
 		t.Fatalf("exact-token index must not stem: %v", rows)
 	}
 
-	// The dry-run plan reports the rebuild without applying it.
 	plan, err := st.PlanMigration(ctx, "test", "legacy", []schema.Change{
 		{Op: schema.OpSetFulltext, Name: "body", Value: boolPtr(true)},
 	}, testEmbed, 1)
@@ -156,7 +138,6 @@ func TestFulltextReindexViaSetFulltext(t *testing.T) {
 		t.Fatalf("dry-run must leave the old index in place: %v", rows)
 	}
 
-	// Re-asserting fulltext = true rebuilds under the current tokenizer.
 	sc, err := st.Migrate(ctx, "test", "legacy", []schema.Change{
 		{Op: schema.OpSetFulltext, Name: "body", Value: boolPtr(true)},
 	}, testEmbed, 1)

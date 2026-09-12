@@ -27,7 +27,6 @@ func mustCreateUsers(t *testing.T, base string) {
 	}
 }
 
-// dataKeys returns the response data's exact key set.
 func dataKeys(t *testing.T, res map[string]any) map[string]bool {
 	t.Helper()
 	data, ok := res["data"].(map[string]any)
@@ -49,16 +48,11 @@ func keySet(keys ...string) map[string]bool {
 	return set
 }
 
-// TestWriteOpsShareResponseShape pins the write contract: insert, upsert, and
-// upsert_by_key answer in one shape — ids of the touched rows plus inserted
-// everywhere; updated wherever a write can update; replayed only where
-// idempotency applies (an idempotent insert), and never required.
 func TestWriteOpsShareResponseShape(t *testing.T) {
 	srv := newTestServer(t)
 	mustNS(t, srv.URL, "app")
 	mustCreateUsers(t, srv.URL)
 
-	// plain insert: no update branch exists and without a key nothing replays
 	code, res := post(t, srv.URL, "insert", map[string]any{
 		"namespace": "app", "table": "users",
 		"records": []map[string]any{{"email": "a@example.com", "plan_name": "free"}},
@@ -70,7 +64,6 @@ func TestWriteOpsShareResponseShape(t *testing.T) {
 		t.Fatalf("plain insert keys = %v, want exactly {ids, inserted}", got)
 	}
 
-	// idempotent insert: replayed joins the shape on first call and replay alike
 	body := map[string]any{
 		"namespace": "app", "table": "users",
 		"records":         []map[string]any{{"email": "b@example.com", "plan_name": "pro"}},
@@ -95,7 +88,6 @@ func TestWriteOpsShareResponseShape(t *testing.T) {
 		t.Fatalf("replay must insert nothing and say so, got %v", data)
 	}
 
-	// upsert insert path: the shared three keys, ids carrying the new row
 	code, res = post(t, srv.URL, "upsert", map[string]any{
 		"namespace": "app", "table": "users",
 		"filter": "email = 'c@example.com'",
@@ -113,7 +105,6 @@ func TestWriteOpsShareResponseShape(t *testing.T) {
 	}
 	rowID := data["ids"].([]any)[0].(float64)
 
-	// upsert update path: same keys, ids carrying the updated row
 	code, res = post(t, srv.URL, "upsert", map[string]any{
 		"namespace": "app", "table": "users",
 		"filter": "email = 'c@example.com'",
@@ -133,7 +124,6 @@ func TestWriteOpsShareResponseShape(t *testing.T) {
 		t.Fatalf("upsert update path must report the updated row's id %v, got %v", rowID, got)
 	}
 
-	// upsert_by_key: the same three keys, ids still naming touched rows
 	code, res = post(t, srv.URL, "upsert_by_key", map[string]any{
 		"namespace": "app", "table": "users", "on": []string{"email"},
 		"records": []map[string]any{{"email": "c@example.com", "logins": 3}},
@@ -252,15 +242,12 @@ func TestInsertIdempotencyOverHTTP(t *testing.T) {
 		t.Fatalf("retried insert must not duplicate rows: %v", rows)
 	}
 
-	// Same key, different records: rejected rather than replayed.
 	body["records"] = []map[string]any{{"email": "c@example.com", "plan_name": "pro"}}
 	code, res = post(t, srv.URL, "insert", body)
 	if code != 400 {
 		t.Fatalf("key reuse for a different payload must 400, got %d %v", code, res)
 	}
 
-	// An explicitly empty or null key must not silently fall back to a plain
-	// (non-idempotent) insert — a retried call would then duplicate rows.
 	for _, badKey := range []any{"", nil} {
 		code, res = post(t, srv.URL, "insert", map[string]any{
 			"namespace": "app", "table": "users",
@@ -308,8 +295,7 @@ func TestInsertIdempotencyKeySchemaParity(t *testing.T) {
 	if code != 400 {
 		t.Fatalf("over-length key must 400, got %d %v", code, res)
 	}
-	// 100 emoji are 400 bytes: schema chars and store bytes must agree, so a
-	// multi-byte key is rejected up front with the byte-count reason.
+
 	code, res = post(t, srv.URL, "insert", map[string]any{
 		"namespace": "app", "table": "users",
 		"records":         []map[string]any{{"email": "emoji@example.com"}},

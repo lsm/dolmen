@@ -11,8 +11,6 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-// jsonNum builds the json.Number the API decoders produce, so tests exercise
-// defaults exactly as they arrive over the wire.
 func jsonNum(s string) json.Number {
 	return json.Number(s)
 }
@@ -50,8 +48,7 @@ func TestCreateTableDefaultValidation(t *testing.T) {
 			want:   "not allowed on vectorize",
 		},
 		{
-			// Numbers coerce to strings exactly like insert values do, so the
-			// mismatch case needs a non-scalar default.
+
 			name:   "default_must_match_type",
 			fields: []schema.Field{{Name: "a", Type: schema.String, Default: true}},
 			want:   "expected a string",
@@ -98,7 +95,6 @@ func TestInsertAppliesDeclaredDefaults(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	// Describe reflects the declared defaults.
 	sc, _, err := st.DescribeTable(ctx, "test", "things")
 	if err != nil {
 		t.Fatalf("describe: %v", err)
@@ -110,8 +106,6 @@ func TestInsertAppliesDeclaredDefaults(t *testing.T) {
 		t.Fatalf("describe: score default = %T(%v), want json.Number 10", got, got)
 	}
 
-	// Omitted fields store their defaults; provided fields win; explicit null
-	// stays null.
 	ids, err := st.Insert(ctx, "test", "things", []map[string]any{
 		{"title": "named", "status": "new"},
 		{"score": jsonNum("42")},
@@ -190,14 +184,13 @@ func TestNumericDefaultExactAcrossSchemaReload(t *testing.T) {
 	st := openStore(t)
 	mustNS(t, st, "test")
 	ctx := context.Background()
-	big := "9007199254740993" // 2^53+1: inexact through float64
+	big := "9007199254740993"
 	if _, err := st.CreateTable(ctx, "test", "exact", []schema.Field{
 		{Name: "n", Type: schema.Number, Default: jsonNum(big)},
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	// A fresh Store forces the schema_json round-trip; describe must report
-	// the default exactly as declared, not the nearest float64.
+
 	raw2, err := Open(st.dir)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
@@ -235,8 +228,6 @@ func TestUpsertPathsApplyDefaults(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	// upsert_by_key insert branch stores the default, and its update branch
-	// keeps the stored value instead of re-defaulting.
 	for i := 0; i < 2; i++ {
 		if _, _, _, err := st.UpsertByKey(ctx, "test", "items", []string{"sku"},
 			[]map[string]any{{"sku": "a"}}, Embedder{}); err != nil {
@@ -252,9 +243,6 @@ func TestUpsertPathsApplyDefaults(t *testing.T) {
 		t.Fatalf("upsert_by_key re-run: %v", err)
 	}
 
-	// Filter upsert: the insert branch stores the default; matched updates
-	// never re-default. An explicit null clears, and a later insert still
-	// defaults.
 	if _, err := st.Upsert(ctx, "test", "items", "sku = 'b'",
 		nil, map[string]any{"sku": "b"}, Embedder{}); err != nil {
 		t.Fatalf("upsert insert: %v", err)
@@ -281,9 +269,9 @@ func TestUpsertPathsApplyDefaults(t *testing.T) {
 		sku string
 		qty any
 	}{
-		{"a", nil}, // update set null; later matched upserts keep it
+		{"a", nil},
 		{"b", int64(9)},
-		{"c", int64(1)}, // insert after the null still defaults
+		{"c", int64(1)},
 	}
 	if len(rows) != len(want) {
 		t.Fatalf("got %d rows, want %d: %v", len(rows), len(want), rows)
@@ -366,10 +354,7 @@ func TestInsertRetryAfterDefaultedFieldDropped(t *testing.T) {
 	emb := Embedder{Identity: "fake-space", Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
 		calls++
 		if calls == 1 {
-			// Land a schema change inside attempt 1's embedding pause: the
-			// in-transaction version check then forces a retry, which must see
-			// the caller's records exactly as sent — not fields defaulted by
-			// the stale attempt (the dropped field would fail as unknown).
+
 			if _, err := st.Migrate(ctx, "test", "docs", []schema.Change{
 				{Op: schema.OpDropField, Name: "tag"},
 			}, Embedder{}, 1); err != nil {

@@ -7,13 +7,6 @@ import (
 	"time"
 )
 
-// Slice 5c conformance (§8.3 item 7's changes_since subset, §9.2–9.3):
-// event-on-write, cursor replay after reopen, gap-free sequences, reconnect
-// catch-up, and the beyond-retention teaching error — all through the
-// transports, in auth:off like every other realtime case (§9.4).
-
-// changesOf projects a changes_since data object as comparable
-// (table, row_id, kind) triples.
 func changesOf(t *testing.T, data map[string]any) [][3]any {
 	t.Helper()
 	raw, ok := data["changes"].([]any)
@@ -39,7 +32,6 @@ func changesOf(t *testing.T, data map[string]any) [][3]any {
 	return out
 }
 
-// nextCursorOf extracts a page's next_cursor, which must always be present.
 func nextCursorOf(t *testing.T, data map[string]any) string {
 	t.Helper()
 	next, ok := data["next_cursor"].(string)
@@ -49,7 +41,6 @@ func nextCursorOf(t *testing.T, data map[string]any) string {
 	return next
 }
 
-// changesEqual compares two projected pages.
 func changesEqual(a, b [][3]any) bool {
 	if len(a) != len(b) {
 		return false
@@ -62,15 +53,10 @@ func changesEqual(a, b [][3]any) bool {
 	return true
 }
 
-// TestChangesSinceEventOnWrite: a commit produces its change records in
-// commit order — insert, update, and delete each leave exactly their own
-// event, addressed by table and row id (§9.2 layer 1, §9.3).
 func TestChangesSinceEventOnWrite(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
 
-	// A fresh subscriber starts at the head: the backlog stays unreplayed and
-	// the response carries the head cursor (§9.3's bare-start semantics).
 	data := h.mustHTTP("changes_since", map[string]any{"namespace": "rt"})
 	if got := changesOf(t, data); len(got) != 0 {
 		t.Fatalf("bare start replayed %d changes, want 0 (head start, no backlog)", len(got))
@@ -102,9 +88,6 @@ func TestChangesSinceEventOnWrite(t *testing.T) {
 	}
 }
 
-// TestChangesSinceCursorReplayAfterReopen: a restarted client replays from
-// its stored cursor, gap-free — the token mapping is durable in the namespace
-// db, so a restart never invalidates it (§9.3).
 func TestChangesSinceCursorReplayAfterReopen(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
@@ -120,7 +103,6 @@ func TestChangesSinceCursorReplayAfterReopen(t *testing.T) {
 
 	h.reopen()
 
-	// A write that lands while the client is down.
 	h.mustHTTP("insert", map[string]any{
 		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "d"}},
 	})
@@ -131,10 +113,6 @@ func TestChangesSinceCursorReplayAfterReopen(t *testing.T) {
 	}
 }
 
-// TestChangesSinceGapFreeSequences: paging a backlog with limit below the
-// log delivers every change exactly once in commit order — the concatenation
-// of pages is the whole feed with no gaps and no duplicates, across tables
-// (§9.3).
 func TestChangesSinceGapFreeSequences(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
@@ -173,16 +151,13 @@ func TestChangesSinceGapFreeSequences(t *testing.T) {
 	}
 }
 
-// TestChangesSinceReconnectCatchUp: a disconnected client's resume equals
-// exactly the events it missed — the reconnect recipe is changes_since
-// catch-up (§8.3 item 7).
 func TestChangesSinceReconnectCatchUp(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
 	h.mustHTTP("insert", map[string]any{
 		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "seen"}},
 	})
-	// The "connection" ends holding this cursor.
+
 	cursor := nextCursorOf(t, h.mustHTTP("changes_since", map[string]any{"namespace": "rt"}))
 
 	missed := h.mustHTTP("insert", map[string]any{
@@ -200,7 +175,6 @@ func TestChangesSinceReconnectCatchUp(t *testing.T) {
 		t.Fatalf("reconnect catch-up = %v, want exactly the missed events %v", got, want)
 	}
 
-	// And the stream continues from there without repeating them.
 	after := h.mustHTTP("insert", map[string]any{
 		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "after"}},
 	})
@@ -211,9 +185,6 @@ func TestChangesSinceReconnectCatchUp(t *testing.T) {
 	}
 }
 
-// TestChangesSinceBeyondRetentionTeachingError: a cursor past the retention
-// window is an explicit teaching error naming the catch-up path — never a
-// silent empty page or short read (§9.3) — on both transports.
 func TestChangesSinceBeyondRetentionTeachingError(t *testing.T) {
 	h := newHarnessRetention(t, 40*time.Millisecond)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
@@ -238,23 +209,19 @@ func TestChangesSinceBeyondRetentionTeachingError(t *testing.T) {
 		}
 	}
 
-	// The MCP surface carries the same teaching error, not a protocol one.
 	res := h.mcpCall("changes_since", map[string]any{"namespace": "rt", "cursor": cursor})
 	if !res.isError() {
 		t.Fatalf("MCP beyond-retention call must be a tool error, got %+v", res)
 	}
 
-	// The catch-up paths work: a fresh head start and a begin replay.
 	h.mustHTTP("changes_since", map[string]any{"namespace": "rt"})
 	h.mustHTTP("changes_since", map[string]any{"namespace": "rt", "cursor": "begin"})
 }
 
-// TestChangesSinceLimitContract: limit default 100, max 1000 — an explicit
-// value outside 1–1000 (or of the wrong type) is invalid_request (§9.3).
 func TestChangesSinceLimitContract(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
-	// 105 changes: the default page is 100, not everything.
+
 	for i := 0; i < 26; i++ {
 		h.mustHTTP("insert", map[string]any{
 			"namespace": "rt", "table": "notes",
@@ -283,16 +250,10 @@ func TestChangesSinceLimitContract(t *testing.T) {
 		}
 	}
 
-	// 1000 — the ceiling — is valid and clamps nothing below it.
 	if status, _ := h.httpCall("changes_since", map[string]any{"namespace": "rt", "cursor": "begin", "limit": 1000}); status != http.StatusOK {
 		t.Fatalf("limit 1000 rejected — the maximum is inclusive")
 	}
 
-	// Explicitly empty selectors are invalid_request, never read as the
-	// omitted field: "" cursor would silently swap a resume for a bare head
-	// start (skipping the caller's backlog) and "" table would silently widen
-	// the feed — and the input schema declares minLength 1, which the server
-	// must enforce itself.
 	for _, field := range []string{"cursor", "table"} {
 		for _, empty := range []any{"", "   "} {
 			status, out := h.httpCall("changes_since", map[string]any{"namespace": "rt", field: empty})
@@ -306,10 +267,6 @@ func TestChangesSinceLimitContract(t *testing.T) {
 	}
 }
 
-// TestChangesSinceTableFeedContract: the optional table filter selects only
-// that table's CURRENT lifetime (a dropped-and-recreated successor's feed
-// never replays the predecessor's records), a missing table's feed is
-// not_found, and a cursor is bound to its feed (§9.3).
 func TestChangesSinceTableFeedContract(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
@@ -321,7 +278,6 @@ func TestChangesSinceTableFeedContract(t *testing.T) {
 		"namespace": "rt", "table": "tasks", "records": []any{map[string]any{"title": "t"}},
 	})
 
-	// The table feed sees only its table.
 	data := h.mustHTTP("changes_since", map[string]any{"namespace": "rt", "table": "notes", "cursor": "begin"})
 	want := [][3]any{{"notes", first["ids"].([]any)[0], "insert"}}
 	if got := changesOf(t, data); !changesEqual(got, want) {
@@ -329,7 +285,6 @@ func TestChangesSinceTableFeedContract(t *testing.T) {
 	}
 	tableCursor := nextCursorOf(t, data)
 
-	// A feed for a table that does not exist is not_found.
 	status, out := h.httpCall("changes_since", map[string]any{"namespace": "rt", "table": "missing"})
 	if status != http.StatusNotFound {
 		t.Fatalf("missing table feed status = %d %v, want 404", status, out)
@@ -338,7 +293,6 @@ func TestChangesSinceTableFeedContract(t *testing.T) {
 		t.Fatalf("missing table feed code = %v, want not_found", errEnv["code"])
 	}
 
-	// Cross-feed reuse is rejected with the teaching shape, never honored.
 	status, out = h.httpCall("changes_since", map[string]any{"namespace": "rt", "cursor": tableCursor})
 	if status != http.StatusBadRequest {
 		t.Fatalf("cross-feed status = %d %v, want 400", status, out)
@@ -347,9 +301,6 @@ func TestChangesSinceTableFeedContract(t *testing.T) {
 		t.Fatalf("cross-feed code = %v, want invalid_request", errEnv["code"])
 	}
 
-	// Drop and recreate: begin on the successor's feed replays only the
-	// successor's lifetime, and a cursor from before the drop never surfaces
-	// the predecessor's records either.
 	h.mustHTTP("drop_table", map[string]any{"namespace": "rt", "table": "notes", "confirm": "notes"})
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
 	next := h.mustHTTP("insert", map[string]any{
@@ -366,8 +317,6 @@ func TestChangesSinceTableFeedContract(t *testing.T) {
 	}
 }
 
-// TestChangesSinceTransportParity: the same changes_since call over /v1 and
-// tools/call returns the same page (§2's one-contract rule).
 func TestChangesSinceTransportParity(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
@@ -378,8 +327,6 @@ func TestChangesSinceTransportParity(t *testing.T) {
 	httpData := h.mustHTTP("changes_since", map[string]any{"namespace": "rt", "cursor": "begin"})
 	mcpData := h.mustMCP("changes_since", map[string]any{"namespace": "rt", "cursor": "begin"})
 
-	// The projected change set must match exactly; cursors are fresh opaque
-	// randomness per issuance (§9.3), so tokens themselves never compare.
 	if got, want := changesOf(t, httpData), changesOf(t, mcpData); !changesEqual(got, want) {
 		t.Fatalf("transport parity broke:\nhttp: %v\nmcp:  %v", got, want)
 	}

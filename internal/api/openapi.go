@@ -14,19 +14,12 @@ const (
 	apiVersion     = "0.1.0"
 )
 
-// writeDataSchema is the shared success shape of the write ops that can
-// update: upsert and upsert_by_key. insert shares it minus updated (a plain
-// insert cannot update) plus the optional replayed (only idempotent inserts
-// can replay).
 var writeDataSchema = objectSchema(false, map[string]any{
 	"ids":      arrayOf(integer(1)),
 	"inserted": integer(0),
 	"updated":  integer(0),
 }, []string{"ids", "inserted", "updated"})
 
-// capabilitiesOutSchema mirrors EngineCapabilities verbatim (§6.2): pinned
-// field names, types, and enum values, all four required — ann_recall_bound
-// is explicitly null under exact execution, never omitted.
 var capabilitiesOutSchema = objectSchema(false, map[string]any{
 	"vector_execution": map[string]any{"type": "string", "enum": []string{string(store.VectorExact), string(store.VectorANN)}},
 	"ann_recall_bound": map[string]any{
@@ -39,9 +32,6 @@ var capabilitiesOutSchema = objectSchema(false, map[string]any{
 	"subscribe":     propBool(),
 }, []string{"vector_execution", "ann_recall_bound", "notifications", "subscribe"})
 
-// changesOutSchema is the page shape the feed ops share (§9.2: wait_for's
-// response has changes_since's exact semantics) — on wait_for's timeout the
-// changes array is empty and next_cursor carries the unchanged boundary.
 var changesOutSchema = objectSchema(false, map[string]any{
 	"changes": arrayOf(objectSchema(false, map[string]any{
 		"cursor": stringProp(""),
@@ -81,7 +71,6 @@ func init() {
 	}
 }
 
-// errorCodeEnum mirrors the api.Error codes every failure response carries.
 var errorCodeEnum = []string{
 	string(ErrCodeInvalid),
 	string(ErrCodeNotFound),
@@ -102,9 +91,6 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.OpenAPIDoc(ctx.BaseURL))
 }
 
-// OpenAPIDoc returns an OpenAPI 3.1.0 description of the /v1 HTTP API,
-// generated from the live Ops registry so it stays in sync with the handlers.
-// The supplied baseURL is used as the OpenAPI server URL; pass "" for "/".
 func (s *Server) OpenAPIDoc(baseURL string) map[string]any {
 	paths := map[string]any{}
 	for _, name := range OpNames() {

@@ -10,15 +10,6 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-// Slice 5c: ChangesSince — the replay op assembled from the 5b helpers. The
-// fixtures drive the real write paths (insert/update/delete) so the pages are
-// what a committed run actually minted, and where exact boundary math matters
-// they seed _dolmen_changes with explicit stamps (seedChanges) so nothing
-// depends on wall-clock luck.
-
-// insertNotes is the one-line write helper: N records titled a, b, c…,
-// returning the insert result (ids for row-addressed follow-ups, Changes for
-// seq-addressed ones).
 func insertNotes(t *testing.T, st *Store, n int) InsertResult {
 	t.Helper()
 	recs := make([]map[string]any, n)
@@ -32,7 +23,6 @@ func insertNotes(t *testing.T, st *Store, n int) InsertResult {
 	return res
 }
 
-// kindsOf projects a page by kind only, for order assertions.
 func kindsOf(records []ChangeRecord) []ChangeKind {
 	out := make([]ChangeKind, len(records))
 	for i, r := range records {
@@ -41,7 +31,6 @@ func kindsOf(records []ChangeRecord) []ChangeKind {
 	return out
 }
 
-// rowIDsOf projects a page by row id only.
 func rowIDsOf(records []ChangeRecord) []int64 {
 	out := make([]int64, len(records))
 	for i, r := range records {
@@ -50,10 +39,6 @@ func rowIDsOf(records []ChangeRecord) []int64 {
 	return out
 }
 
-// TestChangesSinceBareStartIsHead: the zero cursor starts at the CURRENT HEAD
-// — no backlog replays, the first page is empty, and next_cursor is the head
-// cursor; only subsequent commits are delivered (§9.3's wake-up semantics for
-// fresh subscribers).
 func TestChangesSinceBareStartIsHead(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -70,8 +55,6 @@ func TestChangesSinceBareStartIsHead(t *testing.T) {
 		t.Fatalf("bare start returned no next_cursor — the response must carry the head cursor")
 	}
 
-	// A commit after the bare start is delivered; resuming the head cursor
-	// again skips everything before it.
 	insertNotes(t, st, 2)
 	records, _, err = st.ChangesSince(ctx, "test", "", next, [16]byte{}, nil, Incarnation{}, Page{})
 	if err != nil {
@@ -85,9 +68,6 @@ func TestChangesSinceBareStartIsHead(t *testing.T) {
 	}
 }
 
-// TestChangesSinceBeginReplaysRetainedHistory: the "begin" sentinel replays
-// the retained history in commit order with a page per record's cursor —
-// event-on-write plus replay, the conformance core (§8.3 item 7).
 func TestChangesSinceBeginReplaysRetainedHistory(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -129,8 +109,7 @@ func TestChangesSinceBeginReplaysRetainedHistory(t *testing.T) {
 			t.Fatalf("record %d lifetime = %+v, want (notes, 0, the namespace's id)", i, r.Lifetime)
 		}
 	}
-	// Every record's cursor is a distinct opaque token at its own position:
-	// resuming any of them delivers exactly the records after it.
+
 	for i, r := range records {
 		after, _, err := st.ChangesSince(ctx, "test", "", r.Cursor, [16]byte{}, nil, Incarnation{}, Page{})
 		if err != nil {
@@ -148,7 +127,7 @@ func TestChangesSinceBeginReplaysRetainedHistory(t *testing.T) {
 	if next == "" {
 		t.Fatalf("begin returned no next_cursor")
 	}
-	// The next-page token lands after the last record: the page drained.
+
 	drain, _, err := st.ChangesSince(ctx, "test", "", next, [16]byte{}, nil, Incarnation{}, Page{})
 	if err != nil {
 		t.Fatalf("resume next_cursor: %v", err)
@@ -158,9 +137,6 @@ func TestChangesSinceBeginReplaysRetainedHistory(t *testing.T) {
 	}
 }
 
-// TestChangesSinceGapFreePaging: paging through a backlog with limit < the
-// log yields every record exactly once, in seq order — the concatenation of
-// pages is the whole feed with no gaps and no duplicates (§9.3).
 func TestChangesSinceGapFreePaging(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -193,9 +169,6 @@ func TestChangesSinceGapFreePaging(t *testing.T) {
 	}
 }
 
-// TestChangesSincePageLimitContract: limit <= 0 selects the default (100),
-// and the engine clamps above the max (1000) per Page's conventions — the op
-// layer is the one that rejects outside 1–1000 as invalid_request.
 func TestChangesSincePageLimitContract(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -217,7 +190,6 @@ func TestChangesSincePageLimitContract(t *testing.T) {
 		t.Fatalf("negative limit page = %d records, want the default %d", len(records), DefaultChangesPageLimit)
 	}
 
-	// 1005 records: an over-max limit yields exactly the 1000-record max.
 	for i := 0; i < 9; i++ {
 		insertNotes(t, st, 100)
 	}
@@ -231,16 +203,11 @@ func TestChangesSincePageLimitContract(t *testing.T) {
 	}
 }
 
-// TestChangesSinceTableFeedCurrentLifetime: a table-filtered feed delivers
-// only the table's CURRENT lifetime — records from before a drop-and-recreate
-// are never replayed, even from a cursor minted before the drop (§9.3's
-// per-record lifetime labels); the namespace feed carries every lifetime.
 func TestChangesSinceTableFeedCurrentLifetime(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
 	insertNotes(t, st, 2)
 
-	// A pre-drop cursor on the table feed.
 	_, preDrop, err := st.ChangesSince(ctx, "test", "notes", "", [16]byte{}, nil, Incarnation{}, Page{})
 	if err != nil {
 		t.Fatalf("table bare start: %v", err)
@@ -254,7 +221,6 @@ func TestChangesSinceTableFeedCurrentLifetime(t *testing.T) {
 	}
 	insertNotes(t, st, 1)
 
-	// begin on the successor's feed: only the successor's record.
 	records, _, err := st.ChangesSince(ctx, "test", "notes", CursorBegin, [16]byte{}, nil, Incarnation{}, Page{})
 	if err != nil {
 		t.Fatalf("begin on successor feed: %v", err)
@@ -263,8 +229,6 @@ func TestChangesSinceTableFeedCurrentLifetime(t *testing.T) {
 		t.Fatalf("table feed after recreate = %v, want only the successor's row [1] (ids restart with the new table)", got)
 	}
 
-	// The pre-drop cursor resolves (it is young) but still never surfaces the
-	// predecessor's records: the lifetime filter, not the position, decides.
 	records, _, err = st.ChangesSince(ctx, "test", "notes", preDrop, [16]byte{}, nil, Incarnation{}, Page{})
 	if err != nil {
 		t.Fatalf("resume pre-drop cursor: %v", err)
@@ -273,8 +237,6 @@ func TestChangesSinceTableFeedCurrentLifetime(t *testing.T) {
 		t.Fatalf("pre-drop cursor on successor feed = %v, want only the successor's row [1]", got)
 	}
 
-	// The namespace feed spans lifetimes by design: both the predecessor's
-	// two inserts and the successor's one are in the log's commit order.
 	records, _, err = st.ChangesSince(ctx, "test", "", CursorBegin, [16]byte{}, nil, Incarnation{}, Page{})
 	if err != nil {
 		t.Fatalf("namespace begin: %v", err)
@@ -283,16 +245,11 @@ func TestChangesSinceTableFeedCurrentLifetime(t *testing.T) {
 		t.Fatalf("namespace feed = %d records, want 3 across both lifetimes", len(records))
 	}
 
-	// A table feed on a table that does not exist is not_found — no implicit
-	// anything, and no feed for a name with no current lifetime.
 	if _, _, err := st.ChangesSince(ctx, "test", "missing", "", [16]byte{}, nil, Incarnation{}, Page{}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("changes_since on a missing table: err = %v, want ErrNotFound", err)
 	}
 }
 
-// TestChangesSinceFeedBindingAndNamespaceGuard: a token is bound to the feed
-// it was minted on — the namespace feed's token never serves a table feed or
-// another table's (§9.3); the namespace's own absence is not_found.
 func TestChangesSinceFeedBindingAndNamespaceGuard(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -321,9 +278,6 @@ func TestChangesSinceFeedBindingAndNamespaceGuard(t *testing.T) {
 	}
 }
 
-// TestChangesSinceReopenReplay: the mapping lives in the namespace db, so a
-// token from before a close/reopen still resolves and resumes gap-free (§9.3:
-// a restart must not invalidate clients' cursors).
 func TestChangesSinceReopenReplay(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -351,18 +305,13 @@ func TestChangesSinceReopenReplay(t *testing.T) {
 	}
 }
 
-// TestChangesSinceBeginHonorsRetention: begin's boundary consults the store's
-// retention knob — records older than R before the call are outside every
-// replay guarantee and skipped; the R = 0 store starts at the oldest retained
-// record instead (§9.3: unlimited retention must not reduce begin to a no-op).
-// Explicit `at` stamps make the window deterministic.
 func TestChangesSinceBeginHonorsRetention(t *testing.T) {
 	const day = 24 * time.Hour
 	cases := []struct {
 		name      string
 		retention time.Duration
 		mints     []time.Duration
-		wantRow   int64 // row_id of the first delivered record (seq order: row_id = seq)
+		wantRow   int64
 	}{
 		{"retention skips pre-window records", 7 * day, []time.Duration{-30 * day, -1 * day}, 2},
 		{"retention 0 replays from the oldest record", 0, []time.Duration{-30 * day, -1 * day}, 1},
@@ -395,11 +344,6 @@ func TestChangesSinceBeginHonorsRetention(t *testing.T) {
 	}
 }
 
-// TestChangesSinceCursorExpiry: with retention R a token past its own
-// deadline resolves as beyond-retention — the teaching error's engine shape
-// (§9.3: a function of the client's token age alone). A tiny R keeps the
-// sleep bounded; the margin is deliberately wide so slow CI only ever helps
-// the clock pass the deadline.
 func TestChangesSinceCursorExpiry(t *testing.T) {
 	st, err := Open(t.TempDir(), WithChangeRetention(40*time.Millisecond))
 	if err != nil {
@@ -420,16 +364,12 @@ func TestChangesSinceCursorExpiry(t *testing.T) {
 	if _, _, err := st.ChangesSince(ctx, "test", "", next, [16]byte{}, nil, Incarnation{}, Page{}); !errors.Is(err, ErrCursorExpired) {
 		t.Fatalf("resume past the deadline: err = %v, want ErrCursorExpired", err)
 	}
-	// A token that never existed is the same teaching shape — unknown and
-	// past retention are indistinguishable by design (opacity).
+
 	if _, _, err := st.ChangesSince(ctx, "test", "", "deadbeefdeadbeefdeadbeefdeadbeef", [16]byte{}, nil, Incarnation{}, Page{}); !errors.Is(err, ErrCursorExpired) {
 		t.Fatalf("unknown token: err = %v, want ErrCursorExpired", err)
 	}
 }
 
-// TestChangesSinceZeroRetentionNeverExpires: on the R = 0 store a cursor
-// survives arbitrary age and begin replays everything (§9.3's operator disk
-// choice, never a correctness bound).
 func TestChangesSinceZeroRetentionNeverExpires(t *testing.T) {
 	st, err := Open(t.TempDir(), WithChangeRetention(0))
 	if err != nil {
@@ -456,10 +396,6 @@ func TestChangesSinceZeroRetentionNeverExpires(t *testing.T) {
 	}
 }
 
-// TestChangesSincePrunesWithRetention: the read moves retention forward —
-// with R > 0 an old, unreachable record and an expired token are gone after a
-// call, while a live chain's reachable records survive it (pruneChanges'
-// contract, now wired through the op).
 func TestChangesSincePrunesWithRetention(t *testing.T) {
 	st, err := Open(t.TempDir(), WithChangeRetention(24*time.Hour))
 	if err != nil {
@@ -475,8 +411,7 @@ func TestChangesSincePrunesWithRetention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ns: %v", err)
 	}
-	// Three records: two far past the 2R hold, one fresh. No chain reaches
-	// the old ones (begin's boundary skips them), so the call prunes them.
+
 	now := time.Now()
 	seedChanges(t, n, now, []time.Duration{-100 * 24 * time.Hour, -99 * 24 * time.Hour, -time.Hour})
 
@@ -488,16 +423,6 @@ func TestChangesSincePrunesWithRetention(t *testing.T) {
 	}
 }
 
-// TestChangesLogLookupsIndexed pins the indexing the replay path must keep
-// (codex P1 round on #203): the table-filtered page read and every pruning
-// predicate are served by indexes, not scans. All of this work runs inside
-// the namespace's single write transaction on every changes_since call —
-// with only the seq primary key, a quiet table polled in a busy namespace
-// rescans an ever-growing tail of unrelated changes, the age prune full-scans
-// a log whose records are all younger than the hold, and the token prune and
-// reach-boundary lookup full-scan a token table that accumulates a row per
-// poll for a whole retention window. EXPLAIN QUERY PLAN is the pin: if a
-// future DDL edit drops an index, the plan names the scan and this fails.
 func TestChangesLogLookupsIndexed(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -513,7 +438,7 @@ func TestChangesLogLookupsIndexed(t *testing.T) {
 		name  string
 		query string
 		args  []any
-		want  string // index name the plan must use
+		want  string
 	}{
 		{
 			"table feed page read",
@@ -577,11 +502,6 @@ func TestChangesLogLookupsIndexed(t *testing.T) {
 	}
 }
 
-// TestChangesSinceEmptyPollMintsNothing: an empty page is not an issuance —
-// the caller's own token comes back unchanged — so a polling waiter (the
-// 250 ms wait_for loop) mints no durable row per poll; otherwise an idle
-// waiter would add hundreds of thousands of token rows a day. A real page
-// still mints fresh cursors.
 func TestChangesSinceEmptyPollMintsNothing(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -619,8 +539,6 @@ func TestChangesSinceEmptyPollMintsNothing(t *testing.T) {
 		t.Fatalf("5 quiet polls grew the token table %d → %d — an empty poll must mint nothing", before, after)
 	}
 
-	// A commit makes the next page real again: fresh per-record and
-	// next-page cursors issue on the same chain.
 	insertNotes(t, st, 1)
 	records, next, err := st.ChangesSince(ctx, "test", "", head, [16]byte{}, nil, Incarnation{}, Page{})
 	if err != nil {
@@ -634,15 +552,10 @@ func TestChangesSinceEmptyPollMintsNothing(t *testing.T) {
 	}
 }
 
-// TestChangesSinceRegistryWaitHonorsContext: the feed read's registry-lock
-// acquire is context-aware (nsCtx over ctxMutex) — a bounded caller aborts
-// at its deadline even while another holder keeps the lock, the way a
-// drop_namespace draining its pools would, instead of queueing past every
-// bound the way a plain mutex wait must.
 func TestChangesSinceRegistryWaitHonorsContext(t *testing.T) {
 	st := openChangeStore(t)
 	insertNotes(t, st, 1)
-	st.mu.Lock() // stand in for a draining drop_namespace
+	st.mu.Lock()
 	bounded, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
 	start := time.Now()
@@ -659,11 +572,6 @@ func TestChangesSinceRegistryWaitHonorsContext(t *testing.T) {
 	}
 }
 
-// TestNsCtxInitializationHonorsContext: a cache-missing first open carries
-// the caller's context through the registry DDL and the nsgen transaction
-// (lockedNSCtx) — an already-expired context fails fast in the
-// initialization itself instead of waiting out SQLite's busy_timeout behind
-// another process's write lock.
 func TestNsCtxInitializationHonorsContext(t *testing.T) {
 	dir := t.TempDir()
 	st, err := Open(dir)
@@ -674,8 +582,7 @@ func TestNsCtxInitializationHonorsContext(t *testing.T) {
 	if err := st.CreateNamespace(context.Background(), "test", [16]byte{}); err != nil {
 		t.Fatalf("create namespace: %v", err)
 	}
-	// A second store instance starts with an empty namespace cache, so the
-	// open runs the full first-touch initialization path.
+
 	st2, err := Open(dir)
 	if err != nil {
 		t.Fatalf("open second store: %v", err)
@@ -687,7 +594,7 @@ func TestNsCtxInitializationHonorsContext(t *testing.T) {
 	if _, err := st2.nsCtx(expired, "test"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("first open with an expired context = %v, want context.Canceled — the DDL must honor the context", err)
 	}
-	// The same store opens the namespace fine with a live context.
+
 	if _, err := st2.nsCtx(context.Background(), "test"); err != nil {
 		t.Fatalf("open with a live context: %v", err)
 	}

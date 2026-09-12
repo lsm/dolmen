@@ -5,9 +5,6 @@ import (
 	"time"
 )
 
-// Write semantics: idempotency replay, divergence rejection, durability
-// across a store reopen, upsert_by_key convergence, and upsert filter
-// match/no-match.
 func TestWriteIdempotencyReplayAndDivergence(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("wr", "t", []map[string]any{
@@ -23,13 +20,11 @@ func TestWriteIdempotencyReplayAndDivergence(t *testing.T) {
 	if len(ids) != 1 {
 		t.Fatalf("first insert ids %v", ids)
 	}
-	// The replayed flag rides every idempotent insert (false on the first).
+
 	if first["replayed"] != false {
 		t.Fatalf("first insert must report replayed false: %v", first)
 	}
 
-	// Replay with the same key and the same records: original ids, nothing
-	// re-inserted, replayed true.
 	replay := h.mustHTTP("insert", map[string]any{
 		"namespace": "wr", "table": "t", "idempotency_key": "k1", "records": recs,
 	})
@@ -41,13 +36,11 @@ func TestWriteIdempotencyReplayAndDivergence(t *testing.T) {
 		t.Fatalf("replay must report replayed true: %v", replay)
 	}
 
-	// Row count unchanged by the replay.
 	data := h.mustHTTP("describe_table", map[string]any{"namespace": "wr", "table": "t"})
 	if int64val(t, "row count", data["row_count"]) != 1 {
 		t.Fatalf("replay must not add rows: %v", data["row_count"])
 	}
 
-	// Divergence: same key, different records → conflict, nothing written.
 	status, body := h.httpCall("insert", map[string]any{
 		"namespace": "wr", "table": "t", "idempotency_key": "k1",
 		"records": []map[string]any{{"title": "different", "n": 2}},
@@ -60,7 +53,6 @@ func TestWriteIdempotencyReplayAndDivergence(t *testing.T) {
 		t.Fatalf("divergent replay code %v, want conflict", errObj["code"])
 	}
 
-	// A different key with the same records is a plain second insert.
 	second := h.mustHTTP("insert", map[string]any{
 		"namespace": "wr", "table": "t", "idempotency_key": "k2", "records": recs,
 	})
@@ -73,9 +65,6 @@ func TestWriteIdempotencyReplayAndDivergence(t *testing.T) {
 	}
 }
 
-// Durability: the idempotency side table and plain writes survive a full
-// server restart on the same directory — a retry after the restart still
-// replays the original ids instead of duplicating rows.
 func TestWriteDurabilityAcrossReopen(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("wr", "t", []map[string]any{{"name": "title", "type": "string"}})
@@ -95,7 +84,6 @@ func TestWriteDurabilityAcrossReopen(t *testing.T) {
 
 	h.reopen()
 
-	// Plain writes survived.
 	rows := h.mustHTTP("query", map[string]any{
 		"namespace": "wr", "sql": "SELECT id, title FROM t ORDER BY id",
 	})["rows"].([]any)
@@ -107,7 +95,6 @@ func TestWriteDurabilityAcrossReopen(t *testing.T) {
 		t.Fatalf("ids shifted across reopen: %v", rows)
 	}
 
-	// The idempotent retry still replays the original ids.
 	replay := h.mustHTTP("insert", map[string]any{
 		"namespace": "wr", "table": "t", "idempotency_key": "durable",
 		"records": []map[string]any{{"title": "idem"}},
@@ -122,9 +109,6 @@ func TestWriteDurabilityAcrossReopen(t *testing.T) {
 	}
 }
 
-// upsert_by_key convergence: repeated calls with the same records converge
-// (no duplicates), matched rows take a partial update (unspecified fields
-// keep their values), and within a batch later records update earlier ones.
 func TestWriteUpsertByKeyConvergence(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("wr", "u", []map[string]any{
@@ -139,13 +123,12 @@ func TestWriteUpsertByKeyConvergence(t *testing.T) {
 		})
 	}
 
-	// First call inserts.
 	out := call(map[string]any{"email": "a@x", "tier": "free", "seats": 1})
 	if int64val(t, "inserted", out["inserted"]) != 1 || int64val(t, "updated", out["updated"]) != 0 {
 		t.Fatalf("first upsert_by_key: %v", out)
 	}
-	// Second call with the same key converges: update, no duplicate row.
-	out = call(map[string]any{"email": "a@x", "seats": 5}) // partial: tier untouched
+
+	out = call(map[string]any{"email": "a@x", "seats": 5})
 	if int64val(t, "inserted", out["inserted"]) != 0 || int64val(t, "updated", out["updated"]) != 1 {
 		t.Fatalf("converging upsert_by_key: %v", out)
 	}
@@ -156,8 +139,6 @@ func TestWriteUpsertByKeyConvergence(t *testing.T) {
 	assertJSONEqual(t, "partial update keeps unspecified fields", row["tier"], "free")
 	assertJSONEqual(t, "partial update sets given fields", row["seats"], float64(5))
 
-	// Batch-internal convergence: two records with the same key in one call
-	// produce one row, the later record winning.
 	out = call(
 		map[string]any{"email": "b@x", "tier": "trial"},
 		map[string]any{"email": "b@x", "tier": "pro"},
@@ -174,8 +155,6 @@ func TestWriteUpsertByKeyConvergence(t *testing.T) {
 	})["rows"].([]any)[0].(map[string]any)
 	assertJSONEqual(t, "later batch record wins", row["tier"], "pro")
 
-	// Missing key fields are rejected, and so is an explicit null: a NULL
-	// key can never match an existing row, so it must not silently insert.
 	for name, record := range map[string]map[string]any{
 		"omitted": {"tier": "none"},
 		"null":    {"email": nil, "tier": "none"},
@@ -194,8 +173,6 @@ func TestWriteUpsertByKeyConvergence(t *testing.T) {
 	}
 }
 
-// upsert: filter matches → update semantics; filter matches nothing → one
-// insert, which must satisfy required fields.
 func TestWriteUpsertFilterMatchAndInsert(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("wr", "s", []map[string]any{
@@ -203,8 +180,6 @@ func TestWriteUpsertFilterMatchAndInsert(t *testing.T) {
 		{"name": "count", "type": "number"},
 	})
 
-	// No match → insert branch: normalized write shape (ids, inserted,
-	// updated) with inserted counted as rows.
 	out := h.mustHTTP("upsert", map[string]any{
 		"namespace": "wr", "table": "s", "filter": "slug = 'home'",
 		"set": map[string]any{"slug": "home", "count": 1},
@@ -215,7 +190,6 @@ func TestWriteUpsertFilterMatchAndInsert(t *testing.T) {
 	}
 	newID := int64val(t, "inserted id", ids[0])
 
-	// Match → update branch: the same row id, no insert.
 	out = h.mustHTTP("upsert", map[string]any{
 		"namespace": "wr", "table": "s", "filter": "slug = ?",
 		"args": []any{"home"},
@@ -241,10 +215,9 @@ func TestWriteUpsertFilterMatchAndInsert(t *testing.T) {
 	}
 	assertJSONEqual(t, "upsert set value", row["count"], float64(2))
 
-	// Insert branch must still satisfy required fields.
 	status, body := h.httpCall("upsert", map[string]any{
 		"namespace": "wr", "table": "s", "filter": "slug = 'missing'",
-		"set": map[string]any{"count": 9}, // no slug
+		"set": map[string]any{"count": 9},
 	})
 	if status != 400 {
 		t.Fatalf("insert branch without required field: status %d, want 400: %v", status, body)
@@ -255,8 +228,6 @@ func TestWriteUpsertFilterMatchAndInsert(t *testing.T) {
 	}
 }
 
-// Write semantics on the MCP transport: a retried idempotent insert over
-// tools/call replays identically to the HTTP retry.
 func TestWriteIdempotencyOverMCP(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("wrm", "t", []map[string]any{{"name": "title", "type": "string"}})

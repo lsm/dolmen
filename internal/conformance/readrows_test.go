@@ -6,9 +6,6 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-// TestReadRowsContract pins the read_rows half of slice 5a: id-addressed
-// fetch through both transports with the §2 semantics — found rows once, in
-// ascending id order; missing ids simply absent, never an error.
 func TestReadRowsContract(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rr", "docs", []map[string]any{
@@ -29,10 +26,6 @@ func TestReadRowsContract(t *testing.T) {
 		t.Fatalf("insert did not return three ids: %v", ins)
 	}
 
-	// Unsorted request with a missing id interleaved: rows come back in
-	// ascending id order, the missing id is simply absent, and row_count
-	// counts only what returned. The same call over MCP must answer
-	// identically — the parity the shared Dispatch path owes every op.
 	body := map[string]any{"namespace": "rr", "table": "docs", "ids": []any{2.0, 9999.0, 1.0}}
 	data := h.mustHTTP("read_rows", body)
 	assertJSONEqual(t, "read_rows over MCP vs HTTP", h.mustMCP("read_rows", body), data)
@@ -59,7 +52,6 @@ func TestReadRowsContract(t *testing.T) {
 		t.Fatalf("truncated must be present and false for a complete page, got %v", data["truncated"])
 	}
 
-	// Empty id set: a well-formed no-op — an empty rows array, never null.
 	empty := h.mustHTTP("read_rows", map[string]any{"namespace": "rr", "table": "docs", "ids": []any{}})
 	if rows, ok := empty["rows"].([]any); !ok || len(rows) != 0 {
 		t.Fatalf("empty ids must return an empty rows array, got %v", empty)
@@ -68,18 +60,12 @@ func TestReadRowsContract(t *testing.T) {
 		t.Fatalf("row_count must be 0 for an empty id set: %v", empty)
 	}
 
-	// Absence-not-error does not stop at ids: a missing table is still
-	// not_found, the same error the other table reads report.
 	status, out := h.httpCall("read_rows", map[string]any{"namespace": "rr", "table": "nope", "ids": []any{1}})
 	if status != 404 {
 		t.Fatalf("read_rows on a missing table must be 404, got %d %v", status, out)
 	}
 }
 
-// TestReadRowsIDCapEnforced pins §2's cap at the transport boundary: at most
-// store.MaxReadRowsIDs ids per request — invalid_request beyond, over both
-// transports, with the same envelope (the error-parity table repeats the
-// shape; this pins the boundary on both sides).
 func TestReadRowsIDCapEnforced(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("cap", "t", []map[string]any{{"name": "title", "type": "string"}})
@@ -109,11 +95,6 @@ func TestReadRowsIDCapEnforced(t *testing.T) {
 	assertJSONEqual(t, "id-cap error envelope", withoutRequestID(mcpRes.toolError()), withoutRequestID(errObj))
 }
 
-// TestCapabilitiesShapePinned pins the capabilities op (§2, §6.2): the
-// engine's self-description serialized verbatim — the four pinned fields,
-// exact and ann_recall_bound explicitly null for adapter #1, notifications
-// and subscribe true since 6b landed Listen and the /v1/subscribe route,
-// over both transports byte-identical.
 func TestCapabilitiesShapePinned(t *testing.T) {
 	h := newHarness(t)
 
@@ -127,8 +108,6 @@ func TestCapabilitiesShapePinned(t *testing.T) {
 	assertJSONEqual(t, "capabilities", data, want)
 	assertJSONEqual(t, "capabilities over MCP vs HTTP", h.mustMCP("capabilities", map[string]any{}), data)
 
-	// ann_recall_bound is explicit null — present as a key — never omitted:
-	// decode into a map that distinguishes the two.
 	if _, present := data["ann_recall_bound"]; !present {
 		t.Fatalf("ann_recall_bound must be present (explicit null under exact execution), got %v", data)
 	}

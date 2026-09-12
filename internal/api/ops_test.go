@@ -242,7 +242,6 @@ func TestMigrateUnknownChangeKeyErrors(t *testing.T) {
 		}
 	}
 
-	// Well-formed changes must still pass the added validation.
 	code, res := post(t, srv.URL, "migrate", map[string]any{
 		"namespace": "mv", "table": "t",
 		"changes": []map[string]any{
@@ -316,8 +315,7 @@ func TestSearchVectorRawVectorIgnoresProviderIdentity(t *testing.T) {
 		},
 		Identity: "space-a",
 	}
-	// The direct store setup below predates the HTTP server, so create the
-	// namespace through the store itself — ns() no longer creates implicitly.
+
 	if err := st.CreateNamespace(context.Background(), "mix", [16]byte{}); err != nil {
 		t.Fatalf("create ns: %v", err)
 	}
@@ -350,9 +348,6 @@ func (multiEmb) Embed(ctx context.Context, texts []string) ([][]float32, error) 
 	return make([][]float32, 2), nil
 }
 
-// EmbedQuery mirrors what real providers do when their engine returns the
-// wrong vector count for one query text: the count check lives inside
-// EmbedQuery now, so a misbehaving engine surfaces as an error here.
 func (multiEmb) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
 	return nil, fmt.Errorf("embedding provider returned 2 vectors for one query text")
 }
@@ -393,9 +388,6 @@ func TestInsertBatchBoundsDeclared(t *testing.T) {
 	}
 }
 
-// TestReadRowsIDBoundDeclared pins the input schema to the seam's id cap
-// (§2): schema-validating clients see the same 1..MaxReadRowsIDs bound the
-// engine enforces on direct /v1 calls.
 func TestReadRowsIDBoundDeclared(t *testing.T) {
 	def, ok := Ops["read_rows"]
 	if !ok {
@@ -414,11 +406,6 @@ func TestReadRowsIDBoundDeclared(t *testing.T) {
 	t.Fatalf("ids must be a required request key, got %v", req)
 }
 
-// TestWaitForTimeoutBoundDeclared pins wait_for's declared timeout_ms bounds
-// to the constants dispatch enforces: a schema-validating client that trusts
-// the schema must never have the server reject (or, worse, default) a value
-// the schema admitted. The default itself (30000) is dispatch-side — the
-// schema declares only the valid range, and the description names both.
 func TestWaitForTimeoutBoundDeclared(t *testing.T) {
 	def, ok := Ops["wait_for"]
 	if !ok {
@@ -429,7 +416,7 @@ func TestWaitForTimeoutBoundDeclared(t *testing.T) {
 	if timeout["minimum"] != 0 || timeout["maximum"] != maxWaitForTimeoutMS {
 		t.Fatalf("timeout_ms must declare the enforced 0–%d range, got %v", maxWaitForTimeoutMS, timeout)
 	}
-	// limit rides the same shared page contract as changes_since.
+
 	limit := props["limit"].(map[string]any)
 	if limit["minimum"] != 1 || limit["maximum"] != store.MaxChangesPageLimit {
 		t.Fatalf("limit must declare the enforced 1–%d range, got %v", store.MaxChangesPageLimit, limit)
@@ -443,13 +430,6 @@ func TestWaitForTimeoutBoundDeclared(t *testing.T) {
 	t.Fatalf("namespace must be a required request key, got %v", req)
 }
 
-// stalledChangesEngine stalls ChangesSince the way engine contention does:
-// the call sits in its context-honoring wait until the context fires, then
-// fails with the context's error — the shape of every part of the real read
-// path (the connection-pool wait, the SQL, and the registry lock, which is
-// context-aware since the goroutine-racing round). fastReads makes the
-// first N reads instant, so a fixture can validate the feed first and then
-// starve a later read (0 stalls every read).
 type stalledChangesEngine struct {
 	store.Engine
 	stall     time.Duration
@@ -477,14 +457,6 @@ func (e *stalledChangesEngine) ChangesSince(ctx context.Context, ns, table strin
 	return e.Engine.ChangesSince(ctx, ns, table, from, nsGen, scope, scopeIncarnation, page)
 }
 
-// TestWaitForReadsBoundedByDeadline: the bounded-time contract holds even
-// when feed reads queue behind a stalled engine. EVERY read — including a
-// bare start's boundary-establishing one — carries the wait's remaining
-// budget (floored at one tick), and only a read that follows a SUCCESSFUL
-// one — a validated feed, a pinned boundary — may translate its expiry into
-// the empty timeout page; a starved FIRST read (cursor or bare start alike)
-// errors instead of promising "empty" over a feed it never saw: an expired
-// or cross-feed cursor must never be masked into a quiet wait (§9.2, §9.3).
 func TestWaitForReadsBoundedByDeadline(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -500,23 +472,15 @@ func TestWaitForReadsBoundedByDeadline(t *testing.T) {
 				t.Fatalf("%s: %v", op, err)
 			}
 		}
-		// Seeding is ordered — a map here randomizes iteration order and
-		// let insert race ahead of create_table on CI.
+
 		call("create_namespace", `{"namespace":"rt"}`)
 		call("create_table", `{"namespace":"rt","table":"notes","fields":[{"name":"title","type":"string"}]}`)
 		call("insert", `{"namespace":"rt","table":"notes","records":[{"title":"a"}]}`)
 	}
 
-	// A validated wait whose LATER read starves: the first read is instant
-	// (feed validated, boundary pinned), the second queues behind the
-	// stall, its budget expires at the deadline, and the call returns the
-	// EMPTY page carrying the pinned boundary — bounded at timeout_ms, not
-	// at the stall.
 	validated := &Server{eng: &stalledChangesEngine{Engine: st, stall: stall, fastReads: 1}, emb: fakeEmb{}}
 	seed(validated)
-	// The head cursor is minted through the unblocked engine — AFTER
-	// seeding (the namespace must exist) — and is the token the stalled
-	// waits resume from.
+
 	_, head, err := st.ChangesSince(context.Background(), "rt", "", "", [16]byte{}, nil, store.Incarnation{}, store.Page{})
 	if err != nil {
 		t.Fatalf("mint head cursor: %v", err)
@@ -541,11 +505,6 @@ func TestWaitForReadsBoundedByDeadline(t *testing.T) {
 		t.Fatalf("starved wait held %v, want ~timeout_ms 800 (the budget caps the read, not the stall)", held)
 	}
 
-	// A starved FIRST read never earns the timeout page: nothing validated
-	// the cursor or the feed, so an empty page would mask an expired or
-	// cross-feed cursor's teaching error into a quiet wait — it errors,
-	// promptly, instead. Same namespace (already seeded — create_table is
-	// not idempotent), fresh wrapper whose every read stalls.
 	unvalidated := &Server{eng: &stalledChangesEngine{Engine: st, stall: stall}, emb: fakeEmb{}}
 	start = time.Now()
 	res, err = unvalidated.Dispatch(context.Background(), "wait_for",
@@ -557,10 +516,6 @@ func TestWaitForReadsBoundedByDeadline(t *testing.T) {
 		t.Fatalf("starved first read held %v — the tick floor must bound it, not the stall", held)
 	}
 
-	// A bare start's boundary-establishing read is bounded by the SAME
-	// budget (§9.2's bound is unconditional): behind a stalled engine it
-	// errors within the tick floor rather than blocking until the writer
-	// finishes — no feed was seen, so no head cursor may be promised.
 	start = time.Now()
 	res, err = unvalidated.Dispatch(context.Background(), "wait_for", []byte(`{"namespace":"rt","timeout_ms":0}`))
 	if err == nil {
@@ -571,11 +526,6 @@ func TestWaitForReadsBoundedByDeadline(t *testing.T) {
 	}
 }
 
-// TestWaitForMissingNamespaceNotCreated: a wait never creates its
-// namespace — a missing one is not_found and stays missing, so an
-// abandoned or failed wait can never resurrect a dropped namespace (the
-// registry-lock half of that contract is pinned store-side, in
-// TestChangesSinceRegistryWaitHonorsContext).
 func TestWaitForMissingNamespaceNotCreated(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -646,9 +596,7 @@ func vectorSearchWithProvider(t *testing.T, p interface {
 	srv := httptest.NewServer(New(st, p).Handler())
 	t.Cleanup(srv.Close)
 	mustNS(t, srv.URL, "p")
-	// create_table rejects vectorize when the provider cannot embed (a blank
-	// identity included), so create through the store: these tests exercise
-	// search_vector against an already-committed vectorized schema.
+
 	if _, err := st.CreateTable(context.Background(), "p", "t", []schema.Field{
 		{Name: "s", Type: schema.Text, Vectorize: true},
 	}, store.TableOpts{}, [16]byte{}); err != nil {
@@ -694,8 +642,7 @@ func TestSearchVectorTextRejectedForCallerProvidedVectors(t *testing.T) {
 	if code != 200 {
 		t.Fatal("insert failed")
 	}
-	// Text queries must not silently compare a server embedding against
-	// caller-provided vectors from an unrelated space — with or without column.
+
 	for _, extra := range []map[string]any{
 		{"text": "hello"},
 		{"text": "hello", "column": "emb"},
@@ -714,7 +661,7 @@ func TestSearchVectorTextRejectedForCallerProvidedVectors(t *testing.T) {
 			t.Fatalf("rejection should point at the vectorize path or a raw-vector retry, got %q", msg)
 		}
 	}
-	// Raw vectors from the caller's own space keep working, column or not.
+
 	for _, extra := range []map[string]any{
 		{"vector": []float64{1, 0, 0, 0}},
 		{"vector": []float64{1, 0, 0, 0}, "column": "emb"},
@@ -734,12 +681,6 @@ func TestSearchVectorTextRejectedForCallerProvidedVectors(t *testing.T) {
 	}
 }
 
-// TestSearchVectorTextErrorsDisambiguated pins the three failure modes of a
-// text query to three distinguishable, actionable messages on the stable
-// invalid_request code: (a) the table has no vectorize field (fix the table
-// via migrate, or use a raw vector), (b) no usable provider (operator fix:
-// server-side DOLMEN_EMBED_* configuration), (c) provider identity mismatch
-// against the table's recorded embed space (re-embed via migrate).
 func TestSearchVectorTextErrorsDisambiguated(t *testing.T) {
 	errParts := func(res map[string]any) (string, string) {
 		errEnv, _ := res["error"].(map[string]any)
@@ -748,8 +689,6 @@ func TestSearchVectorTextErrorsDisambiguated(t *testing.T) {
 		return code, msg
 	}
 
-	// (a) Provider is fine, the table is not: with declared vector columns the
-	// error must blame the table and offer both fixes.
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -786,7 +725,6 @@ func TestSearchVectorTextErrorsDisambiguated(t *testing.T) {
 		t.Fatalf("missing-vectorize error must not send the agent to the operator, got %q", msg)
 	}
 
-	// (a') Same, on a table with no vector data at all.
 	if code, _ := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "dis", "table": "novec",
 		"fields": []map[string]any{{"name": "s", "type": "string"}},
@@ -804,8 +742,6 @@ func TestSearchVectorTextErrorsDisambiguated(t *testing.T) {
 		t.Fatalf("no-vector-data error must be invalid_request and name the migrate fix, got %q %q", errCode, msg)
 	}
 
-	// (b) Table is fine, the provider is not: the error must name the
-	// operator-side DOLMEN_EMBED_* configuration, not the table.
 	stNone, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -813,10 +749,7 @@ func TestSearchVectorTextErrorsDisambiguated(t *testing.T) {
 	t.Cleanup(func() { stNone.Close() })
 	srvNone := httptest.NewServer(New(stNone, embed.None{}).Handler())
 	t.Cleanup(srvNone.Close)
-	// create_table rejects vectorize without a provider, so reach past the API
-	// and create through the store: a vectorized table can still legitimately
-	// exist on a provider-less server (it predates the provider's removal),
-	// which is exactly the case (b) must keep serving.
+
 	if err := stNone.CreateNamespace(context.Background(), "dis", [16]byte{}); err != nil {
 		t.Fatalf("create ns: %v", err)
 	}
@@ -844,9 +777,6 @@ func TestSearchVectorTextErrorsDisambiguated(t *testing.T) {
 		t.Fatalf("provider-unavailable error must not blame a vectorized table, got %q", msg)
 	}
 
-	// (b') The conflation this issue is about: no provider AND no vectorize
-	// field must report the table error, so the agent learns to fix the table
-	// first instead of calling the operator for a healthy provider setup.
 	if code, _ := post(t, srvNone.URL, "create_table", map[string]any{
 		"namespace": "dis", "table": "plain",
 		"fields": []map[string]any{{"name": "s", "type": "string"}},
@@ -867,8 +797,6 @@ func TestSearchVectorTextErrorsDisambiguated(t *testing.T) {
 		t.Fatalf("broken table + no provider must not yet demand provider config, got %q", msg)
 	}
 
-	// (c) Provider present but its identity differs from the table's recorded
-	// embed space: the error names both spaces and the re-embed path.
 	spaceA := store.Embedder{
 		Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
 			out := make([][]float32, len(texts))
@@ -907,13 +835,6 @@ func TestSearchVectorTextErrorsDisambiguated(t *testing.T) {
 	}
 }
 
-// TestCreateTableRejectsVectorizeWithoutProvider pins the create-time half of
-// the vectorize provider contract: a server that cannot embed must refuse to
-// commit a vectorized schema, with an operator-facing error naming the
-// DOLMEN_EMBED_* configuration — while plain tables, and vectorized tables on
-// a provider-ful server, keep creating. A malformed vectorize request is the
-// caller's to fix and is reported before the provider error, the same
-// table-shape-before-provider ordering search_vector uses.
 func TestCreateTableRejectsVectorizeWithoutProvider(t *testing.T) {
 	errParts := func(res map[string]any) (string, string) {
 		errEnv, _ := res["error"].(map[string]any)
@@ -930,8 +851,6 @@ func TestCreateTableRejectsVectorizeWithoutProvider(t *testing.T) {
 	mustNS(t, srv.URL, "prov")
 	t.Cleanup(srv.Close)
 
-	// (a) vectorize on a provider-less server: rejected at creation time with
-	// the operator fix, and nothing committed.
 	code, res := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "prov", "table": "notes",
 		"fields": []map[string]any{{"name": "body", "type": "text", "vectorize": true}},
@@ -954,7 +873,6 @@ func TestCreateTableRejectsVectorizeWithoutProvider(t *testing.T) {
 		t.Fatalf("the rejected table must not exist, got %d %v", code, res)
 	}
 
-	// (b) the same server keeps creating non-vectorized tables.
 	if code, _ := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "prov", "table": "plain",
 		"fields": []map[string]any{{"name": "s", "type": "string"}},
@@ -962,7 +880,6 @@ func TestCreateTableRejectsVectorizeWithoutProvider(t *testing.T) {
 		t.Fatal("plain create must keep working without a provider")
 	}
 
-	// (c) a provider-ful server keeps creating vectorized tables.
 	srvP := newTestServer(t)
 	mustNS(t, srvP.URL, "prov")
 	if code, _ := post(t, srvP.URL, "create_table", map[string]any{
@@ -972,8 +889,6 @@ func TestCreateTableRejectsVectorizeWithoutProvider(t *testing.T) {
 		t.Fatal("vectorize create must keep working with a provider")
 	}
 
-	// (d) malformed vectorize without a provider reports the field error
-	// first — the caller can fix it without an operator round-trip.
 	code, res = post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "prov", "table": "wrongtype",
 		"fields": []map[string]any{{"name": "n", "type": "number", "vectorize": true}},
@@ -990,10 +905,6 @@ func TestCreateTableRejectsVectorizeWithoutProvider(t *testing.T) {
 	}
 }
 
-// TestMigrateSetVectorizeRequiresProvider pins the migration half of the
-// vectorize provider contract: enabling vectorize on a server that cannot
-// embed is rejected at plan time — apply and dry-run share the guard — with
-// the DOLMEN_EMBED_* pointer, and the table's schema is left untouched.
 func TestMigrateSetVectorizeRequiresProvider(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -1030,7 +941,7 @@ func TestMigrateSetVectorizeRequiresProvider(t *testing.T) {
 			}
 		}
 	}
-	// The rejected migration left the schema untouched.
+
 	code, res := post(t, srv.URL, "describe_table", map[string]any{
 		"namespace": "prov", "table": "notes",
 	})
@@ -1079,7 +990,7 @@ func TestSearchVectorReportsSkippedVectors(t *testing.T) {
 	if code != 200 {
 		t.Fatal("insert failed")
 	}
-	// Corrupt one row the way only an out-of-band SQLite writer could.
+
 	raw, err := sql.Open("sqlite", filepath.Join(dir, "sk.db"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
@@ -1145,9 +1056,6 @@ func (emptyEmb) Embed(ctx context.Context, texts []string) ([][]float32, error) 
 	return [][]float32{}, nil
 }
 
-// EmbedQuery errors like a real provider whose engine returned no vectors
-// for one query text — the count check moved from the api layer into
-// EmbedQuery implementations.
 func (emptyEmb) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
 	return nil, fmt.Errorf("embedding provider returned 0 vectors for one query text")
 }
@@ -1207,7 +1115,6 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 		t.Fatal("insert failed")
 	}
 
-	// filter + args + coercion across several matched rows
 	code, res = post(t, srv.URL, "update", map[string]any{
 		"namespace": "skills",
 		"table":     "findings",
@@ -1219,7 +1126,6 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 		t.Fatalf("update must set 2 rows: %d %v", code, res)
 	}
 
-	// fulltext index follows the new text
 	code, res = post(t, srv.URL, "update", map[string]any{
 		"namespace": "skills", "table": "findings",
 		"filter": "title = 'slow query'",
@@ -1239,7 +1145,6 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 		t.Fatalf("fts must reflect the renamed title, got %v", results)
 	}
 
-	// null clears a field
 	code, _ = post(t, srv.URL, "update", map[string]any{
 		"namespace": "skills", "table": "findings",
 		"filter": "title = 'typo'",
@@ -1259,7 +1164,6 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 		t.Fatalf("confidence must be cleared, got %v", rows[0])
 	}
 
-	// unknown field and missing set are rejected
 	code, _ = post(t, srv.URL, "update", map[string]any{
 		"namespace": "skills", "table": "findings",
 		"filter": "1=1",
@@ -1275,7 +1179,6 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 		t.Fatalf("missing filter must 400, got %d", code)
 	}
 
-	// upsert with no match inserts (and embeds the vectorized field)
 	code, res = post(t, srv.URL, "upsert", map[string]any{
 		"namespace": "skills", "table": "findings",
 		"filter": "title = 'ghost'",
@@ -1307,7 +1210,6 @@ func TestUpdateAndUpsertOverHTTP(t *testing.T) {
 		t.Fatalf("upserted row must be embedded and rank first, got %v", results)
 	}
 
-	// upsert with a match updates instead
 	code, res = post(t, srv.URL, "upsert", map[string]any{
 		"namespace": "skills", "table": "findings",
 		"filter": "title = 'auth bug'",
@@ -1535,7 +1437,6 @@ func TestSemicolonInsideQuotesAllowedAtAPI(t *testing.T) {
 		t.Fatalf("insert failed: %d %v", code, res)
 	}
 
-	// A semicolon inside a quoted literal reaches the store and matches.
 	code, res = post(t, srv.URL, "query", map[string]any{
 		"namespace": "ns", "sql": "SELECT title FROM findings WHERE title = 'a;b'",
 	})
@@ -1547,7 +1448,6 @@ func TestSemicolonInsideQuotesAllowedAtAPI(t *testing.T) {
 		t.Fatalf("unexpected query rows: %v", rows)
 	}
 
-	// A genuine multi-statement query is still rejected by the store.
 	code, _ = post(t, srv.URL, "query", map[string]any{
 		"namespace": "ns", "sql": "SELECT 1; SELECT 2",
 	})
@@ -1555,7 +1455,6 @@ func TestSemicolonInsideQuotesAllowedAtAPI(t *testing.T) {
 		t.Fatalf("expected 400 for multi-statement query, got %d", code)
 	}
 
-	// Same for the delete filter.
 	code, res = post(t, srv.URL, "delete", map[string]any{
 		"namespace": "ns", "table": "findings", "filter": "title = 'a;b'",
 	})
@@ -1597,7 +1496,6 @@ func TestDeleteSafetyHTTP(t *testing.T) {
 		t.Fatalf("insert failed: %d %v", code, res)
 	}
 
-	// dry_run returns matched count without deleting.
 	code, res = post(t, srv.URL, "delete", map[string]any{
 		"namespace": "safety",
 		"table":     "items",
@@ -1612,7 +1510,6 @@ func TestDeleteSafetyHTTP(t *testing.T) {
 		t.Fatalf("dry_run expected matched=3 deleted=0, got %v", data)
 	}
 
-	// Null or out-of-range safety options are rejected at runtime.
 	for _, bad := range []map[string]any{
 		{"namespace": "safety", "table": "items", "filter": "1=1", "dry_run": nil},
 		{"namespace": "safety", "table": "items", "filter": "1=1", "confirm": nil},
@@ -1626,7 +1523,6 @@ func TestDeleteSafetyHTTP(t *testing.T) {
 		}
 	}
 
-	// limit below match count without confirm is rejected.
 	code, res = post(t, srv.URL, "delete", map[string]any{
 		"namespace": "safety",
 		"table":     "items",
@@ -1637,7 +1533,6 @@ func TestDeleteSafetyHTTP(t *testing.T) {
 		t.Fatalf("expected 400 for delete beyond limit without confirm, got %d %v", code, res)
 	}
 
-	// confirm allows deletion beyond the explicit limit.
 	code, res = post(t, srv.URL, "delete", map[string]any{
 		"namespace": "safety",
 		"table":     "items",
@@ -1653,7 +1548,6 @@ func TestDeleteSafetyHTTP(t *testing.T) {
 		t.Fatalf("expected matched=3 deleted=3, got %v", data)
 	}
 
-	// A fresh table for the default-limit guard.
 	code, res = post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "safety2",
 		"table":     "big",
@@ -1701,9 +1595,6 @@ func TestDeleteSafetyHTTP(t *testing.T) {
 	}
 }
 
-// assertTypedHTTPRow checks the typed wire contract on one decoded result row:
-// booleans as JSON booleans, json fields as decoded values, vectors as number
-// arrays, and no hidden _embedding unless it was opted in.
 func assertTypedHTTPRow(t *testing.T, row map[string]any, wantEmbedding bool) {
 	t.Helper()
 	if row["title"] != "typed reads" || row["at"] != "2026-09-01T10:00:00Z" {
@@ -1932,7 +1823,6 @@ func TestMigrateDryRunAndVersionContractOverHTTP(t *testing.T) {
 		t.Fatalf("insert failed: %d %v", code, res)
 	}
 
-	// Destructive changes without expected_version are rejected up front.
 	code, res = post(t, srv.URL, "migrate", map[string]any{
 		"namespace": "mg", "table": "t",
 		"changes": []map[string]any{{"op": "drop_field", "name": "v"}},
@@ -1941,7 +1831,6 @@ func TestMigrateDryRunAndVersionContractOverHTTP(t *testing.T) {
 		t.Fatalf("destructive change without expected_version must 400 naming expected_version, got %d %v", code, res)
 	}
 
-	// Dry-run previews without applying.
 	code, res = post(t, srv.URL, "migrate", map[string]any{
 		"namespace": "mg", "table": "t", "expected_version": 1, "dry_run": true,
 		"changes": []map[string]any{
@@ -1956,8 +1845,7 @@ func TestMigrateDryRunAndVersionContractOverHTTP(t *testing.T) {
 	if data["dry_run"] != true {
 		t.Fatalf("response must be marked dry_run: %v", data)
 	}
-	// The advertised output schema requires table on every migrate response —
-	// dry-run carries the prospective schema at the same key as an apply.
+
 	preview := data["table"].(map[string]any)
 	if preview["version"].(float64) != 2 {
 		t.Fatalf("dry-run table must be the prospective schema, got %v", preview)
@@ -1982,7 +1870,6 @@ func TestMigrateDryRunAndVersionContractOverHTTP(t *testing.T) {
 		t.Fatalf("dry-run must not bump the version, got %v", table["version"])
 	}
 
-	// A stale expected_version conflicts (409), for apply and dry-run alike.
 	code, res = post(t, srv.URL, "migrate", map[string]any{
 		"namespace": "mg", "table": "t", "expected_version": 9,
 		"changes": []map[string]any{{"op": "add_field", "field": map[string]any{"name": "status", "type": "string"}}},
@@ -1998,7 +1885,6 @@ func TestMigrateDryRunAndVersionContractOverHTTP(t *testing.T) {
 		t.Fatalf("dry-run with stale expected_version must 409 too, got %d %v", code, res)
 	}
 
-	// The apply lands and is recorded in history.
 	code, res = post(t, srv.URL, "migrate", map[string]any{
 		"namespace": "mg", "table": "t", "expected_version": 1,
 		"changes": []map[string]any{
@@ -2137,7 +2023,7 @@ func TestMigrateJSONDefaultAllowsNestedNulls(t *testing.T) {
 	if !ok || len(tags) != 3 || tags[1] != nil || tags[0] != float64(1) {
 		t.Fatalf("nulls inside default arrays must round-trip: %v", meta)
 	}
-	// A direct null default is still meaningless (indistinguishable from absent) and stays rejected.
+
 	code, res = post(t, srv.URL, "migrate", map[string]any{
 		"namespace": "jn", "table": "t",
 		"changes": []map[string]any{
@@ -2147,7 +2033,7 @@ func TestMigrateJSONDefaultAllowsNestedNulls(t *testing.T) {
 	if code != 400 {
 		t.Fatalf("a literal null default must still 400, got %d %v", code, res)
 	}
-	// Null control fields elsewhere in the request stay rejected.
+
 	code, res = post(t, srv.URL, "migrate", map[string]any{
 		"namespace": "jn", "table": "t",
 		"changes": []map[string]any{
@@ -2223,7 +2109,7 @@ func TestListMigrationsRecordsExplicitFalseValues(t *testing.T) {
 	if !present || v != false {
 		t.Fatalf("history must carry an explicit value:false for disable ops (replayable through migrate), got %v (present=%v)", v, present)
 	}
-	// The recorded change replays through the migrate endpoint as-is.
+
 	code, res = post(t, srv.URL, "migrate", map[string]any{
 		"namespace": "vf", "table": "t", "expected_version": 2, "changes": []any{ch},
 	})
@@ -2281,8 +2167,7 @@ func TestMigrateRejectsValueOnNonFlagChanges(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("create failed: %d %v", code, res)
 	}
-	// A caller-supplied value on a non-flag change is meaningless and must be
-	// rejected outright, not silently recorded into history.
+
 	code, res = post(t, srv.URL, "migrate", map[string]any{
 		"namespace": "rv", "table": "t",
 		"changes": []map[string]any{
@@ -2292,7 +2177,7 @@ func TestMigrateRejectsValueOnNonFlagChanges(t *testing.T) {
 	if code != 400 {
 		t.Fatalf("add_field with a value must 400, got %d %v", code, res)
 	}
-	// The flag ops keep requiring the key.
+
 	code, res = post(t, srv.URL, "migrate", map[string]any{
 		"namespace": "rv", "table": "t",
 		"changes": []map[string]any{{"op": "set_fulltext", "name": "title"}},
@@ -2330,7 +2215,6 @@ func TestSearchVectorFilterAndMinScoreOverHTTP(t *testing.T) {
 		t.Fatalf("insert failed: %d %v", code, res)
 	}
 
-	// filter with bound arg before scoring
 	code, res = post(t, srv.URL, "search_vector", map[string]any{
 		"namespace": "skills",
 		"table":     "findings",
@@ -2346,7 +2230,6 @@ func TestSearchVectorFilterAndMinScoreOverHTTP(t *testing.T) {
 		t.Fatalf("expected auth bug only, got %v", results)
 	}
 
-	// min_score threshold before ranking/limit
 	code, res = post(t, srv.URL, "search_vector", map[string]any{
 		"namespace": "skills",
 		"table":     "findings",
@@ -2361,7 +2244,6 @@ func TestSearchVectorFilterAndMinScoreOverHTTP(t *testing.T) {
 		t.Fatalf("expected one high-confidence hit, got %v", results)
 	}
 
-	// filter + min_score together
 	code, res = post(t, srv.URL, "search_vector", map[string]any{
 		"namespace": "skills",
 		"table":     "findings",
@@ -2378,7 +2260,6 @@ func TestSearchVectorFilterAndMinScoreOverHTTP(t *testing.T) {
 		t.Fatalf("expected auth bug with combined constraints, got %v", results)
 	}
 
-	// null bind arguments are allowed in filter args
 	code, res = post(t, srv.URL, "search_vector", map[string]any{
 		"namespace": "skills",
 		"table":     "findings",
@@ -2390,7 +2271,6 @@ func TestSearchVectorFilterAndMinScoreOverHTTP(t *testing.T) {
 		t.Fatalf("null in filter args must be accepted, got %d %v", code, res)
 	}
 
-	// null vector entries are still rejected
 	code, res = post(t, srv.URL, "search_vector", map[string]any{
 		"namespace": "skills",
 		"table":     "findings",
@@ -2400,7 +2280,6 @@ func TestSearchVectorFilterAndMinScoreOverHTTP(t *testing.T) {
 		t.Fatalf("null vector entries must 400, got %d %v", code, res)
 	}
 
-	// invalid filter is rejected
 	code, res = post(t, srv.URL, "search_vector", map[string]any{
 		"namespace": "skills",
 		"table":     "findings",
@@ -2440,7 +2319,6 @@ func TestSearchFulltextFilterOverHTTP(t *testing.T) {
 		t.Fatalf("insert failed: %d %v", code, res)
 	}
 
-	// filter with bound arg restricts matches before ranking
 	code, res = post(t, srv.URL, "search_fulltext", map[string]any{
 		"namespace": "skills",
 		"table":     "findings",
@@ -2456,7 +2334,6 @@ func TestSearchFulltextFilterOverHTTP(t *testing.T) {
 		t.Fatalf("expected auth token bug only, got %v", results)
 	}
 
-	// unfiltered search still returns every match
 	code, res = post(t, srv.URL, "search_fulltext", map[string]any{
 		"namespace": "skills",
 		"table":     "findings",
@@ -2470,7 +2347,6 @@ func TestSearchFulltextFilterOverHTTP(t *testing.T) {
 		t.Fatalf("expected both auth rows unfiltered, got %v", results)
 	}
 
-	// null bind arguments are allowed in filter args
 	code, res = post(t, srv.URL, "search_fulltext", map[string]any{
 		"namespace": "skills",
 		"table":     "findings",
@@ -2486,7 +2362,6 @@ func TestSearchFulltextFilterOverHTTP(t *testing.T) {
 		t.Fatalf("null confidence binds SQL NULL and matches nothing, got %v", results)
 	}
 
-	// null outside args is still rejected
 	code, _ = post(t, srv.URL, "search_fulltext", map[string]any{
 		"namespace": "skills",
 		"table":     "findings",
@@ -2496,7 +2371,6 @@ func TestSearchFulltextFilterOverHTTP(t *testing.T) {
 		t.Fatalf("null query must 400, got %d", code)
 	}
 
-	// invalid filters are rejected like search_vector's
 	code, _ = post(t, srv.URL, "search_fulltext", map[string]any{
 		"namespace": "skills",
 		"table":     "findings",
@@ -2541,8 +2415,6 @@ func TestCreateTableDefaultsEndToEnd(t *testing.T) {
 		t.Fatalf("created schema must echo the default, got %v", qty["default"])
 	}
 
-	// Inserts omitting defaulted fields store them (including the nested-null
-	// json default); describe reflects the declarations.
 	code, res = post(t, srv.URL, "insert", map[string]any{
 		"namespace": "e2e", "table": "items", "records": []map[string]any{{"sku": "a"}},
 	})
@@ -2567,7 +2439,6 @@ func TestCreateTableDefaultsEndToEnd(t *testing.T) {
 		t.Fatalf("nested-null json default must round-trip, got %v", row["meta"])
 	}
 
-	// The defaulted fulltext value is indexed.
 	code, res = post(t, srv.URL, "search_fulltext", map[string]any{
 		"namespace": "e2e", "table": "items", "query": "standard",
 	})
@@ -2590,7 +2461,6 @@ func TestCreateTableDefaultsEndToEnd(t *testing.T) {
 		t.Fatalf("describe_table must reflect the default, got %v", note["default"])
 	}
 
-	// Invalid default combinations are rejected with a clear error.
 	code, res = post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "e2e", "table": "bad",
 		"fields": []map[string]any{{"name": "a", "type": "string", "required": true, "default": "x"}},
@@ -2606,7 +2476,6 @@ func TestCreateTableDefaultsEndToEnd(t *testing.T) {
 		t.Fatalf("null default must 400, got %d %v", code, res)
 	}
 
-	// The OpenAPI document describes the default on the Field schema.
 	doc, err := http.Get(srv.URL + "/v1/openapi.json")
 	if err != nil {
 		t.Fatalf("get openapi: %v", err)
@@ -2634,9 +2503,7 @@ func TestDescribeServerEmbeddingStatus(t *testing.T) {
 			want: map[string]any{"provider": "none", "usable": false},
 		},
 		{
-			// The base URL carries HTTP userinfo: the identity (and so the
-			// response) must not — credentials authenticate requests, they
-			// do not name the embedding space.
+
 			name: "openai reports model and the identity that pins tables",
 			emb:  &embed.OpenAI{BaseURL: "https://user:sk-test-secret@proxy.example/v1", Model: "text-embedding-3-small", APIKey: "sk-test-secret"},
 			want: map[string]any{

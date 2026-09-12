@@ -75,10 +75,6 @@ func bareHyphenTerm(match string) bool {
 	return false
 }
 
-// SearchFulltext executes a full-text search (§6.2, §7). includeHidden must
-// cross the seam: truncated is computed against the projected response-byte
-// budget inside the engine. TODO(9d): scope and scopeIncarnation are ignored
-// while auth is off — a non-nil scope will filter visible rows.
 func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string, filter string, args []any, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (SearchResult, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
@@ -117,15 +113,10 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 		}
 	}
 
-	// Fetch limit+1 ids so we can tell the caller whether more results exist.
 	stmt := fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? ORDER BY rank, rowid LIMIT ? OFFSET ?`,
 		q(ftsTable(table)), ftsTable(table))
 	qargs := []any{match, limit + 1, offset}
-	// classify attributes a failure of the combined query (at issue or during
-	// iteration): without a filter it is the store's own FTS-query error; with
-	// one, both user expressions have been validated by the probes below, so
-	// what remains is the filter evaluating against real rows at runtime
-	// (e.g. json_extract over non-JSON stored text) — a filter failure.
+
 	classify := func(err error) error {
 		if filter != "" {
 			return NewFilterError(filter, err)
@@ -133,11 +124,7 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 		return fmt.Errorf("%w: %w", ErrInvalid, NewRedactedSQLite(err))
 	}
 	if filter != "" {
-		// Validate each user expression on its own so failures are attributed
-		// to the expression that caused them: LIMIT 0 compiles the filter
-		// (syntax, column references, bind arity) without evaluating rows, and
-		// a LIMIT 1 candidate query parses the MATCH expression with at most
-		// one inverted-index probe.
+
 		probe, err := tx.QueryContext(ctx,
 			fmt.Sprintf(`SELECT 1 FROM %s WHERE %s LIMIT 0`, q(table), filter), args...)
 		if err != nil {
@@ -171,9 +158,7 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 	if err := rows.Err(); err != nil {
 		return SearchResult{}, classify(err)
 	}
-	// The (limit+1)th id is only a look-ahead for truncated — never fetch it,
-	// or an invalid value in that row would fail the whole page instead of
-	// returning the valid rows with truncated=true.
+
 	hasMore := len(ids) > limit
 	if hasMore {
 		ids = ids[:limit]
@@ -185,19 +170,6 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 	return SearchResult{Rows: out, Truncated: hasMore || !complete}, nil
 }
 
-// fulltextFilterStmt is the filtered FTS candidate query. The filter
-// restricts base-table rows before ranking, with the same semantics as
-// search_vector's filter: its WHERE expression runs against the base table
-// alone — no join — so bare and table-qualified column names resolve exactly
-// as they do there, and the FTS table's duplicate column names (or a base
-// field named rank) cannot make a reference ambiguous. The filter text comes
-// first and its placeholders keep numbers 1..nargs, with the internal MATCH
-// and pagination parameters explicitly numbered after them, so positional
-// and numbered (?NNN) placeholders alike bind from args with the same
-// numbering the filter has standalone. The predicate is correlated to each
-// FTS hit, so SQLite checks it with one primary-key id lookup per MATCH
-// result instead of scanning or materializing the filter's matches when the
-// filter is unselective.
 func fulltextFilterStmt(table, filter string, nargs int) string {
 	return fmt.Sprintf(`SELECT rowid FROM %s WHERE EXISTS (SELECT 1 FROM %s WHERE %s.id = %s.rowid AND (%s)) AND %s MATCH ?%d ORDER BY rank, rowid LIMIT ?%d OFFSET ?%d`,
 		q(ftsTable(table)), q(table), q(table), ftsTable(table), filter, ftsTable(table), nargs+1, nargs+2, nargs+3)
@@ -207,10 +179,6 @@ type dbQueryer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// fetchByIDs reads the full rows for ids (in that order) through proj, the
-// shared typed-read projection. It returns complete=true when every row fit
-// within the response budget, or false when a row was skipped because it would
-// have exceeded the budget.
 func fetchByIDs(ctx context.Context, db dbQueryer, table string, ids []int64, proj *projection) ([]map[string]any, bool, error) {
 	if len(ids) == 0 {
 		return []map[string]any{}, true, nil
@@ -300,35 +268,20 @@ scan:
 	return out, complete, nil
 }
 
-// DefaultDeleteLimit is the maximum number of matching rows a delete can
-// remove without an explicit limit or confirm: true.
 const DefaultDeleteLimit = 1000
 
-// DeleteOptions controls how Delete behaves: dry-run preview, a user-supplied
-// limit (threshold), and an explicit confirmation to delete beyond the limit.
 type DeleteOptions struct {
 	DryRun  bool
 	Limit   int
 	Confirm bool
 }
 
-// DeleteResult reports how many rows matched the filter and how many were
-// actually deleted (zero when DryRun is true), plus the change-log cursor
-// range the delete's transaction minted (§6.2 of the design spec: every
-// write result carries one; zero when the transaction minted no records,
-// e.g. a dry run or a delete that matched nothing).
 type DeleteResult struct {
 	Matched int64
 	Deleted int64
 	Changes ChangeRange
 }
 
-// Delete removes rows matching the filter (§6.2), enforcing the safety
-// threshold inside the delete transaction. DeleteResult carries the
-// ChangeRange the transaction minted (§6.2, §9.3): one delete record per
-// removed row — zero on a dry run or a delete that matched nothing.
-// TODO(9d): scope and scopeIncarnation are ignored while auth is off — a
-// non-nil scope will filter which rows may be matched.
 func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation) (DeleteResult, error) {
 	where = strings.TrimSpace(where)
 	if where == "" {
@@ -345,8 +298,6 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 		return DeleteResult{}, err
 	}
 
-	// Dry-run is a pure count: use the read-only connection, validate the
-	// table and filter, and return the matched rows without modifying data.
 	if opts.DryRun {
 		if _, err := loadSchema(ctx, n.ro, nsName, table); err != nil {
 			return DeleteResult{}, err
@@ -406,12 +357,7 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	if err != nil {
 		return DeleteResult{}, err
 	}
-	// One delete record per removed row (§9.3), minted straight from the
-	// pre-delete id materialization — a single INSERT…SELECT, so a confirmed
-	// bulk delete (no match-count cap) never materializes its matched ids in
-	// the server (§6.2). The owner label is the deleted row's own, stamped
-	// from those pre-delete rows; it stays NULL until stamping lands (slice
-	// 9c), when the read joins the owner column onto the materialization.
+
 	changes, err := mintChangesFromTemp(ctx, tx, table, ChangeDelete, `_dolmen_delete_ids`)
 	if err != nil {
 		return DeleteResult{}, err
@@ -422,9 +368,7 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	if err := tx.Commit(); err != nil {
 		return DeleteResult{}, err
 	}
-	// §9.3: notification happens after commit — rows and log are durable
-	// before any waiter wakes (a dry run returned above without a write; a
-	// delete that matched nothing wakes nobody).
+
 	s.notifyCommitted(nsName, table, changes)
 	return DeleteResult{Matched: matched, Deleted: deleted, Changes: changes}, nil
 }

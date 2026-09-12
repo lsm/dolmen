@@ -6,10 +6,6 @@ import (
 	"testing"
 )
 
-// The enum annotation's contract, pinned at both transports: a non-member
-// write is rejected with the same actionable message over /v1 and MCP, the
-// vocabulary is visible in tools/list and /v1/openapi.json, and set_enum
-// evolution verifies stored rows before dropping values.
 func TestEnumWriteRejectionParity(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("voc", "incidents", []map[string]any{
@@ -17,7 +13,6 @@ func TestEnumWriteRejectionParity(t *testing.T) {
 		{"name": "severity", "type": "string", "enum": []string{"SEV0", "SEV1", "SEV2", "SEV3"}},
 	})
 
-	// describe_table shows the declared vocabulary over both transports.
 	httpTable := h.mustHTTP("describe_table", map[string]any{"namespace": "voc", "table": "incidents"})["table"].(map[string]any)
 	mcpTable := h.mustMCP("describe_table", map[string]any{"namespace": "voc", "table": "incidents"})["table"].(map[string]any)
 	sev := func(table map[string]any) map[string]any {
@@ -36,7 +31,6 @@ func TestEnumWriteRejectionParity(t *testing.T) {
 		t.Fatalf("describe_table must carry the declared enum verbatim, got %v", got)
 	}
 
-	// The canonical typo stores on neither transport, with the same message.
 	bad := map[string]any{"namespace": "voc", "table": "incidents", "records": []map[string]any{{"title": "typo", "severity": "opn"}}}
 	status, body := h.httpCall("insert", bad)
 	if status != http.StatusBadRequest {
@@ -58,7 +52,6 @@ func TestEnumWriteRejectionParity(t *testing.T) {
 		t.Fatalf("rejection message must be identical over both transports:\nhttp: %q\nmcp:  %q", httpMsg, mcpMsg)
 	}
 
-	// update and upsert_by_key reject identically too.
 	status, body = h.httpCall("update", map[string]any{
 		"namespace": "voc", "table": "incidents", "filter": "1=1",
 		"set": map[string]any{"severity": "urgent"},
@@ -78,7 +71,6 @@ func TestEnumWriteRejectionParity(t *testing.T) {
 	wantMessage(t, "mcp upsert rejection", res.toolError()["message"].(string),
 		`field "severity": value "sev1" is not one of the allowed enum values \(SEV0, SEV1, SEV2, SEV3\)`)
 
-	// Members store as written (exact match, no folding).
 	out := h.mustHTTP("insert", map[string]any{
 		"namespace": "voc", "table": "incidents",
 		"records": []map[string]any{{"title": "real", "severity": "SEV1"}},
@@ -94,8 +86,6 @@ func TestEnumWriteRejectionParity(t *testing.T) {
 	}
 }
 
-// The vocabulary is visible before any call: tools/list declares the enum
-// annotation and /v1/openapi.json carries it on the Field component.
 func TestEnumVisibleInSchemas(t *testing.T) {
 	h := newHarness(t)
 
@@ -146,9 +136,6 @@ func TestEnumVisibleInSchemas(t *testing.T) {
 	}
 }
 
-// set_enum lifecycle over HTTP: adding is safe, removing an in-use value is
-// rejected naming the value and its row count, and clearing removes the
-// constraint. A declared default must stay a member.
 func TestEnumSetEnumSemantics(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("voc", "incidents", []map[string]any{
@@ -163,7 +150,6 @@ func TestEnumSetEnumSemantics(t *testing.T) {
 		},
 	})
 
-	// Constraining over a stored non-member value is rejected with the count.
 	status, body := h.httpCall("migrate", map[string]any{
 		"namespace": "voc", "table": "incidents",
 		"changes": []map[string]any{{"op": "set_enum", "name": "severity", "enum": []string{"SEV1"}}},
@@ -174,7 +160,6 @@ func TestEnumSetEnumSemantics(t *testing.T) {
 	wantMessage(t, "in-use value", envelopeOf(t, body)["message"].(string),
 		`cannot apply this enum — "SEV2" is stored by 1 rows`)
 
-	// A vocabulary covering the data applies and bumps the version.
 	out := h.mustHTTP("migrate", map[string]any{
 		"namespace": "voc", "table": "incidents",
 		"changes": []map[string]any{{"op": "set_enum", "name": "severity", "enum": []string{"SEV1", "SEV2"}}},
@@ -183,7 +168,6 @@ func TestEnumSetEnumSemantics(t *testing.T) {
 		t.Fatalf("set_enum must bump the version: %v", out)
 	}
 
-	// Removing the value rows still use is the same rejection.
 	status, body = h.httpCall("migrate", map[string]any{
 		"namespace": "voc", "table": "incidents",
 		"changes": []map[string]any{{"op": "set_enum", "name": "severity", "enum": []string{"SEV2"}}},
@@ -194,7 +178,6 @@ func TestEnumSetEnumSemantics(t *testing.T) {
 	wantMessage(t, "in-use value", envelopeOf(t, body)["message"].(string),
 		`"SEV1" is stored by 1 rows`)
 
-	// Adding is safe and immediately writable.
 	h.mustHTTP("migrate", map[string]any{
 		"namespace": "voc", "table": "incidents",
 		"changes": []map[string]any{{"op": "set_enum", "name": "severity", "enum": []string{"SEV1", "SEV2", "SEV3"}}},
@@ -204,7 +187,6 @@ func TestEnumSetEnumSemantics(t *testing.T) {
 		"records": []map[string]any{{"title": "c", "severity": "SEV3"}},
 	})
 
-	// Clearing (an explicit empty array) removes the constraint entirely.
 	h.mustHTTP("migrate", map[string]any{
 		"namespace": "voc", "table": "incidents",
 		"changes": []map[string]any{{"op": "set_enum", "name": "severity", "enum": []string{}}},
@@ -214,7 +196,6 @@ func TestEnumSetEnumSemantics(t *testing.T) {
 		"records": []map[string]any{{"title": "free", "severity": "anything"}},
 	})
 
-	// The default-membership rule at create time, with the enum message shape.
 	status, body = h.httpCall("create_table", map[string]any{
 		"namespace": "voc", "table": "bad",
 		"fields": []map[string]any{{"name": "severity", "type": "string", "enum": []string{"SEV0"}, "default": "SEV9"}},
@@ -225,7 +206,6 @@ func TestEnumSetEnumSemantics(t *testing.T) {
 	wantMessage(t, "default membership", envelopeOf(t, body)["message"].(string),
 		`field "severity": value "SEV9" is not one of the allowed enum values \(SEV0\)`)
 
-	// set_enum without an enum array is rejected at the key-validation layer.
 	status, body = h.httpCall("migrate", map[string]any{
 		"namespace": "voc", "table": "incidents",
 		"changes": []map[string]any{{"op": "set_enum", "name": "severity"}},

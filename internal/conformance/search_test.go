@@ -7,9 +7,6 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-// FTS5 syntax invariants: the documented accept/reject set from the README's
-// full-text search section. Accepted expressions return ok; rejected ones
-// fail with the fts5 syntax error class.
 func TestSearchFulltextSyntaxAcceptReject(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("fts", "t", []map[string]any{
@@ -52,7 +49,6 @@ func TestSearchFulltextSyntaxAcceptReject(t *testing.T) {
 		})
 	}
 
-	// "cafe" must actually match a stored diacritic (café) row.
 	h.mustHTTP("insert", map[string]any{
 		"namespace": "fts", "table": "t",
 		"records": []map[string]any{{"title": "café latte", "body": "diacritics"}},
@@ -101,8 +97,6 @@ func TestSearchFulltextSyntaxAcceptReject(t *testing.T) {
 		t.Fatalf("bare hyphenated term must teach the quoting fix:\n got %s\nwant %s", msg, want)
 	}
 
-	// Ranking: BM25 relevance with stable id tie-breaking; more relevant
-	// documents (more matches in the indexed fields) come first.
 	data = h.mustHTTP("search_fulltext", map[string]any{
 		"namespace": "fts", "table": "t", "query": "payment OR refund",
 	})
@@ -110,22 +104,18 @@ func TestSearchFulltextSyntaxAcceptReject(t *testing.T) {
 	if len(results) < 2 {
 		t.Fatalf("expected matches, got %v", results)
 	}
-	// "refund issued"/"payment was refunded" both contain refund; the row
-	// containing both tokens ranks first.
+
 	first := results[0].(map[string]any)
 	if first["title"] != "refund issued" && first["body"] != "payment was refunded" {
 		t.Fatalf("dual-token row must rank first, got %v", first)
 	}
-	// Deterministic ordering: same query twice returns the same order.
+
 	again := h.mustHTTP("search_fulltext", map[string]any{
 		"namespace": "fts", "table": "t", "query": "payment OR refund",
 	})
 	assertJSONEqual(t, "stable ordering", again["results"], data["results"])
 }
 
-// Stemming invariants (#147): inflected query terms match indexed singulars,
-// prefix and phrase terms operate on stems, and a table whose index predates
-// stemming keeps working until the set_fulltext re-assert reindexes it.
 func TestSearchFulltextStemming(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("stems", "t", []map[string]any{
@@ -137,11 +127,11 @@ func TestSearchFulltextStemming(t *testing.T) {
 	})
 
 	for q, want := range map[string]int{
-		"payments":        1, // the issue's trap: plural matches singular
-		"refunds":         1, // inflected matches the indexed "refunded"
-		"payment*":        1, // prefix over payment's own stem
-		`"payments were"`: 1, // phrase terms stem before adjacency
-		"pay*":            0, // stems to pai*, which does not reach payment
+		"payments":        1,
+		"refunds":         1,
+		"payment*":        1,
+		`"payments were"`: 1,
+		"pay*":            0,
 	} {
 		data := h.mustHTTP("search_fulltext", map[string]any{
 			"namespace": "stems", "table": "t", "query": q,
@@ -151,10 +141,6 @@ func TestSearchFulltextStemming(t *testing.T) {
 		}
 	}
 
-	// Plant a pre-stemming index the way an older binary would have written
-	// it (exact-token, no porter). It keeps matching exact tokens and misses
-	// inflected queries — existing tables keep working, unstemmed, until
-	// reindexed.
 	h.outOfBand("stems", func(db *sqlDB) error {
 		if _, err := db.Exec(`DROP TABLE IF EXISTS "t__fts"`); err != nil {
 			return err
@@ -178,7 +164,6 @@ func TestSearchFulltextStemming(t *testing.T) {
 		t.Fatalf("exact-token index must not stem: %d results", got)
 	}
 
-	// The dry-run plan reports the rebuild without applying it.
 	plan := h.mustHTTP("migrate", map[string]any{
 		"namespace": "stems", "table": "t", "dry_run": true,
 		"changes": []map[string]any{{"op": "set_fulltext", "name": "body", "value": true}},
@@ -197,7 +182,6 @@ func TestSearchFulltextStemming(t *testing.T) {
 		t.Fatalf("dry-run must leave the old index in place: %d results", got)
 	}
 
-	// Re-asserting set_fulltext = true applies the reindex.
 	out := h.mustHTTP("migrate", map[string]any{
 		"namespace": "stems", "table": "t", "expected_version": 1,
 		"changes": []map[string]any{{"op": "set_fulltext", "name": "body", "value": true}},
@@ -213,9 +197,6 @@ func TestSearchFulltextStemming(t *testing.T) {
 	}
 }
 
-// Vector-search invariants: _score equals the locally computed cosine of the
-// query against each stored vector (float32 math), ordering is by descending
-// score with stable id tie-breaking, and identical vectors score 1.
 func TestSearchVectorScoreIsLocalCosine(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("vec", "t", []map[string]any{
@@ -224,7 +205,7 @@ func TestSearchVectorScoreIsLocalCosine(t *testing.T) {
 	})
 	vectors := map[string][]float32{
 		"same":     {1, 0, 0, 0},
-		"tied":     {1, 0, 0, 0}, // identical vector: equal-score tie with "same"
+		"tied":     {1, 0, 0, 0},
 		"half":     {1, 1, 0, 0},
 		"ortho":    {0, 0, 1, 0},
 		"opposite": {-1, 0, 0, 0},
@@ -275,7 +256,7 @@ func TestSearchVectorScoreIsLocalCosine(t *testing.T) {
 		if math.Abs(score-want) > 1e-6 {
 			t.Fatalf("%s _score %v, want local cosine %v", name, score, want)
 		}
-		// Descending score, then ascending id on ties.
+
 		if score > prev+1e-12 || (score == prev && id < prevID) {
 			t.Fatalf("ordering violated at %s: score %v after %v", name, score, prev)
 		}
@@ -290,8 +271,7 @@ func TestSearchVectorScoreIsLocalCosine(t *testing.T) {
 	if math.Abs(byName["ortho"]) > 1e-6 {
 		t.Fatalf("orthogonal vector must score 0, got %v", byName["ortho"])
 	}
-	// The equal-score pair must be adjacent in ascending id order — the
-	// documented stable tie-break, now actually exercised.
+
 	tie := []int64{}
 	for _, r := range results[:2] {
 		tie = append(tie, int64val(t, "tied row id", r.(map[string]any)["id"]))
@@ -300,7 +280,6 @@ func TestSearchVectorScoreIsLocalCosine(t *testing.T) {
 		t.Fatalf("equal-score rows must order by ascending id, got %v", tie)
 	}
 
-	// min_score drops lower-similarity rows before ranking and limit.
 	data = h.mustHTTP("search_vector", map[string]any{
 		"namespace": "vec", "table": "t", "column": "v", "vector": query, "min_score": 0.5,
 	})
@@ -308,11 +287,10 @@ func TestSearchVectorScoreIsLocalCosine(t *testing.T) {
 	for _, r := range data["results"].([]any) {
 		names = append(names, r.(map[string]any)["name"].(string))
 	}
-	if len(names) != 3 { // the two 1.0 ties and half (~0.707)
+	if len(names) != 3 {
 		t.Fatalf("min_score 0.5 must keep 3 rows, got %v", names)
 	}
 
-	// offset/limit page deterministically: limit 2 offset 3 is the tail.
 	data = h.mustHTTP("search_vector", map[string]any{
 		"namespace": "vec", "table": "t", "column": "v", "vector": query, "limit": 2, "offset": 3,
 	})
@@ -328,9 +306,6 @@ func TestSearchVectorScoreIsLocalCosine(t *testing.T) {
 	}
 }
 
-// skipped_vectors: stored vectors corrupted by an out-of-band writer (wrong
-// storage type or wrong shape) are skipped and counted, never silently
-// dropped and never fatal.
 func TestSearchVectorSkippedVectors(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("vec", "s", []map[string]any{
@@ -348,10 +323,6 @@ func TestSearchVectorSkippedVectors(t *testing.T) {
 		},
 	})
 
-	// Out-of-band writer corrupts four stored vectors, one per documented
-	// skip shape: a non-BLOB value, a malformed BLOB (odd byte length), a
-	// well-formed float32 blob of the wrong dimension, and a well-formed
-	// blob containing a non-finite component.
 	rows := h.mustHTTP("query", map[string]any{
 		"namespace": "vec", "sql": "SELECT id, name FROM s ORDER BY id",
 	})["rows"].([]any)
@@ -369,11 +340,11 @@ func TestSearchVectorSkippedVectors(t *testing.T) {
 		if _, err := db.Exec("UPDATE s SET v = 'not a blob' WHERE id = ?", idOf("text-corrupt")); err != nil {
 			return err
 		}
-		if _, err := db.Exec("UPDATE s SET v = x'0102' WHERE id = ?", idOf("short-blob")); err != nil { // odd, invalid shape
+		if _, err := db.Exec("UPDATE s SET v = x'0102' WHERE id = ?", idOf("short-blob")); err != nil {
 			return err
 		}
 		if _, err := db.Exec("UPDATE s SET v = ? WHERE id = ?",
-			schema.EncodeVector([]float32{1, 0, 1, 0}), idOf("dim-mismatch")); err != nil { // 4 floats in a dim-2 column
+			schema.EncodeVector([]float32{1, 0, 1, 0}), idOf("dim-mismatch")); err != nil {
 			return err
 		}
 		_, err := db.Exec("UPDATE s SET v = ? WHERE id = ?",
@@ -396,9 +367,6 @@ func TestSearchVectorSkippedVectors(t *testing.T) {
 	}
 }
 
-// NULL-embedding exclusion: rows whose vectorize field was null, empty, or
-// absent have a NULL _embedding and are excluded from text vector search —
-// they are not results and not skipped.
 func TestSearchVectorNullEmbeddingExclusion(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("vecz", "t", []map[string]any{
@@ -409,9 +377,9 @@ func TestSearchVectorNullEmbeddingExclusion(t *testing.T) {
 		"namespace": "vecz", "table": "t",
 		"records": []map[string]any{
 			{"body": "embedded text one", "tag": "a"},
-			{"body": "", "tag": "b"},  // empty string → not embedded
-			{"body": nil, "tag": "d"}, // explicit null → stored NULL, not embedded
-			{"tag": "c"},              // absent → not embedded
+			{"body": "", "tag": "b"},
+			{"body": nil, "tag": "d"},
+			{"tag": "c"},
 		},
 	})
 
@@ -431,21 +399,18 @@ func TestSearchVectorNullEmbeddingExclusion(t *testing.T) {
 	if data["truncated"] != false {
 		t.Fatalf("single result page is not truncated: %v", data["truncated"])
 	}
-	// The row_count still reports all four rows.
+
 	desc := h.mustHTTP("describe_table", map[string]any{"namespace": "vecz", "table": "t"})
 	if int64val(t, "row count", desc["row_count"]) != 4 {
 		t.Fatalf("all rows stored: %v", desc["row_count"])
 	}
-	// The explicit null reads back as SQL NULL, never an embedding.
+
 	row := h.mustHTTP("query", map[string]any{
 		"namespace": "vecz", "sql": "SELECT body FROM t WHERE tag = 'd'",
 	})["rows"].([]any)[0].(map[string]any)
 	assertJSONEqual(t, "explicit null vectorized field reads NULL", row["body"], nil)
 }
 
-// search_fulltext filter/args (#120): the optional SQL WHERE filter applies
-// before ranking with the same semantics as search_vector's, and its failure
-// classes match the established filter-error contract.
 func TestSearchFulltextFilterArgs(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("ftsf", "t", []map[string]any{
@@ -460,7 +425,6 @@ func TestSearchFulltextFilterArgs(t *testing.T) {
 		},
 	})
 
-	// The filter narrows the match set before ranking; args bind values.
 	data := h.mustHTTP("search_fulltext", map[string]any{
 		"namespace": "ftsf", "table": "t", "query": "payment",
 		"filter": "tag = ?", "args": []any{"a"},
@@ -470,8 +434,6 @@ func TestSearchFulltextFilterArgs(t *testing.T) {
 		t.Fatalf("filter must narrow to the tagged row, got %v", results)
 	}
 
-	// Failure classes: statement-level rejections are invalid_request;
-	// execution failures are query_error with WHERE-expression guidance.
 	status, body := h.httpCall("search_fulltext", map[string]any{
 		"namespace": "ftsf", "table": "t", "query": "payment", "filter": "tag = 'a'; DROP",
 	})
@@ -497,8 +459,6 @@ func TestSearchFulltextFilterArgs(t *testing.T) {
 	wantMessage(t, "malformed filter", errObj["message"].(string), `single SQL WHERE expression`)
 }
 
-// Search pagination contract: truncated is true exactly when more results
-// exist beyond the returned page.
 func TestSearchTruncatedContract(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("trunc", "t", []map[string]any{{"name": "title", "type": "string", "fulltext": true}})
@@ -513,13 +473,13 @@ func TestSearchTruncatedContract(t *testing.T) {
 		wantLen       int
 		wantTruncated bool
 	}{
-		{10, 0, 10, true},   // default page of 25
-		{10, 5, 10, true},   // middle page, more remain
-		{10, 15, 10, false}, // 15+10 = 25 exactly exhausts the set
-		{10, 20, 5, false},  // tail page is not truncated
-		{25, 0, 25, false},  // whole set in one page
-		{30, 0, 25, false},  // limit above the match count
-		{10, 25, 0, false},  // past the end
+		{10, 0, 10, true},
+		{10, 5, 10, true},
+		{10, 15, 10, false},
+		{10, 20, 5, false},
+		{25, 0, 25, false},
+		{30, 0, 25, false},
+		{10, 25, 0, false},
 	}
 	for _, c := range cases {
 		data := h.mustHTTP("search_fulltext", map[string]any{

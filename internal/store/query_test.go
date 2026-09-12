@@ -398,9 +398,7 @@ func TestDuplicateColumnLabelsRejected(t *testing.T) {
 	if _, _, err := st.Query(ctx, "test", "SELECT 1 AS a, 2 AS a", nil, 0, 0); err == nil {
 		t.Fatal("expected duplicate column labels to be rejected")
 	}
-	// A statement with its own LIMIT takes the wrapped-subquery fallback,
-	// where SQLite would rename the duplicate (a, a:1) instead of letting
-	// rowsToMaps reject it; the fallback must preserve the rejection.
+
 	if _, _, err := st.Query(ctx, "test", "SELECT 1 AS a, 2 AS a LIMIT 1", nil, 0, 0); err == nil {
 		t.Fatal("expected duplicate column labels to be rejected through the wrapped fallback")
 	}
@@ -574,9 +572,7 @@ func TestQueryAllowsKeywordTableNames(t *testing.T) {
 	st := openStore(t)
 	mustNS(t, st, "test")
 	ctx := context.Background()
-	// SQL keyword table names predate the keyword reservation, so simulate the
-	// legacy tables through the namespace connection like the grandfathering
-	// test; the guard must keep serving them.
+
 	n, err := st.ns("test")
 	if err != nil {
 		t.Fatalf("ns: %v", err)
@@ -595,7 +591,7 @@ func TestQueryAllowsKeywordTableNames(t *testing.T) {
 			t.Fatalf("query %q: %v", name, err)
 		}
 	}
-	// Keyword table names can also appear after commas and in cross joins.
+
 	if _, _, err := st.Query(ctx, "test", "SELECT left.v AS lv, right.v AS rv FROM left, right", nil, 0, 0); err != nil {
 		t.Fatalf("comma-separated keyword tables: %v", err)
 	}
@@ -636,8 +632,7 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"join", "SELECT * FROM notes JOIN _dolmen_tables d ON notes.id = d.rowid"},
 		{"compound", "SELECT * FROM notes EXCEPT SELECT * FROM sqlite_master"},
 		{"quoted reserved", `SELECT * FROM "_dolmen_tables"`},
-		// A quoted identifier containing a dot is one name; without a matching
-		// CTE its reserved-looking tail still rejects.
+
 		{"dotted quoted reserved", `SELECT * FROM "c._dolmen_tables"`},
 		{"bracketed reserved", "SELECT * FROM [sqlite_master]"},
 		{"parenthesized reserved", "SELECT * FROM (_dolmen_tables)"},
@@ -652,20 +647,14 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"values subquery internal", "SELECT (VALUES('safe') UNION ALL SELECT schema_json FROM _dolmen_tables LIMIT 1 OFFSET 1) FROM notes"},
 		{"cte scope leak", "SELECT (WITH _dolmen_tables(x) AS (VALUES(1)) SELECT x FROM _dolmen_tables), name FROM _dolmen_tables"},
 		{"pragma arg reserved", "SELECT * FROM pragma_table_info('pragma_table_list')"},
-		// Double-quoted pragma arguments are rejected outright: with a table in
-		// scope SQLite binds "title" to a column before the string fallback, so
-		// the pragma could run against row values naming internal tables.
+
 		{"pragma arg dqs literal", `SELECT * FROM pragma_table_info("notes")`},
 		{"pragma arg dqs correlated", `SELECT p.name FROM notes JOIN pragma_table_info("title") p`},
 		{"dbstat", "SELECT * FROM dbstat"},
 		{"nested expression bypass", "SELECT coalesce((SELECT 1), 0), schema_json FROM _dolmen_tables"},
-		// A $ inside an identifier must not split it: otherwise the scanner
-		// sees a fake FROM, treats the real FROM as a table named "from", and
-		// the reserved table slips through as its alias.
+
 		{"dollar alias bypass", "SELECT schema_json, 1 AS x$from FROM _dolmen_tables"},
-		// expr IN table is shorthand for expr IN (SELECT * FROM table), so the
-		// bare-table operand must be validated like a FROM factor or it leaks a
-		// boolean oracle over internal tables.
+
 		{"bare table in oracle", "SELECT ('notes','secret',NULL,NULL,NULL) IN _dolmen_idempotency"},
 		{"bare table in", "SELECT 1 WHERE 1 IN _dolmen_tables"},
 		{"bare table not in", "SELECT 1 WHERE 1 NOT IN sqlite_master"},
@@ -674,7 +663,7 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"bare table in pragma bare", "SELECT 1 WHERE 1 IN pragma_table_list"},
 		{"colon param bypass", "SELECT 1 AS x:from FROM _dolmen_tables"},
 		{"at param bypass", "SELECT 1 AS x@from FROM _dolmen_tables"},
-		// Tcl-style :: suffixes are part of a parameter name in SQLite.
+
 		{"tcl dollar param bypass", "SELECT schema_json, $x::from FROM _dolmen_tables"},
 		{"tcl colon param bypass", "SELECT schema_json, :x::from FROM _dolmen_tables"},
 		{"tcl at param bypass", "SELECT schema_json, @x::from FROM _dolmen_tables"},
@@ -684,17 +673,12 @@ func TestQueryRejectsReservedTables(t *testing.T) {
 		{"paren colon param bypass", "SELECT schema_json, $x(a:from) FROM _dolmen_tables"},
 		{"paren open param bypass", "SELECT schema_json, $x(a(b) FROM _dolmen_tables"},
 		{"hash param bypass", "SELECT schema_json, #from FROM _dolmen_tables"},
-		// Go's ToLower maps İ to i, but SQLite folds identifiers ASCII-only,
-		// so a CTE whose name lowercases (in Go) onto an internal table's name
-		// must not shadow it.
+
 		{"i-dot cte shadow", "WITH _dolmen_İdempotency(x) AS (VALUES(1)) SELECT * FROM _dolmen_idempotency"},
 		{"bare table in dbstat fn", "SELECT 1 WHERE 1 IN dbstat()"},
-		// The long-s fold orbit (ſ equals s under Unicode simple folding)
-		// must not make the alias ſrom act as the FROM keyword.
+
 		{"long-s alias fold", "SELECT 1 AS ſrom FROM _dolmen_tables"},
-		// Non-ASCII names cannot be created as tables, and without a matching
-		// CTE they resolve to nothing, so they are rejected like any other
-		// non-user table.
+
 		{"non-ascii table", "SELECT * FROM 日本語"},
 		{"excessive table paren nesting", "SELECT * FROM " + strings.Repeat("(", maxTableParens+1) + "notes" + strings.Repeat(")", maxTableParens+1)},
 		{"excessive statement nesting", "SELECT * FROM " + strings.Repeat("(SELECT * FROM ", maxStmtDepth+1) + "notes" + strings.Repeat(")", maxStmtDepth+1)},
@@ -772,40 +756,33 @@ func TestQueryAllowsUserTables(t *testing.T) {
 		"SELECT * FROM (VALUES (1)) AS 'v'",
 		`SELECT "my alias".id FROM notes 'my alias'`,
 		"WITH 'c'(x) AS (VALUES(1)) SELECT * FROM 'c'",
-		// SQLite treats non-ASCII characters as identifier characters, so
-		// Unicode CTE names and aliases must tokenize as identifiers.
+
 		"WITH 日本語(x) AS (VALUES(1)) SELECT * FROM 日本語",
 		"WITH résumé AS (SELECT id FROM notes) SELECT * FROM résumé",
 		"SELECT * FROM notes AS 日本語",
 		"SELECT 日本語.id FROM notes 日本語",
-		// '$' continues an identifier (SQLite IdChar), so keywords cannot be
-		// recognized inside dollar-containing names.
+
 		"SELECT 1 AS x$from FROM notes",
 		"WITH c$1 AS (SELECT id FROM notes) SELECT * FROM c$1",
 		"SELECT n$x.id FROM notes n$x",
-		// Keyword matching is ASCII-only: ſrom is a plain alias to SQLite,
-		// never the FROM keyword.
+
 		"SELECT 1 AS ſrom FROM notes",
-		// Identifier folding is ASCII-only too: a CTE named with İ keeps that
-		// spelling and references to it resolve to the CTE.
+
 		"WITH _dolmen_İdempotency(x) AS (VALUES(1)) SELECT * FROM _dolmen_İdempotency",
-		// A quoted name containing a dot is one identifier, so the whole name
-		// is matched against the CTE scope before any schema split.
+
 		`WITH "c._dolmen_tables"(x) AS (VALUES(1)) SELECT * FROM "c._dolmen_tables"`,
-		// Form feed is SQLite whitespace, so it separates tokens like a space.
+
 		"WITH\fc(x) AS (VALUES(1)) SELECT * FROM c",
 		"WITH c AS\f(VALUES(1)) SELECT * FROM c",
 		"SELECT\fcount(*) AS n FROM notes",
-		// Bare-table IN over user data stays allowed.
+
 		"WITH c(x) AS (VALUES(1)) SELECT 1 WHERE 1 IN c",
 		"SELECT id FROM notes WHERE id IN (SELECT id FROM notes)",
-		// INDEXED BY / NOT INDEXED are table-factor suffixes, not aliases.
+
 		"SELECT * FROM notes NOT INDEXED",
 		"SELECT id FROM notes AS n NOT INDEXED",
 		"SELECT id FROM notes n NOT INDEXED",
-		// MaxQueryRunes counts characters, matching JSON Schema maxLength, so a
-		// query whose UTF-8 encoding is larger than the limit in bytes but within
-		// it in characters is accepted.
+
 		"SELECT * FROM notes WHERE title = '" + strings.Repeat("é", MaxQueryRunes-100) + "' LIMIT 0",
 	}
 
@@ -818,10 +795,6 @@ func TestQueryAllowsUserTables(t *testing.T) {
 	}
 }
 
-// TestQueryValidatorCTEScale guards the validator against quadratic behavior on
-// long sequential CTE lists: each CTE body must not re-copy the names of its
-// siblings. A list this size validates in well under a second when linear, but
-// takes minutes when each body clones the forward-name map.
 func TestQueryValidatorCTEScale(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("WITH ")
@@ -842,9 +815,6 @@ func TestQueryValidatorCTEScale(t *testing.T) {
 	}
 }
 
-// TestQueryTokenizesVariablesAtomically checks that SQLite variable tokens
-// (:name, @name, $name, ?NNN) are consumed as one unit, so a keyword inside a
-// parameter name can never be mistaken for a clause boundary.
 func TestQueryTokenizesVariablesAtomically(t *testing.T) {
 	ok := []string{
 		"SELECT title FROM notes WHERE title = :name OR title = @name OR title = $name",
@@ -857,8 +827,7 @@ func TestQueryTokenizesVariablesAtomically(t *testing.T) {
 		"SELECT $x(a,from) AS v, $x(a.b) AS w, $x('a;b') AS z FROM notes",
 		"SELECT $x(a:from) AS v, $x(a(b) AS w FROM notes",
 		"SELECT #from AS v, #x(a,from) AS w, #x::y AS z FROM notes",
-		// A user table in bare-table IN position passes the guard (SQLite
-		// checks column cardinality itself).
+
 		"SELECT 1 WHERE 1 IN notes",
 		"SELECT * FROM notes INDEXED BY notes_idx",
 	}
@@ -870,7 +839,7 @@ func TestQueryTokenizesVariablesAtomically(t *testing.T) {
 
 	rejected := []string{
 		"SELECT schema_json, 1 AS x$from FROM _dolmen_tables",
-		// INDEXED BY with a reserved table still rejects the table itself.
+
 		"SELECT * FROM _dolmen_tables INDEXED BY i",
 		"SELECT 1 AS x:from FROM _dolmen_tables",
 		"SELECT 1 AS x@from FROM _dolmen_tables",
@@ -883,9 +852,6 @@ func TestQueryTokenizesVariablesAtomically(t *testing.T) {
 	}
 }
 
-// TestQueryAllowsGrandfatheredReservedNames covers tables created before
-// pragma_*/dbstat were reserved: they remain registered user data, so the
-// guard must keep serving them while rejecting new reserved-named tables.
 func TestQueryAllowsGrandfatheredReservedNames(t *testing.T) {
 	st := openStore(t)
 	mustNS(t, st, "test")
@@ -913,18 +879,16 @@ func TestQueryAllowsGrandfatheredReservedNames(t *testing.T) {
 		if _, _, err := st.Query(ctx, "test", "SELECT v FROM "+name, nil, 0, 0); err != nil {
 			t.Fatalf("query grandfathered %s: %v", name, err)
 		}
-		// A main-qualified reference resolves to the same physical table.
+
 		if _, _, err := st.Query(ctx, "test", "SELECT v FROM main."+name, nil, 0, 0); err != nil {
 			t.Fatalf("query main-qualified grandfathered %s: %v", name, err)
 		}
 	}
-	// The main qualifier does not smuggle internal tables: they were never
-	// registered.
+
 	if _, _, err := st.Query(ctx, "test", "SELECT * FROM main._dolmen_tables", nil, 0, 0); err == nil {
 		t.Fatal("expected main-qualified internal registry to stay rejected")
 	}
-	// The registry cannot smuggle internal tables: those names were never
-	// creatable, so they stay rejected.
+
 	if _, _, err := st.Query(ctx, "test", "SELECT * FROM _dolmen_tables", nil, 0, 0); err == nil {
 		t.Fatal("expected internal registry to stay rejected")
 	}
@@ -947,7 +911,6 @@ func TestQueryPaginationAndTruncatedFlag(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	// Page 0: 3 rows, ordered by id.
 	rows, truncated, err := st.Query(ctx, "test", "SELECT v FROM page ORDER BY id", nil, 0, 3)
 	if err != nil {
 		t.Fatalf("page 0: %v", err)
@@ -956,7 +919,6 @@ func TestQueryPaginationAndTruncatedFlag(t *testing.T) {
 		t.Fatalf("page 0 should return 3 rows with truncated=true: %v %v", len(rows), truncated)
 	}
 
-	// Page 1: next 3 rows.
 	rows, truncated, err = st.Query(ctx, "test", "SELECT v FROM page ORDER BY id", nil, 3, 3)
 	if err != nil {
 		t.Fatalf("page 1: %v", err)
@@ -965,7 +927,6 @@ func TestQueryPaginationAndTruncatedFlag(t *testing.T) {
 		t.Fatalf("page 1 should return rows 3-5 with truncated=true: %v %v", len(rows), truncated)
 	}
 
-	// Page 3: last 1 row, truncated should be false.
 	rows, truncated, err = st.Query(ctx, "test", "SELECT v FROM page ORDER BY id", nil, 9, 3)
 	if err != nil {
 		t.Fatalf("page 3: %v", err)
@@ -974,7 +935,6 @@ func TestQueryPaginationAndTruncatedFlag(t *testing.T) {
 		t.Fatalf("page 3 should return 1 row with truncated=false: %v %v", len(rows), truncated)
 	}
 
-	// Empty page past the end.
 	rows, truncated, err = st.Query(ctx, "test", "SELECT v FROM page ORDER BY id", nil, 100, 3)
 	if err != nil {
 		t.Fatalf("empty page: %v", err)
@@ -1121,20 +1081,16 @@ func TestQueryErrorsAreSanitizedAndSelfCorrectable(t *testing.T) {
 		}
 	}
 
-	// Missing table is a not-found error with a query-safe message.
 	_, _, err := st.Query(ctx, "test", "SELECT * FROM missing", nil, 0, 0)
 	if err == nil || !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing table should be ErrNotFound, got %v", err)
 	}
 
-	// Syntax errors are invalid requests.
 	_, _, err = st.Query(ctx, "test", "SELECT * FROOOM notes", nil, 0, 0)
 	if err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("syntax error should be ErrInvalid, got %v", err)
 	}
 
-	// The sanitized public message must not leak raw SQLite, but the original
-	// error should still be available for server-side diagnostics.
 	_, _, err = st.Query(ctx, "test", "SELECT * FROOOM notes", nil, 0, 0)
 	var qe *QueryError
 	if !errors.As(err, &qe) {
@@ -1147,7 +1103,6 @@ func TestQueryErrorsAreSanitizedAndSelfCorrectable(t *testing.T) {
 		t.Fatalf("cause should be the raw SQLite error, got %q", qe.Cause().Error())
 	}
 
-	// Unwrap must expose both the original cause and the sentinel for errors.As/Is.
 	unwrapped := qe.Unwrap()
 	if len(unwrapped) != 2 {
 		t.Fatalf("expected Unwrap to return 2 errors, got %d", len(unwrapped))
@@ -1161,7 +1116,7 @@ func TestQueryErrorsAreSanitizedAndSelfCorrectable(t *testing.T) {
 }
 
 func TestOperationalFailuresAreNotQueryErrors(t *testing.T) {
-	// Recognized input failures become sanitized QueryErrors.
+
 	syntax := errors.New(`SQL logic error: near "FROOOM": syntax error (1)`)
 	err := NewQueryError("SELECT 1", syntax)
 	var qe *QueryError
@@ -1169,8 +1124,6 @@ func TestOperationalFailuresAreNotQueryErrors(t *testing.T) {
 		t.Fatalf("recognized syntax error should be a QueryError, got %T", err)
 	}
 
-	// Generic SQL-layer errors (primary result code 1) name the problem in the
-	// message and are client-correctable even without a specific pattern.
 	ambiguous := errors.New(`SQL logic error: ambiguous column name: id (1)`)
 	err = NewQueryError("SELECT 1", ambiguous)
 	if !errors.As(err, &qe) {
@@ -1183,9 +1136,6 @@ func TestOperationalFailuresAreNotQueryErrors(t *testing.T) {
 		t.Fatalf("generic SQL logic error should classify as ErrInvalid, got %v", err)
 	}
 
-	// Operational failures the client cannot correct (I/O, corruption, busy
-	// timeouts) must stay internal: the original error is returned unwrapped
-	// so it maps to internal_error, never a 400 query_error with a syntax hint.
 	for _, raw := range []string{
 		"database disk image is malformed",
 		"database is locked (5) (SQLITE_BUSY)",
@@ -1234,8 +1184,7 @@ func TestRedactedSQLiteErrSanitizesMessageAndKeepsCause(t *testing.T) {
 func TestAmbiguousColumnQueryIsInvalidRequest(t *testing.T) {
 	st := openStore(t)
 	mustCreateNotes(t, st)
-	// A client-correctable error outside the specific pattern list must still
-	// classify as an invalid request, not an internal error.
+
 	_, _, err := st.Query(context.Background(), "test",
 		"SELECT id FROM notes a JOIN notes b ON 1=1", nil, 0, 0)
 	if err == nil || !errors.Is(err, ErrInvalid) {
@@ -1254,7 +1203,6 @@ func TestFilterErrorsUseFilterGuidance(t *testing.T) {
 	st := openStore(t)
 	mustCreateNotes(t, st)
 
-	// Filter callers get WHERE-expression guidance, not SELECT/WITH guidance.
 	_, err := st.Update(context.Background(), "test", "notes", "id =", nil,
 		map[string]any{"title": "x"}, testEmbed)
 	if err == nil || !errors.Is(err, ErrInvalid) {
@@ -1267,7 +1215,6 @@ func TestFilterErrorsUseFilterGuidance(t *testing.T) {
 		t.Fatalf("filter guidance must not point at SELECT/WITH statements, got %q", err.Error())
 	}
 
-	// Query callers keep statement-oriented guidance.
 	_, _, qerr := st.Query(context.Background(), "test", "SELECT (", nil, 0, 0)
 	if qerr == nil || !errors.Is(qerr, ErrInvalid) {
 		t.Fatalf("incomplete query should classify as invalid request, got %v", qerr)

@@ -202,7 +202,7 @@ func TestUpsertByKeyRequiredOnlyOnInsertPath(t *testing.T) {
 	mustNS(t, st, "test")
 	ctx := context.Background()
 	fields := noteFields()
-	fields[2].Required = true // score
+	fields[2].Required = true
 	if _, err := st.CreateTable(ctx, "test", "req", fields); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -219,8 +219,6 @@ func TestUpsertByKeyRequiredOnlyOnInsertPath(t *testing.T) {
 		t.Fatalf("a matched record updates partially and must not re-require fields: %v", err)
 	}
 
-	// An explicit null for a required field is invalid input (a 400), not a
-	// constraint failure surfacing as a 500.
 	_, _, _, err := st.UpsertByKey(ctx, "test", "req", []string{"title"},
 		[]map[string]any{{"title": "needs-score", "score": nil}}, testEmbed)
 	if err == nil {
@@ -242,7 +240,7 @@ func TestUpsertByKeyRequiredOnlyOnInsertPath(t *testing.T) {
 func TestUpsertByKeyReindexesFulltext(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
-	mustCreateNotes(t, st) // title and body are fulltext fields
+	mustCreateNotes(t, st)
 
 	mustUpsertByKey(t, st, []string{"title"}, []map[string]any{{"title": "fixed", "body": "elephant seal"}})
 	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "elephant", 0, 10, false, "", nil)
@@ -269,8 +267,6 @@ func TestUpsertByKeyReindexesFulltext(t *testing.T) {
 		t.Fatalf("updated text must be searchable: %v", hits)
 	}
 
-	// Nulling an indexed field must drop it from the index (and clear the
-	// stale embedding: body is also the vectorized field here).
 	mustUpsertByKey(t, st, []string{"title"}, []map[string]any{{"title": "fixed", "body": nil}})
 	hits, _, err = st.SearchFulltext(ctx, "test", "notes", "cheetah", 0, 10, false, "", nil)
 	if err != nil {
@@ -418,8 +414,6 @@ func TestUpsertByKeyLegacyKeywordKeyField(t *testing.T) {
 	mustNS(t, st, "test")
 	ctx := context.Background()
 
-	// A table whose key field is a legacy keyword name ("order") must remain
-	// usable as a natural key: the schema lookup verifies the field exists.
 	n, err := st.ns("test")
 	if err != nil {
 		t.Fatalf("open namespace: %v", err)
@@ -462,7 +456,6 @@ func TestUpsertByKeyLegacyKeywordKeyField(t *testing.T) {
 		t.Fatalf("update must apply the new value, got %v", rows[0])
 	}
 
-	// A key field that does not exist is still rejected by the schema lookup.
 	if _, _, _, err := st.UpsertByKey(ctx, "test", "orders", []string{"group"},
 		[]map[string]any{{"order": "x"}}, testEmbed); err == nil {
 		t.Fatal("expected unknown key field to be rejected")
