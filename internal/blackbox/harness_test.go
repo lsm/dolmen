@@ -106,6 +106,21 @@ func runMain(m *testing.M) int {
 	return m.Run()
 }
 
+func hermeticEnv() []string {
+	out := []string{}
+	for _, kv := range os.Environ() {
+		key := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			key = kv[:i]
+		}
+		if strings.HasPrefix(key, "DOLMEN_") || key == "OPENAI_API_KEY" || key == "REMBED_CACHE" || key == "HF_TOKEN" {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 func moduleRoot() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
@@ -161,6 +176,7 @@ func startServer(dataDir string, retention string, withBaseURL bool) (*serverPro
 		return nil, fmt.Errorf("create log: %w", err)
 	}
 	cmd := exec.Command(app.binPath, args...)
+	cmd.Env = hermeticEnv()
 	cmd.Stderr = logFile
 	cmd.Stdout = logFile
 	cmd.WaitDelay = 10 * time.Second
