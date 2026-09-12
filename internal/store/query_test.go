@@ -1206,6 +1206,26 @@ func TestOperationalFailuresAreNotQueryErrors(t *testing.T) {
 	}
 }
 
+func TestRedactedSQLiteErrSanitizesMessageAndKeepsCause(t *testing.T) {
+	raw := errors.New(`SQL logic error: no such column: nocol (1)`)
+	err := fmt.Errorf("%w: %w", ErrInvalid, redactedSQLiteErr(raw))
+	if got, want := err.Error(), `invalid request: column "nocol" not found`; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("must classify as ErrInvalid, got %v", err)
+	}
+	if !errors.Is(err, raw) {
+		t.Fatalf("raw cause must stay reachable, got %v", err)
+	}
+
+	plain := errors.New("unable to use function MATCH in the requested context")
+	err = fmt.Errorf("%w: %w", ErrInvalid, redactedSQLiteErr(plain))
+	if got, want := err.Error(), "invalid request: unable to use function MATCH in the requested context"; got != want {
+		t.Fatalf("unrecognized message = %q, want %q", got, want)
+	}
+}
+
 func TestAmbiguousColumnQueryIsInvalidRequest(t *testing.T) {
 	st := openStore(t)
 	mustCreateNotes(t, st)
