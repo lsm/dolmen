@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lsm/dolmen/internal/schema"
 )
@@ -68,6 +70,16 @@ func TestCreateTableDefaultValidation(t *testing.T) {
 			name:   "default_must_not_contain_nul",
 			fields: []schema.Field{{Name: "a", Type: schema.String, Default: "a\x00b"}},
 			want:   "NUL",
+		},
+		{
+			name:   "now_default_rejected_on_string_field",
+			fields: []schema.Field{{Name: "a", Type: schema.String, Default: schema.NowDefault}},
+			want:   `"now()" is only allowed on timestamp fields`,
+		},
+		{
+			name:   "now_default_rejected_on_number_field",
+			fields: []schema.Field{{Name: "a", Type: schema.Number, Default: schema.NowDefault}},
+			want:   `"now()" is only allowed on timestamp fields`,
 		},
 	}
 	for _, tc := range cases {
@@ -336,5 +348,190 @@ func TestInsertRetryAfterDefaultedFieldDropped(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0]["body"] != "hello world" {
 		t.Fatalf("retried insert must land its record, got %v", rows)
+	}
+}
+
+var nowStampRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$`)
+
+func mustParseNowStamp(t *testing.T, v any) time.Time {
+	t.Helper()
+	s, ok := v.(string)
+	if !ok || !nowStampRe.MatchString(s) {
+		t.Fatalf("server now-stamp must be a millisecond-precision UTC timestamp, got %#v", v)
+	}
+	ts, err := time.Parse(nowStampLayout, s)
+	if err != nil {
+		t.Fatalf("parse now-stamp %q: %v", s, err)
+	}
+	return ts
+}
+
+func TestCreateTableNowDefault(t *testing.T) {
+	st := openStore(t)
+	mustNS(t, st, "test")
+	ctx := context.Background()
+	sc, err := st.CreateTable(ctx, "test", "stamped", []schema.Field{
+		{Name: "title", Type: schema.String},
+		{Name: "updated_at", Type: schema.Timestamp, Default: schema.NowDefault},
+	})
+	if err != nil {
+		t.Fatalf("create with a now() default on a timestamp field: %v", err)
+	}
+	if got := sc.Field("updated_at").Default; got != schema.NowDefault {
+		t.Fatalf("describe must report the declared default verbatim, got %v", got)
+	}
+	raw2, err := Open(st.dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	st2 := legacy(raw2)
+	defer st2.Close()
+	sc2, _, err := st2.DescribeTable(ctx, "test", "stamped")
+	if err != nil {
+		t.Fatalf("describe after reopen: %v", err)
+	}
+	if got := sc2.Field("updated_at").Default; got != schema.NowDefault {
+		t.Fatalf("now() default must survive the schema_json round-trip, got %v", got)
+	}
+}
+
+func TestInsertNowDefaultStampsServerTime(t *testing.T) {
+	st := openStore(t)
+	mustNS(t, st, "test")
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "events", []schema.Field{
+		{Name: "name", Type: schema.String},
+		{Name: "updated_at", Type: schema.Timestamp, Default: schema.NowDefault},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	before := time.Now()
+	ids, err := st.Insert(ctx, "test", "events", []map[string]any{
+		{"name": "omitted"},
+		{"name": "supplied", "updated_at": "2026-01-02T03:04:05Z"},
+		{"name": "nulled", "updated_at": nil},
+	}, Embedder{})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	after := time.Now()
+	if len(ids) != 3 {
+		t.Fatalf("insert returned %d ids, want 3", len(ids))
+	}
+
+	rows, _, err := st.Query(ctx, "test", "SELECT name, updated_at FROM events ORDER BY id", nil, 0, 0)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("got %d rows, want 3: %v", len(rows), rows)
+	}
+	stamp := mustParseNowStamp(t, rows[0]["updated_at"])
+	if stamp.Before(before.Add(-2*time.Second)) || stamp.After(after.Add(2*time.Second)) {
+		t.Fatalf("omitted field must store the server's current time (between %v and %v), got %v", before, after, stamp)
+	}
+	if rows[1]["updated_at"] != "2026-01-02T03:04:05Z" {
+		t.Fatalf("supplied timestamp must win over the now() default, got %v", rows[1]["updated_at"])
+	}
+	if rows[2]["updated_at"] != nil {
+		t.Fatalf("explicit null must stay null, not stamp now, got %v", rows[2]["updated_at"])
+	}
+}
+
+func TestInsertNowDefaultIdempotentReplay(t *testing.T) {
+	st := openStore(t)
+	mustNS(t, st, "test")
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "tasks", []schema.Field{
+		{Name: "title", Type: schema.String},
+		{Name: "updated_at", Type: schema.Timestamp, Default: schema.NowDefault},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	rec := []map[string]any{{"title": "retry me"}}
+	ids1, replayed, err := st.InsertIdempotent(ctx, "test", "tasks", rec, Embedder{}, "now-key")
+	if err != nil || replayed {
+		t.Fatalf("first insert: %v replayed=%v", err, replayed)
+	}
+	readStamp := func() string {
+		rows, _, err := st.Query(ctx, "test", "SELECT updated_at FROM tasks WHERE id = ?", []any{ids1[0]}, 0, 0)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("read stamp: %v rows=%d", err, len(rows))
+		}
+		return rows[0]["updated_at"].(string)
+	}
+	stamp1 := readStamp()
+	mustParseNowStamp(t, stamp1)
+
+	ids2, replayed, err := st.InsertIdempotent(ctx, "test", "tasks", rec, Embedder{}, "now-key")
+	if err != nil {
+		t.Fatalf("retry with the identical body must replay, not error: %v", err)
+	}
+	if !replayed {
+		t.Fatal("retry with a recorded key must report replayed")
+	}
+	if len(ids2) != 1 || ids2[0] != ids1[0] {
+		t.Fatalf("retry must return the original ids, got %v want %v", ids2, ids1)
+	}
+	if stamp2 := readStamp(); stamp2 != stamp1 {
+		t.Fatalf("replay must keep the original stamp (no re-stamp), got %q want %q", stamp2, stamp1)
+	}
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM tasks", nil, 0, 0)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if rows[0]["n"].(int64) != 1 {
+		t.Fatalf("retry must not insert another row: %v", rows)
+	}
+}
+
+func TestUpsertInsertBranchesStampNow(t *testing.T) {
+	st := openStore(t)
+	mustNS(t, st, "test")
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "jobs", []schema.Field{
+		{Name: "sku", Type: schema.String},
+		{Name: "updated_at", Type: schema.Timestamp, Default: schema.NowDefault},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if _, _, _, err := st.UpsertByKey(ctx, "test", "jobs", []string{"sku"},
+		[]map[string]any{{"sku": "a"}}, Embedder{}); err != nil {
+		t.Fatalf("upsert_by_key insert branch: %v", err)
+	}
+	if _, err := st.Upsert(ctx, "test", "jobs", "sku = 'b'",
+		nil, map[string]any{"sku": "b"}, Embedder{}); err != nil {
+		t.Fatalf("filter upsert insert branch: %v", err)
+	}
+	rows, _, err := st.Query(ctx, "test", "SELECT sku, updated_at FROM jobs ORDER BY id", nil, 0, 0)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2: %v", len(rows), rows)
+	}
+	for _, row := range rows {
+		mustParseNowStamp(t, row["updated_at"])
+	}
+	stamp1 := rows[0]["updated_at"].(string)
+	stamp2 := rows[1]["updated_at"].(string)
+
+	if _, _, _, err := st.UpsertByKey(ctx, "test", "jobs", []string{"sku"},
+		[]map[string]any{{"sku": "a"}}, Embedder{}); err != nil {
+		t.Fatalf("upsert_by_key match: %v", err)
+	}
+	if _, err := st.Upsert(ctx, "test", "jobs", "sku = 'b'",
+		nil, map[string]any{"sku": "b2"}, Embedder{}); err != nil {
+		t.Fatalf("filter upsert match: %v", err)
+	}
+	rows, _, err = st.Query(ctx, "test", "SELECT sku, updated_at FROM jobs ORDER BY id", nil, 0, 0)
+	if err != nil {
+		t.Fatalf("query after updates: %v", err)
+	}
+	if rows[0]["updated_at"] != stamp1 || rows[1]["updated_at"] != stamp2 {
+		t.Fatalf("update branches must keep the stored stamp instead of re-stamping, got %v", rows)
 	}
 }

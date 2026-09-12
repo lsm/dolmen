@@ -26,6 +26,8 @@ const (
 
 const MaxVectorDim = 4096
 
+const NowDefault = "now()"
+
 type Field struct {
 	Name      string    `json:"name"`
 	Type      FieldType `json:"type"`
@@ -181,6 +183,11 @@ func EnumAllows(enum []string, s string) bool {
 		}
 	}
 	return false
+}
+
+func IsNowDefault(v any) bool {
+	s, ok := v.(string)
+	return ok && s == NowDefault
 }
 
 // ValidateIdent returns an error explaining why name is not a valid
@@ -390,6 +397,9 @@ func validate(fields []Field, legacy map[string]bool) error {
 			}
 			if f.Vectorize {
 				return fmt.Errorf("field %q: default is not allowed on vectorize fields (the server embeds caller-supplied text; a defaulted value would not be embedded)", f.Name)
+			}
+			if IsNowDefault(f.Default) && f.Type != Timestamp {
+				return fmt.Errorf("field %q: default %q is only allowed on timestamp fields (the server stamps its current time on each write that omits the field)", f.Name, NowDefault)
 			}
 		}
 	}

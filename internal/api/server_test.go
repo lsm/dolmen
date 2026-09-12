@@ -494,6 +494,18 @@ func TestCreateTableDefaultConstraintsDeclared(t *testing.T) {
 			t.Fatalf("%s=true must reject default via not/required, got %v", exclude, rule["then"])
 		}
 	}
+	nowRule, ok := allOf[6].(map[string]any)
+	if !ok {
+		t.Fatalf("now() guard must be an if/then rule, got %v", allOf[6])
+	}
+	nowIfType, ok := nowRule["if"].(map[string]any)["properties"].(map[string]any)["type"].(map[string]any)
+	if !ok || nowIfType["not"].(map[string]any)["const"] != string(schema.Timestamp) {
+		t.Fatalf(`now() guard must key on "type" not const timestamp, got %v`, nowRule["if"])
+	}
+	nowThenDefault, ok := nowRule["then"].(map[string]any)["properties"].(map[string]any)["default"].(map[string]any)
+	if !ok || nowThenDefault["not"].(map[string]any)["const"] != schema.NowDefault {
+		t.Fatalf(`non-timestamp types must reject the "now()" default const, got %v`, nowRule["then"])
+	}
 	// add_field's backfill default lives on the change, so migrate's field
 	// object must not declare one.
 	migrateItems := Ops["migrate"].InputSchema["properties"].(map[string]any)["changes"].(map[string]any)["items"].(map[string]any)

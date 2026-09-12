@@ -350,12 +350,21 @@ func applyInsertDefaults(sc *schema.TableSchema, records []map[string]any) []map
 		}
 		for _, f := range sc.Fields {
 			if _, present := dr[f.Name]; !present && f.Default != nil {
-				dr[f.Name] = f.Default
+				dr[f.Name] = defaultForWrite(f)
 			}
 		}
 		out[i] = dr
 	}
 	return out
+}
+
+const nowStampLayout = "2006-01-02T15:04:05.000Z"
+
+func defaultForWrite(f schema.Field) any {
+	if f.Type == schema.Timestamp && schema.IsNowDefault(f.Default) {
+		return time.Now().UTC().Format(nowStampLayout)
+	}
+	return f.Default
 }
 
 // embedTexts embeds a batch of texts under the table's embedding-space rules:

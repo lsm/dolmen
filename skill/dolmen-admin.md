@@ -172,7 +172,10 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
   the allowed list; exact match, no case folding; a declared `default` must be a member; evolve it
   with `migrate` `set_enum`, which refuses to drop a value rows still store),
   `default: <value>` (stored by later inserts that omit the field, instead of NULL; must match
-  the field's type; not allowed on `required` or `vectorize` fields).
+  the field's type; not allowed on `required` or `vectorize` fields), or — on `timestamp` fields
+  only — `default: "now()"`: the server stamps its current write time on each insert that omits
+  the field. Declare `updated_at`-style columns this way: an idempotent retry then omits the field
+  and replays the original row instead of diverging on a client-regenerated timestamp.
 - `describe_server` reports the embedding provider status without attempting a write: `provider`
   (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, `usable`, and —
   for the `local` provider — `model_cached`, whether the model weights are complete on the server so
@@ -472,7 +475,9 @@ Validation notes:
   the insert branch of `upsert`/`upsert_by_key`. A field with a declared `default` (shown by
   `describe_table`) stores it when an insert omits the field; an explicit `null` still stores NULL.
   Create-time defaults apply to future inserts; `add_field`'s `default` is a one-time backfill for
-  existing rows and does not change later inserts.
+  existing rows and does not change later inserts. A `timestamp` field may declare
+  `default: "now()"` — the server stamps its current write time on each insert (or upsert insert
+  branch) that omits the field.
 - Namespace paths and table names are trimmed and lowercased before validation on direct `/v1`
   requests — a namespace per segment, so `"namespace":" Production / EU "` operates on
   `production/eu`. The MCP tool schemas require already-canonical names — always send trimmed
@@ -487,7 +492,10 @@ Validation notes:
   provider is enabled by default; `describe_server` reports the active provider, its identity, and
   whether server-side embedding is usable.
 - `insert` with an `idempotency_key`: the same key + same records replays the original ids; the same
-  key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes.
+  key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes. Never
+  regenerate a timestamp in a retried record — the body must be byte-identical to replay; a timestamp
+  column a retry would stamp (e.g. `updated_at`) should be declared `default: "now()"` at
+  `create_table` and omitted from records.
 
 ## Typical flows
 

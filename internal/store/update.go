@@ -252,7 +252,8 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 			if f.Default == nil {
 				continue
 			}
-			cv, err := coerceValue(f, f.Default)
+			dv := defaultForWrite(f)
+			cv, err := coerceValue(f, dv)
 			if err != nil {
 				return UpsertResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 			}

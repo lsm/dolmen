@@ -92,6 +92,25 @@ func TestValidateAccepts(t *testing.T) {
 	}
 }
 
+func TestValidateNowDefaultTimestampOnly(t *testing.T) {
+	if err := Validate([]Field{{Name: "updated_at", Type: Timestamp, Default: NowDefault}}); err != nil {
+		t.Fatalf("now() default must be accepted on timestamp fields: %v", err)
+	}
+	for _, typ := range []FieldType{String, Text, Number, Boolean, JSON, Vector} {
+		f := Field{Name: "a", Type: typ, Default: NowDefault}
+		if typ == Vector {
+			f.Dim = 2
+		}
+		err := Validate([]Field{f})
+		if err == nil || !strings.Contains(err.Error(), `"now()" is only allowed on timestamp fields`) {
+			t.Fatalf("type %s: expected now() rejection naming the rule, got %v", typ, err)
+		}
+	}
+	if !IsNowDefault(NowDefault) || IsNowDefault("now") || IsNowDefault("now() ") || IsNowDefault(nil) {
+		t.Fatal("IsNowDefault must match the exact now() spelling only")
+	}
+}
+
 func TestEnumAllowsExactMatch(t *testing.T) {
 	f := Field{Name: "severity", Type: String, Enum: []string{"SEV0", "SEV1"}}
 	if !EnumAllows(f.Enum, "SEV0") || !EnumAllows(f.Enum, "SEV1") {
