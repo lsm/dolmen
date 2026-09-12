@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"testing"
+	"time"
 )
 
 // Write semantics: idempotency replay, divergence rejection, durability
@@ -276,5 +277,81 @@ func TestWriteIdempotencyOverMCP(t *testing.T) {
 	data := h.mustMCP("describe_table", map[string]any{"namespace": "wrm", "table": "t"})
 	if int64val(t, "row count", data["row_count"]) != 1 {
 		t.Fatalf("MCP replay must not add rows: %v", data["row_count"])
+	}
+}
+
+func TestWriteTimestampNowDefault(t *testing.T) {
+	h := newHarness(t)
+	ns := "wrnow"
+	h.seedTable(ns, "t", []map[string]any{
+		{"name": "title", "type": "string"},
+		{"name": "updated_at", "type": "timestamp", "default": "now()"},
+	})
+
+	describe := h.mustHTTP("describe_table", map[string]any{"namespace": ns, "table": "t"})
+	var declared any
+	for _, f := range describe["table"].(map[string]any)["fields"].([]any) {
+		fm := f.(map[string]any)
+		if fm["name"] == "updated_at" {
+			declared = fm["default"]
+		}
+	}
+	if declared != "now()" {
+		t.Fatalf("describe_table must report the declared now() default, got %v", declared)
+	}
+
+	readStamp := func(title string) any {
+		data := h.mustHTTP("query", map[string]any{
+			"namespace": ns, "sql": "SELECT title, updated_at FROM t",
+		})
+		for _, r := range data["rows"].([]any) {
+			rm := r.(map[string]any)
+			if rm["title"] == title {
+				return rm["updated_at"]
+			}
+		}
+		t.Fatalf("no row with title %q", title)
+		return nil
+	}
+
+	before := time.Now()
+	recs := []map[string]any{{"title": "once"}}
+	first := h.mustHTTP("insert", map[string]any{
+		"namespace": ns, "table": "t", "idempotency_key": "k1", "records": recs,
+	})
+	after := time.Now()
+	stamp, ok := readStamp("once").(string)
+	if !ok {
+		t.Fatalf("omitted field must be stamped, got %v", readStamp("once"))
+	}
+	stamped, err := time.Parse(time.RFC3339, stamp)
+	if err != nil {
+		t.Fatalf("stamp %q must be an RFC3339 timestamp: %v", stamp, err)
+	}
+	if stamped.Before(before.Add(-2*time.Second)) || stamped.After(after.Add(2*time.Second)) {
+		t.Fatalf("omitted field must carry the server's write-time stamp, got %v", stamp)
+	}
+
+	replay := h.mustHTTP("insert", map[string]any{
+		"namespace": ns, "table": "t", "idempotency_key": "k1", "records": recs,
+	})
+	assertJSONEqual(t, "replay ids", replay["ids"], first["ids"])
+	if replay["replayed"] != true {
+		t.Fatalf("omitted-field retry must replay, got %v", replay)
+	}
+	if got := readStamp("once"); got != stamp {
+		t.Fatalf("replay must keep the original stamp, got %v want %v", got, stamp)
+	}
+	data := h.mustHTTP("describe_table", map[string]any{"namespace": ns, "table": "t"})
+	if int64val(t, "row count", data["row_count"]) != 1 {
+		t.Fatalf("replay must not add rows: %v", data["row_count"])
+	}
+
+	h.mustHTTP("insert", map[string]any{
+		"namespace": ns, "table": "t",
+		"records": []map[string]any{{"title": "supplied", "updated_at": "2026-01-02T03:04:05Z"}},
+	})
+	if got := readStamp("supplied"); got != "2026-01-02T03:04:05Z" {
+		t.Fatalf("supplied timestamp must win over the now() default, got %v", got)
 	}
 }

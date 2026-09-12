@@ -250,6 +250,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 
 	ids = make([]int64, 0, len(records))
 	for i, row := range coercedRows {
+		stampNowVals(row.vals)
 		var vec []float32
 		if ev, ok := embFor[i]; ok {
 			vec = ev
@@ -350,12 +351,40 @@ func applyInsertDefaults(sc *schema.TableSchema, records []map[string]any) []map
 		}
 		for _, f := range sc.Fields {
 			if _, present := dr[f.Name]; !present && f.Default != nil {
-				dr[f.Name] = f.Default
+				dr[f.Name] = writeDefault(f)
 			}
 		}
 		out[i] = dr
 	}
 	return out
+}
+
+const nowStampLayout = "2006-01-02T15:04:05.000Z"
+
+type nowStamp struct{}
+
+func writeDefault(f schema.Field) any {
+	if f.Type == schema.Timestamp && schema.IsNowDefault(f.Default) {
+		return nowStamp{}
+	}
+	return f.Default
+}
+
+func stampNow(v any) any {
+	if _, ok := v.(nowStamp); ok {
+		return time.Now().UTC().Format(nowStampLayout)
+	}
+	return v
+}
+
+func stampNowVals(vals []any) {
+	for j, v := range vals {
+		vals[j] = stampNow(v)
+	}
+}
+
+func defaultForWrite(f schema.Field) any {
+	return stampNow(writeDefault(f))
 }
 
 // embedTexts embeds a batch of texts under the table's embedding-space rules:
@@ -460,6 +489,9 @@ func ftsText(v any) any {
 func coerceValue(f schema.Field, v any) (any, error) {
 	if v == nil {
 		return nil, nil
+	}
+	if _, ok := v.(nowStamp); ok {
+		return v, nil
 	}
 	switch f.Type {
 	case schema.Number:

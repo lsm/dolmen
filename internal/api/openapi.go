@@ -169,7 +169,7 @@ func components() map[string]any {
 					"description": "Allowed values for this string field (present when the field has an enum constraint); writes carrying any other value are rejected",
 					"items":       map[string]any{"type": "string"},
 				},
-				"default": map[string]any{"description": "Value stored when an insert omits the field; exactly as declared (present when set)"},
+				"default": map[string]any{"description": "Value stored when an insert omits the field; exactly as declared (present when set) — \"now()\" on a timestamp field stamps the server's current time at each write"},
 			}, []string{"name", "type"}),
 			"TableSchema": objectSchema(false, map[string]any{
 				"namespace":   stringProp(store.NSPathPattern()),

@@ -335,11 +335,12 @@ Validation notes:
 - `vector` must be a number array of exactly the declared `dim`; `NaN`/`Inf` are rejected. The 4096-dimension cap applies only to declared `vector` fields; `vectorize` records the provider's returned dimension.
 - Unknown field keys are rejected. Missing or `null` required fields are rejected on `insert`. Fields
   may carry a declared `default` (shown by `describe_table`): an insert omitting such a field stores
-  the default instead of NULL; an explicit `null` still stores NULL.
+  the default instead of NULL; an explicit `null` still stores NULL. A timestamp field may declare
+  `default: "now()"` — the server stamps its current write time on each insert that omits the field.
 - Namespace paths and table names are trimmed and lowercased before validation on direct `/v1` requests — a namespace per segment, so `"namespace":" Production / EU "` operates on `production/eu`. The MCP tool schemas require already-canonical names — always send trimmed lowercase names.
 - `query` accepts only `SELECT`/`WITH`, rejects embedded semicolons (trailing semicolons are accepted), and binds at most 100 `args`.
 - `search_vector` with `text` requires a provider and searches only the server-managed `_embedding` column produced by a `vectorize: true` field — the provider identity must match the one that embedded the table, and a `text` query naming a declared `vector` column is rejected. Searches with a caller-supplied `vector` need no provider and are not checked against any embedding space — only you know which model produced the stored and query vectors. The built-in `local` provider is enabled by default; `describe_server` reports the active provider, its identity, and whether server-side embedding is usable.
-- `insert` with an `idempotency_key`: the same key + same records replays the original ids; the same key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes.
+- `insert` with an `idempotency_key`: the same key + same records replays the original ids; the same key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes. Never regenerate a timestamp in a retried record — the body must be byte-identical to replay. A timestamp column a retry would stamp (e.g. `updated_at`) belongs in the table as `default: "now()"` (declared at `create_table` via the `dolmen-admin` skill) and omitted from records, so the server stamps it and the retry replays.
 
 ## Typical flows
 

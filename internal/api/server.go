@@ -213,7 +213,7 @@ func fieldItemSchema(desc string, withDefault bool) map[string]any {
 	}
 	if withDefault {
 		properties["default"] = map[string]any{
-			"description": "Value stored when an insert omits the field — string/text: a string; timestamp: an ISO/RFC3339 string; number: a number; boolean: a boolean; json: any JSON value; vector: a number array of dim entries. Must match the field's type; not allowed on required or vectorize fields",
+			"description": "Value stored when an insert omits the field — string/text: a string; timestamp: an ISO/RFC3339 string or \"now()\" (the server stamps its current time on each write that omits the field); number: a number; boolean: a boolean; json: any JSON value; vector: a number array of dim entries. Must match the field's type; not allowed on required or vectorize fields; \"now()\" is allowed on timestamp fields only",
 		}
 		allOf = append(allOf,
 			map[string]any{
@@ -229,6 +229,17 @@ func fieldItemSchema(desc string, withDefault bool) map[string]any {
 					"required":   []string{"vectorize"},
 				},
 				"then": map[string]any{"not": map[string]any{"required": []string{"default"}}},
+			},
+			map[string]any{
+				"if": map[string]any{
+					"not": map[string]any{
+						"properties": map[string]any{"type": map[string]any{"const": string(schema.Timestamp)}},
+						"required":   []string{"type"},
+					},
+				},
+				"then": map[string]any{
+					"properties": map[string]any{"default": map[string]any{"not": map[string]any{"const": schema.NowDefault}}},
+				},
 			},
 		)
 	}

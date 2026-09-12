@@ -26,6 +26,8 @@ const (
 
 const MaxVectorDim = 4096
 
+const NowDefault = "now()"
+
 type Field struct {
 	Name      string    `json:"name"`
 	Type      FieldType `json:"type"`
@@ -183,6 +185,11 @@ func EnumAllows(enum []string, s string) bool {
 	return false
 }
 
+func IsNowDefault(v any) bool {
+	s, ok := v.(string)
+	return ok && s == NowDefault
+}
+
 // ValidateIdent returns an error explaining why name is not a valid
 // identifier. The what argument is used in the message ("field name",
 // "table name", etc.).
@@ -326,21 +333,21 @@ func Validate(fields []Field) error {
 // (for example, a field named with an older-release SQLite/SQL keyword). New
 // or renamed-to field names must still pass the strict identifier rules.
 func ValidateForMigration(fields, existing []Field) error {
-	legacy := make(map[string]bool, len(existing))
+	legacy := make(map[string]Field, len(existing))
 	for _, f := range existing {
-		legacy[f.Name] = true
+		legacy[f.Name] = f
 	}
 	return validate(fields, legacy)
 }
 
-func validate(fields []Field, legacy map[string]bool) error {
+func validate(fields []Field, legacy map[string]Field) error {
 	if len(fields) == 0 {
 		return fmt.Errorf("table needs at least one field")
 	}
 	seen := map[string]bool{}
 	vectorizeCount := 0
 	for _, f := range fields {
-		if !legacy[f.Name] {
+		if _, carried := legacy[f.Name]; !carried {
 			if err := ValidateIdent(f.Name, "field name"); err != nil {
 				return err
 			}
@@ -390,6 +397,11 @@ func validate(fields []Field, legacy map[string]bool) error {
 			}
 			if f.Vectorize {
 				return fmt.Errorf("field %q: default is not allowed on vectorize fields (the server embeds caller-supplied text; a defaulted value would not be embedded)", f.Name)
+			}
+			if IsNowDefault(f.Default) && f.Type != Timestamp {
+				if pre, carried := legacy[f.Name]; !carried || !IsNowDefault(pre.Default) {
+					return fmt.Errorf("field %q: default %q is only allowed on timestamp fields (the server stamps its current time on each write that omits the field)", f.Name, NowDefault)
+				}
 			}
 		}
 	}

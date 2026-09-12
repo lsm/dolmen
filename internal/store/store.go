@@ -704,6 +704,9 @@ func validateFieldDefaults(fields []schema.Field) error {
 		if f.Default == nil {
 			continue
 		}
+		if schema.IsNowDefault(f.Default) {
+			continue
+		}
 		cv, err := coerceValue(f, f.Default)
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrInvalid, err)

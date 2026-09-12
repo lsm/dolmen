@@ -383,8 +383,8 @@ func TestCreateTableNameAndDimConstraintsDeclared(t *testing.T) {
 		t.Fatalf(`"name" must exclude the reserved field identifiers, got %v`, name["not"])
 	}
 	allOf, ok := items["allOf"].([]any)
-	if !ok || len(allOf) != 6 {
-		t.Fatalf("expected six conditional constraints (dim, fulltext, vectorize, enum, default exclusions), got %v", items["allOf"])
+	if !ok || len(allOf) != 7 {
+		t.Fatalf("expected seven conditional constraints (dim, fulltext, vectorize, enum, default exclusions, now() guard), got %v", items["allOf"])
 	}
 	dimRule := allOf[0].(map[string]any)
 	then, ok := dimRule["then"].(map[string]any)["required"].([]string)
@@ -405,8 +405,8 @@ func TestCreateTableFulltextAndVectorizeConstraintsDeclared(t *testing.T) {
 	fields := def.InputSchema["properties"].(map[string]any)["fields"].(map[string]any)
 	items := fields["items"].(map[string]any)
 	allOf, ok := items["allOf"].([]any)
-	if !ok || len(allOf) != 6 {
-		t.Fatalf("expected six conditional constraints, got %v", items["allOf"])
+	if !ok || len(allOf) != 7 {
+		t.Fatalf("expected seven conditional constraints, got %v", items["allOf"])
 	}
 	fulltextThen := allOf[1].(map[string]any)["then"].(map[string]any)["properties"].(map[string]any)
 	ftTypes, ok := fulltextThen["type"].(map[string]any)["enum"].([]schema.FieldType)
@@ -493,6 +493,21 @@ func TestCreateTableDefaultConstraintsDeclared(t *testing.T) {
 		if !ok || len(thenNot) != 1 || thenNot[0] != "default" {
 			t.Fatalf("%s=true must reject default via not/required, got %v", exclude, rule["then"])
 		}
+	}
+	nowRule, ok := allOf[6].(map[string]any)
+	if !ok {
+		t.Fatalf("now() guard must be an if/then rule, got %v", allOf[6])
+	}
+	nowNot, ok := nowRule["if"].(map[string]any)["not"].(map[string]any)
+	if !ok || nowNot["required"].([]string)[0] != "type" {
+		t.Fatalf(`now() guard must fire unless type is present-and-timestamp, got %v`, nowRule["if"])
+	}
+	if nowNot["properties"].(map[string]any)["type"].(map[string]any)["const"] != string(schema.Timestamp) {
+		t.Fatalf(`now() guard must except only type=timestamp, got %v`, nowRule["if"])
+	}
+	nowThenDefault, ok := nowRule["then"].(map[string]any)["properties"].(map[string]any)["default"].(map[string]any)
+	if !ok || nowThenDefault["not"].(map[string]any)["const"] != schema.NowDefault {
+		t.Fatalf(`non-timestamp types must reject the "now()" default const, got %v`, nowRule["then"])
 	}
 	// add_field's backfill default lives on the change, so migrate's field
 	// object must not declare one.
