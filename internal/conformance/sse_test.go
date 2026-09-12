@@ -838,7 +838,7 @@ func TestSubscribeRouteRegistered(t *testing.T) {
 	}
 	wantChange(t, f, [3]any{"notes", live["ids"].([]any)[0], "insert"})
 
-	res2, err := http.Post(h.srv.URL+"/v1/subscribe?namespace=rt", "", nil)
+	res2, err := http.Post(h.srv.URL+"/v1/subscribe?namespace=rt", "application/json", nil)
 	if err != nil {
 		t.Fatalf("post /v1/subscribe: %v", err)
 	}
