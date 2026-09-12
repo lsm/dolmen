@@ -14,35 +14,12 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-// HandleSubscribe is §9.2 layer 3's HTTP-surface capability: a GET
-// text/event-stream that replays the namespace's durable change log from a
-// cursor in commit order and then delivers live commits through the engine's
-// listener. It is an HTTP-surface handler like /mcp, not an Ops entry: the
-// MCP tool surface gets wait_for, whose request/response shape carries the
-// same feed semantics (§2's transport parity), while the stream is for agent
-// hosts holding connections. The route is registered on the api mux at
-// /v1/subscribe; the conformance suite also exercises the handler directly
-// (httptest against it) to pin behaviors independent of routing.
-//
-// Query params mirror the changes_since op exactly: namespace (required),
-// table (optional filter over that table's CURRENT lifetime), and cursor (an
-// opaque resume token or the "begin" sentinel; omitted starts at the current
-// head — wake-up semantics, a fresh subscriber gets future events only).
-// Errors split at the moment the stream opens: request-shape failures (wrong
-// method, missing/empty params) are ordinary HTTP errors before any bytes go
-// out, while everything the stream discovers — the cursor teaching errors, a
-// missing table, engine failures — arrives as an SSE error event carrying the
-// standard error envelope inside, because an open text/event-stream response
-// can no longer carry an HTTP status.
 const sseWriteDeadline = 10 * time.Second
 
 const defaultKeepaliveInterval = 20 * time.Second
 
 func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
-	// The stream is its own request: it carries a request id like every /v1/
-	// call, so an in-stream error envelope, the response header, and the
-	// server log line for it can be correlated. The mux entry relies on this
-	// assignment happening here.
+
 	r = r.WithContext(WithRequestID(r.Context(), RequestIDFor(r)))
 	reqID := RequestIDFrom(r.Context())
 
@@ -56,11 +33,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, badRequest("namespace query parameter is required"))
 		return
 	}
-	// Explicitly empty selectors are rejected, never read as omitted — the
-	// same rule the changes_since op enforces: an empty table would silently
-	// widen the feed to the whole namespace, and an empty cursor would
-	// silently swap a resume for a bare head start, skipping the caller's
-	// backlog.
+
 	table := ""
 	if q.Has("table") {
 		table = normTable(q.Get("table"))
@@ -102,11 +75,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 			case <-r.Context().Done():
 			}
 		})
-	// The response opens only once the listener is registered: a client that
-	// observes the open stream must know its subscription exists, or a commit
-	// it makes immediately after that observation could land before the
-	// boundary and never be delivered. Registration failures still open the
-	// stream first, so every in-stream failure keeps one shape.
+
 	sseOpenStream(w, reqID)
 	if err != nil {
 		sseErrorEvent(w, subscribeErr(err), reqID)
@@ -148,13 +117,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 			if ctx.Err() != nil && !errors.Is(context.Cause(ctx), store.ErrListenAged) {
 				return
 			}
-			// The store guarantees the terminal cause: every session
-			// death — a dropped target behind its eviction drain, a
-			// revocation, a failed page — ends the session with its
-			// cause and the closed callback fires it, however long the
-			// drain takes. No timer: one that expired first would frame
-			// the incidental read error instead of the teaching, and
-			// the wait is sound without one.
+
 			select {
 			case cause := <-ended:
 				closeWith(subscribeErr(cause))
@@ -178,15 +141,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	if s.holdReplay != nil {
 		s.holdReplay()
 	}
-	// The ready frame is the recovery point a fresh subscriber holds from
-	// the moment the stream goes live: everything up to this cursor has
-	// been delivered on this stream, and reconnecting with it resumes
-	// exactly here — the last replayed record's cursor, or the
-	// registration head when replay was empty. A stream that ends during
-	// replay never gets one — clean done from the store means provably
-	// alive, every death returning its cause as the replay error and
-	// taking the terminal path instead — and a terminal stream's close
-	// frame carries the reached cursor.
+
 	if !sseEvent(w, "ready", sseCursor{Cursor: string(resume)}) {
 		return
 	}
@@ -259,9 +214,6 @@ func subscribeErr(err error) *Error {
 	}
 }
 
-// sseChange is one change event's data: the same four-field public
-// projection the changes_since op returns — identity only, never a row
-// snapshot (§9.3) — so both transports teach one shape.
 type sseChange struct {
 	Cursor string `json:"cursor"`
 	Table  string `json:"table"`
@@ -269,22 +221,10 @@ type sseChange struct {
 	Kind   string `json:"kind"`
 }
 
-// sseCursor is the single-field cursor carrier both synchronization frames
-// use — ready at the replay→live boundary, close at the terminal — so a
-// reconnecting client reads one recovery shape from every handoff the
-// stream offers.
-
 type sseCursor struct {
 	Cursor string `json:"cursor"`
 }
 
-// sseEvent frames one server-sent event — named event, single-line JSON
-// data, blank-line terminator — and flushes it immediately: a stream frame
-// held in a buffer is a frame the subscriber has not received. It reports
-// false when the write or the flush failed (the subscriber disconnected —
-// a small frame can sit in net/http's buffer and die only at the flush,
-// so the flush error is part of the frame's success), so the caller can
-// stop instead of spinning on a dead connection.
 func sseEvent(w http.ResponseWriter, event string, data any) bool {
 	payload, err := sseJSON(data)
 	if err != nil {
@@ -298,19 +238,12 @@ func sseEvent(w http.ResponseWriter, event string, data any) bool {
 	return werr == nil && ferr == nil
 }
 
-// sseErrorEvent delivers a teaching or failure error as the stream's error
-// event: the standard error envelope — the same {ok: false, error: {...}}
-// shape every /v1 error responds with — as the event's data, so a subscriber
-// reads one error shape on every surface. The error event is terminal; no
-// close frame follows it.
 func sseErrorEvent(w http.ResponseWriter, apiErr *Error, reqID string) {
 	status := apiErr.Status
 	if status == 0 {
 		status = http.StatusInternalServerError
 	}
-	// The same log split writeError makes: server-class failures are
-	// operator-visible at Error level with their cause; request-class
-	// failures only when debugging.
+
 	if status >= http.StatusInternalServerError {
 		slog.Error("sse error", "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
 	} else {
@@ -319,10 +252,6 @@ func sseErrorEvent(w http.ResponseWriter, apiErr *Error, reqID string) {
 	sseEvent(w, "error", map[string]any{"ok": false, "error": apiErr.Public(reqID)})
 }
 
-// sseJSON encodes v as exactly one compact line — the SSE data field is
-// line-framed, and json.Encoder never emits raw newlines inside its payload,
-// so structural newlines are the only ones and they are trimmed. HTML
-// escaping is off to match every other JSON surface the server writes.
 func sseJSON(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)

@@ -8,15 +8,6 @@ import (
 	"testing"
 )
 
-// Slice 4a: every namespace lifetime carries a random 128-bit creation id,
-// minted at first init and persisted in the namespace's own registry
-// (_dolmen_meta). The three properties the plan pins — stable across reopen,
-// distinct after drop+recreate, and the state read never creates — plus the
-// shared-data-directory convergence the mint's INSERT-then-SELECT exists for.
-
-// TestNSGenStableAcrossReopen: the id is minted once, at the namespace's
-// first init, and read thereafter — a reopen must return the same bytes, and
-// a sibling namespace minted by the same store must not share them.
 func TestNSGenStableAcrossReopen(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
@@ -64,11 +55,6 @@ func TestNSGenStableAcrossReopen(t *testing.T) {
 	}
 }
 
-// TestNSGenDistinctAfterDropRecreate: DropNamespace deletes the registry
-// with the file, so a recreated namespace mints a fresh id — the property
-// that lets an nsGen guard tell a successor from the lifetime a grant was
-// made against (§3.4). The gap between the drop and the recreate is
-// not_found, never a zero id.
 func TestNSGenDistinctAfterDropRecreate(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
@@ -98,10 +84,6 @@ func TestNSGenDistinctAfterDropRecreate(t *testing.T) {
 	}
 }
 
-// TestNamespaceStateNeverCreates: the state read is a read (§6.2's global
-// rule). An absent namespace is ErrNotFound with no file materialized for
-// the name — and no parent directory either for a nested path — while an
-// invalid path stays an invalid path, not a not-found.
 func TestNamespaceStateNeverCreates(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
@@ -122,11 +104,6 @@ func TestNamespaceStateNeverCreates(t *testing.T) {
 	}
 }
 
-// TestNSGenSharedDataDirectoryConverges: a second store sharing the data
-// directory runs its own mint on first open; the loser's INSERT is dropped
-// by ON CONFLICT and the SELECT that follows returns the winner's bytes, so
-// both instances hand out the same id — the property that makes concurrent
-// first opens safe across processes too.
 func TestNSGenSharedDataDirectoryConverges(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
@@ -145,7 +122,7 @@ func TestNSGenSharedDataDirectoryConverges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("state via A: %v", err)
 	}
-	// B's first open of the name runs its own mint after A's already won.
+
 	fromB, err := stB.NamespaceState(ctx, "test", nil)
 	if err != nil {
 		t.Fatalf("state via B: %v", err)
@@ -155,10 +132,6 @@ func TestNSGenSharedDataDirectoryConverges(t *testing.T) {
 	}
 }
 
-// TestTableStateCarriesNSGen: the Incarnation TableState hands back names
-// the namespace lifetime too (§6.2) — the same id NamespaceState returns,
-// read in the same one-snapshot transaction as the schema and drop
-// generation.
 func TestTableStateCarriesNSGen(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()

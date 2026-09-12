@@ -6,9 +6,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// sqlDB is a direct connection to a namespace file, used exclusively to plant
-// fixtures the API refuses to produce itself (corrupt stored vectors). It is
-// the "out-of-band writer" the skipped_vectors contract is written for.
 type sqlDB struct {
 	db *sql.DB
 }
@@ -25,8 +22,6 @@ func (s *sqlDB) Exec(query string, args ...any) (sql.Result, error) {
 	return s.db.Exec(query, args...)
 }
 
-// QueryRow answers read-only fixture queries (counting rows a wait must not
-// mint).
 func (s *sqlDB) QueryRow(query string, args ...any) *sql.Row {
 	return s.db.QueryRow(query, args...)
 }

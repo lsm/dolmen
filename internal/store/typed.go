@@ -10,15 +10,10 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-// embeddingCol is the hidden column that stores automatic vectorize embeddings.
 const embeddingCol = "_embedding"
 
 var embeddingMentionRe = regexp.MustCompile(`(?i)\b_embedding\b`)
 
-// projection is the typed-read contract for one result set: which column
-// labels carry a declared field type, the dimension of vector columns, and
-// which hidden internal columns to strip. query, search_fulltext, and
-// search_vector all shape their rows through it so the three ops cannot drift.
 type projection struct {
 	types     map[string]schema.FieldType
 	dims      map[string]int
@@ -35,9 +30,6 @@ func newProjection() *projection {
 	}
 }
 
-// projectionFromSchema builds the projection for reading rows of one known
-// table. includeHidden keeps internal columns (currently _embedding) in the
-// result instead of stripping them.
 func projectionFromSchema(sc *schema.TableSchema, includeHidden bool) *projection {
 	p := newProjection()
 	if includeHidden {
@@ -56,10 +48,6 @@ func projectionFromSchema(sc *schema.TableSchema, includeHidden bool) *projectio
 	return p
 }
 
-// addSchema folds one table's fields into a namespace-wide projection for the
-// raw-SQL read path, where a statement may reference any table. A field name
-// that different tables declare with different types is ambiguous and stays
-// uncoerced rather than guessed.
 func (p *projection) addSchema(sc *schema.TableSchema) {
 	for _, f := range sc.Fields {
 		p.addType(f.Name, f.Type)
@@ -104,15 +92,11 @@ func (p *projection) isHidden(col string) bool {
 	return p.hidden != nil && p.hidden[col]
 }
 
-// mentionsEmbedding reports whether a statement references the _embedding
-// identifier outside string literals and comments, so that hiding the column
-// is lifted only by an actual reference to it, not by a literal or comment
-// that happens to contain the name.
 func mentionsEmbedding(stmt string) bool {
 	var b strings.Builder
 	for i := 0; i < len(stmt); {
 		switch c := stmt[i]; c {
-		case '\'': // string literal; '' escapes a quote
+		case '\'':
 			i++
 			for i < len(stmt) {
 				if stmt[i] == '\'' {
@@ -127,7 +111,7 @@ func mentionsEmbedding(stmt string) bool {
 			}
 			b.WriteByte(' ')
 		case '-':
-			if i+1 < len(stmt) && stmt[i+1] == '-' { // line comment
+			if i+1 < len(stmt) && stmt[i+1] == '-' {
 				for i < len(stmt) && stmt[i] != '\n' {
 					i++
 				}
@@ -137,7 +121,7 @@ func mentionsEmbedding(stmt string) bool {
 				i++
 			}
 		case '/':
-			if i+1 < len(stmt) && stmt[i+1] == '*' { // block comment
+			if i+1 < len(stmt) && stmt[i+1] == '*' {
 				i += 2
 				for i+1 < len(stmt) && !(stmt[i] == '*' && stmt[i+1] == '/') {
 					i++
@@ -159,10 +143,6 @@ func mentionsEmbedding(stmt string) bool {
 	return embeddingMentionRe.MatchString(b.String())
 }
 
-// nsProjection builds the namespace-wide projection for a raw SQL statement.
-// Referencing _embedding in the statement (outside string literals and
-// comments) opts the hidden column in; otherwise it is stripped from results
-// (e.g. from SELECT *).
 func (s *Store) nsProjection(ctx context.Context, db rowsQuerier, statement string) (*projection, error) {
 	rows, err := db.QueryContext(ctx, `SELECT schema_json FROM _dolmen_tables`)
 	if err != nil {
@@ -187,10 +167,6 @@ func (s *Store) nsProjection(ctx context.Context, db rowsQuerier, statement stri
 	return p, rows.Err()
 }
 
-// decodeValue coerces one scanned column value to its declared field type:
-// boolean -> bool, json -> the decoded value, vector -> []float64. Values that
-// do not match the declared storage shape (written outside the typed write
-// path) fall back to the raw presentation instead of failing the read.
 func decodeValue(t schema.FieldType, v any) any {
 	if v == nil {
 		return nil
@@ -240,8 +216,6 @@ func decodeValue(t schema.FieldType, v any) any {
 	return normalizeVal(v)
 }
 
-// decodeColumn applies decodeValue to a result column of this projection.
-// Columns without a declared type keep the raw presentation (blobs as base64).
 func (p *projection) decodeColumn(col string, v any) any {
 	if t, ok := p.fieldType(col); ok {
 		return decodeValue(t, v)
@@ -249,8 +223,6 @@ func (p *projection) decodeColumn(col string, v any) any {
 	return normalizeVal(v)
 }
 
-// presentedSize estimates the encoded size of a column value after typed
-// decoding, for the response-budget accounting.
 func (p *projection) presentedSize(col string, raw, v any) int {
 	t, ok := p.fieldType(col)
 	if !ok {
@@ -265,8 +237,7 @@ func (p *projection) presentedSize(col string, raw, v any) int {
 			return len(fv)*27 + 8
 		}
 	case schema.JSON:
-		// Composite values re-encode to about the size of the stored text;
-		// approxSize would charge them a flat 16 bytes.
+
 		if _, isStr := v.(string); !isStr {
 			return rawValSize(raw)
 		}

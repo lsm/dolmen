@@ -226,9 +226,6 @@ func TestMCPProtocol(t *testing.T) {
 	}
 }
 
-// TestToolsListSurfacesEnum pins the enum annotation's place in tools/list:
-// schema-validating clients see the vocabulary before the call, and every
-// client sees the declaration mechanism in the schemas themselves.
 func TestToolsListSurfacesEnum(t *testing.T) {
 	url := newMCPServer(t).URL + "/mcp"
 	_, res := rpc(t, url, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
@@ -238,8 +235,7 @@ func TestToolsListSurfacesEnum(t *testing.T) {
 		tool := tl.(map[string]any)
 		byName[tool["name"].(string)] = tool
 	}
-	// create_table field items declare the enum annotation with its
-	// string-only guard among the conditional constraints.
+
 	items := byName["create_table"]["inputSchema"].(map[string]any)["properties"].(map[string]any)["fields"].(map[string]any)["items"].(map[string]any)
 	enum, ok := items["properties"].(map[string]any)["enum"].(map[string]any)
 	if !ok || enum["type"] != "array" || enum["minItems"] != float64(1) {
@@ -248,14 +244,12 @@ func TestToolsListSurfacesEnum(t *testing.T) {
 	if _, ok := items["allOf"].([]any); !ok {
 		t.Fatalf("create_table field items must keep their conditional constraints")
 	}
-	// describe_table's output schema shows each field's vocabulary through the
-	// shared Field component (the same schema /v1/openapi.json declares).
+
 	tableRef, ok := byName["describe_table"]["outputSchema"].(map[string]any)["properties"].(map[string]any)["table"].(map[string]any)["$ref"].(string)
 	if !ok || tableRef != "#/components/schemas/TableSchema" {
 		t.Fatalf("describe_table output schema must reference the shared TableSchema component, got %v", byName["describe_table"])
 	}
-	// migrate lists set_enum among its ops and takes the vocabulary at
-	// change level.
+
 	migItems := byName["migrate"]["inputSchema"].(map[string]any)["properties"].(map[string]any)["changes"].(map[string]any)["items"].(map[string]any)
 	opEnum, ok := migItems["properties"].(map[string]any)["op"].(map[string]any)["enum"].([]any)
 	if !ok {
@@ -1224,7 +1218,6 @@ func TestToolsCallErrorOmitsStructuredContent(t *testing.T) {
 	}
 }
 
-// callTool invokes a stateless tools/call and returns its structuredContent.
 func callTool(t *testing.T, url, name string, args map[string]any) map[string]any {
 	t.Helper()
 	code, res := rpc(t, url, map[string]any{
@@ -1245,10 +1238,6 @@ func callTool(t *testing.T, url, name string, args map[string]any) map[string]an
 	return out
 }
 
-// mustMCPNS creates the namespace through the tools/call surface, tolerating
-// an existing one: the store stopped creating namespaces on first use (slice
-// 2b's §6.2 rule), so fixtures that relied on create-on-open create
-// explicitly.
 func mustMCPNS(t *testing.T, url, ns string) {
 	t.Helper()
 	code, res := rpc(t, url, map[string]any{
@@ -1361,8 +1350,6 @@ func TestMCPLifecycleTools(t *testing.T) {
 		t.Fatalf("expected [agents] over MCP, got %v", out)
 	}
 
-	// The confirm guard must bite over MCP too: a mismatched confirm comes
-	// back as an errored tool result, not a silent drop.
 	code, res := rpc(t, url, map[string]any{
 		"jsonrpc": "2.0", "id": 5, "method": "tools/call",
 		"params": map[string]any{"name": "drop_table", "arguments": map[string]any{
@@ -1397,9 +1384,6 @@ func TestMCPLifecycleTools(t *testing.T) {
 	}
 }
 
-// The wiring mirrors main.go — one api server behind /, one mcp server at
-// /mcp — so every version surface must report the single release identity
-// from internal/version (issue #67).
 func TestVersionSurfacesAgree(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -1495,10 +1479,6 @@ func TestDescribeServerMatchesHTTPOp(t *testing.T) {
 	}
 }
 
-// TestToolErrorEmbedderUnavailable pins the #144 contract over MCP: a local
-// embedding model that fails to load reports the actionable
-// embedder_unavailable code — not a bare internal_error — and the tool error
-// envelope carries a request id even when the client sent none.
 func TestToolErrorEmbedderUnavailable(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {

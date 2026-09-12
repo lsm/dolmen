@@ -7,17 +7,11 @@ import (
 	"github.com/lsm/dolmen/internal/api"
 )
 
-// parityScript is one deterministic tour through every operation, in a
-// lifecycle order (create → write → read → search → migrate → delete → drop).
-// Each step's inputs are identical over both transports; the transport is the
-// only variable. Volatile server-assigned timestamps (created_at, migration
-// "at") are masked before comparison.
 type parityStep struct {
 	name string
 	op   string
 	body map[string]any
-	// skipHTTP runs the step only over MCP (for payload variants that must
-	// not run twice on the HTTP side); unused by the standard script.
+
 	skipHTTP bool
 }
 
@@ -67,8 +61,7 @@ func parityScript() []parityStep {
 			"namespace": ns,
 			"sql":       "SELECT id, title, tag, score, flag, meta, vec FROM docs ORDER BY id",
 		}, false},
-		// Unsorted ids with a missing one: the response is the found rows in
-		// ascending id order, the missing id simply absent (§2).
+
 		{"read_rows", "read_rows", map[string]any{
 			"namespace": ns, "table": "docs", "ids": []any{3, 999, 1},
 		}, false},
@@ -120,21 +113,12 @@ func parityScript() []parityStep {
 	}
 }
 
-// TestTransportParityAllOperations drives the identical script against two
-// independent servers — one over /v1, one over MCP tools/call — and requires
-// every step to produce the identical result: HTTP data == MCP
-// structuredContent, modulo server-assigned timestamps. This is the drift
-// guard between the two transports (#119 caught them disagreeing once). The
-// registry-coverage check below keeps the script at one step per operation as
-// the registry grows.
 func TestTransportParityAllOperations(t *testing.T) {
 	httpH := newHarness(t)
 	mcpH := newHarness(t)
 
 	steps := parityScript()
 
-	// The script must exercise every registered operation — a new op added
-	// to the registry without a parity step fails here instead of drifting.
 	covered := map[string]bool{}
 	for _, step := range steps {
 		covered[step.op] = true
@@ -180,7 +164,6 @@ func TestTransportParityAllOperations(t *testing.T) {
 		mcpData[i] = sc
 	}
 
-	// Compare per step as subtests so a drift report names the operation.
 	for i, step := range steps {
 		t.Run(step.name, func(t *testing.T) {
 			assertJSONEqual(t, step.name+" result", maskVolatile(t, mcpData[i]), maskVolatile(t, httpData[i]))
@@ -188,10 +171,6 @@ func TestTransportParityAllOperations(t *testing.T) {
 	}
 }
 
-// TestTransportParityErrorEnvelope pins the error side of transport parity:
-// the same failing call must report the same stable code and message through
-// both transports — HTTP as {"ok":false,"error":{...}} with the pinned
-// status, MCP as a tool error whose text is exactly that same envelope.
 func TestTransportParityErrorEnvelope(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("errp", "t", []map[string]any{{"name": "title", "type": "string", "fulltext": true}})
@@ -200,8 +179,6 @@ func TestTransportParityErrorEnvelope(t *testing.T) {
 		"records": []map[string]any{{"title": "one"}},
 	})
 
-	// §2's read_rows id cap: a body well under the byte limit can still name
-	// too many ids — the cap is the request's own, not the envelope's.
 	tooManyIDs := make([]any, 1001)
 	for i := range tooManyIDs {
 		tooManyIDs[i] = float64(i + 1)
@@ -243,10 +220,6 @@ func TestTransportParityErrorEnvelope(t *testing.T) {
 		})
 	}
 
-	// Same idempotency key, different records → conflict on both transports.
-	// The status is pinned by the api package (TestErrorEnvelopeConflict):
-	// request-class 400, stable code "conflict" — distinct from the 409 a
-	// migrate expected_version conflict reports.
 	replay := map[string]any{
 		"namespace": "errp", "table": "t", "idempotency_key": "diverge",
 		"records": []map[string]any{{"title": "different"}},
@@ -263,10 +236,6 @@ func TestTransportParityErrorEnvelope(t *testing.T) {
 	assertJSONEqual(t, "conflict envelope", withoutRequestID(mcpRes.toolError()), withoutRequestID(httpErr))
 }
 
-// withoutRequestID drops the per-call request id from an error envelope
-// before a cross-transport comparison: parity pins the code and message, and
-// each transport call that sent no X-Request-Id carries its own
-// server-generated id.
 func withoutRequestID(env map[string]any) map[string]any {
 	out := make(map[string]any, len(env))
 	for k, v := range env {
@@ -277,8 +246,6 @@ func withoutRequestID(env map[string]any) map[string]any {
 	return out
 }
 
-// TestMCPToolResultShape pins the MCP result container itself: success carries
-// structuredContent with an empty content array and isError false.
 func TestMCPToolResultShape(t *testing.T) {
 	h := newHarness(t)
 	res := h.mcpCall("list_namespaces", map[string]any{})

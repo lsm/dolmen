@@ -25,20 +25,8 @@ type Embedder struct {
 
 const MaxRecordsPerInsert = 1000
 
-// MaxIdempotencyKeyLen caps client-supplied idempotency keys.
 const MaxIdempotencyKeyLen = 256
 
-// Insert inserts records as-is: a repeated call duplicates rows (§6.2, §6.3).
-// opts.IdempotencyKey makes it retry-safe instead: the key and the inserted
-// ids are committed together, durably, so a retry — even after a process
-// restart — returns the original ids (Replayed = true) instead of inserting
-// again. A key reused with a different payload is an error rather than a
-// silent replay of unrelated ids. The result carries the ChangeRange the
-// transaction minted (§6.2, §9.3) — internal only, never in public response
-// shapes, and the zero value on an idempotency replay (the original insert
-// minted its records; the replay mints none). TODO(9h): opts.Owner and
-// opts.TableWideRead, scope, and scopeIncarnation are ignored while auth is
-// off — slice 9h stamps the owner and scopes the idempotency replay.
 func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
 	if len(opts.IdempotencyKey) > MaxIdempotencyKeyLen {
 		return InsertResult{}, invalidf("idempotency key is %d bytes (max %d)", len(opts.IdempotencyKey), MaxIdempotencyKeyLen)
@@ -94,16 +82,13 @@ func (s *Store) insert(ctx context.Context, nsName, table string, records []map[
 func payloadHash(records []map[string]any) string {
 	raw, err := json.Marshal(records)
 	if err != nil {
-		// Unmarshalable payloads fail later at coercion; hash the error text so
-		// equal payloads still hash equal and unequal ones stay distinguishable.
+
 		raw = []byte("marshal error: " + err.Error())
 	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }
 
-// lookupIdem returns the ids recorded for (table, key). found is true on a
-// replay; a hash mismatch means the key is being reused for a different write.
 func lookupIdem(ctx context.Context, db rowQuerier, table, key, wantHash string) (ids []int64, found bool, err error) {
 	var gotHash, idsJSON string
 	err = db.QueryRowContext(ctx,
@@ -125,13 +110,7 @@ func lookupIdem(ctx context.Context, db rowQuerier, table, key, wantHash string)
 }
 
 func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, idemHash string) (ids []int64, changes ChangeRange, replayed bool, done bool, err error) {
-	// Capture the drop generation before the schema read: a drop_table landing
-	// during the embedding pause below bumps it, so the in-transaction
-	// re-check retries instead of committing into a same-named recreated
-	// table (recreation resets the version to 1, which the version compare
-	// alone cannot distinguish from a never-migrated original). The
-	// generation is persisted, so the guard also holds across Store
-	// instances and processes sharing the data directory.
+
 	gen, err := tableGen(ctx, n.rw, table)
 	if err != nil {
 		return nil, ChangeRange{}, false, true, err
@@ -141,8 +120,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 		return nil, ChangeRange{}, false, true, err
 	}
 	if idemKey != "" {
-		// Fast path: a recorded key must short-circuit before any embedding
-		// work. The in-transaction check below remains the authoritative one.
+
 		if ids, found, err := lookupIdem(ctx, n.rw, table, idemKey, idemHash); err != nil {
 			return nil, ChangeRange{}, false, true, err
 		} else if found {
@@ -152,10 +130,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	persistMeta := sc.EmbedSpace == "" || sc.EmbedDim == 0
 	origEmbedSpace := sc.EmbedSpace
 	origEmbedDim := sc.EmbedDim
-	// Defaults are filled into per-attempt copies, never the shared normalized
-	// maps: a retry after a concurrent schema change re-applies them against
-	// the fresh schema, so a defaulted field a stale attempt added cannot fail
-	// as unknown after the field was renamed or dropped mid-insert.
+
 	records = applyInsertDefaults(sc, records)
 	for _, rec := range records {
 		for k := range rec {
@@ -280,10 +255,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			return nil, ChangeRange{}, false, true, err
 		}
 	}
-	// The change records are minted beside the rows they describe, inside
-	// this same transaction (§9.3): commit exposes rows and log together,
-	// and any failure below rolls both back together. owner stays NULL until
-	// stamping lands (slice 9c) — the insert path has no caller identity yet.
+
 	changes, err = mintChanges(ctx, tx, table, ChangeInsert, ids, nil)
 	if err != nil {
 		return nil, ChangeRange{}, false, true, err
@@ -296,9 +268,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO _dolmen_idempotency(table_name, key, payload_hash, ids_json) VALUES(?,?,?,?)`,
 			table, idemKey, idemHash, string(idsJSON)); err != nil {
-			// A writer in another process may have committed this key between our
-			// lookup and this insert: their rows stand, ours roll back, and the
-			// retry gets their ids — which is exactly the dedup contract.
+
 			if strings.Contains(err.Error(), "UNIQUE constraint failed: _dolmen_idempotency") {
 				if rerr := tx.Rollback(); rerr != nil {
 					return nil, ChangeRange{}, false, true, rerr
@@ -318,20 +288,11 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	if err := tx.Commit(); err != nil {
 		return nil, ChangeRange{}, false, true, err
 	}
-	// §9.3: notification happens after commit — rows and log are durable
-	// before any waiter wakes (the idempotent-race replay above returned
-	// before this point and wakes nobody: it minted nothing).
+
 	s.notifyCommitted(nsName, table, changes)
 	return ids, changes, false, true, nil
 }
 
-// applyInsertDefaults returns records with each omitted field that carries a
-// schema default filled in, so defaults flow through validation, coercion,
-// FTS, and embedding exactly like caller-supplied values (an explicit null
-// stays null — it clears, it does not default). Records are copied, and only
-// when the schema declares defaults: attempts share the caller's normalized
-// maps, and a retry after a concurrent rename/drop must see the records as
-// sent — not fields a stale attempt defaulted under the old schema.
 func applyInsertDefaults(sc *schema.TableSchema, records []map[string]any) []map[string]any {
 	hasDefault := false
 	for _, f := range sc.Fields {
@@ -387,11 +348,6 @@ func defaultForWrite(f schema.Field) any {
 	return stampNow(writeDefault(f))
 }
 
-// embedTexts embeds a batch of texts under the table's embedding-space rules:
-// the provider must exist and report an identity, the identity must match the
-// space the table was first embedded in, and every vector must be non-empty,
-// finite, and dimensionally stable. A first embedding records its dimension on
-// sc for persistence by the caller.
 func embedTexts(ctx context.Context, sc *schema.TableSchema, table string, texts []string, emb Embedder) ([][]float32, error) {
 	if emb.Embed == nil {
 		return nil, invalidf("table %s uses vectorize but no embedding provider is configured", table)
@@ -427,9 +383,6 @@ func embedTexts(ctx context.Context, sc *schema.TableSchema, table string, texts
 	return vecs, nil
 }
 
-// execInsertWithFTS inserts one coerced row (plus its FTS entry when the table
-// has fulltext fields) and returns the new row id. vec, when non-nil, is
-// stored as the row's _embedding.
 func execInsertWithFTS(ctx context.Context, tx *sql.Tx, table string, fts []schema.Field, rec map[string]any, cols []string, vals []any, vec []float32) (int64, error) {
 	if vec != nil {
 		cols = append(cols, `"_embedding"`)
@@ -458,7 +411,6 @@ func execInsertWithFTS(ctx context.Context, tx *sql.Tx, table string, fts []sche
 	return id, nil
 }
 
-// writeFTSRowFor indexes one row's fulltext fields from its record values.
 func writeFTSRowFor(ctx context.Context, tx *sql.Tx, table string, fts []schema.Field, id int64, rec map[string]any) error {
 	fcols := make([]string, len(fts))
 	fvals := make([]any, len(fts)+1)

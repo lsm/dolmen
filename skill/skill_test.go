@@ -41,9 +41,6 @@ func TestRenderRejectsUnknownSkill(t *testing.T) {
 	}
 }
 
-// TestRenderDocumentsJSONRPCFallback guards the autonomous-session fallback:
-// when the MCP tools cannot be hot-loaded, both skills must document driving
-// the MCP endpoint directly over stateless JSON-RPC.
 func TestRenderDocumentsJSONRPCFallback(t *testing.T) {
 	ctx := Context{
 		BaseURL:       "http://example.com",
@@ -178,12 +175,12 @@ func TestETagIsVersionDerivedAndStable(t *testing.T) {
 
 func TestContextForAddsServerPrefix(t *testing.T) {
 	for _, tc := range []struct {
-		name            string
-		configured      string
+		name             string
+		configured       string
 		xForwardedPrefix string
-		prefix          string
-		wantBase        string
-		wantMCP         string
+		prefix           string
+		wantBase         string
+		wantMCP          string
 	}{
 		{
 			name:     "prefix appended to auto base",
@@ -240,10 +237,10 @@ func TestContextForAddsServerPrefix(t *testing.T) {
 
 func TestBaseURLForParsesForwardedHeaderChains(t *testing.T) {
 	for _, tc := range []struct {
-		name            string
-		host            string
-		xForwardedProto string
-		xForwardedHost  string
+		name             string
+		host             string
+		xForwardedProto  string
+		xForwardedHost   string
 		xForwardedPrefix string
 		want             string
 	}{

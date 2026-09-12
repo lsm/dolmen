@@ -10,22 +10,12 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-// VectorSearchResult is the outcome of a vector search. Skipped counts rows
-// whose stored vector could not be scored — a corrupt blob, a dimension that
-// disagrees with the query, a non-finite component, or a non-BLOB value an
-// out-of-band writer left in the column — so those rows are absent from Rows
-// and a nonzero count means the search is partial.
 type VectorSearchResult struct {
 	Rows      []map[string]any
 	Truncated bool
 	Skipped   int
 }
 
-// SearchVector executes a vector search (§6.2, §7). The engine is exact:
-// Execution reports the brute-force path that served the query (Capabilities,
-// still the 2b stub, will say the same once slice 4d makes it real). TODO(9d):
-// scope and scopeIncarnation are ignored while auth is off — a non-nil scope
-// will filter visible rows.
 func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq VectorQuery, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (SearchResult, error) {
 	n, err := s.ns(nsName)
 	if err != nil {
@@ -101,9 +91,7 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq Vecto
 		if err := rows.Scan(&id, &raw); err != nil {
 			return SearchResult{}, err
 		}
-		// An out-of-band SQLite writer can corrupt a vector column with any
-		// storage type (INTEGER, REAL, TEXT); only a BLOB of the right shape
-		// is scoreable — everything else is skipped and counted, not fatal.
+
 		blob, isBlob := raw.([]byte)
 		if !isBlob {
 			skipped++
@@ -123,7 +111,7 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq Vecto
 	if err := rows.Err(); err != nil {
 		return SearchResult{}, err
 	}
-	// Stable, deterministic ordering: higher score first, then lower id.
+
 	sort.SliceStable(hits, func(i, j int) bool {
 		if hits[i].score == hits[j].score {
 			return hits[i].id < hits[j].id
@@ -140,9 +128,6 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq Vecto
 	}
 	paged := hits[offset:end]
 
-	// The (limit+1)th hit is only a look-ahead for truncated — never fetch
-	// it, or an invalid value in that row would fail the whole page instead
-	// of returning the valid rows with truncated=true.
 	hasMore := len(paged) > limit
 	if hasMore {
 		paged = paged[:limit]
@@ -171,15 +156,6 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq Vecto
 	}, nil
 }
 
-// resolveVectorColumn picks the column a vector search runs against and the
-// dimension the query must have. textQuery is true only for text queries,
-// whose vector the active provider embeds: those may only target the
-// server-managed vectorize (_embedding) space, because cosine against a
-// caller-provided vector column compares embeddings from an unrelated model
-// and returns confident nonsense. Raw-vector queries may target any vector
-// column — the caller owns matching the space. textQuery is independent of
-// embedModel so a table's shape can be validated even when no provider is
-// configured (embedModel "") — the two failures must report distinct errors.
 func resolveVectorColumn(sc *schema.TableSchema, table, column string, textQuery bool, embedModel string) (string, int, error) {
 	if column == "" && sc.VectorizeField() != nil {
 		column = "_embedding"
@@ -223,9 +199,6 @@ func resolveVectorColumn(sc *schema.TableSchema, table, column string, textQuery
 	return column, dim, nil
 }
 
-// vectorColumnNames lists the table's declared vector columns, comma-joined,
-// or "" when there are none — the raw-vector fallback in an error message is
-// only offered when this is non-empty.
 func vectorColumnNames(sc *schema.TableSchema) string {
 	cols := sc.VectorFields()
 	if len(cols) == 0 {
@@ -238,14 +211,6 @@ func vectorColumnNames(sc *schema.TableSchema) string {
 	return strings.Join(names, ", ")
 }
 
-// ValidateVectorQuery validates a TEXT vector query against a TableState
-// snapshot (§6.2): vectorize field present and embed-space identity pinned —
-// the pre-embed check the API layer runs against the same snapshot it will
-// resolve scopes from, so an invalid query fails before the embedding
-// provider is contacted (or billed) (§7). It is deliberately a function over
-// the snapshot, not an Engine method: the validation travels with the schema
-// the caller already holds. embedModel is the active provider's identity (""
-// when none is configured — the table's shape still validates).
 func ValidateVectorQuery(sc *schema.TableSchema, table, column, embedModel string) error {
 	_, _, err := resolveVectorColumn(sc, table, column, true, embedModel)
 	return err

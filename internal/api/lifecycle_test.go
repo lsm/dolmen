@@ -47,7 +47,6 @@ func TestNamespaceLifecycleOverHTTP(t *testing.T) {
 		t.Fatalf("expected [myapp], got %v", nss)
 	}
 
-	// The drop guard: confirm must repeat the exact namespace name.
 	code, _ = post(t, srv.URL, "drop_namespace", map[string]any{"namespace": "myapp"})
 	if code != 400 {
 		t.Fatalf("drop_namespace without confirm must 400, got %d", code)
@@ -75,9 +74,6 @@ func TestNamespaceLifecycleOverHTTP(t *testing.T) {
 		t.Fatalf("namespace must be gone after drop, got %v", nss)
 	}
 
-	// The dropped name is reusable; 2b retired implicit recreation at the
-	// store seam (2c's ensureNamespace restores it at the op layer), so create
-	// explicitly and require the fresh namespace to list as empty.
 	mustNS(t, srv.URL, "myapp")
 	code, _ = post(t, srv.URL, "list_tables", map[string]any{"namespace": "myapp"})
 	if code != 200 {
@@ -111,7 +107,6 @@ func TestDropTableOverHTTP(t *testing.T) {
 		t.Fatal("insert failed")
 	}
 
-	// The drop guard: confirm must repeat the exact table name.
 	code, _ = post(t, srv.URL, "drop_table", map[string]any{"namespace": "ns1", "table": "events"})
 	if code != 400 {
 		t.Fatalf("drop_table without confirm must 400, got %d", code)
@@ -146,8 +141,6 @@ func TestDropTableOverHTTP(t *testing.T) {
 		t.Fatalf("search_fulltext on dropped table must 404, got %d", code)
 	}
 
-	// Recreating the name starts fresh — in particular the old idempotency
-	// key inserts instead of replaying ids that no longer exist.
 	code, _ = post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "ns1",
 		"table":     "events",

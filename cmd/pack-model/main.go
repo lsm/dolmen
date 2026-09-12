@@ -30,8 +30,6 @@ var (
 	modelIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+$`)
 )
 
-// hubBase is the Hugging Face Hub root. It is a package-level variable so
-// tests can point it at a local HTTP server.
 var hubBase = "https://huggingface.co"
 
 func main() {
@@ -76,9 +74,6 @@ func main() {
 	}
 }
 
-// ensure downloads the files rembed needs for modelID at the given revision
-// into dir. It mirrors the file selection logic of rembed's internal hub
-// package, with support for a pinned revision.
 func ensure(modelID, revision, dir string) error {
 	fetched := []string{}
 	cleanup := func(files ...string) {
@@ -136,7 +131,7 @@ func ensure(modelID, revision, dir string) error {
 			tokFiles = nil
 			fetched = append(fetched, "sentencepiece.bpe.model")
 		case errors.Is(err, errNotFound):
-			// Not a SentencePiece repo; keep the model_type files.
+
 		default:
 			cleanup(fetched...)
 			return err
@@ -151,7 +146,6 @@ func ensure(modelID, revision, dir string) error {
 		fetched = append(fetched, f)
 	}
 
-	// EmbeddingGemma ships two Dense projection heads alongside the backbone.
 	if hf.ModelType == "gemma3_text" || hf.ModelType == "gemma3" {
 		for _, f := range []string{
 			"2_Dense/config.json", "2_Dense/model.safetensors",
@@ -174,9 +168,6 @@ func ensure(modelID, revision, dir string) error {
 	return nil
 }
 
-// supported lists the architectures rembed can run. Keep it in sync with
-// rembed's hub package so packaging fails early instead of downloading
-// gigabytes for an unsupported model.
 func supported(modelType string) bool {
 	switch modelType {
 	case "bert", "distilbert", "modernbert", "qwen3", "gemma3_text", "gemma3", "roberta", "xlm-roberta", "mpnet":
@@ -185,9 +176,6 @@ func supported(modelType string) bool {
 	return false
 }
 
-// fetch downloads one file from the Hub at the given revision if it is not
-// already cached. It verifies the X-Linked-Etag and X-Linked-Size headers from
-// the first redirect, matching rembed's hub fetch.
 func fetch(modelID, revision, name, dir string) error {
 	dst := filepath.Join(dir, filepath.FromSlash(name))
 	if _, err := os.Stat(dst); err == nil {
@@ -202,8 +190,7 @@ func fetch(modelID, revision, name, dir string) error {
 	client := &http.Client{
 		Timeout: 15 * time.Minute,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// The response that triggered the redirect is req.Response;
-			// via's requests have no Response until after the hop.
+
 			if r := req.Response; r != nil {
 				if etag := strings.Trim(r.Header.Get("X-Linked-Etag"), `W/"`); len(etag) == 64 {
 					wantSHA = etag
@@ -270,8 +257,6 @@ func fetch(modelID, revision, name, dir string) error {
 	return os.Rename(tmp.Name(), dst)
 }
 
-// fetchWeights downloads model.safetensors, or — when the repo shards its
-// weights — the index plus every shard it names.
 func fetchWeights(modelID, revision, dir string) ([]string, error) {
 	err := fetch(modelID, revision, "model.safetensors", dir)
 	if err == nil {
@@ -320,9 +305,6 @@ func fetchWeights(modelID, revision, dir string) ([]string, error) {
 	return got, nil
 }
 
-// validShardName reports whether name is a plain filename safe to join into a
-// model directory. It is copied from rembed's safetensors package because that
-// package is internal to the rembed module.
 func validShardName(name string) bool {
 	if name == "" || name == "." || name == ".." {
 		return false
@@ -330,9 +312,6 @@ func validShardName(name string) bool {
 	return !strings.ContainsAny(name, `/\`)
 }
 
-// writeTar creates a gzip-compressed tar archive at outPath containing the
-// model directory. The top-level entry is named after the model id with its
-// single slash replaced by two dashes, matching rembed's cache naming.
 func writeTar(modelDir, modelID, outPath string) (err error) {
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return err
@@ -345,8 +324,6 @@ func writeTar(modelDir, modelID, outPath string) (err error) {
 	gw := gzip.NewWriter(f)
 	tw := tar.NewWriter(gw)
 
-	// Close the layered writers in order and propagate any close error, but
-	// do not overwrite an earlier write/walk error with a later close error.
 	defer func() {
 		if cerr := tw.Close(); cerr != nil && err == nil {
 			err = cerr
@@ -360,8 +337,7 @@ func writeTar(modelDir, modelID, outPath string) (err error) {
 	}()
 
 	prefix := strings.ReplaceAll(modelID, "/", "--")
-	// Normalize tar metadata so the same pinned revision produces the same
-	// bytes and checksum on every build regardless of the download time.
+
 	archiveEpoch := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	writeEntry := func(name string, size int64, body io.Reader) error {
 		if err := tw.WriteHeader(&tar.Header{
@@ -377,9 +353,6 @@ func writeTar(modelDir, modelID, outPath string) (err error) {
 		return err
 	}
 
-	// Collect the files first so the archive opens with the size manifest:
-	// as the first entry, its presence on disk means extraction reached it,
-	// and the sizes it records catch a stream cut mid-file.
 	type entry struct {
 		rel string
 		fi  os.FileInfo

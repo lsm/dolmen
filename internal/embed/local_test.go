@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-// fakeEngine stands in for rembed's *Embedder so provider logic is testable
-// without a model download.
 type fakeEngine struct {
 	dim float32
 }
@@ -101,7 +99,6 @@ func TestNewProviderLocalCacheEnv(t *testing.T) {
 		t.Fatalf("model cache dir must be created: %v", err)
 	}
 
-	// An operator-set cache must win over the data-dir default.
 	os.Setenv("REMBED_CACHE", "/operator/cache")
 	p2, err := NewProvider("local", "", "", "", dataDir)
 	if err != nil {
@@ -137,7 +134,6 @@ func TestLocalCached(t *testing.T) {
 		t.Fatalf("empty cache must report not cached")
 	}
 
-	// Simulate a downloaded model cache.
 	cacheDir := filepath.Join(dataDir, localModelDir, "sentence-transformers--all-MiniLM-L6-v2")
 	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -161,8 +157,6 @@ func TestLocalCached(t *testing.T) {
 		t.Fatalf("a complete cache must report cached")
 	}
 
-	// A fully seeded sharded cache also reports cached, so the startup log
-	// does not warn about a Hub download an offline install cannot make.
 	shardDir := filepath.Join(dataDir, localModelDir, "org--sharded")
 	if err := os.MkdirAll(shardDir, 0o700); err != nil {
 		t.Fatalf("mkdir shard dir: %v", err)
@@ -283,9 +277,6 @@ func TestLocalCached(t *testing.T) {
 		}
 	}
 
-	// An absolute model-directory path is its own cache, held to the same
-	// completeness rule: a complete directory reports cached, a partial one
-	// (or no model at all) does not.
 	l2 := &Local{Model: cacheDir}
 	if !l2.Cached() {
 		t.Fatalf("complete absolute model directory must report cached")
@@ -319,8 +310,7 @@ func TestLocalEmbedLazyRetryAndSuccess(t *testing.T) {
 	if firstErr == nil || !errors.Is(firstErr, boom) {
 		t.Fatalf("first Embed must fail with the load error, got %v", firstErr)
 	}
-	// A failed load must be classifiable as a LoadError so the API can map
-	// it to an actionable embedder_unavailable error, not a bare internal one.
+
 	var le *LoadError
 	if !errors.As(firstErr, &le) {
 		t.Fatalf("load failure must be a *LoadError, got %T", firstErr)
@@ -328,7 +318,7 @@ func TestLocalEmbedLazyRetryAndSuccess(t *testing.T) {
 	if le.Model != "org/model" {
 		t.Fatalf("LoadError must carry the model name, got %q", le.Model)
 	}
-	// Hub ids are public identifiers; directory paths are filesystem layout.
+
 	if !le.IsHubID() {
 		t.Fatalf("org/model is a Hub id, IsHubID said false")
 	}
@@ -392,7 +382,7 @@ func TestLocalIdentityIncludesDirectoryRef(t *testing.T) {
 func TestLocalRef(t *testing.T) {
 	cases := map[string]string{
 		"sentence-transformers/all-MiniLM-L6-v2": "hf:sentence-transformers/all-MiniLM-L6-v2",
-		"intfloat/multilingual-e5-small":         "hf:intfloat/multilingual-e5-small", // any org/name is a Hub ref
+		"intfloat/multilingual-e5-small":         "hf:intfloat/multilingual-e5-small",
 		"/opt/models/minilm":                     "/opt/models/minilm",
 		"/opt/models/nested/dir":                 "/opt/models/nested/dir",
 	}
@@ -403,9 +393,6 @@ func TestLocalRef(t *testing.T) {
 	}
 }
 
-// seedCache writes the artifact set rembed's directory load needs, minus the
-// named files, so tests can build partial caches the way an interrupted
-// download or tar extraction would leave behind.
 func seedCache(t *testing.T, dir string, skip ...string) {
 	t.Helper()
 	skipMap := make(map[string]struct{}, len(skip))
@@ -432,8 +419,6 @@ func seedCache(t *testing.T, dir string, skip ...string) {
 func TestSeededCacheDir(t *testing.T) {
 	cache := t.TempDir()
 
-	// A pre-seeded model cache is detected when the full artifact set is on
-	// disk.
 	seeded := filepath.Join(cache, "sentence-transformers--all-MiniLM-L6-v2")
 	if err := os.MkdirAll(seeded, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -443,9 +428,6 @@ func TestSeededCacheDir(t *testing.T) {
 		t.Fatalf("seededCacheDir: got %q, want %q", got, seeded)
 	}
 
-	// Weights alone are not a loadable cache: an extraction interrupted after
-	// model.safetensors but before the tokenizer or module files must fall
-	// back to the Hub ref, where rembed can resume what is missing.
 	for _, missing := range []string{"config.json", "tokenizer_config.json", "modules.json", "vocab.txt"} {
 		partial := filepath.Join(cache, "org--partial")
 		if err := os.RemoveAll(partial); err != nil {
@@ -460,8 +442,6 @@ func TestSeededCacheDir(t *testing.T) {
 		}
 	}
 
-	// A sharded pre-seeded cache is detected when the index and all of its
-	// referenced shards exist.
 	sharded := filepath.Join(cache, "org--sharded")
 	if err := os.MkdirAll(sharded, 0o755); err != nil {
 		t.Fatalf("mkdir sharded: %v", err)
@@ -487,18 +467,14 @@ func TestSeededCacheDir(t *testing.T) {
 		t.Fatalf("seededCacheDir sharded: got %q, want %q", got, sharded)
 	}
 
-	// A missing cache means falling back to the Hub.
 	if got := seededCacheDir(cache, "org/not-seeded"); got != "" {
 		t.Fatalf("seededCacheDir for missing cache: got %q, want empty", got)
 	}
 
-	// Absolute model directories are not cache-looked-up.
 	if got := seededCacheDir(cache, "/opt/models/minilm"); got != "" {
 		t.Fatalf("seededCacheDir for absolute path: got %q, want empty", got)
 	}
 
-	// A manifest naming a module directory requires that module's files: a
-	// cache missing 1_Pooling/config.json must fall back to the Hub.
 	manifest := filepath.Join(cache, "org--manifest")
 	if err := os.MkdirAll(manifest, 0o755); err != nil {
 		t.Fatalf("mkdir manifest: %v", err)
@@ -521,7 +497,6 @@ func TestSeededCacheDir(t *testing.T) {
 		t.Fatalf("seededCacheDir with complete modules: got %q, want %q", got, manifest)
 	}
 
-	// A Dense projection head (Gemma's 2_Dense) also needs its own weights.
 	gemma := filepath.Join(cache, "org--gemma")
 	if err := os.MkdirAll(gemma, 0o755); err != nil {
 		t.Fatalf("mkdir gemma: %v", err)
@@ -549,8 +524,6 @@ func TestSeededCacheDir(t *testing.T) {
 		t.Fatalf("seededCacheDir with dense weights: got %q, want %q", got, gemma)
 	}
 
-	// A RoBERTa cache needs both vocab.json and merges.txt — one without the
-	// other cannot load and must fall back to the Hub.
 	roberta := filepath.Join(cache, "org--roberta")
 	if err := os.MkdirAll(roberta, 0o755); err != nil {
 		t.Fatalf("mkdir roberta: %v", err)
@@ -572,9 +545,6 @@ func TestSeededCacheDir(t *testing.T) {
 		t.Fatalf("seededCacheDir with full roberta tokenizer: got %q, want %q", got, roberta)
 	}
 
-	// A cache extracted from the release asset carries a size manifest: a
-	// file present but truncated (extraction interrupted mid-entry) must be
-	// rejected, not loaded with a partial vocabulary.
 	manifested := filepath.Join(cache, "org--manifested")
 	if err := os.MkdirAll(manifested, 0o755); err != nil {
 		t.Fatalf("mkdir manifested: %v", err)
@@ -614,10 +584,6 @@ func TestLocalEmbedContextCanceled(t *testing.T) {
 	}
 }
 
-// TestLocalEmbedCanceledWhileQueuedBehindLoad pins the lock-queue case: a
-// request whose context is canceled while waiting behind another request's
-// in-flight (failing) load must not start a retry download of its own once
-// it finally acquires the lock.
 func TestLocalEmbedCanceledWhileQueuedBehindLoad(t *testing.T) {
 	var mu sync.Mutex
 	opens := 0
@@ -628,7 +594,7 @@ func TestLocalEmbedCanceledWhileQueuedBehindLoad(t *testing.T) {
 			mu.Lock()
 			opens++
 			mu.Unlock()
-			<-release // simulate a slow load: hold the provider lock
+			<-release
 			return nil, errors.New("load failed")
 		},
 	}
@@ -638,8 +604,7 @@ func TestLocalEmbedCanceledWhileQueuedBehindLoad(t *testing.T) {
 		_, err := l.Embed(context.Background(), []string{"a"})
 		resA <- err
 	}()
-	// Let A enter Open and hold the lock, then queue B and cancel it while
-	// it waits on the mutex.
+
 	time.Sleep(20 * time.Millisecond)
 	ctxB, cancelB := context.WithCancel(context.Background())
 	resB := make(chan error, 1)

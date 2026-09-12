@@ -24,9 +24,6 @@ import (
 )
 
 type Server struct {
-	// eng is the storage seam: the ops layer programs against Engine, never
-	// the concrete SQLite store (plan §2c) — adapter #1 is held here only
-	// because New still takes what it gets.
 	eng                store.Engine
 	emb                embed.Provider
 	baseURL            string
@@ -37,17 +34,14 @@ type Server struct {
 	holdReplay         func()
 }
 
-// Option customizes a Server.
 type Option func(*Server)
 
-// WithBaseURL sets a configured public base URL. If empty, the request Host is used.
 func WithBaseURL(u string) Option {
 	return func(s *Server) {
 		s.baseURL = strings.TrimRight(u, "/")
 	}
 }
 
-// WithPrefix sets the server prefix to include in rendered skill and MCP links.
 func WithPrefix(p string) Option {
 	return func(s *Server) {
 		s.prefix = skill.NormalizePrefix(p)
@@ -66,17 +60,12 @@ func WithKeepaliveInterval(d time.Duration) Option {
 	}
 }
 
-// WithNamespaceHint sets the namespace guidance rendered into skills.
 func WithNamespaceHint(h string) Option {
 	return func(s *Server) {
 		s.namespaceHint = h
 	}
 }
 
-// New builds a Server over a storage engine, holding it as the Engine the
-// ops program against (plan §2c). The parameter stays the concrete
-// *store.Store — adapter #1, still the only engine — so main.go and the test
-// harnesses are unchanged when later adapters arrive.
 func New(st *store.Store, emb embed.Provider, opts ...Option) *Server {
 	s := &Server{eng: st, emb: emb, keepaliveInterval: defaultKeepaliveInterval}
 	for _, opt := range opts {
@@ -85,13 +74,6 @@ func New(st *store.Store, emb embed.Provider, opts ...Option) *Server {
 	return s
 }
 
-// HoldReplay parks the subscribe stream around its replay: f is called
-// after each replay page has been written and once more at the replay→live
-// boundary, and the stream holds there until f returns. Conformance-only;
-// production code must never set it — the seam exists so the race fixtures
-// can hold the handler provably mid-replay, or parked with the listener
-// registered but nothing yet accepted, while a racing call commits, which
-// no buffer sizing can guarantee on every runner.
 func (s *Server) HoldReplay(f func()) {
 	s.holdReplay = f
 }
@@ -118,10 +100,6 @@ func fieldNameProp(desc string) map[string]any {
 	}
 }
 
-// existingFieldNameProp matches any syntactically valid field name, including
-// legacy keyword or reserved names that existed before the stricter rules. It
-// is used for migration references (from, name) so clients can rename or drop
-// fields created under the old validation.
 func existingFieldNameProp(desc string) map[string]any {
 	return map[string]any{
 		"type":        "string",
@@ -130,10 +108,6 @@ func existingFieldNameProp(desc string) map[string]any {
 	}
 }
 
-// fieldItemSchema describes a field definition. withDefault additionally
-// declares the create_table-only default annotation: migrate's add_field takes
-// its backfill default on the change itself, so its field object must not
-// accept one.
 func fieldItemSchema(desc string, withDefault bool) map[string]any {
 	properties := map[string]any{
 		"name": map[string]any{
@@ -202,8 +176,7 @@ func fieldItemSchema(desc string, withDefault bool) map[string]any {
 			},
 		},
 		map[string]any{
-			// enum is string-only; an omitted type defaults to string, so the
-			// guard fires only when a type is present and is not string.
+
 			"if": map[string]any{
 				"properties": map[string]any{"type": map[string]any{"not": map[string]any{"const": string(schema.String)}}},
 				"required":   []string{"type"},
@@ -253,11 +226,6 @@ func fieldItemSchema(desc string, withDefault bool) map[string]any {
 	}
 }
 
-// nsProp describes a namespace request property. The pattern is the full
-// §5.1 path grammar — a single segment still matches it, so widening the
-// declared surface from v0.2.0's single-segment pattern is schema-additive:
-// schema-validating clients that sent valid v0.2.0 names still do, and now
-// paths (a/b/c) pass too.
 func nsProp(desc string) map[string]any {
 	return map[string]any{
 		"type":        "string",
@@ -282,9 +250,6 @@ func tableProp(desc string) map[string]any {
 	}
 }
 
-// existingTableProp matches any syntactically valid table name, including
-// legacy keyword or reserved names that were accepted by earlier releases. It
-// keeps the __fts and sqlite_ guards because those are never valid user tables.
 func existingTableProp(desc string) map[string]any {
 	return map[string]any{
 		"type":        "string",
@@ -359,8 +324,6 @@ func decodeData(body []byte, v any) error {
 	return nil
 }
 
-// decodeAllowNullArgs is like decode but permits null values inside the
-// "args" array so SQL-filter bind parameters can include NULL.
 func decodeAllowNullArgs(body []byte, v any) error {
 	if len(body) == 0 {
 		return badRequest("empty request body")
@@ -385,11 +348,6 @@ func decodeAllowNullArgs(body []byte, v any) error {
 	return decodeData(body, v)
 }
 
-// jsonDefaultPathRe matches paths inside a default value — a migrate change's
-// (changes[0].default.…) or a create_table field's (fields[0].default.…) —
-// whether object-shaped or array-shaped (fields[0].default[…]). Nested nulls
-// there are JSON data the store coerces and serializes as-is; everywhere else
-// null remains a request error.
 var jsonDefaultPathRe = regexp.MustCompile(`^(?:changes|fields)\[\d+\]\.default(?:\.|\[)`)
 
 func rejectNulls(path string, v any) error {
@@ -427,11 +385,6 @@ func rejectNulls(path string, v any) error {
 	return nil
 }
 
-// normNS canonicalizes a namespace path the way v0.2.0 canonicalized a
-// name: trimmed and lowercased, per segment (§5.1) — " Acme / Prod " and
-// "acme/prod" name the same namespace on direct /v1 calls. A segment that
-// trims to nothing stays an empty segment; validation, which follows
-// normalization, rejects it there.
 func normNS(ns string) string {
 	segs := strings.Split(ns, "/")
 	for i, seg := range segs {
@@ -522,15 +475,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/skills", s.handleSkillsManifest)
 	mux.HandleFunc("/skills/", s.handleSkill)
 	mux.HandleFunc("/v1/openapi.json", s.handleOpenAPI)
-	// The subscribe stream is its own GET surface, not an op under /v1/'s
-	// JSON dispatch: an exact-match pattern keeps it out of the prefix
-	// handler below, whose envelope-and-status contract a text/event-stream
-	// response cannot honor (§9.2 layer 3).
+
 	mux.HandleFunc("/v1/subscribe", s.HandleSubscribe)
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
-		// Assign the request id before any error path so every response,
-		// envelope, and log line carries one — echoed when the client sent
-		// X-Request-Id, generated when it did not.
+
 		r = r.WithContext(WithRequestID(r.Context(), RequestIDFor(r)))
 		w.Header().Set("X-Request-Id", RequestIDFrom(r.Context()))
 		op := strings.TrimPrefix(r.URL.Path, "/v1/")
@@ -651,15 +599,11 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		reqID = RequestIDFrom(r.Context())
 	}
 	if reqID == "" {
-		// Reached only for errors outside the /v1/ and /mcp/ handlers (the
-		// origin and content-type guards), which run before the transports
-		// assign an id.
+
 		reqID = newRequestID()
 	}
 	w.Header().Set("X-Request-Id", reqID)
-	// Server-class failures (5xx) are operator-visible at Error level with
-	// their cause; request-class failures are client problems, logged only
-	// when debugging.
+
 	if status >= http.StatusInternalServerError {
 		slog.Error("api error", "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
 	} else {

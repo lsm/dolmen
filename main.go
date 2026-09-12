@@ -22,9 +22,6 @@ import (
 	"github.com/lsm/dolmen/skill"
 )
 
-// envHelp documents environment variables that are not represented by flags.
-// They are printed after the flag help so a fresh operator can discover the
-// embedding provider without reading the skill docs.
 type envHelp struct {
 	key  string
 	desc string
@@ -117,8 +114,6 @@ func run() error {
 	}
 }
 
-// printedError marks an error that has already been written to the terminal
-// together with usage text; main should exit without logging it again.
 type printedError struct {
 	err error
 }
@@ -158,8 +153,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	showVersion := fs.Bool("version", false, "print version and exit")
 	publicBaseURL := fs.String("base-url", envOr("DOLMEN_BASE_URL", "", getenv), "public base URL for skills and MCP links (default: use request Host)")
 	prefix := fs.String("prefix", envOr("DOLMEN_PREFIX", "", getenv), "mount all endpoints under this URL prefix (pass-through proxy)")
-	// A string flag, not fs.Duration: the default comes from the environment
-	// either way, and one parse path validates flag and env identically.
+
 	changeRetention := fs.String("change-retention", envOr("DOLMEN_CHANGE_RETENTION", "168h", getenv), "change-log retention: 0 disables pruning (records and cursors never expire); otherwise 1h to 2160h")
 	maxSubscriptionAge := fs.String("max-subscription-age", envOr("DOLMEN_MAX_SUBSCRIPTION_AGE", "30m", getenv), "subscribe connection age bound: the stream teaching-closes at the bound and the client reconnects from its cursor; 0 disables the bound (the identity-refresh backstop is lost), otherwise 1s to 24h")
 
@@ -250,12 +244,6 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	}, nil
 }
 
-// parseChangeRetention validates the change-log retention knob (§9.2/§9.3:
-// -change-retention / DOLMEN_CHANGE_RETENTION): 0 disables pruning — cursors
-// never expire and records accumulate — and any other value must fall in
-// 1h–2160h. Out-of-range values are startup-rejected, never silently
-// clamped: a typo'd "1m" must not quietly discard a week of backlog, and
-// "9999h" must not quietly retain forever.
 func parseChangeRetention(raw string) (time.Duration, error) {
 	d, err := time.ParseDuration(raw)
 	if err != nil {
@@ -327,9 +315,6 @@ func parseAllowedOrigins(raw string) ([]string, error) {
 	return out, nil
 }
 
-// withPrefix mounts next under the given URL prefix. Requests outside the
-// prefix return 404; requests matching the prefix have it stripped before
-// being passed to next.
 func withPrefix(prefix string, next http.Handler) http.Handler {
 	prefix = skill.NormalizePrefix(prefix)
 	if prefix == "" {

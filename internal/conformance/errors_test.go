@@ -8,14 +8,6 @@ import (
 	"testing"
 )
 
-// The golden error contract: every documented failure mode maps to its pinned
-// stable code, HTTP status, and message shape. Codes are the six documented
-// strings clients branch on; the status pins REST semantics; msgRe pins the
-// stable human-readable fragments (never the full wording).
-//
-// Note the two conflict statuses, both current contract: an idempotency-key
-// divergence is a request-class error (400 + code conflict), while a migrate
-// expected_version conflict is a state-class 409.
 func TestGoldenErrorContract(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("errc", "t", []map[string]any{
@@ -36,7 +28,7 @@ func TestGoldenErrorContract(t *testing.T) {
 		code   string
 		msgRe  string
 	}{
-		// --- invalid_request -------------------------------------------------
+
 		{"invalid namespace", "list_tables", map[string]any{"namespace": ""}, 400, "invalid_request", `invalid namespace ""`},
 		{"null option value", "list_tables", map[string]any{"namespace": nil}, 400, "invalid_request", `null is not allowed`},
 		{"reserved field name", "create_table", map[string]any{
@@ -70,7 +62,7 @@ func TestGoldenErrorContract(t *testing.T) {
 		{"required-field table setup", "create_table", map[string]any{
 			"namespace": "errc", "table": "req",
 			"fields": []map[string]any{{"name": "a", "type": "string", "required": true}},
-		}, 200, "", ""}, // created; the next case exercises the rejection
+		}, 200, "", ""},
 		{"insert missing required field", "insert", map[string]any{
 			"namespace": "errc", "table": "req",
 			"records": []map[string]any{{}},
@@ -101,7 +93,6 @@ func TestGoldenErrorContract(t *testing.T) {
 			"namespace": "errc", "confirm": "other",
 		}, 400, "invalid_request", `confirm must repeat the exact namespace name`},
 
-		// --- not_found ---------------------------------------------------------
 		{"describe missing table", "describe_table", map[string]any{"namespace": "errc", "table": "absent"}, 404, "not_found", `errc\.absent`},
 		{"insert into missing table", "insert", map[string]any{
 			"namespace": "errc", "table": "absent",
@@ -110,8 +101,6 @@ func TestGoldenErrorContract(t *testing.T) {
 		{"list_migrations missing table", "list_migrations", map[string]any{"namespace": "errc", "table": "absent"}, 404, "not_found", `absent`},
 		{"query missing table", "query", map[string]any{"namespace": "errc", "sql": "SELECT * FROM absent"}, 404, "not_found", `absent`},
 
-		// Statement classification happens before execution and is a
-		// request-class error; execution failures are query_error.
 		{"write sql rejected", "query", map[string]any{"namespace": "errc", "sql": "INSERT INTO t (title) VALUES ('x')"}, 400, "invalid_request", `only read-only SELECT/WITH statements are allowed`},
 		{"multiple statements rejected", "query", map[string]any{"namespace": "errc", "sql": "SELECT 1; SELECT 2"}, 400, "invalid_request", `multiple statements are not allowed`},
 		{"fts syntax error", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "don't"}, 400, "invalid_request", `fts5: syntax error`},
@@ -125,20 +114,16 @@ func TestGoldenErrorContract(t *testing.T) {
 		}, 400, "invalid_request", `invalid field name "SQLITE_X": must start with a lowercase letter`},
 		{"namespace echoing gate substring", "list_tables", map[string]any{"namespace": "misuse at line"}, 400, "invalid_request", `invalid namespace "misuse at line"`},
 
-		// --- query_error (execution failures) ------------------------------------
-		// `SELECT (` is caught earlier by the statement-shape guard
-		// (invalid_request); these pass the shape check and fail at prepare.
 		{"sql unknown function", "query", map[string]any{"namespace": "errc", "sql": "SELECT no_such_fn(title) FROM t"}, 400, "query_error", `unknown SQL function "no_such_fn"`},
 		{"sql missing column", "query", map[string]any{"namespace": "errc", "sql": "SELECT nope FROM t"}, 400, "query_error", `not found`},
 		{"malformed update filter", "update", map[string]any{
 			"namespace": "errc", "table": "t", "filter": "id =", "set": map[string]any{"title": "x"},
 		}, 400, "query_error", `WHERE expression`},
 
-		// --- conflict (request-class 400) ------------------------------------------
 		{"idempotency divergence", "insert", map[string]any{
 			"namespace": "errc", "table": "t", "idempotency_key": "diverge-1",
 			"records": []map[string]any{{"title": "one"}},
-		}, 200, "", ""}, // first insert ok; the next case replays it divergently
+		}, 200, "", ""},
 		{"idempotency divergence replay", "insert", map[string]any{
 			"namespace": "errc", "table": "t", "idempotency_key": "diverge-1",
 			"records": []map[string]any{{"title": "two"}},
@@ -160,7 +145,7 @@ func TestGoldenErrorContract(t *testing.T) {
 				t.Fatalf("status %d, want %d: %v", status, c.status, body)
 			}
 			if c.code == "" {
-				return // setup row, asserted ok above
+				return
 			}
 			errObj, _ := body["error"].(map[string]any)
 			if errObj == nil {
@@ -176,7 +161,7 @@ func TestGoldenErrorContract(t *testing.T) {
 			if c.msgRe != "" {
 				wantMessage(t, c.name, msg, c.msgRe)
 			}
-			// The envelope never leaks the cause or internal paths.
+
 			if strings.Contains(msg, "SQL logic error") || strings.Contains(msg, "/tmp/") || strings.Contains(msg, ".db") {
 				t.Fatalf("message leaks internals: %q", msg)
 			}
@@ -184,20 +169,17 @@ func TestGoldenErrorContract(t *testing.T) {
 	}
 }
 
-// TestGoldenErrorConflict409 pins the state-class conflict: a migrate whose
-// expected_version precondition fails reports 409 + conflict.
 func TestGoldenErrorConflict409(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("errc9", "t", []map[string]any{{"name": "title", "type": "string"}})
 
-	// Bump to version 2.
 	h.mustHTTP("migrate", map[string]any{
 		"namespace": "errc9", "table": "t", "expected_version": 1,
 		"changes": []map[string]any{{"op": "set_fulltext", "name": "title", "value": true}},
 	})
 
 	status, body := h.httpCall("migrate", map[string]any{
-		"namespace": "errc9", "table": "t", "expected_version": 1, // stale
+		"namespace": "errc9", "table": "t", "expected_version": 1,
 		"changes": []map[string]any{{"op": "set_fulltext", "name": "title", "value": false}},
 	})
 	if status != 409 {
@@ -210,7 +192,6 @@ func TestGoldenErrorConflict409(t *testing.T) {
 	wantMessage(t, "version conflict", errObj["message"].(string),
 		`version conflict on errc9\.t: schema is at version 2, expected 1`)
 
-	// The MCP transport reports the same class as a tool error.
 	res := h.mcpCall("migrate", map[string]any{
 		"namespace": "errc9", "table": "t", "expected_version": 1,
 		"changes": []map[string]any{{"op": "set_fulltext", "name": "title", "value": false}},
@@ -224,9 +205,6 @@ func TestGoldenErrorConflict409(t *testing.T) {
 	}
 }
 
-// TestGoldenErrorForbidden pins the transport-level forbidden envelope: a
-// cross-origin request from a non-allowlisted origin is rejected before any
-// operation runs.
 func TestGoldenErrorForbidden(t *testing.T) {
 	h := newHarness(t)
 	res := h.postWithOrigin("http://evil.example", "list_tables", `{"namespace":"x"}`)
@@ -242,9 +220,6 @@ func TestGoldenErrorForbidden(t *testing.T) {
 	}
 }
 
-// TestGoldenErrorInternal pins the internal_error class: a provider outage
-// under search_vector surfaces as 500 + internal_error with the fixed
-// sanitized message — never the provider's error text or a URL.
 func TestGoldenErrorInternal(t *testing.T) {
 	dir := t.TempDir()
 	emb := &fakeProvider{}
@@ -273,9 +248,6 @@ func TestGoldenErrorInternal(t *testing.T) {
 		t.Fatalf("message must be the fixed sanitized string, got %q", msg)
 	}
 
-	// MCP reports the identical envelope as a tool error (request_id is
-	// dropped before comparing: each transport call that sent no
-	// X-Request-Id gets its own server-generated id).
 	res := h.mcpCall("search_vector", map[string]any{
 		"namespace": "errint", "table": "t", "text": "anything",
 	})
@@ -285,9 +257,6 @@ func TestGoldenErrorInternal(t *testing.T) {
 	assertJSONEqual(t, "internal error envelope", withoutRequestID(res.toolError()), withoutRequestID(errObj))
 }
 
-// TestTransportLevelErrors pins the HTTP transport guards: unknown operation,
-// wrong method, wrong content type, oversized body, malformed JSON, trailing
-// content. These precede any operation dispatch.
 func TestTransportLevelErrors(t *testing.T) {
 	h := newHarness(t)
 
@@ -354,11 +323,7 @@ func TestTransportLevelErrors(t *testing.T) {
 	})
 
 	t.Run("request body at and over the 32 MiB limit, both transports", func(t *testing.T) {
-		// Exactly at the limit the body passes the size gate and fails as
-		// a parse error instead (400, never 413); one byte over is 413.
-		// /v1 and /mcp implement the boundary separately, so both are
-		// pinned: a ceiling regressed smaller 413s the at-limit body, one
-		// grown larger misses the over-limit 413.
+
 		atLimit := strings.Repeat("a", 32<<20)
 		res, _ := h.httpCallRaw("list_tables", atLimit, "application/json")
 		if res.StatusCode != http.StatusBadRequest {
@@ -395,8 +360,6 @@ func TestTransportLevelErrors(t *testing.T) {
 	})
 }
 
-// TestMCPProtocolErrors pins the JSON-RPC protocol layer above tools/call.
-// These are transport errors with JSON-RPC codes, distinct from tool errors.
 func TestMCPProtocolErrors(t *testing.T) {
 	h := newHarness(t)
 
@@ -452,7 +415,6 @@ func TestMCPProtocolErrors(t *testing.T) {
 	})
 }
 
-// envelopeFromString extracts the error object from a raw response body.
 func envelopeFromString(t *testing.T, body string) map[string]any {
 	t.Helper()
 	var env map[string]any
@@ -466,7 +428,6 @@ func envelopeFromString(t *testing.T, body string) map[string]any {
 	return errObj
 }
 
-// manyMaps builds n records for limit cases without flooding test output.
 func manyMaps(n int, build func(i int) map[string]any) []map[string]any {
 	out := make([]map[string]any, n)
 	for i := range out {

@@ -9,17 +9,6 @@ import (
 	"time"
 )
 
-// Slice 6b (the drain): r7a landed the delivery mint; this slice lands
-// the loop that drives it. The pins: a live record mints a resolvable
-// token (at its position), a record the log no longer holds fails loudly
-// rather than minting a skipping cursor, the replay's boundary call gates
-// every live delivery (nothing live before the replay has fully
-// reported, in order after it), the mint failure closes the session with
-// the teaching expiry, and a panicking notify ends the session instead
-// of the process.
-
-// TestListenMintOneMintsAtPosition: the delivery token resolves at the
-// delivered record's position — the reconnect point the client needs.
 func TestListenMintOneMintsAtPosition(t *testing.T) {
 	st := openChangeStore(t)
 	insertNotes(t, st, 2)
@@ -53,10 +42,6 @@ func TestListenMintOneMintsAtPosition(t *testing.T) {
 	}
 }
 
-// TestListenMintOneMissingFailsLoudly: a record deleted between the fill's
-// scan and the delivery (a concurrent pruner's window) mints NOTHING —
-// the teaching expiry, never a token whose reconnect silently skips the
-// deleted tail.
 func TestListenMintOneMissingFailsLoudly(t *testing.T) {
 	st := openChangeStore(t)
 	insertNotes(t, st, 2)
@@ -74,20 +59,15 @@ func TestListenMintOneMissingFailsLoudly(t *testing.T) {
 	}
 }
 
-// TestListenDeliversLiveAfterReplayDrains pins the concatenation §6.2
-// promises end to end: the replay pages the backlog out in cursor order,
-// the boundary call reports done, and only then do live records arrive
-// through notify — in commit order, each carrying a cursor minted at its
-// delivery.
 func TestListenDeliversLiveAfterReplayDrains(t *testing.T) {
 	st := openChangeStore(t)
-	insertNotes(t, st, 2) // the backlog: the replay's
+	insertNotes(t, st, 2)
 
 	got := make(chan ChangeRecord, 4)
 	replay, cancel := listenOn(t, st, "", CursorBegin, func(r ChangeRecord) { got <- r }, nil)
 	defer cancel()
 
-	insertNotes(t, st, 2) // live: commits after registration, queued behind the replay
+	insertNotes(t, st, 2)
 
 	replayed := drainReplay(t, replay)
 	if ids := rowIDsOf(replayed); len(ids) != 2 {
@@ -109,20 +89,15 @@ func TestListenDeliversLiveAfterReplayDrains(t *testing.T) {
 	}
 }
 
-// TestListenDrainWaitsForBoundaryCall: the queue may hold live commits,
-// but delivery is gated on the replay's boundary call — the page carrying
-// the final records does NOT release the drainer; only the completed
-// done report does (§6.2's replay-then-live, as an ordering the caller
-// can rely on).
 func TestListenDrainWaitsForBoundaryCall(t *testing.T) {
 	st := openChangeStore(t)
-	insertNotes(t, st, 2) // the backlog pages once, then reports the boundary
+	insertNotes(t, st, 2)
 
 	got := make(chan ChangeRecord, 4)
 	replay, cancel := listenOn(t, st, "", CursorBegin, func(r ChangeRecord) { got <- r }, nil)
 	defer cancel()
 
-	insertNotes(t, st, 2) // live commits: the fill queues them immediately
+	insertNotes(t, st, 2)
 
 	noEarly := func(stage string) {
 		select {
@@ -133,14 +108,11 @@ func TestListenDrainWaitsForBoundaryCall(t *testing.T) {
 	}
 	noEarly("rest")
 
-	// The final-records page is NOT the boundary (§6.2: the FOLLOWING call
-	// reports it) — delivery still waits.
 	if _, _, done, err := replay.Next(context.Background()); err != nil || done {
 		t.Fatalf("first Next = err %v, done %v, want nil error, done=false (the final records)", err, done)
 	}
 	noEarly("the final-records page")
 
-	// The boundary call completes the replay: the drainer is released.
 	if _, _, done, err := replay.Next(context.Background()); err != nil || !done {
 		t.Fatalf("boundary Next = err %v, done %v, want nil error, done=true", err, done)
 	}
@@ -156,10 +128,6 @@ func TestListenDrainWaitsForBoundaryCall(t *testing.T) {
 	}
 }
 
-// TestListenDrainMintFailureCloses: a queued record whose log row a
-// concurrent pruner deleted (mintOne's existence-check window) closes the
-// session with the teaching expiry — never a delivered cursor whose
-// reconnect silently skips the deleted tail, and never a hang.
 func TestListenDrainMintFailureCloses(t *testing.T) {
 	st := openChangeStore(t)
 	insertNotes(t, st, 1)
@@ -172,8 +140,8 @@ func TestListenDrainMintFailureCloses(t *testing.T) {
 	sess := testSession(func(cause error) { closedCause <- cause })
 	sess.s, sess.n = st, n
 	sess.chain = newCursorChain(time.Now(), 0)
-	sess.queue = []loggedChange{{seq: 999}} // queued, but the log no longer holds it
-	sess.replayDone = true                  // the boundary call has completed: the drainer runs
+	sess.queue = []loggedChange{{seq: 999}}
+	sess.replayDone = true
 	sess.pumps.Add(1)
 	go sess.drain()
 
@@ -185,13 +153,9 @@ func TestListenDrainMintFailureCloses(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("mint failure never closed the session")
 	}
-	sess.cancel() // idempotent teardown; also waits the drain out
+	sess.cancel()
 }
 
-// TestListenPanickingNotifyEndsSession: notify is caller code on the
-// session's own goroutine — a panic there must end the session (the
-// stream is unreliable; the durable log recovers) instead of taking the
-// process down.
 func TestListenPanickingNotifyEndsSession(t *testing.T) {
 	st := openChangeStore(t)
 	insertNotes(t, st, 1)
@@ -221,15 +185,6 @@ func TestListenPanickingNotifyEndsSession(t *testing.T) {
 	sess.cancel()
 }
 
-// TestListenNotifyDefersCancel: notify is caller code, and a natural
-// callback is teardown — but cancel must not be called SYNCHRONOUSLY from
-// inside it: the quiescence join would sit on the calling goroutine's
-// own pump (no goroutine can wait itself out), and carving the delivery
-// bracket out of the join would void external cancel's guarantee —
-// deliveries are continuous on a busy stream (codex P1s on #228,
-// threads r3984073040/r3984335493). The documented pattern is the
-// deferred one: `go cancel()` tears the session down without the
-// self-join, and no further record delivers after it lands.
 func TestListenNotifyDefersCancel(t *testing.T) {
 	st := openChangeStore(t)
 	toredown := make(chan struct{})
@@ -237,14 +192,11 @@ func TestListenNotifyDefersCancel(t *testing.T) {
 
 	var cancel func()
 	replay, cancel := listenOn(t, st, "", "", func(ChangeRecord) {
-		// The documented pattern: deferred, never synchronous — a second
-		// record may still race the teardown landing, so the unsubscribe
-		// arms once.
+
 		unsubscribe.Do(func() { go cancel(); close(toredown) })
 	}, nil)
 	defer cancel()
 
-	// The boundary call releases the drainer before any delivery.
 	if _, _, done, err := replay.Next(context.Background()); err != nil || !done {
 		t.Fatalf("boundary Next = err %v, done %v, want nil error, done=true", err, done)
 	}
@@ -255,8 +207,7 @@ func TestListenNotifyDefersCancel(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("no delivery arrived to unsubscribe on")
 	}
-	// The teardown landed: the replay reports the session's end once it
-	// lands, and neither callback ever deadlocks.
+
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		_, _, done, err := replay.Next(context.Background())
@@ -276,12 +227,6 @@ func TestListenNotifyDefersCancel(t *testing.T) {
 	}
 }
 
-// TestListenExternalCancelWaitsInFlightDelivery: the quiescence
-// guarantee is the contract — an EXTERNAL cancel, called while a
-// delivery is mid-notify, returns only after the callback has returned
-// and the drain goroutine has exited: never delivery after cancel
-// returned, never use-after-free of state the caller releases there
-// (codex P1 on #228, thread r3984335493).
 func TestListenExternalCancelWaitsInFlightDelivery(t *testing.T) {
 	st := openChangeStore(t)
 
@@ -290,11 +235,10 @@ func TestListenExternalCancelWaitsInFlightDelivery(t *testing.T) {
 	release := make(chan struct{})
 	replay, cancel := listenOn(t, st, "", "", func(ChangeRecord) {
 		inFlight <- struct{}{}
-		<-release // park mid-notify: the external cancel must wait this out
+		<-release
 		close(returned)
 	}, nil)
 
-	// The boundary call releases the drainer before any delivery.
 	if _, _, done, err := replay.Next(context.Background()); err != nil || !done {
 		t.Fatalf("boundary Next = err %v, done %v, want nil error, done=true", err, done)
 	}
@@ -303,7 +247,7 @@ func TestListenExternalCancelWaitsInFlightDelivery(t *testing.T) {
 
 	cancelReturned := make(chan struct{})
 	go func() {
-		cancel() // external: from outside the session's goroutines
+		cancel()
 		close(cancelReturned)
 	}()
 	select {
@@ -314,7 +258,7 @@ func TestListenExternalCancelWaitsInFlightDelivery(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 
-	close(release) // the callback returns; the join may complete now
+	close(release)
 	select {
 	case <-cancelReturned:
 	case <-time.After(20 * time.Second):
@@ -327,12 +271,6 @@ func TestListenExternalCancelWaitsInFlightDelivery(t *testing.T) {
 	}
 }
 
-// TestListenCloseWaitsInFlightDelivery: the exposure rule is ordered BOTH
-// ways — no records delivered after closed fires, and closed never races
-// a record the session is handing out: an end landing while a delivery
-// is mid-notify (its mint already committed) waits the bracket out before
-// firing, so a consumer tearing down inside closed cannot beat the record
-// to its own callback (codex P1 on #228).
 func TestListenCloseWaitsInFlightDelivery(t *testing.T) {
 	st := openChangeStore(t)
 	closedCause := make(chan error, 1)
@@ -341,11 +279,10 @@ func TestListenCloseWaitsInFlightDelivery(t *testing.T) {
 	release := make(chan struct{})
 	replay, cancel := listenOn(t, st, "", "", func(r ChangeRecord) {
 		inFlight <- r
-		<-release // park mid-notify: an engine end must wait this out
+		<-release
 	}, func(cause error) { closedCause <- cause })
 	defer cancel()
 
-	// The boundary call releases the drainer before any delivery.
 	if _, _, done, err := replay.Next(context.Background()); err != nil || !done {
 		t.Fatalf("boundary Next = err %v, done %v, want nil error, done=true", err, done)
 	}
@@ -356,7 +293,6 @@ func TestListenCloseWaitsInFlightDelivery(t *testing.T) {
 		t.Fatal("no live delivery arrived to park the close against")
 	}
 
-	// Overflow ends the session while the delivery is parked mid-notify.
 	if _, err := insertNotesChunkedErr(st, listenQueueBound+MaxChangesPageLimit); err != nil {
 		t.Fatalf("bulk write: %v", err)
 	}
@@ -366,7 +302,7 @@ func TestListenCloseWaitsInFlightDelivery(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 
-	close(release) // the delivery returns; the waiting fire may land
+	close(release)
 	select {
 	case cause := <-closedCause:
 		if !errors.Is(cause, ErrListenOverflow) {
@@ -377,12 +313,6 @@ func TestListenCloseWaitsInFlightDelivery(t *testing.T) {
 	}
 }
 
-// TestListenExternalCancelJoinsPendingFire: the firing carve-out covers
-// exactly the closedFn callback's EXECUTION — never the interval where an
-// engine end WAITS a blocked delivery before firing. An external cancel
-// arriving in that interval takes the quiescence join: it returns only
-// after the in-flight notify returned AND the fire completed on the
-// counted pump (codex P1 on #228, thread r3984384330).
 func TestListenExternalCancelJoinsPendingFire(t *testing.T) {
 	st := openChangeStore(t)
 	insertNotes(t, st, 1)
@@ -400,23 +330,20 @@ func TestListenExternalCancelJoinsPendingFire(t *testing.T) {
 	sess.chain = newCursorChain(time.Now(), 0)
 	sess.notify = func(ChangeRecord) {
 		inFlight <- struct{}{}
-		<-release // park mid-notify: the engine end parks behind it
+		<-release
 	}
 	sess.queue = []loggedChange{{seq: 1}}
 	sess.replayDone = true
 	sess.pumps.Add(2)
 	go sess.drain()
-	go func() { // the engine end, on a counted pump as the engine shapes it
+	go func() {
 		defer sess.pumps.Done()
 		<-goEnd
-		sess.end(ErrListenOverflow) // parks WAITING the bracket; firing stays down
+		sess.end(ErrListenOverflow)
 	}()
-	<-inFlight // the delivery is parked mid-notify
+	<-inFlight
 	close(goEnd)
-	// The engine end must WIN the dead race: once it has flipped dead,
-	// its cause is parked (atomically with the flip) and a cancel can no
-	// longer suppress the fire with its own nil-cause end. Waiting on
-	// dead here makes the cancel's arrival deterministic.
+
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		sess.mu.Lock()
@@ -433,7 +360,7 @@ func TestListenExternalCancelJoinsPendingFire(t *testing.T) {
 
 	cancelReturned := make(chan struct{})
 	go func() {
-		sess.cancel() // external: joins the pending fire
+		sess.cancel()
 		close(cancelReturned)
 	}()
 	select {
@@ -444,7 +371,7 @@ func TestListenExternalCancelJoinsPendingFire(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 
-	close(release) // the delivery returns; the end's wait wakes and fires
+	close(release)
 	select {
 	case cause := <-closedFired:
 		if !errors.Is(cause, ErrListenOverflow) {
@@ -460,10 +387,6 @@ func TestListenExternalCancelJoinsPendingFire(t *testing.T) {
 	}
 }
 
-// TestListenDrainFiresPendingDrainCloseAtEmptyQueue: the queue-owned
-// terminal — armed by the queue's owner (a lifetime end, a revocation)
-// once its admitted prefix has queued — fires from the drainer at the
-// EMPTY queue, after every queued record has delivered, never before.
 func TestListenDrainFiresPendingDrainCloseAtEmptyQueue(t *testing.T) {
 	st := openChangeStore(t)
 	insertNotes(t, st, 2)
@@ -483,11 +406,10 @@ func TestListenDrainFiresPendingDrainCloseAtEmptyQueue(t *testing.T) {
 		{seq: 2, rec: ChangeRecord{RowID: 2}},
 	}
 	sess.replayDone = true
-	sess.pendingDrainClose = ErrListenLifetimeEnded // the armer's stand-in; the armer itself lands with Δ3
+	sess.pendingDrainClose = ErrListenLifetimeEnded
 	sess.pumps.Add(1)
 	go sess.drain()
 
-	// Both queued records deliver BEFORE the close: the prefix drains.
 	for i := 0; i < 2; i++ {
 		select {
 		case id := <-delivered:
@@ -506,27 +428,19 @@ func TestListenDrainFiresPendingDrainCloseAtEmptyQueue(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("queue-owned terminal never fired at the empty queue")
 	}
-	sess.cancel() // idempotent teardown; also waits the drain out
+	sess.cancel()
 }
 
-// TestListenLifetimeEndDrainsPredecessorBatch is Δ3's pin (codex P1 on
-// #220, thread r3983157270): an event committed on the predecessor
-// lifetime, then a drop that takes the write connection before the fill's
-// read — the fill's batch scans UNDER THE REGISTRATION LABELS first, so
-// the committed record queues and DELIVERS before ErrListenLifetimeEnded
-// closes the session. The check-first ordering lost exactly this record:
-// a reconnect on the old feed's cursor can never recover it.
 func TestListenLifetimeEndDrainsPredecessorBatch(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
-	insertNotes(t, st, 1) // the predecessor's committed event, seq 1
+	insertNotes(t, st, 1)
 
 	n, err := st.ns("test")
 	if err != nil {
 		t.Fatalf("open test: %v", err)
 	}
-	// The registration labels, as a table-feed registration fixes them —
-	// captured BEFORE the drop ends the lifetime.
+
 	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatalf("labels tx: %v", err)
@@ -539,7 +453,7 @@ func TestListenLifetimeEndDrainsPredecessorBatch(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("labels commit: %v", err)
 	}
-	// The drop: the table's lifetime ends AFTER the commit.
+
 	if err := st.DropTable(ctx, "test", "notes", Incarnation{}); err != nil {
 		t.Fatalf("drop: %v", err)
 	}
@@ -551,15 +465,13 @@ func TestListenLifetimeEndDrainsPredecessorBatch(t *testing.T) {
 	sess.feed = feed
 	sess.chain = newCursorChain(time.Now(), 0)
 
-	// The fill's next batch — the exact racing read the finding describes —
-	// must queue the predecessor record AND arm the queue-owned close.
 	if _, err := sess.fillBatch(); err != nil {
 		t.Fatalf("fillBatch: %v", err)
 	}
 	sess.mu.Lock()
 	queued := len(sess.queue)
 	armed := sess.pendingDrainClose
-	sess.replayDone = true // the boundary call has completed: the drainer runs
+	sess.replayDone = true
 	sess.mu.Unlock()
 	if queued != 1 {
 		t.Fatalf("queue held %d records, want the predecessor's 1 committed event", queued)
@@ -587,14 +499,9 @@ func TestListenLifetimeEndDrainsPredecessorBatch(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("lifetime end never closed the session after the prefix drained")
 	}
-	sess.cancel() // idempotent teardown; also waits the drain out
+	sess.cancel()
 }
 
-// TestListenLifetimeEndDrainsFullPages: a predecessor backlog spanning
-// MORE than one page must drain COMPLETELY before the lifetime close —
-// a full page with ended does not arm; the fill keeps paging the
-// registration-fixed feed until its short tail, and only that final
-// batch's close arms (codex P1 on #230, thread r3984677145).
 func TestListenLifetimeEndDrainsFullPages(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -607,7 +514,7 @@ func TestListenLifetimeEndDrainsFullPages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open test: %v", err)
 	}
-	// The registration labels, captured BEFORE the drop ends the lifetime.
+
 	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatalf("labels tx: %v", err)
@@ -638,7 +545,7 @@ func TestListenLifetimeEndDrainsFullPages(t *testing.T) {
 	}
 	sess.replayDone = true
 	sess.pumps.Add(2)
-	sess.wake("notes", ChangeRange{}) // the drop raced the pump: take the work now
+	sess.wake("notes", ChangeRange{})
 	go sess.pump()
 	go sess.drain()
 
@@ -656,18 +563,9 @@ func TestListenLifetimeEndDrainsFullPages(t *testing.T) {
 	if got != total {
 		t.Fatalf("delivered %d of %d predecessor records before the close — a full page armed early and stranded the tail", got, total)
 	}
-	sess.cancel() // idempotent teardown; also waits the pumps out
+	sess.cancel()
 }
 
-// TestListenEndedFeedParksAtTheBound: an ENDED feed drains its
-// predecessor backlog under BACKPRESSURE, never around the queue bound —
-// the backlog is not size-bounded (retention off, or any volume inside a
-// time window), so queueing it whole could exhaust process memory, while
-// the overflow close would teach a reconnect that cannot succeed against
-// a dropped target (codex P1 on #230, thread r3984838673). With no
-// drainer freeing capacity, the fill PARKS at bound + one page — the
-// memory contract held, no overflow end fired — and cancel still
-// returns: the parked fill exits on end's broadcast (teardown liveness).
 func TestListenEndedFeedParksAtTheBound(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -705,9 +603,6 @@ func TestListenEndedFeedParksAtTheBound(t *testing.T) {
 	sess.wake("notes", ChangeRange{})
 	go sess.pump()
 
-	// The fill reaches the bound and parks: no drainer is freeing
-	// capacity, so the queue must stabilize at bound + one page — the
-	// whole backlog (2 pages past the bound) must NOT materialize.
 	reach := time.Now().Add(60 * time.Second)
 	for {
 		sess.mu.Lock()
@@ -718,14 +613,14 @@ func TestListenEndedFeedParksAtTheBound(t *testing.T) {
 			t.Fatalf("session died mid-drain at %d queued — the overflow close fired on an ended feed", queued)
 		}
 		if queued > listenQueueBound {
-			break // the batch that crossed the bound is in; the fill parks behind it
+			break
 		}
 		if time.Now().After(reach) {
 			t.Fatalf("fill never reached the bound (queued=%d)", queued)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	time.Sleep(300 * time.Millisecond) // any unbounded paging would keep growing here
+	time.Sleep(300 * time.Millisecond)
 	sess.mu.Lock()
 	queued := len(sess.queue)
 	dead := sess.dead
@@ -742,7 +637,6 @@ func TestListenEndedFeedParksAtTheBound(t *testing.T) {
 	default:
 	}
 
-	// Teardown liveness: the parked fill exits on end's broadcast.
 	done := make(chan struct{})
 	go func() {
 		sess.cancel()
@@ -755,12 +649,6 @@ func TestListenEndedFeedParksAtTheBound(t *testing.T) {
 	}
 }
 
-// TestListenEndedFeedDrainsUnderBackpressure: the mechanism's full
-// promise end to end — an ended feed whose backlog crosses the queue
-// bound delivers EVERY predecessor record (the fill parks at the bound,
-// the drainer frees capacity, the fill resumes) before
-// ErrListenLifetimeEnded fires at the empty queue. The queue never
-// exceeds bound + one page while it does.
 func TestListenEndedFeedDrainsUnderBackpressure(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -830,5 +718,5 @@ func TestListenEndedFeedDrainsUnderBackpressure(t *testing.T) {
 	if ceiling > listenQueueBound+MaxChangesPageLimit {
 		t.Fatalf("queue peaked at %d, want ≤ bound+page (%d) — the bound was bypassed", ceiling, listenQueueBound+MaxChangesPageLimit)
 	}
-	sess.cancel() // idempotent teardown; also waits the pumps out
+	sess.cancel()
 }

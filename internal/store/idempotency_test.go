@@ -201,10 +201,6 @@ func TestInsertIdempotentReplaySkipsEmbedding(t *testing.T) {
 	}
 }
 
-// Two writers racing the same fresh key on one namespace file must converge on
-// the winner's ids — never a SQLITE_BUSY_SNAPSHOT error. Each store opens its
-// own connection pool, which is the in-process analogue of two server
-// processes sharing a WAL database.
 func TestInsertIdempotentConcurrentWritersReplay(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()

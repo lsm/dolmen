@@ -94,8 +94,7 @@ func TestOpenAPIErrorEnvelopeMatchesObjectErrors(t *testing.T) {
 	if !ok {
 		t.Fatalf("ErrorEnvelope has no properties")
 	}
-	// Failure responses carry a stable error object, not a bare string, so
-	// generated clients deserialize code/message/request_id correctly.
+
 	errObj, ok := props["error"].(map[string]any)
 	if !ok || errObj["type"] != "object" {
 		t.Fatalf("ErrorEnvelope.error must be an object schema, got %v", props["error"])
@@ -129,8 +128,7 @@ func TestOpenAPIErrorEnvelopeMatchesObjectErrors(t *testing.T) {
 	for _, r := range req {
 		reqSet[r] = true
 	}
-	// request_id is always present (echoed or server-generated), so generated
-	// clients may rely on it for log correlation.
+
 	if !reqSet["code"] || !reqSet["message"] || !reqSet["request_id"] {
 		t.Fatalf("ErrorEnvelope.error must require code, message, and request_id, got %v", req)
 	}
@@ -156,8 +154,6 @@ func TestOpenAPICoversAllOps(t *testing.T) {
 	assertOpenAPIDoc(t, doc)
 }
 
-// TestOpenAPIFieldDeclaresEnum pins the annotation's presence in the OpenAPI
-// Field component — every client sees the vocabulary in the schema itself.
 func TestOpenAPIFieldDeclaresEnum(t *testing.T) {
 	doc := New(nil, fakeEmb{}).OpenAPIDoc("")
 	field := doc["components"].(map[string]any)["schemas"].(map[string]any)["Field"].(map[string]any)
@@ -226,7 +222,6 @@ func assertOpenAPIDoc(t *testing.T, doc map[string]any) {
 			t.Fatalf("summary missing for %s", name)
 		}
 
-		// Request body is required and uses the op's InputSchema.
 		reqBody, ok := op["requestBody"].(map[string]any)
 		if !ok {
 			t.Fatalf("missing requestBody for %s", name)
@@ -247,13 +242,11 @@ func assertOpenAPIDoc(t *testing.T, doc map[string]any) {
 			t.Fatalf("request schema for %s must be a JSON object", name)
 		}
 
-		// Every op must have an OutputSchema wired into the registry.
 		def := Ops[name]
 		if def.OutputSchema == nil {
 			t.Fatalf("%s: OutputSchema not set in OpDef", name)
 		}
 
-		// 200 response wraps the op's OutputSchema in the ok/data envelope.
 		responses, ok := op["responses"].(map[string]any)
 		if !ok {
 			t.Fatalf("missing responses for %s", name)
@@ -339,10 +332,6 @@ func TestOpenAPIOutputSchemasMarkRequiredGuaranteedFields(t *testing.T) {
 	}
 }
 
-// TestWriteOpsOutputSchemasShareShape keeps the three write ops documented in
-// one shape: identical schemas for the ops that can update, and an insert
-// schema that differs only by dropping updated (an insert cannot update) and
-// carrying the optional replayed (only idempotent inserts can replay).
 func TestWriteOpsOutputSchemasShareShape(t *testing.T) {
 	if !reflect.DeepEqual(Ops["upsert"].OutputSchema, Ops["upsert_by_key"].OutputSchema) {
 		t.Fatalf("upsert and upsert_by_key must share one output schema, got %v vs %v",
@@ -380,7 +369,7 @@ func TestOpenAPIIntegerFormatIsInt64(t *testing.T) {
 
 func TestOpenAPIPathNotUnknownOp(t *testing.T) {
 	srv := newTestServer(t)
-	// openapi.json must not be treated as an unknown op under /v1/.
+
 	res, err := http.Get(srv.URL + "/v1/openapi.json")
 	if err != nil {
 		t.Fatalf("get: %v", err)

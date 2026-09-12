@@ -17,9 +17,6 @@ func mustGetRowsNotes(t *testing.T) legacyStore {
 	return st
 }
 
-// TestGetRowsReturnsRequestedIDs pins the read_rows seam contract: the ids
-// address a set — each found row appears once, in ascending id order — and
-// ids that are missing are simply absent, never an error (§2).
 func TestGetRowsReturnsRequestedIDs(t *testing.T) {
 	st := mustGetRowsNotes(t)
 	ctx := context.Background()
@@ -42,10 +39,6 @@ func TestGetRowsReturnsRequestedIDs(t *testing.T) {
 	}
 }
 
-// TestGetRowsBudgetTruncation pins the truncation signal (§6.2's projected
-// response-byte budget): rows that exist but would exceed the budget are
-// dropped from the page with Truncated=true — the caller can tell a dropped
-// existing row from an absent id, which is the whole point of the flag.
 func TestGetRowsBudgetTruncation(t *testing.T) {
 	st := openStore(t)
 	mustNS(t, st, "test")
@@ -70,8 +63,6 @@ func TestGetRowsBudgetTruncation(t *testing.T) {
 	}
 }
 
-// TestGetRowsCollapsesDuplicates: a repeated id names one row; the response
-// never repeats it.
 func TestGetRowsCollapsesDuplicates(t *testing.T) {
 	st := mustGetRowsNotes(t)
 
@@ -84,8 +75,6 @@ func TestGetRowsCollapsesDuplicates(t *testing.T) {
 	}
 }
 
-// TestGetRowsIDCap pins §2's per-request cap: at most MaxReadRowsIDs ids,
-// invalid_request beyond — a bounded body can still name unbounded ids.
 func TestGetRowsIDCap(t *testing.T) {
 	st := mustGetRowsNotes(t)
 	ctx := context.Background()
@@ -98,7 +87,7 @@ func TestGetRowsIDCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRows at the %d-id cap: %v", MaxReadRowsIDs, err)
 	}
-	// Only the three seeded rows exist; the rest of the ids are absent.
+
 	if len(res.Rows) != 3 {
 		t.Fatalf("expected the three seeded rows, got %d", len(res.Rows))
 	}
@@ -109,9 +98,6 @@ func TestGetRowsIDCap(t *testing.T) {
 	}
 }
 
-// TestGetRowsEmptyIDs: an empty id set is a well-formed no-op — the table
-// must still exist (the engine never creates implicitly), and the response
-// is an empty page, not nil.
 func TestGetRowsEmptyIDs(t *testing.T) {
 	st := mustGetRowsNotes(t)
 
@@ -131,9 +117,6 @@ func TestGetRowsEmptyIDs(t *testing.T) {
 	}
 }
 
-// TestGetRowsHidesEmbedding: the projection is the typed read's — the hidden
-// _embedding column of a vectorized table never surfaces, and declared field
-// types decode exactly as query results decode them.
 func TestGetRowsHidesEmbedding(t *testing.T) {
 	st := mustGetRowsNotes(t)
 

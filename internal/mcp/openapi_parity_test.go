@@ -13,9 +13,6 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-// newDualServer returns a test server that exposes both the HTTP /v1 API and
-// the /mcp JSON-RPC endpoint on the same port. This lets a single test drive
-// the same operation through both transports and compare the results.
 func newDualServer(t *testing.T) (srv *httptest.Server, apiURL, mcpURL string) {
 	t.Helper()
 	st, err := store.Open(t.TempDir())
@@ -54,8 +51,6 @@ func postJSON(t *testing.T, url string, body any) map[string]any {
 	return out
 }
 
-// jsonNormalize round-trips a value through JSON so maps, slices and scalar
-// types match what an HTTP/MCP client sees after encoding and decoding.
 func jsonNormalize(t *testing.T, v any) any {
 	t.Helper()
 	b, err := json.Marshal(v)
@@ -84,14 +79,9 @@ func toolNames(tools []any) []string {
 	return names
 }
 
-// TestMCPInputSchemasMatchOpenAPIRequestSchemas validates that the MCP
-// tools/list inputSchema for every operation is exactly the same as the
-// /v1/openapi.json requestBody schema for the same operation. This is the
-// guard that prevents the two surfaces from drifting silently again.
 func TestMCPInputSchemasMatchOpenAPIRequestSchemas(t *testing.T) {
 	srv, _, mcpURL := newDualServer(t)
 
-	// Fetch the OpenAPI document over HTTP.
 	res, err := http.Get(srv.URL + "/v1/openapi.json")
 	if err != nil {
 		t.Fatalf("get openapi: %v", err)
@@ -110,7 +100,6 @@ func TestMCPInputSchemasMatchOpenAPIRequestSchemas(t *testing.T) {
 		t.Fatalf("openapi paths missing")
 	}
 
-	// Fetch the MCP tools manifest.
 	code, mcpRes := rpc(t, mcpURL, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
 	if code != http.StatusOK {
 		t.Fatalf("tools/list status %d", code)
@@ -178,16 +167,12 @@ func TestMCPInputSchemasMatchOpenAPIRequestSchemas(t *testing.T) {
 	}
 }
 
-// TestMigrateAddFieldDefaultMatchesHTTPAndMCP sends the same add_field-with-
-// default payload through /v1 and tools/call and verifies both produce the same
-// migrated table and backfill. This is the functional acceptance for issue #119.
 func TestMigrateAddFieldDefaultMatchesHTTPAndMCP(t *testing.T) {
 	_, apiURL, mcpURL := newDualServer(t)
 	if out := postJSON(t, apiURL+"/create_namespace", map[string]any{"namespace": "p"}); !out["ok"].(bool) {
 		t.Fatalf("create_namespace failed: %v", out)
 	}
 
-	// Set up an identical table on both sides using the HTTP API.
 	createHTTP := map[string]any{
 		"namespace": "p",
 		"table":     "http",
@@ -259,12 +244,10 @@ func TestMigrateAddFieldDefaultMatchesHTTPAndMCP(t *testing.T) {
 		t.Fatalf("migrated table fields over HTTP and MCP differ:\nHTTP: %v\nMCP: %v", httpTable["fields"], mcpTable["fields"])
 	}
 
-	// Both tables should now have version 2 and the new required field.
 	if httpTable["version"].(float64) != 2 || mcpTable["version"].(float64) != 2 {
 		t.Fatalf("expected version 2, got HTTP %v and MCP %v", httpTable["version"], mcpTable["version"])
 	}
 
-	// Verify the default was actually backfilled into the existing rows.
 	httpQuery := postJSON(t, apiURL+"/query", map[string]any{
 		"namespace": "p", "sql": "SELECT status FROM http WHERE title = 'x'",
 	})
@@ -298,8 +281,6 @@ func TestMigrateAddFieldDefaultMatchesHTTPAndMCP(t *testing.T) {
 		t.Fatalf("MCP backfill failed: %v", mcpRows)
 	}
 
-	// Finally, the change object in the migrate inputSchema must still advertise
-	// the default property (the schema-level guard for the bug in #119).
 	migrateSchema := api.Ops["migrate"].InputSchema["properties"].(map[string]any)["changes"].(map[string]any)["items"].(map[string]any)
 	changeProps := migrateSchema["properties"].(map[string]any)
 	if _, ok := changeProps["default"]; !ok {

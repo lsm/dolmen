@@ -8,14 +8,6 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-// Slice 4b: insert transactions mint change records into _dolmen_changes,
-// inside the same transaction as the rows (§9.3). Slice 4c extends minting to
-// the remaining write paths — upsert_by_key, update/upsert, and delete. The
-// fixtures read the namespace db directly: after a commit the rows are there,
-// contiguous, and labeled; a rolled-back mint leaves zero rows and no cursor
-// gap; an idempotency replay mints nothing.
-
-// changeRow is one _dolmen_changes row as read back through direct SQL.
 type changeRow struct {
 	seq     int64
 	table   string
@@ -49,9 +41,6 @@ func readChanges(t *testing.T, n *nsDB) []changeRow {
 	return out
 }
 
-// openChangeStore opens a concrete *Store with namespace test and the notes
-// table — a *Store, not the legacyStore wrapper, because these tests call the
-// Engine-shaped Insert/DropTable whose old signatures legacyStore overrides.
 func openChangeStore(t *testing.T) *Store {
 	t.Helper()
 	st, err := Open(t.TempDir())
@@ -66,12 +55,6 @@ func openChangeStore(t *testing.T) *Store {
 	return st
 }
 
-// TestInsertMintsContiguousChangeRecords: a committed insert leaves exactly
-// one record per inserted id, with contiguous seqs (the per-namespace cursor),
-// kind insert, owner NULL (no stamping until slice 9c), the namespace's
-// creation id, and the table's current drop generation. A second insert
-// continues the same sequence — the cursor is namespace state, not per-table
-// or per-transaction.
 func TestInsertMintsContiguousChangeRecords(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -140,9 +123,6 @@ func TestInsertMintsContiguousChangeRecords(t *testing.T) {
 	}
 }
 
-// TestChangeCursorSpansTables: the seq is the PER-NAMESPACE cursor — records
-// minted for a second table continue the same sequence, never a per-table
-// counter.
 func TestChangeCursorSpansTables(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -172,9 +152,6 @@ func TestChangeCursorSpansTables(t *testing.T) {
 	}
 }
 
-// TestInsertReplayMintsNoChangeRecords: an idempotency replay returns the
-// original ids without writing — the original insert minted its records, and
-// the replay must mint none (the zero ChangeRange means exactly that).
 func TestInsertReplayMintsNoChangeRecords(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -205,11 +182,6 @@ func TestInsertReplayMintsNoChangeRecords(t *testing.T) {
 	}
 }
 
-// TestMintChangesRollbackLeavesNoRecords: records minted inside a transaction
-// that rolls back leave zero rows AND no cursor gap — sqlite_sequence is
-// transactional, so the AUTOINCREMENT counter rolls back with the rows and
-// the next committed mint reuses the rolled-back positions (§9.3:
-// gap-free by construction).
 func TestMintChangesRollbackLeavesNoRecords(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -231,8 +203,7 @@ func TestMintChangesRollbackLeavesNoRecords(t *testing.T) {
 	if rows := readChanges(t, n); len(rows) != 0 {
 		t.Fatalf("got %d change rows after rollback, want 0 — the mint must die with the transaction", len(rows))
 	}
-	// The counter rolled back too: the next committed insert mints from seq 1,
-	// not 4 — a rolled-back write may not leave a gap in the cursor.
+
 	res, err := st.Insert(ctx, "test", "notes", []map[string]any{{"title": "a", "score": 1}}, WriteOpts{}, Embedder{}, nil, Incarnation{})
 	if err != nil {
 		t.Fatalf("insert after rollback: %v", err)
@@ -242,10 +213,6 @@ func TestMintChangesRollbackLeavesNoRecords(t *testing.T) {
 	}
 }
 
-// TestChangeRecordsCarryDropGeneration: each record labels the drop
-// generation of the lifetime it was minted in, so a drop-and-recreated
-// successor's feed is distinguishable from its predecessor's (§3.4) — and
-// DropTable does not purge the log (lifetime labels, not deletion).
 func TestChangeRecordsCarryDropGeneration(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -278,7 +245,6 @@ func TestChangeRecordsCarryDropGeneration(t *testing.T) {
 	}
 }
 
-// mustChangesNS opens the namespace handle for reading _dolmen_changes.
 func mustChangesNS(t *testing.T, st *Store) *nsDB {
 	t.Helper()
 	n, err := st.ns("test")
@@ -288,16 +254,10 @@ func mustChangesNS(t *testing.T, st *Store) *nsDB {
 	return n
 }
 
-// TestUpsertByKeyMintsPerBranch: a mixed batch mints one record per
-// record-branch — an insert record for the new row, an update record for the
-// matched row — inside the same transaction, and the result's Changes covers
-// both as one contiguous range. Pure-insert and pure-update calls each mint
-// their single kind.
 func TestUpsertByKeyMintsPerBranch(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
 
-	// First call creates row A on the insert branch: one insert record (seq 1).
 	first, err := st.UpsertByKey(ctx, "test", "notes", []string{"title"},
 		[]map[string]any{{"title": "a", "score": 1}}, WriteOpts{}, Embedder{}, nil, Incarnation{})
 	if err != nil {
@@ -311,7 +271,6 @@ func TestUpsertByKeyMintsPerBranch(t *testing.T) {
 	}
 	idA := first.Ids[0]
 
-	// Mixed batch: record 0 updates row A, record 1 inserts row B.
 	mixed, err := st.UpsertByKey(ctx, "test", "notes", []string{"title"},
 		[]map[string]any{
 			{"title": "a", "score": 10},
@@ -323,7 +282,7 @@ func TestUpsertByKeyMintsPerBranch(t *testing.T) {
 	if mixed.Inserted != 1 || mixed.Updated != 1 {
 		t.Fatalf("mixed upsert counts = inserted %d, updated %d, want 1/1", mixed.Inserted, mixed.Updated)
 	}
-	// ids stay in record order: the updated row's id, then the new row's.
+
 	if len(mixed.Ids) != 2 || mixed.Ids[0] != idA || mixed.Ids[1] == idA {
 		t.Fatalf("mixed upsert ids = %v, want [row A id %d, new id]", mixed.Ids, idA)
 	}
@@ -335,16 +294,15 @@ func TestUpsertByKeyMintsPerBranch(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("got %d change rows, want 3", len(rows))
 	}
-	// The mint groups by kind — inserts, then updates — inside one contiguous
-	// range spanning the batch.
+
 	idB := mixed.Ids[1]
 	want := []struct {
 		kind  string
 		rowID int64
 	}{
-		{string(ChangeInsert), idA}, // first call's insert
-		{string(ChangeInsert), idB}, // mixed batch insert branch
-		{string(ChangeUpdate), idA}, // mixed batch update branch
+		{string(ChangeInsert), idA},
+		{string(ChangeInsert), idB},
+		{string(ChangeUpdate), idA},
 	}
 	for i, w := range want {
 		if rows[i].kind != w.kind || rows[i].rowID != w.rowID {
@@ -355,7 +313,6 @@ func TestUpsertByKeyMintsPerBranch(t *testing.T) {
 		}
 	}
 
-	// A pure-update call mints exactly one update record.
 	upd, err := st.UpsertByKey(ctx, "test", "notes", []string{"title"},
 		[]map[string]any{{"title": "a", "score": 20}}, WriteOpts{}, Embedder{}, nil, Incarnation{})
 	if err != nil {
@@ -372,16 +329,10 @@ func TestUpsertByKeyMintsPerBranch(t *testing.T) {
 	}
 }
 
-// TestUpsertByKeyMidBatchFailureRollsBackMint: a batch whose second record
-// fails after the first record's write already executed (the natural key is
-// ambiguous) rolls the whole transaction back — the earlier record's row
-// update AND any change records die together (§9.3: records commit with the
-// write they describe, or not at all).
 func TestUpsertByKeyMidBatchFailureRollsBackMint(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
-	// X is the row the batch's first record updates; Y1/Y2 share a natural key,
-	// so the second record cannot resolve its match.
+
 	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{
 		{"title": "x", "score": 7},
 		{"title": "y", "score": 1},
@@ -410,7 +361,7 @@ func TestUpsertByKeyMidBatchFailureRollsBackMint(t *testing.T) {
 	if score != 7 {
 		t.Fatalf("row x score = %d, want 7 — the first record's write must roll back with the batch", score)
 	}
-	// The cursor has no gap either: the next committed mint continues from 4.
+
 	res, err := st.Update(ctx, "test", "notes", "title = 'x'", nil, map[string]any{"score": 8}, Embedder{}, nil, Incarnation{})
 	if err != nil {
 		t.Fatalf("update after rollback: %v", err)
@@ -420,10 +371,6 @@ func TestUpsertByKeyMidBatchFailureRollsBackMint(t *testing.T) {
 	}
 }
 
-// TestUpdateMintsRecordsForMatchedRows: Update mints one update record per
-// matched row, in id order, read from the materialized id set; UpdateResult
-// carries the range. A bulk update (filter 1=1) mints for every row the same
-// way; an update matching nothing mints nothing.
 func TestUpdateMintsRecordsForMatchedRows(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -447,7 +394,6 @@ func TestUpdateMintsRecordsForMatchedRows(t *testing.T) {
 		t.Fatalf("update Changes = %+v, want %+v", res.Changes, want)
 	}
 
-	// Bulk update: every row, one record each.
 	bulk, err := st.Update(ctx, "test", "notes", "1=1", nil, map[string]any{"score": 9}, Embedder{}, nil, Incarnation{})
 	if err != nil {
 		t.Fatalf("bulk update: %v", err)
@@ -459,7 +405,6 @@ func TestUpdateMintsRecordsForMatchedRows(t *testing.T) {
 		t.Fatalf("bulk update Changes = %+v, want %+v", bulk.Changes, want)
 	}
 
-	// No match: nothing minted, zero range.
 	miss, err := st.Update(ctx, "test", "notes", "score = 12345", nil, map[string]any{"done": false}, Embedder{}, nil, Incarnation{})
 	if err != nil {
 		t.Fatalf("no-match update: %v", err)
@@ -472,14 +417,14 @@ func TestUpdateMintsRecordsForMatchedRows(t *testing.T) {
 	if len(rows) != 8 {
 		t.Fatalf("got %d change rows, want 8", len(rows))
 	}
-	// The filtered update's records name the matched rows, in id order.
+
 	for i, id := range []int64{ins.Ids[1], ins.Ids[2]} {
 		r := rows[3+i]
 		if r.kind != string(ChangeUpdate) || r.rowID != id {
 			t.Fatalf("filtered update record %d = kind %q row_id %d, want update/%d", i, r.kind, r.rowID, id)
 		}
 	}
-	// The bulk update's records name every row, in id order.
+
 	for i, id := range ins.Ids {
 		r := rows[5+i]
 		if r.kind != string(ChangeUpdate) || r.rowID != id {
@@ -488,14 +433,10 @@ func TestUpdateMintsRecordsForMatchedRows(t *testing.T) {
 	}
 }
 
-// TestUpsertMintsOnBothBranches: the filter-based upsert mints update records
-// for matched rows and an insert record on its insert branch — the insert
-// branch is a row-insert path like any other (§9.3).
 func TestUpsertMintsOnBothBranches(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
 
-	// Insert branch: nothing matches, so the record inserts.
 	ins, err := st.Upsert(ctx, "test", "notes", "title = 'a'", nil,
 		map[string]any{"title": "a", "score": 1}, WriteOpts{}, Embedder{}, nil, Incarnation{})
 	if err != nil {
@@ -508,7 +449,6 @@ func TestUpsertMintsOnBothBranches(t *testing.T) {
 		t.Fatalf("insert branch Changes = %+v, want %+v", ins.Changes, want)
 	}
 
-	// Update branch: now a row matches.
 	upd, err := st.Upsert(ctx, "test", "notes", "title = 'a'", nil,
 		map[string]any{"score": 2}, WriteOpts{}, Embedder{}, nil, Incarnation{})
 	if err != nil {
@@ -533,10 +473,6 @@ func TestUpsertMintsOnBothBranches(t *testing.T) {
 	}
 }
 
-// TestDeleteMintsDeleteRecords: a confirmed delete mints one delete record per
-// removed row, stamped from the pre-delete materialization; DeleteResult
-// carries the range. A dry run and a no-match delete mint nothing, and the
-// over-limit rejection leaves no records behind.
 func TestDeleteMintsDeleteRecords(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -549,7 +485,6 @@ func TestDeleteMintsDeleteRecords(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	// Dry run: a pure count, nothing minted.
 	dry, err := st.Delete(ctx, "test", "notes", "1=1", nil, DeleteOpts{DryRun: true}, nil, Incarnation{})
 	if err != nil {
 		t.Fatalf("dry run: %v", err)
@@ -561,8 +496,6 @@ func TestDeleteMintsDeleteRecords(t *testing.T) {
 		t.Fatalf("got %d change rows after dry run, want 3", len(rows))
 	}
 
-	// Over the limit without confirm: rejected, and the materialization's
-	// transaction rolled back without minting.
 	if _, err := st.Delete(ctx, "test", "notes", "1=1", nil, DeleteOpts{Limit: 2}, nil, Incarnation{}); err == nil {
 		t.Fatal("delete over the limit without confirm must fail")
 	}
@@ -570,7 +503,6 @@ func TestDeleteMintsDeleteRecords(t *testing.T) {
 		t.Fatalf("got %d change rows after the rejected delete, want 3 — the error path must mint nothing", len(rows))
 	}
 
-	// Confirmed: one delete record per removed row, in id order.
 	del, err := st.Delete(ctx, "test", "notes", "1=1", nil, DeleteOpts{Limit: 2, Confirm: true}, nil, Incarnation{})
 	if err != nil {
 		t.Fatalf("confirmed delete: %v", err)
@@ -596,7 +528,6 @@ func TestDeleteMintsDeleteRecords(t *testing.T) {
 		}
 	}
 
-	// No match: nothing minted, zero range.
 	miss, err := st.Delete(ctx, "test", "notes", "1=1", nil, DeleteOpts{}, nil, Incarnation{})
 	if err != nil {
 		t.Fatalf("no-match delete: %v", err)
@@ -606,15 +537,10 @@ func TestDeleteMintsDeleteRecords(t *testing.T) {
 	}
 }
 
-// TestChangeLabelsDistinguishLifetimesAcrossPaths: records minted by every
-// write path carry their own lifetime's drop generation, so after a drop and
-// recreate the two lifetimes' feeds are distinguishable no matter which path
-// minted them (§3.4) — and DropTable never purges the log.
 func TestChangeLabelsDistinguishLifetimesAcrossPaths(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
 
-	// First lifetime: insert, update, and delete all mint with drop_gen 0.
 	ins, err := st.Insert(ctx, "test", "notes", []map[string]any{{"title": "a", "score": 1}}, WriteOpts{}, Embedder{}, nil, Incarnation{})
 	if err != nil {
 		t.Fatalf("insert: %v", err)
@@ -631,7 +557,7 @@ func TestChangeLabelsDistinguishLifetimesAcrossPaths(t *testing.T) {
 	if _, err := st.CreateTable(ctx, "test", "notes", noteFields(), TableOpts{}, [16]byte{}); err != nil {
 		t.Fatalf("recreate table: %v", err)
 	}
-	// Second lifetime: the upsert paths mint with drop_gen 1.
+
 	res, err := st.UpsertByKey(ctx, "test", "notes", []string{"title"},
 		[]map[string]any{{"title": "b", "score": 1}}, WriteOpts{}, Embedder{}, nil, Incarnation{})
 	if err != nil {

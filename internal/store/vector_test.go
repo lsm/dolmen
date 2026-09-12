@@ -175,7 +175,6 @@ func TestVectorPaginationAndTruncatedFlag(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	// Query vector aligned with row 0: scores descend 0..4.
 	res, err := st.SearchVector(ctx, "test", "vecpage", "emb", []float32{4, 0}, "", 0, 2, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("page 0: %v", err)
@@ -218,8 +217,7 @@ func TestVectorSentinelRowNeverFailsThePage(t *testing.T) {
 	}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	// The (limit+1)th hit carries a blob beyond the response budget: it is
-	// only a look-ahead for truncated, so it must never be materialized.
+
 	n, err := st.ns("test")
 	if err != nil {
 		t.Fatalf("ns: %v", err)
@@ -242,8 +240,7 @@ func TestTextQueryCannotTargetRawVectorColumn(t *testing.T) {
 	st := openStore(t)
 	mustNS(t, st, "test")
 	ctx := context.Background()
-	// rawvec has no vectorize field, only a caller-provided vector column:
-	// a text query has no defensible space to compare against.
+
 	if _, err := st.CreateTable(ctx, "test", "rawvec", []schema.Field{
 		{Name: "s", Type: schema.String},
 		{Name: "emb", Type: schema.Vector, Dim: 4},
@@ -266,12 +263,10 @@ func TestTextQueryCannotTargetRawVectorColumn(t *testing.T) {
 	} else if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("text query naming a vector column: expected ErrInvalid, got %v", err)
 	} else if strings.Contains(err.Error(), "search the table's vectorize field") || !strings.Contains(err.Error(), "set_vectorize") {
-		// rawvec has no vectorize field, so the error must not point at one —
-		// the text remedy is adding a vectorize field via migrate.
+
 		t.Fatalf("text query naming a vector column on a table without vectorize must offer the migrate fix, got %q", err.Error())
 	}
-	// The same table stays searchable with raw vectors, with and without column:
-	// the caller owns matching the embedding space.
+
 	for _, column := range []string{"", "emb"} {
 		res, err := st.SearchVector(ctx, "test", "rawvec", column, []float32{1, 0, 0, 0}, "", 0, 5, false, "", nil, nil)
 		if err != nil {
@@ -281,15 +276,13 @@ func TestTextQueryCannotTargetRawVectorColumn(t *testing.T) {
 			t.Fatalf("unexpected raw-vector results with column %q: %v", column, res.Rows)
 		}
 	}
-	// The fail-fast validation used before spending an embedding rejects too.
+
 	for _, column := range []string{"", "emb"} {
 		if err := st.ValidateVectorSearch(ctx, "test", "rawvec", column, true, "fake-space"); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("ValidateVectorSearch with column %q: expected ErrInvalid, got %v", column, err)
 		}
 	}
-	// A vectorized table also rejects naming its raw vector column for a text
-	// query, even though its own _embedding space would be fine — and there the
-	// vectorize field is a real remedy, so the error may point at it.
+
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
 	if _, err := st.SearchVector(ctx, "test", "notes", "emb", qv[0], "fake-space", 0, 5, false, "", nil, nil); err == nil || !errors.Is(err, ErrInvalid) {
@@ -314,12 +307,6 @@ func TestTextQueryOnTableWithoutAnyVectorData(t *testing.T) {
 	}
 }
 
-// TestTextQueryTableErrorsIndependentOfProvider pins the disambiguation
-// between a broken table and a missing provider: a text query's table-shape
-// validation must fail (or pass) on the table's own merits, even when no
-// provider is configured (empty embed identity), and each failure must name
-// its fix — the migrate/raw-vector path for a missing vectorize field, never
-// the provider.
 func TestTextQueryTableErrorsIndependentOfProvider(t *testing.T) {
 	st := openStore(t)
 	mustNS(t, st, "test")
@@ -336,9 +323,6 @@ func TestTextQueryTableErrorsIndependentOfProvider(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	// Table with declared vector columns but no vectorize field: both fixes
-	// must appear — set_vectorize via migrate, or a raw-vector search of the
-	// declared column.
 	err := st.ValidateVectorSearch(ctx, "test", "rawcols", "", true, "")
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected ErrInvalid for text query on rawcols, got %v", err)
@@ -349,8 +333,6 @@ func TestTextQueryTableErrorsIndependentOfProvider(t *testing.T) {
 		}
 	}
 
-	// Table with no vector data at all: the text error points at adding a
-	// vectorize field via migrate.
 	err = st.ValidateVectorSearch(ctx, "test", "novec", "", true, "")
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected ErrInvalid for text query on novec, got %v", err)
@@ -364,9 +346,6 @@ func TestTextQueryTableErrorsIndependentOfProvider(t *testing.T) {
 		t.Fatalf("novec text error must not offer raw-vector search of nonexistent columns, got %q", err.Error())
 	}
 
-	// Naming _embedding explicitly on a non-vectorized table carries the same
-	// fixes instead of a bare "no vectorize field for _embedding" — and only
-	// offers the raw-vector alternative when declared vector columns exist.
 	err = st.ValidateVectorSearch(ctx, "test", "rawcols", "_embedding", true, "")
 	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "set_vectorize") {
 		t.Fatalf("expected actionable error for explicit _embedding on rawcols, got %v", err)
@@ -382,9 +361,6 @@ func TestTextQueryTableErrorsIndependentOfProvider(t *testing.T) {
 		t.Fatalf("explicit _embedding on novec must not offer raw-vector search of nonexistent columns, got %q", err.Error())
 	}
 
-	// A properly vectorized table passes shape validation with an empty
-	// identity (the provider check belongs to the caller) and reports the
-	// identity mismatch only when an identity is actually known.
 	if _, err := st.CreateTable(ctx, "test", "vecok", []schema.Field{
 		{Name: "s", Type: schema.String, Vectorize: true},
 	}); err != nil {
@@ -423,9 +399,7 @@ func TestSearchVectorSurfacesSkippedCorruptVectors(t *testing.T) {
 	}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	// Corrupt rows the way only an out-of-band SQLite writer could: the store
-	// itself never writes these, so search must report them, not hide them —
-	// in any storage type, not just malformed BLOBs.
+
 	n, err := st.ns("test")
 	if err != nil {
 		t.Fatalf("ns: %v", err)
@@ -471,7 +445,6 @@ func TestSearchVectorFilter(t *testing.T) {
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
 
-	// Filter to rows whose title matches a bound parameter.
 	res, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0, 0, 0}, "", 0, 10, false, "title = ?", []any{"first note"}, nil)
 	if err != nil {
 		t.Fatalf("filtered vector search: %v", err)
@@ -480,7 +453,6 @@ func TestSearchVectorFilter(t *testing.T) {
 		t.Fatalf("expected one filtered hit, got %v", res.Rows)
 	}
 
-	// Filter on a numeric metadata column.
 	res, err = st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0, 0, 0}, "", 0, 10, false, "score >= 3", nil, nil)
 	if err != nil {
 		t.Fatalf("numeric filter search: %v", err)
@@ -489,7 +461,6 @@ func TestSearchVectorFilter(t *testing.T) {
 		t.Fatalf("expected 2 hits with score >= 3, got %v", res.Rows)
 	}
 
-	// Filter with no matches returns empty, not an error.
 	res, err = st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0, 0, 0}, "", 0, 10, false, "title = ?", []any{"missing"}, nil)
 	if err != nil {
 		t.Fatalf("zero-match filter search: %v", err)
@@ -498,7 +469,6 @@ func TestSearchVectorFilter(t *testing.T) {
 		t.Fatalf("expected 0 hits for missing filter, got %v", res.Rows)
 	}
 
-	// Malicious/invalid filters are rejected like delete's filter.
 	if _, err := st.SearchVector(ctx, "test", "notes", "emb", []float32{1, 0, 0, 0}, "", 0, 10, false, "1=1; DROP TABLE notes", nil, nil); err == nil {
 		t.Fatal("expected semicolon in filter to be rejected")
 	}
@@ -514,7 +484,7 @@ func TestSearchVectorMinScore(t *testing.T) {
 	mustInsertNotes(t, st)
 
 	q := []float32{1, 0, 0, 0}
-	// No threshold: all three non-null rows come back.
+
 	res, err := st.SearchVector(ctx, "test", "notes", "emb", q, "", 0, 10, false, "", nil, nil)
 	if err != nil {
 		t.Fatalf("unfiltered search: %v", err)
@@ -523,7 +493,6 @@ func TestSearchVectorMinScore(t *testing.T) {
 		t.Fatalf("expected 3 hits without threshold, got %v", res.Rows)
 	}
 
-	// Threshold just below the top score: only first and third notes.
 	cut := 0.95
 	res, err = st.SearchVector(ctx, "test", "notes", "emb", q, "", 0, 10, false, "", nil, &cut)
 	if err != nil {
@@ -538,7 +507,6 @@ func TestSearchVectorMinScore(t *testing.T) {
 		}
 	}
 
-	// Threshold above the top score: empty.
 	high := 1.01
 	res, err = st.SearchVector(ctx, "test", "notes", "emb", q, "", 0, 10, false, "", nil, &high)
 	if err != nil {
@@ -548,7 +516,6 @@ func TestSearchVectorMinScore(t *testing.T) {
 		t.Fatalf("expected 0 hits above perfect score, got %v", res.Rows)
 	}
 
-	// Threshold and filter together.
 	cut = 0.95
 	res, err = st.SearchVector(ctx, "test", "notes", "emb", q, "", 0, 10, false, "score >= 3", nil, &cut)
 	if err != nil {

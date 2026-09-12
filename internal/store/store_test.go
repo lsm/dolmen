@@ -13,9 +13,6 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-// openStore returns the store wrapped in the legacy adapter (slice 2b): the
-// suite's ~300 direct call sites keep the pre-Engine arities, and new-arity
-// calls go through the Engine-shaped methods on *Store itself.
 func openStore(t *testing.T) legacyStore {
 	t.Helper()
 	st, err := Open(t.TempDir())
@@ -26,10 +23,6 @@ func openStore(t *testing.T) legacyStore {
 	return legacy(st)
 }
 
-// mustNS creates the namespace, tolerating an existing one — the test-side
-// counterpart of the op layer's ensureNamespace (2c). Since the store stopped
-// creating namespaces on first use (2b's §6.2 rule), fixtures that used to
-// rely on create-on-open create explicitly.
 func mustNS(t *testing.T, st legacyStore, ns string) {
 	t.Helper()
 	if err := st.CreateNamespace(ns); err != nil && !strings.Contains(err.Error(), "already exists") {
@@ -148,8 +141,6 @@ func TestLegacyKeywordTableRemainsAccessible(t *testing.T) {
 	legacyTable := "select"
 	legacyFields := []schema.Field{{Name: "order", Type: schema.String}}
 
-	// Simulate a table created before keyword restrictions: create the SQLite
-	// table directly and register it in _dolmen_tables.
 	if _, err := n.rw.ExecContext(ctx, tableDDL(legacyTable, legacyFields)); err != nil {
 		t.Fatalf("create legacy table: %v", err)
 	}
@@ -164,7 +155,6 @@ func TestLegacyKeywordTableRemainsAccessible(t *testing.T) {
 		t.Fatalf("register legacy table: %v", err)
 	}
 
-	// Operations that load the schema must succeed for the legacy table.
 	if _, _, err := st.DescribeTable(ctx, "test", legacyTable); err != nil {
 		t.Fatalf("describe legacy keyword table: %v", err)
 	}
@@ -176,7 +166,7 @@ func TestLegacyKeywordTableRemainsAccessible(t *testing.T) {
 	if err != nil || len(rows) != 1 || rows[0]["order"] != "value" {
 		t.Fatalf("query legacy keyword table: %v %v", err, rows)
 	}
-	// New tables with keyword names must still be rejected.
+
 	if _, err := st.CreateTable(ctx, "test", "group", []schema.Field{{Name: "x", Type: schema.String}}); err == nil {
 		t.Fatal("expected new keyword table name to be rejected")
 	}
@@ -207,9 +197,6 @@ func TestLegacyKeywordFieldMigration(t *testing.T) {
 		t.Fatalf("register legacy table: %v", err)
 	}
 
-	// Migrate should allow a keyword field to be renamed away, and should allow
-	// unrelated changes to a table that contains a keyword field. The rename is
-	// destructive, so it needs the expected_version precondition.
 	if _, err := st.Migrate(ctx, "test", legacyTable, []schema.Change{
 		{Op: schema.OpAddField, Field: &schema.Field{Name: "priority", Type: schema.Number}},
 		{Op: schema.OpRenameField, From: "order", To: "my_order"},
@@ -224,14 +211,12 @@ func TestLegacyKeywordFieldMigration(t *testing.T) {
 		t.Fatalf("unexpected fields after migration: %+v", newSc.Fields)
 	}
 
-	// Rename to a keyword must still fail.
 	if _, err := st.Migrate(ctx, "test", legacyTable, []schema.Change{
 		{Op: schema.OpRenameField, From: "my_order", To: "group"},
 	}, testEmbed, 2); err == nil {
 		t.Fatal("expected rename to a keyword to fail")
 	}
 
-	// Drop the legacy keyword field should also work (uses its current name).
 	if _, err := st.Migrate(ctx, "test", legacyTable, []schema.Change{
 		{Op: schema.OpDropField, Name: "my_order"},
 	}, testEmbed, 2); err != nil {

@@ -8,11 +8,6 @@ import (
 	"time"
 )
 
-// Slice 6b (r3): the replay-page read. The fixtures drive the real write
-// paths (like the 5c suite) and page the replay exactly as a caller would:
-// records through Next, the done contract, cursors minted per record.
-
-// drainReplay pages the replay half to done, collecting records.
 func drainReplay(t *testing.T, replay *ChangeReplay) []ChangeRecord {
 	t.Helper()
 	var out []ChangeRecord
@@ -28,11 +23,6 @@ func drainReplay(t *testing.T, replay *ChangeReplay) []ChangeRecord {
 	}
 }
 
-// TestListenReplayBacklog: a session holding a cursor replays exactly the
-// backlog after it, each record carrying a fresh cursor, and the following
-// call reports the registration boundary (§6.2, §9.3). The live half (a
-// later slice) continues from the drained boundary; until then notify is
-// never invoked.
 func TestListenReplayBacklog(t *testing.T) {
 	st := openChangeStore(t)
 	backlog := insertNotes(t, st, 3)
@@ -55,14 +45,10 @@ func TestListenReplayBacklog(t *testing.T) {
 	}
 }
 
-// TestListenPagedReplayDoneContract pins ChangeReplay's done protocol
-// exactly: pages of MaxChangesPageLimit, the page carrying the final records
-// reports done=false, the following call reports done=true with no records —
-// the registration boundary (§6.2).
 func TestListenPagedReplayDoneContract(t *testing.T) {
 	st := openChangeStore(t)
 	n := 2*MaxChangesPageLimit + 500
-	for n > 0 { // chunked to the per-call record cap
+	for n > 0 {
 		size := n
 		if size > MaxRecordsPerInsert {
 			size = MaxRecordsPerInsert
@@ -105,10 +91,6 @@ func TestListenPagedReplayDoneContract(t *testing.T) {
 	}
 }
 
-// TestListenBareStartSkipsBacklog: the zero cursor fixes the boundary at the
-// current head, so the backlog before registration is never replayed —
-// only subsequent commits would arrive, and they are the live half's (§9.3's
-// wake-up semantics).
 func TestListenBareStartSkipsBacklog(t *testing.T) {
 	st := openChangeStore(t)
 	insertNotes(t, st, 3)
@@ -121,18 +103,13 @@ func TestListenBareStartSkipsBacklog(t *testing.T) {
 	}
 }
 
-// TestListenZeroBoundaryIsBounded: registering over an EMPTY log fixes the
-// boundary at 0 — a real bound, not "unbounded". A commit landing before the
-// caller's first Next is past the boundary, and the replay half must deliver
-// nothing: the boundary is what keeps the two halves disjoint (§6.2's
-// exactly-once).
 func TestListenZeroBoundaryIsBounded(t *testing.T) {
 	st := openChangeStore(t)
 
 	replay, cancel := listenOn(t, st, "", "", func(ChangeRecord) {}, nil)
 	defer cancel()
 
-	insertNotes(t, st, 2) // commits before the first Next call
+	insertNotes(t, st, 2)
 	records, _, done, err := replay.Next(context.Background())
 	if err != nil {
 		t.Fatalf("replay Next: %v", err)
@@ -142,15 +119,12 @@ func TestListenZeroBoundaryIsBounded(t *testing.T) {
 	}
 }
 
-// TestListenResumeCursorReplaysBacklog: a session registered from a token
-// cursor replays the backlog after that position — the resume the standing
-// cursor teaches.
 func TestListenResumeCursorReplaysBacklog(t *testing.T) {
 	st := openChangeStore(t)
 	backlog := insertNotes(t, st, 2)
 
 	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
-	cancel() // the standing cursor is fixed at registration; Next after cancel still teaches it
+	cancel()
 	_, resume, _, err := replay.Next(context.Background())
 	if !errors.Is(err, errListenEnded) {
 		t.Fatalf("first Next = %v, want the ended marker — the cursor teaches on regardless", err)
@@ -166,11 +140,6 @@ func TestListenResumeCursorReplaysBacklog(t *testing.T) {
 	}
 }
 
-// TestListenNextSingleFlight: concurrent Next calls on one session are
-// serialized as page+publish units — every record delivers exactly once,
-// and the published position never regresses. Without the flight lock, two
-// callers scan the same sess.position and duplicate the page; a slower
-// earlier caller then publishes its position over a later one's.
 func TestListenNextSingleFlight(t *testing.T) {
 	st := openChangeStore(t)
 	insertNotes(t, st, 20)
@@ -216,9 +185,6 @@ func TestListenNextSingleFlight(t *testing.T) {
 	}
 }
 
-// seedStampedChanges seeds change records with explicit at stamps — the
-// fixture for clock-stepped pruning scenarios, which no public write path
-// can produce.
 func seedStampedChanges(t *testing.T, st *Store, table string, ats []time.Time) {
 	t.Helper()
 	ctx := context.Background()
@@ -251,8 +217,6 @@ func seedStampedChanges(t *testing.T, st *Store, table string, ats []time.Time) 
 	}
 }
 
-// openStampedStore is the retention-store fixture for the loss tests: a
-// 40ms retention, the test namespace, and the notes table.
 func openStampedStore(t *testing.T) *Store {
 	t.Helper()
 	dir := t.TempDir()
@@ -271,8 +235,6 @@ func openStampedStore(t *testing.T) *Store {
 	return st
 }
 
-// pruneWithReader runs a bare changes_since — a reader whose mint roots a
-// fresh chain at the head, freeing the aged rows behind it for deletion.
 func pruneWithReader(t *testing.T, st *Store) {
 	t.Helper()
 	if _, _, err := st.ChangesSince(context.Background(), "test", "", "", [16]byte{}, nil, Incarnation{}, Page{}); err != nil {
@@ -280,17 +242,13 @@ func pruneWithReader(t *testing.T, st *Store) {
 	}
 }
 
-// TestListenReplayOutlivesRetention: a replay left idle past its chain's
-// retention cap fails LOUDLY, never silently short. Another reader's prune
-// has deleted the aged backlog; the next page reports the cursor-expiry
-// teaching error instead of a short page reported as done.
 func TestListenReplayOutlivesRetention(t *testing.T) {
 	st := openStampedStore(t)
 	insertNotes(t, st, 3)
 
 	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
 	defer cancel()
-	time.Sleep(150 * time.Millisecond) // chains expire; rows age past 2R
+	time.Sleep(150 * time.Millisecond)
 	pruneWithReader(t, st)
 
 	if _, _, _, err := replay.Next(context.Background()); !errors.Is(err, ErrCursorExpired) {
@@ -298,16 +256,9 @@ func TestListenReplayOutlivesRetention(t *testing.T) {
 	}
 }
 
-// TestListenReplayInteriorHoleFailsLoudly: pruning deletes by age, and at
-// stamps are not seq-ordered after a clock step — an aged MIDDLE record can
-// be deleted behind fresher neighbors, and a span count over the scanned
-// range alone would be tautological. The full-tail entry check catches the
-// hole before the page serves past it.
 func TestListenReplayInteriorHoleFailsLoudly(t *testing.T) {
 	st := openStampedStore(t)
-	// Seqs 1 and 3 are stamped ahead (survive every prune, in-window); only
-	// the MIDDLE seq 2 is aged. A bare reader's prune deletes exactly seq 2,
-	// leaving surviving rows on both sides — the interior-hole shape.
+
 	seedStampedChanges(t, st, "notes", []time.Time{
 		time.Now().Add(100 * time.Millisecond),
 		time.Now().Add(-200 * time.Millisecond),
@@ -324,16 +275,9 @@ func TestListenReplayInteriorHoleFailsLoudly(t *testing.T) {
 	}
 }
 
-// TestListenReplayMissingTailFailsLoudly: pruning removes the aged TAIL rows
-// while a future-stamped head row survives, so the scan still finds the
-// head and a span count over the scanned range stays tautological. The
-// full-tail entry count sees the loss: the baseline promised three, the
-// tail holds one.
 func TestListenReplayMissingTailFailsLoudly(t *testing.T) {
 	st := openStampedStore(t)
-	// Seq 1 future-stamped (in-window at registration, survives every
-	// prune — begin resolves P below it); seqs 2-3 aged, prunable behind
-	// the survivor.
+
 	seedStampedChanges(t, st, "notes", []time.Time{
 		time.Now().Add(100 * time.Millisecond),
 		time.Now().Add(-200 * time.Millisecond),
@@ -350,10 +294,6 @@ func TestListenReplayMissingTailFailsLoudly(t *testing.T) {
 	}
 }
 
-// TestListenChainRotatesBeforeCap: a session held past its chain's absolute
-// cap (chain_start + 2R, §9.3) rotates to a fresh chain rooted at the
-// current position — tokens minted on a capped chain are born expired, and
-// every cursor the replay delivers must stay resolvable.
 func TestListenChainRotatesBeforeCap(t *testing.T) {
 	st := openStampedStore(t)
 	ctx := context.Background()
@@ -362,7 +302,7 @@ func TestListenChainRotatesBeforeCap(t *testing.T) {
 	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
 	defer cancel()
 
-	time.Sleep(150 * time.Millisecond) // past chain_start + 2R; no prune ran
+	time.Sleep(150 * time.Millisecond)
 	replayed := drainReplay(t, replay)
 	if len(replayed) != 2 {
 		t.Fatalf("replay delivered %d records, want the 2-record backlog", len(replayed))

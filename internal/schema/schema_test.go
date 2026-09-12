@@ -135,14 +135,13 @@ func TestEnumAllowsExactMatch(t *testing.T) {
 	if !EnumAllows(f.Enum, "SEV0") || !EnumAllows(f.Enum, "SEV1") {
 		t.Fatal("members must be allowed")
 	}
-	// Exact match only: case variants, trimmed variants, and prefixes are
-	// rejected — values are compared as written.
+
 	for _, v := range []string{"sev0", "SEV0 ", "SEV", ""} {
 		if EnumAllows(f.Enum, v) {
 			t.Fatalf("%q must not be allowed", v)
 		}
 	}
-	// No enum imposes no constraint.
+
 	if !EnumAllows(nil, "anything") {
 		t.Fatal("an absent enum must allow every value")
 	}
@@ -325,7 +324,7 @@ func TestSQLKeywordsRejected(t *testing.T) {
 			t.Fatalf("SQL keyword %q must be rejected as a table name", name)
 		}
 	}
-	// Suffixes and prefixes that are not exact keywords should still be valid.
+
 	for _, name := range []string{"my_order", "order_field", "grouped", "selected", "my_indexed", "orderby"} {
 		if !ValidIdent(name) {
 			t.Fatalf("non-keyword %q must be accepted", name)
@@ -373,16 +372,16 @@ func TestSuggestIdent(t *testing.T) {
 
 func TestValidateForMigrationGrandfathersLegacyFields(t *testing.T) {
 	old := []Field{{Name: "order", Type: String}, {Name: "body", Type: Text}}
-	// Adding an unrelated field must succeed even though the table has a keyword field.
+
 	if err := ValidateForMigration(append(old, Field{Name: "priority", Type: Number}), old); err != nil {
 		t.Fatalf("expected migration to allow legacy keyword field, got %v", err)
 	}
-	// Renaming a legacy field to a non-keyword name must succeed.
+
 	renamed := []Field{{Name: "my_order", Type: String}, {Name: "body", Type: Text}}
 	if err := ValidateForMigration(renamed, old); err != nil {
 		t.Fatalf("expected rename away from keyword to succeed, got %v", err)
 	}
-	// Renaming an unrelated field to a keyword must still fail.
+
 	bad := []Field{{Name: "order", Type: String}}
 	if err := ValidateForMigration(bad, nil); err == nil {
 		t.Fatal("expected new keyword field to be rejected")
@@ -596,9 +595,7 @@ func TestInferSchemaRoundTripsThroughValidate(t *testing.T) {
 }
 
 func TestInferSchemaSanitizesSQLKeywordKeys(t *testing.T) {
-	// Common sample keys that are SQLite/SQL keywords must infer usable names
-	// (the documented infer-then-create workflow must not dead-end at
-	// create_table's keyword rejection).
+
 	r := InferSchema([]map[string]any{
 		{"order": "first", "group": "g", "index": 3, "plan": "free", "select": "x"},
 	})

@@ -6,9 +6,6 @@ import (
 	"strings"
 )
 
-// QueryError is a sanitized, client-safe SQL execution error.
-// It wraps either ErrInvalid or ErrNotFound so callers can still use errors.Is,
-// while keeping the original SQLite error available for logging.
 type QueryError struct {
 	msg      string
 	sentinel error
@@ -17,8 +14,6 @@ type QueryError struct {
 
 func (e *QueryError) Error() string { return e.msg }
 
-// Unwrap exposes both the original SQLite cause and the sentinel so callers
-// can use errors.As for result-code inspection and errors.Is for classification.
 func (e *QueryError) Unwrap() []error {
 	if e.cause == nil {
 		return []error{e.sentinel}
@@ -26,13 +21,9 @@ func (e *QueryError) Unwrap() []error {
 	return []error{e.cause, e.sentinel}
 }
 
-// Cause returns the original, unsanitized SQLite error for diagnostics.
 func (e *QueryError) Cause() error { return e.cause }
 
 var (
-	// SQLite error patterns. These are intentionally conservative: they only
-	// match well-known SQLite message shapes so we do not accidentally mangle
-	// hand-written Dolmen error strings.
 	sqlLogicErrorRe = regexp.MustCompile(`(?i)SQL\s+logic\s+error:\s*`)
 	lineNumberRe    = regexp.MustCompile(`\s+\(\d+\)\s*$`)
 	nearRe          = regexp.MustCompile(`(?i)near\s+["']([^"']+)["']\s*:\s*syntax\s+error`)
@@ -47,18 +38,10 @@ var (
 	misuseRe        = regexp.MustCompile(`(?i)misuse\s+at.*`)
 )
 
-// NewQueryError sanitizes a raw SQLite error from the query endpoint.
-// It returns a QueryError that preserves the ErrInvalid/ErrNotFound sentinel
-// while keeping the original error for server-side logging. Operational
-// failures the client cannot correct (I/O errors, corruption, busy timeouts)
-// are returned unwrapped so they map to internal_error instead.
 func NewQueryError(sql string, err error) error {
 	return newSQLExecError(sql, err, false)
 }
 
-// NewFilterError is NewQueryError for user-supplied WHERE expressions
-// (update, delete, upsert, search_vector filters): identical classification,
-// but syntax guidance is worded for a predicate instead of a full statement.
 func NewFilterError(where string, err error) error {
 	return newSQLExecError(where, err, true)
 }
@@ -95,7 +78,7 @@ func newSQLExecError(sql string, err error, filter bool) error {
 		hint = defaultHint
 	}
 
-	_ = sql // reserved for future structured diagnostics; not echoed to avoid leaking input
+	_ = sql
 	msg := base
 	if hint != "" {
 		msg = base + "; " + hint
@@ -103,18 +86,8 @@ func newSQLExecError(sql string, err error, filter bool) error {
 	return &QueryError{msg: msg, sentinel: sentinel, cause: err}
 }
 
-// operationalSQLiteRe matches SQLite failures the client cannot correct by
-// fixing its SQL: lock contention, corruption, I/O and capacity errors, and
-// interrupted or protocol-level failures, by result-code name or message.
 var operationalSQLiteRe = regexp.MustCompile(`(?i)\bSQLITE_(BUSY|LOCKED|CORRUPT|IOERR|FULL|NOMEM|READONLY|CANTOPEN|INTERRUPT|PROTOCOL)\b|\b(?:database is locked|database is busy|disk I/O error|database disk image is malformed|out of memory|database or disk is full|attempt to write a readonly database|unable to open database file)\b`)
 
-// recognizedQueryError reports whether a raw SQLite error describes a problem
-// the client can correct in its own SQL: a known input pattern (syntax errors,
-// unknown tokens, missing tables/columns/functions/parameters, incomplete
-// input, malformed JSON, parameter limits, misuse), or a generic SQL-layer
-// error — SQLite primary result code 1 — whose message names the problem
-// (e.g. "ambiguous column name: id"). Operational failures such as disk I/O
-// errors, corruption, and busy timeouts must not surface as a query_error.
 func recognizedQueryError(raw string) bool {
 	if operationalSQLiteRe.MatchString(raw) {
 		return false
@@ -131,9 +104,6 @@ func recognizedQueryError(raw string) bool {
 	return sqlLogicErrorRe.MatchString(trimmed) || strings.HasSuffix(trimmed, "(1)")
 }
 
-// redactSQLMessage turns a raw SQLite error string into a client-safe string.
-// It extracts the offending token where one is present and removes SQLite
-// internal framing such as "SQL logic error:" and trailing line numbers.
 func RedactSQLMessage(raw string) string {
 	msg := strings.TrimSpace(raw)
 	msg = sqlLogicErrorRe.ReplaceAllString(msg, "")

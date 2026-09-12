@@ -10,20 +10,8 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-// MaxKeyFields caps the natural-key width for UpsertByKey.
 const MaxKeyFields = 8
 
-// UpsertByKey writes records keyed by a natural key: for each record, when a
-// row already exists whose keyFields values equal the record's, that row is
-// updated with the record's other fields (partial update — unspecified fields
-// keep their values); otherwise the record is inserted and must satisfy
-// required fields. Repeating the call converges instead of duplicating rows,
-// making it the retry-safe write path for agents. ids align with records; an
-// updated record reports the existing row's id (§6.2). The result carries the
-// ChangeRange the transaction minted (§6.2, §9.3): one record per
-// record-branch, insert or update, minted beside the write it describes.
-// TODO(9h): opts, scope, and scopeIncarnation are ignored while auth is off —
-// slice 9h stamps the insert branches with opts.Owner and applies the scope.
 func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
 	if len(records) == 0 {
 		return InsertResult{}, invalidf("no records given")
@@ -78,9 +66,7 @@ func normalizeKeyFields(keyFields []string) ([]string, error) {
 	seen := map[string]bool{}
 	for i, k := range keyFields {
 		lk := strings.ToLower(strings.TrimSpace(k))
-		// Syntax only: key fields reference existing table fields, which may
-		// predate the SQL-keyword restriction. The schema lookup in
-		// upsertKeyAttempt verifies the field actually exists.
+
 		if !schema.ValidIdentSyntax(lk) {
 			return nil, invalidf("invalid key field %q: must match ^[a-z][a-z0-9_]{0,63}$", k)
 		}
@@ -100,9 +86,6 @@ type upsertPlan struct {
 	keyVals []any
 }
 
-// matchByKey resolves a record's natural key to the existing row id. 0 means
-// no match (the record inserts); more than one match is an ambiguity error,
-// since the key is supposed to identify at most one row.
 func matchByKey(ctx context.Context, tx *sql.Tx, table string, keyFields []string, keyDefs []*schema.Field, keyVals []any, recIdx int) (int64, error) {
 	where := make([]string, len(keyDefs))
 	for j, kd := range keyDefs {
@@ -139,11 +122,7 @@ func matchByKey(ctx context.Context, tx *sql.Tx, table string, keyFields []strin
 }
 
 func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table string, keyFields []string, records []map[string]any, emb Embedder) (ids []int64, inserted, updated int, changes ChangeRange, done bool, err error) {
-	// Capture the drop generation before the schema read, for the same
-	// reason as insertAttempt: the embedding pause below must not be able to
-	// straddle a drop + recreate and commit a stale plan into the successor.
-	// The generation is persisted, so the guard holds across Store instances
-	// and processes sharing the data directory.
+
 	gen, err := tableGen(ctx, n.rw, table)
 	if err != nil {
 		return nil, 0, 0, ChangeRange{}, true, err
@@ -224,8 +203,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 				texts = append(texts, t)
 				idx = append(idx, i)
 			} else {
-				// Explicit null/empty text: the stored embedding would go stale
-				// and mislead search, so the update path clears it.
+
 				clearEmb[i] = true
 			}
 		}
@@ -259,11 +237,6 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 		return nil, 0, 0, ChangeRange{}, false, nil
 	}
 
-	// Match and write per record, inside the transaction: rows inserted earlier
-	// in the batch are visible to later records sharing the same key, and a
-	// write landing between the schema load and this point cannot split one
-	// record into two rows. The branch ids are collected alongside, one list
-	// per kind, so the change records below can be minted per branch.
 	ids = make([]int64, 0, len(records))
 	insertIDs := make([]int64, 0, len(records))
 	updateIDs := make([]int64, 0, len(records))
@@ -274,11 +247,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 			return nil, 0, 0, ChangeRange{}, true, err
 		}
 		if matchID == 0 {
-			// An unmatched record inserts, so omitted fields with declared
-			// defaults store them (on the update path unspecified fields keep
-			// their values instead): the default joins the column list and the
-			// record so coercion, FTS, and embedding treat it exactly like a
-			// caller-supplied value.
+
 			for _, f := range sc.Fields {
 				if _, present := p.rec[f.Name]; present {
 					continue
@@ -317,7 +286,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 			inserted++
 			continue
 		}
-		// Update path: partial update of the supplied fields.
+
 		for _, f := range sc.Fields {
 			if !f.Required {
 				continue
@@ -376,12 +345,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 			return nil, 0, 0, ChangeRange{}, true, err
 		}
 	}
-	// One change record per record-branch, minted beside the writes they
-	// describe (§9.3): all inserts, then all updates. Each mint is contiguous,
-	// and both run inside this one transaction — nothing can interleave — so
-	// the combined range is contiguous too. owner stays NULL until stamping
-	// lands (slice 9c); the update-branch labels will then be read from the
-	// rows themselves, never taken from the caller.
+
 	if len(insertIDs) > 0 {
 		rng, err := mintChanges(ctx, tx, table, ChangeInsert, insertIDs, nil)
 		if err != nil {
@@ -404,15 +368,11 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 	if err := tx.Commit(); err != nil {
 		return nil, 0, 0, ChangeRange{}, true, err
 	}
-	// §9.3: notification happens after commit — rows and log are durable
-	// before any waiter wakes.
+
 	s.notifyCommitted(nsName, table, changes)
 	return ids, inserted, updated, changes, true, nil
 }
 
-// reindexFTSRow rebuilds one row's full-text entry from its current base-table
-// values (used after a partial update, which may leave indexed fields unset in
-// the record).
 func reindexFTSRow(ctx context.Context, tx *sql.Tx, table string, fts []schema.Field, id int64) error {
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`DELETE FROM %s WHERE rowid = ?`, q(ftsTable(table))), id); err != nil {

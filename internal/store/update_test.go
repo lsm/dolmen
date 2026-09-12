@@ -207,8 +207,6 @@ func TestUpdateClearsEmbeddingWhenVectorizedFieldCleared(t *testing.T) {
 		t.Fatalf("cleared rows must lose their embeddings, got %d hits: %v", len(vres.Rows), vres.Rows)
 	}
 
-	// body is a fulltext field: cleared text must leave the index, and the
-	// untouched row (done = 1) must keep matching its own body text
 	hits, _, err := st.SearchFulltext(ctx, "test", "notes", "memory", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("fts cleared: %v", err)
@@ -231,8 +229,6 @@ func TestUpdateNoMatchTouchesNothing(t *testing.T) {
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
 
-	// a failing provider must not turn a zero-match update into an error:
-	// nothing needs embedding, so the provider is never called
 	broken := Embedder{Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
 		return nil, errors.New("provider down")
 	}, Identity: "fake-space"}
@@ -307,7 +303,7 @@ func TestUpsertUpdatesWhenMatched(t *testing.T) {
 	if res.Inserted != 0 || res.Updated != 1 {
 		t.Fatalf("expected matched upsert to update exactly one row, got %+v", res)
 	}
-	// the shared write shape reports the touched row's id, not just the count
+
 	if len(res.Ids) != 1 || res.Ids[0] != ids[0] {
 		t.Fatalf("matched upsert must report the updated row's id %d, got %v", ids[0], res.Ids)
 	}
@@ -376,9 +372,7 @@ func TestUpsertInsertEnforcesRequiredFields(t *testing.T) {
 	if _, err := st.Upsert(ctx, "test", "req", "1=0", nil, map[string]any{"title": "no score"}, testEmbed); err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected insert path to enforce required fields, got %v", err)
 	}
-	// the candidate is validated before the embedding provider is called:
-	// even a failing provider must surface the required-field error, not an
-	// embedding failure
+
 	broken := Embedder{Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
 		return nil, errors.New("provider down")
 	}, Identity: "fake-space"}
@@ -431,7 +425,6 @@ func TestUpdatePlainTableWithoutIndexes(t *testing.T) {
 		t.Fatalf("plain update wrong: %v", rows)
 	}
 
-	// a table with no vectorize field must not gain embedding metadata on update
 	sc, _, err := st.DescribeTable(ctx, "test", "plain")
 	if err != nil {
 		t.Fatalf("describe: %v", err)

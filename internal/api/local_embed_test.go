@@ -17,9 +17,6 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-// localStub returns a Local provider whose engine is swapped for a stub, so
-// the full create/insert/search HTTP path runs against the real provider
-// wiring (identity, lazy load) without a model download.
 func localStub(model string, dim int) *embed.Local {
 	return &embed.Local{
 		Model: model,
@@ -42,10 +39,6 @@ func (s stubEngine) Embed(ctx context.Context, texts []string) ([][]float32, err
 	return out, nil
 }
 
-// TestLocalProviderVectorizeEndToEnd pins the acceptance path of the local
-// provider: a server with no external endpoint creates a vectorized table,
-// inserts rows (embedding through the provider seam), and answers a text
-// search against the server-managed _embedding space.
 func TestLocalProviderVectorizeEndToEnd(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -83,7 +76,6 @@ func TestLocalProviderVectorizeEndToEnd(t *testing.T) {
 		t.Fatalf("text search must return rows, got %v", res)
 	}
 
-	// The table's embedding space is pinned to local/<model>.
 	code, res = post(t, srv.URL, "describe_table", map[string]any{"namespace": "app", "table": "docs"})
 	if code != 200 {
 		t.Fatalf("describe_table: %d %v", code, res)
@@ -94,9 +86,6 @@ func TestLocalProviderVectorizeEndToEnd(t *testing.T) {
 	}
 }
 
-// TestLocalProviderSwitchRejected pins provider-switch rejection parity: a
-// table embedded by local/<model-a> refuses inserts from local/<model-b>
-// until re-embedded via migrate, exactly as with the OpenAI provider.
 func TestLocalProviderSwitchRejected(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -122,7 +111,6 @@ func TestLocalProviderSwitchRejected(t *testing.T) {
 		t.Fatalf("insert under model-a: %d %v", code, res)
 	}
 
-	// Same store, server restarted with a different local model.
 	srvB := httptest.NewServer(New(st, localStub("org/model-b", 4)).Handler())
 	t.Cleanup(srvB.Close)
 	code, res = post(t, srvB.URL, "insert", map[string]any{
@@ -141,7 +129,6 @@ func TestLocalProviderSwitchRejected(t *testing.T) {
 		t.Fatalf("text search under a different local model must be rejected, got %d %v", code, res)
 	}
 
-	// The re-embed flow clears the pin: set_vectorize off, then on.
 	vecOff := map[string]any{"op": "set_vectorize", "name": "body", "value": false}
 	code, _ = post(t, srvB.URL, "migrate", map[string]any{
 		"namespace": "app", "table": "docs",
@@ -166,9 +153,6 @@ func TestLocalProviderSwitchRejected(t *testing.T) {
 	}
 }
 
-// recordingEngine captures the texts the provider is asked to embed, so the
-// e5 prefix test can assert what reached the engine on both the insert
-// (passage) and search (query) paths.
 type recordingEngine struct {
 	mu    sync.Mutex
 	texts []string
@@ -195,10 +179,6 @@ func (r *recordingEngine) recorded() []string {
 	return append([]string(nil), r.texts...)
 }
 
-// TestLocalProviderE5PrefixesEndToEnd pins the e5 role-prefix contract over
-// HTTP: with an e5-family model configured, inserts embed "passage: <text>"
-// and search_vector embeds "query: <text>". Dolmen adds the prefixes
-// server-side — callers never see or supply them.
 func TestLocalProviderE5PrefixesEndToEnd(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -253,8 +233,6 @@ func TestLocalProviderE5PrefixesEndToEnd(t *testing.T) {
 		t.Errorf("engine must receive %q for the search text, got %q", wantQuery, texts)
 	}
 
-	// The table's embedding space carries the #e5 marker — the prefix
-	// contract is part of the pinned identity.
 	code, res = post(t, srv.URL, "describe_table", map[string]any{"namespace": "e5", "table": "incidents"})
 	if code != 200 {
 		t.Fatalf("describe_table: %d %v", code, res)
@@ -265,22 +243,13 @@ func TestLocalProviderE5PrefixesEndToEnd(t *testing.T) {
 	}
 }
 
-// TestLocalProviderLoadFailureActionable pins the #144 contract: a first-use
-// local-model download failure surfaces as an actionable embedder_unavailable
-// error whose message names the offline remediations — never a bare
-// internal_error — with a request id in the envelope, the response header,
-// and the server log. The failed insert lands no rows and burns no
-// idempotency key, exactly as the round-3 black-box run verified.
 func TestLocalProviderLoadFailureActionable(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	// The stub's error mimics a blocked Hugging Face download whose text a
-	// naive message would leak: a hub URL, a cache path, and a cache path
-	// under a space-bearing directory. None of it may reach the client — the
-	// cause belongs to the server log, correlated by request id.
+
 	blockedDownload := errors.New(`Get "https://huggingface.co/org/model/resolve/main/config.json": TLS handshake timeout (cache dir ` + filepath.Join(t.TempDir(), "models", "org--model") + `; also tried C:\Users\Jane Doe\models\org--model)`)
 	failing := &embed.Local{
 		Model: "org/model",
@@ -301,8 +270,6 @@ func TestLocalProviderLoadFailureActionable(t *testing.T) {
 		t.Fatalf("create_table with vectorize must succeed (the load is lazy): %d %v", code, res)
 	}
 
-	// Capture the server log around the failing insert; the request carries
-	// no X-Request-Id, so the id must be server-generated.
 	var logBuf bytes.Buffer
 	oldLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
@@ -346,14 +313,12 @@ func TestLocalProviderLoadFailureActionable(t *testing.T) {
 	if strings.Contains(msg, "README") {
 		t.Fatalf("message must not cite documents the service does not serve, got %q", msg)
 	}
-	// The raw downloader cause never reaches the client: it can carry signed
-	// CDN URLs, proxy credentials, or internal endpoints, which no redaction
-	// of arbitrary text can promise removed. It belongs to the server log.
+
 	for _, leak := range []string{
-		"TLS handshake timeout",            // the cause text itself
-		"huggingface.co/org/model/resolve", // a URL from the cause
-		"models/org--model",                // cache paths
-		"Jane", "Doe",                      // space-bearing path fragments
+		"TLS handshake timeout",
+		"huggingface.co/org/model/resolve",
+		"models/org--model",
+		"Jane", "Doe",
 	} {
 		if strings.Contains(msg, leak) {
 			t.Fatalf("downloader cause %q leaked into the client message, got %q", leak, msg)
@@ -369,19 +334,17 @@ func TestLocalProviderLoadFailureActionable(t *testing.T) {
 	}
 	logs := logBuf.String()
 	for _, want := range []string{
-		"level=ERROR", // server-class failure, visible at Info
+		"level=ERROR",
 		"code=embedder_unavailable",
 		"status=503",
-		"request_id=" + reqID,   // the log line carries the same id
-		"TLS handshake timeout", // the cause reaches the log
+		"request_id=" + reqID,
+		"TLS handshake timeout",
 	} {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("server log must contain %q, got:\n%s", want, logs)
 		}
 	}
 
-	// Text queries embed server-side, so the same blocked load classifies the
-	// same way on the search path.
 	code, res = post(t, srv.URL, "search_vector", map[string]any{
 		"namespace": "app", "table": "docs", "text": "anything",
 	})
@@ -392,7 +355,6 @@ func TestLocalProviderLoadFailureActionable(t *testing.T) {
 		t.Fatalf("search code %v, want embedder_unavailable", got)
 	}
 
-	// The failed insert rolled back atomically: no rows landed.
 	code, res = post(t, srv.URL, "query", map[string]any{
 		"namespace": "app", "sql": "SELECT COUNT(*) AS n FROM docs",
 	})
@@ -404,9 +366,6 @@ func TestLocalProviderLoadFailureActionable(t *testing.T) {
 		t.Fatalf("blocked insert must leave the table empty, got %d rows", int64(n))
 	}
 
-	// The idempotency key was not burned: after the operator fixes the load
-	// (here: a server whose engine loads), the same key with the same
-	// records inserts fresh instead of failing as key reuse.
 	fixed := httptest.NewServer(New(st, localStub("org/model", 4)).Handler())
 	t.Cleanup(fixed.Close)
 	code, res = post(t, fixed.URL, "insert", map[string]any{

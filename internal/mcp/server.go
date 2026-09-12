@@ -35,20 +35,6 @@ type Server struct {
 	prefix        string
 }
 
-// toolAnnotations carries the MCP annotations (client-side UI hints) for each
-// registry op. Titles and hints describe the op, not the transport. Read ops
-// that touch the store still create the namespace db on first use (Store.ns
-// opens and initializes <namespace>.db), so they must not claim readOnlyHint
-// until that changes; infer_schema, describe_server, and capabilities are
-// pure and do. Ops that can send text to
-// a configured remote embedding provider (insert on vectorized fields,
-// search_vector by text, migrate when enabling vectorize, and the write ops
-// that re-embed) are open-world: the client cannot know whether the deployment
-// embeds locally. Provider-capable ops are not idempotent either — retries
-// re-hit (and re-bill) the endpoint even when the row state would converge.
-// Every write except a plain insert is destructive: it can overwrite or drop
-// existing data, and filter-driven writes (delete, update, upsert) can walk
-// new rows on retry via a non-deterministic WHERE.
 var toolAnnotations = map[string]map[string]any{
 	"list_tables":     {"title": "List tables", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"list_namespaces": {"title": "List namespaces", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
@@ -78,24 +64,20 @@ var toolAnnotations = map[string]map[string]any{
 	"list_migrations": {"title": "List migrations", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 }
 
-// Option customizes an MCP Server.
 type Option func(*Server)
 
-// WithBaseURL sets the configured public base URL for initialize instructions.
 func WithBaseURL(u string) Option {
 	return func(s *Server) {
 		s.baseURL = strings.TrimRight(u, "/")
 	}
 }
 
-// WithPrefix sets the server prefix to include in initialize instructions.
 func WithPrefix(p string) Option {
 	return func(s *Server) {
 		s.prefix = skill.NormalizePrefix(p)
 	}
 }
 
-// WithNamespaceHint sets the namespace guidance included in initialize instructions.
 func WithNamespaceHint(h string) Option {
 	return func(s *Server) {
 		s.namespaceHint = h
@@ -123,8 +105,7 @@ type rpcMessage struct {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("MCP-Protocol-Version", protocolVersion)
-	// Echoed when the client sent X-Request-Id, generated when it did not, so
-	// tool errors and log lines always carry a correlatable id.
+
 	r = r.WithContext(api.WithRequestID(r.Context(), api.RequestIDFor(r)))
 	w.Header().Set("X-Request-Id", api.RequestIDFrom(r.Context()))
 	if origin := r.Header.Get("Origin"); origin != "" {
@@ -328,9 +309,7 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage, r *http.Request) (a
 		if err != nil {
 			apiErr := api.WrapError(err)
 			reqID := api.RequestIDFrom(ctx)
-			// Server-class failures (5xx) are operator-visible at Error level
-			// with their cause; request-class failures are client problems,
-			// logged only when debugging.
+
 			if status := apiErr.Status; status == 0 || status >= http.StatusInternalServerError {
 				slog.Error("mcp tool error", "op", params.Name, "code", apiErr.Code, "request_id", reqID, "cause", apiErr.Cause)
 			} else {
@@ -432,10 +411,6 @@ func ensureObjectParams(raw []byte, what string) (map[string]any, *rpcErr) {
 	return probe, nil
 }
 
-// toolResult shapes a successful call: the result object travels only as
-// structuredContent. The spec keeps content mandatory (an array of content
-// blocks) but does not require mirroring the payload as text — dolmen has no
-// legacy clients to carry, and a text mirror would double every result.
 func toolResult(structured any) map[string]any {
 	return map[string]any{
 		"content":           []map[string]any{},

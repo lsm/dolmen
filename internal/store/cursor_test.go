@@ -10,16 +10,6 @@ import (
 	"time"
 )
 
-// Slice 5b: the cursor-token mapping and the retention math (§9.3), ahead of
-// the ops that consume them (slice 5c). The fixtures drive the helpers
-// directly with an injected clock — deadline, cap, and boundary formulas are
-// pure time arithmetic and must never depend on wall-clock luck — and seed
-// _dolmen_changes rows stamped at explicit times so the boundary and pruning
-// math is deterministic.
-
-// seedChanges inserts _dolmen_changes rows minted at explicit offsets from
-// base (negative = before base): seqs are contiguous from 1 in slice order,
-// mirroring what a run of committed writes would have minted.
 func seedChanges(t *testing.T, n *nsDB, base time.Time, mintOffsets []time.Duration) {
 	t.Helper()
 	ctx := context.Background()
@@ -44,8 +34,6 @@ func seedChanges(t *testing.T, n *nsDB, base time.Time, mintOffsets []time.Durat
 	}
 }
 
-// changeSeqs returns the surviving change records' seqs, in order — the
-// fixture-level view pruning tests assert against.
 func changeSeqs(t *testing.T, n *nsDB) []int64 {
 	t.Helper()
 	rows := readChanges(t, n)
@@ -56,7 +44,6 @@ func changeSeqs(t *testing.T, n *nsDB) []int64 {
 	return out
 }
 
-// countTokens counts _dolmen_cursor_tokens rows.
 func countTokens(t *testing.T, n *nsDB) int {
 	t.Helper()
 	var c int
@@ -67,8 +54,6 @@ func countTokens(t *testing.T, n *nsDB) int {
 	return c
 }
 
-// chainOf is the inheritance mintCursorToken takes to continue a page chain:
-// identity, origin, and start ride over unchanged, only the issuance is fresh.
 func chainOf(row cursorRow) *cursorChain {
 	return &cursorChain{ID: row.ChainID, Origin: row.ChainOrigin, Start: row.ChainStart}
 }
@@ -85,9 +70,6 @@ func eqSeqs(got, want []int64) bool {
 	return true
 }
 
-// TestChangeHead: the head position is the highest minted seq, 0 for an empty
-// log — the resume position of a bare start and of head-minted tokens (§9.3:
-// an omitted cursor starts at the CURRENT HEAD, no backlog).
 func TestChangeHead(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -104,20 +86,11 @@ func TestChangeHead(t *testing.T) {
 	}
 }
 
-// TestChangeBeginBoundary pins the "begin" boundary formula table-driven
-// (§9.3): with retention R > 0 the boundary is the seq before the EARLIEST
-// in-window record (MIN(seq) WHERE at >= now−R, minus 1) — everything after
-// it has full page-chain headroom (M ≥ T−R). Under disordered `at` stamps
-// (a clock step between commits) this formulation over-delivers interleaved
-// out-of-window records rather than skipping in-window history — the
-// out-of-window-MAX phrasing it replaced could skip; when nothing qualifies
-// the boundary is the head (a bare start). With R = 0 the formulas must NOT
-// apply — the boundary is the oldest retained record itself.
 func TestChangeBeginBoundary(t *testing.T) {
 	const day = 24 * time.Hour
 	cases := []struct {
 		name      string
-		mints     []time.Duration // nil seeds an empty log
+		mints     []time.Duration
 		retention time.Duration
 		want      int64
 	}{
@@ -149,9 +122,6 @@ func TestChangeBeginBoundary(t *testing.T) {
 	}
 }
 
-// TestCursorTokenRoundTripSurvivesReopen: the mapping lives in the namespace
-// db, so a token resolves identically after the store closes and reopens — a
-// restart must not invalidate clients' cursors (§9.3).
 func TestCursorTokenRoundTripSurvivesReopen(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -194,10 +164,6 @@ func TestCursorTokenRoundTripSurvivesReopen(t *testing.T) {
 	}
 }
 
-// TestCursorTokensAreOpaqueAndFresh: a token is 16 random bytes in hex — a
-// fixed 32-character string, unrelated to the position, and different on
-// every issuance at the same position (fresh randomness per issuance: no
-// equality to compare across polls, §9.3).
 func TestCursorTokensAreOpaqueAndFresh(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -227,9 +193,6 @@ func TestCursorTokensAreOpaqueAndFresh(t *testing.T) {
 	}
 }
 
-// TestResolveRejectsCrossFeedReuse: a token minted on one feed is never
-// honored as a position on another — that would silently skip the target
-// feed's events behind the foreign feed's cursor (§9.3).
 func TestResolveRejectsCrossFeedReuse(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -253,10 +216,6 @@ func TestResolveRejectsCrossFeedReuse(t *testing.T) {
 	}
 }
 
-// TestCursorTokenDeadlineAndChainCap: a token resolves inside its deadline
-// and dies past it; page-chain refresh carries a fresh issuance but the chain
-// cap — chain_start + 2R, anchored at creation — never moves, so a late-page
-// token with plenty of personal deadline left still dies at the cap (§9.3).
 func TestCursorTokenDeadlineAndChainCap(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -266,9 +225,7 @@ func TestCursorTokenDeadlineAndChainCap(t *testing.T) {
 	}
 	const r = 24 * time.Hour
 	t0 := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
-	// Own-deadline expiry needs a never-resolved token: resolving refreshes
-	// the presented token's deadline, so a resolve just inside it would keep
-	// it alive past it (TestResolveRefreshesPresentedToken pins that).
+
 	inWindow, err := mintCursorToken(ctx, n.rw, t0, 3, "", nil)
 	if err != nil {
 		t.Fatalf("mint inWindow: %v", err)
@@ -288,10 +245,7 @@ func TestCursorTokenDeadlineAndChainCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mint first: %v", err)
 	}
-	// Page 2 is issued at t0+R−5m (the client resolved `first` just inside its
-	// deadline); page 3 at t0+2R−10m, still inside both next's deadline and
-	// the cap. `last`'s personal deadline is t2+R — far past the cap — and the
-	// cap must win over the fresh issuance.
+
 	t1 := t0.Add(r - 5*time.Minute)
 	row1, err := resolveCursorToken(ctx, n.rw, t1, r, first, "")
 	if err != nil {
@@ -315,9 +269,6 @@ func TestCursorTokenDeadlineAndChainCap(t *testing.T) {
 	}
 }
 
-// TestZeroRetentionDisablesExpiry: R = 0 disables more than pruning — no
-// token deadlines, no chain cap: records never age out and a token issued
-// arbitrarily long ago still resolves (§9.3).
 func TestZeroRetentionDisablesExpiry(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -345,10 +296,6 @@ func TestZeroRetentionDisablesExpiry(t *testing.T) {
 	}
 }
 
-// TestResolveRefreshesPresentedToken: a successful resolve bumps the
-// presented token's issued_at — a legitimate retry must not die because the
-// first response was lost — but the chain cap stays fixed at creation, so the
-// refresh extends the deadline only, never past chain_start + 2R (§9.3).
 func TestResolveRefreshesPresentedToken(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -374,20 +321,16 @@ func TestResolveRefreshesPresentedToken(t *testing.T) {
 	if issued != at.UnixMilli() {
 		t.Fatalf("issued_at after resolve = %d, want the resolve time %d", issued, at.UnixMilli())
 	}
-	// The refreshed deadline admits a resolve past the ORIGINAL deadline...
+
 	if _, err := resolveCursorToken(ctx, n.rw, t0.Add(r+time.Minute), r, tok, ""); err != nil {
 		t.Fatalf("resolve past the original deadline after refresh: %v", err)
 	}
-	// ...but never past the chain's cap.
+
 	if _, err := resolveCursorToken(ctx, n.rw, t0.Add(2*r+time.Minute), r, tok, ""); !errors.Is(err, ErrCursorExpired) {
 		t.Fatalf("resolve past the chain cap: err = %v, want ErrCursorExpired", err)
 	}
 }
 
-// TestResolveRefreshIsMonotonic: duplicate requests resolving the same token
-// capture different nows; when an older now lands last, the stored issued_at
-// must keep the newer stamp — a backward refresh would shorten the promised
-// deadline and expire a boundary retry early (§9.3).
 func TestResolveRefreshIsMonotonic(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -404,7 +347,7 @@ func TestResolveRefreshIsMonotonic(t *testing.T) {
 	if _, err := resolveCursorToken(ctx, n.rw, t0.Add(30*time.Minute), r, tok, ""); err != nil {
 		t.Fatalf("newer resolve: %v", err)
 	}
-	// The duplicate with the older now lands after the newer one.
+
 	if _, err := resolveCursorToken(ctx, n.rw, t0.Add(10*time.Minute), r, tok, ""); err != nil {
 		t.Fatalf("older resolve: %v", err)
 	}
@@ -418,10 +361,6 @@ func TestResolveRefreshIsMonotonic(t *testing.T) {
 	}
 }
 
-// TestPruneChangesIsAgeBounded: records older than the 2R hold go, younger
-// ones stay — age alone decides, never a count or byte cap (§9.3). Tokens die
-// past their own deadline or their chain's cap, whichever comes first: a
-// freshly-issued token on a long-dead chain is still dead.
 func TestPruneChangesIsAgeBounded(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -429,16 +368,13 @@ func TestPruneChangesIsAgeBounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ns: %v", err)
 	}
-	const r = 24 * time.Hour // record hold = 2R = 48h
+	const r = 24 * time.Hour
 	now := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
 	seedChanges(t, n, now, []time.Duration{
-		-100 * time.Hour, -90 * time.Hour, // older than the 2R hold
-		-10 * time.Hour, -9 * time.Hour, -time.Hour, // younger
+		-100 * time.Hour, -90 * time.Hour,
+		-10 * time.Hour, -9 * time.Hour, -time.Hour,
 	})
-	// Alive: issued an hour ago. Dead: issued three retentions ago. Capped:
-	// fresh issuance inheriting a chain created three retentions ago — the
-	// absolute cap kills it regardless of the fresh deadline. Its origin (2)
-	// must NOT protect anything once its row is gone.
+
 	if _, err := mintCursorToken(ctx, n.rw, now.Add(-time.Hour), 5, "", nil); err != nil {
 		t.Fatalf("mint alive: %v", err)
 	}
@@ -460,10 +396,6 @@ func TestPruneChangesIsAgeBounded(t *testing.T) {
 	}
 }
 
-// TestPruneRetainsLiveChainRecords: a record older than the 2R hold survives
-// while a live chain can still reach it (seq > chain_origin) through the
-// chain's current deadline, and dies once the chain does — pure age pruning
-// would break gap-free replay on a perfectly valid cursor (§9.3).
 func TestPruneRetainsLiveChainRecords(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -474,8 +406,7 @@ func TestPruneRetainsLiveChainRecords(t *testing.T) {
 	const r = 24 * time.Hour
 	now := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
 	seedChanges(t, n, now, []time.Duration{-100 * time.Hour, -90 * time.Hour, -80 * time.Hour, -time.Hour})
-	// A live chain resuming after seq 2: seqs 1–2 unreachable, seq 3 (80h
-	// old, well past the 48h hold) retained through the chain's deadline.
+
 	if _, err := mintCursorToken(ctx, n.rw, now.Add(-time.Hour), 2, "", nil); err != nil {
 		t.Fatalf("mint live chain: %v", err)
 	}
@@ -485,8 +416,7 @@ func TestPruneRetainsLiveChainRecords(t *testing.T) {
 	if got := changeSeqs(t, n); !eqSeqs(got, []int64{3, 4}) {
 		t.Fatalf("records after prune = %v, want [3 4]: 1–2 unreachable and old, 3 old but chain-reachable, 4 young", got)
 	}
-	// Three retentions later the chain is long dead; everything is older than
-	// the hold and nothing protects the backlog.
+
 	if err := pruneChanges(ctx, n.rw, now.Add(3*r), r); err != nil {
 		t.Fatalf("prune after the chain died: %v", err)
 	}
@@ -495,12 +425,6 @@ func TestPruneRetainsLiveChainRecords(t *testing.T) {
 	}
 }
 
-// TestSlowPageChainRidesOutPruningToTheCap is the multi-page-chain pin
-// (§9.3): a chain pages slowly through a backlog that crosses the pruning
-// cutoff mid-replay. Refresh and retention move together — every page
-// resolves gap-free, the chain's aging backlog is retained past the 2R hold
-// through the chain's deadline — until the absolute cap chain_start + 2R
-// finally kills the chain and the next prune reaps the backlog with it.
 func TestSlowPageChainRidesOutPruningToTheCap(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
@@ -511,7 +435,6 @@ func TestSlowPageChainRidesOutPruningToTheCap(t *testing.T) {
 	const r = 24 * time.Hour
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	// Thirty hourly records minted now−30h..now−1h (seq s ↔ now−(31−s)h).
 	mints := make([]time.Duration, 30)
 	for i := range mints {
 		mints[i] = -time.Duration(30-i) * time.Hour
@@ -520,8 +443,7 @@ func TestSlowPageChainRidesOutPruningToTheCap(t *testing.T) {
 	if head, err := changeHead(ctx, n.ro); err != nil || head != 30 {
 		t.Fatalf("head = (%d, %v), want (30, nil)", head, err)
 	}
-	// begin at now: the oldest record with full headroom is the one minted
-	// exactly R ago (seq 7), so the chain resumes after seq 6.
+
 	begin, err := changeBegin(ctx, n.ro, now, r)
 	if err != nil {
 		t.Fatalf("changeBegin: %v", err)
@@ -540,8 +462,6 @@ func TestSlowPageChainRidesOutPruningToTheCap(t *testing.T) {
 		t.Fatalf("records after the first prune = %v, want 1..30 (nothing is past the 48h hold yet)", got)
 	}
 
-	// Page 1 delivers records 7–16; the client is slow and asks for page 2
-	// only 20h later — inside `first`'s deadline.
 	row1, err := resolveCursorToken(ctx, n.rw, now.Add(20*time.Hour), r, first, "")
 	if err != nil {
 		t.Fatalf("resolve page-1 token at now+20h: %v", err)
@@ -560,9 +480,6 @@ func TestSlowPageChainRidesOutPruningToTheCap(t *testing.T) {
 		t.Fatalf("records after prune at now+20h = %v, want 3..30: seqs 1–2 past the hold, 3–6 within it", got)
 	}
 
-	// Page 2 delivers 17–26; the client is slow again — page 3 lands at
-	// now+40h. The chain's records 7–22 are now past the 48h hold but the
-	// chain is alive to now+48h: they must survive.
 	row2, err := resolveCursorToken(ctx, n.rw, now.Add(40*time.Hour), r, next, "")
 	if err != nil {
 		t.Fatalf("resolve page-2 token at now+40h: %v", err)
@@ -578,7 +495,6 @@ func TestSlowPageChainRidesOutPruningToTheCap(t *testing.T) {
 		t.Fatalf("records after prune at now+40h = %v, want 7..30: seqs 3–6 unreachable and eligible, 7–22 past the hold but chain-retained", got)
 	}
 
-	// Page 3 drains the backlog at now+47h, just inside the cap (now+48h).
 	row3, err := resolveCursorToken(ctx, n.rw, now.Add(47*time.Hour), r, next2, "")
 	if err != nil {
 		t.Fatalf("resolve page-3 token at now+47h: %v", err)
@@ -591,9 +507,6 @@ func TestSlowPageChainRidesOutPruningToTheCap(t *testing.T) {
 		t.Fatalf("mint page-4 token: %v", err)
 	}
 
-	// Past the cap the chain dies even though `last` was issued a minute ago
-	// — refresh cannot extend a chain past chain_start + 2R — and the next
-	// prune reaps the chain's tokens and, with them, the backlog.
 	if _, err := resolveCursorToken(ctx, n.rw, now.Add(48*time.Hour+time.Minute), r, last, ""); !errors.Is(err, ErrCursorExpired) {
 		t.Fatalf("resolve past the cap: err = %v, want ErrCursorExpired", err)
 	}
@@ -608,7 +521,6 @@ func TestSlowPageChainRidesOutPruningToTheCap(t *testing.T) {
 	}
 }
 
-// seqRange is the inclusive range lo..hi as a slice.
 func seqRange(lo, hi int64) []int64 {
 	out := make([]int64, 0, hi-lo+1)
 	for i := lo; i <= hi; i++ {
@@ -617,10 +529,6 @@ func seqRange(lo, hi int64) []int64 {
 	return out
 }
 
-// racingPruneDB is a cursorDB double that injects the P1 interleave
-// deterministically: between resolveCursorToken's SELECT and its refresh
-// UPDATE, a concurrent pruneChanges deletes the token. It fires once, on the
-// first UPDATE it sees, then delegates everything.
 type racingPruneDB struct {
 	db     cursorDB
 	victim string
@@ -642,10 +550,6 @@ func (r *racingPruneDB) ExecContext(ctx context.Context, query string, args ...a
 	return r.db.ExecContext(ctx, query, args...)
 }
 
-// TestResolveRacingPruneReturnsExpired: a token deleted between resolve's
-// SELECT and its refresh UPDATE must resolve as expired, never as a position
-// — the affected-row count of the UPDATE is the existence re-check that
-// makes the refresh atomic against a concurrent prune.
 func TestResolveRacingPruneReturnsExpired(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()

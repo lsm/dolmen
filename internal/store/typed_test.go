@@ -42,9 +42,6 @@ func mustInsertTyped(t *testing.T, st legacyStore) {
 	}
 }
 
-// assertTypedRow checks the typed-read contract for the full row: every
-// declared field type comes back as its JSON-shaped Go value, not its SQL
-// storage form.
 func assertTypedRow(t *testing.T, row map[string]any) {
 	t.Helper()
 	if row["s"] != "hello" || row["t"] != "the needle rests here" {
@@ -91,7 +88,6 @@ func TestTypedReadRoundTripQuery(t *testing.T) {
 	}
 	assertTypedRow(t, rows[0])
 
-	// The sparse row keeps SQL NULL as JSON null and false distinct from null.
 	sparse := rows[1]
 	if b, ok := sparse["b"].(bool); !ok || b {
 		t.Fatalf("explicit false must come back as bool false, got %T %v", sparse["b"], sparse["b"])
@@ -270,7 +266,7 @@ func TestQueryExpressionColumnsFallBack(t *testing.T) {
 		t.Fatalf("query: %v", err)
 	}
 	blob, ok := rows[0]["rawblob"].(string)
-	if !ok || len(blob) != 16 { // base64 of 12 zero bytes
+	if !ok || len(blob) != 16 {
 		t.Fatalf("expression blobs must fall back to base64, got %T %v", rows[0]["rawblob"], rows[0]["rawblob"])
 	}
 	if c, ok := rows[0]["c"].(int64); !ok || c != 2 {
@@ -349,9 +345,6 @@ func TestQueryAliasToDeclaredNameCoercesByLabel(t *testing.T) {
 	mustCreateTyped(t, st)
 	mustInsertTyped(t, st)
 
-	// Coercion is by result-column label: an expression aliased to a declared
-	// boolean field name takes that field's presentation, while values outside
-	// the boolean storage shape (0/1) stay raw.
 	rows, _, err := st.Query(ctx, "test", "SELECT 1 AS b, 2 AS b2 FROM typed", nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)

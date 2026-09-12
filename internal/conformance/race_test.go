@@ -7,14 +7,6 @@ import (
 	"testing"
 )
 
-// Concurrency contract: many concurrent readers (query, search_fulltext,
-// search_vector, describe_table) alongside a single writer (insert, update,
-// upsert, delete). WAL mode allows the readers to proceed while the writer
-// commits; every request must succeed (no locked-database errors surfaced as
-// 5xx) and the final state must be exactly what the writer wrote.
-//
-// Run under `go test -race` (make test) this also exercises the server's
-// shared state for data races.
 func TestConcurrentReadersSingleWriter(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("race", "t", []map[string]any{
@@ -25,7 +17,7 @@ func TestConcurrentReadersSingleWriter(t *testing.T) {
 	})
 	h.mustHTTP("insert", map[string]any{
 		"namespace": "race", "table": "t",
-		// n is -1 so no writer iteration's n = i filter ever matches the seed.
+
 		"records": []map[string]any{{"title": "seed needle", "body": "seed body", "n": -1, "v": []any{1, 0, 0, 0}}},
 	})
 
@@ -33,37 +25,37 @@ func TestConcurrentReadersSingleWriter(t *testing.T) {
 	const writerIterations = 40
 
 	readOps := []func() error{
-		func() error { // full scan
+		func() error {
 			_, err := checkOK(h.httpCall("query", map[string]any{
 				"namespace": "race", "sql": "SELECT id, title, n FROM t",
 			}))
 			return err
 		},
-		func() error { // fulltext
+		func() error {
 			_, err := checkOK(h.httpCall("search_fulltext", map[string]any{
 				"namespace": "race", "table": "t", "query": "needle",
 			}))
 			return err
 		},
-		func() error { // raw vector search
+		func() error {
 			_, err := checkOK(h.httpCall("search_vector", map[string]any{
 				"namespace": "race", "table": "t", "column": "v", "vector": []any{1, 0, 0, 0},
 			}))
 			return err
 		},
-		func() error { // text vector search (exercises the shared fake embedder)
+		func() error {
 			_, err := checkOK(h.httpCall("search_vector", map[string]any{
 				"namespace": "race", "table": "t", "text": "seed body",
 			}))
 			return err
 		},
-		func() error { // schema read
+		func() error {
 			_, err := checkOK(h.httpCall("describe_table", map[string]any{
 				"namespace": "race", "table": "t",
 			}))
 			return err
 		},
-		func() error { // MCP reader in the mix
+		func() error {
 			res := h.mcpCall("query", map[string]any{
 				"namespace": "race", "sql": "SELECT count(*) AS c FROM t",
 			})
@@ -77,7 +69,6 @@ func TestConcurrentReadersSingleWriter(t *testing.T) {
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 
-	// Readers loop over every read op until the writer finishes.
 	for i := 0; i < readerGoroutines; i++ {
 		wg.Add(1)
 		go func(seed int) {
@@ -96,7 +87,6 @@ func TestConcurrentReadersSingleWriter(t *testing.T) {
 		}(i)
 	}
 
-	// One writer inserts, updates, upserts, and deletes.
 	writer := func() (inserted, deleted int) {
 		defer close(stop)
 		for i := 0; i < writerIterations; i++ {
@@ -138,7 +128,7 @@ func TestConcurrentReadersSingleWriter(t *testing.T) {
 				t.Errorf("concurrent upsert %d reported %v, want updated 1 / inserted 0", i, ups)
 				return
 			}
-			// Every fourth row is deleted to interleave deletes with reads.
+
 			if i%4 == 0 {
 				del, err := checkOK(h.httpCall("delete", map[string]any{
 					"namespace": "race", "table": "t", "filter": "n = ?", "args": []any{float64(i + 2000)},
@@ -162,14 +152,13 @@ func TestConcurrentReadersSingleWriter(t *testing.T) {
 		return
 	}
 
-	// Final consistency: seed row + inserts − deletes.
 	want := int64(1 + inserted - deleted)
 	data := h.mustHTTP("describe_table", map[string]any{"namespace": "race", "table": "t"})
 	if int64val(t, "final row count", data["row_count"]) != want {
 		t.Fatalf("final row count %v, want %d (1 seed + %d inserted − %d deleted)",
 			data["row_count"], want, inserted, deleted)
 	}
-	// The writes are durable and searchable after the churn.
+
 	rows := h.mustHTTP("query", map[string]any{
 		"namespace": "race", "sql": "SELECT count(*) AS c FROM t WHERE title LIKE 'row %'",
 	})["rows"].([]any)
@@ -179,7 +168,6 @@ func TestConcurrentReadersSingleWriter(t *testing.T) {
 	}
 }
 
-// checkOK asserts an HTTP call succeeded and returns its data object.
 func checkOK(status int, body map[string]any) (map[string]any, error) {
 	if status != 200 || body["ok"] != true {
 		return nil, fmt.Errorf("status %d: %v", status, body)
@@ -187,13 +175,6 @@ func checkOK(status int, body map[string]any) (map[string]any, error) {
 	return body["data"].(map[string]any), nil
 }
 
-// TestConcurrentFirstUse pins create-on-first-use under contention: when many
-// requests are the first to use the same missing namespace at once, every one
-// observes the v0.2.0 answer — 404 naming the missing table — never a 5xx
-// from pools closed underneath it. The O_EXCL loser of the implicit
-// CreateNamespace (the op layer's ensureNamespace) must wait for the winner's
-// initialization rather than race it; run under -race this also exercises the
-// store's reserve-evict-init lock span.
 func TestConcurrentFirstUse(t *testing.T) {
 	h := newHarness(t)
 
@@ -207,7 +188,7 @@ func TestConcurrentFirstUse(t *testing.T) {
 			for j := 0; j < iterations; j++ {
 				status, body := h.httpCall("insert", map[string]any{
 					"namespace": "firstrace", "table": "t",
-					"records":   []map[string]any{{"a": "x"}},
+					"records": []map[string]any{{"a": "x"}},
 				})
 				if status != http.StatusNotFound {
 					t.Errorf("concurrent first-use insert: status %d, want 404: %v", status, body)
@@ -223,7 +204,6 @@ func TestConcurrentFirstUse(t *testing.T) {
 	}
 	wg.Wait()
 
-	// First use materialized the namespace exactly once, and it lists empty.
 	data := h.mustHTTP("list_namespaces", map[string]any{})
 	nss, _ := data["namespaces"].([]any)
 	found := false

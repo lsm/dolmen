@@ -13,7 +13,6 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-// boolPtr builds a *bool for Change.Value literals in tests.
 func boolPtr(b bool) *bool { return &b }
 
 func TestMigrate(t *testing.T) {
@@ -688,7 +687,7 @@ func TestRequiredFieldAdditionWithDefaultBackfillsEveryType(t *testing.T) {
 			t.Fatalf("defaulted required fields must carry NOT NULL: %v", r)
 		}
 	}
-	// The insert contract is unchanged: required still means present-in-record.
+
 	if _, err := st.Insert(ctx, "test", "defaults", []map[string]any{{"v": "x"}}, testEmbed); err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("insert omitting a required field (with default) must still be rejected, got %v", err)
 	}
@@ -797,7 +796,7 @@ func TestMigrateDryRunReportsPlanWithoutSideEffects(t *testing.T) {
 	if err != nil || len(rows) != 1 || rows[0]["title"] != "first note" {
 		t.Fatalf("dry-run must leave data intact: %v err=%v", rows, err)
 	}
-	// The same plan applies cleanly afterwards.
+
 	if _, err := st.Migrate(ctx, "test", "notes", []schema.Change{
 		{Op: schema.OpAddField, Field: &schema.Field{Name: "prio", Type: schema.Number, Required: true}, Default: 7},
 		{Op: schema.OpRenameField, From: "title", To: "heading"},
@@ -833,7 +832,7 @@ func TestPlanMigrationEstimatesEmbeddingWorkload(t *testing.T) {
 	if plan.ClearsEmbeddings {
 		t.Fatal("first vectorize must not clear embeddings")
 	}
-	// Enabling on an already-vectorized table re-embeds everything.
+
 	if _, err := st.Migrate(ctx, "test", "estim", []schema.Change{
 		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(true)},
 	}, testEmbed, 1); err != nil {
@@ -1012,8 +1011,7 @@ func TestListMigrationsNormalizesLegacyNonFlagValues(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	// Seed a history row in the pre-upgrade shape: a non-flag change carrying
-	// the inert "value": false older binaries recorded on every op.
+
 	n, err := st.ns("test")
 	if err != nil {
 		t.Fatalf("ns: %v", err)
@@ -1043,8 +1041,7 @@ func TestMigrateChangeValueValidation(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
 	mustCreateNotes(t, st)
-	// Value is a *bool so an omitted flag is distinguishable from an explicit
-	// false; the store must refuse a set_* without one instead of applying nil.
+
 	for _, op := range []string{schema.OpSetFulltext, schema.OpSetVectorize} {
 		if _, err := st.Migrate(ctx, "test", "notes", []schema.Change{
 			{Op: op, Name: "title"},
@@ -1052,7 +1049,7 @@ func TestMigrateChangeValueValidation(t *testing.T) {
 			t.Fatalf("%s without a value must be rejected as invalid, got %v", op, err)
 		}
 	}
-	// A value on a non-flag change is meaningless and must not be recorded.
+
 	if _, err := st.Migrate(ctx, "test", "notes", []schema.Change{
 		{Op: schema.OpAddField, Field: &schema.Field{Name: "extra", Type: schema.String}, Value: boolPtr(false)},
 	}, testEmbed, 0); err == nil || !errors.Is(err, ErrInvalid) {
@@ -1135,7 +1132,7 @@ func TestListMigrationsPreservesExactNumericDefaults(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "bignum", []map[string]any{{"v": "x"}}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	big := int64(9007199254740993) // 2^53+1: float64 rounds it down
+	big := int64(9007199254740993)
 	if _, err := st.Migrate(ctx, "test", "bignum", []schema.Change{
 		{Op: schema.OpAddField, Field: &schema.Field{Name: "n", Type: schema.Number, Required: true}, Default: big},
 	}, testEmbed, 1); err != nil {
@@ -1175,7 +1172,7 @@ func TestOptionalFieldDefaultDoesNotLeakToFutureInserts(t *testing.T) {
 	}, testEmbed, 1); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	// Existing rows read the backfill; a fresh insert omitting the field reads NULL.
+
 	rows, _, err := st.Query(ctx, "test", `SELECT note FROM optdef ORDER BY id`, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("query: %v", err)
@@ -1193,8 +1190,7 @@ func TestOptionalFieldDefaultDoesNotLeakToFutureInserts(t *testing.T) {
 	if rows[1]["note"] != nil {
 		t.Fatalf("a later insert omitting an optional defaulted field must store NULL, got %v", rows[1]["note"])
 	}
-	// FTS stays consistent with the base rows: the old row matches the
-	// backfilled text, the new row (NULL) does not.
+
 	fts, _, err := st.SearchFulltext(ctx, "test", "optdef", "grievance", 0, 10, false, "", nil)
 	if err != nil {
 		t.Fatalf("fts: %v", err)
@@ -1295,8 +1291,7 @@ func TestPlanMigrationReportsProspectiveEmbeddingMetadata(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "pem", []map[string]any{{"s": "hello"}}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	// Model switch: the preview must report the incoming space, not the one
-	// being replaced, with the dimension marked to-be-derived.
+
 	other := Embedder{Embed: fakeEmbed, Identity: "other-space"}
 	plan, err := st.PlanMigration(ctx, "test", "pem", []schema.Change{
 		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(false)},
@@ -1314,7 +1309,7 @@ func TestPlanMigrationReportsProspectiveEmbeddingMetadata(t *testing.T) {
 	if !plan.ClearsEmbeddings {
 		t.Fatal("model switch must plan clearing the old embeddings")
 	}
-	// The apply still re-baselines and derives the real dimension.
+
 	sc, err := st.Migrate(ctx, "test", "pem", []schema.Change{
 		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(false)},
 		{Op: schema.OpSetVectorize, Name: "s", Value: boolPtr(true)},
@@ -1339,10 +1334,7 @@ func TestPlanMigrationSeesOneSnapshotUnderConcurrentMigrations(t *testing.T) {
 	if _, err := st.Insert(ctx, "test", "snap", []map[string]any{{"a": "one"}, {"a": "two"}}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	// Flip the column name back and forth while dry-running a rename+vectorize
-	// plan against it: without a single-snapshot read every dry-run result is
-	// either a coherent plan or a version conflict — never a torn error such
-	// as "no such column".
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -1364,7 +1356,7 @@ func TestPlanMigrationSeesOneSnapshotUnderConcurrentMigrations(t *testing.T) {
 	for time.Now().Before(deadline) {
 		select {
 		case <-done:
-			return // enough overlap achieved
+			return
 		default:
 		}
 		_, err := st.PlanMigration(ctx, "test", "snap", []schema.Change{
@@ -1376,7 +1368,7 @@ func TestPlanMigrationSeesOneSnapshotUnderConcurrentMigrations(t *testing.T) {
 		}
 		var vce *VersionConflictError
 		if errors.As(err, &vce) {
-			continue // the table moved past version 1: a clean conflict
+			continue
 		}
 		t.Fatalf("dry-run must fail with a version conflict, not a torn snapshot error: %v", err)
 	}
@@ -1406,7 +1398,7 @@ func TestPlanLastFulltextRemovalReportsZeroReindexRows(t *testing.T) {
 	if !plan.RebuildFulltext || plan.FulltextReindexRows != 0 {
 		t.Fatalf("removing the last fulltext field tears the index down without reindexing, got %+v", plan)
 	}
-	// A rebuild that keeps indexed fields reports the rows it will reindex.
+
 	if _, err := st.Migrate(ctx, "test", "lastfts", []schema.Change{
 		{Op: schema.OpSetFulltext, Name: "body", Value: boolPtr(true)},
 	}, testEmbed, 1); err != nil {
@@ -1502,9 +1494,7 @@ func TestFTSReindexEstimateMatchesRepopulatePredicate(t *testing.T) {
 	}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	// Adding an optional fulltext field without a default rebuilds an index
-	// that stays empty for the NULL rows: only rows with non-NULL indexed
-	// fields are reindexed, and the estimate must say so.
+
 	plan, err := st.PlanMigration(ctx, "test", "ftsest", []schema.Change{
 		{Op: schema.OpAddField, Field: &schema.Field{Name: "title", Type: schema.String, Fulltext: true}},
 	}, testEmbed, 1)
@@ -1514,8 +1504,7 @@ func TestFTSReindexEstimateMatchesRepopulatePredicate(t *testing.T) {
 	if !plan.RebuildFulltext || plan.FulltextReindexRows != 2 {
 		t.Fatalf("estimate must mirror repopulateFTS's non-NULL predicate (2 of 4 rows), got %+v", plan)
 	}
-	// With a default, every existing row receives the added field and all
-	// rows are reindexed.
+
 	plan, err = st.PlanMigration(ctx, "test", "ftsest", []schema.Change{
 		{Op: schema.OpAddField, Field: &schema.Field{Name: "title", Type: schema.String, Fulltext: true}, Default: "untitled"},
 	}, testEmbed, 1)
@@ -1525,14 +1514,13 @@ func TestFTSReindexEstimateMatchesRepopulatePredicate(t *testing.T) {
 	if plan.FulltextReindexRows != 4 {
 		t.Fatalf("a defaulted fulltext add reindexes every row, got %+v", plan)
 	}
-	// The apply populates exactly what the estimate predicted.
+
 	if _, err := st.Migrate(ctx, "test", "ftsest", []schema.Change{
 		{Op: schema.OpAddField, Field: &schema.Field{Name: "title", Type: schema.String, Fulltext: true}},
 	}, testEmbed, 1); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	// The public query path rejects __fts shadow tables by design, so count
-	// the rebuilt index through the namespace's own connection.
+
 	ns, err := st.ns("test")
 	if err != nil {
 		t.Fatalf("ns: %v", err)
@@ -1560,9 +1548,7 @@ func TestEmbedEstimateUsesCoercedDefault(t *testing.T) {
 	}, testEmbed); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	// The API layer decodes numbers as json.Number; a numeric default on a
-	// vectorized text field coerces to a non-empty string that apply embeds
-	// for every backfilled row — the dry-run must predict that workload.
+
 	changes := []schema.Change{{
 		Op:      schema.OpAddField,
 		Field:   &schema.Field{Name: "topic", Type: schema.Text, Vectorize: true},

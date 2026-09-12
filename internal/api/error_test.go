@@ -106,8 +106,6 @@ func TestErrorEnvelopeRedactsStoreInternalErrors(t *testing.T) {
 	srv := newTestServer(t)
 	mustNS(t, srv.URL, "x")
 
-	// create_table with a reserved table name triggers an ErrInvalid. The
-	// envelope must expose a clean message and code, not raw details.
 	code, body := post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "x",
 		"table":     "id",
@@ -232,15 +230,11 @@ func TestWrapStoreErrLogsRawSQLiteCause(t *testing.T) {
 	}
 }
 
-// TestRedactPathsCoversSpacesInPaths pins the redaction of paths whose
-// components contain spaces — a model cache under a user directory
-// ("C:\Users\Jane Doe\models") must redact whole, never leaking a trailing
-// fragment like "Doe\models" into a client-facing message.
 func TestRedactPathsCoversSpacesInPaths(t *testing.T) {
 	cases := []string{
 		`open C:\Users\Jane Doe\models\org--model: not found`,
 		`open /Users/Jane Doe/models/org--model: not found`,
-		`cache /a/b  spaced dir/x is missing`, // multiple spaces between words
+		`cache /a/b  spaced dir/x is missing`,
 	}
 	for _, msg := range cases {
 		out := redactPaths(msg)
@@ -253,10 +247,6 @@ func TestRedactPathsCoversSpacesInPaths(t *testing.T) {
 	}
 }
 
-// TestEmbedderUnavailableMessageNamesModelSafely pins what the public
-// embedder_unavailable message may name: a Hub id (org/name — a public
-// identifier) is echoed, but a model-directory path is filesystem layout and
-// is never interpolated, ASCII or not.
 func TestEmbedderUnavailableMessageNamesModelSafely(t *testing.T) {
 	hub := wrapStoreErr(&embed.LoadError{Model: "org/model", Err: errors.New("download failed")})
 	if hub.Code != ErrCodeEmbedderUnavailable || hub.Status != http.StatusServiceUnavailable {
@@ -344,7 +334,6 @@ func TestErrorEnvelopeQueryErrorForMalformedFilter(t *testing.T) {
 		t.Fatalf("delete filter failures must carry WHERE-expression guidance, got %q", msg)
 	}
 
-	// Vector search filter failures must also classify as query errors.
 	code, _ = post(t, srv.URL, "create_table", map[string]any{
 		"namespace": "app",
 		"table":     "vectors",
@@ -372,10 +361,6 @@ func TestErrorEnvelopeQueryErrorForMalformedFilter(t *testing.T) {
 	}
 }
 
-// TestErrorEnvelopeGeneratesRequestIDWhenNotProvided pins the always-on
-// request-id contract (#144): a client that sends no X-Request-Id still gets
-// one — server-generated, in the envelope and the response header — so any
-// failure can be correlated with the server log.
 func TestErrorEnvelopeGeneratesRequestIDWhenNotProvided(t *testing.T) {
 	srv := newTestServer(t)
 	mustNS(t, srv.URL, "x")

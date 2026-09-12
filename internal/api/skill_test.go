@@ -78,14 +78,12 @@ func TestSkillsManifest(t *testing.T) {
 		t.Fatalf("expected 2 skills, got %d", len(m.Skills))
 	}
 
-	// 304 on matching If-None-Match.
 	res2 := get(t, srv.URL, "/skills", map[string]string{"If-None-Match": etag})
 	defer res2.Body.Close()
 	if res2.StatusCode != http.StatusNotModified {
 		t.Fatalf("If-None-Match: got %d, want 304", res2.StatusCode)
 	}
 
-	// 304 on wildcard If-None-Match.
 	res3 := get(t, srv.URL, "/skills/dolmen", map[string]string{"If-None-Match": "*"})
 	defer res3.Body.Close()
 	if res3.StatusCode != http.StatusNotModified {

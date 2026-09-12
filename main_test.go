@@ -93,7 +93,7 @@ func TestLoadConfig(t *testing.T) {
 		{
 			name: "prefix flag",
 			args: []string{"-prefix", "dolmen/"},
-			// Pin the provider: this case tests prefix parsing, not the default.
+
 			env: map[string]string{"DOLMEN_EMBED_PROVIDER": "none"},
 			want: &config{
 				Addr:               "127.0.0.1:8790",
@@ -423,10 +423,6 @@ func TestLoadConfigVersion(t *testing.T) {
 	}
 }
 
-// TestLoadConfigLocalProvider covers the local provider's config path
-// outside the table: a valid model passes validation and points the model
-// cache at <data>/models. It needs a real temp data dir because the local
-// provider creates the cache directory at config time.
 func TestLoadConfigLocalProvider(t *testing.T) {
 	old, had := os.LookupEnv("REMBED_CACHE")
 	t.Cleanup(func() {
@@ -451,8 +447,7 @@ func TestLoadConfigLocalProvider(t *testing.T) {
 	if cfg.Embed.Provider != "local" {
 		t.Fatalf("provider: %q", cfg.Embed.Provider)
 	}
-	// The model default kicks in inside NewProvider; config records the
-	// raw empty value, the provider owns the default.
+
 	if cfg.Embed.Model != "" {
 		t.Fatalf("model: %q", cfg.Embed.Model)
 	}
@@ -477,7 +472,6 @@ func TestPrefixRouting(t *testing.T) {
 	srv := httptest.NewServer(withPrefix("/dolmen", sub))
 	t.Cleanup(srv.Close)
 
-	// Paths without the prefix must 404.
 	for _, path := range []string{"/healthz", "/version", "/skills", "/mcp", "/dolmenfoo"} {
 		res, err := http.Get(srv.URL + path)
 		if err != nil {
@@ -489,7 +483,6 @@ func TestPrefixRouting(t *testing.T) {
 		}
 	}
 
-	// Prefixed API endpoints must work.
 	res, err := http.Get(srv.URL + "/dolmen/healthz")
 	if err != nil {
 		t.Fatalf("get /dolmen/healthz: %v", err)
@@ -532,7 +525,6 @@ func TestPrefixRouting(t *testing.T) {
 		t.Fatalf("manifest openapi_url: got %q, want %q", manifest.OpenAPIURL, wantBase+"/v1/openapi.json")
 	}
 
-	// Prefixed MCP endpoint must work.
 	initBody, _ := json.Marshal(map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "initialize",
 		"params": map[string]any{
@@ -562,7 +554,6 @@ func TestPrefixRouting(t *testing.T) {
 		t.Fatalf("instructions missing MCP URL: %q", instructions)
 	}
 
-	// A request with a URL-encoded path component after the prefix must not match.
 	res, err = http.Get(srv.URL + "/dolmen%2ffoo")
 	if err != nil {
 		t.Fatalf("get /dolmen%%2ffoo: %v", err)

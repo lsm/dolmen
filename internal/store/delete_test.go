@@ -56,7 +56,6 @@ func TestDeleteLimitAllowsBelowThreshold(t *testing.T) {
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
 
-	// 3 rows match 1=1, limit 10 is above the match count.
 	res, err := st.Delete(ctx, "test", "notes", "1=1", nil, DeleteOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("delete below limit: %v", err)
@@ -72,7 +71,6 @@ func TestDeleteLimitRequiresConfirm(t *testing.T) {
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
 
-	// 3 rows match, limit 1 is below the match count. Without confirm it must fail.
 	_, err := st.Delete(ctx, "test", "notes", "1=1", nil, DeleteOptions{Limit: 1})
 	if err == nil || !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected delete beyond limit to be rejected with ErrInvalid, got %v", err)
