@@ -459,7 +459,8 @@ var Ops = map[string]OpDef{
 	"create_namespace": {
 		Description: "Create an empty namespace. A namespace is a path of 1-3 segments (a/b/c), each " +
 			"1-64 chars: a leading letter or digit, then [a-z0-9_-]. Parents need not exist as " +
-			"namespaces — creating a child makes its parent directories. Namespaces are also created implicitly on first use, " +
+			"namespaces — creating a child makes its parent directories. Namespaces are also created implicitly on first use by the data ops " +
+			"(wait_for and the subscribe stream answer not_found instead), " +
 			"so this is only needed to reserve a name up front or to fail loudly when the name is taken. " +
 			"Creates no tables — follow with create_table.",
 		InputSchema: map[string]any{
@@ -487,8 +488,9 @@ var Ops = map[string]OpDef{
 		Description: "Drop a namespace and every table in it, deleting its SQLite file and WAL sidecars. " +
 			"Irreversible. confirm must repeat the namespace name — a guard against dropping the wrong one " +
 			"(it normalizes like the namespace itself, so case and surrounding whitespace don't matter). " +
-			"In-flight requests on the namespace finish first (or fail); any later use of the same name recreates " +
-			"the namespace empty. The server closes its own connections before deleting, but other processes " +
+			"In-flight requests on the namespace finish first (or fail); any later data-op use of the same name recreates " +
+			"the namespace empty — wait_for and the subscribe stream answer not_found until it is recreated. " +
+			"The server closes its own connections before deleting, but other processes " +
 			"holding the file open (a second dolmen, a backup tool) are not detected — coordinate drops within one server.",
 		InputSchema: map[string]any{
 			"type":                 "object",
