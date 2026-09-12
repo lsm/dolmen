@@ -126,7 +126,7 @@ func TestGoldenErrorContract(t *testing.T) {
 		{"idempotency divergence replay", "insert", map[string]any{
 			"namespace": "errc", "table": "t", "idempotency_key": "diverge-1",
 			"records": []map[string]any{{"title": "two"}},
-		}, 400, "conflict", `idempotency key .* was already recorded for a different insert`},
+		}, 400, "conflict", `idempotency key .* was already recorded for a different insert.*re-send the identical body`},
 	}
 
 	for _, c := range cases {
