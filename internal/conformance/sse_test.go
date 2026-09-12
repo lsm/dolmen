@@ -552,6 +552,167 @@ func TestSubscribeOverflowTeachesReconnect(t *testing.T) {
 	}
 }
 
+func TestSubscribeAgeBoundClosesWithResumeToken(t *testing.T) {
+	h := newHarnessAge(t, 2*time.Second)
+	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
+
+	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}})
+	f, ok := r.next(5 * time.Second)
+	if !ok {
+		t.Fatal("the stream never sent its ready frame")
+	}
+	wantReady(t, f)
+
+	live := h.mustHTTP("insert", map[string]any{
+		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "before-bound"}},
+	})
+	f, ok = r.next(5 * time.Second)
+	if !ok {
+		t.Fatal("the live commit never arrived before the bound")
+	}
+	wantChange(t, f, [3]any{"notes", live["ids"].([]any)[0], "insert"})
+	delivered, _ := frameData(t, f)["cursor"].(string)
+
+	frames := r.rest(5 * time.Second)
+	if len(frames) != 2 {
+		t.Fatalf("age-bounded tail = %d frames, want close and error: %+v", len(frames), frames)
+	}
+	handoff := wantFrame(t, frames, 0, "close")
+	cursor, _ := frameData(t, handoff)["cursor"].(string)
+	if cursor == "" || cursor != delivered {
+		t.Fatalf("the age-bound close cursor %q is not the delivered record's cursor %q", cursor, delivered)
+	}
+	errEnv := wantFrameError(t, frames, 1)
+	if errEnv["code"] != "invalid_request" {
+		t.Fatalf("age-bound close code = %v, want invalid_request", errEnv["code"])
+	}
+	msg, _ := errEnv["message"].(string)
+	for _, teach := range []string{"-max-subscription-age", "reconnect"} {
+		if !strings.Contains(msg, teach) {
+			t.Fatalf("age-bound message %q does not teach the reconnect path (%q missing)", msg, teach)
+		}
+	}
+
+	r2 := h.subscribeStream(t, url.Values{"namespace": {"rt"}, "cursor": {cursor}})
+	f2, ok := r2.next(5 * time.Second)
+	if !ok {
+		t.Fatal("the resumed stream never opened its live phase")
+	}
+	wantReady(t, f2)
+	if dup, ok := r2.next(300 * time.Millisecond); ok && dup.event == "change" {
+		t.Fatalf("the resumed stream replayed a record the close cursor already covered: %+v", dup)
+	}
+}
+
+func TestSubscribeAgeBoundResumeUnderInterleavedWrites(t *testing.T) {
+	h := newHarnessAge(t, 3*time.Second)
+	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
+
+	r1 := h.subscribeStream(t, url.Values{"namespace": {"rt"}})
+	f, ok := r1.next(5 * time.Second)
+	if !ok {
+		t.Fatal("stream 1 never sent its ready frame")
+	}
+	wantReady(t, f)
+	first := h.mustHTTP("insert", map[string]any{
+		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "one"}},
+	})
+
+	var resume, delivered string
+	changes := 0
+	for {
+		f, ok := r1.next(10 * time.Second)
+		if !ok {
+			t.Fatal("stream 1 ended without its age-bound terminal")
+		}
+		if f.event == "error" {
+			break
+		}
+		switch f.event {
+		case "change":
+			wantChange(t, f, [3]any{"notes", first["ids"].([]any)[0], "insert"})
+			delivered, _ = frameData(t, f)["cursor"].(string)
+			changes++
+		case "close":
+			resume, _ = frameData(t, f)["cursor"].(string)
+		}
+	}
+	if changes != 1 {
+		t.Fatalf("stream 1 delivered %d changes before the bound, want 1", changes)
+	}
+	if resume == "" || resume != delivered {
+		t.Fatalf("the age-bound close cursor %q is not the delivered record's cursor %q", resume, delivered)
+	}
+
+	gap := h.mustHTTP("insert", map[string]any{
+		"namespace": "rt", "table": "notes",
+		"records": []any{map[string]any{"title": "gap-a"}, map[string]any{"title": "gap-b"}},
+	})
+	gapIDs := gap["ids"].([]any)
+	racer := make(chan any, 1)
+	go func() {
+		data, err := h.httpData("insert", map[string]any{
+			"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "racing"}},
+		})
+		if err != nil {
+			t.Errorf("racing insert: %v", err)
+			racer <- nil
+			return
+		}
+		racer <- data["ids"].([]any)[0]
+	}()
+
+	r2 := h.subscribeStream(t, url.Values{"namespace": {"rt"}, "cursor": {resume}})
+	var got []any
+	readySeen := false
+	for len(got) < 3 {
+		f, ok := r2.next(10 * time.Second)
+		if !ok {
+			t.Fatalf("the resumed stream stalled after %d of 3 records", len(got))
+		}
+		switch f.event {
+		case "ready":
+			readySeen = true
+		case "change":
+			got = append(got, frameData(t, f)["row_id"])
+		default:
+			t.Fatalf("the resumed stream frame %q arrived before the expected records", f.event)
+		}
+	}
+	racerID := <-racer
+	if racerID == nil {
+		t.Fatal("the racing insert failed")
+	}
+	want := []any{gapIDs[0], gapIDs[1], racerID}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("resumed record %d = %v, want %v — the resume lost, duplicated, or reordered a record", i, got[i], want[i])
+		}
+	}
+	for !readySeen {
+		f, ok := r2.next(10 * time.Second)
+		if !ok {
+			t.Fatal("the resumed stream never went live after its replay")
+		}
+		if f.event != "ready" {
+			t.Fatalf("frame %q where the live boundary was expected", f.event)
+		}
+		readySeen = true
+	}
+
+	after := h.mustHTTP("insert", map[string]any{
+		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "after-resume"}},
+	})
+	f, ok = r2.next(10 * time.Second)
+	if !ok {
+		t.Fatal("the resumed stream never delivered the post-ready commit")
+	}
+	wantChange(t, f, [3]any{"notes", after["ids"].([]any)[0], "insert"})
+	if dup, ok := r2.next(300 * time.Millisecond); ok && dup.event == "change" {
+		t.Fatalf("the resumed stream delivered a duplicate or unexpected change: %+v", dup)
+	}
+}
+
 func TestSubscribeDisconnectLeavesServerHealthy(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})

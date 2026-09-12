@@ -76,7 +76,7 @@ func run() error {
 		}
 	}
 
-	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix))
+	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithMaxSubscriptionAge(cfg.MaxSubscriptionAge))
 	mcpSrv := mcp.New(apiSrv, cfg.AllowedOrigins, mcp.WithBaseURL(cfg.BaseURL), mcp.WithNamespaceHint(cfg.SkillNamespaceHint), mcp.WithPrefix(cfg.Prefix))
 
 	sub := http.NewServeMux()
@@ -131,6 +131,7 @@ type config struct {
 	Prefix             string
 	SkillNamespaceHint string
 	ChangeRetention    time.Duration
+	MaxSubscriptionAge time.Duration
 }
 
 type embedConfig struct {
@@ -156,6 +157,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	// A string flag, not fs.Duration: the default comes from the environment
 	// either way, and one parse path validates flag and env identically.
 	changeRetention := fs.String("change-retention", envOr("DOLMEN_CHANGE_RETENTION", "168h", getenv), "change-log retention: 0 disables pruning (records and cursors never expire); otherwise 1h to 2160h")
+	maxSubscriptionAge := fs.String("max-subscription-age", envOr("DOLMEN_MAX_SUBSCRIPTION_AGE", "30m", getenv), "subscribe connection age bound: the stream teaching-closes at the bound and the client reconnects from its cursor; 0 disables the bound (the identity-refresh backstop is lost), otherwise 1s to 24h")
 
 	fs.Usage = func() {
 		fmt.Fprint(out, "Usage: dolmen [flags]\n\nFlags:\n")
@@ -206,6 +208,13 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		return nil, &printedError{err}
 	}
 
+	maxAge, err := parseMaxSubscriptionAge(*maxSubscriptionAge)
+	if err != nil {
+		fmt.Fprintf(out, "config: %v\n", err)
+		fs.Usage()
+		return nil, &printedError{err}
+	}
+
 	skillNamespaceHint := envOr("DOLMEN_SKILL_NAMESPACE_HINT", skill.DefaultNamespaceHint, getenv)
 	prefixValue := skill.NormalizePrefix(*prefix)
 
@@ -226,6 +235,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		Prefix:             prefixValue,
 		SkillNamespaceHint: skillNamespaceHint,
 		ChangeRetention:    retention,
+		MaxSubscriptionAge: maxAge,
 		Embed: embedConfig{
 			Provider: provider,
 			BaseURL:  baseURL,
@@ -253,6 +263,17 @@ func parseChangeRetention(raw string) (time.Duration, error) {
 	return 0, fmt.Errorf("invalid change retention %q: must be 0 (disable pruning) or between 1h and 2160h", raw)
 }
 
+func parseMaxSubscriptionAge(raw string) (time.Duration, error) {
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid max subscription age %q: %w", raw, err)
+	}
+	if d == 0 || (d >= time.Second && d <= 24*time.Hour) {
+		return d, nil
+	}
+	return 0, fmt.Errorf("invalid max subscription age %q: must be 0 (disable the bound) or between 1s and 24h", raw)
+}
+
 func envOr(key, fallback string, getenv func(string) string) string {
 	if v := getenv(key); v != "" {
 		return v
@@ -268,6 +289,7 @@ func printEnvHelp(out io.Writer) {
 		{"DOLMEN_BASE_URL", "public base URL for skills and MCP links (default: use request Host)"},
 		{"DOLMEN_SKILL_NAMESPACE_HINT", "hint text rendered into skill markdown"},
 		{"DOLMEN_CHANGE_RETENTION", "change-log retention: 0 disables pruning, else 1h to 2160h (default 168h)"},
+		{"DOLMEN_MAX_SUBSCRIPTION_AGE", "subscribe connection age bound: 0 disables, else 1s to 24h (default 30m)"},
 		{"", ""},
 		{"DOLMEN_EMBED_PROVIDER", "embedding provider: none, local (default), or openai"},
 		{"DOLMEN_EMBED_MODEL", "model name or absolute model-directory path"},

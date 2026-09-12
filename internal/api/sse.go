@@ -85,6 +85,11 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		sseErrorEvent(w, wrapStoreErr(err), reqID)
 		return
 	}
+	if s.maxSubscriptionAge > 0 {
+		var ageStop context.CancelFunc
+		ctx, ageStop = context.WithTimeoutCause(ctx, s.maxSubscriptionAge, store.ErrListenAged)
+		defer ageStop()
+	}
 	live := make(chan store.ChangeRecord, 1)
 	ended := make(chan error, 1)
 	replay, cancel, err := s.eng.Listen(ctx, ns, table, cursor, [16]byte{}, nil,
@@ -97,7 +102,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		func(cause error) {
 			select {
 			case ended <- cause:
-			case <-ctx.Done():
+			case <-r.Context().Done():
 			}
 		})
 	// The response opens only once the listener is registered: a client that
@@ -125,11 +130,25 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 			Kind:   string(rec.Kind),
 		})
 	}
+	closeWith := func(apiErr *Error) {
+		for {
+			select {
+			case rec := <-live:
+				if !write(rec) {
+					return
+				}
+			default:
+				sseEvent(w, "close", sseCursor{Cursor: string(resume)})
+				sseErrorEvent(w, apiErr, reqID)
+				return
+			}
+		}
+	}
 
 	for {
 		records, _, done, nerr := replay.Next(ctx)
 		if nerr != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil && !errors.Is(context.Cause(ctx), store.ErrListenAged) {
 				return
 			}
 			// The store guarantees the terminal cause: every session
@@ -141,9 +160,8 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 			// the wait is sound without one.
 			select {
 			case cause := <-ended:
-				sseEvent(w, "close", sseCursor{Cursor: string(resume)})
-				sseErrorEvent(w, subscribeErr(cause), reqID)
-			case <-ctx.Done():
+				closeWith(subscribeErr(cause))
+			case <-r.Context().Done():
 				return
 			}
 			return
@@ -183,19 +201,13 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case cause := <-ended:
-			for {
-				select {
-				case rec := <-live:
-					if !write(rec) {
-						return
-					}
-				default:
-					sseEvent(w, "close", sseCursor{Cursor: string(resume)})
-					sseErrorEvent(w, subscribeErr(cause), reqID)
-					return
-				}
-			}
+			closeWith(subscribeErr(cause))
+			return
 		case <-ctx.Done():
+			if !errors.Is(context.Cause(ctx), store.ErrListenAged) {
+				return
+			}
+			closeWith(subscribeErr(store.ErrListenAged))
 			return
 		}
 	}
@@ -224,6 +236,8 @@ func subscribeErr(err error) *Error {
 		return badRequest("the subscription's target ended (a dropped table, or a dropped or replaced namespace); reconnect against the current target — a same-named successor is a different feed")
 	case errors.Is(err, store.ErrListenRevoked):
 		return badRequest("subscription authorization was revoked; reconnect once authorization is restored")
+	case errors.Is(err, store.ErrListenAged):
+		return badRequest("subscription reached the maximum subscription age (-max-subscription-age, default 30m); reconnect from the cursor in the preceding close frame to resume exactly where this stream ended — the fresh connection re-asserts your credentials")
 	default:
 		return wrapStoreErr(err)
 	}
