@@ -47,6 +47,14 @@ func TestGoldenErrorContract(t *testing.T) {
 			"namespace": "errc", "table": "id",
 			"fields": []map[string]any{{"name": "a", "type": "string"}},
 		}, 400, "invalid_request", ``},
+		{"now default on a typed string field", "create_table", map[string]any{
+			"namespace": "errc", "table": "badnow1",
+			"fields": []map[string]any{{"name": "a", "type": "string", "default": "now()"}},
+		}, 400, "invalid_request", `now\(\)`},
+		{"now default on an untyped field", "create_table", map[string]any{
+			"namespace": "errc", "table": "badnow2",
+			"fields": []map[string]any{{"name": "a", "default": "now()"}},
+		}, 400, "invalid_request", `"now\(\)" is only allowed on timestamp fields`},
 		{"too many records", "insert", map[string]any{
 			"namespace": "errc", "table": "t",
 			"records": manyMaps(1001, func(i int) map[string]any { return map[string]any{"title": "x"} }),

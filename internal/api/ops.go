@@ -49,7 +49,7 @@ func fieldOutSchema(desc string) map[string]any {
 				"description": "Allowed values for this string field (present when the field has an enum constraint); writes carrying any other value are rejected",
 				"items":       map[string]any{"type": "string"},
 			},
-			"default": map[string]any{"description": "Value stored when an insert omits the field; exactly as declared (present when set)"},
+			"default": map[string]any{"description": "Value stored when an insert omits the field; exactly as declared (present when set) — \"now()\" on a timestamp field stamps the server's current time at each write"},
 		},
 		"required":             []string{"name", "type"},
 		"additionalProperties": false,
@@ -696,7 +696,9 @@ var Ops = map[string]OpDef{
 			"for vector search; enum=[values] restricts a string field to a closed vocabulary — writes carrying any other value " +
 			"are rejected (exact match, no case folding; a declared default must be a member); " +
 			"default=<value> is stored by later inserts that omit the field (instead of NULL; must match " +
-			"the field's type; not allowed on required or vectorize fields). Consider infer_schema first when starting from sample records.",
+			"the field's type; not allowed on required or vectorize fields) — a timestamp field may instead declare " +
+			"default=now(), stamped with the server's current time on each write that omits the field, so idempotent " +
+			"retries can omit it and replay instead of hashing a regenerated client timestamp. Consider infer_schema first when starting from sample records.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

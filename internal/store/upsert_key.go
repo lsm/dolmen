@@ -286,11 +286,12 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 				if f.Default == nil {
 					continue
 				}
-				cv, err := coerceValue(f, f.Default)
+				dv := defaultForWrite(f)
+				cv, err := coerceValue(f, dv)
 				if err != nil {
 					return nil, 0, 0, ChangeRange{}, true, fmt.Errorf("%w: %w", ErrInvalid, err)
 				}
-				p.rec[f.Name] = f.Default
+				p.rec[f.Name] = dv
 				p.cols = append(p.cols, q(f.Name))
 				p.vals = append(p.vals, cv)
 			}
