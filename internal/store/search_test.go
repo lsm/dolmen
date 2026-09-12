@@ -193,7 +193,7 @@ func TestFTSQuotedHyphenAndColumnFiltersStillAccepted(t *testing.T) {
 	st := openStore(t)
 	mustCreateNotes(t, st)
 	mustInsertNotes(t, st)
-	for _, q := range []string{`"first note"`, `-title : dolmen`, `-title:dolmen`, `-title:dolmen AND -body:note`} {
+	for _, q := range []string{`"first note"`, `-title : dolmen`, `-title:dolmen`, `-title:dolmen AND -body:note`, `-"title":dolmen`, `-{"title"}:dolmen`, `-"title" : dolmen`} {
 		rows, _, err := st.SearchFulltext(context.Background(), "test", "notes", q, 0, 10, false, "", nil)
 		if err != nil {
 			t.Fatalf("query %q: %v", q, err)

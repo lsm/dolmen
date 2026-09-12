@@ -50,6 +50,14 @@ func bareHyphenTerm(match string) bool {
 				if k < len(match) {
 					k++
 				}
+			} else if k < len(match) && match[k] == '"' {
+				k++
+				for k < len(match) && match[k] != '"' {
+					k++
+				}
+				if k < len(match) {
+					k++
+				}
 			} else {
 				for k < len(match) && ftsWordByte(match[k]) {
 					k++
