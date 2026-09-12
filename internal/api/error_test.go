@@ -217,6 +217,21 @@ func TestRedactStoreMsgKeepsEchoedGateSubstrings(t *testing.T) {
 	}
 }
 
+func TestWrapStoreErrLogsRawSQLiteCause(t *testing.T) {
+	raw := errors.New("database is locked (5) (SQLITE_BUSY)")
+	err := fmt.Errorf("%w: %w", store.ErrInvalid, store.NewRedactedSQLite(raw))
+	apiErr := wrapStoreErr(err)
+	if apiErr == nil {
+		t.Fatal("expected wrapped error")
+	}
+	if apiErr.Message != "the SQL could not be executed" {
+		t.Fatalf("public message must stay sanitized, got %q", apiErr.Message)
+	}
+	if apiErr.Cause == nil || apiErr.Cause.Error() != raw.Error() {
+		t.Fatalf("log cause must carry the raw driver error, got %v", apiErr.Cause)
+	}
+}
+
 // TestRedactPathsCoversSpacesInPaths pins the redaction of paths whose
 // components contain spaces — a model cache under a user directory
 // ("C:\Users\Jane Doe\models") must redact whole, never leaking a trailing

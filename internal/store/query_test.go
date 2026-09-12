@@ -1208,7 +1208,8 @@ func TestOperationalFailuresAreNotQueryErrors(t *testing.T) {
 
 func TestRedactedSQLiteErrSanitizesMessageAndKeepsCause(t *testing.T) {
 	raw := errors.New(`SQL logic error: no such column: nocol (1)`)
-	err := fmt.Errorf("%w: %w", ErrInvalid, redactedSQLiteErr(raw))
+	wrapped := NewRedactedSQLite(raw)
+	err := fmt.Errorf("%w: %w", ErrInvalid, wrapped)
 	if got, want := err.Error(), `invalid request: column "nocol" not found`; got != want {
 		t.Fatalf("message = %q, want %q", got, want)
 	}
@@ -1218,9 +1219,13 @@ func TestRedactedSQLiteErrSanitizesMessageAndKeepsCause(t *testing.T) {
 	if !errors.Is(err, raw) {
 		t.Fatalf("raw cause must stay reachable, got %v", err)
 	}
+	var r *RedactedSQLite
+	if !errors.As(err, &r) || r.Cause() != raw {
+		t.Fatalf("Cause() must expose the raw driver error, got %v", err)
+	}
 
 	plain := errors.New("unable to use function MATCH in the requested context")
-	err = fmt.Errorf("%w: %w", ErrInvalid, redactedSQLiteErr(plain))
+	err = fmt.Errorf("%w: %w", ErrInvalid, NewRedactedSQLite(plain))
 	if got, want := err.Error(), "invalid request: unable to use function MATCH in the requested context"; got != want {
 		t.Fatalf("unrecognized message = %q, want %q", got, want)
 	}

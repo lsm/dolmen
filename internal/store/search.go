@@ -130,7 +130,7 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 		if filter != "" {
 			return NewFilterError(filter, err)
 		}
-		return fmt.Errorf("%w: %w", ErrInvalid, redactedSQLiteErr(err))
+		return fmt.Errorf("%w: %w", ErrInvalid, NewRedactedSQLite(err))
 	}
 	if filter != "" {
 		// Validate each user expression on its own so failures are attributed
@@ -147,7 +147,7 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 		probe, err = tx.QueryContext(ctx,
 			fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? LIMIT 1`, q(ftsTable(table)), ftsTable(table)), match)
 		if err != nil {
-			return SearchResult{}, fmt.Errorf("%w: %w", ErrInvalid, redactedSQLiteErr(err))
+			return SearchResult{}, fmt.Errorf("%w: %w", ErrInvalid, NewRedactedSQLite(err))
 		}
 		probe.Close()
 		stmt = fulltextFilterStmt(table, filter, len(args))

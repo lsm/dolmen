@@ -198,7 +198,12 @@ func wrapStoreErr(err error) *Error {
 		if isConflict(err.Error()) {
 			code = ErrCodeConflict
 		}
-		return &Error{Status: http.StatusBadRequest, Code: code, Message: msg, Cause: err}
+		cause := err
+		var r *store.RedactedSQLite
+		if errors.As(err, &r) {
+			cause = r.Cause()
+		}
+		return &Error{Status: http.StatusBadRequest, Code: code, Message: msg, Cause: cause}
 	}
 	// A local model that cannot load (most often its first-use download
 	// failing) is an operator-actionable condition, not an unexpected bug:
