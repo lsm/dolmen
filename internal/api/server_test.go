@@ -383,8 +383,8 @@ func TestCreateTableNameAndDimConstraintsDeclared(t *testing.T) {
 		t.Fatalf(`"name" must exclude the reserved field identifiers, got %v`, name["not"])
 	}
 	allOf, ok := items["allOf"].([]any)
-	if !ok || len(allOf) != 6 {
-		t.Fatalf("expected six conditional constraints (dim, fulltext, vectorize, enum, default exclusions), got %v", items["allOf"])
+	if !ok || len(allOf) != 7 {
+		t.Fatalf("expected seven conditional constraints (dim, fulltext, vectorize, enum, default exclusions, now() guard), got %v", items["allOf"])
 	}
 	dimRule := allOf[0].(map[string]any)
 	then, ok := dimRule["then"].(map[string]any)["required"].([]string)
@@ -405,8 +405,8 @@ func TestCreateTableFulltextAndVectorizeConstraintsDeclared(t *testing.T) {
 	fields := def.InputSchema["properties"].(map[string]any)["fields"].(map[string]any)
 	items := fields["items"].(map[string]any)
 	allOf, ok := items["allOf"].([]any)
-	if !ok || len(allOf) != 6 {
-		t.Fatalf("expected six conditional constraints, got %v", items["allOf"])
+	if !ok || len(allOf) != 7 {
+		t.Fatalf("expected seven conditional constraints, got %v", items["allOf"])
 	}
 	fulltextThen := allOf[1].(map[string]any)["then"].(map[string]any)["properties"].(map[string]any)
 	ftTypes, ok := fulltextThen["type"].(map[string]any)["enum"].([]schema.FieldType)

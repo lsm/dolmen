@@ -439,6 +439,40 @@ func TestInsertNowDefaultStampsServerTime(t *testing.T) {
 	}
 }
 
+func TestInsertNowDefaultStampsAfterEmbedding(t *testing.T) {
+	st := openStore(t)
+	mustNS(t, st, "test")
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "test", "vecevents", []schema.Field{
+		{Name: "body", Type: schema.Text, Vectorize: true},
+		{Name: "updated_at", Type: schema.Timestamp, Default: schema.NowDefault},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	var embDone time.Time
+	emb := Embedder{Identity: "fake-space", Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+		time.Sleep(50 * time.Millisecond)
+		embDone = time.Now()
+		return fakeEmbed(ctx, texts)
+	}}
+	before := time.Now()
+	ids, err := st.Insert(ctx, "test", "vecevents", []map[string]any{{"body": "hello"}}, emb)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if embDone.Before(before.Add(40 * time.Millisecond)) {
+		t.Fatalf("embedding must have paused the insert, started %v done %v", before, embDone)
+	}
+	rows, _, err := st.Query(ctx, "test", "SELECT updated_at FROM vecevents WHERE id = ?", []any{ids[0]}, 0, 0)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("query: %v rows=%d", err, len(rows))
+	}
+	stamp := mustParseNowStamp(t, rows[0]["updated_at"])
+	if stamp.Before(embDone.Add(-2 * time.Millisecond)) {
+		t.Fatalf("now() must resolve at write time, after the embedding pause: embedder done %v, stamp %v", embDone, stamp)
+	}
+}
+
 func TestInsertNowDefaultIdempotentReplay(t *testing.T) {
 	st := openStore(t)
 	mustNS(t, st, "test")
