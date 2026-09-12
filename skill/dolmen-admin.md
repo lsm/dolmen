@@ -171,17 +171,21 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
   `default: <value>` (stored by later inserts that omit the field, instead of NULL; must match
   the field's type; not allowed on `required` or `vectorize` fields).
 - `describe_server` reports the embedding provider status without attempting a write: `provider`
-  (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, and `usable`.
-  `vectorize` in `create_table`/`migrate` and `search_vector` `text` queries fail while `usable`
-  is false; a table whose `embed_space` (see `describe_table`) differs from `identity` was embedded
-  by a different provider/model and rejects inserts and text searches until it is re-embedded
-  (`migrate` with `set_vectorize` off, then on).
+  (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, `usable`, and —
+  for the `local` provider — `model_cached`, whether the model weights are complete on the server so
+  no first-use download is needed (`false` means the first vectorized write or `text` search
+  downloads a Hugging Face model, which can fail transiently — retry, or pre-seed; with
+  `DOLMEN_EMBED_MODEL` naming a directory, `false` means the directory is incomplete and no
+  download repairs it). `vectorize` in `create_table`/`migrate` and `search_vector` `text` queries
+  fail while `usable` is false; a table whose `embed_space` (see `describe_table`) differs from
+  `identity` was embedded by a different provider/model and rejects inserts and text searches until
+  it is re-embedded (`migrate` with `set_vectorize` off, then on).
 - Operators in HF-blocked or air-gapped networks should pre-seed the embedding model per the
   README's "Offline install" section before enabling `vectorize`. `describe_server`'s `usable` is
-  configuration-only — it does not load the model or verify the cache, so confirm a pre-seed with
-  an actual embedding round-trip (insert + `search_vector` with `text`), never by reading `usable`.
-  Both the English default and the multilingual model (`intfloat/multilingual-e5-small`) ship as
-  release tarballs.
+  configuration-only — it does not load the model — but `model_cached` checks the model cache on
+  disk, so a pre-seed is confirmed by `model_cached` reporting true; an actual embedding round-trip
+  (insert + `search_vector` with `text`) remains the end-to-end check. Both the English default and
+  the multilingual model (`intfloat/multilingual-e5-small`) ship as release tarballs.
 - `create_namespace` is only for reserving a name up front (or failing loudly if it is taken) —
   namespaces are otherwise created implicitly on first use by the data ops (`wait_for` and the
   `subscribe` stream answer `not_found` instead), and it creates no tables.
