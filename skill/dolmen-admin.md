@@ -7,7 +7,7 @@ description: Developer skill for Dolmen — schema inference, table creation, an
 
 > This is the `dolmen-admin` skill. It contains everything in the `dolmen` (core) skill and adds the tools needed to design and evolve tables: `infer_schema`, `create_table`, and `migrate`. If you only need to query, insert, search, and delete against existing tables, use the `dolmen` skill instead ({{ .BaseURL }}/skills/dolmen).
 
-A Dolmen server exposes nineteen tools over MCP. Everything lives in namespaces (isolated databases).
+A Dolmen server exposes its tools over MCP — `tools/list` is the authoritative list; the surface grows between versions, so never hard-code a count. Everything lives in namespaces (isolated databases).
 
 {{ .NamespaceHint }}
 
@@ -62,9 +62,12 @@ no user is available to re-run it, use the JSON-RPC fallback below instead.
 
 Every tool in this skill is also a plain HTTP operation: `POST /v1/{operation}` with the tool's input
 as the JSON body (`Content-Type: application/json`). Responses are enveloped — success is
-`{"ok":true,"data":...}` and failure is `{"ok":false,"error":{"code","message"}}` with a stable
-machine-readable `code` (`invalid_request`, `not_found`, `query_error`, `conflict`, `forbidden`,
-`embedder_unavailable`, `internal_error`). The full list of operations and their request schemas is in the OpenAPI document (`GET /v1/openapi.json`).
+`{"ok":true,"data":...}` and failure is `{"ok":false,"error":{"code","message","request_id"}}`
+with a stable machine-readable `code` (`invalid_request`, `not_found`, `query_error`, `conflict`,
+`forbidden`, `embedder_unavailable`, `internal_error`); `request_id` is the request's
+`X-Request-Id` header when one was sent, otherwise a server-generated id, echoed back as the
+`X-Request-Id` response header — when a message says the underlying cause is in the server log
+under this id, this is the id. The full list of operations and their request schemas is in the OpenAPI document (`GET /v1/openapi.json`).
 
 Create a table:
 
@@ -133,7 +136,7 @@ curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0",
 ```
 
 A failed call is not an HTTP error: the result carries `"isError":true` and the error object
-(`{"code","message"}`) as JSON text in `content[0].text`.
+(`{"code","message","request_id"}`) as JSON text in `content[0].text`.
 
 ## Working rules
 
@@ -180,12 +183,15 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
   fail while `usable` is false; a table whose `embed_space` (see `describe_table`) differs from
   `identity` was embedded by a different provider/model and rejects inserts and text searches until
   it is re-embedded (`migrate` with `set_vectorize` off, then on).
-- Operators in HF-blocked or air-gapped networks should pre-seed the embedding model per the
-  README's "Offline install" section before enabling `vectorize`. `describe_server`'s `usable` is
+- Operators in HF-blocked or air-gapped networks should pre-seed the embedding model before
+  enabling `vectorize`: download a model tarball from the dolmen releases page and extract it
+  into the server's model cache (`<data>/models`, one `org--name` directory per model), or point
+  `DOLMEN_EMBED_MODEL` at an absolute model-directory path — both forms skip the Hugging Face Hub
+  entirely. Both the English default and the multilingual model (`intfloat/multilingual-e5-small`)
+  ship as release tarballs. `describe_server`'s `usable` is
   configuration-only — it does not load the model — but `model_cached` checks the model cache on
   disk, so a pre-seed is confirmed by `model_cached` reporting true; an actual embedding round-trip
-  (insert + `search_vector` with `text`) remains the end-to-end check. Both the English default and
-  the multilingual model (`intfloat/multilingual-e5-small`) ship as release tarballs.
+  (insert + `search_vector` with `text`) remains the end-to-end check.
 - `create_namespace` is only for reserving a name up front (or failing loudly if it is taken) —
   namespaces are otherwise created implicitly on first use by the data ops (`wait_for` and the
   `subscribe` stream answer `not_found` instead), and it creates no tables.
@@ -335,7 +341,8 @@ match, before ranking.
   (`all-MiniLM-L6-v2`, see `describe_server`) is English-only: semantic recall is per-language —
   an English query will not surface a Japanese incident, and vice versa. Mixed-language/CJK
   deployments should ask the operator to run `DOLMEN_EMBED_MODEL=intfloat/multilingual-e5-small`
-  (README, "Choosing an embedding model"; the e5 `query:`/`passage:` role prefixes are added
+  (100+ languages, ~450 MB from the Hub, ~270 MB as a release tarball; the e5
+  `query:`/`passage:` role prefixes are added
   server-side, callers never supply them — the `#e5` suffix in the reported identity reflects
   that contract). Switching models changes the embedding identity, so existing vectorized tables
   reject writes until re-embedded via `migrate` (`set_vectorize` off, then on).

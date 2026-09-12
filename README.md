@@ -272,8 +272,9 @@ $env:DOLMEN_EMBED_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-
 ```
 
 Whichever provider is configured, `describe_server` reports its status read-only over both `/v1`
-and MCP — provider, model, the identity that pins vectorized tables, and whether server-side
-embedding is usable — so the active provider is visible without attempting a write. `usable` is
+and MCP — provider, model, the identity that pins vectorized tables, whether server-side embedding
+is usable, and (local only) whether the model is cached (`model_cached`) — so the active provider
+is visible without attempting a write. `usable` is
 configuration status only: the provider is not called, so an endpoint that is down or rejects its
 credentials still fails at first use, not here.
 
@@ -501,6 +502,87 @@ The MCP server exposes the same twenty-three operations as tools (`tools/list` s
 
 Skill distribution is built into the server. `GET /skills` returns a JSON manifest with links to the layered skill markdown; `GET /skills/dolmen` is the end-user skill and `GET /skills/dolmen-admin` is the developer skill. Agents should fetch the skill from the running binary instead of copying a static file.
 
+## Live changes (SSE subscribe)
+
+`GET /v1/subscribe` streams a namespace's change feed over server-sent events: it replays the
+durable change log from a cursor, then delivers every live commit as it happens. It is the push
+counterpart of `wait_for`, which carries the same feed semantics as a request/response tool;
+`capabilities`'s `subscribe` field reports whether the server offers it.
+
+```bash
+curl -sN "http://127.0.0.1:8790/v1/subscribe?namespace=myapp"
+```
+
+Query parameters mirror `changes_since` (names are trimmed and lowercased like every `/v1`
+call): `namespace` (required — a namespace that does not exist is an in-stream `not_found`
+error; the stream never creates one, like `wait_for` and unlike the data ops), `table` (optional
+filter to one table's feed; an explicitly empty value is rejected), and `cursor` (an opaque
+resume token or the literal `begin`; omitted = start at the current head and receive future
+commits only; an explicitly empty value is rejected). Wrong method, an omitted `namespace`
+parameter, and empty `table` / `cursor` values are ordinary HTTP errors (the standard envelope)
+before the stream opens; every
+other failure arrives inside the stream, because an open `text/event-stream` response can no
+longer carry an HTTP status.
+
+The frame protocol — named events whose `data` is one compact JSON line:
+
+- `event: ready`, `data: {"cursor":"..."}` — the replay→live boundary. Replayed `change` frames
+  (when resuming behind the head) arrive first, then `ready`, then live frames. Its cursor is the
+  last replayed change's, or the head at registration when nothing replayed — reconnect with it
+  to resume exactly there, gap-free. A stream that ends during replay never reaches `ready`; its
+  `close` frame carries the reached cursor instead.
+- `event: change`, `data: {"cursor":"...","table":"...","row_id":1,"kind":"insert"}` — one frame
+  per changed row: a batch write (multi-record `insert`, filter-matched `update`/`delete`) mints
+  one change-log record per affected row, and frames arrive in commit order. `kind` is `insert`,
+  `update`, or `delete`. The payload is the same identity projection `changes_since` returns —
+  re-read the row by id; a `delete` names a row that is already gone.
+- `event: close`, `data: {"cursor":"..."}` — sent before every server-initiated terminal, with
+  the last-delivered cursor: the reconnect token.
+- `event: error`, `data: {"ok":false,"error":{"code","message","request_id"}}` — the terminal
+  frame: the standard error envelope. Nothing follows it.
+
+There is no heartbeat — an idle stream sends nothing after `ready`. Detect a dead connection
+with a transport-level read timeout, or use `wait_for` when quiet must be detectable within a
+bound.
+
+Every server-initiated terminal is a `close` frame followed by a teaching `error` event whose
+message is the recipe; registration failures — an unknown or foreign cursor, a missing namespace,
+a missing table — send only the `error` event, since nothing was delivered. The causes, verbatim:
+
+- Unknown or expired cursor: "cursor is unknown or past the change-log retention window
+  (-change-retention, default 168h); catch up by reconnecting with no cursor to resume from the
+  current head, or with cursor=begin to replay retained history"
+- Cursor from another feed: "cursor was minted on a different feed (a specific table's, or the
+  namespace-wide feed); pass it only to the feed you received it from — honoring it elsewhere
+  would silently skip events — or start fresh with no cursor / cursor=begin"
+- Buffer overflow: "subscription buffer overflow: commits arrived faster than this stream drained
+  them; reconnect from the cursor in the preceding close frame — the durable log is the catch-up
+  path, the buffer never was"
+- Target ended: "the subscription's target ended (a dropped table, or a dropped or replaced
+  namespace); reconnect against the current target — a same-named successor is a different feed"
+- Authorization revoked: "subscription authorization was revoked; reconnect once authorization
+  is restored"
+- Subscription age bound (`-max-subscription-age`, default 30m): "subscription reached the
+  maximum subscription age (-max-subscription-age, default 30m); reconnect from the cursor in
+  the preceding close frame to resume exactly where this stream ended — the fresh connection
+  re-asserts your credentials"
+
+Recovery is one rule for the cursor-reusable terminals — buffer overflow, revoked, age bound:
+reconnect with the `close` frame's cursor (or the newest you hold, from `ready` or the last
+`change`, when the connection died without one) and the new stream replays everything after it,
+then goes live — no gaps, no duplicates. Target ended is the close-bearing exception: the feed
+you were reading is gone (a dropped table's feed, or a dropped/replaced namespace whose cursor
+store was deleted with it), so its cursor cannot resume anything — reconnect against the current
+target and establish a fresh cursor (no cursor, or `cursor=begin`), as its message says; a
+same-named successor is a different feed. The registration failures above are the other
+exception: their cursor was rejected, so reconnect exactly as their message says — no cursor
+(head) or `cursor=begin` — never the rejected token. Like every feed surface, cursor tokens are
+minted per emission: the same commit carries a different token on each read that re-emits it,
+while a read that emits nothing returns your cursor unchanged (the `wait_for` idle contract) —
+and no frame field is a stable event id either: the same row updated twice yields two changes
+with identical `table`/`row_id`/`kind`. Make processing idempotent and persist the cursor
+atomically with your side effects rather than deduplicating on frame content.
+
 ## Tools
 
 | Tool | Purpose |
@@ -640,7 +722,7 @@ Common syntax:
 - `"foo bar"` — phrase (adjacent tokens, matched on stems). Because stored punctuation is also
   tokenized, a phrase matches token adjacency, not literal punctuation.
 - `"foo-bar"` — double-quote any term that contains spaces or punctuation (hyphens, dots, slashes,
-  apostrophes). Bare `foo-bar` is parsed as multiple terms and usually errors.
+  apostrophes). Bare `foo-bar` is read by FTS5 as a column filter and errors.
 - `pay*` — prefix match, applied to the stemmed term (`pay*` → `pai*`).
 - `NEAR(payment refund)` — proximity search (default near span). The group form
   `NEAR(term1 term2 ...)` enforces proximity; writing `term1 NEAR(term2)` instead parses as an
