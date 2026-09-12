@@ -73,14 +73,17 @@ func (sess *listenSession) next(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		sess.replayDone = true
 		sess.cond.Broadcast()
 	}
-	if sess.dead && len(records) > 0 {
-		// The omitted page's own cursor points PAST records the caller never
-		// receives — handing it back would teach a resume that skips them.
-		// The pre-page boundary is the honest position. The session is over:
-		// release any drainer the same way.
+	if sess.dead {
+		// A death that lands while a page was being decided is the error to
+		// report, whatever the page found: records the caller will not
+		// receive are withheld — and their cursors with them, so the
+		// pre-page boundary stays the honest resume position — and an EMPTY
+		// boundary page (an overflow ending the session exactly as it
+		// completes) is just as dead. Clean done is provable aliveness,
+		// never a death in disguise.
 		sess.replayDone = true
 		sess.cond.Broadcast()
-		return nil, resume, true, nil
+		return nil, resume, true, sess.endCauseLocked()
 	}
 	if err != nil || progress.next == "" {
 		return records, next, done, err
@@ -105,11 +108,15 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	sess.mu.Lock()
 	dead, exhausted := sess.dead, sess.replayExhausted
 	sess.mu.Unlock()
-	if dead || exhausted {
+	if dead {
+		return nil, sess.cursor(), true, pageProgress{}, sess.endCause()
+	}
+	if exhausted {
 		return nil, sess.cursor(), true, pageProgress{}, nil
 	}
 	tx, err := sess.n.rw.BeginTx(ctx, nil)
 	if err != nil {
+		sess.endOnPageFailure(ctx, err)
 		return nil, "", false, pageProgress{}, err
 	}
 	// The namespace's write pool is a single connection: a transaction that
@@ -129,6 +136,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	// last delivered cursor — never a short page reported as done, which
 	// would silently omit records the boundary promised.
 	if err := sess.verifyRetained(ctx, tx, sess.position, sess.boundary, sess.outstanding); err != nil {
+		sess.endOnPageFailure(ctx, err)
 		return nil, "", false, pageProgress{}, err
 	}
 	boundary := sess.boundary
@@ -148,6 +156,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		qerr = tx.Commit()
 	}
 	if qerr != nil {
+		sess.endOnPageFailure(ctx, qerr)
 		return nil, "", false, pageProgress{}, qerr
 	}
 
@@ -160,7 +169,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		vis, rev := sess.admit(lc.rec)
 		if rev {
 			sess.end(ErrListenRevoked)
-			return nil, sess.cursor(), true, pageProgress{}, nil
+			return nil, sess.cursor(), true, pageProgress{}, sess.endCause()
 		}
 		if vis {
 			admitted = append(admitted, lc)
@@ -168,6 +177,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	}
 	records, next, merr := sess.mint(ctx, admitted, sess.position, mLast, len(scanned))
 	if merr != nil {
+		sess.endOnPageFailure(ctx, merr)
 		return nil, "", false, pageProgress{}, merr
 	}
 

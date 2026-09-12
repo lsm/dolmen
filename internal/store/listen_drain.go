@@ -149,8 +149,10 @@ func (sess *listenSession) drain() {
 			// bracket — including, before the clear above, this
 			// goroutine's own — and no goroutine can wait itself out. The
 			// record the client is about to be handed must still resolve;
-			// the session ends with the wrapped cause.
-			sess.end(fail)
+			// the session ends with the wrapped cause — yielding, a report
+			// that parks when first but never displaces a cause already
+			// parked.
+			sess.endYielding(fail)
 			return
 		}
 	}
@@ -165,6 +167,6 @@ func (sess *listenSession) recoverPump(half string) {
 	if r := recover(); r != nil {
 		slog.Error("listen pump panicked; ending session",
 			"namespace", sess.nsName, "table", sess.table, "half", half, "panic", r)
-		sess.end(fmt.Errorf("listen %s pump panicked: %v", half, r))
+		sess.endYielding(fmt.Errorf("listen %s pump panicked: %v", half, r))
 	}
 }

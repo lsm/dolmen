@@ -101,7 +101,13 @@ func (sess *listenSession) pump() {
 	defer sess.flushParkedClose()
 	defer sess.recoverPump("fill")
 	if cause := sess.fill(); cause != nil {
-		sess.end(cause)
+		// A fill failure is a report, not a verdict: it may be the first
+		// cause (it parks and fires), but it must never displace a cause
+		// already parked — a page's symptom ends the session with
+		// ctxCancel, the canceled fill returns this very error, and the
+		// teaching the client is owed is the page's, not the cancellation
+		// the teardown itself induced.
+		sess.endYielding(cause)
 	}
 }
 

@@ -2,10 +2,16 @@ package store
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 )
+
+// errListenEnded marks a Next on a dead session whose parked cause the
+// flush has already fired — the real cause rides the closed callback, and
+// the caller's terminal wait observes it there.
+var errListenEnded = errors.New("listen: the subscription ended")
 
 // listenSession is one Listen registration. Registration (listen_register.go)
 // fixes the resume position P, the replay boundary R, the page chain, and
@@ -65,6 +71,7 @@ type listenSession struct {
 	// already-queued prefix must deliver first, fired only by the drainer
 	// once the queue empties.
 	pendingClose      error // parked by end; fired by a pump's deferred flush (or inline on a never-launched session)
+	pendingCloseYield bool  // the parked cause is a page symptom, not a lifecycle verdict — an authoritative end may replace it
 	pendingDrainClose error // armed by the queue's owner; fired by the drainer at the empty queue
 
 	// pumpsLaunched is set once, under mu, at Listen's launch site: after
@@ -176,13 +183,60 @@ func (sess *listenSession) end(cause error) {
 }
 
 func (sess *listenSession) endParked(cause error) bool {
-	sess.mu.Lock()
-	if sess.dead {
-		sess.mu.Unlock()
-		return false
+	return sess.endPark(cause, false)
+}
+
+// endOnPageFailure ends the session for a page failure that is NOT the
+// caller's own per-call cancellation: a deadline on one Next attempt must
+// leave the session — and its standing cursor — retryable, exactly as a
+// cancellation before the flight permit already does. The ctx check is the
+// robust form: a failure the caller's context explains is attributed to
+// the caller, whatever the driver wrapped it in.
+func (sess *listenSession) endOnPageFailure(ctx context.Context, err error) {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
 	}
-	sess.dead = true
-	close(sess.stop)
+	sess.endYielding(err)
+}
+
+// endYielding is the page-symptom end: a replay page whose own read failed
+// ends the session with that failure, but YIELDS to any later lifecycle
+// verdict — a drop's evict closes the pools before its endListenSessions
+// runs, so the page's incidental read error can park FIRST while the
+// lifetime teaching is still behind the eviction drain; the symptom must
+// not eat the verdict. endPark's replace rule does the deferring.
+func (sess *listenSession) endYielding(cause error) bool {
+	return sess.endPark(cause, true)
+}
+
+// endCause reports the cause a dead session ended with — the parked one
+// when the flush has not fired it yet, otherwise the generic marker: a
+// flushed cause rides the closed callback, whose delivery the caller's
+// terminal wait observes. Callers use it to return death as an error
+// rather than a clean done: clean done means provably alive.
+func (sess *listenSession) endCause() error {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.endCauseLocked()
+}
+
+// endCauseLocked is endCause for a caller already holding sess.mu —
+// next()'s publish section reads the cause inside its own critical
+// section, where the locking variant would self-deadlock.
+func (sess *listenSession) endCauseLocked() error {
+	if sess.pendingClose != nil {
+		return sess.pendingClose
+	}
+	return errListenEnded
+}
+
+func (sess *listenSession) endPark(cause error, yields bool) bool {
+	sess.mu.Lock()
+	first := !sess.dead
+	if first {
+		sess.dead = true
+		close(sess.stop)
+	}
 	// The park rides the SAME critical section as dead, and the first
 	// cause parked wins: the flush (from a pump's deferred, counted exit)
 	// waits out any in-flight delivery and page BEFORE firing, so the
@@ -200,13 +254,33 @@ func (sess *listenSession) endParked(cause error) bool {
 	// at all if that registration then fails (end's inline exception is
 	// for the never-launched fixture world, decided by the session's own
 	// goroutines).
-	if cause != nil && sess.pendingClose == nil {
-		sess.pendingClose = cause
+	//
+	// The park rules, stated once: the FIRST end parks its cause — a
+	// verdict or a page symptom — and arms the teardown (stop, cancel,
+	// broadcast, once). A LATER authoritative end may REPLACE a symptom
+	// still parked: the drop's evict closes the pools before its
+	// endListenSessions runs, so an incidental read error can park first
+	// while the lifetime teaching is still behind the eviction drain, and
+	// the verdict must survive it. A later end never parks into an EMPTY
+	// slot — empty after the flush means the cause has already fired, and
+	// nothing remains to deliver a fresh park.
+	if cause != nil {
+		if first && sess.pendingClose == nil {
+			sess.pendingClose = cause
+			sess.pendingCloseYield = yields
+		} else if !first && !yields && sess.pendingClose != nil && sess.pendingCloseYield {
+			sess.pendingClose = cause
+			sess.pendingCloseYield = false
+		}
 	}
-	sess.ctxCancel() // the pumps' in-flight database work — cancel must not wait out a blocked read
-	sess.cond.Broadcast()
+	if first {
+		sess.ctxCancel() // the pumps' in-flight database work — cancel must not wait out a blocked read
+		sess.cond.Broadcast()
+		sess.mu.Unlock()
+		return true
+	}
 	sess.mu.Unlock()
-	return true
+	return false
 }
 
 // flushParkedClose fires a parked terminal from a pump's exit path, once
@@ -229,6 +303,23 @@ func (sess *listenSession) flushParkedClose() {
 	sess.mu.Lock()
 	for sess.pendingClose != nil && (sess.replayActive || sess.notifyActive) {
 		sess.cond.Wait()
+	}
+	if sess.pendingClose != nil && sess.pendingCloseYield && sess.s != nil {
+		// A symptom defers behind the store mutex: DropNamespace holds it
+		// across its whole eviction-to-endListenSessions-to-removal span,
+		// so an empty pass through s.mu here blocks exactly while a drop
+		// is in flight — the drop's authoritative end replaces the
+		// symptom under the same mutex — and the fire below carries the
+		// verdict, not the incidental read error the drop's pool closure
+		// produced. A yield with no drop in flight finds the mutex
+		// uncontended and fires immediately. The flush runs in a pump's
+		// exit path holding no pool connection, so the eviction drain
+		// never waits on it; s.mu is never held waiting on pump exits;
+		// nothing nests on either side of the barrier.
+		sess.mu.Unlock()
+		sess.s.mu.Lock()
+		sess.s.mu.Unlock()
+		sess.mu.Lock()
 	}
 	cause := sess.pendingClose
 	sess.pendingClose = nil

@@ -2,30 +2,32 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/lsm/dolmen/internal/store"
 )
 
 // HandleSubscribe is §9.2 layer 3's HTTP-surface capability: a GET
 // text/event-stream that replays the namespace's durable change log from a
-// cursor in commit order and then closes — the replay half. It is an
-// HTTP-surface handler like /mcp, not an Ops entry: the MCP tool surface gets
-// wait_for, whose request/response shape carries the same feed semantics
-// (§2's transport parity), while the stream is for agent hosts holding
-// connections.
+// cursor in commit order and then delivers live commits through the engine's
+// listener. It is an HTTP-surface handler like /mcp, not an Ops entry: the
+// MCP tool surface gets wait_for, whose request/response shape carries the
+// same feed semantics (§2's transport parity), while the stream is for agent
+// hosts holding connections.
 //
-// The route stays UNREGISTERED until 6b lands live streaming. The endpoint's
-// specified behavior is a live stream, and a client discovering a registered
+// The route joins the api mux with the registration slice, not before. The
+// endpoint's specified behavior is a live stream, and a client discovering a
 // replay-then-terminate route could mistake the terminal frame for
 // end-of-subscription and miss every subsequent commit; until then the
 // handler is exercised handler-direct only (httptest against it, never
-// through the mux), and 6b registers it on the api mux in Server.Handler.
+// through the mux).
 //
 // Query params mirror the changes_since op exactly: namespace (required),
 // table (optional filter over that table's CURRENT lifetime), and cursor (an
@@ -37,10 +39,12 @@ import (
 // missing table, engine failures — arrives as an SSE error event carrying the
 // standard error envelope inside, because an open text/event-stream response
 // can no longer carry an HTTP status.
+const sseWriteDeadline = 10 * time.Second
+
 func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	// The stream is its own request: it carries a request id like every /v1/
 	// call, so an in-stream error envelope, the response header, and the
-	// server log line for it can be correlated. 6b's mux entry relies on this
+	// server log line for it can be correlated. The mux entry relies on this
 	// assignment happening here.
 	r = r.WithContext(WithRequestID(r.Context(), RequestIDFor(r)))
 	reqID := RequestIDFrom(r.Context())
@@ -78,62 +82,155 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		cursor = store.Cursor(c)
 	}
 
-	// From here the response IS the stream: the headers go out and flush
-	// immediately, and every later failure is an in-stream error event.
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Request-Id", reqID)
-	w.WriteHeader(http.StatusOK)
-	sseFlush(w)
-
 	ns := normNS(q.Get("namespace"))
-	if err := s.ensureNamespace(r.Context(), ns); err != nil {
+	ctx, stop := context.WithCancel(r.Context())
+	defer stop()
+	if err := s.ensureNamespace(ctx, ns); err != nil {
+		sseOpenStream(w, reqID)
 		sseErrorEvent(w, wrapStoreErr(err), reqID)
 		return
 	}
-	from := cursor
+	live := make(chan store.ChangeRecord, 1)
+	ended := make(chan error, 1)
+	replay, cancel, err := s.eng.Listen(ctx, ns, table, cursor, [16]byte{}, nil,
+		func(rec store.ChangeRecord) {
+			select {
+			case live <- rec:
+			case <-ctx.Done():
+			}
+		},
+		func(cause error) {
+			select {
+			case ended <- cause:
+			case <-ctx.Done():
+			}
+		})
+	// The response opens only once the listener is registered: a client that
+	// observes the open stream must know its subscription exists, or a commit
+	// it makes immediately after that observation could land before the
+	// boundary and never be delivered. Registration failures still open the
+	// stream first, so every in-stream failure keeps one shape.
+	sseOpenStream(w, reqID)
+	if err != nil {
+		sseErrorEvent(w, subscribeErr(err), reqID)
+		return
+	}
+	defer func() {
+		stop()
+		cancel()
+	}()
+
+	resume := replay.Resume()
+	write := func(rec store.ChangeRecord) bool {
+		resume = rec.Cursor
+		return sseEvent(w, "change", sseChange{
+			Cursor: string(rec.Cursor),
+			Table:  rec.Table,
+			RowID:  rec.RowID,
+			Kind:   string(rec.Kind),
+		})
+	}
+
 	for {
-		records, next, err := s.eng.ChangesSince(r.Context(), ns, table, from,
-			[16]byte{}, nil, store.Incarnation{}, store.Page{Limit: store.MaxChangesPageLimit})
-		if err != nil {
-			if r.Context().Err() != nil {
-				return // the subscriber went away; there is nobody to tell
-			}
-			// The cursor teaching errors carry their own catch-up path,
-			// phrased for this surface — reconnecting IS the catch-up call.
-			// They stay generic on purpose: which feed or table a foreign
-			// cursor was minted for is not the caller's to learn here.
-			if errors.Is(err, store.ErrCursorExpired) {
-				sseErrorEvent(w, badRequest("cursor is unknown or past the change-log retention window (-change-retention, default 168h); catch up by reconnecting with no cursor to resume from the current head, or with cursor=begin to replay retained history"), reqID)
+		records, _, done, nerr := replay.Next(ctx)
+		if nerr != nil {
+			if ctx.Err() != nil {
 				return
 			}
-			if errors.Is(err, store.ErrCursorCrossFeed) {
-				sseErrorEvent(w, badRequest("cursor was minted on a different feed (a specific table's, or the namespace-wide feed); pass it only to the feed you received it from — honoring it elsewhere would silently skip events — or start fresh with no cursor / cursor=begin"), reqID)
+			// The store guarantees the terminal cause: every session
+			// death — a dropped target behind its eviction drain, a
+			// revocation, a failed page — ends the session with its
+			// cause and the closed callback fires it, however long the
+			// drain takes. No timer: one that expired first would frame
+			// the incidental read error instead of the teaching, and
+			// the wait is sound without one.
+			select {
+			case cause := <-ended:
+				sseEvent(w, "close", sseCursor{Cursor: string(resume)})
+				sseErrorEvent(w, subscribeErr(cause), reqID)
+			case <-ctx.Done():
 				return
 			}
-			sseErrorEvent(w, wrapStoreErr(err), reqID)
 			return
 		}
 		for _, rec := range records {
-			if !sseEvent(w, "change", sseChange{
-				Cursor: string(rec.Cursor),
-				Table:  rec.Table,
-				RowID:  rec.RowID,
-				Kind:   string(rec.Kind),
-			}) {
-				return // the write failed: the subscriber is gone
+			if !write(rec) {
+				return
 			}
 		}
-		// A short page means the backlog is drained; the close frame carries
-		// the boundary cursor so a client persisting it resumes exactly here.
-		// (A backlog growing faster than it drains keeps the loop catching up
-		// — inherent to replay; 6b's live streaming holds the stream open
-		// instead.)
-		if len(records) < store.MaxChangesPageLimit {
-			sseEvent(w, "close", sseClose{Cursor: string(next)})
+		if done {
+			break
+		}
+		if s.holdReplay != nil {
+			s.holdReplay()
+		}
+	}
+	if s.holdReplay != nil {
+		s.holdReplay()
+	}
+	// The ready frame is the recovery point a fresh subscriber holds from
+	// the moment the stream goes live: everything up to this cursor has
+	// been delivered on this stream, and reconnecting with it resumes
+	// exactly here — the last replayed record's cursor, or the
+	// registration head when replay was empty. A stream that ends during
+	// replay never gets one — clean done from the store means provably
+	// alive, every death returning its cause as the replay error and
+	// taking the terminal path instead — and a terminal stream's close
+	// frame carries the reached cursor.
+	if !sseEvent(w, "ready", sseCursor{Cursor: string(resume)}) {
+		return
+	}
+
+	for {
+		select {
+		case rec := <-live:
+			if !write(rec) {
+				return
+			}
+		case cause := <-ended:
+			for {
+				select {
+				case rec := <-live:
+					if !write(rec) {
+						return
+					}
+				default:
+					sseEvent(w, "close", sseCursor{Cursor: string(resume)})
+					sseErrorEvent(w, subscribeErr(cause), reqID)
+					return
+				}
+			}
+		case <-ctx.Done():
 			return
 		}
-		from = next
+	}
+}
+
+func sseOpenStream(w http.ResponseWriter, reqID string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Request-Id", reqID)
+	rc := http.NewResponseController(w)
+	rc.SetWriteDeadline(time.Now().Add(sseWriteDeadline))
+	w.WriteHeader(http.StatusOK)
+	rc.Flush()
+	rc.SetWriteDeadline(time.Time{})
+}
+
+func subscribeErr(err error) *Error {
+	switch {
+	case errors.Is(err, store.ErrCursorExpired):
+		return badRequest("cursor is unknown or past the change-log retention window (-change-retention, default 168h); catch up by reconnecting with no cursor to resume from the current head, or with cursor=begin to replay retained history")
+	case errors.Is(err, store.ErrCursorCrossFeed):
+		return badRequest("cursor was minted on a different feed (a specific table's, or the namespace-wide feed); pass it only to the feed you received it from — honoring it elsewhere would silently skip events — or start fresh with no cursor / cursor=begin")
+	case errors.Is(err, store.ErrListenOverflow):
+		return badRequest("subscription buffer overflow: commits arrived faster than this stream drained them; reconnect from the cursor in the preceding close frame — the durable log is the catch-up path, the buffer never was")
+	case errors.Is(err, store.ErrListenLifetimeEnded):
+		return badRequest("the subscription's target ended (a dropped table, or a dropped or replaced namespace); reconnect against the current target — a same-named successor is a different feed")
+	case errors.Is(err, store.ErrListenRevoked):
+		return badRequest("subscription authorization was revoked; reconnect once authorization is restored")
+	default:
+		return wrapStoreErr(err)
 	}
 }
 
@@ -147,28 +244,33 @@ type sseChange struct {
 	Kind   string `json:"kind"`
 }
 
-// sseClose is the replay half's terminal frame: the cursor at the replay
-// boundary, the exact position a reconnecting client resumes from. 6b
-// replaces this frame with live streaming.
-type sseClose struct {
+// sseCursor is the single-field cursor carrier both synchronization frames
+// use — ready at the replay→live boundary, close at the terminal — so a
+// reconnecting client reads one recovery shape from every handoff the
+// stream offers.
+
+type sseCursor struct {
 	Cursor string `json:"cursor"`
 }
 
 // sseEvent frames one server-sent event — named event, single-line JSON
 // data, blank-line terminator — and flushes it immediately: a stream frame
 // held in a buffer is a frame the subscriber has not received. It reports
-// false when the write failed (the subscriber disconnected), so the caller
-// can stop instead of spinning on a dead connection.
+// false when the write or the flush failed (the subscriber disconnected —
+// a small frame can sit in net/http's buffer and die only at the flush,
+// so the flush error is part of the frame's success), so the caller can
+// stop instead of spinning on a dead connection.
 func sseEvent(w http.ResponseWriter, event string, data any) bool {
 	payload, err := sseJSON(data)
 	if err != nil {
 		return false
 	}
-	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload); err != nil {
-		return false
-	}
-	sseFlush(w)
-	return true
+	rc := http.NewResponseController(w)
+	rc.SetWriteDeadline(time.Now().Add(sseWriteDeadline))
+	_, werr := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload)
+	ferr := rc.Flush()
+	rc.SetWriteDeadline(time.Time{})
+	return werr == nil && ferr == nil
 }
 
 // sseErrorEvent delivers a teaching or failure error as the stream's error
@@ -204,13 +306,4 @@ func sseJSON(v any) ([]byte, error) {
 		return nil, err
 	}
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
-}
-
-// sseFlush pushes buffered frames to the wire. Every ResponseWriter the
-// server hands an HTTP/1.1 handler implements http.Flusher; the assert keeps
-// an exotic test double from panicking on it.
-func sseFlush(w http.ResponseWriter) {
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
-	}
 }
