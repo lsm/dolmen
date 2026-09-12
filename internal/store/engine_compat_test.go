@@ -78,10 +78,10 @@ func TestCapabilities(t *testing.T) {
 	if got.ANNRecallBound != nil {
 		t.Errorf("ANNRecallBound = %v, want explicit null under exact execution", *got.ANNRecallBound)
 	}
-	if got.Notifications {
-		t.Error("Notifications = true, want false until Listen is implemented (6b)")
+	if !got.Notifications {
+		t.Error("Notifications = false, want true since 6b implemented Listen")
 	}
-	if got.Subscribe {
-		t.Error("Subscribe = true, want false until live streams are implemented (6b)")
+	if !got.Subscribe {
+		t.Error("Subscribe = false, want true since 6b registered the /v1/subscribe stream")
 	}
 }

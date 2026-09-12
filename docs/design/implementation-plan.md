@@ -503,6 +503,18 @@ across the boundary); slow-drain overflow triggers the reconnect frame; disconne
 listener; the registered route serves replay-then-live; the capabilities op reports
 `subscribe: true`.
 
+Landed (6b, closed): the slice grew past its planned four-PR stack — the replay/live halves each
+split under review, and the terminal contract strengthened twice. What landed beyond the plan:
+the `ready` frame (one per subscription at the replay→live boundary, carrying the cursor a
+reconnect resumes from — the registration head for an omitted cursor, the last replayed record's
+cursor otherwise; a stream that ends during replay never emits one), and the store's terminal
+contract that makes it sound — `Next` never reports a dead session as a clean done (every death
+returns its cause as the replay error, so clean done means provably alive), with lifecycle
+verdicts displacing page symptoms in the parked-cause slot and the flush of a symptom deferring
+behind an in-flight drop so the lifetime teaching always wins. The page-failure paths end their
+session with the failure (a per-call cancellation excepted — that is the caller's, and the
+session stays retryable).
+
 ### 6c. Subscription age bound + resume contract
 **Spec:** §1.2 (`-max-subscription-age`), §9.3 · **Dep:** 6b
 
