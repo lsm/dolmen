@@ -116,7 +116,7 @@ func lookupIdem(ctx context.Context, db rowQuerier, table, key, wantHash string)
 		return nil, false, err
 	}
 	if gotHash != wantHash {
-		return nil, false, invalidf("idempotency key %q was already recorded for a different insert into %s; keys are single-use, generate a fresh one", key, table)
+		return nil, false, invalidf("idempotency key %q was already recorded for a different insert into %s; for a retry, re-send the identical body with the same key (a client-regenerated timestamp or nonce is the classic cause; a fresh key would insert a duplicate); for a genuinely new insert, use a fresh key", key, table)
 	}
 	if err := json.Unmarshal([]byte(idsJSON), &ids); err != nil {
 		return nil, false, fmt.Errorf("corrupt idempotency record for key %q: %w", key, err)

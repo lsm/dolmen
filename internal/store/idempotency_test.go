@@ -103,8 +103,10 @@ func TestInsertIdempotentPayloadMismatchRejected(t *testing.T) {
 	if replayed {
 		t.Fatal("a rejected mismatch must not report replayed")
 	}
-	if !strings.Contains(err.Error(), "different insert") {
-		t.Fatalf("error should tell the writer keys are single-use, got: %v", err)
+	for _, want := range []string{"different insert", "re-send the identical body", "timestamp or nonce", "fresh key would insert a duplicate", "genuinely new insert", "use a fresh key"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error must teach re-sending the identical body, missing %q, got: %v", want, err)
+		}
 	}
 	rows, _, err := st.Query(ctx, "test", "SELECT title FROM notes", nil, 0, 0)
 	if err != nil {
