@@ -65,6 +65,8 @@ func (e *LoadError) Unwrap() error { return e.Err }
 // layout and must not be echoed to clients.
 func (e *LoadError) IsHubID() bool { return localModelIDRe.MatchString(e.Model) }
 
+func (e *LoadError) CacheDirName() string { return modelCacheDirName(e.Model) }
+
 // Local embeds in-process via rembed — pure Go inference, no cgo, no ONNX
 // Runtime — so vectorize works with zero external endpoints. Weights are
 // never in the binary: the model downloads from the Hugging Face Hub on
@@ -117,20 +119,20 @@ func (l *Local) Identity() string {
 	return "local/v2:" + escapeIdentityReference(l.Model) + identityMarker(l.Model)
 }
 
+func (l *Local) HubModel() bool { return localModelIDRe.MatchString(l.Model) }
+
 // Cached reports whether the model weights are already on disk. A test stub
 // (Open != nil) is treated as cached so tests do not trigger the warning.
 func (l *Local) Cached() bool {
 	if l.Open != nil {
 		return true
 	}
-	if localModelIDRe.MatchString(l.Model) {
+	if l.HubModel() {
 		return seededCacheDir(l.CacheRoot, l.Model) != ""
 	}
 	// An absolute model-directory path is its own cache.
 	if filepath.IsAbs(l.Model) {
-		if fi, err := os.Stat(l.Model); err == nil && fi.IsDir() {
-			return true
-		}
+		return completeModelDir(l.Model)
 	}
 	return false
 }
@@ -229,14 +231,26 @@ func seededCacheDir(cacheRoot, model string) string {
 		return ""
 	}
 	dir := filepath.Join(cacheRoot, modelCacheDirName(model))
+	if !completeModelDir(dir) {
+		return ""
+	}
+	return dir
+}
 
-	// Loading a directory means loading exactly what is on disk: rembed
-	// cannot fall back to the Hub for a file a partial cache is missing
-	// (an interrupted download or tar extraction), so every artifact its
-	// directory load needs must already be present.
+// completeModelDir reports whether dir holds every artifact rembed's
+// directory load needs, so loading it cannot fail for a missing file and
+// must not fall back to the Hub (it cannot: a directory load is exactly
+// what is on disk). A partial cache — an interrupted download or tar
+// extraction — fails here, as does a directory that is no model at all.
+func fileNonEmpty(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && !fi.IsDir() && fi.Size() > 0
+}
+
+func completeModelDir(dir string) bool {
 	for _, f := range []string{"config.json", "tokenizer_config.json", "modules.json"} {
-		if fi, err := os.Stat(filepath.Join(dir, f)); err != nil || fi.IsDir() {
-			return ""
+		if !fileNonEmpty(filepath.Join(dir, f)) {
+			return false
 		}
 	}
 	// The tokenizer artifacts a cache needs depend on the model (RoBERTa
@@ -249,30 +263,30 @@ func seededCacheDir(cacheRoot, model string) string {
 	}
 	cfgRaw, err := os.ReadFile(filepath.Join(dir, "config.json"))
 	if err != nil {
-		return ""
+		return false
 	}
 	if err := json.Unmarshal(cfgRaw, &hf); err != nil {
-		return ""
+		return false
 	}
 	var tc struct {
 		TokenizerClass string `json:"tokenizer_class"`
 	}
 	tcRaw, err := os.ReadFile(filepath.Join(dir, "tokenizer_config.json"))
 	if err != nil {
-		return ""
+		return false
 	}
 	if err := json.Unmarshal(tcRaw, &tc); err != nil {
-		return ""
+		return false
 	}
 	tokFiles, probe := TokenizerFiles(hf.ModelType, tc.TokenizerClass)
 	if probe {
-		if fi, err := os.Stat(filepath.Join(dir, "sentencepiece.bpe.model")); err == nil && !fi.IsDir() {
+		if fileNonEmpty(filepath.Join(dir, "sentencepiece.bpe.model")) {
 			tokFiles = nil
 		}
 	}
 	for _, f := range tokFiles {
-		if fi, err := os.Stat(filepath.Join(dir, f)); err != nil || fi.IsDir() {
-			return ""
+		if !fileNonEmpty(filepath.Join(dir, f)) {
+			return false
 		}
 	}
 
@@ -281,7 +295,7 @@ func seededCacheDir(cacheRoot, model string) string {
 	// must carry its files, or the directory cannot load and must not bypass
 	// the Hub.
 	if !moduleArtifactsComplete(dir) {
-		return ""
+		return false
 	}
 
 	// A cache packaged by the release asset carries a size manifest as its
@@ -289,22 +303,22 @@ func seededCacheDir(cacheRoot, model string) string {
 	// size, so a tar extraction interrupted mid-file cannot pass as a
 	// complete cache. Caches without a manifest (written by rembed's own
 	// atomic-rename downloader) rely on the checks above.
-	if fi, err := os.Stat(filepath.Join(dir, CacheManifestName)); err == nil && !fi.IsDir() {
+	if _, err := os.Stat(filepath.Join(dir, CacheManifestName)); err == nil {
 		manifestRaw, err := os.ReadFile(filepath.Join(dir, CacheManifestName))
 		if err != nil {
-			return ""
+			return false
 		}
 		var sizes map[string]int64
 		if err := json.Unmarshal(manifestRaw, &sizes); err != nil {
-			return ""
+			return false
 		}
 		for name, want := range sizes {
 			if !validCacheRel(name) {
-				return ""
+				return false
 			}
 			fi, err := os.Stat(filepath.Join(dir, filepath.FromSlash(name)))
 			if err != nil || fi.IsDir() || fi.Size() != want {
-				return ""
+				return false
 			}
 		}
 	}
@@ -312,38 +326,41 @@ func seededCacheDir(cacheRoot, model string) string {
 	// A single-file model has model.safetensors; sharded models have an
 	// index plus one or more shard files. The index alone is not enough.
 	single := filepath.Join(dir, "model.safetensors")
-	if fi, err := os.Stat(single); err == nil && !fi.IsDir() {
-		return dir
+	if fileNonEmpty(single) {
+		return true
 	}
 
 	idx := filepath.Join(dir, "model.safetensors.index.json")
-	if fi, err := os.Stat(idx); err != nil || fi.IsDir() {
-		return ""
+	if !fileNonEmpty(idx) {
+		return false
 	}
 	idxRaw, err := os.ReadFile(idx)
 	if err != nil {
-		return ""
+		return false
 	}
 	var sharded struct {
 		WeightMap map[string]string `json:"weight_map"`
 	}
 	if err := json.Unmarshal(idxRaw, &sharded); err != nil {
-		return ""
+		return false
+	}
+	if len(sharded.WeightMap) == 0 {
+		return false
 	}
 	seen := make(map[string]struct{})
 	for _, shard := range sharded.WeightMap {
-		if !validCacheShard(shard) {
-			return ""
+		if !validCacheShard(shard) || !strings.HasSuffix(shard, ".safetensors") {
+			return false
 		}
 		if _, ok := seen[shard]; ok {
 			continue
 		}
 		seen[shard] = struct{}{}
-		if fi, err := os.Stat(filepath.Join(dir, shard)); err != nil || fi.IsDir() {
-			return ""
+		if !fileNonEmpty(filepath.Join(dir, shard)) {
+			return false
 		}
 	}
-	return dir
+	return true
 }
 
 // validCacheShard reports whether name is a plain filename safe to look for in
@@ -418,11 +435,11 @@ func moduleArtifactsComplete(dir string) bool {
 		seen[m.Path] = struct{}{}
 
 		sub := filepath.Join(dir, m.Path)
-		if fi, err := os.Stat(filepath.Join(sub, "config.json")); err != nil || fi.IsDir() {
+		if !fileNonEmpty(filepath.Join(sub, "config.json")) {
 			return false
 		}
 		if strings.HasSuffix(m.Type, ".Dense") {
-			if fi, err := os.Stat(filepath.Join(sub, "model.safetensors")); err != nil || fi.IsDir() {
+			if !fileNonEmpty(filepath.Join(sub, "model.safetensors")) {
 				return false
 			}
 		}

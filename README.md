@@ -361,10 +361,13 @@ curl -s localhost:8790/v1/search_vector -H 'Content-Type: application/json' -d '
 ```
 
 Note that `describe_server`'s `usable` is configuration-only — it is true whether or not the cache
-actually holds the model — so the round-trip above is the real verification: with `huggingface.co`
-unreachable and the cache correctly pre-seeded, the insert and the `search_vector(text=...)` load
-the model from disk; a missing or incomplete cache fails at that first operation with the offline
-remediations in the error message.
+actually holds the model — while `model_cached` (local provider) does check the cache on disk:
+`true` means the weights are complete and the first vectorized write needs no download; `false`
+means that first operation downloads the model from the Hugging Face Hub (or, with
+`DOLMEN_EMBED_MODEL` naming a directory, fails until the directory is fixed). The round-trip above
+remains the end-to-end verification: with `huggingface.co` unreachable and the cache correctly
+pre-seeded, the insert and the `search_vector(text=...)` load the model from disk; a missing or
+incomplete cache fails at that first operation with the offline remediations in the error message.
 
 Local provider notes:
 
@@ -506,7 +509,7 @@ Skill distribution is built into the server. `GET /skills` returns a JSON manife
 | `create_namespace` | Reserve a namespace up front (data ops create implicitly on first use otherwise; `wait_for` and the `subscribe` stream never create — a missing namespace is `not_found`) |
 | `drop_namespace` | Delete a namespace and all its tables; `confirm` must repeat the name; a namespace with child namespaces is refused — drop the children first |
 | `list_tables` | Tables in a namespace |
-| `describe_server` | Server's embedding provider status — provider (`none` / `local` / `openai`), model, the identity that pins vectorized tables, and whether server-side embedding is usable; read-only, no secrets |
+| `describe_server` | Server's embedding provider status — provider (`none` / `local` / `openai`), model, the identity that pins vectorized tables, whether server-side embedding is usable, and (local only) whether the model is cached; read-only, no secrets |
 | `describe_table` | Schema, version, row count |
 | `read_rows` | Fetch rows by id — each found row once, ascending id order; missing ids are simply absent (never an error); `truncated` is true only when the response budget dropped rows for existing ids (retry with fewer); at most 1,000 ids per request |
 | `capabilities` | The engine's static capability surface — `vector_execution` (`exact` / `ann`), `ann_recall_bound` (explicit `null` when exact), `notifications`, `subscribe`; reported verbatim |

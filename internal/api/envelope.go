@@ -218,13 +218,12 @@ func wrapStoreErr(err error) *Error {
 	// carries.
 	var le *embed.LoadError
 	if errors.As(err, &le) {
-		what := fmt.Sprintf("the local embedding model %s (first use downloads it from the Hugging Face Hub into the model cache)", le.Model)
-		if !le.IsHubID() {
-			what = "the configured local model directory (DOLMEN_EMBED_MODEL)"
-		}
 		msg := redactStoreMsg(fmt.Sprintf(
-			"embedding is unavailable: %s could not be loaded; pre-seed the model cache per the README's local provider notes, or point DOLMEN_EMBED_MODEL at an absolute model-directory path, to serve without network access; the underlying cause is in the server log under this request id",
-			what))
+			"embedding is unavailable: the local embedding model %s could not be loaded (first use downloads it from the Hugging Face Hub into the server's model cache); the failure is often transient — retry the request, which retries the download (a failed write rolls back and consumes no idempotency key); to serve without network access, pre-seed the model cache by placing the model's files in it as %s (the org--name form of the model id), or point DOLMEN_EMBED_MODEL at an absolute model-directory path; the underlying cause is in the server log under this request id",
+			le.Model, le.CacheDirName()))
+		if !le.IsHubID() {
+			msg = redactStoreMsg("embedding is unavailable: the configured local model directory (DOLMEN_EMBED_MODEL) could not be loaded; retry the request in case the failure was transient (a failed write rolls back and consumes no idempotency key), and check that the directory holds a complete model (config, tokenizer, and weight files) or point DOLMEN_EMBED_MODEL at one that does; the underlying cause is in the server log under this request id")
+		}
 		return &Error{Status: http.StatusServiceUnavailable, Code: ErrCodeEmbedderUnavailable, Message: msg, Cause: err}
 	}
 	return &Error{Status: http.StatusInternalServerError, Code: ErrCodeInternal, Message: "internal error", Cause: err}
