@@ -62,28 +62,31 @@ var app struct {
 var mcpSeq atomic.Int64
 
 func TestMain(m *testing.M) {
-	code := 1
-	defer func() { os.Exit(code) }()
+	os.Exit(runMain(m))
+}
+
+func runMain(m *testing.M) int {
 	goBin, err := exec.LookPath("go")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "blackbox: no go toolchain on PATH; this suite builds and execs the packaged binary")
-		return
+		return 1
 	}
 	root, err := moduleRoot()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "blackbox:", err)
-		return
+		return 1
 	}
 	tmp, err := os.MkdirTemp("", "dolmen-blackbox-*")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "blackbox: tmp:", err)
-		return
+		return 1
 	}
+	defer os.RemoveAll(tmp)
 	app.tmpDir = tmp
 	binDir := filepath.Join(tmp, "bin")
 	if err := os.MkdirAll(binDir, 0o700); err != nil {
 		fmt.Fprintln(os.Stderr, "blackbox:", err)
-		return
+		return 1
 	}
 	app.binPath = filepath.Join(binDir, "dolmen")
 	build := exec.Command(goBin, "build", "-o", app.binPath, ".")
@@ -91,19 +94,16 @@ func TestMain(m *testing.M) {
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "blackbox: building the packaged binary: %v\n%s", err, out)
-		return
+		return 1
 	}
 	srv, err := bootServer(filepath.Join(tmp, "data"), mainRetention, true)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "blackbox:", err)
-		return
+		return 1
 	}
 	app.srv = srv
-	code = m.Run()
-	app.srv.stop()
-	if err := os.RemoveAll(tmp); err != nil {
-		fmt.Fprintln(os.Stderr, "blackbox: cleanup:", err)
-	}
+	defer srv.stop()
+	return m.Run()
 }
 
 func moduleRoot() (string, error) {

@@ -1,14 +1,13 @@
 package blackbox
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 func TestStage04AssistantLoopOverHTTP(t *testing.T) {
@@ -82,31 +81,45 @@ func TestStage04AssistantLoopOverHTTP(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	var wg sync.WaitGroup
-	wg.Add(1)
+	bodyStarted := make(chan struct{})
+	killErr := make(chan error, 1)
 	go func() {
-		defer wg.Done()
 		payload, err := json.Marshal(ticket())
 		if err != nil {
+			close(bodyStarted)
+			killErr <- err
 			return
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, app.srv.url+"/v1/insert", bytes.NewReader(payload))
+		body := &stalledBody{head: payload, signaled: bodyStarted, ctx: ctx}
+		defer body.signal()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, app.srv.url+"/v1/insert", body)
 		if err != nil {
+			killErr <- err
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := (&http.Client{}).Do(req)
 		if err == nil {
 			resp.Body.Close()
+			err = errors.New("the canceled write completed anyway")
 		}
+		killErr <- err
 	}()
-	time.AfterFunc(10*time.Millisecond, cancel)
-	wg.Wait()
+	<-bodyStarted
+	cancel()
+	if err := <-killErr; err != nil {
+		t.Logf("the killed write failed as expected: %v", err)
+	} else {
+		t.Fatal("the killed write reported success")
+	}
 
 	filedData := op(t, "insert", ticket())
 	filedIDs, _ := filedData["ids"].([]any)
 	if len(filedIDs) != 1 {
 		t.Fatalf("filing the ticket after the killed write returned %v", filedData)
+	}
+	if inserted := asInt(t, filedData["inserted"], "retry inserted"); inserted != 1 {
+		t.Fatalf("the retry after the killed write was not a fresh insert: %v", filedData)
 	}
 	ticketID := asInt(t, filedIDs[0], "filed ticket id")
 
@@ -175,4 +188,26 @@ func TestStage04AssistantLoopOverHTTP(t *testing.T) {
 	if n := asInt(t, evRows[0]["n"], "events count"); n != 3 {
 		t.Fatalf("telemetry holds %d events, expected one per assistant action", n)
 	}
+}
+
+type stalledBody struct {
+	head     []byte
+	signaled chan struct{}
+	ctx      context.Context
+	once     sync.Once
+}
+
+func (b *stalledBody) Read(p []byte) (int, error) {
+	if len(b.head) > 0 {
+		n := copy(p, b.head)
+		b.head = b.head[n:]
+		return n, nil
+	}
+	b.signal()
+	<-b.ctx.Done()
+	return 0, b.ctx.Err()
+}
+
+func (b *stalledBody) signal() {
+	b.once.Do(func() { close(b.signaled) })
 }
