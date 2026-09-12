@@ -319,3 +319,20 @@ func TestBaseURLForParsesForwardedHeaderChains(t *testing.T) {
 		})
 	}
 }
+
+func TestStdioInstructions(t *testing.T) {
+	bare := StdioInstructions(Context{Version: "v0.2.0", NamespaceHint: "Use the `team` namespace."})
+	if !strings.Contains(bare, "runs over stdio") {
+		t.Fatalf("stdio instructions must name the transport: %q", bare)
+	}
+	if strings.Contains(bare, "http") {
+		t.Fatalf("stdio instructions must not link anywhere when no base URL is configured: %q", bare)
+	}
+	if !strings.Contains(bare, "Use the `team` namespace.") {
+		t.Fatalf("stdio instructions must carry the namespace hint: %q", bare)
+	}
+	linked := StdioInstructions(Context{BaseURL: "https://example.com/d", Version: "v0.2.0", NamespaceHint: "hint"})
+	if !strings.Contains(linked, "https://example.com/d") {
+		t.Fatalf("configured base URL must appear in stdio instructions: %q", linked)
+	}
+}

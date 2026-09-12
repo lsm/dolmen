@@ -79,10 +79,10 @@ func RequestIDFor(r *http.Request) string {
 	if id := requestIDFromHeader(r); id != "" {
 		return id
 	}
-	return newRequestID()
+	return NewRequestID()
 }
 
-func newRequestID() string {
+func NewRequestID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return fmt.Sprintf("req-%x", time.Now().UnixNano())
