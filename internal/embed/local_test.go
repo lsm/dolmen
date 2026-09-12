@@ -190,14 +190,15 @@ func TestLocalCached(t *testing.T) {
 		t.Fatalf("complete sharded cache must report cached")
 	}
 
-	// An absolute model-directory path is its own cache.
-	absPath := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(absPath, "model.safetensors"), 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	l2 := &Local{Model: absPath}
+	// An absolute model-directory path is its own cache, held to the same
+	// completeness rule: a complete directory reports cached, a partial one
+	// (or no model at all) does not.
+	l2 := &Local{Model: cacheDir}
 	if !l2.Cached() {
-		t.Fatalf("absolute model directory must report cached")
+		t.Fatalf("complete absolute model directory must report cached")
+	}
+	if (&Local{Model: t.TempDir()}).Cached() {
+		t.Fatalf("incomplete absolute model directory must not report cached")
 	}
 }
 

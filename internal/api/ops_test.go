@@ -2680,14 +2680,14 @@ func TestDescribeServerEmbeddingStatus(t *testing.T) {
 		emb  embed.Provider
 		want map[string]any
 	}{
-		name: "local with an absolute model directory reports model_cached true",
+		name: "local with an incomplete absolute model directory reports model_cached false",
 		emb:  &embed.Local{Model: absModel},
 		want: map[string]any{
 			"provider":     "local",
 			"model":        absModel,
 			"identity":     "local/" + absModel,
 			"usable":       true,
-			"model_cached": true,
+			"model_cached": false,
 		},
 	})
 	for _, tc := range cases {
