@@ -31,5 +31,5 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: check: no-comments
-        run: go run ./tools/nocomment --check
+      - name: Check no comments
+        run: go run github.com/lsm/nocomment-for-agents/go@016ad219e84b9b78ca66ff1b66a7729218030c12 --check
