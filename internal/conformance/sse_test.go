@@ -33,11 +33,12 @@ type sseFrame struct {
 }
 
 type sseReader struct {
-	frames chan sseFrame
+	frames   chan sseFrame
+	comments chan string
 }
 
 func newSSEReader(res *http.Response) *sseReader {
-	r := &sseReader{frames: make(chan sseFrame, 8)}
+	r := &sseReader{frames: make(chan sseFrame, 8), comments: make(chan string, 8)}
 	go func() {
 		defer close(r.frames)
 		var cur sseFrame
@@ -49,6 +50,11 @@ func newSSEReader(res *http.Response) *sseReader {
 				cur.event = strings.TrimPrefix(line, "event: ")
 			case strings.HasPrefix(line, "data: "):
 				cur.data = strings.TrimPrefix(line, "data: ")
+			case strings.HasPrefix(line, ":"):
+				select {
+				case r.comments <- line:
+				default:
+				}
 			case line == "":
 				if cur.event != "" || cur.data != "" {
 					r.frames <- cur
@@ -58,6 +64,15 @@ func newSSEReader(res *http.Response) *sseReader {
 		}
 	}()
 	return r
+}
+
+func (r *sseReader) nextComment(within time.Duration) (string, bool) {
+	select {
+	case c, ok := <-r.comments:
+		return c, ok
+	case <-time.After(within):
+		return "", false
+	}
 }
 
 func (r *sseReader) next(within time.Duration) (sseFrame, bool) {
@@ -769,6 +784,37 @@ func TestSubscribeDisconnectLeavesServerHealthy(t *testing.T) {
 		t.Fatal("a subscription after a disconnect never delivered the commit")
 	}
 	wantChange(t, f2, [3]any{"notes", after["ids"].([]any)[0], "insert"})
+}
+
+func TestSubscribeKeepaliveOnIdleStream(t *testing.T) {
+	h := newHarnessKeepalive(t, 100*time.Millisecond)
+	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
+
+	r := h.subscribeStream(t, url.Values{"namespace": {"rt"}})
+	f, ok := r.next(5 * time.Second)
+	if !ok {
+		t.Fatal("the idle stream never sent its ready frame")
+	}
+	wantReady(t, f)
+	comment, ok := r.nextComment(2 * time.Second)
+	if !ok {
+		t.Fatal("the idle stream never sent a keepalive within the bounded window")
+	}
+	if comment != ": keepalive" {
+		t.Fatalf("keepalive = %q, want the \": keepalive\" comment frame", comment)
+	}
+
+	live := h.mustHTTP("insert", map[string]any{
+		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "after-keepalive"}},
+	})
+	f, ok = r.next(5 * time.Second)
+	if !ok {
+		t.Fatal("the stream never delivered the commit that followed its keepalives")
+	}
+	wantChange(t, f, [3]any{"notes", live["ids"].([]any)[0], "insert"})
+	if extra, ok := r.next(300 * time.Millisecond); ok {
+		t.Fatalf("the keepalive frames corrupted the event stream: %+v", extra)
+	}
 }
 
 // replayRaceBacklog is the backlog the two replay-race fixtures seed. The

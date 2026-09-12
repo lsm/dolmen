@@ -170,6 +170,14 @@ func newHarnessAge(t *testing.T, d time.Duration) *harness {
 	return h
 }
 
+func newHarnessKeepalive(t *testing.T, d time.Duration) *harness {
+	t.Helper()
+	h := newHarnessAtMode(t, t.TempDir(), &fakeProvider{}, authOff)
+	h.apiOpts = []api.Option{api.WithKeepaliveInterval(d)}
+	h.reopen()
+	return h
+}
+
 func newHarnessAt(t *testing.T, dir string, emb *fakeProvider) *harness {
 	t.Helper()
 	return newHarnessAtMode(t, dir, emb, authOff)
