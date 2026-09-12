@@ -210,6 +210,52 @@ func TestLocalCached(t *testing.T) {
 		t.Fatalf("an index whose weight_map names no shards must not report cached")
 	}
 
+	seedMeta := func(dir string, weights map[string]string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+		for name, body := range map[string]string{
+			"config.json":           `{"model_type": "bert"}`,
+			"tokenizer_config.json": `{}`,
+			"modules.json":          `[]`,
+			"vocab.txt":             "[PAD]\n",
+		} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+				t.Fatalf("write %s: %v", name, err)
+			}
+		}
+		for name, body := range weights {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+				t.Fatalf("write %s: %v", name, err)
+			}
+		}
+	}
+	cacheRoot := filepath.Join(dataDir, localModelDir)
+
+	emptyWeights := filepath.Join(cacheRoot, "org--emptyweights")
+	seedMeta(emptyWeights, map[string]string{"model.safetensors": ""})
+	if (&Local{Model: "org/emptyweights", CacheRoot: cacheRoot}).Cached() {
+		t.Fatalf("a zero-byte model.safetensors must not report cached")
+	}
+
+	emptyShard := filepath.Join(cacheRoot, "org--emptyshard")
+	seedMeta(emptyShard, map[string]string{
+		"model.safetensors.index.json":     `{"weight_map": {"layer.0": "model-00001-of-00001.safetensors"}}`,
+		"model-00001-of-00001.safetensors": "",
+	})
+	if (&Local{Model: "org/emptyshard", CacheRoot: cacheRoot}).Cached() {
+		t.Fatalf("a zero-byte shard must not report cached")
+	}
+
+	aliasShard := filepath.Join(cacheRoot, "org--aliasshard")
+	seedMeta(aliasShard, map[string]string{
+		"model.safetensors.index.json": `{"weight_map": {"layer.0": "vocab.txt"}}`,
+	})
+	if (&Local{Model: "org/aliasshard", CacheRoot: cacheRoot}).Cached() {
+		t.Fatalf("a weight_map naming a non-safetensors file must not report cached")
+	}
+
 	// An absolute model-directory path is its own cache, held to the same
 	// completeness rule: a complete directory reports cached, a partial one
 	// (or no model at all) does not.

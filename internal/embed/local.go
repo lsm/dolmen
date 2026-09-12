@@ -119,10 +119,10 @@ func (l *Local) Identity() string {
 	return "local/v2:" + escapeIdentityReference(l.Model) + identityMarker(l.Model)
 }
 
-// Cached reports whether the model weights are already on disk. A test stub
-// (Open != nil) is treated as cached so tests do not trigger the warning.
 func (l *Local) HubModel() bool { return localModelIDRe.MatchString(l.Model) }
 
+// Cached reports whether the model weights are already on disk. A test stub
+// (Open != nil) is treated as cached so tests do not trigger the warning.
 func (l *Local) Cached() bool {
 	if l.Open != nil {
 		return true
@@ -325,7 +325,7 @@ func completeModelDir(dir string) bool {
 	// A single-file model has model.safetensors; sharded models have an
 	// index plus one or more shard files. The index alone is not enough.
 	single := filepath.Join(dir, "model.safetensors")
-	if fi, err := os.Stat(single); err == nil && !fi.IsDir() {
+	if fi, err := os.Stat(single); err == nil && !fi.IsDir() && fi.Size() > 0 {
 		return true
 	}
 
@@ -348,14 +348,14 @@ func completeModelDir(dir string) bool {
 	}
 	seen := make(map[string]struct{})
 	for _, shard := range sharded.WeightMap {
-		if !validCacheShard(shard) {
+		if !validCacheShard(shard) || !strings.HasSuffix(shard, ".safetensors") {
 			return false
 		}
 		if _, ok := seen[shard]; ok {
 			continue
 		}
 		seen[shard] = struct{}{}
-		if fi, err := os.Stat(filepath.Join(dir, shard)); err != nil || fi.IsDir() {
+		if fi, err := os.Stat(filepath.Join(dir, shard)); err != nil || fi.IsDir() || fi.Size() == 0 {
 			return false
 		}
 	}
