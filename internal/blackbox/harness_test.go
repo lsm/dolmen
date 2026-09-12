@@ -102,7 +102,7 @@ func runMain(m *testing.M) int {
 		return 1
 	}
 	app.srv = srv
-	defer srv.stop()
+	defer func() { app.srv.stop() }()
 	return m.Run()
 }
 
