@@ -2647,13 +2647,25 @@ func TestDescribeServerEmbeddingStatus(t *testing.T) {
 			},
 		},
 		{
-			name: "local reports model and the identity that pins tables",
+			name: "local with an uncached model stays usable and reports model_cached false",
 			emb:  &embed.Local{Model: "sentence-transformers/all-MiniLM-L6-v2"},
 			want: map[string]any{
-				"provider": "local",
-				"model":    "sentence-transformers/all-MiniLM-L6-v2",
-				"identity": "local/sentence-transformers/all-MiniLM-L6-v2",
-				"usable":   true,
+				"provider":     "local",
+				"model":        "sentence-transformers/all-MiniLM-L6-v2",
+				"identity":     "local/sentence-transformers/all-MiniLM-L6-v2",
+				"usable":       true,
+				"model_cached": false,
+			},
+		},
+		{
+			name: "local with a cached model reports model_cached true",
+			emb:  localStub("sentence-transformers/all-MiniLM-L6-v2", 4),
+			want: map[string]any{
+				"provider":     "local",
+				"model":        "sentence-transformers/all-MiniLM-L6-v2",
+				"identity":     "local/sentence-transformers/all-MiniLM-L6-v2",
+				"usable":       true,
+				"model_cached": true,
 			},
 		},
 		{
@@ -2662,6 +2674,22 @@ func TestDescribeServerEmbeddingStatus(t *testing.T) {
 			want: map[string]any{"provider": "blank", "usable": false},
 		},
 	}
+	absModel := t.TempDir()
+	cases = append(cases, struct {
+		name string
+		emb  embed.Provider
+		want map[string]any
+	}{
+		name: "local with an incomplete absolute model directory reports model_cached false",
+		emb:  &embed.Local{Model: absModel},
+		want: map[string]any{
+			"provider":     "local",
+			"model":        absModel,
+			"identity":     "local/" + absModel,
+			"usable":       true,
+			"model_cached": false,
+		},
+	})
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			st, err := store.Open(t.TempDir())

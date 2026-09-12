@@ -190,14 +190,42 @@ func TestLocalCached(t *testing.T) {
 		t.Fatalf("complete sharded cache must report cached")
 	}
 
-	// An absolute model-directory path is its own cache.
-	absPath := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(absPath, "model.safetensors"), 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
+	emptyIdxDir := filepath.Join(dataDir, localModelDir, "org--emptyidx")
+	if err := os.MkdirAll(emptyIdxDir, 0o700); err != nil {
+		t.Fatalf("mkdir empty-index dir: %v", err)
 	}
-	l2 := &Local{Model: absPath}
+	for name, body := range map[string]string{
+		"config.json":                  `{"model_type": "bert"}`,
+		"tokenizer_config.json":        `{}`,
+		"modules.json":                 `[]`,
+		"vocab.txt":                    "[PAD]\n",
+		"model.safetensors.index.json": `{"weight_map": {}}`,
+	} {
+		if err := os.WriteFile(filepath.Join(emptyIdxDir, name), []byte(body), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	lEmptyIdx := &Local{Model: "org/emptyidx", CacheRoot: filepath.Join(dataDir, localModelDir)}
+	if lEmptyIdx.Cached() {
+		t.Fatalf("an index whose weight_map names no shards must not report cached")
+	}
+
+	// An absolute model-directory path is its own cache, held to the same
+	// completeness rule: a complete directory reports cached, a partial one
+	// (or no model at all) does not.
+	l2 := &Local{Model: cacheDir}
 	if !l2.Cached() {
-		t.Fatalf("absolute model directory must report cached")
+		t.Fatalf("complete absolute model directory must report cached")
+	}
+	if (&Local{Model: t.TempDir()}).Cached() {
+		t.Fatalf("incomplete absolute model directory must not report cached")
+	}
+}
+
+func TestLoadErrorCacheDirName(t *testing.T) {
+	le := &LoadError{Model: "sentence-transformers/all-MiniLM-L6-v2", Err: errors.New("429")}
+	if got := le.CacheDirName(); got != "sentence-transformers--all-MiniLM-L6-v2" {
+		t.Fatalf("CacheDirName: got %q want the org--name cache layout", got)
 	}
 }
 

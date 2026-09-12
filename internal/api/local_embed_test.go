@@ -328,16 +328,23 @@ func TestLocalProviderLoadFailureActionable(t *testing.T) {
 	}
 	msg, _ := errObj["message"].(string)
 	for _, want := range []string{
-		"org/model",                // which model failed
-		"pre-seed the model cache", // remediation 1 (README local provider notes)
-		"DOLMEN_EMBED_MODEL",       // remediation 2 (absolute model-directory path)
+		"org/model",
+		"retry the request",
+		"rolls back and consumes no idempotency key",
+		"pre-seed the model cache",
+		"org--model",
+		"org--name form",
+		"DOLMEN_EMBED_MODEL",
 		"model-directory path",
 		"Hugging Face Hub",
-		"this request id", // points at the log correlation
+		"this request id",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("message must name %q for the operator, got %q", want, msg)
 		}
+	}
+	if strings.Contains(msg, "README") {
+		t.Fatalf("message must not cite documents the service does not serve, got %q", msg)
 	}
 	// The raw downloader cause never reaches the client: it can carry signed
 	// CDN URLs, proxy credentials, or internal endpoints, which no redaction
