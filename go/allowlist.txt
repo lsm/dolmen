@@ -91,7 +91,6 @@ internal/store/update_test.go
 internal/store/upsert_key.go
 internal/store/upsert_key_test.go
 internal/store/vector.go
-internal/store/vector_test.go
 internal/version/version.go
 main.go
 main_test.go

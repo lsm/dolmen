@@ -1,6 +1,7 @@
-# Minimal CI: vet plus the race-enabled test suite (which includes the
-# contract-conformance suite). Releases, container builds, SBOM, and the
-# vulnerability gate are deliberately out of scope here — see #68.
+# Minimal CI: vet, the race-enabled test suite (which includes the
+# contract-conformance suite), and the zero-comments gate (#231).
+# Releases, container builds, SBOM, and the vulnerability gate are
+# deliberately out of scope here — see #68.
 name: CI
 
 on:
