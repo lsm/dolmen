@@ -35,6 +35,9 @@ func New(code Code, format string, args ...any) *Error {
 }
 
 func Wrap(code Code, cause error) *Error {
+	if cause == nil {
+		return &Error{Code: code, Message: string(code)}
+	}
 	return &Error{Code: code, Message: cause.Error(), Cause: cause}
 }
 
