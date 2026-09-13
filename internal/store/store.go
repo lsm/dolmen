@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
 
 	_ "modernc.org/sqlite"
@@ -26,6 +27,10 @@ var ErrInvalid = errors.New("invalid request")
 
 func invalidf(format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{ErrInvalid}, args...)...)
+}
+
+func conflictf(format string, args ...any) error {
+	return derr.Wrap(derr.Conflict, invalidf(format, args...))
 }
 
 const nsSegmentSrc = `[a-z0-9][a-z0-9_-]{0,63}`

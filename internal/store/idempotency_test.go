@@ -2,10 +2,13 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/derr"
 )
 
 func TestInsertIdempotentReplayReturnsOriginalIDs(t *testing.T) {
@@ -107,6 +110,9 @@ func TestInsertIdempotentPayloadMismatchRejected(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error must teach re-sending the identical body, missing %q, got: %v", want, err)
 		}
+	}
+	if !errors.Is(err, derr.ErrConflict) || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a key mismatch must carry typed conflict and invalid causes, got: %v", err)
 	}
 	rows, _, err := st.Query(ctx, "test", "SELECT title FROM notes", nil, 0, 0)
 	if err != nil {
