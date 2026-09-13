@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/lsm/dolmen/internal/embed"
+	"github.com/lsm/dolmen/internal/ops"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 	"github.com/lsm/dolmen/internal/version"
@@ -265,12 +266,7 @@ func existingTableProp(desc string) map[string]any {
 }
 
 func (s *Server) embedder() store.Embedder {
-	return store.Embedder{
-		Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
-			return s.emb.Embed(ctx, texts)
-		},
-		Identity: s.emb.Identity(),
-	}
+	return ops.Embedder(s.emb)
 }
 
 type nsReq struct {
