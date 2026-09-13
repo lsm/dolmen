@@ -166,6 +166,7 @@ func seedParityTableHTTP(t *testing.T, h *harness) {
 		{"name": "score", "type": "number"},
 		{"name": "done", "type": "boolean"},
 		{"name": "tags", "type": "json"},
+		{"name": "rank", "type": "number", "default": 7},
 	})
 }
 
@@ -176,6 +177,7 @@ func seedParityTableEmbedded(t *testing.T, st *dolmen.Store) {
 		{Name: "score", Type: dolmen.Number},
 		{Name: "done", Type: dolmen.Boolean},
 		{Name: "tags", Type: dolmen.JSON},
+		{Name: "rank", Type: dolmen.Number, Default: 7},
 	})
 	if err != nil {
 		t.Fatalf("embedded create table: %v", err)
@@ -424,6 +426,13 @@ func TestEmbeddedParityEmbeddingFailure(t *testing.T) {
 	h.emb.mu.Lock()
 	h.emb.fail = errors.New("provider exploded")
 	h.emb.mu.Unlock()
+	wStatus, wBody := h.httpCallNumbered("insert", map[string]any{
+		"namespace": "par", "table": "docs", "records": []map[string]any{{"body": "never embedded"}},
+	})
+	wErrObj, _ := wBody["error"].(map[string]any)
+	if wStatus != 500 || wErrObj["code"] != "internal_error" {
+		t.Fatalf("http insert through a failing provider must keep the pinned 500 internal_error shape: %d %v", wStatus, wBody)
+	}
 	status, body := h.httpCallNumbered("search_vector", map[string]any{
 		"namespace": "par", "table": "docs", "text": "query",
 	})
