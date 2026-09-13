@@ -464,6 +464,22 @@ func TestDecodeErrorFraming(t *testing.T) {
 		}
 	})
 
+	t.Run("trailing garbage after an unknown field keeps the parse framing", func(t *testing.T) {
+		res, body := h.httpCallRaw("query", `{"namespace":"decf","table":"x","sql":"SELECT 1"} garbage`, "application/json")
+		if res.StatusCode != 400 {
+			t.Fatalf("status %d, want 400: %s", res.StatusCode, body)
+		}
+		errObj := envelopeFromString(t, body)
+		if errObj["code"] != "invalid_request" {
+			t.Fatalf("expected invalid_request envelope, got %v", errObj)
+		}
+		msg := errObj["message"].(string)
+		wantMessage(t, "trailing garbage", msg, `^unexpected trailing content`)
+		if strings.Contains(msg, "unknown field") {
+			t.Fatalf("a document with invalid trailing bytes must not be framed as an unknown field: %q", msg)
+		}
+	})
+
 	t.Run("mcp tool call reports the same framing", func(t *testing.T) {
 		res := h.mcpCall("query", map[string]any{"namespace": "decf", "table": "x", "sql": "SELECT 1"})
 		if !res.isError() {

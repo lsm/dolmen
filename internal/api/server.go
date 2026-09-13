@@ -317,6 +317,9 @@ func decodeData(body []byte, v any) error {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		if field, ok := unknownJSONField(err); ok {
+			if tErr := dec.Decode(&struct{}{}); tErr != io.EOF {
+				return badRequest("unexpected trailing content after JSON body")
+			}
 			uf := &unknownFieldError{Field: field}
 			return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: uf.Error(), Cause: uf}
 		}
