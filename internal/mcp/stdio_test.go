@@ -428,6 +428,17 @@ func TestServeStdioLateLineAfterSignalIsNotAdmitted(t *testing.T) {
 	time.Sleep(400 * time.Millisecond)
 	cancelParent()
 	x.sendCall("l-late", "create_namespace", map[string]any{"namespace": "post-shutdown"})
+	responses := make(chan string, 16)
+	go func() {
+		for {
+			line, err := x.br.ReadString('\n')
+			if err != nil {
+				close(responses)
+				return
+			}
+			responses <- line
+		}
+	}()
 	select {
 	case err := <-x.done:
 		if err != nil {
@@ -437,17 +448,8 @@ func TestServeStdioLateLineAfterSignalIsNotAdmitted(t *testing.T) {
 		t.Fatal("ServeStdio did not return after the signal drain")
 	}
 	for {
-		ch := make(chan string, 1)
-		go func() {
-			line, err := x.br.ReadString('\n')
-			if err != nil {
-				close(ch)
-				return
-			}
-			ch <- line
-		}()
 		select {
-		case line, ok := <-ch:
+		case line, ok := <-responses:
 			if !ok {
 				x.inW.Close()
 				return

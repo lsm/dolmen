@@ -217,16 +217,23 @@ func wrapStoreErr(err error) *Error {
 	return &Error{Status: http.StatusInternalServerError, Code: ErrCodeInternal, Message: "internal error", Cause: err}
 }
 
+func canceled(err error) *Error {
+	return &Error{Status: http.StatusOK, Code: ErrCodeCanceled, Message: "the request was cancelled before it completed; the operation may or may not have finished server-side — check with a query before retrying a write", Cause: err}
+}
+
 func WrapError(err error) *Error {
 	if err == nil {
 		return nil
 	}
 	var apiErr *Error
 	if errors.As(err, &apiErr) {
+		if apiErr.Code == ErrCodeInternal && errors.Is(apiErr, context.Canceled) {
+			return canceled(err)
+		}
 		return apiErr
 	}
 	if errors.Is(err, context.Canceled) {
-		return &Error{Status: http.StatusOK, Code: ErrCodeCanceled, Message: "the request was cancelled before it completed; the operation may or may not have finished server-side — check with a query before retrying a write", Cause: err}
+		return canceled(err)
 	}
 	return internal(err)
 }

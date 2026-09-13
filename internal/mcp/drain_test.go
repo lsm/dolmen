@@ -229,6 +229,30 @@ func TestInflightNonCanonicalIDStaysDrainReachable(t *testing.T) {
 	}
 }
 
+func TestInflightSealRefusesNewWork(t *testing.T) {
+	r := newInflightRequests()
+	sealed := make(chan struct{})
+	go func() {
+		r.seal()
+		close(sealed)
+	}()
+	select {
+	case <-sealed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("seal must return")
+	}
+	w := newFakeWorker()
+	r.start(context.Background(), json.RawMessage(`"post-seal"`), w.exitOnCancel)
+	select {
+	case <-w.started:
+		t.Fatal("start after seal must not spawn the worker")
+	default:
+	}
+	if !r.drain(context.Background(), 2*time.Second, 2*time.Second) {
+		t.Fatal("drain on a sealed idle registry must report a clean join")
+	}
+}
+
 func TestDrainJoinsIdleRegistry(t *testing.T) {
 	r := newInflightRequests()
 	if !r.drain(context.Background(), 5*time.Second, 5*time.Second) {

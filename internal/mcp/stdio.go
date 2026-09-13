@@ -63,6 +63,10 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 			lines <- stdioLine{err: err}
 		}
 	}()
+	go func() {
+		<-ctx.Done()
+		inflight.seal()
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -72,9 +76,14 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 			drain()
 			return err
 		case line, ok := <-lines:
-			if ctx.Err() != nil {
+			select {
+			case werr := <-writeErr:
+				drain()
+				return werr
+			case <-ctx.Done():
 				drain()
 				return nil
+			default:
 			}
 			if !ok {
 				drain()

@@ -68,10 +68,14 @@ func (r *inflightRequests) cancelKey(key string) bool {
 	return ok
 }
 
-func (r *inflightRequests) drain(ctx context.Context, grace, joinBound time.Duration) bool {
+func (r *inflightRequests) seal() {
 	r.mu.Lock()
 	r.draining = true
 	r.mu.Unlock()
+}
+
+func (r *inflightRequests) drain(ctx context.Context, grace, joinBound time.Duration) bool {
+	r.seal()
 	if r.joinWithin(ctx, grace) {
 		return true
 	}
