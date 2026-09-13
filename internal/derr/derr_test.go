@@ -72,3 +72,13 @@ func TestNewFormatsMessage(t *testing.T) {
 		t.Fatalf("unexpected error value %+v", err)
 	}
 }
+
+func TestWrapNilCauseIsSafe(t *testing.T) {
+	err := Wrap(NotFound, nil)
+	if err.Error() != string(NotFound) || err.Cause != nil || err.Code != NotFound {
+		t.Fatalf("nil cause must produce a safe value, got %+v", err)
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatal("nil-cause wrap must still match its category sentinel")
+	}
+}
