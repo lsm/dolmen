@@ -30,7 +30,7 @@ tables plus search plus an agent-native interface.
 ```bash
 git clone https://github.com/lsm/dolmen.git
 cd dolmen
-CGO_ENABLED=0 go build -o dolmen .
+CGO_ENABLED=0 go build -o dolmen ./cmd/dolmen
 ./dolmen -addr 127.0.0.1:8790 -data ./data
 ```
 
@@ -40,7 +40,7 @@ On Windows (PowerShell):
 git clone https://github.com/lsm/dolmen.git
 cd dolmen
 $env:CGO_ENABLED = 0
-go build -o dolmen.exe .
+go build -o dolmen.exe ./cmd/dolmen
 .\dolmen.exe -addr 127.0.0.1:8790 -data ./data
 ```
 

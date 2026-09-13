@@ -20,7 +20,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -trimpath \
     -ldflags "-X github.com/lsm/dolmen/internal/version.Version=${VERSION}" \
-    -o /out/dolmen .
+    -o /out/dolmen ./cmd/dolmen
 
 # gcr.io/distroless/static is a multi-arch, root-user image with CA certificates
 # and no shell. Pinned to the OCI index digest for reproducibility.
