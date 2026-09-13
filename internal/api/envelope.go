@@ -14,6 +14,7 @@ import (
 
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/embed"
+	"github.com/lsm/dolmen/internal/ops"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -158,10 +159,6 @@ func redactPaths(msg string) string {
 	return filePathRe.ReplaceAllString(msg, "${1}<path>")
 }
 
-func isConflict(err error) bool {
-	return errors.Is(err, derr.ErrConflict)
-}
-
 func wrapStoreErr(err error) *Error {
 	if err == nil {
 		return nil
@@ -172,10 +169,9 @@ func wrapStoreErr(err error) *Error {
 	}
 	var qe *store.QueryError
 	if errors.As(err, &qe) {
-		code := ErrCodeQuery
+		_, code := statusFor(ops.Classify(qe))
 		status := http.StatusBadRequest
-		if errors.Is(qe, store.ErrNotFound) {
-			code = ErrCodeNotFound
+		if code == ErrCodeNotFound {
 			status = http.StatusNotFound
 		}
 		return &Error{Status: status, Code: code, Message: qe.Error(), Cause: qe.Cause()}
@@ -183,19 +179,18 @@ func wrapStoreErr(err error) *Error {
 	if errors.Is(err, store.ErrNotFound) {
 		msg := redactStoreMsg(err.Error())
 		msg = strings.TrimPrefix(msg, store.ErrNotFound.Error()+": ")
-		return &Error{Status: http.StatusNotFound, Code: ErrCodeNotFound, Message: msg, Cause: err}
+		_, code := statusFor(ops.Classify(err))
+		return &Error{Status: http.StatusNotFound, Code: code, Message: msg, Cause: err}
 	}
 	var vce *store.VersionConflictError
 	if errors.As(err, &vce) {
-		return &Error{Status: http.StatusConflict, Code: ErrCodeConflict, Message: err.Error(), Cause: err}
+		_, code := statusFor(ops.Classify(err))
+		return &Error{Status: http.StatusConflict, Code: code, Message: err.Error(), Cause: err}
 	}
 	if errors.Is(err, store.ErrInvalid) {
 		msg := redactStoreMsg(err.Error())
 		msg = strings.TrimPrefix(msg, store.ErrInvalid.Error()+": ")
-		code := ErrCodeInvalid
-		if isConflict(err) {
-			code = ErrCodeConflict
-		}
+		_, code := statusFor(ops.Classify(err))
 		cause := err
 		var r *store.RedactedSQLite
 		if errors.As(err, &r) {
@@ -221,7 +216,8 @@ func wrapStoreErr(err error) *Error {
 		if !le.IsHubID() {
 			msg = redactStoreMsg("embedding is unavailable: the configured local model directory (DOLMEN_EMBED_MODEL) could not be loaded; retry the request in case the failure was transient (a failed write rolls back and consumes no idempotency key), and check that the directory holds a complete model (config, tokenizer, and weight files) or point DOLMEN_EMBED_MODEL at one that does; the underlying cause is in the server log under this request id")
 		}
-		return &Error{Status: http.StatusServiceUnavailable, Code: ErrCodeEmbedderUnavailable, Message: msg, Cause: err}
+		_, code := statusFor(ops.Classify(err))
+		return &Error{Status: http.StatusServiceUnavailable, Code: code, Message: msg, Cause: err}
 	}
 	return &Error{Status: http.StatusInternalServerError, Code: ErrCodeInternal, Message: "internal error", Cause: err}
 }
