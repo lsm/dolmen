@@ -393,7 +393,7 @@ func TestLoadConfig(t *testing.T) {
 				v, ok := tc.env[key]
 				return v, ok
 			}
-			cfg, err := loadConfig(tc.args, getenv, lookupEnv, io.Discard)
+			cfg, err := loadConfig(tc.args, getenv, lookupEnv, io.Discard, false)
 			if tc.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error containing %q, got nil", tc.wantErr)
@@ -414,7 +414,7 @@ func TestLoadConfig(t *testing.T) {
 }
 
 func TestLoadConfigVersion(t *testing.T) {
-	cfg, err := loadConfig([]string{"-version"}, func(string) string { return "" }, func(string) (string, bool) { return "", false }, io.Discard)
+	cfg, err := loadConfig([]string{"-version"}, func(string) string { return "" }, func(string) (string, bool) { return "", false }, io.Discard, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestLoadConfigLocalProvider(t *testing.T) {
 		"DOLMEN_DATA":           dataDir,
 	}
 	cfg, err := loadConfig([]string{}, func(k string) string { return env[k] },
-		func(k string) (string, bool) { v, ok := env[k]; return v, ok }, io.Discard)
+		func(k string) (string, bool) { v, ok := env[k]; return v, ok }, io.Discard, false)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -586,5 +586,79 @@ func TestPrefixRoutingWithoutPrefix(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("/healthz: got %d", res.StatusCode)
+	}
+}
+
+func TestRunRoutesMCPSubcommand(t *testing.T) {
+	oldArgs, oldStdin, oldStdout := os.Args, os.Stdin, os.Stdout
+	defer func() { os.Args, os.Stdin, os.Stdout = oldArgs, oldStdin, oldStdout }()
+
+	dir := t.TempDir()
+	os.Args = []string{"dolmen", "mcp", "-data", dir}
+
+	inR, inW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
+	}
+	os.Stdin = inR
+	line := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_namespace","arguments":{"namespace":"rt"}}}` + "\n"
+	if _, err := inW.WriteString(line); err != nil {
+		t.Fatalf("seed stdin: %v", err)
+	}
+	inW.Close()
+
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	os.Stdout = outW
+
+	oldProvider, hadProvider := os.LookupEnv("DOLMEN_EMBED_PROVIDER")
+	os.Setenv("DOLMEN_EMBED_PROVIDER", "none")
+	t.Cleanup(func() {
+		if hadProvider {
+			os.Setenv("DOLMEN_EMBED_PROVIDER", oldProvider)
+		} else {
+			os.Unsetenv("DOLMEN_EMBED_PROVIDER")
+		}
+	})
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- run() }()
+	if err := <-runErr; err != nil {
+		t.Fatalf("run dolmen mcp: %v", err)
+	}
+	outW.Close()
+	out, _ := io.ReadAll(outR)
+
+	var res map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(out), &res); err != nil {
+		t.Fatalf("stdout must carry one JSON-RPC line, got %q", out)
+	}
+	if res["id"] != float64(1) || res["result"] == nil {
+		t.Fatalf("unexpected response: %v", res)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "rt.db")); err != nil {
+		t.Fatalf("the stdio subcommand must operate the store: %v", err)
+	}
+}
+
+func TestLoadConfigStdioSkipsSubscriptionAgeValidation(t *testing.T) {
+	env := map[string]string{
+		"DOLMEN_EMBED_PROVIDER":       "none",
+		"DOLMEN_MAX_SUBSCRIPTION_AGE": "500ms",
+	}
+	cfg, err := loadConfig([]string{}, func(k string) string { return env[k] },
+		func(k string) (string, bool) { v, ok := env[k]; return v, ok }, io.Discard, true)
+	if err != nil {
+		t.Fatalf("the stdio mode must not reject an HTTP-only max subscription age it never uses: %v", err)
+	}
+	if cfg.MaxSubscriptionAge != 0 {
+		t.Fatalf("the stdio mode leaves the unused bound at zero, got %v", cfg.MaxSubscriptionAge)
+	}
+	_, err = loadConfig([]string{}, func(k string) string { return env[k] },
+		func(k string) (string, bool) { v, ok := env[k]; return v, ok }, io.Discard, false)
+	if err == nil {
+		t.Fatal("the serve mode must still reject an out-of-range max subscription age")
 	}
 }

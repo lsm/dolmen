@@ -148,24 +148,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeRPCError(w, nil, jsonRPCParseError, "cannot read request body")
 		return
 	}
-	var probe any
-	probeDec := json.NewDecoder(bytes.NewReader(body))
-	probeDec.UseNumber()
-	if err := probeDec.Decode(&probe); err != nil {
-		writeRPCError(w, nil, jsonRPCParseError, "invalid JSON")
-		return
-	}
-	if err := probeDec.Decode(&struct{}{}); err != io.EOF {
-		writeRPCError(w, nil, jsonRPCParseError, "trailing content after JSON body")
-		return
-	}
-	var msg rpcMessage
-	if err := json.Unmarshal(body, &msg); err != nil {
-		writeRPCError(w, nil, jsonRPCInvalidReq, "expected a JSON-RPC 2.0 request object")
-		return
-	}
-	if msg.JSONRPC != "2.0" || msg.Method == "" {
-		writeRPCError(w, validID(msg.ID), jsonRPCInvalidReq, "expected a JSON-RPC 2.0 request")
+	msg, msgErr := parseMessage(body)
+	if msgErr != nil {
+		writeRPCError(w, msgErr.ID, msgErr.Code, msgErr.Message)
 		return
 	}
 	if msg.Method != "initialize" {
@@ -174,15 +159,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if len(msg.ID) > 0 && validID(msg.ID) == nil {
-		writeRPCError(w, nil, jsonRPCInvalidReq, "request id must be a string or number")
-		return
-	}
 	if len(msg.ID) == 0 {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	result, rpcErr := s.handle(r.Context(), msg, r)
+	instr := skill.MCPInstructions(skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version, s.prefix))
+	result, rpcErr := s.handle(r.Context(), msg, instr)
 	if rpcErr != nil {
 		writeRPCError(w, msg.ID, rpcErr.Code, rpcErr.Message)
 		return
@@ -193,9 +175,33 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type rpcErr struct {
 	Code    int
 	Message string
+	ID      json.RawMessage
 }
 
-func (s *Server) handle(ctx context.Context, msg rpcMessage, r *http.Request) (any, *rpcErr) {
+func parseMessage(body []byte) (rpcMessage, *rpcErr) {
+	var probe any
+	probeDec := json.NewDecoder(bytes.NewReader(body))
+	probeDec.UseNumber()
+	if err := probeDec.Decode(&probe); err != nil {
+		return rpcMessage{}, &rpcErr{Code: jsonRPCParseError, Message: "invalid JSON"}
+	}
+	if err := probeDec.Decode(&struct{}{}); err != io.EOF {
+		return rpcMessage{}, &rpcErr{Code: jsonRPCParseError, Message: "trailing content after JSON body"}
+	}
+	var msg rpcMessage
+	if err := json.Unmarshal(body, &msg); err != nil {
+		return rpcMessage{}, &rpcErr{Code: jsonRPCInvalidReq, Message: "expected a JSON-RPC 2.0 request object"}
+	}
+	if msg.JSONRPC != "2.0" || msg.Method == "" {
+		return rpcMessage{}, &rpcErr{Code: jsonRPCInvalidReq, Message: "expected a JSON-RPC 2.0 request", ID: validID(msg.ID)}
+	}
+	if len(msg.ID) > 0 && validID(msg.ID) == nil {
+		return rpcMessage{}, &rpcErr{Code: jsonRPCInvalidReq, Message: "request id must be a string or number"}
+	}
+	return msg, nil
+}
+
+func (s *Server) handle(ctx context.Context, msg rpcMessage, instr string) (any, *rpcErr) {
 	switch msg.Method {
 	case "initialize":
 		var params struct {
@@ -238,12 +244,11 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage, r *http.Request) (a
 		if params.ProtocolVersion == protocolVersion {
 			pv = params.ProtocolVersion
 		}
-		ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version, s.prefix)
 		return map[string]any{
 			"protocolVersion": pv,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
 			"serverInfo":      map[string]any{"name": serverName, "version": version.Version},
-			"instructions":    skill.MCPInstructions(ctx),
+			"instructions":    instr,
 		}, nil
 	case "ping":
 		if _, e := ensureObjectParams(msg.Params, "ping"); e != nil {
@@ -426,21 +431,27 @@ func toolError(text string) map[string]any {
 	}
 }
 
-func writeRPCResult(w http.ResponseWriter, id json.RawMessage, result any) {
-	resp := map[string]any{"jsonrpc": "2.0", "id": id, "result": result}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(resp)
+func rpcResultEnvelope(id json.RawMessage, result any) map[string]any {
+	return map[string]any{"jsonrpc": "2.0", "id": id, "result": result}
 }
 
-func writeRPCError(w http.ResponseWriter, id json.RawMessage, code int, message string) {
-	resp := map[string]any{
+func rpcErrorEnvelope(id json.RawMessage, code int, message string) map[string]any {
+	return map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
 		"error":   map[string]any{"code": code, "message": message},
 	}
+}
+
+func writeRPCResult(w http.ResponseWriter, id json.RawMessage, result any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(rpcResultEnvelope(id, result))
+}
+
+func writeRPCError(w http.ResponseWriter, id json.RawMessage, code int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	if code == jsonRPCParseError || code == jsonRPCInvalidReq {
 		w.WriteHeader(http.StatusBadRequest)
@@ -449,5 +460,5 @@ func writeRPCError(w http.ResponseWriter, id json.RawMessage, code int, message 
 	}
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
-	_ = enc.Encode(resp)
+	_ = enc.Encode(rpcErrorEnvelope(id, code, message))
 }

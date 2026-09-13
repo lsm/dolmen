@@ -88,6 +88,9 @@ var (
 
 	mcpInstructionsTpl = template.Must(template.New("mcp-instructions").Parse(
 		`Pick the right skill for this client from {{.BaseURL}}/skills, then connect to {{.MCPURL}} and begin by listing and describing tables. {{.NamespaceHint}}`))
+
+	stdioInstructionsTpl = template.Must(template.New("stdio-instructions").Parse(
+		`This dolmen MCP server runs over stdio: begin by listing and describing tables; tools/list is the authoritative surface.{{if .BaseURL}} The HTTP deployment — skills and the REST API — is at {{.BaseURL}}.{{end}} {{.NamespaceHint}}`))
 )
 
 func Render(name string, ctx Context) ([]byte, error) {
@@ -131,6 +134,15 @@ func MCPInstructions(ctx Context) string {
 	if err != nil {
 
 		return fmt.Sprintf("Pick the right skill from %s/skills, then connect to %s.", ctx.BaseURL, ctx.MCPURL)
+	}
+	return s
+}
+
+func StdioInstructions(ctx Context) string {
+	s, err := renderString(stdioInstructionsTpl, ctx)
+	if err != nil {
+
+		return fmt.Sprintf("This dolmen MCP server runs over stdio: begin by listing and describing tables; tools/list is the authoritative surface. %s", ctx.NamespaceHint)
 	}
 	return s
 }

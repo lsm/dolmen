@@ -42,7 +42,11 @@ func main() {
 }
 
 func run() error {
-	cfg, err := loadConfig(os.Args[1:], os.Getenv, os.LookupEnv, os.Stderr)
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "mcp" {
+		return runStdio(args[1:])
+	}
+	cfg, err := loadConfig(args, os.Getenv, os.LookupEnv, os.Stderr, false)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -56,29 +60,19 @@ func run() error {
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
-	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention))
+	st, err := openStore(cfg)
 	if err != nil {
-		return fmt.Errorf("open store: %w", err)
+		return err
 	}
 	defer st.Close()
 
-	emb, err := embed.NewProvider(cfg.Embed.Provider, cfg.Embed.BaseURL, cfg.Embed.Model, cfg.Embed.APIKey, cfg.DataDir)
+	emb, err := newEmbedProvider(cfg)
 	if err != nil {
-		return fmt.Errorf("embed provider: %w", err)
-	}
-	if l, ok := emb.(*embed.Local); ok {
-		slog.Info("local embedding provider", "model", l.Model, "cache", "under the data directory (first use loads from the cache; downloads from the Hugging Face Hub only if the model is not pre-seeded)")
-		if !l.Cached() {
-			if l.HubModel() {
-				slog.Warn("local embedding model is not cached; the first vectorized write will download it from the Hugging Face Hub", "model", l.Model)
-			} else {
-				slog.Warn("configured local model directory is incomplete; no download repairs it — fix or replace the directory (DOLMEN_EMBED_MODEL)", "model", l.Model)
-			}
-		}
+		return err
 	}
 
 	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithMaxSubscriptionAge(cfg.MaxSubscriptionAge))
-	mcpSrv := mcp.New(apiSrv, cfg.AllowedOrigins, mcp.WithBaseURL(cfg.BaseURL), mcp.WithNamespaceHint(cfg.SkillNamespaceHint), mcp.WithPrefix(cfg.Prefix))
+	mcpSrv := newMCPServer(cfg, apiSrv)
 
 	sub := http.NewServeMux()
 	sub.Handle("/mcp", mcpSrv)
@@ -114,6 +108,76 @@ func run() error {
 	}
 }
 
+func runStdio(args []string) error {
+	cfg, err := loadConfig(args, os.Getenv, os.LookupEnv, os.Stderr, true)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if cfg.Version {
+		fmt.Println("dolmen", version.Version)
+		return nil
+	}
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
+	st, err := openStore(cfg)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	emb, err := newEmbedProvider(cfg)
+	if err != nil {
+		return err
+	}
+
+	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix))
+	mcpSrv := newMCPServer(cfg, apiSrv)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+
+	slog.Info("dolmen mcp serving stdio", "data", cfg.DataDir, "embed", emb.Name(), "version", version.Version)
+	return mcpSrv.ServeStdio(ctx, os.Stdin, os.Stdout)
+}
+
+func openStore(cfg *config) (*store.Store, error) {
+	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention))
+	if err != nil {
+		return nil, fmt.Errorf("open store: %w", err)
+	}
+	return st, nil
+}
+
+func newEmbedProvider(cfg *config) (embed.Provider, error) {
+	emb, err := embed.NewProvider(cfg.Embed.Provider, cfg.Embed.BaseURL, cfg.Embed.Model, cfg.Embed.APIKey, cfg.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("embed provider: %w", err)
+	}
+	if l, ok := emb.(*embed.Local); ok {
+		slog.Info("local embedding provider", "model", l.Model, "cache", "under the data directory (first use loads from the cache; downloads from the Hugging Face Hub only if the model is not pre-seeded)")
+		if !l.Cached() {
+			if l.HubModel() {
+				slog.Warn("local embedding model is not cached; the first vectorized write will download it from the Hugging Face Hub", "model", l.Model)
+			} else {
+				slog.Warn("configured local model directory is incomplete; no download repairs it — fix or replace the directory (DOLMEN_EMBED_MODEL)", "model", l.Model)
+			}
+		}
+	}
+	return emb, nil
+}
+
+func newMCPServer(cfg *config, apiSrv *api.Server) *mcp.Server {
+	return mcp.New(apiSrv, cfg.AllowedOrigins, mcp.WithBaseURL(cfg.BaseURL), mcp.WithNamespaceHint(cfg.SkillNamespaceHint), mcp.WithPrefix(cfg.Prefix))
+}
+
 type printedError struct {
 	err error
 }
@@ -140,13 +204,9 @@ type embedConfig struct {
 	APIKey   string
 }
 
-func loadConfig(args []string, getenv func(string) string, lookupEnv func(string) (string, bool), out io.Writer) (*config, error) {
+func loadConfig(args []string, getenv func(string) string, lookupEnv func(string) (string, bool), out io.Writer, stdio bool) (*config, error) {
 	fs := flag.NewFlagSet("dolmen", flag.ContinueOnError)
 	fs.SetOutput(out)
-	fs.Usage = func() {
-		fmt.Fprint(out, "Usage: dolmen [flags]\n\nFlags:\n")
-		fs.PrintDefaults()
-	}
 
 	addr := fs.String("addr", envOr("DOLMEN_ADDR", "127.0.0.1:8790", getenv), "listen address")
 	dataDir := fs.String("data", envOr("DOLMEN_DATA", "data", getenv), "data directory (one SQLite file per namespace)")
@@ -158,7 +218,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	maxSubscriptionAge := fs.String("max-subscription-age", envOr("DOLMEN_MAX_SUBSCRIPTION_AGE", "30m", getenv), "subscribe connection age bound: the stream teaching-closes at the bound and the client reconnects from its cursor; 0 disables the bound (the identity-refresh backstop is lost), otherwise 1s to 24h")
 
 	fs.Usage = func() {
-		fmt.Fprint(out, "Usage: dolmen [flags]\n\nFlags:\n")
+		fmt.Fprint(out, "Usage: dolmen [flags]\n       dolmen mcp [flags]\n\nFlags:\n")
 		fs.PrintDefaults()
 		printEnvHelp(out)
 	}
@@ -206,11 +266,14 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		return nil, &printedError{err}
 	}
 
-	maxAge, err := parseMaxSubscriptionAge(*maxSubscriptionAge)
-	if err != nil {
-		fmt.Fprintf(out, "config: %v\n", err)
-		fs.Usage()
-		return nil, &printedError{err}
+	var maxAge time.Duration
+	if !stdio {
+		maxAge, err = parseMaxSubscriptionAge(*maxSubscriptionAge)
+		if err != nil {
+			fmt.Fprintf(out, "config: %v\n", err)
+			fs.Usage()
+			return nil, &printedError{err}
+		}
 	}
 
 	skillNamespaceHint := envOr("DOLMEN_SKILL_NAMESPACE_HINT", skill.DefaultNamespaceHint, getenv)

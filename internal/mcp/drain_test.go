@@ -15,9 +15,9 @@ func TestRequestIDKeyNormalization(t *testing.T) {
 		want string
 	}{
 		{`"a"`, `"a"`},
-		{`"a"`, `"a"`},
-		{`"A"`, `"A"`},
-		{`"e-wait"`, `"e-wait"`},
+		{`"\u0061"`, `"a"`},
+		{`"\u0041"`, `"A"`},
+		{`"\u0065-wait"`, `"e-wait"`},
 		{`1`, `1`},
 		{`1.0`, `1`},
 		{`1e0`, `1`},
@@ -113,7 +113,7 @@ func awaitStarted(t *testing.T, workers ...*fakeWorker) {
 
 func TestInflightCancelKeyNormalizesSpellings(t *testing.T) {
 	for _, tc := range []struct{ registered, cancelWith string }{
-		{`"e-wait"`, `"e-wait"`},
+		{`"\u0065-wait"`, `"e-wait"`},
 		{` 1e0 `, `1`},
 		{`"1"`, `"1"`},
 	} {

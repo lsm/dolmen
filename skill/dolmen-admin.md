@@ -54,6 +54,11 @@ claude mcp add --transport http dolmen "{{ .MCPURL }}"
 The `dolmen` tools then appear in `tools/list` with full input schemas. The endpoint can also be
 read from the environment: `DOLMEN_URL` (default `{{ .BaseURL }}`).
 
+Dolmen also ships a stdio transport — `dolmen mcp` (same flags) speaks the identical
+JSON-RPC surface on stdin/stdout for hosts that launch the server as a subprocess; this
+skill is rendered for an HTTP deployment, so prefer the connection command above when it
+is reachable.
+
 If the `dolmen` MCP tools are not connected, do not improvise — ask the user to re-run the
 connection command above. MCP servers cannot be hot-loaded into an already-running session; when
 no user is available to re-run it, use the JSON-RPC fallback below instead.
