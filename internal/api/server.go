@@ -389,15 +389,11 @@ func rejectNulls(path string, v any) error {
 }
 
 func normNS(ns string) string {
-	segs := strings.Split(ns, "/")
-	for i, seg := range segs {
-		segs[i] = strings.ToLower(strings.TrimSpace(seg))
-	}
-	return strings.Join(segs, "/")
+	return ops.NormalizeNamespace(ns)
 }
 
 func normTable(t string) string {
-	return strings.ToLower(strings.TrimSpace(t))
+	return ops.NormalizeTable(t)
 }
 
 func limit(n int) int {

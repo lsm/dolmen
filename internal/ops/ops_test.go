@@ -206,3 +206,39 @@ func sharedCode(err error) derr.Code {
 	}
 	return ""
 }
+
+type failingProvider struct{ err error }
+
+func (p failingProvider) Identity() string { return "fake|v1" }
+
+func (p failingProvider) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	return nil, p.err
+}
+
+func (p failingProvider) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	return nil, p.err
+}
+
+func TestEmbedderPreservesCancellation(t *testing.T) {
+	emb := Embedder(failingProvider{err: context.Canceled})
+	_, err := emb.Embed(context.Background(), []string{"a"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation must survive the provider boundary, got %v", err)
+	}
+	if Classify(err) != derr.Canceled {
+		t.Fatalf("a provider-honored cancellation must classify canceled, got %s", Classify(err))
+	}
+	emb = Embedder(failingProvider{err: context.DeadlineExceeded})
+	_, err = emb.Embed(context.Background(), []string{"a"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline must survive the provider boundary, got %v", err)
+	}
+	if Classify(err) != derr.Internal {
+		t.Fatalf("a provider-honored deadline keeps the wire classification, got %s", Classify(err))
+	}
+	emb = Embedder(failingProvider{err: errors.New("upstream 429")})
+	_, err = emb.Embed(context.Background(), []string{"a"})
+	if Classify(err) != derr.EmbedderUnavailable {
+		t.Fatalf("an ordinary provider failure keeps the marker classification, got %s", Classify(err))
+	}
+}

@@ -17,7 +17,35 @@ type EmbeddingProvider interface {
 }
 
 func Embedder(emb EmbeddingProvider) store.Embedder {
-	return store.Embedder{Embed: emb.Embed, Identity: emb.Identity()}
+	return store.Embedder{
+		Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+			vecs, err := emb.Embed(ctx, texts)
+			if err != nil {
+				return nil, asProviderError(err)
+			}
+			return vecs, nil
+		},
+		Identity: emb.Identity(),
+	}
+}
+
+type ProviderError struct {
+	Cause error
+}
+
+func (e *ProviderError) Error() string { return e.Cause.Error() }
+
+func (e *ProviderError) Unwrap() error { return e.Cause }
+
+func asProviderError(err error) error {
+	var pe *ProviderError
+	if err == nil || errors.As(err, &pe) {
+		return err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return &ProviderError{Cause: err}
 }
 
 func EnsureNamespace(ctx context.Context, eng store.Engine, ns string) error {
