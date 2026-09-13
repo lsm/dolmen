@@ -17,6 +17,12 @@ const (
 
 var queryShapeRe = regexp.MustCompile(`^\s*(?i:select|with)\b`)
 
+var tableNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+func validTableName(t string) bool {
+	return tableNameRe.MatchString(t) && !strings.Contains(t, "__fts") && !strings.HasPrefix(t, "sqlite_")
+}
+
 type QueryOptions struct {
 	Args   []any
 	Offset int
@@ -38,6 +44,9 @@ func (s *Store) GetRows(ctx context.Context, namespace, table string, ids []int6
 	}
 	if len(ids) > store.MaxReadRowsIDs {
 		return QueryResult{}, derr.New(derr.InvalidRequest, "GetRows accepts at most %d ids per call, got %d", store.MaxReadRowsIDs, len(ids))
+	}
+	if tbl := ops.NormalizeTable(table); tbl == "" || !validTableName(tbl) {
+		return QueryResult{}, derr.New(derr.InvalidRequest, "table must match ^[a-z][a-z0-9_]{0,63}$ and not contain __fts or start with sqlite_")
 	}
 	ns := ops.NormalizeNamespace(namespace)
 	if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {

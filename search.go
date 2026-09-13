@@ -64,6 +64,9 @@ func (s *Store) SearchFulltext(ctx context.Context, namespace, table, query stri
 	if strings.TrimSpace(query) == "" {
 		return SearchResult{}, derr.New(derr.InvalidRequest, "query must contain a non-whitespace FTS5 MATCH expression")
 	}
+	if tbl := ops.NormalizeTable(table); tbl == "" || !validTableName(tbl) {
+		return SearchResult{}, derr.New(derr.InvalidRequest, "table must match ^[a-z][a-z0-9_]{0,63}$ and not contain __fts or start with sqlite_")
+	}
 	ns := ops.NormalizeNamespace(namespace)
 	if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
 		return SearchResult{}, facadeErr(err)
@@ -90,6 +93,15 @@ func (s *Store) SearchVector(ctx context.Context, namespace, table string, query
 	}
 	if query.MinScore != nil && (math.IsNaN(*query.MinScore) || math.IsInf(*query.MinScore, 0)) {
 		return SearchResult{}, derr.New(derr.InvalidRequest, "MinScore must be a finite number (NaN and infinities silently filter everything or nothing)")
+	}
+	if query.Text != "" && query.Vec != nil {
+		return SearchResult{}, derr.New(derr.InvalidRequest, "pass either text or vector, not both")
+	}
+	if query.Vec != nil && len(query.Vec) == 0 {
+		return SearchResult{}, derr.New(derr.InvalidRequest, "vector must have at least one element")
+	}
+	if tbl := ops.NormalizeTable(table); tbl == "" || !validTableName(tbl) {
+		return SearchResult{}, derr.New(derr.InvalidRequest, "table must match ^[a-z][a-z0-9_]{0,63}$ and not contain __fts or start with sqlite_")
 	}
 	var vec []float64
 	if query.Vec != nil {
