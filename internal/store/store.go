@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lsm/dolmen/internal/derr"
@@ -24,6 +25,8 @@ import (
 var ErrNotFound = errors.New("not found")
 
 var ErrInvalid = errors.New("invalid request")
+
+var ErrClosed = errors.New("store is closed")
 
 func invalidf(format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{ErrInvalid}, args...)...)
@@ -89,6 +92,9 @@ type Store struct {
 	pruneNext      map[string]time.Time
 
 	changeRetention time.Duration
+
+	closed   atomic.Bool
+	closeErr error
 }
 
 type nsDB struct {
@@ -123,6 +129,15 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed.Load() {
+		return s.closeErr
+	}
+	s.closed.Store(true)
+	s.closeErr = s.lockedClose()
+	return s.closeErr
+}
+
+func (s *Store) lockedClose() error {
 	var first error
 	names := make([]string, 0, len(s.nss))
 	for name, n := range s.nss {
@@ -172,6 +187,9 @@ func (s *Store) lockedNS(name string) (*nsDB, error) {
 }
 
 func (s *Store) lockedNSCtx(ctx context.Context, name string) (*nsDB, error) {
+	if s.closed.Load() {
+		return nil, ErrClosed
+	}
 	if n, ok := s.nss[name]; ok {
 		return n, nil
 	}
