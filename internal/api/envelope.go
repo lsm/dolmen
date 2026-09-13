@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -157,9 +158,8 @@ func redactPaths(msg string) string {
 	return filePathRe.ReplaceAllString(msg, "${1}<path>")
 }
 
-func isConflict(msg string) bool {
-	return strings.Contains(msg, "idempotency key") && strings.Contains(msg, "different") ||
-		strings.Contains(msg, "matches multiple")
+func isConflict(err error) bool {
+	return errors.Is(err, derr.ErrConflict)
 }
 
 func wrapStoreErr(err error) *Error {
@@ -193,7 +193,7 @@ func wrapStoreErr(err error) *Error {
 		msg := redactStoreMsg(err.Error())
 		msg = strings.TrimPrefix(msg, store.ErrInvalid.Error()+": ")
 		code := ErrCodeInvalid
-		if isConflict(err.Error()) {
+		if isConflict(err) {
 			code = ErrCodeConflict
 		}
 		cause := err

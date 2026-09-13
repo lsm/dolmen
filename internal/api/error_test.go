@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -187,8 +188,8 @@ func TestRedactStoreMsgRedactsFilePaths(t *testing.T) {
 }
 
 func TestRedactStoreMsgKeepsEchoedGateSubstrings(t *testing.T) {
-	err := fmt.Errorf("%w: idempotency key %q was already recorded for a different insert into %s; for a retry, re-send the identical body with the same key (a client-regenerated timestamp or nonce is the classic cause; a fresh key would insert a duplicate); for a genuinely new insert, use a fresh key",
-		store.ErrInvalid, "SQLITE_-x", "t")
+	var err error = derr.Wrap(derr.Conflict, fmt.Errorf("%w: idempotency key %q was already recorded for a different insert into %s; for a retry, re-send the identical body with the same key (a client-regenerated timestamp or nonce is the classic cause; a fresh key would insert a duplicate); for a genuinely new insert, use a fresh key",
+		store.ErrInvalid, "SQLITE_-x", "t"))
 	apiErr := wrapStoreErr(err)
 	if apiErr == nil {
 		t.Fatal("expected wrapped error")

@@ -3,9 +3,11 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
 )
 
@@ -147,6 +149,9 @@ func TestUpsertByKeyAmbiguousRowsRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "matches multiple") {
 		t.Fatalf("error should name the ambiguity, got: %v", err)
+	}
+	if !errors.Is(err, derr.ErrConflict) || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("an ambiguous key must carry typed conflict and invalid causes, got: %v", err)
 	}
 
 	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes WHERE title = 'dup'", nil, 0, 0)

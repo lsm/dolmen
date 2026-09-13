@@ -113,7 +113,7 @@ func matchByKey(ctx context.Context, tx *sql.Tx, table string, keyFields []strin
 	}
 	rows.Close()
 	if len(matchIDs) > 1 {
-		return 0, invalidf("record %d: natural key (%s) matches multiple existing rows (ids %d and %d); the key is not unique in the table — delete the duplicate rows before upserting", recIdx, strings.Join(keyFields, ", "), matchIDs[0], matchIDs[1])
+		return 0, conflictf("record %d: natural key (%s) matches multiple existing rows (ids %d and %d); the key is not unique in the table — delete the duplicate rows before upserting", recIdx, strings.Join(keyFields, ", "), matchIDs[0], matchIDs[1])
 	}
 	if len(matchIDs) == 1 {
 		return matchIDs[0], nil
