@@ -405,3 +405,17 @@ func TestWrapErrorClassifiesWrappedCancellation(t *testing.T) {
 		t.Fatalf("a deadline must keep the internal classification, got %s", got.Code)
 	}
 }
+
+func TestSharedInternalErrorsKeepTheirMessagePrivate(t *testing.T) {
+	err := derr.Wrap(derr.Internal, errors.New("sqlite path /var/lib/dolmen/secret.db leaked"))
+	apiErr := wrapStoreErr(err)
+	if apiErr == nil || apiErr.Status != 500 || apiErr.Code != ErrCodeInternal {
+		t.Fatalf("shared internal errors must stay 500 internal_error, got %+v", apiErr)
+	}
+	if apiErr.Message != "internal error" {
+		t.Fatalf("internal diagnostics must not reach the wire, got %q", apiErr.Message)
+	}
+	if !errors.Is(apiErr, err) {
+		t.Fatal("the cause must survive for logging")
+	}
+}

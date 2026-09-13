@@ -203,6 +203,15 @@ func wrapStoreErr(err error) *Error {
 		}
 		return &Error{Status: http.StatusBadRequest, Code: code, Message: msg, Cause: cause}
 	}
+	var shared *derr.Error
+	if errors.As(err, &shared) {
+		status, code := statusFor(shared.Code)
+		msg := shared.Message
+		if status == http.StatusInternalServerError {
+			msg = "internal error"
+		}
+		return &Error{Status: status, Code: code, Message: msg, Cause: err}
+	}
 
 	var le *embed.LoadError
 	if errors.As(err, &le) {
@@ -219,6 +228,27 @@ func wrapStoreErr(err error) *Error {
 
 func canceled(err error) *Error {
 	return &Error{Status: http.StatusOK, Code: ErrCodeCanceled, Message: "the request was cancelled before it completed; the operation may or may not have finished server-side — check with a query before retrying a write", Cause: err}
+}
+
+func statusFor(code derr.Code) (int, ErrorCode) {
+	switch code {
+	case derr.InvalidRequest:
+		return http.StatusBadRequest, ErrCodeInvalid
+	case derr.NotFound:
+		return http.StatusNotFound, ErrCodeNotFound
+	case derr.Query:
+		return http.StatusBadRequest, ErrCodeQuery
+	case derr.Conflict:
+		return http.StatusBadRequest, ErrCodeConflict
+	case derr.Forbidden:
+		return http.StatusForbidden, ErrCodeForbidden
+	case derr.EmbedderUnavailable:
+		return http.StatusServiceUnavailable, ErrCodeEmbedderUnavailable
+	case derr.Canceled:
+		return http.StatusOK, ErrCodeCanceled
+	default:
+		return http.StatusInternalServerError, ErrCodeInternal
+	}
 }
 
 func WrapError(err error) *Error {

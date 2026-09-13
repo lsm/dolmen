@@ -28,6 +28,8 @@ var ErrInvalid = errors.New("invalid request")
 
 var ErrClosed = errors.New("store is closed")
 
+var ErrExists = errors.New("already exists")
+
 func invalidf(format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{ErrInvalid}, args...)...)
 }

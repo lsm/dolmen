@@ -165,7 +165,7 @@ func (s *Store) CreateNamespace(ctx context.Context, nsName string, parentNsGen 
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if os.IsExist(err) {
-			return invalidf("namespace %s already exists", nsName)
+			return fmt.Errorf("%w: namespace %s %w", ErrInvalid, nsName, ErrExists)
 		}
 		return err
 	}
