@@ -497,6 +497,31 @@ DOLMEN_ALLOWED_ORIGINS=https://example.com ./dolmen
 `localhost`, `127.0.0.1`, and `::1` are always allowed; the public origin of a
 proxy is not.
 
+## Embedded library use (Go)
+
+Go programs can open dolmen in-process — no port, IPC, or subprocess. The module is `github.com/lsm/dolmen`; the executable's install path is now `github.com/lsm/dolmen/cmd/dolmen` (historical release instructions describe their own layout):
+
+```go
+import "github.com/lsm/dolmen"
+
+st, err := dolmen.Open(dataDir,
+	dolmen.WithEmbedding(myProvider),
+	dolmen.WithChangeRetention(168*time.Hour),
+)
+if err != nil { ... }
+defer st.Close()
+```
+
+`Open` never reads environment variables, loads a model, or starts a server; options are validated before touching the filesystem. Embedding is disabled unless a provider is supplied — implement `dolmen.EmbeddingProvider` (`Identity`, `Embed`, `EmbedQuery`); query and document embedding stay distinct for asymmetric models such as E5, and the identity string pins a vectorized table to its embedding space. The application owns the provider (a shared provider is not closed by `Close`).
+
+The surface covers namespace/table lifecycle, `Insert`/`Update`/`Delete`/`UpsertByKey`, `GetRows`/`Query`, and `SearchFulltext`/`SearchVector` — the same semantic validation, embedding orchestration, error classification, and defaults as the HTTP and MCP transports (the conformance suite pins the parity). Records are `map[string]any`; reads return engine-typed values (`int64`/`float64` numbers, `bool`, decoded JSON with `json.Number` precision, `[]float64` vectors) rather than a JSON round trip.
+
+Errors are typed: match categories with `errors.Is(err, dolmen.ErrConflict)` (also `ErrNotFound`, `ErrQuery`, `ErrInvalidRequest`, `ErrEmbedderUnavailable`, `ErrCanceled`, `ErrForbidden`, `ErrInternal`) and read `*dolmen.Error` with `errors.As` for the code and message; underlying causes stay wrapped. `Close` is terminal and idempotent — repeated Close returns the first result; operations after close return the local `dolmen.ErrClosed` sentinel — and one process holds at most one live store per data directory (symlinks resolve; opening a server and an embedded store on the same directory is unsupported).
+
+While dolmen is on v0, breaking Go API changes land in minor releases only; patch releases keep source and behavioral compatibility.
+
+A runnable end-to-end example lives in [`examples/basic`](examples/basic/main.go).
+
 ## MCP (agents)
 
 Dolmen speaks MCP over two transports — one dispatcher, two framings: `tools/list`, `tools/call`, the JSON-RPC 2.0 envelopes, and the error taxonomy are identical either way.
