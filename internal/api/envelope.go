@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -92,6 +93,39 @@ func newRequestID() string {
 
 func badRequest(format string, args ...any) *Error {
 	return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: fmt.Sprintf(format, args...)}
+}
+
+type unknownFieldError struct {
+	Field string
+}
+
+func (e *unknownFieldError) Error() string {
+	return "unknown field " + strconv.Quote(e.Field)
+}
+
+func unknownJSONField(err error) (string, bool) {
+	quoted, ok := strings.CutPrefix(err.Error(), "json: unknown field ")
+	if !ok {
+		return "", false
+	}
+	field, unquoteErr := strconv.Unquote(quoted)
+	if unquoteErr != nil {
+		return "", false
+	}
+	return field, true
+}
+
+func frameUnknownField(err error, op string) *Error {
+	var uf *unknownFieldError
+	var apiErr *Error
+	if !errors.As(err, &uf) || !errors.As(err, &apiErr) {
+		return nil
+	}
+	reframed := *apiErr
+	reframed.Message = fmt.Sprintf(
+		"unknown field %q on operation %s; see %s's InputSchema (MCP tools/list or /v1/openapi.json) for the accepted fields",
+		uf.Field, op, op)
+	return &reframed
 }
 
 func notFound(format string, args ...any) *Error {
