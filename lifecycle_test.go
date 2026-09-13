@@ -7,7 +7,19 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
+
+func TestChangeRetentionOptionPassesThrough(t *testing.T) {
+	st, err := Open(t.TempDir(), WithChangeRetention(time.Hour))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	if st.changeRetention != time.Hour {
+		t.Fatalf("retention option must be recorded, got %v", st.changeRetention)
+	}
+}
 
 func TestOpenRejectsInvalidOptions(t *testing.T) {
 	if _, err := Open(t.TempDir(), nil); err == nil {
