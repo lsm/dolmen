@@ -302,6 +302,7 @@ func TestTransportLevelErrors(t *testing.T) {
 		if errObj["code"] != "invalid_request" {
 			t.Fatalf("expected invalid_request envelope, got %v", errObj)
 		}
+		wantMessage(t, "malformed json", errObj["message"].(string), `^invalid JSON`)
 	})
 
 	t.Run("empty body on an op with required fields 400", func(t *testing.T) {
@@ -425,6 +426,70 @@ func TestEmptyBodyIsAnEmptyObject(t *testing.T) {
 		if !reflect.DeepEqual(emptyEnv["data"], objEnv["data"]) {
 			t.Fatalf("no-body data %v must equal {} data %v", emptyEnv["data"], objEnv["data"])
 		}
+	})
+}
+
+func TestDecodeErrorFraming(t *testing.T) {
+	h := newHarness(t)
+
+	t.Run("valid json unknown field leads with the field", func(t *testing.T) {
+		res, body := h.httpCallRaw("query", `{"namespace":"decf","table":"x","sql":"SELECT 1"}`, "application/json")
+		if res.StatusCode != 400 {
+			t.Fatalf("status %d, want 400: %s", res.StatusCode, body)
+		}
+		errObj := envelopeFromString(t, body)
+		if errObj["code"] != "invalid_request" {
+			t.Fatalf("expected invalid_request envelope, got %v", errObj)
+		}
+		msg := errObj["message"].(string)
+		wantMessage(t, "unknown field", msg, `^unknown field "table" on operation query; see query's InputSchema`)
+		if strings.Contains(msg, "invalid JSON") {
+			t.Fatalf("valid JSON must not be called invalid JSON: %q", msg)
+		}
+	})
+
+	t.Run("malformed json keeps the parse framing", func(t *testing.T) {
+		res, body := h.httpCallRaw("query", `{"namespace":"decf","sql":`, "application/json")
+		if res.StatusCode != 400 {
+			t.Fatalf("status %d, want 400: %s", res.StatusCode, body)
+		}
+		errObj := envelopeFromString(t, body)
+		if errObj["code"] != "invalid_request" {
+			t.Fatalf("expected invalid_request envelope, got %v", errObj)
+		}
+		msg := errObj["message"].(string)
+		wantMessage(t, "malformed json", msg, `^invalid JSON`)
+		if strings.Contains(msg, "unknown field") {
+			t.Fatalf("unparseable bytes must not be framed as an unknown field: %q", msg)
+		}
+	})
+
+	t.Run("trailing garbage after an unknown field keeps the parse framing", func(t *testing.T) {
+		res, body := h.httpCallRaw("query", `{"namespace":"decf","table":"x","sql":"SELECT 1"} garbage`, "application/json")
+		if res.StatusCode != 400 {
+			t.Fatalf("status %d, want 400: %s", res.StatusCode, body)
+		}
+		errObj := envelopeFromString(t, body)
+		if errObj["code"] != "invalid_request" {
+			t.Fatalf("expected invalid_request envelope, got %v", errObj)
+		}
+		msg := errObj["message"].(string)
+		wantMessage(t, "trailing garbage", msg, `^unexpected trailing content`)
+		if strings.Contains(msg, "unknown field") {
+			t.Fatalf("a document with invalid trailing bytes must not be framed as an unknown field: %q", msg)
+		}
+	})
+
+	t.Run("mcp tool call reports the same framing", func(t *testing.T) {
+		res := h.mcpCall("query", map[string]any{"namespace": "decf", "table": "x", "sql": "SELECT 1"})
+		if !res.isError() {
+			t.Fatalf("MCP query with unknown field must fail: %+v", res)
+		}
+		env := res.toolError()
+		if env["code"] != "invalid_request" {
+			t.Fatalf("MCP code %v, want invalid_request: %v", env["code"], env)
+		}
+		wantMessage(t, "mcp unknown field", env["message"].(string), `^unknown field "table" on operation query; see query's InputSchema`)
 	})
 }
 

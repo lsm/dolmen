@@ -316,6 +316,13 @@ func decodeData(body []byte, v any) error {
 	dec.UseNumber()
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
+		if field, ok := unknownJSONField(err); ok {
+			if tErr := dec.Decode(&struct{}{}); tErr != io.EOF {
+				return badRequest("unexpected trailing content after JSON body")
+			}
+			uf := &unknownFieldError{Field: field}
+			return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: uf.Error(), Cause: uf}
+		}
 		return badRequest("invalid JSON: %v", err)
 	}
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
@@ -421,7 +428,13 @@ func (s *Server) Dispatch(ctx context.Context, op string, body []byte) (any, err
 	if !ok {
 		return nil, notFound("unknown operation %q", op)
 	}
-	return def.Func(ctx, s, body)
+	res, err := def.Func(ctx, s, body)
+	if err != nil {
+		if framed := frameUnknownField(err, op); framed != nil {
+			return res, framed
+		}
+	}
+	return res, err
 }
 
 func OriginGuard(next http.Handler, extraOrigins []string) http.Handler {
