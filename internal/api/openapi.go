@@ -175,8 +175,12 @@ func components() map[string]any {
 }
 
 func requestBody(inputSchema map[string]any) map[string]any {
+	bodyRequired := true
+	if req, ok := inputSchema["required"].([]string); !ok || len(req) == 0 {
+		bodyRequired = false
+	}
 	return map[string]any{
-		"required": true,
+		"required": bodyRequired,
 		"content": map[string]any{
 			"application/json": map[string]any{
 				"schema": inputSchema,
