@@ -306,11 +306,20 @@ func TestServeStdioReadErrorDrainsWorkers(t *testing.T) {
 
 	x.sendCall("r-wait", "wait_for", map[string]any{"namespace": "drainerr", "table": "t", "timeout_ms": 12000})
 	time.Sleep(400 * time.Millisecond)
-	x.send(strings.Repeat("a", stdioMaxLine+1))
+	go func() { _, _ = x.inW.Write([]byte(strings.Repeat("a", stdioMaxLine+1) + "\n")) }()
 	first := x.recv()
 	if e, ok := first["error"].(map[string]any); !ok || e["code"] != float64(-32700) {
 		t.Fatalf("the oversize line must draw a parse error first, got %v", first)
 	}
+	got := make(chan string, 1)
+	go func() {
+		line, err := x.br.ReadString('\n')
+		if err != nil {
+			got <- ""
+			return
+		}
+		got <- line
+	}()
 	start := time.Now()
 	select {
 	case err := <-x.done:
@@ -323,9 +332,18 @@ func TestServeStdioReadErrorDrainsWorkers(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("ServeStdio did not return after the read error")
 	}
-	if m := x.recv(); m["id"] != "r-wait" {
+	line := <-got
+	if line == "" {
+		t.Fatal("stdout closed before the drained worker's response")
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(line), &m); err != nil {
+		t.Fatalf("drained worker response is not JSON: %q", line)
+	}
+	if m["id"] != "r-wait" {
 		t.Fatalf("expected the drained worker's response, got %v", m)
 	}
+	x.inW.Close()
 }
 
 func TestServeStdioNotificationsOnly(t *testing.T) {
