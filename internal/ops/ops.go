@@ -33,7 +33,12 @@ type ProviderError struct {
 	Cause error
 }
 
-func (e *ProviderError) Error() string { return e.Cause.Error() }
+func (e *ProviderError) Error() string {
+	if e.Cause == nil {
+		return "embedding provider failure"
+	}
+	return e.Cause.Error()
+}
 
 func (e *ProviderError) Unwrap() error { return e.Cause }
 
@@ -91,7 +96,7 @@ func PrepareVectorQuery(ctx context.Context, eng store.Engine, ns, table string,
 		}
 		qv, err := emb.EmbedQuery(ctx, in.Text)
 		if err != nil {
-			return store.VectorQuery{}, err
+			return store.VectorQuery{}, asProviderError(err)
 		}
 		if len(qv) == 0 {
 			return store.VectorQuery{}, derr.New(derr.InvalidRequest, "embedding provider returned a zero-dimensional vector for the query text")
