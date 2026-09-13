@@ -42,8 +42,8 @@ func (r *inflightRequests) start(parent context.Context, rawID json.RawMessage, 
 		r.byKey[key] = slot
 	}
 	r.slots[slot] = struct{}{}
-	r.mu.Unlock()
 	r.wg.Add(1)
+	r.mu.Unlock()
 	go func() {
 		defer r.wg.Done()
 		defer r.release(key, slot)
