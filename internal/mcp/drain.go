@@ -22,10 +22,7 @@ type inflightRequests struct {
 }
 
 func newInflightRequests() *inflightRequests {
-	return &inflightRequests{
-		byKey: map[string]*requestSlot{},
-		slots: map[*requestSlot]struct{}{},
-	}
+	return &inflightRequests{byKey: map[string]*requestSlot{}, slots: map[*requestSlot]struct{}{}}
 }
 
 func (r *inflightRequests) start(parent context.Context, rawID json.RawMessage, run func(context.Context)) {
@@ -116,8 +113,6 @@ func requestIDKey(raw []byte) string {
 		return strconv.Quote(id)
 	case json.Number:
 		return numberKey(id)
-	case bool:
-		return strconv.FormatBool(id)
 	}
 	return ""
 }
@@ -125,6 +120,9 @@ func requestIDKey(raw []byte) string {
 func numberKey(n json.Number) string {
 	if i, err := n.Int64(); err == nil {
 		return strconv.FormatInt(i, 10)
+	}
+	if u, err := strconv.ParseUint(n.String(), 10, 64); err == nil {
+		return strconv.FormatUint(u, 10)
 	}
 	if f, err := n.Float64(); err == nil {
 		if -1<<63 <= f && f < 1<<63 {
