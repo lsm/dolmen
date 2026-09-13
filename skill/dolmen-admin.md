@@ -71,7 +71,7 @@ operation whose input fields are all optional (for example `list_namespaces`) ca
 body at all. Responses are enveloped — success is
 `{"ok":true,"data":...}` and failure is `{"ok":false,"error":{"code","message","request_id"}}`
 with a stable machine-readable `code` (`invalid_request`, `not_found`, `query_error`, `conflict`,
-`forbidden`, `embedder_unavailable`, `internal_error`); `request_id` is the request's
+`forbidden`, `embedder_unavailable`, `canceled`, `internal_error`); `request_id` is the request's
 `X-Request-Id` header when one was sent, otherwise a server-generated id, echoed back as the
 `X-Request-Id` response header — when a message says the underlying cause is in the server log
 under this id, this is the id. The full list of operations and their request schemas is in the OpenAPI document (`GET /v1/openapi.json`).

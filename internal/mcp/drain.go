@@ -25,12 +25,12 @@ func newInflightRequests() *inflightRequests {
 	return &inflightRequests{byKey: map[string]*requestSlot{}, slots: map[*requestSlot]struct{}{}}
 }
 
-func (r *inflightRequests) start(parent context.Context, rawID json.RawMessage, run func(context.Context)) {
+func (r *inflightRequests) start(parent, gate context.Context, rawID json.RawMessage, run func(context.Context)) {
 	ctx, cancel := context.WithCancel(parent)
 	slot := &requestSlot{cancel: cancel}
 	key := requestIDKey(rawID)
 	r.mu.Lock()
-	if r.draining {
+	if r.draining || gate.Err() != nil {
 		r.mu.Unlock()
 		cancel()
 		return

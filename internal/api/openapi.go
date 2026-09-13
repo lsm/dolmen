@@ -78,6 +78,7 @@ var errorCodeEnum = []string{
 	string(ErrCodeConflict),
 	string(ErrCodeForbidden),
 	string(ErrCodeEmbedderUnavailable),
+	string(ErrCodeCanceled),
 	string(ErrCodeInternal),
 }
 

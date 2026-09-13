@@ -40,6 +40,7 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 		writeMu.Lock()
 		defer writeMu.Unlock()
 		if err := enc.Encode(resp); err != nil {
+			inflight.seal()
 			select {
 			case writeErr <- err:
 			default:
@@ -62,10 +63,6 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 		if err := sc.Err(); err != nil {
 			lines <- stdioLine{err: err}
 		}
-	}()
-	go func() {
-		<-ctx.Done()
-		inflight.seal()
 	}()
 	for {
 		select {
@@ -113,7 +110,7 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 				}
 				continue
 			}
-			inflight.start(context.Background(), msg.ID, func(reqCtx context.Context) {
+			inflight.start(context.Background(), ctx, msg.ID, func(reqCtx context.Context) {
 				result, rpcErr := s.handle(api.WithRequestID(reqCtx, api.NewRequestID()), msg, instr)
 				if rpcErr != nil {
 					write(rpcErrorEnvelope(msg.ID, rpcErr.Code, rpcErr.Message))

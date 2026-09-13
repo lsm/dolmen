@@ -98,7 +98,7 @@ it does not block the core. Multiple existing write calls are separate commits.
 
 Expose `Error`, `ErrorCode`, and category sentinels from the root package. Preserve
 the existing taxonomy: `invalid_request`, `not_found`, `query_error`, `conflict`,
-`forbidden`, `embedder_unavailable`, and `internal_error`. The forbidden category is
+`forbidden`, `embedder_unavailable`, `canceled`, and `internal_error`. The forbidden category is
 reserved for shared classification; trusted embedded access does not introduce auth.
 
 `Error` carries a stable code and human-readable message, supports `Unwrap`, and
