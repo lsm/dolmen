@@ -82,7 +82,10 @@ All successful `/v1/{operation}` POSTs return `{"ok":true,"data":{...}}`; errors
 request's `X-Request-Id` header when one was sent, otherwise a server-generated id, echoed back as
 the `X-Request-Id` response header so any error can be correlated with the server log — with a
 matching 4xx/5xx status. Error codes are stable for branching: `invalid_request`, `not_found`,
-`query_error`, `conflict`, `forbidden`, `embedder_unavailable`, `internal_error`.
+`query_error`, `conflict`, `forbidden`, `embedder_unavailable`, `canceled`, `internal_error`.
+`canceled` means the request was cancelled before it completed (over the stdio transport, by a
+client cancellation notification or the shutdown drain); the operation may or may not have
+finished server-side — check with a query before retrying a write.
 `embedder_unavailable` (503) means the server's embedding provider could not load its model — with
 the `local` provider, typically the first-use Hugging Face download failing — and its message names
 the offline remediations (pre-seed the model cache, or point `DOLMEN_EMBED_MODEL` at a local model
@@ -391,10 +394,12 @@ Local provider notes:
 
 Dolmen reads its startup configuration from command-line flags and environment
 variables. Unknown flags and positional arguments are rejected with an error.
+`dolmen mcp` takes the same flags and environment and serves the MCP surface
+over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 
 | Flag | Environment variable | Default | Description |
 |---|---|---|---|
-| `-addr` | `DOLMEN_ADDR` | `127.0.0.1:8790` | HTTP/MCP listen address |
+| `-addr` | `DOLMEN_ADDR` | `127.0.0.1:8790` | HTTP listen address (`dolmen mcp` does not listen) |
 | `-data` | `DOLMEN_DATA` | `data` | Data directory (one SQLite file per namespace) |
 | `-version` | — | — | Print version and exit |
 | `-prefix` | `DOLMEN_PREFIX` | — | Mount all endpoints (`/healthz`, `/version`, `/skills*`, `/v1/*`, `/mcp`) under this URL prefix. Use with a pass-through proxy that forwards the full path |
@@ -494,13 +499,25 @@ proxy is not.
 
 ## MCP (agents)
 
+Dolmen speaks MCP over two transports — one dispatcher, two framings: `tools/list`, `tools/call`, the JSON-RPC 2.0 envelopes, and the error taxonomy are identical either way.
+
+**HTTP** (`./dolmen`) — one server, many clients, browser and curl access:
+
 ```bash
 claude mcp add --transport http dolmen http://127.0.0.1:8790/mcp
 ```
 
+**stdio** (`dolmen mcp`) — for hosts that launch the server as a subprocess (Claude Desktop, Cursor, any non-Go client that can spawn a process). One process serves one data directory: newline-delimited JSON-RPC 2.0 on stdin/stdout, stdout carries protocol only (all logs go to stderr), and the process serves until stdin closes or SIGTERM/SIGINT arrives, then drains in-flight requests (a 5s grace, then cancellation); a second SIGINT/SIGTERM during a stuck drain kills the process immediately:
+
+```bash
+claude mcp add dolmen -- /path/to/dolmen mcp -data /path/to/data
+```
+
+`dolmen mcp` takes the same flags and environment as `dolmen`; the HTTP-only ones (`-addr`, `-max-subscription-age`, `DOLMEN_ALLOWED_ORIGINS`) have no effect. The `initialize` handshake works as over HTTP (its instructions describe the stdio transport; set `-base-url` when an HTTP deployment also exists, and its links appear there). Over stdio there is no `MCP-Protocol-Version` header, so version negotiation happens in `initialize` alone.
+
 The MCP server exposes the same twenty-three operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
 
-Skill distribution is built into the server. `GET /skills` returns a JSON manifest with links to the layered skill markdown; `GET /skills/dolmen` is the end-user skill and `GET /skills/dolmen-admin` is the developer skill. Agents should fetch the skill from the running binary instead of copying a static file.
+Skill distribution is built into the server. `GET /skills` returns a JSON manifest with links to the layered skill markdown; `GET /skills/dolmen` is the end-user skill and `GET /skills/dolmen-admin` is the developer skill. Agents should fetch the skill from the running binary instead of copying a static file. Over `dolmen mcp` there is no HTTP listener — the skills are served by the HTTP deployment named by `-base-url`, when one exists.
 
 ## Live changes (SSE subscribe)
 

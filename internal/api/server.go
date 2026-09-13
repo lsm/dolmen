@@ -613,7 +613,7 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	if reqID == "" {
 
-		reqID = newRequestID()
+		reqID = NewRequestID()
 	}
 	w.Header().Set("X-Request-Id", reqID)
 

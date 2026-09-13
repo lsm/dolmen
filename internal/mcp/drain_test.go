@@ -15,9 +15,9 @@ func TestRequestIDKeyNormalization(t *testing.T) {
 		want string
 	}{
 		{`"a"`, `"a"`},
-		{`"a"`, `"a"`},
-		{`"A"`, `"A"`},
-		{`"e-wait"`, `"e-wait"`},
+		{`"\u0061"`, `"a"`},
+		{`"\u0041"`, `"A"`},
+		{`"\u0065-wait"`, `"e-wait"`},
 		{`1`, `1`},
 		{`1.0`, `1`},
 		{`1e0`, `1`},
@@ -113,13 +113,13 @@ func awaitStarted(t *testing.T, workers ...*fakeWorker) {
 
 func TestInflightCancelKeyNormalizesSpellings(t *testing.T) {
 	for _, tc := range []struct{ registered, cancelWith string }{
-		{`"e-wait"`, `"e-wait"`},
+		{`"\u0065-wait"`, `"e-wait"`},
 		{` 1e0 `, `1`},
 		{`"1"`, `"1"`},
 	} {
 		r := newInflightRequests()
 		w := newFakeWorker()
-		r.start(context.Background(), json.RawMessage(tc.registered), w.exitOnCancel)
+		r.start(context.Background(), context.Background(), json.RawMessage(tc.registered), w.exitOnCancel)
 		awaitStarted(t, w)
 		if !r.cancelKey(tc.cancelWith) {
 			t.Fatalf("cancelKey(%s) must reach the request registered as %s", tc.cancelWith, tc.registered)
@@ -136,9 +136,9 @@ func TestInflightCancelKeyNormalizesSpellings(t *testing.T) {
 func TestInflightDuplicateIDKeepsEveryWorkerReachable(t *testing.T) {
 	r := newInflightRequests()
 	first, second := newFakeWorker(), newFakeWorker()
-	r.start(context.Background(), json.RawMessage(`"dup"`), first.exitOnCancel)
+	r.start(context.Background(), context.Background(), json.RawMessage(`"dup"`), first.exitOnCancel)
 	awaitStarted(t, first)
-	r.start(context.Background(), json.RawMessage(`"dup"`), second.exitOnCancel)
+	r.start(context.Background(), context.Background(), json.RawMessage(`"dup"`), second.exitOnCancel)
 	awaitStarted(t, second)
 	if !r.cancelKey(`"dup"`) {
 		t.Fatal("cancelKey must reach the latest worker under a duplicate id")
@@ -151,9 +151,9 @@ func TestInflightDuplicateIDKeepsEveryWorkerReachable(t *testing.T) {
 func TestInflightDuplicateIDReleaseKeepsLatestEntry(t *testing.T) {
 	r := newInflightRequests()
 	first, second := newFakeWorker(), newFakeWorker()
-	r.start(context.Background(), json.RawMessage(`"dup"`), first.ignoreCancel)
+	r.start(context.Background(), context.Background(), json.RawMessage(`"dup"`), first.ignoreCancel)
 	awaitStarted(t, first)
-	r.start(context.Background(), json.RawMessage(`"dup"`), second.exitOnCancel)
+	r.start(context.Background(), context.Background(), json.RawMessage(`"dup"`), second.exitOnCancel)
 	awaitStarted(t, second)
 	close(first.released)
 	live := 0
@@ -180,7 +180,7 @@ func TestInflightDuplicateIDReleaseKeepsLatestEntry(t *testing.T) {
 func TestInflightStartRefusedOnceDraining(t *testing.T) {
 	r := newInflightRequests()
 	stuck := newFakeWorker()
-	r.start(context.Background(), json.RawMessage(`"stuck"`), stuck.ignoreCancel)
+	r.start(context.Background(), context.Background(), json.RawMessage(`"stuck"`), stuck.ignoreCancel)
 	awaitStarted(t, stuck)
 	drained := make(chan bool, 1)
 	go func() {
@@ -200,7 +200,7 @@ func TestInflightStartRefusedOnceDraining(t *testing.T) {
 		t.Fatal("drain must mark the registry draining")
 	}
 	late := newFakeWorker()
-	r.start(context.Background(), json.RawMessage(`"late"`), late.exitOnCancel)
+	r.start(context.Background(), context.Background(), json.RawMessage(`"late"`), late.exitOnCancel)
 	select {
 	case <-late.started:
 		t.Fatal("start during drain must not spawn the worker")
@@ -219,13 +219,37 @@ func TestInflightStartRefusedOnceDraining(t *testing.T) {
 func TestInflightNonCanonicalIDStaysDrainReachable(t *testing.T) {
 	r := newInflightRequests()
 	w := newFakeWorker()
-	r.start(context.Background(), json.RawMessage(`null`), w.exitOnCancel)
+	r.start(context.Background(), context.Background(), json.RawMessage(`null`), w.exitOnCancel)
 	awaitStarted(t, w)
 	if r.cancelKey(``) || r.cancelKey(`null`) {
 		t.Fatal("an id that does not canonicalize must not be keyed")
 	}
 	if !r.drain(context.Background(), 50*time.Millisecond, 2*time.Second) {
 		t.Fatal("a worker without a canonical key must still be drained by the cancel-all sweep")
+	}
+}
+
+func TestInflightSealRefusesNewWork(t *testing.T) {
+	r := newInflightRequests()
+	sealed := make(chan struct{})
+	go func() {
+		r.seal()
+		close(sealed)
+	}()
+	select {
+	case <-sealed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("seal must return")
+	}
+	w := newFakeWorker()
+	r.start(context.Background(), context.Background(), json.RawMessage(`"post-seal"`), w.exitOnCancel)
+	select {
+	case <-w.started:
+		t.Fatal("start after seal must not spawn the worker")
+	default:
+	}
+	if !r.drain(context.Background(), 2*time.Second, 2*time.Second) {
+		t.Fatal("drain on a sealed idle registry must report a clean join")
 	}
 }
 
@@ -240,7 +264,7 @@ func TestDrainCancelsResponsiveWorkers(t *testing.T) {
 	t.Run("stdin EOF", func(t *testing.T) {
 		r := newInflightRequests()
 		w := newFakeWorker()
-		r.start(context.Background(), json.RawMessage(`"w"`), w.exitOnCancel)
+		r.start(context.Background(), context.Background(), json.RawMessage(`"w"`), w.exitOnCancel)
 		awaitStarted(t, w)
 		if !r.drain(context.Background(), 50*time.Millisecond, 2*time.Second) {
 			t.Fatal("drain after stdin EOF must cancel and join a context-aware worker")
@@ -250,7 +274,7 @@ func TestDrainCancelsResponsiveWorkers(t *testing.T) {
 		parent, cancelParent := context.WithCancel(context.Background())
 		r := newInflightRequests()
 		w := newFakeWorker()
-		r.start(parent, json.RawMessage(`"w"`), w.exitOnCancel)
+		r.start(parent, parent, json.RawMessage(`"w"`), w.exitOnCancel)
 		awaitStarted(t, w)
 		cancelParent()
 		if !r.drain(context.Background(), 2*time.Second, 2*time.Second) {
@@ -260,8 +284,8 @@ func TestDrainCancelsResponsiveWorkers(t *testing.T) {
 	t.Run("read error", func(t *testing.T) {
 		r := newInflightRequests()
 		gone, live := newFakeWorker(), newFakeWorker()
-		r.start(context.Background(), json.RawMessage(`"gone"`), gone.immediately)
-		r.start(context.Background(), json.RawMessage(`"live"`), live.exitOnCancel)
+		r.start(context.Background(), context.Background(), json.RawMessage(`"gone"`), gone.immediately)
+		r.start(context.Background(), context.Background(), json.RawMessage(`"live"`), live.exitOnCancel)
 		awaitStarted(t, gone, live)
 		if !r.drain(context.Background(), 50*time.Millisecond, 2*time.Second) {
 			t.Fatal("drain after a read error must cancel and join the still-running worker")
@@ -272,8 +296,8 @@ func TestDrainCancelsResponsiveWorkers(t *testing.T) {
 func TestDrainBoundHoldsUnderUnresponsiveWorkers(t *testing.T) {
 	r := newInflightRequests()
 	stuckA, stuckB := newFakeWorker(), newFakeWorker()
-	r.start(context.Background(), json.RawMessage(`"stuck-a"`), stuckA.ignoreCancel)
-	r.start(context.Background(), json.RawMessage(`"stuck-b"`), stuckB.ignoreCancel)
+	r.start(context.Background(), context.Background(), json.RawMessage(`"stuck-a"`), stuckA.ignoreCancel)
+	r.start(context.Background(), context.Background(), json.RawMessage(`"stuck-b"`), stuckB.ignoreCancel)
 	awaitStarted(t, stuckA, stuckB)
 	r.cancelKey(`"stuck-a"`)
 	start := time.Now()
@@ -293,7 +317,7 @@ func TestDrainBoundHoldsUnderUnresponsiveWorkers(t *testing.T) {
 func TestDrainContextInterruptCutsTheWait(t *testing.T) {
 	r := newInflightRequests()
 	stuck := newFakeWorker()
-	r.start(context.Background(), json.RawMessage(`"stuck"`), stuck.ignoreCancel)
+	r.start(context.Background(), context.Background(), json.RawMessage(`"stuck"`), stuck.ignoreCancel)
 	awaitStarted(t, stuck)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -323,7 +347,7 @@ func TestInflightConcurrentStartsAndCancels(t *testing.T) {
 			for j := 0; j < 50; j++ {
 				key := fmt.Sprintf(`"c-%d-%d"`, i, j)
 				w := newFakeWorker()
-				r.start(context.Background(), json.RawMessage(key), w.exitOnCancel)
+				r.start(context.Background(), context.Background(), json.RawMessage(key), w.exitOnCancel)
 				r.cancelKey(key)
 			}
 		}(i)
@@ -331,5 +355,24 @@ func TestInflightConcurrentStartsAndCancels(t *testing.T) {
 	wg.Wait()
 	if !r.drain(context.Background(), 2*time.Second, 2*time.Second) {
 		t.Fatal("after every keyed cancel, drain must join every worker")
+	}
+}
+
+func TestInflightStartRefusesWhenGateCanceled(t *testing.T) {
+	r := newInflightRequests()
+	gate, cancelGate := context.WithCancel(context.Background())
+	cancelGate()
+	w := newFakeWorker()
+	r.start(context.Background(), gate, json.RawMessage(`"gated"`), w.exitOnCancel)
+	select {
+	case <-w.started:
+		t.Fatal("start with a canceled gate must not spawn the worker")
+	default:
+	}
+	if r.cancelKey(`"gated"`) {
+		t.Fatal("a gate-refused start must not register a keyed entry")
+	}
+	if !r.drain(context.Background(), 2*time.Second, 2*time.Second) {
+		t.Fatal("drain on a gate-refused registry must report a clean join")
 	}
 }

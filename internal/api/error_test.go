@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -385,5 +386,21 @@ func TestErrorEnvelopeGeneratesRequestIDWhenNotProvided(t *testing.T) {
 	}
 	if got := res.Header.Get("X-Request-Id"); got != reqID {
 		t.Fatalf("X-Request-Id header %q must match envelope request_id %q", got, reqID)
+	}
+}
+
+func TestWrapErrorClassifiesWrappedCancellation(t *testing.T) {
+	if got := WrapError(wrapStoreErr(context.Canceled)); got.Code != ErrCodeCanceled {
+		t.Fatalf("a store-wrapped cancellation must classify as canceled, got %s", got.Code)
+	}
+	teaching := &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: "specific", Cause: context.Canceled}
+	if got := WrapError(teaching); got.Code != ErrCodeInvalid {
+		t.Fatalf("a specific teaching error wrapping a cancellation must keep its own code, got %s", got.Code)
+	}
+	if got := WrapError(context.Canceled); got.Code != ErrCodeCanceled {
+		t.Fatalf("a bare cancellation must classify as canceled, got %s", got.Code)
+	}
+	if got := WrapError(context.DeadlineExceeded); got.Code != ErrCodeInternal {
+		t.Fatalf("a deadline must keep the internal classification, got %s", got.Code)
 	}
 }

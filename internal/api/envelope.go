@@ -31,6 +31,8 @@ const (
 
 	ErrCodeEmbedderUnavailable ErrorCode = "embedder_unavailable"
 
+	ErrCodeCanceled ErrorCode = "canceled"
+
 	ErrCodeInternal ErrorCode = "internal_error"
 )
 
@@ -80,10 +82,10 @@ func RequestIDFor(r *http.Request) string {
 	if id := requestIDFromHeader(r); id != "" {
 		return id
 	}
-	return newRequestID()
+	return NewRequestID()
 }
 
-func newRequestID() string {
+func NewRequestID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return fmt.Sprintf("req-%x", time.Now().UnixNano())
@@ -215,13 +217,23 @@ func wrapStoreErr(err error) *Error {
 	return &Error{Status: http.StatusInternalServerError, Code: ErrCodeInternal, Message: "internal error", Cause: err}
 }
 
+func canceled(err error) *Error {
+	return &Error{Status: http.StatusOK, Code: ErrCodeCanceled, Message: "the request was cancelled before it completed; the operation may or may not have finished server-side — check with a query before retrying a write", Cause: err}
+}
+
 func WrapError(err error) *Error {
 	if err == nil {
 		return nil
 	}
 	var apiErr *Error
 	if errors.As(err, &apiErr) {
+		if apiErr.Code == ErrCodeInternal && errors.Is(apiErr, context.Canceled) {
+			return canceled(err)
+		}
 		return apiErr
+	}
+	if errors.Is(err, context.Canceled) {
+		return canceled(err)
 	}
 	return internal(err)
 }
