@@ -72,6 +72,10 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 			drain()
 			return err
 		case line, ok := <-lines:
+			if ctx.Err() != nil {
+				drain()
+				return nil
+			}
 			if !ok {
 				drain()
 				return nil

@@ -418,6 +418,54 @@ func TestServeStdioReadErrorDrainsWorkers(t *testing.T) {
 	x.inW.Close()
 }
 
+func TestServeStdioLateLineAfterSignalIsNotAdmitted(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+	x := newStdioSessionCtx(t, newStdioServer(t), parent)
+	x.seedTable("late")
+
+	x.sendCall("l-wait", "wait_for", map[string]any{"namespace": "late", "table": "t", "timeout_ms": 8000})
+	time.Sleep(400 * time.Millisecond)
+	cancelParent()
+	x.sendCall("l-late", "create_namespace", map[string]any{"namespace": "post-shutdown"})
+	select {
+	case err := <-x.done:
+		if err != nil {
+			t.Fatalf("ServeStdio after signal: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("ServeStdio did not return after the signal drain")
+	}
+	for {
+		ch := make(chan string, 1)
+		go func() {
+			line, err := x.br.ReadString('\n')
+			if err != nil {
+				close(ch)
+				return
+			}
+			ch <- line
+		}()
+		select {
+		case line, ok := <-ch:
+			if !ok {
+				x.inW.Close()
+				return
+			}
+			var m map[string]any
+			if err := json.Unmarshal([]byte(line), &m); err != nil {
+				t.Fatalf("response is not JSON: %q", line)
+			}
+			if m["id"] == "l-late" {
+				t.Fatal("a request that arrives after shutdown begins must not be admitted or answered")
+			}
+		case <-time.After(2 * time.Second):
+			x.inW.Close()
+			return
+		}
+	}
+}
+
 func TestServeStdioNotificationsOnly(t *testing.T) {
 	s := newStdioServer(t)
 	msgs, err := runStdio(t, s, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"method\":\"cancelled\",\"params\":{}}\n")
