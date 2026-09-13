@@ -316,6 +316,18 @@ func TestTransportLevelErrors(t *testing.T) {
 		wantMessage(t, "empty body", errObj["message"].(string), `invalid namespace ""`)
 	})
 
+	t.Run("bodyless headerless post on an op with required fields 400", func(t *testing.T) {
+		res, body := h.httpCallRaw("list_tables", ``, "")
+		if res.StatusCode != 400 {
+			t.Fatalf("status %d, want 400: %s", res.StatusCode, body)
+		}
+		errObj := envelopeFromString(t, body)
+		if errObj["code"] != "invalid_request" {
+			t.Fatalf("expected invalid_request envelope, got %v", errObj)
+		}
+		wantMessage(t, "bodyless headerless", errObj["message"].(string), `invalid namespace ""`)
+	})
+
 	t.Run("trailing content 400", func(t *testing.T) {
 		res, _ := h.httpCallRaw("list_tables", `{"namespace":"x"} {"namespace":"y"}`, "application/json")
 		if res.StatusCode != 400 {
@@ -382,6 +394,20 @@ func TestEmptyBodyIsAnEmptyObject(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("zero-arg op with no body and no content-type", func(t *testing.T) {
+		res, body := h.httpCallRaw("list_namespaces", ``, "")
+		if res.StatusCode != 200 {
+			t.Fatalf("status %d, want 200: %s", res.StatusCode, body)
+		}
+		var env map[string]any
+		if err := json.Unmarshal([]byte(body), &env); err != nil {
+			t.Fatalf("response is not JSON: %q", body)
+		}
+		if env["ok"] != true {
+			t.Fatalf("expected ok envelope, got %v", env)
+		}
+	})
 
 	t.Run("no body and {} answer identically", func(t *testing.T) {
 		res, raw := h.httpCallRaw("list_namespaces", ``, "application/json")

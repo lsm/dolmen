@@ -453,7 +453,7 @@ func OriginGuard(next http.Handler, extraOrigins []string) http.Handler {
 				return
 			}
 		}
-		if r.Method == http.MethodPost {
+		if r.Method == http.MethodPost && r.ContentLength != 0 {
 			mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 			if err != nil || strings.ToLower(mt) != "application/json" {
 				writeError(w, r, &Error{Status: http.StatusUnsupportedMediaType, Code: ErrCodeInvalid, Message: "content-type must be application/json"})
