@@ -15,6 +15,9 @@ import (
 )
 
 func (s *Store) ListNamespaces(ctx context.Context, prefix string, bindings []AuthBinding) ([]string, error) {
+	if s.closed.Load() {
+		return nil, ErrClosed
+	}
 	var out []string
 	root, at := s.dir, ""
 	if prefix != "" {
@@ -149,6 +152,9 @@ func (s *Store) CreateNamespace(ctx context.Context, nsName string, parentNsGen 
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed.Load() {
+		return ErrClosed
+	}
 
 	if err := s.verifyNSDirs(nsName); err != nil {
 		return err
@@ -185,6 +191,9 @@ func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte
 	path := s.nsPath(nsName)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed.Load() {
+		return ErrClosed
+	}
 	if err := s.verifyNSDirs(nsName); err != nil {
 		return err
 	}
