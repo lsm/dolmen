@@ -89,7 +89,7 @@ func runMain(m *testing.M) int {
 		return 1
 	}
 	app.binPath = filepath.Join(binDir, "dolmen")
-	build := exec.Command(goBin, "build", "-o", app.binPath, ".")
+	build := exec.Command(goBin, "build", "-o", app.binPath, "./cmd/dolmen")
 	build.Dir = root
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {

@@ -43,7 +43,7 @@ func dolmenBinary(t *testing.T) string {
 			return
 		}
 		stdioBinPath = filepath.Join(dir, "dolmen")
-		build := exec.Command("go", "build", "-o", stdioBinPath, ".")
+		build := exec.Command("go", "build", "-o", stdioBinPath, "./cmd/dolmen")
 		build.Dir = root
 		if out, err := build.CombinedOutput(); err != nil {
 			stdioBinErr = fmt.Errorf("go build: %v: %s", err, out)

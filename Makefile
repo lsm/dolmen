@@ -22,7 +22,7 @@ EMBED_MODELS ?= \
 	intfloat/multilingual-e5-small@614241f622f53c4eeff9890bdc4f31cfecc418b3
 
 build:
-	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o dolmen .
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o dolmen ./cmd/dolmen
 
 test:
 	go vet ./... && go test ./...
@@ -31,7 +31,7 @@ race:
 	go vet ./... && go test -race ./...
 
 run:
-	go run . -addr 127.0.0.1:8790 -data ./data
+	go run ./cmd/dolmen -addr 127.0.0.1:8790 -data ./data
 
 clean:
 	rm -rf dolmen dolmen.exe $(RELEASE_DIR)
@@ -45,7 +45,7 @@ release: clean
 		[ "$$goos" = "windows" ] && ext=".exe"; \
 		out="$(RELEASE_DIR)/dolmen-$(VERSION)-$$goos-$$goarch$$ext"; \
 		echo "Building $$out"; \
-		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch go build -trimpath -ldflags "$(LDFLAGS)" -o "$$out" . || exit 1; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch go build -trimpath -ldflags "$(LDFLAGS)" -o "$$out" ./cmd/dolmen || exit 1; \
 	done
 
 release-sbom:
