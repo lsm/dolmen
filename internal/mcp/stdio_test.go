@@ -300,6 +300,34 @@ func TestServeStdioEOFDrainCancelsLingeringWorkers(t *testing.T) {
 	<-got
 }
 
+func TestServeStdioReadErrorDrainsWorkers(t *testing.T) {
+	x := newStdioSession(t, newStdioServer(t))
+	x.seedTable("drainerr")
+
+	x.sendCall("r-wait", "wait_for", map[string]any{"namespace": "drainerr", "table": "t", "timeout_ms": 12000})
+	time.Sleep(400 * time.Millisecond)
+	x.send(strings.Repeat("a", stdioMaxLine+1))
+	first := x.recv()
+	if e, ok := first["error"].(map[string]any); !ok || e["code"] != float64(-32700) {
+		t.Fatalf("the oversize line must draw a parse error first, got %v", first)
+	}
+	start := time.Now()
+	select {
+	case err := <-x.done:
+		if err == nil {
+			t.Fatal("an oversize line must fail ServeStdio")
+		}
+		if elapsed := time.Since(start); elapsed > 9*time.Second {
+			t.Fatalf("the read-error return must drain lingering workers (grace + cancel + join), not wait out their timeout (returned after %v)", elapsed)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("ServeStdio did not return after the read error")
+	}
+	if m := x.recv(); m["id"] != "r-wait" {
+		t.Fatalf("expected the drained worker's response, got %v", m)
+	}
+}
+
 func TestServeStdioNotificationsOnly(t *testing.T) {
 	s := newStdioServer(t)
 	msgs, err := runStdio(t, s, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"method\":\"cancelled\",\"params\":{}}\n")

@@ -151,6 +151,7 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 				if errors.Is(line.err, bufio.ErrTooLong) {
 					write(rpcErrorEnvelope(nil, jsonRPCParseError, fmt.Sprintf("stdio line exceeds the %d MiB limit", stdioMaxLine>>20)))
 				}
+				drain()
 				return fmt.Errorf("read stdin: %w", line.err)
 			}
 			trimmed := bytes.TrimSpace(line.data)
