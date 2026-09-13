@@ -294,7 +294,7 @@ type inferReq struct {
 
 func decode(body []byte, v any) error {
 	if len(body) == 0 {
-		return badRequest("empty request body")
+		body = []byte("{}")
 	}
 	var probe any
 	probeDec := json.NewDecoder(bytes.NewReader(body))
@@ -310,7 +310,7 @@ func decode(body []byte, v any) error {
 
 func decodeData(body []byte, v any) error {
 	if len(body) == 0 {
-		return badRequest("empty request body")
+		body = []byte("{}")
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
@@ -326,7 +326,7 @@ func decodeData(body []byte, v any) error {
 
 func decodeAllowNullArgs(body []byte, v any) error {
 	if len(body) == 0 {
-		return badRequest("empty request body")
+		body = []byte("{}")
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
@@ -453,7 +453,7 @@ func OriginGuard(next http.Handler, extraOrigins []string) http.Handler {
 				return
 			}
 		}
-		if r.Method == http.MethodPost {
+		if r.Method == http.MethodPost && r.ContentLength != 0 {
 			mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 			if err != nil || strings.ToLower(mt) != "application/json" {
 				writeError(w, r, &Error{Status: http.StatusUnsupportedMediaType, Code: ErrCodeInvalid, Message: "content-type must be application/json"})

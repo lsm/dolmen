@@ -222,12 +222,18 @@ func assertOpenAPIDoc(t *testing.T, doc map[string]any) {
 			t.Fatalf("summary missing for %s", name)
 		}
 
+		def := Ops[name]
+
 		reqBody, ok := op["requestBody"].(map[string]any)
 		if !ok {
 			t.Fatalf("missing requestBody for %s", name)
 		}
-		if reqBody["required"] != true {
-			t.Fatalf("requestBody for %s must be required", name)
+		wantBodyRequired := true
+		if req, ok := def.InputSchema["required"].([]string); !ok || len(req) == 0 {
+			wantBodyRequired = false
+		}
+		if reqBody["required"] != wantBodyRequired {
+			t.Fatalf("requestBody.required for %s = %v, want %v", name, reqBody["required"], wantBodyRequired)
 		}
 		reqContent, ok := reqBody["content"].(map[string]any)
 		if !ok {
@@ -242,7 +248,6 @@ func assertOpenAPIDoc(t *testing.T, doc map[string]any) {
 			t.Fatalf("request schema for %s must be a JSON object", name)
 		}
 
-		def := Ops[name]
 		if def.OutputSchema == nil {
 			t.Fatalf("%s: OutputSchema not set in OpDef", name)
 		}

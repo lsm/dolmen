@@ -59,7 +59,9 @@ no user is available to re-run it, use the JSON-RPC fallback below instead.
 ## Raw HTTP
 
 Every tool in this skill is also a plain HTTP operation: `POST /v1/{operation}` with the tool's input
-as the JSON body (`Content-Type: application/json`). Responses are enveloped — success is
+as the JSON body (`Content-Type: application/json`). An empty request body counts as `{}`, so an
+operation whose input fields are all optional (for example `list_namespaces`) can be called with no
+body at all. Responses are enveloped — success is
 `{"ok":true,"data":...}` and failure is `{"ok":false,"error":{"code","message","request_id"}}`
 with a stable machine-readable `code` (`invalid_request`, `not_found`, `query_error`, `conflict`,
 `forbidden`, `embedder_unavailable`, `internal_error`); `request_id` is the request's
