@@ -253,9 +253,51 @@ func TestServeStdioCancellationNotification(t *testing.T) {
 		t.Fatalf("the cancellation notification must abort the in-flight wait (response after %v; the 15s timeout would still be running)", elapsed)
 	}
 
+	x.send(`{"jsonrpc":"2.0","id":"\u0065-wait","method":"tools/call","params":{"name":"wait_for","arguments":{"namespace":"cancel","table":"t","timeout_ms":15000}}}`)
+	time.Sleep(400 * time.Millisecond)
+	start = time.Now()
+	x.send(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"e-wait"}}`)
+	m = x.recv()
+	if m["id"] != "e-wait" {
+		t.Fatalf("expected the escaped-id request's response, got %v", m)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("a request id spelled with JSON escapes must cancel the same as its canonical form (response after %v)", elapsed)
+	}
+
 	if err := x.close(); err != nil {
 		t.Fatalf("ServeStdio: %v", err)
 	}
+}
+
+func TestServeStdioEOFDrainCancelsLingeringWorkers(t *testing.T) {
+	x := newStdioSession(t, newStdioServer(t))
+	x.seedTable("drain")
+
+	x.sendCall("d-wait", "wait_for", map[string]any{"namespace": "drain", "table": "t", "timeout_ms": 12000})
+	time.Sleep(400 * time.Millisecond)
+	got := make(chan struct{})
+	go func() {
+		defer close(got)
+		if m := x.recv(); m["id"] != "d-wait" {
+			x.t.Errorf("expected the d-wait response, got %v", m)
+		}
+	}()
+
+	x.inW.Close()
+	start := time.Now()
+	select {
+	case err := <-x.done:
+		if err != nil {
+			t.Fatalf("ServeStdio: %v", err)
+		}
+		if elapsed := time.Since(start); elapsed > 9*time.Second {
+			t.Fatalf("stdin EOF must not wait out a lingering worker's full timeout (returned after %v; the drain should cancel it after the 5s grace)", elapsed)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("ServeStdio did not return after stdin EOF")
+	}
+	<-got
 }
 
 func TestServeStdioNotificationsOnly(t *testing.T) {

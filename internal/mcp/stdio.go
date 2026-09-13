@@ -57,16 +57,34 @@ func (c *stdioCancels) cancel(key string) bool {
 	return ok
 }
 
+func (c *stdioCancels) cancelAll() {
+	c.mu.Lock()
+	for _, cancel := range c.byID {
+		cancel()
+	}
+	c.mu.Unlock()
+}
+
 func cancelledRequestKey(raw []byte) string {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var params struct {
-		RequestID any `json:"requestId"`
+		RequestID json.RawMessage `json:"requestId"`
 	}
-	if err := dec.Decode(&params); err != nil || params.RequestID == nil {
+	if err := dec.Decode(&params); err != nil || len(params.RequestID) == 0 {
 		return ""
 	}
-	key, err := json.Marshal(params.RequestID)
+	return requestIDKey(params.RequestID)
+}
+
+func requestIDKey(raw []byte) string {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil || v == nil {
+		return ""
+	}
+	key, err := json.Marshal(v)
 	if err != nil {
 		return ""
 	}
@@ -100,6 +118,8 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 		select {
 		case <-drained:
 		case <-time.After(stdioDrainTimeout):
+			cancels.cancelAll()
+			inflight.Wait()
 		}
 	}
 	lines := make(chan stdioLine)
@@ -150,7 +170,7 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 				}
 				continue
 			}
-			key := string(msg.ID)
+			key := requestIDKey(msg.ID)
 			reqCtx, cancelReq := context.WithCancel(ctx)
 			cancels.add(key, cancelReq)
 			inflight.Add(1)
