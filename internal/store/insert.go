@@ -495,7 +495,7 @@ func coerceValue(f schema.Field, v any) (any, error) {
 			if err != nil {
 				return nil, fmt.Errorf("field %q: expected a number", fErrName)
 			}
-			return f, nil
+			return finiteNumber(f, fErrName)
 		default:
 			rv := reflect.ValueOf(v)
 			switch rv.Kind() {

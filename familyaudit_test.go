@@ -2,6 +2,7 @@ package dolmen
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -57,7 +58,7 @@ func TestInsertRejectsNonFiniteNumbers(t *testing.T) {
 	if _, err := st.CreateTable(ctx, "fa", "nums", []Field{{Name: "scalar", Type: Number}}); err != nil {
 		t.Fatal(err)
 	}
-	for name, v := range map[string]any{"NaN": math.NaN(), "Inf": math.Inf(1), "NegInf": math.Inf(-1), "NaN32": float32(math.NaN())} {
+	for name, v := range map[string]any{"NaN": math.NaN(), "Inf": math.Inf(1), "NegInf": math.Inf(-1), "NaN32": float32(math.NaN()), "jsonNaN": json.Number("NaN"), "jsonInf": json.Number("Inf")} {
 		if _, err := st.Insert(ctx, "fa", "nums", []map[string]any{{"scalar": v}}, InsertOptions{}); !errors.Is(err, ErrInvalidRequest) {
 			t.Fatalf("%s must be rejected invalid_request on write (NaN reads back as NULL, infinities poison the row), got %v", name, err)
 		}
