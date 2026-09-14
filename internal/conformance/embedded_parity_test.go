@@ -401,6 +401,28 @@ func TestEmbeddedParityEmbeddingIdentityAndSearch(t *testing.T) {
 		httpTypedFTS = append(httpTypedFTS, r.(map[string]any))
 	}
 	rowsEqual(t, "fulltext search", httpTypedFTS, embFTS.Rows)
+
+	httpTrunc := h.mustHTTPNumbered("search_vector", map[string]any{
+		"namespace": "par", "table": "docs", "text": "refund", "limit": 1,
+	})
+	embTrunc, err := st.SearchVector(ctx, "par", "docs", dolmen.VectorQuery{Text: "refund"}, dolmen.SearchOptions{Limit: 1})
+	if err != nil {
+		t.Fatalf("embedded vector truncation probe: %v", err)
+	}
+	if httpTrunc["truncated"] != true || embTrunc.Truncated != true {
+		t.Fatalf("vector search with two matches and limit 1 must report truncated=true on both surfaces: http %v vs embedded %v", httpTrunc["truncated"], embTrunc.Truncated)
+	}
+
+	httpFTSTrunc := h.mustHTTPNumbered("search_fulltext", map[string]any{
+		"namespace": "par", "table": "docs", "query": "refund OR payment", "limit": 1,
+	})
+	embFTSTrunc, err := st.SearchFulltext(ctx, "par", "docs", "refund OR payment", dolmen.SearchOptions{Limit: 1})
+	if err != nil {
+		t.Fatalf("embedded fulltext truncation probe: %v", err)
+	}
+	if httpFTSTrunc["truncated"] != true || embFTSTrunc.Truncated != true {
+		t.Fatalf("fulltext search with two matches and limit 1 must report truncated=true on both surfaces: http %v vs embedded %v", httpFTSTrunc["truncated"], embFTSTrunc.Truncated)
+	}
 }
 
 func TestEmbeddedParityEmbeddingFailure(t *testing.T) {
