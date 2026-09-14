@@ -438,6 +438,13 @@ func ftsText(v any) any {
 	return fmt.Sprint(v)
 }
 
+func finiteNumber(f float64, name string) (float64, error) {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, fmt.Errorf("field %q: number must be finite (NaN and infinities are not storable)", name)
+	}
+	return f, nil
+}
+
 func coerceValue(f schema.Field, v any) (any, error) {
 	if v == nil {
 		return nil, nil
@@ -449,9 +456,9 @@ func coerceValue(f schema.Field, v any) (any, error) {
 	case schema.Number:
 		switch n := v.(type) {
 		case float64:
-			return n, nil
+			return finiteNumber(n, f.Name)
 		case float32:
-			return float64(n), nil
+			return finiteNumber(float64(n), f.Name)
 		case int:
 			return int64(n), nil
 		case int8:
@@ -488,7 +495,7 @@ func coerceValue(f schema.Field, v any) (any, error) {
 			if err != nil {
 				return nil, fmt.Errorf("field %q: expected a number", fErrName)
 			}
-			return f, nil
+			return finiteNumber(f, fErrName)
 		default:
 			rv := reflect.ValueOf(v)
 			switch rv.Kind() {
@@ -501,7 +508,7 @@ func coerceValue(f schema.Field, v any) (any, error) {
 				}
 				return int64(u), nil
 			case reflect.Float32, reflect.Float64:
-				return rv.Float(), nil
+				return finiteNumber(rv.Float(), f.Name)
 			}
 			return nil, fmt.Errorf("field %q: expected a number", f.Name)
 		}
