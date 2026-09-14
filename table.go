@@ -74,6 +74,9 @@ func (s *Store) DescribeTable(ctx context.Context, namespace, table string) (Tab
 	if err := ctx.Err(); err != nil {
 		return TableSchema{}, 0, facadeErr(err)
 	}
+	if tbl := ops.NormalizeTable(table); tbl == "" || !validTableName(tbl) {
+		return TableSchema{}, 0, derr.New(derr.InvalidRequest, "table must match ^[a-z][a-z0-9_]{0,63}$ and not contain __fts or start with sqlite_")
+	}
 	ns := ops.NormalizeNamespace(namespace)
 	if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
 		return TableSchema{}, 0, facadeErr(err)
@@ -92,6 +95,9 @@ func (s *Store) DropTable(ctx context.Context, namespace, table string) error {
 	defer s.done()
 	if err := ctx.Err(); err != nil {
 		return facadeErr(err)
+	}
+	if tbl := ops.NormalizeTable(table); tbl == "" || !validTableName(tbl) {
+		return derr.New(derr.InvalidRequest, "table must match ^[a-z][a-z0-9_]{0,63}$ and not contain __fts or start with sqlite_")
 	}
 	ns := ops.NormalizeNamespace(namespace)
 	if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {

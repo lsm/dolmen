@@ -331,6 +331,18 @@ func TestEmbeddedParityErrorTaxonomy(t *testing.T) {
 	if _, err := st.Insert(ctx, "par", "notes", []map[string]any{{"unknown_field": 1}}, dolmen.InsertOptions{}); !errors.Is(err, dolmen.ErrInvalidRequest) {
 		t.Fatalf("embedded unknown field must be invalid_request, got %v", err)
 	}
+
+	status, body = h.httpCallNumbered("describe_table", map[string]any{"namespace": "par", "table": "sqlite_notes"})
+	errObj, _ = body["error"].(map[string]any)
+	if status != 404 || errObj["code"] != "not_found" {
+		t.Fatalf("http malformed table name (the /v1 surface does not enforce the MCP grammar): %d %v", status, body)
+	}
+	if _, _, err := st.DescribeTable(ctx, "par", "sqlite_notes"); !errors.Is(err, dolmen.ErrInvalidRequest) {
+		t.Fatalf("embedded malformed table name is rejected invalid_request by the curated façade (by-design stricter than /v1, which reports not_found), got %v", err)
+	}
+	if err := st.DropTable(ctx, "par", "sqlite_notes"); !errors.Is(err, dolmen.ErrInvalidRequest) {
+		t.Fatalf("embedded malformed table name on drop is rejected invalid_request by the curated façade, got %v", err)
+	}
 }
 
 func TestEmbeddedParityEmbeddingIdentityAndSearch(t *testing.T) {
@@ -694,6 +706,9 @@ func TestNumericFidelityMatrix(t *testing.T) {
 	}
 	if got := numberKeyOf(t, embRows.Rows[2]["scalar"]); got != "0" {
 		t.Fatalf("negative zero must normalize to zero on the embedded surface too, got %q", got)
+	}
+	if _, ok := embRows.Rows[2]["scalar"].(int64); !ok {
+		t.Fatalf("negative zero must read back as the int64 storage class (NUMERIC affinity rewrites fractionless REALs to INTEGER at storage), got %T", embRows.Rows[2]["scalar"])
 	}
 	if got := numberKeyOf(t, embRows.Rows[3]["scalar"]); got != "9223372036854775807" {
 		t.Fatalf("class (a) int64 max must round-trip exactly on the embedded surface too, got %q", got)
