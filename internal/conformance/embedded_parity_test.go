@@ -51,13 +51,10 @@ func numberKey(v any) (string, bool) {
 		if i, err := t.Int64(); err == nil {
 			return strconv.FormatInt(i, 10), true
 		}
-		s := t.String()
 		if f, err := t.Float64(); err == nil {
-			if short := strconv.FormatFloat(f, 'g', -1, 64); short == s {
-				return short, true
-			}
+			return strconv.FormatFloat(f, 'g', -1, 64), true
 		}
-		return s, true
+		return t.String(), true
 	}
 	return "", false
 }
@@ -612,6 +609,8 @@ func TestNumericFidelityMatrix(t *testing.T) {
 			{"scalar": json.Number("-0")},
 			{"scalar": json.Number("9223372036854775807")},
 			{"scalar": json.Number("-9223372036854775808")},
+			{"scalar": json.Number("0.00001")},
+			{"scalar": json.Number("1e-7")},
 		},
 	})
 	httpIDs, _ := httpRes["ids"].([]any)
@@ -645,6 +644,8 @@ func TestNumericFidelityMatrix(t *testing.T) {
 		{"scalar": math.Copysign(0, -1)},
 		{"scalar": int64(9223372036854775807)},
 		{"scalar": int64(-9223372036854775808)},
+		{"scalar": 0.00001},
+		{"scalar": 1e-7},
 	}, dolmen.InsertOptions{})
 	if err != nil {
 		t.Fatalf("embedded insert: %v", err)
@@ -708,6 +709,18 @@ func TestNumericFidelityMatrix(t *testing.T) {
 	hE, ok := blobNumber(t, h0["blob"], "e")
 	if !ok || hE != "1e-400" {
 		t.Fatalf("class (c) below-range exponent must survive verbatim on the wire too, got %q", hE)
+	}
+	if got := numberKeyOf(t, httpTyped[5]["scalar"]); got != "1e-05" {
+		t.Fatalf("the [1e-6,1e-4) band (wire json decimal form) must reconcile to the 'g' canonical, got %q", got)
+	}
+	if got := numberKeyOf(t, embRows.Rows[5]["scalar"]); got != "1e-05" {
+		t.Fatalf("the [1e-6,1e-4) band (embedded float64) must reconcile to the 'g' canonical, got %q", got)
+	}
+	if got := numberKeyOf(t, httpTyped[6]["scalar"]); got != "1e-07" {
+		t.Fatalf("the below-1e-6 band (wire exponent-stripped json form) must reconcile to the 'g' canonical, got %q", got)
+	}
+	if got := numberKeyOf(t, embRows.Rows[6]["scalar"]); got != "1e-07" {
+		t.Fatalf("the below-1e-6 band (embedded float64) must reconcile to the 'g' canonical, got %q", got)
 	}
 
 	acc, err := st.Insert(ctx, "fid", "nums", []map[string]any{{"scalar": json.Number("2.5")}}, dolmen.InsertOptions{})
