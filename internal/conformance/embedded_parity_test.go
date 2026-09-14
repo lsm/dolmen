@@ -229,8 +229,8 @@ func TestEmbeddedParityPaginationAndFilters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embedded query: %v", err)
 	}
-	if httpPage["truncated"] != embPage.Truncated {
-		t.Fatalf("truncated flags differ: %v vs %v", httpPage["truncated"], embPage.Truncated)
+	if httpPage["truncated"] != true || embPage.Truncated != true {
+		t.Fatalf("a limit-1 page over two matches must report truncated=true on both surfaces: http %v vs embedded %v", httpPage["truncated"], embPage.Truncated)
 	}
 	hRows, _ := httpPage["rows"].([]any)
 	var httpTyped []map[string]any
@@ -366,6 +366,11 @@ func TestEmbeddedParityEmbeddingIdentityAndSearch(t *testing.T) {
 	}
 	if described.EmbedSpace != "conformance|fake|v1" {
 		t.Fatalf("embedded table must pin the provider identity, got %q", described.EmbedSpace)
+	}
+	httpDesc := h.mustHTTPNumbered("describe_table", map[string]any{"namespace": "par", "table": "docs"})
+	httpTable, _ := httpDesc["table"].(map[string]any)
+	if httpTable["embed_space"] != "conformance|fake|v1" {
+		t.Fatalf("the wire must pin the provider identity in table.embed_space, got %v", httpTable["embed_space"])
 	}
 
 	httpSearch := h.mustHTTPNumbered("search_vector", map[string]any{
@@ -683,6 +688,27 @@ func TestNumericFidelityMatrix(t *testing.T) {
 	if got := numberKeyOf(t, httpTyped[4]["scalar"]); got != "-9223372036854775808" {
 		t.Fatalf("class (a) int64 min must round-trip exactly, got %q", got)
 	}
+	if got := numberKeyOf(t, embRows.Rows[0]["scalar"]); got != "0.12345678901234568" {
+		t.Fatalf("class (b) shortest-round-trip must hold on the embedded surface too, got %q", got)
+	}
+	if got := numberKeyOf(t, embRows.Rows[2]["scalar"]); got != "0" {
+		t.Fatalf("negative zero must normalize to zero on the embedded surface too, got %q", got)
+	}
+	if got := numberKeyOf(t, embRows.Rows[3]["scalar"]); got != "9223372036854775807" {
+		t.Fatalf("class (a) int64 max must round-trip exactly on the embedded surface too, got %q", got)
+	}
+	if got := numberKeyOf(t, embRows.Rows[4]["scalar"]); got != "-9223372036854775808" {
+		t.Fatalf("class (a) int64 min must round-trip exactly on the embedded surface too, got %q", got)
+	}
+	h0 := rowAt(httpTyped, 0)
+	hPi, ok := blobNumber(t, h0["blob"], "pi")
+	if !ok || hPi != "3.141592653589793238462643383279" {
+		t.Fatalf("class (c) verbatim blob digits must survive exactly on the wire too, got %q", hPi)
+	}
+	hE, ok := blobNumber(t, h0["blob"], "e")
+	if !ok || hE != "1e-400" {
+		t.Fatalf("class (c) below-range exponent must survive verbatim on the wire too, got %q", hE)
+	}
 
 	acc, err := st.Insert(ctx, "fid", "nums", []map[string]any{{"scalar": json.Number("2.5")}}, dolmen.InsertOptions{})
 	if err != nil {
@@ -694,6 +720,14 @@ func TestNumericFidelityMatrix(t *testing.T) {
 	}
 	if k := numberKeyOf(t, accRows.Rows[0]["scalar"]); k != "2.5" {
 		t.Fatalf("json.Number scalar must coerce to its numeric value, got %q", k)
+	}
+	wStatus, wBody := h.httpCallNumbered("insert", map[string]any{
+		"namespace": "fid", "table": "nums",
+		"records": []map[string]any{{"scalar": json.Number("1e400")}},
+	})
+	wErrObj, _ := wBody["error"].(map[string]any)
+	if wStatus != 400 || wErrObj["code"] != "invalid_request" {
+		t.Fatalf("an out-of-float64-range number over HTTP must be rejected 400 invalid_request, got %d %v", wStatus, wBody)
 	}
 	if _, err := st.Insert(ctx, "fid", "nums", []map[string]any{{"scalar": json.Number("1e400")}}, dolmen.InsertOptions{}); !errors.Is(err, dolmen.ErrInvalidRequest) {
 		t.Fatalf("an out-of-float64-range json.Number must be rejected invalid_request, got %v", err)
