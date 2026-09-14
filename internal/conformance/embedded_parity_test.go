@@ -24,12 +24,6 @@ func canonical(v any) any {
 		return t
 	case int:
 		return int64(t)
-	case []float64:
-		out := make([]any, len(t))
-		for i, x := range t {
-			out[i] = float64(x)
-		}
-		return out
 	case []any:
 		out := make([]any, len(t))
 		for i, x := range t {
@@ -297,7 +291,7 @@ func TestEmbeddedParityIdempotencyAndConflicts(t *testing.T) {
 	if status != 400 || errObj["code"] != "conflict" {
 		t.Fatalf("http divergence: %d %v", status, diverged)
 	}
-	_, embErr := st.Insert(ctx, "par", "notes", parityRecords[1:], dolmen.InsertOptions{IdempotencyKey: "retry-1"})
+	_, embErr := st.Insert(ctx, "par", "notes", parityRecords[1:2], dolmen.InsertOptions{IdempotencyKey: "retry-1"})
 	if !errors.Is(embErr, dolmen.ErrConflict) {
 		t.Fatalf("embedded divergence must be a typed conflict, got %v", embErr)
 	}
@@ -704,4 +698,68 @@ func numberKeyOf(t *testing.T, v any) string {
 		t.Fatalf("numberKeyOf: %v (%T) is not a number", v, v)
 	}
 	return k
+}
+
+func TestParityTerminalPageNotTruncated(t *testing.T) {
+	h := newHarness(t)
+	seedParityTableHTTP(t, h)
+	h.mustHTTPNumbered("insert", map[string]any{"namespace": "par", "table": "notes", "records": parityRecords[:2]})
+	httpSecond := h.mustHTTPNumbered("query", map[string]any{
+		"namespace": "par", "sql": "SELECT id, body, score FROM notes WHERE score >= ? ORDER BY score", "args": []any{1}, "limit": 1, "offset": 1,
+	})
+	if httpSecond["truncated"] != false {
+		t.Fatalf("the terminal page (offset past the last full page) must report truncated=false, got %v", httpSecond["truncated"])
+	}
+
+	st, _ := embeddedStore(t)
+	seedParityTableEmbedded(t, st)
+	ctx := context.Background()
+	if _, err := st.Insert(ctx, "par", "notes", parityRecords[:2], dolmen.InsertOptions{}); err != nil {
+		t.Fatalf("embedded insert: %v", err)
+	}
+	embSecond, err := st.Query(ctx, "par", "SELECT id, body, score FROM notes WHERE score >= ? ORDER BY score", dolmen.QueryOptions{Args: []any{1}, Limit: 1, Offset: 1})
+	if err != nil {
+		t.Fatalf("embedded query: %v", err)
+	}
+	if embSecond.Truncated {
+		t.Fatalf("the terminal page must not report truncated on the embedded surface either")
+	}
+}
+
+func TestParityDefaultsMaterializeOnBothSurfaces(t *testing.T) {
+	h := newHarness(t)
+	seedParityTableHTTP(t, h)
+	httpRes := h.mustHTTPNumbered("insert", map[string]any{
+		"namespace": "par", "table": "notes", "records": []map[string]any{parityRecords[2]},
+	})
+	httpRows := h.mustHTTPNumbered("read_rows", map[string]any{
+		"namespace": "par", "table": "notes", "ids": httpRes["ids"],
+	})
+	hRow := httpRows["rows"].([]any)[0].(map[string]any)
+	rank, ok := hRow["rank"]
+	if !ok {
+		t.Fatalf("the wire must MATERIALIZE the omitted default (rank), got fields %v", hRow)
+	}
+	if k := numberKeyOf(t, rank); k != "7" {
+		t.Fatalf("wire default rank must be 7, got %q", k)
+	}
+
+	st, _ := embeddedStore(t)
+	seedParityTableEmbedded(t, st)
+	ctx := context.Background()
+	ins, err := st.Insert(ctx, "par", "notes", []map[string]any{parityRecords[2]}, dolmen.InsertOptions{})
+	if err != nil {
+		t.Fatalf("embedded insert: %v", err)
+	}
+	embRows, err := st.GetRows(ctx, "par", "notes", ins.Ids)
+	if err != nil {
+		t.Fatalf("embedded read: %v", err)
+	}
+	erank, ok := embRows.Rows[0]["rank"]
+	if !ok {
+		t.Fatalf("the embedded surface must MATERIALIZE the omitted default (rank), got fields %v", embRows.Rows[0])
+	}
+	if k := numberKeyOf(t, erank); k != "7" {
+		t.Fatalf("embedded default rank must be 7, got %q", k)
+	}
 }
