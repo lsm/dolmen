@@ -62,7 +62,7 @@ Notes on the test tiers:
 
 ## Architecture
 
-Request flow: transport → `internal/api` op table → `internal/ops` shared logic → `store.Engine` (SQLite). The Go facade skips the transport and op table and calls the engine through `internal/ops` directly.
+Request flow: transport → `internal/api` op table → `store.Engine` (SQLite). Each `OpDef.Func` calls the engine directly and reaches for `internal/ops` helpers where needed (namespace ensure, vector-query preparation, error classification). The Go facade skips the transport and op table and calls the engine directly too, using the same `internal/ops` helpers. There is no shared operation layer that every call passes through; parity between surfaces is enforced by the conformance suite, not by a common code path.
 
 **`cmd/dolmen`** parses flags and env (`loadConfig`), opens the store, builds the embed provider, then `api.New` and `mcp.New`. Plain `dolmen` serves HTTP; `dolmen mcp` serves the same MCP dispatcher over stdio with logs on stderr. `-prefix` mounts everything under a sub-path.
 
@@ -74,7 +74,7 @@ Request flow: transport → `internal/api` op table → `internal/ops` shared lo
 
 **`internal/derr`** is the error taxonomy every surface agrees on: `invalid_request`, `not_found`, `query_error`, `conflict`, `forbidden`, `embedder_unavailable`, `canceled`, `internal_error`. The root package re-exports these as `dolmen.ErrX` sentinels matched with `errors.Is`.
 
-**`internal/store`** defines the `Engine` interface (`engine.go`) and its SQLite implementation. One namespace is one file `<data>/<ns>.db` in WAL mode with a single writer connection and a read-only pool; read-only SQL runs on a `mode=ro` connection with a SELECT/WITH allowlist. FTS5 shadow tables back full-text fields; vectors are float32 blobs scanned brute-force in Go. Each file also holds a schema registry, migration log, idempotency-key table, and a durable change log that feeds `changes_since`, `wait_for`, and SSE (`listen_*.go`, `notify.go`). The `Engine` methods take `AuthBinding`, `RowScope`, `Incarnation`, and `nsGen [16]byte` parameters that callers currently pass as zero values; they are the seam for the auth epic and must stay.
+**`internal/store`** defines the `Engine` interface (`engine.go`) and its SQLite implementation. One namespace is one file `<data>/<ns>.db` in WAL mode with a single writer connection and a read-only pool; read-only SQL runs on a `mode=ro` connection with a SELECT/WITH allowlist. FTS5 shadow tables back full-text fields; vectors are float32 blobs scanned brute-force in Go. Each file also holds a schema registry, migration log, idempotency-key table, and a durable change log that feeds `changes_since`, `wait_for`, and SSE (`listen_*.go`, `notify.go`). The `Engine` methods take `AuthBinding`, `RowScope`, `Incarnation`, and `nsGen [16]byte` parameters. `Incarnation.Version` is live today: `migrate` and its dry run pass the caller's `expected_version` through it, and the engine turns a mismatch into a conflict. The auth-related fields (`AuthBinding`, `RowScope`, `nsGen`, and the `NsGen`/`DropGen` fields of `Incarnation`) are passed as zero values under the current `auth: off` behavior; they are the seam for the auth epic and must stay.
 
 **`internal/schema`** owns field types, the name grammar and reserved names, enum/default rules, migration `Change` ops, and value coercion.
 
