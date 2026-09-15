@@ -24,8 +24,10 @@ Classification throughout this matrix is of the **post-normalization** name: eve
 `ops.NormalizeTable` — trim plus lowercase (`internal/ops/normalize.go:21`) — before lookup or
 validation; the façade's guarded methods validate the normalized name (root `table.go:77`), and
 the wire normalizes in its handlers. A noncanonical spelling such as `" Notes "` therefore
-resolves to the existing `notes` table on every surface (pinned by "table names normalize too"
-in `internal/conformance/limits_test.go`), while the MCP `InputSchema` pattern sees the raw
+resolves to the existing `notes` table on every surface — pinned on the wire by "table names
+normalize too" in `internal/conformance/limits_test.go`; the façade's normalization is shared
+code (every method passes through `ops.NormalizeTable`) but carries no dedicated test pin —
+while the MCP `InputSchema` pattern sees the raw
 token — a schema-conforming client rejects a spelling the server runtime accepts. The table
 above classifies names that remain invalid after normalization.
 

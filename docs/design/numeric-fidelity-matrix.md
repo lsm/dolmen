@@ -12,8 +12,13 @@ Number fields coerce at `coerceValue` (`internal/store/insert.go:448`), int64-fi
 - **Class (a), int64 exactness.** Every integer kind narrows to int64 before storage; unsigned
   values above `math.MaxInt64` are rejected (`number overflows int64`). The signed-int64
   boundaries — minimum `-9223372036854775808` (−2^63) and maximum `9223372036854775807`
-  (2^63−1) — round-trip exactly on both surfaces. Query bind arguments follow the same policy
-  (`normalizeArg`, `internal/store/query.go:14`: integral `json.Number` → int64, else float64).
+  (2^63−1) — round-trip exactly on both surfaces. The overflow rejection is a typed-integer
+  rule: a `json.Number` token above the int64 range (e.g. `9223372036854775809`) is not
+  rejected — `Int64()` fails and the `Float64()` fallback accepts it with rounding, keeping the
+  REAL storage class — so the wire's token path and the façade's typed-integer rejection
+  diverge for the same value (code-verified; no repo test pins this band). Query bind arguments
+  follow the same policy (`normalizeArg`, `internal/store/query.go:14`: integral `json.Number`
+  → int64, else float64).
 - **Class (b), float64 shortest round-trip.** A decimal beyond float64 precision stores to the
   nearest double and reads back in its shortest round-trip form — at most 17 significant digits:
   `0.1234567890123456789012345` → `0.12345678901234568`, while `0.10000000000000000001` →
@@ -71,10 +76,12 @@ exponent-stripped spelling below 1e-6) both read back as the `'g'` canonical `1e
 Number columns use NUMERIC affinity, and SQLite rewrites a fractionless REAL to INTEGER storage
 at write time when the value is exactly representable as a signed integer.
 
-- Pinned per-surface: `−0.0` reads back as concrete **int64 0** — the Go-type pin (the assert
-  requires `.(int64)`, not just value equality), embodying the twice-adjudicated hyperneo r2 P1
-  concern (adjudication 5659925896): the INTEGER storage class is the engine's documented
-  behavior, not a parity bug.
+- Pinned on the embedded surface: `−0.0` reads back as concrete **int64 0** — the Go-type pin
+  (the assert requires `.(int64)`, not just value equality), embodying the twice-adjudicated
+  hyperneo r2 P1 concern (adjudication 5659925896): the INTEGER storage class is the engine's
+  documented behavior, not a parity bug. The wire leg of the same matrix pins value equality
+  only: it sends `json.Number("-0")`, which `Int64()` parses to zero before SQLite ever sees a
+  REAL, so the HTTP response carries the value without pinning a concrete type.
 - The rewrite's bound follows from SQLite's affinity rule, not from a repo test pin: a
   fractionless float inside int64 range (e.g. `2.0`) returns through the integer read path —
   embedded `int64` where the wire carries the equivalent JSON number — while a fractionless
