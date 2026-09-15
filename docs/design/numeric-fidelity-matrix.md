@@ -38,7 +38,8 @@ sites — covering `float64`, `float32`, and the reflect fallback. Pinned by
 `json.Number` spellings on `Insert`, plus an `Update` `Set`; the `UpsertByKey` leg is guarded by
 the same call sites but carries no dedicated test pin. The wire is structurally immune for float
 tokens (JSON cannot spell a non-finite number), but `json.Number` is a string-backed token a Go
-caller can construct, which was the hole #309 closed (cc40085): json.Number parses are routed
+caller can construct, which was the hole #309 closed (squash commit `ba06ba2`; the arc's
+in-branch commits are squash-merged and unresolvable): json.Number parses are routed
 through the guard, so `json.Number("NaN")` and `json.Number("Inf")` are rejected instead of
 stored. Before the fix NaN read back as silent NULL and ±Inf poisoned the row — every later
 read errored `column produced a non-finite value`.
