@@ -48,7 +48,7 @@ Notes on the test tiers:
 - **macOS quirk:** three symlink tests in the root package (`TestOpenDotDotThroughSymlinkSharesOwnership`, `TestOpenResolvesRelativeSymlinkTargetInPlace`, `TestOpenResolvesRelativeTargetThroughSymlinkAndDotDot`) fail when `TMPDIR` is the default `/var/folders/...`, because that path is itself a symlink to `/private/var/...` and the tests compare against the unresolved `t.TempDir()`. Linux CI is unaffected. Locally, run with a physically resolved temp dir: `TMPDIR="$(realpath "$TMPDIR")" go test ./...`.
 - `internal/blackbox` is a `*_test.go`-only package. `TestMain` builds `./cmd/dolmen`, boots one server, and stages 01–11 share global state in file order. Run the package as a whole; `-run TestStage05...` alone will not work. A guard test forbids importing `internal/` or `skill` there.
 - `internal/conformance` uses an in-process `httptest` server plus a fake embedding provider. Its `harnessMode` currently has only `authOff`; the scaffolding is for the auth epic below.
-- Releases: pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml` (cross-compiled binaries, SBOM, packaged models via `cmd/pack-model`, GHCR image).
+- Releases: pushing any tag matching `v*` runs `.github/workflows/release.yml`, which publishes cross-compiled binaries, an SBOM, packaged models via `cmd/pack-model`, a GHCR image, and a GitHub release. Only an exact `vX.Y.Z` tag becomes a final release tagged `latest`; any other `v...` tag (an RC, for example) still publishes all of that as a prerelease. Do not push a `v` tag unless a release is intended.
 
 ## Conventions that are enforced or expected
 
