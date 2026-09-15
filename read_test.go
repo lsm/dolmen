@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -163,5 +164,23 @@ func TestGetRowsLeavesCallerIdsUntouched(t *testing.T) {
 		if ids[i] != before[i] {
 			t.Fatalf("GetRows must not reorder or rewrite the caller's slice: had %v, now %v", before, ids)
 		}
+	}
+}
+
+func TestGetRowsNilIDsRejected(t *testing.T) {
+	st, ctx := openWithNotes(t)
+	_, err := st.GetRows(ctx, "app", "notes", nil)
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("nil ids must be rejected as invalid_request, got %v", err)
+	}
+	if want := "GetRows requires ids"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("nil-ids error must teach, got %q", err.Error())
+	}
+	empty, err := st.GetRows(ctx, "app", "notes", []int64{})
+	if err != nil {
+		t.Fatalf("an explicit empty id list is a legal empty-set read: %v", err)
+	}
+	if len(empty.Rows) != 0 || empty.Truncated {
+		t.Fatalf("empty id list must select nothing, got %+v", empty)
 	}
 }

@@ -45,6 +45,9 @@ func (s *Store) GetRows(ctx context.Context, namespace, table string, ids []int6
 	if len(ids) > store.MaxReadRowsIDs {
 		return QueryResult{}, derr.New(derr.InvalidRequest, "GetRows accepts at most %d ids per call, got %d", store.MaxReadRowsIDs, len(ids))
 	}
+	if ids == nil {
+		return QueryResult{}, derr.New(derr.InvalidRequest, "GetRows requires ids: pass the ids a write returned or a query projected; an empty non-nil slice selects nothing")
+	}
 	if tbl := ops.NormalizeTable(table); tbl == "" || !validTableName(tbl) {
 		return QueryResult{}, derr.New(derr.InvalidRequest, "table must match ^[a-z][a-z0-9_]{0,63}$ and not contain __fts or start with sqlite_")
 	}
