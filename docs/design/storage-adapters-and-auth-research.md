@@ -204,7 +204,8 @@ small-write problem is solved below the seam via deletion vectors (Iceberg V3/De
 merge-on-read (Hudi), LSM (Paimon), or a WAL in front of Parquet; reads go through a
 serving/cache tier; high-frequency OLTP is out of scope; full-text is the one genuine gap
 (a sidecar implementing the FTS core subset); demand-gated like webhooks (D20). The
-assessment below confirms the seam accommodates this — with one honest contract touch.
+assessment below confirms the seam accommodates this, with one open contract decision
+(`query`, §2.3).
 
 ### 2.2 Op-by-op mapping
 
@@ -218,11 +219,14 @@ assessment below confirms the seam accommodates this — with one honest contrac
   table); `set_enum`/backfills (full scans/rewrites — heavy but rare, consistent with
   rare-DDL semantics).
 - **Genuine gaps, stated plainly:**
-  - `query` (raw SQL) — no SQL engine lives in a table format. Options: declare it
-    unavailable via an additive capability field; embed DuckDB; or point at external
-    Trino/Spark. Precedent exists: `subscribe` may already be declared unavailable, and
-    the capabilities object explicitly allows additive fields (§2/§7; shape pinned in
-    `internal/conformance/readrows_test.go`).
+  - `query` (raw SQL) — no SQL engine lives in a table format. §9.3 permits only
+    `subscribe` to be declared unavailable, and §7 makes search semantics contract on
+    every engine, so an engine refusing `query` is a contract revision, not an additive
+    capability field. The conforming paths: implement it below the seam (embed DuckDB, or
+    front an external Trino/Spark — see the effort classes below), or amend the spec
+    explicitly — §0.5.3, §2's op table, and the shared conformance corpus, which replays
+    every op (`parity_test.go`) — to permit raw-SQL-less engines. That amendment is an
+    open decision (below), not something this note assumes.
   - `search_fulltext` — sidecar per the spec. The Postgres engine's shared tokenizer/BM25
     extraction (Phase 2 above) is exactly the component the sidecar reuses — the two
     adapters share this cost.
@@ -238,11 +242,16 @@ assessment below confirms the seam accommodates this — with one honest contrac
 
 ### 2.3 Contract impact and effort classes
 
-**Contract: stays engine-neutral with one additive touch** — `Capabilities` gains
-availability declarations (`query`, `fulltext`; possibly transaction-grade hints).
-Additive per §8.1; no breaking change; no spec rewrite beyond adding fields to the pinned
-capabilities object plus conformance cases. Everything else (RowScope predicate
-conjoinment, incarnations, envelope) is already engine-mechanism-agnostic.
+**Contract: engine-neutral only if both gaps are implemented below the seam.**
+Full-text is contract on every engine (§7's core subset) — D25's own answer is the
+sidecar, so `SearchFulltext` stays available and needs no unavailability declaration.
+`query` has the same shape: either it is implemented below the seam (DuckDB embed or an
+external-engine front), or the spec is amended to permit raw-SQL-less engines — and that
+amendment is a **breaking contract revision** (§0.5.3, §2's op table, and the shared
+conformance corpus, which replays every op), not an additive capability field: §9.3
+allows only `subscribe` to be declared unavailable, and an engine that errors `query`
+changes the behavior of requests the current contract accepts. Everything else (RowScope
+predicate conjoinment, incarnations, envelope) is already engine-mechanism-agnostic.
 
 **Rough effort classes:** design + gap analysis S; append write path M; update/delete via
 deletion vectors M; change-feed mapping M; FTS sidecar M (shared with adapter #2);
@@ -254,8 +263,9 @@ reads, but a production Iceberg *writer* in pure Go likely means a sidecar proce
 below-seam strategies.
 
 **What I'd slice first:** nothing in-repo (the D25 demand-gate stands). Concretely, when a
-demander appears: (1) a one-page capabilities-addition design note (the only contract
-touch); (2) a throwaway spike evaluating iceberg-go/parquet-go write+read against one
+demander appears: (1) a one-page decision note on the `query` contract question —
+implement below the seam vs. an explicit spec revision (the only contract touch, §2.3);
+(2) a throwaway spike evaluating iceberg-go/parquet-go write+read against one
 conformance-shaped table, to retire the ecosystem risk before any lane is planned.
 
 **Open questions for the principal:**
@@ -263,8 +273,9 @@ conformance-shaped table, to retire the ecosystem risk before any lane is planne
 1. Is the intended consumer the *analytics* property (Spark/Trino/DuckDB reading the same
    Parquet) or dolmen-side durability/scale? It changes whether the serving tier is a v1
    or a v3 concern.
-2. Is `query`-unavailable (capability-declared) acceptable for this tier, or is embedded
-   DuckDB a requirement from day one?
+2. `query` on this tier: implement below the seam (embedded DuckDB — the additive path),
+   or amend the spec to permit raw-SQL-less engines (an explicit breaking revision to
+   §0.5.3/§2 plus the conformance corpus, landed spec-first per its own deviation rule)?
 3. Is a non-Go sidecar process (Iceberg writer) acceptable operationally, given the
    local-first single-binary ethos?
 
@@ -330,13 +341,19 @@ failure teaches. No seam in the codebase contradicts it.
 server* — it advertises `/.well-known/oauth-protected-resource` pointing at an
 authorization server; clients use PKCE and metadata discovery, with dynamic client
 registration recommended). Mapping: gateway deployments (source A) advertise the external
-AS; source B makes dolmen **its own AS** — §1.4's token is an OAuth-shaped bearer JWT,
-and the stream would additionally serve `/.well-known/oauth-authorization-server` plus
-DCR. API keys are non-OAuth bearers — legitimate machine-tier credentials, invisible to
-spec-driven discovery, documented as such. The `/mcp` and envelope gating under `auth:
-on` (§1.2) already matches. Recommended addition to the source-B stream (one small
-slice): the two well-known metadata endpoints, so MCP-native clients can discover the
-flow without documentation.
+AS the gateway fronts — the conforming answer for MCP-native clients today, because
+metadata only helps if the advertised AS will actually complete an authorization-code +
+PKCE exchange against the client's redirect URI. Source B as specced (§1.4) is a **human
+browser flow** (`/v1/auth/begin` → IdP → callback → a page that hands the token out); it
+mints an OAuth-shaped bearer JWT but is not an authorization server MCP clients can run
+the code flow against — serving the two well-known documents plus DCR on top of §1.4 as
+specced would advertise an AS that discovery-based clients still cannot obtain a token
+from. Making dolmen the advertised AS therefore means extending source B into a full
+token-broker AS (authorization endpoint, token endpoint, client registration, redirect
+URI handling) — a scope increase over §1.4, not a metadata slice. API keys are non-OAuth
+bearers — legitimate machine-tier credentials, invisible to spec-driven discovery,
+documented as such. The `/mcp` and envelope gating under `auth: on` (§1.2) already
+matches.
 
 ### 3.4 What today's deferral bakes in — retrofit-cost audit
 
@@ -378,9 +395,14 @@ shared with the engine work.
 **What I'd slice first (when the posture lifts — not before):** the Lane B opening pair as
 already planned — 7a (auth config plumbing: `-auth`/`DOLMEN_AUTH`, `-trusted-proxies`,
 `-max-groups`, startup validation) then 7b (identity middleware: header source + admin
-key, the 401 `unauthorized` envelope, principal-on-the-log-line) — then 7d
-(gateway-mode conformance) before any grants. API keys (10a/10b) can ride earlier than
-OIDC if machine identity is the near-term need (§8.2 notes no dependency).
+key, the 401 `unauthorized` envelope, principal-on-the-log-line); 7c and 7e follow, both
+depending only on 7b. Gateway-mode conformance (7d) is **not** an early slice: the
+implementation plan pins its dependencies as 7b + 8d — `auth: on` boots from 8d, so the
+grant-backed 403/allow matrix cannot run until the grant chain (8a registry → 8b ops →
+8c dispatch enforcement → 8d guards/activation) has landed. Handler-level identity
+behavior stays testable from 7b; the full 7d suite lands after 8d. API keys (10a/10b)
+can ride earlier than OIDC if machine identity is the near-term need (§8.2 notes no
+dependency).
 
 **Open questions for the principal:**
 
@@ -388,8 +410,10 @@ OIDC if machine identity is the near-term need (§8.2 notes no dependency).
    API-keys-first (10a/b) wanted for agent fleets before the gateway tier?
 2. stdio under `auth: on`: forbid, `-principal` flag, or exempt-and-document? (Needs a
    spec line before Lane B.)
-3. MCP resource-server metadata (`/.well-known/oauth-protected-resource`, and AS metadata
-   under source B): in scope for the source-B stream, or a follow-up?
+3. MCP-native clients under source B: extend §1.4 into a full token-broker authorization
+   server (authorization + token endpoints, client registration — a scope increase), or
+   leave MCP discovery pointing at the gateway tier's external AS and keep source B the
+   human browser flow?
 4. Does the Postgres-engine recommendation in §1 change auth sequencing — engine work and
    Lane B interleaved (they share the quantization and shared-evaluator slices), or
    strictly serialized?
