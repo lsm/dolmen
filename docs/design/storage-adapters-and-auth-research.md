@@ -169,8 +169,12 @@ rationale in `CreateTable`'s limit error. Harness changes needed:
    neutrality through their own suites, not through the parity script. A matrix that
    skips any of these surfaces leaves that transport on SQLite silently.
 2. Per-engine fixture policy, at **test/subtest granularity — never whole files**: the
-   SQLite-specific cases (out-of-band FTS5 surgery, NUMERIC-affinity internals,
-   CAST-alias semantics) skip on adapter #2, and error-message pins fork by **input,
+   genuine implementation probes (out-of-band FTS5 surgery, storage-class surgery,
+   CAST-alias semantics) skip on adapter #2, while the **contract-facing fidelity
+   assertions** — negative-zero normalization, int64 endpoints, exponent-format bands
+   — keep running on adapter #2: they are the validation of §1.3's normalization
+   layer (splitting them out of single top-level tests like
+   `TestNumericFidelityMatrix` is part of the matrix slice). Error-message pins fork by **input,
    not assertion** — subtests whose SQL is valid on both engines (unknown function,
    missing column, the WHERE-expression guard) keep running on adapter #2, because
    they are the matrix coverage proving §1.3's SQLSTATE translator emits the same
@@ -460,10 +464,17 @@ token-broker AS (authorization endpoint, token endpoint, client registration, re
 URI handling) — a scope increase over §1.4, not a metadata slice. API keys are non-OAuth
 bearers — legitimate machine-tier credentials, invisible to spec-driven discovery,
 documented as such. The `/mcp` and envelope gating under `auth: on` (§1.2) already
-matches. One Lane B addition is required under either mapping: an unauthenticated
-`/.well-known/oauth-protected-resource` endpoint linked from the `401` challenge's
-`WWW-Authenticate` — without it, discovery-based clients cannot learn the advertised
-AS at all. It is in no Lane B slice today; flagged for the implementing epic.
+matches. One Lane B addition is required wherever dolmen itself serves discovery: an
+unauthenticated `/.well-known/oauth-protected-resource` endpoint whose
+`authorization_servers` value dolmen can only know from configuration — under source
+A the gateway owns both the metadata and the challenge (dolmen emits the bare `401`);
+dolmen serves the endpoint only when it knows the AS (source B, or an explicit
+validated external-AS URL setting). It is in no Lane B slice today; flagged for the
+implementing epic. The same gateway-owns rule covers the credential: the gateway
+consumes and **strips the verified bearer before forwarding** — a forwarded external
+access token would hit §1's fail-closed bearer precedence and 401 the request instead
+of accepting the proxy assertion; validating or exchanging external tokens inside
+dolmen would be a new identity source, out of scope here.
 
 ### 3.4 What today's deferral bakes in — retrofit-cost audit
 
