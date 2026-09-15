@@ -46,12 +46,15 @@ Pinned on both surfaces: HTTP 400 `invalid_request`, façade `ErrInvalidRequest`
 
 ## Read-back canonicalization
 
-Numbers compare across surfaces under one canonical form: parse, then format. `numberKey`
-(`internal/mcp/drain.go:124`, mirrored by the conformance harness) goes int64-first —
-`Int64()`, then `ParseUint`, then `Float64()` — and emits `strconv.FormatFloat(f, 'g', -1, 64)`
-on every successful parse; the raw token survives **only** when parsing fails outright. This
-reconciles the wire's JSON decimal spellings with the embedded float64 values without
-privileging either surface's formatting.
+Cross-surface comparison of stored numbers is the parity harness's rule, not a shared library
+helper: `numberKey` (`internal/conformance/embedded_parity_test.go:44`) parses int64-first —
+`Int64()`, else `Float64()` — emitting `strconv.FormatInt` or `strconv.FormatFloat(f, 'g', -1,
+64)` for the respective parse; the raw token survives **only** when parsing fails outright.
+That rule reconciles the wire's JSON decimal spellings with the embedded float64 values without
+privileging either surface's formatting. The JSON-RPC drain path keeps a separate request-ID key
+(`internal/mcp/drain.go:124`) with two more steps — an unsigned-exact `ParseUint` branch, and a
+collapse of exactly-integral float64s in range back to `FormatInt`; the two helpers serve
+different purposes (stored-value parity vs request-ID bookkeeping) and are not interchangeable.
 
 The decimal-vs-`'g'` band is pinned as spec rows, not formatting accidents:
 `0.00001` (the wire's plain-decimal spelling of the [1e-6, 1e-4) band) and `1e-7` (the wire's
@@ -61,12 +64,15 @@ exponent-stripped spelling below 1e-6) both read back as the `'g'` canonical `1e
 ## SQLite NUMERIC affinity read-back
 
 Number columns use NUMERIC affinity, and SQLite rewrites a fractionless REAL to INTEGER storage
-at write time. Consequences pinned per-surface:
+at write time when the value is exactly representable as a signed integer.
 
-- `−0.0` reads back as concrete **int64 0** — the Go-type pin (the assert requires `.(int64)`,
-  not just value equality), embodying the twice-adjudicated hyperneo r2 P1 concern (adjudication
-  5659925896): the INTEGER storage class is the engine's documented behavior, not a parity bug.
-- The rewrite holds only where SQLite can represent the value as a signed integer. A fractionless
-  float inside int64 range (e.g. `2.0`) returns through the integer read path — embedded `int64`
-  where the wire carries the equivalent JSON number. A fractionless float outside the range
-  (e.g. `1e20`) keeps the REAL storage class and reads back as `float64`.
+- Pinned per-surface: `−0.0` reads back as concrete **int64 0** — the Go-type pin (the assert
+  requires `.(int64)`, not just value equality), embodying the twice-adjudicated hyperneo r2 P1
+  concern (adjudication 5659925896): the INTEGER storage class is the engine's documented
+  behavior, not a parity bug.
+- The rewrite's bound follows from SQLite's affinity rule, not from a repo test pin: a
+  fractionless float inside int64 range (e.g. `2.0`) returns through the integer read path —
+  embedded `int64` where the wire carries the equivalent JSON number — while a fractionless
+  float outside the range (e.g. `1e20`) keeps the REAL storage class and reads back as
+  `float64` (verified against SQLite directly; `TestNumericFidelityMatrix` stores no
+  out-of-range fractionless float, so this direction carries no test pin).

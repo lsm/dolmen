@@ -12,7 +12,7 @@ One dispatch table (`internal/api/ops.go`) and one engine serve three surfaces:
 | Surface | Input gate | Malformed table name |
 | --- | --- | --- |
 | MCP tools | `InputSchema` advertised on `tools/list`: `existingTableProp` grammar, `maxItems` bounds | Grammar is the tool's schema contract |
-| `/v1` HTTP | Struct decode (`decode`/`decodeData`, `internal/api/server.go`): `UseNumber` + `DisallowUnknownFields`, no name grammar | Flows to the engine → 404 `not_found` |
+| `/v1` HTTP | Struct decode (`decode`/`decodeData`, `internal/api/server.go`): `UseNumber` + `DisallowUnknownFields`, no name grammar | Existing-table ops → engine lookup → 404 `not_found`; `create_table` → 400 `invalid_request` |
 | Public Go façade | Curated pre-checks (`validTableName`, root `read.go:22`) before `EnsureNamespace`, on guarded methods only | `invalid_request` on reads/search and describe/drop; writes classify via the engine |
 
 `existingTableProp` (`internal/api/server.go:254`) pins the grammar `^[a-z][a-z0-9_]{0,63}$`,
@@ -27,6 +27,10 @@ curated-stricter reading that keeps #304's merged decision coherent. The pre-che
 reads/search and describe/drop only: the write methods (`Insert`, `Update`, `Delete`,
 `UpsertByKey` in root `write.go`) normalize the name and hand it to the engine, where a
 malformed name matches no table and classifies `not_found` — the same answer the wire gives.
+`CreateTable` (root `table.go`) carries no pre-check either, but its engine path enforces the
+grammar itself (`schema.ValidateTableName`, `internal/store/store.go:495`), so a malformed name
+on create classifies `invalid_request` on both surfaces; the wire's 404 is specifically the
+existing-table resolution path.
 The divergence is pinned
 by-design in `TestEmbeddedParityErrorTaxonomy` (`internal/conformance/embedded_parity_test.go`):
 the same malformed name yields wire `not_found` and façade `invalid_request`, each surface's
