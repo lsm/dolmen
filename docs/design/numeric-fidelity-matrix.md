@@ -15,9 +15,10 @@ Number fields coerce at `coerceValue` (`internal/store/insert.go:448`), int64-fi
   Query bind arguments follow the same policy (`normalizeArg`, `internal/store/query.go:14`:
   integral `json.Number` → int64, else float64).
 - **Class (b), float64 shortest round-trip.** A decimal beyond float64 precision stores to the
-  nearest double and reads back as its 17-digit shortest form (`0.1234567890123456789012345` →
-  `0.12345678901234568`). Adjacent decimals beyond float64 precision conflate to the same
-  double — documented behavior, asserted equal on both surfaces, not a defect.
+  nearest double and reads back in its shortest round-trip form — at most 17 significant digits:
+  `0.1234567890123456789012345` → `0.12345678901234568`, while `0.10000000000000000001` →
+  `0.1`. Adjacent decimals beyond float64 precision conflate to the same double — documented
+  behavior, asserted equal on both surfaces, not a defect.
 - **Class (c), JSON blobs verbatim.** `json` fields keep their number tokens byte-for-byte:
   `3.141592653589793238462643383279` and the below-range exponent `1e-400` survive exactly,
   decoding back as numeric `json.Number` tokens (a quoted-string regression on either surface
@@ -31,13 +32,16 @@ design-note resolution): `Int64()` first, else `Float64()` — `json.Number("2.5
 
 `finiteNumber` (`internal/store/insert.go:441`) rejects NaN and ±Inf
 (`number must be finite (NaN and infinities are not storable)`) as `invalid_request`. One point
-guards every write path — `Insert`, `Update`, `UpsertByKey` — covering `float64`, `float32`, and
-the reflect fallback. The wire is structurally immune for float tokens (JSON cannot spell a
-non-finite number), but `json.Number` is a string-backed token a Go caller can construct, which
-was the hole #309 closed (cc40085): json.Number parses are routed through the guard, so
-`json.Number("NaN")` and `json.Number("Inf")` are rejected instead of stored. Before the fix NaN
-read back as silent NULL and ±Inf poisoned the row — every later read errored
-`column produced a non-finite value`.
+guards every write path — `Insert`, `Update`, `UpsertByKey` share the `coerceValue` call
+sites — covering `float64`, `float32`, and the reflect fallback. Pinned by
+`TestInsertRejectsNonFiniteNumbers` (root `familyaudit_test.go`): NaN/±Inf/float32-NaN and the
+`json.Number` spellings on `Insert`, plus an `Update` `Set`; the `UpsertByKey` leg is guarded by
+the same call sites but carries no dedicated test pin. The wire is structurally immune for float
+tokens (JSON cannot spell a non-finite number), but `json.Number` is a string-backed token a Go
+caller can construct, which was the hole #309 closed (cc40085): json.Number parses are routed
+through the guard, so `json.Number("NaN")` and `json.Number("Inf")` are rejected instead of
+stored. Before the fix NaN read back as silent NULL and ±Inf poisoned the row — every later
+read errored `column produced a non-finite value`.
 
 Range rejection fires **before** the guard: for `1e400`, `json.Number.Float64()`
 (`strconv.ParseFloat` underneath) returns a range error, so `coerceValue` fails with

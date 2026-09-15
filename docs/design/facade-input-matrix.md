@@ -9,7 +9,7 @@ by-design and recorded per-surface.
 
 One dispatch table (`internal/api/ops.go`) and one engine serve three surfaces:
 
-| Surface | Input gate | Malformed table name |
+| Surface | Input gate | Name invalid after normalization |
 | --- | --- | --- |
 | MCP tools | `InputSchema` advertised on `tools/list`: `existingTableProp` grammar, `maxItems` bounds | Grammar is the tool's schema contract |
 | `/v1` HTTP | Struct decode (`decode`/`decodeData`, `internal/api/server.go`): `UseNumber` + `DisallowUnknownFields`, no name grammar | Existing-table ops → engine lookup → 404 `not_found`; `create_table` → 400 `invalid_request` |
@@ -18,6 +18,15 @@ One dispatch table (`internal/api/ops.go`) and one engine serve three surfaces:
 `existingTableProp` (`internal/api/server.go:254`) pins the grammar `^[a-z][a-z0-9_]{0,63}$`,
 excluding `__fts` and `sqlite_` prefixes; the façade mirrors it in
 `validTableName` and applies it on reads/search (#304) and describe/drop (#309).
+
+Classification throughout this matrix is of the **post-normalization** name: every surface runs
+`ops.NormalizeTable` — trim plus lowercase (`internal/ops/normalize.go:21`) — before lookup or
+validation; the façade's guarded methods validate the normalized name (root `table.go:77`), and
+the wire normalizes in its handlers. A noncanonical spelling such as `" Notes "` therefore
+resolves to the existing `notes` table on every surface (pinned by "table names normalize too"
+in `internal/conformance/limits_test.go`), while the MCP `InputSchema` pattern sees the raw
+token — a schema-conforming client rejects a spelling the server runtime accepts. The table
+above classifies names that remain invalid after normalization.
 
 The #309 premise correction: the grammar is expressed on the MCP tool schema only. Probing live
 `/v1` showed the wire classifying malformed names `not_found` on `describe_table` and
