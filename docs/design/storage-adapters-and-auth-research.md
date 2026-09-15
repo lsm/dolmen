@@ -162,9 +162,14 @@ rationale in `CreateTable`'s limit error. Harness changes needed:
    diffs HTTP vs MCP only — the embedded and stdio legs assert their own engine
    neutrality through their own suites, not through the parity script. A matrix that
    skips any of these surfaces leaves that transport on SQLite silently.
-2. Per-engine fixture policy: tag SQLite-specific tests to run on adapter #1 only; the
-   engine-neutral corpus (the large majority — envelope, coercion, limits, realtime,
-   parity) runs on both.
+2. Per-engine fixture policy, at **test/subtest granularity — never whole files**: the
+   SQLite-specific cases (out-of-band FTS5 surgery, dialect error-string pins,
+   NUMERIC-affinity internals, CAST-alias semantics) skip on adapter #2, while the
+   engine-neutral majority inside those same files keeps running on both — the exact
+   vector contract in `search_test.go`, transport framing in `errors_test.go`,
+   idempotency and pagination in `embedded_parity_test.go`, plus envelope, coercion,
+   limits, realtime, and parity. Whole-file tags would silently drop that coverage and
+   let a Postgres regression in those paths escape the matrix.
 3. CI: add a Postgres job with a service container (workflow YAML is test infrastructure,
    outside the prod-line budget). The blackbox suite (`internal/blackbox`, eleven
    staged HTTP scenarios, stage01–stage11) is engine-blind at the protocol level but
@@ -192,18 +197,22 @@ The SQLite store is ~5.5k prod lines — the size anchor for what follows:
 - **Phase 1 — core engine** (7-8 slices): skeleton (open/pool/schema-per-namespace registry
   DDL + nsgen) → namespace lifecycle → table DDL → insert + idempotency + change minting →
   typed reads and number normalization → update/delete/upsert paths → `query` plus the
-  Postgres error translator → migrate port.
+  Postgres error translator **plus the §0.5.3 catalog/function rejection — confinement
+  is a precondition of exposing `query`, not a Phase 4 polish; until that slice lands,
+  the engine selector refuses `postgres` outside the matrix harness** → migrate port.
 - **Phase 2 — search** (3 slices): FTS tokenizer/BM25 extraction and postings storage;
   `SearchFulltext` wiring; `SearchVector` exact (near-free reuse).
 - **Phase 3 — realtime** (2-3 slices): `ChangesSince`/cursors; `Listen` polling and
   sessions; retention pruning.
-- **Phase 4 — confinement and hardening** (2-3 slices): roles and catalog rejection; the
-  CI Postgres matrix; topology declaration.
+- **Phase 4 — confinement and hardening** (2-3 slices): role-per-schema privileges (catalog
+  rejection having landed with the Phase 1 `query` slice); the CI Postgres matrix;
+  topology declaration.
 
 Total ≈ 17-20 slices. The first three, concrete:
 
 1. **Harness engine parameterization** (enabler): widen `api.New` to `store.Engine`, add
-   the engine selector to `harness.start()`, tag the five SQLite-hardcoded files. Prod
+   the engine selector to `harness.start()`, tag the SQLite-specific tests/subtests
+   inside the five SQLite-touching files (never whole files — §1.4). Prod
    delta ~15 lines; test infrastructure otherwise.
 2. **Shared value-layer extraction**: move `coerceValue`/`finiteNumber`/`decodeValue`/
    projection sizing/`cosine`/limit constants into a subpackage both engines import; the
@@ -279,9 +288,16 @@ assessment below confirms the seam accommodates this, with one open contract dec
     table**, and a namespace-wide feed spans tables, so two concurrent commits to
     different tables have no snapshot that atomically orders both — the same
     reserve-vs-commit skip race as the Postgres sequence hazard in §1.3. Adapter #3
-    needs a namespace-level commit log written atomically with every table mutation
-    (the transactional-outbox shape §9.3 explicitly permits), with table snapshots as
-    the payload source — or an explicit contract revision. Capability-degraded
+    needs a namespace-level commit log committed atomically with every table mutation —
+    and the atomicity needs a **named mechanism**, because Iceberg/Delta without a
+    transactional catalog cannot commit a log record and a data snapshot in one step: a
+    crash between two independent commits leaves an acknowledged mutation without an
+    event, or an event for an uncommitted mutation. Conforming mechanisms: a
+    transactional catalog/coordinator that commits both (a JDBC/Postgres-backed
+    catalog), or a dolmen-owned namespace WAL as the authoritative commit record — the
+    WAL append is the commit point, snapshots are idempotent materializations, recovery
+    replays — with table snapshots as the payload source. Absent one of those, this is
+    a contract revision, not an implementation detail. Capability-degraded
     `wait_for` stays mandatory (never unavailable; degrades to scanning, §9.3).
 - **Read vs write path split:** writes use the format's optimistic-concurrency commit
   protocol — conflicts surface as `409`, already the contract's collision rule (§0.6);
