@@ -55,7 +55,10 @@ facade (root `table.go`/`read.go`/`search.go`), and `internal/api` (§1.3 item 9
   — the coordinated-storage token form §9.3 permits, portable as plain SQL. Retention and
   chain-cap pruning (`pruneChanges`) are dialect-neutral.
 - **Incarnation guards, idempotency (payload-hash compare), drop generations, pagination
-  (`LIMIT ? OFFSET ?`), `ON CONFLICT DO NOTHING/UPDATE`** — portable SQL patterns.
+  (`LIMIT ? OFFSET ?`), `ON CONFLICT DO NOTHING/UPDATE`** — portable SQL patterns, with
+  one portability caveat: dolmen's pinned `?` placeholders are SQLite-style, so adapter
+  #2 rewrites them (and renumbers server-appended pagination parameters) through a
+  lexer-aware rebinding layer, detailed in `storage-adapter-mechanics.md` §3.
 
 ### 1.3 What is SQLite-shaped (adapter #2 must reimplement)
 
@@ -112,7 +115,7 @@ Ranked by lift:
    the contract's 64-character maximum exceed stock Postgres's 63-byte identifier
    limit (longer names are silently truncated, colliding two valid dolmen names) —
    the port needs an injective physical-name mapping with logical-name resolution on
-   the `query` path (mechanism detailed in implementation).
+   the `query` path (detailed in `storage-adapter-mechanics.md` §3).
 7. **Notifications.** In-process commit listeners plus a 250 ms poll fallback
    (`internal/store/listen_live.go`, `notify.go`). The durable table is the source of
    truth, so the polling design is multi-process-correct on day one; Postgres

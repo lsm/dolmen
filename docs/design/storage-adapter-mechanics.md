@@ -77,6 +77,35 @@ none of its own; no usable `authorization_servers` value exists) — dolmen serv
 - The `401` challenge carries the `WWW-Authenticate` `resource_metadata` link to that
   URI — a bare 401 leaves a standards-based client unable to learn the AS.
 - The metadata route itself is unauthenticated (it *is* discovery).
+- The metadata response's **REQUIRED `resource` member** carries the same canonical
+  public resource URL that derives the metadata path (e.g.
+  `https://host/dolmen/mcp` under `-prefix=/dolmen`) — the URL the client actually
+  requests; covered by the implementing tests.
 
 **Slice gap.** No Lane B slice covers the endpoint, the challenge linkage, or the
 external-AS URL setting — flagged for the implementing epic.
+
+---
+
+## 3. Postgres adapter (#2) — SQL surface mechanics
+
+**Placeholder rebinding.** Dolmen's public query/filter contract pins SQLite-style `?`
+parameters; Postgres grammar and drivers use numbered `$N`. Adapter #2 rewrites
+placeholders through a lexer-aware rebinding layer — literal strings, quoted
+identifiers, and comments are skipped; each `?` becomes `$k` in positional order; and
+server-appended pagination parameters (`LIMIT ? OFFSET ?`) are appended to the same
+renumbered sequence. Implementing tests pin: mixed user + appended parameters, `?`
+inside string literals and comments (never rewritten), and error positions.
+
+**Physical-name mapping.** Dolmen names may reach 64 characters; stock Postgres
+identifiers are limited to 63 bytes (longer names are silently truncated, colliding
+two valid names). Adapter #2 maps logical names to injective physical names: names
+within 63 bytes pass through unchanged; longer names become `<prefix>_<h>` where
+`<h>` is the first 16 hex characters of SHA-256 over the full logical name and
+`<prefix>` the longest prefix keeping the total at 63 bytes. All dolmen-generated SQL
+translates at statement-build time; caller SQL (`query`, filters) passes through the
+same lexer-aware translation as the placeholder rebinding (logical identifiers →
+physical), and error messages map physical back to logical before redaction surfaces
+them — callers only ever see logical names. Implementing tests pin: two 64-character
+names sharing a 63-byte prefix (no collision), round-trip through `query`, and error
+messages naming logical names.
