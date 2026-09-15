@@ -105,11 +105,22 @@ Ranked by lift:
    (`internal/store/listen_live.go`, `notify.go`). The durable table is the source of
    truth, so the polling design is multi-process-correct on day one; Postgres
    `LISTEN/NOTIFY` is a pure latency optimization later. `Capabilities` stays truthful.
-8. **Topology and confinement obligations** (spec §0.5.3, not SQLite code): role-per-schema
-   privileges plus catalog rejection (`pg_catalog`/`information_schema` and
-   function-equivalent probes refused on the query path), and §0.6's serial-observability
-   guarantee mapping to the change-log sequence assigned inside the write transaction
-   under MVCC.
+8. **Topology, ordering, and confinement obligations** (spec §0.5.3/§9.3, not SQLite
+   code): role-per-schema privileges plus catalog rejection
+   (`pg_catalog`/`information_schema` and function-equivalent probes refused on the
+   query path). And — subtler — §0.6/§9.3's ordering guarantee does **not** come free
+   under MVCC: Postgres sequences and IDENTITY columns allocate at reserve time, so two
+   concurrent writers can reserve change-log positions 1 and 2 and commit in the
+   opposite order; a client that observes and persists cursor 2 before position 1
+   commits has permanently skipped position 1 (`seq > ?` resume never returns it).
+   §9.3 requires "the same serialization point that orders commits assigns the
+   sequence" — adapter #1 gets that from its single rw connection; adapter #2 needs an
+   explicit per-namespace serialization point: a `pg_advisory_xact_lock` keyed on the
+   namespace (or an in-transaction counter row it updates), which serializes
+   per-namespace writes exactly as SQLite already does while leaving cross-namespace
+   concurrency — which adapter #1 never had — intact. Concurrent intra-namespace
+   writers with commit-watermark reads (serve only the contiguous committed prefix) are
+   a later, conformance-proven option, not the v1.
 
 ### 1.4 Can the conformance suite run against multiple engines?
 
@@ -131,7 +142,11 @@ rationale in `CreateTable`'s limit error. Harness changes needed:
    parity) runs on both.
 3. CI: add a Postgres job with a service container (workflow YAML is test infrastructure,
    outside the prod-line budget). The blackbox suite (`internal/blackbox`, eight staged
-   HTTP scenarios) is already engine-blind — a free second gate.
+   HTTP scenarios) is engine-blind at the protocol level but **not** a free second gate
+   as wired: its `hermeticEnv` strips every `DOLMEN_*` variable and boots the subprocess
+   with SQLite-style `-data` arguments, so a job-level engine/DSN never reaches it —
+   engine/DSN plumbing through the blackbox boot path and its restart helper is part of
+   the matrix slice, not a given.
 
 One sequencing note: §7's `q(s)=floor(s/1e-9)` canonical quantization is designed but built
 nowhere (the current suite pins raw, unclamped cosine — the auth-off tier). Cross-engine
@@ -314,7 +329,11 @@ already paid:
   precedent in `internal/api/envelope.go`).
 - **HTTP whole-server wrap:** alongside `OriginGuard` in `cmd/dolmen/main.go` — covers
   `/v1`, `/v1/subscribe`, and `/mcp` in one place; `/healthz`, `/version`, `/skills`,
-  `/v1/openapi.json` exempted per §1.2 (unauthenticated by recorded decision).
+  `/v1/openapi.json` exempted per §1.2 (unauthenticated by recorded decision), plus —
+  when source B is enabled — `/v1/auth/begin` and its callback, which §1.2 exempts by
+  construction ("they *are* the authentication"): the browser starting the flow holds
+  no dolmen credential yet, and a wrapper that 401s them deadlocks the flow before it
+  can mint one.
 - **MCP specifics:** streamable-HTTP is a stateless JSON-RPC POST (no sessions despite
   `MCP-Session-Id` in the CORS allow-headers); `initialize` carries no identity today; a
   bearer rejected at the HTTP edge returns a plain `http.Error`, not a JSON-RPC error — an
