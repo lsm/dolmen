@@ -202,8 +202,9 @@ The SQLite store is ~5.5k prod lines — the size anchor for what follows:
   DDL + nsgen) → namespace lifecycle → table DDL → insert + idempotency + change minting →
   typed reads and number normalization → update/delete/upsert paths → `query` plus the
   Postgres error translator **plus the §0.5.3 catalog/function rejection — confinement
-  is a precondition of exposing `query`, not a Phase 4 polish; until that slice lands,
-  the engine selector refuses `postgres` outside the matrix harness** → migrate port.
+  is a precondition of exposing `query`, not a Phase 4 polish. The engine selector
+  refuses `postgres` outside the matrix harness until every mandatory `Engine`
+  operation and its conformance coverage land (end of Phase 4)** → migrate port.
 - **Phase 2 — search** (3 slices): FTS tokenizer/BM25 extraction and postings storage;
   `SearchFulltext` wiring; `SearchVector` exact (near-free reuse).
 - **Phase 3 — realtime** (2-3 slices): `ChangesSince`/cursors; `Listen` polling and
@@ -386,7 +387,9 @@ already paid:
   funnels through it too (`internal/mcp/server.go`). Auth placed there gates `/v1/{op}`
   and MCP tools in one move; the principal rides `context.Context` (the `requestIDKey`
   precedent in `internal/api/envelope.go`).
-- **HTTP whole-server wrap:** alongside `OriginGuard` in `cmd/dolmen/main.go` — covers
+- **HTTP whole-server wrap:** in `cmd/dolmen/main.go`, **inside `withPrefix` — after
+  the configured prefix is stripped** (a wrapper placed alongside `OriginGuard` sees
+  `/dolmen/healthz` and would 401 every exempt route listed here) — covers
   `/v1`, `/v1/subscribe`, and `/mcp` in one place; `/healthz`, `/version`, `/skills*`,
   `/v1/openapi.json` exempted per §1.2 (unauthenticated by recorded decision) — the
   skills exemption is prefix-based over the whole route family: the manifest at
