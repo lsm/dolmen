@@ -1,0 +1,86 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+Dolmen is a single static Go binary that gives AI agents a data layer: typed tables, FTS5 full-text search, and cosine vector search over one SQLite file per namespace. It exposes the same 23 operations three ways: HTTP `POST /v1/{op}`, MCP `tools/call` (over HTTP at `/mcp` or over stdio via `dolmen mcp`), and an in-process Go library (the root `dolmen` package). Module path is `github.com/lsm/dolmen`; the executable lives at `./cmd/dolmen`.
+
+## Commands
+
+```bash
+make test                 # go vet ./... && go test ./...
+make race                 # go vet + go test -race ./...   (CI runs CGO_ENABLED=1 go test -race ./...)
+make build                # CGO_ENABLED=0 static binary -> ./dolmen, version injected via ldflags
+make run                  # go run ./cmd/dolmen -addr 127.0.0.1:8790 -data ./data
+make vulncheck            # govulncheck ./... (needs govulncheck on PATH)
+```
+
+Single package / single test:
+
+```bash
+go test ./internal/store -run TestName
+go test . -run TestName                    # root package (public Go facade)
+go test ./internal/conformance             # contract suite over HTTP + MCP + embedded facade
+go test ./internal/blackbox                # builds the binary and drives it as a subprocess
+```
+
+Other checks CI runs that `make test` does not:
+
+```bash
+# Zero-comments gate (fails CI if any Go comment exists; see Conventions)
+go run github.com/lsm/nocomment-for-agents/go@016ad219e84b9b78ca66ff1b66a7729218030c12 --check
+
+# examples/basic is a separate module (replace => ../..); CI builds, vets, and runs it
+cd examples/basic && go build ./... && go vet ./... && go run .
+```
+
+Opt-in test that downloads real embedding models (skipped otherwise):
+
+```bash
+DOLMEN_TEST_EMBED_LOCAL=1 go test ./internal/embed -run Live
+```
+
+Notes on the test tiers:
+- **macOS quirk:** three symlink tests in the root package (`TestOpenDotDotThroughSymlinkSharesOwnership`, `TestOpenResolvesRelativeSymlinkTargetInPlace`, `TestOpenResolvesRelativeTargetThroughSymlinkAndDotDot`) fail when `TMPDIR` is the default `/var/folders/...`, because that path is itself a symlink to `/private/var/...` and the tests compare against the unresolved `t.TempDir()`. Linux CI is unaffected. Locally, run with a physically resolved temp dir: `TMPDIR="$(realpath "$TMPDIR")" go test ./...`.
+- `internal/blackbox` is a `*_test.go`-only package. `TestMain` builds `./cmd/dolmen`, boots one server, and stages 01–11 share global state in file order. Run the package as a whole; `-run TestStage05...` alone will not work. A guard test forbids importing `internal/` or `skill` there.
+- `internal/conformance` uses an in-process `httptest` server plus a fake embedding provider. Its `harnessMode` currently has only `authOff`; the scaffolding is for the auth epic below.
+- Releases: pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml` (cross-compiled binaries, SBOM, packaged models via `cmd/pack-model`, GHCR image).
+
+## Conventions that are enforced or expected
+
+- **No comments in Go source.** CI runs a zero-comments check; the tree has none. Do not add doc comments, even on exported identifiers, and do not add explanatory inline comments. `//go:embed`-style directives are allowed. `go/allowlist.txt` is the gate's per-file allowlist and is empty; keep it that way. Explanations belong in `README.md`, `docs/design/`, or the commit message.
+- **Commit subjects** follow `Dolmen#<issue> - <summary>`; some carry a trailing `(#PR)` from squash-merge.
+- **Behavior-changing PRs update `internal/conformance` in the same PR.** The suite pins transport parity between `/v1` and MCP, the error contract, the limits table, typed-read coercion, write semantics, search invariants, and migration guards.
+- **Concurrency-touching changes must pass `make race`**, not only `make test` (notifications, listen/drain, drop cascades).
+- **Pure Go, `CGO_ENABLED=0`.** SQLite is `modernc.org/sqlite`; embeddings are `rembed`. Do not introduce cgo dependencies.
+- **Design authority.** `docs/design/identity-and-engines.md` is the spec for the auth / multi-tenancy / pluggable-engine epic (#159) and `implementation-plan.md` is its slice order. Deviating from the spec requires editing the spec first, in the same PR. `public-go-facade.md`, `facade-input-matrix.md`, and `numeric-fidelity-matrix.md` record the settled decisions for the Go library.
+- **Errors teach.** Messages name the remediation (which field, which limit, what to call instead) and are stable enough that tests pin them. User input must never be able to rewrite an error message, and file paths are redacted before leaving the API layer (`internal/api/envelope.go`).
+
+## Architecture
+
+Request flow: transport → `internal/api` op table → `internal/ops` shared logic → `store.Engine` (SQLite). The Go facade skips the transport and op table and calls the engine through `internal/ops` directly.
+
+**`cmd/dolmen`** parses flags and env (`loadConfig`), opens the store, builds the embed provider, then `api.New` and `mcp.New`. Plain `dolmen` serves HTTP; `dolmen mcp` serves the same MCP dispatcher over stdio with logs on stderr. `-prefix` mounts everything under a sub-path.
+
+**`internal/api`** is the HTTP transport and the single source of truth for operations. `Ops` in `internal/api/ops.go` is a `map[string]OpDef`; each entry carries `Description`, `InputSchema`, `OutputSchema`, and `Func`. Everything else derives from it: `/v1/{op}` routing (`server.go`), `/v1/openapi.json` (`openapi.go`), and MCP `tools/list` / `tools/call`. To add or change an operation, edit its `OpDef` (schemas included), add its entry to `toolAnnotations` in `internal/mcp/server.go`, and update the conformance suite. Tests in `internal/mcp` fail if the tool list, annotations, and `Ops` drift apart. `envelope.go` maps engine errors to HTTP status and error code (`wrapStoreErr`, `statusFor`). `sse.go` serves `/v1/subscribe`.
+
+**`internal/mcp`** wraps `api.Server` in JSON-RPC 2.0 for `/mcp` and stdio. Successful tool results go in `structuredContent`; `content` stays empty. `drain.go` implements the stdio shutdown grace period.
+
+**`internal/ops`** holds the logic shared by both transports and the Go facade: the embedding adapter, `EnsureNamespace`, `PrepareVectorQuery`, name normalization, and `Classify(err) derr.Code`.
+
+**`internal/derr`** is the error taxonomy every surface agrees on: `invalid_request`, `not_found`, `query_error`, `conflict`, `forbidden`, `embedder_unavailable`, `canceled`, `internal_error`. The root package re-exports these as `dolmen.ErrX` sentinels matched with `errors.Is`.
+
+**`internal/store`** defines the `Engine` interface (`engine.go`) and its SQLite implementation. One namespace is one file `<data>/<ns>.db` in WAL mode with a single writer connection and a read-only pool; read-only SQL runs on a `mode=ro` connection with a SELECT/WITH allowlist. FTS5 shadow tables back full-text fields; vectors are float32 blobs scanned brute-force in Go. Each file also holds a schema registry, migration log, idempotency-key table, and a durable change log that feeds `changes_since`, `wait_for`, and SSE (`listen_*.go`, `notify.go`). The `Engine` methods take `AuthBinding`, `RowScope`, `Incarnation`, and `nsGen [16]byte` parameters that callers currently pass as zero values; they are the seam for the auth epic and must stay.
+
+**`internal/schema`** owns field types, the name grammar and reserved names, enum/default rules, migration `Change` ops, and value coercion.
+
+**`internal/embed`** defines `Provider` (`Name`, `Identity`, `ModelName`, `Embed`, `EmbedQuery`) with `none`, `local` (rembed, in-process, model cached under `<data>/models`), and `openai` implementations. The identity string pins a vectorized table to its embedding space; e5-family models get `query:` / `passage:` prefixes automatically.
+
+**Root package `dolmen`** is the public Go facade: `Open`/`Close`, namespace and table lifecycle, `Insert`/`Update`/`Delete`/`UpsertByKey`, `GetRows`/`Query`, `SearchFulltext`/`SearchVector`. `Open` never reads env or loads a model; the caller supplies an `EmbeddingProvider`. One live `Store` per data directory per process. Its semantics must match the transports; `internal/conformance/embedded_parity_test.go` pins that.
+
+**`skill/`** embeds `dolmen.md` and `dolmen-admin.md` as Go templates served at `/skills/*`. They are part of the served contract and have tests; keep them in sync with behavior changes.
+
+## Configuration reference
+
+Flags and env vars are documented in the README "Configuration" table and in `dolmen -help`. Defaults: `127.0.0.1:8790`, data dir `data`, embedding provider `local`. There is no authentication yet, so the server binds to loopback by default.
