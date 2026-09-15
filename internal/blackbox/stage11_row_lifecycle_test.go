@@ -44,8 +44,9 @@ func TestStage11RowLifecycleAndPinnedErrors(t *testing.T) {
 	if len(rows) != 2 || asInt(t, rows[0]["id"], "row 0 id") != first || asInt(t, rows[1]["id"], "row 1 id") != second {
 		t.Fatalf("read_rows must return found rows in ascending id order and drop missing ids: %v", rows)
 	}
-	if hours := rows[1]["hours"]; hours != nil {
-		t.Fatalf("an omitted number field must read back null, got %v", hours)
+	hours, haveHours := rows[1]["hours"]
+	if !haveHours || hours != nil {
+		t.Fatalf("an omitted number field must read back as an explicit null key, got %v (present=%v)", hours, haveHours)
 	}
 
 	code, envelope := opErrorEnvelope(t, "read_rows", map[string]any{"namespace": stage11Namespace, "table": "docs"})
