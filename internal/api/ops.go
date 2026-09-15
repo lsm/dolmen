@@ -926,11 +926,14 @@ var Ops = map[string]OpDef{
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
+			if req.Ids == nil {
+				return nil, badRequest(`ids is required (pass the ids a write returned, a query projected, or a change feed carried; an empty list selects nothing)`)
+			}
 			ns := normNS(req.Namespace)
 			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			res, err := s.eng.GetRows(ctx, ns, normTable(req.Table), req.Ids, nil, store.Incarnation{})
+			res, err := s.eng.GetRows(ctx, ns, normTable(req.Table), *req.Ids, nil, store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -1829,9 +1832,9 @@ type upsertReq struct {
 }
 
 type readRowsReq struct {
-	Namespace string  `json:"namespace"`
-	Table     string  `json:"table"`
-	Ids       []int64 `json:"ids"`
+	Namespace string   `json:"namespace"`
+	Table     string   `json:"table"`
+	Ids       *[]int64 `json:"ids"`
 }
 
 type queryReq struct {
