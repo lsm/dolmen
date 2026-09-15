@@ -223,8 +223,8 @@ The SQLite store is ~5.5k prod lines — the size anchor for what follows:
 - **Phase 3 — realtime** (2-3 slices): `ChangesSince`/cursors; `Listen` polling and
   sessions; retention pruning.
 - **Phase 4 — confinement and hardening** (2-3 slices): role-per-schema privileges (catalog
-  rejection having landed with the Phase 1 `query` slice); the CI Postgres matrix;
-  topology declaration.
+  rejection having landed with the Phase 1 `query` slice, the CI matrix with the
+  skeleton slice); topology declaration.
 
 Total ≈ 17-20 slices. The first three, concrete:
 
@@ -240,7 +240,9 @@ Total ≈ 17-20 slices. The first three, concrete:
 3. **Postgres skeleton**: open/close, DSN config, schema-per-namespace registry DDL port
    (strftime → now()-based millisecond defaults, IDENTITY), nsgen, `NamespaceState`/
    `TableState`; the conformance namespace/lifecycle subset green under the Postgres
-   engine (locally via DSN env; the CI job behind the same knob).
+   engine — the service-backed CI Postgres job lands **with this slice**, so every
+   subsequent engine slice is gated by the engine-specific conformance subset instead
+   of discovering accumulated regressions in Phase 4.
 
 **What I'd slice first:** the three above, in that order — low-risk, behavior-invariant,
 and every later slice depends on them. Nothing in Phase 1+ should start before the harness
@@ -279,22 +281,14 @@ assessment below confirms the seam accommodates this, with one open contract dec
 
 ### 2.2 Op-by-op mapping
 
-- **Natural fits:** `insert` (append + snapshot commit — the format's native op — but
-  the implicit `id` needs a server-assigned, monotonic, never-reused allocator that
-  Iceberg/Delta has no native equivalent of: ids are assigned inside the namespace-level
-  serialization point below, never derived as `max(id)+1` from a snapshot, which
-  collides under concurrent writers); DDL
-  migrations add/drop/rename field (Iceberg schema evolution is a strength);
-  `search_vector` exact (Parquet column scan; brute-force cosine in Go scales to moderate
-  corpora before an ANN index is needed); describe/list/capabilities (catalog reads).
+- **Natural fits:** `insert` (append + snapshot commit — the format's native op; the
+  implicit `id` needs a server-assigned allocator, §mechanics), DDL migrations
+  add/drop/rename field (Iceberg schema evolution is a strength), `search_vector` exact
+  (Parquet column scan), describe/list/capabilities (catalog reads).
 - **Workable via below-seam machinery:** `update`/`delete`/`upsert`/`upsert_by_key`
   (deletion vectors / merge-on-read — "rare updates are not a blocker" per D25);
-  `read_rows` (needs row-group stats pruning or the serving tier); idempotency (the
-  record — key, payload hash, assigned ids — commits inside the same atomic
-  serialization point as its rows, never a separately-committed metadata table, or a
-  crash between the two commits duplicates or replays phantom ids, violating §0.6);
-  `set_enum`/backfills (full scans/rewrites — heavy but rare, consistent with
-  rare-DDL semantics).
+  `read_rows` (stats pruning or the serving tier); idempotency (commits atomically with
+  its rows, §mechanics); `set_enum`/backfills (full scans/rewrites — heavy but rare).
 - **Genuine gaps, stated plainly:**
   - `query` (raw SQL) — no SQL engine lives in a table format. §9.3 permits only
     `subscribe` to be declared unavailable, and §7 makes search semantics contract on
@@ -304,40 +298,23 @@ assessment below confirms the seam accommodates this, with one open contract dec
     explicitly — §0.5.3, §2's op table, and the shared conformance corpus, which replays
     every op (`parity_test.go`) — to permit raw-SQL-less engines. That amendment is an
     open decision (below), not something this note assumes.
-  - `search_fulltext` — sidecar per the spec. The Postgres engine's shared tokenizer/BM25
-    extraction (Phase 2 above) is exactly the component the sidecar reuses — the two
-    adapters share this cost.
+  - `search_fulltext` — sidecar per the spec, sharing the Postgres engine's
+    tokenizer/BM25 extraction.
   - `changes_since`/`wait_for`/`subscribe` — snapshot-diff can seed the change log, but
-    two contract facts are not native to the formats: owner labels (§9.3,
-    `ChangeRecord.Owner`) need engine-internal metadata stamped in the write path, and —
-    harder — the per-namespace gap-free monotonic cursor cannot be a
-    `(snapshot, position)` token: Iceberg/Delta snapshots order commits **within one
-    table**, and a namespace-wide feed spans tables, so two concurrent commits to
-    different tables have no snapshot that atomically orders both — the same
-    reserve-vs-commit skip race as the Postgres sequence hazard in §1.3. Adapter #3
-    needs a namespace-level commit log committed atomically with every table mutation —
-    and the atomicity needs a **named mechanism**, because Iceberg/Delta without a
-    transactional catalog cannot commit a log record and a data snapshot in one step: a
-    crash between two independent commits leaves an acknowledged mutation without an
-    event, or an event for an uncommitted mutation. Conforming mechanisms: a
-    transactional catalog/coordinator that commits both (a JDBC/Postgres-backed
-    catalog), or a dolmen-owned namespace WAL as the authoritative commit record — the
-    WAL append is the commit point, snapshots are idempotent materializations, recovery
-    replays — and the WAL is the **read-authoritative tail**, not merely a recovery
-    log: reads (`read_rows`, `query`, the searches) must overlay
-    committed-but-unmaterialized WAL entries as a union view, or the serving view must
-    advance synchronously before the write acks — otherwise an acknowledged write
-    exists only in the WAL and §0.6's read-your-writes is violated until
-    materialization completes. With table snapshots as the payload source. Absent one
-    of those, this is
-    a contract revision, not an implementation detail. Capability-degraded
-    `wait_for` stays mandatory (never unavailable; degrades to scanning, §9.3).
+    a `(snapshot, position)` cursor cannot provide the per-namespace gap-free order
+    (snapshots order commits within one table only — the same skip race as the
+    Postgres sequence hazard in §1.3), and owner labels are not native. Adapter #3
+    needs a namespace-level commit log with a named atomicity mechanism and
+    read-visibility rule, or an explicit contract revision.
 - **Read vs write path split:** writes use the format's optimistic-concurrency commit
-  protocol — a lost metadata race is refreshed/rebased and retried internally within
-  bounds, and only exhausted or genuinely non-retryable conflicts surface as `409`
-  (§0.6's transparent-serialization-first rule; surfacing every routine race would
-  fail serializable concurrent appends);
-  reads use the serving tier or direct Parquet scan. Both below the seam, dolmen-blind.
+  protocol (races retried within bounds, exhausted/non-retryable conflicts `409`,
+  §mechanics); reads use the serving tier or direct Parquet scan. Both below the seam,
+  dolmen-blind.
+
+The per-op mechanism details — row-id allocation, atomic idempotency commit, the
+namespace commit-log atomicity mechanisms and WAL read-visibility, retry-before-409 —
+are **detailed in implementation**: `storage-adapter-mechanics.md` §1, enforced by the
+implementing PRs' tests rather than prose review rounds.
 
 ### 2.3 Contract impact and effort classes
 
@@ -457,30 +434,20 @@ metadata only helps if the advertised AS will actually complete an authorization
 PKCE exchange against the client's redirect URI. Source B as specced (§1.4) is a **human
 browser flow** (`/v1/auth/begin` → IdP → callback → a page that hands the token out); it
 mints an OAuth-shaped bearer JWT but is not an authorization server MCP clients can run
-the code flow against — serving the two well-known documents plus DCR on top of §1.4 as
-specced would advertise an AS that discovery-based clients still cannot obtain a token
-from. Making dolmen the advertised AS therefore means extending source B into a full
-token-broker AS (authorization endpoint, token endpoint, client registration, redirect
-URI handling) — a scope increase over §1.4, not a metadata slice. API keys are non-OAuth
+the code flow against. Making dolmen the advertised AS therefore means extending source
+B into a full token-broker AS (authorization endpoint, token endpoint, client
+registration, redirect URI handling) — a scope increase over §1.4, not a metadata
+slice; unextended source B can advertise no usable AS at all. API keys are non-OAuth
 bearers — legitimate machine-tier credentials, invisible to spec-driven discovery,
 documented as such. The `/mcp` and envelope gating under `auth: on` (§1.2) already
-matches. One Lane B addition is required wherever dolmen itself serves discovery: an
-unauthenticated `/.well-known/oauth-protected-resource` endpoint whose
-`authorization_servers` value dolmen can only know from configuration — under source
-A the gateway owns both the metadata and the challenge (dolmen emits the bare `401`);
-when dolmen itself serves discovery — via the explicit validated external-AS URL
-setting, or source B **after its extension into the token-broker AS above**
-(unextended source B can advertise no usable AS: it neither accepts the upstream
-IdP's tokens nor issues its own) — its `401` carries the `WWW-Authenticate`
-`resource_metadata` link and the metadata is served at the **path-derived** well-known
-URI (RFC 9728: `/.well-known/oauth-protected-resource/mcp` for the `/mcp` resource),
-not only the root route — a bare 401 would leave a standards-based client unable to
-learn the AS. It is in no Lane B slice today; flagged for the
-implementing epic. The same gateway-owns rule covers the credential: the gateway
-consumes and **strips the verified bearer before forwarding** — a forwarded external
-access token would hit §1's fail-closed bearer precedence and 401 the request instead
-of accepting the proxy assertion; validating or exchanging external tokens inside
-dolmen would be a new identity source, out of scope here.
+matches, and one Lane B addition is required wherever dolmen itself serves discovery
+(an unauthenticated protected-resource metadata endpoint linked from the `401`
+challenge) — it is in no Lane B slice today. The discovery **mechanics** — who owns
+metadata and challenge under each source, gateway bearer consumption/stripping, the
+`WWW-Authenticate` linkage, path-derived RFC 9728 URIs (including `-prefix` handling),
+and dolmen-served eligibility — are **detailed in implementation**:
+`storage-adapter-mechanics.md` §2, enforced by the implementing PRs' tests rather than
+prose review rounds.
 
 ### 3.4 What today's deferral bakes in — retrofit-cost audit
 
