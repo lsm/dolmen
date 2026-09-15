@@ -66,5 +66,7 @@ at write time. Consequences pinned per-surface:
 - `−0.0` reads back as concrete **int64 0** — the Go-type pin (the assert requires `.(int64)`,
   not just value equality), embodying the twice-adjudicated hyperneo r2 P1 concern (adjudication
   5659925896): the INTEGER storage class is the engine's documented behavior, not a parity bug.
-- Any fractionless float follows the same rewrite: it returns through the integer read path, so
-  embedded results carry `int64` where the wire carries the equivalent JSON number.
+- The rewrite holds only where SQLite can represent the value as a signed integer. A fractionless
+  float inside int64 range (e.g. `2.0`) returns through the integer read path — embedded `int64`
+  where the wire carries the equivalent JSON number. A fractionless float outside the range
+  (e.g. `1e20`) keeps the REAL storage class and reads back as `float64`.

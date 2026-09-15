@@ -13,7 +13,7 @@ One dispatch table (`internal/api/ops.go`) and one engine serve three surfaces:
 | --- | --- | --- |
 | MCP tools | `InputSchema` advertised on `tools/list`: `existingTableProp` grammar, `maxItems` bounds | Grammar is the tool's schema contract |
 | `/v1` HTTP | Struct decode (`decode`/`decodeData`, `internal/api/server.go`): `UseNumber` + `DisallowUnknownFields`, no name grammar | Flows to the engine → 404 `not_found` |
-| Public Go façade | Curated pre-checks (`validTableName`, root `read.go:22`) before `EnsureNamespace` | `invalid_request` — uniformly stricter |
+| Public Go façade | Curated pre-checks (`validTableName`, root `read.go:22`) before `EnsureNamespace`, on guarded methods only | `invalid_request` on reads/search and describe/drop; writes classify via the engine |
 
 `existingTableProp` (`internal/api/server.go:254`) pins the grammar `^[a-z][a-z0-9_]{0,63}$`,
 excluding `__fts` and `sqlite_` prefixes; the façade mirrors it in
@@ -23,7 +23,11 @@ The #309 premise correction: the grammar is expressed on the MCP tool schema onl
 `/v1` showed the wire classifying malformed names `not_found` on `describe_table` and
 `search_fulltext` alike, because the wire decodes typed request structs and applies no grammar
 gate. The façade instead rejects impossible names early with `invalid_request` — the
-curated-stricter reading that keeps #304's merged decision coherent. The divergence is pinned
+curated-stricter reading that keeps #304's merged decision coherent. The pre-check covers
+reads/search and describe/drop only: the write methods (`Insert`, `Update`, `Delete`,
+`UpsertByKey` in root `write.go`) normalize the name and hand it to the engine, where a
+malformed name matches no table and classifies `not_found` — the same answer the wire gives.
+The divergence is pinned
 by-design in `TestEmbeddedParityErrorTaxonomy` (`internal/conformance/embedded_parity_test.go`):
 the same malformed name yields wire `not_found` and façade `invalid_request`, each surface's
 assert naming the divergence. Wire-side tightening (400 on `/v1`) is a contract change deferred
