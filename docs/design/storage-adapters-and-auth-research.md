@@ -163,13 +163,17 @@ rationale in `CreateTable`'s limit error. Harness changes needed:
    neutrality through their own suites, not through the parity script. A matrix that
    skips any of these surfaces leaves that transport on SQLite silently.
 2. Per-engine fixture policy, at **test/subtest granularity — never whole files**: the
-   SQLite-specific cases (out-of-band FTS5 surgery, dialect error-string pins,
-   NUMERIC-affinity internals, CAST-alias semantics) skip on adapter #2, while the
-   engine-neutral majority inside those same files keeps running on both — the exact
-   vector contract in `search_test.go`, transport framing in `errors_test.go`,
-   idempotency and pagination in `embedded_parity_test.go`, plus envelope, coercion,
-   limits, realtime, and parity. Whole-file tags would silently drop that coverage and
-   let a Postgres regression in those paths escape the matrix.
+   SQLite-specific cases (out-of-band FTS5 surgery, NUMERIC-affinity internals,
+   CAST-alias semantics) skip on adapter #2, and error-message pins fork by **input,
+   not assertion** — subtests whose SQL is valid on both engines (unknown function,
+   missing column, the WHERE-expression guard) keep running on adapter #2, because
+   they are the matrix coverage proving §1.3's SQLSTATE translator emits the same
+   user-facing strings; only genuinely engine-specific syntax skips or takes a
+   per-engine input. The engine-neutral majority inside those same files keeps
+   running on both — the exact vector contract in `search_test.go`, transport framing
+   in `errors_test.go`, idempotency and pagination in `embedded_parity_test.go`, plus
+   envelope, coercion, limits, realtime, and parity. Whole-file tags would silently
+   drop that coverage and let a Postgres regression in those paths escape the matrix.
 3. CI: add a Postgres job with a service container (workflow YAML is test infrastructure,
    outside the prod-line budget). The blackbox suite (`internal/blackbox`, eleven
    staged HTTP scenarios, stage01–stage11) is engine-blind at the protocol level but
@@ -296,7 +300,13 @@ assessment below confirms the seam accommodates this, with one open contract dec
     transactional catalog/coordinator that commits both (a JDBC/Postgres-backed
     catalog), or a dolmen-owned namespace WAL as the authoritative commit record — the
     WAL append is the commit point, snapshots are idempotent materializations, recovery
-    replays — with table snapshots as the payload source. Absent one of those, this is
+    replays — and the WAL is the **read-authoritative tail**, not merely a recovery
+    log: reads (`read_rows`, `query`, the searches) must overlay
+    committed-but-unmaterialized WAL entries as a union view, or the serving view must
+    advance synchronously before the write acks — otherwise an acknowledged write
+    exists only in the WAL and §0.6's read-your-writes is violated until
+    materialization completes. With table snapshots as the payload source. Absent one
+    of those, this is
     a contract revision, not an implementation detail. Capability-degraded
     `wait_for` stays mandatory (never unavailable; degrades to scanning, §9.3).
 - **Read vs write path split:** writes use the format's optimistic-concurrency commit
@@ -388,8 +398,10 @@ already paid:
   before it can mint one.
 - **MCP specifics:** streamable-HTTP is a stateless JSON-RPC POST (no sessions despite
   `MCP-Session-Id` in the CORS allow-headers); `initialize` carries no identity today; a
-  bearer rejected at the HTTP edge returns a plain `http.Error`, not a JSON-RPC error — an
-  error-shape decision to make deliberately (below). stdio bypasses HTTP entirely
+  bearer rejected at the HTTP edge returns a plain `http.Error` today — the target shape
+  is settled by the MCP authorization protocol, not open: uniform HTTP `401` +
+  `WWW-Authenticate` for every authentication failure, JSON-RPC errors only for
+  authenticated requests (§3.4). stdio bypasses HTTP entirely
   (`internal/mcp/stdio.go`) — inherently local trust.
 - **Config conventions established:** env-twin flags (`envOr`), env-only for secrets
   (`DOLMEN_EMBED_API_KEY`), functional options for server attachments
@@ -442,11 +454,16 @@ design — no contract debt accrues while it stands.
    requirement (9g) and the Postgres engine's translator. §4.3's filter allowlist already
    pins SQLite evaluation semantics ("one shared evaluator, not just a shared validator")
    — each new pinned SQLite-ism is future cross-engine tax.
-3. **MCP error-shape drift.** The HTTP-edge-vs-JSON-RPC auth-error decision gets more
-   expensive the more MCP clients accrete on today's permissive behavior. Decide the
-   shape in the design note before the identity middleware lands (reading of the spec:
-   `401` with `WWW-Authenticate` at the HTTP edge for non-JSON-RPC-aware callers, a
-   JSON-RPC error for in-band rejections — pin it in slice 7b).
+3. **MCP error-shape drift.** The auth-error shape gets more expensive to change the
+   more MCP clients accrete on today's permissive behavior — and the shape is not an
+   open choice: the MCP authorization protocol treats the server as an HTTP resource
+   server, so **every** authentication failure on the HTTP MCP surface (`initialize`
+   and `tools/call` included) is an HTTP `401` with `WWW-Authenticate`, never an
+   in-band JSON-RPC error — discovery-based clients detect authentication through
+   exactly that challenge and start the OAuth flow from it. JSON-RPC/tool errors are
+   reserved for requests that passed HTTP authentication. Slice 7b pins this: uniform
+   `401` + `WWW-Authenticate` at the HTTP edge (the current plain `http.Error` lacks
+   the challenge header), JSON-RPC errors only beyond it.
 4. **stdio policy.** No identity source exists on stdio. The spec is silent; options are
    forbid-under-`auth: on` (startup error), a `-principal` flag for local-trust testing,
    or exemption with documentation. Needs a one-line spec amendment before Lane B lands,
