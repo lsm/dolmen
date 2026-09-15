@@ -169,7 +169,10 @@ rationale in `CreateTable`'s limit error. Harness changes needed:
    missing column, the WHERE-expression guard) keep running on adapter #2, because
    they are the matrix coverage proving §1.3's SQLSTATE translator emits the same
    user-facing strings; only genuinely engine-specific syntax skips or takes a
-   per-engine input. The engine-neutral majority inside those same files keeps
+   per-engine input. Extended-FTS subtests fork by engine too: `field:term`,
+   `{a b}:term`, `NEAR(...)` are engine-documented per §7 (adapter #1-only if the
+   Postgres engine implements just the core subset), while every core-grammar
+   assertion runs on both. The engine-neutral majority inside those same files keeps
    running on both — the exact vector contract in `search_test.go`, transport framing
    in `errors_test.go`, idempotency and pagination in `embedded_parity_test.go`, plus
    envelope, coercion, limits, realtime, and parity. Whole-file tags would silently
@@ -264,14 +267,21 @@ assessment below confirms the seam accommodates this, with one open contract dec
 
 ### 2.2 Op-by-op mapping
 
-- **Natural fits:** `insert` (append + snapshot commit — the format's native op); DDL
+- **Natural fits:** `insert` (append + snapshot commit — the format's native op — but
+  the implicit `id` needs a server-assigned, monotonic, never-reused allocator that
+  Iceberg/Delta has no native equivalent of: ids are assigned inside the namespace-level
+  serialization point below, never derived as `max(id)+1` from a snapshot, which
+  collides under concurrent writers); DDL
   migrations add/drop/rename field (Iceberg schema evolution is a strength);
   `search_vector` exact (Parquet column scan; brute-force cosine in Go scales to moderate
   corpora before an ANN index is needed); describe/list/capabilities (catalog reads).
 - **Workable via below-seam machinery:** `update`/`delete`/`upsert`/`upsert_by_key`
   (deletion vectors / merge-on-read — "rare updates are not a blocker" per D25);
-  `read_rows` (needs row-group stats pruning or the serving tier); idempotency (a metadata
-  table); `set_enum`/backfills (full scans/rewrites — heavy but rare, consistent with
+  `read_rows` (needs row-group stats pruning or the serving tier); idempotency (the
+  record — key, payload hash, assigned ids — commits inside the same atomic
+  serialization point as its rows, never a separately-committed metadata table, or a
+  crash between the two commits duplicates or replays phantom ids, violating §0.6);
+  `set_enum`/backfills (full scans/rewrites — heavy but rare, consistent with
   rare-DDL semantics).
 - **Genuine gaps, stated plainly:**
   - `query` (raw SQL) — no SQL engine lives in a table format. §9.3 permits only
@@ -311,7 +321,10 @@ assessment below confirms the seam accommodates this, with one open contract dec
     a contract revision, not an implementation detail. Capability-degraded
     `wait_for` stays mandatory (never unavailable; degrades to scanning, §9.3).
 - **Read vs write path split:** writes use the format's optimistic-concurrency commit
-  protocol — conflicts surface as `409`, already the contract's collision rule (§0.6);
+  protocol — a lost metadata race is refreshed/rebased and retried internally within
+  bounds, and only exhausted or genuinely non-retryable conflicts surface as `409`
+  (§0.6's transparent-serialization-first rule; surfacing every routine race would
+  fail serializable concurrent appends);
   reads use the serving tier or direct Parquet scan. Both below the seam, dolmen-blind.
 
 ### 2.3 Contract impact and effort classes
