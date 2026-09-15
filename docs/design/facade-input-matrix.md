@@ -16,8 +16,9 @@ One dispatch table (`internal/api/ops.go`) and one engine serve three surfaces:
 | Public Go façade | Curated pre-checks (`validTableName`, root `read.go:22`) before `EnsureNamespace`, on guarded methods only | `invalid_request` on reads/search and describe/drop; writes classify via the engine |
 
 `existingTableProp` (`internal/api/server.go:254`) pins the grammar `^[a-z][a-z0-9_]{0,63}$`,
-excluding `__fts` and `sqlite_` prefixes; the façade mirrors it in
-`validTableName` and applies it on reads/search (#304) and describe/drop (#309).
+banning `__fts` anywhere in the name and the `sqlite_` prefix; the façade mirrors it in
+`validTableName` (`strings.Contains` for `__fts`, `strings.HasPrefix` for `sqlite_`, root
+`read.go:23`) and applies it on reads/search (#304) and describe/drop (#309).
 
 Classification throughout this matrix is of the **post-normalization** name: every surface runs
 `ops.NormalizeTable` — trim plus lowercase (`internal/ops/normalize.go:21`) — before lookup or

@@ -10,10 +10,10 @@ another test is named. Number handling is one engine policy expressed per surfac
 Number fields coerce at `coerceValue` (`internal/store/insert.go:448`), int64-first:
 
 - **Class (a), int64 exactness.** Every integer kind narrows to int64 before storage; unsigned
-  values above `math.MaxInt64` are rejected (`number overflows int64`). The ±2^63 boundaries —
-  `9223372036854775807` and `-9223372036854775808` — round-trip exactly on both surfaces.
-  Query bind arguments follow the same policy (`normalizeArg`, `internal/store/query.go:14`:
-  integral `json.Number` → int64, else float64).
+  values above `math.MaxInt64` are rejected (`number overflows int64`). The signed-int64
+  boundaries — minimum `-9223372036854775808` (−2^63) and maximum `9223372036854775807`
+  (2^63−1) — round-trip exactly on both surfaces. Query bind arguments follow the same policy
+  (`normalizeArg`, `internal/store/query.go:14`: integral `json.Number` → int64, else float64).
 - **Class (b), float64 shortest round-trip.** A decimal beyond float64 precision stores to the
   nearest double and reads back in its shortest round-trip form — at most 17 significant digits:
   `0.1234567890123456789012345` → `0.12345678901234568`, while `0.10000000000000000001` →
