@@ -1,9 +1,10 @@
 # Numeric fidelity matrix
 
 Status: pinned decisions transcribed from the [#279](https://github.com/lsm/dolmen/issues/279)
-parity arc (PRs #301–#309). Documentation-only: every ruling below is already landed in code and
-pinned by `TestNumericFidelityMatrix` (`internal/conformance/embedded_parity_test.go`) unless
-another test is named. Number handling is one engine policy expressed per surface.
+parity arc (PRs #301–#309). Documentation-only: every ruling below is already landed in code;
+most are pinned by `TestNumericFidelityMatrix` (`internal/conformance/embedded_parity_test.go`)
+or another named test, and directions with no repo pin are marked as such inline. Number
+handling is one engine policy expressed per surface.
 
 ## Storage classes
 
@@ -17,8 +18,10 @@ Number fields coerce at `coerceValue` (`internal/store/insert.go:448`), int64-fi
   rejected — `Int64()` fails and the `Float64()` fallback accepts it with rounding, keeping the
   REAL storage class — so the wire's token path and the façade's typed-integer rejection
   diverge for the same value (code-verified; no repo test pins this band). Query bind arguments
-  follow the same policy (`normalizeArg`, `internal/store/query.go:14`: integral `json.Number`
-  → int64, else float64).
+  share only the int64-first conversion, not the write guard (`normalizeArg`,
+  `internal/store/query.go:14`: integral `json.Number` → int64, else float64 with the parse
+  error discarded) — so `json.Number("1e400")` binds +Inf and `json.Number("NaN")` binds NaN,
+  unchecked by `finiteNumber` (code-verified; no repo test pins this divergence).
 - **Class (b), float64 shortest round-trip.** A decimal beyond float64 precision stores to the
   nearest double and reads back in its shortest round-trip form — at most 17 significant digits:
   `0.1234567890123456789012345` → `0.12345678901234568`, while `0.10000000000000000001` →
