@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Dolmen is a single static Go binary that gives AI agents a data layer: typed tables, FTS5 full-text search, and cosine vector search over one SQLite file per namespace. It exposes the same 23 operations three ways: HTTP `POST /v1/{op}`, MCP `tools/call` (over HTTP at `/mcp` or over stdio via `dolmen mcp`), and an in-process Go library (the root `dolmen` package). Module path is `github.com/lsm/dolmen`; the executable lives at `./cmd/dolmen`.
+Dolmen is a single static Go binary that gives AI agents a data layer: typed tables, FTS5 full-text search, and cosine vector search over one SQLite file per namespace. It exposes 23 operations over two wire transports: HTTP `POST /v1/{op}` and MCP `tools/call` (over HTTP at `/mcp` or over stdio via `dolmen mcp`). An in-process Go library (the root `dolmen` package) exposes a subset of those operations with identical semantics; see the root-package entry under Architecture for what it covers. Module path is `github.com/lsm/dolmen`; the executable lives at `./cmd/dolmen`.
 
 ## Commands
 
@@ -25,7 +25,7 @@ go test ./internal/conformance             # contract suite over HTTP + MCP + em
 go test ./internal/blackbox                # builds the binary and drives it as a subprocess
 ```
 
-Other checks CI runs that `make test` does not:
+Other checks CI runs on every pull request that `make test` does not:
 
 ```bash
 # Zero-comments gate (fails CI if any Go comment exists; see Conventions)
@@ -33,6 +33,9 @@ go run github.com/lsm/nocomment-for-agents/go@016ad219e84b9b78ca66ff1b66a7729218
 
 # examples/basic is a separate module (replace => ../..); CI builds, vets, and runs it
 cd examples/basic && go build ./... && go vet ./... && go run .
+
+# Vulnerability gate (.github/workflows/vuln.yml); install: go install golang.org/x/vuln/cmd/govulncheck@latest
+make vulncheck
 ```
 
 Opt-in test that downloads real embedding models (skipped otherwise):
