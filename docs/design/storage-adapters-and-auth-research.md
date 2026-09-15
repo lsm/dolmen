@@ -31,8 +31,9 @@ Two concrete pins remain — the only type-level SQLite coupling above the store
 
 Everything above the seam (envelope, dispatch, validation, OpenAPI, MCP tools, SSE) is
 engine-neutral by construction — with one caveat, because SQLite still appears in
-user-visible **contract text** above the store: the reserved-identifier rules
-(`sqlite_`/`pragma_`/`dbstat_` prefixes, `__fts` shadow tables, FTS5's `rank`),
+user-visible **contract text** above the store: the reserved-identifier rules (the
+`sqlite_`/`pragma_` prefixes, the exact name `dbstat`, `__fts` shadow tables, FTS5's
+`rank`),
 teaching texts naming FTS5, the `^sqlite_`/`__fts` pattern pins in the OpenAPI and
 tool schemas, and the envelope's `RedactedSQLite` match — in `internal/schema`, the
 facade (root `table.go`/`read.go`/`search.go`), and `internal/api` (§1.3 item 9). No
@@ -207,7 +208,8 @@ quantization slice as a shared dependency of Lane B and adapter #2.
 
 ### 1.5 Phased slice plan (~100 prod lines per PR)
 
-The SQLite store is ~5.5k prod lines — the size anchor for what follows:
+The SQLite store is ~7.5k prod lines (7,624 non-test lines at this base) — the size
+anchor for what follows:
 
 - **Phase 0 — seam and harness prep** (2-3 slices): engine injection at constructors plus
   an `DOLMEN_ENGINE` knob; harness engine parameterization and fixture tags; extraction of
@@ -232,9 +234,10 @@ The SQLite store is ~5.5k prod lines — the size anchor for what follows:
 Total ≈ 17-20 slices. The first three, concrete:
 
 1. **Harness engine parameterization** (enabler): widen `api.New` to `store.Engine`, add
-   the engine selector to all four §1.4 boot surfaces — `harness.start()`,
-   `dolmen.Open`'s engine knob (embedded-parity), and the binary's engine flag
-   (stdio) — and tag the SQLite-specific tests/subtests
+   the engine selector to all three §1.4 engine-opening boot surfaces —
+   `harness.start()`, `dolmen.Open`'s engine knob (embedded-parity), and the binary's
+   engine flag (stdio, which the blackbox subprocess also rides) — and tag the
+   SQLite-specific tests/subtests
    inside the five SQLite-touching files (never whole files — §1.4); this slice
    completes before any Phase 1 slice starts. Test infrastructure-weighted.
 2. **Shared value-layer extraction**: move `coerceValue`/`finiteNumber`/`decodeValue`/
@@ -475,9 +478,11 @@ design — no contract debt accrues while it stands.
    and `tools/call` included) is an HTTP `401` with `WWW-Authenticate`, never an
    in-band JSON-RPC error — discovery-based clients detect authentication through
    exactly that challenge and start the OAuth flow from it. JSON-RPC/tool errors are
-   reserved for requests that passed HTTP authentication. Slice 7b pins this: uniform
-   `401` + `WWW-Authenticate` at the HTTP edge (the current plain `http.Error` lacks
-   the challenge header), JSON-RPC errors only beyond it.
+   reserved for requests that passed HTTP authentication. Slice 7b must extend to pin
+   the challenge header — uniform `401` + `WWW-Authenticate` at the HTTP edge —
+   alongside its 401 `unauthorized` envelope (the plan's 7b pins the envelope only;
+   the challenge linkage belongs to the §3.3-flagged Lane B gap), with JSON-RPC
+   errors only beyond it.
 4. **stdio policy.** No identity source exists on stdio. The spec is silent; options are
    forbid-under-`auth: on` (startup error), a `-principal` flag for local-trust testing,
    or exemption with documentation. Needs a one-line spec amendment before Lane B lands,
