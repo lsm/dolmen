@@ -30,7 +30,13 @@ Two concrete pins remain — the only type-level SQLite coupling above the store
 - The public facade's `dolmen.Open` calls `store.Open` directly (root `store.go`).
 
 Everything above the seam (envelope, dispatch, validation, OpenAPI, MCP tools, SSE) is
-engine-neutral by construction: no SQLite specifics exist outside `internal/store`.
+engine-neutral by construction — with one caveat, because SQLite still appears in
+user-visible **contract text** above the store: the reserved-identifier rules
+(`sqlite_`/`pragma_`/`dbstat_` prefixes, `__fts` shadow tables, FTS5's `rank`),
+teaching texts naming FTS5, the `^sqlite_`/`__fts` pattern pins in the OpenAPI and
+tool schemas, and the envelope's `RedactedSQLite` match — in `internal/schema`, the
+facade (root `table.go`/`read.go`/`search.go`), and `internal/api` (§1.3 item 9). No
+*storage coupling* exists above `internal/store`; SQLite-named contract strings do.
 
 ### 1.2 What the seam abstracts cleanly (adapter #2 inherits)
 
@@ -121,6 +127,16 @@ Ranked by lift:
    concurrency — which adapter #1 never had — intact. Concurrent intra-namespace
    writers with commit-watermark reads (serve only the contiguous committed prefix) are
    a later, conformance-proven option, not the v1.
+9. **SQLite-named contract surface above the store.** Identifier reservations
+   (`sqlite_`/`pragma_`/`dbstat`/`__fts`, FTS5's `rank` — `internal/schema`, and the
+   facade's table/read/search validation), teaching texts ("SQLite FTS5 MATCH syntax"
+   in the search op description), the `^sqlite_`/`__fts` pattern pins in the OpenAPI
+   and tool schemas (`internal/api/server.go`, `ops.go`), and the envelope's
+   `RedactedSQLite` match (`internal/api/envelope.go`) all live above the seam yet name
+   SQLite. They are contract text, not storage coupling — adapter #2 inherits them
+   verbatim, which is correct (the reserved-name grammar is engine-neutral policy even
+   where its vocabulary is SQLite-shaped) — but any future cleanup of that vocabulary
+   is a contract change, not an internal refactor.
 
 ### 1.4 Can the conformance suite run against multiple engines?
 
@@ -128,21 +144,31 @@ Yes, with harness work. The suite (105 top-level tests, ~7.3k lines, run under
 `go test -race ./...` in CI) is already transport-parameterized (HTTP `/v1`, HTTP MCP,
 stdio subprocess, embedded facade — all parity-diffed in `parity_test.go`) and mode-shaped
 for auth (`harnessMode{name:"off"}`, identity scaffolding, `assertIdentityIgnored` —
-`harness_test.go`). But it is engine-hardcoded: `harness.start()` calls `store.Open` at one
-site, and at least five files assume SQLite outright — out-of-band FTS5 surgery through the
+`harness_test.go`). But it is engine-hardcoded, and not at one site: three boot surfaces
+open engines of their own — `harness.start()` calls `store.Open`, the embedded-parity
+helper opens the facade (`dolmen.Open`), and the stdio tests launch the packaged binary
+(whose `openStore` still calls `store.Open`). At least five files also assume SQLite
+outright — out-of-band FTS5 surgery through the
 modernc driver (`outofband_test.go`, `search_test.go`'s stemming test), verbatim SQLite
 error strings (`errors_test.go`), NUMERIC-affinity pins (`embedded_parity_test.go`),
 SQLite `CAST(... AS BLOB)` alias semantics (`coercion_test.go`), and the 2000-column
 rationale in `CreateTable`'s limit error. Harness changes needed:
 
-1. One injection point: parameterize the harness engine constructor (extend the existing
-   `storeOpts` mechanism; env-driven, e.g. `DOLMEN_PG_DSN` → run-or-skip).
+1. Engine plumbing at **every** boot surface, not one injection point: the harness
+   constructor (`harness.start()`, extending the existing `storeOpts` mechanism;
+   env-driven, e.g. `DOLMEN_PG_DSN` → run-or-skip), the embedded-parity facade helper
+   (`dolmen.Open` needs the engine knob), and the stdio subprocess (the binary's
+   `openStore` needs an engine flag the test can pass). Note also that `parity_test.go`
+   diffs HTTP vs MCP only — the embedded and stdio legs assert their own engine
+   neutrality through their own suites, not through the parity script. A matrix that
+   skips any of these surfaces leaves that transport on SQLite silently.
 2. Per-engine fixture policy: tag SQLite-specific tests to run on adapter #1 only; the
    engine-neutral corpus (the large majority — envelope, coercion, limits, realtime,
    parity) runs on both.
 3. CI: add a Postgres job with a service container (workflow YAML is test infrastructure,
-   outside the prod-line budget). The blackbox suite (`internal/blackbox`, eight staged
-   HTTP scenarios) is engine-blind at the protocol level but **not** a free second gate
+   outside the prod-line budget). The blackbox suite (`internal/blackbox`, eleven
+   staged HTTP scenarios, stage01–stage11) is engine-blind at the protocol level but
+   **not** a free second gate
    as wired: its `hermeticEnv` strips every `DOLMEN_*` variable and boots the subprocess
    with SQLite-style `-data` arguments, so a job-level engine/DSN never reaches it —
    engine/DSN plumbing through the blackbox boot path and its restart helper is part of
@@ -245,12 +271,18 @@ assessment below confirms the seam accommodates this, with one open contract dec
   - `search_fulltext` — sidecar per the spec. The Postgres engine's shared tokenizer/BM25
     extraction (Phase 2 above) is exactly the component the sidecar reuses — the two
     adapters share this cost.
-  - `changes_since`/`wait_for`/`subscribe` — snapshot-diff can serve as the change log,
-    but the contract's per-namespace gap-free monotonic cursor and owner labels (§9.3,
-    `ChangeRecord.Owner`) are not native concepts; they need engine-internal metadata
-    (owner stamped into the write path; cursor = an opaque (snapshot, position) token).
-    Capability-degraded `wait_for` stays mandatory (never unavailable; degrades to
-    scanning, §9.3).
+  - `changes_since`/`wait_for`/`subscribe` — snapshot-diff can seed the change log, but
+    two contract facts are not native to the formats: owner labels (§9.3,
+    `ChangeRecord.Owner`) need engine-internal metadata stamped in the write path, and —
+    harder — the per-namespace gap-free monotonic cursor cannot be a
+    `(snapshot, position)` token: Iceberg/Delta snapshots order commits **within one
+    table**, and a namespace-wide feed spans tables, so two concurrent commits to
+    different tables have no snapshot that atomically orders both — the same
+    reserve-vs-commit skip race as the Postgres sequence hazard in §1.3. Adapter #3
+    needs a namespace-level commit log written atomically with every table mutation
+    (the transactional-outbox shape §9.3 explicitly permits), with table snapshots as
+    the payload source — or an explicit contract revision. Capability-degraded
+    `wait_for` stays mandatory (never unavailable; degrades to scanning, §9.3).
 - **Read vs write path split:** writes use the format's optimistic-concurrency commit
   protocol — conflicts surface as `409`, already the contract's collision rule (§0.6);
   reads use the serving tier or direct Parquet scan. Both below the seam, dolmen-blind.
@@ -301,7 +333,8 @@ conformance-shaped table, to retire the ecosystem risk before any lane is planne
 ### 3.1 Current state: designed in full, built not at all — and the expensive parts are pre-paid
 
 The design authority is complete (`identity-and-engines.md` §1–§9; decision index D1–D26)
-and pre-sliced (`implementation-plan.md`, Lane B = slices 7a–10g, ~24 slices). Production
+and pre-sliced (`implementation-plan.md`, Lane B = slices 7a–10g, 29 slices: 7a–7e,
+8a–8g, 9a–9j, 10a–10g). Production
 code: zero — no `-auth`/`DOLMEN_AUTH`/`-trusted-proxies` anywhere (the flag list in
 `cmd/dolmen/main.go`), no grant ops among the 23 ops (`internal/api/ops.go`), no
 `Authorization` handling (the only hits are the CORS allow-header in `server.go` and the
@@ -328,12 +361,15 @@ already paid:
   and MCP tools in one move; the principal rides `context.Context` (the `requestIDKey`
   precedent in `internal/api/envelope.go`).
 - **HTTP whole-server wrap:** alongside `OriginGuard` in `cmd/dolmen/main.go` — covers
-  `/v1`, `/v1/subscribe`, and `/mcp` in one place; `/healthz`, `/version`, `/skills`,
-  `/v1/openapi.json` exempted per §1.2 (unauthenticated by recorded decision), plus —
-  when source B is enabled — `/v1/auth/begin` and its callback, which §1.2 exempts by
-  construction ("they *are* the authentication"): the browser starting the flow holds
-  no dolmen credential yet, and a wrapper that 401s them deadlocks the flow before it
-  can mint one.
+  `/v1`, `/v1/subscribe`, and `/mcp` in one place; `/healthz`, `/version`, `/skills*`,
+  `/v1/openapi.json` exempted per §1.2 (unauthenticated by recorded decision) — the
+  skills exemption is prefix-based over the whole route family: the manifest at
+  `/skills` and the document handler under `/skills/` register separately, and
+  exempting only the manifest would strand the manifest-linked skill content behind a
+  401 — plus, when source B is enabled, `/v1/auth/begin` and its callback, which §1.2
+  exempts by construction ("they *are* the authentication"): the browser starting the
+  flow holds no dolmen credential yet, and a wrapper that 401s them deadlocks the flow
+  before it can mint one.
 - **MCP specifics:** streamable-HTTP is a stateless JSON-RPC POST (no sessions despite
   `MCP-Session-Id` in the CORS allow-headers); `initialize` carries no identity today; a
   bearer rejected at the HTTP edge returns a plain `http.Error`, not a JSON-RPC error — an
@@ -414,11 +450,12 @@ shared with the engine work.
 **What I'd slice first (when the posture lifts — not before):** the Lane B opening pair as
 already planned — 7a (auth config plumbing: `-auth`/`DOLMEN_AUTH`, `-trusted-proxies`,
 `-max-groups`, startup validation) then 7b (identity middleware: header source + admin
-key, the 401 `unauthorized` envelope, principal-on-the-log-line); 7c and 7e follow, both
-depending only on 7b. Gateway-mode conformance (7d) is **not** an early slice: the
-implementation plan pins its dependencies as 7b + 8d — `auth: on` boots from 8d, so the
-grant-backed 403/allow matrix cannot run until the grant chain (8a registry → 8b ops →
-8c dispatch enforcement → 8d guards/activation) has landed. Handler-level identity
+key, the 401 `unauthorized` envelope, principal-on-the-log-line). Per the plan's
+authoritative `Dep` fields: 7c depends on 7a; 7e depends on 7b. Gateway-mode
+conformance (7d) is **not** an early slice: the plan pins its dependencies as
+`7b, 1, 8d, 5a, 3c` — `auth: on` boots from 8d, so the grant-backed 403/allow matrix
+cannot run until the grant chain (8a registry → 8b ops → 8c dispatch enforcement →
+8d guards/activation) has landed. Handler-level identity
 behavior stays testable from 7b; the full 7d suite lands after 8d. API keys (10a/10b)
 can ride earlier than OIDC if machine identity is the near-term need (§8.2 notes no
 dependency).
