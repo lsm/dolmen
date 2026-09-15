@@ -87,7 +87,9 @@ Ranked by lift:
    int64 max/min exact, 17-digit shortest-round-trip doubles, `1e400` rejected,
    exponent-format reconciliation bands, and 2^53+1 exact on wire and facade. Implication:
    Postgres `DOUBLE PRECISION` alone is non-conforming (loses integers beyond 2^53);
-   Postgres `NUMERIC` plus a normalize layer (integral numerics → int64, else float64)
+   Postgres `NUMERIC` plus a normalize layer (integral numerics → int64 **when within
+   the int64 range**, else float64 — `1e20` is integral yet stays REAL, and converting
+   it would overflow a value the current engine accepts)
    reproduces the affinity contract exactly and keeps NaN/Inf rejection (enforced above the
    driver, plus the SQL-level guard `checkRowValue` in `query.go`).
 4. **JSON handling.** Stored as TEXT today, byte-preserving (`coerceValue`'s JSON arm),
@@ -106,7 +108,11 @@ Ranked by lift:
    (`internal/store/store.go`, `dsn`) → pool and isolation decisions,
    `temp._dolmen_delete_ids`/`_dolmen_update_ids` temp tables → `pg_temp` + `ON COMMIT
    DROP` or CTEs, `LastInsertId` → `RETURNING`, UNIQUE-violation sniffed from message text
-   → SQLSTATE 23505, the "duplicate column" sniff in `Migrate` → 42701.
+   → SQLSTATE 23505, the "duplicate column" sniff in `Migrate` → 42701. And names at
+   the contract's 64-character maximum exceed stock Postgres's 63-byte identifier
+   limit (longer names are silently truncated, colliding two valid dolmen names) —
+   the port needs an injective physical-name mapping with logical-name resolution on
+   the `query` path (mechanism detailed in implementation).
 7. **Notifications.** In-process commit listeners plus a 250 ms poll fallback
    (`internal/store/listen_live.go`, `notify.go`). The durable table is the source of
    truth, so the polling design is multi-process-correct on day one; Postgres
@@ -219,9 +225,11 @@ The SQLite store is ~5.5k prod lines — the size anchor for what follows:
 Total ≈ 17-20 slices. The first three, concrete:
 
 1. **Harness engine parameterization** (enabler): widen `api.New` to `store.Engine`, add
-   the engine selector to `harness.start()`, tag the SQLite-specific tests/subtests
-   inside the five SQLite-touching files (never whole files — §1.4). Prod
-   delta ~15 lines; test infrastructure otherwise.
+   the engine selector to all four §1.4 boot surfaces — `harness.start()`,
+   `dolmen.Open`'s engine knob (embedded-parity), and the binary's engine flag
+   (stdio) — and tag the SQLite-specific tests/subtests
+   inside the five SQLite-touching files (never whole files — §1.4); this slice
+   completes before any Phase 1 slice starts. Test infrastructure-weighted.
 2. **Shared value-layer extraction**: move `coerceValue`/`finiteNumber`/`decodeValue`/
    projection sizing/`cosine`/limit constants into a subpackage both engines import; the
    suite is unchanged and green.
@@ -452,7 +460,10 @@ token-broker AS (authorization endpoint, token endpoint, client registration, re
 URI handling) — a scope increase over §1.4, not a metadata slice. API keys are non-OAuth
 bearers — legitimate machine-tier credentials, invisible to spec-driven discovery,
 documented as such. The `/mcp` and envelope gating under `auth: on` (§1.2) already
-matches.
+matches. One Lane B addition is required under either mapping: an unauthenticated
+`/.well-known/oauth-protected-resource` endpoint linked from the `401` challenge's
+`WWW-Authenticate` — without it, discovery-based clients cannot learn the advertised
+AS at all. It is in no Lane B slice today; flagged for the implementing epic.
 
 ### 3.4 What today's deferral bakes in — retrofit-cost audit
 
