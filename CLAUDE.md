@@ -32,7 +32,7 @@ Other checks CI runs on every pull request that `make test` does not:
 go run github.com/lsm/nocomment-for-agents/go@016ad219e84b9b78ca66ff1b66a7729218030c12 --check
 
 # examples/basic is a separate module (replace => ../..); CI builds, vets, and runs it
-cd examples/basic && go build ./... && go vet ./... && go run .
+(cd examples/basic && go build ./... && go vet ./... && go run .)
 
 # Vulnerability gate (.github/workflows/vuln.yml); install: go install golang.org/x/vuln/cmd/govulncheck@latest
 make vulncheck
@@ -62,7 +62,7 @@ Notes on the test tiers:
 
 ## Architecture
 
-Request flow: transport → `internal/api` op table → `store.Engine` (SQLite). Each `OpDef.Func` calls the engine directly and reaches for `internal/ops` helpers where needed (namespace ensure, vector-query preparation, error classification). The Go facade skips the transport and op table and calls the engine directly too, using the same `internal/ops` helpers. There is no shared operation layer that every call passes through; parity between surfaces is enforced by the conformance suite, not by a common code path.
+Request flow: transport → `internal/api` op table → `store.Engine` (SQLite). Each storage-backed `OpDef.Func` calls the engine directly and reaches for `internal/ops` helpers where needed (namespace ensure, vector-query preparation, error classification). Two operations are pure and never touch the engine: `describe_server` reads only the embedding provider, and `infer_schema` only calls `schema.InferSchema`. The Go facade skips the transport and op table and calls the engine directly too, using the same `internal/ops` helpers. There is no shared operation layer that every call passes through; parity between surfaces is enforced by the conformance suite, not by a common code path.
 
 **`cmd/dolmen`** parses flags and env (`loadConfig`), opens the store, builds the embed provider, then `api.New` and `mcp.New`. Plain `dolmen` serves HTTP; `dolmen mcp` serves the same MCP dispatcher over stdio with logs on stderr. `-prefix` mounts everything under a sub-path.
 
