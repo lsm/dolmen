@@ -468,8 +468,14 @@ matches. One Lane B addition is required wherever dolmen itself serves discovery
 unauthenticated `/.well-known/oauth-protected-resource` endpoint whose
 `authorization_servers` value dolmen can only know from configuration — under source
 A the gateway owns both the metadata and the challenge (dolmen emits the bare `401`);
-dolmen serves the endpoint only when it knows the AS (source B, or an explicit
-validated external-AS URL setting). It is in no Lane B slice today; flagged for the
+when dolmen itself serves discovery — via the explicit validated external-AS URL
+setting, or source B **after its extension into the token-broker AS above**
+(unextended source B can advertise no usable AS: it neither accepts the upstream
+IdP's tokens nor issues its own) — its `401` carries the `WWW-Authenticate`
+`resource_metadata` link and the metadata is served at the **path-derived** well-known
+URI (RFC 9728: `/.well-known/oauth-protected-resource/mcp` for the `/mcp` resource),
+not only the root route — a bare 401 would leave a standards-based client unable to
+learn the AS. It is in no Lane B slice today; flagged for the
 implementing epic. The same gateway-owns rule covers the credential: the gateway
 consumes and **strips the verified bearer before forwarding** — a forwarded external
 access token would hit §1's fail-closed bearer precedence and 401 the request instead
