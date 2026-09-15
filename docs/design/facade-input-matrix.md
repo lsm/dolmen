@@ -1,8 +1,9 @@
 # Facade input-validation matrix
 
 Status: pinned decisions transcribed from the [#279](https://github.com/lsm/dolmen/issues/279)
-parity arc (PRs #301–#309). Documentation-only: every ruling below is already landed in code and
-pinned by a test; this file introduces no new behavior. Where surfaces diverge, the divergence is
+parity arc (PRs #301–#309). Documentation-only: every ruling below is already landed in code;
+most are pinned by a named test, and directions with no repo pin are marked as such inline.
+This file introduces no new behavior. Where surfaces diverge, the divergence is
 by-design and recorded per-surface.
 
 ## The three surfaces
@@ -24,17 +25,21 @@ Classification throughout this matrix is of the **post-normalization** name: eve
 `ops.NormalizeTable` — trim plus lowercase (`internal/ops/normalize.go:21`) — before lookup or
 validation; the façade's guarded methods validate the normalized name (root `table.go:77`), and
 the wire normalizes in its handlers. A noncanonical spelling such as `" Notes "` therefore
-resolves to the existing `notes` table on every surface — pinned on the wire by "table names
-normalize too" in `internal/conformance/limits_test.go`; the façade's normalization is shared
-code (every method passes through `ops.NormalizeTable`) but carries no dedicated test pin —
-while the MCP `InputSchema` pattern sees the raw
-token — a schema-conforming client rejects a spelling the server runtime accepts. The table
-above classifies names that remain invalid after normalization.
+resolves to the existing `notes` table on every surface — code-verified (every handler passes
+through `ops.NormalizeTable`); the wire's "table names normalize too" subtest
+(`internal/conformance/limits_test.go`) pins creation-side normalization only — it sends
+`" Docs "` to `create_table` and then calls `describe_table` with the canonical `docs` — and no
+façade-side test pins normalization at all. The `InputSchema` pattern sees the raw token, so a
+schema-conforming client on either wire transport rejects a spelling the server runtime
+accepts. The table above classifies names that remain invalid after normalization.
 
-The #309 premise correction: the grammar is expressed on the MCP tool schema only. Probing live
-`/v1` showed the wire classifying malformed names `not_found` on `describe_table` and
-`search_fulltext` alike, because the wire decodes typed request structs and applies no grammar
-gate. The façade instead rejects impossible names early with `invalid_request` — the
+The #309 premise correction: the grammar lives in the shared `InputSchema`, advertised on both
+wire transports — MCP `tools/list` and `/v1/openapi.json`, whose request bodies are built from
+the same `OpDef.InputSchema` (`internal/api/openapi.go`, pinned identical by
+`TestMCPInputSchemasMatchOpenAPIRequestSchemas`) — but neither wire runtime re-validates it.
+Probing live `/v1` showed the wire classifying malformed names `not_found` on `describe_table`
+and `search_fulltext` alike, because the wire decodes typed request structs and applies no
+grammar gate. The façade instead rejects impossible names early with `invalid_request` — the
 curated-stricter reading that keeps #304's merged decision coherent. The pre-check covers
 reads/search and describe/drop only: the write methods (`Insert`, `Update`, `Delete`,
 `UpsertByKey` in root `write.go`) normalize the name and hand it to the engine, where a
