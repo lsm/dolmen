@@ -8,7 +8,9 @@ by-design and recorded per-surface.
 
 ## The three surfaces
 
-One dispatch table (`internal/api/ops.go`) and one engine serve three surfaces:
+The two wire transports share one dispatch table (`internal/api/ops.go`); the public Go façade
+bypasses it and calls the engine directly (root `table.go`/`read.go`/`write.go` invoke `s.eng`).
+One engine serves all three surfaces:
 
 | Surface | Input gate | Name invalid after normalization |
 | --- | --- | --- |
@@ -61,7 +63,7 @@ to a ruling; this doc records the status quo.
 | Fields per table | `store.MaxFieldsPerTable` = 100 | `create_table` `fields.maxItems` | `CreateTable` (`internal/store/store.go:498`) | Same bound via engine |
 | Records per insert | `store.MaxRecordsPerInsert` = 1000 | `insert` `records.maxItems` | `Insert` (`internal/store/insert.go:45`) | Same bound via engine |
 | Records per upsert | `store.MaxRecordsPerInsert` = 1000 | `upsert_by_key` `records.maxItems` | `UpsertByKey` (`internal/store/upsert_key.go:19`) | Same bound via engine |
-| Delete limit, lower range | `minimum: 1` on the wire | `delete` `limit` | — | negatives rejected (root `write.go:145`) |
+| Delete limit, lower range | wire runtime rejects < 1 with 400 (`parseOptPosInt`, `internal/api/ops.go:1923`); schema advertises `minimum: 1` | `delete` `limit` | — | negatives rejected (root `write.go:145`); explicit 0 = default threshold — an at-zero divergence with the wire (code-verified) |
 | Delete limit, upper range | none on any surface | none | none | none |
 
 The advertised `maxItems` bounds and the engine's runtime bounds are the same constants, so wire
@@ -76,5 +78,5 @@ The family audit (#309) dispositioned every unaudited cousin line from the parit
 | #301 fields count | engine `CreateTable` enforces `MaxFieldsPerTable`; same bound both surfaces | Cleared + pinned (`TestCreateTableRejectsTooManyFields`, root `familyaudit_test.go`). Order note: façade `EnsureNamespace` runs before engine rejection (namespace side effect on a rejected create) — same as wire handler-level rejections, documented |
 | #301 table-name grammar on describe/drop | `/v1` does not enforce the MCP grammar (404 `not_found`); the façade classified `not_found` too | Fixed per the curated-stricter reading + pinned cross-surface with the by-design flag (above) |
 | #302 records count | engine `Insert`/`UpsertByKey` enforce `MaxRecordsPerInsert`; same bound both surfaces | Cleared + pinned (`TestInsertRejectsTooManyRecords`, both ops) |
-| #302 delete-limit range | wire schema has `minimum: 1`, no maximum; façade rejects negatives (`TestDeleteRejectsNegativeLimit`, root `write_test.go`), no upper bound either | Cleared — no upper-range divergence exists; parity by construction |
+| #302 delete-limit range | wire schema has `minimum: 1`, no maximum; the wire handler also rejects < 1 at runtime (`parseOptPosInt`), so explicit 0 diverges — wire 400, façade default threshold; façade rejects negatives (`TestDeleteRejectsNegativeLimit`, root `write_test.go`), no upper bound either | Cleared — no upper-range divergence exists; parity by construction; the at-zero divergence is code-verified, unpinned |
 | #302 record-data floats | NaN stored silently and read back as NULL; ±Inf poisoned the row (every later read errored) | Fixed (`finiteNumber` guard) + pinned; details in [numeric-fidelity-matrix.md](numeric-fidelity-matrix.md) |
