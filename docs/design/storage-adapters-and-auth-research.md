@@ -256,22 +256,39 @@ can express "run the corpus on engine X", or adapter #2 drifts unpinned.
 
 **Open questions for the principal:**
 
-1. Dialect stance for `query` — accept Postgres SQL on adapter #2 (fork the dialect
+1. ~~Dialect stance for `query` — accept Postgres SQL on adapter #2 (fork the dialect
    fixtures; `query` becomes engine-documented) vs. translate a SQLite-compatible subset
-   (a shared evaluator à la §4.3's filter allowlist). This is the one real contract
-   decision; §7 defers it to engine-2. Recommendation: accept Postgres SQL and document
-   per-engine dialect — translating arbitrary caller SQL is a money pit, and the allowlist
-   already gives scoped filters a portable lane.
+   (a shared evaluator à la §4.3's filter allowlist).~~
+   **Answered 2026-09-17 by the principal: transparent passthrough, engine-documented
+   dialect.** Caller SQL reaches the engine as written; there is no translation layer and no
+   portable subset for `query`. SQL is too large a language to translate honestly, and a
+   partial translator is worse than none because it fails silently on what it does not
+   cover. The obligation is disclosure rather than portability: each engine states its
+   dialect on the capability surface so clients branch on it instead of discovering the
+   difference from a syntax error. §4.3's filter allowlist remains the portable lane for
+   `filter`/`args`, and §0.5.3 confinement applies to every engine exposing `query`.
+   Recorded in `identity-and-engines.md` §7.
 2. ~~FTS strategy — shared-Go BM25 (recommended; honors the bit-for-bit pin) vs. relaxing
    the auth-on rank pin for adapter #2 (a spec change). Affects ~3 slices.~~
-   **Answered 2026-09-17 by the principal: shared-Go BM25.** Scoring lives in one place and
-   every engine returns the identical order for the same corpus and query, so the
-   bit-for-bit rank pin stands unchanged and no spec revision is needed. Phase 2's
-   tokenizer/BM25 extraction becomes load-bearing rather than optional: SQLite keeps using
-   FTS5 for storage, but ranking is dolmen's, and adapter #3's full-text sidecar (§2.2)
-   consumes the same code. Cost accepted: dolmen owns tokenization and scoring instead of
-   borrowing SQLite's, and the extraction must reproduce FTS5's current order exactly or
-   the pin breaks on the engine that already ships.
+   **Answered 2026-09-17 by the principal: shared-Go BM25.** Scoring lives in one place, so
+   every engine returns the identical order for the same corpus and query by construction —
+   an engine supplies token streams and postings, never a score. Adapter #3's full-text
+   sidecar (§2.2) consumes the same code, and Phase 2's tokenizer/BM25 extraction becomes
+   load-bearing rather than optional.
+
+   **Matching SQLite FTS5 is explicitly NOT a requirement.** The principal ruled that the
+   shared scorer need not reproduce FTS5's output; comparing against FTS5 in tests is a
+   useful quality check, not a contract. This supersedes §7's pre-amendment rule naming
+   SQLite FTS5 the reference oracle, so it is a spec change and `identity-and-engines.md`
+   §7 was amended in the same PR that records this.
+
+   **One question it opens, not decided here:** §8.1 promises `auth: off` is preserved
+   bit-for-bit, and adapter #1 orders full-text by FTS5's own ranks today. Adopting the
+   shared scorer there changes the order existing v0.2.0 callers see. Either SQLite keeps
+   FTS5 ranking under `auth: off` and uses the shared scorer elsewhere (two paths on one
+   engine, §8.1 intact), or the shared scorer applies everywhere and §8.1's full-text
+   ordering guarantee is explicitly relaxed. The extraction slice must not land before that
+   is settled.
 3. Demand — D25 gates adapter #2 behind a demander, yet the spec calls Postgres "the
    reference shared engine." Does this research precede a build decision (Phase 0 becomes
    real tasks), or does the demander rule stand?
