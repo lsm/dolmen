@@ -150,16 +150,9 @@ func newHarnessAtMode(t *testing.T, dir string, emb *fakeProvider, mode harnessM
 
 func (h *harness) start() {
 	h.t.Helper()
-	if engine := testEngine(h.t); engine != store.EngineSQLite {
-		h.t.Fatalf("engine %q has no conformance harness yet", engine)
-	}
-	st, err := store.Open(h.dir, h.storeOpts...)
-	if err != nil {
-		h.t.Fatalf("open store: %v", err)
-	}
-	h.st = st
+	h.st = openEngineStore(h.t, h.dir, h.storeOpts...)
 
-	apiSrv := api.New(st, embed.Provider(h.emb), h.apiOpts...)
+	apiSrv := api.New(h.st, embed.Provider(h.emb), h.apiOpts...)
 	h.api = apiSrv
 	mcpSrv := mcp.New(apiSrv, nil)
 	mux := http.NewServeMux()

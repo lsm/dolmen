@@ -7,6 +7,18 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
+func openEngineStore(t *testing.T, dir string, opts ...store.OpenOption) *store.Store {
+	t.Helper()
+	if engine := testEngine(t); engine != store.EngineSQLite {
+		t.Fatalf("engine %q has no conformance harness yet", engine)
+	}
+	st, err := store.Open(dir, opts...)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	return st
+}
+
 func resolveEngine(getenv func(string) string) (string, error) {
 	name := getenv("DOLMEN_ENGINE")
 	if err := store.ValidateEngine(name); err != nil {
