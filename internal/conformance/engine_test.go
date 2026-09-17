@@ -57,7 +57,7 @@ func TestEngineKnobResolution(t *testing.T) {
 		{env: map[string]string{"DOLMEN_ENGINE": ""}, want: store.EngineSQLite},
 		{env: map[string]string{"DOLMEN_ENGINE": "sqlite"}, want: store.EngineSQLite},
 		{env: map[string]string{"DOLMEN_ENGINE": "postgres"}, wantErr: `unknown engine "postgres" (the available engine is "sqlite")`},
-		{env: map[string]string{"DOLMEN_ENGINE": "banana"}, wantErr: `unknown engine "banana"`},
+		{env: map[string]string{"DOLMEN_ENGINE": "banana"}, wantErr: `unknown engine "banana" (the available engine is "sqlite")`},
 	}
 	for _, c := range cases {
 		lookup := c.env
