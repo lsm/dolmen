@@ -480,6 +480,69 @@ func TestDecodeErrorFraming(t *testing.T) {
 		}
 	})
 
+	t.Run("wrongly typed value names the field and both types", func(t *testing.T) {
+		res, body := h.httpCallRaw("query", `{"namespace":"decf","sql":1}`, "application/json")
+		if res.StatusCode != 400 {
+			t.Fatalf("status %d, want 400: %s", res.StatusCode, body)
+		}
+		errObj := envelopeFromString(t, body)
+		if errObj["code"] != "invalid_request" {
+			t.Fatalf("expected invalid_request envelope, got %v", errObj)
+		}
+		msg := errObj["message"].(string)
+		wantMessage(t, "type mismatch", msg, `^field "sql" must be a string, but the request sent a number; see query's InputSchema`)
+		if strings.Contains(msg, "invalid JSON") {
+			t.Fatalf("valid JSON carrying a wrongly typed value must not be called invalid JSON: %q", msg)
+		}
+		if strings.Contains(msg, "unknown field") {
+			t.Fatalf("a wrongly typed value must not be framed as an unknown field: %q", msg)
+		}
+	})
+
+	t.Run("type mismatch leaks no go internals", func(t *testing.T) {
+		for _, probe := range []struct{ op, body string }{
+			{"query", `{"namespace":"decf","sql":1}`},
+			{"insert", `{"namespace":"decf","table":"t","records":"nope"}`},
+			{"read_rows", `{"namespace":"decf","table":"t","ids":"nope"}`},
+			{"create_table", `{"namespace":"decf","table":"t","fields":[{"name":"a","type":true}]}`},
+		} {
+			_, body := h.httpCallRaw(probe.op, probe.body, "application/json")
+			msg := envelopeFromString(t, body)["message"].(string)
+			for _, leak := range []string{"Req.", "json:", "Go struct", "of type", "unmarshal"} {
+				if strings.Contains(msg, leak) {
+					t.Fatalf("%s message leaks the go internal %q: %q", probe.op, leak, msg)
+				}
+			}
+		}
+	})
+
+	t.Run("nested type mismatch names the path", func(t *testing.T) {
+		_, body := h.httpCallRaw("create_table", `{"namespace":"decf","table":"t","fields":[{"name":"a","type":true}]}`, "application/json")
+		msg := envelopeFromString(t, body)["message"].(string)
+		wantMessage(t, "nested type mismatch", msg, `^field "fields\.0\.type" must be a string, but the request sent a boolean`)
+	})
+
+	t.Run("non object body is named as such", func(t *testing.T) {
+		res, body := h.httpCallRaw("query", `[1,2]`, "application/json")
+		if res.StatusCode != 400 {
+			t.Fatalf("status %d, want 400: %s", res.StatusCode, body)
+		}
+		msg := envelopeFromString(t, body)["message"].(string)
+		wantMessage(t, "non object body", msg, `^request body must be a JSON object, but the request sent an array`)
+	})
+
+	t.Run("mcp reports the type mismatch framing too", func(t *testing.T) {
+		res := h.mcpCall("query", map[string]any{"namespace": "decf", "sql": 1})
+		if !res.isError() {
+			t.Fatalf("MCP query with a wrongly typed value must fail: %+v", res)
+		}
+		env := res.toolError()
+		if env["code"] != "invalid_request" {
+			t.Fatalf("MCP code %v, want invalid_request: %v", env["code"], env)
+		}
+		wantMessage(t, "mcp type mismatch", env["message"].(string), `^field "sql" must be a string, but the request sent a number; see query's InputSchema`)
+	})
+
 	t.Run("mcp tool call reports the same framing", func(t *testing.T) {
 		res := h.mcpCall("query", map[string]any{"namespace": "decf", "table": "x", "sql": "SELECT 1"})
 		if !res.isError() {
