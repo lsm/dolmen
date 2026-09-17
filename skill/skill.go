@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"text/template"
 )
@@ -169,12 +171,131 @@ func BaseURLFor(r *http.Request, configured string) string {
 	if h := r.Header.Get("X-Forwarded-Host"); h != "" {
 		host = forwardedFirst(h)
 	}
+	if fwd := parseForwarded(r.Header.Get("Forwarded")); fwd.host != "" || fwd.proto != "" {
+		if r.Header.Get("X-Forwarded-Proto") == "" && fwd.proto != "" {
+			scheme = fwd.proto
+		}
+		if r.Header.Get("X-Forwarded-Host") == "" && fwd.host != "" {
+			host = fwd.host
+		}
+	}
 	prefix := ""
 	if p := r.Header.Get("X-Forwarded-Prefix"); p != "" {
 		prefix = NormalizePrefix(forwardedFirst(p))
+	} else {
+		prefix = StrippedPrefix(r)
 	}
 	return scheme + "://" + host + prefix
 }
+
+var originalURIHeaders = []string{
+	"X-Forwarded-Uri",
+	"X-Original-Uri",
+	"X-Original-Url",
+	"X-Envoy-Original-Path",
+	"X-Rewrite-Url",
+}
+
+func StrippedPrefix(r *http.Request) string {
+	current := r.URL.EscapedPath()
+	if current == "" {
+		current = "/"
+	}
+	for _, name := range originalURIHeaders {
+		raw := forwardedFirst(r.Header.Get(name))
+		if raw == "" {
+			continue
+		}
+		original := originalPath(raw)
+		if original == "" || original == current {
+			continue
+		}
+		if !strings.HasSuffix(original, current) {
+			continue
+		}
+		if p := NormalizePrefix(strings.TrimSuffix(original, current)); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+func originalPath(raw string) string {
+	if i := strings.IndexAny(raw, "?#"); i >= 0 {
+		raw = raw[:i]
+	}
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return ""
+		}
+		raw = u.EscapedPath()
+	}
+	if raw != "" && !strings.HasPrefix(raw, "/") {
+		return ""
+	}
+	return raw
+}
+
+type forwardedPair struct {
+	proto string
+	host  string
+}
+
+func parseForwarded(v string) forwardedPair {
+	var out forwardedPair
+	first := forwardedFirst(v)
+	if first == "" {
+		return out
+	}
+	for _, part := range strings.Split(first, ";") {
+		key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok {
+			continue
+		}
+		value = strings.Trim(strings.TrimSpace(value), `"`)
+		if value == "" {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "proto":
+			out.proto = value
+		case "host":
+			out.host = value
+		}
+	}
+	return out
+}
+
+func Proxied(r *http.Request) bool {
+	if r.Header.Get("Forwarded") != "" {
+		return true
+	}
+	for _, name := range append([]string{"X-Forwarded-Proto", "X-Forwarded-Host", "X-Forwarded-Prefix", "X-Forwarded-For"}, originalURIHeaders...) {
+		if r.Header.Get(name) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func UnreachableBaseURL(base string) bool {
+	u, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
+}
+
+const ProxyAdvice = "the public links dolmen advertises (the skills manifest, the skill markdown, openapi.json servers, and the MCP initialize instructions) are built from this request, and it arrived through a proxy that did not say what the public URL is; set DOLMEN_BASE_URL to the full public URL, or have the proxy send Host/X-Forwarded-Host, X-Forwarded-Proto, and X-Forwarded-Prefix (nginx defaults Host to the upstream address and never sends X-Forwarded-Prefix on its own)"
 
 func forwardedFirst(v string) string {
 	for _, p := range strings.Split(v, ",") {

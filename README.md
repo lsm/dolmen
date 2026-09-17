@@ -453,6 +453,53 @@ public URL instead:
 DOLMEN_BASE_URL=https://example.com/dolmen ./dolmen
 ```
 
+### nginx `rewrite`
+
+A `rewrite` that strips the sub-path is a stripping proxy, and it is the easiest
+one to get wrong, because nginx supplies none of the context dolmen needs:
+`Host` defaults to the **upstream** address (`127.0.0.1:8790`), and nginx never
+sends `X-Forwarded-Prefix` on its own. Left alone, dolmen advertises links to
+its own loopback address with no sub-path.
+
+Dolmen recovers the sub-path by itself when the proxy forwards the original
+request URI — nginx's `$request_uri` — so this config works without naming the
+prefix twice:
+
+```nginx
+location /dolmen/ {
+    rewrite ^/dolmen/(.*)$ /$1 break;
+    proxy_pass http://127.0.0.1:8790;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Original-URI $request_uri;
+}
+```
+
+`X-Forwarded-Uri`, `X-Original-URL`, `X-Envoy-Original-Path`, and
+`X-Rewrite-URL` are read the same way; an explicit `X-Forwarded-Prefix` always
+wins over inference. The standard `Forwarded` header (RFC 7239) is honored for
+`proto` and `host`, below the `X-Forwarded-*` equivalents.
+
+Setting `DOLMEN_BASE_URL` to the full public URL overrides all of it and is the
+surest fix when a proxy cannot be changed.
+
+### Troubleshooting sub-path links
+
+Ask the server what it thinks its public URL is, through the proxy:
+
+```bash
+curl -s https://example.com/dolmen/skills | grep base_url
+```
+
+If `base_url` is not the URL you typed, the proxy is not telling dolmen enough.
+The server also logs a warning the first time it advertises a base URL that no
+proxied client could reach:
+
+```
+level=WARN msg="advertising a base URL no proxied client can reach" base_url=http://127.0.0.1:8790
+```
+
 ### Pass-through proxy
 
 The proxy forwards the full path, including the sub-path, to dolmen. Run dolmen
