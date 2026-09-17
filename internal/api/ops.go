@@ -334,9 +334,6 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-				return nil, wrapStoreErr(err)
-			}
 			tables, err := s.eng.ListTables(ctx, ns, nil)
 			if err != nil {
 				return nil, wrapStoreErr(err)
@@ -495,9 +492,6 @@ var Ops = map[string]OpDef{
 				return nil, badRequest("confirm must repeat the exact table name %q to drop it", table)
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-				return nil, wrapStoreErr(err)
-			}
 			if err := s.eng.DropTable(ctx, ns, table, store.Incarnation{}); err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -616,9 +610,6 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-				return nil, wrapStoreErr(err)
-			}
 			sc, count, err := s.eng.DescribeTable(ctx, ns, normTable(req.Table), nil, store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
@@ -930,9 +921,6 @@ var Ops = map[string]OpDef{
 				return nil, badRequest(`ids is required (pass the ids a write returned, a query projected, or a change feed carried; an empty list selects nothing)`)
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-				return nil, wrapStoreErr(err)
-			}
 			res, err := s.eng.GetRows(ctx, ns, normTable(req.Table), *req.Ids, nil, store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
@@ -1007,9 +995,6 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-				return nil, wrapStoreErr(err)
-			}
 			res, err := s.eng.Query(ctx, ns, req.SQL, req.Args, [16]byte{},
 				store.Page{Offset: req.Offset, Limit: req.Limit})
 			if err != nil {
@@ -1092,9 +1077,6 @@ var Ops = map[string]OpDef{
 				return nil, badRequest("query must not be empty")
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-				return nil, wrapStoreErr(err)
-			}
 			res, err := s.eng.SearchFulltext(ctx, ns, normTable(req.Table), req.Query, req.Filter, req.Args,
 				req.IncludeHidden, nil, store.Incarnation{}, store.Page{Offset: req.Offset, Limit: limit(req.Limit)})
 			if err != nil {
@@ -1270,9 +1252,6 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-				return nil, wrapStoreErr(err)
-			}
 			records, next, err := runChangesSince(ctx, s, ns, table, cursor, limit)
 			if err != nil {
 				return nil, err
@@ -1788,9 +1767,6 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-				return nil, wrapStoreErr(err)
-			}
 			ms, err := s.eng.ListMigrations(ctx, ns, normTable(req.Table), store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
