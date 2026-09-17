@@ -38,8 +38,12 @@ func TestSearchFulltextSyntaxAcceptReject(t *testing.T) {
 		"case-insensitive match": "PAYMENT",
 		"diacritic-insensitive":  "cafe",
 	}
+	extendedFTS := map[string]bool{"field-scoped": true, "field group": true, "NEAR group": true}
 	for name, q := range accept {
 		t.Run("accept: "+name, func(t *testing.T) {
+			if extendedFTS[name] {
+				sqliteOnly(t)
+			}
 			data := h.mustHTTP("search_fulltext", map[string]any{
 				"namespace": "fts", "table": "t", "query": q,
 			})
@@ -117,6 +121,7 @@ func TestSearchFulltextSyntaxAcceptReject(t *testing.T) {
 }
 
 func TestSearchFulltextStemming(t *testing.T) {
+	sqliteOnly(t)
 	h := newHarness(t)
 	h.seedTable("stems", "t", []map[string]any{
 		{"name": "body", "type": "text", "fulltext": true},
@@ -307,6 +312,7 @@ func TestSearchVectorScoreIsLocalCosine(t *testing.T) {
 }
 
 func TestSearchVectorSkippedVectors(t *testing.T) {
+	sqliteOnly(t)
 	h := newHarness(t)
 	h.seedTable("vec", "s", []map[string]any{
 		{"name": "name", "type": "string"},

@@ -151,13 +151,16 @@ func TestTypedReadAliasesAndFallbacks(t *testing.T) {
 	})["rows"].([]any)[0].(map[string]any)
 	assertJSONEqual(t, "undeclared expression label", row["doubled"], float64(14))
 
-	row = h.mustHTTP("query", map[string]any{
-		"namespace": "alias", "sql": "SELECT CAST('hello' AS BLOB) AS blobby FROM a",
-	})["rows"].([]any)[0].(map[string]any)
-	b64, ok := row["blobby"].(string)
-	if !ok || b64 != "aGVsbG8=" {
-		t.Fatalf("blob under undeclared label must read as base64, got %v", row["blobby"])
-	}
+	t.Run("sqlite cast to blob under an undeclared label reads as base64", func(t *testing.T) {
+		sqliteOnly(t)
+		row := h.mustHTTP("query", map[string]any{
+			"namespace": "alias", "sql": "SELECT CAST('hello' AS BLOB) AS blobby FROM a",
+		})["rows"].([]any)[0].(map[string]any)
+		b64, ok := row["blobby"].(string)
+		if !ok || b64 != "aGVsbG8=" {
+			t.Fatalf("blob under undeclared label must read as base64, got %v", row["blobby"])
+		}
+	})
 
 	rows := h.mustHTTP("query", map[string]any{
 		"namespace": "alias", "sql": "SELECT flag FROM a UNION ALL SELECT flag FROM b",

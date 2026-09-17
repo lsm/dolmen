@@ -150,6 +150,9 @@ func newHarnessAtMode(t *testing.T, dir string, emb *fakeProvider, mode harnessM
 
 func (h *harness) start() {
 	h.t.Helper()
+	if engine := testEngine(h.t); engine != store.EngineSQLite {
+		h.t.Fatalf("engine %q has no conformance harness yet", engine)
+	}
 	st, err := store.Open(h.dir, h.storeOpts...)
 	if err != nil {
 		h.t.Fatalf("open store: %v", err)
@@ -545,6 +548,9 @@ func decodeJSON(t *testing.T, res *http.Response, v any) {
 
 func (h *harness) outOfBand(ns string, fn func(db *sqlDB) error) {
 	h.t.Helper()
+	if engine := testEngine(h.t); engine != store.EngineSQLite {
+		h.t.Fatalf("out-of-band surgery opens the SQLite namespace file; engine %q must skip this fixture instead", engine)
+	}
 	db, err := openSQL(h.dir + "/" + ns + ".db")
 	if err != nil {
 		h.t.Fatalf("open %s.db out of band: %v", ns, err)

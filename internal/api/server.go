@@ -67,8 +67,8 @@ func WithNamespaceHint(h string) Option {
 	}
 }
 
-func New(st *store.Store, emb embed.Provider, opts ...Option) *Server {
-	s := &Server{eng: st, emb: emb, keepaliveInterval: defaultKeepaliveInterval}
+func New(eng store.Engine, emb embed.Provider, opts ...Option) *Server {
+	s := &Server{eng: eng, emb: emb, keepaliveInterval: defaultKeepaliveInterval}
 	for _, opt := range opts {
 		opt(s)
 	}

@@ -2,9 +2,21 @@ package store
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/lsm/dolmen/internal/schema"
 )
+
+const EngineSQLite = "sqlite"
+
+func ValidateEngine(name string) error {
+	switch name {
+	case "", EngineSQLite:
+		return nil
+	default:
+		return fmt.Errorf("unknown engine %q (the available engine is %q)", name, EngineSQLite)
+	}
+}
 
 type Engine interface {
 	NamespaceState(ctx context.Context, ns string, auth []AuthBinding) ([16]byte, error)

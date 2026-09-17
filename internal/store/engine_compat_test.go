@@ -8,6 +8,18 @@ import (
 
 var _ Engine = (*Store)(nil)
 
+func TestValidateEngine(t *testing.T) {
+	for _, name := range []string{"", EngineSQLite} {
+		if err := ValidateEngine(name); err != nil {
+			t.Fatalf("ValidateEngine(%q) = %v, want nil", name, err)
+		}
+	}
+	err := ValidateEngine("postgres")
+	if err == nil || err.Error() != `unknown engine "postgres" (the available engine is "sqlite")` {
+		t.Fatalf("ValidateEngine(postgres) = %v, want the teaching error", err)
+	}
+}
+
 func TestEngineMethodSetMatchesStore(t *testing.T) {
 	eng := reflect.TypeOf((*Engine)(nil)).Elem()
 	concrete := reflect.TypeOf(&Store{})

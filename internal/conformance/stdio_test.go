@@ -80,7 +80,7 @@ func stdioEnv(extra ...string) []string {
 
 func startStdioWithEnv(t *testing.T, extraEnv []string, args ...string) *stdioProc {
 	t.Helper()
-	full := append([]string{"mcp", "-data", t.TempDir()}, args...)
+	full := append([]string{"mcp", "-data", t.TempDir(), "-engine", testEngine(t)}, args...)
 	cmd := exec.Command(dolmenBinary(t), full...)
 	cmd.Env = stdioEnv(extraEnv...)
 	stdin, err := cmd.StdinPipe()

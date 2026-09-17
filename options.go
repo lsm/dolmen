@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/lsm/dolmen/internal/derr"
+	"github.com/lsm/dolmen/internal/store"
 )
 
 type EmbeddingProvider interface {
@@ -15,6 +16,7 @@ type EmbeddingProvider interface {
 }
 
 type config struct {
+	engine          string
 	embedding       EmbeddingProvider
 	embeddingSet    bool
 	changeRetention time.Duration
@@ -26,6 +28,12 @@ func WithEmbedding(provider EmbeddingProvider) Option {
 	return func(c *config) {
 		c.embedding = provider
 		c.embeddingSet = true
+	}
+}
+
+func WithEngine(name string) Option {
+	return func(c *config) {
+		c.engine = name
 	}
 }
 
@@ -41,6 +49,9 @@ func (c *config) validate() error {
 	}
 	if c.changeRetention < 0 {
 		return derr.New(derr.InvalidRequest, "WithChangeRetention: duration must not be negative (0 disables pruning)")
+	}
+	if err := store.ValidateEngine(c.engine); err != nil {
+		return derr.New(derr.InvalidRequest, "WithEngine: %v", err)
 	}
 	return nil
 }
