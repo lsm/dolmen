@@ -262,8 +262,16 @@ can express "run the corpus on engine X", or adapter #2 drifts unpinned.
    decision; §7 defers it to engine-2. Recommendation: accept Postgres SQL and document
    per-engine dialect — translating arbitrary caller SQL is a money pit, and the allowlist
    already gives scoped filters a portable lane.
-2. FTS strategy — shared-Go BM25 (recommended; honors the bit-for-bit pin) vs. relaxing
-   the auth-on rank pin for adapter #2 (a spec change). Affects ~3 slices.
+2. ~~FTS strategy — shared-Go BM25 (recommended; honors the bit-for-bit pin) vs. relaxing
+   the auth-on rank pin for adapter #2 (a spec change). Affects ~3 slices.~~
+   **Answered 2026-09-17 by the principal: shared-Go BM25.** Scoring lives in one place and
+   every engine returns the identical order for the same corpus and query, so the
+   bit-for-bit rank pin stands unchanged and no spec revision is needed. Phase 2's
+   tokenizer/BM25 extraction becomes load-bearing rather than optional: SQLite keeps using
+   FTS5 for storage, but ranking is dolmen's, and adapter #3's full-text sidecar (§2.2)
+   consumes the same code. Cost accepted: dolmen owns tokenization and scoring instead of
+   borrowing SQLite's, and the extraction must reproduce FTS5's current order exactly or
+   the pin breaks on the engine that already ships.
 3. Demand — D25 gates adapter #2 behind a demander, yet the spec calls Postgres "the
    reference shared engine." Does this research precede a build decision (Phase 0 becomes
    real tasks), or does the demander rule stand?
