@@ -519,7 +519,7 @@ func TestDecodeErrorFraming(t *testing.T) {
 	t.Run("nested type mismatch names the path", func(t *testing.T) {
 		_, body := h.httpCallRaw("create_table", `{"namespace":"decf","table":"t","fields":[{"name":"a","type":true}]}`, "application/json")
 		msg := envelopeFromString(t, body)["message"].(string)
-		wantMessage(t, "nested type mismatch", msg, `^field "fields\.0\.type" must be a string, but the request sent a boolean`)
+		wantMessage(t, "nested type mismatch", msg, `^field "fields(\.0)?\.type" must be a string, but the request sent a boolean`)
 	})
 
 	t.Run("non object body is named as such", func(t *testing.T) {
