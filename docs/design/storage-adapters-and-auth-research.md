@@ -70,8 +70,10 @@ Ranked by lift:
    synchronous shadow-row writes on every insert/update/delete, and `MATCH ? ORDER BY
    rank, rowid` execution (`internal/store/search.go`). §7 pins the FTS5 match grammar
    (core subset, precedence ladder), porter+unicode61 tokenization, and BM25
-   (k1=1.2, b=0.75, weights 1.0) — and, under `auth: on`, adapter #1's rank values
-   bit-for-bit. The conformance suite pins it concretely (`internal/conformance/search_test.go`,
+   (k1=1.2, b=0.75, weights 1.0). ~~and, under `auth: on`, adapter #1's rank values
+   bit-for-bit.~~ **Superseded 2026-09-17** (open question 2 below, and the §7 "Ranking
+   quality" amendment): FTS5 is no longer the reference oracle and no engine must reproduce
+   its rank values — one shared Go scorer serves every engine instead. The conformance suite pins it concretely (`internal/conformance/search_test.go`,
    `errors_test.go`: syntax accept/reject including `field:term`, `NEAR`, prefix; BM25
    ordering; the bare-`-` teaching message; `fts5: syntax error` verbatim). Viable
    strategy: extract tokenizer+BM25 into shared Go code, store token streams/postings in
@@ -84,7 +86,10 @@ Ranked by lift:
    found; use list_tables…`, `unknown SQL function "no_such_fn"` — pinned in
    `internal/conformance/errors_test.go`). Adapter #2 needs a SQLSTATE-driven translator
    emitting the same user-facing strings — more stable than text sniffing, behind the same
-   messages. §7 explicitly leaves the dialect stance to engine-2; see the open questions.
+   messages. §7 left the dialect stance to engine-2; **answered 2026-09-17** (open question 1
+   below): transparent passthrough with an engine-documented dialect, so this translator
+   normalizes Postgres *errors* into the pinned teaching strings, and does not translate
+   caller SQL.
 3. **Number storage fidelity.** Pinned hard by `TestNumericFidelityMatrix`
    (`internal/conformance/embedded_parity_test.go`): NUMERIC affinity semantics verbatim —
    fractionless REALs rewritten to INTEGER at storage (so `-0.0` reads back as int64 `0`),
