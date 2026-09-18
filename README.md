@@ -401,6 +401,7 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 |---|---|---|---|
 | `-addr` | `DOLMEN_ADDR` | `127.0.0.1:8790` | HTTP listen address (`dolmen mcp` does not listen) |
 | `-data` | `DOLMEN_DATA` | `data` | Data directory (one SQLite file per namespace) |
+| `-engine` | `DOLMEN_ENGINE` | `sqlite` | Storage engine. `sqlite` is the default and currently the only engine; unknown values are rejected with an error |
 | `-version` | — | — | Print version and exit |
 | `-prefix` | `DOLMEN_PREFIX` | — | Mount all endpoints (`/healthz`, `/version`, `/skills*`, `/v1/*`, `/mcp`) under this URL prefix. Use with a pass-through proxy that forwards the full path |
 | — | `DOLMEN_ALLOWED_ORIGINS` | — | Comma-separated allowed HTTP origins for CORS; `localhost`, `127.0.0.1`, and `::1` are always allowed |

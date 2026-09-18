@@ -91,6 +91,42 @@ func TestLoadConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "engine flag overrides env",
+			args: []string{"-engine", "sqlite"},
+			env:  map[string]string{"DOLMEN_ENGINE": "postgres", "DOLMEN_EMBED_PROVIDER": "none"},
+			want: &config{
+				Addr:               "127.0.0.1:8790",
+				DataDir:            "data",
+				Engine:             "sqlite",
+				AllowedOrigins:     nil,
+				Embed:              embedConfig{Provider: "none"},
+				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				ChangeRetention:    168 * time.Hour,
+				MaxSubscriptionAge: 30 * time.Minute,
+			},
+		},
+		{
+			name: "engine env accepted",
+			args: []string{},
+			env:  map[string]string{"DOLMEN_ENGINE": "sqlite", "DOLMEN_EMBED_PROVIDER": "none"},
+			want: &config{
+				Addr:               "127.0.0.1:8790",
+				DataDir:            "data",
+				Engine:             "sqlite",
+				AllowedOrigins:     nil,
+				Embed:              embedConfig{Provider: "none"},
+				SkillNamespaceHint: skill.DefaultNamespaceHint,
+				ChangeRetention:    168 * time.Hour,
+				MaxSubscriptionAge: 30 * time.Minute,
+			},
+		},
+		{
+			name:    "unknown engine teaches the available engine",
+			args:    []string{},
+			env:     map[string]string{"DOLMEN_ENGINE": "postgres", "DOLMEN_EMBED_PROVIDER": "none"},
+			wantErr: `unknown engine "postgres" (the available engine is "sqlite")`,
+		},
+		{
 			name: "prefix flag",
 			args: []string{"-prefix", "dolmen/"},
 

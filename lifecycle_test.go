@@ -31,6 +31,17 @@ func TestOpenRejectsInvalidOptions(t *testing.T) {
 	if _, err := Open(t.TempDir(), WithChangeRetention(-1)); err == nil {
 		t.Fatal("a negative change retention must be rejected")
 	}
+	if _, err := Open(t.TempDir(), WithEngine("postgres")); err == nil {
+		t.Fatal("an unknown engine name must be rejected")
+	}
+}
+
+func TestEngineOptionAcceptsSQLite(t *testing.T) {
+	st, err := Open(t.TempDir(), WithEngine("sqlite"))
+	if err != nil {
+		t.Fatalf("open with the sqlite engine: %v", err)
+	}
+	defer st.Close()
 }
 
 func TestOpenDuplicateDirectoryIsRejected(t *testing.T) {

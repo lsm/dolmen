@@ -20,7 +20,6 @@ import (
 	"github.com/lsm/dolmen/internal/api"
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/mcp"
-	"github.com/lsm/dolmen/internal/store"
 )
 
 var (
@@ -80,7 +79,7 @@ func stdioEnv(extra ...string) []string {
 
 func startStdioWithEnv(t *testing.T, extraEnv []string, args ...string) *stdioProc {
 	t.Helper()
-	full := append([]string{"mcp", "-data", t.TempDir()}, args...)
+	full := append([]string{"mcp", "-data", t.TempDir(), "-engine", testEngine(t)}, args...)
 	cmd := exec.Command(dolmenBinary(t), full...)
 	cmd.Env = stdioEnv(extraEnv...)
 	stdin, err := cmd.StdinPipe()
@@ -388,10 +387,7 @@ func TestStdioIgnoresHTTPOnlySubscriptionAge(t *testing.T) {
 
 func noneServer(t *testing.T) string {
 	t.Helper()
-	st, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
+	st := openEngineStore(t, t.TempDir())
 	apiSrv := api.New(st, embed.None{})
 	mcpSrv := mcp.New(apiSrv, nil)
 	mux := http.NewServeMux()

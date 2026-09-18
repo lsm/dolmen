@@ -96,13 +96,19 @@ func rowsEqual(t *testing.T, label string, httpRows, embeddedRows []map[string]a
 	}
 }
 
-func embeddedStore(t *testing.T) (*dolmen.Store, dolmen.EmbeddingProvider) {
+func openEmbedded(t *testing.T, dir string, opts ...dolmen.Option) *dolmen.Store {
 	t.Helper()
-	emb := &parityProvider{}
-	st, err := dolmen.Open(t.TempDir(), dolmen.WithEmbedding(emb))
+	st, err := dolmen.Open(dir, append([]dolmen.Option{dolmen.WithEngine(testEngine(t))}, opts...)...)
 	if err != nil {
 		t.Fatalf("embedded open: %v", err)
 	}
+	return st
+}
+
+func embeddedStore(t *testing.T) (*dolmen.Store, dolmen.EmbeddingProvider) {
+	t.Helper()
+	emb := &parityProvider{}
+	st := openEmbedded(t, t.TempDir(), dolmen.WithEmbedding(emb))
 	t.Cleanup(func() { st.Close() })
 	return st, emb
 }
@@ -467,10 +473,7 @@ func TestEmbeddedParityEmbeddingFailure(t *testing.T) {
 	}
 
 	boom := errors.New("provider exploded")
-	st, err := dolmen.Open(t.TempDir(), dolmen.WithEmbedding(&parityProvider{fail: boom}))
-	if err != nil {
-		t.Fatalf("embedded open: %v", err)
-	}
+	st := openEmbedded(t, t.TempDir(), dolmen.WithEmbedding(&parityProvider{fail: boom}))
 	defer st.Close()
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "par", "docs", []dolmen.Field{{Name: "body", Type: dolmen.Text, Vectorize: true}}); err != nil {
@@ -514,10 +517,7 @@ func TestEmbeddedParityEmbedQueryFailureThroughSearch(t *testing.T) {
 
 	boom := errors.New("query embedder down")
 	emb := &parityProvider{}
-	st, err := dolmen.Open(t.TempDir(), dolmen.WithEmbedding(emb))
-	if err != nil {
-		t.Fatalf("embedded open: %v", err)
-	}
+	st := openEmbedded(t, t.TempDir(), dolmen.WithEmbedding(emb))
 	defer st.Close()
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "par", "docs", []dolmen.Field{{Name: "body", Type: dolmen.Text, Vectorize: true}}); err != nil {
@@ -527,7 +527,7 @@ func TestEmbeddedParityEmbedQueryFailureThroughSearch(t *testing.T) {
 		t.Fatalf("embedded seed insert must succeed before the provider is failed: %v", err)
 	}
 	emb.fail = boom
-	_, err = st.SearchVector(ctx, "par", "docs", dolmen.VectorQuery{Text: "probe"}, dolmen.SearchOptions{})
+	_, err := st.SearchVector(ctx, "par", "docs", dolmen.VectorQuery{Text: "probe"}, dolmen.SearchOptions{})
 	if err == nil {
 		t.Fatal("a text query through a failing provider must fail")
 	}
@@ -584,10 +584,7 @@ func TestEmbeddedParityExactIntegerPrecision(t *testing.T) {
 		t.Fatalf("the wire must return 2^53+1 exactly, got %v (%T)", hv, hv)
 	}
 
-	st, err := dolmen.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("embedded open: %v", err)
-	}
+	st := openEmbedded(t, t.TempDir())
 	defer st.Close()
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "par", "nums", []dolmen.Field{{Name: "big", Type: dolmen.Number}}); err != nil {
@@ -641,10 +638,7 @@ func TestNumericFidelityMatrix(t *testing.T) {
 	if err := json.Unmarshal([]byte(adjacent), &adjF); err != nil {
 		t.Fatalf("unmarshal adjacent: %v", err)
 	}
-	st, err := dolmen.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("embedded open: %v", err)
-	}
+	st := openEmbedded(t, t.TempDir())
 	defer st.Close()
 	ctx := context.Background()
 	if _, err := st.CreateTable(ctx, "fid", "nums", []dolmen.Field{
@@ -854,10 +848,7 @@ func TestParityDefaultsMaterializeOnBothSurfaces(t *testing.T) {
 func TestEmbeddedParityReadsNeverCreateNamespaces(t *testing.T) {
 	dir := t.TempDir()
 	emb := &parityProvider{}
-	st, err := dolmen.Open(dir, dolmen.WithEmbedding(emb))
-	if err != nil {
-		t.Fatalf("embedded open: %v", err)
-	}
+	st := openEmbedded(t, dir, dolmen.WithEmbedding(emb))
 	defer st.Close()
 	ctx := context.Background()
 
@@ -919,19 +910,19 @@ func TestEmbeddedParityReadsNeverCreateNamespaces(t *testing.T) {
 
 func TestEmbeddedParityWritesStillCreateNamespaces(t *testing.T) {
 	dir := t.TempDir()
-	st, err := dolmen.Open(dir, dolmen.WithEmbedding(&parityProvider{}))
-	if err != nil {
-		t.Fatalf("embedded open: %v", err)
-	}
+	st := openEmbedded(t, dir, dolmen.WithEmbedding(&parityProvider{}))
 	defer st.Close()
 	ctx := context.Background()
 
 	if _, err := st.CreateTable(ctx, "facadeborn", "notes", []dolmen.Field{{Name: "body", Type: dolmen.Text}}); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "facadeborn.db")); err != nil {
-		t.Fatalf("a facade write must create its namespace implicitly: %v", err)
-	}
+	t.Run("sqlite namespace file appears on write", func(t *testing.T) {
+		sqliteOnly(t)
+		if _, err := os.Stat(filepath.Join(dir, "facadeborn.db")); err != nil {
+			t.Fatalf("a facade write must create its namespace implicitly: %v", err)
+		}
+	})
 	tables, err := st.ListTables(ctx, "facadeborn")
 	if err != nil || len(tables) != 1 || tables[0] != "notes" {
 		t.Fatalf("the created table must be listed, got %v (%v)", tables, err)

@@ -149,6 +149,9 @@ func runStdio(args []string) error {
 }
 
 func openStore(cfg *config) (*store.Store, error) {
+	if cfg.Engine != "" && cfg.Engine != store.EngineSQLite {
+		return nil, fmt.Errorf("open store: engine %q is not implemented yet", cfg.Engine)
+	}
 	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention))
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
@@ -187,6 +190,7 @@ func (e *printedError) Error() string { return e.err.Error() }
 type config struct {
 	Addr               string
 	DataDir            string
+	Engine             string
 	AllowedOrigins     []string
 	Embed              embedConfig
 	Version            bool
@@ -210,6 +214,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 
 	addr := fs.String("addr", envOr("DOLMEN_ADDR", "127.0.0.1:8790", getenv), "listen address")
 	dataDir := fs.String("data", envOr("DOLMEN_DATA", "data", getenv), "data directory (one SQLite file per namespace)")
+	engine := fs.String("engine", getenv("DOLMEN_ENGINE"), "storage engine (empty or sqlite)")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	publicBaseURL := fs.String("base-url", envOr("DOLMEN_BASE_URL", "", getenv), "public base URL for skills and MCP links (default: use request Host)")
 	prefix := fs.String("prefix", envOr("DOLMEN_PREFIX", "", getenv), "mount all endpoints under this URL prefix (pass-through proxy)")
@@ -259,6 +264,12 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		return nil, &printedError{err}
 	}
 
+	if err := store.ValidateEngine(*engine); err != nil {
+		fmt.Fprintf(out, "config: %v\n", err)
+		fs.Usage()
+		return nil, &printedError{err}
+	}
+
 	retention, err := parseChangeRetention(*changeRetention)
 	if err != nil {
 		fmt.Fprintf(out, "config: %v\n", err)
@@ -291,6 +302,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	return &config{
 		Addr:               *addr,
 		DataDir:            *dataDir,
+		Engine:             *engine,
 		AllowedOrigins:     allowedOrigins,
 		BaseURL:            *publicBaseURL,
 		Prefix:             prefixValue,
@@ -340,6 +352,7 @@ func printEnvHelp(out io.Writer) {
 	help := []envHelp{
 		{"DOLMEN_ADDR", "listen address (default 127.0.0.1:8790)"},
 		{"DOLMEN_DATA", "data directory (default data)"},
+		{"DOLMEN_ENGINE", "storage engine; empty or sqlite (default sqlite)"},
 		{"DOLMEN_ALLOWED_ORIGINS", "comma-separated allowed HTTP origins for CORS"},
 		{"DOLMEN_BASE_URL", "public base URL for skills and MCP links (default: use request Host)"},
 		{"DOLMEN_SKILL_NAMESPACE_HINT", "hint text rendered into skill markdown"},

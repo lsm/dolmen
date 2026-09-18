@@ -162,6 +162,7 @@ func TestWaitForCursorResumeChain(t *testing.T) {
 }
 
 func TestWaitForIdleLoopMintsNothing(t *testing.T) {
+	sqliteOnly(t)
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
 	countTokens := func() int {
