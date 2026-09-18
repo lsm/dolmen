@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -117,6 +119,99 @@ func unknownJSONField(err error) (string, bool) {
 		return "", false
 	}
 	return field, true
+}
+
+type typeMismatchError struct {
+	Field string
+	Want  string
+	Got   string
+}
+
+func (e *typeMismatchError) Error() string {
+	if e.Field == "" {
+		return fmt.Sprintf("request body must be a JSON object, but the request sent %s", e.Got)
+	}
+	return fmt.Sprintf("field %q must be %s, but the request sent %s", e.Field, e.Want, e.Got)
+}
+
+func jsonShapeOf(t reflect.Type) string {
+	for t != nil && (t.Kind() == reflect.Pointer || t.Kind() == reflect.Interface) {
+		t = t.Elem()
+	}
+	if t == nil {
+		return "a different type"
+	}
+	if t == reflect.TypeOf(json.Number("")) || t == reflect.TypeOf(json.RawMessage(nil)) {
+		if t == reflect.TypeOf(json.Number("")) {
+			return "a number"
+		}
+		return "a JSON value"
+	}
+	switch t.Kind() {
+	case reflect.String:
+		return "a string"
+	case reflect.Bool:
+		return "a boolean"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "an integer"
+	case reflect.Float32, reflect.Float64:
+		return "a number"
+	case reflect.Slice, reflect.Array:
+		return "an array"
+	case reflect.Map, reflect.Struct:
+		return "an object"
+	}
+	return "a different type"
+}
+
+func jsonValueWord(value string) string {
+	switch value {
+	case "number":
+		return "a number"
+	case "string":
+		return "a string"
+	case "bool", "true", "false":
+		return "a boolean"
+	case "array":
+		return "an array"
+	case "object":
+		return "an object"
+	case "null":
+		return "null"
+	}
+	if value == "" {
+		return "a different type"
+	}
+	return value
+}
+
+func asTypeMismatch(err error) (*typeMismatchError, bool) {
+	var ute *json.UnmarshalTypeError
+	if !errors.As(err, &ute) {
+		return nil, false
+	}
+	return &typeMismatchError{
+		Field: ute.Field,
+		Want:  jsonShapeOf(ute.Type),
+		Got:   jsonValueWord(ute.Value),
+	}, true
+}
+
+func frameTypeMismatch(err error, op string) *Error {
+	var tm *typeMismatchError
+	var apiErr *Error
+	if !errors.As(err, &tm) || !errors.As(err, &apiErr) {
+		return nil
+	}
+	if tm.Field == "" {
+		return nil
+	}
+	reframed := *apiErr
+	reframed.Message = fmt.Sprintf(
+		"%s; see %s's InputSchema (MCP tools/list or /v1/openapi.json) for the accepted types",
+		tm.Error(), op)
+	return &reframed
 }
 
 func frameUnknownField(err error, op string) *Error {

@@ -67,7 +67,7 @@ func Open(dataDir string, opts ...Option) (*Store, error) {
 	if err != nil {
 		releaseOwnership(dir)
 		code := derr.Internal
-		if pathShapeError(err) {
+		if pathShapeError(err) || errors.Is(err, store.ErrCatalogTooNew) {
 			code = derr.InvalidRequest
 		}
 		return nil, derr.Wrap(code, fmt.Errorf("open data directory: %w", err))

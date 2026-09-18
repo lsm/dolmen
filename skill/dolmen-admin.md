@@ -203,8 +203,12 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
   disk, so a pre-seed is confirmed by `model_cached` reporting true; an actual embedding round-trip
   (insert + `search_vector` with `text`) remains the end-to-end check.
 - `create_namespace` is only for reserving a name up front (or failing loudly if it is taken) —
-  namespaces are otherwise created implicitly on first use by the data ops (`wait_for` and the
-  `subscribe` stream answer `not_found` instead), and it creates no tables.
+  namespaces are otherwise created implicitly on first use by the **write** ops (`create_table`,
+  `insert`, `update`, `upsert`, `upsert_by_key`, `delete`, `migrate`), and it creates no tables.
+  **Every read answers `not_found` for a namespace that does not exist and creates nothing** —
+  `list_tables`, `describe_table`, `read_rows`, `query`, `search_fulltext`, `search_vector`,
+  `changes_since`, `wait_for`, `list_migrations`, `subscribe`, and `drop_table`. A mistyped
+  namespace therefore costs an error, never a stray database file.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
 - `read_rows` is the by-id fetch: pass `"ids": [...]` (the ids a write returned, a query projected,
   or a feed carried), get the full rows back — each found row once, in ascending id order, typed

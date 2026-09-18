@@ -604,7 +604,7 @@ curl -sN "http://127.0.0.1:8790/v1/subscribe?namespace=myapp"
 
 Query parameters mirror `changes_since` (names are trimmed and lowercased like every `/v1`
 call): `namespace` (required — a namespace that does not exist is an in-stream `not_found`
-error; the stream never creates one, like `wait_for` and unlike the data ops), `table` (optional
+error; the stream never creates one, as no read does), `table` (optional
 filter to one table's feed; an explicitly empty value is rejected), and `cursor` (an opaque
 resume token or the literal `begin`; omitted = start at the current head and receive future
 commits only; an explicitly empty value is rejected). Wrong method, an omitted `namespace`
@@ -679,7 +679,7 @@ atomically with your side effects rather than deduplicating on frame content.
 | Tool | Purpose |
 |---|---|
 | `list_namespaces` | Namespaces on this server; an optional `prefix` (a namespace path) lists only that path's subtree, recursively |
-| `create_namespace` | Reserve a namespace up front (data ops create implicitly on first use otherwise; `wait_for` and the `subscribe` stream never create — a missing namespace is `not_found`) |
+| `create_namespace` | Reserve a namespace up front (the write ops create implicitly on first use otherwise; every read — including `wait_for` and the `subscribe` stream — never creates, and a missing namespace is `not_found`) |
 | `drop_namespace` | Delete a namespace and all its tables; `confirm` must repeat the name; a namespace with child namespaces is refused — drop the children first |
 | `list_tables` | Tables in a namespace |
 | `describe_server` | Server's embedding provider status — provider (`none` / `local` / `openai`), model, the identity that pins vectorized tables, whether server-side embedding is usable, and (local only) whether the model is cached; read-only, no secrets |
@@ -753,9 +753,13 @@ atomically with your side effects rather than deduplicating on frame content.
 - **Embeddings** are pluggable: `none` (caller supplies vectors), `local` (built-in in-process
   inference via [rembed](https://github.com/rostamlabs/rembed) — pure Go, no cgo, model weights
   cached under the data dir), or any OpenAI-compatible endpoint.
-- Namespaces are created implicitly on first use by the data ops (one file per name; `create_namespace`
-  just reserves the name up front) — `wait_for` and the `subscribe` stream never create, answering
-  `not_found`; tables are not — call `create_table` before inserting, `drop_table` (confirm-guarded)
+- Namespaces are created implicitly on first use by the **write** ops — `create_table`, `insert`,
+  `update`, `upsert`, `upsert_by_key`, `delete`, and `migrate` (one file per name; `create_namespace`
+  just reserves the name up front). **Reads never create.** `list_tables`, `describe_table`,
+  `read_rows`, `query`, `search_fulltext`, `search_vector`, `changes_since`, `wait_for`,
+  `list_migrations`, the `subscribe` stream, and `drop_table` all answer `not_found` for a namespace
+  that does not exist, leaving nothing on disk — so a typo costs an error, not a stray database file.
+  Tables are never implicit — call `create_table` before inserting, `drop_table` (confirm-guarded)
   to remove one completely. No other management surface to operate.
 
 Storage sits behind the store layer, so engines like DuckDB-over-Parquet or Iceberg-over-S3 can be

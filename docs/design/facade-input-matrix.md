@@ -75,8 +75,31 @@ The family audit (#309) dispositioned every unaudited cousin line from the parit
 
 | Cousin | Audit result | Disposition |
 | --- | --- | --- |
-| #301 fields count | engine `CreateTable` enforces `MaxFieldsPerTable`; same bound both surfaces | Cleared + pinned (`TestCreateTableRejectsTooManyFields`, root `familyaudit_test.go`). Order note: façade `EnsureNamespace` runs before engine rejection (namespace side effect on a rejected create) — same as wire handler-level rejections, documented |
+| #301 fields count | engine `CreateTable` enforces `MaxFieldsPerTable`; same bound both surfaces | Cleared + pinned (`TestCreateTableRejectsTooManyFields`, root `familyaudit_test.go`). Order note: on both surfaces the namespace is ensured before the engine rejects, so a rejected create may leave an empty namespace behind — documented, and unchanged by #39, which removed the ensure from reads only |
 | #301 table-name grammar on describe/drop | `/v1` does not enforce the MCP grammar (404 `not_found`); the façade classified `not_found` too | Fixed per the curated-stricter reading + pinned cross-surface with the by-design flag (above) |
 | #302 records count | engine `Insert`/`UpsertByKey` enforce `MaxRecordsPerInsert`; same bound both surfaces | Cleared + pinned (`TestInsertRejectsTooManyRecords`, both ops) |
 | #302 delete-limit range | wire schema has `minimum: 1`, no maximum; the wire handler also rejects < 1 at runtime (`parseOptPosInt`), so explicit 0 diverges — wire 400, façade default threshold; façade rejects negatives (`TestDeleteRejectsNegativeLimit`, root `write_test.go`), no upper bound either | Cleared — no upper-range divergence exists; parity by construction; the at-zero divergence is code-verified, unpinned |
 | #302 record-data floats | NaN stored silently and read back as NULL; ±Inf poisoned the row (every later read errored) | Fixed (`finiteNumber` guard) + pinned; details in [numeric-fidelity-matrix.md](numeric-fidelity-matrix.md) |
+
+## Namespace creation on reads (#39)
+
+Parity by construction, no divergence: **no read creates a namespace on either surface.** The write
+ops — `create_table`, `insert`, `update`, `upsert`, `upsert_by_key`, `delete`, `migrate` — still
+create implicitly on first use, on both surfaces.
+
+| Surface | Reads that answer `not_found` for a missing namespace, creating nothing |
+| --- | --- |
+| MCP + `/v1` | `list_tables`, `describe_table`, `read_rows`, `query`, `search_fulltext`, `search_vector`, `changes_since`, `wait_for`, `list_migrations`, `subscribe`, `drop_table` |
+| Go façade | `ListTables`, `DescribeTable`, `GetRows`, `Query`, `SearchFulltext`, `SearchVector` (both the text and raw-vector branches), `DropTable` |
+
+Before #39 both surfaces resolved reads through `ops.EnsureNamespace`, so discovery created the
+namespace file, its registry, and its connections — a mistyped name left `<ns>.db`, `-wal` and
+`-shm` on disk. The engine's own open path already returns `ErrNotFound` for a missing file without
+creating it, which is how `wait_for` always answered `not_found`; the reads simply never reached it.
+
+Pinned cross-surface in the same PR: `TestReadOpsNeverCreateNamespaceFiles` and
+`TestWriteOpsStillCreateNamespacesImplicitly` (`internal/conformance/namespace_test.go`, over `/v1`
+and MCP), and `TestEmbeddedParityReadsNeverCreateNamespaces` /
+`TestEmbeddedParityWritesStillCreateNamespaces` (`internal/conformance/embedded_parity_test.go`).
+Each asserts the data directory is empty afterwards, so a future reintroduction of an ensure on a
+read fails on the surface that regressed.

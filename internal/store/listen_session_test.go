@@ -74,3 +74,43 @@ func TestSessionCursorIsStanding(t *testing.T) {
 		t.Fatalf("cursor = %q, want the standing token", got)
 	}
 }
+
+func TestSessionDeathCauseSurvivesParkedCloseFlush(t *testing.T) {
+	closedFired := make(chan error, 1)
+	sess := testSession(func(cause error) { closedFired <- cause })
+
+	if !sess.endParked(ErrListenRevoked) {
+		t.Fatal("the first end must report itself as first")
+	}
+	sess.flushParkedClose()
+
+	select {
+	case cause := <-closedFired:
+		if !errors.Is(cause, ErrListenRevoked) {
+			t.Fatalf("flushed close cause = %v, want ErrListenRevoked", cause)
+		}
+	default:
+		t.Fatal("flushParkedClose never delivered the parked cause")
+	}
+
+	if err := sess.endCause(); !errors.Is(err, ErrListenRevoked) {
+		t.Fatalf("endCause after a concurrent pump flushed the parked close = %v, want ErrListenRevoked — a death cause must outlive its one delivery to closedFn, or a page racing the flush reports a clean end for a revoked session", err)
+	}
+}
+
+func TestSessionDeathCauseUpgradesFromYieldingLikeParkedClose(t *testing.T) {
+	sess := testSession(func(error) {})
+
+	if !sess.endYielding(errListenEnded) {
+		t.Fatal("the first end must report itself as first")
+	}
+	sess.endParked(ErrListenRevoked)
+
+	if err := sess.endCause(); !errors.Is(err, ErrListenRevoked) {
+		t.Fatalf("endCause after a non-yielding cause displaced a yielding one = %v, want ErrListenRevoked", err)
+	}
+	sess.flushParkedClose()
+	if err := sess.endCause(); !errors.Is(err, ErrListenRevoked) {
+		t.Fatalf("endCause after the upgrade was flushed = %v, want ErrListenRevoked", err)
+	}
+}
