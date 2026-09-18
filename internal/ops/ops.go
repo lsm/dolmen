@@ -77,9 +77,6 @@ func PrepareVectorQuery(ctx context.Context, eng store.Engine, ns, table string,
 	var vec []float32
 	switch {
 	case in.Text != "":
-		if err := EnsureNamespace(ctx, eng, ns); err != nil {
-			return store.VectorQuery{}, err
-		}
 		sc, _, err := eng.TableState(ctx, ns, table, nil)
 		if err != nil {
 			return store.VectorQuery{}, err
@@ -110,7 +107,7 @@ func PrepareVectorQuery(ctx context.Context, eng store.Engine, ns, table string,
 			}
 			vec[i] = float32(x)
 		}
-		if err := EnsureNamespace(ctx, eng, ns); err != nil {
+		if _, err := eng.NamespaceState(ctx, ns, nil); err != nil {
 			return store.VectorQuery{}, err
 		}
 	default:

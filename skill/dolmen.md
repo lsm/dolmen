@@ -153,8 +153,8 @@ Query parameters — the same contract as `changes_since` (names are trimmed and
 every `/v1` call):
 
 - `namespace` (required) — the feed to subscribe to. A namespace that does not exist is an
-  in-stream `not_found` error: the stream never creates one, like `wait_for` and unlike the
-  data ops.
+  in-stream `not_found` error: the stream never creates one, as no read does, unlike the
+  write ops.
 - `table` (optional) — filter to that table's feed. An explicitly empty value is rejected — omit
   the parameter for the namespace-wide feed. A table-filtered feed has its own cursors.
 - `cursor` (optional) — an opaque resume token or the literal `begin`. Omitted = start at the

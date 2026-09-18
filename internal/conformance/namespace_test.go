@@ -2,6 +2,8 @@ package conformance
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -208,4 +210,78 @@ func TestNamespaceDeepPathLifecycle(t *testing.T) {
 	h.mustHTTP("drop_namespace", map[string]any{"namespace": "acme", "confirm": "acme"})
 	data = h.mustHTTP("list_namespaces", map[string]any{})
 	assertJSONEqual(t, "post-drop listing", data["namespaces"], []any{})
+}
+
+func TestReadOpsNeverCreateNamespaceFiles(t *testing.T) {
+	h := newHarness(t)
+
+	reads := []struct {
+		op   string
+		body map[string]any
+	}{
+		{"list_tables", map[string]any{"namespace": "ghost01"}},
+		{"describe_table", map[string]any{"namespace": "ghost02", "table": "t"}},
+		{"query", map[string]any{"namespace": "ghost03", "sql": "SELECT 1"}},
+		{"search_fulltext", map[string]any{"namespace": "ghost04", "table": "t", "query": "x"}},
+		{"search_vector", map[string]any{"namespace": "ghost05", "table": "t", "vector": []float64{1, 2, 3, 4, 5, 6, 7, 8}}},
+		{"search_vector", map[string]any{"namespace": "ghost06", "table": "t", "text": "x"}},
+		{"read_rows", map[string]any{"namespace": "ghost07", "table": "t", "ids": []int64{1}}},
+		{"changes_since", map[string]any{"namespace": "ghost08"}},
+		{"wait_for", map[string]any{"namespace": "ghost09", "timeout_ms": 0}},
+		{"list_migrations", map[string]any{"namespace": "ghost10", "table": "t"}},
+		{"drop_table", map[string]any{"namespace": "ghost11", "table": "t", "confirm": "t"}},
+	}
+
+	for _, r := range reads {
+		t.Run(r.op+"/"+r.body["namespace"].(string), func(t *testing.T) {
+			status, out := h.httpCall(r.op, r.body)
+			if status != 404 {
+				t.Fatalf("%s on a missing namespace: status %d, want 404: %v", r.op, status, out)
+			}
+			errObj, _ := out["error"].(map[string]any)
+			if errObj == nil || errObj["code"] != "not_found" {
+				t.Fatalf("%s on a missing namespace must answer not_found: %v", r.op, out)
+			}
+
+			res := h.mcpCall(r.op, r.body)
+			if !res.isError() {
+				t.Fatalf("MCP %s on a missing namespace must fail: %+v", r.op, res)
+			}
+			if env := res.toolError(); env["code"] != "not_found" {
+				t.Fatalf("MCP %s code %v, want not_found: %v", r.op, env["code"], env)
+			}
+		})
+	}
+
+	entries, err := os.ReadDir(h.dir)
+	if err != nil {
+		t.Fatalf("read data dir: %v", err)
+	}
+	for _, e := range entries {
+		t.Errorf("a read against a missing namespace left %s on disk; discovery must never create files", e.Name())
+	}
+}
+
+func TestWriteOpsStillCreateNamespacesImplicitly(t *testing.T) {
+	h := newHarness(t)
+
+	h.mustHTTP("create_table", map[string]any{
+		"namespace": "born01", "table": "notes",
+		"fields": []any{map[string]any{"name": "body", "type": "text"}},
+	})
+	if _, err := os.Stat(filepath.Join(h.dir, "born01.db")); err != nil {
+		t.Fatalf("create_table must create its namespace implicitly: %v", err)
+	}
+
+	names := h.mustHTTP("list_namespaces", map[string]any{})
+	list, _ := names["namespaces"].([]any)
+	found := false
+	for _, n := range list {
+		if n == "born01" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the implicitly created namespace must be listed: %v", names)
+	}
 }
