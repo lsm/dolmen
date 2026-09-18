@@ -52,9 +52,6 @@ func (s *Store) GetRows(ctx context.Context, namespace, table string, ids []int6
 		return QueryResult{}, derr.New(derr.InvalidRequest, "table must match ^[a-z][a-z0-9_]{0,63}$ and not contain __fts or start with sqlite_")
 	}
 	ns := ops.NormalizeNamespace(namespace)
-	if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-		return QueryResult{}, facadeErr(err)
-	}
 	ownIds := append([]int64(nil), ids...)
 	res, err := s.eng.GetRows(ctx, ns, ops.NormalizeTable(table), ownIds, nil, store.Incarnation{})
 	if err != nil {
@@ -87,9 +84,6 @@ func (s *Store) Query(ctx context.Context, namespace, sql string, opts QueryOpti
 		return QueryResult{}, derr.New(derr.InvalidRequest, "QueryOptions.Offset must be between 0 and %d, got %d", maxOffsetPerCall, opts.Offset)
 	}
 	ns := ops.NormalizeNamespace(namespace)
-	if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-		return QueryResult{}, facadeErr(err)
-	}
 	args := append([]any(nil), opts.Args...)
 	res, err := s.eng.Query(ctx, ns, sql, args, [16]byte{}, store.Page{Offset: opts.Offset, Limit: opts.Limit})
 	if err != nil {
