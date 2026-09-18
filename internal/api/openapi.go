@@ -5,8 +5,6 @@ import (
 
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
-	"github.com/lsm/dolmen/internal/version"
-	"github.com/lsm/dolmen/skill"
 )
 
 const (
@@ -88,7 +86,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, &Error{Status: http.StatusMethodNotAllowed, Code: ErrCodeInvalid, Message: "use GET"})
 		return
 	}
-	ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version, s.prefix)
+	ctx := s.publicContext(r)
 	writeJSON(w, http.StatusOK, s.OpenAPIDoc(ctx.BaseURL))
 }
 

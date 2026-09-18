@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lsm/dolmen/internal/embed"
@@ -33,6 +34,7 @@ type Server struct {
 	maxSubscriptionAge time.Duration
 	keepaliveInterval  time.Duration
 	holdReplay         func()
+	proxyAdviceOnce    sync.Once
 }
 
 type Option func(*Server)
@@ -73,6 +75,17 @@ func New(st *store.Store, emb embed.Provider, opts ...Option) *Server {
 		opt(s)
 	}
 	return s
+}
+
+func (s *Server) publicContext(r *http.Request) skill.Context {
+	ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version, s.prefix)
+	if s.baseURL == "" && skill.Proxied(r) && skill.UnreachableBaseURL(ctx.BaseURL) {
+		s.proxyAdviceOnce.Do(func() {
+			slog.Warn("advertising a base URL no proxied client can reach",
+				"base_url", ctx.BaseURL, "advice", skill.ProxyAdvice)
+		})
+	}
+	return ctx
 }
 
 func (s *Server) HoldReplay(f func()) {
@@ -319,6 +332,9 @@ func decodeData(body []byte, v any) error {
 			uf := &unknownFieldError{Field: field}
 			return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: uf.Error(), Cause: uf}
 		}
+		if tm, ok := asTypeMismatch(err); ok {
+			return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: tm.Error(), Cause: tm}
+		}
 		return badRequest("invalid JSON: %v", err)
 	}
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
@@ -335,6 +351,9 @@ func decodeAllowNullArgs(body []byte, v any) error {
 	dec.UseNumber()
 	var probe map[string]any
 	if err := dec.Decode(&probe); err != nil {
+		if tm, ok := asTypeMismatch(err); ok {
+			return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: tm.Error(), Cause: tm}
+		}
 		return badRequest("invalid JSON: %v", err)
 	}
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
@@ -423,6 +442,9 @@ func (s *Server) Dispatch(ctx context.Context, op string, body []byte) (any, err
 	res, err := def.Func(ctx, s, body)
 	if err != nil {
 		if framed := frameUnknownField(err, op); framed != nil {
+			return res, framed
+		}
+		if framed := frameTypeMismatch(err, op); framed != nil {
 			return res, framed
 		}
 	}
@@ -527,7 +549,7 @@ func (s *Server) handleSkillsManifest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, &Error{Status: http.StatusMethodNotAllowed, Code: ErrCodeInvalid, Message: "use GET"})
 		return
 	}
-	ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version, s.prefix)
+	ctx := s.publicContext(r)
 	manifest, err := skill.ManifestJSON(ctx)
 	if err != nil {
 		writeError(w, r, err)
@@ -547,7 +569,7 @@ func (s *Server) handleSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, notFound("unknown skill %q", name))
 		return
 	}
-	ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version, s.prefix)
+	ctx := s.publicContext(r)
 	body, err := skill.Render(name, ctx)
 	if err != nil {
 		if errors.Is(err, skill.ErrNotFound) {
@@ -627,4 +649,8 @@ func writeJSONStatus(w http.ResponseWriter, status int, v any) {
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(v)
+}
+
+func (s *Server) PublicContext(r *http.Request) skill.Context {
+	return s.publicContext(r)
 }

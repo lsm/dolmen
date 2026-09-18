@@ -43,6 +43,8 @@ type listenSession struct {
 	pendingClose      error
 	pendingCloseYield bool
 	pendingDrainClose error
+	deathCause        error
+	deathCauseYield   bool
 
 	pumpsLaunched bool
 
@@ -114,6 +116,9 @@ func (sess *listenSession) endCause() error {
 }
 
 func (sess *listenSession) endCauseLocked() error {
+	if sess.deathCause != nil {
+		return sess.deathCause
+	}
 	if sess.pendingClose != nil {
 		return sess.pendingClose
 	}
@@ -135,6 +140,13 @@ func (sess *listenSession) endPark(cause error, yields bool) bool {
 		} else if !first && !yields && sess.pendingClose != nil && sess.pendingCloseYield {
 			sess.pendingClose = cause
 			sess.pendingCloseYield = false
+		}
+		if first && sess.deathCause == nil {
+			sess.deathCause = cause
+			sess.deathCauseYield = yields
+		} else if !first && !yields && sess.deathCause != nil && sess.deathCauseYield {
+			sess.deathCause = cause
+			sess.deathCauseYield = false
 		}
 	}
 	if first {

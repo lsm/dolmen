@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1011,5 +1012,65 @@ func TestSubscribeRouteRegistered(t *testing.T) {
 		if name == "subscribe" {
 			t.Fatalf("subscribe must not be an Ops entry — it is an HTTP-surface capability, not an op")
 		}
+	}
+}
+
+func TestProxyRewriteAdvertisesThePublicPrefix(t *testing.T) {
+	h := newHarness(t)
+
+	req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/skills", nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "example.com")
+	req.Header.Set("X-Original-URI", "/dolmen/skills")
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get skills: %v", err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+
+	var manifest map[string]any
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		t.Fatalf("decode manifest: %v (%s)", err, body)
+	}
+	if got, want := manifest["base_url"], "https://example.com/dolmen"; got != want {
+		t.Fatalf("a stripping rewrite must still advertise the public prefix: base_url = %v, want %v", got, want)
+	}
+	if !strings.Contains(string(body), "https://example.com/dolmen/skills/dolmen") {
+		t.Fatalf("skill links must carry the inferred prefix: %s", body)
+	}
+}
+
+func TestProxyRewriteAdvertisesThePublicPrefixOnOpenAPI(t *testing.T) {
+	h := newHarness(t)
+
+	req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/v1/openapi.json", nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "example.com")
+	req.Header.Set("X-Original-URI", "/dolmen/v1/openapi.json")
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get openapi: %v", err)
+	}
+	defer res.Body.Close()
+	var doc map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&doc); err != nil {
+		t.Fatalf("decode openapi: %v", err)
+	}
+	servers, _ := doc["servers"].([]any)
+	if len(servers) == 0 {
+		t.Fatalf("openapi carries no servers block: %v", doc)
+	}
+	first, _ := servers[0].(map[string]any)
+	if got := first["url"]; got != "https://example.com/dolmen" {
+		t.Fatalf("openapi servers url = %v, want https://example.com/dolmen", got)
 	}
 }

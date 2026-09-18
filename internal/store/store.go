@@ -125,7 +125,40 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 	for _, opt := range opts {
 		opt(s)
 	}
+	if err := s.verifyCatalogVersions(context.Background()); err != nil {
+		return nil, err
+	}
 	return s, nil
+}
+
+func (s *Store) verifyCatalogVersions(ctx context.Context) error {
+	var names []string
+	if err := walkNamespaces(s.dir, "", &names); err != nil {
+		return err
+	}
+	sortNS(names)
+	for _, name := range names {
+		if err := s.verifyOneCatalogVersion(ctx, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) verifyOneCatalogVersion(ctx context.Context, name string) error {
+	ro, err := sql.Open("sqlite", dsn(s.nsPath(name), true))
+	if err != nil {
+		return nil
+	}
+	defer ro.Close()
+	format, minReader, err := readCatalogVersion(ctx, ro)
+	if err != nil {
+		return nil
+	}
+	if minReader > CatalogFormat {
+		return &CatalogVersionError{Namespace: name, Format: format, MinReader: minReader, Supported: CatalogFormat}
+	}
+	return nil
 }
 
 func (s *Store) Close() error {
@@ -220,6 +253,15 @@ func (s *Store) lockedNSCtx(ctx context.Context, name string) (*nsDB, error) {
 			rw.Close()
 			return nil, fmt.Errorf("init namespace %s: %w", name, err)
 		}
+	}
+
+	if err := ensureCatalogVersion(ctx, rw, name); err != nil {
+		rw.Close()
+		var cve *CatalogVersionError
+		if errors.As(err, &cve) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("init namespace %s: %w", name, err)
 	}
 
 	if err := ensureNSGen(ctx, rw); err != nil {

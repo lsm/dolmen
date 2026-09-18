@@ -336,3 +336,107 @@ func TestStdioInstructions(t *testing.T) {
 		t.Fatalf("configured base URL must appear in stdio instructions: %q", linked)
 	}
 }
+
+func TestBaseURLForInfersPrefixStrippedByRewrite(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		header   string
+		original string
+		path     string
+		want     string
+	}{
+		{"nginx rewrite keeps request_uri", "X-Original-URI", "/dolmen/skills", "/skills", "https://example.com/dolmen"},
+		{"ingress style forwarded uri", "X-Forwarded-Uri", "/dolmen/v1/query", "/v1/query", "https://example.com/dolmen"},
+		{"envoy original path", "X-Envoy-Original-Path", "/dolmen/skills/dolmen", "/skills/dolmen", "https://example.com/dolmen"},
+		{"nested prefix", "X-Original-URI", "/a/b/skills", "/skills", "https://example.com/a/b"},
+		{"query string is ignored", "X-Original-URI", "/dolmen/skills?x=1", "/skills", "https://example.com/dolmen"},
+		{"absolute original url", "X-Original-URL", "https://example.com/dolmen/skills", "/skills", "https://example.com/dolmen"},
+		{"root mount infers nothing", "X-Original-URI", "/skills", "/skills", "https://example.com"},
+		{"root path with prefix", "X-Original-URI", "/dolmen/", "/", "https://example.com/dolmen"},
+		{"mismatched original is ignored", "X-Original-URI", "/somewhere/else", "/skills", "https://example.com"},
+		{"garbage original is ignored", "X-Original-URI", "not a path", "/skills", "https://example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			r.Host = "127.0.0.1:8790"
+			r.Header.Set("X-Forwarded-Proto", "https")
+			r.Header.Set("X-Forwarded-Host", "example.com")
+			r.Header.Set(tc.header, tc.original)
+			if got := BaseURLFor(r, ""); got != tc.want {
+				t.Fatalf("BaseURLFor: got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBaseURLForPrefersExplicitPrefixOverInference(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/skills", nil)
+	r.Host = "127.0.0.1:8790"
+	r.Header.Set("X-Forwarded-Host", "example.com")
+	r.Header.Set("X-Forwarded-Proto", "https")
+	r.Header.Set("X-Forwarded-Prefix", "/declared")
+	r.Header.Set("X-Original-URI", "/inferred/skills")
+
+	if got, want := BaseURLFor(r, ""), "https://example.com/declared"; got != want {
+		t.Fatalf("an explicit X-Forwarded-Prefix must win over inference: got %q, want %q", got, want)
+	}
+}
+
+func TestBaseURLForHonorsRFC7239Forwarded(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		forwarded string
+		xProto    string
+		xHost     string
+		want      string
+	}{
+		{"proto and host", `for=203.0.113.9;proto=https;host=example.com`, "", "", "https://example.com"},
+		{"quoted values", `proto="https";host="example.com:8443"`, "", "", "https://example.com:8443"},
+		{"first hop wins", `proto=https;host=example.com, proto=http;host=internal`, "", "", "https://example.com"},
+		{"x-forwarded-host wins", `proto=https;host=example.com`, "", "other.example.com", "https://other.example.com"},
+		{"x-forwarded-proto wins", `proto=https;host=example.com`, "http", "", "http://example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/skills", nil)
+			r.Host = "127.0.0.1:8790"
+			r.Header.Set("Forwarded", tc.forwarded)
+			if tc.xProto != "" {
+				r.Header.Set("X-Forwarded-Proto", tc.xProto)
+			}
+			if tc.xHost != "" {
+				r.Header.Set("X-Forwarded-Host", tc.xHost)
+			}
+			if got := BaseURLFor(r, ""); got != tc.want {
+				t.Fatalf("BaseURLFor: got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUnreachableBaseURLDetectsLoopback(t *testing.T) {
+	unreachable := []string{"http://127.0.0.1:8790", "http://localhost:8790", "https://[::1]:8790", "http://0.0.0.0:8790"}
+	for _, u := range unreachable {
+		if !UnreachableBaseURL(u) {
+			t.Errorf("%s must be reported as unreachable for a proxied client", u)
+		}
+	}
+	for _, u := range []string{"https://example.com", "https://example.com/dolmen", "http://10.0.0.4:8790"} {
+		if UnreachableBaseURL(u) {
+			t.Errorf("%s must not be reported as unreachable", u)
+		}
+	}
+}
+
+func TestProxiedDetectsForwardingHeaders(t *testing.T) {
+	plain := httptest.NewRequest(http.MethodGet, "/skills", nil)
+	if Proxied(plain) {
+		t.Fatal("a direct request must not look proxied")
+	}
+	for _, h := range []string{"X-Forwarded-Proto", "X-Forwarded-Host", "X-Forwarded-For", "X-Forwarded-Prefix", "Forwarded", "X-Original-URI"} {
+		r := httptest.NewRequest(http.MethodGet, "/skills", nil)
+		r.Header.Set(h, "x")
+		if !Proxied(r) {
+			t.Errorf("%s must mark the request as proxied", h)
+		}
+	}
+}

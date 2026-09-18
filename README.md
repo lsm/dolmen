@@ -453,6 +453,53 @@ public URL instead:
 DOLMEN_BASE_URL=https://example.com/dolmen ./dolmen
 ```
 
+### nginx `rewrite`
+
+A `rewrite` that strips the sub-path is a stripping proxy, and it is the easiest
+one to get wrong, because nginx supplies none of the context dolmen needs:
+`Host` defaults to the **upstream** address (`127.0.0.1:8790`), and nginx never
+sends `X-Forwarded-Prefix` on its own. Left alone, dolmen advertises links to
+its own loopback address with no sub-path.
+
+Dolmen recovers the sub-path by itself when the proxy forwards the original
+request URI — nginx's `$request_uri` — so this config works without naming the
+prefix twice:
+
+```nginx
+location /dolmen/ {
+    rewrite ^/dolmen/(.*)$ /$1 break;
+    proxy_pass http://127.0.0.1:8790;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Original-URI $request_uri;
+}
+```
+
+`X-Forwarded-Uri`, `X-Original-URL`, `X-Envoy-Original-Path`, and
+`X-Rewrite-URL` are read the same way; an explicit `X-Forwarded-Prefix` always
+wins over inference. The standard `Forwarded` header (RFC 7239) is honored for
+`proto` and `host`, below the `X-Forwarded-*` equivalents.
+
+Setting `DOLMEN_BASE_URL` to the full public URL overrides all of it and is the
+surest fix when a proxy cannot be changed.
+
+### Troubleshooting sub-path links
+
+Ask the server what it thinks its public URL is, through the proxy:
+
+```bash
+curl -s https://example.com/dolmen/skills | grep base_url
+```
+
+If `base_url` is not the URL you typed, the proxy is not telling dolmen enough.
+The server also logs a warning the first time it advertises a base URL that no
+proxied client could reach:
+
+```
+level=WARN msg="advertising a base URL no proxied client can reach" base_url=http://127.0.0.1:8790
+```
+
 ### Pass-through proxy
 
 The proxy forwards the full path, including the sub-path, to dolmen. Run dolmen
@@ -557,7 +604,7 @@ curl -sN "http://127.0.0.1:8790/v1/subscribe?namespace=myapp"
 
 Query parameters mirror `changes_since` (names are trimmed and lowercased like every `/v1`
 call): `namespace` (required — a namespace that does not exist is an in-stream `not_found`
-error; the stream never creates one, like `wait_for` and unlike the data ops), `table` (optional
+error; the stream never creates one, as no read does), `table` (optional
 filter to one table's feed; an explicitly empty value is rejected), and `cursor` (an opaque
 resume token or the literal `begin`; omitted = start at the current head and receive future
 commits only; an explicitly empty value is rejected). Wrong method, an omitted `namespace`
@@ -632,7 +679,7 @@ atomically with your side effects rather than deduplicating on frame content.
 | Tool | Purpose |
 |---|---|
 | `list_namespaces` | Namespaces on this server; an optional `prefix` (a namespace path) lists only that path's subtree, recursively |
-| `create_namespace` | Reserve a namespace up front (data ops create implicitly on first use otherwise; `wait_for` and the `subscribe` stream never create — a missing namespace is `not_found`) |
+| `create_namespace` | Reserve a namespace up front (the write ops create implicitly on first use otherwise; every read — including `wait_for` and the `subscribe` stream — never creates, and a missing namespace is `not_found`) |
 | `drop_namespace` | Delete a namespace and all its tables; `confirm` must repeat the name; a namespace with child namespaces is refused — drop the children first |
 | `list_tables` | Tables in a namespace |
 | `describe_server` | Server's embedding provider status — provider (`none` / `local` / `openai`), model, the identity that pins vectorized tables, whether server-side embedding is usable, and (local only) whether the model is cached; read-only, no secrets |
@@ -706,9 +753,13 @@ atomically with your side effects rather than deduplicating on frame content.
 - **Embeddings** are pluggable: `none` (caller supplies vectors), `local` (built-in in-process
   inference via [rembed](https://github.com/rostamlabs/rembed) — pure Go, no cgo, model weights
   cached under the data dir), or any OpenAI-compatible endpoint.
-- Namespaces are created implicitly on first use by the data ops (one file per name; `create_namespace`
-  just reserves the name up front) — `wait_for` and the `subscribe` stream never create, answering
-  `not_found`; tables are not — call `create_table` before inserting, `drop_table` (confirm-guarded)
+- Namespaces are created implicitly on first use by the **write** ops — `create_table`, `insert`,
+  `update`, `upsert`, `upsert_by_key`, `delete`, and `migrate` (one file per name; `create_namespace`
+  just reserves the name up front). **Reads never create.** `list_tables`, `describe_table`,
+  `read_rows`, `query`, `search_fulltext`, `search_vector`, `changes_since`, `wait_for`,
+  `list_migrations`, the `subscribe` stream, and `drop_table` all answer `not_found` for a namespace
+  that does not exist, leaving nothing on disk — so a typo costs an error, not a stray database file.
+  Tables are never implicit — call `create_table` before inserting, `drop_table` (confirm-guarded)
   to remove one completely. No other management surface to operate.
 
 Storage sits behind the store layer, so engines like DuckDB-over-Parquet or Iceberg-over-S3 can be
