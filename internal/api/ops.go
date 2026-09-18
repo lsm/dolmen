@@ -334,9 +334,6 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-				return nil, wrapStoreErr(err)
-			}
 			tables, err := s.eng.ListTables(ctx, ns, nil)
 			if err != nil {
 				return nil, wrapStoreErr(err)
@@ -400,8 +397,8 @@ var Ops = map[string]OpDef{
 	"create_namespace": {
 		Description: "Create an empty namespace. A namespace is a path of 1-3 segments (a/b/c), each " +
 			"1-64 chars: a leading letter or digit, then [a-z0-9_-]. Parents need not exist as " +
-			"namespaces — creating a child makes its parent directories. Namespaces are also created implicitly on first use by the data ops " +
-			"(wait_for and the subscribe stream answer not_found instead), " +
+			"namespaces — creating a child makes its parent directories. Namespaces are also created implicitly on first use by the write ops " +
+			"(create_table, insert, update, upsert, upsert_by_key, delete, migrate); every read answers not_found for a namespace that does not exist and creates nothing, " +
 			"so this is only needed to reserve a name up front or to fail loudly when the name is taken. " +
 			"Creates no tables — follow with create_table.",
 		InputSchema: map[string]any{
@@ -430,7 +427,7 @@ var Ops = map[string]OpDef{
 			"Irreversible. confirm must repeat the namespace name — a guard against dropping the wrong one " +
 			"(it normalizes like the namespace itself, so case and surrounding whitespace don't matter). " +
 			"In-flight requests on the namespace finish first (or fail); any later data-op use of the same name recreates " +
-			"the namespace empty — wait_for and the subscribe stream answer not_found until it is recreated. " +
+			"the namespace empty — every read answers not_found until it is recreated. " +
 			"The server closes its own connections before deleting, but other processes " +
 			"holding the file open (a second dolmen, a backup tool) are not detected — coordinate drops within one server.",
 		InputSchema: map[string]any{
@@ -495,9 +492,6 @@ var Ops = map[string]OpDef{
 				return nil, badRequest("confirm must repeat the exact table name %q to drop it", table)
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-				return nil, wrapStoreErr(err)
-			}
 			if err := s.eng.DropTable(ctx, ns, table, store.Incarnation{}); err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -616,9 +610,6 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-				return nil, wrapStoreErr(err)
-			}
 			sc, count, err := s.eng.DescribeTable(ctx, ns, normTable(req.Table), nil, store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
@@ -930,9 +921,6 @@ var Ops = map[string]OpDef{
 				return nil, badRequest(`ids is required (pass the ids a write returned, a query projected, or a change feed carried; an empty list selects nothing)`)
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-				return nil, wrapStoreErr(err)
-			}
 			res, err := s.eng.GetRows(ctx, ns, normTable(req.Table), *req.Ids, nil, store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
@@ -1007,9 +995,6 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-				return nil, wrapStoreErr(err)
-			}
 			res, err := s.eng.Query(ctx, ns, req.SQL, req.Args, [16]byte{},
 				store.Page{Offset: req.Offset, Limit: req.Limit})
 			if err != nil {
@@ -1092,9 +1077,6 @@ var Ops = map[string]OpDef{
 				return nil, badRequest("query must not be empty")
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-				return nil, wrapStoreErr(err)
-			}
 			res, err := s.eng.SearchFulltext(ctx, ns, normTable(req.Table), req.Query, req.Filter, req.Args,
 				req.IncludeHidden, nil, store.Incarnation{}, store.Page{Offset: req.Offset, Limit: limit(req.Limit)})
 			if err != nil {
@@ -1270,9 +1252,6 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-				return nil, wrapStoreErr(err)
-			}
 			records, next, err := runChangesSince(ctx, s, ns, table, cursor, limit)
 			if err != nil {
 				return nil, err
@@ -1788,9 +1767,6 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-				return nil, wrapStoreErr(err)
-			}
 			ms, err := s.eng.ListMigrations(ctx, ns, normTable(req.Table), store.Incarnation{})
 			if err != nil {
 				return nil, wrapStoreErr(err)

@@ -6,7 +6,10 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"testing"
 
@@ -845,5 +848,92 @@ func TestParityDefaultsMaterializeOnBothSurfaces(t *testing.T) {
 	}
 	if k := numberKeyOf(t, erank); k != "7" {
 		t.Fatalf("embedded default rank must be 7, got %q", k)
+	}
+}
+
+func TestEmbeddedParityReadsNeverCreateNamespaces(t *testing.T) {
+	dir := t.TempDir()
+	emb := &parityProvider{}
+	st, err := dolmen.Open(dir, dolmen.WithEmbedding(emb))
+	if err != nil {
+		t.Fatalf("embedded open: %v", err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+
+	reads := map[string]func(ns string) error{
+		"ListTables": func(ns string) error {
+			_, err := st.ListTables(ctx, ns)
+			return err
+		},
+		"DescribeTable": func(ns string) error {
+			_, _, err := st.DescribeTable(ctx, ns, "t")
+			return err
+		},
+		"GetRows": func(ns string) error {
+			_, err := st.GetRows(ctx, ns, "t", []int64{1})
+			return err
+		},
+		"Query": func(ns string) error {
+			_, err := st.Query(ctx, ns, "SELECT 1", dolmen.QueryOptions{})
+			return err
+		},
+		"SearchFulltext": func(ns string) error {
+			_, err := st.SearchFulltext(ctx, ns, "t", "x", dolmen.SearchOptions{})
+			return err
+		},
+		"SearchVectorRaw": func(ns string) error {
+			_, err := st.SearchVector(ctx, ns, "t", dolmen.VectorQuery{Vec: []float32{1, 2, 3, 4, 5, 6, 7, 8}}, dolmen.SearchOptions{})
+			return err
+		},
+		"SearchVectorText": func(ns string) error {
+			_, err := st.SearchVector(ctx, ns, "t", dolmen.VectorQuery{Text: "x"}, dolmen.SearchOptions{})
+			return err
+		},
+		"DropTable": func(ns string) error {
+			return st.DropTable(ctx, ns, "t")
+		},
+	}
+
+	names := make([]string, 0, len(reads))
+	for name := range reads {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for i, name := range names {
+		ns := "facadeghost" + strconv.Itoa(i)
+		if err := reads[name](ns); !errors.Is(err, dolmen.ErrNotFound) {
+			t.Fatalf("facade %s on a missing namespace = %v, want ErrNotFound — the wire surface answers not_found", name, err)
+		}
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read data dir: %v", err)
+	}
+	for _, e := range entries {
+		t.Errorf("a facade read against a missing namespace left %s on disk; the facade must match the wire surface", e.Name())
+	}
+}
+
+func TestEmbeddedParityWritesStillCreateNamespaces(t *testing.T) {
+	dir := t.TempDir()
+	st, err := dolmen.Open(dir, dolmen.WithEmbedding(&parityProvider{}))
+	if err != nil {
+		t.Fatalf("embedded open: %v", err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+
+	if _, err := st.CreateTable(ctx, "facadeborn", "notes", []dolmen.Field{{Name: "body", Type: dolmen.Text}}); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "facadeborn.db")); err != nil {
+		t.Fatalf("a facade write must create its namespace implicitly: %v", err)
+	}
+	tables, err := st.ListTables(ctx, "facadeborn")
+	if err != nil || len(tables) != 1 || tables[0] != "notes" {
+		t.Fatalf("the created table must be listed, got %v (%v)", tables, err)
 	}
 }

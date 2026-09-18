@@ -68,9 +68,6 @@ func (s *Store) SearchFulltext(ctx context.Context, namespace, table, query stri
 		return SearchResult{}, derr.New(derr.InvalidRequest, "table must match ^[a-z][a-z0-9_]{0,63}$ and not contain __fts or start with sqlite_")
 	}
 	ns := ops.NormalizeNamespace(namespace)
-	if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-		return SearchResult{}, facadeErr(err)
-	}
 	args := append([]any(nil), opts.Args...)
 	res, err := s.eng.SearchFulltext(ctx, ns, ops.NormalizeTable(table), query, opts.Filter, args,
 		opts.IncludeHidden, nil, store.Incarnation{}, store.Page{Offset: opts.Offset, Limit: opts.Limit})

@@ -123,6 +123,9 @@ func TestCreateTableVectorizeRequiresProvider(t *testing.T) {
 		t.Fatalf("vectorize without a provider must be rejected, got %v", err)
 	}
 	tables, err := st.ListTables(ctx, "app")
+	if errors.Is(err, ErrNotFound) {
+		tables, err = nil, nil
+	}
 	if err != nil || len(tables) != 0 {
 		t.Fatalf("a rejected vectorize create must leave no table behind, got %v (%v)", tables, err)
 	}
