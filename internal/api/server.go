@@ -319,6 +319,9 @@ func decodeData(body []byte, v any) error {
 			uf := &unknownFieldError{Field: field}
 			return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: uf.Error(), Cause: uf}
 		}
+		if tm, ok := asTypeMismatch(err); ok {
+			return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: tm.Error(), Cause: tm}
+		}
 		return badRequest("invalid JSON: %v", err)
 	}
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
@@ -335,6 +338,9 @@ func decodeAllowNullArgs(body []byte, v any) error {
 	dec.UseNumber()
 	var probe map[string]any
 	if err := dec.Decode(&probe); err != nil {
+		if tm, ok := asTypeMismatch(err); ok {
+			return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: tm.Error(), Cause: tm}
+		}
 		return badRequest("invalid JSON: %v", err)
 	}
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
@@ -423,6 +429,9 @@ func (s *Server) Dispatch(ctx context.Context, op string, body []byte) (any, err
 	res, err := def.Func(ctx, s, body)
 	if err != nil {
 		if framed := frameUnknownField(err, op); framed != nil {
+			return res, framed
+		}
+		if framed := frameTypeMismatch(err, op); framed != nil {
 			return res, framed
 		}
 	}

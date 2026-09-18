@@ -128,8 +128,16 @@ func TestStage11RowLifecycleAndPinnedErrors(t *testing.T) {
 		t.Fatalf("type-mismatch envelope carries no error object: %v", envelope)
 	}
 	mismatchMsg := asStr(t, errObj["message"], "type-mismatch message")
-	if !strings.Contains(mismatchMsg, "invalid JSON") || !strings.Contains(mismatchMsg, "cannot unmarshal") {
-		t.Fatalf("issue #287 pin: envelope type mismatches still lead with invalid JSON and the raw decoder text, got %q", mismatchMsg)
+	if !strings.Contains(mismatchMsg, `field "ids" must be an array`) || !strings.Contains(mismatchMsg, "the request sent a string") {
+		t.Fatalf("a wrongly typed value must name the field and both types, got %q", mismatchMsg)
+	}
+	if strings.Contains(mismatchMsg, "invalid JSON") {
+		t.Fatalf("valid JSON carrying a wrongly typed value must not be called invalid JSON, got %q", mismatchMsg)
+	}
+	for _, leak := range []string{"cannot unmarshal", "Go struct", "Req.", "of type"} {
+		if strings.Contains(mismatchMsg, leak) {
+			t.Fatalf("type-mismatch message leaks the go internal %q: %q", leak, mismatchMsg)
+		}
 	}
 
 	code, _, raw := postRawBody(t, app.srv.url+"/v1/insert", nil, `{"namespace":"acme/lifecycle","table":"docs","records":[{"title":"nf","hours":1e999}]}`)
