@@ -272,9 +272,8 @@ can express "run the corpus on engine X", or adapter #2 drifts unpinned.
    `query` dialect in the pinned `query_dialect` capability field (string, open enum —
    `"sqlite"` on adapter #1) so conformance can compare it and clients branch on it instead of
    discovering the difference from a syntax error. Scoped `filter`/`args` are unaffected: §4.3's
-   shared allowlist keeps them portable on every engine. §4.3's filter allowlist remains the portable lane for
-   `filter`/`args`, and §0.5.3 confinement applies to every engine exposing `query`.
-   Recorded in `identity-and-engines.md` §7.
+   shared allowlist keeps them portable on every engine, and §0.5.3 confinement applies to every
+   engine exposing `query`. Recorded in `identity-and-engines.md` §7.
 2. ~~FTS strategy — shared-Go BM25 (recommended; honors the bit-for-bit pin) vs. relaxing
    the auth-on rank pin for adapter #2 (a spec change). Affects ~3 slices.~~
    **Answered 2026-09-17 by the principal: shared-Go BM25.** Scoring lives in one place, so
