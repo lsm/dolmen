@@ -269,9 +269,10 @@ can express "run the corpus on engine X", or adapter #2 drifts unpinned.
    portable subset for `query`. SQL is too large a language to translate honestly, and a
    partial translator is worse than none because it fails silently on what it does not
    cover. The obligation is disclosure rather than portability: each engine states its
-   dialect in the pinned `query_dialect` capability field (string, open enum — `"sqlite"` on
-   adapter #1) so conformance can compare it and clients branch on it instead of discovering
-   the difference from a syntax error. §4.3's filter allowlist remains the portable lane for
+   `query` dialect in the pinned `query_dialect` capability field (string, open enum —
+   `"sqlite"` on adapter #1) so conformance can compare it and clients branch on it instead of
+   discovering the difference from a syntax error. Scoped `filter`/`args` are unaffected: §4.3's
+   shared allowlist keeps them portable on every engine. §4.3's filter allowlist remains the portable lane for
    `filter`/`args`, and §0.5.3 confinement applies to every engine exposing `query`.
    Recorded in `identity-and-engines.md` §7.
 2. ~~FTS strategy — shared-Go BM25 (recommended; honors the bit-for-bit pin) vs. relaxing
@@ -398,7 +399,7 @@ conformance-shaped table, to retire the ecosystem risk before any lane is planne
 
 ### 3.1 Current state: designed in full, built not at all — and the expensive parts are pre-paid
 
-The design authority is complete (`identity-and-engines.md` §1–§9; decision index D1–D26)
+The design authority is complete (`identity-and-engines.md` §1–§9; decision index D1–D28)
 and pre-sliced (`implementation-plan.md`, Lane B = slices 7a–10g, 29 slices: 7a–7e,
 8a–8g, 9a–9j, 10a–10g). Production
 code: zero — no `-auth`/`DOLMEN_AUTH`/`-trusted-proxies` anywhere (the flag list in
