@@ -163,7 +163,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	instr := skill.MCPInstructions(skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version, s.prefix))
+	instr := skill.MCPInstructions(s.api.PublicContext(r))
 	result, rpcErr := s.handle(r.Context(), msg, instr)
 	if rpcErr != nil {
 		writeRPCError(w, msg.ID, rpcErr.Code, rpcErr.Message)
