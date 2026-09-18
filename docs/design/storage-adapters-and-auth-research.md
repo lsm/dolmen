@@ -269,8 +269,9 @@ can express "run the corpus on engine X", or adapter #2 drifts unpinned.
    portable subset for `query`. SQL is too large a language to translate honestly, and a
    partial translator is worse than none because it fails silently on what it does not
    cover. The obligation is disclosure rather than portability: each engine states its
-   dialect on the capability surface so clients branch on it instead of discovering the
-   difference from a syntax error. §4.3's filter allowlist remains the portable lane for
+   dialect in the pinned `query_dialect` capability field (string, open enum — `"sqlite"` on
+   adapter #1) so conformance can compare it and clients branch on it instead of discovering
+   the difference from a syntax error. §4.3's filter allowlist remains the portable lane for
    `filter`/`args`, and §0.5.3 confinement applies to every engine exposing `query`.
    Recorded in `identity-and-engines.md` §7.
 2. ~~FTS strategy — shared-Go BM25 (recommended; honors the bit-for-bit pin) vs. relaxing
