@@ -531,6 +531,22 @@ func TestDecodeErrorFraming(t *testing.T) {
 		wantMessage(t, "non object body", msg, `^request body must be a JSON object, but the request sent an array`)
 	})
 
+	t.Run("search ops leak no decoder text for a non object body", func(t *testing.T) {
+		for _, op := range []string{"search_fulltext", "search_vector"} {
+			res, body := h.httpCallRaw(op, `[1,2]`, "application/json")
+			if res.StatusCode != 400 {
+				t.Fatalf("%s with a non-object body: status %d, want 400: %s", op, res.StatusCode, body)
+			}
+			msg := envelopeFromString(t, body)["message"].(string)
+			wantMessage(t, op+" non object body", msg, `^request body must be a JSON object, but the request sent an array`)
+			for _, leak := range []string{"cannot unmarshal", "Go value", "map[string]interface", "json:"} {
+				if strings.Contains(msg, leak) {
+					t.Fatalf("%s message leaks the go internal %q: %q", op, leak, msg)
+				}
+			}
+		}
+	})
+
 	t.Run("mcp reports the type mismatch framing too", func(t *testing.T) {
 		res := h.mcpCall("query", map[string]any{"namespace": "decf", "sql": 1})
 		if !res.isError() {

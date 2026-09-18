@@ -338,6 +338,9 @@ func decodeAllowNullArgs(body []byte, v any) error {
 	dec.UseNumber()
 	var probe map[string]any
 	if err := dec.Decode(&probe); err != nil {
+		if tm, ok := asTypeMismatch(err); ok {
+			return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: tm.Error(), Cause: tm}
+		}
 		return badRequest("invalid JSON: %v", err)
 	}
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
