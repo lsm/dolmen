@@ -615,3 +615,16 @@ func (m harnessMode) authMode() auth.Mode {
 	}
 	return auth.ModeOff
 }
+
+func aliceHeaders() map[string]string {
+	return map[string]string{"X-Dolmen-Principal": "alice", "X-Dolmen-Groups": "team-a,readers"}
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(raw)
+}

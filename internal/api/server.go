@@ -525,12 +525,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/openapi.json", s.handleOpenAPI)
 
 	mux.HandleFunc("/v1/subscribe", func(w http.ResponseWriter, r *http.Request) {
-		authed, err := s.Authenticated(r)
+		r, err := s.Authenticated(r)
 		if err != nil {
 			writeError(w, r, WrapError(err))
 			return
 		}
-		s.HandleSubscribe(w, authed)
+		s.HandleSubscribe(w, r)
 	})
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
 
@@ -551,11 +551,11 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		authed, authErr := s.Authenticated(r)
+		r = authed
 		if authErr != nil {
 			writeError(w, r, WrapError(authErr))
 			return
 		}
-		r = authed
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20))
 		if err != nil {
 			var maxErr *http.MaxBytesError
@@ -583,12 +583,13 @@ func (s *Server) Authenticated(r *http.Request) (*http.Request, error) {
 	}
 	id, err := s.authn.Authenticate(r)
 	if err != nil {
-		return nil, err
+		return r, err
 	}
+	r = r.WithContext(auth.WithIdentity(r.Context(), id))
 	if err := s.authn.Authorize(id); err != nil {
-		return nil, err
+		return r, err
 	}
-	return r.WithContext(auth.WithIdentity(r.Context(), id)), nil
+	return r, nil
 }
 
 func (s *Server) handleSkillsManifest(w http.ResponseWriter, r *http.Request) {
