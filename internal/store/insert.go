@@ -348,6 +348,10 @@ func defaultForWrite(f schema.Field) any {
 	return stampNow(writeDefault(f))
 }
 
+func EmbedTexts(ctx context.Context, sc *schema.TableSchema, table string, texts []string, emb Embedder) ([][]float32, error) {
+	return embedTexts(ctx, sc, table, texts, emb)
+}
+
 func embedTexts(ctx context.Context, sc *schema.TableSchema, table string, texts []string, emb Embedder) ([][]float32, error) {
 	if emb.Embed == nil {
 		return nil, invalidf("table %s uses vectorize but no embedding provider is configured", table)

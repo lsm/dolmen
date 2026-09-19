@@ -11,7 +11,7 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-const catalogVersion = 2
+const catalogVersion = 3
 
 func ident(parts ...string) string { return pgx.Identifier(parts).Sanitize() }
 
@@ -78,6 +78,23 @@ func (s *Store) bootstrap(ctx context.Context) error {
   CHECK ((active AND physical IS NOT NULL) OR (NOT active AND physical IS NULL))
  )`); err != nil {
 		return err
+	}
+	for _, stmt := range []string{
+		"CREATE TABLE IF NOT EXISTS " + s.relation("idempotency") + ` (
+ namespace text NOT NULL REFERENCES ` + s.relation("namespaces") + `(name) ON DELETE CASCADE,
+ table_name text NOT NULL, drop_generation bigint NOT NULL, key text NOT NULL,
+ payload_hash text NOT NULL, result_json text NOT NULL,
+ PRIMARY KEY(namespace,table_name,drop_generation,key))`,
+		"CREATE TABLE IF NOT EXISTS " + s.relation("changes") + ` (
+ namespace text NOT NULL REFERENCES ` + s.relation("namespaces") + `(name) ON DELETE CASCADE,
+ position bigint NOT NULL, table_name text NOT NULL, drop_generation bigint NOT NULL,
+ row_id bigint NOT NULL, kind text NOT NULL CHECK(kind IN ('insert','update','delete')),
+ created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ PRIMARY KEY(namespace,position))`,
+	} {
+		if _, err := tx.Exec(ctx, stmt); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec(ctx, "UPDATE "+s.relation("version")+" SET version = $1", catalogVersion); err != nil {
 		return err

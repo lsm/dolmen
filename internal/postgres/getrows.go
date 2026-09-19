@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -62,7 +61,7 @@ func (s *Store) GetRows(ctx context.Context, ns, table string, ids []int64, scop
 			for i, f := range fields {
 				v := raw[i]
 				if f.Type == schema.Number && v != nil && i >= 2 {
-					v, err = value.Coerce(f, json.Number(v.(string)))
+					v, err = decodeNumber(f, v.(string))
 					if err != nil {
 						return fmt.Errorf("%w: column %q contains an invalid number", store.ErrInvalid, f.Name)
 					}

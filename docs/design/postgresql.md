@@ -119,13 +119,31 @@ SQLite contract, including truncation and rejection of an oversized first row.
 Reads hold the namespace lifetime lock and reject stale supplied incarnations.
 Nonempty row scopes still fail closed until authorization is implemented.
 
-Row writes are not yet exposed. PostgreSQL read fixtures seed physical rows directly;
-shared conformance covers empty pages, ID limits, and missing resources until the
-write slice enables the complete round-trip matrix.
+`Insert` now supplies typed round-trip fixtures in shared SQLite/PostgreSQL
+conformance. Direct physical-row fixtures still exercise malformed/oversized data.
+
+## Transactional inserts (implemented internally)
+
+Catalog version 3 adds durable change records and idempotency results. Inserts commit
+rows, embedding metadata, the namespace change counter, change records, and retry
+results atomically. Change positions serialize across independent processes using the
+namespace row lock; PostgreSQL identity sequences assign row IDs only, so aborted
+inserts may leave row-ID gaps without consuming change positions.
+
+Retry keys bind to the table lifetime and normalized request body. Matching retries
+return the original IDs without generating new changes or calling an embedding
+provider. A dropped/recreated table has a fresh retry domain. Authorization options
+still fail closed. Timestamp defaults are evaluated at write time.
+
+Embedding work runs outside transactions. Before writing, the adapter rechecks the
+namespace/table lifetime and schema, retries schema changes up to three times, and
+rejects table replacement. Shared embedding validation rejects mismatched spaces,
+invalid dimensions, and non-finite vectors. Durable replay and retention APIs follow
+separately; the initial change log is retained until namespace deletion.
 
 ## Remaining implementation sequence
 
-1. Insert/update/delete/upsert with idempotency and durable change records in the same
+1. Update/delete/upsert with idempotency and durable change records in the same
    namespace-serialized transaction. Normalize PostgreSQL SQLSTATE errors to dolmen's
    taxonomy; preserve integer and JSON fidelity fixtures.
 2. Caller query confinement and schema migrations. Resolve placeholder/operator
@@ -151,7 +169,7 @@ Against a disposable PostgreSQL database:
 export DOLMEN_TEST_PG_DSN='postgres://user:password@127.0.0.1:5432/dolmen_test?sslmode=disable'
 export DOLMEN_TEST_PG_REQUIRED=1
 go test -race -count=1 ./internal/postgres
-go test -race -count=1 ./internal/conformance -run '^Test(Namespace|Table|RowRead)BackendConformance$'
+go test -race -count=1 ./internal/conformance -run '^Test(Namespace|Table|RowRead|Insert)BackendConformance$'
 ```
 
 Without the test DSN, PostgreSQL integration tests skip during ordinary SQLite-only
