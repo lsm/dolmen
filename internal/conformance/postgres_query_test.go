@@ -57,6 +57,30 @@ func TestQueryBackendConformance(t *testing.T) {
 			if _, err := eng.Query(ctx, "app", "SELECT "+strings.TrimSuffix(strings.Repeat("?,", len(args)), ","), args, [16]byte{}, store.Page{}); !errors.Is(err, store.ErrInvalid) {
 				t.Fatalf("parameter cap: %v", err)
 			}
+			if _, err := eng.Query(ctx, "app", "SELECT '"+strings.Repeat("é", store.MaxQueryRunes)+"'", nil, [16]byte{}, store.Page{}); !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("query length cap: %v", err)
+			}
+			if _, err := eng.CreateTable(ctx, "app", "vectors_two", []schema.Field{{Name: "v", Type: schema.Vector, Dim: 2}}, store.TableOpts{}, [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := eng.CreateTable(ctx, "app", "vectors_three", []schema.Field{{Name: "v", Type: schema.Vector, Dim: 3}}, store.TableOpts{}, [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := eng.Insert(ctx, "app", "vectors_two", []map[string]any{{"v": []float64{1, 2}}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := eng.Insert(ctx, "app", "vectors_three", []map[string]any{{"v": []float64{1, 2, 3}}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+				t.Fatal(err)
+			}
+			result, err = eng.Query(ctx, "app", "SELECT v FROM vectors_two UNION ALL SELECT v FROM vectors_three", nil, [16]byte{}, store.Page{})
+			if err != nil || len(result.Rows) != 2 {
+				t.Fatalf("mixed vector dimensions: %+v %v", result, err)
+			}
+			for _, row := range result.Rows {
+				if _, ok := row["v"].([]float64); !ok {
+					t.Fatalf("mixed vector result is %T, want []float64", row["v"])
+				}
+			}
 		})
 	}
 }

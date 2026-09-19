@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lsm/dolmen/internal/ops"
 	"github.com/lsm/dolmen/internal/schema"
@@ -993,6 +994,9 @@ var Ops = map[string]OpDef{
 			var req queryReq
 			if err := decodeData(body, &req); err != nil {
 				return nil, err
+			}
+			if utf8.RuneCountInString(req.SQL) > store.MaxQueryRunes {
+				return nil, badRequest("sql exceeds %d characters", store.MaxQueryRunes)
 			}
 			ns := normNS(req.Namespace)
 			res, err := s.eng.Query(ctx, ns, req.SQL, req.Args, [16]byte{},

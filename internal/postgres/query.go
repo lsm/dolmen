@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -35,7 +36,7 @@ func queryError(ctx context.Context, err error) error {
 	case pgerr.Code == "57014":
 		code = derr.Canceled
 		message = "PostgreSQL statement timed out; narrow the query or reduce its work"
-	case pgerr.Code == "42501":
+	case pgerr.Code == "42501" || pgerr.Code == "28000":
 		code = derr.Forbidden
 		message = "PostgreSQL query is not permitted by the namespace role"
 	case pgerr.Code == "23505":
@@ -68,8 +69,12 @@ func queryProjection(names *sqlNames) map[string]schema.Field {
 	ambiguous := map[string]bool{}
 	for _, table := range names.tables {
 		for _, field := range table.schema.Fields {
-			if previous, ok := fields[field.Name]; ok && (previous.Type != field.Type || previous.Dim != field.Dim) {
-				ambiguous[field.Name] = true
+			if previous, ok := fields[field.Name]; ok {
+				if previous.Type != field.Type {
+					ambiguous[field.Name] = true
+				} else if field.Type == schema.Vector && previous.Dim != field.Dim {
+					field.Dim = 0
+				}
 			}
 			fields[field.Name] = field
 		}
@@ -197,6 +202,9 @@ func (s *Store) Query(ctx context.Context, ns, input string, args []any, expecte
 	if page.Offset < 0 {
 		return store.QueryResult{}, sqlRejected("query offset must not be negative")
 	}
+	if utf8.RuneCountInString(input) > store.MaxQueryRunes {
+		return store.QueryResult{}, sqlRejected("query exceeds %d characters", store.MaxQueryRunes)
+	}
 	if len(args) > 100 {
 		return store.QueryResult{}, sqlRejected("too many query parameters")
 	}
@@ -222,10 +230,10 @@ func (s *Store) Query(ctx context.Context, ns, input string, args []any, expecte
 			return err
 		}
 		if _, err := tx.Exec(ctx, "SET TRANSACTION READ ONLY"); err != nil {
-			return err
+			return queryError(ctx, err)
 		}
 		if err := enterQueryRole(ctx, tx, s.queryRole); err != nil {
-			return err
+			return queryError(ctx, err)
 		}
 		limit := page.Limit
 		if limit <= 0 {

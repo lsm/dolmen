@@ -172,7 +172,7 @@ Embedding calls run before the write transaction, and the table lifetime and sch
 are rechecked before committing. Rows, embedding metadata, and insert-then-update
 change records commit atomically. Authorization-bearing options still fail closed.
 
-## Caller SQL boundary (integration validation pending)
+## Caller SQL boundary
 
 The implementation parses PostgreSQL syntax with the pinned `wasilibs/go-pgquery`
 WebAssembly parser, which preserves the no-cgo build. It accepts one SELECT/read-only
@@ -228,7 +228,10 @@ with dolmen and no service is started by opening a store.
 Against a disposable PostgreSQL database:
 
 ```sh
-export DOLMEN_TEST_PG_DSN='postgres://user:password@127.0.0.1:5432/dolmen_test?sslmode=disable'
+export DOLMEN_TEST_PG_ADMIN_DSN='postgres://admin:password@127.0.0.1:5432/dolmen_test?sslmode=disable'
+psql "$DOLMEN_TEST_PG_ADMIN_DSN" -c "CREATE ROLE dolmen_query NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS; CREATE ROLE dolmen_backend LOGIN PASSWORD 'backend-test'; GRANT dolmen_query TO dolmen_backend WITH INHERIT FALSE, SET TRUE; GRANT CONNECT, CREATE ON DATABASE dolmen_test TO dolmen_backend"
+export DOLMEN_TEST_PG_DSN='postgres://dolmen_backend:backend-test@127.0.0.1:5432/dolmen_test?sslmode=disable'
+export DOLMEN_TEST_PG_QUERY_ROLE=dolmen_query
 export DOLMEN_TEST_PG_REQUIRED=1
 go test -race -count=1 ./internal/postgres
 go test -race -count=1 ./internal/conformance -run '^Test(Namespace|Table|RowRead|Insert|Changes|KeyUpsert|Query)BackendConformance$'
