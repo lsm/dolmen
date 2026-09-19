@@ -334,9 +334,15 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
+			if err := s.requireNamespaceVisible(ctx, ns); err != nil {
+				return nil, err
+			}
 			tables, err := s.eng.ListTables(ctx, ns, nil)
 			if err != nil {
 				return nil, wrapStoreErr(err)
+			}
+			if tables, err = s.visibleTables(ctx, ns, tables); err != nil {
+				return nil, err
 			}
 			if tables == nil {
 				tables = []string{}
@@ -387,6 +393,9 @@ var Ops = map[string]OpDef{
 			nss, err := s.eng.ListNamespaces(ctx, prefix, nil)
 			if err != nil {
 				return nil, wrapStoreErr(err)
+			}
+			if nss, err = s.visibleNamespaces(ctx, nss); err != nil {
+				return nil, err
 			}
 			if nss == nil {
 				nss = []string{}
@@ -458,6 +467,9 @@ var Ops = map[string]OpDef{
 			if err := s.eng.DropNamespace(ctx, ns, [16]byte{}); err != nil {
 				return nil, wrapStoreErr(err)
 			}
+			if err := s.dropNamespaceGrants(ctx, ns); err != nil {
+				return nil, err
+			}
 			return map[string]any{"dropped": ns}, nil
 		},
 	},
@@ -494,6 +506,9 @@ var Ops = map[string]OpDef{
 			ns := normNS(req.Namespace)
 			if err := s.eng.DropTable(ctx, ns, table, store.Incarnation{}); err != nil {
 				return nil, wrapStoreErr(err)
+			}
+			if err := s.dropTableGrants(ctx, ns, table); err != nil {
+				return nil, err
 			}
 			return map[string]any{"dropped": table}, nil
 		},
@@ -672,7 +687,7 @@ var Ops = map[string]OpDef{
 				}
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
+			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			sc, err := s.eng.CreateTable(ctx, ns, normTable(req.Table), req.Fields, store.TableOpts{}, [16]byte{})
@@ -804,7 +819,7 @@ var Ops = map[string]OpDef{
 			}
 
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
+			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			res, err := s.eng.Insert(ctx, ns, normTable(req.Table), req.Records,
@@ -869,7 +884,7 @@ var Ops = map[string]OpDef{
 				return nil, badRequest("on must name at least one key field")
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
+			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			res, err := s.eng.UpsertByKey(ctx, ns, normTable(req.Table), req.On, req.Records,
@@ -1417,7 +1432,7 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
+			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			res, err := s.eng.Delete(ctx, ns, normTable(req.Table), req.Filter, req.Args, store.DeleteOptions{
@@ -1478,7 +1493,7 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
+			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			res, err := s.eng.Update(ctx, ns, normTable(req.Table), req.Filter, req.Args, req.Set,
@@ -1534,7 +1549,7 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
+			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			res, err := s.eng.Upsert(ctx, ns, normTable(req.Table), req.Filter, req.Args, req.Set,
@@ -1706,7 +1721,7 @@ var Ops = map[string]OpDef{
 				ver = *req.ExpectedVersion
 			}
 			ns := normNS(req.Namespace)
-			if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
+			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			if req.DryRun {

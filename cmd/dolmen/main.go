@@ -73,7 +73,13 @@ func run() error {
 		return err
 	}
 
-	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithMaxSubscriptionAge(cfg.MaxSubscriptionAge), api.WithAuth(cfg.Auth))
+	grants, err := openGrantRegistry(cfg)
+	if err != nil {
+		return err
+	}
+	defer grants.Close()
+
+	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithMaxSubscriptionAge(cfg.MaxSubscriptionAge), api.WithAuth(cfg.Auth), api.WithGrants(grants))
 	mcpSrv := newMCPServer(cfg, apiSrv)
 
 	sub := http.NewServeMux()
@@ -177,6 +183,21 @@ func newEmbedProvider(cfg *config) (embed.Provider, error) {
 		}
 	}
 	return emb, nil
+}
+
+func openGrantRegistry(cfg *config) (*auth.Registry, error) {
+	if !cfg.Auth.On() {
+		return nil, nil
+	}
+	r, err := auth.OpenRegistry(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.Auth.CheckRootAdministrator(context.Background(), r); err != nil {
+		r.Close()
+		return nil, err
+	}
+	return r, nil
 }
 
 func logAuthPosture(a *auth.Authenticator) {

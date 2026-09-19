@@ -479,19 +479,66 @@ principal is a `401`, never a silently weakened identity. A bearer credential
 outranks an asserted header, and an invalid bearer is refused rather than
 falling back to the header identity.
 
-**Asserted identities authenticate but are not yet granted anything.** Until the
-grant ops land, a proxied caller gets `403 forbidden`: the server knows who they
-are and has nothing to authorize them for. That is deny-by-default working as
-intended, not a configuration error — it is why this mode is safe to enable
-early. Only the admin key has access today.
+### Permissions
 
-**What this mode is and is not.** The admin key authenticates one principal,
-`dolmen-admin`, which holds administrative access to everything. It is a shared
-credential protecting the whole server — useful for putting a personal instance
-somewhere other than loopback, not a multi-user system. Per-user identities,
-API keys, and per-namespace permissions are the next slices of the auth work;
-see `docs/design/identity-and-engines.md`. Until they land there is no `403`
-path, because there is only one identity.
+An authenticated caller starts with nothing. Access comes from **grants**: a
+subject (a principal or a group) gets **verbs** on an **object** (a namespace, a
+table, or `*` for the whole server).
+
+The six verbs are `create`, `read`, `update`, `delete`, `schema`, and `admin`.
+They are CRUD-shaped on purpose — an append-only table is `create` without
+`update` or `delete`, which a bundled "write" permission could not express.
+
+```bash
+# The bootstrap admin key can grant. Give a group read access to a namespace:
+curl -sS http://localhost:8790/v1/grant \
+  -H "Authorization: Bearer $DOLMEN_ADMIN_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"subject":{"type":"group","id":"team-a"},
+       "object":{"namespace":"acme"},
+       "verbs":["read"]}'
+```
+
+Grants inherit **downward**: a grant on `acme` covers every table in it and
+every namespace under it; `*` covers everything. They never inherit upward — a
+grant on one table says nothing about its namespace or its siblings. A caller's
+effective verbs are the union of every grant matching their principal and every
+grant matching any of their groups, over the object and everything covering it.
+There are no deny grants and no precedence — only union.
+
+Grants are idempotent by (subject, object): re-granting merges new verbs into
+the existing grant and keeps its `created_at`. `revoke` takes explicit verbs,
+never an implicit "all", and the grant disappears when its last verb goes.
+Dropping a namespace or table removes the grants targeting it.
+
+A few rules worth knowing:
+
+- **Authorization precedes existence.** An ungranted caller gets `403` whether
+  or not the object exists, and `list_tables` on a namespace they hold nothing
+  under answers `404` — so neither can be used to enumerate names.
+- **`query` needs `read` on the whole namespace**, not one table: raw SQL can
+  reference any table in it.
+- **`drop_table` needs `admin` as well as `schema`**, because dropping a table
+  deletes the grants targeting it, and changing what others may do is `admin`.
+- **Implicit namespace creation is off** when auth is on. A write to a namespace
+  that does not exist answers `404` instead of creating it, which would bypass
+  the `admin` grant on the parent.
+- **Grant-free ops still work**: `describe_server`, `capabilities`,
+  `infer_schema`, `whoami`, and `list_namespaces` (which lists only what the
+  caller can reach).
+
+After a `403`, `whoami` reports the principal, groups, and identity source the
+request authenticated as — enough to ask an administrator for the right grant.
+
+**Bootstrapping and handing over.** The admin key exists to mint the first real
+administrators, not to reign. Grant `admin` on `*` to a principal, then remove
+`DOLMEN_ADMIN_KEY` from the environment and restart: the bootstrap identity
+disappears while the grants persist. Revoking the last root administrator is
+refused while no replacement exists, and setting `DOLMEN_ADMIN_KEY` again always
+recovers a locked-out deployment.
+
+**Not yet built:** per-row ownership (`row_access`), API keys, and native OIDC.
+The design for all three is in `docs/design/identity-and-engines.md`.
 
 `dolmen mcp` (the stdio transport) refuses to start with `-auth on`: a pipe
 carries no per-request credential, and treating whoever launched the subprocess

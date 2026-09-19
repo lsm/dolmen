@@ -37,6 +37,7 @@ type Server struct {
 	holdReplay         func()
 	proxyAdviceOnce    sync.Once
 	authn              *auth.Authenticator
+	grants             *auth.Registry
 }
 
 type Option func(*Server)
@@ -68,6 +69,12 @@ func WithKeepaliveInterval(d time.Duration) Option {
 func WithAuth(a *auth.Authenticator) Option {
 	return func(s *Server) {
 		s.authn = a
+	}
+}
+
+func WithGrants(r *auth.Registry) Option {
+	return func(s *Server) {
+		s.grants = r
 	}
 }
 
@@ -456,9 +463,12 @@ func OpNames() []string {
 }
 
 func (s *Server) Dispatch(ctx context.Context, op string, body []byte) (any, error) {
-	def, ok := Ops[op]
+	def, ok := s.Op(op)
 	if !ok {
 		return nil, notFound("unknown operation %q", op)
+	}
+	if err := s.authorizeOp(ctx, op, body); err != nil {
+		return nil, err
 	}
 	res, err := def.Func(ctx, s, body)
 	if err != nil {
@@ -541,7 +551,7 @@ func (s *Server) Handler() http.Handler {
 			writeError(w, r, notFound("unknown operation"))
 			return
 		}
-		if _, ok := Ops[op]; !ok {
+		if _, ok := s.Op(op); !ok {
 			writeError(w, r, notFound("unknown operation"))
 			return
 		}
@@ -583,9 +593,6 @@ func (s *Server) Authenticated(r *http.Request) (*http.Request, error) {
 	}
 	id, err := s.authn.Authenticate(r)
 	if err != nil {
-		return nil, err
-	}
-	if err := s.authn.Authorize(id); err != nil {
 		return nil, err
 	}
 	return r.WithContext(auth.WithIdentity(r.Context(), id)), nil

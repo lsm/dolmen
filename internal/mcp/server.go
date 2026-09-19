@@ -36,6 +36,10 @@ type Server struct {
 }
 
 var toolAnnotations = map[string]map[string]any{
+	"whoami":      {"title": "Who am I", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"grant":       {"title": "Grant access", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"revoke":      {"title": "Revoke access", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
+	"list_grants": {"title": "List grants", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"list_tables":     {"title": "List tables", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"list_namespaces": {"title": "List namespaces", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"create_namespace": {"title": "Create namespace", "readOnlyHint": false, "destructiveHint": false,
@@ -275,8 +279,8 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage, instr string) (any,
 			}
 		}
 		tools := make([]map[string]any, 0)
-		for _, name := range api.OpNames() {
-			def := api.Ops[name]
+		for _, name := range s.api.OpNames() {
+			def, _ := s.api.Op(name)
 			tool := map[string]any{
 				"name":        name,
 				"description": def.Description,
@@ -316,7 +320,7 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage, instr string) (any,
 				return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "tools/call arguments must be an object"}
 			}
 		}
-		if _, known := api.Ops[params.Name]; !known {
+		if _, known := s.api.Op(params.Name); !known {
 			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: fmt.Sprintf("unknown tool %q", params.Name)}
 		}
 		res, err := s.api.Dispatch(ctx, params.Name, args)

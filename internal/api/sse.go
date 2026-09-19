@@ -42,6 +42,11 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := s.authorizeFeed(r.Context(), q.Get("namespace"), table); err != nil {
+		writeError(w, r, WrapError(err))
+		return
+	}
+
 	cursor := store.Cursor("")
 	if q.Has("cursor") {
 		c := q.Get("cursor")

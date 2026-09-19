@@ -1,14 +1,12 @@
 package auth
 
 import (
-	"errors"
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/lsm/dolmen/internal/derr"
 )
 
 func proxies(t *testing.T, raw string) []*net.IPNet {
@@ -149,23 +147,6 @@ func TestBearerOutranksAssertedHeaders(t *testing.T) {
 	}
 }
 
-func TestAuthorizeGrantsOnlyTheAdminPrincipal(t *testing.T) {
-	a := gatewayAuth(t, "127.0.0.0/8", 0)
-	if err := a.Authorize(Identity{Principal: AdminPrincipal}); err != nil {
-		t.Fatalf("admin principal refused: %v", err)
-	}
-	err := a.Authorize(Identity{Principal: "alice", Groups: []string{"admins"}})
-	if err == nil {
-		t.Fatal("an ungranted principal was authorized")
-	}
-	if !errors.Is(err, derr.ErrForbidden) {
-		t.Fatalf("code is not forbidden: %v", err)
-	}
-	if strings.Contains(err.Error(), "alice") || strings.Contains(err.Error(), "admins") {
-		t.Fatalf("the forbidden message echoes caller-supplied identity: %v", err)
-	}
-}
-
 func TestAuthOffIgnoresTrustedProxies(t *testing.T) {
 	a, err := New(Config{Mode: ModeOff, TrustedProxies: proxies(t, "127.0.0.0/8")})
 	if err != nil {
@@ -178,18 +159,38 @@ func TestAuthOffIgnoresTrustedProxies(t *testing.T) {
 	if !id.Empty() {
 		t.Fatalf("auth off produced identity %+v", id)
 	}
-	if err := a.Authorize(Identity{Principal: "alice"}); err != nil {
-		t.Fatalf("auth off authorized nothing: %v", err)
-	}
 }
 
-func TestTrustedProxiesWithoutAdminKeyIsStartupError(t *testing.T) {
-	_, err := New(Config{Mode: ModeOn, TrustedProxies: proxies(t, "127.0.0.0/8")})
+type fakeRootAdmins []Subject
+
+func (f fakeRootAdmins) RootAdmins(context.Context) ([]Subject, error) { return f, nil }
+
+func TestTrustedProxiesWithoutAdminKeyNeedsADurableRootGrant(t *testing.T) {
+	a, err := New(Config{Mode: ModeOn, TrustedProxies: proxies(t, "127.0.0.0/8")})
+	if err != nil {
+		t.Fatalf("auth on with a proxy source refused at construction: %v", err)
+	}
+	err = a.CheckRootAdministrator(context.Background(), fakeRootAdmins(nil))
 	if err == nil {
-		t.Fatal("auth on with only a trusted-proxy source started")
+		t.Fatal("no admin key and no root grant started")
 	}
 	if !strings.Contains(err.Error(), "root administrator") {
 		t.Fatalf("error does not name the missing administrator: %v", err)
+	}
+
+	if err := a.CheckRootAdministrator(context.Background(), fakeRootAdmins{{Type: SubjectGroup, ID: "admins"}}); err == nil {
+		t.Fatal("a group root grant satisfied the check, but membership is asserted per request and cannot be established at startup")
+	}
+	if err := a.CheckRootAdministrator(context.Background(), fakeRootAdmins{{Type: SubjectPrincipal, ID: "boss"}}); err != nil {
+		t.Fatalf("a durable principal root grant did not satisfy the check: %v", err)
+	}
+
+	withKey, err := New(Config{Mode: ModeOn, AdminKey: testKey})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if err := withKey.CheckRootAdministrator(context.Background(), fakeRootAdmins(nil)); err != nil {
+		t.Fatalf("the bootstrap key did not satisfy the check: %v", err)
 	}
 }
 
