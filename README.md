@@ -321,7 +321,7 @@ the release instead of relying on the Hub — the English default and the multil
 both packaged (see "Choosing an embedding model"):
 
 ```bash
-tag="v0.2.0"
+tag="v0.3.0"
 curl -LO "https://github.com/lsm/dolmen/releases/download/${tag}/dolmen-model-all-MiniLM-L6-v2-${tag}.tar.gz"
 # and/or, for mixed-language/CJK data (~270 MB):
 curl -LO "https://github.com/lsm/dolmen/releases/download/${tag}/dolmen-model-multilingual-e5-small-${tag}.tar.gz"
@@ -404,6 +404,10 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 | `-engine` | `DOLMEN_ENGINE` | `sqlite` | Storage engine. `sqlite` is the default and currently the only engine; unknown values are rejected with an error |
 | `-version` | — | — | Print version and exit |
 | `-prefix` | `DOLMEN_PREFIX` | — | Mount all endpoints (`/healthz`, `/version`, `/skills*`, `/v1/*`, `/mcp`) under this URL prefix. Use with a pass-through proxy that forwards the full path |
+| `-base-url` | `DOLMEN_BASE_URL` | — | Public base URL for the links rendered into the skills manifest, the skill markdown, and the MCP `initialize` instructions. Default: derive from the request `Host` and forwarded headers. Refused when it ends with `-prefix` |
+| `-change-retention` | `DOLMEN_CHANGE_RETENTION` | `168h` | Change-log retention for `changes_since` / `wait_for` / `subscribe`. `0` disables pruning (records and cursors never expire); otherwise `1h` to `2160h` |
+| `-max-subscription-age` | `DOLMEN_MAX_SUBSCRIPTION_AGE` | `30m` | `subscribe` connection age bound: the stream teaching-closes at the bound and the client reconnects from its cursor. `0` disables the bound; otherwise `1s` to `24h` |
+| — | `DOLMEN_SKILL_NAMESPACE_HINT` | built-in default | Hint text rendered into the served skill markdown |
 | — | `DOLMEN_ALLOWED_ORIGINS` | — | Comma-separated allowed HTTP origins for CORS; `localhost`, `127.0.0.1`, and `::1` are always allowed |
 | — | `DOLMEN_EMBED_PROVIDER` | `local` | Embedding provider: `local` (built-in in-process embeddings via [rembed](https://github.com/rostamlabs/rembed), default), `openai` (any OpenAI-compatible endpoint), or `none` (caller supplies vectors). Unknown values produce an error |
 | — | `DOLMEN_EMBED_BASE_URL` | `https://api.openai.com/v1` | Base URL for an OpenAI-compatible provider |
@@ -695,7 +699,7 @@ atomically with your side effects rather than deduplicating on frame content.
 | `search_fulltext` | FTS5 MATCH over `fulltext` fields, relevance-ordered, typed results; optional `filter` + `args` restrict rows before ranking |
 | `search_vector` | Cosine KNN; `text` (server embeds; searches only the vectorize `_embedding` space) or raw `vector` (any vector column, caller owns the space); optional `filter` + `args` and `min_score` threshold; results carry `_score` and `skipped_vectors` |
 | `changes_since` | Replay the namespace's durable change log: changes committed after a cursor, in commit order, as a bounded page plus `next_cursor`. No cursor = start at the current head (future commits only); `"begin"` = retained history; optional `table` filters to that table's current lifetime. Changes carry `cursor`/`table`/`row_id`/`kind` only |
-| `wait_for` | Long-poll the change feed: block until a change commits after the cursor or `timeout_ms` elapses (default 30000, max 60000, `0` = immediate conditional poll), then return exactly a `changes_since` page. A timeout is an empty page carrying the unchanged `next_cursor` — never an error; pass it back in to keep waiting. A wait never creates its namespace: a missing one is `not_found` |
+| `wait_for` | Long-poll the change feed: block until a change commits after the cursor or `timeout_ms` elapses (default 30000, max 60000, `0` = immediate conditional poll), then return exactly a `changes_since` page. A timeout is an empty page carrying the unchanged `next_cursor` — never an error; pass it back in to keep waiting. |
 | `delete` | WHERE-filtered delete, cascades to search indexes |
 | `drop_table` | Drop a table — rows, search index, schema, history, idempotency keys; `confirm` must repeat the name |
 | `update` | WHERE-filtered field update; reindexes full-text rows and re-embeds changed vectorized fields |
@@ -708,8 +712,9 @@ atomically with your side effects rather than deduplicating on frame content.
 - **Namespace = one SQLite file** (`data/<ns>.db`, WAL). Isolation is physical. Lifecycle is managed
   over the API: `list_namespaces`, `create_namespace`, and `drop_namespace` (which closes the server's
   own connections, then deletes the file and its WAL sidecars — `confirm` must repeat the namespace
-  name, and any later data-op use of the name recreates the namespace empty (the realtime reads —
-  `wait_for`, the `subscribe` stream (`/v1/subscribe`) — answer `not_found` until it is recreated);
+  name, and any later **write**-op use of the name recreates the namespace empty (every read —
+  including `wait_for` and the `subscribe` stream (`/v1/subscribe`) — answers `not_found` until it
+  is recreated);
   a namespace with child
   namespaces is refused, the error naming the descendant count — children are dropped first, never
   deleted implicitly). Safety caveat: drop coordinates
@@ -886,8 +891,10 @@ Every row has two implicit columns:
 Coercion and validation rules:
 
 - `number`: JSON numbers and Go numeric types become `int64` when integral and within the int64
-  range, otherwise `float64`. Unsigned Go integer values larger than `math.MaxInt64` are rejected;
-  integral JSON numbers outside the int64 range are stored as `float64` (precision loss).
+  range, otherwise `float64`. A JSON number outside the int64 range is stored as `float64`, which
+  loses precision — it is NOT rejected (`9223372036854775808` reads back as `9223372036854776000`).
+  The separate rejection of unsigned values larger than `math.MaxInt64` applies only to the Go
+  library, where the value arrives already typed.
 - `boolean`: stored as `0` or `1`; returned as `true`/`false`.
 - `timestamp`: stored as RFC3339/ISO strings with minimal canonicalization (whitespace trimmed,
   lowercase `t`/`z` uppercased; offsets and date-only/space-separated forms are preserved as
@@ -958,14 +965,19 @@ make image           # build a local container image
 Pushing a `vX.Y.Z` tag starts the `release` workflow:
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
+
+Bump the fallback in `internal/version/version.go` when the release line changes. Release binaries
+and the container image take their version from the tag via `-ldflags`; that constant is what a
+plain `go build` or `go install` reports, so leaving it stale makes source builds misreport
+themselves in `-version`, `GET /version`, MCP `serverInfo`, and the served-skill ETag.
 
 The workflow creates a GitHub Release with static binaries for `linux/darwin/windows` on `amd64/arm64`, a `SHA256SUMS` file, and an SPDX SBOM. It also builds and pushes a multi-arch (linux/amd64 and linux/arm64) container image to `ghcr.io/lsm/dolmen`:
 
 ```bash
-docker run --rm -it -p 127.0.0.1:8790:8790 -v dolmen-data:/data ghcr.io/lsm/dolmen:v0.2.0
+docker run --rm -it -p 127.0.0.1:8790:8790 -v dolmen-data:/data ghcr.io/lsm/dolmen:v0.3.0
 ```
 
 The image contains a single static Go binary in a `gcr.io/distroless/static` base. `/data` is exposed as a volume and is created by the container if not mounted. The default container command binds to `0.0.0.0:8790` so the port can be published from Docker. As with the native binary, keep this on a private network until authn/authz lands.
@@ -977,7 +989,7 @@ The image contains a single static Go binary in a `gcr.io/distroless/static` bas
 sha256sum -c --ignore-missing SHA256SUMS
 
 # Check the container image digest
-oras manifest fetch ghcr.io/lsm/dolmen:v0.2.0
+oras manifest fetch ghcr.io/lsm/dolmen:v0.3.0
 ```
 
 The `internal/conformance` package is the contract-conformance suite: black-box

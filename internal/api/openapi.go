@@ -9,7 +9,7 @@ import (
 
 const (
 	openAPIVersion = "3.1.0"
-	apiVersion     = "0.1.0"
+	apiVersion     = "0.3.0"
 )
 
 var writeDataSchema = objectSchema(false, map[string]any{
@@ -86,7 +86,12 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, &Error{Status: http.StatusMethodNotAllowed, Code: ErrCodeInvalid, Message: "use GET"})
 		return
 	}
+	if !s.UsableHost(r) {
+		writeError(w, r, errUnusableHost)
+		return
+	}
 	ctx := s.publicContext(r)
+	setPublicURLCacheHeaders(w)
 	writeJSON(w, http.StatusOK, s.OpenAPIDoc(ctx.BaseURL))
 }
 
@@ -108,6 +113,34 @@ func (s *Server) OpenAPIDoc(baseURL string) map[string]any {
 		}
 	}
 
+	paths["/v1/subscribe"] = map[string]any{
+		"get": map[string]any{
+			"operationId": "subscribe",
+			"summary": "Server-sent events over the namespace change feed: replay from an optional cursor, " +
+				"a ready frame at the replay-to-live boundary carrying the cursor a reconnect resumes from, " +
+				"then live change frames in commit order, with periodic keepalive comments on an idle stream. " +
+				"Unlike the POST operations this is a GET with query parameters and a text/event-stream body; " +
+				"a namespace that does not exist is an in-stream not_found error, and the stream never creates one.",
+			"parameters": []any{
+				queryParam("namespace", "Namespace whose change feed to stream", true, nsProp("")),
+				queryParam("table", "Optional table filter: stream only this table's current lifetime", false,
+					map[string]any{"type": "string", "pattern": `^[a-z][a-z0-9_]{0,63}$`}),
+				queryParam("cursor", "Resume token from a previous frame or page; \"begin\" replays retained history; omitted starts at the current head", false,
+					map[string]any{"type": "string", "minLength": 1}),
+			},
+			"responses": map[string]any{
+				"200": map[string]any{
+					"description": "An event stream of ready, change, and error frames",
+					"content": map[string]any{
+						"text/event-stream": map[string]any{
+							"schema": map[string]any{"type": "string"},
+						},
+					},
+				},
+			},
+		},
+	}
+
 	serverURL := "/"
 	if baseURL != "" {
 		serverURL = baseURL
@@ -124,6 +157,16 @@ func (s *Server) OpenAPIDoc(baseURL string) map[string]any {
 		},
 		"paths":      paths,
 		"components": components(),
+	}
+}
+
+func queryParam(name, desc string, required bool, schema map[string]any) map[string]any {
+	return map[string]any{
+		"name":        name,
+		"in":          "query",
+		"required":    required,
+		"description": desc,
+		"schema":      schema,
 	}
 }
 

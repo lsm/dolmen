@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"text/template"
 )
@@ -156,6 +157,19 @@ func ETag(name, version string, body []byte) string {
 	return "\"" + hex.EncodeToString(h.Sum(nil)[:16]) + "\""
 }
 
+func UsableRequestHost(r *http.Request, configured string) bool {
+	if configured != "" {
+		return true
+	}
+	if h := forwardedFirst(r.Header.Get("X-Forwarded-Host")); h != "" && validHost(h) {
+		return true
+	}
+	if fwd := parseForwarded(r.Header.Get("Forwarded")); r.Header.Get("X-Forwarded-Host") == "" && fwd.host != "" && validHost(fwd.host) {
+		return true
+	}
+	return validHost(r.Host)
+}
+
 func BaseURLFor(r *http.Request, configured string) string {
 	if configured != "" {
 		return strings.TrimRight(configured, "/")
@@ -164,18 +178,21 @@ func BaseURLFor(r *http.Request, configured string) string {
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	if p := r.Header.Get("X-Forwarded-Proto"); p != "" {
-		scheme = forwardedFirst(p)
+	if p := forwardedFirst(r.Header.Get("X-Forwarded-Proto")); validScheme(p) {
+		scheme = p
 	}
 	host := r.Host
-	if h := r.Header.Get("X-Forwarded-Host"); h != "" {
-		host = forwardedFirst(h)
+	if !validHost(host) {
+		host = "invalid-host.invalid"
+	}
+	if h := forwardedFirst(r.Header.Get("X-Forwarded-Host")); h != "" && validHost(h) {
+		host = h
 	}
 	if fwd := parseForwarded(r.Header.Get("Forwarded")); fwd.host != "" || fwd.proto != "" {
-		if r.Header.Get("X-Forwarded-Proto") == "" && fwd.proto != "" {
+		if r.Header.Get("X-Forwarded-Proto") == "" && validScheme(fwd.proto) {
 			scheme = fwd.proto
 		}
-		if r.Header.Get("X-Forwarded-Host") == "" && fwd.host != "" {
+		if r.Header.Get("X-Forwarded-Host") == "" && fwd.host != "" && validHost(fwd.host) {
 			host = fwd.host
 		}
 	}
@@ -187,6 +204,10 @@ func BaseURLFor(r *http.Request, configured string) string {
 	}
 	return scheme + "://" + host + prefix
 }
+
+var PublicURLVaryHeader = strings.Join(append([]string{
+	"Host", "Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Forwarded-Prefix",
+}, originalURIHeaders...), ", ")
 
 var originalURIHeaders = []string{
 	"X-Forwarded-Uri",
@@ -297,6 +318,47 @@ func UnreachableBaseURL(base string) bool {
 
 const ProxyAdvice = "the public links dolmen advertises (the skills manifest, the skill markdown, openapi.json servers, and the MCP initialize instructions) are built from this request, and it arrived through a proxy that did not say what the public URL is; set DOLMEN_BASE_URL to the full public URL, or have the proxy send Host/X-Forwarded-Host, X-Forwarded-Proto, and X-Forwarded-Prefix (nginx defaults Host to the upstream address and never sends X-Forwarded-Prefix on its own)"
 
+var hostLabelRe = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$`)
+
+var ipv6LiteralRe = regexp.MustCompile(`^\[[0-9A-Fa-f:.]{2,45}\]$`)
+
+func validScheme(s string) bool {
+	return s == "http" || s == "https"
+}
+
+func validPort(s string) bool {
+	if len(s) < 2 || len(s) > 6 || s[0] != ':' {
+		return false
+	}
+	for _, c := range s[1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func validHost(h string) bool {
+	if h == "" || len(h) > 260 {
+		return false
+	}
+	if strings.HasPrefix(h, "[") {
+		end := strings.LastIndex(h, "]")
+		if end < 0 || !ipv6LiteralRe.MatchString(h[:end+1]) {
+			return false
+		}
+		rest := h[end+1:]
+		return rest == "" || validPort(rest)
+	}
+	if i := strings.LastIndex(h, ":"); i >= 0 {
+		if !validPort(h[i:]) {
+			return false
+		}
+		h = h[:i]
+	}
+	return hostLabelRe.MatchString(h)
+}
+
 func forwardedFirst(v string) string {
 	for _, p := range strings.Split(v, ",") {
 		p = strings.TrimSpace(p)
@@ -328,6 +390,13 @@ func publicBase(base, prefix string) string {
 	return base + prefix
 }
 
+const (
+	MaxPrefixBytes    = 128
+	MaxPrefixSegments = 8
+)
+
+var prefixSegmentRe = regexp.MustCompile(`^[A-Za-z0-9._~:@-]+$`)
+
 func NormalizePrefix(v string) string {
 	v = strings.TrimSpace(v)
 	v = strings.TrimRight(v, "/")
@@ -336,6 +405,18 @@ func NormalizePrefix(v string) string {
 	}
 	if !strings.HasPrefix(v, "/") {
 		v = "/" + v
+	}
+	if len(v) > MaxPrefixBytes {
+		return ""
+	}
+	segments := strings.Split(strings.TrimPrefix(v, "/"), "/")
+	if len(segments) > MaxPrefixSegments {
+		return ""
+	}
+	for _, seg := range segments {
+		if seg == "" || seg == "." || seg == ".." || !prefixSegmentRe.MatchString(seg) {
+			return ""
+		}
 	}
 	return v
 }

@@ -283,13 +283,13 @@ func parseChangesFeed(tableRaw, cursorRaw, limitRaw json.RawMessage) (table, cur
 	return table, cursor, limit, nil
 }
 
-func runChangesSince(ctx context.Context, s *Server, ns, table, cursor string, limit int) ([]store.ChangeRecord, store.Cursor, error) {
+func runChangesSince(ctx context.Context, s *Server, op, ns, table, cursor string, limit int) ([]store.ChangeRecord, store.Cursor, error) {
 	records, next, err := s.eng.ChangesSince(ctx, ns, table, store.Cursor(cursor),
 		[16]byte{}, nil, store.Incarnation{}, store.Page{Limit: limit})
 	if err != nil {
 
 		if errors.Is(err, store.ErrCursorExpired) {
-			return nil, "", badRequest("cursor is unknown or past the change-log retention window (-change-retention, default 168h); catch up by calling changes_since with no cursor to resume from the current head, or with cursor \"begin\" to replay retained history")
+			return nil, "", badRequest("cursor is unknown or past the change-log retention window (-change-retention, default 168h); catch up by calling %s with no cursor to resume from the current head, or with cursor \"begin\" to replay retained history", op)
 		}
 		if errors.Is(err, store.ErrCursorCrossFeed) {
 			return nil, "", badRequest("cursor was minted on a different feed (a specific table's, or the namespace-wide feed); pass it only to the feed you received it from — honoring it elsewhere would silently skip events — or start fresh with no cursor / \"begin\"")
@@ -426,7 +426,7 @@ var Ops = map[string]OpDef{
 		Description: "Drop a namespace and every table in it, deleting its SQLite file and WAL sidecars. " +
 			"Irreversible. confirm must repeat the namespace name — a guard against dropping the wrong one " +
 			"(it normalizes like the namespace itself, so case and surrounding whitespace don't matter). " +
-			"In-flight requests on the namespace finish first (or fail); any later data-op use of the same name recreates " +
+			"In-flight requests on the namespace finish first (or fail); any later write-op use of the same name recreates " +
 			"the namespace empty — every read answers not_found until it is recreated. " +
 			"The server closes its own connections before deleting, but other processes " +
 			"holding the file open (a second dolmen, a backup tool) are not detected — coordinate drops within one server.",
@@ -1252,7 +1252,7 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			records, next, err := runChangesSince(ctx, s, ns, table, cursor, limit)
+			records, next, err := runChangesSince(ctx, s, "changes_since", ns, table, cursor, limit)
 			if err != nil {
 				return nil, err
 			}
@@ -1270,8 +1270,8 @@ var Ops = map[string]OpDef{
 			"pass next_cursor back in and keep waiting. Prefer this over polling changes_since in a loop — the " +
 			"server holds the wait, not your token budget. The teaching errors are changes_since's: a cursor that " +
 			"is unknown, past the change-log retention window, or minted on a different feed is rejected naming " +
-			"the catch-up path. Unlike the data ops, a wait never creates its namespace: a missing one is " +
-			"not_found — create it first, then wait.",
+			"the catch-up path. Like every read, a wait never creates its namespace: a missing one is " +
+			"not_found — create it first (create_namespace, or any write op), then wait.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -1326,7 +1326,7 @@ var Ops = map[string]OpDef{
 			for {
 
 				readCtx, cancel := context.WithTimeout(ctx, waitBudget(deadline))
-				records, next, err := runChangesSince(readCtx, s, ns, table, cursor, limit)
+				records, next, err := runChangesSince(readCtx, s, "wait_for", ns, table, cursor, limit)
 				cancel()
 				if err != nil {
 

@@ -102,7 +102,7 @@ func TestGoldenErrorContract(t *testing.T) {
 		{"list_migrations missing table", "list_migrations", map[string]any{"namespace": "errc", "table": "absent"}, 404, "not_found", `absent`},
 		{"query missing table", "query", map[string]any{"namespace": "errc", "sql": "SELECT * FROM absent"}, 404, "not_found", `absent`},
 
-		{"write sql rejected", "query", map[string]any{"namespace": "errc", "sql": "INSERT INTO t (title) VALUES ('x')"}, 400, "invalid_request", `only read-only SELECT/WITH statements are allowed`},
+		{"write sql rejected", "query", map[string]any{"namespace": "errc", "sql": "INSERT INTO t (title) VALUES ('x')"}, 400, "invalid_request", `^query must begin with SELECT or WITH \(got "INSERT"\); query is read-only`},
 		{"multiple statements rejected", "query", map[string]any{"namespace": "errc", "sql": "SELECT 1; SELECT 2"}, 400, "invalid_request", `multiple statements are not allowed`},
 		{"fts syntax error", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "don't"}, 400, "invalid_request", `fts5: syntax error`},
 		{"fts unknown column filter", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "nocol:x"}, 400, "invalid_request", `column "nocol" not found`},
@@ -646,4 +646,46 @@ func manyMaps(n int, build func(i int) map[string]any) []map[string]any {
 		out[i] = build(i)
 	}
 	return out
+}
+
+func TestQueryRejectionSeparatesTypoFromWrite(t *testing.T) {
+	h := newHarness(t)
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "qrej"})
+
+	for _, tc := range []struct{ name, sql, want string }{
+		{"typo", "SELEKT * FROM t", `^query must begin with SELECT or WITH \(got "SELEKT"\)`},
+		{"write", "DELETE FROM t WHERE 1=1", `^query must begin with SELECT or WITH \(got "DELETE"\)`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, out := h.httpCall("query", map[string]any{"namespace": "qrej", "sql": tc.sql})
+			if status != 400 {
+				t.Fatalf("status %d, want 400: %v", status, out)
+			}
+			msg := out["error"].(map[string]any)["message"].(string)
+			wantMessage(t, tc.name, msg, tc.want)
+			if !strings.Contains(msg, "typo") {
+				t.Fatalf("the rejection must mention that a misspelled keyword lands here too, got %q", msg)
+			}
+		})
+	}
+}
+
+func TestRequestDerivedDocumentsAreNotSharedCacheable(t *testing.T) {
+	h := newHarness(t)
+	for _, path := range []string{"/skills", "/skills/dolmen", "/skills/dolmen-admin", "/v1/openapi.json"} {
+		res, err := http.Get(h.srv.URL + path)
+		if err != nil {
+			t.Fatalf("get %s: %v", path, err)
+		}
+		res.Body.Close()
+		if got := res.Header.Get("Cache-Control"); got != "private, no-store" {
+			t.Errorf("%s Cache-Control = %q, want \"private, no-store\" — this document embeds a request-derived public URL", path, got)
+		}
+		vary := res.Header.Get("Vary")
+		for _, want := range []string{"Host", "X-Forwarded-Host", "X-Original-Uri"} {
+			if !strings.Contains(vary, want) {
+				t.Errorf("%s Vary = %q, missing %q", path, vary, want)
+			}
+		}
+	}
 }

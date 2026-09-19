@@ -77,6 +77,16 @@ func New(eng store.Engine, emb embed.Provider, opts ...Option) *Server {
 	return s
 }
 
+func setPublicURLCacheHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("Vary", skill.PublicURLVaryHeader)
+}
+
+var errUnusableHost = &Error{
+	Status: http.StatusBadRequest, Code: ErrCodeInvalid,
+	Message: "the request Host header is not a usable host name, and this response would have to quote it back as this server's public URL; send a valid Host, have the proxy send X-Forwarded-Host, or set DOLMEN_BASE_URL",
+}
+
 func (s *Server) publicContext(r *http.Request) skill.Context {
 	ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version, s.prefix)
 	if s.baseURL == "" && skill.Proxied(r) && skill.UnreachableBaseURL(ctx.BaseURL) {
@@ -333,6 +343,9 @@ func decodeData(body []byte, v any) error {
 			return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: uf.Error(), Cause: uf}
 		}
 		if tm, ok := asTypeMismatch(err); ok {
+			if tErr := dec.Decode(&struct{}{}); tErr != io.EOF {
+				return badRequest("unexpected trailing content after JSON body")
+			}
 			return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: tm.Error(), Cause: tm}
 		}
 		return badRequest("invalid JSON: %v", err)
@@ -549,6 +562,10 @@ func (s *Server) handleSkillsManifest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, &Error{Status: http.StatusMethodNotAllowed, Code: ErrCodeInvalid, Message: "use GET"})
 		return
 	}
+	if !s.UsableHost(r) {
+		writeError(w, r, errUnusableHost)
+		return
+	}
 	ctx := s.publicContext(r)
 	manifest, err := skill.ManifestJSON(ctx)
 	if err != nil {
@@ -569,6 +586,10 @@ func (s *Server) handleSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, notFound("unknown skill %q", name))
 		return
 	}
+	if !s.UsableHost(r) {
+		writeError(w, r, errUnusableHost)
+		return
+	}
 	ctx := s.publicContext(r)
 	body, err := skill.Render(name, ctx)
 	if err != nil {
@@ -586,6 +607,7 @@ func (s *Server) serveSkillBytes(w http.ResponseWriter, r *http.Request, body []
 	etag := skill.ETag(name, version.Version, body)
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Content-Type", contentType)
+	setPublicURLCacheHeaders(w)
 	if etagMatch(r, etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
@@ -653,4 +675,8 @@ func writeJSONStatus(w http.ResponseWriter, status int, v any) {
 
 func (s *Server) PublicContext(r *http.Request) skill.Context {
 	return s.publicContext(r)
+}
+
+func (s *Server) UsableHost(r *http.Request) bool {
+	return skill.UsableRequestHost(r, s.baseURL)
 }

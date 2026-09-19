@@ -4,8 +4,6 @@
 # Build: docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/lsm/dolmen:vX.Y.Z --build-arg VERSION=vX.Y.Z --push .
 
 ARG VERSION=devel
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
 
 FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine AS build
 ARG VERSION

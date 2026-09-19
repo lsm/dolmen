@@ -22,14 +22,14 @@ The API's machine-readable description — every operation's request schema, the
 Bash:
 
 ```bash
-base="{{ .BaseURL }}"
+base='{{ .BaseURL }}'
 curl -s "${base%/}/healthz"
 ```
 
 Windows PowerShell:
 
 ```powershell
-$base = "{{ .BaseURL }}"
+$base = '{{ .BaseURL }}'
 curl.exe -s "$($base.TrimEnd('/'))/healthz"
 ```
 
@@ -42,13 +42,13 @@ Add the MCP server to Claude:
 Bash:
 
 ```bash
-claude mcp add --transport http dolmen "{{ .MCPURL }}"
+claude mcp add --transport http dolmen '{{ .MCPURL }}'
 ```
 
 Windows PowerShell:
 
 ```powershell
-claude mcp add --transport http dolmen "{{ .MCPURL }}"
+claude mcp add --transport http dolmen '{{ .MCPURL }}'
 ```
 
 The `dolmen` tools then appear in `tools/list` with full input schemas. The endpoint can also be
@@ -79,7 +79,7 @@ under this id, this is the id. The full list of operations and their request sch
 Create a table:
 
 ```bash
-base="{{ .BaseURL }}"
+base='{{ .BaseURL }}'
 curl -s -X POST "${base%/}/v1/create_table" \
   -H 'Content-Type: application/json' \
   -d '{"namespace":"research","table":"findings","fields":[{"name":"title","type":"string","fulltext":true,"required":true},{"name":"body","type":"text"}]}'
@@ -119,14 +119,14 @@ connected MCP client sees; for plain one-shot calls the raw HTTP operations abov
 Initialize:
 
 ```bash
-mcp="{{ .MCPURL }}"
+mcp='{{ .MCPURL }}'
 curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"agent","version":"1.0"}}}'
 ```
 
 List every tool with its input schema (single page, no cursor):
 
 ```bash
-mcp="{{ .MCPURL }}"
+mcp='{{ .MCPURL }}'
 curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 ```
 
@@ -134,7 +134,7 @@ Call a tool — `arguments` is the tool's input, and the result data arrives unw
 `result.structuredContent`:
 
 ```bash
-mcp="{{ .MCPURL }}"
+mcp='{{ .MCPURL }}'
 curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_tables","arguments":{"namespace":"research"}}}'
 ```
 
@@ -476,8 +476,9 @@ is much faster.
 Validation notes:
 
 - `number` becomes `int64` or `float64`: integral values within the int64 range become `int64`;
-  unsigned Go values > `MaxInt64` are rejected, and integral JSON numbers outside the int64 range
-  become `float64` (precision loss).
+  a JSON number outside the int64 range is stored as `float64`, which loses precision — it is NOT
+  rejected (`9223372036854775808` reads back as `9223372036854776000`). The separate rejection of
+  unsigned values above `MaxInt64` applies only to the Go library, where the value arrives typed.
 - `timestamp` must be a parseable ISO/RFC3339 string.
 - `vector` must be a number array of exactly the declared `dim`; `NaN`/`Inf` are rejected. The
   4096-dimension cap applies only to declared `vector` fields; `vectorize` records the provider's

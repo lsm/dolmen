@@ -22,14 +22,14 @@ The API's machine-readable description — every operation's request schema, the
 Bash:
 
 ```bash
-base="{{ .BaseURL }}"
+base='{{ .BaseURL }}'
 curl -s "${base%/}/healthz"
 ```
 
 Windows PowerShell:
 
 ```powershell
-$base = "{{ .BaseURL }}"
+$base = '{{ .BaseURL }}'
 curl.exe -s "$($base.TrimEnd('/'))/healthz"
 ```
 
@@ -40,13 +40,13 @@ Should return `{"status":"ok"}`. If the server is not running, do not improvise 
 Bash:
 
 ```bash
-claude mcp add --transport http dolmen "{{ .MCPURL }}"
+claude mcp add --transport http dolmen '{{ .MCPURL }}'
 ```
 
 Windows PowerShell:
 
 ```powershell
-claude mcp add --transport http dolmen "{{ .MCPURL }}"
+claude mcp add --transport http dolmen '{{ .MCPURL }}'
 ```
 
 The `dolmen` tools then appear in `tools/list` with full input schemas. The endpoint can also be
@@ -77,7 +77,7 @@ under this id, this is the id. The full list of operations and their request sch
 Insert a record:
 
 ```bash
-base="{{ .BaseURL }}"
+base='{{ .BaseURL }}'
 curl -s -X POST "${base%/}/v1/insert" \
   -H 'Content-Type: application/json' \
   -d '{"namespace":"research","table":"findings","records":[{"title":"auth flow","done":true}]}'
@@ -107,14 +107,14 @@ connected MCP client sees; for plain one-shot calls the raw HTTP operations abov
 Initialize:
 
 ```bash
-mcp="{{ .MCPURL }}"
+mcp='{{ .MCPURL }}'
 curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"agent","version":"1.0"}}}'
 ```
 
 List every tool with its input schema (single page, no cursor):
 
 ```bash
-mcp="{{ .MCPURL }}"
+mcp='{{ .MCPURL }}'
 curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 ```
 
@@ -122,7 +122,7 @@ Call a tool — `arguments` is the tool's input, and the result data arrives unw
 `result.structuredContent`:
 
 ```bash
-mcp="{{ .MCPURL }}"
+mcp='{{ .MCPURL }}'
 curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_tables","arguments":{"namespace":"research"}}}'
 ```
 
@@ -145,7 +145,7 @@ server offers it.
 Bash:
 
 ```bash
-base="{{ .BaseURL }}"
+base='{{ .BaseURL }}'
 curl -sN "${base%/}/v1/subscribe?namespace=research"
 ```
 
@@ -247,7 +247,7 @@ rejected token.
   **Rows whose `vectorize` source is `null`/empty/missing have `_embedding` `null` and are silently excluded from any `search_vector` that searches `_embedding` (a `text` query, or a raw `vector` query with `column` omitted or set to `_embedding`). If recall matters, call `query` with `SELECT COUNT(*) FROM <table_name> WHERE _embedding IS NULL AND (<same filter>)` (substitute the table name; bind the same `args`; drop the `AND (...)` clause when no filter is used) to find unembedded rows eligible for the search; if you compare counts instead, do it against `SELECT COUNT(*) FROM <table_name> WHERE <same filter>` after exhausting all pages with `min_score` unset (omit the WHERE clause when no filter is used).**
 - `skipped_vectors` in a `search_vector` response counts stored vectors that were corrupt or dimension-mismatched and could not be scored; **it does not count rows with a `null`/empty/missing `vectorize` source — those rows are silently excluded and will not raise `skipped_vectors`.**
 - `changes_since` replays a namespace's durable change log instead of polling tables: each call returns the changes committed after the cursor plus `next_cursor`. Omit `cursor` to start at the current head (nothing replays; keep the returned `next_cursor` and later calls deliver only new commits), or pass `"begin"` to replay retained history. An optional `table` filters to that table. Changes carry `cursor`/`table`/`row_id`/`kind` only — re-read row content by id with `query` (`SELECT * FROM <table> WHERE id = ?`). A cursor older than the change-log retention window (default 7d) is rejected with an error telling you to restart from the head (omit `cursor`) or `"begin"`; cursors are per-feed, so a cursor from a `table`-filtered call only works on that same feed. Cursor tokens are minted per emission: a change re-read later carries a fresh token for the same commit, so the same commit yields different tokens on different reads — while a read that emits nothing returns the cursor you passed unchanged (the `wait_for` idle contract). Treat a token as a resume handle, never as an event id — and no frame field is one either: the same row updated twice yields two changes with identical `table`/`row_id`/`kind`. No stable per-event identifier is exposed; make processing idempotent and persist the cursor atomically with your side effects instead of deduplicating on frame content.
-- `wait_for` REPLACES polling: one call blocks server-side until a change commits after the cursor (or `timeout_ms` elapses, default 30000, max 60000), then returns exactly a `changes_since` page. A timeout is an **empty page plus the unchanged `next_cursor` — never an error**: pass `next_cursor` straight back into the next `wait_for` and loop. `timeout_ms: 0` is a cheap conditional poll (returns immediately). Same feed semantics as `changes_since` (`cursor` resume, `"begin"`, optional `table` filter); never re-derive the head between waits — always resume from the returned cursor. Unlike the data ops, a wait never creates its namespace — a missing one is `not_found` (create it first, then wait).
+- `wait_for` REPLACES polling: one call blocks server-side until a change commits after the cursor (or `timeout_ms` elapses, default 30000, max 60000), then returns exactly a `changes_since` page. A timeout is an **empty page plus the unchanged `next_cursor` — never an error**: pass `next_cursor` straight back into the next `wait_for` and loop. `timeout_ms: 0` is a cheap conditional poll (returns immediately). Same feed semantics as `changes_since` (`cursor` resume, `"begin"`, optional `table` filter); never re-derive the head between waits — always resume from the returned cursor. Like every read, a wait never creates its namespace — a missing one is `not_found` (create it first, then wait).
 - `GET /v1/subscribe?namespace=...` is the stream counterpart of `wait_for` — HTTP-only (`text/event-stream`, no MCP tool): replay the log from `cursor`/`"begin"`/the head, then live `change` frames, one per changed row, in commit order. `ready` (replay→live boundary) and `close` (before every server-initiated terminal) carry cursors — resume from the `close` cursor after overflow/revoked/age-bound, and start fresh (no cursor, or `begin`) after target-ended or a rejected cursor. See "Live changes: the subscribe stream" above.
 
 ## Agent-critical caveats
@@ -324,7 +324,9 @@ The optional `filter` parameter is separate from the MATCH `query`: it is regula
 | Namespace path | 1–3 segments (`a/b/c`), each `^[a-z0-9][a-z0-9_-]{0,63}$` (max 64 chars per segment) | rejected |
 | Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
-| Records per `insert` | 1,000 | rejected |
+| Records per `insert` / `upsert_by_key` | 1,000 | rejected |
+| Ids per `read_rows` | 1,000 | rejected |
+| Natural key fields per `upsert_by_key` | 8 | rejected |
 | Idempotency key length | 1–256 bytes; use printable ASCII; omit the field for a non-idempotent insert | empty and over-256-byte keys are rejected; the JSON Schema enforces non-empty printable ASCII for schema-validating clients |
 | Vector dimension (declared `vector` fields) | 1–4096 | rejected |
 | Search `limit` | default 10, max 200 | omit `limit` for the default of 10; the tool schema enforces 1–200 for schema-validating clients, and the server clamps values above 200 to 200 (0 or negative selects the default on direct `/v1` calls) |
@@ -337,7 +339,7 @@ Vector search is brute-force (fine into the low millions of rows); FTS5 uses an 
 
 Validation notes:
 
-- `number` becomes `int64` or `float64`: integral values within the int64 range become `int64`; unsigned Go values > `MaxInt64` are rejected, and integral JSON numbers outside the int64 range become `float64` (precision loss).
+- `number` becomes `int64` or `float64`: integral values within the int64 range become `int64`; a JSON number outside the int64 range is stored as `float64`, which loses precision — it is NOT rejected (`9223372036854775808` reads back as `9223372036854776000`). The separate rejection of unsigned values above `MaxInt64` applies only to the Go library, where the value arrives typed.
 - `timestamp` must be a parseable ISO/RFC3339 string.
 - `vector` must be a number array of exactly the declared `dim`; `NaN`/`Inf` are rejected. The 4096-dimension cap applies only to declared `vector` fields; `vectorize` records the provider's returned dimension.
 - Unknown field keys are rejected. Missing or `null` required fields are rejected on `insert`. Fields

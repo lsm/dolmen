@@ -236,7 +236,7 @@ func (s *Store) lockedNSCtx(ctx context.Context, name string) (*nsDB, error) {
 	fi, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%w: namespace %s", ErrNotFound, name)
+			return nil, fmt.Errorf("%w: namespace %s does not exist; create it with create_namespace, or let any write op (create_table, insert, update, upsert, upsert_by_key, delete, migrate) create it on first use", ErrNotFound, name)
 		}
 		return nil, err
 	}
@@ -248,6 +248,10 @@ func (s *Store) lockedNSCtx(ctx context.Context, name string) (*nsDB, error) {
 		return nil, err
 	}
 	rw.SetMaxOpenConns(1)
+	if err := refuseNewerCatalog(ctx, rw, name); err != nil {
+		rw.Close()
+		return nil, err
+	}
 	for _, ddl := range registryDDL {
 		if _, err := rw.ExecContext(ctx, ddl); err != nil {
 			rw.Close()

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -283,5 +284,22 @@ func TestWriteOpsStillCreateNamespacesImplicitly(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("the implicitly created namespace must be listed: %v", names)
+	}
+}
+
+func TestDropNamespaceNotFoundDoesNotAdviseCreating(t *testing.T) {
+	h := newHarness(t)
+	status, out := h.httpCall("drop_namespace", map[string]any{"namespace": "nosuchns", "confirm": "nosuchns"})
+	if status != 404 {
+		t.Fatalf("status %d, want 404: %v", status, out)
+	}
+	msg := out["error"].(map[string]any)["message"].(string)
+	if !strings.Contains(msg, "nothing was dropped") {
+		t.Fatalf("a failed drop must say nothing was dropped, got %q", msg)
+	}
+	for _, bad := range []string{"create_namespace", "create it on first use"} {
+		if strings.Contains(msg, bad) {
+			t.Fatalf("a failed drop must not advise recreating the namespace the caller asked to delete, got %q", msg)
+		}
 	}
 }

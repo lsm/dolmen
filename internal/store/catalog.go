@@ -19,6 +19,8 @@ const (
 
 var ErrCatalogTooNew = errors.New("namespace catalog is newer than this binary supports")
 
+var ErrCatalogCorrupt = errors.New("corrupt catalog metadata")
+
 type CatalogVersionError struct {
 	Namespace string
 	Format    int
@@ -34,6 +36,25 @@ func (e *CatalogVersionError) Error() string {
 
 func (e *CatalogVersionError) Is(target error) bool {
 	return target == ErrCatalogTooNew
+}
+
+func refuseNewerCatalog(ctx context.Context, rw *sql.DB, nsName string) error {
+	var metaTables int
+	if err := rw.QueryRowContext(ctx,
+		`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '_dolmen_meta'`).Scan(&metaTables); err != nil {
+		return err
+	}
+	if metaTables == 0 {
+		return nil
+	}
+	format, minReader, err := readCatalogVersion(ctx, rw)
+	if err != nil {
+		return err
+	}
+	if minReader > CatalogFormat {
+		return &CatalogVersionError{Namespace: nsName, Format: format, MinReader: minReader, Supported: CatalogFormat}
+	}
+	return nil
 }
 
 func ensureCatalogVersion(ctx context.Context, rw *sql.DB, nsName string) error {
@@ -79,6 +100,14 @@ func ensureCatalogVersion(ctx context.Context, rw *sql.DB, nsName string) error 
 	return tx.Commit()
 }
 
+func truncateStamp(raw []byte) string {
+	const max = 32
+	if len(raw) <= max {
+		return string(raw)
+	}
+	return string(raw[:max]) + "..."
+}
+
 func readCatalogInt(ctx context.Context, tx *sql.Tx, key string) (int, bool, error) {
 	var raw []byte
 	err := tx.QueryRowContext(ctx, `SELECT value FROM _dolmen_meta WHERE key = ?`, key).Scan(&raw)
@@ -90,7 +119,7 @@ func readCatalogInt(ctx context.Context, tx *sql.Tx, key string) (int, bool, err
 	}
 	n, convErr := strconv.Atoi(string(raw))
 	if convErr != nil || n < 1 {
-		return 0, false, fmt.Errorf("corrupt catalog metadata: %s = %q is not a positive integer", key, string(raw))
+		return 0, false, fmt.Errorf("%w: %s = %q is not a positive integer", ErrCatalogCorrupt, key, truncateStamp(raw))
 	}
 	return n, true, nil
 }
@@ -116,7 +145,7 @@ func readCatalogVersion(ctx context.Context, db rowQuerier) (format int, minRead
 		}
 		n, convErr := strconv.Atoi(string(raw))
 		if convErr != nil || n < 1 {
-			return 0, 0, fmt.Errorf("corrupt catalog metadata: %s = %q is not a positive integer", key, string(raw))
+			return 0, 0, fmt.Errorf("%w: %s = %q is not a positive integer", ErrCatalogCorrupt, key, truncateStamp(raw))
 		}
 		*dst = n
 	}

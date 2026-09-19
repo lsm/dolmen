@@ -289,6 +289,12 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 
 	skillNamespaceHint := envOr("DOLMEN_SKILL_NAMESPACE_HINT", skill.DefaultNamespaceHint, getenv)
 	prefixValue := skill.NormalizePrefix(*prefix)
+	if *prefix != "" && prefixValue == "" {
+		e := fmt.Errorf("-prefix %q is not a usable URL path prefix: use at most %d segments of [A-Za-z0-9._~:@-], at most %d bytes total, with no empty or dot segments", *prefix, skill.MaxPrefixSegments, skill.MaxPrefixBytes)
+		fmt.Fprintf(out, "config: %v\n", e)
+		fs.Usage()
+		return nil, &printedError{e}
+	}
 
 	if *publicBaseURL != "" && prefixValue != "" {
 		if strings.HasSuffix(strings.TrimRight(*publicBaseURL, "/"), prefixValue) {

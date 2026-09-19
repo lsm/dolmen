@@ -44,6 +44,9 @@ func Classify(err error) derr.Code {
 	if errors.As(err, &vce) || errors.Is(err, derr.ErrConflict) {
 		return derr.Conflict
 	}
+	if errors.Is(err, store.ErrCatalogTooNew) {
+		return derr.InvalidRequest
+	}
 	if errors.Is(err, store.ErrInvalid) {
 		return derr.InvalidRequest
 	}
