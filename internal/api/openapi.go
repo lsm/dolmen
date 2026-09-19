@@ -91,6 +91,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := s.publicContext(r)
+	setPublicURLCacheHeaders(w)
 	writeJSON(w, http.StatusOK, s.OpenAPIDoc(ctx.BaseURL))
 }
 

@@ -77,6 +77,11 @@ func New(eng store.Engine, emb embed.Provider, opts ...Option) *Server {
 	return s
 }
 
+func setPublicURLCacheHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("Vary", skill.PublicURLVaryHeader)
+}
+
 var errUnusableHost = &Error{
 	Status: http.StatusBadRequest, Code: ErrCodeInvalid,
 	Message: "the request Host header is not a usable host name, and this response would have to quote it back as this server's public URL; send a valid Host, have the proxy send X-Forwarded-Host, or set DOLMEN_BASE_URL",
@@ -602,8 +607,7 @@ func (s *Server) serveSkillBytes(w http.ResponseWriter, r *http.Request, body []
 	etag := skill.ETag(name, version.Version, body)
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "private, no-store")
-	w.Header().Set("Vary", skill.PublicURLVaryHeader)
+	setPublicURLCacheHeaders(w)
 	if etagMatch(r, etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return

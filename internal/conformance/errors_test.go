@@ -669,3 +669,23 @@ func TestQueryRejectionSeparatesTypoFromWrite(t *testing.T) {
 		})
 	}
 }
+
+func TestRequestDerivedDocumentsAreNotSharedCacheable(t *testing.T) {
+	h := newHarness(t)
+	for _, path := range []string{"/skills", "/skills/dolmen", "/skills/dolmen-admin", "/v1/openapi.json"} {
+		res, err := http.Get(h.srv.URL + path)
+		if err != nil {
+			t.Fatalf("get %s: %v", path, err)
+		}
+		res.Body.Close()
+		if got := res.Header.Get("Cache-Control"); got != "private, no-store" {
+			t.Errorf("%s Cache-Control = %q, want \"private, no-store\" — this document embeds a request-derived public URL", path, got)
+		}
+		vary := res.Header.Get("Vary")
+		for _, want := range []string{"Host", "X-Forwarded-Host", "X-Original-Uri"} {
+			if !strings.Contains(vary, want) {
+				t.Errorf("%s Vary = %q, missing %q", path, vary, want)
+			}
+		}
+	}
+}
