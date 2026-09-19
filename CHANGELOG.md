@@ -60,8 +60,10 @@ changes need attention before upgrading.
   response. Prefixes are now validated (a conservative character set, no dot or empty segments, and
   length and segment caps), the skills single-quote interpolated URLs, and the skills and OpenAPI
   responses are marked `private, no-store` with a `Vary` so a shared cache cannot serve one
-  request's rendering to everyone. Setting `DOLMEN_BASE_URL` was, and remains, a complete
-  mitigation.
+  request's rendering to everyone. The forwarded host and scheme are validated the same way, since
+  they reach the same snippets and the OpenAPI `servers` URL, and the PowerShell snippet uses a
+  literal-quoted string so it cannot interpolate either. Setting `DOLMEN_BASE_URL` was, and remains,
+  a complete mitigation.
 - **A JSON number that did not fit its field echoed the caller's literal back in the error.** A
   multi-megabyte literal produced a multi-megabyte error message. The message now names the type
   only.

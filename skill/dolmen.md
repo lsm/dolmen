@@ -29,7 +29,7 @@ curl -s "${base%/}/healthz"
 Windows PowerShell:
 
 ```powershell
-$base = "{{ .BaseURL }}"
+$base = '{{ .BaseURL }}'
 curl.exe -s "$($base.TrimEnd('/'))/healthz"
 ```
 

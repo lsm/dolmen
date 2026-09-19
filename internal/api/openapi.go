@@ -9,7 +9,7 @@ import (
 
 const (
 	openAPIVersion = "3.1.0"
-	apiVersion     = "0.1.0"
+	apiVersion     = "0.3.0"
 )
 
 var writeDataSchema = objectSchema(false, map[string]any{

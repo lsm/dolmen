@@ -500,3 +500,58 @@ func TestRenderedSkillCannotBreakOutOfShellQuoting(t *testing.T) {
 		t.Fatal("injected shell text reached the served skill markdown")
 	}
 }
+
+func TestBaseURLForRejectsAnInjectedForwardedHost(t *testing.T) {
+	for _, bad := range []string{
+		`real.example.com"; id; echo "`,
+		"real$(id)evil.com",
+		"real.example.com `id`",
+		"user@evil.com",
+		"evil.com/#@real.example.com",
+		"  ",
+		"real.example.com:notaport",
+		strings.Repeat("a", 300),
+	} {
+		r := httptest.NewRequest(http.MethodGet, "/skills/dolmen", nil)
+		r.Host = "fallback.example.com"
+		r.Header.Set("X-Forwarded-Host", bad)
+		got := BaseURLFor(r, "")
+		if got != "http://fallback.example.com" {
+			t.Errorf("X-Forwarded-Host %q produced %q, want the request host — an unvalidated host is interpolated into served shell snippets", bad, got)
+		}
+	}
+	for _, good := range []string{"real.example.com", "real.example.com:8443", "127.0.0.1:8790", "[::1]:8790", "a-b.c_d.example"} {
+		r := httptest.NewRequest(http.MethodGet, "/skills/dolmen", nil)
+		r.Host = "fallback.example.com"
+		r.Header.Set("X-Forwarded-Host", good)
+		if got := BaseURLFor(r, ""); got != "http://"+good {
+			t.Errorf("X-Forwarded-Host %q produced %q, want it honored", good, got)
+		}
+	}
+}
+
+func TestBaseURLForRejectsAnInjectedScheme(t *testing.T) {
+	for _, bad := range []string{"javascript", "data", "HTTPS ", "http://x", ""} {
+		r := httptest.NewRequest(http.MethodGet, "/skills/dolmen", nil)
+		r.Host = "real.example.com"
+		r.Header.Set("X-Forwarded-Proto", bad)
+		if got := BaseURLFor(r, ""); got != "http://real.example.com" {
+			t.Errorf("X-Forwarded-Proto %q produced %q, want the fallback scheme", bad, got)
+		}
+	}
+}
+
+func TestRenderedSkillCannotBeInjectedViaHost(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/skills/dolmen", nil)
+	r.Host = "real.example.com"
+	r.Header.Set("X-Forwarded-Host", `real.example.com"; id; echo "`)
+	body, err := Render("dolmen", ContextFor(r, "", "", "v0.0.0-test", ""))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for _, bad := range []string{"; id; echo", `"; id`} {
+		if strings.Contains(string(body), bad) {
+			t.Fatalf("injected host text %q reached the served skill markdown", bad)
+		}
+	}
+}
