@@ -92,7 +92,8 @@ release-model-checksums:
 	@$(MAKE) checksums DIR=$(MODEL_DIR)
 
 checksums:
-	@cd $(DIR) && { \
+	@[ -n "$(DIR)" ] || { echo "checksums needs DIR=<directory>; use release-checksums or release-model-checksums"; exit 1; }
+	@cd "$(DIR)" && { \
 		for f in *; do \
 			[ "$$f" = "SHA256SUMS" ] && continue; \
 			[ -f "$$f" ] && { $(CHECKSUM) "$$f" || exit 1; }; \
