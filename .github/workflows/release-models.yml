@@ -1,0 +1,60 @@
+name: release-models
+
+on:
+  push:
+    tags:
+      - 'models-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Model release tag to publish (e.g. models-v1)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  models:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          tag="${{ github.event.inputs.tag }}"
+          [ -n "$tag" ] || tag="${{ github.ref_name }}"
+          expected="$(make -s model-release)"
+          if [ "$tag" != "$expected" ]; then
+            echo "tag $tag does not match MODEL_RELEASE ($expected) in the Makefile; bump one or the other" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Package embedding models
+        run: make release-model
+
+      - name: Generate checksums
+        run: make release-model-checksums
+
+      - name: Create model release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Embedding models (${{ steps.tag.outputs.tag }})
+          files: dist-models/*
+          body: |
+            Pre-packaged embedding models for offline or Hugging-Face-blocked dolmen installs. These are independent of any dolmen version — every dolmen release links here rather than carrying its own ~370 MB copy. Each archive holds the `org--name` model directory the `local` provider expects under `<data>/models`, plus a `.dolmen-sizes.json` manifest so a partial extraction is refused instead of loaded.
+
+            - `dolmen-model-all-MiniLM-L6-v2.tar.gz` — the default English model (`sentence-transformers/all-MiniLM-L6-v2`, ~90 MB).
+            - `dolmen-model-multilingual-e5-small.tar.gz` — the multilingual/CJK model (`intfloat/multilingual-e5-small`, ~270 MB compressed).
+
+            Upstream revisions are pinned in `EMBED_MODELS` in the Makefile. See the README's "Offline install" section for extraction and `DOLMEN_EMBED_MODEL`.
+          prerelease: false
+          make_latest: false

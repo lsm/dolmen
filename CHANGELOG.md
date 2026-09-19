@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Embedding model tarballs are no longer attached to each release.** They are published once
+  under their own tag (`models-v1`) and shared by every dolmen version, which keeps ~370 MB of
+  identical bytes off every release. Existing download URLs for v0.3.0 and earlier keep working;
+  new ones drop the version from the asset name and take the model tag instead, e.g.
+  `releases/download/models-v1/dolmen-model-all-MiniLM-L6-v2.tar.gz`. Each release's notes link the
+  model tag it was built against.
+
 ## v0.3.0
 
 Realtime change feeds, an MCP stdio transport, and an in-process Go library. Five behavior
