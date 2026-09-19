@@ -149,6 +149,15 @@ func (c *sqlCompiler) walk(message protoreflect.Message, ctes map[string]bool) e
 		if !builtinName(node.Name, queryOperators) {
 			return sqlRejected("operator is not in the PostgreSQL query allowlist")
 		}
+	case *pg.SubLink:
+		if len(node.OperName) > 0 {
+			if !builtinName(node.OperName, queryOperators) {
+				return sqlRejected("operator is not in the PostgreSQL query allowlist")
+			}
+			if len(node.OperName) == 1 {
+				node.OperName = append([]*pg.Node{pg.MakeStrNode("pg_catalog")}, node.OperName...)
+			}
+		}
 	case *pg.SortBy:
 		if len(node.UseOp) > 0 && !builtinName(node.UseOp, queryOperators) {
 			return sqlRejected("sort operator is not allowed")

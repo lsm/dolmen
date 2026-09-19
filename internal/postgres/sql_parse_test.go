@@ -21,6 +21,7 @@ func TestPostgresSQLCompiler(t *testing.T) {
 		{"WITH q AS (SELECT * FROM notes) SELECT q.body FROM q", 0},
 		{"WITH RECURSIVE q(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM q WHERE n < 3) SELECT * FROM q", 0},
 		{"SELECT body FROM notes WHERE EXISTS(SELECT 1 FROM other WHERE other.body=notes.body)", 0},
+		{"SELECT 1 = ANY(SELECT n FROM notes)", 0},
 		{"SELECT CASE WHEN n > 1 THEN upper(body) ELSE 'none' END FROM notes", 0},
 		{"SELECT CAST(? AS numeric), CURRENT_TIMESTAMP, coalesce(?, 'fallback')", 2},
 		{"SELECT '{\"key\":1}'::jsonb ?? 'key'", 0},
@@ -38,7 +39,7 @@ func TestPostgresSQLCompiler(t *testing.T) {
 func TestPostgresSQLBoundaryRejectsEscapes(t *testing.T) {
 	for _, sql := range []string{
 		"SELECT * FROM pg_catalog.pg_class", "SELECT * FROM information_schema.tables", "SELECT * FROM other_namespace.notes", "SELECT * FROM pg_class",
-		"SELECT current_user", "SELECT session_user", "SELECT current_database()", "SELECT current_setting('data_directory')", "SELECT pg_read_file('/etc/passwd')", "SELECT pg_sleep(10)", "SELECT set_config('role','postgres',false)", "SELECT public.lower('x')", "SELECT 'pg_class'::regclass", "SELECT 1; DELETE FROM notes", "WITH gone AS (DELETE FROM notes RETURNING *) SELECT * FROM gone", "SELECT * INTO copied FROM notes", "SELECT * FROM notes FOR UPDATE", "COPY notes TO STDOUT", "SELECT 1 OPERATOR(public.+) 2", "SELECT * FROM notes ORDER BY n USING OPERATOR(public.<)", "WITH q AS (SELECT * FROM pg_class), pg_class AS (SELECT * FROM notes) SELECT * FROM q",
+		"SELECT current_user", "SELECT session_user", "SELECT current_database()", "SELECT current_setting('data_directory')", "SELECT pg_read_file('/etc/passwd')", "SELECT pg_sleep(10)", "SELECT set_config('role','postgres',false)", "SELECT public.lower('x')", "SELECT 'pg_class'::regclass", "SELECT 1; DELETE FROM notes", "WITH gone AS (DELETE FROM notes RETURNING *) SELECT * FROM gone", "SELECT * INTO copied FROM notes", "SELECT * FROM notes FOR UPDATE", "COPY notes TO STDOUT", "SELECT 1 OPERATOR(public.+) 2", "SELECT 1 OPERATOR(public.+) ANY(SELECT n FROM notes)", "SELECT * FROM notes ORDER BY n USING OPERATOR(public.<)", "WITH q AS (SELECT * FROM pg_class), pg_class AS (SELECT * FROM notes) SELECT * FROM q",
 	} {
 		if out, _, err := compileSQL(sql, 0, "namespace_schema", queryTestTables()); err == nil {
 			t.Errorf("accepted %s as %s", sql, out)
