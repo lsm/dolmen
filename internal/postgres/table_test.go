@@ -13,6 +13,20 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
+func TestPhysicalCandidateLengthBound(t *testing.T) {
+	for length := 1; length <= 64; length++ {
+		name := strings.Repeat("a", length)
+		seen := map[string]bool{}
+		for attempt := 0; attempt < 64; attempt++ {
+			candidate := physicalCandidate(name, attempt)
+			if len(candidate) > 63 || seen[candidate] {
+				t.Fatalf("length %d attempt %d: invalid candidate %q", length, attempt, candidate)
+			}
+			seen[candidate] = true
+		}
+	}
+}
+
 func TestPhysicalColumnsResolveShortenedNameCollision(t *testing.T) {
 	long := strings.Repeat("a", 64)
 	colliding := physicalCandidate(long, 0)
@@ -180,14 +194,37 @@ func TestPostgresPhysicalTableAvoidsIndexNameCollision(t *testing.T) {
 	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"notes", "notes_pkey", "notes_id_seq", strings.Repeat("z", 64), physicalCandidate(strings.Repeat("z", 64), 0)} {
+	logicalNames := []string{"notes", "notes_pkey", "notes_id_seq", strings.Repeat("z", 64), physicalCandidate(strings.Repeat("z", 64), 0)}
+	for length := 40; length <= 56; length++ {
+		base := strings.Repeat("a", length)
+		logicalNames = append(logicalNames, base, base+"_id_seq")
+	}
+	for _, name := range logicalNames {
 		if _, err := s.CreateTable(ctx, "app", name, []schema.Field{{Name: "body"}}, store.TableOpts{}, [16]byte{}); err != nil {
 			t.Fatalf("create %q: %v", name, err)
 		}
 	}
 	names, err := s.ListTables(ctx, "app", nil)
-	if err != nil || len(names) != 5 {
+	if err != nil || len(names) != len(logicalNames) {
 		t.Fatalf("tables: %v %v", names, err)
+	}
+	if err := s.read(ctx, "app", func(tx pgx.Tx, n namespace) error {
+		for _, name := range logicalNames {
+			state, err := s.loadTable(ctx, tx, n, name)
+			if err != nil {
+				return err
+			}
+			var exists bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname=$2)`, n.physical, state.physical).Scan(&exists); err != nil {
+				return err
+			}
+			if !exists || len(state.physical) > 63 {
+				t.Fatalf("registry identifier does not match physical relation: %q -> %q", name, state.physical)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

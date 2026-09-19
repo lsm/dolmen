@@ -77,6 +77,9 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	}
 	if err != nil {
 		pool.Close()
+		if errors.Is(err, store.ErrCatalogTooNew) {
+			return nil, err
+		}
 		return nil, &connectionError{"initialize store", err}
 	}
 	return s, nil

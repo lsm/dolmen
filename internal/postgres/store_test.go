@@ -142,6 +142,9 @@ func TestPostgresBootstrapConcurrentAndVersionGuard(t *testing.T) {
 	if newer != nil || !errors.Is(err, store.ErrCatalogTooNew) {
 		t.Fatalf("future catalog: %v", err)
 	}
+	if !strings.Contains(err.Error(), "use a compatible dolmen release") || strings.Contains(err.Error(), "connection settings") {
+		t.Fatalf("future catalog remediation hidden: %v", err)
+	}
 	var version int
 	if err := s.pool.QueryRow(ctx, "SELECT version FROM "+s.relation("version")).Scan(&version); err != nil || version != catalogVersion+1 {
 		t.Fatalf("future catalog changed: %d %v", version, err)
