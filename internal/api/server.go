@@ -37,6 +37,7 @@ type Server struct {
 	holdReplay         func()
 	proxyAdviceOnce    sync.Once
 	authn              *auth.Authenticator
+	grants             *auth.Registry
 }
 
 type Option func(*Server)
@@ -68,6 +69,12 @@ func WithKeepaliveInterval(d time.Duration) Option {
 func WithAuth(a *auth.Authenticator) Option {
 	return func(s *Server) {
 		s.authn = a
+	}
+}
+
+func WithGrants(r *auth.Registry) Option {
+	return func(s *Server) {
+		s.grants = r
 	}
 }
 
@@ -456,9 +463,12 @@ func OpNames() []string {
 }
 
 func (s *Server) Dispatch(ctx context.Context, op string, body []byte) (any, error) {
-	def, ok := Ops[op]
+	def, ok := s.Op(op)
 	if !ok {
 		return nil, notFound("unknown operation %q", op)
+	}
+	if err := s.authorizeOp(ctx, op, body); err != nil {
+		return nil, err
 	}
 	res, err := def.Func(ctx, s, body)
 	if err != nil {
@@ -541,7 +551,7 @@ func (s *Server) Handler() http.Handler {
 			writeError(w, r, notFound("unknown operation"))
 			return
 		}
-		if _, ok := Ops[op]; !ok {
+		if _, ok := s.Op(op); !ok {
 			writeError(w, r, notFound("unknown operation"))
 			return
 		}
@@ -585,11 +595,7 @@ func (s *Server) Authenticated(r *http.Request) (*http.Request, error) {
 	if err != nil {
 		return r, err
 	}
-	r = r.WithContext(auth.WithIdentity(r.Context(), id))
-	if err := s.authn.Authorize(id); err != nil {
-		return r, err
-	}
-	return r, nil
+	return r.WithContext(auth.WithIdentity(r.Context(), id)), nil
 }
 
 func (s *Server) handleSkillsManifest(w http.ResponseWriter, r *http.Request) {
@@ -674,13 +680,17 @@ func etagMatch(r *http.Request, etag string) bool {
 }
 
 func WithPrincipal(r *http.Request, attrs ...any) []any {
-	if p := auth.IdentityFrom(r.Context()).Principal; p != "" {
+	return WithPrincipalCtx(r.Context(), attrs...)
+}
+
+func WithPrincipalCtx(ctx context.Context, attrs ...any) []any {
+	if p := auth.IdentityFrom(ctx).Principal; p != "" {
 		return append(attrs, "principal", p)
 	}
 	return attrs
 }
 
-func denial(code ErrorCode) bool {
+func Denial(code ErrorCode) bool {
 	return code == ErrCodeUnauthorized || code == ErrCodeForbidden
 }
 
@@ -704,7 +714,7 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case status >= http.StatusInternalServerError:
 		slog.Error("api error", attrs...)
-	case denial(apiErr.Code):
+	case Denial(apiErr.Code):
 		slog.Info("api denial", attrs...)
 	default:
 		slog.Debug("api error", attrs...)

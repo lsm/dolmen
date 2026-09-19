@@ -19,12 +19,10 @@ func assertForbiddenEnvelope(t *testing.T, what string, res *http.Response, out 
 
 func TestGatewayAssertedIdentityAuthenticatesThenIsUngranted(t *testing.T) {
 	h := newHarnessMode(t, authGateway)
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "gw"})
 
-	res, out := h.postNoCredential(t, h.httpURL+"/list_namespaces", "{}", map[string]string{
-		"X-Dolmen-Principal": "alice",
-		"X-Dolmen-Groups":    "team-a,readers",
-	})
-	assertForbiddenEnvelope(t, "asserted alice", res, out)
+	res, out := h.postNoCredential(t, h.httpURL+"/query", `{"namespace":"gw","sql":"SELECT 1"}`, aliceHeaders())
+	assertForbiddenEnvelope(t, "asserted alice running query", res, out)
 
 	errEnv, _ := out["error"].(map[string]any)
 	msg, _ := errEnv["message"].(string)
@@ -32,6 +30,33 @@ func TestGatewayAssertedIdentityAuthenticatesThenIsUngranted(t *testing.T) {
 		if strings.Contains(msg, leak) {
 			t.Fatalf("the forbidden message echoes caller-supplied identity %q: %q", leak, msg)
 		}
+	}
+}
+
+func TestGatewayGrantFreeOpsSucceedForAnUngrantedCaller(t *testing.T) {
+	h := newHarnessMode(t, authGateway)
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "gw"})
+
+	res, out := h.postNoCredential(t, h.httpURL+"/list_namespaces", "{}", aliceHeaders())
+	if res.StatusCode != http.StatusOK || out["ok"] != true {
+		t.Fatalf("list_namespaces as an ungranted caller: status %d %v", res.StatusCode, out)
+	}
+	data, _ := out["data"].(map[string]any)
+	nss, _ := data["namespaces"].([]any)
+	if len(nss) != 0 {
+		t.Fatalf("list_namespaces leaked namespaces to an ungranted caller: %v", nss)
+	}
+
+	for _, op := range []string{"describe_server", "capabilities", "whoami"} {
+		res, out := h.postNoCredential(t, h.httpURL+"/"+op, "{}", aliceHeaders())
+		if res.StatusCode != http.StatusOK || out["ok"] != true {
+			t.Fatalf("%s as an ungranted caller: status %d %v", op, res.StatusCode, out)
+		}
+	}
+
+	res, out = h.postNoCredential(t, h.httpURL+"/list_tables", `{"namespace":"gw"}`, aliceHeaders())
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("list_tables on an unreachable namespace: status %d, want 404 so listing cannot enumerate names: %v", res.StatusCode, out)
 	}
 }
 
@@ -73,7 +98,9 @@ func TestGatewayOverLimitGroupsFailTheIdentity(t *testing.T) {
 		"X-Dolmen-Principal": "alice",
 		"X-Dolmen-Groups":    "a,b",
 	})
-	assertForbiddenEnvelope(t, "at the group limit", res, out)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("at the group limit: status %d, want 200: %v", res.StatusCode, out)
+	}
 
 	res, out = h.postNoCredential(t, h.httpURL+"/list_namespaces", "{}", map[string]string{
 		"X-Dolmen-Principal": "alice",
@@ -95,10 +122,17 @@ func TestGatewayInvalidBearerNeverDowngradesToHeaders(t *testing.T) {
 func TestGatewayIdentityReachesMCPAndSubscribe(t *testing.T) {
 	h := newHarnessMode(t, authGateway)
 
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "gw"})
+
 	res, out := h.postNoCredential(t, h.mcpURL,
-		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_namespaces","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query","arguments":{"namespace":"gw","sql":"SELECT 1"}}}`,
 		map[string]string{"X-Dolmen-Principal": "alice"})
-	assertForbiddenEnvelope(t, "/mcp as alice", res, out)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("/mcp as alice: status %d, want a tool error inside 200: %v", res.StatusCode, out)
+	}
+	if !strings.Contains(mustJSON(t, out), "forbidden") {
+		t.Fatalf("/mcp query as an ungranted caller was not refused: %v", out)
+	}
 
 	req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/v1/subscribe?namespace=gw", nil)
 	if err != nil {

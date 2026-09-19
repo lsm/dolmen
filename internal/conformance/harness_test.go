@@ -82,6 +82,7 @@ type harnessMode struct {
 	adminKey       string
 	trustedProxies string
 	maxGroups      int
+	noAdminKey     bool
 }
 
 var authOff = harnessMode{name: "off"}
@@ -90,9 +91,11 @@ var authAdminKey = harnessMode{name: "admin-key", adminKey: "Tt5vQ2rXm9LbHc0wPqZ
 
 var authGateway = harnessMode{name: "gateway", adminKey: authAdminKey.adminKey, trustedProxies: "127.0.0.0/8,::1/128"}
 
-func (m harnessMode) off() bool { return m.adminKey == "" }
+var authGatewayNoKey = harnessMode{name: "gateway-no-key", trustedProxies: "127.0.0.0/8,::1/128", noAdminKey: true}
 
-func (m harnessMode) on() bool { return m.adminKey != "" }
+func (m harnessMode) off() bool { return m.adminKey == "" && !m.noAdminKey }
+
+func (m harnessMode) on() bool { return !m.off() }
 
 type harness struct {
 	t   *testing.T
@@ -101,7 +104,8 @@ type harness struct {
 	st  *store.Store
 	emb *fakeProvider
 
-	api *api.Server
+	api    *api.Server
+	grants *auth.Registry
 
 	mode harnessMode
 
@@ -175,7 +179,16 @@ func (h *harness) start() {
 	if err != nil {
 		h.t.Fatalf("build authenticator for mode %q: %v", h.mode.name, err)
 	}
-	apiSrv := api.New(h.st, embed.Provider(h.emb), append(append([]api.Option(nil), h.apiOpts...), api.WithAuth(authn))...)
+	opts := append(append([]api.Option(nil), h.apiOpts...), api.WithAuth(authn))
+	if authn.On() {
+		grants, err := auth.OpenRegistry(h.dir)
+		if err != nil {
+			h.t.Fatalf("open grant registry: %v", err)
+		}
+		h.grants = grants
+		opts = append(opts, api.WithGrants(grants))
+	}
+	apiSrv := api.New(h.st, embed.Provider(h.emb), opts...)
 	h.api = apiSrv
 	mcpSrv := mcp.New(apiSrv, nil)
 	mux := http.NewServeMux()
@@ -194,12 +207,20 @@ func (h *harness) reopen() {
 	if err := h.st.Close(); err != nil {
 		h.t.Fatalf("close store: %v", err)
 	}
+	if h.grants != nil {
+		_ = h.grants.Close()
+		h.grants = nil
+	}
 	h.start()
 }
 
 func (h *harness) close() {
 	h.srv.Close()
 	_ = h.st.Close()
+	if h.grants != nil {
+		_ = h.grants.Close()
+		h.grants = nil
+	}
 }
 
 func (h *harness) httpCall(op string, body any) (int, map[string]any) {

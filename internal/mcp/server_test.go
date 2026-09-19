@@ -953,9 +953,21 @@ func TestToolAnnotationsMatchRegistry(t *testing.T) {
 			}
 		}
 	}
+	known := map[string]struct{}{}
+	for _, name := range api.OpNames() {
+		known[name] = struct{}{}
+	}
+	for _, name := range api.AuthOpNames() {
+		known[name] = struct{}{}
+	}
 	for name := range toolAnnotations {
-		if _, ok := api.Ops[name]; !ok {
+		if _, ok := known[name]; !ok {
 			t.Fatalf("annotations defined for unknown tool %q", name)
+		}
+	}
+	for _, name := range api.AuthOpNames() {
+		if _, ok := toolAnnotations[name]; !ok {
+			t.Fatalf("auth-only tool %q has no MCP annotations", name)
 		}
 	}
 }

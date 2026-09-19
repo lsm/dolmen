@@ -1,0 +1,201 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/lsm/dolmen/internal/auth"
+	"github.com/lsm/dolmen/internal/derr"
+)
+
+type authScope int
+
+const (
+	scopeNone authScope = iota
+	scopeRoot
+	scopeParentNamespace
+	scopeNamespace
+	scopeTable
+	scopeTableOrNamespace
+	scopeGrantObject
+)
+
+type authRule struct {
+	Scope   authScope
+	Verbs   []auth.Verb
+	AnyVerb bool
+}
+
+var authRules = map[string]authRule{
+	"capabilities":    {Scope: scopeNone},
+	"describe_server": {Scope: scopeNone},
+	"infer_schema":    {Scope: scopeNone},
+	"list_namespaces": {Scope: scopeNone},
+	"list_tables":     {Scope: scopeNone},
+	"whoami":          {Scope: scopeNone},
+
+	"create_namespace": {Scope: scopeParentNamespace, Verbs: []auth.Verb{auth.VerbAdmin}},
+	"drop_namespace":   {Scope: scopeNamespace, Verbs: []auth.Verb{auth.VerbAdmin}},
+
+	"describe_table": {Scope: scopeTable, AnyVerb: true, Verbs: auth.VerbOrder},
+
+	"create_table": {Scope: scopeNamespace, Verbs: []auth.Verb{auth.VerbSchema}},
+
+	"drop_table":      {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbSchema, auth.VerbAdmin}},
+	"migrate":         {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbSchema}},
+	"list_migrations": {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbSchema}},
+
+	"insert":          {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbCreate}},
+	"update":          {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbUpdate}},
+	"delete":          {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbDelete}},
+	"upsert":          {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbCreate, auth.VerbUpdate}},
+	"upsert_by_key":   {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbCreate, auth.VerbUpdate}},
+	"read_rows":       {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}},
+	"search_fulltext": {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}},
+	"search_vector":   {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}},
+
+	"query": {Scope: scopeNamespace, Verbs: []auth.Verb{auth.VerbRead}},
+
+	"changes_since": {Scope: scopeTableOrNamespace, Verbs: []auth.Verb{auth.VerbRead}},
+	"wait_for":      {Scope: scopeTableOrNamespace, Verbs: []auth.Verb{auth.VerbRead}},
+
+	"grant":       {Scope: scopeGrantObject, Verbs: []auth.Verb{auth.VerbAdmin}},
+	"revoke":      {Scope: scopeGrantObject, Verbs: []auth.Verb{auth.VerbAdmin}},
+	"list_grants": {Scope: scopeGrantObject, Verbs: []auth.Verb{auth.VerbAdmin}},
+}
+
+type authTarget struct {
+	Namespace string          `json:"namespace"`
+	Table     string          `json:"table"`
+	Object    *grantObjectRaw `json:"object"`
+	Changes   []struct {
+		Op string `json:"op"`
+	} `json:"changes"`
+}
+
+type grantObjectRaw struct {
+	Namespace string `json:"namespace"`
+	Table     string `json:"table"`
+}
+
+func forbidden403() error {
+	return derr.New(derr.Forbidden, "%s", forbiddenMessage)
+}
+
+const forbiddenMessage = "the caller holds no grant permitting this operation on this object; an administrator grants access with the grant op, and whoami reports the principal and groups this request authenticated as"
+
+var readDependentMigrations = map[string]struct{}{
+	"set_enum":       {},
+	"set_vectorize":  {},
+	"add_field":      {},
+	"drop_field":     {},
+	"set_fulltext":   {},
+	"set_row_access": {},
+}
+
+func parseAuthTarget(body []byte) authTarget {
+	var t authTarget
+	if len(body) == 0 {
+		return t
+	}
+	_ = json.Unmarshal(body, &t)
+	return t
+}
+
+func parentNamespace(ns string) auth.Object {
+	idx := strings.LastIndex(ns, "/")
+	if idx < 0 {
+		return auth.Object{Namespace: auth.RootObject}
+	}
+	return auth.Object{Namespace: ns[:idx]}
+}
+
+func (s *Server) authorizeOp(ctx context.Context, op string, body []byte) error {
+	if !s.authn.On() {
+		return nil
+	}
+	id := auth.IdentityFrom(ctx)
+	if id.Principal == auth.AdminPrincipal {
+		return nil
+	}
+	rule, ok := authRules[op]
+	if !ok {
+		return fmt.Errorf("operation %s has no authorization rule", op)
+	}
+	if rule.Scope == scopeNone {
+		return nil
+	}
+	if s.grants == nil {
+		return fmt.Errorf("auth is on but no grant registry is configured, so authorization cannot be decided")
+	}
+
+	target := parseAuthTarget(body)
+	obj, err := objectFor(rule.Scope, target)
+	if err != nil {
+		return err
+	}
+
+	held, err := s.grants.EffectiveVerbs(ctx, id, obj)
+	if err != nil {
+		return err
+	}
+
+	required := rule.Verbs
+	if rule.AnyVerb {
+		if held.HasAny(required...) {
+			return nil
+		}
+		return forbidden403()
+	}
+	if !held.HasAll(required...) {
+		return forbidden403()
+	}
+	if op == "migrate" && migrationReadsRows(target) && !held.Has(auth.VerbRead) {
+		return derr.New(derr.Forbidden, "this migration's outcome depends on the table's existing rows, so it requires the read verb in addition to schema; without it a schema-only caller could learn about rows they cannot see")
+	}
+	return nil
+}
+
+func migrationReadsRows(t authTarget) bool {
+	for _, c := range t.Changes {
+		if _, ok := readDependentMigrations[c.Op]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func objectFor(scope authScope, t authTarget) (auth.Object, error) {
+	switch scope {
+	case scopeRoot:
+		return auth.Object{Namespace: auth.RootObject}, nil
+	case scopeParentNamespace:
+		if t.Namespace == "" {
+			return auth.Object{}, badRequest("namespace is required")
+		}
+		return parentNamespace(t.Namespace), nil
+	case scopeNamespace:
+		if t.Namespace == "" {
+			return auth.Object{}, badRequest("namespace is required")
+		}
+		return auth.Object{Namespace: t.Namespace}, nil
+	case scopeTable:
+		if t.Namespace == "" {
+			return auth.Object{}, badRequest("namespace is required")
+		}
+		return auth.Object{Namespace: t.Namespace, Table: t.Table}, nil
+	case scopeTableOrNamespace:
+		if t.Namespace == "" {
+			return auth.Object{}, badRequest("namespace is required")
+		}
+		return auth.Object{Namespace: t.Namespace, Table: t.Table}, nil
+	case scopeGrantObject:
+		if t.Object == nil {
+			return auth.Object{Namespace: auth.RootObject}, nil
+		}
+		return auth.Object{Namespace: t.Object.Namespace, Table: t.Object.Table}, nil
+	}
+	return auth.Object{Namespace: auth.RootObject}, nil
+}

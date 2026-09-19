@@ -21,7 +21,7 @@ const (
 
 var (
 	principalRe = regexp.MustCompile(`^[!-~]{1,256}$`)
-	groupRe     = regexp.MustCompile(`^[!-~]{1,128}$`)
+	groupRe     = regexp.MustCompile(`^[\x21-\x2B\x2D-\x7E]{1,128}$`)
 )
 
 func ValidateMaxGroups(n int) error {
