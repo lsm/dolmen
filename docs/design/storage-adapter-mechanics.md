@@ -46,8 +46,9 @@ retried internally within bounds; only exhausted or genuinely non-retryable conf
 surface as `409` (§0.6 transparent-serialization-first — surfacing every routine race
 would fail serializable concurrent appends).
 
-**Fulltext.** Sidecar implementing the FTS core subset (D25); shares the
-tokenizer/BM25 extraction built for the Postgres engine.
+**Fulltext.** Sidecar implementing the FTS core expression grammar (D25), with engine-native
+text analysis and ranking documented per §7/D27. The 2026-09-19 decision removes
+the previously planned dependency on a shared PostgreSQL tokenizer/BM25 extraction.
 
 ---
 

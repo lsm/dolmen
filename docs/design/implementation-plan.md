@@ -57,7 +57,8 @@ activation slice 8c additionally requires Lane A's 8a → 8b → 8f, 5a, 5d, 6b,
 10f (…, 8d), with 10g last (…, 9j, 7d).
 
 Filing cadence (drift control): Lane 0 + Lane A issues are filed now; Lane B issues file when
-Lane A is moving. **Deliberately not filed — demander-gated (spec D20/D25):** the Postgres adapter,
+Lane A is moving. **Amended 2026-09-19:** the principal requested the Postgres adapter;
+implementation now follows [postgresql.md](postgresql.md). **Still demander-gated (spec D20/D25):**
 the lakehouse adapter, webhooks, export/import, job-queue/claim semantics.
 
 **Native OIDC (10c–10g) is scheduled, not demander-gated — the scope decision, recorded:** the
@@ -1425,7 +1426,8 @@ Acceptance: docs review; no behavior change.
 
 ## Not filed — demander-gated (D20/D25)
 
-The Postgres adapter (engine-2), the lakehouse adapter (engine-3, append-dominated tier),
-webhooks (§9 layer 4), user-facing export/import, and job-queue/claim semantics. All are
-designed in the spec; none has a demander; none is scheduled. The seam (slices 2a–2c) and the
+The Postgres adapter (engine-2) was authorized on 2026-09-19 and is tracked in
+[postgresql.md](postgresql.md). The lakehouse adapter (engine-3, append-dominated tier),
+webhooks (§9 layer 4), user-facing export/import, and job-queue/claim semantics
+remain designed but unscheduled pending a demander. The seam (slices 2a–2c) and the
 spec-pinned signatures are what keep them cheap to add when one appears.

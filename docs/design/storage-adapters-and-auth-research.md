@@ -65,21 +65,14 @@ facade (root `table.go`/`read.go`/`search.go`), and `internal/api` (§1.3 item 9
 
 Ranked by lift:
 
-1. **FTS5 — the single biggest item.** Today a virtual table
-   (`fts5(..., tokenize='porter unicode61')`, `internal/store/store.go` `createFTS`) with
-   synchronous shadow-row writes on every insert/update/delete, and `MATCH ? ORDER BY
-   rank, rowid` execution (`internal/store/search.go`). §7 pins the FTS5 match grammar
-   (core subset, precedence ladder), porter+unicode61 tokenization, and BM25
-   (k1=1.2, b=0.75, weights 1.0). ~~and, under `auth: on`, adapter #1's rank values
-   bit-for-bit.~~ **Superseded 2026-09-17** (open question 2 below, and the §7 "Ranking
-   quality" amendment): FTS5 is no longer the reference oracle and no engine must reproduce
-   its rank values — one shared Go scorer serves every engine instead. The conformance suite pins it concretely (`internal/conformance/search_test.go`,
-   `errors_test.go`: syntax accept/reject including `field:term`, `NEAR`, prefix; BM25
-   ordering; the bare-`-` teaching message; `fts5: syntax error` verbatim). Viable
-   strategy: extract tokenizer+BM25 into shared Go code, store token streams/postings in
-   ordinary Postgres tables, and evaluate the core-subset match and rank in Go — exact by
-   construction because the same code computes it. tsvector can pre-filter candidates;
-   ranking stays Go-side. This is a slice cluster, not a slice.
+1. **Native full-text search (decision amended 2026-09-19).** Keep SQLite FTS5
+   BM25 intact. PostgreSQL stores/indexes `tsvector` with GIN and evaluates matches,
+   `ts_rank_cd`, ordering, and pagination inside PostgreSQL. Translate the common
+   query expression grammar, not the relevance algorithm. Document native `english`
+   stemming/stop-word differences; migration may change matches and ranking. The
+   previous shared-Go tokenizer/BM25 extraction is superseded. Cross-engine tests
+   cover the shared query structure, filters, shape, bounds, and deterministic ties;
+   relevance expectations are engine-specific.
 2. **The raw-`query` dialect and error taxonomy.** Caller SQL executes as SQLite
    (`internal/store/query.go`, `Query`); errors are normalized from modernc message text
    via regexes (`internal/store/sqlerr.go`) into pinned teaching strings (`table %q not
@@ -228,8 +221,9 @@ anchor for what follows:
   is a precondition of exposing `query`, not a Phase 4 polish. The engine selector
   refuses `postgres` outside the matrix harness until every mandatory `Engine`
   operation and its conformance coverage land (end of Phase 4)** → migrate port.
-- **Phase 2 — search** (3 slices): FTS tokenizer/BM25 extraction and postings storage;
-  `SearchFulltext` wiring; `SearchVector` exact (near-free reuse).
+- **Phase 2 — search**: native PostgreSQL tsvector/GIN and ts_rank_cd, core query
+  grammar translation and engine-specific linguistic/ranking fixtures; exact vector
+  search under the separately specified vector contract. No shared BM25 extraction.
 - **Phase 3 — realtime** (2-3 slices): `ChangesSince`/cursors; `Listen` polling and
   sessions; retention pruning.
 - **Phase 4 — confinement and hardening** (2-3 slices): role-per-schema privileges (catalog
@@ -255,9 +249,12 @@ Total ≈ 17-20 slices. The first three, concrete:
    subsequent engine slice is gated by the engine-specific conformance subset instead
    of discovering accumulated regressions in Phase 4.
 
-**What I'd slice first:** the three above, in that order — low-risk, behavior-invariant,
-and every later slice depends on them. Nothing in Phase 1+ should start before the harness
-can express "run the corpus on engine X", or adapter #2 drifts unpinned.
+**Implementation sequence amended 2026-09-19:** begin with an internal PostgreSQL
+connection/catalog and namespace lifecycle slice, with a service-backed CI job and a
+shared namespace conformance subset. This does not yet implement the full `Engine`
+interface or enable the public selector. Complete transport/facade fixture plumbing
+as the mandatory methods land; do not ship a partially implemented engine. The
+concrete sequence and current boundary are in `postgresql.md`.
 
 **Open questions for the principal:**
 
@@ -274,30 +271,14 @@ can express "run the corpus on engine X", or adapter #2 drifts unpinned.
    discovering the difference from a syntax error. Scoped `filter`/`args` are unaffected: §4.3's
    shared allowlist keeps them portable on every engine, and §0.5.3 confinement applies to every
    engine exposing `query`. Recorded in `identity-and-engines.md` §7.
-2. ~~FTS strategy — shared-Go BM25 (recommended; honors the bit-for-bit pin) vs. relaxing
-   the auth-on rank pin for adapter #2 (a spec change). Affects ~3 slices.~~
-   **Answered 2026-09-17 by the principal: shared-Go BM25.** Scoring lives in one place, so
-   every engine returns the identical order for the same corpus and query by construction —
-   an engine supplies token streams and postings, never a score. Adapter #3's full-text
-   sidecar (§2.2) consumes the same code, and Phase 2's tokenizer/BM25 extraction becomes
-   load-bearing rather than optional.
-
-   **Matching SQLite FTS5 is explicitly NOT a requirement.** The principal ruled that the
-   shared scorer need not reproduce FTS5's output; comparing against FTS5 in tests is a
-   useful quality check, not a contract. This supersedes §7's pre-amendment rule naming
-   SQLite FTS5 the reference oracle, so it is a spec change and `identity-and-engines.md`
-   §7 was amended in the same PR that records this.
-
-   **One question it opens, not decided here:** §8.1 promises `auth: off` is preserved
-   bit-for-bit, and adapter #1 orders full-text by FTS5's own ranks today. Adopting the
-   shared scorer there changes the order existing v0.2.0 callers see. Either SQLite keeps
-   FTS5 ranking under `auth: off` and uses the shared scorer elsewhere (two paths on one
-   engine, §8.1 intact), or the shared scorer applies everywhere and §8.1's full-text
-   ordering guarantee is explicitly relaxed. The extraction slice must not land before that
-   is settled.
-3. Demand — D25 gates adapter #2 behind a demander, yet the spec calls Postgres "the
-   reference shared engine." Does this research precede a build decision (Phase 0 becomes
-   real tasks), or does the demander rule stand?
+2. **Answered 2026-09-19: native database-side search.** This supersedes the
+   2026-09-17 shared-Go BM25 decision. Each engine chooses its native ranking;
+   differences after migration are accepted and documented. SQLite keeps existing
+   FTS5 behavior. PostgreSQL uses `tsvector`/GIN with `ts_rank_cd`. Core expression
+   structure, filtering, result shape, and deterministic pagination remain shared;
+   linguistic analysis and relevance order are engine-specific. See §7/D27.
+3. **Demand gate satisfied 2026-09-19:** the principal explicitly requested the
+   PostgreSQL implementation. The lakehouse remains demand-gated.
 4. Should the §7 quantization slice (`q(s)`) be pulled forward as a shared dependency of
    Lane B and adapter #2, so cross-engine parity is enforceable before either lands?
 
@@ -335,8 +316,8 @@ assessment below confirms the seam accommodates this, with one open contract dec
     explicitly — §0.5.3, §2's op table, and the shared conformance corpus, which replays
     every op (`parity_test.go`) — to permit raw-SQL-less engines. That amendment is an
     open decision (below), not something this note assumes.
-  - `search_fulltext` — sidecar per the spec, sharing the Postgres engine's
-    tokenizer/BM25 extraction.
+  - `search_fulltext` — sidecar per the spec, using documented native text analysis and
+    ranking. The shared PostgreSQL scorer dependency was superseded on 2026-09-19.
   - `changes_since`/`wait_for`/`subscribe` — snapshot-diff can seed the change log, but
     a `(snapshot, position)` cursor cannot provide the per-namespace gap-free order
     (snapshots order commits within one table only — the same skip race as the
