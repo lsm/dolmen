@@ -23,6 +23,18 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Resolve model release tag
+        id: models
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="$(make -s model-release)"
+          if ! gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "MODEL_RELEASE is $tag but no release is published under that tag, so this release's model links would 404; push the $tag tag (or run the release-models workflow), then re-run this job" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
       - name: Install govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -45,9 +57,6 @@ jobs:
           output-file: dist/dolmen-${{ github.ref_name }}-sbom.spdx.json
           upload-artifact: false
           upload-release-assets: false
-
-      - name: Package default embedding model
-        run: make release-model VERSION=${{ github.ref_name }}
 
       - name: Generate checksums
         run: make release-checksums
@@ -95,10 +104,12 @@ jobs:
         with:
           files: dist/*
           body: |
-            This release includes two pre-packaged embedding models for offline or Hugging-Face-blocked installs (see the README's "Offline install" and "Choosing an embedding model" sections):
+            Pre-packaged embedding models for offline or Hugging-Face-blocked installs are not attached here. They change far less often than dolmen does, so they are published once under their own tag and shared by every release — this one uses [`${{ steps.models.outputs.tag }}`](https://github.com/${{ github.repository }}/releases/tag/${{ steps.models.outputs.tag }}):
 
-            - `dolmen-model-all-MiniLM-L6-v2-${{ github.ref_name }}.tar.gz` — the default English model (`sentence-transformers/all-MiniLM-L6-v2`, ~90 MB).
-            - `dolmen-model-multilingual-e5-small-${{ github.ref_name }}.tar.gz` — the multilingual/CJK model (`intfloat/multilingual-e5-small`, ~270 MB compressed).
+            - [`dolmen-model-all-MiniLM-L6-v2.tar.gz`](https://github.com/${{ github.repository }}/releases/download/${{ steps.models.outputs.tag }}/dolmen-model-all-MiniLM-L6-v2.tar.gz) — the default English model (`sentence-transformers/all-MiniLM-L6-v2`, ~90 MB).
+            - [`dolmen-model-multilingual-e5-small.tar.gz`](https://github.com/${{ github.repository }}/releases/download/${{ steps.models.outputs.tag }}/dolmen-model-multilingual-e5-small.tar.gz) — the multilingual/CJK model (`intfloat/multilingual-e5-small`, ~270 MB compressed).
+
+            See the README's "Offline install" and "Choosing an embedding model" sections.
           generate_release_notes: true
           prerelease: ${{ steps.tags.outputs.is_final != 'true' }}
           make_latest: ${{ steps.tags.outputs.is_final }}

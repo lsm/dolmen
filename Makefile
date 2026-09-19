@@ -1,4 +1,4 @@
-.PHONY: build test race run clean release release-sbom release-model release-checksums release-all image vulncheck
+.PHONY: build test race run clean release release-sbom release-model release-checksums release-model-checksums checksums model-release release-all image vulncheck
 
 # Release identity injected into the binary at link time. An exact git tag
 # wins (v0.2.0, or v0.2.0-dirty); otherwise development builds report
@@ -9,6 +9,7 @@ VERSION ?= $(shell git describe --tags --exact-match --dirty 2>/dev/null || prin
 LDFLAGS := -X github.com/lsm/dolmen/internal/version.Version=$(VERSION)
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 RELEASE_DIR := dist
+MODEL_DIR := dist-models
 
 # Embedding models packaged as release assets for offline installs: the
 # English default plus the multilingual/CJK option (README, "Choosing an
@@ -16,10 +17,18 @@ RELEASE_DIR := dist
 # pins the upstream Hugging Face commit so release assets are reproducible
 # (rembed does not expose revision pinning, so the packer downloads the
 # pinned commit directly). The asset name derives from the model name after
-# the slash: dolmen-model-<name>-$(VERSION).tar.gz.
+# the slash: dolmen-model-<name>.tar.gz.
+#
+# Model tarballs are not attached to a dolmen release. They are published
+# once per model revision under their own tag (MODEL_RELEASE, pushed as a
+# git tag matching models-v*), and every dolmen release links to that tag.
+# Re-pin a revision above and cut the next MODEL_RELEASE; older dolmen
+# releases keep pointing at the tag they shipped with.
 EMBED_MODELS ?= \
 	sentence-transformers/all-MiniLM-L6-v2@1110a243fdf4706b3f48f1d95db1a4f5529b4d41 \
 	intfloat/multilingual-e5-small@614241f622f53c4eeff9890bdc4f31cfecc418b3
+
+MODEL_RELEASE ?= models-v1
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o dolmen ./cmd/dolmen
@@ -34,7 +43,7 @@ run:
 	go run ./cmd/dolmen -addr 127.0.0.1:8790 -data ./data
 
 clean:
-	rm -rf dolmen dolmen.exe $(RELEASE_DIR)
+	rm -rf dolmen dolmen.exe $(RELEASE_DIR) $(MODEL_DIR)
 
 release: clean
 	@mkdir -p $(RELEASE_DIR)
@@ -56,13 +65,17 @@ release-sbom:
 	syft . -o spdx-json=$$tmp && \
 	mv "$$tmp" $(RELEASE_DIR)/dolmen-$(VERSION)-sbom.spdx.json
 
+model-release:
+	@echo $(MODEL_RELEASE)
+
 release-model:
-	@mkdir -p $(RELEASE_DIR)
+	@rm -rf $(MODEL_DIR)
+	@mkdir -p $(MODEL_DIR)
 	@for m in $(EMBED_MODELS); do \
 		id=$${m%@*}; \
 		rev=$${m#*@}; \
 		name=$${id##*/}; \
-		out="$(RELEASE_DIR)/dolmen-model-$$name-$(VERSION).tar.gz"; \
+		out="$(MODEL_DIR)/dolmen-model-$$name.tar.gz"; \
 		echo "Packaging $$id ($$out)"; \
 		go run ./cmd/pack-model \
 			-model "$$id" \
@@ -73,7 +86,14 @@ release-model:
 CHECKSUM := $(shell if command -v sha256sum >/dev/null 2>&1; then echo sha256sum; else echo shasum -a 256; fi)
 
 release-checksums:
-	@cd $(RELEASE_DIR) && { \
+	@$(MAKE) checksums DIR=$(RELEASE_DIR)
+
+release-model-checksums:
+	@$(MAKE) checksums DIR=$(MODEL_DIR)
+
+checksums:
+	@[ -n "$(DIR)" ] || { echo "checksums needs DIR=<directory>; use release-checksums or release-model-checksums"; exit 1; }
+	@cd "$(DIR)" && { \
 		for f in *; do \
 			[ "$$f" = "SHA256SUMS" ] && continue; \
 			[ -f "$$f" ] && { $(CHECKSUM) "$$f" || exit 1; }; \
@@ -83,7 +103,6 @@ release-checksums:
 release-all:
 	@$(MAKE) release
 	@$(MAKE) release-sbom
-	@$(MAKE) release-model
 	@$(MAKE) release-checksums
 
 image:

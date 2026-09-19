@@ -316,27 +316,32 @@ re-embeds every row).
 
 ### Offline install
 
-In networks that block `huggingface.co` (or on air-gapped machines), download a model asset from
-the release instead of relying on the Hub — the English default and the multilingual model are
-both packaged (see "Choosing an embedding model"):
+In networks that block `huggingface.co` (or on air-gapped machines), download a packaged model
+instead of relying on the Hub — the English default and the multilingual model are both available
+(see "Choosing an embedding model").
+
+Models are not attached to a dolmen release. They change far less often than the binary does, so
+they are published once under their own tag and shared by every version; the tag each release uses
+is linked from its release notes.
 
 ```bash
-tag="v0.3.0"
-curl -LO "https://github.com/lsm/dolmen/releases/download/${tag}/dolmen-model-all-MiniLM-L6-v2-${tag}.tar.gz"
+models="models-v1"
+base="https://github.com/lsm/dolmen/releases/download/${models}"
+curl -LO "${base}/dolmen-model-all-MiniLM-L6-v2.tar.gz"
 # and/or, for mixed-language/CJK data (~270 MB):
-curl -LO "https://github.com/lsm/dolmen/releases/download/${tag}/dolmen-model-multilingual-e5-small-${tag}.tar.gz"
+curl -LO "${base}/dolmen-model-multilingual-e5-small.tar.gz"
 
 # Option A: extract into the data directory's model cache, then run normally.
 # (The multilingual model needs DOLMEN_EMBED_MODEL; the default does not.)
 mkdir -p data/models
-tar -xzf "dolmen-model-multilingual-e5-small-${tag}.tar.gz" -C data/models
+tar -xzf dolmen-model-multilingual-e5-small.tar.gz -C data/models
 DOLMEN_EMBED_PROVIDER=local \
 DOLMEN_EMBED_MODEL=intfloat/multilingual-e5-small \
 ./dolmen
 
 # Option B: extract anywhere and point DOLMEN_EMBED_MODEL at the directory.
 mkdir -p /opt/dolmen/models
-tar -xzf "dolmen-model-multilingual-e5-small-${tag}.tar.gz" -C /opt/dolmen/models
+tar -xzf dolmen-model-multilingual-e5-small.tar.gz -C /opt/dolmen/models
 DOLMEN_EMBED_PROVIDER=local \
 DOLMEN_EMBED_MODEL=/opt/dolmen/models/intfloat--multilingual-e5-small \
 ./dolmen
