@@ -55,6 +55,8 @@ func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields
 	}
 }
 
+func NormalizeKeyFields(fields []string) ([]string, error) { return normalizeKeyFields(fields) }
+
 func normalizeKeyFields(keyFields []string) ([]string, error) {
 	if len(keyFields) == 0 {
 		return nil, invalidf("upsert needs at least one key field")
