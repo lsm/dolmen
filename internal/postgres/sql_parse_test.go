@@ -54,6 +54,10 @@ func TestPostgresSQLLongNamesAndPlaceholders(t *testing.T) {
 	if err != nil || !strings.Contains(out, "short_table") || !strings.Contains(out, "short_field") || names.original(names.name(long)) != long {
 		t.Fatalf("long mapping: %s %v", out, err)
 	}
+	out, names, err = compileSQL("SELECT "+ident(long)+" AS dolmen_long_0 FROM "+ident(long), 0, "namespace_schema", tables)
+	if err != nil || names.name(long) == "dolmen_long_0" || names.original("dolmen_long_0") != "dolmen_long_0" {
+		t.Fatalf("reserved-looking caller alias collided: %s %v", out, err)
+	}
 	source := `SELECT '?' AS "?", $$ ? $$, $tag$ ? $tag$, E'it\'s ?', ? /* ? /* ? */ ? */ -- ?
 , ?`
 	rewritten, count, err := rewriteSQL(source, newSQLNames(nil))

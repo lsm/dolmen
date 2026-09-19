@@ -197,6 +197,9 @@ func (s *Store) Query(ctx context.Context, ns, input string, args []any, expecte
 	if page.Offset < 0 {
 		return store.QueryResult{}, sqlRejected("query offset must not be negative")
 	}
+	if len(args) > 100 {
+		return store.QueryResult{}, sqlRejected("too many query parameters")
+	}
 	args, err := queryArgs(args)
 	if err != nil {
 		return store.QueryResult{}, err

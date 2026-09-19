@@ -24,6 +24,8 @@ type Store struct {
 	pool            *pgxpool.Pool
 	catalog         string
 	queryRole       string
+	queryGrantMu    sync.Mutex
+	queryGrants     map[string][16]byte
 	changeRetention time.Duration
 	now             func() time.Time
 	mu              sync.Mutex

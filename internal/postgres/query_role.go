@@ -52,13 +52,44 @@ func (s *Store) queryTables(ctx context.Context, tx pgx.Tx, n namespace) (map[st
 	return out, nil
 }
 
+func (s *Store) queryGrant(ns string) ([16]byte, bool) {
+	s.queryGrantMu.Lock()
+	defer s.queryGrantMu.Unlock()
+	generation, ok := s.queryGrants[ns]
+	return generation, ok
+}
+
+func (s *Store) rememberQueryGrant(ns string, generation [16]byte) {
+	s.queryGrantMu.Lock()
+	defer s.queryGrantMu.Unlock()
+	if s.queryGrants == nil {
+		s.queryGrants = map[string][16]byte{}
+	}
+	s.queryGrants[ns] = generation
+}
+
+func (s *Store) forgetQueryGrant(ns string) {
+	s.queryGrantMu.Lock()
+	defer s.queryGrantMu.Unlock()
+	delete(s.queryGrants, ns)
+}
+
 func (s *Store) ensureQueryRole(ctx context.Context, ns string, expected [16]byte) ([16]byte, error) {
 	if s.queryRole == "" {
 		return [16]byte{}, fmt.Errorf("%w: PostgreSQL caller SQL requires a pre-provisioned NOLOGIN query role", store.ErrInvalid)
 	}
+	if generation, ok := s.queryGrant(ns); ok {
+		if expected != [16]byte{} && expected != generation {
+			return [16]byte{}, fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, ns)
+		}
+		return generation, nil
+	}
 	var generation [16]byte
 	err := s.write(ctx, ns, expected, func(tx pgx.Tx, n namespace) error {
 		generation = n.generation
+		if cached, ok := s.queryGrant(ns); ok && cached == generation {
+			return nil
+		}
 		var login, super, createDB, createRole, replicate, bypass bool
 		err := tx.QueryRow(ctx, "SELECT rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls FROM pg_catalog.pg_roles WHERE rolname=$1", s.queryRole).Scan(&login, &super, &createDB, &createRole, &replicate, &bypass)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -91,6 +122,9 @@ func (s *Store) ensureQueryRole(ctx context.Context, ns string, expected [16]byt
 		}
 		return nil
 	})
+	if err == nil {
+		s.rememberQueryGrant(ns, generation)
+	}
 	return generation, err
 }
 

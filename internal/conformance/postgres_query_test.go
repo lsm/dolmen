@@ -3,6 +3,7 @@ package conformance
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -51,6 +52,10 @@ func TestQueryBackendConformance(t *testing.T) {
 			}
 			if _, err := eng.Query(ctx, "app", "SELECT 1 AS x,2 AS x", nil, [16]byte{}, store.Page{}); !errors.Is(err, store.ErrInvalid) {
 				t.Fatalf("duplicate labels: %v", err)
+			}
+			args := make([]any, 101)
+			if _, err := eng.Query(ctx, "app", "SELECT "+strings.TrimSuffix(strings.Repeat("?,", len(args)), ","), args, [16]byte{}, store.Page{}); !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("parameter cap: %v", err)
 			}
 		})
 	}
