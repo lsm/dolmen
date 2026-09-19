@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/lsm/dolmen/internal/value"
 )
@@ -359,50 +358,9 @@ func checkRowValue(col string, v any) error {
 	return nil
 }
 
-func rawValSize(v any) int {
-	switch t := v.(type) {
-	case []byte:
-		return len(t)
-	case string:
-		return len(t)
-	default:
-		return 16
-	}
-}
-
-func approxSize(v any) int {
-	switch t := v.(type) {
-	case string:
-		return encodedSize(t)
-	case []byte:
-		return len(t)
-	default:
-		return 16
-	}
-}
-
-func encodedSize(s string) int {
-	n := len(s)
-	for i := 0; i < len(s); i++ {
-		switch {
-		case s[i] < 0x20:
-			n += 6
-		case s[i] == '"' || s[i] == '\\':
-			n += 3
-		}
-	}
-	if strings.Contains(s, " ") || strings.Contains(s, " ") {
-		n += 4 * (strings.Count(s, " ") + strings.Count(s, " "))
-	}
-	if !utf8.ValidString(s) {
-		for _, r := range s {
-			if r == utf8.RuneError {
-				n += 6
-			}
-		}
-	}
-	return n
-}
+func rawValSize(v any) int     { return value.RawSize(v) }
+func approxSize(v any) int     { return value.ApproxSize(v) }
+func encodedSize(s string) int { return value.EncodedSize(s) }
 
 func normalizeVal(v any) any {
 	return value.Normalize(v)
