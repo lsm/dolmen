@@ -24,7 +24,7 @@ ranking. No shared Go BM25 scorer or tokenization extraction is required. The
 separate vector score/ANN contract remains in force; vector acceleration needs its
 own conformance-backed implementation.
 
-## First implementation increment (planned)
+## First implementation increment (implemented internally)
 
 The first increment establishes `internal/postgres` with a pgx connection pool and
 namespace catalog. It deliberately
