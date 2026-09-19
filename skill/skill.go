@@ -157,6 +157,19 @@ func ETag(name, version string, body []byte) string {
 	return "\"" + hex.EncodeToString(h.Sum(nil)[:16]) + "\""
 }
 
+func UsableRequestHost(r *http.Request, configured string) bool {
+	if configured != "" {
+		return true
+	}
+	if h := forwardedFirst(r.Header.Get("X-Forwarded-Host")); h != "" && validHost(h) {
+		return true
+	}
+	if fwd := parseForwarded(r.Header.Get("Forwarded")); r.Header.Get("X-Forwarded-Host") == "" && fwd.host != "" && validHost(fwd.host) {
+		return true
+	}
+	return validHost(r.Host)
+}
+
 func BaseURLFor(r *http.Request, configured string) string {
 	if configured != "" {
 		return strings.TrimRight(configured, "/")
@@ -169,6 +182,9 @@ func BaseURLFor(r *http.Request, configured string) string {
 		scheme = p
 	}
 	host := r.Host
+	if !validHost(host) {
+		host = "invalid-host.invalid"
+	}
 	if h := forwardedFirst(r.Header.Get("X-Forwarded-Host")); h != "" && validHost(h) {
 		host = h
 	}

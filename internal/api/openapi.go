@@ -86,6 +86,10 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, &Error{Status: http.StatusMethodNotAllowed, Code: ErrCodeInvalid, Message: "use GET"})
 		return
 	}
+	if !s.UsableHost(r) {
+		writeError(w, r, errUnusableHost)
+		return
+	}
 	ctx := s.publicContext(r)
 	writeJSON(w, http.StatusOK, s.OpenAPIDoc(ctx.BaseURL))
 }

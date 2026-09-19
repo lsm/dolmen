@@ -555,3 +555,42 @@ func TestRenderedSkillCannotBeInjectedViaHost(t *testing.T) {
 		}
 	}
 }
+
+func TestUsableRequestHostRejectsShellMetacharacters(t *testing.T) {
+	for _, bad := range []string{
+		`127.0.0.1';id;'.example.com`,
+		`a"b.example.com`,
+		"a;b.example.com",
+		"a|b.example.com",
+		"a`b.example.com",
+		"a$b.example.com",
+		"a b.example.com",
+	} {
+		r := httptest.NewRequest(http.MethodGet, "/skills/dolmen", nil)
+		r.Host = bad
+		if UsableRequestHost(r, "") {
+			t.Errorf("Host %q must not be usable: it is quoted back into shell snippets the reader is told to paste", bad)
+		}
+		if got := BaseURLFor(r, ""); strings.ContainsAny(got, "'\"`$;| ") {
+			t.Errorf("BaseURLFor with Host %q leaked shell metacharacters: %q", bad, got)
+		}
+	}
+	for _, good := range []string{"example.com", "example.com:8443", "127.0.0.1:8790", "[::1]:8790"} {
+		r := httptest.NewRequest(http.MethodGet, "/skills/dolmen", nil)
+		r.Host = good
+		if !UsableRequestHost(r, "") {
+			t.Errorf("Host %q must remain usable", good)
+		}
+	}
+}
+
+func TestUsableRequestHostAcceptsAConfiguredBaseURL(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/skills/dolmen", nil)
+	r.Host = `bad';id;'.example.com`
+	if !UsableRequestHost(r, "https://real.example.com") {
+		t.Fatal("a configured base URL must override an unusable request host")
+	}
+	if got := BaseURLFor(r, "https://real.example.com"); got != "https://real.example.com" {
+		t.Fatalf("configured base URL = %q", got)
+	}
+}

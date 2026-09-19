@@ -265,6 +265,13 @@ func wrapStoreErr(err error) *Error {
 	if errors.As(err, &apiErr) {
 		return apiErr
 	}
+	var cve *store.CatalogVersionError
+	if errors.As(err, &cve) {
+		return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: cve.Error(), Cause: err}
+	}
+	if strings.Contains(err.Error(), "corrupt catalog metadata") {
+		return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: redactStoreMsg(err.Error()), Cause: err}
+	}
 	var qe *store.QueryError
 	if errors.As(err, &qe) {
 		_, code := statusFor(ops.Classify(qe))

@@ -94,6 +94,14 @@ func ensureCatalogVersion(ctx context.Context, rw *sql.DB, nsName string) error 
 	return tx.Commit()
 }
 
+func truncateStamp(raw []byte) string {
+	const max = 32
+	if len(raw) <= max {
+		return string(raw)
+	}
+	return string(raw[:max]) + "..."
+}
+
 func readCatalogInt(ctx context.Context, tx *sql.Tx, key string) (int, bool, error) {
 	var raw []byte
 	err := tx.QueryRowContext(ctx, `SELECT value FROM _dolmen_meta WHERE key = ?`, key).Scan(&raw)
@@ -105,7 +113,7 @@ func readCatalogInt(ctx context.Context, tx *sql.Tx, key string) (int, bool, err
 	}
 	n, convErr := strconv.Atoi(string(raw))
 	if convErr != nil || n < 1 {
-		return 0, false, fmt.Errorf("corrupt catalog metadata: %s = %q is not a positive integer", key, string(raw))
+		return 0, false, fmt.Errorf("corrupt catalog metadata: %s = %q is not a positive integer", key, truncateStamp(raw))
 	}
 	return n, true, nil
 }
@@ -131,7 +139,7 @@ func readCatalogVersion(ctx context.Context, db rowQuerier) (format int, minRead
 		}
 		n, convErr := strconv.Atoi(string(raw))
 		if convErr != nil || n < 1 {
-			return 0, 0, fmt.Errorf("corrupt catalog metadata: %s = %q is not a positive integer", key, string(raw))
+			return 0, 0, fmt.Errorf("corrupt catalog metadata: %s = %q is not a positive integer", key, truncateStamp(raw))
 		}
 		*dst = n
 	}

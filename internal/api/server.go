@@ -77,6 +77,11 @@ func New(eng store.Engine, emb embed.Provider, opts ...Option) *Server {
 	return s
 }
 
+var errUnusableHost = &Error{
+	Status: http.StatusBadRequest, Code: ErrCodeInvalid,
+	Message: "the request Host header is not a usable host name, and this response would have to quote it back as this server's public URL; send a valid Host, have the proxy send X-Forwarded-Host, or set DOLMEN_BASE_URL",
+}
+
 func (s *Server) publicContext(r *http.Request) skill.Context {
 	ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version, s.prefix)
 	if s.baseURL == "" && skill.Proxied(r) && skill.UnreachableBaseURL(ctx.BaseURL) {
@@ -552,6 +557,10 @@ func (s *Server) handleSkillsManifest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, &Error{Status: http.StatusMethodNotAllowed, Code: ErrCodeInvalid, Message: "use GET"})
 		return
 	}
+	if !s.UsableHost(r) {
+		writeError(w, r, errUnusableHost)
+		return
+	}
 	ctx := s.publicContext(r)
 	manifest, err := skill.ManifestJSON(ctx)
 	if err != nil {
@@ -570,6 +579,10 @@ func (s *Server) handleSkill(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/skills/")
 	if name == "" || strings.Contains(name, "/") {
 		writeError(w, r, notFound("unknown skill %q", name))
+		return
+	}
+	if !s.UsableHost(r) {
+		writeError(w, r, errUnusableHost)
 		return
 	}
 	ctx := s.publicContext(r)
@@ -658,4 +671,8 @@ func writeJSONStatus(w http.ResponseWriter, status int, v any) {
 
 func (s *Server) PublicContext(r *http.Request) skill.Context {
 	return s.publicContext(r)
+}
+
+func (s *Server) UsableHost(r *http.Request) bool {
+	return skill.UsableRequestHost(r, s.baseURL)
 }
