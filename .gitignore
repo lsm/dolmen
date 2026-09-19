@@ -4,4 +4,5 @@
 *.db-wal
 /dolmen
 /dist/
+/dist-models/
 examples/basic/basic
