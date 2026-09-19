@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- **`-auth on` / `DOLMEN_AUTH=on`** turns on deny-by-default authentication, with the bootstrap
+  admin key (`DOLMEN_ADMIN_KEY`) as its one identity source. Every `/v1/{op}`, `/mcp`, and
+  `/v1/subscribe` request without an accepted credential answers `401` with the new `unauthorized`
+  error code; rejections are uniform, so the message never says which part failed. `/healthz`,
+  `/version`, `/skills*`, and `/v1/openapi.json` stay unauthenticated in both modes. This is a
+  shared credential for one administrative principal, not a multi-user system — per-user
+  identities, API keys, and permissions are the following slices. `dolmen mcp` refuses to start
+  with auth on: a stdio pipe carries no per-request credential.
+- **`unauthorized` error code** (401) in the shared taxonomy. `auth: off` never emits it, and the
+  default is still `auth: off` — nothing changes for existing deployments.
+
 ### Changed
 
 - **Embedding model tarballs are no longer attached to each release.** They are published once

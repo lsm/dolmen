@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/lsm/dolmen/internal/api"
+	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/mcp"
 	"github.com/lsm/dolmen/internal/store"
@@ -77,12 +78,17 @@ func (p *fakeProvider) embeddedTexts() []string {
 }
 
 type harnessMode struct {
-	name string
+	name     string
+	adminKey string
 }
 
 var authOff = harnessMode{name: "off"}
 
-func (m harnessMode) off() bool { return m.name == "off" }
+var authAdminKey = harnessMode{name: "admin-key", adminKey: "Tt5vQ2rXm9LbHc0wPqZaJ4yNfE7sUgKdRi1oCnBxV3M"}
+
+func (m harnessMode) off() bool { return m.adminKey == "" }
+
+func (m harnessMode) on() bool { return m.adminKey != "" }
 
 type harness struct {
 	t   *testing.T
@@ -152,7 +158,11 @@ func (h *harness) start() {
 	h.t.Helper()
 	h.st = openEngineStore(h.t, h.dir, h.storeOpts...)
 
-	apiSrv := api.New(h.st, embed.Provider(h.emb), h.apiOpts...)
+	authn, err := auth.New(auth.Config{Mode: h.mode.authMode(), AdminKey: h.mode.adminKey})
+	if err != nil {
+		h.t.Fatalf("build authenticator for mode %q: %v", h.mode.name, err)
+	}
+	apiSrv := api.New(h.st, embed.Provider(h.emb), append(append([]api.Option(nil), h.apiOpts...), api.WithAuth(authn))...)
 	h.api = apiSrv
 	mcpSrv := mcp.New(apiSrv, nil)
 	mux := http.NewServeMux()
@@ -272,6 +282,9 @@ func (h *harness) postWithHeaders(url string, body []byte, hdr map[string]string
 	for k, v := range hdr {
 		req.Header.Set(k, v)
 	}
+	if h.mode.on() && req.Header.Get("Authorization") == "" {
+		req.Header.Set("Authorization", "Bearer "+h.mode.adminKey)
+	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		h.t.Fatalf("post %s: %v", url, err)
@@ -281,7 +294,15 @@ func (h *harness) postWithHeaders(url string, body []byte, hdr map[string]string
 
 func (h *harness) httpCallRaw(op, body, contentType string) (*http.Response, string) {
 	h.t.Helper()
-	res, err := http.Post(h.httpURL+"/"+op, contentType, strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, h.httpURL+"/"+op, strings.NewReader(body))
+	if err != nil {
+		h.t.Fatalf("new request /v1/%s: %v", op, err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	if h.mode.on() {
+		req.Header.Set("Authorization", "Bearer "+h.mode.adminKey)
+	}
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		h.t.Fatalf("post /v1/%s: %v", op, err)
 	}
@@ -573,4 +594,11 @@ func (h *harness) seedTable(ns, table string, fields []map[string]any) map[strin
 		"table":     table,
 		"fields":    fields,
 	})
+}
+
+func (m harnessMode) authMode() auth.Mode {
+	if m.on() {
+		return auth.ModeOn
+	}
+	return auth.ModeOff
 }

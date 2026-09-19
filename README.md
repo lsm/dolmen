@@ -407,6 +407,8 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 | `-addr` | `DOLMEN_ADDR` | `127.0.0.1:8790` | HTTP listen address (`dolmen mcp` does not listen) |
 | `-data` | `DOLMEN_DATA` | `data` | Data directory (one SQLite file per namespace) |
 | `-engine` | `DOLMEN_ENGINE` | `sqlite` | Storage engine. `sqlite` is the default and currently the only engine; unknown values are rejected with an error |
+| `-auth` | `DOLMEN_AUTH` | `off` | Authentication. `off` is the v0.2.0 behavior: no identity, no credential, bind to loopback. `on` is deny-by-default and requires `DOLMEN_ADMIN_KEY` (see [Authentication](#authentication)) |
+| — | `DOLMEN_ADMIN_KEY` | — | Bootstrap admin credential, required when `-auth on`. 32–256 characters of `[A-Za-z0-9_-]`, presented as `Authorization: Bearer <key>`. Environment only — flags are visible in process listings |
 | `-version` | — | — | Print version and exit |
 | `-prefix` | `DOLMEN_PREFIX` | — | Mount all endpoints (`/healthz`, `/version`, `/skills*`, `/v1/*`, `/mcp`) under this URL prefix. Use with a pass-through proxy that forwards the full path |
 | `-base-url` | `DOLMEN_BASE_URL` | — | Public base URL for the links rendered into the skills manifest, the skill markdown, and the MCP `initialize` instructions. Default: derive from the request `Host` and forwarded headers. Refused when it ends with `-prefix` |
@@ -421,6 +423,50 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 | — | `OPENAI_API_KEY` | — | Fallback API key when `DOLMEN_EMBED_API_KEY` is unset |
 | — | `REMBED_CACHE` | `<data>/models` | Model cache directory for the `local` provider (overrides the data-dir location) |
 | — | `HF_TOKEN` | — | Hugging Face token for gated repos downloaded by the `local` provider |
+
+## Authentication
+
+Dolmen defaults to `-auth off`: no credential is required, no identity exists, and
+the server binds to loopback. That is the right mode for a local agent and it is
+not going away.
+
+`-auth on` turns on deny-by-default. In this release it enables exactly one
+identity source — the bootstrap admin key:
+
+```bash
+DOLMEN_AUTH=on \
+DOLMEN_ADMIN_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')" \
+./dolmen -addr 0.0.0.0:8790
+```
+
+Callers then present the key as a bearer token:
+
+```bash
+curl -sS http://localhost:8790/v1/list_namespaces \
+  -H "Authorization: Bearer $DOLMEN_ADMIN_KEY" \
+  -H 'Content-Type: application/json' -d '{}'
+```
+
+Every `/v1/{op}`, `/mcp`, and `/v1/subscribe` request without an accepted
+credential answers `401` with error code `unauthorized`. Rejections are
+deliberately uniform — a wrong key, a malformed one, and a missing one produce
+the same message, so the response never says which part failed.
+`/healthz`, `/version`, `/skills*`, and `/v1/openapi.json` stay unauthenticated
+in both modes: they are liveness probes and client-side schema discovery, and
+expose no row data.
+
+**What this mode is and is not.** The admin key authenticates one principal,
+`dolmen-admin`, which holds administrative access to everything. It is a shared
+credential protecting the whole server — useful for putting a personal instance
+somewhere other than loopback, not a multi-user system. Per-user identities,
+API keys, and per-namespace permissions are the next slices of the auth work;
+see `docs/design/identity-and-engines.md`. Until they land there is no `403`
+path, because there is only one identity.
+
+`dolmen mcp` (the stdio transport) refuses to start with `-auth on`: a pipe
+carries no per-request credential, and treating whoever launched the subprocess
+as an administrator would be a silent bypass. Stdio is reachable only by its
+parent process, so run it with auth off.
 
 ## Reverse proxy / sub-path hosting
 

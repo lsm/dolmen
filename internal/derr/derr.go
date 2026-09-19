@@ -9,6 +9,7 @@ const (
 	NotFound            Code = "not_found"
 	Query               Code = "query_error"
 	Conflict            Code = "conflict"
+	Unauthorized        Code = "unauthorized"
 	Forbidden           Code = "forbidden"
 	EmbedderUnavailable Code = "embedder_unavailable"
 	Canceled            Code = "canceled"
@@ -46,6 +47,7 @@ var (
 	ErrNotFound            = &Error{Code: NotFound}
 	ErrQuery               = &Error{Code: Query}
 	ErrConflict            = &Error{Code: Conflict}
+	ErrUnauthorized        = &Error{Code: Unauthorized}
 	ErrForbidden           = &Error{Code: Forbidden}
 	ErrEmbedderUnavailable = &Error{Code: EmbedderUnavailable}
 	ErrCanceled            = &Error{Code: Canceled}

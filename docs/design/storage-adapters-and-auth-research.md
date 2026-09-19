@@ -379,7 +379,7 @@ conformance-shaped table, to retire the ecosystem risk before any lane is planne
 
 ### 3.1 Current state: designed in full, built not at all — and the expensive parts are pre-paid
 
-The design authority is complete (`identity-and-engines.md` §1–§9; decision index D1–D28)
+The design authority is complete (`identity-and-engines.md` §1–§9; decision index D1–D29)
 and pre-sliced (`implementation-plan.md`, Lane B = slices 7a–10g, 29 slices: 7a–7e,
 8a–8g, 9a–9j, 10a–10g). Production
 code: zero — no `-auth`/`DOLMEN_AUTH`/`-trusted-proxies` anywhere (the flag list in

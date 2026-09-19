@@ -31,6 +31,8 @@ const (
 
 	ErrCodeConflict ErrorCode = "conflict"
 
+	ErrCodeUnauthorized ErrorCode = "unauthorized"
+
 	ErrCodeForbidden ErrorCode = "forbidden"
 
 	ErrCodeEmbedderUnavailable ErrorCode = "embedder_unavailable"
@@ -341,6 +343,8 @@ func statusFor(code derr.Code) (int, ErrorCode) {
 		return http.StatusBadRequest, ErrCodeQuery
 	case derr.Conflict:
 		return http.StatusBadRequest, ErrCodeConflict
+	case derr.Unauthorized:
+		return http.StatusUnauthorized, ErrCodeUnauthorized
 	case derr.Forbidden:
 		return http.StatusForbidden, ErrCodeForbidden
 	case derr.EmbedderUnavailable:
@@ -365,6 +369,15 @@ func WrapError(err error) *Error {
 	}
 	if errors.Is(err, context.Canceled) {
 		return canceled(err)
+	}
+	var shared *derr.Error
+	if errors.As(err, &shared) {
+		status, code := statusFor(shared.Code)
+		msg := shared.Message
+		if status == http.StatusInternalServerError {
+			msg = "internal error"
+		}
+		return &Error{Status: status, Code: code, Message: msg, Cause: err}
 	}
 	return internal(err)
 }
