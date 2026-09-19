@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -226,6 +227,9 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	dataDir := fs.String("data", envOr("DOLMEN_DATA", "data", getenv), "data directory (one SQLite file per namespace)")
 	engine := fs.String("engine", getenv("DOLMEN_ENGINE"), "storage engine (empty or sqlite)")
 	authMode := fs.String("auth", envOr("DOLMEN_AUTH", "off", getenv), "authentication: off (default, no identity required) or on (deny-by-default; set DOLMEN_ADMIN_KEY)")
+	trustedProxies := fs.String("trusted-proxies", envOr("DOLMEN_TRUSTED_PROXIES", "", getenv), "comma-separated CIDRs (bare IPs allowed) whose peers may assert X-Dolmen-Principal / X-Dolmen-Groups")
+	maxGroupsDefault, maxGroupsErr := envIntOr("DOLMEN_MAX_GROUPS", auth.DefaultMaxGroups, getenv)
+	maxGroups := fs.Int("max-groups", maxGroupsDefault, "maximum group entries accepted per request (1 to 1024)")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	publicBaseURL := fs.String("base-url", envOr("DOLMEN_BASE_URL", "", getenv), "public base URL for skills and MCP links (default: use request Host)")
 	prefix := fs.String("prefix", envOr("DOLMEN_PREFIX", "", getenv), "mount all endpoints under this URL prefix (pass-through proxy)")
@@ -287,7 +291,25 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		fs.Usage()
 		return nil, &printedError{err}
 	}
-	authn, err := auth.New(auth.Config{Mode: mode, AdminKey: getenv("DOLMEN_ADMIN_KEY"), Stdio: stdio})
+	if maxGroupsErr != nil {
+		fmt.Fprintf(out, "config: %v\n", maxGroupsErr)
+		fs.Usage()
+		return nil, &printedError{maxGroupsErr}
+	}
+
+	proxies, err := auth.ParseTrustedProxies(*trustedProxies)
+	if err != nil {
+		fmt.Fprintf(out, "config: %v\n", err)
+		fs.Usage()
+		return nil, &printedError{err}
+	}
+	authn, err := auth.New(auth.Config{
+		Mode:           mode,
+		AdminKey:       getenv("DOLMEN_ADMIN_KEY"),
+		TrustedProxies: proxies,
+		MaxGroups:      *maxGroups,
+		Stdio:          stdio,
+	})
 	if err != nil {
 		fmt.Fprintf(out, "config: %v\n", err)
 		fs.Usage()
@@ -372,6 +394,18 @@ func parseMaxSubscriptionAge(raw string) (time.Duration, error) {
 	return 0, fmt.Errorf("invalid max subscription age %q: must be 0 (disable the bound) or between 1s and 24h", raw)
 }
 
+func envIntOr(key string, fallback int, getenv func(string) string) (int, error) {
+	raw := strings.TrimSpace(getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: must be a whole number", key, raw)
+	}
+	return n, nil
+}
+
 func envOr(key, fallback string, getenv func(string) string) string {
 	if v := getenv(key); v != "" {
 		return v
@@ -386,6 +420,8 @@ func printEnvHelp(out io.Writer) {
 		{"DOLMEN_ENGINE", "storage engine; empty or sqlite (default sqlite)"},
 		{"DOLMEN_AUTH", "authentication: off (default) or on (deny-by-default)"},
 		{"DOLMEN_ADMIN_KEY", "bootstrap admin credential, required when auth is on (env-only, never a flag)"},
+		{"DOLMEN_TRUSTED_PROXIES", "comma-separated CIDRs whose peers may assert identity headers"},
+		{"DOLMEN_MAX_GROUPS", "maximum group entries accepted per request, 1 to 1024 (default 128)"},
 		{"DOLMEN_ALLOWED_ORIGINS", "comma-separated allowed HTTP origins for CORS"},
 		{"DOLMEN_BASE_URL", "public base URL for skills and MCP links (default: use request Host)"},
 		{"DOLMEN_SKILL_NAMESPACE_HINT", "hint text rendered into skill markdown"},

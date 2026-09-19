@@ -585,6 +585,9 @@ func (s *Server) Authenticated(r *http.Request) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := s.authn.Authorize(id); err != nil {
+		return nil, err
+	}
 	return r.WithContext(auth.WithIdentity(r.Context(), id)), nil
 }
 
