@@ -40,3 +40,38 @@ jobs:
           go-version-file: go.mod
       - name: Check no comments
         run: go run github.com/lsm/nocomment-for-agents/go@016ad219e84b9b78ca66ff1b66a7729218030c12 --check
+
+  postgres-foundation:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: dolmen
+          POSTGRES_PASSWORD: dolmen-test
+          POSTGRES_DB: dolmen_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dolmen -d dolmen_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DOLMEN_TEST_PG_DSN: postgres://dolmen_backend:backend-test@127.0.0.1:5432/dolmen_test?sslmode=disable
+      DOLMEN_TEST_PG_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Create an unprivileged backend role
+        env:
+          PGPASSWORD: dolmen-test
+        run: >-
+          psql -h 127.0.0.1 -U dolmen -d dolmen_test -v ON_ERROR_STOP=1
+          -c "CREATE ROLE dolmen_backend LOGIN PASSWORD 'backend-test'; GRANT CONNECT, CREATE ON DATABASE dolmen_test TO dolmen_backend;"
+      - name: PostgreSQL lifecycle and cross-process transaction tests
+        run: go test -race -count=1 ./internal/postgres
+      - name: Shared namespace and table contracts on both backends
+        run: go test -race -count=1 ./internal/conformance -run '^Test(Namespace|Table)BackendConformance$'

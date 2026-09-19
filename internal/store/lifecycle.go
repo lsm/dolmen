@@ -345,6 +345,10 @@ func (s *Store) evict(name string) {
 }
 
 func validateNSPath(name string) error {
+	return ValidateNamespace(name)
+}
+
+func ValidateNamespace(name string) error {
 	segs := strings.Split(name, "/")
 	if len(segs) > maxNSDepth {
 		return invalidf("invalid namespace %q: namespace paths are 1-3 segments (a/b/c), got %d", name, len(segs))

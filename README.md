@@ -965,6 +965,17 @@ make release-all     # release binaries + SBOM + SHA256SUMS
 make image           # build a local container image
 ```
 
+### PostgreSQL development status
+
+The PostgreSQL backend is under development; it is not yet selectable in the CLI or
+Go API. The internal implementation includes pooled connections, namespace and table
+lifecycle, schema metadata, and transaction locking, with PostgreSQL-backed CI tests. See the
+[implementation plan](docs/design/postgresql.md) for scope and test instructions.
+The planned full-text search uses each backend's native ranking: SQLite keeps FTS5
+BM25, while PostgreSQL uses its native text-search index and ranking. Relevance and
+linguistic matching may differ when moving datasets between backends.
+
+
 ### Releasing
 
 Pushing a `vX.Y.Z` tag starts the `release` workflow:
