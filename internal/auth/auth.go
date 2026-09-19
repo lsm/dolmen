@@ -31,6 +31,8 @@ const AdminPrincipal = "dolmen-admin"
 
 const KeyPrefix = "dlm_"
 
+const AdminKeySourceName = "admin-key"
+
 type Identity struct {
 	Principal string
 	Groups    []string
@@ -69,7 +71,7 @@ func NewAdminKeySource(key string) Source {
 	return &adminKeySource{key: []byte(key)}
 }
 
-func (s *adminKeySource) Name() string { return "admin-key" }
+func (s *adminKeySource) Name() string { return AdminKeySourceName }
 
 func (s *adminKeySource) Authenticate(r *http.Request) (Identity, bool) {
 	token, ok := BearerToken(r)

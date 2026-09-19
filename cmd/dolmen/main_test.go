@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lsm/dolmen/internal/api"
+	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/mcp"
 	"github.com/lsm/dolmen/internal/store"
@@ -797,5 +799,43 @@ func TestLoadConfigStdioAuthOffStillWorks(t *testing.T) {
 	}
 	if cfg.Auth.On() {
 		t.Fatal("stdio auth is on")
+	}
+}
+
+func captureLogs(t *testing.T, fn func()) string {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+	fn()
+	return buf.String()
+}
+
+func TestLogAuthPosture(t *testing.T) {
+	const key = "Tt5vQ2rXm9LbHc0wPqZaJ4yNfE7sUgKdRi1oCnBxV3M"
+
+	off, err := auth.New(auth.Config{Mode: auth.ModeOff})
+	if err != nil {
+		t.Fatalf("auth off: %v", err)
+	}
+	got := captureLogs(t, func() { logAuthPosture(off) })
+	if !strings.Contains(got, "no authentication") {
+		t.Fatalf("auth off did not warn: %q", got)
+	}
+
+	on, err := auth.New(auth.Config{Mode: auth.ModeOn, AdminKey: key})
+	if err != nil {
+		t.Fatalf("auth on: %v", err)
+	}
+	got = captureLogs(t, func() { logAuthPosture(on) })
+	if strings.Contains(got, "no authentication") {
+		t.Fatalf("auth on claimed there is no authentication: %q", got)
+	}
+	if !strings.Contains(got, auth.AdminKeySourceName) {
+		t.Fatalf("auth on did not name the enabled source: %q", got)
+	}
+	if strings.Contains(got, key) {
+		t.Fatalf("startup log echoes the admin key: %q", got)
 	}
 }

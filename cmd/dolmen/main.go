@@ -93,7 +93,7 @@ func run() error {
 	go func() {
 		slog.Info("dolmen listening", "addr", cfg.Addr, "data", cfg.DataDir, "embed", emb.Name(), "version", version.Version)
 		slog.Info("endpoints", "mcp", "http://"+cfg.Addr+cfg.Prefix+"/mcp", "api", "http://"+cfg.Addr+cfg.Prefix+"/v1/{op}", "health", "http://"+cfg.Addr+cfg.Prefix+"/healthz", "version", "http://"+cfg.Addr+cfg.Prefix+"/version", "skills", "http://"+cfg.Addr+cfg.Prefix+"/skills")
-		slog.Warn("no authentication: keep this bound to a private interface")
+		logAuthPosture(cfg.Auth)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
@@ -176,6 +176,14 @@ func newEmbedProvider(cfg *config) (embed.Provider, error) {
 		}
 	}
 	return emb, nil
+}
+
+func logAuthPosture(a *auth.Authenticator) {
+	if a.On() {
+		slog.Info("authentication on", "source", auth.AdminKeySourceName, "principal", auth.AdminPrincipal)
+		return
+	}
+	slog.Warn("no authentication: keep this bound to a private interface")
 }
 
 func newMCPServer(cfg *config, apiSrv *api.Server) *mcp.Server {
