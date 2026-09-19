@@ -68,9 +68,36 @@ for the future confined query path is a separate deployment decision before that
 can ship. Use a dedicated database for tests; the test fixtures create and remove
 only uniquely named catalogs and the namespace schemas registered within them.
 
+## Table lifecycle increment (implemented internally)
+
+The next stacked slice adds CreateTable, TableState, ListTables, DescribeTable, and
+DropTable. It shares table-definition/default validation with SQLite and stores logical
+schemas with exact JSON number tokens. PostgreSQL uses NUMERIC for number fields,
+BOOLEAN for booleans, BYTEA for vectors, and TEXT for strings/timestamps/JSON. Value
+coercion and typed row reads are the next slice; these DDL choices do not claim that
+raw PostgreSQL casts reproduce SQLite coercion. Application defaults remain in schema
+metadata for application during writes, matching the existing SQLite write contract.
+
+Catalog version 2 adds the table registry transactionally; opening a version-1 catalog
+upgrades it while preserving namespace generations. Drop tombstones retain table drop
+generations and are removed with their namespace. A stale incarnation cannot drop a
+replacement table. Schema reads/counts hold a shared namespace-row lock; table changes
+hold the exclusive write lock, keeping schema, row count, and incarnation coherent.
+
+Logical-to-physical field/table maps are persisted. Short identifiers normally pass
+through; long identifiers use a shortened candidate with a hash suffix. Check for
+collisions with other mapped names and PostgreSQL relations (including generated
+indexes/sequences), allocate a distinct candidate, and fail rather than alias after a
+bounded number of attempts. This is collision detection, not a claim of an injective
+truncated hash. The future caller-query path must resolve identifiers with these
+persisted maps and preserve caller-visible logical names.
+
+Full-text indexes, row mutations, caller SQL, and notifications are not implemented by
+this slice. Selecting postgres publicly remains disabled.
+
 ## Remaining implementation sequence
 
-1. Table/schema lifecycle and registry, shared value coercion/decoding, typed reads.
+1. Shared value coercion/decoding and typed row reads.
 2. Insert/update/delete/upsert with idempotency and durable change records in the same
    namespace-serialized transaction. Normalize PostgreSQL SQLSTATE errors to dolmen's
    taxonomy; preserve integer and JSON fidelity fixtures.
@@ -97,7 +124,7 @@ Against a disposable PostgreSQL database:
 export DOLMEN_TEST_PG_DSN='postgres://user:password@127.0.0.1:5432/dolmen_test?sslmode=disable'
 export DOLMEN_TEST_PG_REQUIRED=1
 go test -race -count=1 ./internal/postgres
-go test -race -count=1 ./internal/conformance -run '^TestNamespaceBackendConformance$'
+go test -race -count=1 ./internal/conformance -run '^Test(Namespace|Table)BackendConformance$'
 ```
 
 Without the test DSN, PostgreSQL integration tests skip during ordinary SQLite-only

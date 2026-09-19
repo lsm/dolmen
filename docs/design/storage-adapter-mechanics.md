@@ -98,15 +98,20 @@ server-appended pagination parameters (`LIMIT ? OFFSET ?`) are appended to the s
 renumbered sequence. Implementing tests pin: mixed user + appended parameters, `?`
 inside string literals and comments (never rewritten), and error positions.
 
-**Physical-name mapping.** Dolmen names may reach 64 characters; stock Postgres
-identifiers are limited to 63 bytes (longer names are silently truncated, colliding
-two valid names). Adapter #2 maps logical names to injective physical names: names
-within 63 bytes pass through unchanged; longer names become `<prefix>_<h>` where
-`<h>` is the first 16 hex characters of SHA-256 over the full logical name and
-`<prefix>` the longest prefix keeping the total at 63 bytes. All dolmen-generated SQL
-translates at statement-build time; caller SQL (`query`, filters) passes through the
-same lexer-aware translation as the placeholder rebinding (logical identifiers →
-physical), and error messages map physical back to logical before redaction surfaces
-them — callers only ever see logical names. Implementing tests pin: two 64-character
-names sharing a 63-byte prefix (no collision), round-trip through `query`, and error
-messages naming logical names.
+**Physical-name mapping (amended 2026-09-19).** Dolmen names may reach 64
+characters; PostgreSQL identifiers are limited to 63 bytes. Namespace paths map to
+registered generation-specific physical schemas. Table/field names within 63 bytes
+normally pass through; longer names first try `<prefix>_<h>`, where `<h>` is 16 hex
+characters of SHA-256 and `<prefix>` keeps the whole identifier within 63 bytes.
+This truncated hash is not injective. Detect collisions with other mapped columns and
+existing PostgreSQL relations, including generated indexes and sequences; allocate a
+distinct salted candidate and persist the resulting mapping. Allocation fails rather
+than silently aliasing when its bounded retry budget is exhausted.
+
+Generated SQL uses the persisted mapping. Before exposing caller SQL, its identifier
+resolver must distinguish real table/field references from aliases and CTE names,
+resolve them through the same map, and return logical labels/errors to callers.
+This is not a promise that arbitrary token substitution is a SQL parser. Tests cover
+two 64-character names sharing a 63-byte prefix, a short name equal to a long name's
+first candidate, index/sequence collisions, and (when the query path lands) round-trip
+query results and errors using logical names.

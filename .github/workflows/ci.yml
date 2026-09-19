@@ -73,5 +73,5 @@ jobs:
           -c "CREATE ROLE dolmen_backend LOGIN PASSWORD 'backend-test'; GRANT CONNECT, CREATE ON DATABASE dolmen_test TO dolmen_backend;"
       - name: PostgreSQL lifecycle and cross-process transaction tests
         run: go test -race -count=1 ./internal/postgres
-      - name: Shared namespace contract on both backends
-        run: go test -race -count=1 ./internal/conformance -run '^TestNamespaceBackendConformance$'
+      - name: Shared namespace and table contracts on both backends
+        run: go test -race -count=1 ./internal/conformance -run '^Test(Namespace|Table)BackendConformance$'

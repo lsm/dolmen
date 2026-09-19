@@ -113,8 +113,8 @@ Ranked by lift:
    → SQLSTATE 23505, the "duplicate column" sniff in `Migrate` → 42701. And names at
    the contract's 64-character maximum exceed stock Postgres's 63-byte identifier
    limit (longer names are silently truncated, colliding two valid dolmen names) —
-   the port needs an injective physical-name mapping with logical-name resolution on
-   the `query` path (detailed in `storage-adapter-mechanics.md` §3).
+   the port needs a persisted, collision-checked physical-name mapping with logical-name
+   resolution on the `query` path (detailed in `storage-adapter-mechanics.md` §3).
 7. **Notifications.** In-process commit listeners plus a 250 ms poll fallback
    (`internal/store/listen_live.go`, `notify.go`). The durable table is the source of
    truth, so the polling design is multi-process-correct on day one; Postgres

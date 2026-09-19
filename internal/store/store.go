@@ -538,17 +538,9 @@ func (s *Store) ListMigrations(ctx context.Context, nsName, table string, inc In
 const MaxFieldsPerTable = 100
 
 func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []schema.Field, opts TableOpts, nsGen [16]byte) (*schema.TableSchema, error) {
-	if err := schema.ValidateTableName(table); err != nil {
-		return nil, invalidf("%s", err)
-	}
-	if len(fields) > MaxFieldsPerTable {
-		return nil, invalidf("too many fields: %d (max %d; SQLite caps tables at 2000 columns including the implicit id, created_at, and _embedding)", len(fields), MaxFieldsPerTable)
-	}
-	fields = schema.Normalize(fields)
-	if err := schema.Validate(fields); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
-	}
-	if err := validateFieldDefaults(fields); err != nil {
+	var err error
+	fields, err = ValidateTableDefinition(table, fields)
+	if err != nil {
 		return nil, err
 	}
 	n, err := s.ns(nsName)
