@@ -31,7 +31,9 @@ changes need attention before upgrading.
   spending tokens on a poll loop; `subscribe` (SSE, `GET /v1/subscribe`) streams replay-then-live
   with keepalive frames and a resume cursor.
 - **`read_rows`** fetches rows by id, and **`capabilities`** reports the engine's static surface.
-  Twenty-three operations total, up from nineteen. No operations were removed.
+  Twenty-three operations total, up from nineteen, and none were removed. `openapi.json` lists 24
+  paths: one `POST /v1/{op}` per operation, plus `GET /v1/subscribe`, which is a stream rather than
+  an operation and so has no entry in `tools/list`.
 - **MCP over stdio.** `dolmen mcp` serves the same dispatcher on stdin/stdout for hosts that launch
   a subprocess, with a bounded drain on shutdown.
 - **Embedded Go library.** `import "github.com/lsm/dolmen"` opens a store in-process with no port
