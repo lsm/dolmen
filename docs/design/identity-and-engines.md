@@ -179,10 +179,22 @@ reinterpreted as a weaker source (fail-closed, §1.3). The shapes stay disjoint 
 §1.3 rejects an admin key beginning with `dlm_` at startup, so no credential is ever two
 interpretations at once and dispatch never needs a second guess.
 
-Build order (mirrored on the epic's authn stream, #159's checklist): the authn stream builds
-**the seam itself — identity
-sources as a pluggable interface, with the header source as v1**. Native OIDC and API keys land
-later as one additive stream: they touch only the source layer and the key registry, never FGA.
+Build order (mirrored on the epic's authn stream, #159's checklist). **Amended 2026-09-19 (D29),
+superseding "the seam itself, with the header source as v1":** the authn stream builds **the seam
+itself — identity sources as a pluggable interface — with the bootstrap admin key (source D, §1.3)
+as its first and only source**. Source A follows, then API keys, then native OIDC.
+
+*Rationale.* The deployment the owner is building toward is the gateway-less one, whose native
+credential is the API key (source C) — and source C cannot go first: its ops are `admin`-gated on
+`*` (§1.5), and its self-revocation guard evaluates the deployment-wide reachable-root-administrator
+set atomically across the key registry *and* the grant registry (§1.2, §1.5), so it presupposes
+§2's verbs and §3's registry. Source D presupposes neither: its grant is implicit and attaches to
+the credential rather than to data (§1.3), so it is the one source that can land with the seam, and
+it is already the credential the later key-minting bootstrap flow starts from. Source A remains
+fully specified and unchanged (§1.1–1.2, D1/D2); it moved in the order, not in the design. Until
+§2 and §3 land, `auth: on` authenticates exactly one principal — `dolmen-admin`, holding its
+implicit `admin` on `*` — so there is no `403` path yet and deny-by-default rests entirely on
+`401`. Native OIDC and API keys still touch only the source layer and the key registry, never FGA.
 
 ### 1.1 Headers
 
@@ -267,6 +279,13 @@ Rules:
   hard, not operator error unrecoverable. The same check guards the
   other end: removing `DOLMEN_ADMIN_KEY` from the environment is only safe once a durable
   principal root-admin grant exists (the §3.4 last-admin guard then keeps it un-revocable).
+- **The stdio MCP transport cannot run `auth: on`** (added 2026-09-19, D29): a pipe carries no
+  per-request credential, and treating whoever spawned the subprocess as an authenticated principal
+  would be an unaudited bypass of every rule in this section — `dolmen mcp` with `auth: on` is a
+  **startup error**. Stdio is reachable only by the process that launched it, so `auth: off` is the
+  honest mode there. *Open:* whether a future stdio deployment should adopt a launcher-supplied
+  credential (an env-passed key, say) rather than staying auth-off; nothing here presumes the
+  answer, and the startup error is the fail-closed placeholder until one is wanted.
 - `/healthz`, `/version`, `/skills*`, and `/v1/openapi.json` remain unauthenticated in both modes
   (liveness probes and client-side schema discovery; they expose no row data — **confirmed in
   review 2026-09-05, a decision, not a default**); everything under `/v1/{op}` and `/mcp`
@@ -1502,10 +1521,18 @@ callback endpoints) likewise; and the `row_access` annotation in any schema.
 
 ### 8.2 Modes in the harness
 
-The matrix has three modes (grown from two, 2026-09-06) — the harness is already
-mode-parameterized, so this adds fixtures, not machinery:
+The matrix has four modes (grown from two 2026-09-06, and from three 2026-09-19 with D29's build
+reorder) — the harness is already mode-parameterized, so this adds fixtures, not machinery:
 
 - `auth: off` — today's harness, unchanged: full suite, golden contract.
+- `admin-key` — `DOLMEN_AUTH=on` with the bootstrap admin key as the only enabled source (§1.3,
+  D29). **The first `auth: on` mode to land**, before §2's verbs and §3's grants exist: it pins
+  the seam's mode-level contract — every op, `/mcp`, and `/v1/subscribe` answer `401 unauthorized`
+  without an accepted credential; rejections are byte-identical across every failing credential
+  shape so none of them says which part failed; asserted §1.1 headers do not authenticate while
+  source A is unbuilt; `/healthz`, `/version`, `/skills*`, and `/v1/openapi.json` stay open; and
+  `auth: off` never emits `unauthorized`. It keeps running once later sources land — its job is the
+  seam, not the source.
 - `gateway` — `DOLMEN_AUTH=on`, `DOLMEN_TRUSTED_PROXIES=127.0.0.1/8`, and an admin key; tests
   assert identity via `X-Dolmen-Principal`/`X-Dolmen-Groups` (or the bearer key) the way a
   gateway would.
@@ -1562,9 +1589,10 @@ mode-parameterized, so this adds fixtures, not machinery:
 
 ### 8.4 CI wiring
 
-**Every matrix mode that has landed runs in CI** — `auth: off` + `gateway` from day one,
-`native+keys` when the OIDC stream lands (§8.2): skipping an available mode fails CI, so the
-native fixtures (source-blindness, the OIDC dance, key issuance) can never silently drop out.
+**Every matrix mode that has landed runs in CI** — `auth: off` + `admin-key` from day one,
+`gateway` when source A lands, `native+keys` when the OIDC stream lands (§8.2): skipping an
+available mode fails CI, so the native fixtures (source-blindness, the OIDC dance, key issuance)
+can never silently drop out.
 Each is an ordinary `go test ./...` run inside `make test` — mode selection happens inside the
 harness per test group, no CI matrix, no new make targets.
 
@@ -1818,5 +1846,6 @@ ETL layer (an ETL layer in dolmen would be fiso-shaped, not dolmen-shaped).
 | D24 | Realtime change notifications join the spec ("one bag" — auth, authz, and subscription designed together): four layers in build order (durable per-namespace change log + `changes_since` → `wait_for` long-poll ≤60s → SSE `subscribe` for agent hosts → webhooks designed-not-built); a subscription is a **standing read** (`read` verb — or any data verb under `row_access`, own rows only — visible set, **per-event** scope AND credential evaluation, mid-subscription revocation drops the stream, source-A streams duration-bounded with the documented gateway termination obligation); change records and cursors are **minted inside the write transaction** (per-record table-lifetime key and internal owner label; no CDC; notification after commit only, never the durability mechanism; order = §0.6 serial observability; cross-pod fan-out = engine-declared capability); durable gap-free per-namespace cursors with a retention knob (beyond retention = teaching error); realtime ops exist in both modes (data ops, not auth surface); decoding stays OUT (agent decodes; fiso is the codec layer for non-LLM pipelines) | §9 |
 | D25 | Postgres is the reference shared engine (adapter #2 — the org/multi-host tier; schema-per-namespace, native RLS for RowScope, role-per-schema confinement, ACID are its native vocabulary; only an operational engine can honor the operational contract). The lakehouse is **adapter #3, a first-class engine for the append-dominated tier** (events, telemetry, memory — amended 2026-09-06, refining #8's demotion): the small-write problem is solved below the seam (deletion vectors / merge-on-read / LSM-tree / WAL-fronted Parquet — engine-internal, dolmen-blind), §0.6 honored via any; **high-frequency OLTP (tens of thousands of point mutations/sec) is out of scope** for this tier — the operational store's job; rare updates are not a blocker; reads via a serving/cache tier; **full-text is the one genuine gap** — engine-specific sidecar for the FTS core subset, stated plainly; open-format storage makes analytics consumption a property of the storage, not an export pipeline (still DISTINCT from the skipped user-facing `export`/`import` ops, D20); designed-not-built until a demander (D20 status, like webhooks §9) — designed *as an engine* | §0.5 |
 | D26 | `search_vector` ANN accelerator exception (full-text follows D27's native per-engine ranking): an engine MAY serve vector search from an ANN index (e.g. pgvector HNSW) with **declared** capability (B4-style, never silent) and a documented recall bound; the contract pins result shape, visible set, and per-path determinism — not bit-identical ranking across engines or index configs; RowScope, `truncated`, `skipped_vectors`, and pagination stay exact regardless of index (approximation affects top-K ordering only, never eligibility); the brute-force exact path (canonical cosine + `q(s)` quantization) remains the conformance reference; §8.1's auth-off corpus untouched | §7 |
+| D29 | Authn build order reversed (2026-09-19): the seam lands with **source D (bootstrap admin key)** as its only source, then source A, then API keys, then OIDC — superseding "the seam itself, with the header source as v1". Source C cannot lead: its ops are `admin`-gated and its self-revocation guard spans the grant registry, so it presupposes §2 and §3; source D's grant is implicit and credential-bound, so it presupposes neither. Source A is unchanged in design, only in order. Adds the `admin-key` conformance mode (§8.2) and makes `auth: on` over the stdio MCP transport a startup error (§1.2) | §1, §1.2, §1.3, §8.2 |
 | D27 | **Amended 2026-09-19:** full-text search uses each backend's native indexing and database-side ranking. SQLite keeps FTS5 BM25; PostgreSQL uses `tsvector`/GIN and `ts_rank_cd`. No shared Go scorer or cross-engine ranking parity; ranking and native text-analysis differences after migration are acceptable and documented. Preserve shared core grammar, filtering/authorization, result shapes, bounded pagination, and deterministic per-engine tie-breaking. SQLite's auth-off ranking remains unchanged. | §7 |
 | D28 | `query` is **transparent**: caller SQL reaches the engine as written — no translation layer, no portable subset (a partial SQL translator fails silently on what it does not cover). The obligation is **disclosure, not portability**: each engine states its `query` dialect in the pinned `query_dialect` capability field (string, open enum — `"sqlite"` on adapter #1; §6, §2) so conformance can compare it and clients branch on it rather than meet a syntax error. Scoped `filter`/`args` are unaffected: §4.3's shared allowlist keeps them portable on every engine, and §0.5.3 catalog/function confinement applies to every engine exposing `query` | §7 |

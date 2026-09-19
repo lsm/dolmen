@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/ops"
 	"github.com/lsm/dolmen/internal/schema"
@@ -35,6 +36,7 @@ type Server struct {
 	keepaliveInterval  time.Duration
 	holdReplay         func()
 	proxyAdviceOnce    sync.Once
+	authn              *auth.Authenticator
 }
 
 type Option func(*Server)
@@ -60,6 +62,12 @@ func WithMaxSubscriptionAge(d time.Duration) Option {
 func WithKeepaliveInterval(d time.Duration) Option {
 	return func(s *Server) {
 		s.keepaliveInterval = d
+	}
+}
+
+func WithAuth(a *auth.Authenticator) Option {
+	return func(s *Server) {
+		s.authn = a
 	}
 }
 
@@ -516,7 +524,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/skills/", s.handleSkill)
 	mux.HandleFunc("/v1/openapi.json", s.handleOpenAPI)
 
-	mux.HandleFunc("/v1/subscribe", s.HandleSubscribe)
+	mux.HandleFunc("/v1/subscribe", func(w http.ResponseWriter, r *http.Request) {
+		authed, err := s.Authenticated(r)
+		if err != nil {
+			writeError(w, r, WrapError(err))
+			return
+		}
+		s.HandleSubscribe(w, authed)
+	})
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
 
 		r = r.WithContext(WithRequestID(r.Context(), RequestIDFor(r)))
@@ -535,6 +550,12 @@ func (s *Server) Handler() http.Handler {
 			writeError(w, r, &Error{Status: http.StatusMethodNotAllowed, Code: ErrCodeInvalid, Message: "use POST"})
 			return
 		}
+		authed, authErr := s.Authenticated(r)
+		if authErr != nil {
+			writeError(w, r, WrapError(authErr))
+			return
+		}
+		r = authed
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20))
 		if err != nil {
 			var maxErr *http.MaxBytesError
@@ -547,13 +568,24 @@ func (s *Server) Handler() http.Handler {
 		}
 		res, err := s.Dispatch(r.Context(), op, body)
 		if err != nil {
-			slog.Debug("op failed", "op", op, "err", err)
+			slog.Debug("op failed", withPrincipal(r, "op", op, "err", err)...)
 			writeError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": res})
 	})
 	return mux
+}
+
+func (s *Server) Authenticated(r *http.Request) (*http.Request, error) {
+	if !s.authn.On() {
+		return r, nil
+	}
+	id, err := s.authn.Authenticate(r)
+	if err != nil {
+		return nil, err
+	}
+	return r.WithContext(auth.WithIdentity(r.Context(), id)), nil
 }
 
 func (s *Server) handleSkillsManifest(w http.ResponseWriter, r *http.Request) {
@@ -637,6 +669,13 @@ func etagMatch(r *http.Request, etag string) bool {
 	return false
 }
 
+func withPrincipal(r *http.Request, attrs ...any) []any {
+	if p := auth.IdentityFrom(r.Context()).Principal; p != "" {
+		return append(attrs, "principal", p)
+	}
+	return attrs
+}
+
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	apiErr := WrapError(err)
 	status := apiErr.Status
@@ -653,10 +692,11 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	w.Header().Set("X-Request-Id", reqID)
 
+	attrs := withPrincipal(r, "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
 	if status >= http.StatusInternalServerError {
-		slog.Error("api error", "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
+		slog.Error("api error", attrs...)
 	} else {
-		slog.Debug("api error", "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
+		slog.Debug("api error", attrs...)
 	}
 	writeJSONStatus(w, status, map[string]any{"ok": false, "error": apiErr.Public(reqID)})
 }

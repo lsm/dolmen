@@ -442,6 +442,13 @@ func TestLoadConfig(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
+			if cfg.Auth == nil {
+				t.Fatal("loadConfig returned no authenticator")
+			}
+			if cfg.Auth.On() {
+				t.Fatalf("auth is on without DOLMEN_AUTH=on")
+			}
+			cfg.Auth = nil
 			if !reflect.DeepEqual(cfg, tc.want) {
 				t.Fatalf("got %+v, want %+v", cfg, tc.want)
 			}
@@ -696,5 +703,99 @@ func TestLoadConfigStdioSkipsSubscriptionAgeValidation(t *testing.T) {
 		func(k string) (string, bool) { v, ok := env[k]; return v, ok }, io.Discard, false)
 	if err == nil {
 		t.Fatal("the serve mode must still reject an out-of-range max subscription age")
+	}
+}
+
+func loadWithEnv(t *testing.T, args []string, env map[string]string, stdio bool) (*config, error) {
+	t.Helper()
+	getenv := func(k string) string { return env[k] }
+	lookup := func(k string) (string, bool) {
+		v, ok := env[k]
+		return v, ok
+	}
+	return loadConfig(args, getenv, lookup, io.Discard, stdio)
+}
+
+func TestLoadConfigAuthMode(t *testing.T) {
+	const key = "Tt5vQ2rXm9LbHc0wPqZaJ4yNfE7sUgKdRi1oCnBxV3M"
+
+	cfg, err := loadWithEnv(t, nil, map[string]string{"DOLMEN_AUTH": "on", "DOLMEN_ADMIN_KEY": key, "DOLMEN_EMBED_PROVIDER": "none"}, false)
+	if err != nil {
+		t.Fatalf("auth on with an admin key: %v", err)
+	}
+	if !cfg.Auth.On() {
+		t.Fatal("DOLMEN_AUTH=on did not turn auth on")
+	}
+
+	cfg, err = loadWithEnv(t, []string{"-auth", "on"}, map[string]string{"DOLMEN_ADMIN_KEY": key, "DOLMEN_EMBED_PROVIDER": "none"}, false)
+	if err != nil {
+		t.Fatalf("-auth on with an admin key: %v", err)
+	}
+	if !cfg.Auth.On() {
+		t.Fatal("-auth on did not turn auth on")
+	}
+
+	for name, tc := range map[string]struct {
+		env     map[string]string
+		args    []string
+		stdio   bool
+		wantErr string
+	}{
+		"on without a source": {
+			env:     map[string]string{"DOLMEN_AUTH": "on"},
+			wantErr: "DOLMEN_ADMIN_KEY",
+		},
+		"malformed admin key": {
+			env:     map[string]string{"DOLMEN_AUTH": "on", "DOLMEN_ADMIN_KEY": "short"},
+			wantErr: "DOLMEN_ADMIN_KEY",
+		},
+		"admin key with the reserved key prefix": {
+			env:     map[string]string{"DOLMEN_AUTH": "on", "DOLMEN_ADMIN_KEY": "dlm_" + key},
+			wantErr: "dlm_",
+		},
+		"malformed admin key rejected even with auth off": {
+			env:     map[string]string{"DOLMEN_ADMIN_KEY": "short"},
+			wantErr: "DOLMEN_ADMIN_KEY",
+		},
+		"unknown mode": {
+			env:     map[string]string{"DOLMEN_AUTH": "true"},
+			wantErr: "invalid auth mode",
+		},
+		"on over stdio": {
+			env:     map[string]string{"DOLMEN_AUTH": "on", "DOLMEN_ADMIN_KEY": key},
+			stdio:   true,
+			wantErr: "stdio",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tc.env["DOLMEN_EMBED_PROVIDER"] = "none"
+			_, err := loadWithEnv(t, tc.args, tc.env, tc.stdio)
+			if err == nil {
+				t.Fatalf("config accepted, want error containing %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadConfigAuthOffIsDefault(t *testing.T) {
+	cfg, err := loadWithEnv(t, nil, map[string]string{"DOLMEN_EMBED_PROVIDER": "none"}, false)
+	if err != nil {
+		t.Fatalf("defaults: %v", err)
+	}
+	if cfg.Auth.On() {
+		t.Fatal("auth defaults to on")
+	}
+}
+
+func TestLoadConfigStdioAuthOffStillWorks(t *testing.T) {
+	cfg, err := loadWithEnv(t, nil, map[string]string{"DOLMEN_EMBED_PROVIDER": "none"}, true)
+	if err != nil {
+		t.Fatalf("stdio with auth off: %v", err)
+	}
+	if cfg.Auth.On() {
+		t.Fatal("stdio auth is on")
 	}
 }

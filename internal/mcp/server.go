@@ -138,6 +138,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	authed, authErr := s.api.Authenticated(r)
+	if authErr != nil {
+		apiErr := api.WrapError(authErr)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(apiErr.Status)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": apiErr.Public(api.RequestIDFrom(r.Context()))})
+		return
+	}
+	r = authed
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20))
 	if err != nil {
 		var maxErr *http.MaxBytesError
