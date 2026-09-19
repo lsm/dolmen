@@ -78,13 +78,17 @@ func (p *fakeProvider) embeddedTexts() []string {
 }
 
 type harnessMode struct {
-	name     string
-	adminKey string
+	name           string
+	adminKey       string
+	trustedProxies string
+	maxGroups      int
 }
 
 var authOff = harnessMode{name: "off"}
 
 var authAdminKey = harnessMode{name: "admin-key", adminKey: "Tt5vQ2rXm9LbHc0wPqZaJ4yNfE7sUgKdRi1oCnBxV3M"}
+
+var authGateway = harnessMode{name: "gateway", adminKey: authAdminKey.adminKey, trustedProxies: "127.0.0.0/8,::1/128"}
 
 func (m harnessMode) off() bool { return m.adminKey == "" }
 
@@ -158,7 +162,16 @@ func (h *harness) start() {
 	h.t.Helper()
 	h.st = openEngineStore(h.t, h.dir, h.storeOpts...)
 
-	authn, err := auth.New(auth.Config{Mode: h.mode.authMode(), AdminKey: h.mode.adminKey})
+	trusted, err := auth.ParseTrustedProxies(h.mode.trustedProxies)
+	if err != nil {
+		h.t.Fatalf("parse trusted proxies for mode %q: %v", h.mode.name, err)
+	}
+	authn, err := auth.New(auth.Config{
+		Mode:           h.mode.authMode(),
+		AdminKey:       h.mode.adminKey,
+		TrustedProxies: trusted,
+		MaxGroups:      h.mode.maxGroups,
+	})
 	if err != nil {
 		h.t.Fatalf("build authenticator for mode %q: %v", h.mode.name, err)
 	}

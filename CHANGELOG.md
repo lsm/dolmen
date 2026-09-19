@@ -12,6 +12,13 @@
   shared credential for one administrative principal, not a multi-user system — per-user
   identities, API keys, and permissions are the following slices. `dolmen mcp` refuses to start
   with auth on: a stdio pipe carries no per-request credential.
+- **Identity asserted by a gateway.** `-trusted-proxies` / `DOLMEN_TRUSTED_PROXIES` lets peers
+  inside the given CIDRs assert `X-Dolmen-Principal` and `X-Dolmen-Groups`. Trust is decided from
+  the immediate TCP peer, never from `X-Forwarded-For`; headers from other peers are ignored
+  entirely. `-max-groups` / `DOLMEN_MAX_GROUPS` (default 128, range 1–1024) caps the group list,
+  and an over-limit list fails the identity rather than dropping a group that might carry a grant.
+  An asserted identity authenticates and is then refused `403 forbidden` until the grant ops land —
+  deny-by-default, which is what makes the source safe to enable before permissions exist.
 - **`unauthorized` error code** (401) in the shared taxonomy. `auth: off` never emits it, and the
   default is still `auth: off` — nothing changes for existing deployments.
 

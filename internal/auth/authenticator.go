@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 
@@ -16,14 +17,17 @@ func Unauthorized() error {
 }
 
 type Authenticator struct {
-	mode  Mode
-	admin Source
+	mode   Mode
+	admin  Source
+	header Source
 }
 
 type Config struct {
-	Mode     Mode
-	AdminKey string
-	Stdio    bool
+	Mode           Mode
+	AdminKey       string
+	TrustedProxies []*net.IPNet
+	MaxGroups      int
+	Stdio          bool
 }
 
 func New(cfg Config) (*Authenticator, error) {
@@ -34,14 +38,25 @@ func New(cfg Config) (*Authenticator, error) {
 		}
 		a.admin = NewAdminKeySource(cfg.AdminKey)
 	}
+	if cfg.MaxGroups != 0 {
+		if err := ValidateMaxGroups(cfg.MaxGroups); err != nil {
+			return nil, err
+		}
+	}
+	if len(cfg.TrustedProxies) > 0 {
+		a.header = NewHeaderSource(cfg.TrustedProxies, cfg.MaxGroups)
+	}
 	if !cfg.Mode.On() {
 		return a, nil
 	}
 	if cfg.Stdio {
 		return nil, fmt.Errorf("auth is on, but the stdio MCP transport carries no per-request credential: a pipe cannot present one, and treating whoever launched the subprocess as %s would be an unaudited bypass; serve HTTP for an authenticated deployment, or run stdio with auth off (it is reachable only by the process that spawned it)", AdminPrincipal)
 	}
+	if a.admin == nil && a.header == nil {
+		return nil, fmt.Errorf("auth is on, but no identity source is configured, so every request would answer 401: set DOLMEN_ADMIN_KEY to the bootstrap credential (%s), or DOLMEN_TRUSTED_PROXIES to accept identity asserted by a gateway", AdminPrincipal)
+	}
 	if a.admin == nil {
-		return nil, fmt.Errorf("auth is on, but no identity source is configured, so every request would answer 401: set DOLMEN_ADMIN_KEY to the bootstrap credential (%s), which is the only source this build implements", AdminPrincipal)
+		return nil, fmt.Errorf("auth is on with a trusted-proxy source but no DOLMEN_ADMIN_KEY, so the deployment has no usable root administrator: every proxied identity authenticates and is then refused, because grants do not exist in this build and %s is the only principal with access; set DOLMEN_ADMIN_KEY", AdminPrincipal)
 	}
 	return a, nil
 }
@@ -56,6 +71,11 @@ func (a *Authenticator) Authenticate(r *http.Request) (Identity, error) {
 	}
 	token, ok := BearerToken(r)
 	if !ok {
+		if a.header != nil {
+			if id, ok := a.header.Authenticate(r); ok {
+				return id, nil
+			}
+		}
 		return Identity{}, Unauthorized()
 	}
 	switch {

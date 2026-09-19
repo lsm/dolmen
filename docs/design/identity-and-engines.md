@@ -1535,7 +1535,11 @@ reorder) — the harness is already mode-parameterized, so this adds fixtures, n
   seam, not the source.
 - `gateway` — `DOLMEN_AUTH=on`, `DOLMEN_TRUSTED_PROXIES=127.0.0.1/8`, and an admin key; tests
   assert identity via `X-Dolmen-Principal`/`X-Dolmen-Groups` (or the bearer key) the way a
-  gateway would.
+  gateway would. **Landed before §2 and §3**, so until they arrive its assertions are the
+  authenticated-but-ungranted ones this section's own §1.2 rule predicts: a well-formed assertion
+  from a trusted peer authenticates and is then refused `403 forbidden`, while a malformed one, a
+  reserved-principal one, an over-limit group list, and an assertion from an untrusted peer are all
+  `401`. The verb and grant fixtures fill in on top of the same mode.
 - `native+keys` — `DOLMEN_AUTH=on` with the OIDC source enabled against a **local issuer stub**:
   fixtures run the real dance (`/v1/auth/begin` → stub → callback → bearer token) and exercise key
   issuance (`create_key` → use → `list_keys` → `revoke_key` → 401). **Arrives with the native-OIDC
@@ -1589,9 +1593,8 @@ reorder) — the harness is already mode-parameterized, so this adds fixtures, n
 
 ### 8.4 CI wiring
 
-**Every matrix mode that has landed runs in CI** — `auth: off` + `admin-key` from day one,
-`gateway` when source A lands, `native+keys` when the OIDC stream lands (§8.2): skipping an
-available mode fails CI, so the native fixtures (source-blindness, the OIDC dance, key issuance)
+**Every matrix mode that has landed runs in CI** — `auth: off`, `admin-key`, and `gateway`,
+`native+keys` when the OIDC stream lands (§8.2): skipping an available mode fails CI, so the native fixtures (source-blindness, the OIDC dance, key issuance)
 can never silently drop out.
 Each is an ordinary `go test ./...` run inside `make test` — mode selection happens inside the
 harness per test group, no CI matrix, no new make targets.
