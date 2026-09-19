@@ -337,3 +337,31 @@ func TestChangesSinceTransportParity(t *testing.T) {
 		t.Fatalf("MCP page carried no next_cursor")
 	}
 }
+
+func TestRetentionErrorNamesTheOperationTheCallerUsed(t *testing.T) {
+	h := newHarness(t)
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "rtname"})
+
+	bogus := "cursor-that-was-never-minted"
+	for _, op := range []string{"changes_since", "wait_for"} {
+		body := map[string]any{"namespace": "rtname", "cursor": bogus}
+		if op == "wait_for" {
+			body["timeout_ms"] = 0
+		}
+		status, out := h.httpCall(op, body)
+		if status != 400 {
+			t.Fatalf("%s with a bogus cursor: status %d, want 400: %v", op, status, out)
+		}
+		msg := out["error"].(map[string]any)["message"].(string)
+		if !strings.Contains(msg, op) {
+			t.Fatalf("%s must name itself as the catch-up path, not a different operation, got %q", op, msg)
+		}
+		other := "wait_for"
+		if op == "wait_for" {
+			other = "changes_since"
+		}
+		if strings.Contains(msg, other) {
+			t.Fatalf("%s names %s instead of itself: %q", op, other, msg)
+		}
+	}
+}

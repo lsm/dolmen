@@ -283,13 +283,13 @@ func parseChangesFeed(tableRaw, cursorRaw, limitRaw json.RawMessage) (table, cur
 	return table, cursor, limit, nil
 }
 
-func runChangesSince(ctx context.Context, s *Server, ns, table, cursor string, limit int) ([]store.ChangeRecord, store.Cursor, error) {
+func runChangesSince(ctx context.Context, s *Server, op, ns, table, cursor string, limit int) ([]store.ChangeRecord, store.Cursor, error) {
 	records, next, err := s.eng.ChangesSince(ctx, ns, table, store.Cursor(cursor),
 		[16]byte{}, nil, store.Incarnation{}, store.Page{Limit: limit})
 	if err != nil {
 
 		if errors.Is(err, store.ErrCursorExpired) {
-			return nil, "", badRequest("cursor is unknown or past the change-log retention window (-change-retention, default 168h); catch up by calling changes_since with no cursor to resume from the current head, or with cursor \"begin\" to replay retained history")
+			return nil, "", badRequest("cursor is unknown or past the change-log retention window (-change-retention, default 168h); catch up by calling %s with no cursor to resume from the current head, or with cursor \"begin\" to replay retained history", op)
 		}
 		if errors.Is(err, store.ErrCursorCrossFeed) {
 			return nil, "", badRequest("cursor was minted on a different feed (a specific table's, or the namespace-wide feed); pass it only to the feed you received it from — honoring it elsewhere would silently skip events — or start fresh with no cursor / \"begin\"")
@@ -1252,7 +1252,7 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			records, next, err := runChangesSince(ctx, s, ns, table, cursor, limit)
+			records, next, err := runChangesSince(ctx, s, "changes_since", ns, table, cursor, limit)
 			if err != nil {
 				return nil, err
 			}
@@ -1326,7 +1326,7 @@ var Ops = map[string]OpDef{
 			for {
 
 				readCtx, cancel := context.WithTimeout(ctx, waitBudget(deadline))
-				records, next, err := runChangesSince(readCtx, s, ns, table, cursor, limit)
+				records, next, err := runChangesSince(readCtx, s, "wait_for", ns, table, cursor, limit)
 				cancel()
 				if err != nil {
 

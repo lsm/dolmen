@@ -891,8 +891,10 @@ Every row has two implicit columns:
 Coercion and validation rules:
 
 - `number`: JSON numbers and Go numeric types become `int64` when integral and within the int64
-  range, otherwise `float64`. Unsigned Go integer values larger than `math.MaxInt64` are rejected;
-  integral JSON numbers outside the int64 range are stored as `float64` (precision loss).
+  range, otherwise `float64`. A JSON number outside the int64 range is stored as `float64`, which
+  loses precision — it is NOT rejected (`9223372036854775808` reads back as `9223372036854776000`).
+  The separate rejection of unsigned values larger than `math.MaxInt64` applies only to the Go
+  library, where the value arrives already typed.
 - `boolean`: stored as `0` or `1`; returned as `true`/`false`.
 - `timestamp`: stored as RFC3339/ISO strings with minimal canonicalization (whitespace trimmed,
   lowercase `t`/`z` uppercased; offsets and date-only/space-separated forms are preserved as

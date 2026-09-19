@@ -476,8 +476,9 @@ is much faster.
 Validation notes:
 
 - `number` becomes `int64` or `float64`: integral values within the int64 range become `int64`;
-  unsigned Go values > `MaxInt64` are rejected, and integral JSON numbers outside the int64 range
-  become `float64` (precision loss).
+  a JSON number outside the int64 range is stored as `float64`, which loses precision — it is NOT
+  rejected (`9223372036854775808` reads back as `9223372036854776000`). The separate rejection of
+  unsigned values above `MaxInt64` applies only to the Go library, where the value arrives typed.
 - `timestamp` must be a parseable ISO/RFC3339 string.
 - `vector` must be a number array of exactly the declared `dim`; `NaN`/`Inf` are rejected. The
   4096-dimension cap applies only to declared `vector` fields; `vectorize` records the provider's
