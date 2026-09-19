@@ -109,20 +109,33 @@ for JSON number tokens, JSON decoding with `UseNumber`, canonical timestamps,
 float32 vector validation/encoding, and base64 fallback for untyped binary values.
 The existing facade and transport conformance suites remain the behavior reference.
 
+## Typed row reads (implemented internally)
+
+`GetRows` selects declared fields by their persisted physical names, excludes the
+hidden embedding, and returns found IDs once each in ascending order. It preserves
+large signed integers, JSON number tokens, booleans, timestamps, and float32 vectors
+through the shared value helpers. The ID cap and 32 MiB response budget follow the
+SQLite contract, including truncation and rejection of an oversized first row.
+Reads hold the namespace lifetime lock and reject stale supplied incarnations.
+Nonempty row scopes still fail closed until authorization is implemented.
+
+Row writes are not yet exposed. PostgreSQL read fixtures seed physical rows directly;
+shared conformance covers empty pages, ID limits, and missing resources until the
+write slice enables the complete round-trip matrix.
+
 ## Remaining implementation sequence
 
-1. Shared value coercion/decoding and typed row reads.
-2. Insert/update/delete/upsert with idempotency and durable change records in the same
+1. Insert/update/delete/upsert with idempotency and durable change records in the same
    namespace-serialized transaction. Normalize PostgreSQL SQLSTATE errors to dolmen's
    taxonomy; preserve integer and JSON fidelity fixtures.
-3. Caller query confinement and schema migrations. Resolve placeholder/operator
+2. Caller query confinement and schema migrations. Resolve placeholder/operator
    ambiguity and logical table/field-name mapping with parser tests before accepting
    caller SQL. Schema privileges plus catalog/function restrictions are mandatory.
-4. Native PostgreSQL full-text indexing/matching/ranking and vector search; add
+3. Native PostgreSQL full-text indexing/matching/ranking and vector search; add
    per-engine match/relevance fixtures and cross-engine filter/shape tests.
-5. Durable cursor replay, retention, cross-process polling/listening, and SSE lifecycle
+4. Durable cursor replay, retention, cross-process polling/listening, and SSE lifecycle
    tests. Notifications may wake readers but never replace the durable log.
-6. Implement every mandatory Engine method, wire the HTTP/MCP/stdio/facade/blackbox
+5. Implement every mandatory Engine method, wire the HTTP/MCP/stdio/facade/blackbox
    constructors and complete the conformance matrix; only then enable the public
    selector and publish PostgreSQL configuration/install guidance.
 
@@ -138,7 +151,7 @@ Against a disposable PostgreSQL database:
 export DOLMEN_TEST_PG_DSN='postgres://user:password@127.0.0.1:5432/dolmen_test?sslmode=disable'
 export DOLMEN_TEST_PG_REQUIRED=1
 go test -race -count=1 ./internal/postgres
-go test -race -count=1 ./internal/conformance -run '^Test(Namespace|Table)BackendConformance$'
+go test -race -count=1 ./internal/conformance -run '^Test(Namespace|Table|RowRead)BackendConformance$'
 ```
 
 Without the test DSN, PostgreSQL integration tests skip during ordinary SQLite-only
