@@ -603,7 +603,7 @@ func (s *Server) serveSkillBytes(w http.ResponseWriter, r *http.Request, body []
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "private, no-store")
-	w.Header().Set("Vary", "X-Forwarded-Host, X-Forwarded-Proto, X-Forwarded-Prefix, X-Original-URI, Forwarded")
+	w.Header().Set("Vary", skill.PublicURLVaryHeader)
 	if etagMatch(r, etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return

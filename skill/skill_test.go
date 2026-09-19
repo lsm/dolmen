@@ -594,3 +594,12 @@ func TestUsableRequestHostAcceptsAConfiguredBaseURL(t *testing.T) {
 		t.Fatalf("configured base URL = %q", got)
 	}
 }
+
+func TestPublicURLVaryHeaderCoversEveryInput(t *testing.T) {
+	vary := PublicURLVaryHeader
+	for _, want := range append([]string{"Host", "Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Forwarded-Prefix"}, originalURIHeaders...) {
+		if !strings.Contains(vary, want) {
+			t.Errorf("Vary %q omits %q, which changes the rendered public URL", vary, want)
+		}
+	}
+}

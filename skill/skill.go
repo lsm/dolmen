@@ -205,6 +205,10 @@ func BaseURLFor(r *http.Request, configured string) string {
 	return scheme + "://" + host + prefix
 }
 
+var PublicURLVaryHeader = strings.Join(append([]string{
+	"Host", "Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Forwarded-Prefix",
+}, originalURIHeaders...), ", ")
+
 var originalURIHeaders = []string{
 	"X-Forwarded-Uri",
 	"X-Original-Uri",
