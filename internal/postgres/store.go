@@ -13,18 +13,21 @@ import (
 )
 
 type Config struct {
-	DSN      string
-	Catalog  string
-	MaxConns int32
+	DSN             string
+	Catalog         string
+	MaxConns        int32
+	ChangeRetention *time.Duration
 }
 
 type Store struct {
-	pool    *pgxpool.Pool
-	catalog string
-	mu      sync.Mutex
-	closed  bool
-	done    chan struct{}
-	active  sync.WaitGroup
+	pool            *pgxpool.Pool
+	catalog         string
+	changeRetention time.Duration
+	now             func() time.Time
+	mu              sync.Mutex
+	closed          bool
+	done            chan struct{}
+	active          sync.WaitGroup
 }
 
 type connectionError struct {
@@ -53,6 +56,13 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	if cfg.MaxConns < 0 {
 		return nil, fmt.Errorf("%w: PostgreSQL MaxConns must not be negative", store.ErrInvalid)
 	}
+	retention := store.DefaultChangeRetention
+	if cfg.ChangeRetention != nil {
+		retention = *cfg.ChangeRetention
+	}
+	if retention < 0 || retention > time.Duration(1<<62-1) {
+		return nil, fmt.Errorf("%w: invalid PostgreSQL change retention", store.ErrInvalid)
+	}
 	pc, err := pgxpool.ParseConfig(cfg.DSN)
 	if err != nil {
 		return nil, &connectionError{"invalid connection string", errors.Join(store.ErrInvalid, err)}
@@ -71,7 +81,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	if err != nil {
 		return nil, &connectionError{"open pool", err}
 	}
-	s := &Store{pool: pool, catalog: cfg.Catalog, done: make(chan struct{})}
+	s := &Store{pool: pool, catalog: cfg.Catalog, done: make(chan struct{}), changeRetention: retention, now: time.Now}
 	if err = pool.Ping(ctx); err == nil {
 		err = s.bootstrap(ctx)
 	}

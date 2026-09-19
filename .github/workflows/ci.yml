@@ -74,4 +74,4 @@ jobs:
       - name: PostgreSQL lifecycle and cross-process transaction tests
         run: go test -race -count=1 ./internal/postgres
       - name: Shared namespace and table contracts on both backends
-        run: go test -race -count=1 ./internal/conformance -run '^Test(Namespace|Table|RowRead|Insert)BackendConformance$'
+        run: go test -race -count=1 ./internal/conformance -run '^Test(Namespace|Table|RowRead|Insert|Changes)BackendConformance$'

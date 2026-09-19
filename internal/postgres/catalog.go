@@ -11,7 +11,7 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-const catalogVersion = 3
+const catalogVersion = 4
 
 func ident(parts ...string) string { return pgx.Identifier(parts).Sanitize() }
 
@@ -91,6 +91,22 @@ func (s *Store) bootstrap(ctx context.Context) error {
  row_id bigint NOT NULL, kind text NOT NULL CHECK(kind IN ('insert','update','delete')),
  created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
  PRIMARY KEY(namespace,position))`,
+	} {
+		if _, err := tx.Exec(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, "CREATE TABLE IF NOT EXISTS "+s.relation("cursors")+` (
+ namespace text NOT NULL REFERENCES `+s.relation("namespaces")+`(name) ON DELETE CASCADE,
+ token text NOT NULL, position bigint NOT NULL, chain_origin bigint NOT NULL,
+ chain_start timestamptz NOT NULL, issued_at timestamptz NOT NULL,
+ table_name text NOT NULL, drop_generation bigint NOT NULL,
+ PRIMARY KEY(namespace,token))`); err != nil {
+		return err
+	}
+	for _, stmt := range []string{
+		"CREATE INDEX IF NOT EXISTS changes_feed ON " + s.relation("changes") + " (namespace,table_name,drop_generation,position)",
+		"CREATE INDEX IF NOT EXISTS cursors_origin ON " + s.relation("cursors") + " (namespace,chain_origin)",
 	} {
 		if _, err := tx.Exec(ctx, stmt); err != nil {
 			return err
