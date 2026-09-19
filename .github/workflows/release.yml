@@ -23,6 +23,18 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Resolve model release tag
+        id: models
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="$(make -s model-release)"
+          if ! gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "MODEL_RELEASE is $tag but no release is published under that tag, so this release's model links would 404; push the $tag tag (or run the release-models workflow), then re-run this job" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
       - name: Install govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -58,10 +70,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Resolve model release tag
-        id: models
-        run: echo "tag=$(make -s model-release)" >> "$GITHUB_OUTPUT"
 
       - name: Determine container tags
         id: tags
