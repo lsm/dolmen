@@ -158,9 +158,23 @@ writes. Scoped replay remains unavailable until authorization is implemented.
 Indexes cover namespace/table change paging and cursor history pins. Cross-process
 subscriptions will poll this durable log; no in-memory notification is authoritative.
 
+## Natural-key upsert (implemented internally)
+
+`UpsertByKey` normalizes and validates up to eight scalar key fields, then processes
+the batch in caller order while holding the namespace write lock. A later record in
+the same batch therefore sees an earlier insert. Concurrent callers serialize at the
+namespace boundary, so a previously absent key produces one insert followed by
+updates. Existing duplicate keys are reported as a conflict instead of choosing an
+arbitrary row.
+
+Inserts apply defaults and required-field checks; updates patch only supplied fields.
+Embedding calls run before the write transaction, and the table lifetime and schema
+are rechecked before committing. Rows, embedding metadata, and insert-then-update
+change records commit atomically. Authorization-bearing options still fail closed.
+
 ## Remaining implementation sequence
 
-1. Update/delete/upsert with idempotency and durable change records in the same
+1. Update/delete and filter-based upsert with durable change records in the same
    namespace-serialized transaction. Normalize PostgreSQL SQLSTATE errors to dolmen's
    taxonomy; preserve integer and JSON fidelity fixtures.
 2. Caller query confinement and schema migrations. Resolve placeholder/operator
@@ -186,7 +200,7 @@ Against a disposable PostgreSQL database:
 export DOLMEN_TEST_PG_DSN='postgres://user:password@127.0.0.1:5432/dolmen_test?sslmode=disable'
 export DOLMEN_TEST_PG_REQUIRED=1
 go test -race -count=1 ./internal/postgres
-go test -race -count=1 ./internal/conformance -run '^Test(Namespace|Table|RowRead|Insert|Changes)BackendConformance$'
+go test -race -count=1 ./internal/conformance -run '^Test(Namespace|Table|RowRead|Insert|Changes|KeyUpsert)BackendConformance$'
 ```
 
 Without the test DSN, PostgreSQL integration tests skip during ordinary SQLite-only

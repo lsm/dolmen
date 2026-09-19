@@ -80,6 +80,10 @@ func (s *Store) lookupIdempotency(ctx context.Context, tx pgx.Tx, n namespace, s
 }
 
 func prepareRows(ctx context.Context, state tableState, records []map[string]any, emb store.Embedder) ([]preparedRow, error) {
+	return prepareValues(ctx, state, records, emb, true)
+}
+
+func prepareValues(ctx context.Context, state tableState, records []map[string]any, emb store.Embedder, insert bool) ([]preparedRow, error) {
 	out := make([]preparedRow, len(records))
 	texts := []string{}
 	indices := []int{}
@@ -92,6 +96,9 @@ func prepareRows(ctx context.Context, state tableState, records []map[string]any
 		}
 		for _, f := range state.schema.Fields {
 			v, present := rec[f.Name]
+			if !present && !insert {
+				continue
+			}
 			if !present && f.Default != nil {
 				v = f.Default
 				if f.Type == schema.Timestamp && schema.IsNowDefault(v) {
@@ -123,6 +130,9 @@ func prepareRows(ctx context.Context, state tableState, records []map[string]any
 				if text, ok := coerced.(string); ok && text != "" {
 					texts = append(texts, text)
 					indices = append(indices, i)
+				} else if !insert {
+					out[i].columns = append(out[i].columns, ident("_embedding"))
+					out[i].values = append(out[i].values, nil)
 				}
 			}
 		}
