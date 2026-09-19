@@ -138,8 +138,25 @@ still fail closed. Timestamp defaults are evaluated at write time.
 Embedding work runs outside transactions. Before writing, the adapter rechecks the
 namespace/table lifetime and schema, retries schema changes up to three times, and
 rejects table replacement. Shared embedding validation rejects mismatched spaces,
-invalid dimensions, and non-finite vectors. Durable replay and retention APIs follow
-separately; the initial change log is retained until namespace deletion.
+invalid dimensions, and non-finite vectors. Durable replay and retention are described below.
+
+## Durable replay and retention (implemented internally)
+
+Catalog version 4 adds opaque, random cursor tokens. `ChangesSince` supports a
+current-head cursor, retained-history `begin`, bounded pages, per-event resume, and
+stable empty-page cursors. Tokens survive process restart and bind to their namespace,
+feed, and table lifetime. Unknown/expired tokens and cross-feed tokens retain the
+existing error taxonomy. Supplied namespace/table incarnations are checked.
+
+Retention defaults to seven days. The internal config accepts an optional duration;
+explicit zero disables pruning. Successful cursor use refreshes its idle lifetime,
+while the replay chain has an absolute twice-retention age bound. Active chains pin
+history after their origin; pruning removes only old, unpinned changes and expired
+tokens. Pruning runs transactionally with replay and uses the same namespace lock as
+writes. Scoped replay remains unavailable until authorization is implemented.
+
+Indexes cover namespace/table change paging and cursor history pins. Cross-process
+subscriptions will poll this durable log; no in-memory notification is authoritative.
 
 ## Remaining implementation sequence
 
@@ -151,7 +168,7 @@ separately; the initial change log is retained until namespace deletion.
    caller SQL. Schema privileges plus catalog/function restrictions are mandatory.
 3. Native PostgreSQL full-text indexing/matching/ranking and vector search; add
    per-engine match/relevance fixtures and cross-engine filter/shape tests.
-4. Durable cursor replay, retention, cross-process polling/listening, and SSE lifecycle
+4. Cross-process polling/listening and SSE lifecycle
    tests. Notifications may wake readers but never replace the durable log.
 5. Implement every mandatory Engine method, wire the HTTP/MCP/stdio/facade/blackbox
    constructors and complete the conformance matrix; only then enable the public
@@ -169,7 +186,7 @@ Against a disposable PostgreSQL database:
 export DOLMEN_TEST_PG_DSN='postgres://user:password@127.0.0.1:5432/dolmen_test?sslmode=disable'
 export DOLMEN_TEST_PG_REQUIRED=1
 go test -race -count=1 ./internal/postgres
-go test -race -count=1 ./internal/conformance -run '^Test(Namespace|Table|RowRead|Insert)BackendConformance$'
+go test -race -count=1 ./internal/conformance -run '^Test(Namespace|Table|RowRead|Insert|Changes)BackendConformance$'
 ```
 
 Without the test DSN, PostgreSQL integration tests skip during ordinary SQLite-only
