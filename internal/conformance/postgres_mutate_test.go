@@ -34,7 +34,7 @@ func TestMutationBackendConformance(t *testing.T) {
 			if err := eng.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
 				t.Fatal(err)
 			}
-			fields := []schema.Field{{Name: "body", Required: true, Vectorize: true}, {Name: "score", Type: schema.Number}, {Name: "active", Type: schema.Boolean, Default: true}}
+			fields := []schema.Field{{Name: "body", Required: true, Vectorize: true}, {Name: "code", Required: true}, {Name: "score", Type: schema.Number}, {Name: "active", Type: schema.Boolean, Default: true}}
 			if _, err := eng.CreateTable(ctx, "app", "notes", fields, store.TableOpts{}, [16]byte{}); err != nil {
 				t.Fatal(err)
 			}
@@ -47,7 +47,7 @@ func TestMutationBackendConformance(t *testing.T) {
 				}
 				return vectors, nil
 			}}
-			inserted, err := eng.Insert(ctx, "app", "notes", []map[string]any{{"body": "one", "score": 1}, {"body": "two", "score": 2}, {"body": "three", "score": 3, "active": false}}, store.WriteOpts{}, emb, nil, store.Incarnation{})
+			inserted, err := eng.Insert(ctx, "app", "notes", []map[string]any{{"body": "one", "code": "a", "score": 1}, {"body": "two", "code": "b", "score": 2}, {"body": "three", "code": "c", "score": 3, "active": false}}, store.WriteOpts{}, emb, nil, store.Incarnation{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -61,6 +61,10 @@ func TestMutationBackendConformance(t *testing.T) {
 					t.Fatalf("invalid no-match update accepted: %v", err)
 				}
 			}
+			beforeInvalidUpsert := calls
+			if _, err := eng.Upsert(ctx, "app", "notes", "score = ?", []any{404}, map[string]any{"body": "would embed"}, store.WriteOpts{}, emb, nil, store.Incarnation{}); !errors.Is(err, store.ErrInvalid) || calls != beforeInvalidUpsert {
+				t.Fatalf("invalid insert fallback embedded: calls=%d want=%d err=%v", calls, beforeInvalidUpsert, err)
+			}
 			updated, err := eng.Update(ctx, "app", "notes", "score >= ? AND active = ?", []any{2, true}, map[string]any{"body": "changed"}, emb, nil, store.Incarnation{})
 			if err != nil || updated.Updated != 1 || updated.Changes.Count != 1 {
 				t.Fatalf("update: %+v %v", updated, err)
@@ -69,7 +73,7 @@ func TestMutationBackendConformance(t *testing.T) {
 			if err != nil || matched.Updated != 1 || matched.Inserted != 0 || len(matched.Ids) != 1 {
 				t.Fatalf("matched upsert: %+v %v", matched, err)
 			}
-			created, err := eng.Upsert(ctx, "app", "notes", "score = ?", []any{99}, map[string]any{"body": "new", "score": 99}, store.WriteOpts{}, emb, nil, store.Incarnation{})
+			created, err := eng.Upsert(ctx, "app", "notes", "score = ?", []any{99}, map[string]any{"body": "new", "code": "d", "score": 99}, store.WriteOpts{}, emb, nil, store.Incarnation{})
 			if err != nil || created.Inserted != 1 || created.Updated != 0 || len(created.Ids) != 1 {
 				t.Fatalf("insert upsert: %+v %v", created, err)
 			}

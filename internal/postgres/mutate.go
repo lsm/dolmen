@@ -115,6 +115,16 @@ func addInsertDefaults(state tableState, record map[string]any, row preparedRow,
 	return row, nil
 }
 
+func validateInsertFallback(state tableState, record map[string]any) error {
+	for _, field := range state.schema.Fields {
+		if _, present := record[field.Name]; present || field.Default != nil || !field.Required {
+			continue
+		}
+		return fmt.Errorf("%w: field %q is required (no row matched the filter, so upsert would insert a new record)", store.ErrInvalid, field.Name)
+	}
+	return nil
+}
+
 func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any, set map[string]any, emb store.Embedder, allowInsert bool, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
 	if scope != nil {
 		return store.InsertResult{}, derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
@@ -157,6 +167,11 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 		if !matched && !allowInsert {
 			return store.InsertResult{}, nil
 		}
+		if !matched {
+			if err := validateInsertFallback(state, set); err != nil {
+				return store.InsertResult{}, err
+			}
+		}
 		before, _ := json.Marshal(state.schema)
 		prepared, err := prepareValues(ctx, state, []map[string]any{set}, emb, false)
 		if err != nil {
@@ -189,11 +204,13 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 				result.Updated = int64(len(ids))
 				result.Changes, err = s.mintChanges(ctx, tx, n, state, store.ChangeUpdate, ids)
 			} else if allowInsert {
-				row, err := addInsertDefaults(state, set, prepared[0], time.Now().UTC().Format("2006-01-02T15:04:05.000Z"))
+				var row preparedRow
+				row, err = addInsertDefaults(state, set, prepared[0], time.Now().UTC().Format("2006-01-02T15:04:05.000Z"))
 				if err != nil {
 					return err
 				}
-				id, err := insertPrepared(ctx, tx, n, state, row)
+				var id int64
+				id, err = insertPrepared(ctx, tx, n, state, row)
 				if err != nil {
 					return queryError(ctx, err)
 				}
