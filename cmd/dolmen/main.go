@@ -297,6 +297,12 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		return nil, &printedError{maxGroupsErr}
 	}
 
+	if err := auth.ValidateMaxGroups(*maxGroups); err != nil {
+		fmt.Fprintf(out, "config: %v\n", err)
+		fs.Usage()
+		return nil, &printedError{err}
+	}
+
 	proxies, err := auth.ParseTrustedProxies(*trustedProxies)
 	if err != nil {
 		fmt.Fprintf(out, "config: %v\n", err)
