@@ -103,6 +103,9 @@ func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []sche
 		if _, err := tx.Exec(ctx, tableDDL(n.physical, physical, fields, columns)); err != nil {
 			return err
 		}
+		if err := s.grantQueryTable(ctx, tx, n, physical, fields, columns); err != nil {
+			return err
+		}
 		raw, err := json.Marshal(sc)
 		if err != nil {
 			return err

@@ -15,6 +15,7 @@ import (
 type Config struct {
 	DSN             string
 	Catalog         string
+	QueryRole       string
 	MaxConns        int32
 	ChangeRetention *time.Duration
 }
@@ -22,6 +23,7 @@ type Config struct {
 type Store struct {
 	pool            *pgxpool.Pool
 	catalog         string
+	queryRole       string
 	changeRetention time.Duration
 	now             func() time.Time
 	mu              sync.Mutex
@@ -53,6 +55,9 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	if !catalogName.MatchString(cfg.Catalog) || cfg.Catalog == "public" || cfg.Catalog == "information_schema" || len(cfg.Catalog) >= 3 && cfg.Catalog[:3] == "pg_" {
 		return nil, fmt.Errorf("%w: invalid PostgreSQL catalog schema", store.ErrInvalid)
 	}
+	if cfg.QueryRole != "" && !catalogName.MatchString(cfg.QueryRole) {
+		return nil, fmt.Errorf("%w: invalid PostgreSQL query role", store.ErrInvalid)
+	}
 	if cfg.MaxConns < 0 {
 		return nil, fmt.Errorf("%w: PostgreSQL MaxConns must not be negative", store.ErrInvalid)
 	}
@@ -81,7 +86,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	if err != nil {
 		return nil, &connectionError{"open pool", err}
 	}
-	s := &Store{pool: pool, catalog: cfg.Catalog, done: make(chan struct{}), changeRetention: retention, now: time.Now}
+	s := &Store{pool: pool, catalog: cfg.Catalog, queryRole: cfg.QueryRole, done: make(chan struct{}), changeRetention: retention, now: time.Now}
 	if err = pool.Ping(ctx); err == nil {
 		err = s.bootstrap(ctx)
 	}

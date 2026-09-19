@@ -31,7 +31,7 @@ func testConfig(t *testing.T) Config {
 	if _, err := rand.Read(id[:]); err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{DSN: dsn, Catalog: "dolmen_test_" + hex.EncodeToString(id[:]), MaxConns: 4}
+	cfg := Config{DSN: dsn, Catalog: "dolmen_test_" + hex.EncodeToString(id[:]), QueryRole: os.Getenv("DOLMEN_TEST_PG_QUERY_ROLE"), MaxConns: 4}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -89,6 +89,7 @@ func TestOpenRejectsInvalidConfig(t *testing.T) {
 		{DSN: "postgres://localhost/test", Catalog: "information_schema"},
 		{DSN: "postgres://localhost/test", Catalog: "x; DROP SCHEMA public"},
 		{DSN: "postgres://localhost/test", Catalog: strings.Repeat("x", 64)},
+		{DSN: "postgres://localhost/test", QueryRole: "query; SET ROLE postgres"},
 		{DSN: "postgres://localhost/test", MaxConns: -1},
 		{DSN: "postgres://user:secret-password@localhost:invalid/test"},
 	} {

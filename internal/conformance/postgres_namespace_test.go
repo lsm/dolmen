@@ -38,7 +38,7 @@ func postgresNamespaceEngine(t *testing.T) namespaceEngine {
 		t.Fatal(err)
 	}
 	catalog := "dolmen_conf_" + hex.EncodeToString(id[:])
-	s, err := postgres.Open(t.Context(), postgres.Config{DSN: dsn, Catalog: catalog})
+	s, err := postgres.Open(t.Context(), postgres.Config{DSN: dsn, Catalog: catalog, QueryRole: os.Getenv("DOLMEN_TEST_PG_QUERY_ROLE")})
 	if err != nil {
 		t.Fatal(err)
 	}
