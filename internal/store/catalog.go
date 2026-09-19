@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 )
 
 const (
@@ -19,6 +18,8 @@ const (
 )
 
 var ErrCatalogTooNew = errors.New("namespace catalog is newer than this binary supports")
+
+var ErrCatalogCorrupt = errors.New("corrupt catalog metadata")
 
 type CatalogVersionError struct {
 	Namespace string
@@ -38,11 +39,16 @@ func (e *CatalogVersionError) Is(target error) bool {
 }
 
 func refuseNewerCatalog(ctx context.Context, rw *sql.DB, nsName string) error {
+	var metaTables int
+	if err := rw.QueryRowContext(ctx,
+		`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '_dolmen_meta'`).Scan(&metaTables); err != nil {
+		return err
+	}
+	if metaTables == 0 {
+		return nil
+	}
 	format, minReader, err := readCatalogVersion(ctx, rw)
 	if err != nil {
-		if strings.Contains(err.Error(), "no such table") {
-			return nil
-		}
 		return err
 	}
 	if minReader > CatalogFormat {
@@ -113,7 +119,7 @@ func readCatalogInt(ctx context.Context, tx *sql.Tx, key string) (int, bool, err
 	}
 	n, convErr := strconv.Atoi(string(raw))
 	if convErr != nil || n < 1 {
-		return 0, false, fmt.Errorf("corrupt catalog metadata: %s = %q is not a positive integer", key, truncateStamp(raw))
+		return 0, false, fmt.Errorf("%w: %s = %q is not a positive integer", ErrCatalogCorrupt, key, truncateStamp(raw))
 	}
 	return n, true, nil
 }
@@ -139,7 +145,7 @@ func readCatalogVersion(ctx context.Context, db rowQuerier) (format int, minRead
 		}
 		n, convErr := strconv.Atoi(string(raw))
 		if convErr != nil || n < 1 {
-			return 0, 0, fmt.Errorf("corrupt catalog metadata: %s = %q is not a positive integer", key, truncateStamp(raw))
+			return 0, 0, fmt.Errorf("%w: %s = %q is not a positive integer", ErrCatalogCorrupt, key, truncateStamp(raw))
 		}
 		*dst = n
 	}

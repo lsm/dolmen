@@ -240,3 +240,37 @@ func TestCatalogVersionRefusesBeforeWriting(t *testing.T) {
 		t.Fatal("a refused namespace must not be written to at all")
 	}
 }
+
+func TestCorruptCatalogIsATypedError(t *testing.T) {
+	dir := t.TempDir()
+	seedNamespace(t, dir, "bad")
+	setCatalogMeta(t, dir, "bad", catalogFormatKey, "not-a-number")
+
+	st := &Store{dir: dir, mu: newCtxMutex(), nss: map[string]*nsDB{}, changeRetention: DefaultChangeRetention}
+	_, err := st.ns("bad")
+	if !errors.Is(err, ErrCatalogCorrupt) {
+		t.Fatalf("a corrupt stamp must be matchable with errors.Is, not by message text, got %v", err)
+	}
+}
+
+func TestCatalogGateToleratesAPreMetaNamespace(t *testing.T) {
+	dir := t.TempDir()
+	seedNamespace(t, dir, "legacy")
+
+	db, err := sql.Open("sqlite", dsn(filepath.Join(dir, "legacy.db"), false))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := db.Exec(`DROP TABLE _dolmen_meta`); err != nil {
+		t.Fatalf("drop meta: %v", err)
+	}
+	db.Close()
+
+	st := &Store{dir: dir, mu: newCtxMutex(), nss: map[string]*nsDB{}, changeRetention: DefaultChangeRetention}
+	if _, err := st.ns("legacy"); err != nil {
+		t.Fatalf("a namespace with no meta table at all must still open: %v", err)
+	}
+	if format, ok := catalogMeta(t, dir, "legacy", catalogFormatKey); !ok || format != strconv.Itoa(CatalogFormat) {
+		t.Fatalf("it must then be adopted at the current format, got %q (present=%v)", format, ok)
+	}
+}

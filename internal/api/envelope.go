@@ -269,7 +269,7 @@ func wrapStoreErr(err error) *Error {
 	if errors.As(err, &cve) {
 		return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: cve.Error(), Cause: err}
 	}
-	if strings.Contains(err.Error(), "corrupt catalog metadata") {
+	if errors.Is(err, store.ErrCatalogCorrupt) {
 		return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: redactStoreMsg(err.Error()), Cause: err}
 	}
 	var qe *store.QueryError
