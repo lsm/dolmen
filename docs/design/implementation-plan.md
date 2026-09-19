@@ -1105,14 +1105,18 @@ visible set pinned.
 ### 9f. FTS visible-corpus ranking
 **Spec:** §7 (relevance statistics must not include foreign rows) · **Dep:** 9e
 
-Goal: adapter #1 isolates ranking statistics per visible corpus.
+Goal: each adapter preserves native database-side ranking while isolating it from hidden rows.
 
 Changes:
-- Filter-then-rescore over the shared FTS index: candidates restricted to visible ids, rank
-  computed over that corpus (per-scope index partitioning is the documented alternative —
-  engine's choice per §7, conformance-verifiable either way). The auth-on `q()` rank
-  comparison itself landed with 8c's activation semantics; this slice adds only the
-  corpus isolation.
+- Keep SQLite FTS5 BM25 and PostgreSQL `ts_rank_cd` inside their respective engines.
+  SQLite's corpus statistics require an isolated visible-corpus index (for example,
+  per-scope partitioning) or another database-side implementation of native ranking
+  over that corpus. Filtering a shared FTS5 index alone does not isolate its statistics.
+  PostgreSQL's document-local `ts_rank_cd` has no corpus-wide statistics; restrict
+  candidates and caller-filter evaluation to visible rows before ordering and paging.
+- Do not introduce a shared Go scorer or full-text `q()` comparison. Verify each engine's
+  native order and hidden-row isolation separately; cross-engine relevance parity is
+  not required.
 
 Files: `internal/store/search.go`; conformance.
 
