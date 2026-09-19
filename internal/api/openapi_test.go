@@ -184,8 +184,45 @@ func assertOpenAPIDoc(t *testing.T, doc map[string]any) {
 	if !ok {
 		t.Fatalf("paths missing or not an object: %v", doc["paths"])
 	}
-	if len(paths) != len(Ops) {
-		t.Fatalf("expected %d paths, got %d", len(Ops), len(paths))
+	if len(paths) != len(Ops)+1 {
+		t.Fatalf("expected %d paths (one POST per op plus the subscribe stream), got %d", len(Ops)+1, len(paths))
+	}
+	for name := range Ops {
+		entry, ok := paths["/v1/"+name].(map[string]any)
+		if !ok {
+			t.Fatalf("operation %s has no path entry", name)
+		}
+		if _, ok := entry["post"]; !ok {
+			t.Fatalf("operation %s must be documented as a POST", name)
+		}
+	}
+	sub, ok := paths["/v1/subscribe"].(map[string]any)
+	if !ok {
+		t.Fatal("the subscribe stream must be documented: a client working from openapi.json alone must be able to discover live changes")
+	}
+	get, ok := sub["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("subscribe must be documented as a GET, got %v", sub)
+	}
+	params, ok := get["parameters"].([]any)
+	if !ok || len(params) == 0 {
+		t.Fatalf("subscribe must document its query parameters, got %v", get["parameters"])
+	}
+	seen := map[string]bool{}
+	for _, raw := range params {
+		p, _ := raw.(map[string]any)
+		if p["in"] != "query" {
+			t.Fatalf("subscribe parameters must be query parameters, got %v", p)
+		}
+		seen[p["name"].(string)] = true
+	}
+	for _, want := range []string{"namespace", "table", "cursor"} {
+		if !seen[want] {
+			t.Fatalf("subscribe must document the %q query parameter, got %v", want, seen)
+		}
+	}
+	if _, ok := get["responses"].(map[string]any)["200"].(map[string]any)["content"].(map[string]any)["text/event-stream"]; !ok {
+		t.Fatalf("subscribe must declare a text/event-stream response, got %v", get["responses"])
 	}
 
 	components, ok := doc["components"].(map[string]any)

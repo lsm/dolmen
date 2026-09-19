@@ -135,8 +135,11 @@ func (e *typeMismatchError) Error() string {
 }
 
 func jsonShapeOf(t reflect.Type) string {
-	for t != nil && (t.Kind() == reflect.Pointer || t.Kind() == reflect.Interface) {
+	for t != nil && t.Kind() == reflect.Pointer {
 		t = t.Elem()
+	}
+	if t != nil && t.Kind() == reflect.Interface {
+		return "a JSON value"
 	}
 	if t == nil {
 		return "a different type"
@@ -180,10 +183,10 @@ func jsonValueWord(value string) string {
 	case "null":
 		return "null"
 	}
-	if value == "" {
-		return "a different type"
+	if strings.HasPrefix(value, "number ") {
+		return "a number"
 	}
-	return value
+	return "a different type"
 }
 
 func asTypeMismatch(err error) (*typeMismatchError, bool) {

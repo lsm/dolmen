@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"text/template"
 )
@@ -328,6 +329,13 @@ func publicBase(base, prefix string) string {
 	return base + prefix
 }
 
+const (
+	MaxPrefixBytes    = 128
+	MaxPrefixSegments = 8
+)
+
+var prefixSegmentRe = regexp.MustCompile(`^[A-Za-z0-9._~:@-]+$`)
+
 func NormalizePrefix(v string) string {
 	v = strings.TrimSpace(v)
 	v = strings.TrimRight(v, "/")
@@ -336,6 +344,18 @@ func NormalizePrefix(v string) string {
 	}
 	if !strings.HasPrefix(v, "/") {
 		v = "/" + v
+	}
+	if len(v) > MaxPrefixBytes {
+		return ""
+	}
+	segments := strings.Split(strings.TrimPrefix(v, "/"), "/")
+	if len(segments) > MaxPrefixSegments {
+		return ""
+	}
+	for _, seg := range segments {
+		if seg == "" || seg == "." || seg == ".." || !prefixSegmentRe.MatchString(seg) {
+			return ""
+		}
 	}
 	return v
 }

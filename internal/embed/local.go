@@ -310,7 +310,7 @@ func moduleArtifactsComplete(dir string) bool {
 	seen := make(map[string]struct{})
 	for _, m := range modules {
 
-		if m.Path == "" || !validCacheShard(m.Path) {
+		if m.Path == "" || !validCacheShard(m.Path) || parameterlessModule(m.Type) {
 			continue
 		}
 		if _, ok := seen[m.Path]; ok {
@@ -329,6 +329,15 @@ func moduleArtifactsComplete(dir string) bool {
 		}
 	}
 	return true
+}
+
+func parameterlessModule(moduleType string) bool {
+	for _, suffix := range []string{".Normalize", ".LayerNorm"} {
+		if strings.HasSuffix(moduleType, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateLocalModel(model string) error {

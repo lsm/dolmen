@@ -87,3 +87,26 @@ func TestDescribeDropRejectInvalidTableName(t *testing.T) {
 		}
 	}
 }
+
+func TestInsertRejectsNilRecord(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "fa", "notes", []Field{{Name: "body", Type: Text, Required: true}}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := st.Insert(ctx, "fa", "notes", []map[string]any{nil, {"body": "real"}}, InsertOptions{})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("a nil record must be rejected as the wire rejects it, got %v (ids %v)", err, res.Ids)
+	}
+	rows, err := st.Query(ctx, "fa", "SELECT id FROM notes", QueryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.Rows) != 0 {
+		t.Fatalf("a rejected batch must insert nothing, got %d rows", len(rows.Rows))
+	}
+}

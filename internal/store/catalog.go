@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -34,6 +35,20 @@ func (e *CatalogVersionError) Error() string {
 
 func (e *CatalogVersionError) Is(target error) bool {
 	return target == ErrCatalogTooNew
+}
+
+func refuseNewerCatalog(ctx context.Context, rw *sql.DB, nsName string) error {
+	format, minReader, err := readCatalogVersion(ctx, rw)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return nil
+		}
+		return err
+	}
+	if minReader > CatalogFormat {
+		return &CatalogVersionError{Namespace: nsName, Format: format, MinReader: minReader, Supported: CatalogFormat}
+	}
+	return nil
 }
 
 func ensureCatalogVersion(ctx context.Context, rw *sql.DB, nsName string) error {

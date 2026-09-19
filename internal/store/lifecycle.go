@@ -204,7 +204,7 @@ func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte
 
 			s.evict(nsName)
 			s.endListenSessions(nsName, ErrListenLifetimeEnded)
-			return fmt.Errorf("%w: namespace %s", ErrNotFound, nsName)
+			return fmt.Errorf("%w: namespace %s does not exist; create it with create_namespace, or let any write op (create_table, insert, update, upsert, upsert_by_key, delete, migrate) create it on first use", ErrNotFound, nsName)
 		}
 		return err
 	}

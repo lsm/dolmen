@@ -628,3 +628,54 @@ func TestLocalEmbedCanceledWhileQueuedBehindLoad(t *testing.T) {
 		t.Fatalf("canceled queued request must not trigger another Open, got %d opens", opens)
 	}
 }
+
+func writeModelFixture(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	for name, body := range files {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+}
+
+func TestCachedAcceptsTheDefaultModelLayout(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "sentence-transformers--all-MiniLM-L6-v2")
+	writeModelFixture(t, dir, map[string]string{
+		"config.json":           `{"model_type":"bert"}`,
+		"tokenizer_config.json": `{"tokenizer_class":"BertTokenizer"}`,
+		"vocab.txt":             "[PAD]\n",
+		"model.safetensors":     "weights",
+		"1_Pooling/config.json": `{"word_embedding_dimension":384}`,
+		"modules.json": `[{"idx":0,"name":"0","path":"","type":"sentence_transformers.models.Transformer"},
+			{"idx":1,"name":"1","path":"1_Pooling","type":"sentence_transformers.models.Pooling"},
+			{"idx":2,"name":"2","path":"2_Normalize","type":"sentence_transformers.models.Normalize"}]`,
+	})
+
+	l := &Local{Model: "sentence-transformers/all-MiniLM-L6-v2", CacheRoot: root}
+	if !l.Cached() {
+		t.Fatal("the default model's own on-disk layout must report cached: modules.json lists 2_Normalize, which carries no config.json and is never materialized, so demanding one reports a complete cache as missing")
+	}
+}
+
+func TestCachedStillRejectsAMissingPoolingModule(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "sentence-transformers--all-MiniLM-L6-v2")
+	writeModelFixture(t, dir, map[string]string{
+		"config.json":           `{"model_type":"bert"}`,
+		"tokenizer_config.json": `{"tokenizer_class":"BertTokenizer"}`,
+		"vocab.txt":             "[PAD]\n",
+		"model.safetensors":     "weights",
+		"modules.json": `[{"idx":0,"name":"0","path":"","type":"sentence_transformers.models.Transformer"},
+			{"idx":1,"name":"1","path":"1_Pooling","type":"sentence_transformers.models.Pooling"}]`,
+	})
+
+	l := &Local{Model: "sentence-transformers/all-MiniLM-L6-v2", CacheRoot: root}
+	if l.Cached() {
+		t.Fatal("a module that does carry artifacts must still be required: an absent 1_Pooling/config.json means the cache is incomplete")
+	}
+}

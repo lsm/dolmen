@@ -426,7 +426,7 @@ var Ops = map[string]OpDef{
 		Description: "Drop a namespace and every table in it, deleting its SQLite file and WAL sidecars. " +
 			"Irreversible. confirm must repeat the namespace name — a guard against dropping the wrong one " +
 			"(it normalizes like the namespace itself, so case and surrounding whitespace don't matter). " +
-			"In-flight requests on the namespace finish first (or fail); any later data-op use of the same name recreates " +
+			"In-flight requests on the namespace finish first (or fail); any later write-op use of the same name recreates " +
 			"the namespace empty — every read answers not_found until it is recreated. " +
 			"The server closes its own connections before deleting, but other processes " +
 			"holding the file open (a second dolmen, a backup tool) are not detected — coordinate drops within one server.",
@@ -1270,8 +1270,8 @@ var Ops = map[string]OpDef{
 			"pass next_cursor back in and keep waiting. Prefer this over polling changes_since in a loop — the " +
 			"server holds the wait, not your token budget. The teaching errors are changes_since's: a cursor that " +
 			"is unknown, past the change-log retention window, or minted on a different feed is rejected naming " +
-			"the catch-up path. Unlike the data ops, a wait never creates its namespace: a missing one is " +
-			"not_found — create it first, then wait.",
+			"the catch-up path. Like every read, a wait never creates its namespace: a missing one is " +
+			"not_found — create it first (create_namespace, or any write op), then wait.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

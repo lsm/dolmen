@@ -66,6 +66,11 @@ func (s *Store) Insert(ctx context.Context, namespace, table string, records []m
 	if err := ctx.Err(); err != nil {
 		return InsertResult{}, facadeErr(err)
 	}
+	for i, rec := range records {
+		if rec == nil {
+			return InsertResult{}, derr.New(derr.InvalidRequest, "records[%d] must be an object, not null", i)
+		}
+	}
 	ns := ops.NormalizeNamespace(namespace)
 	if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
 		return InsertResult{}, facadeErr(err)

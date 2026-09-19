@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -191,5 +192,51 @@ func TestCatalogVersionRejectsCorruptStamp(t *testing.T) {
 		t.Fatal("a corrupt catalog stamp must be reported when the namespace is opened")
 	} else if !strings.Contains(err.Error(), "corrupt catalog metadata") {
 		t.Fatalf("corrupt stamp error = %v, want it to name the corrupt catalog metadata", err)
+	}
+}
+
+func TestCatalogVersionRefusesBeforeWriting(t *testing.T) {
+	dir := t.TempDir()
+	seedNamespace(t, dir, "future")
+	setCatalogMeta(t, dir, "future", catalogFormatKey, strconv.Itoa(CatalogFormat+3))
+	setCatalogMeta(t, dir, "future", catalogMinReaderKey, strconv.Itoa(CatalogFormat+2))
+
+	db, err := sql.Open("sqlite", dsn(filepath.Join(dir, "future.db"), false))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := db.Exec(`DROP TABLE _dolmen_migrations`); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	db.Close()
+
+	before, err := os.Stat(filepath.Join(dir, "future.db"))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+
+	st := &Store{dir: dir, mu: newCtxMutex(), nss: map[string]*nsDB{}, changeRetention: DefaultChangeRetention}
+	if _, err := st.ns("future"); !errors.Is(err, ErrCatalogTooNew) {
+		t.Fatalf("opening a too-new namespace = %v, want ErrCatalogTooNew", err)
+	}
+
+	db, err = sql.Open("sqlite", dsn(filepath.Join(dir, "future.db"), true))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name = '_dolmen_migrations'`).Scan(&n); err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if n != 0 {
+		t.Fatal("a refused namespace must not have its registry recreated: the newer format may have dropped or renamed that table deliberately")
+	}
+	after, err := os.Stat(filepath.Join(dir, "future.db"))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatal("a refused namespace must not be written to at all")
 	}
 }

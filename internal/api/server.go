@@ -333,6 +333,9 @@ func decodeData(body []byte, v any) error {
 			return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: uf.Error(), Cause: uf}
 		}
 		if tm, ok := asTypeMismatch(err); ok {
+			if tErr := dec.Decode(&struct{}{}); tErr != io.EOF {
+				return badRequest("unexpected trailing content after JSON body")
+			}
 			return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: tm.Error(), Cause: tm}
 		}
 		return badRequest("invalid JSON: %v", err)
@@ -586,6 +589,8 @@ func (s *Server) serveSkillBytes(w http.ResponseWriter, r *http.Request, body []
 	etag := skill.ETag(name, version.Version, body)
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("Vary", "X-Forwarded-Host, X-Forwarded-Proto, X-Forwarded-Prefix, X-Original-URI, Forwarded")
 	if etagMatch(r, etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return

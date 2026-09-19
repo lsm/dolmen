@@ -22,7 +22,7 @@ The API's machine-readable description — every operation's request schema, the
 Bash:
 
 ```bash
-base="{{ .BaseURL }}"
+base='{{ .BaseURL }}'
 curl -s "${base%/}/healthz"
 ```
 
@@ -42,13 +42,13 @@ Add the MCP server to Claude:
 Bash:
 
 ```bash
-claude mcp add --transport http dolmen "{{ .MCPURL }}"
+claude mcp add --transport http dolmen '{{ .MCPURL }}'
 ```
 
 Windows PowerShell:
 
 ```powershell
-claude mcp add --transport http dolmen "{{ .MCPURL }}"
+claude mcp add --transport http dolmen '{{ .MCPURL }}'
 ```
 
 The `dolmen` tools then appear in `tools/list` with full input schemas. The endpoint can also be
@@ -79,7 +79,7 @@ under this id, this is the id. The full list of operations and their request sch
 Create a table:
 
 ```bash
-base="{{ .BaseURL }}"
+base='{{ .BaseURL }}'
 curl -s -X POST "${base%/}/v1/create_table" \
   -H 'Content-Type: application/json' \
   -d '{"namespace":"research","table":"findings","fields":[{"name":"title","type":"string","fulltext":true,"required":true},{"name":"body","type":"text"}]}'
@@ -119,14 +119,14 @@ connected MCP client sees; for plain one-shot calls the raw HTTP operations abov
 Initialize:
 
 ```bash
-mcp="{{ .MCPURL }}"
+mcp='{{ .MCPURL }}'
 curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"agent","version":"1.0"}}}'
 ```
 
 List every tool with its input schema (single page, no cursor):
 
 ```bash
-mcp="{{ .MCPURL }}"
+mcp='{{ .MCPURL }}'
 curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 ```
 
@@ -134,7 +134,7 @@ Call a tool — `arguments` is the tool's input, and the result data arrives unw
 `result.structuredContent`:
 
 ```bash
-mcp="{{ .MCPURL }}"
+mcp='{{ .MCPURL }}'
 curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_tables","arguments":{"namespace":"research"}}}'
 ```
 
