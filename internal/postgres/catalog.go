@@ -11,7 +11,7 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-const catalogVersion = 1
+const catalogVersion = 2
 
 func ident(parts ...string) string { return pgx.Identifier(parts).Sanitize() }
 
@@ -53,7 +53,7 @@ func (s *Store) bootstrap(ctx context.Context) error {
 	if err := tx.QueryRow(ctx, "SELECT version FROM "+s.relation("version")).Scan(&version); err != nil {
 		return err
 	}
-	if version != catalogVersion {
+	if version < 1 || version > catalogVersion {
 		return fmt.Errorf("%w: PostgreSQL catalog version %d is unsupported; use a compatible dolmen release", store.ErrCatalogTooNew, version)
 	}
 	_, err = tx.Exec(ctx, "CREATE TABLE IF NOT EXISTS "+s.relation("namespaces")+` (
@@ -63,6 +63,23 @@ func (s *Store) bootstrap(ctx context.Context) error {
   next_change bigint NOT NULL DEFAULT 0 CHECK (next_change >= 0)
  )`)
 	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, "CREATE TABLE IF NOT EXISTS "+s.relation("tables")+` (
+  namespace text NOT NULL REFERENCES `+s.relation("namespaces")+`(name) ON DELETE CASCADE,
+  name text COLLATE "C" NOT NULL,
+  physical text,
+  schema_json text NOT NULL,
+  columns_json text NOT NULL,
+  drop_generation bigint NOT NULL DEFAULT 0 CHECK (drop_generation >= 0),
+  active boolean NOT NULL DEFAULT true,
+  PRIMARY KEY(namespace, name),
+  UNIQUE(namespace, physical),
+  CHECK ((active AND physical IS NOT NULL) OR (NOT active AND physical IS NULL))
+ )`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, "UPDATE "+s.relation("version")+" SET version = $1", catalogVersion); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

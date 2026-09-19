@@ -135,7 +135,7 @@ func TestPostgresBootstrapConcurrentAndVersionGuard(t *testing.T) {
 	if s == nil {
 		t.Fatal("no store opened")
 	}
-	if _, err := s.pool.Exec(ctx, "UPDATE "+s.relation("version")+" SET version = 2"); err != nil {
+	if _, err := s.pool.Exec(ctx, "UPDATE "+s.relation("version")+" SET version = $1", catalogVersion+1); err != nil {
 		t.Fatal(err)
 	}
 	newer, err := Open(ctx, cfg)
@@ -143,7 +143,7 @@ func TestPostgresBootstrapConcurrentAndVersionGuard(t *testing.T) {
 		t.Fatalf("future catalog: %v", err)
 	}
 	var version int
-	if err := s.pool.QueryRow(ctx, "SELECT version FROM "+s.relation("version")).Scan(&version); err != nil || version != 2 {
+	if err := s.pool.QueryRow(ctx, "SELECT version FROM "+s.relation("version")).Scan(&version); err != nil || version != catalogVersion+1 {
 		t.Fatalf("future catalog changed: %d %v", version, err)
 	}
 }
