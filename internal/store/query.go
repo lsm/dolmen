@@ -3,13 +3,14 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"math"
 	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/lsm/dolmen/internal/value"
 )
 
 func normalizeArg(v any) any {
@@ -404,8 +405,5 @@ func encodedSize(s string) int {
 }
 
 func normalizeVal(v any) any {
-	if b, ok := v.([]byte); ok {
-		return base64.StdEncoding.EncodeToString(b)
-	}
-	return v
+	return value.Normalize(v)
 }

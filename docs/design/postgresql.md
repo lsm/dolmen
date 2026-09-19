@@ -95,6 +95,20 @@ persisted maps and preserve caller-visible logical names.
 Full-text indexes, row mutations, caller SQL, and notifications are not implemented by
 this slice. Selecting postgres publicly remains disabled.
 
+## Shared value handling
+
+`internal/value` contains the existing field coercion and typed decoding rules,
+extracted from SQLite without changing accepted inputs, errors, or output types.
+SQLite delegates to this package; PostgreSQL row operations will use the same rules
+with driver-specific parameter and result conversion. In particular, normalized
+booleans currently use integer 0/1 and need conversion to PostgreSQL booleans at
+that boundary. SQL default evaluation remains in the adapter.
+
+This extraction preserves signed-integer fidelity, the existing overflow behavior
+for JSON number tokens, JSON decoding with `UseNumber`, canonical timestamps,
+float32 vector validation/encoding, and base64 fallback for untyped binary values.
+The existing facade and transport conformance suites remain the behavior reference.
+
 ## Remaining implementation sequence
 
 1. Shared value coercion/decoding and typed row reads.
