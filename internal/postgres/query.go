@@ -133,11 +133,13 @@ func queryRows(rows pgx.Rows, names *sqlNames, limit int) (store.QueryResult, er
 		for i, label := range labels {
 			field := fields[label]
 			v := raw[i]
+			rawSize := value.RawSize(v)
 			if (columns[i].DataTypeOID == pgtype.JSONOID || columns[i].DataTypeOID == pgtype.JSONBOID) && v != nil {
 				encoded := rows.RawValues()[i]
 				if columns[i].DataTypeOID == pgtype.JSONBOID && columns[i].Format == pgx.BinaryFormatCode && len(encoded) > 0 {
 					encoded = encoded[1:]
 				}
+				rawSize = len(encoded)
 				dec := json.NewDecoder(bytes.NewReader(encoded))
 				dec.UseNumber()
 				if err := dec.Decode(&v); err != nil {
@@ -173,7 +175,7 @@ func queryRows(rows pgx.Rows, names *sqlNames, limit int) (store.QueryResult, er
 			if b, ok := v.([]byte); ok && len(b) > store.MaxQueryBytes {
 				return result, sqlRejected("column %q exceeds the %d MiB response budget", label, store.MaxQueryBytes>>20)
 			}
-			if total+size+value.RawSize(v) > store.MaxQueryBytes {
+			if total+size+rawSize > store.MaxQueryBytes {
 				if len(result.Rows) == 0 {
 					return result, sqlRejected("query result exceeds the %d MiB response budget on its first row; select fewer or smaller columns", store.MaxQueryBytes>>20)
 				}
@@ -197,7 +199,7 @@ func queryRows(rows pgx.Rows, names *sqlNames, limit int) (store.QueryResult, er
 				}
 			} else if field.Type == schema.JSON {
 				if _, ok := decoded.(string); !ok {
-					presented = value.RawSize(v)
+					presented = rawSize
 				}
 			}
 			size += presented

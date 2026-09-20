@@ -117,6 +117,9 @@ func TestPostgresQueryLongNamesAndNativeResults(t *testing.T) {
 	if _, err := s.Query(ctx, "app", "SELECT repeat('x',33*1024*1024) AS body", nil, [16]byte{}, store.Page{}); !errors.Is(err, store.ErrInvalid) {
 		t.Fatalf("response budget: %v", err)
 	}
+	if _, err := s.Query(ctx, "app", "SELECT json_build_object('x',repeat('x',33*1024*1024)) AS metadata", nil, [16]byte{}, store.Page{}); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("JSON response budget: %v", err)
+	}
 }
 
 func TestPostgresQueryClearsStaleGrantGeneration(t *testing.T) {
