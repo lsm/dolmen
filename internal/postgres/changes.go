@@ -66,6 +66,10 @@ func (s *Store) pruneChanges(ctx context.Context, tx pgx.Tx, n namespace, now ti
 }
 
 func (s *Store) ChangesSince(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, scope *store.RowScope, inc store.Incarnation, page store.Page) ([]store.ChangeRecord, store.Cursor, error) {
+	return s.changesSince(ctx, ns, table, from, expected, scope, inc, page, 0)
+}
+
+func (s *Store) changesSince(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, scope *store.RowScope, inc store.Incarnation, page store.Page, boundary int64) ([]store.ChangeRecord, store.Cursor, error) {
 	if scope != nil {
 		return nil, "", derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
 	}
@@ -130,6 +134,10 @@ func (s *Store) ChangesSince(ctx context.Context, ns, table string, from store.C
 			stmt += " AND table_name=$3 AND drop_generation=$4"
 			args = append(args, table, drop)
 		}
+		if boundary > 0 {
+			stmt += fmt.Sprintf(" AND position<=$%d", len(args)+1)
+			args = append(args, boundary)
+		}
 		stmt += fmt.Sprintf(" ORDER BY position LIMIT $%d", len(args)+1)
 		args = append(args, limit)
 		rows, err := tx.Query(ctx, stmt, args...)
@@ -176,6 +184,14 @@ func (s *Store) ChangesSince(ctx context.Context, ns, table string, from store.C
 		return nil, "", err
 	}
 	return records, next, nil
+}
+
+func (s *Store) changeHead(ctx context.Context, ns string, expected [16]byte) (int64, error) {
+	var head int64
+	err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
+		return tx.QueryRow(ctx, "SELECT next_change FROM "+s.relation("namespaces")+" WHERE name=$1", ns).Scan(&head)
+	})
+	return head, err
 }
 
 func (s *Store) anchorCursor(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, inc store.Incarnation) (store.Cursor, error) {

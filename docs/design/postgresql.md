@@ -420,6 +420,10 @@ auth-on harness modes (row authorization is unimplemented on PostgreSQL), the em
 facade fixtures and the stdio subprocess fixtures (neither constructor can select the
 engine yet), and fixtures that probe SQLite storage internals directly.
 
+Listen anchors a replay boundary at the namespace head, so replay terminates under
+concurrent writes and the stream reaches its ready frame, and it rejects a cursor that
+is past the retention window before opening a stream rather than after.
+
 Query rejection now shares one contract across backends: `store.ValidateQueryShape`
 applies the SELECT/WITH and multiple-statement checks before either engine parses, and
 SQL-content rejections carry `store.QueryError` so they classify as `query_error` while
@@ -437,10 +441,7 @@ closed before the public selector is enabled:
 | Typed reads | `TestTypedReadEmbeddingHidden` | `_embedding` is not selectable from caller SQL (SQLSTATE 42703) |
 | Full-text | `TestSearchFulltextSyntaxAcceptReject` | diacritic-insensitive matching returns nothing; needs `unaccent` or a documented divergence under D27 |
 | Change feed | `TestChangesSinceTableFeedContract` | a live table-feed cursor is rejected as past the retention window |
-| SSE | `TestSubscribeCursorTeachingErrors` | emits a close frame and an error frame where the contract pins one error event |
-| SSE | `TestSubscribeOverflowTeachesReconnect` | overflow never produces the error frame that teaches reconnection |
-| SSE | `TestSubscribeBoundaryUnderConcurrentWrites` | the ready synchronization frame is missing |
-| SSE | `TestSubscribeNeverCreatesNamespace` | `subscribe` and `wait_for` disagree on the missing-namespace message |
+| SSE | `TestSubscribeOverflowTeachesReconnect` | live delivery back-pressures the notify callback instead of bounding a queue, so a slow subscriber never produces the overflow error frame that teaches reconnection |
 
 The driver remains pure Go and compatible with the static binary requirement.
 PostgreSQL dependency versions are pinned in go.mod. No PostgreSQL server is bundled
