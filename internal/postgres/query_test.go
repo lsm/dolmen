@@ -239,3 +239,88 @@ func TestPostgresQueryRecoversRevokedGrant(t *testing.T) {
 		t.Fatalf("rows: %+v", result.Rows)
 	}
 }
+
+func TestPostgresQueryRendersIntervalAndTimeAsText(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "body"}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "one"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		sql  string
+		want string
+	}{
+		{"SELECT '1 mon 2 day 03:04:05'::interval AS span FROM notes", "1 mon 2 day 03:04:05"},
+		{"SELECT '12:34:56'::time AS clock FROM notes", "12:34:56.000000"},
+		{"SELECT '12:34:56+02'::timetz AS zoned FROM notes", "12:34:56+02"},
+	} {
+		result, err := s.Query(ctx, "app", tc.sql, nil, [16]byte{}, store.Page{})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.sql, err)
+		}
+		if len(result.Rows) != 1 {
+			t.Fatalf("%s: %+v", tc.sql, result.Rows)
+		}
+		for label, v := range result.Rows[0] {
+			got, ok := v.(string)
+			if !ok {
+				t.Fatalf("%s: column %q decoded to %T (%+v), want a string", tc.sql, label, v, v)
+			}
+			if got != tc.want {
+				t.Fatalf("%s: column %q = %q, want %q", tc.sql, label, got, tc.want)
+			}
+		}
+	}
+}
+
+func TestPostgresQueryLoadsTablesInOneRoundTrip(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		if _, err := s.CreateTable(ctx, "app", name, []schema.Field{{Name: "body"}, {Name: "n", Type: schema.Number}}, store.TableOpts{}, [16]byte{}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Insert(ctx, "app", name, []map[string]any{{"body": name, "n": 1}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var loaded map[string]tableState
+	if err := s.read(ctx, "app", func(tx pgx.Tx, n namespace) error {
+		var err error
+		loaded, err = s.queryTables(ctx, tx, n)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 3 {
+		t.Fatalf("loaded %d tables", len(loaded))
+	}
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		state, ok := loaded[name]
+		if !ok {
+			t.Fatalf("missing %s: %+v", name, loaded)
+		}
+		if state.schema == nil || state.physical == "" || state.columns["body"] == "" {
+			t.Fatalf("%s decoded incompletely: %+v", name, state)
+		}
+		if state.incarnation.Table != name || state.incarnation.Version != 1 {
+			t.Fatalf("%s incarnation: %+v", name, state.incarnation)
+		}
+	}
+	result, err := s.Query(ctx, "app", "SELECT body FROM beta", nil, [16]byte{}, store.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Rows) != 1 || result.Rows[0]["body"] != "beta" {
+		t.Fatalf("query after batch load: %+v", result.Rows)
+	}
+}

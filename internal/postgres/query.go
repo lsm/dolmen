@@ -168,6 +168,18 @@ func queryRows(rows pgx.Rows, names *sqlNames, limit int) (store.QueryResult, er
 				}
 			case time.Time:
 				v = typed.Format(time.RFC3339Nano)
+			case pgtype.Interval:
+				database, err := typed.Value()
+				if err != nil {
+					return result, sqlRejected("column %q produced an invalid interval value", label)
+				}
+				v = database
+			case pgtype.Time:
+				database, err := typed.Value()
+				if err != nil {
+					return result, sqlRejected("column %q produced an invalid time value", label)
+				}
+				v = database
 			}
 			if f, ok := v.(float64); ok && (math.IsNaN(f) || math.IsInf(f, 0)) {
 				return result, sqlRejected("column %q produced a non-finite value", label)
