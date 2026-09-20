@@ -118,3 +118,31 @@ func TestPostgresQueryLongNamesAndNativeResults(t *testing.T) {
 		t.Fatalf("response budget: %v", err)
 	}
 }
+
+func TestPostgresQueryClearsStaleGrantGeneration(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	old, err := s.ensureQueryRole(ctx, "app", [16]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DropNamespace(ctx, "app", old); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	s.rememberQueryGrant("app", old)
+	if _, err := s.Query(ctx, "app", "SELECT 1 AS n", nil, [16]byte{}, store.Page{}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("stale generation: %v", err)
+	}
+	if _, ok := s.queryGrant("app"); ok {
+		t.Fatal("stale grant generation remained cached")
+	}
+	if _, err := s.Query(ctx, "app", "SELECT 1 AS n", nil, [16]byte{}, store.Page{}); err != nil {
+		t.Fatalf("query did not recover after stale grant: %v", err)
+	}
+}

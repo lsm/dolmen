@@ -74,6 +74,14 @@ func (s *Store) forgetQueryGrant(ns string) {
 	delete(s.queryGrants, ns)
 }
 
+func (s *Store) forgetQueryGrantGeneration(ns string, generation [16]byte) {
+	s.queryGrantMu.Lock()
+	defer s.queryGrantMu.Unlock()
+	if s.queryGrants[ns] == generation {
+		delete(s.queryGrants, ns)
+	}
+}
+
 func (s *Store) ensureQueryRole(ctx context.Context, ns string, expected [16]byte) ([16]byte, error) {
 	if s.queryRole == "" {
 		return [16]byte{}, fmt.Errorf("%w: PostgreSQL caller SQL requires a pre-provisioned NOLOGIN query role", store.ErrInvalid)

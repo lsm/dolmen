@@ -138,11 +138,15 @@ func queryRows(rows pgx.Rows, names *sqlNames, limit int) (store.QueryResult, er
 			case float32:
 				v = float64(typed)
 			case pgtype.Numeric:
-				encoded, err := typed.MarshalJSON()
+				database, err := typed.Value()
 				if err != nil {
 					return result, sqlRejected("column %q produced an invalid numeric value", label)
 				}
-				v, err = decodeNumber(schema.Field{Name: label, Type: schema.Number}, string(encoded))
+				raw, ok := database.(string)
+				if !ok {
+					return result, sqlRejected("column %q produced an invalid numeric value", label)
+				}
+				v, err = decodeNumber(schema.Field{Name: label, Type: schema.Number}, raw)
 				if err != nil {
 					return result, sqlRejected("column %q produced a non-finite or out-of-range number", label)
 				}
@@ -219,6 +223,7 @@ func (s *Store) Query(ctx context.Context, ns, input string, args []any, expecte
 	result := store.QueryResult{}
 	err = s.readOnly(ctx, ns, func(tx pgx.Tx, n namespace) error {
 		if n.generation != generation {
+			s.forgetQueryGrantGeneration(ns, generation)
 			return fmt.Errorf("%w: namespace was replaced", store.ErrNotFound)
 		}
 		tables, err := s.queryTables(ctx, tx, n)
