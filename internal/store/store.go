@@ -481,9 +481,20 @@ func (s *Store) DescribeTable(ctx context.Context, nsName, table string, scope *
 	if err != nil {
 		return nil, 0, err
 	}
+	if err := scopeUsable(scope, sc); err != nil {
+		return nil, 0, err
+	}
+	if scope != nil && scope.Empty {
+		return sc, 0, nil
+	}
+	countStmt := fmt.Sprintf(`SELECT count(*) FROM %s`, q(table))
+	var cargs []any
+	if clause, sargs := scopeClause(scope, ""); clause != "" {
+		countStmt = fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s`, q(table), clause)
+		cargs = sargs
+	}
 	var count int64
-	if err := n.ro.QueryRowContext(ctx,
-		fmt.Sprintf(`SELECT count(*) FROM %s`, q(table))).Scan(&count); err != nil {
+	if err := n.ro.QueryRowContext(ctx, countStmt, cargs...).Scan(&count); err != nil {
 		return nil, 0, err
 	}
 	return sc, count, nil

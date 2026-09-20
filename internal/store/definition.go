@@ -31,3 +31,10 @@ func ValidateTableDefinition(table string, fields []schema.Field) ([]schema.Fiel
 	}
 	return fields, nil
 }
+
+func stampOwner(sc *schema.TableSchema, owner string) string {
+	if sc == nil || !sc.HasOwner {
+		return ""
+	}
+	return owner
+}

@@ -31,14 +31,14 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 	if len(opts.IdempotencyKey) > MaxIdempotencyKeyLen {
 		return InsertResult{}, invalidf("idempotency key is %d bytes (max %d)", len(opts.IdempotencyKey), MaxIdempotencyKeyLen)
 	}
-	ids, changes, replayed, err := s.insert(ctx, nsName, table, records, emb, opts.IdempotencyKey)
+	ids, changes, replayed, err := s.insert(ctx, nsName, table, records, emb, opts.IdempotencyKey, opts.Owner)
 	if err != nil {
 		return InsertResult{}, err
 	}
 	return InsertResult{Ids: ids, Replayed: replayed, Changes: changes}, nil
 }
 
-func (s *Store) insert(ctx context.Context, nsName, table string, records []map[string]any, emb Embedder, idemKey string) (ids []int64, changes ChangeRange, replayed bool, err error) {
+func (s *Store) insert(ctx context.Context, nsName, table string, records []map[string]any, emb Embedder, idemKey, owner string) (ids []int64, changes ChangeRange, replayed bool, err error) {
 	if len(records) == 0 {
 		return nil, ChangeRange{}, false, invalidf("no records given")
 	}
@@ -72,7 +72,7 @@ func (s *Store) insert(ctx context.Context, nsName, table string, records []map[
 		if attempt >= 3 {
 			return nil, ChangeRange{}, false, invalidf("table schema changed concurrently; retry the insert")
 		}
-		ids, changes, replayed, done, err := s.insertAttempt(ctx, n, nsName, table, records, emb, idemKey, idemHash)
+		ids, changes, replayed, done, err := s.insertAttempt(ctx, n, nsName, table, records, emb, idemKey, idemHash, owner)
 		if done {
 			return ids, changes, replayed, err
 		}
@@ -109,7 +109,7 @@ func lookupIdem(ctx context.Context, db rowQuerier, table, key, wantHash string)
 	return ids, true, nil
 }
 
-func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, idemHash string) (ids []int64, changes ChangeRange, replayed bool, done bool, err error) {
+func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, idemHash, owner string) (ids []int64, changes ChangeRange, replayed bool, done bool, err error) {
 
 	gen, err := tableGen(ctx, n.rw, table)
 	if err != nil {
@@ -230,7 +230,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 		if ev, ok := embFor[i]; ok {
 			vec = ev
 		}
-		id, err := execInsertWithFTS(ctx, tx, table, fts, row.rec, row.cols, row.vals, vec)
+		id, err := execInsertWithFTS(ctx, tx, table, fts, row.rec, row.cols, row.vals, vec, stampOwner(sc, owner))
 		if err != nil {
 			return nil, ChangeRange{}, false, true, err
 		}
@@ -387,10 +387,14 @@ func embedTexts(ctx context.Context, sc *schema.TableSchema, table string, texts
 	return vecs, nil
 }
 
-func execInsertWithFTS(ctx context.Context, tx *sql.Tx, table string, fts []schema.Field, rec map[string]any, cols []string, vals []any, vec []float32) (int64, error) {
+func execInsertWithFTS(ctx context.Context, tx *sql.Tx, table string, fts []schema.Field, rec map[string]any, cols []string, vals []any, vec []float32, owner string) (int64, error) {
 	if vec != nil {
 		cols = append(cols, `"_embedding"`)
 		vals = append(vals, schema.EncodeVector(vec))
+	}
+	if owner != "" {
+		cols = append(cols, q(schema.OwnerColumn))
+		vals = append(vals, owner)
 	}
 	var stmt string
 	if len(cols) == 0 {
