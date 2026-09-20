@@ -1022,3 +1022,90 @@ func TestPostgresListenOverflowsABlockedSubscriber(t *testing.T) {
 		t.Fatal("a subscriber that never drained did not overflow the live buffer")
 	}
 }
+
+func listenAuthz(inc store.Incarnation) func(string) (*store.RowScope, store.Incarnation, bool) {
+	return func(string) (*store.RowScope, store.Incarnation, bool) { return nil, inc, true }
+}
+
+func TestPostgresListenFiltersRecordsFromAnotherTableLifetime(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	_, inc, err := s.TableState(ctx, "app", "notes", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := store.Incarnation{NsGen: inc.NsGen, Table: inc.Table, DropGen: inc.DropGen + 1}
+	got := make(chan store.ChangeRecord, 8)
+	ended := make(chan error, 1)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, listenAuthz(stale),
+		func(r store.ChangeRecord) { got <- r }, func(c error) { ended <- c })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	drainReplay(t, ctx, replay)
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "other lifetime"}}, store.WriteOpts{}, store.Embedder{}, nil, inc); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case rec := <-got:
+		t.Fatalf("a record whose lifetime differs from the authorized incarnation was delivered: %+v", rec)
+	case cause := <-ended:
+		t.Fatalf("a lifetime mismatch must filter the record, not end the stream: %v", cause)
+	case <-time.After(3 * time.Second):
+	}
+}
+
+func TestPostgresListenDeliversRecordsMatchingTheAuthorizedLifetime(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	_, inc, err := s.TableState(ctx, "app", "notes", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan store.ChangeRecord, 8)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, listenAuthz(inc),
+		func(r store.ChangeRecord) { got <- r }, func(error) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	drainReplay(t, ctx, replay)
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "same lifetime"}}, store.WriteOpts{}, store.Embedder{}, nil, inc); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-got:
+	case <-time.After(20 * time.Second):
+		t.Fatal("a record matching the authorized incarnation was never delivered")
+	}
+}
+
+func TestPostgresListenNamespaceFeedIgnoresTableLifetimeMismatch(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	_, inc, err := s.TableState(ctx, "app", "notes", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := store.Incarnation{NsGen: inc.NsGen, Table: inc.Table, DropGen: inc.DropGen + 1}
+	got := make(chan store.ChangeRecord, 8)
+	replay, cancel, err := s.Listen(ctx, "app", "", "", [16]byte{}, listenAuthz(stale),
+		func(r store.ChangeRecord) { got <- r }, func(error) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	drainReplay(t, ctx, replay)
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "namespace wide"}}, store.WriteOpts{}, store.Embedder{}, nil, inc); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-got:
+	case <-time.After(20 * time.Second):
+		t.Fatal("a namespace-wide feed must not apply the per-record table-lifetime comparison")
+	}
+}
