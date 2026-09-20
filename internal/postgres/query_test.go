@@ -390,3 +390,21 @@ func TestPostgresQueryAcceptsBetweenAndOverlaps(t *testing.T) {
 		t.Fatalf("BETWEEN in a mutation filter rejected: %v", err)
 	}
 }
+
+func TestPostgresFilterErrorsSurviveAnIdentifierNamingTheParseMessage(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "f", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "f", "t", []schema.Field{{Name: "tag"}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.Delete(ctx, "f", "t", `"invalid PostgreSQL SQL"(tag) = 1`, nil, store.DeleteOpts{DryRun: true}, nil, store.Incarnation{})
+	if err == nil {
+		t.Fatal("an unknown function must be rejected")
+	}
+	if !strings.Contains(err.Error(), "unknown SQL function") {
+		t.Fatalf("an identifier that quotes the parse message must keep its own diagnosis, got %v", err)
+	}
+}
