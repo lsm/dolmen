@@ -89,6 +89,7 @@ const (
 	OpSetFulltext  = "set_fulltext"
 	OpSetVectorize = "set_vectorize"
 	OpSetEnum      = "set_enum"
+	OpSetRowAccess = "set_row_access"
 )
 
 var identRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)

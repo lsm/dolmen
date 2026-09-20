@@ -192,6 +192,10 @@ var migrateChangeKeys = map[string][]string{
 	schema.OpSetEnum:      {"op", "name", "enum"},
 }
 
+var migrateAuthChangeKeys = map[string][]string{
+	schema.OpSetRowAccess: {"op", "value"},
+}
+
 var migrateFieldDefKeys = map[string]bool{
 	"name":      true,
 	"type":      true,
@@ -201,16 +205,23 @@ var migrateFieldDefKeys = map[string]bool{
 	"required":  true,
 }
 
-func validateMigrateChanges(changes []map[string]any) error {
+func validateMigrateChanges(changes []map[string]any, authOn bool) error {
+	valid := "add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum"
+	if authOn {
+		valid += ", set_row_access"
+	}
 	for i, ch := range changes {
 		rawOp, present := ch["op"]
 		op, isString := rawOp.(string)
 		if !present || !isString || op == "" {
-			return badRequest("changes[%d]: op must be a non-empty string naming the change (add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum)", i)
+			return badRequest("changes[%d]: op must be a non-empty string naming the change (%s)", i, valid)
 		}
 		keys, known := migrateChangeKeys[op]
+		if !known && authOn {
+			keys, known = migrateAuthChangeKeys[op]
+		}
 		if !known {
-			return badRequest("changes[%d]: unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum)", i, op)
+			return badRequest("changes[%d]: unknown migration op %q (valid: %s)", i, op, valid)
 		}
 		var unknown []string
 		for k := range ch {
@@ -1750,7 +1761,7 @@ var Ops = map[string]OpDef{
 			if err := decodeData(body, &shadow); err != nil {
 				return nil, err
 			}
-			if err := validateMigrateChanges(shadow.Changes); err != nil {
+			if err := validateMigrateChanges(shadow.Changes, s.authn.On()); err != nil {
 				return nil, err
 			}
 			var req migrateReq

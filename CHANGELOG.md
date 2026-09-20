@@ -31,6 +31,17 @@
   auth is on, since it would bypass the parent's `admin` gate. Dropping a namespace or table
   removes the grants targeting it, and revoking the last root administrator is refused while no
   replacement exists.
+- **Per-row ownership.** A table declared with `row_access: "own"` carries an implicit `owner`
+  column the server stamps on every insert; callers never supply it. A caller holding `read` sees
+  the whole table, a caller holding only a data verb (`create`/`update`/`delete`) sees the rows
+  they wrote, and a `schema`/`admin`-only holder sees none — `describe_table` reports 0 rather than
+  the real count. The annotation exists only when auth is on, and never appears in a schema when it
+  is off. Enabling it later through `migrate set_row_access` is refused on a table that already has
+  rows, because no operation can write another principal's rows as that principal; turning it off
+  keeps the column and its values and requires `admin` as well as `schema` and `read`. Scoped
+  `update`, `delete`, `upsert`, `upsert_by_key` and filtered searches are refused for now: their
+  caller-supplied filters and key matches need the restricted filter language before they can be
+  safe.
 - **`unauthorized` error code** (401) in the shared taxonomy. `auth: off` never emits it, and the
   default is still `auth: off` — nothing changes for existing deployments.
 

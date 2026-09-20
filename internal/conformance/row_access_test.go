@@ -219,3 +219,175 @@ func TestMigrationKeepsTheScopeOnARowAccessTable(t *testing.T) {
 		t.Fatalf("after a migration alice saw %d rows, want only her own: %v", len(rows), rows)
 	}
 }
+
+func TestSetRowAccessIsUnknownUnderAuthOff(t *testing.T) {
+	h := newHarnessMode(t, authOff)
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "acme"})
+	h.seedTable("acme", "notes", []map[string]any{{"name": "body", "type": "text"}})
+
+	status, out := h.httpCall("migrate", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"changes": []map[string]any{{"op": "set_row_access", "value": true}},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("set_row_access under auth off: status %d, want 400: %v", status, out)
+	}
+	if doc := h.mustHTTPGet(t, "/v1/openapi.json"); strings.Contains(doc, "set_row_access") {
+		t.Fatal("openapi.json advertises set_row_access under auth off")
+	}
+}
+
+func TestEnablingRowAccessIsRefusedOnAPopulatedTable(t *testing.T) {
+	h := newHarnessMode(t, authGateway)
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "acme"})
+	h.mustHTTP("create_table", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"fields": []map[string]any{{"name": "body", "type": "text"}},
+	})
+
+	h.mustHTTP("migrate", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"changes": []map[string]any{{"op": "set_row_access", "value": true}},
+	})
+	h.mustHTTP("migrate", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"changes": []map[string]any{{"op": "set_row_access", "value": false}},
+	})
+
+	h.mustHTTP("insert", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"records": []map[string]any{{"body": "x"}},
+	})
+	status, out := h.httpCall("migrate", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"changes": []map[string]any{{"op": "set_row_access", "value": true}},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("enabling row_access on a populated table: status %d, want 400: %v", status, out)
+	}
+	errEnv, _ := out["error"].(map[string]any)
+	if msg, _ := errEnv["message"].(string); !strings.Contains(msg, "replay") {
+		t.Fatalf("the refusal does not teach the supported path: %v", out)
+	}
+}
+
+func TestDisablingRowAccessNeedsAdminAndRead(t *testing.T) {
+	h := seedRowAccess(t)
+	grantTo(t, h, "principal", "sam", "acme", "notes", "schema", "read")
+
+	res, out := h.asIdentity(t, "sam", "", "migrate",
+		`{"namespace":"acme","table":"notes","changes":[{"op":"set_row_access","value":false}]}`)
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("schema+read disabling row_access: status %d, want 403: %v", res.StatusCode, out)
+	}
+	errEnv, _ := out["error"].(map[string]any)
+	if msg, _ := errEnv["message"].(string); !strings.Contains(msg, "admin") {
+		t.Fatalf("the refusal does not name the missing verb: %v", out)
+	}
+
+	grantTo(t, h, "principal", "sam", "acme", "notes", "admin")
+	res, out = h.asIdentity(t, "sam", "", "migrate",
+		`{"namespace":"acme","table":"notes","changes":[{"op":"set_row_access","value":false}]}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("schema+read+admin disabling row_access: status %d %v", res.StatusCode, out)
+	}
+}
+
+func TestEnablingRowAccessNeedsReadBeforeTheRowCountIsConsulted(t *testing.T) {
+	h := newHarnessMode(t, authGateway)
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "acme"})
+	h.mustHTTP("create_table", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"fields": []map[string]any{{"name": "body", "type": "text"}},
+	})
+	h.mustHTTP("insert", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"records": []map[string]any{{"body": "secret"}},
+	})
+	grantTo(t, h, "principal", "dave", "acme", "notes", "schema")
+
+	res, out := h.asIdentity(t, "dave", "", "migrate",
+		`{"namespace":"acme","table":"notes","changes":[{"op":"set_row_access","value":true}]}`)
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("a schema-only caller: status %d, want 403 before any row-dependent check: %v", res.StatusCode, out)
+	}
+	body := mustJSON(t, out)
+	if strings.Contains(body, "1 rows") || strings.Contains(body, "already holds") {
+		t.Fatalf("the refusal leaked the row count to a schema-only caller: %s", body)
+	}
+}
+
+func TestDisablingRowAccessStopsTheFiltering(t *testing.T) {
+	h := seedRowAccess(t)
+	grantTo(t, h, "principal", "alice", "acme", "notes", "create")
+	grantTo(t, h, "principal", "bob", "acme", "notes", "create")
+	grantTo(t, h, "principal", "carol", "acme", "notes", "read")
+	h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"alice note"}]}`)
+	h.asIdentity(t, "bob", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"bob note"}]}`)
+
+	res, out := h.asIdentity(t, "alice", "", "read_rows", `{"namespace":"acme","table":"notes","ids":[1,2]}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("alice read while row_access is on: status %d %v", res.StatusCode, out)
+	}
+	data, _ := out["data"].(map[string]any)
+	if rows, _ := data["rows"].([]any); len(rows) != 1 {
+		t.Fatalf("alice saw %d rows while scoped, want 1", len(rows))
+	}
+
+	h.mustHTTP("migrate", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"changes": []map[string]any{{"op": "set_row_access", "value": false}},
+	})
+
+	res, out = h.asIdentity(t, "alice", "", "read_rows", `{"namespace":"acme","table":"notes","ids":[1,2]}`)
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("with row_access off a create-only caller has no read path: status %d, want 403: %v", res.StatusCode, out)
+	}
+
+	res, out = h.asIdentity(t, "carol", "", "read_rows", `{"namespace":"acme","table":"notes","ids":[1,2]}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("carol read after disabling: status %d %v", res.StatusCode, out)
+	}
+	data, _ = out["data"].(map[string]any)
+	rows, _ := data["rows"].([]any)
+	if len(rows) != 2 {
+		t.Fatalf("a read holder saw %d rows after disabling, want the whole table", len(rows))
+	}
+	kept := 0
+	for _, r := range rows {
+		if row, _ := r.(map[string]any); row["owner"] != nil {
+			kept++
+		}
+	}
+	if kept != 2 {
+		t.Fatalf("disabling row_access dropped stored owner values: %v", rows)
+	}
+}
+
+func TestOwnerStaysReservedWhileTheColumnExists(t *testing.T) {
+	h := seedRowAccess(t)
+
+	for _, change := range []map[string]any{
+		{"op": "add_field", "field": map[string]any{"name": "owner", "type": "string"}},
+		{"op": "rename_field", "from": "body", "to": "owner"},
+	} {
+		status, out := h.httpCall("migrate", map[string]any{
+			"namespace": "acme", "table": "notes", "changes": []map[string]any{change},
+		})
+		if status != http.StatusBadRequest {
+			t.Fatalf("%v: status %d, want 400: %v", change["op"], status, out)
+		}
+	}
+
+	h.mustHTTP("migrate", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"changes": []map[string]any{{"op": "set_row_access", "value": false}},
+	})
+	status, out := h.httpCall("migrate", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"changes": []map[string]any{{"op": "add_field", "field": map[string]any{"name": "owner", "type": "string"}}},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("owner must stay reserved while the column exists: status %d %v", status, out)
+	}
+}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/derr"
+	"github.com/lsm/dolmen/internal/schema"
 )
 
 type authScope int
@@ -75,8 +76,18 @@ type authTarget struct {
 	Table     string          `json:"table"`
 	Object    *grantObjectRaw `json:"object"`
 	Changes   []struct {
-		Op string `json:"op"`
+		Op    string `json:"op"`
+		Value *bool  `json:"value"`
 	} `json:"changes"`
+}
+
+func disablesRowAccess(t authTarget) bool {
+	for _, c := range t.Changes {
+		if c.Op == schema.OpSetRowAccess && c.Value != nil && !*c.Value {
+			return true
+		}
+	}
+	return false
 }
 
 type grantObjectRaw struct {
@@ -159,8 +170,13 @@ func (s *Server) authorizeOp(ctx context.Context, op string, body []byte) error 
 		}
 		return forbidden403()
 	}
-	if op == "migrate" && migrationReadsRows(target) && !held.Has(auth.VerbRead) {
-		return derr.New(derr.Forbidden, "this migration's outcome depends on the table's existing rows, so it requires the read verb in addition to schema; without it a schema-only caller could learn about rows they cannot see")
+	if op == "migrate" {
+		if migrationReadsRows(target) && !held.Has(auth.VerbRead) {
+			return derr.New(derr.Forbidden, "this migration's outcome depends on the table's existing rows, so it requires the read verb in addition to schema; without it a schema-only caller could learn about rows they cannot see")
+		}
+		if disablesRowAccess(target) && !held.Has(auth.VerbAdmin) {
+			return derr.New(derr.Forbidden, "turning row_access off widens every data-verb holder's reach from their own rows to all owners' rows, which changes what other callers may do, so it requires the admin verb in addition to schema and read")
+		}
 	}
 	return nil
 }

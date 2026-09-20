@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/lsm/dolmen/internal/auth"
+	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -30,7 +31,7 @@ func (s *Server) resolveScope(ctx context.Context, ns, table string) (*store.Row
 	if err != nil {
 		return nil, store.Incarnation{}, err
 	}
-	if !sc.HasOwner {
+	if sc.RowAccess != schema.RowAccessOwn {
 		if verbs.HasAny(auth.VerbRead, auth.VerbCreate, auth.VerbUpdate, auth.VerbDelete) {
 			return nil, inc, nil
 		}
@@ -60,5 +61,5 @@ func (s *Server) tableHasRowAccess(ctx context.Context, obj auth.Object) bool {
 	if err != nil {
 		return false
 	}
-	return sc.HasOwner
+	return sc.RowAccess == schema.RowAccessOwn
 }

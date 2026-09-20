@@ -30,8 +30,13 @@ func (s *Server) OpNames() []string {
 
 func (s *Server) Op(name string) (OpDef, bool) {
 	if def, ok := Ops[name]; ok {
-		if s.authOpsEnabled() && name == "create_table" {
-			return withRowAccessInput(def), true
+		if s.authOpsEnabled() {
+			switch name {
+			case "create_table":
+				return withRowAccessInput(def), true
+			case "migrate":
+				return withRowAccessChange(def), true
+			}
 		}
 		return def, true
 	}
@@ -57,6 +62,72 @@ func withRowAccessInput(def OpDef) OpDef {
 		"enum":        []string{schema.RowAccessOwn},
 		"description": "Restrict row visibility to the principal who wrote each row. Omit for a table every grant holder sees in full. The server stamps an implicit owner column; callers never supply it, and it cannot be enabled later on a table that already has rows",
 	}
+	next := make(map[string]any, len(def.InputSchema))
+	for k, v := range def.InputSchema {
+		next[k] = v
+	}
+	next["properties"] = nextProps
+	def.InputSchema = next
+	return def
+}
+
+func withRowAccessChange(def OpDef) OpDef {
+	props, ok := def.InputSchema["properties"].(map[string]any)
+	if !ok {
+		return def
+	}
+	changes, ok := props["changes"].(map[string]any)
+	if !ok {
+		return def
+	}
+	items, ok := changes["items"].(map[string]any)
+	if !ok {
+		return def
+	}
+	itemProps, ok := items["properties"].(map[string]any)
+	if !ok {
+		return def
+	}
+	opProp, ok := itemProps["op"].(map[string]any)
+	if !ok {
+		return def
+	}
+	names, ok := opProp["enum"].([]string)
+	if !ok {
+		return def
+	}
+
+	nextOp := make(map[string]any, len(opProp))
+	for k, v := range opProp {
+		nextOp[k] = v
+	}
+	nextOp["enum"] = append(append([]string(nil), names...), schema.OpSetRowAccess)
+	nextOp["description"] = "add_field | rename_field | drop_field | set_fulltext | set_vectorize | set_enum | set_row_access"
+
+	nextItemProps := make(map[string]any, len(itemProps))
+	for k, v := range itemProps {
+		nextItemProps[k] = v
+	}
+	nextItemProps["op"] = nextOp
+
+	nextItems := make(map[string]any, len(items))
+	for k, v := range items {
+		nextItems[k] = v
+	}
+	nextItems["properties"] = nextItemProps
+
+	nextChanges := make(map[string]any, len(changes))
+	for k, v := range changes {
+		nextChanges[k] = v
+	}
+	nextChanges["items"] = nextItems
+
+	nextProps := make(map[string]any, len(props))
+	for k, v := range props {
+		nextProps[k] = v
+	}
+	nextProps["changes"] = nextChanges
+
 	next := make(map[string]any, len(def.InputSchema))
 	for k, v := range def.InputSchema {
 		next[k] = v
