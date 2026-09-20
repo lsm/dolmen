@@ -356,3 +356,37 @@ func TestPostgresQueryReservedLongNamePrefixDoesNotCollide(t *testing.T) {
 		t.Fatalf("unexpected labels: %+v", row)
 	}
 }
+
+func TestPostgresQueryAcceptsBetweenAndOverlaps(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "n", Type: schema.Number}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"n": 1}, {"n": 5}, {"n": 9}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.Query(ctx, "app", "SELECT n FROM notes WHERE n BETWEEN ? AND ? ORDER BY n", []any{json.Number("2"), json.Number("8")}, [16]byte{}, store.Page{})
+	if err != nil {
+		t.Fatalf("BETWEEN rejected: %v", err)
+	}
+	if len(result.Rows) != 1 || result.Rows[0]["n"] != int64(5) {
+		t.Fatalf("BETWEEN rows: %+v", result.Rows)
+	}
+	result, err = s.Query(ctx, "app", "SELECT n FROM notes WHERE n NOT BETWEEN ? AND ? ORDER BY n", []any{json.Number("2"), json.Number("8")}, [16]byte{}, store.Page{})
+	if err != nil {
+		t.Fatalf("NOT BETWEEN rejected: %v", err)
+	}
+	if len(result.Rows) != 2 {
+		t.Fatalf("NOT BETWEEN rows: %+v", result.Rows)
+	}
+	if _, err := s.Query(ctx, "app", "SELECT (DATE '2024-01-01', DATE '2024-02-01') OVERLAPS (DATE '2024-01-15', DATE '2024-03-01') AS both FROM notes", nil, [16]byte{}, store.Page{}); err != nil {
+		t.Fatalf("OVERLAPS rejected: %v", err)
+	}
+	if _, err := s.Delete(ctx, "app", "notes", "n BETWEEN ? AND ?", []any{json.Number("2"), json.Number("8")}, store.DeleteOpts{DryRun: true}, nil, store.Incarnation{}); err != nil {
+		t.Fatalf("BETWEEN in a mutation filter rejected: %v", err)
+	}
+}
