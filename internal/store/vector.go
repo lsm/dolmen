@@ -61,6 +61,9 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq Vecto
 	vec := vq.Vec
 	minScore := vq.MinScore
 
+	if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
+		return SearchResult{}, err
+	}
 	if err := scopeUsable(scope, sc); err != nil {
 		return SearchResult{}, err
 	}

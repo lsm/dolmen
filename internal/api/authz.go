@@ -26,7 +26,11 @@ type authRule struct {
 	Scope   authScope
 	Verbs   []auth.Verb
 	AnyVerb bool
+
+	OwnRows bool
 }
+
+var dataVerbs = []auth.Verb{auth.VerbCreate, auth.VerbUpdate, auth.VerbDelete}
 
 var authRules = map[string]authRule{
 	"capabilities":    {Scope: scopeNone},
@@ -52,14 +56,14 @@ var authRules = map[string]authRule{
 	"delete":          {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbDelete}},
 	"upsert":          {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbCreate, auth.VerbUpdate}},
 	"upsert_by_key":   {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbCreate, auth.VerbUpdate}},
-	"read_rows":       {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}},
-	"search_fulltext": {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}},
-	"search_vector":   {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}},
+	"read_rows":       {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true},
+	"search_fulltext": {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true},
+	"search_vector":   {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true},
 
 	"query": {Scope: scopeNamespace, Verbs: []auth.Verb{auth.VerbRead}},
 
-	"changes_since": {Scope: scopeTableOrNamespace, Verbs: []auth.Verb{auth.VerbRead}},
-	"wait_for":      {Scope: scopeTableOrNamespace, Verbs: []auth.Verb{auth.VerbRead}},
+	"changes_since": {Scope: scopeTableOrNamespace, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true},
+	"wait_for":      {Scope: scopeTableOrNamespace, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true},
 
 	"grant":       {Scope: scopeGrantObject, Verbs: []auth.Verb{auth.VerbAdmin}},
 	"revoke":      {Scope: scopeGrantObject, Verbs: []auth.Verb{auth.VerbAdmin}},
@@ -150,6 +154,9 @@ func (s *Server) authorizeOp(ctx context.Context, op string, body []byte) error 
 		return forbidden403()
 	}
 	if !held.HasAll(required...) {
+		if rule.OwnRows && held.HasAny(dataVerbs...) && s.tableHasRowAccess(ctx, obj) {
+			return nil
+		}
 		return forbidden403()
 	}
 	if op == "migrate" && migrationReadsRows(target) && !held.Has(auth.VerbRead) {

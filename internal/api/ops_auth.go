@@ -29,6 +29,9 @@ func (s *Server) OpNames() []string {
 
 func (s *Server) Op(name string) (OpDef, bool) {
 	if def, ok := Ops[name]; ok {
+		if s.authOpsEnabled() && name == "create_table" {
+			return withRowAccessInput(def), true
+		}
 		return def, true
 	}
 	if s.authOpsEnabled() {
@@ -37,6 +40,29 @@ func (s *Server) Op(name string) (OpDef, bool) {
 		}
 	}
 	return OpDef{}, false
+}
+
+func withRowAccessInput(def OpDef) OpDef {
+	props, ok := def.InputSchema["properties"].(map[string]any)
+	if !ok {
+		return def
+	}
+	nextProps := make(map[string]any, len(props)+1)
+	for k, v := range props {
+		nextProps[k] = v
+	}
+	nextProps["row_access"] = map[string]any{
+		"type":        "string",
+		"enum":        []string{auth.RowAccessOwn},
+		"description": "Restrict row visibility to the principal who wrote each row. Omit for a table every grant holder sees in full. The server stamps an implicit owner column; callers never supply it, and it cannot be enabled later on a table that already has rows",
+	}
+	next := make(map[string]any, len(def.InputSchema))
+	for k, v := range def.InputSchema {
+		next[k] = v
+	}
+	next["properties"] = nextProps
+	def.InputSchema = next
+	return def
 }
 
 func AuthOpNames() []string {

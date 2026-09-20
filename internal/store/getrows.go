@@ -25,6 +25,9 @@ func (s *Store) GetRows(ctx context.Context, nsName, table string, ids []int64, 
 		return QueryResult{}, err
 	}
 
+	if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
+		return QueryResult{}, err
+	}
 	if err := scopeUsable(scope, sc); err != nil {
 		return QueryResult{}, err
 	}

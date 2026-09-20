@@ -481,6 +481,9 @@ func (s *Store) DescribeTable(ctx context.Context, nsName, table string, scope *
 	if err != nil {
 		return nil, 0, err
 	}
+	if err := checkScopeIncarnation(ctx, n.ro, nsName, table, scopeIncarnation); err != nil {
+		return nil, 0, err
+	}
 	if err := scopeUsable(scope, sc); err != nil {
 		return nil, 0, err
 	}

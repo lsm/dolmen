@@ -113,6 +113,9 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 		}
 	}
 
+	if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
+		return SearchResult{}, err
+	}
 	if err := scopeUsable(scope, sc); err != nil {
 		return SearchResult{}, err
 	}
