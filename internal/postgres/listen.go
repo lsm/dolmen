@@ -135,7 +135,9 @@ func (s *Store) listenOnce(w *wakeSet, stop chan struct{}) {
 
 func listenCause(err error) error {
 	switch {
-	case errors.Is(err, store.ErrCursorExpired), errors.Is(err, store.ErrCursorCrossFeed):
+	case errors.Is(err, store.ErrCursorCrossFeed):
+		return err
+	case errors.Is(err, store.ErrCursorExpired):
 		return store.ErrListenAged
 	case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrClosed):
 		return store.ErrListenLifetimeEnded
@@ -158,6 +160,8 @@ type listenSession struct {
 	cancelOnce sync.Once
 	stopOnce   sync.Once
 	firing     atomic.Bool
+	drained    bool
+	halted     bool
 	stop       chan struct{}
 	storeStop  chan struct{}
 	wake       chan struct{}
@@ -306,7 +310,26 @@ func (l *listenSession) storeClosing() bool {
 }
 
 func (l *listenSession) halt() {
+	l.mu.Lock()
+	l.halted = true
+	l.mu.Unlock()
 	l.stopOnce.Do(func() { close(l.stop) })
+}
+
+func (l *listenSession) replayStep() (bool, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.halted, l.drained
+}
+
+func (l *listenSession) markDrained() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.drained {
+		return false
+	}
+	l.drained = true
+	return true
 }
 
 func (l *listenSession) run(ctx context.Context) {
@@ -399,12 +422,35 @@ func (s *Store) listenIncarnation(ctx context.Context, ns, table string) (store.
 	return inc, generation, err
 }
 
+func (s *Store) validateListenCursor(ctx context.Context, ns, table string, from store.Cursor) error {
+	if from == "" || from == store.CursorBegin {
+		return nil
+	}
+	return s.readOnly(ctx, ns, func(tx pgx.Tx, n namespace) error {
+		var feed string
+		err := tx.QueryRow(ctx, "SELECT table_name FROM "+s.relation("cursors")+" WHERE namespace=$1 AND token=$2", n.name, string(from)).Scan(&feed)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.ErrCursorExpired
+		}
+		if err != nil {
+			return err
+		}
+		if feed != table {
+			return store.ErrCursorCrossFeed
+		}
+		return nil
+	})
+}
+
 func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor, nsGen [16]byte, liveAuthz func(table string) (*store.RowScope, store.Incarnation, bool), notify func(store.ChangeRecord), closed func(cause error)) (*store.ChangeReplay, func(), error) {
 	if notify == nil {
 		return nil, nil, invalidf("listen: notify callback is required")
 	}
 	inc, generation, err := s.listenIncarnation(ctx, ns, table)
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := s.validateListenCursor(ctx, ns, table, from); err != nil {
 		return nil, nil, err
 	}
 	if nsGen == [16]byte{} {
@@ -429,10 +475,13 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 	}
 	session.release = w.register(ns, session.wake)
 	live, cancelLive := context.WithCancel(ctx)
-	drained := false
 
 	replay := &store.ChangeReplay{
 		Next: func(ctx context.Context) ([]store.ChangeRecord, store.Cursor, bool, error) {
+			halted, drained := session.replayStep()
+			if halted {
+				return nil, session.resume(), true, store.ErrClosed
+			}
 			if drained {
 				return nil, session.resume(), true, nil
 			}
@@ -443,8 +492,9 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 				return nil, "", false, err
 			}
 			if len(batch) == 0 {
-				drained = true
-				close(session.replayDone)
+				if session.markDrained() {
+					close(session.replayDone)
+				}
 				return nil, session.resume(), true, nil
 			}
 			return batch, session.resume(), false, nil

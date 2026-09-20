@@ -332,6 +332,16 @@ PostgreSQL's 63-byte limit, and the announce runs in a savepoint so a failed not
 — a full notification queue, say — cannot poison the write transaction that raised it.
 Notifications are an optimisation, and a write must not fail because one did.
 
+A cursor is validated at `Listen` rather than on the first page, so a token minted on
+another feed is refused up front with the cross-feed error and its own remediation instead
+of surfacing later as an age bound. `ChangeReplay.Next` serializes against the session and
+refuses calls once the subscription is cancelled.
+
+Cursor chains rotate: `changes_since` re-anchors a chain once it is a full retention period
+old, because a chain is expired at twice retention and an actively consuming subscription
+would otherwise be cut off at that bound — while still delivering — with a resume cursor
+that could never resolve.
+
 The subscription captures the namespace generation and the table's drop generation at
 `Listen` rather than trusting caller-supplied bindings, so a dropped and recreated table
 or a replaced namespace ends the feed even when the caller passes a zero incarnation. The

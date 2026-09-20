@@ -93,6 +93,10 @@ func (s *Store) ChangesSince(ctx context.Context, ns, table string, from store.C
 			if err != nil {
 				return err
 			}
+			if s.changeRetention > 0 && !now.Before(state.start.Add(s.changeRetention)) {
+				state.origin = state.position
+				state.start = now
+			}
 		} else {
 			if err := tx.QueryRow(ctx, "SELECT next_change FROM "+s.relation("namespaces")+" WHERE name=$1", ns).Scan(&state.position); err != nil {
 				return err

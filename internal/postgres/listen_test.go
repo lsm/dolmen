@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -669,5 +670,124 @@ func TestPostgresListenCloseReportsLifetimeEnded(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("closing the store never ended the subscription")
+	}
+}
+
+func TestPostgresListenRejectsCrossFeedCursorAtListen(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "one"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	_, tableCursor, err := s.ChangesSince(ctx, "app", "notes", store.CursorBegin, [16]byte{}, nil, store.Incarnation{}, store.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = s.Listen(ctx, "app", "", tableCursor, [16]byte{}, nil, func(store.ChangeRecord) {}, nil)
+	if !errors.Is(err, store.ErrCursorCrossFeed) {
+		t.Fatalf("cross-feed cursor reported %v, want ErrCursorCrossFeed", err)
+	}
+	if errors.Is(err, store.ErrListenAged) {
+		t.Fatal("cross-feed cursor was reported as an age bound")
+	}
+	if _, _, err := s.Listen(ctx, "app", "notes", store.Cursor("deadbeefdeadbeefdeadbeefdeadbeef"), [16]byte{}, nil, func(store.ChangeRecord) {}, nil); !errors.Is(err, store.ErrCursorExpired) {
+		t.Fatalf("unknown cursor reported %v, want ErrCursorExpired", err)
+	}
+}
+
+func TestPostgresListenReplayRejectsCallsAfterCancel(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "one"}, {"body": "two"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	replay, cancel, err := s.Listen(ctx, "app", "notes", store.CursorBegin, [16]byte{}, nil, func(store.ChangeRecord) {}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if _, _, _, err := replay.Next(ctx); !errors.Is(err, store.ErrClosed) {
+		t.Fatalf("Next after cancel returned %v, want ErrClosed", err)
+	}
+}
+
+func TestPostgresListenConcurrentReplayNextIsSafe(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, nil, func(store.ChangeRecord) {}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 5; j++ {
+				if _, _, _, err := replay.Next(ctx); err != nil && !errors.Is(err, store.ErrClosed) {
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestPostgresListenSurvivesPastTwiceChangeRetention(t *testing.T) {
+	cfg := testConfig(t)
+	retention := 2 * time.Second
+	cfg.ChangeRetention = &retention
+	s := openTest(t, cfg)
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	live := make(chan store.ChangeRecord, 128)
+	closedWith := make(chan error, 1)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, nil, func(rec store.ChangeRecord) { live <- rec }, func(cause error) { closedWith <- cause })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	drainReplay(t, ctx, replay)
+	deadline := time.Now().Add(5 * retention)
+	written := 0
+	for time.Now().Before(deadline) {
+		if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "tick"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+			t.Fatal(err)
+		}
+		written++
+		select {
+		case cause := <-closedWith:
+			t.Fatalf("subscription ended after %v with %v", time.Since(deadline.Add(-5*retention)), cause)
+		case <-time.After(retention / 4):
+		}
+	}
+	delivered := 0
+	for {
+		select {
+		case <-live:
+			delivered++
+			continue
+		case cause := <-closedWith:
+			t.Fatalf("subscription ended with %v", cause)
+		case <-time.After(2 * listenPollInterval):
+		}
+		break
+	}
+	if delivered == 0 {
+		t.Fatalf("nothing delivered across %d writes", written)
+	}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "final"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-live:
+	case cause := <-closedWith:
+		t.Fatalf("subscription ended with %v", cause)
+	case <-time.After(20 * time.Second):
+		t.Fatal("subscription stopped delivering past twice the retention window")
 	}
 }
