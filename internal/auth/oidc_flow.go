@@ -1,0 +1,291 @@
+package auth
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+)
+
+const (
+	AuthBeginPath    = "/v1/auth/begin"
+	AuthCallbackPath = "/v1/auth/callback"
+
+	pendingTTL = 10 * time.Minute
+)
+
+var ErrAuthFlow = errors.New("the sign-in could not be completed")
+
+type providerEndpoints struct {
+	Authorize string
+	Token     string
+	UserInfo  string
+}
+
+type discoveryDoc struct {
+	AuthorizationEndpoint string `json:"authorization_endpoint"`
+	TokenEndpoint         string `json:"token_endpoint"`
+	UserinfoEndpoint      string `json:"userinfo_endpoint"`
+}
+
+type OIDCSource struct {
+	cfg    OIDCConfig
+	reg    *Registry
+	ring   Keyring
+	client *http.Client
+	digest string
+
+	endpoints providerEndpoints
+}
+
+func NewOIDCSource(cfg OIDCConfig, reg *Registry, ring Keyring, client *http.Client) *OIDCSource {
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	return &OIDCSource{cfg: cfg, reg: reg, ring: ring, client: client, digest: IssuerDigest(cfg.IssuerKey())}
+}
+
+func (s *OIDCSource) Name() string { return OIDCSourceName }
+
+func (s *OIDCSource) IssuerDigest() string { return s.digest }
+
+func (s *OIDCSource) SetEndpoints(e providerEndpoints) { s.endpoints = e }
+
+func (s *OIDCSource) resolveEndpoints(ctx context.Context) (providerEndpoints, error) {
+	if s.endpoints.Authorize != "" {
+		return s.endpoints, nil
+	}
+	if s.cfg.Preset == PresetGitHub {
+		s.endpoints = providerEndpoints{Authorize: githubAuthorizeURL, Token: githubTokenURL, UserInfo: githubUserURL}
+		return s.endpoints, nil
+	}
+	docURL := strings.TrimRight(s.cfg.Issuer, "/") + "/.well-known/openid-configuration"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, docURL, nil)
+	if err != nil {
+		return providerEndpoints{}, err
+	}
+	res, err := s.client.Do(req)
+	if err != nil {
+		return providerEndpoints{}, fmt.Errorf("%w: the identity provider's discovery document could not be fetched", ErrAuthFlow)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return providerEndpoints{}, fmt.Errorf("%w: the identity provider's discovery document answered %d", ErrAuthFlow, res.StatusCode)
+	}
+	var doc discoveryDoc
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&doc); err != nil {
+		return providerEndpoints{}, fmt.Errorf("%w: the identity provider's discovery document is not valid JSON", ErrAuthFlow)
+	}
+	if doc.AuthorizationEndpoint == "" || doc.TokenEndpoint == "" {
+		return providerEndpoints{}, fmt.Errorf("%w: the identity provider's discovery document names no authorization or token endpoint", ErrAuthFlow)
+	}
+	s.endpoints = providerEndpoints{Authorize: doc.AuthorizationEndpoint, Token: doc.TokenEndpoint, UserInfo: doc.UserinfoEndpoint}
+	return s.endpoints, nil
+}
+
+func randomURLSafe(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+func pkceChallenge(verifier string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func (s *OIDCSource) Begin(ctx context.Context, redirectURI string) (string, error) {
+	eps, err := s.resolveEndpoints(ctx)
+	if err != nil {
+		return "", err
+	}
+	state, err := randomURLSafe(32)
+	if err != nil {
+		return "", err
+	}
+	verifier, err := randomURLSafe(32)
+	if err != nil {
+		return "", err
+	}
+	if err := s.reg.putPending(ctx, state, verifier, redirectURI); err != nil {
+		return "", err
+	}
+
+	q := url.Values{}
+	q.Set("response_type", "code")
+	q.Set("client_id", s.cfg.ClientID)
+	q.Set("redirect_uri", redirectURI)
+	q.Set("scope", strings.Join(s.cfg.scopeList(), " "))
+	q.Set("state", state)
+	q.Set("code_challenge", pkceChallenge(verifier))
+	q.Set("code_challenge_method", "S256")
+
+	sep := "?"
+	if strings.Contains(eps.Authorize, "?") {
+		sep = "&"
+	}
+	return eps.Authorize + sep + q.Encode(), nil
+}
+
+type tokenResponse struct {
+	IDToken     string `json:"id_token"`
+	AccessToken string `json:"access_token"`
+}
+
+func (s *OIDCSource) Complete(ctx context.Context, state, code string) (string, time.Duration, error) {
+	verifier, redirectURI, ok, err := s.reg.takePending(ctx, state)
+	if err != nil {
+		return "", 0, err
+	}
+	if !ok {
+		return "", 0, fmt.Errorf("%w: this sign-in link is unknown or has expired; start again", ErrAuthFlow)
+	}
+	eps, err := s.resolveEndpoints(ctx)
+	if err != nil {
+		return "", 0, err
+	}
+
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", code)
+	form.Set("redirect_uri", redirectURI)
+	form.Set("client_id", s.cfg.ClientID)
+	form.Set("client_secret", s.cfg.ClientSecret)
+	form.Set("code_verifier", verifier)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, eps.Token, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", 0, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	res, err := s.client.Do(req)
+	if err != nil {
+		return "", 0, fmt.Errorf("%w: the identity provider could not be reached to exchange the code", ErrAuthFlow)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return "", 0, fmt.Errorf("%w: the identity provider refused the code exchange", ErrAuthFlow)
+	}
+	var tr tokenResponse
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&tr); err != nil {
+		return "", 0, fmt.Errorf("%w: the identity provider's token response is not valid JSON", ErrAuthFlow)
+	}
+
+	sub, groups, err := s.claimsFrom(ctx, tr, eps)
+	if err != nil {
+		return "", 0, err
+	}
+	principal, err := QualifyOIDC(s.digest, sub)
+	if err != nil {
+		return "", 0, fmt.Errorf("%w: %s", ErrAuthFlow, err.Error())
+	}
+	qualified := make([]string, 0, len(groups))
+	for _, g := range groups {
+		q, err := QualifyOIDCGroup(s.digest, g)
+		if err != nil {
+			continue
+		}
+		qualified = append(qualified, q)
+	}
+
+	ttl := s.cfg.TokenTTL
+	if ttl == 0 {
+		ttl = DefaultTokenTTL
+	}
+	tok, err := MintToken(s.ring, principal, qualified, ttl, time.Now())
+	if err != nil {
+		return "", 0, err
+	}
+	return tok, ttl, nil
+}
+
+func (s *OIDCSource) claimsFrom(ctx context.Context, tr tokenResponse, eps providerEndpoints) (string, []string, error) {
+	if tr.IDToken != "" {
+		claims, err := unverifiedClaims(tr.IDToken)
+		if err == nil {
+			sub, _ := claims["sub"].(string)
+			if sub != "" {
+				return sub, groupClaims(claims, s.cfg.GroupsClaim), nil
+			}
+		}
+	}
+	if tr.AccessToken == "" || eps.UserInfo == "" {
+		return "", nil, fmt.Errorf("%w: the identity provider returned no usable subject claim", ErrAuthFlow)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, eps.UserInfo, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tr.AccessToken)
+	req.Header.Set("Accept", "application/json")
+	res, err := s.client.Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: the identity provider's user endpoint could not be reached", ErrAuthFlow)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return "", nil, fmt.Errorf("%w: the identity provider's user endpoint answered %d", ErrAuthFlow, res.StatusCode)
+	}
+	var claims map[string]any
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&claims); err != nil {
+		return "", nil, fmt.Errorf("%w: the identity provider's user response is not valid JSON", ErrAuthFlow)
+	}
+	sub, _ := claims["sub"].(string)
+	if sub == "" {
+		if id, ok := claims["id"].(float64); ok {
+			sub = fmt.Sprintf("%d", int64(id))
+		}
+	}
+	if sub == "" {
+		return "", nil, fmt.Errorf("%w: the identity provider returned no usable subject claim", ErrAuthFlow)
+	}
+	return sub, groupClaims(claims, s.cfg.GroupsClaim), nil
+}
+
+func unverifiedClaims(idToken string) (map[string]any, error) {
+	parts := strings.Split(idToken, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("id token is not a JWT")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, err
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		return nil, err
+	}
+	return claims, nil
+}
+
+func groupClaims(claims map[string]any, key string) []string {
+	if key == "" {
+		key = "groups"
+	}
+	raw, ok := claims[key]
+	if !ok {
+		return nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, v := range list {
+		if s, ok := v.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}

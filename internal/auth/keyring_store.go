@@ -1,0 +1,142 @@
+package auth
+
+import (
+	"context"
+	"crypto/ed25519"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"time"
+)
+
+func (r *Registry) initKeyring() error {
+	if _, err := r.db.Exec(`CREATE TABLE IF NOT EXISTS signing_keys (
+		id         TEXT PRIMARY KEY,
+		private    TEXT NOT NULL,
+		public     TEXT NOT NULL,
+		active     INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL
+	)`); err != nil {
+		return err
+	}
+	_, err := r.db.Exec(`CREATE TABLE IF NOT EXISTS deployment (
+		id         TEXT PRIMARY KEY,
+		created_at TEXT NOT NULL
+	)`)
+	return err
+}
+
+func (r *Registry) DeploymentID(ctx context.Context, pinned string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var stored string
+	err := r.db.QueryRowContext(ctx, `SELECT id FROM deployment LIMIT 1`).Scan(&stored)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		id := pinned
+		if id == "" {
+			minted, mintErr := NewDeploymentID()
+			if mintErr != nil {
+				return "", mintErr
+			}
+			id = minted
+		}
+		if _, err := r.db.ExecContext(ctx,
+			`INSERT INTO deployment (id, created_at) VALUES (?, ?)`,
+			id, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return "", fmt.Errorf("store deployment id: %w", err)
+		}
+		return id, nil
+	case err != nil:
+		return "", fmt.Errorf("read deployment id: %w", err)
+	}
+	if pinned != "" && pinned != stored {
+		return "", fmt.Errorf("DOLMEN_AUTH_OIDC_DEPLOYMENT_ID is %q but this data directory was created as %q: tokens are bound to the deployment id, so changing it would invalidate every live token and accept none; unset the variable to keep %q, or point at a different data directory", pinned, stored, stored)
+	}
+	return stored, nil
+}
+
+func (r *Registry) LoadKeyring(ctx context.Context, deployment string) (Keyring, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rows, err := r.db.QueryContext(ctx, `SELECT id, private, public, active FROM signing_keys ORDER BY created_at`)
+	if err != nil {
+		return Keyring{}, fmt.Errorf("read signing keys: %w", err)
+	}
+	defer rows.Close()
+
+	k := Keyring{Deployment: deployment}
+	var found bool
+	for rows.Next() {
+		var id, priv, pub string
+		var active int
+		if err := rows.Scan(&id, &priv, &pub, &active); err != nil {
+			return Keyring{}, fmt.Errorf("read signing keys: %w", err)
+		}
+		privBytes, err := hex.DecodeString(priv)
+		if err != nil {
+			return Keyring{}, fmt.Errorf("read signing key %s: stored private key is not hex", id)
+		}
+		pubBytes, err := hex.DecodeString(pub)
+		if err != nil {
+			return Keyring{}, fmt.Errorf("read signing key %s: stored public key is not hex", id)
+		}
+		sk := SigningKey{ID: id, Private: ed25519.PrivateKey(privBytes), Public: ed25519.PublicKey(pubBytes)}
+		if active != 0 {
+			k.Active = sk
+			found = true
+			continue
+		}
+		k.Verify = append(k.Verify, sk)
+	}
+	if err := rows.Err(); err != nil {
+		return Keyring{}, fmt.Errorf("read signing keys: %w", err)
+	}
+	if found {
+		return k, nil
+	}
+
+	sk, err := NewSigningKey()
+	if err != nil {
+		return Keyring{}, err
+	}
+	if _, err := r.db.ExecContext(ctx,
+		`INSERT INTO signing_keys (id, private, public, active, created_at) VALUES (?, ?, ?, 1, ?)`,
+		sk.ID, hex.EncodeToString(sk.Private), hex.EncodeToString(sk.Public),
+		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return Keyring{}, fmt.Errorf("store signing key: %w", err)
+	}
+	k.Active = sk
+	return k, nil
+}
+
+func (r *Registry) RotateSigningKey(ctx context.Context) (Keyring, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	sk, err := NewSigningKey()
+	if err != nil {
+		return Keyring{}, err
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Keyring{}, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE signing_keys SET active = 0`); err != nil {
+		return Keyring{}, fmt.Errorf("retire signing key: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO signing_keys (id, private, public, active, created_at) VALUES (?, ?, ?, 1, ?)`,
+		sk.ID, hex.EncodeToString(sk.Private), hex.EncodeToString(sk.Public),
+		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return Keyring{}, fmt.Errorf("store signing key: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Keyring{}, err
+	}
+	return Keyring{}, nil
+}

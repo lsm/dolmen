@@ -1,0 +1,124 @@
+package auth
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestDeploymentIDIsMintedOnceAndPersists(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	r, err := OpenRegistry(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	first, err := r.DeploymentID(ctx, "")
+	if err != nil {
+		t.Fatalf("deployment id: %v", err)
+	}
+	r.Close()
+
+	r2, err := OpenRegistry(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer r2.Close()
+	again, err := r2.DeploymentID(ctx, "")
+	if err != nil {
+		t.Fatalf("deployment id: %v", err)
+	}
+	if again != first {
+		t.Fatalf("the deployment id changed across a restart: %q then %q", first, again)
+	}
+
+	if _, err := r2.DeploymentID(ctx, "something-else"); err == nil {
+		t.Fatal("a pinned deployment id that disagrees with the stored one was accepted")
+	} else if !strings.Contains(err.Error(), first) {
+		t.Fatalf("the startup error does not name the stored id: %v", err)
+	}
+
+	same, err := r2.DeploymentID(ctx, first)
+	if err != nil || same != first {
+		t.Fatalf("pinning the stored id was refused: %q %v", same, err)
+	}
+}
+
+func TestSigningKeyPersistsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	now := time.Now()
+
+	r, err := OpenRegistry(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	dep, _ := r.DeploymentID(ctx, "")
+	k, err := r.LoadKeyring(ctx, dep)
+	if err != nil {
+		t.Fatalf("keyring: %v", err)
+	}
+	tok, err := MintToken(k, "oidc:v1:abc:sub", nil, DefaultTokenTTL, now)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	r.Close()
+
+	r2, err := OpenRegistry(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer r2.Close()
+	dep2, _ := r2.DeploymentID(ctx, "")
+	k2, err := r2.LoadKeyring(ctx, dep2)
+	if err != nil {
+		t.Fatalf("keyring: %v", err)
+	}
+	if k2.Active.ID != k.Active.ID {
+		t.Fatal("a restart minted a new signing key, so every live token would stop verifying")
+	}
+	if _, err := VerifyToken(k2, tok, now); err != nil {
+		t.Fatalf("a token minted before the restart no longer verifies: %v", err)
+	}
+}
+
+func TestRotationKeepsVerifyingLiveTokens(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	now := time.Now()
+
+	r, err := OpenRegistry(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer r.Close()
+	dep, _ := r.DeploymentID(ctx, "")
+	k, _ := r.LoadKeyring(ctx, dep)
+	tok, err := MintToken(k, "oidc:v1:abc:sub", nil, DefaultTokenTTL, now)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+
+	if _, err := r.RotateSigningKey(ctx); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	rotated, err := r.LoadKeyring(ctx, dep)
+	if err != nil {
+		t.Fatalf("keyring after rotation: %v", err)
+	}
+	if rotated.Active.ID == k.Active.ID {
+		t.Fatal("rotation did not mint a successor")
+	}
+	if _, err := VerifyToken(rotated, tok, now); err != nil {
+		t.Fatalf("a token from before the rotation stopped verifying during the overlap: %v", err)
+	}
+	fresh, err := MintToken(rotated, "oidc:v1:abc:sub", nil, DefaultTokenTTL, now)
+	if err != nil {
+		t.Fatalf("mint after rotation: %v", err)
+	}
+	if _, err := VerifyToken(rotated, fresh, now); err != nil {
+		t.Fatalf("a token from the successor does not verify: %v", err)
+	}
+}

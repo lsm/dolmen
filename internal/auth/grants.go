@@ -111,6 +111,14 @@ func OpenRegistry(dir string) (*Registry, error) {
 		db.Close()
 		return nil, fmt.Errorf("create key registry: %w", err)
 	}
+	if err := r.initKeyring(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create signing keyring: %w", err)
+	}
+	if err := r.initPending(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create sign-in state table: %w", err)
+	}
 	return r, nil
 }
 
