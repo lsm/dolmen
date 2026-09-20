@@ -29,7 +29,7 @@ func physicalCandidate(name string, attempt int) string {
 
 func physicalColumns(fields []schema.Field) (map[string]string, error) {
 	out := map[string]string{}
-	used := map[string]bool{"id": true, "created_at": true, "_embedding": true}
+	used := map[string]bool{"id": true, "created_at": true, "_embedding": true, ftsColumn: true}
 	for _, f := range fields {
 		if len(f.Name) <= 63 {
 			out[f.Name] = f.Name
@@ -56,6 +56,10 @@ func physicalColumns(fields []schema.Field) (map[string]string, error) {
 }
 
 func physicalTable(ctx context.Context, tx pgx.Tx, n namespace, name string) (string, error) {
+	return physicalRelation(ctx, tx, n, name)
+}
+
+func physicalRelation(ctx context.Context, tx pgx.Tx, n namespace, name string) (string, error) {
 	for i := 0; i < 64; i++ {
 		candidate := physicalCandidate(name, i)
 		var exists bool
@@ -67,7 +71,7 @@ func physicalTable(ctx context.Context, tx pgx.Tx, n namespace, name string) (st
 			return candidate, nil
 		}
 	}
-	return "", fmt.Errorf("postgres: cannot allocate a distinct table identifier")
+	return "", fmt.Errorf("postgres: cannot allocate a distinct relation identifier")
 }
 
 type columnNamer struct {
@@ -76,7 +80,7 @@ type columnNamer struct {
 }
 
 func newColumnNamer(columns map[string]string) *columnNamer {
-	n := &columnNamer{columns: map[string]string{}, used: map[string]bool{"id": true, "created_at": true, "_embedding": true}}
+	n := &columnNamer{columns: map[string]string{}, used: map[string]bool{"id": true, "created_at": true, "_embedding": true, ftsColumn: true}}
 	for logical, physical := range columns {
 		n.columns[logical] = physical
 		n.used[physical] = true

@@ -126,6 +126,15 @@ func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []sche
 		if _, err := tx.Exec(ctx, tableDDL(n.physical, physical, fields, columns)); err != nil {
 			return err
 		}
+		if len(fulltextFields(fields)) > 0 {
+			indexDDL, err := ftsIndexDDL(ctx, tx, n, physical)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, indexDDL); err != nil {
+				return err
+			}
+		}
 		if err := s.grantQueryTable(ctx, tx, n, physical, fields, columns); err != nil {
 			return err
 		}
@@ -172,6 +181,9 @@ func tableDDL(ns, table string, fields []schema.Field, columns map[string]string
 	}
 	if vectorized {
 		parts = append(parts, `"_embedding" bytea`)
+	}
+	if fts := ftsColumnDDL(fields, columns); fts != "" {
+		parts = append(parts, fts)
 	}
 	return "CREATE TABLE " + ident(ns, table) + " (" + strings.Join(parts, ",") + ")"
 }
