@@ -1,8 +1,10 @@
 package postgres
 
 import (
+	"context"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/lsm/dolmen/internal/schema"
 )
 
@@ -37,10 +39,10 @@ func ftsColumnDDL(fields []schema.Field, columns map[string]string) string {
 	return ident(ftsColumn) + " tsvector GENERATED ALWAYS AS (" + expression + ") STORED"
 }
 
-func ftsIndexName(table string) string {
-	return physicalCandidate(table+"_fts", 0)
-}
-
-func ftsIndexDDL(ns, table string) string {
-	return "CREATE INDEX " + ident(ftsIndexName(table)) + " ON " + ident(ns, table) + " USING GIN (" + ident(ftsColumn) + ")"
+func ftsIndexDDL(ctx context.Context, tx pgx.Tx, n namespace, table string) (string, error) {
+	name, err := physicalRelation(ctx, tx, n, table+"_fts")
+	if err != nil {
+		return "", err
+	}
+	return "CREATE INDEX " + ident(name) + " ON " + ident(n.physical, table) + " USING GIN (" + ident(ftsColumn) + ")", nil
 }

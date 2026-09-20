@@ -225,9 +225,13 @@ Migrations validate the same six `schema.Change` ops as SQLite, in request order
 reproduce its plan output and rejection messages: the field cap, required-without-
 backfill, enum values still stored by rows, the single-vectorized-field rule, and the
 `expected_version` requirement for destructive changes. `PlanMigration` runs the same
-validation and probes without writing, and `Migrate` re-plans under the namespace write
-lock so a plan cannot apply against a schema that moved on. `checkIncarnation` supplies
-the version compare-and-set and returns the shared `VersionConflictError`.
+validation and probes without writing. `Migrate` plans twice: once to decide what
+embedding work is needed, and again inside the namespace write transaction, whose plan is
+the one applied. Re-planning under the lock re-runs the data probes, not just the
+incarnation check, so a value written between the two plans — an enum member a concurrent
+insert added that the new vocabulary excludes — is rejected rather than committed against
+the schema that forbids it. `checkIncarnation` supplies the version compare-and-set and
+returns the shared `VersionConflictError`.
 
 Catalog version 5 adds a `migrations` relation keyed by namespace, table, drop
 generation, and a per-table id, so `list_migrations` returns newest-first history with
@@ -276,6 +280,12 @@ only stop words matches nothing where FTS5 would match.
 
 Migrations drop the generated column before the field DDL and rebuild it after, because
 PostgreSQL refuses to drop a column a generated column reads.
+
+The index name is allocated through the same `pg_class` probe that table names use, not
+derived as `<table>_fts`. Indexes and tables share one namespace in PostgreSQL, and the
+grammar reserves only the `__fts` substring, so a namespace may legitimately hold a table
+called `notes_fts`; deriving the name would make full-text on `notes` fail with 42P07 and
+stay broken.
 
 Vector search scans stored vectors and scores cosine similarity in Go, exactly as SQLite
 does, and reports `exact` execution. Ordering, `_score`, `min_score`, skipped-vector
