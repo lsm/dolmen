@@ -22,7 +22,7 @@ func TestDenialLogsTheResolvedPrincipal(t *testing.T) {
 	h := newHarnessMode(t, authGateway)
 
 	logs := captureLogs(t, func() {
-		res, out := h.postNoCredential(t, h.httpURL+"/list_namespaces", "{}", aliceHeaders())
+		res, out := h.postNoCredential(t, h.httpURL+"/query", `{"namespace":"acme","sql":"SELECT 1"}`, aliceHeaders())
 		if res.StatusCode != http.StatusForbidden {
 			t.Fatalf("expected a 403 to log: status %d %v", res.StatusCode, out)
 		}
@@ -33,10 +33,10 @@ func TestDenialLogsTheResolvedPrincipal(t *testing.T) {
 
 	logs = captureLogs(t, func() {
 		res, out := h.postNoCredential(t, h.mcpURL,
-			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_namespaces","arguments":{}}}`,
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query","arguments":{"namespace":"acme","sql":"SELECT 1"}}}`,
 			aliceHeaders())
-		if res.StatusCode != http.StatusForbidden {
-			t.Fatalf("expected a 403 over MCP: status %d %v", res.StatusCode, out)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("expected an MCP tool error inside 200: status %d %v", res.StatusCode, out)
 		}
 	})
 	if !strings.Contains(logs, "principal=alice") {
@@ -80,7 +80,7 @@ func TestDenialsAreLoggedAboveDebug(t *testing.T) {
 	}
 
 	logs := atInfo(func() {
-		if res, _ := h.postNoCredential(t, h.httpURL+"/list_namespaces", "{}", aliceHeaders()); res.StatusCode != http.StatusForbidden {
+		if res, _ := h.postNoCredential(t, h.httpURL+"/query", `{"namespace":"acme","sql":"SELECT 1"}`, aliceHeaders()); res.StatusCode != http.StatusForbidden {
 			t.Fatalf("expected a 403: status %d", res.StatusCode)
 		}
 	})
@@ -101,7 +101,7 @@ func TestDenialsAreLoggedAboveDebug(t *testing.T) {
 func TestResponseBodiesNeverEchoIdentity(t *testing.T) {
 	h := newHarnessMode(t, authGateway)
 
-	res, out := h.postNoCredential(t, h.httpURL+"/list_namespaces", "{}", aliceHeaders())
+	res, out := h.postNoCredential(t, h.httpURL+"/query", `{"namespace":"acme","sql":"SELECT 1"}`, aliceHeaders())
 	if res.StatusCode != http.StatusForbidden {
 		t.Fatalf("status %d, want 403: %v", res.StatusCode, out)
 	}

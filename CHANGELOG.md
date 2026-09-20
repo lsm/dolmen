@@ -19,6 +19,18 @@
   and an over-limit list fails the identity rather than dropping a group that might carry a grant.
   An asserted identity authenticates and is then refused `403 forbidden` until the grant ops land —
   deny-by-default, which is what makes the source safe to enable before permissions exist.
+- **Grants.** `grant`, `revoke`, and `list_grants` give a principal or group verbs — `create`,
+  `read`, `update`, `delete`, `schema`, `admin` — on a namespace, a table, or `*`. Grants inherit
+  downward and combine by union, with no deny grants and no precedence. The verb gate covers every
+  operation, `/mcp`, and `/v1/subscribe`. `whoami` reports the caller's identity so an agent can
+  self-diagnose a `403`. All four ops exist only when auth is on, and are absent from dispatch,
+  `tools/list`, and `openapi.json` when it is off.
+  Authorization precedes existence: an ungranted caller gets `403` whether or not the object
+  exists, `list_tables` answers `404` for a namespace they hold nothing under, and
+  `list_namespaces` returns only what they can reach. Implicit namespace creation is disabled when
+  auth is on, since it would bypass the parent's `admin` gate. Dropping a namespace or table
+  removes the grants targeting it, and revoking the last root administrator is refused while no
+  replacement exists.
 - **`unauthorized` error code** (401) in the shared taxonomy. `auth: off` never emits it, and the
   default is still `auth: off` — nothing changes for existing deployments.
 

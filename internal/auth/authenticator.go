@@ -55,13 +55,12 @@ func New(cfg Config) (*Authenticator, error) {
 	if a.admin == nil && a.header == nil {
 		return nil, fmt.Errorf("auth is on, but no identity source is configured, so every request would answer 401: set DOLMEN_ADMIN_KEY to the bootstrap credential (%s), or DOLMEN_TRUSTED_PROXIES to accept identity asserted by a gateway", AdminPrincipal)
 	}
-	if a.admin == nil {
-		return nil, fmt.Errorf("auth is on with a trusted-proxy source but no DOLMEN_ADMIN_KEY, so the deployment has no usable root administrator: every proxied identity authenticates and is then refused, because grants do not exist in this build and %s is the only principal with access; set DOLMEN_ADMIN_KEY", AdminPrincipal)
-	}
 	return a, nil
 }
 
 func (a *Authenticator) Mode() Mode { return a.mode }
+
+func (a *Authenticator) AdminKeyConfigured() bool { return a != nil && a.admin != nil }
 
 func (a *Authenticator) On() bool { return a != nil && a.mode.On() }
 
@@ -103,4 +102,24 @@ func WithIdentity(ctx context.Context, id Identity) context.Context {
 func IdentityFrom(ctx context.Context) Identity {
 	id, _ := ctx.Value(identityKey{}).(Identity)
 	return id
+}
+
+type RootAdminSource interface {
+	RootAdmins(ctx context.Context) ([]Subject, error)
+}
+
+func (a *Authenticator) CheckRootAdministrator(ctx context.Context, src RootAdminSource) error {
+	if !a.On() || a.AdminKeyConfigured() {
+		return nil
+	}
+	admins, err := src.RootAdmins(ctx)
+	if err != nil {
+		return err
+	}
+	for _, s := range admins {
+		if s.Type == SubjectPrincipal {
+			return nil
+		}
+	}
+	return fmt.Errorf("auth is on but the deployment has no usable root administrator: no DOLMEN_ADMIN_KEY is set and no principal holds admin on \"*\", so nobody could grant anything; set DOLMEN_ADMIN_KEY and restart, which restores the bootstrap administrator while existing grants persist")
 }

@@ -97,8 +97,8 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) OpenAPIDoc(baseURL string) map[string]any {
 	paths := map[string]any{}
-	for _, name := range OpNames() {
-		def := Ops[name]
+	for _, name := range s.OpNames() {
+		def, _ := s.Op(name)
 		dataSchema := def.OutputSchema
 		if dataSchema == nil {
 			dataSchema = map[string]any{"type": "object"}
