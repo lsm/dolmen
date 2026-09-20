@@ -6,6 +6,15 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
+func ValidateOwnerCollision(fields []schema.Field) error {
+	for _, f := range fields {
+		if schema.ReservedWithOwner(f.Name) {
+			return invalidf("field %q collides with the implicit owner column this table carries because it declares row_access; rename the field, for example to %q", schema.OwnerColumn, "owner_name")
+		}
+	}
+	return nil
+}
+
 func ValidateTableDefinition(table string, fields []schema.Field) ([]schema.Field, error) {
 	if err := schema.ValidateTableName(table); err != nil {
 		return nil, invalidf("%s", err)

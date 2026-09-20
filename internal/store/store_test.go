@@ -141,7 +141,7 @@ func TestLegacyKeywordTableRemainsAccessible(t *testing.T) {
 	legacyTable := "select"
 	legacyFields := []schema.Field{{Name: "order", Type: schema.String}}
 
-	if _, err := n.rw.ExecContext(ctx, tableDDL(legacyTable, legacyFields)); err != nil {
+	if _, err := n.rw.ExecContext(ctx, tableDDL(legacyTable, legacyFields, false)); err != nil {
 		t.Fatalf("create legacy table: %v", err)
 	}
 	sc := schema.TableSchema{Namespace: "test", Name: legacyTable, Version: 1, Fields: legacyFields}
@@ -183,7 +183,7 @@ func TestLegacyKeywordFieldMigration(t *testing.T) {
 	}
 	legacyTable := "orders"
 	legacyFields := []schema.Field{{Name: "order", Type: schema.String}}
-	if _, err := n.rw.ExecContext(ctx, tableDDL(legacyTable, legacyFields)); err != nil {
+	if _, err := n.rw.ExecContext(ctx, tableDDL(legacyTable, legacyFields, false)); err != nil {
 		t.Fatalf("create legacy table: %v", err)
 	}
 	sc := schema.TableSchema{Namespace: "test", Name: legacyTable, Version: 1, Fields: legacyFields}
@@ -271,13 +271,13 @@ func TestStoragePermissions(t *testing.T) {
 }
 
 func TestRequiredFieldsEmitNotNull(t *testing.T) {
-	ddl := tableDDL("notes", noteFields())
+	ddl := tableDDL("notes", noteFields(), false)
 	if !strings.Contains(ddl, `"score" NUMERIC`) || strings.Contains(ddl, `"score" NUMERIC NOT NULL`) {
 		t.Fatalf("optional field must stay nullable, got: %s", ddl)
 	}
 	fields := noteFields()
 	fields[2].Required = true
-	ddl = tableDDL("notes", fields)
+	ddl = tableDDL("notes", fields, false)
 	if !strings.Contains(ddl, `"score" NUMERIC NOT NULL`) {
 		t.Fatalf("required field must emit NOT NULL, got: %s", ddl)
 	}
