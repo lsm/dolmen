@@ -860,3 +860,99 @@ func TestPostgresListenNamespaceReplayRechecksAdmission(t *testing.T) {
 		t.Fatal("revoked admission during replay never fired closed")
 	}
 }
+
+func TestPostgresListenDeliversWritesRacingTheFirstNext(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	live := make(chan store.ChangeRecord, 32)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, nil, func(rec store.ChangeRecord) { live <- rec }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "between listen and next"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[int64]bool{}
+	for _, rec := range drainReplay(t, ctx, replay) {
+		seen[rec.RowID] = true
+	}
+	for !seen[1] {
+		select {
+		case rec := <-live:
+			seen[rec.RowID] = true
+		case <-time.After(20 * time.Second):
+			t.Fatal("a write committed between Listen and the first Next was never delivered")
+		}
+	}
+}
+
+func TestPostgresListenNextContextCancelLeavesSessionUsable(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	live := make(chan store.ChangeRecord, 16)
+	closedWith := make(chan error, 1)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", store.CursorBegin, [16]byte{}, nil, func(rec store.ChangeRecord) { live <- rec }, func(cause error) { closedWith <- cause })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	dead, killIt := context.WithCancel(ctx)
+	killIt()
+	if _, _, _, err := replay.Next(dead); err == nil {
+		t.Fatal("Next with a cancelled context succeeded")
+	}
+	select {
+	case cause := <-closedWith:
+		t.Fatalf("a cancelled Next context ended the subscription with %v", cause)
+	case <-time.After(time.Second):
+	}
+	drainReplay(t, ctx, replay)
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "after a dead Next"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-live:
+	case cause := <-closedWith:
+		t.Fatalf("subscription ended with %v", cause)
+	case <-time.After(20 * time.Second):
+		t.Fatal("subscription stopped delivering after a cancelled Next context")
+	}
+}
+
+func TestPostgresListenIdleSubscriptionOutlivesRetention(t *testing.T) {
+	cfg := testConfig(t)
+	retention := 2 * time.Second
+	cfg.ChangeRetention = &retention
+	s := openTest(t, cfg)
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	live := make(chan store.ChangeRecord, 16)
+	closedWith := make(chan error, 1)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, nil, func(rec store.ChangeRecord) { live <- rec }, func(cause error) { closedWith <- cause })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	drainReplay(t, ctx, replay)
+	select {
+	case cause := <-closedWith:
+		t.Fatalf("idle subscription ended early with %v", cause)
+	case <-time.After(3 * retention):
+	}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "after a long idle"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case rec := <-live:
+		if rec.RowID != 1 {
+			t.Fatalf("record: %+v", rec)
+		}
+	case cause := <-closedWith:
+		t.Fatalf("idle subscription expired its own cursor: %v", cause)
+	case <-time.After(20 * time.Second):
+		t.Fatal("change after a long idle was never delivered")
+	}
+}

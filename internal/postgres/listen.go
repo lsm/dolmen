@@ -162,6 +162,7 @@ type listenSession struct {
 	firing     atomic.Bool
 	drained    bool
 	halted     bool
+	lastFetch  time.Time
 	stop       chan struct{}
 	storeStop  chan struct{}
 	wake       chan struct{}
@@ -274,7 +275,29 @@ func (l *listenSession) fetch(ctx context.Context) ([]store.ChangeRecord, error)
 		return nil, listenCause(err)
 	}
 	l.cursor = next
+	l.lastFetch = l.store.now()
 	return records, nil
+}
+
+func (l *listenSession) needsRefresh() bool {
+	if l.store.changeRetention <= 0 {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.store.now().Sub(l.lastFetch) >= l.store.changeRetention/4
+}
+
+func (l *listenSession) reanchor(ctx context.Context) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	token, err := l.store.reanchorCursor(ctx, l.ns, l.table, l.cursor, l.nsGen, l.inc)
+	if err != nil {
+		return listenCause(err)
+	}
+	l.cursor = token
+	l.lastFetch = l.store.now()
+	return nil
 }
 
 func (l *listenSession) resume() store.Cursor {
@@ -374,6 +397,18 @@ func (l *listenSession) run(ctx context.Context) {
 			}
 			return
 		}
+		if l.needsRefresh() {
+			if err := l.reanchor(ctx); err != nil {
+				if l.storeClosing() {
+					l.finish(store.ErrListenLifetimeEnded)
+					return
+				}
+				if cause, report := terminalCause(ctx, err); report {
+					l.finish(cause)
+				}
+				return
+			}
+		}
 		for l.pending(ctx) {
 			records, err := l.fetch(ctx)
 			if err != nil {
@@ -472,11 +507,16 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 	if err != nil {
 		return nil, nil, err
 	}
+	anchored, err := s.anchorCursor(ctx, ns, table, from, nsGen, inc)
+	if err != nil {
+		return nil, nil, listenCause(err)
+	}
 	session := &listenSession{
-		store: s, ns: ns, table: table, nsGen: nsGen, inc: inc, cursor: from,
+		store: s, ns: ns, table: table, nsGen: nsGen, inc: inc, cursor: anchored,
 		liveAuthz: liveAuthz, notify: notify, closed: closed,
 		stop: make(chan struct{}), storeStop: w.stop,
 		wake: make(chan struct{}, 1), replayDone: make(chan struct{}), done: make(chan struct{}),
+		lastFetch: s.now(),
 	}
 	if table != "" {
 		if err := session.admits(table); err != nil {
@@ -497,8 +537,10 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 			}
 			batch, err := session.fetch(ctx)
 			if err != nil {
-				session.finish(err)
-				session.halt()
+				if cause, report := terminalCause(ctx, err); report {
+					session.finish(cause)
+					session.halt()
+				}
 				return nil, "", false, err
 			}
 			if len(batch) == 0 {

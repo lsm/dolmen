@@ -334,13 +334,28 @@ Notifications are an optimisation, and a write must not fail because one did.
 
 A cursor is validated at `Listen` rather than on the first page, so a token minted on
 another feed is refused up front with the cross-feed error and its own remediation instead
-of surfacing later as an age bound. `ChangeReplay.Next` serializes against the session and
-refuses calls once the subscription is cancelled.
+of surfacing later as an age bound. `Listen` also anchors the feed there, minting a cursor
+at the resolved head or retention floor inside its own transaction, so a commit landing
+between `Listen` returning and the first `Next` is delivered rather than falling below a
+boundary resolved later.
 
-Cursor chains rotate: `changes_since` re-anchors a chain once it is a full retention period
-old, because a chain is expired at twice retention and an actively consuming subscription
-would otherwise be cut off at that bound — while still delivering — with a resume cursor
-that could never resolve.
+`ChangeReplay.Next` serializes against the session and refuses calls once the subscription
+is cancelled. A context cancelled by the caller for one `Next` call ends that call only:
+the error is returned but the session stays usable, since a per-call deadline is not a
+statement about the subscription.
+
+A subscription re-anchors its own cursor once every quarter of the retention window,
+minting a fresh chain at its current position. Two bounds make this necessary. A token is
+expired once it has gone unrefreshed for a retention window, and a chain is expired
+outright at twice retention, so a feed quiet for longer than that would expire its own
+cursor, lose the next change, and hand back a resume cursor that no longer resolves.
+
+That re-anchoring lives in the subscription, not in `changes_since`. The absolute chain
+bound is deliberate for the polling surface — a caller holding one chain forever is made
+to re-anchor — and `TestPostgresCursorDurabilityAndRetention` pins it. Only a live
+subscription, which cannot ask its caller to reconnect without dropping the stream, is
+exempt. The cost is one write per subscription per quarter-window, not the one per poll
+that the read-only guard replaced.
 
 The subscription captures the namespace generation and the table's drop generation at
 `Listen` rather than trusting caller-supplied bindings, so a dropped and recreated table
