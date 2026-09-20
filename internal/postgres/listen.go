@@ -163,6 +163,7 @@ type listenSession struct {
 	drained    bool
 	halted     bool
 	lastFetch  time.Time
+	boundary   int64
 	stop       chan struct{}
 	storeStop  chan struct{}
 	wake       chan struct{}
@@ -262,7 +263,7 @@ func (l *listenSession) pending(ctx context.Context) bool {
 	return has
 }
 
-func (l *listenSession) fetch(ctx context.Context) ([]store.ChangeRecord, error) {
+func (l *listenSession) fetch(ctx context.Context, boundary *int64) ([]store.ChangeRecord, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.table != "" {
@@ -270,7 +271,7 @@ func (l *listenSession) fetch(ctx context.Context) ([]store.ChangeRecord, error)
 			return nil, err
 		}
 	}
-	records, next, err := l.store.ChangesSince(ctx, l.ns, l.table, l.cursor, l.nsGen, nil, l.inc, store.Page{})
+	records, next, err := l.store.changesSince(ctx, l.ns, l.table, l.cursor, l.nsGen, nil, l.inc, store.Page{}, boundary)
 	if err != nil {
 		return nil, listenCause(err)
 	}
@@ -410,7 +411,7 @@ func (l *listenSession) run(ctx context.Context) {
 			}
 		}
 		for l.pending(ctx) {
-			records, err := l.fetch(ctx)
+			records, err := l.fetch(ctx, nil)
 			if err != nil {
 				if l.storeClosing() {
 					l.finish(store.ErrListenLifetimeEnded)
@@ -473,7 +474,8 @@ func (s *Store) validateListenCursor(ctx context.Context, ns, table string, from
 	}
 	return s.readOnly(ctx, ns, func(tx pgx.Tx, n namespace) error {
 		var feed string
-		err := tx.QueryRow(ctx, "SELECT table_name FROM "+s.relation("cursors")+" WHERE namespace=$1 AND token=$2", n.name, string(from)).Scan(&feed)
+		var issued, start time.Time
+		err := tx.QueryRow(ctx, "SELECT table_name,issued_at,chain_start FROM "+s.relation("cursors")+" WHERE namespace=$1 AND token=$2", n.name, string(from)).Scan(&feed, &issued, &start)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.ErrCursorExpired
 		}
@@ -482,6 +484,10 @@ func (s *Store) validateListenCursor(ctx context.Context, ns, table string, from
 		}
 		if feed != table {
 			return store.ErrCursorCrossFeed
+		}
+		now := s.now()
+		if s.changeRetention > 0 && (now.After(issued.Add(s.changeRetention)) || now.After(start.Add(2*s.changeRetention))) {
+			return store.ErrCursorExpired
 		}
 		return nil
 	})
@@ -511,12 +517,16 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 	if err != nil {
 		return nil, nil, listenCause(err)
 	}
+	head, err := s.changeHead(ctx, ns, nsGen)
+	if err != nil {
+		return nil, nil, listenCause(err)
+	}
 	session := &listenSession{
 		store: s, ns: ns, table: table, nsGen: nsGen, inc: inc, cursor: anchored,
 		liveAuthz: liveAuthz, notify: notify, closed: closed,
 		stop: make(chan struct{}), storeStop: w.stop,
 		wake: make(chan struct{}, 1), replayDone: make(chan struct{}), done: make(chan struct{}),
-		lastFetch: s.now(),
+		lastFetch: s.now(), boundary: head,
 	}
 	if table != "" {
 		if err := session.admits(table); err != nil {
@@ -535,7 +545,7 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 			if drained {
 				return nil, session.resume(), true, nil
 			}
-			batch, err := session.fetch(ctx)
+			batch, err := session.fetch(ctx, &session.boundary)
 			if err != nil {
 				if cause, report := terminalCause(ctx, err); report {
 					session.finish(cause)

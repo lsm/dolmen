@@ -88,7 +88,7 @@ func (s *Store) readMode(ctx context.Context, name string, readOnly bool, fn fun
 	}
 	err = tx.QueryRow(ctx, query, name).Scan(&n.physical, &gen)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("%w: namespace %s", store.ErrNotFound, name)
+		return fmt.Errorf("%w: namespace %s; use list_namespaces", store.ErrNotFound, name)
 	}
 	if err != nil {
 		return err
