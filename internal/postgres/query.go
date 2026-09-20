@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"time"
 	"unicode/utf8"
 
@@ -89,12 +90,25 @@ func queryRows(rows pgx.Rows, names *sqlNames, limit int) (store.QueryResult, er
 	result := store.QueryResult{Rows: []map[string]any{}}
 	columns := rows.FieldDescriptions()
 	labels := make([]string, len(columns))
+	reserved := map[string]bool{}
+	for _, col := range columns {
+		reserved[names.original(col.Name)] = true
+	}
 	seen := map[string]bool{}
 	labelBytes := 0
 	for i, col := range columns {
 		label := names.original(col.Name)
 		if seen[label] {
-			return result, sqlRejected("duplicate column label %q in query result; use AS aliases", label)
+			if label != "?column?" {
+				return result, sqlRejected("duplicate column label %q in query result; use AS aliases", label)
+			}
+			for suffix := 2; ; suffix++ {
+				candidate := label + "_" + strconv.Itoa(suffix)
+				if !seen[candidate] && !reserved[candidate] {
+					label = candidate
+					break
+				}
+			}
 		}
 		if len(label) > 4096 {
 			return result, sqlRejected("column label exceeds 4096 bytes; use a shorter AS alias")

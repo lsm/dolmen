@@ -57,6 +57,19 @@ func TestQueryBackendConformance(t *testing.T) {
 			if _, err := eng.Query(ctx, "app", "SELECT 1 AS x,2 AS x", nil, [16]byte{}, store.Page{}); !errors.Is(err, store.ErrInvalid) {
 				t.Fatalf("duplicate labels: %v", err)
 			}
+			result, err = eng.Query(ctx, "app", "SELECT 1,2", nil, [16]byte{}, store.Page{})
+			if err != nil || len(result.Rows) != 1 || len(result.Rows[0]) != 2 {
+				t.Fatalf("unnamed columns: %+v %v", result, err)
+			}
+			values := map[int64]bool{}
+			for _, value := range result.Rows[0] {
+				if number, ok := value.(int64); ok {
+					values[number] = true
+				}
+			}
+			if !values[1] || !values[2] {
+				t.Fatalf("unnamed column values: %+v", result.Rows[0])
+			}
 			args := make([]any, 101)
 			if _, err := eng.Query(ctx, "app", "SELECT "+strings.TrimSuffix(strings.Repeat("?,", len(args)), ","), args, [16]byte{}, store.Page{}); !errors.Is(err, store.ErrInvalid) {
 				t.Fatalf("parameter cap: %v", err)

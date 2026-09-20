@@ -98,16 +98,16 @@ func (s *Store) ensureQueryRole(ctx context.Context, ns string, expected [16]byt
 		if cached, ok := s.queryGrant(ns); ok && cached == generation {
 			return nil
 		}
-		var login, super, createDB, createRole, replicate, bypass bool
-		err := tx.QueryRow(ctx, "SELECT rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls FROM pg_catalog.pg_roles WHERE rolname=$1", s.queryRole).Scan(&login, &super, &createDB, &createRole, &replicate, &bypass)
+		var login, inherit, super, createDB, createRole, replicate, bypass bool
+		err := tx.QueryRow(ctx, "SELECT rolcanlogin,rolinherit,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls FROM pg_catalog.pg_roles WHERE rolname=$1", s.queryRole).Scan(&login, &inherit, &super, &createDB, &createRole, &replicate, &bypass)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("%w: PostgreSQL query role %q does not exist", store.ErrInvalid, s.queryRole)
 		}
 		if err != nil {
 			return err
 		}
-		if login || super || createDB || createRole || replicate || bypass {
-			return fmt.Errorf("%w: PostgreSQL query role %q must be NOLOGIN, NOSUPERUSER, NOCREATEDB, NOCREATEROLE, NOREPLICATION, and NOBYPASSRLS", store.ErrInvalid, s.queryRole)
+		if login || inherit || super || createDB || createRole || replicate || bypass {
+			return fmt.Errorf("%w: PostgreSQL query role %q must be NOLOGIN, NOINHERIT, NOSUPERUSER, NOCREATEDB, NOCREATEROLE, NOREPLICATION, and NOBYPASSRLS", store.ErrInvalid, s.queryRole)
 		}
 		var canSet bool
 		if err := tx.QueryRow(ctx, "SELECT pg_catalog.pg_has_role(current_user,$1,'SET')", s.queryRole).Scan(&canSet); err != nil {
