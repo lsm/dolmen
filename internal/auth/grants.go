@@ -106,7 +106,12 @@ func OpenRegistry(dir string) (*Registry, error) {
 		db.Close()
 		return nil, fmt.Errorf("create grant registry: %w", err)
 	}
-	return &Registry{db: db}, nil
+	r := &Registry{db: db}
+	if err := r.initKeys(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create key registry: %w", err)
+	}
+	return r, nil
 }
 
 func (r *Registry) Close() error {
@@ -221,7 +226,35 @@ func (r *Registry) Grant(ctx context.Context, subj Subject, obj Object, verbs Ve
 
 var ErrLastRootAdmin = errors.New("the deployment would be left with no usable root administrator")
 
-func (r *Registry) Revoke(ctx context.Context, subj Subject, obj Object, verbs VerbSet, keepRootAdmin bool) (*Grant, error) {
+func (r *Registry) otherRootAdminRemainsLocked(ctx context.Context, revoked Subject, headerReachable bool) (bool, error) {
+	admins, err := r.rootAdminsLocked(ctx)
+	if err != nil {
+		return false, err
+	}
+	var remaining []Subject
+	for _, a := range admins {
+		if a != revoked {
+			remaining = append(remaining, a)
+		}
+	}
+	if len(remaining) == 0 {
+		return false, nil
+	}
+	if headerReachable {
+		for _, a := range remaining {
+			if a.Type == SubjectPrincipal {
+				return true, nil
+			}
+		}
+	}
+	keys, err := r.activeKeysLocked(ctx)
+	if err != nil {
+		return false, err
+	}
+	return rootReachableByKey(remaining, keys, ""), nil
+}
+
+func (r *Registry) Revoke(ctx context.Context, subj Subject, obj Object, verbs VerbSet, keepRootAdmin, headerReachable bool) (*Grant, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -237,18 +270,11 @@ func (r *Registry) Revoke(ctx context.Context, subj Subject, obj Object, verbs V
 		return &existing, nil
 	}
 	if keepRootAdmin && obj.Root() && existing.Verbs.Has(VerbAdmin) && !remaining.Has(VerbAdmin) {
-		admins, err := r.rootAdminsLocked(ctx)
+		ok, err := r.otherRootAdminRemainsLocked(ctx, subj, headerReachable)
 		if err != nil {
 			return nil, err
 		}
-		replacement := false
-		for _, a := range admins {
-			if a.Type == SubjectPrincipal && a != subj {
-				replacement = true
-				break
-			}
-		}
-		if !replacement {
+		if !ok {
 			return nil, ErrLastRootAdmin
 		}
 	}

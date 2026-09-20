@@ -37,6 +37,9 @@ type Server struct {
 
 var toolAnnotations = map[string]map[string]any{
 	"whoami":          {"title": "Who am I", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"create_key":      {"title": "Create API key", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+	"list_keys":       {"title": "List API keys", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"revoke_key":      {"title": "Revoke API key", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
 	"grant":           {"title": "Grant access", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"revoke":          {"title": "Revoke access", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
 	"list_grants":     {"title": "List grants", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},

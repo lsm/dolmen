@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -80,10 +81,14 @@ func TestValidateAdminKeyPrefixErrorExplainsDispatch(t *testing.T) {
 	}
 }
 
-func TestNewRejectsAuthOnWithoutSource(t *testing.T) {
-	_, err := New(Config{Mode: ModeOn})
+func TestAuthOnWithoutAnySourceIsRefusedAtStartup(t *testing.T) {
+	a, err := New(Config{Mode: ModeOn})
+	if err != nil {
+		t.Fatalf("construction defers the source check to startup, where keys are visible: %v", err)
+	}
+	err = a.CheckRootAdministrator(context.Background(), fakeRootAdmins(nil))
 	if err == nil {
-		t.Fatal("auth on with no source started, want startup error")
+		t.Fatal("auth on with no identity source started")
 	}
 	if !strings.Contains(err.Error(), "DOLMEN_ADMIN_KEY") {
 		t.Fatalf("error does not name the remediation: %v", err)

@@ -93,6 +93,8 @@ var authGateway = harnessMode{name: "gateway", adminKey: authAdminKey.adminKey, 
 
 var authGatewayNoKey = harnessMode{name: "gateway-no-key", trustedProxies: "127.0.0.0/8,::1/128", noAdminKey: true}
 
+var authKeysOnly = harnessMode{name: "keys-only", noAdminKey: true}
+
 func (m harnessMode) off() bool { return m.adminKey == "" && !m.noAdminKey }
 
 func (m harnessMode) on() bool { return !m.off() }
@@ -189,6 +191,7 @@ func (h *harness) start() {
 			h.t.Fatalf("open grant registry: %v", err)
 		}
 		h.grants = grants
+		authn.UseKeys(grants)
 		opts = append(opts, api.WithGrants(grants))
 	}
 	apiSrv := api.New(h.st, embed.Provider(h.emb), opts...)
@@ -651,4 +654,14 @@ func mustJSON(t *testing.T, v any) string {
 		t.Fatalf("marshal: %v", err)
 	}
 	return string(raw)
+}
+
+func (h *harness) mustHTTPAs(t *testing.T, id identity, op string, body any) map[string]any {
+	t.Helper()
+	status, out := h.httpCallAs(id, op, body)
+	if status != http.StatusOK || out["ok"] != true {
+		t.Fatalf("/v1/%s failed: status %d %v", op, status, out)
+	}
+	data, _ := out["data"].(map[string]any)
+	return data
 }

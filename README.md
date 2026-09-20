@@ -580,7 +580,44 @@ turned into a probe for rows the caller cannot see. The
 restricted filter language that makes them safe is not built yet, so they fail
 closed rather than leaking. Inserting and reading your own rows work normally.
 
-**Not yet built:** API keys and native OIDC. The design for both is in
+### API keys
+
+A machine cannot do an interactive sign-in, and a shared long-lived token is the
+wrong shape for a CI job. Mint a key instead:
+
+```bash
+curl -sS http://localhost:8790/v1/create_key \
+  -H "Authorization: Bearer $DOLMEN_ADMIN_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"ci runner","principal":"ci-bot","groups":["builders"]}'
+```
+
+The response carries the credential **once** — it is stored hashed and can never
+be shown again. Mint a new key if it is lost. The caller presents it exactly
+like any other bearer token:
+
+```bash
+curl -sS http://localhost:8790/v1/query \
+  -H "Authorization: Bearer dlm_..." \
+  -H 'Content-Type: application/json' -d '{"namespace":"acme","sql":"SELECT 1"}'
+```
+
+A key **grants nothing by itself**. It authenticates as its principal, and that
+principal needs grants like anyone else — which is what makes it safe to mint
+one before deciding what it may do. Group grants reach key identities too, so a
+fleet of machines can share one grant through a group.
+
+Every key carries a server-generated id. `revoke_key` selects by that id, so two
+keys sharing a name and principal stay individually revocable — you can drop
+exactly the compromised credential. `list_keys` reports ids, names, principals,
+groups and revocation state, never credentials. A revoked key is refused with
+the same `401` as an unknown one.
+
+Revoking a key is refused when it would leave the deployment with no usable root
+administrator; setting `DOLMEN_ADMIN_KEY` and restarting always recovers.
+
+**Not yet built:** native OIDC, for humans signing in through an identity
+provider without a gateway. The design is in
 `docs/design/identity-and-engines.md`.
 
 `dolmen mcp` (the stdio transport) refuses to start with `-auth on`: a pipe
