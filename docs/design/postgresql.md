@@ -446,6 +446,14 @@ conformance fixture pass and breaks that containment test. The README and the sk
 already describe `_embedding` caller-SQL access as backend-dependent for this reason,
 so the fixture needs an engine-aware pin, not a wider query role.
 
+Filters share the query contract's remediation. A `;` in a filter is rejected with the
+wording SQLite uses instead of reaching the parser, and a filter that fails to parse is
+reframed: the compiler wraps a filter into `SELECT id FROM t WHERE <filter> ORDER BY
+id`, so a malformed filter surfaced a syntax error naming `ORDER` — a token the caller
+never wrote, from a statement they cannot see. Only parse failures are reframed, so an
+unknown column or table still names what was missing. A failed `drop_namespace` now
+says nothing was dropped rather than pointing at `list_namespaces`.
+
 The remaining failures are genuine backend gaps, not harness artifacts. They must be
 closed before the public selector is enabled:
 
@@ -453,7 +461,6 @@ closed before the public selector is enabled:
 |---|---|---|
 | Error taxonomy | `TestGoldenErrorContract` | codes now match; the unknown-column and malformed-filter messages still diverge from the pinned shapes, and the three full-text rows pin FTS5 wording that D27 makes per-engine, so they need an engine-aware pin |
 | Error taxonomy | `TestTransportParityErrorEnvelope` | a rejected query answers `200` with an empty result set instead of `400` |
-| Error taxonomy | `TestDropNamespaceNotFoundDoesNotAdviseCreating`, `TestSearchFulltextFilterArgs` | remediation wording diverges from the pinned shapes |
 | Typed reads | `TestTypedReadAliasesAndFallbacks` | an alias to an undeclared label reads back as boolean `true` rather than `1` |
 | Full-text | `TestSearchFulltextSyntaxAcceptReject` | diacritic-insensitive matching returns nothing; needs `unaccent` or a documented divergence under D27 |
 | Change feed | `TestChangesSinceTableFeedContract` | a live table-feed cursor is rejected as past the retention window |
