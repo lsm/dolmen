@@ -456,9 +456,11 @@ drop generation, so the predecessor's rows cannot leak: the cursor's position si
 carries over and the caller sees the successor's own events, which is what SQLite does
 and what the shared fixture pins. `TestPostgresCursorPinsHistoryAndLifetime` asserted
 the rejection and now asserts the successor behavior instead; its namespace-replacement
-assertion is unchanged. Subscriptions are unaffected — they cross table lifetimes
-through `checkIncarnation` and the live guard, not through the cursor's stored
-generation.
+assertion is unchanged. Subscriptions are unaffected — they refuse to cross a table
+lifetime through `checkIncarnation` and the live guard, not through the cursor's
+stored generation. `changesSince` runs `checkIncarnation` against the session-pinned
+incarnation before it resolves the cursor, so a live fetch after a drop and recreate
+ends the subscription instead of adopting the successor's generation.
 
 A bare `-` is now rejected by the PostgreSQL query translator as it is by FTS5. It is
 not in the common grammar, and PostgreSQL's parser treats it as punctuation, so such a
