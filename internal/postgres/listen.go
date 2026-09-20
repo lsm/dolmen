@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -146,6 +147,8 @@ type listenSession struct {
 	closed     func(error)
 	finishOnce sync.Once
 	cancelOnce sync.Once
+	stopOnce   sync.Once
+	firing     atomic.Bool
 	stop       chan struct{}
 	storeStop  chan struct{}
 	wake       chan struct{}
@@ -185,9 +188,15 @@ func (l *listenSession) resume() store.Cursor {
 func (l *listenSession) finish(cause error) {
 	l.finishOnce.Do(func() {
 		if l.closed != nil {
+			l.firing.Store(true)
+			defer l.firing.Store(false)
 			l.closed(cause)
 		}
 	})
+}
+
+func (l *listenSession) halt() {
+	l.stopOnce.Do(func() { close(l.stop) })
 }
 
 func (l *listenSession) run(ctx context.Context) {
@@ -295,6 +304,8 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 			}
 			batch, err := session.fetch(ctx)
 			if err != nil {
+				session.finish(err)
+				session.halt()
 				return nil, "", false, err
 			}
 			if len(batch) == 0 {
@@ -311,9 +322,11 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 
 	cancel := func() {
 		session.cancelOnce.Do(func() {
-			close(session.stop)
+			session.halt()
 			cancelLive()
-			<-session.done
+			if !session.firing.Load() {
+				<-session.done
+			}
 			session.release()
 		})
 	}

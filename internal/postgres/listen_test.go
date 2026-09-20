@@ -402,3 +402,59 @@ func TestPostgresListenCloseStopsNotifier(t *testing.T) {
 		t.Fatalf("Listen after Close: %v", err)
 	}
 }
+
+func TestPostgresListenReplayFailureFiresClosed(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	closedWith := make(chan error, 1)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", store.Cursor("deadbeefdeadbeefdeadbeefdeadbeef"), [16]byte{}, nil, func(store.ChangeRecord) {}, func(cause error) { closedWith <- cause })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if _, _, _, err := replay.Next(ctx); err == nil {
+		t.Fatal("stale cursor accepted by replay")
+	} else if !errors.Is(err, store.ErrListenAged) {
+		t.Fatalf("replay error = %v, want ErrListenAged", err)
+	}
+	select {
+	case cause := <-closedWith:
+		if !errors.Is(cause, store.ErrListenAged) {
+			t.Fatalf("closed cause = %v, want ErrListenAged", cause)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("a terminal replay error never fired closed")
+	}
+}
+
+func TestPostgresListenCancelFromClosedCallbackDoesNotDeadlock(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	var cancel func()
+	ready := make(chan struct{})
+	returned := make(chan struct{})
+	admitted := atomic.Bool{}
+	admitted.Store(true)
+	replay, c, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, func(string) (*store.RowScope, store.Incarnation, bool) {
+		return nil, store.Incarnation{}, admitted.Load()
+	}, func(store.ChangeRecord) {}, func(error) {
+		<-ready
+		cancel()
+		close(returned)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel = c
+	defer cancel()
+	drainReplay(t, ctx, replay)
+	close(ready)
+	admitted.Store(false)
+	select {
+	case <-returned:
+	case <-time.After(20 * time.Second):
+		t.Fatal("cancel called from the closed callback deadlocked")
+	}
+}

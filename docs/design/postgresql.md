@@ -333,9 +333,15 @@ from the session goroutine and so must be safe to call concurrently. Ends are re
 through `closed` with the shared sentinels the transports match on — `ErrListenRevoked`
 for a withdrawn admission, `ErrListenLifetimeEnded` for a replaced target or a closing
 store, and `ErrListenAged` for a cursor past retention. The session is bound to the
-caller's context, so cancelling that context ends it. Cancelling is idempotent and
-synchronous: repeated calls are safe, and the first waits for the session goroutine before
-returning, so no delivery can follow it.
+caller's context, so cancelling that context ends it. A terminal error during the replay
+phase — an expired cursor, a withdrawn admission, a target that went away — reports
+through `closed` just as a live one does, rather than only surfacing as the error returned
+from `Next`, so a transport waiting on the close signal is never left hanging.
+
+Cancelling is idempotent, and it joins the session goroutine so no delivery can follow it
+— except while a terminal callback is running, where it returns without joining. `closed`
+runs on the session goroutine, so joining from inside it would wait on the goroutine that
+is waiting on the callback.
 
 ## Remaining implementation sequence
 
