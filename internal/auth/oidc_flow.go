@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -43,6 +44,7 @@ type OIDCSource struct {
 	client *http.Client
 	digest string
 
+	mu        sync.Mutex
 	endpoints providerEndpoints
 }
 
@@ -57,15 +59,15 @@ func (s *OIDCSource) Name() string { return OIDCSourceName }
 
 func (s *OIDCSource) IssuerDigest() string { return s.digest }
 
-func (s *OIDCSource) SetEndpoints(e providerEndpoints) { s.endpoints = e }
-
 func (s *OIDCSource) resolveEndpoints(ctx context.Context) (providerEndpoints, error) {
-	if s.endpoints.Authorize != "" {
-		return s.endpoints, nil
+	s.mu.Lock()
+	cached := s.endpoints
+	s.mu.Unlock()
+	if cached.Authorize != "" {
+		return cached, nil
 	}
 	if s.cfg.Preset == PresetGitHub {
-		s.endpoints = providerEndpoints{Authorize: githubAuthorizeURL, Token: githubTokenURL, UserInfo: githubUserURL}
-		return s.endpoints, nil
+		return s.cacheEndpoints(providerEndpoints{Authorize: githubAuthorizeURL, Token: githubTokenURL, UserInfo: githubUserURL}), nil
 	}
 	docURL := strings.TrimRight(s.cfg.Issuer, "/") + "/.well-known/openid-configuration"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, docURL, nil)
@@ -87,8 +89,20 @@ func (s *OIDCSource) resolveEndpoints(ctx context.Context) (providerEndpoints, e
 	if doc.AuthorizationEndpoint == "" || doc.TokenEndpoint == "" {
 		return providerEndpoints{}, fmt.Errorf("%w: the identity provider's discovery document names no authorization or token endpoint", ErrAuthFlow)
 	}
-	s.endpoints = providerEndpoints{Authorize: doc.AuthorizationEndpoint, Token: doc.TokenEndpoint, UserInfo: doc.UserinfoEndpoint}
-	return s.endpoints, nil
+	return s.cacheEndpoints(providerEndpoints{
+		Authorize: doc.AuthorizationEndpoint,
+		Token:     doc.TokenEndpoint,
+		UserInfo:  doc.UserinfoEndpoint,
+	}), nil
+}
+
+func (s *OIDCSource) cacheEndpoints(e providerEndpoints) providerEndpoints {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.endpoints.Authorize == "" {
+		s.endpoints = e
+	}
+	return s.endpoints
 }
 
 func randomURLSafe(n int) (string, error) {
@@ -190,11 +204,18 @@ func (s *OIDCSource) Complete(ctx context.Context, state, code string) (string, 
 	if err != nil {
 		return "", 0, fmt.Errorf("%w: %s", ErrAuthFlow, err.Error())
 	}
+	maxGroups := s.cfg.MaxGroups
+	if maxGroups <= 0 {
+		maxGroups = DefaultMaxGroups
+	}
+	if len(groups) > maxGroups {
+		return "", 0, fmt.Errorf("%w: the identity provider returned %d groups, more than this server accepts (%d); dropping some would silently discard a group that carries a grant, so the sign-in is refused — ask the administrator to raise -max-groups or have the provider send fewer", ErrAuthFlow, len(groups), maxGroups)
+	}
 	qualified := make([]string, 0, len(groups))
 	for _, g := range groups {
 		q, err := QualifyOIDCGroup(s.digest, g)
 		if err != nil {
-			continue
+			return "", 0, fmt.Errorf("%w: %s", ErrAuthFlow, err.Error())
 		}
 		qualified = append(qualified, q)
 	}
@@ -203,7 +224,7 @@ func (s *OIDCSource) Complete(ctx context.Context, state, code string) (string, 
 	if ttl == 0 {
 		ttl = DefaultTokenTTL
 	}
-	tok, err := MintToken(s.ring, principal, qualified, ttl, time.Now())
+	tok, err := MintToken(s.currentRing(), principal, qualified, ttl, time.Now())
 	if err != nil {
 		return "", 0, err
 	}
@@ -288,4 +309,21 @@ func groupClaims(claims map[string]any, key string) []string {
 		}
 	}
 	return out
+}
+
+func (s *OIDCSource) Rotate(ctx context.Context, retirePredecessors bool) (Keyring, error) {
+	ring, err := s.reg.RotateSigningKey(ctx, s.ring.Deployment, retirePredecessors)
+	if err != nil {
+		return Keyring{}, err
+	}
+	s.mu.Lock()
+	s.ring = ring
+	s.mu.Unlock()
+	return ring, nil
+}
+
+func (s *OIDCSource) currentRing() Keyring {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ring
 }

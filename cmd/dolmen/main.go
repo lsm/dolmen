@@ -199,6 +199,10 @@ func openGrantRegistry(cfg *config) (*auth.Registry, error) {
 		return nil, err
 	}
 	cfg.Auth.UseKeys(r)
+	if _, err := buildOIDC(cfg, r); err != nil {
+		r.Close()
+		return nil, err
+	}
 	if err := cfg.Auth.CheckRootAdministrator(context.Background(), r); err != nil {
 		r.Close()
 		return nil, err
@@ -209,6 +213,9 @@ func openGrantRegistry(cfg *config) (*auth.Registry, error) {
 func buildOIDC(cfg *config, r *auth.Registry) (*auth.OIDCSource, error) {
 	if r == nil || !cfg.OIDC.Enabled() {
 		return nil, nil
+	}
+	if cfg.oidcSource != nil {
+		return cfg.oidcSource, nil
 	}
 	ctx := context.Background()
 	deployment, err := r.DeploymentID(ctx, cfg.OIDC.DeploymentID)
@@ -222,6 +229,7 @@ func buildOIDC(cfg *config, r *auth.Registry) (*auth.OIDCSource, error) {
 	cfg.Auth.UseTokens(ring)
 	src := auth.NewOIDCSource(cfg.OIDC, r, ring, nil)
 	cfg.Auth.SetOIDCIssuer(src.IssuerDigest())
+	cfg.oidcSource = src
 	return src, nil
 }
 
@@ -249,6 +257,7 @@ type config struct {
 	Engine             string
 	Auth               *auth.Authenticator
 	OIDC               auth.OIDCConfig
+	oidcSource         *auth.OIDCSource
 	AllowedOrigins     []string
 	Embed              embedConfig
 	Version            bool
@@ -364,6 +373,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		GroupsClaim:  getenv("DOLMEN_AUTH_OIDC_GROUPS_CLAIM"),
 		DeploymentID: getenv("DOLMEN_AUTH_OIDC_DEPLOYMENT_ID"),
 		Preset:       getenv("DOLMEN_AUTH_OIDC_PRESET"),
+		MaxGroups:    *maxGroups,
 	}
 	if raw := strings.TrimSpace(getenv("DOLMEN_AUTH_OIDC_TOKEN_TTL")); raw != "" {
 		d, ttlErr := time.ParseDuration(raw)

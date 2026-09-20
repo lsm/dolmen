@@ -242,3 +242,70 @@ func danceForToken(t *testing.T, h *harness) string {
 	}
 	return extractToken(t, readAll(t, res))
 }
+
+func TestOIDCRejectsOverLimitGroups(t *testing.T) {
+	many := make([]string, 5)
+	for i := range many {
+		many[i] = fmt.Sprintf("team-%d", i)
+	}
+	stub := newIssuerStub(t, "00u1a2b3", many)
+	h := newHarnessMode(t, authAdminKey)
+	cfg := auth.OIDCConfig{
+		Issuer:       stub.srv.URL,
+		ClientID:     "dolmen-test",
+		ClientSecret: "shhh",
+		MaxGroups:    2,
+	}
+	h.attachOIDC(t, auth.NewOIDCSource(cfg, h.grants, h.keyring(t), nil))
+
+	res, err := http.Get(h.srv.URL + "/v1/auth/begin")
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusOK {
+		t.Fatal("a provider returning more groups than the server accepts signed in; dropping some would discard a group that carries a grant")
+	}
+	if body := readAll(t, res); !strings.Contains(body, "groups") {
+		t.Fatalf("the refusal does not explain the cause: %s", body)
+	}
+}
+
+func TestRotatingTheSigningKeyInvalidatesTokensWhenAsked(t *testing.T) {
+	stub := newIssuerStub(t, "00u1a2b3", nil)
+	h := oidcHarness(t, stub)
+	token := danceForToken(t, h)
+
+	if status, out := h.httpCallAs(identity{bearer: token}, "whoami", map[string]any{}); status != http.StatusOK {
+		t.Fatalf("token does not authenticate before rotation: %d %v", status, out)
+	}
+
+	h.mustHTTP("rotate_signing_key", map[string]any{})
+	if status, out := h.httpCallAs(identity{bearer: token}, "whoami", map[string]any{}); status != http.StatusOK {
+		t.Fatalf("a plain rotation must keep live tokens working during the overlap: %d %v", status, out)
+	}
+
+	data := h.mustHTTP("rotate_signing_key", map[string]any{"retire_previous": true})
+	if data["retired_previous"] != true {
+		t.Fatalf("rotate reported %v", data)
+	}
+	if status, _ := h.httpCallAs(identity{bearer: token}, "whoami", map[string]any{}); status != http.StatusUnauthorized {
+		t.Fatalf("retiring the predecessor left its tokens working: status %d", status)
+	}
+
+	fresh := danceForToken(t, h)
+	if status, out := h.httpCallAs(identity{bearer: fresh}, "whoami", map[string]any{}); status != http.StatusOK {
+		t.Fatalf("a token minted after rotation does not authenticate: %d %v", status, out)
+	}
+}
+
+func TestRotateSigningKeyAbsentWithoutTheOIDCSource(t *testing.T) {
+	h := newHarnessMode(t, authAdminKey)
+	status, out := h.httpCall("rotate_signing_key", map[string]any{})
+	if status != http.StatusNotFound {
+		t.Fatalf("rotate_signing_key without native sign-in: status %d, want 404: %v", status, out)
+	}
+	if doc := h.mustHTTPGet(t, "/v1/openapi.json"); strings.Contains(doc, "rotate_signing_key") {
+		t.Fatal("openapi.json advertises rotate_signing_key with no signing key to rotate")
+	}
+}

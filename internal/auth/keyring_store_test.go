@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -101,12 +102,9 @@ func TestRotationKeepsVerifyingLiveTokens(t *testing.T) {
 		t.Fatalf("mint: %v", err)
 	}
 
-	if _, err := r.RotateSigningKey(ctx); err != nil {
-		t.Fatalf("rotate: %v", err)
-	}
-	rotated, err := r.LoadKeyring(ctx, dep)
+	rotated, err := r.RotateSigningKey(ctx, dep, false)
 	if err != nil {
-		t.Fatalf("keyring after rotation: %v", err)
+		t.Fatalf("rotate: %v", err)
 	}
 	if rotated.Active.ID == k.Active.ID {
 		t.Fatal("rotation did not mint a successor")
@@ -120,5 +118,46 @@ func TestRotationKeepsVerifyingLiveTokens(t *testing.T) {
 	}
 	if _, err := VerifyToken(rotated, fresh, now); err != nil {
 		t.Fatalf("a token from the successor does not verify: %v", err)
+	}
+}
+
+func TestRetiringPredecessorsRevokesTheirTokens(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	now := time.Now()
+
+	r, err := OpenRegistry(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer r.Close()
+	dep, _ := r.DeploymentID(ctx, "")
+	k, _ := r.LoadKeyring(ctx, dep)
+	old, err := MintToken(k, "oidc:v1:abc:sub", nil, DefaultTokenTTL, now)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+
+	rotated, err := r.RotateSigningKey(ctx, dep, true)
+	if err != nil {
+		t.Fatalf("rotate with retirement: %v", err)
+	}
+	if _, err := VerifyToken(rotated, old, now); !errors.Is(err, ErrTokenInvalid) {
+		t.Fatal("retiring the predecessor left its tokens verifying, so rotation revokes nothing")
+	}
+
+	reopened, err := r.LoadKeyring(ctx, dep)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if _, err := VerifyToken(reopened, old, now); !errors.Is(err, ErrTokenInvalid) {
+		t.Fatal("a retired key came back after reloading the keyring")
+	}
+	fresh, err := MintToken(reopened, "oidc:v1:abc:sub", nil, DefaultTokenTTL, now)
+	if err != nil {
+		t.Fatalf("mint after retirement: %v", err)
+	}
+	if _, err := VerifyToken(reopened, fresh, now); err != nil {
+		t.Fatalf("the successor does not verify after retirement: %v", err)
 	}
 }

@@ -451,6 +451,7 @@ func TestLoadConfig(t *testing.T) {
 				t.Fatalf("auth is on without DOLMEN_AUTH=on")
 			}
 			cfg.Auth = nil
+			cfg.OIDC.MaxGroups = 0
 			if !reflect.DeepEqual(cfg, tc.want) {
 				t.Fatalf("got %+v, want %+v", cfg, tc.want)
 			}
@@ -889,4 +890,41 @@ func TestAuthOnWithAnAdminKeyOpensTheRegistry(t *testing.T) {
 		t.Fatalf("open registry: %v", err)
 	}
 	defer r.Close()
+}
+
+func TestOIDCSourceRegistersBeforeTheReachabilityCheck(t *testing.T) {
+	cfg, err := loadWithEnv(t, nil, map[string]string{
+		"DOLMEN_AUTH":                    "on",
+		"DOLMEN_AUTH_OIDC_ISSUER":        "https://login.example.com/v2.0",
+		"DOLMEN_AUTH_OIDC_CLIENT_ID":     "dolmen",
+		"DOLMEN_AUTH_OIDC_CLIENT_SECRET": "shhh",
+		"DOLMEN_EMBED_PROVIDER":          "none",
+	}, false)
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	cfg.DataDir = t.TempDir()
+
+	seed, err := auth.OpenRegistry(cfg.DataDir)
+	if err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	principal, err := auth.QualifyOIDC(auth.IssuerDigest("https://login.example.com/v2.0"), "boss")
+	if err != nil {
+		t.Fatalf("qualify: %v", err)
+	}
+	if _, err := seed.Grant(t.Context(), auth.Subject{Type: auth.SubjectPrincipal, ID: principal},
+		auth.Object{Namespace: auth.RootObject}, auth.NewVerbSet(auth.VerbAdmin)); err != nil {
+		t.Fatalf("seed grant: %v", err)
+	}
+	seed.Close()
+
+	r, err := openGrantRegistry(cfg)
+	if err != nil {
+		t.Fatalf("a root grant the configured issuer can produce must satisfy the startup check: %v", err)
+	}
+	defer r.Close()
+	if !cfg.Auth.OIDCEnabled() {
+		t.Fatal("the OIDC source was not registered before the check ran")
+	}
 }

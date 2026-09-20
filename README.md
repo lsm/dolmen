@@ -638,8 +638,19 @@ provider. Those two endpoints are the only non-JSON surface dolmen serves.
 **dolmen stores no users and no sessions.** The token is Ed25519-signed and
 stateless, valid for `DOLMEN_AUTH_OIDC_TOKEN_TTL` (default 7 days, range 1h to
 720h). When it expires the caller signs in again. There is no per-device
-revocation and no sliding session — revoking every human token at once means
-rotating the signing key, which is rare and is the trade-off this tier accepts.
+revocation and no sliding session. To sign everyone out at once, rotate the
+signing key and retire its predecessor:
+
+```bash
+curl -sS http://localhost:8790/v1/rotate_signing_key \
+  -H "Authorization: Bearer $DOLMEN_ADMIN_KEY" \
+  -H 'Content-Type: application/json' -d '{"retire_previous":true}'
+```
+
+Without `retire_previous` the successor signs new tokens while the predecessor
+keeps verifying, so tokens already in people's hands live out their TTL — the
+overlap you want for a routine rotation. With it, every token signed by an
+earlier key stops working immediately.
 
 **Identities are qualified by issuer.** A subject is only unique within its
 provider, so the principal is `oidc:v1:<issuer-digest>:<sub>` — never the email,

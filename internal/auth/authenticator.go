@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lsm/dolmen/internal/derr"
@@ -29,12 +30,29 @@ type Authenticator struct {
 }
 
 type tokenSource struct {
+	mu   sync.RWMutex
 	ring Keyring
 	now  func() time.Time
 }
 
+func (t *tokenSource) keyring() Keyring {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.ring
+}
+
+func (t *tokenSource) replace(ring Keyring) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.ring = ring
+}
+
 func (a *Authenticator) UseTokens(ring Keyring) {
 	if a == nil {
+		return
+	}
+	if a.tokens != nil {
+		a.tokens.replace(ring)
 		return
 	}
 	a.tokens = &tokenSource{ring: ring, now: time.Now}
@@ -53,7 +71,7 @@ func (a *Authenticator) TokenKeyring() (Keyring, bool) {
 	if a == nil || a.tokens == nil {
 		return Keyring{}, false
 	}
-	return a.tokens.ring, true
+	return a.tokens.keyring(), true
 }
 
 func (a *Authenticator) UseKeys(r *Registry) {
@@ -135,7 +153,7 @@ func (a *Authenticator) Authenticate(r *http.Request) (Identity, error) {
 		if a.tokens == nil {
 			return Identity{}, Unauthorized()
 		}
-		id, err := VerifyToken(a.tokens.ring, token, a.tokens.now())
+		id, err := VerifyToken(a.tokens.keyring(), token, a.tokens.now())
 		if err != nil {
 			return Identity{}, Unauthorized()
 		}

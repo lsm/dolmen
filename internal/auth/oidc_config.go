@@ -16,6 +16,7 @@ type OIDCConfig struct {
 	TokenTTL     time.Duration
 	DeploymentID string
 	Preset       string
+	MaxGroups    int
 }
 
 const (

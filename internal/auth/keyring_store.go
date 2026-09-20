@@ -16,6 +16,7 @@ func (r *Registry) initKeyring() error {
 		private    TEXT NOT NULL,
 		public     TEXT NOT NULL,
 		active     INTEGER NOT NULL DEFAULT 0,
+		retired    INTEGER NOT NULL DEFAULT 0,
 		created_at TEXT NOT NULL
 	)`); err != nil {
 		return err
@@ -62,7 +63,7 @@ func (r *Registry) LoadKeyring(ctx context.Context, deployment string) (Keyring,
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	rows, err := r.db.QueryContext(ctx, `SELECT id, private, public, active FROM signing_keys ORDER BY created_at`)
+	rows, err := r.db.QueryContext(ctx, `SELECT id, private, public, active FROM signing_keys WHERE retired = 0 ORDER BY created_at`)
 	if err != nil {
 		return Keyring{}, fmt.Errorf("read signing keys: %w", err)
 	}
@@ -113,30 +114,38 @@ func (r *Registry) LoadKeyring(ctx context.Context, deployment string) (Keyring,
 	return k, nil
 }
 
-func (r *Registry) RotateSigningKey(ctx context.Context) (Keyring, error) {
+func (r *Registry) RotateSigningKey(ctx context.Context, deployment string, retirePredecessors bool) (Keyring, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	sk, err := NewSigningKey()
 	if err != nil {
+		r.mu.Unlock()
 		return Keyring{}, err
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
+		r.mu.Unlock()
 		return Keyring{}, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `UPDATE signing_keys SET active = 0`); err != nil {
+	demote := `UPDATE signing_keys SET active = 0`
+	if retirePredecessors {
+		demote = `UPDATE signing_keys SET active = 0, retired = 1`
+	}
+	if _, err := tx.ExecContext(ctx, demote); err != nil {
+		r.mu.Unlock()
 		return Keyring{}, fmt.Errorf("retire signing key: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO signing_keys (id, private, public, active, created_at) VALUES (?, ?, ?, 1, ?)`,
+		`INSERT INTO signing_keys (id, private, public, active, retired, created_at) VALUES (?, ?, ?, 1, 0, ?)`,
 		sk.ID, hex.EncodeToString(sk.Private), hex.EncodeToString(sk.Public),
 		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		r.mu.Unlock()
 		return Keyring{}, fmt.Errorf("store signing key: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
+		r.mu.Unlock()
 		return Keyring{}, err
 	}
-	return Keyring{}, nil
+	r.mu.Unlock()
+	return r.LoadKeyring(ctx, deployment)
 }
