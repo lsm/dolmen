@@ -481,9 +481,23 @@ func (s *Store) DescribeTable(ctx context.Context, nsName, table string, scope *
 	if err != nil {
 		return nil, 0, err
 	}
+	if err := checkScopeIncarnation(ctx, n.ro, nsName, table, scopeIncarnation); err != nil {
+		return nil, 0, err
+	}
+	if err := scopeUsable(scope, sc); err != nil {
+		return nil, 0, err
+	}
+	if scope != nil && scope.Empty {
+		return sc, 0, nil
+	}
+	countStmt := fmt.Sprintf(`SELECT count(*) FROM %s`, q(table))
+	var cargs []any
+	if clause, sargs := scopeClause(scope, ""); clause != "" {
+		countStmt = fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s`, q(table), clause)
+		cargs = sargs
+	}
 	var count int64
-	if err := n.ro.QueryRowContext(ctx,
-		fmt.Sprintf(`SELECT count(*) FROM %s`, q(table))).Scan(&count); err != nil {
+	if err := n.ro.QueryRowContext(ctx, countStmt, cargs...).Scan(&count); err != nil {
 		return nil, 0, err
 	}
 	return sc, count, nil
@@ -543,6 +557,14 @@ func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []
 	if err != nil {
 		return nil, err
 	}
+	if err := schema.ValidateRowAccess(opts.RowAccess); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	if opts.RowAccess != "" {
+		if err := ValidateOwnerCollision(fields); err != nil {
+			return nil, err
+		}
+	}
 	n, err := s.ns(nsName)
 	if err != nil {
 		return nil, err
@@ -558,7 +580,7 @@ func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []
 	} else if !errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, tableDDL(table, fields)); err != nil {
+	if _, err := tx.ExecContext(ctx, tableDDL(table, fields, opts.RowAccess != "")); err != nil {
 		return nil, err
 	}
 	if fts := ftsFields(fields); len(fts) > 0 {
@@ -566,7 +588,8 @@ func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []
 			return nil, err
 		}
 	}
-	sc := &schema.TableSchema{Namespace: nsName, Name: table, Version: 1, Fields: fields}
+	sc := &schema.TableSchema{Namespace: nsName, Name: table, Version: 1, Fields: fields,
+		RowAccess: opts.RowAccess, HasOwner: opts.RowAccess != ""}
 	raw, _ := json.Marshal(sc)
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO _dolmen_tables(name, version, schema_json) VALUES(?,?,?)`,
@@ -603,10 +626,13 @@ func validateFieldDefaults(fields []schema.Field) error {
 	return nil
 }
 
-func tableDDL(table string, fields []schema.Field) string {
+func tableDDL(table string, fields []schema.Field, owner bool) string {
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf(`CREATE TABLE %s (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL DEFAULT (strftime('%%Y-%%m-%%dT%%H:%%M:%%fZ','now'))`, q(table)))
+	if owner {
+		sb.WriteString(fmt.Sprintf(", %s TEXT", q(schema.OwnerColumn)))
+	}
 	for _, f := range fields {
 		sb.WriteString(fmt.Sprintf(`, %s %s`, q(f.Name), schema.SQLType(f)))
 		if f.Required {

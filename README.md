@@ -537,8 +537,51 @@ disappears while the grants persist. Revoking the last root administrator is
 refused while no replacement exists, and setting `DOLMEN_ADMIN_KEY` again always
 recovers a locked-out deployment.
 
-**Not yet built:** per-row ownership (`row_access`), API keys, and native OIDC.
-The design for all three is in `docs/design/identity-and-engines.md`.
+### Per-row ownership
+
+A table can restrict rows to whoever wrote them:
+
+```bash
+curl -sS http://localhost:8790/v1/create_table \
+  -H "Authorization: Bearer $DOLMEN_ADMIN_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"namespace":"acme","table":"notes",
+       "fields":[{"name":"body","type":"text"}],
+       "row_access":"own"}'
+```
+
+The server adds an implicit `owner` column and stamps it on every insert.
+Callers never supply it — it is refused like any unknown field. What a caller
+sees then depends on the verbs they hold on the table:
+
+| Caller holds | Sees |
+|---|---|
+| `read` | every row (the `read` verb is table-wide by definition) |
+| any of `create`, `update`, `delete` | only the rows they wrote |
+| only `schema` or `admin` | no rows; `describe_table` reports `row_count` 0 |
+
+Own-row visibility rides with **any** data verb, so a `create`-only appender can
+search back what it appended without being able to read anyone else's rows.
+
+`row_access` can be turned on later with `migrate`, but only while the table is
+empty — there is no honest way to assign owners to rows that already exist,
+since no operation can write another principal's rows as that principal. To
+adopt it for existing data, create a new table and replay each owner's rows
+under their own identity. Turning it off keeps the column and its values and
+needs `admin` as well as `schema` and `read`, because it changes what every
+other data-verb holder may reach.
+
+**A current limitation:** `update`, `delete`, `upsert`, `upsert_by_key`,
+filtered searches, and inserts carrying an `idempotency_key` are refused for a
+caller restricted to their own rows. Those
+take caller-supplied SQL filters, match on a natural key across the table, or
+share an idempotency record keyed per table rather than per owner — each can be
+turned into a probe for rows the caller cannot see. The
+restricted filter language that makes them safe is not built yet, so they fail
+closed rather than leaking. Inserting and reading your own rows work normally.
+
+**Not yet built:** API keys and native OIDC. The design for both is in
+`docs/design/identity-and-engines.md`.
 
 `dolmen mcp` (the stdio transport) refuses to start with `-auth on`: a pipe
 carries no per-request credential, and treating whoever launched the subprocess

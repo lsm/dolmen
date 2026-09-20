@@ -193,6 +193,10 @@ var migrateChangeKeys = map[string][]string{
 	schema.OpSetEnum:      {"op", "name", "enum"},
 }
 
+var migrateAuthChangeKeys = map[string][]string{
+	schema.OpSetRowAccess: {"op", "value"},
+}
+
 var migrateFieldDefKeys = map[string]bool{
 	"name":      true,
 	"type":      true,
@@ -202,16 +206,23 @@ var migrateFieldDefKeys = map[string]bool{
 	"required":  true,
 }
 
-func validateMigrateChanges(changes []map[string]any) error {
+func validateMigrateChanges(changes []map[string]any, authOn bool) error {
+	valid := "add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum"
+	if authOn {
+		valid += ", set_row_access"
+	}
 	for i, ch := range changes {
 		rawOp, present := ch["op"]
 		op, isString := rawOp.(string)
 		if !present || !isString || op == "" {
-			return badRequest("changes[%d]: op must be a non-empty string naming the change (add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum)", i)
+			return badRequest("changes[%d]: op must be a non-empty string naming the change (%s)", i, valid)
 		}
 		keys, known := migrateChangeKeys[op]
+		if !known && authOn {
+			keys, known = migrateAuthChangeKeys[op]
+		}
 		if !known {
-			return badRequest("changes[%d]: unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum)", i, op)
+			return badRequest("changes[%d]: unknown migration op %q (valid: %s)", i, op, valid)
 		}
 		var unknown []string
 		for k := range ch {
@@ -626,7 +637,11 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			sc, count, err := s.eng.DescribeTable(ctx, ns, normTable(req.Table), nil, store.Incarnation{})
+			scope, inc, err := s.resolveScope(ctx, ns, normTable(req.Table))
+			if err != nil {
+				return nil, err
+			}
+			sc, count, err := s.eng.DescribeTable(ctx, ns, normTable(req.Table), scope, inc)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -672,7 +687,15 @@ var Ops = map[string]OpDef{
 		}, "table"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req createTableReq
-			if err := decode(body, &req); err != nil {
+			var rowAccess string
+			if s.authn.On() {
+				var ext createTableAuthReq
+				if err := decode(body, &ext); err != nil {
+					return nil, err
+				}
+				req = createTableReq{Namespace: ext.Namespace, Table: ext.Table, Fields: ext.Fields}
+				rowAccess = ext.RowAccess
+			} else if err := decode(body, &req); err != nil {
 				return nil, err
 			}
 
@@ -691,7 +714,7 @@ var Ops = map[string]OpDef{
 			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			sc, err := s.eng.CreateTable(ctx, ns, normTable(req.Table), req.Fields, store.TableOpts{}, [16]byte{})
+			sc, err := s.eng.CreateTable(ctx, ns, normTable(req.Table), req.Fields, store.TableOpts{RowAccess: rowAccess}, [16]byte{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -823,8 +846,12 @@ var Ops = map[string]OpDef{
 			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
+			scope, inc, err := s.resolveScope(ctx, ns, normTable(req.Table))
+			if err != nil {
+				return nil, err
+			}
 			res, err := s.eng.Insert(ctx, ns, normTable(req.Table), req.Records,
-				store.WriteOpts{IdempotencyKey: key}, s.embedder(), nil, store.Incarnation{})
+				store.WriteOpts{IdempotencyKey: key, Owner: s.writeOwner(ctx)}, s.embedder(), scope, inc)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -888,8 +915,12 @@ var Ops = map[string]OpDef{
 			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
+			scope, inc, err := s.resolveScope(ctx, ns, normTable(req.Table))
+			if err != nil {
+				return nil, err
+			}
 			res, err := s.eng.UpsertByKey(ctx, ns, normTable(req.Table), req.On, req.Records,
-				store.WriteOpts{}, s.embedder(), nil, store.Incarnation{})
+				store.WriteOpts{Owner: s.writeOwner(ctx)}, s.embedder(), scope, inc)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -937,7 +968,11 @@ var Ops = map[string]OpDef{
 				return nil, badRequest(`ids is required (pass the ids a write returned, a query projected, or a change feed carried; an empty list selects nothing)`)
 			}
 			ns := normNS(req.Namespace)
-			res, err := s.eng.GetRows(ctx, ns, normTable(req.Table), *req.Ids, nil, store.Incarnation{})
+			scope, inc, err := s.resolveScope(ctx, ns, normTable(req.Table))
+			if err != nil {
+				return nil, err
+			}
+			res, err := s.eng.GetRows(ctx, ns, normTable(req.Table), *req.Ids, scope, inc)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -1095,8 +1130,12 @@ var Ops = map[string]OpDef{
 				return nil, badRequest("query must not be empty")
 			}
 			ns := normNS(req.Namespace)
+			scope, inc, err := s.resolveScope(ctx, ns, normTable(req.Table))
+			if err != nil {
+				return nil, err
+			}
 			res, err := s.eng.SearchFulltext(ctx, ns, normTable(req.Table), req.Query, req.Filter, req.Args,
-				req.IncludeHidden, nil, store.Incarnation{}, store.Page{Offset: req.Offset, Limit: limit(req.Limit)})
+				req.IncludeHidden, scope, inc, store.Page{Offset: req.Offset, Limit: limit(req.Limit)})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -1214,8 +1253,12 @@ var Ops = map[string]OpDef{
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
+			scope, inc, err := s.resolveScope(ctx, normNS(req.Namespace), normTable(req.Table))
+			if err != nil {
+				return nil, err
+			}
 			res, err := s.eng.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table), vq,
-				req.IncludeHidden, nil, store.Incarnation{}, store.Page{Offset: req.Offset, Limit: limit(req.Limit)})
+				req.IncludeHidden, scope, inc, store.Page{Offset: req.Offset, Limit: limit(req.Limit)})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -1438,11 +1481,15 @@ var Ops = map[string]OpDef{
 			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
+			scope, inc, err := s.resolveScope(ctx, ns, normTable(req.Table))
+			if err != nil {
+				return nil, err
+			}
 			res, err := s.eng.Delete(ctx, ns, normTable(req.Table), req.Filter, req.Args, store.DeleteOptions{
 				DryRun:  dryRun,
 				Limit:   limit,
 				Confirm: confirm,
-			}, nil, store.Incarnation{})
+			}, scope, inc)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -1499,8 +1546,12 @@ var Ops = map[string]OpDef{
 			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
+			scope, inc, err := s.resolveScope(ctx, ns, normTable(req.Table))
+			if err != nil {
+				return nil, err
+			}
 			res, err := s.eng.Update(ctx, ns, normTable(req.Table), req.Filter, req.Args, req.Set,
-				s.embedder(), nil, store.Incarnation{})
+				s.embedder(), scope, inc)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -1555,8 +1606,12 @@ var Ops = map[string]OpDef{
 			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
+			scope, inc, err := s.resolveScope(ctx, ns, normTable(req.Table))
+			if err != nil {
+				return nil, err
+			}
 			res, err := s.eng.Upsert(ctx, ns, normTable(req.Table), req.Filter, req.Args, req.Set,
-				store.WriteOpts{}, s.embedder(), nil, store.Incarnation{})
+				store.WriteOpts{Owner: s.writeOwner(ctx)}, s.embedder(), scope, inc)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -1709,7 +1764,7 @@ var Ops = map[string]OpDef{
 			if err := decodeData(body, &shadow); err != nil {
 				return nil, err
 			}
-			if err := validateMigrateChanges(shadow.Changes); err != nil {
+			if err := validateMigrateChanges(shadow.Changes, s.authn.On()); err != nil {
 				return nil, err
 			}
 			var req migrateReq

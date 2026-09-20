@@ -113,9 +113,24 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 		}
 	}
 
+	if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
+		return SearchResult{}, err
+	}
+	if err := scopeUsable(scope, sc); err != nil {
+		return SearchResult{}, err
+	}
+	if scope != nil && filter != "" {
+		return SearchResult{}, errScopedFilterUnsupported
+	}
+
 	stmt := fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? ORDER BY rank, rowid LIMIT ? OFFSET ?`,
 		q(ftsTable(table)), ftsTable(table))
 	qargs := []any{match, limit + 1, offset}
+	if clause, sargs := scopeClause(scope, "b"); clause != "" {
+		stmt = fmt.Sprintf(`SELECT rowid FROM %s WHERE EXISTS (SELECT 1 FROM %s b WHERE b.id = %s.rowid AND %s) AND %s MATCH ? ORDER BY rank, rowid LIMIT ? OFFSET ?`,
+			q(ftsTable(table)), q(table), ftsTable(table), clause, ftsTable(table))
+		qargs = append(append([]any(nil), sargs...), match, limit+1, offset)
+	}
 
 	classify := func(err error) error {
 		if filter != "" {
@@ -180,6 +195,10 @@ type dbQueryer interface {
 }
 
 func fetchByIDs(ctx context.Context, db dbQueryer, table string, ids []int64, proj *projection) ([]map[string]any, bool, error) {
+	return fetchByIDsScoped(ctx, db, table, ids, proj, nil)
+}
+
+func fetchByIDsScoped(ctx context.Context, db dbQueryer, table string, ids []int64, proj *projection, scope *RowScope) ([]map[string]any, bool, error) {
 	if len(ids) == 0 {
 		return []map[string]any{}, true, nil
 	}
@@ -189,9 +208,14 @@ func fetchByIDs(ctx context.Context, db dbQueryer, table string, ids []int64, pr
 		values[i] = "(?, ?)"
 		args = append(args, i, id)
 	}
+	source := q(table)
+	if clause, sargs := scopeClause(scope, ""); clause != "" {
+		source = fmt.Sprintf("(SELECT * FROM %s WHERE %s)", q(table), clause)
+		args = append(args, sargs...)
+	}
 	rows, err := db.QueryContext(ctx,
 		fmt.Sprintf(`WITH _ranked(pos, id) AS (VALUES %s) SELECT t.* FROM _ranked JOIN %s t ON t.id = _ranked.id ORDER BY _ranked.pos`,
-			strings.Join(values, ", "), q(table)), args...)
+			strings.Join(values, ", "), source), args...)
 	if err != nil {
 		return nil, false, err
 	}
@@ -283,6 +307,12 @@ type DeleteResult struct {
 }
 
 func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation) (DeleteResult, error) {
+	if scope != nil {
+		return DeleteResult{}, errScopedFilterUnsupported
+	}
+	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
+		return DeleteResult{}, err
+	}
 	where = strings.TrimSpace(where)
 	if where == "" {
 		return DeleteResult{}, invalidf("filter is required (pass \"1=1\" to delete everything)")

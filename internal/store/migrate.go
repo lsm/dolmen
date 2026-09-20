@@ -205,6 +205,12 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 }
 
 func (s *Store) PlanMigration(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expected Incarnation, scope *RowScope, scopeIncarnation Incarnation) (*MigrationPlan, error) {
+	if scope != nil {
+		return nil, errScopedPlanUnsupported
+	}
+	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
+		return nil, err
+	}
 	expectedVersion := int(expected.Version)
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
@@ -248,10 +254,19 @@ func checkExpectedVersion(nsName, table string, expected int, old *schema.TableS
 	return nil
 }
 
+func takesValue(op string) bool {
+	switch op {
+	case schema.OpSetFulltext, schema.OpSetVectorize, schema.OpSetRowAccess:
+		return true
+	}
+	return false
+}
+
 func planMigration(ctx context.Context, db querier, nsName, table string, old *schema.TableSchema, changes []schema.Change, emb Embedder, expectedVersion int) (*migrationWork, error) {
 	fields := make([]schema.Field, len(old.Fields))
 	copy(fields, old.Fields)
-	cur := &schema.TableSchema{Namespace: nsName, Name: table, Version: old.Version, Fields: fields, EmbedSpace: old.EmbedSpace, EmbedDim: old.EmbedDim}
+	cur := &schema.TableSchema{Namespace: nsName, Name: table, Version: old.Version, Fields: fields,
+		EmbedSpace: old.EmbedSpace, EmbedDim: old.EmbedDim, RowAccess: old.RowAccess, HasOwner: old.HasOwner}
 
 	plan := &MigrationPlan{
 		FromVersion: old.Version,
@@ -284,11 +299,22 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 		if ch.Op != schema.OpAddField && ch.Default != nil {
 			return nil, invalidf("changes[%d]: default is only allowed on add_field (op %q has no added field to backfill)", i, ch.Op)
 		}
-		if (ch.Op == schema.OpSetFulltext || ch.Op == schema.OpSetVectorize) && ch.Value == nil {
+		if takesValue(ch.Op) && ch.Value == nil {
 			return nil, invalidf("changes[%d]: %s requires an explicit value (true or false)", i, ch.Op)
 		}
-		if ch.Op != schema.OpSetFulltext && ch.Op != schema.OpSetVectorize && ch.Value != nil {
-			return nil, invalidf("changes[%d]: value is only allowed on set_fulltext/set_vectorize (op %q has no flag to set)", i, ch.Op)
+		if !takesValue(ch.Op) && ch.Value != nil {
+			return nil, invalidf("changes[%d]: value is only allowed on set_fulltext/set_vectorize/set_row_access (op %q has no flag to set)", i, ch.Op)
+		}
+		if cur.HasOwner {
+			targets := []string{ch.Name, ch.To}
+			if ch.Field != nil {
+				targets = append(targets, ch.Field.Name)
+			}
+			for _, t := range targets {
+				if schema.ReservedWithOwner(strings.ToLower(strings.TrimSpace(t))) {
+					return nil, invalidf("%q is the implicit owner column on this table, which carries it because row_access was declared; the name stays reserved while the column exists, even with row_access turned off, so pick another name such as %q", schema.OwnerColumn, "owner_name")
+				}
+			}
 		}
 		if ch.Op == schema.OpSetEnum && ch.Enum == nil {
 			return nil, invalidf("changes[%d]: set_enum requires an explicit enum array (the field's complete new vocabulary; pass an empty array to remove the constraint)", i)
@@ -571,8 +597,46 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				f.Enum = nil
 			}
 			plan.Operations = append(plan.Operations, "set_enum "+ch.Name+" = "+describeValue(vals))
+
+		case schema.OpSetRowAccess:
+			if ch.Value == nil {
+				return nil, invalidf("set_row_access requires value: true restricts rows to the principal who wrote them, false stops the filtering")
+			}
+			if *ch.Value {
+				if cur.RowAccess == schema.RowAccessOwn {
+					plan.Operations = append(plan.Operations, "set_row_access true (already enabled)")
+					break
+				}
+				if err := ValidateOwnerCollision(cur.Fields); err != nil {
+					return nil, err
+				}
+				var rows int64
+				if err := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT count(*) FROM %s`, q(table))).Scan(&rows); err != nil {
+					return nil, err
+				}
+				if rows > 0 {
+					return nil, invalidf("table %s already holds %d rows, so row_access cannot be enabled on it: no operation can write another principal's rows as that principal, so there is no honest way to assign owners to what is already there; create a new table with row_access and replay each owner's rows under their own identity, letting the server stamp them", table, rows)
+				}
+				if !cur.HasOwner {
+					w.steps = append(w.steps, func(ctx context.Context, tx *sql.Tx) error {
+						_, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s TEXT`, q(table), q(schema.OwnerColumn)))
+						return err
+					})
+				}
+				cur.RowAccess = schema.RowAccessOwn
+				cur.HasOwner = true
+				plan.Operations = append(plan.Operations, "set_row_access true")
+				break
+			}
+			if cur.RowAccess == "" {
+				plan.Operations = append(plan.Operations, "set_row_access false (already off)")
+				break
+			}
+			cur.RowAccess = ""
+			plan.Operations = append(plan.Operations, "set_row_access false (the owner column and its values are kept)")
+
 		default:
-			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum)", ch.Op)
+			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_row_access)", ch.Op)
 		}
 	}
 	if len(plan.Destructive) > 0 && expectedVersion == 0 {

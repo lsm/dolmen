@@ -8,6 +8,7 @@ import (
 
 	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/derr"
+	"github.com/lsm/dolmen/internal/schema"
 )
 
 type authScope int
@@ -26,7 +27,11 @@ type authRule struct {
 	Scope   authScope
 	Verbs   []auth.Verb
 	AnyVerb bool
+
+	OwnRows bool
 }
+
+var dataVerbs = []auth.Verb{auth.VerbCreate, auth.VerbUpdate, auth.VerbDelete}
 
 var authRules = map[string]authRule{
 	"capabilities":    {Scope: scopeNone},
@@ -52,9 +57,9 @@ var authRules = map[string]authRule{
 	"delete":          {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbDelete}},
 	"upsert":          {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbCreate, auth.VerbUpdate}},
 	"upsert_by_key":   {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbCreate, auth.VerbUpdate}},
-	"read_rows":       {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}},
-	"search_fulltext": {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}},
-	"search_vector":   {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}},
+	"read_rows":       {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true},
+	"search_fulltext": {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true},
+	"search_vector":   {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true},
 
 	"query": {Scope: scopeNamespace, Verbs: []auth.Verb{auth.VerbRead}},
 
@@ -71,8 +76,18 @@ type authTarget struct {
 	Table     string          `json:"table"`
 	Object    *grantObjectRaw `json:"object"`
 	Changes   []struct {
-		Op string `json:"op"`
+		Op    string `json:"op"`
+		Value *bool  `json:"value"`
 	} `json:"changes"`
+}
+
+func disablesRowAccess(t authTarget) bool {
+	for _, c := range t.Changes {
+		if c.Op == schema.OpSetRowAccess && c.Value != nil && !*c.Value {
+			return true
+		}
+	}
+	return false
 }
 
 type grantObjectRaw struct {
@@ -150,10 +165,18 @@ func (s *Server) authorizeOp(ctx context.Context, op string, body []byte) error 
 		return forbidden403()
 	}
 	if !held.HasAll(required...) {
+		if rule.OwnRows && held.HasAny(dataVerbs...) && s.tableHasRowAccess(ctx, obj) {
+			return nil
+		}
 		return forbidden403()
 	}
-	if op == "migrate" && migrationReadsRows(target) && !held.Has(auth.VerbRead) {
-		return derr.New(derr.Forbidden, "this migration's outcome depends on the table's existing rows, so it requires the read verb in addition to schema; without it a schema-only caller could learn about rows they cannot see")
+	if op == "migrate" {
+		if migrationReadsRows(target) && !held.Has(auth.VerbRead) {
+			return derr.New(derr.Forbidden, "this migration's outcome depends on the table's existing rows, so it requires the read verb in addition to schema; without it a schema-only caller could learn about rows they cannot see")
+		}
+		if disablesRowAccess(target) && !held.Has(auth.VerbAdmin) {
+			return derr.New(derr.Forbidden, "turning row_access off widens every data-verb holder's reach from their own rows to all owners' rows, which changes what other callers may do, so it requires the admin verb in addition to schema and read")
+		}
 	}
 	return nil
 }

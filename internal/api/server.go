@@ -322,6 +322,13 @@ type createTableReq struct {
 	Fields    []schema.Field `json:"fields"`
 }
 
+type createTableAuthReq struct {
+	Namespace string         `json:"namespace"`
+	Table     string         `json:"table"`
+	Fields    []schema.Field `json:"fields"`
+	RowAccess string         `json:"row_access"`
+}
+
 type inferReq struct {
 	Samples []map[string]any `json:"samples"`
 }

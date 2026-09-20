@@ -48,6 +48,24 @@ type TableSchema struct {
 	Fields     []Field `json:"fields"`
 	EmbedSpace string  `json:"embed_space,omitempty"`
 	EmbedDim   int     `json:"embed_dim,omitempty"`
+	RowAccess  string  `json:"row_access,omitempty"`
+	HasOwner   bool    `json:"has_owner,omitempty"`
+}
+
+const (
+	RowAccessOwn = "own"
+	OwnerColumn  = "owner"
+)
+
+func ValidateRowAccess(v string) error {
+	if v == "" || v == RowAccessOwn {
+		return nil
+	}
+	return fmt.Errorf("row_access must be %q, the only value this version defines; omit the key for a table whose rows every grant holder can see", RowAccessOwn)
+}
+
+func ReservedWithOwner(name string) bool {
+	return name == OwnerColumn
 }
 
 type Change struct {
@@ -71,6 +89,7 @@ const (
 	OpSetFulltext  = "set_fulltext"
 	OpSetVectorize = "set_vectorize"
 	OpSetEnum      = "set_enum"
+	OpSetRowAccess = "set_row_access"
 )
 
 var identRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)

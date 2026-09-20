@@ -19,7 +19,13 @@ type UpsertResult struct {
 }
 
 func (s *Store) Update(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (UpdateResult, error) {
-	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, false)
+	if scope != nil {
+		return UpdateResult{}, errScopedFilterUnsupported
+	}
+	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
+		return UpdateResult{}, err
+	}
+	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, false, "")
 	if err != nil {
 		return UpdateResult{}, err
 	}
@@ -27,14 +33,20 @@ func (s *Store) Update(ctx context.Context, nsName, table, where string, args []
 }
 
 func (s *Store) Upsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
-	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, true)
+	if scope != nil {
+		return InsertResult{}, errScopedFilterUnsupported
+	}
+	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
+		return InsertResult{}, err
+	}
+	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, true, opts.Owner)
 	if err != nil {
 		return InsertResult{}, err
 	}
 	return InsertResult{Ids: res.Ids, Inserted: res.Inserted, Updated: res.Updated, Changes: res.Changes}, nil
 }
 
-func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, allowInsert bool) (UpsertResult, error) {
+func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, allowInsert bool, owner string) (UpsertResult, error) {
 	where = strings.TrimSpace(where)
 	if where == "" {
 		return UpsertResult{}, invalidf("filter is required (pass \"1=1\" to update every row)")
@@ -224,6 +236,10 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 		if vec != nil {
 			icols = append(icols, `"_embedding"`)
 			ivals = append(ivals, schema.EncodeVector(vec))
+		}
+		if stamp := stampOwner(sc, owner); stamp != "" {
+			icols = append(icols, q(schema.OwnerColumn))
+			ivals = append(ivals, stamp)
 		}
 		ph := strings.TrimSuffix(strings.Repeat("?,", len(icols)), ",")
 		res, err := tx.ExecContext(ctx,

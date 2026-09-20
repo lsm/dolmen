@@ -424,7 +424,7 @@ func TestUpsertByKeyLegacyKeywordKeyField(t *testing.T) {
 		t.Fatalf("open namespace: %v", err)
 	}
 	legacyFields := []schema.Field{{Name: "order", Type: schema.String}, {Name: "qty", Type: schema.Number}}
-	if _, err := n.rw.ExecContext(ctx, tableDDL("orders", legacyFields)); err != nil {
+	if _, err := n.rw.ExecContext(ctx, tableDDL("orders", legacyFields, false)); err != nil {
 		t.Fatalf("create legacy table: %v", err)
 	}
 	raw, err := json.Marshal(schema.TableSchema{Namespace: "test", Name: "orders", Version: 1, Fields: legacyFields})

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lsm/dolmen/internal/auth"
+	"github.com/lsm/dolmen/internal/schema"
 )
 
 var authOps = map[string]OpDef{}
@@ -29,6 +30,14 @@ func (s *Server) OpNames() []string {
 
 func (s *Server) Op(name string) (OpDef, bool) {
 	if def, ok := Ops[name]; ok {
+		if s.authOpsEnabled() {
+			switch name {
+			case "create_table":
+				return withRowAccessInput(def), true
+			case "migrate":
+				return withRowAccessChange(def), true
+			}
+		}
 		return def, true
 	}
 	if s.authOpsEnabled() {
@@ -37,6 +46,169 @@ func (s *Server) Op(name string) (OpDef, bool) {
 		}
 	}
 	return OpDef{}, false
+}
+
+func withRowAccessInput(def OpDef) OpDef {
+	props, ok := def.InputSchema["properties"].(map[string]any)
+	if !ok {
+		return def
+	}
+	nextProps := make(map[string]any, len(props)+1)
+	for k, v := range props {
+		nextProps[k] = v
+	}
+	nextProps["row_access"] = map[string]any{
+		"type":        "string",
+		"enum":        []string{schema.RowAccessOwn},
+		"description": "Restrict row visibility to the principal who wrote each row. Omit for a table every grant holder sees in full. The server stamps an implicit owner column; callers never supply it, and it cannot be enabled later on a table that already has rows",
+	}
+	next := make(map[string]any, len(def.InputSchema))
+	for k, v := range def.InputSchema {
+		next[k] = v
+	}
+	next["properties"] = nextProps
+	def.InputSchema = next
+	return def
+}
+
+func withRowAccessChange(def OpDef) OpDef {
+	props, ok := def.InputSchema["properties"].(map[string]any)
+	if !ok {
+		return def
+	}
+	changes, ok := props["changes"].(map[string]any)
+	if !ok {
+		return def
+	}
+	items, ok := changes["items"].(map[string]any)
+	if !ok {
+		return def
+	}
+	itemProps, ok := items["properties"].(map[string]any)
+	if !ok {
+		return def
+	}
+	opProp, ok := itemProps["op"].(map[string]any)
+	if !ok {
+		return def
+	}
+	names, ok := opProp["enum"].([]string)
+	if !ok {
+		return def
+	}
+
+	nextOp := make(map[string]any, len(opProp))
+	for k, v := range opProp {
+		nextOp[k] = v
+	}
+	nextOp["enum"] = append(append([]string(nil), names...), schema.OpSetRowAccess)
+	nextOp["description"] = "add_field | rename_field | drop_field | set_fulltext | set_vectorize | set_enum | set_row_access"
+
+	nextItemProps := make(map[string]any, len(itemProps))
+	for k, v := range itemProps {
+		nextItemProps[k] = v
+	}
+	nextItemProps["op"] = nextOp
+	nextItemProps["value"] = prop("boolean", "Flag value (set_fulltext, set_vectorize, set_row_access)")
+
+	nextItems := make(map[string]any, len(items))
+	for k, v := range items {
+		nextItems[k] = v
+	}
+	nextItems["properties"] = nextItemProps
+	if clauses, ok := items["allOf"].([]any); ok {
+		nextItems["allOf"] = withRowAccessConditionals(clauses)
+	}
+
+	nextChanges := make(map[string]any, len(changes))
+	for k, v := range changes {
+		nextChanges[k] = v
+	}
+	nextChanges["items"] = nextItems
+
+	nextProps := make(map[string]any, len(props))
+	for k, v := range props {
+		nextProps[k] = v
+	}
+	nextProps["changes"] = nextChanges
+
+	next := make(map[string]any, len(def.InputSchema))
+	for k, v := range def.InputSchema {
+		next[k] = v
+	}
+	next["properties"] = nextProps
+	def.InputSchema = next
+	return def
+}
+
+func withRowAccessConditionals(clauses []any) []any {
+	out := make([]any, 0, len(clauses)+1)
+	for _, raw := range clauses {
+		clause, ok := raw.(map[string]any)
+		if !ok {
+			out = append(out, raw)
+			continue
+		}
+		out = append(out, widenValueClause(clause))
+	}
+	return append(out, map[string]any{
+		"if": map[string]any{
+			"properties": map[string]any{
+				"op": map[string]any{"const": schema.OpSetRowAccess},
+			},
+			"required": []string{"op"},
+		},
+		"then": map[string]any{"required": []string{"value"}},
+	})
+}
+
+func widenValueClause(clause map[string]any) map[string]any {
+	cond, ok := clause["if"].(map[string]any)
+	if !ok {
+		return clause
+	}
+	props, ok := cond["properties"].(map[string]any)
+	if !ok {
+		return clause
+	}
+	opCond, ok := props["op"].(map[string]any)
+	if !ok {
+		return clause
+	}
+	not, ok := opCond["not"].(map[string]any)
+	if !ok {
+		return clause
+	}
+	names, ok := not["enum"].([]string)
+	if !ok || len(names) != 2 || names[0] != schema.OpSetFulltext || names[1] != schema.OpSetVectorize {
+		return clause
+	}
+
+	nextNot := map[string]any{"enum": []string{schema.OpSetFulltext, schema.OpSetVectorize, schema.OpSetRowAccess}}
+	nextOp := make(map[string]any, len(opCond))
+	for k, v := range opCond {
+		nextOp[k] = v
+	}
+	nextOp["not"] = nextNot
+
+	nextProps := make(map[string]any, len(props))
+	for k, v := range props {
+		nextProps[k] = v
+	}
+	nextProps["op"] = nextOp
+
+	nextCond := make(map[string]any, len(cond))
+	for k, v := range cond {
+		nextCond[k] = v
+	}
+	nextCond["properties"] = nextProps
+
+	next := make(map[string]any, len(clause))
+	for k, v := range clause {
+		next[k] = v
+	}
+	next["if"] = nextCond
+	return next
 }
 
 func AuthOpNames() []string {

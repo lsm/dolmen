@@ -13,6 +13,12 @@ import (
 const MaxKeyFields = 8
 
 func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
+	if scope != nil {
+		return InsertResult{}, errScopedKeyUpsertUnsupported
+	}
+	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
+		return InsertResult{}, err
+	}
 	if len(records) == 0 {
 		return InsertResult{}, invalidf("no records given")
 	}
@@ -45,7 +51,7 @@ func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields
 		if attempt >= 3 {
 			return InsertResult{}, invalidf("table schema changed concurrently; retry the upsert")
 		}
-		ids, inserted, updated, changes, done, err := s.upsertKeyAttempt(ctx, n, nsName, table, keyFields, records, emb)
+		ids, inserted, updated, changes, done, err := s.upsertKeyAttempt(ctx, n, nsName, table, keyFields, records, emb, opts.Owner)
 		if done {
 			if err != nil {
 				return InsertResult{}, err
@@ -123,7 +129,7 @@ func matchByKey(ctx context.Context, tx *sql.Tx, table string, keyFields []strin
 	return 0, nil
 }
 
-func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table string, keyFields []string, records []map[string]any, emb Embedder) (ids []int64, inserted, updated int, changes ChangeRange, done bool, err error) {
+func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table string, keyFields []string, records []map[string]any, emb Embedder, owner string) (ids []int64, inserted, updated int, changes ChangeRange, done bool, err error) {
 
 	gen, err := tableGen(ctx, n.rw, table)
 	if err != nil {
@@ -279,7 +285,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 			if v, ok := embFor[i]; ok {
 				vec = v
 			}
-			id, err := execInsertWithFTS(ctx, tx, table, fts, p.rec, p.cols, p.vals, vec)
+			id, err := execInsertWithFTS(ctx, tx, table, fts, p.rec, p.cols, p.vals, vec, stampOwner(sc, owner))
 			if err != nil {
 				return nil, 0, 0, ChangeRange{}, true, err
 			}
