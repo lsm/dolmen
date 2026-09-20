@@ -250,8 +250,9 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
   `null`. In `query`, coercion is by result-column label (aliases count as their label); labels that
   match no declared field fall back to raw values (blobs as base64).
 - The hidden `_embedding` column (from `vectorize`) is excluded from `SELECT *`, search results, and `read_rows`;
-  reference it in the SQL (outside string literals and comments) or pass `include_hidden: true` to a
-  search when you really need it.
+  pass `include_hidden: true` to a search when you really need it. Naming it in the SQL (outside
+  string literals and comments) also works where the backend exposes it to caller SQL, but that is
+  backend-dependent — `include_hidden: true` is the portable way to reach it.
 - Vector search results carry `_score` (cosine similarity; higher is closer).
 - `search_vector` has two query forms with different reach: `text` (server embeds it) searches only
   the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`; `vector`
@@ -259,10 +260,12 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
   the stored and the query vectors, so keep them from the same model.
   **Rows whose `vectorize` source is `null`/empty/missing have `_embedding` `null` and are silently
   excluded from any `search_vector` that searches `_embedding` (a `text` query, or a raw `vector`
-  query with `column` omitted or set to `_embedding`). If recall matters, call `query` with
+  query with `column` omitted or set to `_embedding`). If recall matters, and the backend exposes
+  `_embedding` to caller SQL, call `query` with
   `SELECT COUNT(*) FROM <table_name> WHERE _embedding IS NULL AND (<same filter>)` (substitute the
   table name; bind the same `args`; drop the `AND (...)` clause when no filter is used) to find
-  unembedded rows eligible for the search; if you compare counts instead, do it against
+  unembedded rows eligible for the search; if that column is not reachable, or you compare counts
+  instead, do it against
   `SELECT COUNT(*) FROM <table_name> WHERE <same filter>` after exhausting all pages with
   `min_score` unset (omit the WHERE clause when no filter is used).**
 - `skipped_vectors` in a `search_vector` response counts stored vectors that were corrupt or
@@ -341,10 +344,12 @@ match, before ranking.
   vectorized field have `_embedding` NULL and are silently excluded from any `search_vector` that
   searches `_embedding` — whether it is a `text` query or a raw `vector` query with `column` omitted
   or set to `_embedding`. `skipped_vectors` does NOT count those rows — it only counts stored vectors
-  that are corrupt or dimension-mismatched and could not be scored. If recall matters, call `query`
+  that are corrupt or dimension-mismatched and could not be scored. If recall matters, and the backend
+  exposes `_embedding` to caller SQL, call `query`
   with `SELECT COUNT(*) FROM <table_name> WHERE _embedding IS NULL AND (<same filter>)` (substitute
   the table name; bind the same `args`; drop the `AND (...)` clause when no filter is used) to find
-  unembedded rows eligible for the search. If you instead compare counts, compare against
+  unembedded rows eligible for the search. If that column is not reachable, or you instead compare
+  counts, compare against
   `SELECT COUNT(*) FROM <table_name> WHERE <same filter>` after exhausting all pages with
   `min_score` unset (omit the WHERE clause when no filter is used) — otherwise pagination,
   `min_score`, offsets, filters, and response truncation can make embedded rows look missing.
