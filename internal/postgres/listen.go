@@ -263,7 +263,7 @@ func (l *listenSession) pending(ctx context.Context) bool {
 	return has
 }
 
-func (l *listenSession) fetch(ctx context.Context, boundary int64) ([]store.ChangeRecord, error) {
+func (l *listenSession) fetch(ctx context.Context, boundary *int64) ([]store.ChangeRecord, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.table != "" {
@@ -411,7 +411,7 @@ func (l *listenSession) run(ctx context.Context) {
 			}
 		}
 		for l.pending(ctx) {
-			records, err := l.fetch(ctx, 0)
+			records, err := l.fetch(ctx, nil)
 			if err != nil {
 				if l.storeClosing() {
 					l.finish(store.ErrListenLifetimeEnded)
@@ -545,7 +545,7 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 			if drained {
 				return nil, session.resume(), true, nil
 			}
-			batch, err := session.fetch(ctx, session.boundary)
+			batch, err := session.fetch(ctx, &session.boundary)
 			if err != nil {
 				if cause, report := terminalCause(ctx, err); report {
 					session.finish(cause)

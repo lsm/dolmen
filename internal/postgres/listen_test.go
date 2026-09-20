@@ -956,3 +956,35 @@ func TestPostgresListenIdleSubscriptionOutlivesRetention(t *testing.T) {
 		t.Fatal("change after a long idle was never delivered")
 	}
 }
+
+func TestPostgresListenZeroHeadReplaysNothing(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	var head int64
+	if err := s.read(ctx, "app", func(tx pgx.Tx, n namespace) error {
+		return tx.QueryRow(ctx, "SELECT next_change FROM "+s.relation("namespaces")+" WHERE name=$1", "app").Scan(&head)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if head != 0 {
+		t.Fatalf("fixture precondition: next_change = %d, want 0 so the zero bound is exercised", head)
+	}
+	live := make(chan store.ChangeRecord, 8)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, nil, func(rec store.ChangeRecord) { live <- rec }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "after listen"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if replayed := drainReplay(t, ctx, replay); len(replayed) != 0 {
+		t.Fatalf("replay returned %d records on a namespace whose head is zero; a post-Listen write belongs to the live phase", len(replayed))
+	}
+	select {
+	case <-live:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the post-Listen write never arrived on the live phase")
+	}
+}
