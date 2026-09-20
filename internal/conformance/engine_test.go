@@ -73,6 +73,7 @@ func openPostgresEngine(t *testing.T, dir string, retention *time.Duration) *pos
 			dropPostgresCatalog(t, dsn, catalog)
 		})
 	}
+	t.Cleanup(func() { s.Close() })
 	return s
 }
 
