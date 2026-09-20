@@ -27,6 +27,20 @@ func sqlRejected(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", store.ErrInvalid, fmt.Sprintf(format, args...))
 }
 
+func sqlQueryRejected(format string, args ...any) error {
+	return store.NewBackendQueryError(fmt.Sprintf(format, args...), nil)
+}
+
+func qualifiedName(nodes []*pg.Node) string {
+	parts := []string{}
+	for _, n := range nodes {
+		if sval := n.GetString_().GetSval(); sval != "" {
+			parts = append(parts, sval)
+		}
+	}
+	return strings.Join(parts, ".")
+}
+
 func builtinName(nodes []*pg.Node, allowed map[string]bool) bool {
 	if len(nodes) == 2 {
 		if nodes[0].GetString_().GetSval() != "pg_catalog" {
@@ -55,7 +69,7 @@ func compileSQL(input string, argc int, namespace string, tables map[string]tabl
 	}
 	tree, err := parser.Parse(rewritten)
 	if err != nil {
-		return "", nil, sqlRejected("invalid PostgreSQL SQL: %v", err)
+		return "", nil, sqlQueryRejected("invalid PostgreSQL SQL: %v", err)
 	}
 	if len(tree.Stmts) != 1 || tree.Stmts[0].Stmt.GetSelectStmt() == nil {
 		return "", nil, sqlRejected("query accepts a single SELECT or read-only WITH statement")
@@ -70,14 +84,14 @@ func compileSQL(input string, argc int, namespace string, tables map[string]tabl
 
 func (c *sqlCompiler) walk(message protoreflect.Message, ctes map[string]bool) error {
 	if !queryMessages[string(message.Descriptor().Name())] {
-		return sqlRejected("SQL construct %s is not supported in confined queries", message.Descriptor().Name())
+		return sqlQueryRejected("SQL construct %s is not supported in confined queries", message.Descriptor().Name())
 	}
 	skipWith := false
 	switch node := message.Interface().(type) {
 	case *pg.Node:
 		if relation := node.GetRangeVar(); relation != nil {
 			if relation.Catalogname != "" || relation.Schemaname != "" {
-				return sqlRejected("query may reference only tables in its namespace")
+				return sqlQueryRejected("query may reference only tables in its namespace")
 			}
 			if ctes[relation.Relname] {
 				return nil
@@ -105,7 +119,7 @@ func (c *sqlCompiler) walk(message protoreflect.Message, ctes map[string]bool) e
 		}
 	case *pg.SelectStmt:
 		if node.IntoClause != nil || len(node.LockingClause) > 0 {
-			return sqlRejected("SELECT INTO and row locking are not allowed")
+			return sqlQueryRejected("SELECT INTO and row locking are not allowed")
 		}
 		local := map[string]bool{}
 		for name, present := range ctes {
@@ -117,7 +131,7 @@ func (c *sqlCompiler) walk(message protoreflect.Message, ctes map[string]bool) e
 				for _, entry := range node.WithClause.Ctes {
 					cte := entry.GetCommonTableExpr()
 					if cte == nil {
-						return sqlRejected("invalid CTE")
+						return sqlQueryRejected("invalid CTE")
 					}
 					local[cte.Ctename] = true
 				}
@@ -125,7 +139,7 @@ func (c *sqlCompiler) walk(message protoreflect.Message, ctes map[string]bool) e
 			for _, entry := range node.WithClause.Ctes {
 				cte := entry.GetCommonTableExpr()
 				if cte == nil || cte.Ctequery.GetSelectStmt() == nil {
-					return sqlRejected("WITH may contain only SELECT statements")
+					return sqlQueryRejected("WITH may contain only SELECT statements")
 				}
 				if err := c.walk(entry.ProtoReflect(), local); err != nil {
 					return err
@@ -136,24 +150,24 @@ func (c *sqlCompiler) walk(message protoreflect.Message, ctes map[string]bool) e
 		}
 	case *pg.FuncCall:
 		if !builtinName(node.Funcname, queryFunctions) {
-			return sqlRejected("function is not in the PostgreSQL query allowlist")
+			return sqlQueryRejected("unknown SQL function %q; only standard SQL functions and table/column names from describe_table are supported", qualifiedName(node.Funcname))
 		}
 		if len(node.Funcname) == 1 {
 			node.Funcname = append([]*pg.Node{pg.MakeStrNode("pg_catalog")}, node.Funcname...)
 		}
 	case *pg.TypeName:
 		if !builtinName(node.Names, queryTypes) || node.Setof {
-			return sqlRejected("type is not in the PostgreSQL query allowlist")
+			return sqlQueryRejected("type is not in the PostgreSQL query allowlist")
 		}
 	case *pg.A_Expr:
 		between := node.Kind >= pg.A_Expr_Kind_AEXPR_BETWEEN && node.Kind <= pg.A_Expr_Kind_AEXPR_NOT_BETWEEN_SYM
 		if !between && !builtinName(node.Name, queryOperators) {
-			return sqlRejected("operator is not in the PostgreSQL query allowlist")
+			return sqlQueryRejected("operator is not in the PostgreSQL query allowlist")
 		}
 	case *pg.SubLink:
 		if len(node.OperName) > 0 {
 			if !builtinName(node.OperName, queryOperators) {
-				return sqlRejected("operator is not in the PostgreSQL query allowlist")
+				return sqlQueryRejected("operator is not in the PostgreSQL query allowlist")
 			}
 			if len(node.OperName) == 1 {
 				node.OperName = append([]*pg.Node{pg.MakeStrNode("pg_catalog")}, node.OperName...)
@@ -161,11 +175,11 @@ func (c *sqlCompiler) walk(message protoreflect.Message, ctes map[string]bool) e
 		}
 	case *pg.SortBy:
 		if len(node.UseOp) > 0 && !builtinName(node.UseOp, queryOperators) {
-			return sqlRejected("sort operator is not allowed")
+			return sqlQueryRejected("sort operator is not allowed")
 		}
 	case *pg.ColumnRef:
 		if len(node.Fields) > 2 {
-			return sqlRejected("column references may not qualify a schema or database")
+			return sqlQueryRejected("column references may not qualify a schema or database")
 		}
 	case *pg.ParamRef:
 		if node.Number < 1 || int(node.Number) > c.parameters {

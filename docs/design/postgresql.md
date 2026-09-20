@@ -420,13 +420,17 @@ auth-on harness modes (row authorization is unimplemented on PostgreSQL), the em
 facade fixtures and the stdio subprocess fixtures (neither constructor can select the
 engine yet), and fixtures that probe SQLite storage internals directly.
 
+Query rejection now shares one contract across backends: `store.ValidateQueryShape`
+applies the SELECT/WITH and multiple-statement checks before either engine parses, and
+SQL-content rejections carry `store.QueryError` so they classify as `query_error` while
+request-shape rejections stay `invalid_request`.
+
 The remaining failures are genuine backend gaps, not harness artifacts. They must be
 closed before the public selector is enabled:
 
 | Area | Fixture | Gap |
 |---|---|---|
-| Error taxonomy | `TestGoldenErrorContract` | allowlist, unknown-column and syntax rejections return `invalid_request` where the contract pins `query_error` |
-| Error taxonomy | `TestQueryRejectionSeparatesTypoFromWrite` | PostgreSQL reports a syntax error before the SELECT/WITH check, so a typo and a write are not distinguished |
+| Error taxonomy | `TestGoldenErrorContract` | codes now match; the unknown-column and malformed-filter messages still diverge from the pinned shapes, and the three full-text rows pin FTS5 wording that D27 makes per-engine, so they need an engine-aware pin |
 | Error taxonomy | `TestTransportParityErrorEnvelope` | a rejected query answers `200` with an empty result set instead of `400` |
 | Error taxonomy | `TestDropNamespaceNotFoundDoesNotAdviseCreating`, `TestSearchFulltextFilterArgs` | remediation wording diverges from the pinned shapes |
 | Typed reads | `TestTypedReadAliasesAndFallbacks` | an alias to an undeclared label reads back as boolean `true` rather than `1` |

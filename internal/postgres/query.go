@@ -44,7 +44,7 @@ func queryError(ctx context.Context, err error) error {
 		code = derr.Conflict
 		message = "PostgreSQL uniqueness conflict"
 	case len(pgerr.Code) >= 2 && (pgerr.Code[:2] == "42" || pgerr.Code[:2] == "22" || pgerr.Code[:2] == "23"):
-		code = derr.InvalidRequest
+		code = derr.Query
 		message = "invalid PostgreSQL SQL or value; use describe_table for column names and types and ? for parameters"
 	}
 	return &derr.Error{Code: code, Message: message + " (SQLSTATE " + pgerr.Code + ")", Cause: err}
@@ -239,6 +239,9 @@ func (s *Store) Query(ctx context.Context, ns, input string, args []any, expecte
 	}
 	if len(args) > 100 {
 		return store.QueryResult{}, sqlRejected("too many query parameters")
+	}
+	if err := store.ValidateQueryShape(input); err != nil {
+		return store.QueryResult{}, err
 	}
 	args, err := queryArgs(args)
 	if err != nil {

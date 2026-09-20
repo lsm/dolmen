@@ -38,6 +38,10 @@ var (
 	misuseRe        = regexp.MustCompile(`(?i)misuse\s+at.*`)
 )
 
+func NewBackendQueryError(msg string, cause error) error {
+	return &QueryError{msg: msg, sentinel: ErrInvalid, cause: cause}
+}
+
 func NewQueryError(sql string, err error) error {
 	return newSQLExecError(sql, err, false)
 }
