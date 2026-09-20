@@ -31,6 +31,12 @@ func sqlQueryRejected(format string, args ...any) error {
 	return store.NewBackendQueryError(fmt.Sprintf(format, args...), nil)
 }
 
+type sqlParseRejection struct{ err error }
+
+func (p sqlParseRejection) Error() string { return p.err.Error() }
+
+func (p sqlParseRejection) Unwrap() error { return p.err }
+
 func qualifiedName(nodes []*pg.Node) string {
 	parts := []string{}
 	for _, n := range nodes {
@@ -69,7 +75,7 @@ func compileSQL(input string, argc int, namespace string, tables map[string]tabl
 	}
 	tree, err := parser.Parse(rewritten)
 	if err != nil {
-		return "", nil, sqlQueryRejected("invalid PostgreSQL SQL: %v", err)
+		return "", nil, sqlParseRejection{sqlQueryRejected("invalid PostgreSQL SQL: %v", err)}
 	}
 	if len(tree.Stmts) != 1 || tree.Stmts[0].Stmt.GetSelectStmt() == nil {
 		return "", nil, sqlRejected("query accepts a single SELECT or read-only WITH statement")
