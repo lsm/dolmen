@@ -98,6 +98,7 @@ func rowsEqual(t *testing.T, label string, httpRows, embeddedRows []map[string]a
 
 func openEmbedded(t *testing.T, dir string, opts ...dolmen.Option) *dolmen.Store {
 	t.Helper()
+	facadeEngineOnly(t)
 	st, err := dolmen.Open(dir, append([]dolmen.Option{dolmen.WithEngine(testEngine(t))}, opts...)...)
 	if err != nil {
 		t.Fatalf("embedded open: %v", err)

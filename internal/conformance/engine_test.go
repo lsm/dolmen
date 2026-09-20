@@ -1,16 +1,27 @@
 package conformance
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/lsm/dolmen/internal/postgres"
 	"github.com/lsm/dolmen/internal/store"
 )
 
-func openEngineStore(t *testing.T, dir string, opts ...store.OpenOption) *store.Store {
+func openEngineStore(t *testing.T, dir string, retention *time.Duration) store.Engine {
 	t.Helper()
-	if engine := testEngine(t); engine != store.EngineSQLite {
-		t.Fatalf("engine %q has no conformance harness yet", engine)
+	if testEngine(t) == store.EnginePostgres {
+		return openPostgresEngine(t, dir, retention)
+	}
+	opts := []store.OpenOption{}
+	if retention != nil {
+		opts = append(opts, store.WithChangeRetention(*retention))
 	}
 	st, err := store.Open(dir, opts...)
 	if err != nil {
@@ -19,8 +30,88 @@ func openEngineStore(t *testing.T, dir string, opts ...store.OpenOption) *store.
 	return st
 }
 
+func postgresDSN(t *testing.T) string {
+	t.Helper()
+	dsn := os.Getenv("DOLMEN_TEST_PG_DSN")
+	if dsn == "" {
+		if os.Getenv("DOLMEN_TEST_PG_REQUIRED") == "1" {
+			t.Fatal("PostgreSQL CI requires DOLMEN_TEST_PG_DSN")
+		}
+		t.Skip("set DOLMEN_TEST_PG_DSN for PostgreSQL conformance")
+	}
+	return dsn
+}
+
+func postgresCatalog(dir string) string {
+	sum := sha256.Sum256([]byte(dir))
+	return "dolmen_conf_" + hex.EncodeToString(sum[:12])
+}
+
+var (
+	pgCleanupMu   sync.Mutex
+	pgCleanupSeen = map[string]bool{}
+)
+
+func openPostgresEngine(t *testing.T, dir string, retention *time.Duration) *postgres.Store {
+	t.Helper()
+	dsn := postgresDSN(t)
+	catalog := postgresCatalog(dir)
+	cfg := postgres.Config{DSN: dsn, Catalog: catalog, QueryRole: os.Getenv("DOLMEN_TEST_PG_QUERY_ROLE"), ChangeRetention: retention}
+	s, err := postgres.Open(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pgCleanupMu.Lock()
+	fresh := !pgCleanupSeen[catalog]
+	pgCleanupSeen[catalog] = true
+	pgCleanupMu.Unlock()
+	if fresh {
+		t.Cleanup(func() {
+			pgCleanupMu.Lock()
+			delete(pgCleanupSeen, catalog)
+			pgCleanupMu.Unlock()
+			dropPostgresCatalog(t, dsn, catalog)
+		})
+	}
+	return s
+}
+
+func dropPostgresCatalog(t *testing.T, dsn, catalog string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	defer conn.Close(ctx)
+	schemas := []string{}
+	rows, err := conn.Query(ctx, "SELECT physical FROM "+pgx.Identifier{catalog}.Sanitize()+".namespaces")
+	if err == nil {
+		for rows.Next() {
+			var physical string
+			if err := rows.Scan(&physical); err != nil {
+				t.Error(err)
+				break
+			}
+			schemas = append(schemas, physical)
+		}
+		rows.Close()
+	}
+	schemas = append(schemas, catalog)
+	for _, name := range schemas {
+		if _, err := conn.Exec(ctx, "DROP SCHEMA IF EXISTS "+pgx.Identifier{name}.Sanitize()+" CASCADE"); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
 func resolveEngine(getenv func(string) string) (string, error) {
 	name := getenv("DOLMEN_ENGINE")
+	if name == store.EnginePostgres {
+		return name, nil
+	}
 	if err := store.ValidateEngine(name); err != nil {
 		return "", err
 	}
@@ -40,6 +131,20 @@ func testEngine(t *testing.T) string {
 	return activeEngine
 }
 
+func facadeEngineOnly(t *testing.T) {
+	t.Helper()
+	if name := testEngine(t); name != store.EngineSQLite {
+		t.Skipf("engine %q: the Go facade cannot select it yet", name)
+	}
+}
+
+func serverEngineOnly(t *testing.T) {
+	t.Helper()
+	if name := testEngine(t); name != store.EngineSQLite {
+		t.Skipf("engine %q: the dolmen binary cannot select it yet", name)
+	}
+}
+
 func sqliteOnly(t *testing.T) {
 	t.Helper()
 	if name := testEngine(t); name != store.EngineSQLite {
@@ -56,7 +161,7 @@ func TestEngineKnobResolution(t *testing.T) {
 		{env: nil, want: store.EngineSQLite},
 		{env: map[string]string{"DOLMEN_ENGINE": ""}, want: store.EngineSQLite},
 		{env: map[string]string{"DOLMEN_ENGINE": "sqlite"}, want: store.EngineSQLite},
-		{env: map[string]string{"DOLMEN_ENGINE": "postgres"}, wantErr: `unknown engine "postgres" (the available engine is "sqlite")`},
+		{env: map[string]string{"DOLMEN_ENGINE": "postgres"}, want: store.EnginePostgres},
 		{env: map[string]string{"DOLMEN_ENGINE": "banana"}, wantErr: `unknown engine "banana" (the available engine is "sqlite")`},
 	}
 	for _, c := range cases {

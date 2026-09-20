@@ -101,7 +101,7 @@ type harness struct {
 	t   *testing.T
 	dir string
 	srv *httptest.Server
-	st  *store.Store
+	st  store.Engine
 	emb *fakeProvider
 
 	api    *api.Server
@@ -109,7 +109,7 @@ type harness struct {
 
 	mode harnessMode
 
-	storeOpts []store.OpenOption
+	retention *time.Duration
 	apiOpts   []api.Option
 
 	httpURL string
@@ -129,7 +129,7 @@ func newHarnessMode(t *testing.T, mode harnessMode) *harness {
 func newHarnessRetention(t *testing.T, d time.Duration) *harness {
 	t.Helper()
 	h := newHarnessAtMode(t, t.TempDir(), &fakeProvider{}, authOff)
-	h.storeOpts = []store.OpenOption{store.WithChangeRetention(d)}
+	h.retention = &d
 	h.reopen()
 	return h
 }
@@ -157,6 +157,9 @@ func newHarnessAt(t *testing.T, dir string, emb *fakeProvider) *harness {
 
 func newHarnessAtMode(t *testing.T, dir string, emb *fakeProvider, mode harnessMode) *harness {
 	t.Helper()
+	if mode.on() && testEngine(t) == store.EnginePostgres {
+		t.Skipf("engine %q: row authorization is not implemented yet", store.EnginePostgres)
+	}
 	h := &harness{t: t, dir: dir, emb: emb, mode: mode}
 	h.start()
 	return h
@@ -164,7 +167,7 @@ func newHarnessAtMode(t *testing.T, dir string, emb *fakeProvider, mode harnessM
 
 func (h *harness) start() {
 	h.t.Helper()
-	h.st = openEngineStore(h.t, h.dir, h.storeOpts...)
+	h.st = openEngineStore(h.t, h.dir, h.retention)
 
 	trusted, err := auth.ParseTrustedProxies(h.mode.trustedProxies)
 	if err != nil {

@@ -14,7 +14,7 @@ func TestValidateEngine(t *testing.T) {
 			t.Fatalf("ValidateEngine(%q) = %v, want nil", name, err)
 		}
 	}
-	err := ValidateEngine("postgres")
+	err := ValidateEngine(EnginePostgres)
 	if err == nil || err.Error() != `unknown engine "postgres" (the available engine is "sqlite")` {
 		t.Fatalf("ValidateEngine(postgres) = %v, want the teaching error", err)
 	}
