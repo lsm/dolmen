@@ -274,8 +274,11 @@ lexeme with `:*`, combined with the `&&`, `||`, and `!!` tsquery operators. Ever
 and phrase reaches PostgreSQL as a bind parameter, so tsquery metacharacters in a query
 become literal lexemes instead of operators. Two pieces of the FTS5 grammar have no
 faithful equivalent and are rejected with a message naming the alternative rather than
-mistranslated: the `field:term` column filter (and its `{field field}:term` group form)
-and `NEAR()`. Stemming, stop words, and accent handling are PostgreSQL's, so a query of
+mistranslated: the `field:term` column filter (and its `{field field}:term` group form),
+`NEAR()`, the `^` first-token operator, and `+` adjacency. The last two matter because
+they would otherwise pass through as term text — PostgreSQL drops a leading `^` and
+matches the word anywhere, and a lone `+` compiles to an empty query matching nothing —
+so silently returning different rows than FTS5 rather than refusing. Stemming, stop words, and accent handling are PostgreSQL's, so a query of
 only stop words matches nothing where FTS5 would match.
 
 Migrations drop the generated column before the field DDL and rebuild it after, because
