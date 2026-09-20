@@ -237,3 +237,64 @@ func TestMigrationDropTableClearsHistoryBackendConformance(t *testing.T) {
 		})
 	}
 }
+
+func TestMigrationEmptyTableVectorizeBackendConformance(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			eng := migrationTestEngine(t, backend)
+			ctx := t.Context()
+			if err := eng.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := eng.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "code"}}, store.TableOpts{}, [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			emb := store.Embedder{Identity: "test", Embed: func(_ context.Context, texts []string) ([][]float32, error) {
+				out := make([][]float32, len(texts))
+				for i := range out {
+					out[i] = []float32{1, 2, 3}
+				}
+				return out, nil
+			}}
+			sc, err := eng.Migrate(ctx, "app", "notes", []schema.Change{
+				{Op: schema.OpAddField, Field: &schema.Field{Name: "summary", Vectorize: true}, Default: "placeholder"},
+			}, emb, store.Incarnation{Version: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sc.EmbedDim != 0 {
+				t.Fatalf("no rows were embedded but embed_dim is %d", sc.EmbedDim)
+			}
+			if sc.EmbedSpace != "test" {
+				t.Fatalf("embed_space: %q", sc.EmbedSpace)
+			}
+		})
+	}
+}
+
+func TestMigrationRejectsNegativeExpectedVersionBackendConformance(t *testing.T) {
+	for _, backend := range []string{"sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			eng := migrationTestEngine(t, backend)
+			ctx := t.Context()
+			if err := eng.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := eng.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "body"}}, store.TableOpts{}, [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			changes := []schema.Change{{Op: schema.OpAddField, Field: &schema.Field{Name: "extra"}}}
+			_, err := eng.Migrate(ctx, "app", "notes", changes, store.Embedder{}, store.Incarnation{Version: -1})
+			if !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("negative expected_version: %v", err)
+			}
+			var conflict *store.VersionConflictError
+			if errors.As(err, &conflict) {
+				t.Fatalf("negative expected_version reported as a conflict: %v", err)
+			}
+			if _, err := eng.PlanMigration(ctx, "app", "notes", changes, store.Embedder{}, store.Incarnation{Version: -1}, nil, store.Incarnation{}); !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("plan with negative expected_version: %v", err)
+			}
+		})
+	}
+}
