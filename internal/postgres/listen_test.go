@@ -614,3 +614,60 @@ func TestPostgresAnnounceFailureDoesNotAbortWrites(t *testing.T) {
 		t.Fatalf("announce left the transaction unusable: %v", err)
 	}
 }
+
+func TestPostgresListenPanickingClosedCallbackDoesNotCrash(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	var admitted atomic.Bool
+	admitted.Store(true)
+	panicked := make(chan struct{})
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, func(string) (*store.RowScope, store.Incarnation, bool) {
+		return nil, store.Incarnation{}, admitted.Load()
+	}, func(store.ChangeRecord) {}, func(error) {
+		close(panicked)
+		panic("closed callback exploded")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	drainReplay(t, ctx, replay)
+	admitted.Store(false)
+	select {
+	case <-panicked:
+	case <-time.After(20 * time.Second):
+		t.Fatal("closed callback never fired")
+	}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "still alive"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatalf("store unusable after a panicking callback: %v", err)
+	}
+}
+
+func TestPostgresListenCloseReportsLifetimeEnded(t *testing.T) {
+	cfg := testConfig(t)
+	s, err := Open(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	closedWith := make(chan error, 1)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, nil, func(store.ChangeRecord) {}, func(cause error) { closedWith <- cause })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	drainReplay(t, ctx, replay)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case cause := <-closedWith:
+		if !errors.Is(cause, store.ErrListenLifetimeEnded) {
+			t.Fatalf("closing store reported %v, want ErrListenLifetimeEnded", cause)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("closing the store never ended the subscription")
+	}
+}

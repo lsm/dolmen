@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -136,7 +137,7 @@ func listenCause(err error) error {
 	switch {
 	case errors.Is(err, store.ErrCursorExpired), errors.Is(err, store.ErrCursorCrossFeed):
 		return store.ErrListenAged
-	case errors.Is(err, store.ErrNotFound):
+	case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrClosed):
 		return store.ErrListenLifetimeEnded
 	}
 	return err
@@ -280,12 +281,28 @@ func (l *listenSession) resume() store.Cursor {
 
 func (l *listenSession) finish(cause error) {
 	l.finishOnce.Do(func() {
-		if l.closed != nil {
-			l.firing.Store(true)
-			defer l.firing.Store(false)
-			l.closed(cause)
+		if l.closed == nil {
+			return
 		}
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("listen closed callback panicked; session already ending",
+					"namespace", l.ns, "table", l.table, "panic", r)
+			}
+		}()
+		l.firing.Store(true)
+		defer l.firing.Store(false)
+		l.closed(cause)
 	})
+}
+
+func (l *listenSession) storeClosing() bool {
+	select {
+	case <-l.storeStop:
+		return true
+	default:
+		return false
+	}
 }
 
 func (l *listenSession) halt() {
@@ -310,7 +327,15 @@ func (l *listenSession) run(ctx context.Context) {
 	ticker := time.NewTicker(listenPollInterval)
 	defer ticker.Stop()
 	for {
+		if l.storeClosing() {
+			l.finish(store.ErrListenLifetimeEnded)
+			return
+		}
 		if err := l.guard(ctx); err != nil {
+			if l.storeClosing() {
+				l.finish(store.ErrListenLifetimeEnded)
+				return
+			}
 			if cause, report := terminalCause(ctx, err); report {
 				l.finish(cause)
 			}
@@ -319,6 +344,10 @@ func (l *listenSession) run(ctx context.Context) {
 		for l.pending(ctx) {
 			records, err := l.fetch(ctx)
 			if err != nil {
+				if l.storeClosing() {
+					l.finish(store.ErrListenLifetimeEnded)
+					return
+				}
 				if cause, report := terminalCause(ctx, err); report {
 					l.finish(cause)
 				}

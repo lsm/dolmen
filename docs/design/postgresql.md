@@ -349,7 +349,12 @@ does.
 
 Ends are reported through `closed` with the shared sentinels the transports match on —
 `ErrListenRevoked` for a withdrawn admission, `ErrListenLifetimeEnded` for a replaced
-target or a closing store, and `ErrListenAged` for a cursor past retention. Plain
+target or a closing store, and `ErrListenAged` for a cursor past retention. A closing
+store is checked before each tick's work and again if that work fails, so a session
+racing `Close` reports the sentinel rather than whatever error the closing pool happened
+to raise. The `closed` dispatch recovers from a panicking callback and logs it: the
+callback runs on the engine's session goroutine, so one bad subscriber would otherwise
+take the process down. Plain
 cancellation reports nothing: the transports treat the close cause as an error to render,
 and a nil cause is not one. The session is bound to the
 caller's context, so cancelling that context ends it. A terminal error during the replay
