@@ -596,9 +596,24 @@ func (s *Store) Migrate(ctx context.Context, ns, table string, changes []schema.
 				return err
 			}
 			physical := ident(n.physical, current.physical)
+			if work.rebuildFTS {
+				if _, err := tx.Exec(ctx, "ALTER TABLE "+physical+" DROP COLUMN IF EXISTS "+ident(ftsColumn)); err != nil {
+					return err
+				}
+			}
 			for _, step := range work.steps {
 				if _, err := tx.Exec(ctx, step.sql, step.args...); err != nil {
 					return err
+				}
+			}
+			if work.rebuildFTS {
+				if ddl := ftsColumnDDL(work.cur.Fields, work.columns); ddl != "" {
+					if _, err := tx.Exec(ctx, "ALTER TABLE "+physical+" ADD COLUMN "+ddl); err != nil {
+						return err
+					}
+					if _, err := tx.Exec(ctx, ftsIndexDDL(n.physical, current.physical)); err != nil {
+						return err
+					}
 				}
 			}
 			if work.embed.addColumn {
