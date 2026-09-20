@@ -521,6 +521,9 @@ func (s *Store) PlanMigration(ctx context.Context, ns, table string, changes []s
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
 	}
+	if expected.Version < 0 {
+		return nil, invalidf("expected_version must be a positive schema version, got %d", expected.Version)
+	}
 	var plan *store.MigrationPlan
 	err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
 		state, err := s.loadTable(ctx, tx, n, table)
@@ -548,6 +551,9 @@ func (s *Store) PlanMigration(ctx context.Context, ns, table string, changes []s
 func (s *Store) Migrate(ctx context.Context, ns, table string, changes []schema.Change, emb store.Embedder, expected store.Incarnation) (*schema.TableSchema, error) {
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
+	}
+	if expected.Version < 0 {
+		return nil, invalidf("expected_version must be a positive schema version, got %d", expected.Version)
 	}
 	for attempt := 0; attempt < 3; attempt++ {
 		var state tableState
@@ -699,11 +705,14 @@ func (s *Store) applyEmbeddings(ctx context.Context, tx pgx.Tx, physical string,
 		if constant == nil {
 			return false, nil
 		}
-		if work.cur.EmbedDim == 0 {
+		tag, err := tx.Exec(ctx, "UPDATE "+physical+` SET "_embedding" = $1 WHERE `+col+" IS NOT NULL AND "+col+" != ''", schema.EncodeVector(constant))
+		if err != nil {
+			return false, err
+		}
+		if tag.RowsAffected() > 0 && work.cur.EmbedDim == 0 {
 			work.cur.EmbedDim = len(constant)
 		}
-		_, err := tx.Exec(ctx, "UPDATE "+physical+` SET "_embedding" = $1 WHERE `+col+" IS NOT NULL AND "+col+" != ''", schema.EncodeVector(constant))
-		return false, err
+		return false, nil
 	}
 	rows, err := tx.Query(ctx, "SELECT id,"+col+" FROM "+physical+" WHERE "+col+" IS NOT NULL AND "+col+` != '' AND "_embedding" IS NULL ORDER BY id`)
 	if err != nil {
