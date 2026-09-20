@@ -164,6 +164,9 @@ func (s *Store) mintChanges(ctx context.Context, tx pgx.Tx, n namespace, state t
 			return store.ChangeRange{}, err
 		}
 	}
+	if err := s.announce(ctx, tx, n.name); err != nil {
+		return store.ChangeRange{}, err
+	}
 	return change, nil
 }
 

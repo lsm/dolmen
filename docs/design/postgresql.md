@@ -288,11 +288,33 @@ a filter sees declared columns only and cannot reach the generated tsvector colu
 hidden embeddings. Result shapes, typed coercion, hidden-column behaviour, response
 budgets, and truncation match the other read paths.
 
+## Cross-process subscriptions (implemented internally)
+
+`Listen` is built on the durable change log, not on notifications. A subscription
+resolves its starting cursor exactly as `changes_since` does — a token, `begin`, or the
+current head — replays through `ChangeReplay.Next` until a page comes back empty, then
+polls the same log for live changes. Because every record comes from a committed row in
+the catalog, a subscription sees writes from any process against the same database, and
+two store instances over one catalog are covered by an integration test.
+
+`pg_notify` is a latency optimisation layered on top. Writes announce their namespace on
+a per-catalog channel, and one shared connection per store `LISTEN`s and fans the wake-up
+out to the sessions for that namespace; a session that is woken simply polls earlier. A
+poll interval runs regardless, so a dropped, missed, or disabled notification costs
+latency and never a change: a test removes the wake registration entirely and still
+requires the change to arrive. One `LISTEN` connection per store, rather than one per
+subscription, keeps subscriptions from exhausting the pool.
+
+Admission is re-checked on every fetch through the `liveAuthz` callback, which is invoked
+from the session goroutine and so must be safe to call concurrently. A revoked admission,
+an expired cursor, or a replaced namespace or table ends the subscription through the
+`closed` callback with the cause. Cancelling is synchronous: it stops the session, waits
+for the goroutine to finish, and unregisters the wake channel, so no delivery can follow
+the call.
+
 ## Remaining implementation sequence
 
-1. Cross-process polling/listening and SSE lifecycle
-   tests. Notifications may wake readers but never replace the durable log.
-2. Implement every mandatory Engine method, wire the HTTP/MCP/stdio/facade/blackbox
+1. Implement every mandatory Engine method, wire the HTTP/MCP/stdio/facade/blackbox
    constructors and complete the conformance matrix; only then enable the public
    selector and publish PostgreSQL configuration/install guidance.
 
