@@ -232,6 +232,25 @@ func (s *Store) Query(ctx context.Context, ns, input string, args []any, expecte
 	if err != nil {
 		return store.QueryResult{}, err
 	}
+	for attempt := 0; ; attempt++ {
+		result, err := s.runQuery(ctx, ns, input, args, expected, page)
+		if err == nil {
+			return result, nil
+		}
+		if attempt == 0 && grantDenied(err) {
+			s.forgetQueryGrant(ns)
+			continue
+		}
+		return store.QueryResult{}, err
+	}
+}
+
+func grantDenied(err error) bool {
+	var pgerr *pgconn.PgError
+	return errors.As(err, &pgerr) && (pgerr.Code == "42501" || pgerr.Code == "28000")
+}
+
+func (s *Store) runQuery(ctx context.Context, ns, input string, args []any, expected [16]byte, page store.Page) (store.QueryResult, error) {
 	generation, err := s.ensureQueryRole(ctx, ns, expected)
 	if err != nil {
 		return store.QueryResult{}, err

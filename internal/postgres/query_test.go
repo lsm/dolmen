@@ -149,3 +149,93 @@ func TestPostgresQueryClearsStaleGrantGeneration(t *testing.T) {
 		t.Fatalf("query did not recover after stale grant: %v", err)
 	}
 }
+
+func TestPostgresQueryRecoversUngrantedTableFromAnotherInstance(t *testing.T) {
+	cfg := testConfig(t)
+	if cfg.QueryRole == "" {
+		t.Skip("set DOLMEN_TEST_PG_QUERY_ROLE for caller SQL grant recovery")
+	}
+	s := openTest(t, cfg)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "body"}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Query(ctx, "app", "SELECT body FROM notes", nil, [16]byte{}, store.Page{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.queryGrant("app"); !ok {
+		t.Fatal("grant was not cached")
+	}
+	ungranted := cfg
+	ungranted.QueryRole = ""
+	other, err := Open(ctx, ungranted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.CreateTable(ctx, "app", "later", []schema.Field{{Name: "body"}}, store.TableOpts{}, [16]byte{}); err != nil {
+		other.Close()
+		t.Fatal(err)
+	}
+	if _, err := other.Insert(ctx, "app", "later", []map[string]any{{"body": "from the other instance"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		other.Close()
+		t.Fatal(err)
+	}
+	if err := other.Close(); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.Query(ctx, "app", "SELECT body FROM later", nil, [16]byte{}, store.Page{})
+	if err != nil {
+		t.Fatalf("stale grant cache never recovered: %v", err)
+	}
+	if len(result.Rows) != 1 || result.Rows[0]["body"] != "from the other instance" {
+		t.Fatalf("rows: %+v", result.Rows)
+	}
+}
+
+func TestPostgresQueryRecoversRevokedGrant(t *testing.T) {
+	cfg := testConfig(t)
+	if cfg.QueryRole == "" {
+		t.Skip("set DOLMEN_TEST_PG_QUERY_ROLE for caller SQL grant recovery")
+	}
+	s := openTest(t, cfg)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "body"}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "kept"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Query(ctx, "app", "SELECT body FROM notes", nil, [16]byte{}, store.Page{}); err != nil {
+		t.Fatal(err)
+	}
+	var physical, table string
+	if err := s.read(ctx, "app", func(tx pgx.Tx, n namespace) error {
+		state, err := s.loadTable(ctx, tx, n, "notes")
+		physical, table = n.physical, state.physical
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := pgx.Connect(ctx, cfg.DSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, "REVOKE ALL ON "+ident(physical, table)+" FROM "+ident(cfg.QueryRole)); err != nil {
+		conn.Close(ctx)
+		t.Fatal(err)
+	}
+	conn.Close(ctx)
+	result, err := s.Query(ctx, "app", "SELECT body FROM notes", nil, [16]byte{}, store.Page{})
+	if err != nil {
+		t.Fatalf("revoked grant never recovered: %v", err)
+	}
+	if len(result.Rows) != 1 || result.Rows[0]["body"] != "kept" {
+		t.Fatalf("rows: %+v", result.Rows)
+	}
+}
