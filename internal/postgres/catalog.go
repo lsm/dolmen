@@ -11,7 +11,7 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-const catalogVersion = 4
+const catalogVersion = 5
 
 func ident(parts ...string) string { return pgx.Identifier(parts).Sanitize() }
 
@@ -91,6 +91,12 @@ func (s *Store) bootstrap(ctx context.Context) error {
  row_id bigint NOT NULL, kind text NOT NULL CHECK(kind IN ('insert','update','delete')),
  created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
  PRIMARY KEY(namespace,position))`,
+		"CREATE TABLE IF NOT EXISTS " + s.relation("migrations") + ` (
+ namespace text NOT NULL REFERENCES ` + s.relation("namespaces") + `(name) ON DELETE CASCADE,
+ table_name text NOT NULL, drop_generation bigint NOT NULL, id bigint NOT NULL,
+ from_version integer NOT NULL, to_version integer NOT NULL, changes_json text NOT NULL,
+ at text NOT NULL DEFAULT to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+ PRIMARY KEY(namespace,table_name,drop_generation,id))`,
 	} {
 		if _, err := tx.Exec(ctx, stmt); err != nil {
 			return err

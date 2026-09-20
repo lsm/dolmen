@@ -219,15 +219,49 @@ the existing dry-run, match limit, and explicit confirmation contract. Embedding
 runs before the write transaction and is skipped for no-match updates; invalid fields
 and values are still rejected even when a filter matches nothing.
 
+## Schema migrations (implemented internally)
+
+Migrations validate the same six `schema.Change` ops as SQLite, in request order, and
+reproduce its plan output and rejection messages: the field cap, required-without-
+backfill, enum values still stored by rows, the single-vectorized-field rule, and the
+`expected_version` requirement for destructive changes. `PlanMigration` runs the same
+validation and probes without writing, and `Migrate` re-plans under the namespace write
+lock so a plan cannot apply against a schema that moved on. `checkIncarnation` supplies
+the version compare-and-set and returns the shared `VersionConflictError`.
+
+Catalog version 5 adds a `migrations` relation keyed by namespace, table, drop
+generation, and a per-table id, so `list_migrations` returns newest-first history with
+the same shape as SQLite and a recreated table starts a fresh log. Schema JSON, the
+physical column mapping, and the history row are written in the transaction that runs
+the DDL, so a failed step leaves version, columns, and history untouched.
+
+Physical column names persist in `columns_json` and are allocated incrementally: an
+existing field keeps its stored physical name across unrelated migrations, a new field
+gets a collision-checked name, and a rename renames the physical column so short
+logical names keep matching their column. Pre-DDL probes (enum scans, full-text and
+embedding estimates) read the pre-migration physical name, because the new name does
+not exist until the DDL runs. Migrations re-issue the query role's column grants so
+caller SQL sees added fields and loses dropped ones.
+
+Embedding backfills run outside the write transaction. The migration plans and reads a
+snapshot under a short read transaction, embeds with no lock held, then applies the DDL
+and the precomputed vectors under the write lock, confirming each row's text is
+unchanged. If a concurrent write moved a row, the transaction rolls back and the
+migration retries; no embedding call happens while the namespace write lock is held. A
+newly added vectorized field with a constant backfill default embeds that text once.
+
+Full-text changes record schema state and report the same `rebuild_fulltext` and
+`fulltext_reindex_rows` plan fields as SQLite, but build no index yet: PostgreSQL-native
+full-text indexing is the next increment, and it takes over the index work without
+changing these plan semantics.
+
 ## Remaining implementation sequence
 
-1. Schema migrations with atomic history, physical-name mapping updates, full-text
-   rebuild planning, and embedding backfill outside long-held write transactions.
-2. Native PostgreSQL full-text indexing/matching/ranking and vector search; add
+1. Native PostgreSQL full-text indexing/matching/ranking and vector search; add
    per-engine match/relevance fixtures and cross-engine filter/shape tests.
-3. Cross-process polling/listening and SSE lifecycle
+2. Cross-process polling/listening and SSE lifecycle
    tests. Notifications may wake readers but never replace the durable log.
-4. Implement every mandatory Engine method, wire the HTTP/MCP/stdio/facade/blackbox
+3. Implement every mandatory Engine method, wire the HTTP/MCP/stdio/facade/blackbox
    constructors and complete the conformance matrix; only then enable the public
    selector and publish PostgreSQL configuration/install guidance.
 
