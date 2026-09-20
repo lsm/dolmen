@@ -31,22 +31,37 @@ func (s *Store) loadTable(ctx context.Context, tx pgx.Tx, n namespace, table str
 	if err != nil {
 		return result, err
 	}
-	dec := json.NewDecoder(strings.NewReader(raw))
-	dec.UseNumber()
-	if err := dec.Decode(&result.schema); err != nil {
-		return result, fmt.Errorf("postgres: corrupt table schema: %w", err)
+	if err := decodeTableState(&result, n, table, raw, columns, generation); err != nil {
+		return result, err
 	}
-	if result.schema == nil {
-		return result, fmt.Errorf("postgres: missing table schema")
-	}
-	if err := json.Unmarshal([]byte(columns), &result.columns); err != nil {
-		return result, fmt.Errorf("postgres: corrupt column mapping: %w", err)
-	}
-	result.incarnation = store.Incarnation{NsGen: n.generation, Table: table, Version: int64(result.schema.Version), DropGen: generation}
 	return result, nil
 }
 
+func decodeTableState(result *tableState, n namespace, table, raw, columns string, generation int64) error {
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&result.schema); err != nil {
+		return fmt.Errorf("postgres: corrupt table schema: %w", err)
+	}
+	if result.schema == nil {
+		return fmt.Errorf("postgres: missing table schema")
+	}
+	if err := json.Unmarshal([]byte(columns), &result.columns); err != nil {
+		return fmt.Errorf("postgres: corrupt column mapping: %w", err)
+	}
+	result.incarnation = store.Incarnation{NsGen: n.generation, Table: table, Version: int64(result.schema.Version), DropGen: generation}
+	return nil
+}
+
 func (s *Store) read(ctx context.Context, name string, fn func(pgx.Tx, namespace) error) error {
+	return s.readMode(ctx, name, false, fn)
+}
+
+func (s *Store) readOnly(ctx context.Context, name string, fn func(pgx.Tx, namespace) error) error {
+	return s.readMode(ctx, name, true, fn)
+}
+
+func (s *Store) readMode(ctx context.Context, name string, readOnly bool, fn func(pgx.Tx, namespace) error) error {
 	done, err := s.begin(ctx)
 	if err != nil {
 		return err
@@ -55,7 +70,11 @@ func (s *Store) read(ctx context.Context, name string, fn func(pgx.Tx, namespace
 	if err := store.ValidateNamespace(name); err != nil {
 		return err
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	options := pgx.TxOptions{IsoLevel: pgx.ReadCommitted}
+	if readOnly {
+		options.AccessMode = pgx.ReadOnly
+	}
+	tx, err := s.pool.BeginTx(ctx, options)
 	if err != nil {
 		return err
 	}
@@ -63,7 +82,11 @@ func (s *Store) read(ctx context.Context, name string, fn func(pgx.Tx, namespace
 	var n namespace
 	var gen []byte
 	n.name = name
-	err = tx.QueryRow(ctx, "SELECT physical,generation FROM "+s.relation("namespaces")+" WHERE name=$1 FOR SHARE", name).Scan(&n.physical, &gen)
+	query := "SELECT physical,generation FROM " + s.relation("namespaces") + " WHERE name=$1"
+	if !readOnly {
+		query += " FOR SHARE"
+	}
+	err = tx.QueryRow(ctx, query, name).Scan(&n.physical, &gen)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("%w: namespace %s", store.ErrNotFound, name)
 	}
@@ -103,6 +126,9 @@ func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []sche
 		if _, err := tx.Exec(ctx, tableDDL(n.physical, physical, fields, columns)); err != nil {
 			return err
 		}
+		if err := s.grantQueryTable(ctx, tx, n, physical, fields, columns); err != nil {
+			return err
+		}
 		raw, err := json.Marshal(sc)
 		if err != nil {
 			return err
@@ -121,20 +147,23 @@ func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []sche
 	return sc, nil
 }
 
+func columnType(f schema.Field) string {
+	switch f.Type {
+	case schema.Number:
+		return "numeric"
+	case schema.Boolean:
+		return "boolean"
+	case schema.Vector:
+		return "bytea"
+	}
+	return `text COLLATE "C"`
+}
+
 func tableDDL(ns, table string, fields []schema.Field, columns map[string]string) string {
 	parts := []string{"id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY", `created_at text NOT NULL DEFAULT to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`}
 	vectorized := false
 	for _, f := range fields {
-		typ := `text COLLATE "C"`
-		switch f.Type {
-		case schema.Number:
-			typ = "numeric"
-		case schema.Boolean:
-			typ = "boolean"
-		case schema.Vector:
-			typ = "bytea"
-		}
-		col := ident(columns[f.Name]) + " " + typ
+		col := ident(columns[f.Name]) + " " + columnType(f)
 		if f.Required {
 			col += " NOT NULL"
 		}
@@ -224,6 +253,9 @@ func (s *Store) DropTable(ctx context.Context, ns, table string, expected store.
 			return err
 		}
 		if _, err := tx.Exec(ctx, "DROP TABLE "+ident(n.physical, current.physical)); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, "DELETE FROM "+s.relation("migrations")+" WHERE namespace=$1 AND table_name=$2", ns, table); err != nil {
 			return err
 		}
 		_, err = tx.Exec(ctx, "UPDATE "+s.relation("tables")+" SET active=false, physical=NULL, drop_generation=drop_generation+1 WHERE namespace=$1 AND name=$2", ns, table)

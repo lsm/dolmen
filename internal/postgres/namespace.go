@@ -65,7 +65,11 @@ func (s *Store) CreateNamespace(ctx context.Context, name string, parentGen [16]
 	if _, err := tx.Exec(ctx, "INSERT INTO "+s.relation("namespaces")+" (name, physical, generation) VALUES ($1, $2, $3)", name, physical, gen[:]); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	s.forgetQueryGrant(name)
+	return nil
 }
 
 func (s *Store) NamespaceState(ctx context.Context, name string, auth []store.AuthBinding) ([16]byte, error) {
@@ -157,5 +161,9 @@ func (s *Store) DropNamespace(ctx context.Context, name string, expected [16]byt
 	if _, err := tx.Exec(ctx, "DELETE FROM "+s.relation("namespaces")+" WHERE name = $1", name); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	s.forgetQueryGrant(name)
+	return nil
 }
