@@ -79,6 +79,7 @@ func stdioEnv(extra ...string) []string {
 
 func startStdioWithEnv(t *testing.T, extraEnv []string, args ...string) *stdioProc {
 	t.Helper()
+	serverEngineOnly(t)
 	full := append([]string{"mcp", "-data", t.TempDir(), "-engine", testEngine(t)}, args...)
 	cmd := exec.Command(dolmenBinary(t), full...)
 	cmd.Env = stdioEnv(extraEnv...)
@@ -387,7 +388,7 @@ func TestStdioIgnoresHTTPOnlySubscriptionAge(t *testing.T) {
 
 func noneServer(t *testing.T) string {
 	t.Helper()
-	st := openEngineStore(t, t.TempDir())
+	st := openEngineStore(t, t.TempDir(), nil)
 	apiSrv := api.New(st, embed.None{})
 	mcpSrv := mcp.New(apiSrv, nil)
 	mux := http.NewServeMux()

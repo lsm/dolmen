@@ -7,7 +7,10 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-const EngineSQLite = "sqlite"
+const (
+	EngineSQLite   = "sqlite"
+	EnginePostgres = "postgres"
+)
 
 func ValidateEngine(name string) error {
 	switch name {

@@ -264,6 +264,7 @@ func TestReadOpsNeverCreateNamespaceFiles(t *testing.T) {
 }
 
 func TestWriteOpsStillCreateNamespacesImplicitly(t *testing.T) {
+	sqliteOnly(t)
 	h := newHarness(t)
 
 	h.mustHTTP("create_table", map[string]any{

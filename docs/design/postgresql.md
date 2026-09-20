@@ -398,9 +398,45 @@ is waiting on the callback.
 
 ## Remaining implementation sequence
 
-1. Implement every mandatory Engine method, wire the HTTP/MCP/stdio/facade/blackbox
-   constructors and complete the conformance matrix; only then enable the public
-   selector and publish PostgreSQL configuration/install guidance.
+1. Close the conformance gaps listed under "Conformance matrix status" below, then wire
+   the HTTP/MCP/stdio/facade/blackbox constructors, enable the public selector, and
+   publish PostgreSQL configuration/install guidance.
+
+## Conformance matrix status
+
+The conformance suite runs against either backend. `DOLMEN_ENGINE=postgres` selects
+PostgreSQL for the whole package; the knob is read by the suite's own engine resolver,
+not by `store.ValidateEngine`, so the public selector stays closed while the matrix is
+still red:
+
+```sh
+DOLMEN_ENGINE=postgres DOLMEN_TEST_PG_DSN=... DOLMEN_TEST_PG_QUERY_ROLE=dolmen_query \
+  go test ./internal/conformance
+```
+
+Each harness derives a catalog schema from its data directory, so a harness restart
+reconnects to the same catalog instead of a fresh one. Three groups skip deliberately:
+auth-on harness modes (row authorization is unimplemented on PostgreSQL), the embedded
+facade fixtures and the stdio subprocess fixtures (neither constructor can select the
+engine yet), and fixtures that probe SQLite storage internals directly.
+
+The remaining failures are genuine backend gaps, not harness artifacts. They must be
+closed before the public selector is enabled:
+
+| Area | Fixture | Gap |
+|---|---|---|
+| Error taxonomy | `TestGoldenErrorContract` | allowlist, unknown-column and syntax rejections return `invalid_request` where the contract pins `query_error` |
+| Error taxonomy | `TestQueryRejectionSeparatesTypoFromWrite` | PostgreSQL reports a syntax error before the SELECT/WITH check, so a typo and a write are not distinguished |
+| Error taxonomy | `TestTransportParityErrorEnvelope` | a rejected query answers `200` with an empty result set instead of `400` |
+| Error taxonomy | `TestDropNamespaceNotFoundDoesNotAdviseCreating`, `TestSearchFulltextFilterArgs` | remediation wording diverges from the pinned shapes |
+| Typed reads | `TestTypedReadAliasesAndFallbacks` | an alias to an undeclared label reads back as boolean `true` rather than `1` |
+| Typed reads | `TestTypedReadEmbeddingHidden` | `_embedding` is not selectable from caller SQL (SQLSTATE 42703) |
+| Full-text | `TestSearchFulltextSyntaxAcceptReject` | diacritic-insensitive matching returns nothing; needs `unaccent` or a documented divergence under D27 |
+| Change feed | `TestChangesSinceTableFeedContract` | a live table-feed cursor is rejected as past the retention window |
+| SSE | `TestSubscribeCursorTeachingErrors` | emits a close frame and an error frame where the contract pins one error event |
+| SSE | `TestSubscribeOverflowTeachesReconnect` | overflow never produces the error frame that teaches reconnection |
+| SSE | `TestSubscribeBoundaryUnderConcurrentWrites` | the ready synchronization frame is missing |
+| SSE | `TestSubscribeNeverCreatesNamespace` | `subscribe` and `wait_for` disagree on the missing-namespace message |
 
 The driver remains pure Go and compatible with the static binary requirement.
 PostgreSQL dependency versions are pinned in go.mod. No PostgreSQL server is bundled

@@ -2,17 +2,11 @@ package conformance
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/lsm/dolmen/internal/postgres"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -26,46 +20,7 @@ type namespaceEngine interface {
 
 func postgresNamespaceEngine(t *testing.T) namespaceEngine {
 	t.Helper()
-	dsn := os.Getenv("DOLMEN_TEST_PG_DSN")
-	if dsn == "" {
-		if os.Getenv("DOLMEN_TEST_PG_REQUIRED") == "1" {
-			t.Fatal("PostgreSQL CI requires DOLMEN_TEST_PG_DSN")
-		}
-		t.Skip("set DOLMEN_TEST_PG_DSN for PostgreSQL namespace conformance")
-	}
-	var id [12]byte
-	if _, err := rand.Read(id[:]); err != nil {
-		t.Fatal(err)
-	}
-	catalog := "dolmen_conf_" + hex.EncodeToString(id[:])
-	s, err := postgres.Open(t.Context(), postgres.Config{DSN: dsn, Catalog: catalog, QueryRole: os.Getenv("DOLMEN_TEST_PG_QUERY_ROLE")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		defer s.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		names, err := s.ListNamespaces(ctx, "", nil)
-		if err != nil {
-			t.Error(err)
-		}
-		for i := len(names) - 1; i >= 0; i-- {
-			if err := s.DropNamespace(ctx, names[i], [16]byte{}); err != nil {
-				t.Error(err)
-			}
-		}
-		conn, err := pgx.Connect(ctx, dsn)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer conn.Close(ctx)
-		if _, err := conn.Exec(ctx, "DROP SCHEMA "+pgx.Identifier{catalog}.Sanitize()+" CASCADE"); err != nil {
-			t.Error(err)
-		}
-	})
-	return s
+	return openPostgresEngine(t, t.TempDir(), nil)
 }
 
 func TestNamespaceBackendConformance(t *testing.T) {
