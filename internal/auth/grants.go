@@ -106,7 +106,12 @@ func OpenRegistry(dir string) (*Registry, error) {
 		db.Close()
 		return nil, fmt.Errorf("create grant registry: %w", err)
 	}
-	return &Registry{db: db}, nil
+	r := &Registry{db: db}
+	if err := r.initKeys(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create key registry: %w", err)
+	}
+	return r, nil
 }
 
 func (r *Registry) Close() error {

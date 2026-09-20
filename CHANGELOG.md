@@ -43,6 +43,13 @@
   `idempotency_key` are refused for now: caller-supplied filters, key matches, and a per-table
   idempotency record each need work before a scoped caller can use them without probing rows they
   cannot see.
+- **API keys.** `create_key` / `list_keys` / `revoke_key` mint credentials for machines that cannot
+  do an interactive sign-in. A key authenticates as a principal and carries optional groups, but
+  grants nothing by itself. The credential is shown once and stored hashed; keys are revoked by a
+  server-generated id, so two sharing a name stay individually revocable; `list_keys` never returns
+  credentials; and a revoked key is refused with the same `401` as an unknown one. Downstream of
+  the seam a key identity is indistinguishable from a gateway-asserted one — same verbs, same
+  grants, same row scope.
 - **`unauthorized` error code** (401) in the shared taxonomy. `auth: off` never emits it, and the
   default is still `auth: off` — nothing changes for existing deployments.
 

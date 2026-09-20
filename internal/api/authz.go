@@ -41,6 +41,10 @@ var authRules = map[string]authRule{
 	"list_tables":     {Scope: scopeNone},
 	"whoami":          {Scope: scopeNone},
 
+	"create_key": {Scope: scopeRoot, Verbs: []auth.Verb{auth.VerbAdmin}},
+	"list_keys":  {Scope: scopeRoot, Verbs: []auth.Verb{auth.VerbAdmin}},
+	"revoke_key": {Scope: scopeRoot, Verbs: []auth.Verb{auth.VerbAdmin}},
+
 	"create_namespace": {Scope: scopeParentNamespace, Verbs: []auth.Verb{auth.VerbAdmin}},
 	"drop_namespace":   {Scope: scopeNamespace, Verbs: []auth.Verb{auth.VerbAdmin}},
 

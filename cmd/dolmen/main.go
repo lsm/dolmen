@@ -193,6 +193,7 @@ func openGrantRegistry(cfg *config) (*auth.Registry, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.Auth.UseKeys(r)
 	if err := cfg.Auth.CheckRootAdministrator(context.Background(), r); err != nil {
 		r.Close()
 		return nil, err

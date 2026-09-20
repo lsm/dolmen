@@ -481,3 +481,162 @@ func init() {
 		},
 	}
 }
+
+func keySchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":        prop("string", "Server-generated key id, unique and never reused; revoke_key selects by this"),
+			"name":      prop("string", "The name the administrator gave the key; names need not be unique"),
+			"principal": prop("string", "The identity this key authenticates as"),
+			"groups": map[string]any{
+				"type":        "array",
+				"description": "The groups this key carries, matched by group grants",
+				"items":       map[string]any{"type": "string"},
+			},
+			"revoked":    prop("boolean", "Whether the key has been revoked"),
+			"created_at": prop("string", "When the key was minted, RFC 3339"),
+		},
+	}
+}
+
+func keyPayload(k auth.Key) map[string]any {
+	groups := k.Groups
+	if groups == nil {
+		groups = []string{}
+	}
+	return map[string]any{
+		"id":         k.ID,
+		"name":       k.Name,
+		"principal":  k.Principal,
+		"groups":     groups,
+		"revoked":    k.Revoked,
+		"created_at": k.CreatedAt.Format(time.RFC3339Nano),
+	}
+}
+
+func init() {
+	authOps["create_key"] = OpDef{
+		Description: "Mint an API key that authenticates as a principal, for a machine that cannot do an interactive sign-in. " +
+			"The key is returned in full exactly once — it is stored hashed and can never be shown again. It grants nothing by " +
+			"itself: grant verbs to its principal or groups separately. Requires admin on \"*\".",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"name", "principal"},
+			"properties": map[string]any{
+				"name":      prop("string", "A name to tell this key apart in list_keys; need not be unique"),
+				"principal": prop("string", "The identity the key authenticates as; grants are made to it separately"),
+				"groups": map[string]any{
+					"type":        "array",
+					"description": "Optional groups the key carries, so group grants apply to it",
+					"items":       map[string]any{"type": "string"},
+				},
+			},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"key":    keySchema(),
+			"secret": prop("string", "The credential, shown this once only: present it as Authorization: Bearer <secret>"),
+		}, "key", "secret"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req struct {
+				Name      string   `json:"name"`
+				Principal string   `json:"principal"`
+				Groups    []string `json:"groups"`
+			}
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			if err := auth.ValidateKeyName(req.Name); err != nil {
+				return nil, badRequest("%s", err.Error())
+			}
+			if err := auth.ValidateKeyIdentity(req.Principal, req.Groups, s.authn.MaxGroups()); err != nil {
+				return nil, badRequest("%s", err.Error())
+			}
+			if s.grants == nil {
+				return nil, errNoGrantRegistry
+			}
+			k, secret, err := s.grants.CreateKey(ctx, req.Name, req.Principal, req.Groups)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"key": keyPayload(k), "secret": secret}, nil
+		},
+	}
+
+	authOps["list_keys"] = OpDef{
+		Description: "List the API keys this deployment holds: ids, names, principals, groups and whether each is revoked. " +
+			"Never returns credentials — a key's secret is shown once, at creation. Requires admin on \"*\".",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"keys": map[string]any{"type": "array", "items": keySchema()},
+		}, "keys"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req struct{}
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			if s.grants == nil {
+				return nil, errNoGrantRegistry
+			}
+			keys, err := s.grants.ListKeys(ctx)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]any, 0, len(keys))
+			for _, k := range keys {
+				out = append(out, keyPayload(k))
+			}
+			return map[string]any{"keys": out}, nil
+		},
+	}
+
+	authOps["revoke_key"] = OpDef{
+		Description: "Revoke one API key by its id, so it stops authenticating. Selecting by id rather than name means two keys " +
+			"sharing a name and principal stay individually revocable. Revoking an already-revoked or unknown key succeeds " +
+			"unchanged. Refused when it would leave the deployment with no usable root administrator. Requires admin on \"*\".",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"id"},
+			"properties": map[string]any{
+				"id": prop("string", "The key id from create_key or list_keys"),
+			},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"key": map[string]any{
+				"description": "The revoked key, or null when no key has that id",
+				"anyOf":       []any{keySchema(), map[string]any{"type": "null"}},
+			},
+		}, "key"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req struct {
+				ID string `json:"id"`
+			}
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			if req.ID == "" {
+				return nil, badRequest("id is required: name the key to revoke, as create_key and list_keys report it")
+			}
+			if s.grants == nil {
+				return nil, errNoGrantRegistry
+			}
+			k, err := s.grants.RevokeKey(ctx, req.ID, !s.authn.AdminKeyConfigured())
+			if err != nil {
+				if errors.Is(err, auth.ErrLastRootKey) {
+					return nil, lastRootKeyError()
+				}
+				return nil, err
+			}
+			if k.ID == "" {
+				return map[string]any{"key": nil}, nil
+			}
+			return map[string]any{"key": keyPayload(k)}, nil
+		},
+	}
+}

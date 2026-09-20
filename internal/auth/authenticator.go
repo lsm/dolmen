@@ -20,6 +20,16 @@ type Authenticator struct {
 	mode   Mode
 	admin  Source
 	header Source
+	keys   Source
+
+	maxGroups int
+}
+
+func (a *Authenticator) UseKeys(r *Registry) {
+	if a == nil || r == nil {
+		return
+	}
+	a.keys = &keySource{reg: r}
 }
 
 type Config struct {
@@ -31,7 +41,7 @@ type Config struct {
 }
 
 func New(cfg Config) (*Authenticator, error) {
-	a := &Authenticator{mode: cfg.Mode}
+	a := &Authenticator{mode: cfg.Mode, maxGroups: cfg.MaxGroups}
 	if cfg.AdminKey != "" {
 		if err := ValidateAdminKey(cfg.AdminKey); err != nil {
 			return nil, err
@@ -62,6 +72,8 @@ func (a *Authenticator) Mode() Mode { return a.mode }
 
 func (a *Authenticator) AdminKeyConfigured() bool { return a != nil && a.admin != nil }
 
+func (a *Authenticator) MaxGroups() int { return a.maxGroups }
+
 func (a *Authenticator) On() bool { return a != nil && a.mode.On() }
 
 func (a *Authenticator) Authenticate(r *http.Request) (Identity, error) {
@@ -79,7 +91,14 @@ func (a *Authenticator) Authenticate(r *http.Request) (Identity, error) {
 	}
 	switch {
 	case strings.HasPrefix(token, KeyPrefix):
-		return Identity{}, Unauthorized()
+		if a.keys == nil {
+			return Identity{}, Unauthorized()
+		}
+		id, ok := a.keys.Authenticate(r)
+		if !ok {
+			return Identity{}, Unauthorized()
+		}
+		return id, nil
 	case strings.Contains(token, "."):
 		return Identity{}, Unauthorized()
 	}

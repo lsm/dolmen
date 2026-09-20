@@ -180,3 +180,10 @@ func (s *Server) dropTableGrants(ctx context.Context, ns, table string) error {
 	}
 	return s.grants.DropTable(ctx, ns, table)
 }
+
+func lastRootKeyError() error {
+	return &Error{
+		Status: http.StatusConflict, Code: ErrCodeConflict,
+		Message: "revoking this key would leave the deployment with no usable root administrator, so nobody could administer it again: mint another key for a principal holding admin on \"*\" first, or set DOLMEN_ADMIN_KEY and restart, which restores the bootstrap administrator",
+	}
+}

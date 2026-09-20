@@ -189,6 +189,7 @@ func (h *harness) start() {
 			h.t.Fatalf("open grant registry: %v", err)
 		}
 		h.grants = grants
+		authn.UseKeys(grants)
 		opts = append(opts, api.WithGrants(grants))
 	}
 	apiSrv := api.New(h.st, embed.Provider(h.emb), opts...)
