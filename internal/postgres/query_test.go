@@ -37,6 +37,19 @@ func TestPostgresQueryNamespaceBoundary(t *testing.T) {
 	if result.Rows[0]["metadata"].(map[string]any)["exact"] != json.Number("9007199254740993") {
 		t.Fatalf("JSON changed: %#v", result.Rows)
 	}
+	err = s.readOnly(ctx, "app", func(tx pgx.Tx, _ namespace) error {
+		var readOnly string
+		if err := tx.QueryRow(ctx, "SHOW transaction_read_only").Scan(&readOnly); err != nil {
+			return err
+		}
+		if readOnly != "on" {
+			return errors.New("read helper opened a writable transaction")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, sql := range []string{"SELECT * FROM pg_catalog.pg_class", "SELECT pg_read_file('/etc/passwd')", "SELECT _embedding FROM notes", "WITH x AS (DELETE FROM notes RETURNING *) SELECT * FROM x", "SELECT current_setting('role')"} {
 		if _, err := s.Query(ctx, "app", sql, nil, [16]byte{}, store.Page{}); err == nil {
 			t.Errorf("unsafe query accepted: %s", sql)

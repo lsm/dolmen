@@ -17,6 +17,8 @@ func TestPostgresSQLCompiler(t *testing.T) {
 		args int
 	}{
 		{"SELECT * FROM notes WHERE n > ? ORDER BY id", 1},
+		{"SELECT * FROM notes WHERE n BETWEEN ? AND ?", 2},
+		{"SELECT (DATE '2026-01-01', DATE '2026-01-03') OVERLAPS (DATE '2026-01-02', DATE '2026-01-04')", 0},
 		{"SELECT n.body, count(*) OVER () AS total FROM notes n LEFT JOIN other o ON n.body=o.body GROUP BY n.body", 0},
 		{"WITH q AS (SELECT * FROM notes) SELECT q.body FROM q", 0},
 		{"WITH RECURSIVE q(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM q WHERE n < 3) SELECT * FROM q", 0},

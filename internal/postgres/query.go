@@ -217,7 +217,7 @@ func (s *Store) Query(ctx context.Context, ns, input string, args []any, expecte
 		return store.QueryResult{}, err
 	}
 	result := store.QueryResult{}
-	err = s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
+	err = s.readOnly(ctx, ns, func(tx pgx.Tx, n namespace) error {
 		if n.generation != generation {
 			return fmt.Errorf("%w: namespace was replaced", store.ErrNotFound)
 		}
@@ -228,9 +228,6 @@ func (s *Store) Query(ctx context.Context, ns, input string, args []any, expecte
 		sql, names, err := compileSQL(input, len(args), n.physical, tables)
 		if err != nil {
 			return err
-		}
-		if _, err := tx.Exec(ctx, "SET TRANSACTION READ ONLY"); err != nil {
-			return queryError(ctx, err)
 		}
 		if err := enterQueryRole(ctx, tx, s.queryRole); err != nil {
 			return queryError(ctx, err)

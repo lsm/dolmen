@@ -47,6 +47,10 @@ func TestQueryBackendConformance(t *testing.T) {
 			if err != nil || len(result.Rows) != 1 || result.Rows[0]["body"] != "three" {
 				t.Fatalf("CTE: %+v %v", result, err)
 			}
+			result, err = eng.Query(ctx, "app", "SELECT body FROM notes WHERE n BETWEEN ? AND ? ORDER BY n", []any{2, 3}, [16]byte{}, store.Page{})
+			if err != nil || len(result.Rows) != 2 || result.Rows[0]["body"] != "two" || result.Rows[1]["body"] != "three" {
+				t.Fatalf("BETWEEN: %+v %v", result, err)
+			}
 			if _, err := eng.Query(ctx, "app", "DELETE FROM notes", nil, [16]byte{}, store.Page{}); !errors.Is(err, store.ErrInvalid) {
 				t.Fatalf("mutation accepted: %v", err)
 			}
