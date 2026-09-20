@@ -204,18 +204,30 @@ PostgreSQL SQL surface is not a SQLite SQL translator. Integration tests cover l
 names, typed results, pagination, response bounds, role isolation, and pooled-state
 cleanup. Tests use the same pre-provisioned role model as production.
 
+## Filter mutations (implemented internally)
+
+Update, delete, and filter-based upsert compile their filter as a confined single-table
+`SELECT id` through the same PostgreSQL parser boundary. This preserves logical field
+names and `?` arguments while rejecting additional statements, schema-qualified
+references, and unsupported functions or operators. Matching IDs are selected and
+mutated under the namespace write lock, with row changes and durable change records in
+one transaction.
+
+Updates patch only supplied fields. Filter upsert updates every match or inserts one
+record with defaults and required-field validation when there is no match. Delete keeps
+the existing dry-run, match limit, and explicit confirmation contract. Embedding work
+runs before the write transaction and is skipped for no-match updates; invalid fields
+and values are still rejected even when a filter matches nothing.
+
 ## Remaining implementation sequence
 
-1. Update/delete and filter-based upsert with durable change records in the same
-   namespace-serialized transaction. Normalize PostgreSQL SQLSTATE errors to dolmen's
-   taxonomy; preserve integer and JSON fidelity fixtures.
-2. Schema migrations with atomic history, physical-name mapping updates, full-text
+1. Schema migrations with atomic history, physical-name mapping updates, full-text
    rebuild planning, and embedding backfill outside long-held write transactions.
-3. Native PostgreSQL full-text indexing/matching/ranking and vector search; add
+2. Native PostgreSQL full-text indexing/matching/ranking and vector search; add
    per-engine match/relevance fixtures and cross-engine filter/shape tests.
-4. Cross-process polling/listening and SSE lifecycle
+3. Cross-process polling/listening and SSE lifecycle
    tests. Notifications may wake readers but never replace the durable log.
-5. Implement every mandatory Engine method, wire the HTTP/MCP/stdio/facade/blackbox
+4. Implement every mandatory Engine method, wire the HTTP/MCP/stdio/facade/blackbox
    constructors and complete the conformance matrix; only then enable the public
    selector and publish PostgreSQL configuration/install guidance.
 
@@ -234,7 +246,7 @@ export DOLMEN_TEST_PG_DSN='postgres://dolmen_backend:backend-test@127.0.0.1:5432
 export DOLMEN_TEST_PG_QUERY_ROLE=dolmen_query
 export DOLMEN_TEST_PG_REQUIRED=1
 go test -race -count=1 ./internal/postgres
-go test -race -count=1 ./internal/conformance -run '^Test(Namespace|Table|RowRead|Insert|Changes|KeyUpsert|Query)BackendConformance$'
+go test -race -count=1 ./internal/conformance -run '^Test(Namespace|Table|RowRead|Insert|Changes|KeyUpsert|Query|Mutation)BackendConformance$'
 ```
 
 Without the test DSN, PostgreSQL integration tests skip during ordinary SQLite-only
