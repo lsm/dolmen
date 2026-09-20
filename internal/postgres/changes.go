@@ -194,6 +194,57 @@ func (s *Store) changeHead(ctx context.Context, ns string, expected [16]byte) (i
 	return head, err
 }
 
+func (s *Store) anchorListen(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, inc store.Incarnation) (store.Cursor, store.Cursor, int64, error) {
+	var replay, live store.Cursor
+	var head int64
+	err := s.write(ctx, ns, expected, func(tx pgx.Tx, n namespace) error {
+		now := s.now()
+		drop := int64(0)
+		if table != "" {
+			state, err := s.loadTable(ctx, tx, n, table)
+			if err != nil {
+				return err
+			}
+			if err := checkIncarnation(ns, state.incarnation, inc); err != nil {
+				return err
+			}
+			drop = state.incarnation.DropGen
+		}
+		if err := tx.QueryRow(ctx, "SELECT next_change FROM "+s.relation("namespaces")+" WHERE name=$1", ns).Scan(&head); err != nil {
+			return err
+		}
+		token, err := s.mintCursor(ctx, tx, n, cursorState{position: head, origin: head, start: now, table: table, drop: drop}, now)
+		if err != nil {
+			return err
+		}
+		live = token
+		if from != "" && from != store.CursorBegin {
+			replay = from
+			return nil
+		}
+		state := cursorState{position: head, origin: head, start: now, table: table, drop: drop}
+		if from == store.CursorBegin {
+			var first *int64
+			stmt := "SELECT min(position) FROM " + s.relation("changes") + " WHERE namespace=$1"
+			args := []any{ns}
+			if s.changeRetention > 0 {
+				stmt += " AND created_at >= $2"
+				args = append(args, now.Add(-s.changeRetention))
+			}
+			if err := tx.QueryRow(ctx, stmt, args...).Scan(&first); err != nil {
+				return err
+			}
+			if first != nil {
+				state.position = *first - 1
+				state.origin = state.position
+			}
+		}
+		replay, err = s.mintCursor(ctx, tx, n, state, now)
+		return err
+	})
+	return replay, live, head, err
+}
+
 func (s *Store) anchorCursor(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, inc store.Incarnation) (store.Cursor, error) {
 	if from != "" && from != store.CursorBegin {
 		return from, nil

@@ -988,3 +988,37 @@ func TestPostgresListenZeroHeadReplaysNothing(t *testing.T) {
 		t.Fatal("the post-Listen write never arrived on the live phase")
 	}
 }
+
+func TestPostgresListenOverflowsABlockedSubscriber(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	block := make(chan struct{})
+	defer close(block)
+	ended := make(chan error, 1)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, nil,
+		func(store.ChangeRecord) { <-block },
+		func(cause error) { ended <- cause })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	drainReplay(t, ctx, replay)
+	for i := 0; i < 9; i++ {
+		records := make([]map[string]any, 0, store.MaxChangesPageLimit)
+		for j := 0; j < store.MaxChangesPageLimit; j++ {
+			records = append(records, map[string]any{"body": "flood"})
+		}
+		if _, err := s.Insert(context.Background(), "app", "notes", records, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case cause := <-ended:
+		if !errors.Is(cause, store.ErrListenOverflow) {
+			t.Fatalf("subscription ended with %v, want the overflow sentinel", cause)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("a subscriber that never drained did not overflow the live buffer")
+	}
+}
