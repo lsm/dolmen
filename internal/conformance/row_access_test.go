@@ -183,3 +183,39 @@ func TestDefaultTablesCarryNoOwnerUnderAuthOn(t *testing.T) {
 		t.Fatalf("a default table reported an owner column: %v", row)
 	}
 }
+
+func TestChangeFeedsStillRequireTableWideRead(t *testing.T) {
+	h := seedRowAccess(t)
+	grantTo(t, h, "principal", "alice", "acme", "notes", "create")
+	h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"x"}]}`)
+
+	for _, op := range []string{"changes_since", "wait_for"} {
+		res, out := h.asIdentity(t, "alice", "", op, `{"namespace":"acme","table":"notes","cursor":"begin"}`)
+		if res.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s as a create-only holder: status %d, want 403 until the feed honors a row scope: %v", op, res.StatusCode, out)
+		}
+	}
+}
+
+func TestMigrationKeepsTheScopeOnARowAccessTable(t *testing.T) {
+	h := seedRowAccess(t)
+	grantTo(t, h, "principal", "alice", "acme", "notes", "create")
+	grantTo(t, h, "principal", "bob", "acme", "notes", "create")
+	h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"alice note"}]}`)
+	h.asIdentity(t, "bob", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"bob note"}]}`)
+
+	h.mustHTTP("migrate", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"changes": []map[string]any{{"op": "add_field", "field": map[string]any{"name": "tag", "type": "string"}}},
+	})
+
+	res, out := h.asIdentity(t, "alice", "", "read_rows", `{"namespace":"acme","table":"notes","ids":[1,2]}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("read after migration: status %d %v", res.StatusCode, out)
+	}
+	data, _ := out["data"].(map[string]any)
+	rows, _ := data["rows"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("after a migration alice saw %d rows, want only her own: %v", len(rows), rows)
+	}
+}

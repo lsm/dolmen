@@ -251,7 +251,8 @@ func checkExpectedVersion(nsName, table string, expected int, old *schema.TableS
 func planMigration(ctx context.Context, db querier, nsName, table string, old *schema.TableSchema, changes []schema.Change, emb Embedder, expectedVersion int) (*migrationWork, error) {
 	fields := make([]schema.Field, len(old.Fields))
 	copy(fields, old.Fields)
-	cur := &schema.TableSchema{Namespace: nsName, Name: table, Version: old.Version, Fields: fields, EmbedSpace: old.EmbedSpace, EmbedDim: old.EmbedDim}
+	cur := &schema.TableSchema{Namespace: nsName, Name: table, Version: old.Version, Fields: fields,
+		EmbedSpace: old.EmbedSpace, EmbedDim: old.EmbedDim, RowAccess: old.RowAccess, HasOwner: old.HasOwner}
 
 	plan := &MigrationPlan{
 		FromVersion: old.Version,

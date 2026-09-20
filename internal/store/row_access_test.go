@@ -294,3 +294,31 @@ func TestScopeOnATableWithoutOwnerIsRefused(t *testing.T) {
 		t.Fatal("a scope was applied to a table with no owner column, which would silently return every row")
 	}
 }
+
+func TestMigrationPreservesRowAccess(t *testing.T) {
+	st := openRowAccessStore(t)
+	seedScoped(t, st)
+	ctx := context.Background()
+
+	if _, err := st.Migrate(ctx, "ns", "notes", []schema.Change{
+		{Op: "add_field", Field: &schema.Field{Name: "tag", Type: schema.String}},
+	}, Embedder{}, Incarnation{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	sc, _, err := st.TableState(ctx, "ns", "notes", nil)
+	if err != nil {
+		t.Fatalf("table state: %v", err)
+	}
+	if !sc.HasOwner || sc.RowAccess != schema.RowAccessOwn {
+		t.Fatalf("a migration stripped the row_access annotation while the owner column persists: %+v", sc)
+	}
+
+	own, err := st.GetRows(ctx, "ns", "notes", []int64{1, 2, 3}, &RowScope{Owner: "alice"}, Incarnation{})
+	if err != nil {
+		t.Fatalf("scoped read after migration: %v", err)
+	}
+	if len(own.Rows) != 2 {
+		t.Fatalf("after a migration the scope stopped filtering: %d rows", len(own.Rows))
+	}
+}

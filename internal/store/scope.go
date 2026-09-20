@@ -25,26 +25,6 @@ func scopeClause(sc *RowScope, alias string) (string, []any) {
 	return sc.sql(alias)
 }
 
-func andScope(where string, args []any, sc *RowScope, alias string) (string, []any) {
-	clause, sargs := scopeClause(sc, alias)
-	if clause == "" {
-		return where, args
-	}
-	combined := append(append([]any(nil), sargs...), args...)
-	if where == "" {
-		return clause, combined
-	}
-	return "(" + clause + ") AND (" + where + ")", combined
-}
-
-func (s *Store) scopedTable(sc *RowScope, table string) (string, []any) {
-	clause, args := scopeClause(sc, "")
-	if clause == "" {
-		return q(table), nil
-	}
-	return fmt.Sprintf("(SELECT * FROM %s WHERE %s)", q(table), clause), args
-}
-
 func scopeUsable(sc *RowScope, tsc *schema.TableSchema) error {
 	if sc == nil || sc.Empty {
 		return nil
