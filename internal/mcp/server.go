@@ -14,7 +14,6 @@ import (
 	"strings"
 
 	"github.com/lsm/dolmen/internal/api"
-	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/version"
 	"github.com/lsm/dolmen/skill"
 )
@@ -143,8 +142,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = authed
 	if authErr != nil {
 		apiErr := api.WrapError(authErr)
-		slog.Debug("mcp auth error", "code", apiErr.Code, "status", apiErr.Status,
-			"request_id", api.RequestIDFrom(r.Context()), "principal", auth.IdentityFrom(r.Context()).Principal)
+		slog.Info("mcp denial", api.WithPrincipal(r, "code", apiErr.Code, "status", apiErr.Status,
+			"request_id", api.RequestIDFrom(r.Context()))...)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(apiErr.Status)
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": apiErr.Public(api.RequestIDFrom(r.Context()))})

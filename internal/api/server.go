@@ -568,7 +568,7 @@ func (s *Server) Handler() http.Handler {
 		}
 		res, err := s.Dispatch(r.Context(), op, body)
 		if err != nil {
-			slog.Debug("op failed", withPrincipal(r, "op", op, "err", err)...)
+			slog.Debug("op failed", WithPrincipal(r, "op", op, "err", err)...)
 			writeError(w, r, err)
 			return
 		}
@@ -673,11 +673,15 @@ func etagMatch(r *http.Request, etag string) bool {
 	return false
 }
 
-func withPrincipal(r *http.Request, attrs ...any) []any {
+func WithPrincipal(r *http.Request, attrs ...any) []any {
 	if p := auth.IdentityFrom(r.Context()).Principal; p != "" {
 		return append(attrs, "principal", p)
 	}
 	return attrs
+}
+
+func denial(code ErrorCode) bool {
+	return code == ErrCodeUnauthorized || code == ErrCodeForbidden
 }
 
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
@@ -696,10 +700,13 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	w.Header().Set("X-Request-Id", reqID)
 
-	attrs := withPrincipal(r, "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
-	if status >= http.StatusInternalServerError {
+	attrs := WithPrincipal(r, "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
+	switch {
+	case status >= http.StatusInternalServerError:
 		slog.Error("api error", attrs...)
-	} else {
+	case denial(apiErr.Code):
+		slog.Info("api denial", attrs...)
+	default:
 		slog.Debug("api error", attrs...)
 	}
 	writeJSONStatus(w, status, map[string]any{"ok": false, "error": apiErr.Public(reqID)})

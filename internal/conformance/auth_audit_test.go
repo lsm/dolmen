@@ -47,14 +47,54 @@ func TestDenialLogsTheResolvedPrincipal(t *testing.T) {
 func TestUnauthenticatedDenialLogsNoPrincipal(t *testing.T) {
 	h := newHarnessMode(t, authGateway)
 
-	logs := captureLogs(t, func() {
-		res, out := h.postNoCredential(t, h.httpURL+"/list_namespaces", "{}")
-		if res.StatusCode != http.StatusUnauthorized {
-			t.Fatalf("expected a 401: status %d %v", res.StatusCode, out)
+	for name, url := range map[string]string{
+		"http": h.httpURL + "/list_namespaces",
+		"mcp":  h.mcpURL,
+	} {
+		body := "{}"
+		if name == "mcp" {
+			body = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_namespaces","arguments":{}}}`
+		}
+		logs := captureLogs(t, func() {
+			res, out := h.postNoCredential(t, url, body)
+			if res.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("%s: expected a 401: status %d %v", name, res.StatusCode, out)
+			}
+		})
+		if strings.Contains(logs, "principal=") {
+			t.Fatalf("%s: a 401 logged a principal attribute, but no identity was resolved:\n%s", name, logs)
+		}
+	}
+}
+
+func TestDenialsAreLoggedAboveDebug(t *testing.T) {
+	h := newHarnessMode(t, authGateway)
+
+	atInfo := func(fn func()) string {
+		var buf bytes.Buffer
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+		defer slog.SetDefault(prev)
+		fn()
+		return buf.String()
+	}
+
+	logs := atInfo(func() {
+		if res, _ := h.postNoCredential(t, h.httpURL+"/list_namespaces", "{}", aliceHeaders()); res.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected a 403: status %d", res.StatusCode)
 		}
 	})
-	if strings.Contains(logs, "principal=") {
-		t.Fatalf("a 401 logged a principal, but no identity was resolved:\n%s", logs)
+	if !strings.Contains(logs, "principal=alice") {
+		t.Fatalf("a 403 left no audit line at the default log level, so a shipped binary records no denial:\n%s", logs)
+	}
+
+	logs = atInfo(func() {
+		if res, _ := h.postNoCredential(t, h.httpURL+"/list_namespaces", "{}"); res.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected a 401")
+		}
+	})
+	if !strings.Contains(logs, "api denial") {
+		t.Fatalf("a 401 left no audit line at the default log level:\n%s", logs)
 	}
 }
 
