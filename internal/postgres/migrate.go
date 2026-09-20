@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -573,7 +574,7 @@ func (s *Store) Migrate(ctx context.Context, ns, table string, changes []schema.
 		if err != nil {
 			return nil, err
 		}
-		snapshot := map[int64]string{}
+		digests := map[int64][32]byte{}
 		vectors := map[int64][]float32{}
 		var constant []float32
 		if planned.embedding {
@@ -584,10 +585,7 @@ func (s *Store) Migrate(ctx context.Context, ns, table string, changes []schema.
 				}
 				constant = vecs[0]
 			} else if planned.embed.hasSource {
-				if err := s.readEmbedSnapshot(ctx, ns, state, planned.embed.source, snapshot); err != nil {
-					return nil, err
-				}
-				if err := embedSnapshot(ctx, planned.cur, table, emb, snapshot, vectors); err != nil {
+				if err := s.backfillEmbeddings(ctx, ns, table, state, planned.embed.source, planned.cur, emb, digests, vectors); err != nil {
 					return nil, err
 				}
 			}
@@ -623,7 +621,7 @@ func (s *Store) Migrate(ctx context.Context, ns, table string, changes []schema.
 				}
 			}
 			if work.embedding {
-				left, err := s.applyEmbeddings(ctx, tx, physical, work, snapshot, vectors, constant)
+				left, err := s.applyEmbeddings(ctx, tx, physical, work, digests, vectors, constant)
 				if err != nil {
 					return err
 				}
@@ -647,59 +645,51 @@ func (s *Store) Migrate(ctx context.Context, ns, table string, changes []schema.
 	return nil, derr.New(derr.Conflict, "migration of %s.%s kept losing a race with concurrent writes while backfilling embeddings; retry the migration", ns, table)
 }
 
-func (s *Store) readEmbedSnapshot(ctx context.Context, ns string, state tableState, column string, out map[int64]string) error {
-	return s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
-		physical := ident(n.physical, state.physical)
-		col := ident(column)
-		rows, err := tx.Query(ctx, "SELECT id,"+col+" FROM "+physical+" WHERE "+col+" IS NOT NULL AND "+col+" != '' ORDER BY id")
+const embedBackfillPage = 128
+
+func (s *Store) backfillEmbeddings(ctx context.Context, ns, table string, state tableState, column string, sc *schema.TableSchema, emb store.Embedder, digests map[int64][32]byte, vectors map[int64][]float32) error {
+	var after int64
+	for {
+		ids := []int64{}
+		texts := []string{}
+		err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
+			physical := ident(n.physical, state.physical)
+			col := ident(column)
+			rows, err := tx.Query(ctx, "SELECT id,"+col+" FROM "+physical+" WHERE "+col+" IS NOT NULL AND "+col+" != '' AND id > $1 ORDER BY id LIMIT $2", after, embedBackfillPage)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var id int64
+				var text string
+				if err := rows.Scan(&id, &text); err != nil {
+					return err
+				}
+				ids = append(ids, id)
+				texts = append(texts, text)
+			}
+			return rows.Err()
+		})
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var id int64
-			var text string
-			if err := rows.Scan(&id, &text); err != nil {
-				return err
-			}
-			out[id] = text
-		}
-		return rows.Err()
-	})
-}
-
-func embedSnapshot(ctx context.Context, sc *schema.TableSchema, table string, emb store.Embedder, snapshot map[int64]string, out map[int64][]float32) error {
-	ids := make([]int64, 0, len(snapshot))
-	for id := range snapshot {
-		ids = append(ids, id)
-	}
-	for i := 1; i < len(ids); i++ {
-		for j := i; j > 0 && ids[j] < ids[j-1]; j-- {
-			ids[j], ids[j-1] = ids[j-1], ids[j]
-		}
-	}
-	for start := 0; start < len(ids); start += 128 {
-		end := start + 128
-		if end > len(ids) {
-			end = len(ids)
-		}
-		batch := ids[start:end]
-		texts := make([]string, len(batch))
-		for i, id := range batch {
-			texts[i] = snapshot[id]
+		if len(ids) == 0 {
+			return nil
 		}
 		vecs, err := store.EmbedTexts(ctx, sc, table, texts, emb)
 		if err != nil {
 			return err
 		}
-		for i, id := range batch {
-			out[id] = vecs[i]
+		for i, id := range ids {
+			digests[id] = sha256.Sum256([]byte(texts[i]))
+			vectors[id] = vecs[i]
 		}
+		after = ids[len(ids)-1]
 	}
-	return nil
 }
 
-func (s *Store) applyEmbeddings(ctx context.Context, tx pgx.Tx, physical string, work *migrationWork, snapshot map[int64]string, vectors map[int64][]float32, constant []float32) (bool, error) {
+func (s *Store) applyEmbeddings(ctx context.Context, tx pgx.Tx, physical string, work *migrationWork, digests map[int64][32]byte, vectors map[int64][]float32, constant []float32) (bool, error) {
 	col := ident(work.embed.target)
 	if work.embed.constant != "" {
 		if constant == nil {
@@ -731,7 +721,7 @@ func (s *Store) applyEmbeddings(ctx context.Context, tx pgx.Tx, physical string,
 			rows.Close()
 			return false, err
 		}
-		if snapshot[id] != text {
+		if digests[id] != sha256.Sum256([]byte(text)) {
 			stale = true
 			continue
 		}
