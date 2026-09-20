@@ -18,7 +18,7 @@ var postgresErrorPins = map[string]string{
 	"fts gate substring in query":  `query "SQLITE_-x": a bare - is not a query operator`,
 	"fts misuse framing in query":  `query "misuse at line 1 -x": a bare - is not a query operator`,
 	"sql unknown function":         `unknown SQL function "no_such_fn"`,
-	"sql missing column":           `not found`,
+	"sql missing column":           `use describe_table for column names`,
 	"write sql rejected":           `^query must begin with SELECT or WITH \(got "INSERT"\); query is read-only`,
 	"multiple statements rejected": `multiple statements are not allowed`,
 }

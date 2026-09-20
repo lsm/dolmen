@@ -483,6 +483,7 @@ closed before the public selector is enabled:
 | Area | Fixture | Gap |
 |---|---|---|
 | Error taxonomy | `TestDropNamespaceNotFoundDoesNotAdviseCreating`, `TestSearchFulltextFilterArgs` | remediation wording diverges from the pinned shapes |
+| Error taxonomy | `TestGoldenErrorContract` | the full-text rows and the unknown-column row are pinned per engine; `malformed update filter` still carries SQLite's shape and stays red until the filter reframing lands, which rewrites the PostgreSQL message to name a WHERE expression |
 | Change feed | `TestChangesSinceTableFeedContract` | a live table-feed cursor is rejected as past the retention window |
 | SSE | `TestSubscribeOverflowTeachesReconnect` | the bound itself now exists and `TestPostgresListenOverflowsABlockedSubscriber` pins it, but the fixture parks a consumer and floods 9000 changes, which needs the live pump to get 8000 ahead of the writer. Live fetches go through `ChangesSince`, which takes the namespace write lock to mint a cursor per record, so the pump contends with the very writer it must outrun and no backlog accumulates. Closing this means a live read that does not take the write lock |
 
