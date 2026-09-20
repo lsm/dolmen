@@ -429,6 +429,17 @@ applies the SELECT/WITH and multiple-statement checks before either engine parse
 SQL-content rejections carry `store.QueryError` so they classify as `query_error` while
 request-shape rejections stay `invalid_request`.
 
+One failure is **not** a gap and must not be "fixed" in the backend.
+`TestTypedReadEmbeddingHidden` requires an explicit `SELECT _embedding` to return the
+vector. On PostgreSQL caller SQL runs as the restricted query role, and
+`TestPostgresQueryNamespaceBoundary` pins `SELECT _embedding` as a rejected query
+alongside `pg_read_file` and a `DELETE ... RETURNING`, and separately pins that the
+query role cannot read the column even through raw SQL. Exposing it — by adding the
+column to the compiled projection and to the role's column grant — makes the
+conformance fixture pass and breaks that containment test. The README and the skills
+already describe `_embedding` caller-SQL access as backend-dependent for this reason,
+so the fixture needs an engine-aware pin, not a wider query role.
+
 The remaining failures are genuine backend gaps, not harness artifacts. They must be
 closed before the public selector is enabled:
 
@@ -438,7 +449,6 @@ closed before the public selector is enabled:
 | Error taxonomy | `TestTransportParityErrorEnvelope` | a rejected query answers `200` with an empty result set instead of `400` |
 | Error taxonomy | `TestDropNamespaceNotFoundDoesNotAdviseCreating`, `TestSearchFulltextFilterArgs` | remediation wording diverges from the pinned shapes |
 | Typed reads | `TestTypedReadAliasesAndFallbacks` | an alias to an undeclared label reads back as boolean `true` rather than `1` |
-| Typed reads | `TestTypedReadEmbeddingHidden` | `_embedding` is not selectable from caller SQL (SQLSTATE 42703) |
 | Full-text | `TestSearchFulltextSyntaxAcceptReject` | diacritic-insensitive matching returns nothing; needs `unaccent` or a documented divergence under D27 |
 | Change feed | `TestChangesSinceTableFeedContract` | a live table-feed cursor is rejected as past the retention window |
 | SSE | `TestSubscribeOverflowTeachesReconnect` | live delivery back-pressures the notify callback instead of bounding a queue, so a slow subscriber never produces the overflow error frame that teaches reconnection |
