@@ -31,19 +31,26 @@ func (s *Store) loadTable(ctx context.Context, tx pgx.Tx, n namespace, table str
 	if err != nil {
 		return result, err
 	}
+	if err := decodeTableState(&result, n, table, raw, columns, generation); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func decodeTableState(result *tableState, n namespace, table, raw, columns string, generation int64) error {
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.UseNumber()
 	if err := dec.Decode(&result.schema); err != nil {
-		return result, fmt.Errorf("postgres: corrupt table schema: %w", err)
+		return fmt.Errorf("postgres: corrupt table schema: %w", err)
 	}
 	if result.schema == nil {
-		return result, fmt.Errorf("postgres: missing table schema")
+		return fmt.Errorf("postgres: missing table schema")
 	}
 	if err := json.Unmarshal([]byte(columns), &result.columns); err != nil {
-		return result, fmt.Errorf("postgres: corrupt column mapping: %w", err)
+		return fmt.Errorf("postgres: corrupt column mapping: %w", err)
 	}
 	result.incarnation = store.Incarnation{NsGen: n.generation, Table: table, Version: int64(result.schema.Version), DropGen: generation}
-	return result, nil
+	return nil
 }
 
 func (s *Store) read(ctx context.Context, name string, fn func(pgx.Tx, namespace) error) error {

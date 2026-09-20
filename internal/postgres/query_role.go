@@ -24,32 +24,25 @@ func (s *Store) grantQueryTable(ctx context.Context, tx pgx.Tx, n namespace, phy
 }
 
 func (s *Store) queryTables(ctx context.Context, tx pgx.Tx, n namespace) (map[string]tableState, error) {
-	rows, err := tx.Query(ctx, "SELECT name FROM "+s.relation("tables")+" WHERE namespace=$1 AND active", n.name)
+	rows, err := tx.Query(ctx, "SELECT name, physical, schema_json, columns_json, drop_generation FROM "+s.relation("tables")+" WHERE namespace=$1 AND active", n.name)
 	if err != nil {
 		return nil, err
 	}
-	names := []string{}
+	defer rows.Close()
+	out := map[string]tableState{}
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			rows.Close()
+		var name, raw, columns string
+		var state tableState
+		var generation int64
+		if err := rows.Scan(&name, &state.physical, &raw, &columns, &generation); err != nil {
 			return nil, err
 		}
-		names = append(names, name)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	out := map[string]tableState{}
-	for _, name := range names {
-		state, err := s.loadTable(ctx, tx, n, name)
-		if err != nil {
+		if err := decodeTableState(&state, n, name, raw, columns, generation); err != nil {
 			return nil, err
 		}
 		out[name] = state
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 func (s *Store) queryGrant(ns string) ([16]byte, bool) {
