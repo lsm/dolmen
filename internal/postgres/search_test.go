@@ -508,3 +508,33 @@ func TestPostgresSearchFulltextRejectsMistranslatableOperators(t *testing.T) {
 		t.Fatalf("the suggested phrase alternative was rejected: %v", err)
 	}
 }
+
+func TestPostgresFulltextColumnNameIsNotAValidField(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{ftsColumn, "_embedding", "_score"} {
+		if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: name}}, store.TableOpts{}, [16]byte{}); !errors.Is(err, store.ErrInvalid) {
+			t.Fatalf("field %q was accepted at create: %v", name, err)
+		}
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "title", Fulltext: true}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{ftsColumn, "_embedding"} {
+		if _, err := s.Migrate(ctx, "app", "notes", []schema.Change{
+			{Op: schema.OpAddField, Field: &schema.Field{Name: name}},
+		}, store.Embedder{}, store.Incarnation{Version: 1}); !errors.Is(err, store.ErrInvalid) {
+			t.Fatalf("field %q was accepted by migrate: %v", name, err)
+		}
+	}
+	sc, _, err := s.TableState(ctx, "app", "notes", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Version != 1 {
+		t.Fatalf("a rejected field changed the schema: %+v", sc)
+	}
+}
