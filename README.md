@@ -633,7 +633,10 @@ Register `<base-url>/v1/auth/callback` as the redirect URI with your provider,
 then send people to `/v1/auth/begin`. They sign in with the provider, land back
 on a small page carrying a token, and present it as a bearer credential like any
 other. `DOLMEN_AUTH_OIDC_PRESET=github` uses GitHub instead of a generic OIDC
-provider. Those two endpoints are the only non-JSON surface dolmen serves.
+provider; it brings its own issuer, so setting it alongside
+`DOLMEN_AUTH_OIDC_ISSUER` is refused at startup rather than silently preferring
+one. Those two endpoints are the only non-JSON surface dolmen serves, and they
+appear in `/v1/openapi.json` only on a deployment that serves them.
 
 **dolmen stores no users and no sessions.** The token is Ed25519-signed and
 stateless, valid for `DOLMEN_AUTH_OIDC_TOKEN_TTL` (default 7 days, range 1h to

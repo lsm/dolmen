@@ -36,6 +36,9 @@ func (c *OIDCConfig) Validate() error {
 	if c.Preset != "" && c.Preset != PresetGitHub {
 		return fmt.Errorf("unknown OIDC preset %q: the only preset is %q; otherwise set DOLMEN_AUTH_OIDC_ISSUER to a generic OIDC issuer URL", c.Preset, PresetGitHub)
 	}
+	if c.Preset != "" && c.Issuer != "" {
+		return fmt.Errorf("DOLMEN_AUTH_OIDC_PRESET=%s and DOLMEN_AUTH_OIDC_ISSUER are both set: the preset pins its own issuer (%s), so the configured issuer would be ignored and every grant naming it would miss the principals this deployment mints; unset one", c.Preset, c.IssuerKey())
+	}
 	if c.Preset == "" {
 		u, err := url.Parse(c.Issuer)
 		if err != nil || u.Scheme != "https" || u.Host == "" {

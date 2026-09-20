@@ -206,6 +206,51 @@ func TestAuthEndpointsAbsentWithoutTheSource(t *testing.T) {
 			t.Fatalf("%s without an OIDC source: status %d, want 404", path, res.StatusCode)
 		}
 	}
+	if doc := h.mustHTTPGet(t, "/v1/openapi.json"); strings.Contains(doc, "/v1/auth/begin") {
+		t.Fatal("openapi.json advertises the sign-in routes on a deployment that does not serve them")
+	}
+}
+
+func TestAuthEndpointsAreDiscoverableWhenServed(t *testing.T) {
+	stub := newIssuerStub(t, "00u1a2b3", nil)
+	h := oidcHarness(t, stub)
+
+	var doc struct {
+		Paths map[string]struct {
+			Get *struct {
+				OperationID string `json:"operationId"`
+				Summary     string `json:"summary"`
+				Responses   map[string]struct {
+					Content map[string]any `json:"content"`
+				} `json:"responses"`
+			} `json:"get"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal([]byte(h.mustHTTPGet(t, "/v1/openapi.json")), &doc); err != nil {
+		t.Fatalf("openapi.json is not valid JSON: %v", err)
+	}
+	for path, wantID := range map[string]string{"/v1/auth/begin": "auth_begin", "/v1/auth/callback": "auth_callback"} {
+		entry, ok := doc.Paths[path]
+		if !ok {
+			t.Fatalf("openapi.json omits %s, so a client working from it alone cannot find the sign-in", path)
+		}
+		if entry.Get == nil {
+			t.Fatalf("%s must be documented as a GET", path)
+		}
+		if entry.Get.OperationID != wantID {
+			t.Fatalf("%s operationId = %q, want %q", path, entry.Get.OperationID, wantID)
+		}
+		if entry.Get.Summary == "" {
+			t.Fatalf("%s carries no summary", path)
+		}
+	}
+	callback := doc.Paths["/v1/auth/callback"].Get
+	if _, ok := callback.Responses["200"].Content["text/html"]; !ok {
+		t.Fatalf("the callback must advertise its HTML page, not a JSON envelope: %v", callback.Responses["200"])
+	}
+	if _, ok := doc.Paths["/v1/auth/begin"].Get.Responses["302"]; !ok {
+		t.Fatal("the begin route must advertise its redirect")
+	}
 }
 
 func readAll(t *testing.T, res *http.Response) string {

@@ -354,7 +354,10 @@ OIDC covers Entra, Okta, Google, etc.
 
 - Config: `DOLMEN_AUTH_OIDC_ISSUER`, `DOLMEN_AUTH_OIDC_CLIENT_ID`, `DOLMEN_AUTH_OIDC_CLIENT_SECRET`
   (the secret env-only per the §1.3 convention), plus optional extra scopes and an optional GitHub
-  preset that fills in endpoints and claim mapping.
+  preset that fills in endpoints and claim mapping. The preset pins its own issuer, so a preset and
+  an explicit issuer together are a startup error rather than a silent precedence rule: principals
+  are qualified by the issuer actually used (§1.4), and the ignored one would name grants that never
+  match.
 - Flow: `/v1/auth/begin` → the IdP's authorization endpoint → callback with PKCE and state/CSRF →
   code exchange. `/v1/auth/begin` and the callback are **the one deliberate non-JSON browser
   surface** — a tiny page that hands the token out — with the same exceptional status as `/mcp`;
