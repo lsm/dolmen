@@ -495,3 +495,16 @@ func TestPostgresMigrateFulltextIndexNameAvoidsExistingTable(t *testing.T) {
 		t.Fatalf("search after migration: %+v", result.Rows)
 	}
 }
+
+func TestPostgresSearchFulltextRejectsMistranslatableOperators(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := seedSearchTable(t, s)
+	for _, match := range []string{"^payment", "payment ^gateway", "payment + gateway", "payment+gateway"} {
+		if _, err := s.SearchFulltext(ctx, "app", "notes", match, "", nil, false, nil, store.Incarnation{}, store.Page{}); !errors.Is(err, store.ErrInvalid) {
+			t.Fatalf("%q was accepted rather than rejected: %v", match, err)
+		}
+	}
+	if _, err := s.SearchFulltext(ctx, "app", "notes", `"payment gateway"`, "", nil, false, nil, store.Incarnation{}, store.Page{}); err != nil {
+		t.Fatalf("the suggested phrase alternative was rejected: %v", err)
+	}
+}
