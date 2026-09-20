@@ -525,12 +525,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/openapi.json", s.handleOpenAPI)
 
 	mux.HandleFunc("/v1/subscribe", func(w http.ResponseWriter, r *http.Request) {
-		authed, err := s.Authenticated(r)
+		r, err := s.Authenticated(r)
 		if err != nil {
 			writeError(w, r, WrapError(err))
 			return
 		}
-		s.HandleSubscribe(w, authed)
+		s.HandleSubscribe(w, r)
 	})
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
 
@@ -551,11 +551,11 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		authed, authErr := s.Authenticated(r)
+		r = authed
 		if authErr != nil {
 			writeError(w, r, WrapError(authErr))
 			return
 		}
-		r = authed
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20))
 		if err != nil {
 			var maxErr *http.MaxBytesError
@@ -568,7 +568,7 @@ func (s *Server) Handler() http.Handler {
 		}
 		res, err := s.Dispatch(r.Context(), op, body)
 		if err != nil {
-			slog.Debug("op failed", withPrincipal(r, "op", op, "err", err)...)
+			slog.Debug("op failed", WithPrincipal(r, "op", op, "err", err)...)
 			writeError(w, r, err)
 			return
 		}
@@ -583,9 +583,13 @@ func (s *Server) Authenticated(r *http.Request) (*http.Request, error) {
 	}
 	id, err := s.authn.Authenticate(r)
 	if err != nil {
-		return nil, err
+		return r, err
 	}
-	return r.WithContext(auth.WithIdentity(r.Context(), id)), nil
+	r = r.WithContext(auth.WithIdentity(r.Context(), id))
+	if err := s.authn.Authorize(id); err != nil {
+		return r, err
+	}
+	return r, nil
 }
 
 func (s *Server) handleSkillsManifest(w http.ResponseWriter, r *http.Request) {
@@ -669,11 +673,15 @@ func etagMatch(r *http.Request, etag string) bool {
 	return false
 }
 
-func withPrincipal(r *http.Request, attrs ...any) []any {
+func WithPrincipal(r *http.Request, attrs ...any) []any {
 	if p := auth.IdentityFrom(r.Context()).Principal; p != "" {
 		return append(attrs, "principal", p)
 	}
 	return attrs
+}
+
+func denial(code ErrorCode) bool {
+	return code == ErrCodeUnauthorized || code == ErrCodeForbidden
 }
 
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
@@ -692,10 +700,13 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	w.Header().Set("X-Request-Id", reqID)
 
-	attrs := withPrincipal(r, "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
-	if status >= http.StatusInternalServerError {
+	attrs := WithPrincipal(r, "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
+	switch {
+	case status >= http.StatusInternalServerError:
 		slog.Error("api error", attrs...)
-	} else {
+	case denial(apiErr.Code):
+		slog.Info("api denial", attrs...)
+	default:
 		slog.Debug("api error", attrs...)
 	}
 	writeJSONStatus(w, status, map[string]any{"ok": false, "error": apiErr.Public(reqID)})

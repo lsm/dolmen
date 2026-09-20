@@ -409,6 +409,8 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 | `-engine` | `DOLMEN_ENGINE` | `sqlite` | Storage engine. `sqlite` is the default and currently the only engine; unknown values are rejected with an error |
 | `-auth` | `DOLMEN_AUTH` | `off` | Authentication. `off` is the v0.2.0 behavior: no identity, no credential, bind to loopback. `on` is deny-by-default and requires `DOLMEN_ADMIN_KEY` (see [Authentication](#authentication)) |
 | — | `DOLMEN_ADMIN_KEY` | — | Bootstrap admin credential, required when `-auth on`. 32–256 characters of `[A-Za-z0-9_-]`, presented as `Authorization: Bearer <key>`. Environment only — flags are visible in process listings |
+| `-trusted-proxies` | `DOLMEN_TRUSTED_PROXIES` | — | Comma-separated CIDRs (bare IPs allowed) whose peers may assert `X-Dolmen-Principal` / `X-Dolmen-Groups`. Trust is decided from the immediate TCP peer, never from `X-Forwarded-For` |
+| `-max-groups` | `DOLMEN_MAX_GROUPS` | `128` | Maximum group entries accepted per request, `1` to `1024`. An over-limit list fails the identity rather than dropping a group |
 | `-version` | — | — | Print version and exit |
 | `-prefix` | `DOLMEN_PREFIX` | — | Mount all endpoints (`/healthz`, `/version`, `/skills*`, `/v1/*`, `/mcp`) under this URL prefix. Use with a pass-through proxy that forwards the full path |
 | `-base-url` | `DOLMEN_BASE_URL` | — | Public base URL for the links rendered into the skills manifest, the skill markdown, and the MCP `initialize` instructions. Default: derive from the request `Host` and forwarded headers. Refused when it ends with `-prefix` |
@@ -454,6 +456,34 @@ the same message, so the response never says which part failed.
 `/healthz`, `/version`, `/skills*`, and `/v1/openapi.json` stay unauthenticated
 in both modes: they are liveness probes and client-side schema discovery, and
 expose no row data.
+
+### Identity from a gateway
+
+If dolmen sits behind an authenticating proxy, the proxy can assert the caller's
+identity with headers, and dolmen will trust them only from peers inside
+`-trusted-proxies`:
+
+```bash
+DOLMEN_AUTH=on \
+DOLMEN_ADMIN_KEY="$key" \
+DOLMEN_TRUSTED_PROXIES=10.0.0.0/8 \
+./dolmen -addr 0.0.0.0:8790
+```
+
+The proxy then sends `X-Dolmen-Principal: alice` and, optionally,
+`X-Dolmen-Groups: team-a,readers`. Trust comes from the TCP peer address, never
+from `X-Forwarded-For`, which any client can spoof; headers from a peer outside
+the configured ranges are ignored entirely. A malformed principal or group, an
+over-limit group list, or an attempt to assert the reserved `dolmen-admin`
+principal is a `401`, never a silently weakened identity. A bearer credential
+outranks an asserted header, and an invalid bearer is refused rather than
+falling back to the header identity.
+
+**Asserted identities authenticate but are not yet granted anything.** Until the
+grant ops land, a proxied caller gets `403 forbidden`: the server knows who they
+are and has nothing to authorize them for. That is deny-by-default working as
+intended, not a configuration error — it is why this mode is safe to enable
+early. Only the admin key has access today.
 
 **What this mode is and is not.** The admin key authenticates one principal,
 `dolmen-admin`, which holds administrative access to everything. It is a shared

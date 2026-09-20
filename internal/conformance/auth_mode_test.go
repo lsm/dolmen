@@ -34,13 +34,18 @@ func (h *harness) getNoCredential(t *testing.T, path string) (*http.Response, st
 	return res, string(buf)
 }
 
-func (h *harness) postNoCredential(t *testing.T, url, body string) (*http.Response, map[string]any) {
+func (h *harness) postNoCredential(t *testing.T, url, body string, hdr ...map[string]string) (*http.Response, map[string]any) {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("new request %s: %v", url, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	for _, h := range hdr {
+		for k, v := range h {
+			req.Header.Set(k, v)
+		}
+	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("post %s: %v", url, err)

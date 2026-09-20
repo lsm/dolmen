@@ -839,3 +839,21 @@ func TestLogAuthPosture(t *testing.T) {
 		t.Fatalf("startup log echoes the admin key: %q", got)
 	}
 }
+
+func TestLoadConfigMaxGroupsRange(t *testing.T) {
+	for _, raw := range []string{"1", "128", "1024"} {
+		if _, err := loadWithEnv(t, nil, map[string]string{"DOLMEN_MAX_GROUPS": raw, "DOLMEN_EMBED_PROVIDER": "none"}, false); err != nil {
+			t.Fatalf("DOLMEN_MAX_GROUPS=%s rejected: %v", raw, err)
+		}
+	}
+	for _, raw := range []string{"0", "-1", "1025", "many"} {
+		if _, err := loadWithEnv(t, nil, map[string]string{"DOLMEN_MAX_GROUPS": raw, "DOLMEN_EMBED_PROVIDER": "none"}, false); err == nil {
+			t.Fatalf("DOLMEN_MAX_GROUPS=%s accepted, but the documented range is 1 to 1024", raw)
+		}
+	}
+	for _, raw := range []string{"0", "1025"} {
+		if _, err := loadWithEnv(t, []string{"-max-groups", raw}, map[string]string{"DOLMEN_EMBED_PROVIDER": "none"}, false); err == nil {
+			t.Fatalf("-max-groups %s accepted, but the documented range is 1 to 1024", raw)
+		}
+	}
+}
