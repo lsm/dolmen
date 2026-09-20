@@ -16,6 +16,9 @@ func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields
 	if scope != nil {
 		return InsertResult{}, errScopedKeyUpsertUnsupported
 	}
+	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
+		return InsertResult{}, err
+	}
 	if len(records) == 0 {
 		return InsertResult{}, invalidf("no records given")
 	}

@@ -68,3 +68,18 @@ func checkScopeIncarnation(ctx context.Context, tx rowQuerier, nsName, table str
 }
 
 var errScopedKeyUpsertUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and upsert_by_key matches on the natural key across every row, so it could update a row you cannot see; insert instead, or ask for the read verb on the table, which lifts the scope", ErrInvalid)
+
+func (s *Store) guardIncarnation(ctx context.Context, nsName, table string, want Incarnation) error {
+	if want.zero() {
+		return nil
+	}
+	n, err := s.ns(nsName)
+	if err != nil {
+		return err
+	}
+	return checkScopeIncarnation(ctx, n.ro, nsName, table, want)
+}
+
+var errScopedFeedUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and the change feed does not yet filter records by owner; ask for the read verb on the table, which lifts the scope", ErrInvalid)
+
+var errScopedPlanUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and a migration plan reports table-wide information; ask for the read verb on the table, which lifts the scope", ErrInvalid)

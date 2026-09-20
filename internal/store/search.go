@@ -310,6 +310,9 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	if scope != nil {
 		return DeleteResult{}, errScopedFilterUnsupported
 	}
+	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
+		return DeleteResult{}, err
+	}
 	where = strings.TrimSpace(where)
 	if where == "" {
 		return DeleteResult{}, invalidf("filter is required (pass \"1=1\" to delete everything)")

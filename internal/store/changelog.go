@@ -340,6 +340,14 @@ func mintChangeCursors(ctx context.Context, tx *sql.Tx, now time.Time, scanned [
 }
 
 func (s *Store) ChangesSince(ctx context.Context, nsName, table string, from Cursor, nsGen [16]byte, scope *RowScope, scopeIncarnation Incarnation, page Page) ([]ChangeRecord, Cursor, error) {
+	if scope != nil {
+		return nil, "", errScopedFeedUnsupported
+	}
+	if table != "" {
+		if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
+			return nil, "", err
+		}
+	}
 	n, err := s.nsCtx(ctx, nsName)
 	if err != nil {
 		return nil, "", err

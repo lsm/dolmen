@@ -28,6 +28,9 @@ const MaxRecordsPerInsert = 1000
 const MaxIdempotencyKeyLen = 256
 
 func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
+	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
+		return InsertResult{}, err
+	}
 	if len(opts.IdempotencyKey) > MaxIdempotencyKeyLen {
 		return InsertResult{}, invalidf("idempotency key is %d bytes (max %d)", len(opts.IdempotencyKey), MaxIdempotencyKeyLen)
 	}
