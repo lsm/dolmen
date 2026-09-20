@@ -407,21 +407,27 @@ func TestPostgresListenReplayFailureFiresClosed(t *testing.T) {
 	s := openTest(t, testConfig(t))
 	ctx := t.Context()
 	listenSeed(t, s, ctx)
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "one"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
 	closedWith := make(chan error, 1)
-	replay, cancel, err := s.Listen(ctx, "app", "notes", store.Cursor("deadbeefdeadbeefdeadbeefdeadbeef"), [16]byte{}, nil, func(store.ChangeRecord) {}, func(cause error) { closedWith <- cause })
+	replay, cancel, err := s.Listen(ctx, "app", "notes", store.CursorBegin, [16]byte{}, nil, func(store.ChangeRecord) {}, func(cause error) { closedWith <- cause })
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cancel()
+	if err := s.DropTable(ctx, "app", "notes", store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, _, err := replay.Next(ctx); err == nil {
-		t.Fatal("stale cursor accepted by replay")
-	} else if !errors.Is(err, store.ErrListenAged) {
-		t.Fatalf("replay error = %v, want ErrListenAged", err)
+		t.Fatal("replay against a dropped table succeeded")
+	} else if !errors.Is(err, store.ErrListenLifetimeEnded) {
+		t.Fatalf("replay error = %v, want ErrListenLifetimeEnded", err)
 	}
 	select {
 	case cause := <-closedWith:
-		if !errors.Is(cause, store.ErrListenAged) {
-			t.Fatalf("closed cause = %v, want ErrListenAged", cause)
+		if !errors.Is(cause, store.ErrListenLifetimeEnded) {
+			t.Fatalf("closed cause = %v, want ErrListenLifetimeEnded", cause)
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("a terminal replay error never fired closed")
