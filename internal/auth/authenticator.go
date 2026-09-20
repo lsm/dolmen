@@ -29,22 +29,39 @@ type Authenticator struct {
 	maxGroups  int
 }
 
+const DefaultKeyringRefresh = 30 * time.Second
+
 type tokenSource struct {
-	mu   sync.RWMutex
-	ring Keyring
-	now  func() time.Time
+	mu       sync.RWMutex
+	ring     Keyring
+	loadedAt time.Time
+	load     func(context.Context) (Keyring, error)
+	every    time.Duration
+	now      func() time.Time
 }
 
 func (t *tokenSource) keyring() Keyring {
 	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.ring
+	ring, at := t.ring, t.loadedAt
+	load, every := t.load, t.every
+	t.mu.RUnlock()
+	if load == nil || every <= 0 || t.now().Sub(at) < every {
+		return ring
+	}
+	fresh, err := load(context.Background())
+	if err != nil {
+		return ring
+	}
+	t.mu.Lock()
+	t.ring, t.loadedAt = fresh, t.now()
+	t.mu.Unlock()
+	return fresh
 }
 
 func (t *tokenSource) replace(ring Keyring) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.ring = ring
+	t.ring, t.loadedAt = ring, t.now()
 }
 
 func (a *Authenticator) UseTokens(ring Keyring) {
@@ -55,7 +72,19 @@ func (a *Authenticator) UseTokens(ring Keyring) {
 		a.tokens.replace(ring)
 		return
 	}
-	a.tokens = &tokenSource{ring: ring, now: time.Now}
+	a.tokens = &tokenSource{ring: ring, loadedAt: time.Now(), now: time.Now}
+}
+
+func (a *Authenticator) RefreshTokensFrom(load func(context.Context) (Keyring, error), every time.Duration) {
+	if a == nil || a.tokens == nil {
+		return
+	}
+	if every <= 0 {
+		every = DefaultKeyringRefresh
+	}
+	a.tokens.mu.Lock()
+	a.tokens.load, a.tokens.every = load, every
+	a.tokens.mu.Unlock()
 }
 
 func (a *Authenticator) SetOIDCIssuer(digest string) {
@@ -199,22 +228,9 @@ func (a *Authenticator) CheckRootAdministrator(ctx context.Context, src RootAdmi
 	if len(admins) == 0 {
 		return fmt.Errorf("auth is on but the deployment has no usable root administrator: no DOLMEN_ADMIN_KEY is set and nothing holds admin on \"*\", so nobody could grant anything; set DOLMEN_ADMIN_KEY and restart, which restores the bootstrap administrator while existing grants persist")
 	}
-	if a.HeaderSourceEnabled() {
-		for _, s := range admins {
-			if s.Type == SubjectPrincipal {
-				return nil
-			}
-		}
-	}
-	if a.OIDCEnabled() {
-		for _, s := range admins {
-			if s.Type != SubjectPrincipal {
-				continue
-			}
-			digest, qualified := OIDCIssuerOf(s.ID)
-			if qualified && digest != a.oidcIssuer {
-				continue
-			}
+	reach := a.Reach()
+	for _, s := range admins {
+		if s.Type == SubjectPrincipal && reach.PrincipalReachable(s.ID) {
 			return nil
 		}
 	}
@@ -256,4 +272,12 @@ func rootReachableByKey(admins []Subject, keys []Key, excludeKeyID string) bool 
 		}
 	}
 	return false
+}
+
+func (a *Authenticator) mustRing(t interface{ Fatalf(string, ...any) }) Keyring {
+	ring, ok := a.TokenKeyring()
+	if !ok {
+		t.Fatalf("no token keyring is configured")
+	}
+	return ring
 }

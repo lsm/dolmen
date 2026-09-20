@@ -161,3 +161,42 @@ func TestRetiringPredecessorsRevokesTheirTokens(t *testing.T) {
 		t.Fatalf("the successor does not verify after retirement: %v", err)
 	}
 }
+
+func TestKeyringRefreshPropagatesRetirement(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	now := time.Now()
+
+	replicaA, err := OpenRegistry(dir)
+	if err != nil {
+		t.Fatalf("open A: %v", err)
+	}
+	defer replicaA.Close()
+	dep, _ := replicaA.DeploymentID(ctx, "")
+	ring, _ := replicaA.LoadKeyring(ctx, dep)
+	token, err := MintToken(ring, "oidc:v1:abc:sub", nil, DefaultTokenTTL, now)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+
+	other, err := New(Config{Mode: ModeOn})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	other.UseTokens(ring)
+	other.RefreshTokensFrom(func(ctx context.Context) (Keyring, error) {
+		return replicaA.LoadKeyring(ctx, dep)
+	}, time.Nanosecond)
+
+	if _, err := VerifyToken(other.mustRing(t), token, now); err != nil {
+		t.Fatalf("the token should verify before retirement: %v", err)
+	}
+
+	if _, err := replicaA.RotateSigningKey(ctx, dep, true); err != nil {
+		t.Fatalf("rotate with retirement: %v", err)
+	}
+
+	if _, err := VerifyToken(other.mustRing(t), token, now); !errors.Is(err, ErrTokenInvalid) {
+		t.Fatal("a replica that did not serve the rotation kept honouring the retired key's tokens")
+	}
+}

@@ -164,7 +164,7 @@ func (r *Registry) ListKeys(ctx context.Context) ([]Key, error) {
 	return out, rows.Err()
 }
 
-func (r *Registry) RevokeKey(ctx context.Context, id string, keepRootAdmin, headerReachable bool) (Key, error) {
+func (r *Registry) RevokeKey(ctx context.Context, id string, keepRootAdmin bool, reach Reach) (Key, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -179,7 +179,7 @@ func (r *Registry) RevokeKey(ctx context.Context, id string, keepRootAdmin, head
 		return k, nil
 	}
 	if keepRootAdmin {
-		reachable, err := r.rootReachableWithoutLocked(ctx, id, headerReachable)
+		reachable, err := r.rootReachableWithoutLocked(ctx, id, reach)
 		if err != nil {
 			return Key{}, err
 		}
@@ -236,7 +236,7 @@ func (r *Registry) activeKeysLocked(ctx context.Context) ([]Key, error) {
 	return out, rows.Err()
 }
 
-func (r *Registry) rootReachableWithoutLocked(ctx context.Context, excludeKeyID string, headerReachable bool) (bool, error) {
+func (r *Registry) rootReachableWithoutLocked(ctx context.Context, excludeKeyID string, reach Reach) (bool, error) {
 	admins, err := r.rootAdminsLocked(ctx)
 	if err != nil {
 		return false, err
@@ -244,11 +244,9 @@ func (r *Registry) rootReachableWithoutLocked(ctx context.Context, excludeKeyID 
 	if len(admins) == 0 {
 		return true, nil
 	}
-	if headerReachable {
-		for _, a := range admins {
-			if a.Type == SubjectPrincipal {
-				return true, nil
-			}
+	for _, a := range admins {
+		if a.Type == SubjectPrincipal && reach.PrincipalReachable(a.ID) {
+			return true, nil
 		}
 	}
 	keys, err := r.activeKeysLocked(ctx)

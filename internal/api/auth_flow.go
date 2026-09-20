@@ -105,13 +105,13 @@ func humanTTL(d time.Duration) string {
 }
 
 func fmtInt(n int) string {
-	return template.HTMLEscapeString(itoa(n))
+	return itoa(n)
 }
 
 func (s *Server) renderAuthError(w http.ResponseWriter, r *http.Request, err error) {
 	message := "The sign-in could not be completed. Start again, and if it keeps failing ask the server's administrator to check its identity provider settings."
 	if errors.Is(err, auth.ErrAuthFlow) {
-		message = template.HTMLEscapeString(err.Error())
+		message = err.Error()
 	}
 	setPublicURLCacheHeaders(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

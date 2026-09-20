@@ -650,7 +650,11 @@ curl -sS http://localhost:8790/v1/rotate_signing_key \
 Without `retire_previous` the successor signs new tokens while the predecessor
 keeps verifying, so tokens already in people's hands live out their TTL — the
 overlap you want for a routine rotation. With it, every token signed by an
-earlier key stops working immediately.
+earlier key stops working.
+
+On the replica that served the rotation the change is immediate. Others pick it
+up within their keyring refresh interval (30 seconds), since the keyring lives in
+the shared registry rather than in any one process.
 
 **Identities are qualified by issuer.** A subject is only unique within its
 provider, so the principal is `oidc:v1:<issuer-digest>:<sub>` — never the email,

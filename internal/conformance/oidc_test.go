@@ -309,3 +309,21 @@ func TestRotateSigningKeyAbsentWithoutTheOIDCSource(t *testing.T) {
 		t.Fatal("openapi.json advertises rotate_signing_key with no signing key to rotate")
 	}
 }
+
+func TestSignInErrorPageIsNotDoubleEscaped(t *testing.T) {
+	stub := newIssuerStub(t, "00u1a2b3", nil)
+	h := oidcHarness(t, stub)
+
+	res, err := http.Get(h.srv.URL + "/v1/auth/callback?state=never-issued&code=the-code")
+	if err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	defer res.Body.Close()
+	body := readAll(t, res)
+	if strings.Contains(body, "&amp;#") {
+		t.Fatalf("the error page escapes its message twice, so remediation text is garbled: %s", body)
+	}
+	if !strings.Contains(body, "expired") && !strings.Contains(body, "unknown") {
+		t.Fatalf("the error page does not carry the remediation: %s", body)
+	}
+}

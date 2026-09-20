@@ -139,7 +139,7 @@ func TestRevokeSemantics(t *testing.T) {
 	obj := Object{Namespace: "acme"}
 	mustGrant(t, r, principal("alice"), obj, VerbRead, VerbCreate)
 
-	g, err := r.Revoke(ctx, principal("alice"), obj, NewVerbSet(VerbDelete), false, false)
+	g, err := r.Revoke(ctx, principal("alice"), obj, NewVerbSet(VerbDelete), false, Reach{})
 	if err != nil {
 		t.Fatalf("revoking an unheld verb failed: %v", err)
 	}
@@ -147,12 +147,12 @@ func TestRevokeSemantics(t *testing.T) {
 		t.Fatalf("revoking an unheld verb changed the grant: %+v", g)
 	}
 
-	g, err = r.Revoke(ctx, principal("alice"), obj, NewVerbSet(VerbCreate), false, false)
+	g, err = r.Revoke(ctx, principal("alice"), obj, NewVerbSet(VerbCreate), false, Reach{})
 	if err != nil || g == nil || g.Verbs.Has(VerbCreate) || !g.Verbs.Has(VerbRead) {
 		t.Fatalf("partial revoke: %+v %v", g, err)
 	}
 
-	g, err = r.Revoke(ctx, principal("alice"), obj, NewVerbSet(VerbRead), false, false)
+	g, err = r.Revoke(ctx, principal("alice"), obj, NewVerbSet(VerbRead), false, Reach{})
 	if err != nil {
 		t.Fatalf("final revoke: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestRevokeSemantics(t *testing.T) {
 		t.Fatal("the grant survived its last verb being revoked")
 	}
 
-	if g, err := r.Revoke(ctx, principal("nobody"), obj, NewVerbSet(VerbRead), false, false); err != nil || g != nil {
+	if g, err := r.Revoke(ctx, principal("nobody"), obj, NewVerbSet(VerbRead), false, Reach{}); err != nil || g != nil {
 		t.Fatalf("revoking a nonexistent grant: %+v %v", g, err)
 	}
 }
@@ -364,10 +364,10 @@ func TestRevokeKeepsTheLastRootAdministrator(t *testing.T) {
 	mustGrant(t, r, principal("alice"), root, VerbAdmin)
 	mustGrant(t, r, principal("bob"), root, VerbAdmin)
 
-	if _, err := r.Revoke(ctx, principal("bob"), root, NewVerbSet(VerbAdmin), true, true); err != nil {
+	if _, err := r.Revoke(ctx, principal("bob"), root, NewVerbSet(VerbAdmin), true, Reach{Header: true}); err != nil {
 		t.Fatalf("revoking one of two root administrators: %v", err)
 	}
-	_, err := r.Revoke(ctx, principal("alice"), root, NewVerbSet(VerbAdmin), true, true)
+	_, err := r.Revoke(ctx, principal("alice"), root, NewVerbSet(VerbAdmin), true, Reach{Header: true})
 	if !errors.Is(err, ErrLastRootAdmin) {
 		t.Fatalf("revoking the last root administrator returned %v, want ErrLastRootAdmin", err)
 	}
@@ -375,7 +375,7 @@ func TestRevokeKeepsTheLastRootAdministrator(t *testing.T) {
 		t.Fatalf("the refused revoke still changed the grant: %+v", admins)
 	}
 
-	if _, err := r.Revoke(ctx, principal("alice"), root, NewVerbSet(VerbAdmin), false, false); err != nil {
+	if _, err := r.Revoke(ctx, principal("alice"), root, NewVerbSet(VerbAdmin), false, Reach{}); err != nil {
 		t.Fatalf("the bootstrap key should let the last root grant go: %v", err)
 	}
 	if admins, _ := r.RootAdmins(ctx); len(admins) != 0 {
@@ -396,7 +396,7 @@ func TestConcurrentLastAdminRevokesCannotBothWin(t *testing.T) {
 		wg.Add(1)
 		go func(i int, who string) {
 			defer wg.Done()
-			_, errs[i] = r.Revoke(ctx, principal(who), root, NewVerbSet(VerbAdmin), true, true)
+			_, errs[i] = r.Revoke(ctx, principal(who), root, NewVerbSet(VerbAdmin), true, Reach{Header: true})
 		}(i, who)
 	}
 	wg.Wait()

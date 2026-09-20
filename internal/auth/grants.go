@@ -234,7 +234,7 @@ func (r *Registry) Grant(ctx context.Context, subj Subject, obj Object, verbs Ve
 
 var ErrLastRootAdmin = errors.New("the deployment would be left with no usable root administrator")
 
-func (r *Registry) otherRootAdminRemainsLocked(ctx context.Context, revoked Subject, headerReachable bool) (bool, error) {
+func (r *Registry) otherRootAdminRemainsLocked(ctx context.Context, revoked Subject, reach Reach) (bool, error) {
 	admins, err := r.rootAdminsLocked(ctx)
 	if err != nil {
 		return false, err
@@ -248,11 +248,9 @@ func (r *Registry) otherRootAdminRemainsLocked(ctx context.Context, revoked Subj
 	if len(remaining) == 0 {
 		return false, nil
 	}
-	if headerReachable {
-		for _, a := range remaining {
-			if a.Type == SubjectPrincipal {
-				return true, nil
-			}
+	for _, a := range remaining {
+		if a.Type == SubjectPrincipal && reach.PrincipalReachable(a.ID) {
+			return true, nil
 		}
 	}
 	keys, err := r.activeKeysLocked(ctx)
@@ -262,7 +260,7 @@ func (r *Registry) otherRootAdminRemainsLocked(ctx context.Context, revoked Subj
 	return rootReachableByKey(remaining, keys, ""), nil
 }
 
-func (r *Registry) Revoke(ctx context.Context, subj Subject, obj Object, verbs VerbSet, keepRootAdmin, headerReachable bool) (*Grant, error) {
+func (r *Registry) Revoke(ctx context.Context, subj Subject, obj Object, verbs VerbSet, keepRootAdmin bool, reach Reach) (*Grant, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -278,7 +276,7 @@ func (r *Registry) Revoke(ctx context.Context, subj Subject, obj Object, verbs V
 		return &existing, nil
 	}
 	if keepRootAdmin && obj.Root() && existing.Verbs.Has(VerbAdmin) && !remaining.Has(VerbAdmin) {
-		ok, err := r.otherRootAdminRemainsLocked(ctx, subj, headerReachable)
+		ok, err := r.otherRootAdminRemainsLocked(ctx, subj, reach)
 		if err != nil {
 			return nil, err
 		}

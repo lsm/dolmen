@@ -59,7 +59,8 @@
   persist beside the grants, so tokens survive restarts and verify across replicas, and a
   deployment will not accept a token minted by another that happens to share its keyring.
   `rotate_signing_key` mints a successor; with `retire_previous` it stops honouring every token
-  signed by an earlier key, which is how a deployment signs all its people out at once.
+  signed by an earlier key, which is how a deployment signs all its people out at once — immediately on the replica that
+  served it, and within the keyring refresh interval elsewhere.
 - **`unauthorized` error code** (401) in the shared taxonomy. `auth: off` never emits it, and the
   default is still `auth: off` — nothing changes for existing deployments.
 

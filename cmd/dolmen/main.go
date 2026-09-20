@@ -227,6 +227,9 @@ func buildOIDC(cfg *config, r *auth.Registry) (*auth.OIDCSource, error) {
 		return nil, err
 	}
 	cfg.Auth.UseTokens(ring)
+	cfg.Auth.RefreshTokensFrom(func(ctx context.Context) (auth.Keyring, error) {
+		return r.LoadKeyring(ctx, deployment)
+	}, 0)
 	src := auth.NewOIDCSource(cfg.OIDC, r, ring, nil)
 	cfg.Auth.SetOIDCIssuer(src.IssuerDigest())
 	cfg.oidcSource = src
