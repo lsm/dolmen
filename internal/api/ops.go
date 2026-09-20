@@ -464,11 +464,11 @@ var Ops = map[string]OpDef{
 			if normNS(req.Confirm) != ns {
 				return nil, badRequest("confirm must repeat the exact namespace name %q to drop it", ns)
 			}
-			if err := s.eng.DropNamespace(ctx, ns, [16]byte{}); err != nil {
-				return nil, wrapStoreErr(err)
-			}
 			if err := s.dropNamespaceGrants(ctx, ns); err != nil {
 				return nil, err
+			}
+			if err := s.eng.DropNamespace(ctx, ns, [16]byte{}); err != nil {
+				return nil, wrapStoreErr(err)
 			}
 			return map[string]any{"dropped": ns}, nil
 		},
@@ -504,11 +504,11 @@ var Ops = map[string]OpDef{
 				return nil, badRequest("confirm must repeat the exact table name %q to drop it", table)
 			}
 			ns := normNS(req.Namespace)
-			if err := s.eng.DropTable(ctx, ns, table, store.Incarnation{}); err != nil {
-				return nil, wrapStoreErr(err)
-			}
 			if err := s.dropTableGrants(ctx, ns, table); err != nil {
 				return nil, err
+			}
+			if err := s.eng.DropTable(ctx, ns, table, store.Incarnation{}); err != nil {
+				return nil, wrapStoreErr(err)
 			}
 			return map[string]any{"dropped": table}, nil
 		},

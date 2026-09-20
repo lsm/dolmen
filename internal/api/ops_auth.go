@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"time"
 
@@ -237,11 +238,11 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			if err := s.guardLastRootAdmin(ctx, subj, obj, verbs); err != nil {
-				return nil, err
-			}
-			g, err := s.grants.Revoke(ctx, subj, obj, verbs)
+			g, err := s.grants.Revoke(ctx, subj, obj, verbs, !s.authn.AdminKeyConfigured())
 			if err != nil {
+				if errors.Is(err, auth.ErrLastRootAdmin) {
+					return nil, lastRootAdminError()
+				}
 				return nil, err
 			}
 			if g == nil {

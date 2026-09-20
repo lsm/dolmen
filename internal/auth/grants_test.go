@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -137,7 +139,7 @@ func TestRevokeSemantics(t *testing.T) {
 	obj := Object{Namespace: "acme"}
 	mustGrant(t, r, principal("alice"), obj, VerbRead, VerbCreate)
 
-	g, err := r.Revoke(ctx, principal("alice"), obj, NewVerbSet(VerbDelete))
+	g, err := r.Revoke(ctx, principal("alice"), obj, NewVerbSet(VerbDelete), false)
 	if err != nil {
 		t.Fatalf("revoking an unheld verb failed: %v", err)
 	}
@@ -145,12 +147,12 @@ func TestRevokeSemantics(t *testing.T) {
 		t.Fatalf("revoking an unheld verb changed the grant: %+v", g)
 	}
 
-	g, err = r.Revoke(ctx, principal("alice"), obj, NewVerbSet(VerbCreate))
+	g, err = r.Revoke(ctx, principal("alice"), obj, NewVerbSet(VerbCreate), false)
 	if err != nil || g == nil || g.Verbs.Has(VerbCreate) || !g.Verbs.Has(VerbRead) {
 		t.Fatalf("partial revoke: %+v %v", g, err)
 	}
 
-	g, err = r.Revoke(ctx, principal("alice"), obj, NewVerbSet(VerbRead))
+	g, err = r.Revoke(ctx, principal("alice"), obj, NewVerbSet(VerbRead), false)
 	if err != nil {
 		t.Fatalf("final revoke: %v", err)
 	}
@@ -161,7 +163,7 @@ func TestRevokeSemantics(t *testing.T) {
 		t.Fatal("the grant survived its last verb being revoked")
 	}
 
-	if g, err := r.Revoke(ctx, principal("nobody"), obj, NewVerbSet(VerbRead)); err != nil || g != nil {
+	if g, err := r.Revoke(ctx, principal("nobody"), obj, NewVerbSet(VerbRead), false); err != nil || g != nil {
 		t.Fatalf("revoking a nonexistent grant: %+v %v", g, err)
 	}
 }
@@ -301,5 +303,109 @@ func TestVerbSerializationOrderIsFixed(t *testing.T) {
 	}
 	if _, err := ParseVerbs(nil); err == nil {
 		t.Fatal("empty verb list accepted")
+	}
+}
+
+func TestLikeWildcardsInNamespacesDoNotMatchSiblings(t *testing.T) {
+	r := newRegistry(t)
+	ctx := context.Background()
+	mustGrant(t, r, principal("alice"), Object{Namespace: "team_a"}, VerbRead)
+	mustGrant(t, r, principal("alice"), Object{Namespace: "team_a/sub"}, VerbRead)
+	mustGrant(t, r, principal("alice"), Object{Namespace: "team-a"}, VerbRead)
+	mustGrant(t, r, principal("alice"), Object{Namespace: "team-a/sub"}, VerbRead)
+
+	sub, err := r.List(ctx, nil, &Object{Namespace: "team_a"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, g := range sub {
+		if strings.HasPrefix(g.Object.Namespace, "team-a") {
+			t.Fatalf("the subtree filter for team_a matched the distinct namespace %s", g.Object.Namespace)
+		}
+	}
+	if len(sub) != 2 {
+		t.Fatalf("subtree filter returned %d grants, want 2: %+v", len(sub), sub)
+	}
+
+	if err := r.DropNamespace(ctx, "team_a"); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	remaining, _ := r.List(ctx, nil, nil)
+	if len(remaining) != 2 {
+		t.Fatalf("dropping team_a removed %d grants, want only its own subtree: %+v", 4-len(remaining), remaining)
+	}
+	for _, g := range remaining {
+		if !strings.HasPrefix(g.Object.Namespace, "team-a") {
+			t.Fatalf("dropping team_a deleted the grants of %s", g.Object.Namespace)
+		}
+	}
+}
+
+func TestPercentInNamespaceIsNotAWildcard(t *testing.T) {
+	r := newRegistry(t)
+	ctx := context.Background()
+	mustGrant(t, r, principal("alice"), Object{Namespace: "a"}, VerbRead)
+	mustGrant(t, r, principal("alice"), Object{Namespace: "a/b"}, VerbRead)
+	mustGrant(t, r, principal("alice"), Object{Namespace: "keep"}, VerbRead)
+
+	if err := r.DropNamespace(ctx, "%"); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	remaining, _ := r.List(ctx, nil, nil)
+	if len(remaining) != 3 {
+		t.Fatalf("a namespace of %q deleted %d grants: %+v", "%", 3-len(remaining), remaining)
+	}
+}
+
+func TestRevokeKeepsTheLastRootAdministrator(t *testing.T) {
+	r := newRegistry(t)
+	ctx := context.Background()
+	root := Object{Namespace: RootObject}
+	mustGrant(t, r, principal("alice"), root, VerbAdmin)
+	mustGrant(t, r, principal("bob"), root, VerbAdmin)
+
+	if _, err := r.Revoke(ctx, principal("bob"), root, NewVerbSet(VerbAdmin), true); err != nil {
+		t.Fatalf("revoking one of two root administrators: %v", err)
+	}
+	_, err := r.Revoke(ctx, principal("alice"), root, NewVerbSet(VerbAdmin), true)
+	if !errors.Is(err, ErrLastRootAdmin) {
+		t.Fatalf("revoking the last root administrator returned %v, want ErrLastRootAdmin", err)
+	}
+	if admins, _ := r.RootAdmins(ctx); len(admins) != 1 {
+		t.Fatalf("the refused revoke still changed the grant: %+v", admins)
+	}
+
+	if _, err := r.Revoke(ctx, principal("alice"), root, NewVerbSet(VerbAdmin), false); err != nil {
+		t.Fatalf("the bootstrap key should let the last root grant go: %v", err)
+	}
+	if admins, _ := r.RootAdmins(ctx); len(admins) != 0 {
+		t.Fatalf("root administrators remain: %+v", admins)
+	}
+}
+
+func TestConcurrentLastAdminRevokesCannotBothWin(t *testing.T) {
+	r := newRegistry(t)
+	ctx := context.Background()
+	root := Object{Namespace: RootObject}
+	mustGrant(t, r, principal("alice"), root, VerbAdmin)
+	mustGrant(t, r, principal("bob"), root, VerbAdmin)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i, who := range []string{"alice", "bob"} {
+		wg.Add(1)
+		go func(i int, who string) {
+			defer wg.Done()
+			_, errs[i] = r.Revoke(ctx, principal(who), root, NewVerbSet(VerbAdmin), true)
+		}(i, who)
+	}
+	wg.Wait()
+
+	admins, err := r.RootAdmins(ctx)
+	if err != nil {
+		t.Fatalf("root admins: %v", err)
+	}
+	if len(admins) == 0 {
+		t.Fatalf("both revokes committed and left no root administrator: %v", errs)
 	}
 }

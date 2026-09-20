@@ -35,22 +35,7 @@ func (s *Server) requireGrantableObject(ctx context.Context, obj auth.Object) er
 	return nil
 }
 
-func (s *Server) guardLastRootAdmin(ctx context.Context, subj auth.Subject, obj auth.Object, verbs auth.VerbSet) error {
-	if !obj.Root() || !verbs.Has(auth.VerbAdmin) {
-		return nil
-	}
-	if s.authn.AdminKeyConfigured() {
-		return nil
-	}
-	admins, err := s.grants.RootAdmins(ctx)
-	if err != nil {
-		return err
-	}
-	for _, a := range admins {
-		if a.Type == auth.SubjectPrincipal && a != subj {
-			return nil
-		}
-	}
+func lastRootAdminError() error {
 	return &Error{
 		Status: http.StatusConflict, Code: ErrCodeConflict,
 		Message: "revoking this grant would leave the deployment with no usable root administrator, so nobody could grant anything again: grant admin on \"*\" to another principal first, or set DOLMEN_ADMIN_KEY and restart, which restores the bootstrap administrator while the grants persist",

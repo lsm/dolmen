@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -115,6 +116,19 @@ func (r *Registry) Close() error {
 	return r.db.Close()
 }
 
+func likePrefix(ns string) string {
+	var b strings.Builder
+	for _, r := range ns {
+		switch r {
+		case '\\', '%', '_':
+			b.WriteRune('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteString("/%")
+	return b.String()
+}
+
 func coveringObjects(o Object) []Object {
 	out := []Object{{Namespace: RootObject}}
 	if o.Root() {
@@ -205,7 +219,9 @@ func (r *Registry) Grant(ctx context.Context, subj Subject, obj Object, verbs Ve
 	return Grant{Subject: subj, Object: obj, Verbs: verbs, CreatedAt: created}, nil
 }
 
-func (r *Registry) Revoke(ctx context.Context, subj Subject, obj Object, verbs VerbSet) (*Grant, error) {
+var ErrLastRootAdmin = errors.New("the deployment would be left with no usable root administrator")
+
+func (r *Registry) Revoke(ctx context.Context, subj Subject, obj Object, verbs VerbSet, keepRootAdmin bool) (*Grant, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -219,6 +235,22 @@ func (r *Registry) Revoke(ctx context.Context, subj Subject, obj Object, verbs V
 	remaining := existing.Verbs &^ verbs
 	if remaining == existing.Verbs {
 		return &existing, nil
+	}
+	if keepRootAdmin && obj.Root() && existing.Verbs.Has(VerbAdmin) && !remaining.Has(VerbAdmin) {
+		admins, err := r.rootAdminsLocked(ctx)
+		if err != nil {
+			return nil, err
+		}
+		replacement := false
+		for _, a := range admins {
+			if a.Type == SubjectPrincipal && a != subj {
+				replacement = true
+				break
+			}
+		}
+		if !replacement {
+			return nil, ErrLastRootAdmin
+		}
 	}
 	if remaining == 0 {
 		if _, err := r.db.ExecContext(ctx,
@@ -269,8 +301,8 @@ func (r *Registry) List(ctx context.Context, subj *Subject, obj *Object) ([]Gran
 			where = append(where, "namespace = ? AND table_name = ?")
 			args = append(args, obj.Namespace, obj.Table)
 		} else {
-			where = append(where, "(namespace = ? OR namespace LIKE ?)")
-			args = append(args, obj.Namespace, obj.Namespace+"/%")
+			where = append(where, `(namespace = ? OR namespace LIKE ? ESCAPE '\')`)
+			args = append(args, obj.Namespace, likePrefix(obj.Namespace))
 		}
 	}
 	if len(where) > 0 {
@@ -324,7 +356,7 @@ func (r *Registry) DropNamespace(ctx context.Context, ns string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, err := r.db.ExecContext(ctx,
-		"DELETE FROM grants WHERE namespace = ? OR namespace LIKE ?", ns, ns+"/%"); err != nil {
+		`DELETE FROM grants WHERE namespace = ? OR namespace LIKE ? ESCAPE '\'`, ns, likePrefix(ns)); err != nil {
 		return fmt.Errorf("drop grants for namespace: %w", err)
 	}
 	return nil
@@ -366,6 +398,12 @@ func (r *Registry) NamespacesWithAnyGrant(ctx context.Context, id Identity) (map
 }
 
 func (r *Registry) RootAdmins(ctx context.Context) ([]Subject, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.rootAdminsLocked(ctx)
+}
+
+func (r *Registry) rootAdminsLocked(ctx context.Context) ([]Subject, error) {
 	rows, err := r.db.QueryContext(ctx,
 		"SELECT subject_type, subject_id, verbs FROM grants WHERE namespace = ? AND table_name = ''", RootObject)
 	if err != nil {
