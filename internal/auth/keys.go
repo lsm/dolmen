@@ -164,7 +164,7 @@ func (r *Registry) ListKeys(ctx context.Context) ([]Key, error) {
 	return out, rows.Err()
 }
 
-func (r *Registry) RevokeKey(ctx context.Context, id string, keepRootAdmin bool) (Key, error) {
+func (r *Registry) RevokeKey(ctx context.Context, id string, keepRootAdmin, headerReachable bool) (Key, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -179,7 +179,7 @@ func (r *Registry) RevokeKey(ctx context.Context, id string, keepRootAdmin bool)
 		return k, nil
 	}
 	if keepRootAdmin {
-		reachable, err := r.rootReachableWithoutLocked(ctx, id)
+		reachable, err := r.rootReachableWithoutLocked(ctx, id, headerReachable)
 		if err != nil {
 			return Key{}, err
 		}
@@ -236,7 +236,7 @@ func (r *Registry) activeKeysLocked(ctx context.Context) ([]Key, error) {
 	return out, rows.Err()
 }
 
-func (r *Registry) rootReachableWithoutLocked(ctx context.Context, excludeKeyID string) (bool, error) {
+func (r *Registry) rootReachableWithoutLocked(ctx context.Context, excludeKeyID string, headerReachable bool) (bool, error) {
 	admins, err := r.rootAdminsLocked(ctx)
 	if err != nil {
 		return false, err
@@ -244,28 +244,18 @@ func (r *Registry) rootReachableWithoutLocked(ctx context.Context, excludeKeyID 
 	if len(admins) == 0 {
 		return true, nil
 	}
+	if headerReachable {
+		for _, a := range admins {
+			if a.Type == SubjectPrincipal {
+				return true, nil
+			}
+		}
+	}
 	keys, err := r.activeKeysLocked(ctx)
 	if err != nil {
 		return false, err
 	}
-	for _, k := range keys {
-		if k.ID == excludeKeyID {
-			continue
-		}
-		for _, a := range admins {
-			if a.Type == SubjectPrincipal && a.ID == k.Principal {
-				return true, nil
-			}
-			if a.Type == SubjectGroup {
-				for _, g := range k.Groups {
-					if g == a.ID {
-						return true, nil
-					}
-				}
-			}
-		}
-	}
-	return false, nil
+	return rootReachableByKey(admins, keys, excludeKeyID), nil
 }
 
 type keySource struct {
@@ -311,4 +301,10 @@ func (r *Registry) keyByHash(ctx context.Context, hash string) (Key, bool, error
 		return k, true, nil
 	}
 	return Key{}, false, rows.Err()
+}
+
+func (r *Registry) ActiveKeys(ctx context.Context) ([]Key, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.activeKeysLocked(ctx)
 }

@@ -67,7 +67,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	live := make(chan store.ChangeRecord, 1)
 	ended := make(chan error, 1)
-	replay, cancel, err := s.eng.Listen(ctx, ns, table, cursor, [16]byte{}, nil,
+	replay, cancel, err := s.eng.Listen(ctx, ns, table, cursor, [16]byte{}, s.liveAuthz(r, ns),
 		func(rec store.ChangeRecord) {
 			select {
 			case live <- rec:

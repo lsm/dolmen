@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"net/http"
 
 	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/schema"
@@ -68,4 +69,28 @@ func (s *Server) tableHasRowAccess(ctx context.Context, obj auth.Object) bool {
 		return false
 	}
 	return sc.RowAccess == schema.RowAccessOwn
+}
+
+func (s *Server) liveAuthz(r *http.Request, ns string) func(table string) (*store.RowScope, store.Incarnation, bool) {
+	if !s.authn.On() {
+		return nil
+	}
+	return func(table string) (*store.RowScope, store.Incarnation, bool) {
+		id, err := s.authn.Authenticate(r)
+		if err != nil {
+			return nil, store.Incarnation{}, false
+		}
+		ctx := auth.WithIdentity(r.Context(), id)
+		if err := s.authorizeFeed(ctx, ns, table); err != nil {
+			return nil, store.Incarnation{}, false
+		}
+		if table == "" {
+			return nil, store.Incarnation{}, true
+		}
+		scope, inc, err := s.resolveScope(ctx, ns, table)
+		if err != nil {
+			return nil, store.Incarnation{}, false
+		}
+		return scope, inc, true
+	}
 }

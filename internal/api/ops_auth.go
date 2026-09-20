@@ -410,7 +410,7 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			g, err := s.grants.Revoke(ctx, subj, obj, verbs, !s.authn.AdminKeyConfigured())
+			g, err := s.grants.Revoke(ctx, subj, obj, verbs, !s.authn.AdminKeyConfigured(), s.authn.HeaderSourceEnabled())
 			if err != nil {
 				if errors.Is(err, auth.ErrLastRootAdmin) {
 					return nil, lastRootAdminError()
@@ -626,7 +626,7 @@ func init() {
 			if s.grants == nil {
 				return nil, errNoGrantRegistry
 			}
-			k, err := s.grants.RevokeKey(ctx, req.ID, !s.authn.AdminKeyConfigured())
+			k, err := s.grants.RevokeKey(ctx, req.ID, !s.authn.AdminKeyConfigured(), s.authn.HeaderSourceEnabled())
 			if err != nil {
 				if errors.Is(err, auth.ErrLastRootKey) {
 					return nil, lastRootKeyError()

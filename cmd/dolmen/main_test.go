@@ -743,10 +743,6 @@ func TestLoadConfigAuthMode(t *testing.T) {
 		stdio   bool
 		wantErr string
 	}{
-		"on without a source": {
-			env:     map[string]string{"DOLMEN_AUTH": "on"},
-			wantErr: "DOLMEN_ADMIN_KEY",
-		},
 		"malformed admin key": {
 			env:     map[string]string{"DOLMEN_AUTH": "on", "DOLMEN_ADMIN_KEY": "short"},
 			wantErr: "DOLMEN_ADMIN_KEY",
@@ -856,4 +852,41 @@ func TestLoadConfigMaxGroupsRange(t *testing.T) {
 			t.Fatalf("-max-groups %s accepted, but the documented range is 1 to 1024", raw)
 		}
 	}
+}
+
+func TestAuthOnWithoutASourceFailsWhenTheRegistryOpens(t *testing.T) {
+	cfg, err := loadWithEnv(t, nil, map[string]string{
+		"DOLMEN_AUTH":           "on",
+		"DOLMEN_EMBED_PROVIDER": "none",
+	}, false)
+	if err != nil {
+		t.Fatalf("the source check now runs where API keys are visible, so config should parse: %v", err)
+	}
+	cfg.DataDir = t.TempDir()
+
+	r, err := openGrantRegistry(cfg)
+	if err == nil {
+		r.Close()
+		t.Fatal("auth on with no identity source started")
+	}
+	if !strings.Contains(err.Error(), "DOLMEN_ADMIN_KEY") {
+		t.Fatalf("error does not name the remediation: %v", err)
+	}
+}
+
+func TestAuthOnWithAnAdminKeyOpensTheRegistry(t *testing.T) {
+	cfg, err := loadWithEnv(t, nil, map[string]string{
+		"DOLMEN_AUTH":           "on",
+		"DOLMEN_ADMIN_KEY":      "Tt5vQ2rXm9LbHc0wPqZaJ4yNfE7sUgKdRi1oCnBxV3M",
+		"DOLMEN_EMBED_PROVIDER": "none",
+	}, false)
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	cfg.DataDir = t.TempDir()
+	r, err := openGrantRegistry(cfg)
+	if err != nil {
+		t.Fatalf("open registry: %v", err)
+	}
+	defer r.Close()
 }

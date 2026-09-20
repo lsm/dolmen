@@ -165,6 +165,8 @@ type fakeRootAdmins []Subject
 
 func (f fakeRootAdmins) RootAdmins(context.Context) ([]Subject, error) { return f, nil }
 
+func (f fakeRootAdmins) ActiveKeys(context.Context) ([]Key, error) { return nil, nil }
+
 func TestTrustedProxiesWithoutAdminKeyNeedsADurableRootGrant(t *testing.T) {
 	a, err := New(Config{Mode: ModeOn, TrustedProxies: proxies(t, "127.0.0.0/8")})
 	if err != nil {

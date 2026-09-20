@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func mintKey(t *testing.T, h *harness, name, principal string, groups ...string) (id, secret string) {
@@ -204,4 +205,64 @@ func TestSourceBlindness(t *testing.T) {
 		t.Fatalf("the same identity behaved differently by source: header %d, key %d", viaHeader.StatusCode, viaKey)
 	}
 	assertJSONEqual(t, "read_rows across sources", headerOut["data"], keyOut["data"])
+}
+
+func TestRevokingAKeyDropsItsLiveStream(t *testing.T) {
+	h := newHarnessMode(t, authAdminKey)
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "acme"})
+	h.seedTable("acme", "docs", []map[string]any{{"name": "title", "type": "string"}})
+	id, secret := mintKey(t, h, "streamer", "stream-bot")
+	h.mustHTTP("grant", map[string]any{
+		"subject": map[string]any{"type": "principal", "id": "stream-bot"},
+		"object":  map[string]any{"namespace": "acme"},
+		"verbs":   []string{"read"},
+	})
+
+	req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/v1/subscribe?namespace=acme&table=docs&cursor=begin", nil)
+	if err != nil {
+		t.Fatalf("subscribe request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+secret)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("subscribe with a granted key: status %d", res.StatusCode)
+	}
+
+	h.mustHTTP("revoke_key", map[string]any{"id": id})
+	h.mustHTTP("insert", map[string]any{
+		"namespace": "acme", "table": "docs",
+		"records": []map[string]any{{"title": "after revocation"}},
+	})
+
+	done := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		var seen strings.Builder
+		for {
+			n, err := res.Body.Read(buf)
+			if n > 0 {
+				seen.Write(buf[:n])
+				if strings.Contains(seen.String(), "after revocation") {
+					done <- seen.String()
+					return
+				}
+			}
+			if err != nil {
+				done <- ""
+				return
+			}
+		}
+	}()
+
+	select {
+	case got := <-done:
+		if strings.Contains(got, "after revocation") {
+			t.Fatalf("a revoked key kept receiving events: %s", got)
+		}
+	case <-time.After(3 * time.Second):
+	}
 }
