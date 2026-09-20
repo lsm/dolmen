@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lsm/dolmen/internal/auth"
 )
 
 func mintKey(t *testing.T, h *harness, name, principal string, groups ...string) (id, secret string) {
@@ -264,5 +266,58 @@ func TestRevokingAKeyDropsItsLiveStream(t *testing.T) {
 			t.Fatalf("a revoked key kept receiving events: %s", got)
 		}
 	case <-time.After(3 * time.Second):
+	}
+}
+
+func TestGatewayDeploymentCanRevokeAnyKey(t *testing.T) {
+	h := newHarnessMode(t, authGatewayNoKey)
+	if _, err := h.grants.Grant(t.Context(), auth.Subject{Type: auth.SubjectPrincipal, ID: "alice"},
+		auth.Object{Namespace: auth.RootObject}, auth.NewVerbSet(auth.VerbAdmin)); err != nil {
+		t.Fatalf("seed root grant: %v", err)
+	}
+
+	res, out := h.asIdentity(t, "alice", "", "create_key", `{"name":"runner","principal":"ci-bot"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("create_key as the root administrator: status %d %v", res.StatusCode, out)
+	}
+	data, _ := out["data"].(map[string]any)
+	key, _ := data["key"].(map[string]any)
+	id, _ := key["id"].(string)
+
+	res, out = h.asIdentity(t, "alice", "", "revoke_key", `{"id":"`+id+`"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("a gateway deployment must be able to drop a key while the gateway can still assert its root administrator: status %d %v", res.StatusCode, out)
+	}
+}
+
+func TestKeyOnlyDeploymentRefusesItsLastRootKey(t *testing.T) {
+	h := newHarnessMode(t, authKeysOnly)
+	ctx := t.Context()
+	if _, err := h.grants.Grant(ctx, auth.Subject{Type: auth.SubjectPrincipal, ID: "root-bot"},
+		auth.Object{Namespace: auth.RootObject}, auth.NewVerbSet(auth.VerbAdmin)); err != nil {
+		t.Fatalf("seed root grant: %v", err)
+	}
+	root, secret, err := h.grants.CreateKey(ctx, "bootstrap", "root-bot", nil)
+	if err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+
+	status, out := h.httpCallAs(identity{bearer: secret}, "revoke_key", map[string]any{"id": root.ID})
+	if status != http.StatusConflict {
+		t.Fatalf("a key-only deployment let its last root key go: status %d, want 409: %v", status, out)
+	}
+	errEnv, _ := out["error"].(map[string]any)
+	if msg, _ := errEnv["message"].(string); !strings.Contains(msg, "DOLMEN_ADMIN_KEY") {
+		t.Fatalf("the refusal does not name the recovery: %v", out)
+	}
+
+	replacement := h.mustHTTPAs(t, identity{bearer: secret}, "create_key",
+		map[string]any{"name": "replacement", "principal": "root-bot"})
+	if replacement == nil {
+		t.Fatal("minting a replacement failed")
+	}
+	status, out = h.httpCallAs(identity{bearer: secret}, "revoke_key", map[string]any{"id": root.ID})
+	if status != http.StatusOK {
+		t.Fatalf("with a replacement key present the revoke must succeed: status %d %v", status, out)
 	}
 }
