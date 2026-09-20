@@ -237,3 +237,11 @@ func cosine(a, b []float32) float64 {
 	}
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
+
+func ResolveVectorColumn(sc *schema.TableSchema, table, column string, textQuery bool, embedModel string) (string, int, error) {
+	return resolveVectorColumn(sc, table, column, textQuery, embedModel)
+}
+
+func Cosine(a, b []float32) float64 { return cosine(a, b) }
+
+func AllFinite(v []float32) bool { return allFinite(v) }

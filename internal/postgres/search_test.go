@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -213,5 +214,201 @@ func TestPostgresSearchFulltextFollowsMigrations(t *testing.T) {
 	}
 	if _, err := s.SearchFulltext(ctx, "app", "notes", "gateway", "", nil, false, nil, store.Incarnation{}, store.Page{}); !errors.Is(err, store.ErrInvalid) {
 		t.Fatalf("search after removing every fulltext field: %v", err)
+	}
+}
+
+func vectorQuery(vec []float32) store.VectorQuery {
+	return store.VectorQuery{Vec: vec}
+}
+
+func TestPostgresSearchVectorRanksAndScores(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	fields := []schema.Field{{Name: "label"}, {Name: "vec", Type: schema.Vector, Dim: 3}}
+	if _, err := s.CreateTable(ctx, "app", "points", fields, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	records := []map[string]any{
+		{"label": "east", "vec": []any{1.0, 0.0, 0.0}},
+		{"label": "north", "vec": []any{0.0, 1.0, 0.0}},
+		{"label": "diagonal", "vec": []any{1.0, 1.0, 0.0}},
+		{"label": "missing"},
+	}
+	if _, err := s.Insert(ctx, "app", "points", records, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.SearchVector(ctx, "app", "points", vectorQuery([]float32{1, 0, 0}), false, nil, store.Incarnation{}, store.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := searchIDs(t, result)
+	if len(ids) != 3 || ids[0] != 1 {
+		t.Fatalf("ranking: %+v", ids)
+	}
+	if ids[1] != 3 || ids[2] != 2 {
+		t.Fatalf("cosine order: %+v", ids)
+	}
+	if result.Execution != store.VectorExact {
+		t.Fatalf("execution: %q", result.Execution)
+	}
+	if result.SkippedVectors != 0 {
+		t.Fatalf("skipped: %d", result.SkippedVectors)
+	}
+	top, ok := result.Rows[0]["_score"].(float64)
+	if !ok || top < 0.999 {
+		t.Fatalf("top score: %+v", result.Rows[0]["_score"])
+	}
+	for _, row := range result.Rows {
+		if _, ok := row["_score"].(float64); !ok {
+			t.Fatalf("row without score: %+v", row)
+		}
+	}
+}
+
+func TestPostgresSearchVectorMinScoreFilterAndPaging(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	fields := []schema.Field{{Name: "kind"}, {Name: "vec", Type: schema.Vector, Dim: 3}}
+	if _, err := s.CreateTable(ctx, "app", "points", fields, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	records := []map[string]any{
+		{"kind": "a", "vec": []any{1.0, 0.0, 0.0}},
+		{"kind": "b", "vec": []any{1.0, 1.0, 0.0}},
+		{"kind": "a", "vec": []any{0.0, 1.0, 0.0}},
+	}
+	if _, err := s.Insert(ctx, "app", "points", records, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	min := 0.9
+	q := vectorQuery([]float32{1, 0, 0})
+	q.MinScore = &min
+	result, err := s.SearchVector(ctx, "app", "points", q, false, nil, store.Incarnation{}, store.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := searchIDs(t, result); len(ids) != 1 || ids[0] != 1 {
+		t.Fatalf("min_score: %+v", ids)
+	}
+	filtered := vectorQuery([]float32{1, 0, 0})
+	filtered.Filter = "kind = ?"
+	filtered.Args = []any{"a"}
+	result, err = s.SearchVector(ctx, "app", "points", filtered, false, nil, store.Incarnation{}, store.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := searchIDs(t, result); len(ids) != 2 || ids[0] != 1 || ids[1] != 3 {
+		t.Fatalf("filtered: %+v", ids)
+	}
+	first, err := s.SearchVector(ctx, "app", "points", vectorQuery([]float32{1, 0, 0}), false, nil, store.Incarnation{}, store.Page{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Rows) != 1 || !first.Truncated {
+		t.Fatalf("first page: rows=%d truncated=%v", len(first.Rows), first.Truncated)
+	}
+	second, err := s.SearchVector(ctx, "app", "points", vectorQuery([]float32{1, 0, 0}), false, nil, store.Incarnation{}, store.Page{Limit: 1, Offset: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := searchIDs(t, second); len(ids) != 1 || ids[0] != 2 {
+		t.Fatalf("second page: %+v", ids)
+	}
+	bad := vectorQuery([]float32{1, 0})
+	if _, err := s.SearchVector(ctx, "app", "points", bad, false, nil, store.Incarnation{}, store.Page{}); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("dimension mismatch: %v", err)
+	}
+}
+
+func TestPostgresSearchVectorCountsSkippedVectors(t *testing.T) {
+	cfg := testConfig(t)
+	s := openTest(t, cfg)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	fields := []schema.Field{{Name: "vec", Type: schema.Vector, Dim: 3}}
+	if _, err := s.CreateTable(ctx, "app", "points", fields, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "app", "points", []map[string]any{
+		{"vec": []any{1.0, 0.0, 0.0}},
+		{"vec": []any{0.0, 1.0, 0.0}},
+	}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.read(ctx, "app", func(tx pgx.Tx, n namespace) error {
+		state, err := s.loadTable(ctx, tx, n, "points")
+		if err != nil {
+			return err
+		}
+		conn, err := pgx.Connect(ctx, cfg.DSN)
+		if err != nil {
+			return err
+		}
+		defer conn.Close(ctx)
+		_, err = conn.Exec(ctx, "UPDATE "+ident(n.physical, state.physical)+" SET "+ident(state.columns["vec"])+" = $1 WHERE id = 2", []byte{1, 2, 3, 4, 5})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.SearchVector(ctx, "app", "points", vectorQuery([]float32{1, 0, 0}), false, nil, store.Incarnation{}, store.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SkippedVectors != 1 {
+		t.Fatalf("skipped = %d, want 1", result.SkippedVectors)
+	}
+	if ids := searchIDs(t, result); len(ids) != 1 || ids[0] != 1 {
+		t.Fatalf("corrupt vector returned: %+v", ids)
+	}
+}
+
+func TestPostgresSearchVectorUsesEmbeddingColumn(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "body", Vectorize: true}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	emb := store.Embedder{Identity: "test", Embed: func(_ context.Context, texts []string) ([][]float32, error) {
+		out := make([][]float32, len(texts))
+		for i, text := range texts {
+			if text == "east" {
+				out[i] = []float32{1, 0, 0}
+				continue
+			}
+			out[i] = []float32{0, 1, 0}
+		}
+		return out, nil
+	}}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "east"}, {"body": "north"}}, store.WriteOpts{}, emb, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.SearchVector(ctx, "app", "notes", vectorQuery([]float32{1, 0, 0}), false, nil, store.Incarnation{}, store.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := searchIDs(t, result); len(ids) != 2 || ids[0] != 1 {
+		t.Fatalf("embedding search: %+v", ids)
+	}
+	if _, ok := result.Rows[0]["_embedding"]; ok {
+		t.Fatalf("hidden column exposed: %+v", result.Rows[0])
+	}
+	hidden, err := s.SearchVector(ctx, "app", "notes", vectorQuery([]float32{1, 0, 0}), true, nil, store.Incarnation{}, store.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vec, ok := hidden.Rows[0]["_embedding"].([]float64)
+	if !ok || len(vec) != 3 {
+		t.Fatalf("include_hidden embedding: %+v", hidden.Rows[0]["_embedding"])
 	}
 }

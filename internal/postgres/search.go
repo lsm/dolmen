@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -112,7 +114,7 @@ func (s *Store) fetchRanked(ctx context.Context, tx pgx.Tx, n namespace, state t
 	return p.scan(rows, "search result")
 }
 
-func (s *Store) SearchFulltext(ctx context.Context, ns, table, match, filter string, args []any, includeHidden bool, scope *store.RowScope, scopeIncarnation store.Incarnation, page store.Page) (store.SearchResult, error) {
+func (s *Store) SearchFulltext(ctx context.Context, ns, table, match, filter string, args []any, includeHidden bool, scope *store.RowScope, _ store.Incarnation, page store.Page) (store.SearchResult, error) {
 	if scope != nil {
 		return store.SearchResult{}, derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
 	}
@@ -138,9 +140,6 @@ func (s *Store) SearchFulltext(ctx context.Context, ns, table, match, filter str
 	err = s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
 		state, err := s.loadTable(ctx, tx, n, table)
 		if err != nil {
-			return err
-		}
-		if err := checkIncarnation(ns, state.incarnation, scopeIncarnation); err != nil {
 			return err
 		}
 		if len(fulltextFields(state.schema.Fields)) == 0 {
@@ -205,4 +204,138 @@ func searchError(ctx context.Context, filter string, err error) error {
 		return store.NewFilterError(filter, queryError(ctx, err))
 	}
 	return queryError(ctx, err)
+}
+
+func (s *Store) SearchVector(ctx context.Context, ns, table string, q store.VectorQuery, includeHidden bool, scope *store.RowScope, _ store.Incarnation, page store.Page) (store.SearchResult, error) {
+	if scope != nil {
+		return store.SearchResult{}, derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
+	}
+	if page.Offset < 0 {
+		return store.SearchResult{}, invalidf("offset must be non-negative")
+	}
+	if len(q.Args) > 100 {
+		return store.SearchResult{}, invalidf("too many filter arguments")
+	}
+	limit := store.DefaultSearchLimit
+	if page.Limit > 0 {
+		limit = page.Limit
+	}
+	if limit > store.MaxSearchLimit {
+		limit = store.MaxSearchLimit
+	}
+	filter := strings.TrimSpace(q.Filter)
+	args, err := queryArgs(q.Args)
+	if err != nil {
+		return store.SearchResult{}, err
+	}
+	threshold := math.Inf(-1)
+	if q.MinScore != nil {
+		threshold = *q.MinScore
+	}
+	result := store.SearchResult{Rows: []map[string]any{}, Execution: store.VectorExact}
+	err = s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
+		state, err := s.loadTable(ctx, tx, n, table)
+		if err != nil {
+			return err
+		}
+		column, dim, err := store.ResolveVectorColumn(state.schema, table, q.Column, q.EmbedModel != "", q.EmbedModel)
+		if err != nil {
+			return err
+		}
+		if dim > 0 && len(q.Vec) != dim {
+			return invalidf("query vector has %d entries, column %s expects dim %d", len(q.Vec), column, dim)
+		}
+		if !store.AllFinite(q.Vec) {
+			return invalidf("query vector contains a non-finite component")
+		}
+		physicalColumn := column
+		if column != "_embedding" {
+			physicalColumn = state.columns[column]
+		}
+		physical := ident(n.physical, state.physical)
+		stmt := "SELECT id," + ident(physicalColumn) + " FROM " + physical + " WHERE " + ident(physicalColumn) + " IS NOT NULL"
+		bind := append([]any{}, args...)
+		if filter != "" {
+			compiled, err := compileMutationFilter(filter, len(args), n.physical, state)
+			if err != nil {
+				return err
+			}
+			stmt += " AND id IN (" + compiled + ")"
+		}
+		rows, err := tx.Query(ctx, stmt, bind...)
+		if err != nil {
+			return searchError(ctx, filter, err)
+		}
+		type hit struct {
+			id    int64
+			score float64
+		}
+		hits := []hit{}
+		skipped := 0
+		for rows.Next() {
+			var id int64
+			var raw []byte
+			if err := rows.Scan(&id, &raw); err != nil {
+				rows.Close()
+				return err
+			}
+			stored, err := schema.DecodeVector(raw)
+			if err != nil || len(stored) != len(q.Vec) || !store.AllFinite(stored) {
+				skipped++
+				continue
+			}
+			score := store.Cosine(q.Vec, stored)
+			if score < threshold {
+				continue
+			}
+			hits = append(hits, hit{id: id, score: score})
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return searchError(ctx, filter, err)
+		}
+		rows.Close()
+		sort.SliceStable(hits, func(i, j int) bool {
+			if hits[i].score == hits[j].score {
+				return hits[i].id < hits[j].id
+			}
+			return hits[i].score > hits[j].score
+		})
+		offset := page.Offset
+		if offset > len(hits) {
+			offset = len(hits)
+		}
+		end := offset + limit + 1
+		if end > len(hits) {
+			end = len(hits)
+		}
+		paged := hits[offset:end]
+		hasMore := len(paged) > limit
+		if hasMore {
+			paged = paged[:limit]
+		}
+		ids := make([]int64, len(paged))
+		scoreByID := make(map[int64]float64, len(paged))
+		for i, h := range paged {
+			ids[i] = h.id
+			scoreByID[h.id] = h.score
+		}
+		out, truncated, err := s.fetchRanked(ctx, tx, n, state, ids, includeHidden)
+		if err != nil {
+			return err
+		}
+		for _, row := range out {
+			if id, ok := row["id"].(int64); ok {
+				row["_score"] = scoreByID[id]
+			}
+		}
+		result.Rows = out
+		result.Truncated = hasMore || truncated
+		result.SkippedVectors = skipped
+		return nil
+	})
+	if err != nil {
+		return store.SearchResult{}, err
+	}
+	return result, nil
 }

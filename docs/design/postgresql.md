@@ -255,13 +255,44 @@ Full-text changes record schema state and report the same `rebuild_fulltext` and
 full-text indexing is the next increment, and it takes over the index work without
 changing these plan semantics.
 
+## Native search (implemented internally)
+
+Full-text search uses a STORED generated `tsvector` column over the table's fulltext
+fields with a GIN index, matched with `@@` and ordered by `ts_rank_cd` descending then
+id ascending. The text-search configuration is the explicit `english` one, never the
+server's ambient default, and fields carry equal weight. Relevance is PostgreSQL-native
+and does not agree with SQLite's BM25 ordering; ranking is tested within each backend,
+not across them.
+
+The match grammar is translated to a tsquery expression rather than passed through.
+Terms become `plainto_tsquery`, phrases `phraseto_tsquery`, and prefixes a quoted
+lexeme with `:*`, combined with the `&&`, `||`, and `!!` tsquery operators. Every term
+and phrase reaches PostgreSQL as a bind parameter, so tsquery metacharacters in a query
+become literal lexemes instead of operators. Two pieces of the FTS5 grammar have no
+faithful equivalent and are rejected with a message naming the alternative rather than
+mistranslated: the `field:term` column filter (and its `{field field}:term` group form)
+and `NEAR()`. Stemming, stop words, and accent handling are PostgreSQL's, so a query of
+only stop words matches nothing where FTS5 would match.
+
+Migrations drop the generated column before the field DDL and rebuild it after, because
+PostgreSQL refuses to drop a column a generated column reads.
+
+Vector search scans stored vectors and scores cosine similarity in Go, exactly as SQLite
+does, and reports `exact` execution. Ordering, `_score`, `min_score`, skipped-vector
+counting, filters, and paging agree with SQLite row for row, and the conformance suite
+pins that. No PostgreSQL vector extension is required; approximate-nearest-neighbour
+acceleration remains a separate increment with its own conformance-backed contract.
+
+Both searches apply their filter through the same confined parser the mutations use, so
+a filter sees declared columns only and cannot reach the generated tsvector column or
+hidden embeddings. Result shapes, typed coercion, hidden-column behaviour, response
+budgets, and truncation match the other read paths.
+
 ## Remaining implementation sequence
 
-1. Native PostgreSQL full-text indexing/matching/ranking and vector search; add
-   per-engine match/relevance fixtures and cross-engine filter/shape tests.
-2. Cross-process polling/listening and SSE lifecycle
+1. Cross-process polling/listening and SSE lifecycle
    tests. Notifications may wake readers but never replace the durable log.
-3. Implement every mandatory Engine method, wire the HTTP/MCP/stdio/facade/blackbox
+2. Implement every mandatory Engine method, wire the HTTP/MCP/stdio/facade/blackbox
    constructors and complete the conformance matrix; only then enable the public
    selector and publish PostgreSQL configuration/install guidance.
 
