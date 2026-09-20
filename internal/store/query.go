@@ -156,14 +156,23 @@ func firstKeyword(query string) string {
 	return strconv.Quote(word)
 }
 
+func ValidateQueryShape(query string) error {
+	if !queryStartRe.MatchString(strings.TrimSpace(query)) {
+		return invalidf("query must begin with SELECT or WITH (got %s); query is read-only, so writes go through insert/update/upsert/delete — and check the first keyword for a typo, which lands here too", firstKeyword(query))
+	}
+	trimmed := strings.TrimRight(strings.TrimSpace(query), ";")
+	trimmed = stripUnterminatedBlockComment(trimmed)
+	if hasStatementSeparator(trimmed) {
+		return invalidf("multiple statements are not allowed")
+	}
+	return nil
+}
+
 func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsGen [16]byte, page Page) (QueryResult, error) {
 	trimmed := strings.TrimRight(strings.TrimSpace(query), ";")
 	trimmed = stripUnterminatedBlockComment(trimmed)
-	if !queryStartRe.MatchString(strings.TrimSpace(query)) {
-		return QueryResult{}, invalidf("query must begin with SELECT or WITH (got %s); query is read-only, so writes go through insert/update/upsert/delete — and check the first keyword for a typo, which lands here too", firstKeyword(query))
-	}
-	if hasStatementSeparator(trimmed) {
-		return QueryResult{}, invalidf("multiple statements are not allowed")
+	if err := ValidateQueryShape(query); err != nil {
+		return QueryResult{}, err
 	}
 	if len(args) > 100 {
 		return QueryResult{}, invalidf("too many query parameters")
