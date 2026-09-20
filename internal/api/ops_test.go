@@ -1303,6 +1303,9 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 	if sqlP["minLength"] != 1 {
 		t.Fatalf("sql must declare minLength 1, got %v", sqlP)
 	}
+	if sqlP["maxLength"] != store.MaxQueryRunes {
+		t.Fatalf("sql must declare maxLength %d, got %v", store.MaxQueryRunes, sqlP)
+	}
 	if sqlP["pattern"] != `^\s*([sS][eE][lL][eE][cC][tT]|[wW][iI][tT][hH])\b[\s\S]*$` {
 		t.Fatalf("sql must anchor to a SELECT/WITH prefix without banning semicolons (store guard is authoritative), got %v", sqlP["pattern"])
 	}
@@ -1316,6 +1319,13 @@ func TestQueryAndDeleteSchemaParity(t *testing.T) {
 	offsetP := props["offset"].(map[string]any)
 	if offsetP["minimum"] != 0 {
 		t.Fatalf("query offset must declare minimum 0, got %v", offsetP)
+	}
+	body, err := json.Marshal(map[string]any{"namespace": "n", "sql": "SELECT '" + strings.Repeat("é", store.MaxQueryRunes) + "'"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.Func(context.Background(), &Server{}, body); err == nil {
+		t.Fatal("query accepted SQL beyond the advertised character limit")
 	}
 	d, ok := Ops["delete"]
 	if !ok {

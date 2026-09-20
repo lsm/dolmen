@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lsm/dolmen/internal/ops"
 	"github.com/lsm/dolmen/internal/schema"
@@ -950,8 +951,7 @@ var Ops = map[string]OpDef{
 			"a label declared boolean reads true/false, json reads decoded, vector reads a number array, " +
 			"number reads integer or float. Labels that match no declared field, or that different tables " +
 			"declare with different types, fall back to raw values (blobs as base64). " +
-			"id and created_at are included in SELECT *; the hidden _embedding column is stripped from SELECT * — " +
-			"reference _embedding in the statement (outside string literals/comments) to include it. " +
+			"id and created_at are included in SELECT *; the hidden _embedding column is omitted and may not be available through caller SQL, depending on the backend. " +
 			"Do not put LIMIT or OFFSET in the SQL; use the offset and limit parameters. " +
 			"For stable pagination, include an explicit ORDER BY clause.",
 		InputSchema: map[string]any{
@@ -1008,6 +1008,9 @@ var Ops = map[string]OpDef{
 			var req queryReq
 			if err := decodeData(body, &req); err != nil {
 				return nil, err
+			}
+			if utf8.RuneCountInString(req.SQL) > store.MaxQueryRunes {
+				return nil, badRequest("sql exceeds %d characters", store.MaxQueryRunes)
 			}
 			ns := normNS(req.Namespace)
 			res, err := s.eng.Query(ctx, ns, req.SQL, req.Args, [16]byte{},

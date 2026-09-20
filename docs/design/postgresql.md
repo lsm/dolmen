@@ -172,19 +172,62 @@ Embedding calls run before the write transaction, and the table lifetime and sch
 are rechecked before committing. Rows, embedding metadata, and insert-then-update
 change records commit atomically. Authorization-bearing options still fail closed.
 
+## Caller SQL boundary (implemented internally)
+
+The implementation parses PostgreSQL syntax with the pinned `wasilibs/go-pgquery`
+WebAssembly parser, which preserves the no-cgo build. It accepts one SELECT/read-only
+WITH statement and validates an allowlist of expressions, built-in functions, types,
+and operators. Catalog/schema-qualified references, administrative functions,
+SELECT INTO, locking clauses, and mutation CTEs are rejected before execution.
+
+Base tables become generated subqueries exposing declared columns only, with persisted
+physical names and logical output labels. The resolver respects CTE scope and aliases.
+Identifiers longer than 63 bytes are replaced with collision-checked temporary names
+before PostgreSQL parsing, avoiding parser truncation. Placeholders are lexed through
+strings, quoted identifiers, nested comments, and dollar-quoted strings. `?` is always
+a Dolmen parameter; write `??` for PostgreSQL's JSON existence operator (`?|` and `?&`
+remain native operators). Numbered `$N` caller parameters are rejected.
+
+A DBA provisions one restricted NOLOGIN query role per dedicated Dolmen database and
+grants the backend account permission to `SET ROLE` to it. Dolmen does not need
+CREATEROLE. The backend grants that role schema USAGE and SELECT on declared columns
+only; hidden embeddings and catalog tables are not granted. New tables receive grants
+transactionally. Execution switches to the restricted role inside a read-only
+transaction with a 30-second statement timeout. Rollback resets connection-local
+settings before pool reuse. Parser validation additionally blocks PostgreSQL's
+PUBLIC-readable catalog and function-equivalent probes. A dedicated database keeps the
+shared query role's grants within one Dolmen installation; parser rewriting enforces
+the logical namespace boundary.
+
+The exact built-in allowlists live in `internal/postgres/sql_parse.go`. This native
+PostgreSQL SQL surface is not a SQLite SQL translator. Integration tests cover logical
+names, typed results, pagination, response bounds, role isolation, and pooled-state
+cleanup. Tests use the same pre-provisioned role model as production.
+
+## Filter mutations (implemented internally)
+
+Update, delete, and filter-based upsert compile their filter as a confined single-table
+`SELECT id` through the same PostgreSQL parser boundary. This preserves logical field
+names and `?` arguments while rejecting additional statements, schema-qualified
+references, and unsupported functions or operators. Matching IDs are selected and
+mutated under the namespace write lock, with row changes and durable change records in
+one transaction.
+
+Updates patch only supplied fields. Filter upsert updates every match or inserts one
+record with defaults and required-field validation when there is no match. Delete keeps
+the existing dry-run, match limit, and explicit confirmation contract. Embedding work
+runs before the write transaction and is skipped for no-match updates; invalid fields
+and values are still rejected even when a filter matches nothing.
+
 ## Remaining implementation sequence
 
-1. Update/delete and filter-based upsert with durable change records in the same
-   namespace-serialized transaction. Normalize PostgreSQL SQLSTATE errors to dolmen's
-   taxonomy; preserve integer and JSON fidelity fixtures.
-2. Caller query confinement and schema migrations. Resolve placeholder/operator
-   ambiguity and logical table/field-name mapping with parser tests before accepting
-   caller SQL. Schema privileges plus catalog/function restrictions are mandatory.
-3. Native PostgreSQL full-text indexing/matching/ranking and vector search; add
+1. Schema migrations with atomic history, physical-name mapping updates, full-text
+   rebuild planning, and embedding backfill outside long-held write transactions.
+2. Native PostgreSQL full-text indexing/matching/ranking and vector search; add
    per-engine match/relevance fixtures and cross-engine filter/shape tests.
-4. Cross-process polling/listening and SSE lifecycle
+3. Cross-process polling/listening and SSE lifecycle
    tests. Notifications may wake readers but never replace the durable log.
-5. Implement every mandatory Engine method, wire the HTTP/MCP/stdio/facade/blackbox
+4. Implement every mandatory Engine method, wire the HTTP/MCP/stdio/facade/blackbox
    constructors and complete the conformance matrix; only then enable the public
    selector and publish PostgreSQL configuration/install guidance.
 
@@ -197,10 +240,13 @@ with dolmen and no service is started by opening a store.
 Against a disposable PostgreSQL database:
 
 ```sh
-export DOLMEN_TEST_PG_DSN='postgres://user:password@127.0.0.1:5432/dolmen_test?sslmode=disable'
+export DOLMEN_TEST_PG_ADMIN_DSN='postgres://admin:password@127.0.0.1:5432/dolmen_test?sslmode=disable'
+psql "$DOLMEN_TEST_PG_ADMIN_DSN" -c "CREATE ROLE dolmen_query NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS; CREATE ROLE dolmen_backend LOGIN PASSWORD 'backend-test'; GRANT dolmen_query TO dolmen_backend WITH INHERIT FALSE, SET TRUE; GRANT CONNECT, CREATE ON DATABASE dolmen_test TO dolmen_backend"
+export DOLMEN_TEST_PG_DSN='postgres://dolmen_backend:backend-test@127.0.0.1:5432/dolmen_test?sslmode=disable'
+export DOLMEN_TEST_PG_QUERY_ROLE=dolmen_query
 export DOLMEN_TEST_PG_REQUIRED=1
 go test -race -count=1 ./internal/postgres
-go test -race -count=1 ./internal/conformance -run '^Test(Namespace|Table|RowRead|Insert|Changes|KeyUpsert)BackendConformance$'
+go test -race -count=1 ./internal/conformance -run '^Test(Namespace|Table|RowRead|Insert|Changes|KeyUpsert|Query|Mutation)BackendConformance$'
 ```
 
 Without the test DSN, PostgreSQL integration tests skip during ordinary SQLite-only

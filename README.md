@@ -877,8 +877,9 @@ atomically with your side effects rather than deduplicating on frame content.
   integer or float, SQL `NULL` → `null`. In raw SQL, coercion is by result-column label (aliases count
   as their label); labels that match no declared field, or that different tables declare with
   conflicting types, fall back to raw values (blobs as base64). The hidden `_embedding` column (from
-  `vectorize`) is stripped from `SELECT *` and search results — reference it in the SQL (outside string
-  literals and comments) or pass `include_hidden: true` to a search to include it.
+  `vectorize`) is stripped from `SELECT *` and search results — pass `include_hidden: true` to a search
+  to include it. Naming it in the SQL (outside string literals and comments) also works where the
+  backend exposes it to caller SQL, but that is backend-dependent.
 - **Pagination** on `query`, `search_fulltext`, and `search_vector` via `offset` and `limit` parameters.
   Do not put `LIMIT`/`OFFSET` in raw SQL; use the parameters. `search_fulltext` and `search_vector`
   have stable, deterministic ordering. The response includes `truncated: true` when more results are
@@ -981,8 +982,8 @@ negative — `rank` value and are returned first. The rank value itself is not i
   used to produce the stored and query vectors.
 - Every vector result carries `_score`: cosine similarity, where higher is closer. For typical
   positive embeddings it ranges `0`–`1`; mathematically it ranges `-1`–`1`.
-- `_embedding` is hidden from `SELECT *` and search results unless you reference it explicitly in the
-  SQL or pass `include_hidden: true`.
+- `_embedding` is hidden from `SELECT *` and search results unless you pass `include_hidden: true`, or
+  the SQL names it explicitly on a backend that exposes it to caller SQL.
 
 ### Id, `created_at`, and stability
 
