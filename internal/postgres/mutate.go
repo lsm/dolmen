@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -55,9 +56,23 @@ func compileMutationFilter(filter string, argc int, physicalNamespace string, st
 	if filter == "" {
 		return "", fmt.Errorf("%w: filter is required (pass \"1=1\" to match every row)", store.ErrInvalid)
 	}
+	if strings.Contains(filter, ";") {
+		return "", fmt.Errorf("%w: multiple statements are not allowed in filter", store.ErrInvalid)
+	}
 	query := "SELECT id FROM " + ident(state.incarnation.Table) + " WHERE " + filter + " ORDER BY id"
 	compiled, _, err := compileSQL(query, argc, physicalNamespace, map[string]tableState{state.incarnation.Table: state})
-	return compiled, err
+	if err != nil {
+		return "", filterSyntaxError(filter, err)
+	}
+	return compiled, nil
+}
+
+func filterSyntaxError(filter string, err error) error {
+	var parse sqlParseRejection
+	if !errors.As(err, &parse) {
+		return err
+	}
+	return store.NewBackendQueryError(fmt.Sprintf("invalid filter %q: the filter must be a single SQL WHERE expression (e.g. \"status = 'done'\" or \"id IN (3, 7)\"); use ? for parameters and column names from describe_table", filter), err)
 }
 
 func selectMutationIDs(ctx context.Context, tx pgx.Tx, query string, args []any) ([]int64, error) {

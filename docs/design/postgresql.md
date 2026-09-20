@@ -446,6 +446,16 @@ conformance fixture pass and breaks that containment test. The README and the sk
 already describe `_embedding` caller-SQL access as backend-dependent for this reason,
 so the fixture needs an engine-aware pin, not a wider query role.
 
+Filters share the query contract's remediation. A `;` in a filter is rejected with the
+wording SQLite uses instead of reaching the parser, and a filter that fails to parse is
+reframed: the compiler wraps a filter into `SELECT id FROM t WHERE <filter> ORDER BY
+id`, so a malformed filter surfaced a syntax error naming `ORDER` — a token the caller
+never wrote, from a statement they cannot see. Only parse failures are reframed, so an
+unknown table or function still names what was missing; an unknown filter column
+parses cleanly and fails at execution, where it keeps the generic remediation pointing
+at `describe_table` rather than naming the column. A failed `drop_namespace` now
+says nothing was dropped rather than pointing at `list_namespaces`.
+
 A bare `-` is now rejected by the PostgreSQL query translator as it is by FTS5. It is
 not in the common grammar, and PostgreSQL's parser treats it as punctuation, so such a
 query was accepted and answered `200` with an empty result set where the contract
@@ -472,7 +482,6 @@ closed before the public selector is enabled:
 | Area | Fixture | Gap |
 |---|---|---|
 | Error taxonomy | `TestGoldenErrorContract` | statuses and codes now match on every case; what remains is full-text wording, where the fixture pins FTS5 strings (`fts5: syntax error`, `column "nocol" not found`, `FTS5 parses a bare "-"`) that D27 makes per-engine, so these need an engine-aware pin |
-| Error taxonomy | `TestDropNamespaceNotFoundDoesNotAdviseCreating`, `TestSearchFulltextFilterArgs` | remediation wording diverges from the pinned shapes |
 | Change feed | `TestChangesSinceTableFeedContract` | a live table-feed cursor is rejected as past the retention window |
 | SSE | `TestSubscribeOverflowTeachesReconnect` | the bound itself now exists and `TestPostgresListenOverflowsABlockedSubscriber` pins it, but the fixture parks a consumer and floods 9000 changes, which needs the live pump to get 8000 ahead of the writer. Live fetches go through `ChangesSince`, which takes the namespace write lock to mint a cursor per record, so the pump contends with the very writer it must outrun and no backlog accumulates. Closing this means a live read that does not take the write lock |
 
