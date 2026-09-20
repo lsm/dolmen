@@ -247,10 +247,12 @@ embedding estimates) read the pre-migration physical name, because the new name 
 not exist until the DDL runs. Migrations re-issue the query role's column grants so
 caller SQL sees added fields and loses dropped ones.
 
-Embedding backfills run outside the write transaction. The migration plans and reads a
-snapshot under a short read transaction, embeds with no lock held, then applies the DDL
-and the precomputed vectors under the write lock, confirming each row's text is
-unchanged. If a concurrent write moved a row, the transaction rolls back and the
+Embedding backfills run outside the write transaction. The migration pages the vectorized
+column in id order under short read transactions, embedding each batch with no lock held,
+then applies the DDL and the precomputed vectors under the write lock, confirming each
+row's text is unchanged by comparing a digest rather than retaining the text. Paging keeps
+the working set per batch bounded; the vectors themselves are held until the write, which
+is the price of applying the whole backfill in one transaction. If a concurrent write moved a row, the transaction rolls back and the
 migration retries; no embedding call happens while the namespace write lock is held. A
 newly added vectorized field with a constant backfill default embeds that text once.
 
