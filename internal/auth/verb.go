@@ -7,8 +7,6 @@ import (
 
 type Verb string
 
-const RowAccessOwn = "own"
-
 const (
 	VerbCreate Verb = "create"
 	VerbRead   Verb = "read"

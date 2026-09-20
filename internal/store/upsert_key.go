@@ -13,6 +13,9 @@ import (
 const MaxKeyFields = 8
 
 func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
+	if scope != nil {
+		return InsertResult{}, errScopedKeyUpsertUnsupported
+	}
 	if len(records) == 0 {
 		return InsertResult{}, invalidf("no records given")
 	}

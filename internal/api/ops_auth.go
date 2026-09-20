@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lsm/dolmen/internal/auth"
+	"github.com/lsm/dolmen/internal/schema"
 )
 
 var authOps = map[string]OpDef{}
@@ -53,7 +54,7 @@ func withRowAccessInput(def OpDef) OpDef {
 	}
 	nextProps["row_access"] = map[string]any{
 		"type":        "string",
-		"enum":        []string{auth.RowAccessOwn},
+		"enum":        []string{schema.RowAccessOwn},
 		"description": "Restrict row visibility to the principal who wrote each row. Omit for a table every grant holder sees in full. The server stamps an implicit owner column; callers never supply it, and it cannot be enabled later on a table that already has rows",
 	}
 	next := make(map[string]any, len(def.InputSchema))

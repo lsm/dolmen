@@ -66,3 +66,5 @@ func checkScopeIncarnation(ctx context.Context, tx rowQuerier, nsName, table str
 	}
 	return nil
 }
+
+var errScopedKeyUpsertUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and upsert_by_key matches on the natural key across every row, so it could update a row you cannot see; insert instead, or ask for the read verb on the table, which lifts the scope", ErrInvalid)

@@ -322,3 +322,32 @@ func TestMigrationPreservesRowAccess(t *testing.T) {
 		t.Fatalf("after a migration the scope stopped filtering: %d rows", len(own.Rows))
 	}
 }
+
+func TestScopedUpsertByKeyCannotTouchAForeignRow(t *testing.T) {
+	st := openRowAccessStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "ns", "docs", []schema.Field{
+		{Name: "sku", Type: schema.String},
+		{Name: "body", Type: schema.Text},
+	}, TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "ns", "docs", []map[string]any{{"sku": "k1", "body": "bob's"}},
+		WriteOpts{Owner: "bob"}, Embedder{}, nil, Incarnation{}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, err := st.UpsertByKey(ctx, "ns", "docs", []string{"sku"},
+		[]map[string]any{{"sku": "k1", "body": "alice overwrote it"}},
+		WriteOpts{Owner: "alice"}, Embedder{}, &RowScope{Owner: "alice"}, Incarnation{}); err == nil {
+		t.Fatal("a scoped upsert_by_key matched a row owned by someone else")
+	}
+
+	rows, err := st.GetRows(ctx, "ns", "docs", []int64{1}, nil, Incarnation{})
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if len(rows.Rows) != 1 || rows.Rows[0]["body"] != "bob's" {
+		t.Fatalf("bob's row was modified: %v", rows.Rows)
+	}
+}
