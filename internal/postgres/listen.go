@@ -300,6 +300,16 @@ func (l *listenSession) finish(cause error) {
 	})
 }
 
+func (l *listenSession) deliver(record store.ChangeRecord) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("listen notify callback panicked; subscription continues",
+				"namespace", l.ns, "table", record.Table, "panic", r)
+		}
+	}()
+	l.notify(record)
+}
+
 func (l *listenSession) storeClosing() bool {
 	select {
 	case <-l.storeStop:
@@ -384,7 +394,7 @@ func (l *listenSession) run(ctx context.Context) {
 					l.finish(err)
 					return
 				}
-				l.notify(record)
+				l.deliver(record)
 			}
 		}
 		select {
@@ -496,6 +506,13 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 					close(session.replayDone)
 				}
 				return nil, session.resume(), true, nil
+			}
+			for _, record := range batch {
+				if err := session.admits(record.Table); err != nil {
+					session.finish(err)
+					session.halt()
+					return nil, "", false, err
+				}
 			}
 			return batch, session.resume(), false, nil
 		},

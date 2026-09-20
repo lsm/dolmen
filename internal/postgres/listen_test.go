@@ -797,3 +797,66 @@ func TestPostgresListenSurvivesPastTwiceChangeRetention(t *testing.T) {
 		t.Fatal("subscription stopped delivering past twice the retention window")
 	}
 }
+
+func TestPostgresListenPanickingNotifyDoesNotCrash(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	var seen atomic.Int64
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, nil, func(store.ChangeRecord) {
+		seen.Add(1)
+		panic("notify callback exploded")
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	drainReplay(t, ctx, replay)
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "one"}, {"body": "two"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(20 * time.Second)
+	for seen.Load() < 2 {
+		select {
+		case <-deadline:
+			t.Fatalf("a panicking notify stopped delivery after %d records", seen.Load())
+		case <-time.After(listenPollInterval):
+		}
+	}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "three"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatalf("store unusable after a panicking notify: %v", err)
+	}
+}
+
+func TestPostgresListenNamespaceReplayRechecksAdmission(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "one"}, {"body": "two"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	var admitted atomic.Bool
+	admitted.Store(false)
+	closedWith := make(chan error, 1)
+	replay, cancel, err := s.Listen(ctx, "app", "", store.CursorBegin, [16]byte{}, func(string) (*store.RowScope, store.Incarnation, bool) {
+		return nil, store.Incarnation{}, admitted.Load()
+	}, func(store.ChangeRecord) {}, func(cause error) { closedWith <- cause })
+	if err != nil {
+		if !errors.Is(err, store.ErrListenRevoked) {
+			t.Fatalf("Listen with revoked admission: %v", err)
+		}
+		return
+	}
+	defer cancel()
+	if _, _, _, err := replay.Next(ctx); !errors.Is(err, store.ErrListenRevoked) {
+		t.Fatalf("namespace replay delivered under revoked admission: %v", err)
+	}
+	select {
+	case cause := <-closedWith:
+		if !errors.Is(cause, store.ErrListenRevoked) {
+			t.Fatalf("closed cause = %v, want ErrListenRevoked", cause)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("revoked admission during replay never fired closed")
+	}
+}

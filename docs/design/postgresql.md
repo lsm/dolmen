@@ -362,9 +362,13 @@ Ends are reported through `closed` with the shared sentinels the transports matc
 target or a closing store, and `ErrListenAged` for a cursor past retention. A closing
 store is checked before each tick's work and again if that work fails, so a session
 racing `Close` reports the sentinel rather than whatever error the closing pool happened
-to raise. The `closed` dispatch recovers from a panicking callback and logs it: the
-callback runs on the engine's session goroutine, so one bad subscriber would otherwise
-take the process down. Plain
+to raise. Both the `closed` and `notify` dispatches recover from a panicking callback and log
+it: they run on the engine's session goroutine, so one bad subscriber would otherwise take
+the process down. A panicking `notify` is logged and the subscription continues; only the
+record that raised it is lost.
+
+Replay admits per record too, not only the live phase, so a namespace-wide feed whose
+admission is withdrawn during a long replay stops rather than finishing the backlog. Plain
 cancellation reports nothing: the transports treat the close cause as an error to render,
 and a nil cause is not one. The session is bound to the
 caller's context, so cancelling that context ends it. A terminal error during the replay
