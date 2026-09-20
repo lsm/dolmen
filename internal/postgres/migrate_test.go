@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -440,5 +441,67 @@ func TestPostgresMigrateRejectsEnumValueRacingTheWriteLock(t *testing.T) {
 	}
 	if len(rows.Rows) != 2 {
 		t.Fatalf("racing insert lost: %+v", rows.Rows)
+	}
+}
+
+func TestPostgresMigrateBackfillsInPagedBatches(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "body"}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	const rows = embedBackfillPage*2 + 7
+	records := make([]map[string]any, rows)
+	for i := range records {
+		records[i] = map[string]any{"body": fmt.Sprintf("row %d", i)}
+	}
+	if _, err := s.Insert(ctx, "app", "notes", records, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	batches := []int{}
+	emb := store.Embedder{Identity: "test", Embed: func(_ context.Context, texts []string) ([][]float32, error) {
+		mu.Lock()
+		batches = append(batches, len(texts))
+		mu.Unlock()
+		out := make([][]float32, len(texts))
+		for i := range out {
+			out[i] = []float32{1, 0, float32(len(texts[i]))}
+		}
+		return out, nil
+	}}
+	if _, err := s.Migrate(ctx, "app", "notes", []schema.Change{
+		{Op: schema.OpSetVectorize, Name: "body", Value: migrateTrue()},
+	}, emb, store.Incarnation{Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	for _, n := range batches {
+		if n > embedBackfillPage {
+			t.Fatalf("batch of %d exceeds the %d-row page: %+v", n, embedBackfillPage, batches)
+		}
+		total += n
+	}
+	if total != rows {
+		t.Fatalf("embedded %d texts, want %d", total, rows)
+	}
+	if len(batches) < 3 {
+		t.Fatalf("expected the backfill to page, got batches %+v", batches)
+	}
+	var embedded int
+	if err := s.read(ctx, "app", func(tx pgx.Tx, n namespace) error {
+		state, err := s.loadTable(ctx, tx, n, "notes")
+		if err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, "SELECT count(*) FROM "+ident(n.physical, state.physical)+` WHERE "_embedding" IS NOT NULL`).Scan(&embedded)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if embedded != rows {
+		t.Fatalf("backfilled %d rows, want %d", embedded, rows)
 	}
 }
