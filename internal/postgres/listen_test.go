@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -544,5 +545,72 @@ func TestPostgresListenIdlePollDoesNotWrite(t *testing.T) {
 	time.Sleep(8 * listenPollInterval)
 	if after := count(); after != before {
 		t.Fatalf("idle polling minted %d cursors in %v", after-before, 8*listenPollInterval)
+	}
+}
+
+func TestPostgresNotifyChannelFitsIdentifierLimit(t *testing.T) {
+	for _, catalog := range []string{"dolmen_catalog", strings.Repeat("c", 63), "c" + strings.Repeat("x", 62)} {
+		s := &Store{catalog: catalog}
+		channel := s.notifyChannel()
+		if len(channel) > 63 {
+			t.Fatalf("catalog %d chars yields a %d-byte channel %q", len(catalog), len(channel), channel)
+		}
+		if channel != (&Store{catalog: catalog}).notifyChannel() {
+			t.Fatalf("channel for catalog %q is not deterministic", catalog)
+		}
+	}
+	short := (&Store{catalog: "app"}).notifyChannel()
+	long := (&Store{catalog: strings.Repeat("c", 63)}).notifyChannel()
+	if short == long {
+		t.Fatal("distinct catalogs collided on one channel")
+	}
+}
+
+func TestPostgresListenWorksWithALongCatalogName(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Catalog = cfg.Catalog + "_" + strings.Repeat("z", 63-len(cfg.Catalog)-1)
+	if len(cfg.Catalog) != 63 {
+		t.Fatalf("catalog is %d chars", len(cfg.Catalog))
+	}
+	s := openTest(t, cfg)
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	live := make(chan store.ChangeRecord, 16)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, nil, func(rec store.ChangeRecord) { live <- rec }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	drainReplay(t, ctx, replay)
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "long catalog"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatalf("write failed under a 63-character catalog: %v", err)
+	}
+	got := collectLive(t, live, 1)
+	if got[0].RowID != 1 {
+		t.Fatalf("record: %+v", got[0])
+	}
+}
+
+func TestPostgresAnnounceFailureDoesNotAbortWrites(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	if err := s.write(ctx, "app", [16]byte{}, func(tx pgx.Tx, n namespace) error {
+		if _, err := tx.Exec(ctx, "SELECT pg_notify($1,$2)", strings.Repeat("q", 64), n.name); err == nil {
+			return errors.New("expected an oversized channel to be rejected")
+		}
+		return nil
+	}); err == nil {
+		t.Fatal("expected the poisoned transaction to surface")
+	}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "after"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.write(ctx, "app", [16]byte{}, func(tx pgx.Tx, n namespace) error {
+		s.announce(ctx, tx, n.name)
+		var alive int
+		return tx.QueryRow(ctx, "SELECT 1").Scan(&alive)
+	}); err != nil {
+		t.Fatalf("announce left the transaction unusable: %v", err)
 	}
 }

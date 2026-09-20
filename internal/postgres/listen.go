@@ -15,11 +15,18 @@ import (
 
 const listenPollInterval = 250 * time.Millisecond
 
-func (s *Store) notifyChannel() string { return "dolmen_" + s.catalog }
+func (s *Store) notifyChannel() string { return physicalCandidate("dolmen_"+s.catalog, 0) }
 
-func (s *Store) announce(ctx context.Context, tx pgx.Tx, ns string) error {
-	_, err := tx.Exec(ctx, "SELECT pg_notify($1,$2)", s.notifyChannel(), ns)
-	return err
+func (s *Store) announce(ctx context.Context, tx pgx.Tx, ns string) {
+	savepoint, err := tx.Begin(ctx)
+	if err != nil {
+		return
+	}
+	if _, err := savepoint.Exec(ctx, "SELECT pg_notify($1,$2)", s.notifyChannel(), ns); err != nil {
+		_ = savepoint.Rollback(ctx)
+		return
+	}
+	_ = savepoint.Commit(ctx)
 }
 
 type wakeSet struct {

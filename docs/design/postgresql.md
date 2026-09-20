@@ -326,7 +326,11 @@ runs regardless, so a dropped, missed, or disabled notification costs latency an
 change: a test removes the wake registration entirely and still requires the change to
 arrive. That connection is opened directly rather than taken from the pool, because a
 pooled connection parked in `WaitForNotification` would hold a slot for the store's
-lifetime and deadlock writes on a small pool.
+lifetime and deadlock writes on a small pool. The channel name is length-capped the same
+way physical identifiers are, since a 63-character catalog would otherwise push it past
+PostgreSQL's 63-byte limit, and the announce runs in a savepoint so a failed notification
+— a full notification queue, say — cannot poison the write transaction that raised it.
+Notifications are an optimisation, and a write must not fail because one did.
 
 The subscription captures the namespace generation and the table's drop generation at
 `Listen` rather than trusting caller-supplied bindings, so a dropped and recreated table
