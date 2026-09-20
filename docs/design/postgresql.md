@@ -451,7 +451,9 @@ wording SQLite uses instead of reaching the parser, and a filter that fails to p
 reframed: the compiler wraps a filter into `SELECT id FROM t WHERE <filter> ORDER BY
 id`, so a malformed filter surfaced a syntax error naming `ORDER` — a token the caller
 never wrote, from a statement they cannot see. Only parse failures are reframed, so an
-unknown column or table still names what was missing. A failed `drop_namespace` now
+unknown table or function still names what was missing; an unknown filter column
+parses cleanly and fails at execution, where it keeps the generic remediation pointing
+at `describe_table` rather than naming the column. A failed `drop_namespace` now
 says nothing was dropped rather than pointing at `list_namespaces`.
 
 A bare `-` is now rejected by the PostgreSQL query translator as it is by FTS5. It is

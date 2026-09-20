@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -67,7 +68,8 @@ func compileMutationFilter(filter string, argc int, physicalNamespace string, st
 }
 
 func filterSyntaxError(filter string, err error) error {
-	if !strings.Contains(err.Error(), "invalid PostgreSQL SQL") {
+	var parse sqlParseRejection
+	if !errors.As(err, &parse) {
 		return err
 	}
 	return store.NewBackendQueryError(fmt.Sprintf("invalid filter %q: the filter must be a single SQL WHERE expression (e.g. \"status = 'done'\" or \"id IN (3, 7)\"); use ? for parameters and column names from describe_table", filter), err)
