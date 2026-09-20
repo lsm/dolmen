@@ -412,3 +412,30 @@ func TestPostgresSearchVectorUsesEmbeddingColumn(t *testing.T) {
 		t.Fatalf("include_hidden embedding: %+v", hidden.Rows[0]["_embedding"])
 	}
 }
+
+func TestPostgresSearchIgnoresArgsWithoutFilter(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := seedSearchTable(t, s)
+	result, err := s.SearchFulltext(ctx, "app", "notes", "payment", "", []any{"unused"}, false, nil, store.Incarnation{}, store.Page{})
+	if err != nil {
+		t.Fatalf("fulltext args without a filter: %v", err)
+	}
+	if len(result.Rows) != 3 {
+		t.Fatalf("fulltext rows: %+v", searchIDs(t, result))
+	}
+	if _, err := s.CreateTable(ctx, "app", "points", []schema.Field{{Name: "vec", Type: schema.Vector, Dim: 3}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "app", "points", []map[string]any{{"vec": []any{1.0, 0.0, 0.0}}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	q := vectorQuery([]float32{1, 0, 0})
+	q.Args = []any{"unused"}
+	vectorResult, err := s.SearchVector(ctx, "app", "points", q, false, nil, store.Incarnation{}, store.Page{})
+	if err != nil {
+		t.Fatalf("vector args without a filter: %v", err)
+	}
+	if len(vectorResult.Rows) != 1 {
+		t.Fatalf("vector rows: %+v", searchIDs(t, vectorResult))
+	}
+}

@@ -145,15 +145,19 @@ func (s *Store) SearchFulltext(ctx context.Context, ns, table, match, filter str
 		if len(fulltextFields(state.schema.Fields)) == 0 {
 			return invalidf("table %s has no fulltext fields", table)
 		}
-		tsquery, tsargs, err := compileFTSQuery(match, len(args))
+		bound := []any{}
+		if filter != "" {
+			bound = append(bound, args...)
+		}
+		tsquery, tsargs, err := compileFTSQuery(match, len(bound))
 		if err != nil {
 			return err
 		}
 		physical := ident(n.physical, state.physical)
-		bind := append(append([]any{}, args...), tsargs...)
+		bind := append(append([]any{}, bound...), tsargs...)
 		where := ident(ftsColumn) + " @@ " + tsquery
 		if filter != "" {
-			compiled, err := compileMutationFilter(filter, len(args), n.physical, state)
+			compiled, err := compileMutationFilter(filter, len(bound), n.physical, state)
 			if err != nil {
 				return err
 			}
@@ -254,9 +258,10 @@ func (s *Store) SearchVector(ctx context.Context, ns, table string, q store.Vect
 		}
 		physical := ident(n.physical, state.physical)
 		stmt := "SELECT id," + ident(physicalColumn) + " FROM " + physical + " WHERE " + ident(physicalColumn) + " IS NOT NULL"
-		bind := append([]any{}, args...)
+		bind := []any{}
 		if filter != "" {
-			compiled, err := compileMutationFilter(filter, len(args), n.physical, state)
+			bind = append(bind, args...)
+			compiled, err := compileMutationFilter(filter, len(bind), n.physical, state)
 			if err != nil {
 				return err
 			}
