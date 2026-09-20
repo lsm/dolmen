@@ -172,7 +172,7 @@ Embedding calls run before the write transaction, and the table lifetime and sch
 are rechecked before committing. Rows, embedding metadata, and insert-then-update
 change records commit atomically. Authorization-bearing options still fail closed.
 
-## Caller SQL boundary
+## Caller SQL boundary (implemented internally)
 
 The implementation parses PostgreSQL syntax with the pinned `wasilibs/go-pgquery`
 WebAssembly parser, which preserves the no-cgo build. It accepts one SELECT/read-only

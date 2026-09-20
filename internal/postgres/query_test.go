@@ -324,3 +324,35 @@ func TestPostgresQueryLoadsTablesInOneRoundTrip(t *testing.T) {
 		t.Fatalf("query after batch load: %+v", result.Rows)
 	}
 }
+
+func TestPostgresQueryReservedLongNamePrefixDoesNotCollide(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	long := strings.Repeat("v", 64)
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: long}, {Name: "body"}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{long: "encoded", "body": "plain"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.Query(ctx, "app", `SELECT body AS dolmen_long_0, "`+long+`" FROM notes`, nil, [16]byte{}, store.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Rows) != 1 {
+		t.Fatalf("rows: %+v", result.Rows)
+	}
+	row := result.Rows[0]
+	if row["dolmen_long_0"] != "plain" {
+		t.Fatalf("caller alias using the reserved prefix was remapped: %+v", row)
+	}
+	if row[long] != "encoded" {
+		t.Fatalf("long field lost its logical label: %+v", row)
+	}
+	if len(row) != 2 {
+		t.Fatalf("unexpected labels: %+v", row)
+	}
+}
