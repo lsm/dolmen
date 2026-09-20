@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -157,19 +158,104 @@ type listenSession struct {
 	done       chan struct{}
 }
 
-func (l *listenSession) admitted() bool {
-	if l.table == "" || l.liveAuthz == nil {
+func (l *listenSession) admits(table string) error {
+	if l.liveAuthz == nil {
+		return nil
+	}
+	scope, _, ok := l.liveAuthz(table)
+	if !ok {
+		return store.ErrListenRevoked
+	}
+	if scope != nil {
+		return derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
+	}
+	return nil
+}
+
+func terminalCause(ctx context.Context, err error) (error, bool) {
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return err, true
+	}
+	cause := context.Cause(ctx)
+	for _, sentinel := range []error{store.ErrListenAged, store.ErrListenRevoked, store.ErrListenLifetimeEnded, store.ErrListenOverflow} {
+		if errors.Is(cause, sentinel) {
+			return cause, true
+		}
+	}
+	return nil, false
+}
+
+func (l *listenSession) guard(ctx context.Context) error {
+	if err := l.admits(l.table); err != nil {
+		return err
+	}
+	intact := true
+	err := l.store.readOnly(ctx, l.ns, func(tx pgx.Tx, n namespace) error {
+		if n.generation != l.nsGen {
+			intact = false
+			return nil
+		}
+		if l.table == "" {
+			return nil
+		}
+		state, err := l.store.loadTable(ctx, tx, n, l.table)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				intact = false
+				return nil
+			}
+			return err
+		}
+		if state.incarnation.DropGen != l.inc.DropGen {
+			intact = false
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return store.ErrListenLifetimeEnded
+		}
+		return err
+	}
+	if !intact {
+		return store.ErrListenLifetimeEnded
+	}
+	return nil
+}
+
+func (l *listenSession) pending(ctx context.Context) bool {
+	from := l.resume()
+	if from == "" || from == store.CursorBegin {
 		return true
 	}
-	_, _, ok := l.liveAuthz(l.table)
-	return ok
+	has := true
+	err := l.store.readOnly(ctx, l.ns, func(tx pgx.Tx, n namespace) error {
+		var position int64
+		if err := tx.QueryRow(ctx, "SELECT position FROM "+l.store.relation("cursors")+" WHERE namespace=$1 AND token=$2", n.name, string(from)).Scan(&position); err != nil {
+			return err
+		}
+		stmt := "SELECT EXISTS(SELECT 1 FROM " + l.store.relation("changes") + " WHERE namespace=$1 AND position>$2"
+		args := []any{n.name, position}
+		if l.table != "" {
+			stmt += " AND table_name=$3 AND drop_generation=$4"
+			args = append(args, l.table, l.inc.DropGen)
+		}
+		stmt += ")"
+		return tx.QueryRow(ctx, stmt, args...).Scan(&has)
+	})
+	if err != nil {
+		return true
+	}
+	return has
 }
 
 func (l *listenSession) fetch(ctx context.Context) ([]store.ChangeRecord, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if !l.admitted() {
-		return nil, store.ErrListenRevoked
+	if l.table != "" {
+		if err := l.admits(l.table); err != nil {
+			return nil, err
+		}
 	}
 	records, next, err := l.store.ChangesSince(ctx, l.ns, l.table, l.cursor, l.nsGen, nil, l.inc, store.Page{})
 	if err != nil {
@@ -204,25 +290,30 @@ func (l *listenSession) run(ctx context.Context) {
 	select {
 	case <-l.replayDone:
 	case <-l.stop:
-		l.finish(nil)
 		return
 	case <-l.storeStop:
 		l.finish(store.ErrListenLifetimeEnded)
 		return
 	case <-ctx.Done():
-		l.finish(nil)
+		if cause, report := terminalCause(ctx, ctx.Err()); report {
+			l.finish(cause)
+		}
 		return
 	}
 	ticker := time.NewTicker(listenPollInterval)
 	defer ticker.Stop()
 	for {
-		for {
+		if err := l.guard(ctx); err != nil {
+			if cause, report := terminalCause(ctx, err); report {
+				l.finish(cause)
+			}
+			return
+		}
+		for l.pending(ctx) {
 			records, err := l.fetch(ctx)
 			if err != nil {
-				if errors.Is(err, context.Canceled) {
-					l.finish(nil)
-				} else {
-					l.finish(err)
+				if cause, report := terminalCause(ctx, err); report {
+					l.finish(cause)
 				}
 				return
 			}
@@ -230,18 +321,23 @@ func (l *listenSession) run(ctx context.Context) {
 				break
 			}
 			for _, record := range records {
+				if err := l.admits(record.Table); err != nil {
+					l.finish(err)
+					return
+				}
 				l.notify(record)
 			}
 		}
 		select {
 		case <-l.stop:
-			l.finish(nil)
 			return
 		case <-l.storeStop:
 			l.finish(store.ErrListenLifetimeEnded)
 			return
 		case <-ctx.Done():
-			l.finish(nil)
+			if cause, report := terminalCause(ctx, ctx.Err()); report {
+				l.finish(cause)
+			}
 			return
 		case <-l.wake:
 		case <-ticker.C:
@@ -290,8 +386,10 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 		stop: make(chan struct{}), storeStop: w.stop,
 		wake: make(chan struct{}, 1), replayDone: make(chan struct{}), done: make(chan struct{}),
 	}
-	if !session.admitted() {
-		return nil, nil, store.ErrListenRevoked
+	if table != "" {
+		if err := session.admits(table); err != nil {
+			return nil, nil, err
+		}
 	}
 	session.release = w.register(ns, session.wake)
 	live, cancelLive := context.WithCancel(ctx)

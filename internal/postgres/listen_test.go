@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -217,11 +218,8 @@ func TestPostgresListenCancelStopsDelivery(t *testing.T) {
 	cancel()
 	select {
 	case cause := <-closedWith:
-		if cause != nil {
-			t.Fatalf("cancel reported %v", cause)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("cancel never closed the subscription")
+		t.Fatalf("plain cancellation reported a cause (%v); the transports treat a nil cause as a panic", cause)
+	case <-time.After(2 * time.Second):
 	}
 	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "after cancel"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
 		t.Fatal(err)
@@ -456,5 +454,95 @@ func TestPostgresListenCancelFromClosedCallbackDoesNotDeadlock(t *testing.T) {
 	case <-returned:
 	case <-time.After(20 * time.Second):
 		t.Fatal("cancel called from the closed callback deadlocked")
+	}
+}
+
+func TestPostgresListenMapsAgedContextCause(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	aged, expire := context.WithCancelCause(ctx)
+	closedWith := make(chan error, 1)
+	replay, cancel, err := s.Listen(aged, "app", "notes", "", [16]byte{}, nil, func(store.ChangeRecord) {}, func(cause error) { closedWith <- cause })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	drainReplay(t, ctx, replay)
+	expire(store.ErrListenAged)
+	select {
+	case cause := <-closedWith:
+		if !errors.Is(cause, store.ErrListenAged) {
+			t.Fatalf("cause = %v, want ErrListenAged", cause)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("an aged context never ended the subscription")
+	}
+}
+
+func TestPostgresListenFailsClosedOnRowScope(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	scope := &store.RowScope{}
+	if _, _, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, func(string) (*store.RowScope, store.Incarnation, bool) {
+		return scope, store.Incarnation{}, true
+	}, func(store.ChangeRecord) {}, nil); err == nil {
+		t.Fatal("a row scope was accepted rather than failing closed")
+	}
+}
+
+func TestPostgresListenRechecksNamespaceFeedAdmission(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	var admitted atomic.Bool
+	admitted.Store(true)
+	closedWith := make(chan error, 1)
+	replay, cancel, err := s.Listen(ctx, "app", "", "", [16]byte{}, func(string) (*store.RowScope, store.Incarnation, bool) {
+		return nil, store.Incarnation{}, admitted.Load()
+	}, func(store.ChangeRecord) {}, func(cause error) { closedWith <- cause })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	drainReplay(t, ctx, replay)
+	admitted.Store(false)
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "after revoke"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case cause := <-closedWith:
+		if !errors.Is(cause, store.ErrListenRevoked) {
+			t.Fatalf("cause = %v, want ErrListenRevoked", cause)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("a namespace-wide feed never re-checked admission")
+	}
+}
+
+func TestPostgresListenIdlePollDoesNotWrite(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, nil, func(store.ChangeRecord) {}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	drainReplay(t, ctx, replay)
+	count := func() int64 {
+		var n int64
+		if err := s.read(ctx, "app", func(tx pgx.Tx, _ namespace) error {
+			return tx.QueryRow(ctx, "SELECT count(*) FROM "+s.relation("cursors")).Scan(&n)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := count()
+	time.Sleep(8 * listenPollInterval)
+	if after := count(); after != before {
+		t.Fatalf("idle polling minted %d cursors in %v", after-before, 8*listenPollInterval)
 	}
 }

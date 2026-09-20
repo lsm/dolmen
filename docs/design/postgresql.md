@@ -333,11 +333,21 @@ The subscription captures the namespace generation and the table's drop generati
 or a replaced namespace ends the feed even when the caller passes a zero incarnation. The
 schema version is deliberately not captured: a migration must not end a subscription.
 
-Admission is re-checked on every fetch through the `liveAuthz` callback, which is invoked
-from the session goroutine and so must be safe to call concurrently. Ends are reported
-through `closed` with the shared sentinels the transports match on — `ErrListenRevoked`
-for a withdrawn admission, `ErrListenLifetimeEnded` for a replaced target or a closing
-store, and `ErrListenAged` for a cursor past retention. The session is bound to the
+Every poll tick first runs a read-only guard: it re-checks `liveAuthz`, which is invoked
+from the session goroutine and so must be safe to call concurrently, and re-reads the
+namespace generation and table drop generation. Only when that guard passes and a
+read-only probe finds changes past the cursor does the tick take the write path that mints
+cursors, so an idle subscription costs two reads rather than a write transaction
+contending with writers on the namespace row. Records are additionally checked against
+`liveAuthz` per record, so a namespace-wide feed re-checks per table rather than once. A
+`liveAuthz` that returns a row scope fails closed, as every other PostgreSQL operation
+does.
+
+Ends are reported through `closed` with the shared sentinels the transports match on —
+`ErrListenRevoked` for a withdrawn admission, `ErrListenLifetimeEnded` for a replaced
+target or a closing store, and `ErrListenAged` for a cursor past retention. Plain
+cancellation reports nothing: the transports treat the close cause as an error to render,
+and a nil cause is not one. The session is bound to the
 caller's context, so cancelling that context ends it. A terminal error during the replay
 phase — an expired cursor, a withdrawn admission, a target that went away — reports
 through `closed` just as a live one does, rather than only surfacing as the error returned
