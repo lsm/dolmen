@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -153,14 +154,14 @@ func TestPostgresListenSurvivesWithoutNotifications(t *testing.T) {
 	defer cancel()
 	drainReplay(t, ctx, replay)
 	time.Sleep(4 * listenPollInterval)
-	s.wakes().mu.Lock()
+	s.wake.mu.Lock()
 	waiters := s.wake.waiters
 	s.wake.waiters = map[string]map[chan struct{}]struct{}{}
-	s.wakes().mu.Unlock()
+	s.wake.mu.Unlock()
 	defer func() {
-		s.wakes().mu.Lock()
+		s.wake.mu.Lock()
 		s.wake.waiters = waiters
-		s.wakes().mu.Unlock()
+		s.wake.mu.Unlock()
 	}()
 	select {
 	case rec := <-live:
@@ -183,18 +184,19 @@ func TestPostgresListenClosesWhenAdmissionRevoked(t *testing.T) {
 	var admitted atomic.Bool
 	admitted.Store(true)
 	closedWith := make(chan error, 1)
-	_, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, func(string) (*store.RowScope, store.Incarnation, bool) {
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, func(string) (*store.RowScope, store.Incarnation, bool) {
 		return nil, store.Incarnation{}, admitted.Load()
 	}, func(store.ChangeRecord) {}, func(cause error) { closedWith <- cause })
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cancel()
+	drainReplay(t, ctx, replay)
 	admitted.Store(false)
 	select {
 	case cause := <-closedWith:
-		if cause == nil {
-			t.Fatal("revoked admission closed without a cause")
+		if !errors.Is(cause, store.ErrListenRevoked) {
+			t.Fatalf("revoked admission cause = %v, want ErrListenRevoked", cause)
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("revoked admission never closed the subscription")
@@ -245,5 +247,158 @@ func TestPostgresCapabilities(t *testing.T) {
 	caps := s.Capabilities()
 	if caps.VectorExecution != store.VectorExact || !caps.Notifications || !caps.Subscribe || caps.ANNRecallBound != nil {
 		t.Fatalf("capabilities: %+v", caps)
+	}
+}
+
+func TestPostgresListenDeliversEachChangeOnce(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	for i := 0; i < 5; i++ {
+		if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "before"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	live := make(chan store.ChangeRecord, 64)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", store.CursorBegin, [16]byte{}, nil, func(rec store.ChangeRecord) { live <- rec }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	writing := make(chan struct{})
+	go func() {
+		defer close(writing)
+		for i := 0; i < 5; i++ {
+			if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "during"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+				return
+			}
+		}
+	}()
+	replayed := drainReplay(t, ctx, replay)
+	<-writing
+	seen := map[int64]int{}
+	for _, rec := range replayed {
+		seen[rec.RowID]++
+	}
+	for len(seen) < 10 {
+		select {
+		case rec := <-live:
+			seen[rec.RowID]++
+		case <-time.After(20 * time.Second):
+			t.Fatalf("only %d of 10 changes arrived: %+v", len(seen), seen)
+		}
+	}
+	select {
+	case rec := <-live:
+		seen[rec.RowID]++
+	case <-time.After(2 * time.Second):
+	}
+	for id, count := range seen {
+		if count != 1 {
+			t.Fatalf("row %d delivered %d times across the replay/live boundary: %+v", id, count, seen)
+		}
+	}
+	if len(seen) != 10 {
+		t.Fatalf("delivered %d distinct rows, want 10", len(seen))
+	}
+}
+
+func TestPostgresListenCancelIsIdempotent(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, nil, func(store.ChangeRecord) {}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainReplay(t, ctx, replay)
+	cancel()
+	cancel()
+	cancel()
+}
+
+func TestPostgresListenEndsWhenTableLifetimeEnds(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	closedWith := make(chan error, 1)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, nil, func(store.ChangeRecord) {}, func(cause error) { closedWith <- cause })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	drainReplay(t, ctx, replay)
+	if err := s.DropTable(ctx, "app", "notes", store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "body"}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case cause := <-closedWith:
+		if !errors.Is(cause, store.ErrListenLifetimeEnded) {
+			t.Fatalf("cause = %v, want ErrListenLifetimeEnded", cause)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("a recreated table did not end the subscription")
+	}
+}
+
+func TestPostgresListenDoesNotStarveASingleConnectionPool(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.MaxConns = 1
+	s := openTest(t, cfg)
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	live := make(chan store.ChangeRecord, 16)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, nil, func(rec store.ChangeRecord) { live <- rec }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	drainReplay(t, ctx, replay)
+	writeCtx, writeCancel := context.WithTimeout(ctx, 20*time.Second)
+	defer writeCancel()
+	if _, err := s.Insert(writeCtx, "app", "notes", []map[string]any{{"body": "single slot"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatalf("write starved by the LISTEN connection: %v", err)
+	}
+	got := collectLive(t, live, 1)
+	if got[0].RowID != 1 {
+		t.Fatalf("record: %+v", got[0])
+	}
+}
+
+func TestPostgresListenCloseStopsNotifier(t *testing.T) {
+	cfg := testConfig(t)
+	s, err := Open(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, nil, func(store.ChangeRecord) {}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainReplay(t, ctx, replay)
+	cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Close hung with a notifier running")
+	}
+	s.wake.mu.Lock()
+	stopped := s.wake.stopped
+	s.wake.mu.Unlock()
+	if !stopped {
+		t.Fatal("Close left the notifier running")
+	}
+	if _, _, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, nil, func(store.ChangeRecord) {}, nil); !errors.Is(err, store.ErrClosed) {
+		t.Fatalf("Listen after Close: %v", err)
 	}
 }

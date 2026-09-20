@@ -3,11 +3,11 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -23,17 +23,9 @@ func (s *Store) announce(ctx context.Context, tx pgx.Tx, ns string) error {
 type wakeSet struct {
 	mu      sync.Mutex
 	started bool
+	stopped bool
 	stop    chan struct{}
 	waiters map[string]map[chan struct{}]struct{}
-}
-
-func (s *Store) wakes() *wakeSet {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.wake == nil {
-		s.wake = &wakeSet{waiters: map[string]map[chan struct{}]struct{}{}, stop: make(chan struct{})}
-	}
-	return s.wake
 }
 
 func (w *wakeSet) register(ns string, ch chan struct{}) func() {
@@ -64,17 +56,24 @@ func (w *wakeSet) signal(ns string) {
 	}
 }
 
-func (s *Store) startNotifier() {
-	w := s.wakes()
-	w.mu.Lock()
-	if w.started {
-		w.mu.Unlock()
-		return
+func (s *Store) startNotifier() (*wakeSet, error) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil, store.ErrClosed
 	}
-	w.started = true
-	stop := w.stop
-	w.mu.Unlock()
-	go s.runNotifier(w, stop)
+	if s.wake == nil {
+		s.wake = &wakeSet{waiters: map[string]map[chan struct{}]struct{}{}, stop: make(chan struct{})}
+	}
+	w := s.wake
+	s.mu.Unlock()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.started {
+		w.started = true
+		go s.runNotifier(w, w.stop)
+	}
+	return w, nil
 }
 
 func (s *Store) runNotifier(w *wakeSet, stop chan struct{}) {
@@ -103,16 +102,20 @@ func (s *Store) listenOnce(w *wakeSet, stop chan struct{}) {
 		case <-ctx.Done():
 		}
 	}()
-	conn, err := s.pool.Acquire(ctx)
+	conn, err := pgx.ConnectConfig(ctx, s.pool.Config().ConnConfig.Copy())
 	if err != nil {
 		return
 	}
-	defer conn.Release()
+	defer func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer closeCancel()
+		_ = conn.Close(closeCtx)
+	}()
 	if _, err := conn.Exec(ctx, "LISTEN "+ident(s.notifyChannel())); err != nil {
 		return
 	}
 	for {
-		notification, err := conn.Conn().WaitForNotification(ctx)
+		notification, err := conn.WaitForNotification(ctx)
 		if err != nil {
 			return
 		}
@@ -120,51 +123,67 @@ func (s *Store) listenOnce(w *wakeSet, stop chan struct{}) {
 	}
 }
 
-type listenSession struct {
-	store     *Store
-	ns        string
-	table     string
-	nsGen     [16]byte
-	cursor    store.Cursor
-	mu        sync.Mutex
-	liveAuthz func(table string) (*store.RowScope, store.Incarnation, bool)
-	notify    func(store.ChangeRecord)
-	closed    func(error)
-	once      sync.Once
-	stop      chan struct{}
-	wake      chan struct{}
-	release   func()
-	done      chan struct{}
+func listenCause(err error) error {
+	switch {
+	case errors.Is(err, store.ErrCursorExpired), errors.Is(err, store.ErrCursorCrossFeed):
+		return store.ErrListenAged
+	case errors.Is(err, store.ErrNotFound):
+		return store.ErrListenLifetimeEnded
+	}
+	return err
 }
 
-func (l *listenSession) incarnation() (store.Incarnation, bool) {
+type listenSession struct {
+	store      *Store
+	ns         string
+	table      string
+	nsGen      [16]byte
+	inc        store.Incarnation
+	cursor     store.Cursor
+	mu         sync.Mutex
+	liveAuthz  func(table string) (*store.RowScope, store.Incarnation, bool)
+	notify     func(store.ChangeRecord)
+	closed     func(error)
+	finishOnce sync.Once
+	cancelOnce sync.Once
+	stop       chan struct{}
+	storeStop  chan struct{}
+	wake       chan struct{}
+	replayDone chan struct{}
+	release    func()
+	done       chan struct{}
+}
+
+func (l *listenSession) admitted() bool {
 	if l.table == "" || l.liveAuthz == nil {
-		return store.Incarnation{NsGen: l.nsGen}, true
+		return true
 	}
-	_, inc, ok := l.liveAuthz(l.table)
-	return inc, ok
+	_, _, ok := l.liveAuthz(l.table)
+	return ok
 }
 
 func (l *listenSession) fetch(ctx context.Context) ([]store.ChangeRecord, error) {
-	inc, ok := l.incarnation()
-	if !ok {
-		return nil, derr.New(derr.Forbidden, "subscription is no longer admitted to %s", l.table)
-	}
 	l.mu.Lock()
-	from := l.cursor
-	l.mu.Unlock()
-	records, next, err := l.store.ChangesSince(ctx, l.ns, l.table, from, l.nsGen, nil, inc, store.Page{})
+	defer l.mu.Unlock()
+	if !l.admitted() {
+		return nil, store.ErrListenRevoked
+	}
+	records, next, err := l.store.ChangesSince(ctx, l.ns, l.table, l.cursor, l.nsGen, nil, l.inc, store.Page{})
 	if err != nil {
-		return nil, err
+		return nil, listenCause(err)
 	}
-	l.mu.Lock()
 	l.cursor = next
-	l.mu.Unlock()
 	return records, nil
 }
 
+func (l *listenSession) resume() store.Cursor {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.cursor
+}
+
 func (l *listenSession) finish(cause error) {
-	l.once.Do(func() {
+	l.finishOnce.Do(func() {
 		if l.closed != nil {
 			l.closed(cause)
 		}
@@ -173,16 +192,28 @@ func (l *listenSession) finish(cause error) {
 
 func (l *listenSession) run(ctx context.Context) {
 	defer close(l.done)
+	select {
+	case <-l.replayDone:
+	case <-l.stop:
+		l.finish(nil)
+		return
+	case <-l.storeStop:
+		l.finish(store.ErrListenLifetimeEnded)
+		return
+	case <-ctx.Done():
+		l.finish(nil)
+		return
+	}
 	ticker := time.NewTicker(listenPollInterval)
 	defer ticker.Stop()
 	for {
 		for {
 			records, err := l.fetch(ctx)
 			if err != nil {
-				if !errors.Is(err, context.Canceled) {
-					l.finish(err)
-				} else {
+				if errors.Is(err, context.Canceled) {
 					l.finish(nil)
+				} else {
+					l.finish(err)
 				}
 				return
 			}
@@ -197,6 +228,9 @@ func (l *listenSession) run(ctx context.Context) {
 		case <-l.stop:
 			l.finish(nil)
 			return
+		case <-l.storeStop:
+			l.finish(store.ErrListenLifetimeEnded)
+			return
 		case <-ctx.Done():
 			l.finish(nil)
 			return
@@ -206,73 +240,82 @@ func (l *listenSession) run(ctx context.Context) {
 	}
 }
 
+func (s *Store) listenIncarnation(ctx context.Context, ns, table string) (store.Incarnation, [16]byte, error) {
+	var inc store.Incarnation
+	var generation [16]byte
+	err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
+		generation = n.generation
+		if table == "" {
+			return nil
+		}
+		state, err := s.loadTable(ctx, tx, n, table)
+		if err != nil {
+			return err
+		}
+		inc = store.Incarnation{NsGen: n.generation, Table: table, DropGen: state.incarnation.DropGen}
+		return nil
+	})
+	return inc, generation, err
+}
+
 func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor, nsGen [16]byte, liveAuthz func(table string) (*store.RowScope, store.Incarnation, bool), notify func(store.ChangeRecord), closed func(cause error)) (*store.ChangeReplay, func(), error) {
 	if notify == nil {
 		return nil, nil, invalidf("listen: notify callback is required")
 	}
-	session := &listenSession{
-		store: s, ns: ns, table: table, nsGen: nsGen, cursor: from,
-		liveAuthz: liveAuthz, notify: notify, closed: closed,
-		stop: make(chan struct{}), wake: make(chan struct{}, 1), done: make(chan struct{}),
-	}
-	inc, ok := session.incarnation()
-	if !ok {
-		return nil, nil, derr.New(derr.Forbidden, "subscription is not admitted to %s", table)
-	}
-	records, next, err := s.ChangesSince(ctx, ns, table, from, nsGen, nil, inc, store.Page{})
+	inc, generation, err := s.listenIncarnation(ctx, ns, table)
 	if err != nil {
 		return nil, nil, err
 	}
-	session.cursor = next
-	pending := records
+	if nsGen == [16]byte{} {
+		nsGen = generation
+	} else if nsGen != generation {
+		return nil, nil, fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, ns)
+	}
+	w, err := s.startNotifier()
+	if err != nil {
+		return nil, nil, err
+	}
+	session := &listenSession{
+		store: s, ns: ns, table: table, nsGen: nsGen, inc: inc, cursor: from,
+		liveAuthz: liveAuthz, notify: notify, closed: closed,
+		stop: make(chan struct{}), storeStop: w.stop,
+		wake: make(chan struct{}, 1), replayDone: make(chan struct{}), done: make(chan struct{}),
+	}
+	if !session.admitted() {
+		return nil, nil, store.ErrListenRevoked
+	}
+	session.release = w.register(ns, session.wake)
+	live, cancelLive := context.WithCancel(ctx)
 	drained := false
 
 	replay := &store.ChangeReplay{
 		Next: func(ctx context.Context) ([]store.ChangeRecord, store.Cursor, bool, error) {
 			if drained {
-				session.mu.Lock()
-				resume := session.cursor
-				session.mu.Unlock()
-				return nil, resume, true, nil
-			}
-			if len(pending) > 0 {
-				batch := pending
-				pending = nil
-				session.mu.Lock()
-				resume := session.cursor
-				session.mu.Unlock()
-				return batch, resume, false, nil
+				return nil, session.resume(), true, nil
 			}
 			batch, err := session.fetch(ctx)
 			if err != nil {
 				return nil, "", false, err
 			}
-			session.mu.Lock()
-			resume := session.cursor
-			session.mu.Unlock()
 			if len(batch) == 0 {
 				drained = true
-				return nil, resume, true, nil
+				close(session.replayDone)
+				return nil, session.resume(), true, nil
 			}
-			return batch, resume, false, nil
+			return batch, session.resume(), false, nil
 		},
-		Resume: func() store.Cursor {
-			session.mu.Lock()
-			defer session.mu.Unlock()
-			return session.cursor
-		},
+		Resume: func() store.Cursor { return session.resume() },
 	}
 
-	s.startNotifier()
-	session.release = s.wakes().register(ns, session.wake)
-	live, cancelLive := context.WithCancel(context.WithoutCancel(ctx))
 	go session.run(live)
 
 	cancel := func() {
-		close(session.stop)
-		cancelLive()
-		<-session.done
-		session.release()
+		session.cancelOnce.Do(func() {
+			close(session.stop)
+			cancelLive()
+			<-session.done
+			session.release()
+		})
 	}
 	return replay, cancel, nil
 }

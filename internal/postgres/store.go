@@ -128,8 +128,8 @@ func (s *Store) Close() error {
 	s.mu.Unlock()
 	if w != nil {
 		w.mu.Lock()
-		if w.started {
-			w.started = false
+		if !w.stopped {
+			w.stopped = true
 			close(w.stop)
 		}
 		w.mu.Unlock()

@@ -297,20 +297,35 @@ polls the same log for live changes. Because every record comes from a committed
 the catalog, a subscription sees writes from any process against the same database, and
 two store instances over one catalog are covered by an integration test.
 
+Replay and live delivery never overlap. The session's poller does not begin until
+`ChangeReplay.Next` reports the replay drained, and every read of the feed — from the
+replay or from the poller — takes the session lock for the whole cursor-read, fetch, and
+cursor-write span. Two reads can therefore never start from the same cursor, so a change
+is delivered exactly once across the boundary rather than once by `Next` and again by
+`notify`.
+
 `pg_notify` is a latency optimisation layered on top. Writes announce their namespace on
-a per-catalog channel, and one shared connection per store `LISTEN`s and fans the wake-up
-out to the sessions for that namespace; a session that is woken simply polls earlier. A
-poll interval runs regardless, so a dropped, missed, or disabled notification costs
-latency and never a change: a test removes the wake registration entirely and still
-requires the change to arrive. One `LISTEN` connection per store, rather than one per
-subscription, keeps subscriptions from exhausting the pool.
+a per-catalog channel, and one `LISTEN` connection per store fans the wake-up out to the
+sessions for that namespace; a session that is woken simply polls earlier. A poll interval
+runs regardless, so a dropped, missed, or disabled notification costs latency and never a
+change: a test removes the wake registration entirely and still requires the change to
+arrive. That connection is opened directly rather than taken from the pool, because a
+pooled connection parked in `WaitForNotification` would hold a slot for the store's
+lifetime and deadlock writes on a small pool.
+
+The subscription captures the namespace generation and the table's drop generation at
+`Listen` rather than trusting caller-supplied bindings, so a dropped and recreated table
+or a replaced namespace ends the feed even when the caller passes a zero incarnation. The
+schema version is deliberately not captured: a migration must not end a subscription.
 
 Admission is re-checked on every fetch through the `liveAuthz` callback, which is invoked
-from the session goroutine and so must be safe to call concurrently. A revoked admission,
-an expired cursor, or a replaced namespace or table ends the subscription through the
-`closed` callback with the cause. Cancelling is synchronous: it stops the session, waits
-for the goroutine to finish, and unregisters the wake channel, so no delivery can follow
-the call.
+from the session goroutine and so must be safe to call concurrently. Ends are reported
+through `closed` with the shared sentinels the transports match on — `ErrListenRevoked`
+for a withdrawn admission, `ErrListenLifetimeEnded` for a replaced target or a closing
+store, and `ErrListenAged` for a cursor past retention. The session is bound to the
+caller's context, so cancelling that context ends it. Cancelling is idempotent and
+synchronous: repeated calls are safe, and the first waits for the session goroutine before
+returning, so no delivery can follow it.
 
 ## Remaining implementation sequence
 
