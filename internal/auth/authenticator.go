@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/lsm/dolmen/internal/derr"
 )
@@ -21,8 +22,28 @@ type Authenticator struct {
 	admin  Source
 	header Source
 	keys   Source
+	tokens *tokenSource
 
 	maxGroups int
+}
+
+type tokenSource struct {
+	ring Keyring
+	now  func() time.Time
+}
+
+func (a *Authenticator) UseTokens(ring Keyring) {
+	if a == nil {
+		return
+	}
+	a.tokens = &tokenSource{ring: ring, now: time.Now}
+}
+
+func (a *Authenticator) TokenKeyring() (Keyring, bool) {
+	if a == nil || a.tokens == nil {
+		return Keyring{}, false
+	}
+	return a.tokens.ring, true
 }
 
 func (a *Authenticator) UseKeys(r *Registry) {
@@ -100,8 +121,15 @@ func (a *Authenticator) Authenticate(r *http.Request) (Identity, error) {
 			return Identity{}, Unauthorized()
 		}
 		return id, nil
-	case strings.Contains(token, "."):
-		return Identity{}, Unauthorized()
+	case LooksLikeToken(token):
+		if a.tokens == nil {
+			return Identity{}, Unauthorized()
+		}
+		id, err := VerifyToken(a.tokens.ring, token, a.tokens.now())
+		if err != nil {
+			return Identity{}, Unauthorized()
+		}
+		return id, nil
 	}
 	if a.admin == nil {
 		return Identity{}, Unauthorized()
