@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -183,5 +184,36 @@ func TestQualifiedIdentitiesAreDisjointAcrossIssuers(t *testing.T) {
 	b, _ := QualifyOIDC(IssuerDigest("https://b.example"), "same-sub")
 	if a == b {
 		t.Fatal("the same subject at two issuers produced one principal")
+	}
+}
+
+func TestOIDCReachabilityRejectsAStaleIssuerQualification(t *testing.T) {
+	ctx := context.Background()
+	oldDigest := IssuerDigest("https://old.example")
+	newDigest := IssuerDigest("https://new.example")
+
+	a, err := New(Config{Mode: ModeOn})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	a.UseTokens(Keyring{Deployment: "dep"})
+	a.SetOIDCIssuer(newDigest)
+
+	stale, _ := QualifyOIDC(oldDigest, "boss")
+	err = a.CheckRootAdministrator(ctx, fakeRootAdmins{{Type: SubjectPrincipal, ID: stale}})
+	if err == nil {
+		t.Fatal("a root grant qualified by a retired issuer was accepted as reachable")
+	}
+	if !strings.Contains(err.Error(), stale) {
+		t.Fatalf("the startup error does not name the stranded grant: %v", err)
+	}
+
+	current, _ := QualifyOIDC(newDigest, "boss")
+	if err := a.CheckRootAdministrator(ctx, fakeRootAdmins{{Type: SubjectPrincipal, ID: current}}); err != nil {
+		t.Fatalf("a root grant under the configured issuer should be reachable: %v", err)
+	}
+
+	if err := a.CheckRootAdministrator(ctx, fakeRootAdmins{{Type: SubjectPrincipal, ID: "plain-principal"}}); err != nil {
+		t.Fatalf("an unqualified principal is not this source's to judge: %v", err)
 	}
 }

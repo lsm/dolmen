@@ -24,7 +24,8 @@ type Authenticator struct {
 	keys   Source
 	tokens *tokenSource
 
-	maxGroups int
+	oidcIssuer string
+	maxGroups  int
 }
 
 type tokenSource struct {
@@ -38,6 +39,15 @@ func (a *Authenticator) UseTokens(ring Keyring) {
 	}
 	a.tokens = &tokenSource{ring: ring, now: time.Now}
 }
+
+func (a *Authenticator) SetOIDCIssuer(digest string) {
+	if a == nil {
+		return
+	}
+	a.oidcIssuer = digest
+}
+
+func (a *Authenticator) OIDCEnabled() bool { return a != nil && a.tokens != nil }
 
 func (a *Authenticator) TokenKeyring() (Keyring, bool) {
 	if a == nil || a.tokens == nil {
@@ -161,8 +171,8 @@ func (a *Authenticator) CheckRootAdministrator(ctx context.Context, src RootAdmi
 	if !a.On() || a.AdminKeyConfigured() {
 		return nil
 	}
-	if !a.HeaderSourceEnabled() && !a.KeySourceEnabled() {
-		return fmt.Errorf("auth is on, but no identity source is configured, so every request would answer 401: set DOLMEN_ADMIN_KEY to the bootstrap credential (%s), or DOLMEN_TRUSTED_PROXIES to accept identity asserted by a gateway", AdminPrincipal)
+	if !a.HeaderSourceEnabled() && !a.KeySourceEnabled() && !a.OIDCEnabled() {
+		return fmt.Errorf("auth is on, but no identity source is configured, so every request would answer 401: set DOLMEN_ADMIN_KEY to the bootstrap credential (%s), DOLMEN_TRUSTED_PROXIES to accept identity asserted by a gateway, or DOLMEN_AUTH_OIDC_ISSUER to sign people in directly", AdminPrincipal)
 	}
 	admins, err := src.RootAdmins(ctx)
 	if err != nil {
@@ -178,6 +188,18 @@ func (a *Authenticator) CheckRootAdministrator(ctx context.Context, src RootAdmi
 			}
 		}
 	}
+	if a.OIDCEnabled() {
+		for _, s := range admins {
+			if s.Type != SubjectPrincipal {
+				continue
+			}
+			digest, qualified := OIDCIssuerOf(s.ID)
+			if qualified && digest != a.oidcIssuer {
+				continue
+			}
+			return nil
+		}
+	}
 	if a.KeySourceEnabled() {
 		keys, err := src.ActiveKeys(ctx)
 		if err != nil {
@@ -185,6 +207,13 @@ func (a *Authenticator) CheckRootAdministrator(ctx context.Context, src RootAdmi
 		}
 		if rootReachableByKey(admins, keys, "") {
 			return nil
+		}
+	}
+	if a.OIDCEnabled() {
+		for _, s := range admins {
+			if digest, qualified := OIDCIssuerOf(s.ID); qualified && digest != a.oidcIssuer {
+				return fmt.Errorf("auth is on but the only root administrator is %q, which carries a different identity provider's qualification than the configured DOLMEN_AUTH_OIDC_ISSUER: the new issuer can never produce that principal, so nobody could administer this deployment; point the issuer back, grant admin on \"*\" to a principal the current issuer yields, or set DOLMEN_ADMIN_KEY and restart", s.ID)
+			}
 		}
 	}
 	return fmt.Errorf("auth is on but no root administrator is reachable through an enabled identity source: a grant of admin on \"*\" exists, but no source can produce the identity it names — the key that bore it may have been revoked, or the grant may name a principal only a source this deployment no longer enables could assert; set DOLMEN_ADMIN_KEY and restart, which restores the bootstrap administrator while existing grants persist")

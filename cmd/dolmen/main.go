@@ -220,7 +220,9 @@ func buildOIDC(cfg *config, r *auth.Registry) (*auth.OIDCSource, error) {
 		return nil, err
 	}
 	cfg.Auth.UseTokens(ring)
-	return auth.NewOIDCSource(cfg.OIDC, r, ring, nil), nil
+	src := auth.NewOIDCSource(cfg.OIDC, r, ring, nil)
+	cfg.Auth.SetOIDCIssuer(src.IssuerDigest())
+	return src, nil
 }
 
 func logAuthPosture(a *auth.Authenticator) {
