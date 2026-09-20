@@ -14,12 +14,13 @@ import (
 )
 
 type issuerStub struct {
-	srv        *httptest.Server
-	sub        string
-	groups     []string
-	lastPKCE   string
-	lastRedir  string
-	challenges map[string]string
+	srv         *httptest.Server
+	sub         string
+	groups      []string
+	lastPKCE    string
+	lastRedir   string
+	challenges  map[string]string
+	extraClaims map[string]any
 }
 
 func newIssuerStub(t *testing.T, sub string, groups []string) *issuerStub {
@@ -51,9 +52,12 @@ func newIssuerStub(t *testing.T, sub string, groups []string) *issuerStub {
 			http.Error(w, "missing code_verifier", http.StatusBadRequest)
 			return
 		}
-		claims := map[string]any{"sub": s.sub}
+		claims := map[string]any{"sub": s.sub, "iss": s.srv.URL, "aud": "dolmen-test"}
 		if len(s.groups) > 0 {
 			claims["groups"] = s.groups
+		}
+		for k, v := range s.extraClaims {
+			claims[k] = v
 		}
 		raw, _ := json.Marshal(claims)
 		idToken := "e30." + base64.RawURLEncoding.EncodeToString(raw) + ".sig"
@@ -340,5 +344,28 @@ func TestSignInAfterARotationElsewhereMintsWithTheLiveKey(t *testing.T) {
 	status, out := h.httpCallAs(identity{bearer: token}, "whoami", map[string]any{})
 	if status != http.StatusOK {
 		t.Fatalf("a sign-in completed after a rotation committed elsewhere handed out a dead token: status %d %v", status, out)
+	}
+}
+
+func TestOIDCRejectsATokenFromAnotherIssuerOrAudience(t *testing.T) {
+	for name, claims := range map[string]map[string]any{
+		"another issuer":  {"sub": "00u1", "iss": "https://evil.example"},
+		"another client":  {"sub": "00u1", "aud": "some-other-app"},
+		"already expired": {"sub": "00u1", "exp": float64(1)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stub := newIssuerStub(t, "00u1", nil)
+			stub.extraClaims = claims
+			h := oidcHarness(t, stub)
+
+			res, err := http.Get(h.srv.URL + "/v1/auth/begin")
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			defer res.Body.Close()
+			if res.StatusCode == http.StatusOK {
+				t.Fatalf("a token carrying %s was trusted for the caller's identity", name)
+			}
+		})
 	}
 }

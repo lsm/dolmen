@@ -137,3 +137,29 @@ func TestStartupRequiresAReachableRootAdministrator(t *testing.T) {
 		t.Fatalf("a key bearing the root principal should satisfy the check: %v", err)
 	}
 }
+
+func TestGroupOnlyRootAdminIsRefusedWithAnExplanation(t *testing.T) {
+	r := seedKeyRegistry(t)
+	ctx := context.Background()
+	mustGrant(t, r, group("ops"), Object{Namespace: RootObject}, VerbAdmin)
+
+	a, err := New(Config{Mode: ModeOn, TrustedProxies: proxies(t, "127.0.0.0/8")})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	err = a.CheckRootAdministrator(ctx, r)
+	if err == nil {
+		t.Fatal("a root grant held only by a group satisfied the startup check, but startup cannot establish the group has any member")
+	}
+	if !strings.Contains(err.Error(), "ops") || !strings.Contains(err.Error(), "API key") {
+		t.Fatalf("the refusal does not name the group or the decidable way out: %v", err)
+	}
+
+	if _, _, err := r.CreateKey(ctx, "fleet", "bot", []string{"ops"}); err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+	a.UseKeys(r)
+	if err := a.CheckRootAdministrator(ctx, r); err != nil {
+		t.Fatalf("a key whose stored groups prove membership is the one decidable exception: %v", err)
+	}
+}

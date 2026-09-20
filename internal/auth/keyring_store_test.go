@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -198,5 +199,67 @@ func TestKeyringRefreshPropagatesRetirement(t *testing.T) {
 
 	if _, err := VerifyToken(other.mustRing(t), token, now); !errors.Is(err, ErrTokenInvalid) {
 		t.Fatal("a replica that did not serve the rotation kept honouring the retired key's tokens")
+	}
+}
+
+func TestPendingSignInsAreCapped(t *testing.T) {
+	r, err := OpenRegistry(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer r.Close()
+	ctx := context.Background()
+
+	for i := 0; i < MaxPendingSignIns; i++ {
+		if err := r.putPending(ctx, fmt.Sprintf("state-%d", i), "verifier", "https://example/cb"); err != nil {
+			t.Fatalf("pending %d: %v", i, err)
+		}
+	}
+	err = r.putPending(ctx, "one-too-many", "verifier", "https://example/cb")
+	if err == nil {
+		t.Fatal("an unauthenticated endpoint grew the registry without bound")
+	}
+	if !errors.Is(err, ErrAuthFlow) {
+		t.Fatalf("the refusal is not a sign-in flow error: %v", err)
+	}
+}
+
+func TestFirstBootMintsOneDeploymentAndOneActiveKey(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	a, err := OpenRegistry(dir)
+	if err != nil {
+		t.Fatalf("open A: %v", err)
+	}
+	defer a.Close()
+	b, err := OpenRegistry(dir)
+	if err != nil {
+		t.Fatalf("open B: %v", err)
+	}
+	defer b.Close()
+
+	idA, err := a.DeploymentID(ctx, "")
+	if err != nil {
+		t.Fatalf("A deployment id: %v", err)
+	}
+	idB, err := b.DeploymentID(ctx, "")
+	if err != nil {
+		t.Fatalf("B deployment id: %v", err)
+	}
+	if idA != idB {
+		t.Fatalf("two replicas minted different deployment ids (%q and %q), so their tokens would never verify for each other", idA, idB)
+	}
+
+	ringA, err := a.LoadKeyring(ctx, idA)
+	if err != nil {
+		t.Fatalf("A keyring: %v", err)
+	}
+	ringB, err := b.LoadKeyring(ctx, idB)
+	if err != nil {
+		t.Fatalf("B keyring: %v", err)
+	}
+	if ringA.Active.ID != ringB.Active.ID {
+		t.Fatalf("two replicas minted different active signing keys (%q and %q)", ringA.Active.ID, ringB.Active.ID)
 	}
 }

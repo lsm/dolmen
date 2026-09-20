@@ -8,13 +8,18 @@ import (
 	"time"
 )
 
+const MaxPendingSignIns = 512
+
 func (r *Registry) initPending() error {
-	_, err := r.db.Exec(`CREATE TABLE IF NOT EXISTS auth_pending (
+	if _, err := r.db.Exec(`CREATE TABLE IF NOT EXISTS auth_pending (
 		state        TEXT PRIMARY KEY,
 		verifier     TEXT NOT NULL,
 		redirect_uri TEXT NOT NULL,
 		expires_at   TEXT NOT NULL
-	)`)
+	)`); err != nil {
+		return err
+	}
+	_, err := r.db.Exec(`CREATE INDEX IF NOT EXISTS auth_pending_expiry ON auth_pending(expires_at)`)
 	return err
 }
 
@@ -25,6 +30,13 @@ func (r *Registry) putPending(ctx context.Context, state, verifier, redirectURI 
 		`DELETE FROM auth_pending WHERE expires_at <= ?`,
 		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("prune sign-in state: %w", err)
+	}
+	var pending int
+	if err := r.db.QueryRowContext(ctx, `SELECT count(*) FROM auth_pending`).Scan(&pending); err != nil {
+		return fmt.Errorf("count sign-in state: %w", err)
+	}
+	if pending >= MaxPendingSignIns {
+		return fmt.Errorf("%w: too many sign-ins are already in flight on this server (%d), so this one was not started; they expire within %s, so try again shortly", ErrAuthFlow, pending, pendingTTL)
 	}
 	if _, err := r.db.ExecContext(ctx,
 		`INSERT INTO auth_pending (state, verifier, redirect_uri, expires_at) VALUES (?, ?, ?, ?)`,

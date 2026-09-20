@@ -21,8 +21,13 @@ func (r *Registry) initKeyring() error {
 	)`); err != nil {
 		return err
 	}
+	if _, err := r.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS signing_keys_one_active
+		ON signing_keys(active) WHERE active = 1`); err != nil {
+		return err
+	}
 	_, err := r.db.Exec(`CREATE TABLE IF NOT EXISTS deployment (
-		id         TEXT PRIMARY KEY,
+		only_row   INTEGER PRIMARY KEY CHECK (only_row = 1),
+		id         TEXT NOT NULL,
 		created_at TEXT NOT NULL
 	)`)
 	return err
@@ -33,7 +38,7 @@ func (r *Registry) DeploymentID(ctx context.Context, pinned string) (string, err
 	defer r.mu.Unlock()
 
 	var stored string
-	err := r.db.QueryRowContext(ctx, `SELECT id FROM deployment LIMIT 1`).Scan(&stored)
+	err := r.db.QueryRowContext(ctx, `SELECT id FROM deployment WHERE only_row = 1`).Scan(&stored)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		id := pinned
@@ -45,24 +50,37 @@ func (r *Registry) DeploymentID(ctx context.Context, pinned string) (string, err
 			id = minted
 		}
 		if _, err := r.db.ExecContext(ctx,
-			`INSERT INTO deployment (id, created_at) VALUES (?, ?)`,
+			`INSERT INTO deployment (only_row, id, created_at) VALUES (1, ?, ?) ON CONFLICT(only_row) DO NOTHING`,
 			id, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return "", fmt.Errorf("store deployment id: %w", err)
 		}
-		return id, nil
+		if err := r.db.QueryRowContext(ctx, `SELECT id FROM deployment WHERE only_row = 1`).Scan(&stored); err != nil {
+			return "", fmt.Errorf("read deployment id: %w", err)
+		}
+		if pinned != "" && pinned != stored {
+			return "", deploymentMismatch(pinned, stored)
+		}
+		return stored, nil
 	case err != nil:
 		return "", fmt.Errorf("read deployment id: %w", err)
 	}
 	if pinned != "" && pinned != stored {
-		return "", fmt.Errorf("DOLMEN_AUTH_OIDC_DEPLOYMENT_ID is %q but this data directory was created as %q: tokens are bound to the deployment id, so changing it would invalidate every live token and accept none; unset the variable to keep %q, or point at a different data directory", pinned, stored, stored)
+		return "", deploymentMismatch(pinned, stored)
 	}
 	return stored, nil
+}
+
+func deploymentMismatch(pinned, stored string) error {
+	return fmt.Errorf("DOLMEN_AUTH_OIDC_DEPLOYMENT_ID is %q but this data directory was created as %q: tokens are bound to the deployment id, so changing it would invalidate every live token and accept none; unset the variable to keep %q, or point at a different data directory", pinned, stored, stored)
 }
 
 func (r *Registry) LoadKeyring(ctx context.Context, deployment string) (Keyring, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.loadKeyringLocked(ctx, deployment)
+}
 
+func (r *Registry) loadKeyringLocked(ctx context.Context, deployment string) (Keyring, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT id, private, public, active FROM signing_keys WHERE retired = 0 ORDER BY created_at`)
 	if err != nil {
 		return Keyring{}, fmt.Errorf("read signing keys: %w", err)
@@ -105,13 +123,13 @@ func (r *Registry) LoadKeyring(ctx context.Context, deployment string) (Keyring,
 		return Keyring{}, err
 	}
 	if _, err := r.db.ExecContext(ctx,
-		`INSERT INTO signing_keys (id, private, public, active, created_at) VALUES (?, ?, ?, 1, ?)`,
+		`INSERT INTO signing_keys (id, private, public, active, retired, created_at) VALUES (?, ?, ?, 1, 0, ?)
+		 ON CONFLICT DO NOTHING`,
 		sk.ID, hex.EncodeToString(sk.Private), hex.EncodeToString(sk.Public),
 		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return Keyring{}, fmt.Errorf("store signing key: %w", err)
 	}
-	k.Active = sk
-	return k, nil
+	return r.loadKeyringLocked(ctx, deployment)
 }
 
 func (r *Registry) RotateSigningKey(ctx context.Context, deployment string, retirePredecessors bool) (Keyring, error) {

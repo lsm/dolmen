@@ -250,6 +250,11 @@ func (a *Authenticator) CheckRootAdministrator(ctx context.Context, src RootAdmi
 			}
 		}
 	}
+	for _, s := range admins {
+		if s.Type == SubjectGroup {
+			return fmt.Errorf("auth is on but the only root administrator is the group %q, and group membership is asserted per request rather than stored, so startup cannot establish that the group has any member — an empty or retired group would satisfy the check while nobody could actually administer; grant admin on \"*\" to a principal as well, mint an API key carrying that group (a key's groups are stored, so they do prove membership), or set DOLMEN_ADMIN_KEY and restart", s.ID)
+		}
+	}
 	return fmt.Errorf("auth is on but no root administrator is reachable through an enabled identity source: a grant of admin on \"*\" exists, but no source can produce the identity it names — the key that bore it may have been revoked, or the grant may name a principal only a source this deployment no longer enables could assert; set DOLMEN_ADMIN_KEY and restart, which restores the bootstrap administrator while existing grants persist")
 }
 

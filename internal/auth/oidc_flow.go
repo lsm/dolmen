@@ -246,6 +246,9 @@ func (s *OIDCSource) claimsFrom(ctx context.Context, tr tokenResponse, eps provi
 	if tr.IDToken != "" {
 		claims, err := unverifiedClaims(tr.IDToken)
 		if err == nil {
+			if err := s.checkIDTokenClaims(claims); err != nil {
+				return "", nil, err
+			}
 			sub, _ := claims["sub"].(string)
 			if sub != "" {
 				return sub, groupClaims(claims, s.cfg.GroupsClaim), nil
@@ -283,6 +286,40 @@ func (s *OIDCSource) claimsFrom(ctx context.Context, tr tokenResponse, eps provi
 		return "", nil, fmt.Errorf("%w: the identity provider returned no usable subject claim", ErrAuthFlow)
 	}
 	return sub, groupClaims(claims, s.cfg.GroupsClaim), nil
+}
+
+func (s *OIDCSource) checkIDTokenClaims(claims map[string]any) error {
+	if s.cfg.Preset == PresetGitHub {
+		return nil
+	}
+	iss, _ := claims["iss"].(string)
+	if iss != "" && strings.TrimRight(iss, "/") != strings.TrimRight(s.cfg.Issuer, "/") {
+		return fmt.Errorf("%w: the identity provider returned a token issued by %q, not by the configured issuer; the sign-in is refused rather than trusting it", ErrAuthFlow, iss)
+	}
+	if !audienceMatches(claims["aud"], s.cfg.ClientID) {
+		return fmt.Errorf("%w: the identity provider returned a token issued for a different application than this server's client id; the sign-in is refused rather than trusting it", ErrAuthFlow)
+	}
+	if exp, ok := claims["exp"].(float64); ok && int64(exp) <= time.Now().Unix() {
+		return fmt.Errorf("%w: the identity provider returned an already-expired token; start the sign-in again", ErrAuthFlow)
+	}
+	return nil
+}
+
+func audienceMatches(raw any, clientID string) bool {
+	switch aud := raw.(type) {
+	case nil:
+		return true
+	case string:
+		return aud == clientID
+	case []any:
+		for _, v := range aud {
+			if s, ok := v.(string); ok && s == clientID {
+				return true
+			}
+		}
+		return false
+	}
+	return false
 }
 
 func unverifiedClaims(idToken string) (map[string]any, error) {
