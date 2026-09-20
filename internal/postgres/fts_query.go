@@ -64,12 +64,14 @@ func ftsTokenize(match string) ([]ftsToken, error) {
 			return nil, invalidf("query %q: PostgreSQL full-text search has no first-token operator equivalent to %s; drop it to match the term anywhere in the field", match, "^term")
 		case r == '+':
 			return nil, invalidf("query %q: PostgreSQL full-text search has no %s adjacency operator; double-quote the words as a phrase instead", match, "+")
+		case r == '-':
+			return nil, invalidf("query %q: a bare %s is not a query operator; double-quote terms that contain punctuation", match, "-")
 		default:
 			start := i
 			star := false
 			for i < len(match) {
 				next, n := utf8.DecodeRuneInString(match[i:])
-				if unicode.IsSpace(next) || next == '(' || next == ')' || next == '"' || next == ':' || next == '{' || next == '\'' || next == '^' || next == '+' {
+				if unicode.IsSpace(next) || next == '(' || next == ')' || next == '"' || next == ':' || next == '{' || next == '\'' || next == '^' || next == '+' || next == '-' {
 					break
 				}
 				if next == '*' {

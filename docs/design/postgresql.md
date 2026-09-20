@@ -454,15 +454,32 @@ never wrote, from a statement they cannot see. Only parse failures are reframed,
 unknown column or table still names what was missing. A failed `drop_namespace` now
 says nothing was dropped rather than pointing at `list_namespaces`.
 
+A bare `-` is now rejected by the PostgreSQL query translator as it is by FTS5. It is
+not in the common grammar, and PostgreSQL's parser treats it as punctuation, so such a
+query was accepted and answered `200` with an empty result set where the contract
+requires a teaching `400`.
+
+Two more failures are per-engine differences the design already grants, not gaps.
+
+`TestTypedReadAliasesAndFallbacks` expects an alias to an *undeclared* label to read
+back raw as `1`. Raw means whatever the engine stored, and this document specifies
+BOOLEAN for boolean fields, so PostgreSQL's raw value is `true`. Coercing it to `1`
+would also misreport genuine boolean expressions — `SELECT n > 5 AS big` is `true` in
+PostgreSQL and `1` in SQLite — so the fixture is pinning SQLite's storage
+representation and needs an engine-aware expectation.
+
+`TestSearchFulltextSyntaxAcceptReject` expects `cafe` to match `café latte`. The
+native search decision above lists accents, alongside stemming, stop words and CJK,
+as analysis that may produce different matches per engine (D27). Matching PostgreSQL
+to SQLite here needs the `unaccent` extension, and this document requires that no
+extension be needed to run the backend.
+
 The remaining failures are genuine backend gaps, not harness artifacts. They must be
 closed before the public selector is enabled:
 
 | Area | Fixture | Gap |
 |---|---|---|
-| Error taxonomy | `TestGoldenErrorContract` | codes now match; the unknown-column and malformed-filter messages still diverge from the pinned shapes, and the three full-text rows pin FTS5 wording that D27 makes per-engine, so they need an engine-aware pin |
-| Error taxonomy | `TestTransportParityErrorEnvelope` | a rejected query answers `200` with an empty result set instead of `400` |
-| Typed reads | `TestTypedReadAliasesAndFallbacks` | an alias to an undeclared label reads back as boolean `true` rather than `1` |
-| Full-text | `TestSearchFulltextSyntaxAcceptReject` | diacritic-insensitive matching returns nothing; needs `unaccent` or a documented divergence under D27 |
+| Error taxonomy | `TestGoldenErrorContract` | statuses and codes now match on every case; what remains is full-text wording, where the fixture pins FTS5 strings (`fts5: syntax error`, `column "nocol" not found`, `FTS5 parses a bare "-"`) that D27 makes per-engine, so these need an engine-aware pin |
 | Change feed | `TestChangesSinceTableFeedContract` | a live table-feed cursor is rejected as past the retention window |
 | SSE | `TestSubscribeOverflowTeachesReconnect` | the bound itself now exists and `TestPostgresListenOverflowsABlockedSubscriber` pins it, but the fixture parks a consumer and floods 9000 changes, which needs the live pump to get 8000 ahead of the writer. Live fetches go through `ChangesSince`, which takes the namespace write lock to mint a cursor per record, so the pump contends with the very writer it must outrun and no backlog accumulates. Closing this means a live read that does not take the write lock |
 
