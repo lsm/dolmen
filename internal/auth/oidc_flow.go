@@ -46,6 +46,13 @@ type OIDCSource struct {
 
 	mu        sync.Mutex
 	endpoints providerEndpoints
+	onRing    func(Keyring)
+}
+
+func (s *OIDCSource) PublishRingTo(f func(Keyring)) {
+	s.mu.Lock()
+	s.onRing = f
+	s.mu.Unlock()
 }
 
 func NewOIDCSource(cfg OIDCConfig, reg *Registry, ring Keyring, client *http.Client) *OIDCSource {
@@ -224,7 +231,11 @@ func (s *OIDCSource) Complete(ctx context.Context, state, code string) (string, 
 	if ttl == 0 {
 		ttl = DefaultTokenTTL
 	}
-	tok, err := MintToken(s.currentRing(), principal, qualified, ttl, time.Now())
+	ring, err := s.mintingRing(ctx)
+	if err != nil {
+		return "", 0, err
+	}
+	tok, err := MintToken(ring, principal, qualified, ttl, time.Now())
 	if err != nil {
 		return "", 0, err
 	}
@@ -318,7 +329,11 @@ func (s *OIDCSource) Rotate(ctx context.Context, retirePredecessors bool) (Keyri
 	}
 	s.mu.Lock()
 	s.ring = ring
+	publish := s.onRing
 	s.mu.Unlock()
+	if publish != nil {
+		publish(ring)
+	}
 	return ring, nil
 }
 
@@ -326,4 +341,23 @@ func (s *OIDCSource) currentRing() Keyring {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.ring
+}
+
+func (s *OIDCSource) mintingRing(ctx context.Context) (Keyring, error) {
+	cached := s.currentRing()
+	if s.reg == nil {
+		return cached, nil
+	}
+	fresh, err := s.reg.LoadKeyring(ctx, cached.Deployment)
+	if err != nil {
+		return Keyring{}, err
+	}
+	s.mu.Lock()
+	s.ring = fresh
+	publish := s.onRing
+	s.mu.Unlock()
+	if publish != nil {
+		publish(fresh)
+	}
+	return fresh, nil
 }

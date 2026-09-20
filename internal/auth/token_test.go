@@ -213,7 +213,17 @@ func TestOIDCReachabilityRejectsAStaleIssuerQualification(t *testing.T) {
 		t.Fatalf("a root grant under the configured issuer should be reachable: %v", err)
 	}
 
-	if err := a.CheckRootAdministrator(ctx, fakeRootAdmins{{Type: SubjectPrincipal, ID: "plain-principal"}}); err != nil {
-		t.Fatalf("an unqualified principal is not this source's to judge: %v", err)
+	if err := a.CheckRootAdministrator(ctx, fakeRootAdmins{{Type: SubjectPrincipal, ID: "plain-principal"}}); err == nil {
+		t.Fatal("with only the OIDC source enabled, an unqualified gateway-era principal is not producible and must not count as reachable")
+	}
+
+	withGateway, err := New(Config{Mode: ModeOn, TrustedProxies: proxies(t, "127.0.0.0/8")})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	withGateway.UseTokens(Keyring{Deployment: "dep"})
+	withGateway.SetOIDCIssuer(newDigest)
+	if err := withGateway.CheckRootAdministrator(ctx, fakeRootAdmins{{Type: SubjectPrincipal, ID: "plain-principal"}}); err != nil {
+		t.Fatalf("a gateway can assert any well-formed principal, so it stays reachable: %v", err)
 	}
 }

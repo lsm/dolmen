@@ -12,7 +12,7 @@ func (r Reach) PrincipalReachable(id string) bool {
 	}
 	if r.OIDC {
 		digest, qualified := OIDCIssuerOf(id)
-		return !qualified || digest == r.OIDCIssuer
+		return qualified && digest == r.OIDCIssuer
 	}
 	return false
 }

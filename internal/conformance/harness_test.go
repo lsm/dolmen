@@ -688,6 +688,11 @@ func (h *harness) keyring(t *testing.T) auth.Keyring {
 func (h *harness) attachOIDC(t *testing.T, src *auth.OIDCSource) {
 	t.Helper()
 	h.authn.UseTokens(h.keyring(t))
+	src.PublishRingTo(h.authn.UseTokens)
+	dep := h.keyring(t).Deployment
+	h.authn.RefreshTokensFrom(func(ctx context.Context) (auth.Keyring, error) {
+		return h.grants.LoadKeyring(ctx, dep)
+	}, time.Millisecond)
 	h.apiOpts = append(h.apiOpts, api.WithOIDC(src))
 	h.oidc = src
 	h.restart()

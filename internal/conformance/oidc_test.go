@@ -327,3 +327,18 @@ func TestSignInErrorPageIsNotDoubleEscaped(t *testing.T) {
 		t.Fatalf("the error page does not carry the remediation: %s", body)
 	}
 }
+
+func TestSignInAfterARotationElsewhereMintsWithTheLiveKey(t *testing.T) {
+	stub := newIssuerStub(t, "00u1a2b3", nil)
+	h := oidcHarness(t, stub)
+
+	if _, err := h.grants.RotateSigningKey(t.Context(), h.keyring(t).Deployment, true); err != nil {
+		t.Fatalf("rotate as another replica would: %v", err)
+	}
+
+	token := danceForToken(t, h)
+	status, out := h.httpCallAs(identity{bearer: token}, "whoami", map[string]any{})
+	if status != http.StatusOK {
+		t.Fatalf("a sign-in completed after a rotation committed elsewhere handed out a dead token: status %d %v", status, out)
+	}
+}
