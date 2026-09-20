@@ -56,6 +56,10 @@ func physicalColumns(fields []schema.Field) (map[string]string, error) {
 }
 
 func physicalTable(ctx context.Context, tx pgx.Tx, n namespace, name string) (string, error) {
+	return physicalRelation(ctx, tx, n, name)
+}
+
+func physicalRelation(ctx context.Context, tx pgx.Tx, n namespace, name string) (string, error) {
 	for i := 0; i < 64; i++ {
 		candidate := physicalCandidate(name, i)
 		var exists bool
@@ -67,7 +71,7 @@ func physicalTable(ctx context.Context, tx pgx.Tx, n namespace, name string) (st
 			return candidate, nil
 		}
 	}
-	return "", fmt.Errorf("postgres: cannot allocate a distinct table identifier")
+	return "", fmt.Errorf("postgres: cannot allocate a distinct relation identifier")
 }
 
 type columnNamer struct {

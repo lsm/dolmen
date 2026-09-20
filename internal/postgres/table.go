@@ -127,7 +127,11 @@ func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []sche
 			return err
 		}
 		if len(fulltextFields(fields)) > 0 {
-			if _, err := tx.Exec(ctx, ftsIndexDDL(n.physical, physical)); err != nil {
+			indexDDL, err := ftsIndexDDL(ctx, tx, n, physical)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, indexDDL); err != nil {
 				return err
 			}
 		}

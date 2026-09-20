@@ -616,7 +616,11 @@ func (s *Store) Migrate(ctx context.Context, ns, table string, changes []schema.
 					if _, err := tx.Exec(ctx, "ALTER TABLE "+physical+" ADD COLUMN "+ddl); err != nil {
 						return err
 					}
-					if _, err := tx.Exec(ctx, ftsIndexDDL(n.physical, current.physical)); err != nil {
+					indexDDL, err := ftsIndexDDL(ctx, tx, n, current.physical)
+					if err != nil {
+						return err
+					}
+					if _, err := tx.Exec(ctx, indexDDL); err != nil {
 						return err
 					}
 				}

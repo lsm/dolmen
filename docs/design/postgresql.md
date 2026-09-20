@@ -281,6 +281,12 @@ only stop words matches nothing where FTS5 would match.
 Migrations drop the generated column before the field DDL and rebuild it after, because
 PostgreSQL refuses to drop a column a generated column reads.
 
+The index name is allocated through the same `pg_class` probe that table names use, not
+derived as `<table>_fts`. Indexes and tables share one namespace in PostgreSQL, and the
+grammar reserves only the `__fts` substring, so a namespace may legitimately hold a table
+called `notes_fts`; deriving the name would make full-text on `notes` fail with 42P07 and
+stay broken.
+
 Vector search scans stored vectors and scores cosine similarity in Go, exactly as SQLite
 does, and reports `exact` execution. Ordering, `_score`, `min_score`, skipped-vector
 counting, filters, and paging agree with SQLite row for row, and the conformance suite

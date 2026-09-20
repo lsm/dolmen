@@ -439,3 +439,59 @@ func TestPostgresSearchIgnoresArgsWithoutFilter(t *testing.T) {
 		t.Fatalf("vector rows: %+v", searchIDs(t, vectorResult))
 	}
 }
+
+func TestPostgresFulltextIndexNameAvoidsExistingTable(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes_fts", []schema.Field{{Name: "body"}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "title", Fulltext: true}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatalf("fulltext table blocked by a sibling named notes_fts: %v", err)
+	}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"title": "payment gateway"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.SearchFulltext(ctx, "app", "notes", "payment", "", nil, false, nil, store.Incarnation{}, store.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Rows) != 1 {
+		t.Fatalf("search: %+v", result.Rows)
+	}
+	if _, err := s.Insert(ctx, "app", "notes_fts", []map[string]any{{"body": "sibling still writable"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatalf("sibling table damaged: %v", err)
+	}
+}
+
+func TestPostgresMigrateFulltextIndexNameAvoidsExistingTable(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes_fts", []schema.Field{{Name: "body"}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "title"}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"title": "refund policy"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Migrate(ctx, "app", "notes", []schema.Change{
+		{Op: schema.OpSetFulltext, Name: "title", Value: migrateTrue()},
+	}, store.Embedder{}, store.Incarnation{Version: 1}); err != nil {
+		t.Fatalf("set_fulltext blocked by a sibling named notes_fts: %v", err)
+	}
+	result, err := s.SearchFulltext(ctx, "app", "notes", "refund", "", nil, false, nil, store.Incarnation{}, store.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Rows) != 1 {
+		t.Fatalf("search after migration: %+v", result.Rows)
+	}
+}
