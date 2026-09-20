@@ -147,20 +147,23 @@ func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []sche
 	return sc, nil
 }
 
+func columnType(f schema.Field) string {
+	switch f.Type {
+	case schema.Number:
+		return "numeric"
+	case schema.Boolean:
+		return "boolean"
+	case schema.Vector:
+		return "bytea"
+	}
+	return `text COLLATE "C"`
+}
+
 func tableDDL(ns, table string, fields []schema.Field, columns map[string]string) string {
 	parts := []string{"id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY", `created_at text NOT NULL DEFAULT to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`}
 	vectorized := false
 	for _, f := range fields {
-		typ := `text COLLATE "C"`
-		switch f.Type {
-		case schema.Number:
-			typ = "numeric"
-		case schema.Boolean:
-			typ = "boolean"
-		case schema.Vector:
-			typ = "bytea"
-		}
-		col := ident(columns[f.Name]) + " " + typ
+		col := ident(columns[f.Name]) + " " + columnType(f)
 		if f.Required {
 			col += " NOT NULL"
 		}
@@ -250,6 +253,9 @@ func (s *Store) DropTable(ctx context.Context, ns, table string, expected store.
 			return err
 		}
 		if _, err := tx.Exec(ctx, "DROP TABLE "+ident(n.physical, current.physical)); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, "DELETE FROM "+s.relation("migrations")+" WHERE namespace=$1 AND table_name=$2", ns, table); err != nil {
 			return err
 		}
 		_, err = tx.Exec(ctx, "UPDATE "+s.relation("tables")+" SET active=false, physical=NULL, drop_generation=drop_generation+1 WHERE namespace=$1 AND name=$2", ns, table)

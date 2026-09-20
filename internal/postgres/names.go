@@ -69,3 +69,61 @@ func physicalTable(ctx context.Context, tx pgx.Tx, n namespace, name string) (st
 	}
 	return "", fmt.Errorf("postgres: cannot allocate a distinct table identifier")
 }
+
+type columnNamer struct {
+	columns map[string]string
+	used    map[string]bool
+}
+
+func newColumnNamer(columns map[string]string) *columnNamer {
+	n := &columnNamer{columns: map[string]string{}, used: map[string]bool{"id": true, "created_at": true, "_embedding": true}}
+	for logical, physical := range columns {
+		n.columns[logical] = physical
+		n.used[physical] = true
+	}
+	return n
+}
+
+func (n *columnNamer) allocate(name string) (string, error) {
+	for i := 0; i < 64; i++ {
+		candidate := physicalCandidate(name, i)
+		if !n.used[candidate] {
+			n.used[candidate] = true
+			n.columns[name] = candidate
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("postgres: cannot allocate a distinct field identifier")
+}
+
+func (n *columnNamer) rename(from, to string) (string, string, error) {
+	physical := n.columns[from]
+	delete(n.columns, from)
+	if from == to {
+		n.columns[to] = physical
+		return physical, physical, nil
+	}
+	for i := 0; i < 64; i++ {
+		candidate := physicalCandidate(to, i)
+		if !n.used[candidate] {
+			n.used[candidate] = true
+			n.columns[to] = candidate
+			return physical, candidate, nil
+		}
+	}
+	return "", "", fmt.Errorf("postgres: cannot allocate a distinct field identifier")
+}
+
+func (n *columnNamer) drop(name string) string {
+	physical := n.columns[name]
+	delete(n.columns, name)
+	return physical
+}
+
+func (n *columnNamer) snapshot() map[string]string {
+	out := map[string]string{}
+	for k, v := range n.columns {
+		out[k] = v
+	}
+	return out
+}
