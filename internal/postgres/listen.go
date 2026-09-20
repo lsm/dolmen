@@ -16,6 +16,8 @@ import (
 
 const listenPollInterval = 250 * time.Millisecond
 
+const listenQueueBound = 8 * store.MaxChangesPageLimit
+
 func (s *Store) notifyChannel() string { return physicalCandidate("dolmen_"+s.catalog, 0) }
 
 func (s *Store) announce(ctx context.Context, tx pgx.Tx, ns string) {
@@ -164,6 +166,8 @@ type listenSession struct {
 	halted     bool
 	lastFetch  time.Time
 	boundary   int64
+	queue      chan store.ChangeRecord
+	liveCursor store.Cursor
 	stop       chan struct{}
 	storeStop  chan struct{}
 	wake       chan struct{}
@@ -237,8 +241,7 @@ func (l *listenSession) guard(ctx context.Context) error {
 	return nil
 }
 
-func (l *listenSession) pending(ctx context.Context) bool {
-	from := l.resume()
+func (l *listenSession) pending(ctx context.Context, from store.Cursor) bool {
 	if from == "" || from == store.CursorBegin {
 		return true
 	}
@@ -292,13 +295,36 @@ func (l *listenSession) needsRefresh() bool {
 func (l *listenSession) reanchor(ctx context.Context) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	token, err := l.store.reanchorCursor(ctx, l.ns, l.table, l.cursor, l.nsGen, l.inc)
+	token, err := l.store.reanchorCursor(ctx, l.ns, l.table, l.liveCursor, l.nsGen, l.inc)
 	if err != nil {
 		return listenCause(err)
 	}
-	l.cursor = token
+	l.liveCursor = token
 	l.lastFetch = l.store.now()
 	return nil
+}
+
+func (l *listenSession) live() store.Cursor {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.liveCursor
+}
+
+func (l *listenSession) fetchLive(ctx context.Context) ([]store.ChangeRecord, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.table != "" {
+		if err := l.admits(l.table); err != nil {
+			return nil, err
+		}
+	}
+	records, next, err := l.store.changesSince(ctx, l.ns, l.table, l.liveCursor, l.nsGen, nil, l.inc, store.Page{}, nil)
+	if err != nil {
+		return nil, listenCause(err)
+	}
+	l.liveCursor = next
+	l.lastFetch = l.store.now()
+	return records, nil
 }
 
 func (l *listenSession) resume() store.Cursor {
@@ -322,6 +348,17 @@ func (l *listenSession) finish(cause error) {
 		defer l.firing.Store(false)
 		l.closed(cause)
 	})
+}
+
+func (l *listenSession) drain() {
+	for {
+		select {
+		case record := <-l.queue:
+			l.deliver(record)
+		case <-l.stop:
+			return
+		}
+	}
 }
 
 func (l *listenSession) deliver(record store.ChangeRecord) {
@@ -368,19 +405,6 @@ func (l *listenSession) markDrained() bool {
 
 func (l *listenSession) run(ctx context.Context) {
 	defer close(l.done)
-	select {
-	case <-l.replayDone:
-	case <-l.stop:
-		return
-	case <-l.storeStop:
-		l.finish(store.ErrListenLifetimeEnded)
-		return
-	case <-ctx.Done():
-		if cause, report := terminalCause(ctx, ctx.Err()); report {
-			l.finish(cause)
-		}
-		return
-	}
 	ticker := time.NewTicker(listenPollInterval)
 	defer ticker.Stop()
 	for {
@@ -410,8 +434,8 @@ func (l *listenSession) run(ctx context.Context) {
 				return
 			}
 		}
-		for l.pending(ctx) {
-			records, err := l.fetch(ctx, nil)
+		for l.pending(ctx, l.live()) {
+			records, err := l.fetchLive(ctx)
 			if err != nil {
 				if l.storeClosing() {
 					l.finish(store.ErrListenLifetimeEnded)
@@ -430,7 +454,12 @@ func (l *listenSession) run(ctx context.Context) {
 					l.finish(err)
 					return
 				}
-				l.deliver(record)
+				select {
+				case l.queue <- record:
+				default:
+					l.finish(store.ErrListenOverflow)
+					return
+				}
 			}
 		}
 		select {
@@ -513,11 +542,7 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 	if err != nil {
 		return nil, nil, err
 	}
-	anchored, err := s.anchorCursor(ctx, ns, table, from, nsGen, inc)
-	if err != nil {
-		return nil, nil, listenCause(err)
-	}
-	head, err := s.changeHead(ctx, ns, nsGen)
+	anchored, liveAnchor, head, err := s.anchorListen(ctx, ns, table, from, nsGen, inc)
 	if err != nil {
 		return nil, nil, listenCause(err)
 	}
@@ -527,6 +552,7 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 		stop: make(chan struct{}), storeStop: w.stop,
 		wake: make(chan struct{}, 1), replayDone: make(chan struct{}), done: make(chan struct{}),
 		lastFetch: s.now(), boundary: head,
+		queue: make(chan store.ChangeRecord, listenQueueBound), liveCursor: liveAnchor,
 	}
 	if table != "" {
 		if err := session.admits(table); err != nil {
@@ -572,6 +598,7 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 	}
 
 	go session.run(live)
+	go session.drain()
 
 	cancel := func() {
 		session.cancelOnce.Do(func() {

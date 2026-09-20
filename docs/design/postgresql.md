@@ -424,6 +424,12 @@ Listen anchors a replay boundary at the namespace head, so replay terminates und
 concurrent writes and the stream reaches its ready frame, and it rejects a cursor that
 is past the retention window before opening a stream rather than after.
 
+The live phase has its own cursor, minted at that same head in the same transaction, and
+starts when the subscription is registered rather than when replay drains — matching the
+SQLite session, whose live pump starts at registration. Live records land in a queue
+bounded at `8 * MaxChangesPageLimit`, the SQLite bound; a subscriber that stops draining
+overflows it and ends with `ErrListenOverflow` instead of back-pressuring forever.
+
 Query rejection now shares one contract across backends: `store.ValidateQueryShape`
 applies the SELECT/WITH and multiple-statement checks before either engine parses, and
 SQL-content rejections carry `store.QueryError` so they classify as `query_error` while
@@ -451,7 +457,7 @@ closed before the public selector is enabled:
 | Typed reads | `TestTypedReadAliasesAndFallbacks` | an alias to an undeclared label reads back as boolean `true` rather than `1` |
 | Full-text | `TestSearchFulltextSyntaxAcceptReject` | diacritic-insensitive matching returns nothing; needs `unaccent` or a documented divergence under D27 |
 | Change feed | `TestChangesSinceTableFeedContract` | a live table-feed cursor is rejected as past the retention window |
-| SSE | `TestSubscribeOverflowTeachesReconnect` | live delivery back-pressures the notify callback instead of bounding a queue, so a slow subscriber never produces the overflow error frame that teaches reconnection |
+| SSE | `TestSubscribeOverflowTeachesReconnect` | the bound itself now exists and `TestPostgresListenOverflowsABlockedSubscriber` pins it, but the fixture parks a consumer and floods 9000 changes, which needs the live pump to get 8000 ahead of the writer. Live fetches go through `ChangesSince`, which takes the namespace write lock to mint a cursor per record, so the pump contends with the very writer it must outrun and no backlog accumulates. Closing this means a live read that does not take the write lock |
 
 The driver remains pure Go and compatible with the static binary requirement.
 PostgreSQL dependency versions are pinned in go.mod. No PostgreSQL server is bundled
