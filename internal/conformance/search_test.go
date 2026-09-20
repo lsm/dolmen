@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
+
+	"github.com/lsm/dolmen/internal/store"
 )
 
 func TestSearchFulltextSyntaxAcceptReject(t *testing.T) {
@@ -60,8 +62,12 @@ func TestSearchFulltextSyntaxAcceptReject(t *testing.T) {
 	data := h.mustHTTP("search_fulltext", map[string]any{
 		"namespace": "fts", "table": "t", "query": "cafe",
 	})
-	if len(data["results"].([]any)) != 1 {
-		t.Fatalf("diacritic-insensitive match: %v", data["results"])
+	wantAccentFolding := 1
+	if testEngine(t) == store.EnginePostgres {
+		wantAccentFolding = 0
+	}
+	if got := len(data["results"].([]any)); got != wantAccentFolding {
+		t.Fatalf("accent folding on engine %q: %d results, want %d (D27 makes accent handling per-engine; PostgreSQL would need the unaccent extension): %v", testEngine(t), got, wantAccentFolding, data["results"])
 	}
 
 	reject := map[string]string{
@@ -97,6 +103,9 @@ func TestSearchFulltextSyntaxAcceptReject(t *testing.T) {
 	}
 	msg, _ := envelopeOf(t, body)["message"].(string)
 	want := `query "money-back": FTS5 parses a bare "-" as a column filter, so a hyphenated term must be double-quoted (e.g. "money-back"); to exclude a term, write NOT between words`
+	if testEngine(t) == store.EnginePostgres {
+		want = `query "money-back": a bare - is not a query operator; double-quote terms that contain punctuation`
+	}
 	if msg != want {
 		t.Fatalf("bare hyphenated term must teach the quoting fix:\n got %s\nwant %s", msg, want)
 	}

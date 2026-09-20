@@ -7,7 +7,21 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/store"
 )
+
+var postgresErrorPins = map[string]string{
+	"fts syntax error":             `bare single quotes are not a term`,
+	"fts syntax error with filter": `bare single quotes are not a term`,
+	"fts unknown column filter":    `does not support the field:term column filter`,
+	"fts gate substring in query":  `query "SQLITE_-x": a bare - is not a query operator`,
+	"fts misuse framing in query":  `query "misuse at line 1 -x": a bare - is not a query operator`,
+	"sql unknown function":         `unknown SQL function "no_such_fn"`,
+	"sql missing column":           `not found`,
+	"write sql rejected":           `^query must begin with SELECT or WITH \(got "INSERT"\); query is read-only`,
+	"multiple statements rejected": `multiple statements are not allowed`,
+}
 
 func TestGoldenErrorContract(t *testing.T) {
 	h := newHarness(t)
@@ -159,8 +173,14 @@ func TestGoldenErrorContract(t *testing.T) {
 			if msg == "" {
 				t.Fatalf("message must be a non-empty string: %v", errObj)
 			}
-			if c.msgRe != "" {
-				wantMessage(t, c.name, msg, c.msgRe)
+			want := c.msgRe
+			if testEngine(t) == store.EnginePostgres {
+				if pg, ok := postgresErrorPins[c.name]; ok {
+					want = pg
+				}
+			}
+			if want != "" {
+				wantMessage(t, c.name, msg, want)
 			}
 
 			if strings.Contains(msg, "SQL logic error") || strings.Contains(msg, "/tmp/") || strings.Contains(msg, ".db") {
