@@ -303,11 +303,102 @@ a filter sees declared columns only and cannot reach the generated tsvector colu
 hidden embeddings. Result shapes, typed coercion, hidden-column behaviour, response
 budgets, and truncation match the other read paths.
 
+## Cross-process subscriptions (implemented internally)
+
+`Listen` is built on the durable change log, not on notifications. A subscription
+resolves its starting cursor exactly as `changes_since` does — a token, `begin`, or the
+current head — replays through `ChangeReplay.Next` until a page comes back empty, then
+polls the same log for live changes. Because every record comes from a committed row in
+the catalog, a subscription sees writes from any process against the same database, and
+two store instances over one catalog are covered by an integration test.
+
+Replay and live delivery never overlap. The session's poller does not begin until
+`ChangeReplay.Next` reports the replay drained, and every read of the feed — from the
+replay or from the poller — takes the session lock for the whole cursor-read, fetch, and
+cursor-write span. Two reads can therefore never start from the same cursor, so a change
+is delivered exactly once across the boundary rather than once by `Next` and again by
+`notify`.
+
+`pg_notify` is a latency optimisation layered on top. Writes announce their namespace on
+a per-catalog channel, and one `LISTEN` connection per store fans the wake-up out to the
+sessions for that namespace; a session that is woken simply polls earlier. A poll interval
+runs regardless, so a dropped, missed, or disabled notification costs latency and never a
+change: a test removes the wake registration entirely and still requires the change to
+arrive. That connection is opened directly rather than taken from the pool, because a
+pooled connection parked in `WaitForNotification` would hold a slot for the store's
+lifetime and deadlock writes on a small pool. The channel name is length-capped the same
+way physical identifiers are, since a 63-character catalog would otherwise push it past
+PostgreSQL's 63-byte limit, and the announce runs in a savepoint so a failed notification
+— a full notification queue, say — cannot poison the write transaction that raised it.
+Notifications are an optimisation, and a write must not fail because one did.
+
+A cursor is validated at `Listen` rather than on the first page, so a token minted on
+another feed is refused up front with the cross-feed error and its own remediation instead
+of surfacing later as an age bound. `Listen` also anchors the feed there, minting a cursor
+at the resolved head or retention floor inside its own transaction, so a commit landing
+between `Listen` returning and the first `Next` is delivered rather than falling below a
+boundary resolved later.
+
+`ChangeReplay.Next` serializes against the session and refuses calls once the subscription
+is cancelled. A context cancelled by the caller for one `Next` call ends that call only:
+the error is returned but the session stays usable, since a per-call deadline is not a
+statement about the subscription.
+
+A subscription re-anchors its own cursor once every quarter of the retention window,
+minting a fresh chain at its current position. Two bounds make this necessary. A token is
+expired once it has gone unrefreshed for a retention window, and a chain is expired
+outright at twice retention, so a feed quiet for longer than that would expire its own
+cursor, lose the next change, and hand back a resume cursor that no longer resolves.
+
+That re-anchoring lives in the subscription, not in `changes_since`. The absolute chain
+bound is deliberate for the polling surface — a caller holding one chain forever is made
+to re-anchor — and `TestPostgresCursorDurabilityAndRetention` pins it. Only a live
+subscription, which cannot ask its caller to reconnect without dropping the stream, is
+exempt. The cost is one write per subscription per quarter-window, not the one per poll
+that the read-only guard replaced.
+
+The subscription captures the namespace generation and the table's drop generation at
+`Listen` rather than trusting caller-supplied bindings, so a dropped and recreated table
+or a replaced namespace ends the feed even when the caller passes a zero incarnation. The
+schema version is deliberately not captured: a migration must not end a subscription.
+
+Every poll tick first runs a read-only guard: it re-checks `liveAuthz`, which is invoked
+from the session goroutine and so must be safe to call concurrently, and re-reads the
+namespace generation and table drop generation. Only when that guard passes and a
+read-only probe finds changes past the cursor does the tick take the write path that mints
+cursors, so an idle subscription costs two reads rather than a write transaction
+contending with writers on the namespace row. Records are additionally checked against
+`liveAuthz` per record, so a namespace-wide feed re-checks per table rather than once. A
+`liveAuthz` that returns a row scope fails closed, as every other PostgreSQL operation
+does.
+
+Ends are reported through `closed` with the shared sentinels the transports match on —
+`ErrListenRevoked` for a withdrawn admission, `ErrListenLifetimeEnded` for a replaced
+target or a closing store, and `ErrListenAged` for a cursor past retention. A closing
+store is checked before each tick's work and again if that work fails, so a session
+racing `Close` reports the sentinel rather than whatever error the closing pool happened
+to raise. Both the `closed` and `notify` dispatches recover from a panicking callback and log
+it: they run on the engine's session goroutine, so one bad subscriber would otherwise take
+the process down. A panicking `notify` is logged and the subscription continues; only the
+record that raised it is lost.
+
+Replay admits per record too, not only the live phase, so a namespace-wide feed whose
+admission is withdrawn during a long replay stops rather than finishing the backlog. Plain
+cancellation reports nothing: the transports treat the close cause as an error to render,
+and a nil cause is not one. The session is bound to the
+caller's context, so cancelling that context ends it. A terminal error during the replay
+phase — an expired cursor, a withdrawn admission, a target that went away — reports
+through `closed` just as a live one does, rather than only surfacing as the error returned
+from `Next`, so a transport waiting on the close signal is never left hanging.
+
+Cancelling is idempotent, and it joins the session goroutine so no delivery can follow it
+— except while a terminal callback is running, where it returns without joining. `closed`
+runs on the session goroutine, so joining from inside it would wait on the goroutine that
+is waiting on the callback.
+
 ## Remaining implementation sequence
 
-1. Cross-process polling/listening and SSE lifecycle
-   tests. Notifications may wake readers but never replace the durable log.
-2. Implement every mandatory Engine method, wire the HTTP/MCP/stdio/facade/blackbox
+1. Implement every mandatory Engine method, wire the HTTP/MCP/stdio/facade/blackbox
    constructors and complete the conformance matrix; only then enable the public
    selector and publish PostgreSQL configuration/install guidance.
 

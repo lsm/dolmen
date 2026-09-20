@@ -177,3 +177,84 @@ func (s *Store) ChangesSince(ctx context.Context, ns, table string, from store.C
 	}
 	return records, next, nil
 }
+
+func (s *Store) anchorCursor(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, inc store.Incarnation) (store.Cursor, error) {
+	if from != "" && from != store.CursorBegin {
+		return from, nil
+	}
+	var token store.Cursor
+	err := s.write(ctx, ns, expected, func(tx pgx.Tx, n namespace) error {
+		now := s.now()
+		drop := int64(0)
+		if table != "" {
+			state, err := s.loadTable(ctx, tx, n, table)
+			if err != nil {
+				return err
+			}
+			if err := checkIncarnation(ns, state.incarnation, inc); err != nil {
+				return err
+			}
+			drop = state.incarnation.DropGen
+		}
+		var state cursorState
+		if err := tx.QueryRow(ctx, "SELECT next_change FROM "+s.relation("namespaces")+" WHERE name=$1", ns).Scan(&state.position); err != nil {
+			return err
+		}
+		if from == store.CursorBegin {
+			var first *int64
+			stmt := "SELECT min(position) FROM " + s.relation("changes") + " WHERE namespace=$1"
+			args := []any{ns}
+			if s.changeRetention > 0 {
+				stmt += " AND created_at >= $2"
+				args = append(args, now.Add(-s.changeRetention))
+			}
+			if err := tx.QueryRow(ctx, stmt, args...).Scan(&first); err != nil {
+				return err
+			}
+			if first != nil {
+				state.position = *first - 1
+			}
+		}
+		state.origin = state.position
+		state.start = now
+		state.table = table
+		state.drop = drop
+		var err error
+		token, err = s.mintCursor(ctx, tx, n, state, now)
+		return err
+	})
+	return token, err
+}
+
+func (s *Store) reanchorCursor(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, inc store.Incarnation) (store.Cursor, error) {
+	if from == "" || from == store.CursorBegin {
+		return from, nil
+	}
+	token := from
+	err := s.write(ctx, ns, expected, func(tx pgx.Tx, n namespace) error {
+		now := s.now()
+		drop := int64(0)
+		if table != "" {
+			state, err := s.loadTable(ctx, tx, n, table)
+			if err != nil {
+				return err
+			}
+			if err := checkIncarnation(ns, state.incarnation, inc); err != nil {
+				return err
+			}
+			drop = state.incarnation.DropGen
+		}
+		state, err := s.resolveCursor(ctx, tx, n, from, table, drop, now)
+		if err != nil {
+			return err
+		}
+		state.origin = state.position
+		state.start = now
+		token, err = s.mintCursor(ctx, tx, n, state, now)
+		if err != nil {
+			return err
+		}
+		return s.pruneChanges(ctx, tx, n, now)
+	})
+	return token, err
+}

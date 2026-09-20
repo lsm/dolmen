@@ -32,6 +32,7 @@ type Store struct {
 	closed          bool
 	done            chan struct{}
 	active          sync.WaitGroup
+	wake            *wakeSet
 }
 
 type connectionError struct {
@@ -123,7 +124,16 @@ func (s *Store) Close() error {
 		return nil
 	}
 	s.closed = true
+	w := s.wake
 	s.mu.Unlock()
+	if w != nil {
+		w.mu.Lock()
+		if !w.stopped {
+			w.stopped = true
+			close(w.stop)
+		}
+		w.mu.Unlock()
+	}
 	s.active.Wait()
 	s.pool.Close()
 	close(s.done)
