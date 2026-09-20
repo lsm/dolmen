@@ -109,12 +109,16 @@ func withRowAccessChange(def OpDef) OpDef {
 		nextItemProps[k] = v
 	}
 	nextItemProps["op"] = nextOp
+	nextItemProps["value"] = prop("boolean", "Flag value (set_fulltext, set_vectorize, set_row_access)")
 
 	nextItems := make(map[string]any, len(items))
 	for k, v := range items {
 		nextItems[k] = v
 	}
 	nextItems["properties"] = nextItemProps
+	if clauses, ok := items["allOf"].([]any); ok {
+		nextItems["allOf"] = withRowAccessConditionals(clauses)
+	}
 
 	nextChanges := make(map[string]any, len(changes))
 	for k, v := range changes {
@@ -135,6 +139,76 @@ func withRowAccessChange(def OpDef) OpDef {
 	next["properties"] = nextProps
 	def.InputSchema = next
 	return def
+}
+
+func withRowAccessConditionals(clauses []any) []any {
+	out := make([]any, 0, len(clauses)+1)
+	for _, raw := range clauses {
+		clause, ok := raw.(map[string]any)
+		if !ok {
+			out = append(out, raw)
+			continue
+		}
+		out = append(out, widenValueClause(clause))
+	}
+	return append(out, map[string]any{
+		"if": map[string]any{
+			"properties": map[string]any{
+				"op": map[string]any{"const": schema.OpSetRowAccess},
+			},
+			"required": []string{"op"},
+		},
+		"then": map[string]any{"required": []string{"value"}},
+	})
+}
+
+func widenValueClause(clause map[string]any) map[string]any {
+	cond, ok := clause["if"].(map[string]any)
+	if !ok {
+		return clause
+	}
+	props, ok := cond["properties"].(map[string]any)
+	if !ok {
+		return clause
+	}
+	opCond, ok := props["op"].(map[string]any)
+	if !ok {
+		return clause
+	}
+	not, ok := opCond["not"].(map[string]any)
+	if !ok {
+		return clause
+	}
+	names, ok := not["enum"].([]string)
+	if !ok || len(names) != 2 || names[0] != schema.OpSetFulltext || names[1] != schema.OpSetVectorize {
+		return clause
+	}
+
+	nextNot := map[string]any{"enum": []string{schema.OpSetFulltext, schema.OpSetVectorize, schema.OpSetRowAccess}}
+	nextOp := make(map[string]any, len(opCond))
+	for k, v := range opCond {
+		nextOp[k] = v
+	}
+	nextOp["not"] = nextNot
+
+	nextProps := make(map[string]any, len(props))
+	for k, v := range props {
+		nextProps[k] = v
+	}
+	nextProps["op"] = nextOp
+
+	nextCond := make(map[string]any, len(cond))
+	for k, v := range cond {
+		nextCond[k] = v
+	}
+	nextCond["properties"] = nextProps
+
+	next := make(map[string]any, len(clause))
+	for k, v := range clause {
+		next[k] = v
+	}
+	next["if"] = nextCond
+	return next
 }
 
 func AuthOpNames() []string {

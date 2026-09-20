@@ -571,10 +571,12 @@ under their own identity. Turning it off keeps the column and its values and
 needs `admin` as well as `schema` and `read`, because it changes what every
 other data-verb holder may reach.
 
-**A current limitation:** `update`, `delete`, `upsert`, `upsert_by_key` and
-filtered searches are refused for a caller restricted to their own rows. Those
-take caller-supplied SQL filters or match on a natural key across the table,
-and both can be turned into a probe for rows the caller cannot see. The
+**A current limitation:** `update`, `delete`, `upsert`, `upsert_by_key`,
+filtered searches, and inserts carrying an `idempotency_key` are refused for a
+caller restricted to their own rows. Those
+take caller-supplied SQL filters, match on a natural key across the table, or
+share an idempotency record keyed per table rather than per owner — each can be
+turned into a probe for rows the caller cannot see. The
 restricted filter language that makes them safe is not built yet, so they fail
 closed rather than leaking. Inserting and reading your own rows work normally.
 

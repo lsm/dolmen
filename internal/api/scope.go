@@ -32,7 +32,13 @@ func (s *Server) resolveScope(ctx context.Context, ns, table string) (*store.Row
 		return nil, store.Incarnation{}, err
 	}
 	if sc.RowAccess != schema.RowAccessOwn {
-		if verbs.HasAny(auth.VerbRead, auth.VerbCreate, auth.VerbUpdate, auth.VerbDelete) {
+		if verbs.Has(auth.VerbRead) {
+			return nil, inc, nil
+		}
+		if verbs.HasAny(auth.VerbCreate, auth.VerbUpdate, auth.VerbDelete) {
+			if sc.HasOwner {
+				return &store.RowScope{Empty: true}, inc, nil
+			}
 			return nil, inc, nil
 		}
 		return &store.RowScope{Empty: true}, inc, nil

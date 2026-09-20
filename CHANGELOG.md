@@ -39,9 +39,10 @@
   is off. Enabling it later through `migrate set_row_access` is refused on a table that already has
   rows, because no operation can write another principal's rows as that principal; turning it off
   keeps the column and its values and requires `admin` as well as `schema` and `read`. Scoped
-  `update`, `delete`, `upsert`, `upsert_by_key` and filtered searches are refused for now: their
-  caller-supplied filters and key matches need the restricted filter language before they can be
-  safe.
+  `update`, `delete`, `upsert`, `upsert_by_key`, filtered searches, and inserts carrying an
+  `idempotency_key` are refused for now: caller-supplied filters, key matches, and a per-table
+  idempotency record each need work before a scoped caller can use them without probing rows they
+  cannot see.
 - **`unauthorized` error code** (401) in the shared taxonomy. `auth: off` never emits it, and the
   default is still `auth: off` — nothing changes for existing deployments.
 

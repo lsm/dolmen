@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -389,5 +390,80 @@ func TestOwnerStaysReservedWhileTheColumnExists(t *testing.T) {
 	})
 	if status != http.StatusBadRequest {
 		t.Fatalf("owner must stay reserved while the column exists: status %d %v", status, out)
+	}
+}
+
+func TestAdvertisedMigrateSchemaAcceptsSetRowAccess(t *testing.T) {
+	h := newHarnessMode(t, authAdminKey)
+	doc := h.mustHTTPGet(t, "/v1/openapi.json")
+
+	if !strings.Contains(doc, "set_row_access") {
+		t.Fatal("openapi.json omits set_row_access under auth on")
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(doc), &parsed); err != nil {
+		t.Fatalf("openapi.json is not valid JSON: %v", err)
+	}
+
+	paths, _ := parsed["paths"].(map[string]any)
+	migrate, _ := paths["/v1/migrate"].(map[string]any)
+	post, _ := migrate["post"].(map[string]any)
+	reqBody, _ := post["requestBody"].(map[string]any)
+	content, _ := reqBody["content"].(map[string]any)
+	appJSON, _ := content["application/json"].(map[string]any)
+	sc, _ := appJSON["schema"].(map[string]any)
+	props, _ := sc["properties"].(map[string]any)
+	changes, _ := props["changes"].(map[string]any)
+	items, _ := changes["items"].(map[string]any)
+
+	raw := mustJSON(t, items)
+	if strings.Contains(raw, `["set_fulltext","set_vectorize"]`) {
+		t.Fatalf("the advertised schema still forbids value outside set_fulltext/set_vectorize, so every set_row_access request it describes is invalid: %s", raw)
+	}
+	if !strings.Contains(raw, "set_row_access") {
+		t.Fatalf("the advertised change schema never mentions set_row_access: %s", raw)
+	}
+}
+
+func TestScopedInsertRefusesAnIdempotencyKey(t *testing.T) {
+	h := seedRowAccess(t)
+	grantTo(t, h, "principal", "alice", "acme", "notes", "create")
+	grantTo(t, h, "principal", "bob", "acme", "notes", "create")
+
+	res, out := h.asIdentity(t, "bob", "", "insert",
+		`{"namespace":"acme","table":"notes","records":[{"body":"bob's"}],"idempotency_key":"shared-key"}`)
+	if res.StatusCode == http.StatusOK {
+		t.Fatalf("a scoped insert accepted an idempotency key, which is recorded per table and would report another owner's rows on replay: %v", out)
+	}
+
+	res, out = h.asIdentity(t, "alice", "", "insert",
+		`{"namespace":"acme","table":"notes","records":[{"body":"bob's"}],"idempotency_key":"shared-key"}`)
+	if res.StatusCode == http.StatusOK {
+		t.Fatalf("alice replayed bob's key: %v", out)
+	}
+
+	res, out = h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"x"}]}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("a scoped insert without a key must still work: status %d %v", res.StatusCode, out)
+	}
+}
+
+func TestDataVerbHolderIsScopedEmptyOnceRowAccessIsOff(t *testing.T) {
+	h := seedRowAccess(t)
+	grantTo(t, h, "principal", "alice", "acme", "notes", "create")
+	h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"alice note"}]}`)
+
+	h.mustHTTP("migrate", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"changes": []map[string]any{{"op": "set_row_access", "value": false}},
+	})
+
+	res, out := h.asIdentity(t, "alice", "", "describe_table", `{"namespace":"acme","table":"notes"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("describe_table needs any verb: status %d %v", res.StatusCode, out)
+	}
+	data, _ := out["data"].(map[string]any)
+	if got := int64val(t, "row_count", data["row_count"]); got != 0 {
+		t.Fatalf("with row_access off a create-only holder saw row_count %d, want 0: the scope must not fall back to table-wide", got)
 	}
 }
