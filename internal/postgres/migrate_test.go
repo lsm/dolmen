@@ -15,6 +15,8 @@ import (
 
 func migrateTrue() *bool { v := true; return &v }
 
+func migrateEnum(v []string) *[]string { return &v }
+
 func fixedEmbedder(calls *int) store.Embedder {
 	return store.Embedder{Identity: "test", Embed: func(_ context.Context, texts []string) ([][]float32, error) {
 		if calls != nil {
@@ -393,5 +395,50 @@ func TestPostgresMigrateAddsVectorizedFieldWithDefault(t *testing.T) {
 	}
 	if embedded != 2 {
 		t.Fatalf("embedded %d rows, want 2", embedded)
+	}
+}
+
+func TestPostgresMigrateRejectsEnumValueRacingTheWriteLock(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "state"}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"state": "open"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	racing := store.Embedder{Identity: "test", Embed: func(_ context.Context, texts []string) ([][]float32, error) {
+		if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"state": "archived"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+			return nil, err
+		}
+		out := make([][]float32, len(texts))
+		for i := range out {
+			out[i] = []float32{1, 0, 0}
+		}
+		return out, nil
+	}}
+	_, err := s.Migrate(ctx, "app", "notes", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "body", Vectorize: true}, Default: "seed"},
+		{Op: schema.OpSetEnum, Name: "state", Enum: migrateEnum([]string{"open"})},
+	}, racing, store.Incarnation{Version: 1})
+	if !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("value written between plan and apply was accepted: %v", err)
+	}
+	sc, _, err := s.TableState(ctx, "app", "notes", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Version != 1 || sc.Field("body") != nil || sc.Field("state").Enum != nil {
+		t.Fatalf("rolled-back migration left changes: %+v", sc)
+	}
+	rows, err := s.GetRows(ctx, "app", "notes", []int64{1, 2}, nil, store.Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.Rows) != 2 {
+		t.Fatalf("racing insert lost: %+v", rows.Rows)
 	}
 }

@@ -551,7 +551,7 @@ func (s *Store) Migrate(ctx context.Context, ns, table string, changes []schema.
 	}
 	for attempt := 0; attempt < 3; attempt++ {
 		var state tableState
-		var work *migrationWork
+		var planned *migrationWork
 		err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
 			var err error
 			state, err = s.loadTable(ctx, tx, n, table)
@@ -561,7 +561,7 @@ func (s *Store) Migrate(ctx context.Context, ns, table string, changes []schema.
 			if err := checkIncarnation(ns, state.incarnation, expected); err != nil {
 				return err
 			}
-			work, err = s.planMigration(ctx, tx, n, state, changes, emb, int(expected.Version))
+			planned, err = s.planMigration(ctx, tx, n, state, changes, emb, int(expected.Version))
 			return err
 		})
 		if err != nil {
@@ -570,23 +570,23 @@ func (s *Store) Migrate(ctx context.Context, ns, table string, changes []schema.
 		snapshot := map[int64]string{}
 		vectors := map[int64][]float32{}
 		var constant []float32
-		if work.embedding {
-			if work.embed.constant != "" {
-				vecs, err := store.EmbedTexts(ctx, work.cur, table, []string{work.embed.constant}, emb)
+		if planned.embedding {
+			if planned.embed.constant != "" {
+				vecs, err := store.EmbedTexts(ctx, planned.cur, table, []string{planned.embed.constant}, emb)
 				if err != nil {
 					return nil, err
 				}
 				constant = vecs[0]
-			} else if work.embed.hasSource {
-				if err := s.readEmbedSnapshot(ctx, ns, state, work.embed.source, snapshot); err != nil {
+			} else if planned.embed.hasSource {
+				if err := s.readEmbedSnapshot(ctx, ns, state, planned.embed.source, snapshot); err != nil {
 					return nil, err
 				}
-				if err := embedSnapshot(ctx, work.cur, table, emb, snapshot, vectors); err != nil {
+				if err := embedSnapshot(ctx, planned.cur, table, emb, snapshot, vectors); err != nil {
 					return nil, err
 				}
 			}
 		}
-		result := work.cur
+		var result *schema.TableSchema
 		err = s.write(ctx, ns, state.incarnation.NsGen, func(tx pgx.Tx, n namespace) error {
 			current, err := s.loadTable(ctx, tx, n, table)
 			if err != nil {
@@ -595,6 +595,11 @@ func (s *Store) Migrate(ctx context.Context, ns, table string, changes []schema.
 			if err := checkIncarnation(ns, current.incarnation, state.incarnation); err != nil {
 				return err
 			}
+			work, err := s.planMigration(ctx, tx, n, current, changes, emb, int(expected.Version))
+			if err != nil {
+				return err
+			}
+			result = work.cur
 			physical := ident(n.physical, current.physical)
 			if work.rebuildFTS {
 				if _, err := tx.Exec(ctx, "ALTER TABLE "+physical+" DROP COLUMN IF EXISTS "+ident(ftsColumn)); err != nil {

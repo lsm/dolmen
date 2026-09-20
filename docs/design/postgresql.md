@@ -225,9 +225,13 @@ Migrations validate the same six `schema.Change` ops as SQLite, in request order
 reproduce its plan output and rejection messages: the field cap, required-without-
 backfill, enum values still stored by rows, the single-vectorized-field rule, and the
 `expected_version` requirement for destructive changes. `PlanMigration` runs the same
-validation and probes without writing, and `Migrate` re-plans under the namespace write
-lock so a plan cannot apply against a schema that moved on. `checkIncarnation` supplies
-the version compare-and-set and returns the shared `VersionConflictError`.
+validation and probes without writing. `Migrate` plans twice: once to decide what
+embedding work is needed, and again inside the namespace write transaction, whose plan is
+the one applied. Re-planning under the lock re-runs the data probes, not just the
+incarnation check, so a value written between the two plans — an enum member a concurrent
+insert added that the new vocabulary excludes — is rejected rather than committed against
+the schema that forbids it. `checkIncarnation` supplies the version compare-and-set and
+returns the shared `VersionConflictError`.
 
 Catalog version 5 adds a `migrations` relation keyed by namespace, table, drop
 generation, and a per-table id, so `list_migrations` returns newest-first history with
