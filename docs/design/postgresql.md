@@ -399,8 +399,15 @@ is waiting on the callback.
 
 ## Remaining implementation sequence
 
-The conformance matrix is clean; see "Conformance matrix status" below. What remains is
-wiring the blackbox constructor and publishing configuration and install guidance.
+The HTTP, MCP, stdio, facade, and blackbox constructors all select PostgreSQL, and the
+public selector is enabled on both the binary and the Go API. Operator-facing guidance
+lives in [postgresql-operations.md](../postgresql-operations.md); this document stays
+the design record. The conformance matrix is clean and CI keeps it that way; see
+"Conformance matrix status" below.
+
+Nothing in the original sequence is outstanding. What is left is the work this document
+records as unimplemented rather than pending: row authorization, which every auth-on
+conformance mode still skips on this backend.
 
 ## Selecting PostgreSQL
 
