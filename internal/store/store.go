@@ -358,6 +358,9 @@ var registryDDL = []string{
 	`CREATE INDEX IF NOT EXISTS _dolmen_changes_table_feed
 		ON _dolmen_changes(table_name, drop_gen, nsgen, seq)`,
 
+	`CREATE INDEX IF NOT EXISTS _dolmen_changes_owner_feed
+		ON _dolmen_changes(table_name, drop_gen, nsgen, owner, seq)`,
+
 	`CREATE INDEX IF NOT EXISTS _dolmen_changes_at ON _dolmen_changes(at)`,
 
 	`CREATE INDEX IF NOT EXISTS _dolmen_cursor_tokens_issued_at ON _dolmen_cursor_tokens(issued_at)`,

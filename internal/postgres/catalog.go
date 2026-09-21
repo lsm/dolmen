@@ -117,6 +117,7 @@ func (s *Store) bootstrap(ctx context.Context) error {
 	for _, stmt := range []string{
 		"ALTER TABLE " + s.relation("changes") + " ADD COLUMN IF NOT EXISTS owner text",
 		"CREATE INDEX IF NOT EXISTS changes_feed ON " + s.relation("changes") + " (namespace,table_name,drop_generation,position)",
+		"CREATE INDEX IF NOT EXISTS changes_owner_feed ON " + s.relation("changes") + " (namespace,table_name,drop_generation,owner,position)",
 		"CREATE INDEX IF NOT EXISTS cursors_origin ON " + s.relation("cursors") + " (namespace,chain_origin)",
 	} {
 		if _, err := tx.Exec(ctx, stmt); err != nil {

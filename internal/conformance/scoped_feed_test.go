@@ -189,3 +189,45 @@ func TestAScopedWaitIgnoresForeignTraffic(t *testing.T) {
 	}
 }
 
+func TestALongPollKeepsTheScopeItStartedWith(t *testing.T) {
+	h := seedRowAccess(t)
+	grantTo(t, h, "principal", "alice", "acme", "notes", "create")
+	grantTo(t, h, "principal", "bob", "acme", "notes", "create")
+	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"from alice"}]}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("alice insert: %d %v", res.StatusCode, out)
+	}
+	_, _, head := changesAs(t, h, "alice", `{"namespace":"acme","table":"notes","cursor":"begin"}`)
+
+	done := make(chan [2]any, 1)
+	go func() {
+		res, out := h.asIdentity(t, "alice", "", "wait_for",
+			`{"namespace":"acme","table":"notes","cursor":"`+head+`","timeout_ms":4000}`)
+		done <- [2]any{res.StatusCode, out}
+	}()
+
+	time.Sleep(300 * time.Millisecond)
+	h.mustHTTP("migrate", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"changes": []map[string]any{{"op": "set_row_access", "value": false}},
+	})
+	res, out = h.asIdentity(t, "bob", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"from bob"}]}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("bob insert: %d %v", res.StatusCode, out)
+	}
+
+	got := <-done
+	status, _ := got[0].(int)
+	body, _ := got[1].(map[string]any)
+	if status == http.StatusOK {
+		data, _ := body["data"].(map[string]any)
+		if changes, _ := data["changes"].([]any); len(changes) > 0 {
+			t.Fatalf("turning row_access off mid-wait widened an in-flight scoped caller to the whole table: %v", changes)
+		}
+		return
+	}
+	errObj, _ := body["error"].(map[string]any)
+	if errObj["code"] != "conflict" {
+		t.Fatalf("the table changed under an in-flight scoped wait, so it must end in conflict rather than widen: %d %v", status, body)
+	}
+}

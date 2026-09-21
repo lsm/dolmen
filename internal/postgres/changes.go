@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -112,15 +113,7 @@ func (s *Store) ChangesSince(ctx context.Context, ns, table string, from store.C
 	if scope != nil && table == "" {
 		return nil, "", store.ErrScopedNamespaceFeed
 	}
-	if scope != nil {
-		stale, serr := s.unlabeledBacklog(ctx, ns, table, from)
-		if serr != nil {
-			return nil, "", serr
-		}
-		if stale {
-			return nil, "", store.ErrScopedFeedPredatesLabels
-		}
-	}
+
 	return s.changesSinceMode(ctx, ns, table, from, expected, scope, inc, page, nil, feedRequest)
 }
 
@@ -134,11 +127,13 @@ func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from sto
 	err := enter(ctx, ns, expected, func(tx pgx.Tx, n namespace) error {
 		now := s.now()
 		drop := int64(0)
+		var scoped *schema.TableSchema
 		if table != "" {
 			state, err := s.loadTable(ctx, tx, n, table)
 			if err != nil {
 				return err
 			}
+			scoped = state.schema
 			if mode == feedRequest {
 				if err := s.guardScope(ctx, tx, n, table, state, inc); err != nil {
 					return err
@@ -183,6 +178,30 @@ func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from sto
 			state.start = now
 			state.table = table
 			state.drop = drop
+		}
+		if scope != nil {
+			if err := scopeUsable(scope, scoped); err != nil {
+				return err
+			}
+			var head int64
+			if err := tx.QueryRow(ctx, "SELECT next_change FROM "+s.relation("namespaces")+" WHERE name=$1", ns).Scan(&head); err != nil {
+				return err
+			}
+			if state.position < head {
+				stmt := "SELECT 1 FROM " + s.relation("changes") + " WHERE namespace=$1 AND position>$2 AND position<=$3 AND owner IS NULL"
+				args := []any{ns, state.position, head}
+				if table != "" {
+					stmt += " AND table_name=$4 AND drop_generation=$5"
+					args = append(args, table, drop)
+				}
+				var one int
+				switch qerr := tx.QueryRow(ctx, stmt+" LIMIT 1", args...).Scan(&one); {
+				case qerr == nil:
+					return store.ErrScopedFeedPredatesLabels
+				case !errors.Is(qerr, pgx.ErrNoRows):
+					return qerr
+				}
+			}
 		}
 		limit := page.Limit
 		if limit <= 0 {
