@@ -216,6 +216,9 @@ func (s *Store) Insert(ctx context.Context, ns, table string, records []map[stri
 			if err != nil {
 				return err
 			}
+			if err := s.guardScope(ctx, tx, n, table, current, expected); err != nil {
+				return err
+			}
 			if err := checkIncarnation(ns, current.incarnation, state.incarnation); err != nil {
 				return err
 			}
@@ -227,9 +230,6 @@ func (s *Store) Insert(ctx context.Context, ns, table string, records []map[stri
 			if string(now) != string(before) {
 				retry = true
 				return nil
-			}
-			if err := s.guardScope(ctx, tx, n, table, current, expected); err != nil {
-				return err
 			}
 			if err := scopeUsable(scope, current.schema); err != nil {
 				return err

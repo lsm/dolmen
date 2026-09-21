@@ -146,6 +146,9 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, table string, keys []string
 			if err != nil {
 				return err
 			}
+			if err := s.guardScope(ctx, tx, n, table, current, expected); err != nil {
+				return err
+			}
 			if err := checkIncarnation(ns, current.incarnation, state.incarnation); err != nil {
 				return err
 			}

@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -84,6 +85,66 @@ func TestPostgresEveryScopedEntryPointConflictsOnAStaleIncarnation(t *testing.T)
 			err := call()
 			if !errors.Is(err, derr.ErrConflict) {
 				t.Fatalf("an incarnation resolved against the dropped table must conflict so the caller re-resolves authorization; %s answered %v", name, err)
+			}
+		})
+	}
+}
+
+func TestPostgresAScopedWriteConflictsWhenTheTableIsReplacedWhileItEmbeds(t *testing.T) {
+	record := []map[string]any{{"body": "x"}}
+	calls := map[string]func(context.Context, *Store, store.Embedder, store.Incarnation) error{
+		"Insert": func(ctx context.Context, s *Store, emb store.Embedder, inc store.Incarnation) error {
+			_, err := s.Insert(ctx, "app", "notes", record, store.WriteOpts{}, emb, nil, inc)
+			return err
+		},
+		"Upsert": func(ctx context.Context, s *Store, emb store.Embedder, inc store.Incarnation) error {
+			_, err := s.Upsert(ctx, "app", "notes", "1=1", nil, map[string]any{"body": "x"}, store.WriteOpts{}, emb, nil, inc)
+			return err
+		},
+		"UpsertByKey": func(ctx context.Context, s *Store, emb store.Embedder, inc store.Incarnation) error {
+			_, err := s.UpsertByKey(ctx, "app", "notes", []string{"body"}, record, store.WriteOpts{}, emb, nil, inc)
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			cfg := testConfig(t)
+			s := openTest(t, cfg)
+			ctx := t.Context()
+			if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			fields := []schema.Field{{Name: "body", Type: schema.Text, Vectorize: true}}
+			if _, err := s.CreateTable(ctx, "app", "notes", fields, store.TableOpts{}, [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			_, live, err := s.TableState(ctx, "app", "notes", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			replaced := false
+			emb := store.Embedder{Identity: "test", Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+				if !replaced {
+					replaced = true
+					if err := s.DropTable(ctx, "app", "notes", live); err != nil {
+						return nil, err
+					}
+					if _, err := s.CreateTable(ctx, "app", "notes", fields, store.TableOpts{}, live.NsGen); err != nil {
+						return nil, err
+					}
+				}
+				vecs := make([][]float32, len(texts))
+				for i := range vecs {
+					vecs[i] = []float32{1, 0}
+				}
+				return vecs, nil
+			}}
+			err = call(ctx, s, emb, live)
+			if !replaced {
+				t.Fatalf("%s never reached the embedder, so nothing replaced the table between its read and its write", name)
+			}
+			if !errors.Is(err, derr.ErrConflict) {
+				t.Fatalf("%s saw the table replaced between its read and its write and answered %v; the scope contract requires conflict so the caller re-resolves authorization", name, err)
 			}
 		})
 	}

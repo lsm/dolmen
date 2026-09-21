@@ -198,6 +198,9 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 			if err != nil {
 				return err
 			}
+			if err := s.guardScope(ctx, tx, n, table, current, expected); err != nil {
+				return err
+			}
 			if err := checkIncarnation(ns, current.incarnation, state.incarnation); err != nil {
 				return err
 			}
