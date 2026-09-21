@@ -11,7 +11,7 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-const catalogVersion = 5
+const catalogVersion = 6
 
 func ident(parts ...string) string { return pgx.Identifier(parts).Sanitize() }
 
@@ -80,11 +80,11 @@ func (s *Store) bootstrap(ctx context.Context) error {
 		return err
 	}
 	for _, stmt := range []string{
-		"CREATE TABLE IF NOT EXISTS " + s.relation("idempotency") + ` (
+		"CREATE TABLE IF NOT EXISTS " + s.relation("idempotency_owned") + ` (
  namespace text NOT NULL REFERENCES ` + s.relation("namespaces") + `(name) ON DELETE CASCADE,
- table_name text NOT NULL, drop_generation bigint NOT NULL, key text NOT NULL,
+ table_name text NOT NULL, drop_generation bigint NOT NULL, owner text NOT NULL, key text NOT NULL,
  payload_hash text NOT NULL, result_json text NOT NULL,
- PRIMARY KEY(namespace,table_name,drop_generation,key))`,
+ PRIMARY KEY(namespace,table_name,drop_generation,owner,key))`,
 		"CREATE TABLE IF NOT EXISTS " + s.relation("changes") + ` (
  namespace text NOT NULL REFERENCES ` + s.relation("namespaces") + `(name) ON DELETE CASCADE,
  position bigint NOT NULL, table_name text NOT NULL, drop_generation bigint NOT NULL,
@@ -101,6 +101,9 @@ func (s *Store) bootstrap(ctx context.Context) error {
 		if _, err := tx.Exec(ctx, stmt); err != nil {
 			return err
 		}
+	}
+	if err := s.retireOwnerlessIdempotency(ctx, tx); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx, "CREATE TABLE IF NOT EXISTS "+s.relation("cursors")+` (
  namespace text NOT NULL REFERENCES `+s.relation("namespaces")+`(name) ON DELETE CASCADE,
@@ -122,6 +125,28 @@ func (s *Store) bootstrap(ctx context.Context) error {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func (s *Store) retireOwnerlessIdempotency(ctx context.Context, tx pgx.Tx) error {
+	var legacy *string
+	if err := tx.QueryRow(ctx, "SELECT to_regclass($1)::text", s.relation("idempotency")).Scan(&legacy); err != nil {
+		return err
+	}
+	if legacy == nil {
+		return nil
+	}
+	for _, stmt := range []string{
+		"INSERT INTO " + s.relation("idempotency_owned") +
+			" (namespace,table_name,drop_generation,owner,key,payload_hash,result_json)" +
+			" SELECT namespace,table_name,drop_generation,'',key,payload_hash,result_json FROM " +
+			s.relation("idempotency") + " ON CONFLICT DO NOTHING",
+		"DROP TABLE " + s.relation("idempotency"),
+	} {
+		if _, err := tx.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("give idempotency records an owner domain: %w", err)
+		}
+	}
+	return nil
 }
 
 type namespace struct {

@@ -67,7 +67,7 @@ func TestPostgresInsertAtomicChanges(t *testing.T) {
 	if err := s.pool.QueryRow(ctx, "SELECT next_change FROM "+s.relation("namespaces")+" WHERE name='app'").Scan(&counter); err != nil || counter != 16 {
 		t.Fatalf("counter consumed: %d %v", counter, err)
 	}
-	if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM "+s.relation("idempotency")).Scan(&count); err != nil || count != 0 {
+	if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM "+s.relation("idempotency_owned")).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("partial idempotency: %d %v", count, err)
 	}
 	if _, err := s.pool.Exec(ctx, "DROP TRIGGER reject_change ON "+s.relation("changes")); err != nil {

@@ -87,25 +87,25 @@ func migrateIdempotencyOwner(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-type idemDomain struct {
-	owner         string
-	tableWideRead bool
+type IdemDomain struct {
+	Owner         string
+	TableWideRead bool
 }
 
-func domainFor(opts WriteOpts, scope *RowScope) idemDomain {
-	return idemDomain{owner: opts.Owner, tableWideRead: opts.TableWideRead}
+func DomainFor(opts WriteOpts, scope *RowScope) IdemDomain {
+	return IdemDomain{Owner: opts.Owner, TableWideRead: opts.TableWideRead}
 }
 
-func (d idemDomain) readsLegacy() bool {
-	return d.owner == LegacyIdempotencyOwner || d.tableWideRead
+func (d IdemDomain) FallsBackToLegacy() bool {
+	return d.Owner != LegacyIdempotencyOwner && d.TableWideRead
 }
 
-func lookupIdem(ctx context.Context, db rowQuerier, table, key, wantHash string, domain idemDomain) (ids []int64, found bool, err error) {
-	ids, found, err = readIdem(ctx, db, table, domain.owner, key, wantHash)
+func lookupIdem(ctx context.Context, db rowQuerier, table, key, wantHash string, domain IdemDomain) (ids []int64, found bool, err error) {
+	ids, found, err = readIdem(ctx, db, table, domain.Owner, key, wantHash)
 	if err != nil || found {
 		return ids, found, err
 	}
-	if domain.owner != LegacyIdempotencyOwner && domain.tableWideRead {
+	if domain.FallsBackToLegacy() {
 		return readIdem(ctx, db, table, LegacyIdempotencyOwner, key, wantHash)
 	}
 	return nil, false, nil
