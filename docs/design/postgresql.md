@@ -478,10 +478,12 @@ DOLMEN_ENGINE=postgres DOLMEN_TEST_PG_DSN=... DOLMEN_TEST_PG_QUERY_ROLE=dolmen_q
 ```
 
 Each harness derives a catalog schema from its data directory, so a harness restart
-reconnects to the same catalog instead of a fresh one. Three groups skip deliberately:
-auth-on harness modes (row authorization is unimplemented on PostgreSQL), the embedded
-facade fixtures and the stdio subprocess fixtures (neither constructor can select the
-engine yet), and fixtures that probe SQLite storage internals directly.
+reconnects to the same catalog instead of a fresh one. The stdio subprocess fixtures
+drive the real binary against PostgreSQL through its own flags. Three groups skip
+deliberately: auth-on harness modes (row authorization is unimplemented on PostgreSQL),
+the embedded facade fixtures (the facade can select the engine, but the fixtures still
+open through `WithEngine` alone and have not been moved onto the subpackage seam), and
+fixtures that probe SQLite storage internals directly.
 
 Listen anchors a replay boundary at the namespace head, so replay terminates under
 concurrent writes and the stream reaches its ready frame, and it rejects a cursor that
@@ -574,8 +576,10 @@ the record; only `ok=false` ends the stream. Namespace-wide feeds compare `nsGen
 since their replay spans table lifetimes by design. No transport passes a callback yet,
 so this is unreachable from the conformance suite and is pinned by engine tests.
 
-The remaining failures are genuine backend gaps, not harness artifacts. They must be
-closed before the public selector is enabled:
+One failure remains. It is a genuine backend gap rather than a harness artifact, and it
+is tracked against the live-read work rather than against engine selection: the bound it
+exercises is implemented and pinned by an engine test, so what is missing is the
+fixture's ability to reach it on this backend, not the protection itself.
 
 | Area | Fixture | Gap |
 |---|---|---|
