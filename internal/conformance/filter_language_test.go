@@ -52,6 +52,25 @@ func TestAuthOffKeepsEachEnginesV020FilterLanguage(t *testing.T) {
 	}
 }
 
+func TestTheAuthOffFilterLanguageIsTheEnginesOwnDialect(t *testing.T) {
+	h := newHarnessMode(t, authOff)
+	seedTwoTables(t, h)
+
+	status, out := h.httpCall("delete", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"filter": "md5('a') = md5('a')", "dry_run": true,
+	})
+	if testEngine(t) == store.EnginePostgres {
+		if status != http.StatusOK {
+			t.Fatalf("PostgreSQL compiles a filter through the same boundary as query, so its own functions are available under auth off: %d %v", status, out)
+		}
+		return
+	}
+	if status == http.StatusOK {
+		t.Fatalf("SQLite has no md5, so this filter cannot be accepted there: %v", out)
+	}
+}
+
 func TestAuthOnRefusesAFilterThatReadsBeyondTheRow(t *testing.T) {
 	h := newHarnessMode(t, authGateway)
 	seedTwoTables(t, h)
