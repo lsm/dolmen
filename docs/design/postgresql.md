@@ -461,10 +461,11 @@ DOLMEN_ENGINE=postgres DOLMEN_TEST_PG_DSN=... DOLMEN_TEST_PG_QUERY_ROLE=dolmen_q
 ```
 
 Each harness derives a catalog schema from its data directory, so a harness restart
-reconnects to the same catalog instead of a fresh one. Three groups skip deliberately:
-auth-on harness modes (row authorization is unimplemented on PostgreSQL), the embedded
-facade fixtures and the stdio subprocess fixtures (neither constructor can select the
-engine yet), and fixtures that probe SQLite storage internals directly.
+reconnects to the same catalog instead of a fresh one. The embedded facade fixtures
+derive theirs the same way and open through `postgres.With`, so the facade is exercised
+against PostgreSQL rather than skipped. Two groups skip deliberately: auth-on harness
+modes (row authorization is unimplemented on PostgreSQL) and fixtures that probe SQLite
+storage internals directly.
 
 Listen anchors a replay boundary at the namespace head, so replay terminates under
 concurrent writes and the stream reaches its ready frame, and it rejects a cursor that

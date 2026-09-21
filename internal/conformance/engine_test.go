@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/lsm/dolmen"
 	"github.com/lsm/dolmen/internal/postgres"
 	"github.com/lsm/dolmen/internal/store"
+	pgfacade "github.com/lsm/dolmen/postgres"
 )
 
 func openEngineStore(t *testing.T, dir string, retention *time.Duration) store.Engine {
@@ -52,6 +54,31 @@ var (
 	pgCleanupSeen = map[string]bool{}
 )
 
+func cleanPostgresCatalog(t *testing.T, dsn, catalog string) {
+	t.Helper()
+	pgCleanupMu.Lock()
+	fresh := !pgCleanupSeen[catalog]
+	pgCleanupSeen[catalog] = true
+	pgCleanupMu.Unlock()
+	if !fresh {
+		return
+	}
+	t.Cleanup(func() {
+		pgCleanupMu.Lock()
+		delete(pgCleanupSeen, catalog)
+		pgCleanupMu.Unlock()
+		dropPostgresCatalog(t, dsn, catalog)
+	})
+}
+
+func postgresFacadeOption(t *testing.T, dir string) dolmen.Option {
+	t.Helper()
+	dsn := postgresDSN(t)
+	catalog := postgresCatalog(dir)
+	cleanPostgresCatalog(t, dsn, catalog)
+	return pgfacade.With(pgfacade.Config{DSN: dsn, Catalog: catalog, QueryRole: os.Getenv("DOLMEN_TEST_PG_QUERY_ROLE")})
+}
+
 func openPostgresEngine(t *testing.T, dir string, retention *time.Duration) *postgres.Store {
 	t.Helper()
 	dsn := postgresDSN(t)
@@ -61,18 +88,7 @@ func openPostgresEngine(t *testing.T, dir string, retention *time.Duration) *pos
 	if err != nil {
 		t.Fatal(err)
 	}
-	pgCleanupMu.Lock()
-	fresh := !pgCleanupSeen[catalog]
-	pgCleanupSeen[catalog] = true
-	pgCleanupMu.Unlock()
-	if fresh {
-		t.Cleanup(func() {
-			pgCleanupMu.Lock()
-			delete(pgCleanupSeen, catalog)
-			pgCleanupMu.Unlock()
-			dropPostgresCatalog(t, dsn, catalog)
-		})
-	}
+	cleanPostgresCatalog(t, dsn, catalog)
 	t.Cleanup(func() { s.Close() })
 	return s
 }
@@ -127,13 +143,6 @@ func testEngine(t *testing.T) string {
 		t.Fatalf("DOLMEN_ENGINE: %v", activeEngineErr)
 	}
 	return activeEngine
-}
-
-func facadeEngineOnly(t *testing.T) {
-	t.Helper()
-	if name := testEngine(t); name != store.EngineSQLite {
-		t.Skipf("engine %q: the Go facade cannot select it yet", name)
-	}
 }
 
 func serverEngineOnly(t *testing.T) {
