@@ -90,6 +90,10 @@ var pinnedFilterSemantics = []struct {
 	{"string comparison is BINARY byte-wise", "'a' > 'B'"},
 	{"integer division truncates toward zero", "-7 / 2 = -3"},
 	{"integer division truncates a stored number too", "n / 2 = -3"},
+	{"a numeric function coerces nonnumeric text to zero", "abs(body) = 0"},
+	{"modulo converts fractional operands to integers", "9.2 % 2.9 = 1"},
+	{"lower case-maps ASCII only", "lower('Æ') = 'Æ'"},
+	{"upper case-maps ASCII only", "upper('æ') = 'æ'"},
 	{"division by zero is null", "(1 / 0) IS NULL"},
 	{"modulo by zero is null", "(1 % 0) IS NULL"},
 	{"round goes half away from zero", "round(-2.5) = -3"},
@@ -116,14 +120,19 @@ var notYetEvaluatedByAdapterTwo = map[string]bool{
 }
 
 var notYetPinnedByAdapterTwo = map[string]bool{
-	"LIKE is ASCII-case-insensitive":                true,
-	"string comparison is BINARY byte-wise":         true,
-	"nonnumeric text coerces to zero in arithmetic": true,
-	"a blob literal is bytes, not bits":             true,
-	"division by zero is null":                      true,
-	"modulo by zero is null":                        true,
-	"text never equals a number":                    true,
-	"text sorts after a number":                     true,
+	"LIKE is ASCII-case-insensitive":                     true,
+	"string comparison is BINARY byte-wise":              true,
+	"nonnumeric text coerces to zero in arithmetic":      true,
+	"a blob literal is bytes, not bits":                  true,
+	"division by zero is null":                           true,
+	"modulo by zero is null":                             true,
+	"text never equals a number":                         true,
+	"text sorts after a number":                          true,
+	"integer division truncates a stored number too":     true,
+	"a numeric function coerces nonnumeric text to zero": true,
+	"modulo converts fractional operands to integers":    true,
+	"lower case-maps ASCII only":                         true,
+	"upper case-maps ASCII only":                         true,
 }
 
 var notYetSpelledByAdapterTwo = map[string]bool{
