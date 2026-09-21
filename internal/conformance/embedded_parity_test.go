@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/lsm/dolmen"
+	"github.com/lsm/dolmen/internal/store"
 )
 
 func canonical(v any) any {
@@ -96,10 +97,17 @@ func rowsEqual(t *testing.T, label string, httpRows, embeddedRows []map[string]a
 	}
 }
 
+func embeddedEngineOption(t *testing.T, dir string) dolmen.Option {
+	t.Helper()
+	if testEngine(t) == store.EnginePostgres {
+		return postgresFacadeOption(t, dir)
+	}
+	return dolmen.WithEngine(testEngine(t))
+}
+
 func openEmbedded(t *testing.T, dir string, opts ...dolmen.Option) *dolmen.Store {
 	t.Helper()
-	facadeEngineOnly(t)
-	st, err := dolmen.Open(dir, append([]dolmen.Option{dolmen.WithEngine(testEngine(t))}, opts...)...)
+	st, err := dolmen.Open(dir, append([]dolmen.Option{embeddedEngineOption(t, dir)}, opts...)...)
 	if err != nil {
 		t.Fatalf("embedded open: %v", err)
 	}
