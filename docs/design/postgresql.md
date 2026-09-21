@@ -433,8 +433,15 @@ to add. A DSN is required: `Open` never reads one from the environment, matching
 facade's rule that it reads no configuration of its own.
 
 The data directory argument belongs to SQLite and is unused here, so pass `""`. One
-live store per catalog per process is still enforced, keyed on DSN and catalog rather
-than on a directory, and a second `Open` against the same catalog is a conflict.
+live store per catalog per process is still enforced, keyed on catalog plus the
+connection's host, port, database and user as pgx parses them rather than on the DSN
+text, so two spellings of the same target collide instead of opening two pools over
+one catalog. Supplying a connection and then contradicting it with `WithEngine` is
+rejected by name rather than failing later as a connection error.
+
+The binary does not select PostgreSQL yet: `-engine postgres` is refused at
+configuration time with an error naming the facade import, so it fails before the
+server starts rather than part way through opening a store.
 
 The role provisioning is the deployment's, not dolmen's: the backend role needs CREATE
 on the database, and caller SQL needs the pre-provisioned restricted query role granted

@@ -306,6 +306,12 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		fs.Usage()
 		return nil, &printedError{err}
 	}
+	if *engine == store.EnginePostgres {
+		err := fmt.Errorf("engine %q is not selectable from this binary yet; the Go facade selects it with github.com/lsm/dolmen/postgres", store.EnginePostgres)
+		fmt.Fprintf(out, "config: %v\n", err)
+		fs.Usage()
+		return nil, &printedError{err}
+	}
 
 	mode, err := auth.ParseMode(*authMode)
 	if err != nil {
