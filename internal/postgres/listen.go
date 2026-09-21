@@ -17,8 +17,6 @@ import (
 
 const listenPollInterval = 250 * time.Millisecond
 
-const listenQueueBound = 8 * store.MaxChangesPageLimit
-
 func (s *Store) notifyChannel() string { return physicalCandidate("dolmen_"+s.catalog, 0) }
 
 func (s *Store) announce(ctx context.Context, tx pgx.Tx, ns string) {
@@ -585,7 +583,7 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 		stop: make(chan struct{}), storeStop: w.stop,
 		wake: make(chan struct{}, 1), replayDone: make(chan struct{}), done: make(chan struct{}),
 		lastFetch: s.now(), boundary: head,
-		queue: make(chan store.ChangeRecord, listenQueueBound), liveCursor: liveAnchor,
+		queue: make(chan store.ChangeRecord, store.ListenQueueBound), liveCursor: liveAnchor,
 	}
 	if table != "" {
 		if err := session.admits(table); err != nil {

@@ -398,9 +398,8 @@ is waiting on the callback.
 
 ## Remaining implementation sequence
 
-1. Close the conformance gaps listed under "Conformance matrix status" below, then wire
-   the HTTP/MCP/stdio/facade/blackbox constructors, enable the public selector, and
-   publish PostgreSQL configuration/install guidance.
+The conformance matrix is clean; see "Conformance matrix status" below. What remains is
+wiring the blackbox constructor and publishing configuration and install guidance.
 
 ## Conformance matrix status
 
@@ -536,12 +535,28 @@ replay from about nine thousand inserts into ninety-one; and it keeps fetching w
 pages come back full instead of re-probing between them. Together these took the
 measured peak queue depth in the overflow fixture from 699 to about 6500.
 
-The remaining failures are genuine backend gaps, not harness artifacts. They must be
-closed before the public selector is enabled:
+That measurement is also what closed the last conformance gap, and it showed the
+earlier reading of that gap was wrong. `TestSubscribeOverflowTeachesReconnect` parks
+the subscriber at its replay boundary and floods, expecting the queue to overflow and
+the stream to close teaching a reconnect. It flooded nine batches of
+`MaxChangesPageLimit` against a bound of eight, which is a margin of one batch. That
+margin is free under SQLite, where the writer pushes into the queue as part of the
+commit, so the queue holds everything the writer has written. It is not free under
+PostgreSQL, where the pump reads committed rows and therefore trails the writer; at
+nine batches it peaked around 6500 of 8000 and the stream simply delivered all nine
+thousand records. The earlier conclusion — that a reader of committed rows cannot get
+far enough ahead — had the mechanism backwards. The pump does not need to get ahead of
+the writer at all; it needs to put more into a parked queue than the queue holds, and
+the fixture was not asking for enough to make that certain whatever the lag.
 
-| Area | Fixture | Gap |
-|---|---|---|
-| SSE | `TestSubscribeOverflowTeachesReconnect` | the bound exists and `TestPostgresListenOverflowsABlockedSubscriber` pins it; the fixture additionally requires the live pump to enqueue eight of the writer's nine batches before the ninth commits, and the pump cannot get more than a batch or two ahead of a writer committing equal-sized batches, because it can only read what has already committed. Three rounds of tuning took the peak queue from 699 to about 6500 of the 8000 bound and it did not cross. Closing it means changing what the fixture asks for, not tuning the pump further |
+The flood is now sized from the bound rather than written as a literal, at twice
+`ListenQueueBound`, so overflow is reached however far the pump trails. That constant
+was duplicated in both engines and is now exported from `internal/store`, which is
+where the cross-engine contract the conformance suite pins belongs. Both engines pass
+the fixture repeatedly, and PostgreSQL passes it faster than it used to fail it,
+because the stream now terminates at the bound instead of delivering every record.
+
+The conformance matrix has no remaining PostgreSQL failures.
 
 The driver remains pure Go and compatible with the static binary requirement.
 PostgreSQL dependency versions are pinned in go.mod. No PostgreSQL server is bundled

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const listenQueueBound = 8 * MaxChangesPageLimit
+const ListenQueueBound = 8 * MaxChangesPageLimit
 
 var ErrListenOverflow = errors.New("subscription buffer overflow: the subscriber drained slower than commits arrived")
 
@@ -182,12 +182,12 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 	wasEmpty := len(sess.queue) == 0
 	sess.queue = append(sess.queue, admitted...)
 
-	over := len(sess.queue) > listenQueueBound
+	over := len(sess.queue) > ListenQueueBound
 	short := len(scanned) < MaxChangesPageLimit
 
 	for over && ended && !sess.dead {
 		sess.cond.Wait()
-		over = len(sess.queue) > listenQueueBound
+		over = len(sess.queue) > ListenQueueBound
 	}
 	dead := sess.dead
 	if ended && short {

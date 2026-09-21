@@ -494,6 +494,8 @@ func TestSubscribeNeverCreatesNamespace(t *testing.T) {
 	wantReady(t, f)
 }
 
+const subscribeOverflowBatches = 2 * store.ListenQueueBound / store.MaxChangesPageLimit
+
 func TestSubscribeOverflowTeachesReconnect(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
@@ -516,7 +518,7 @@ func TestSubscribeOverflowTeachesReconnect(t *testing.T) {
 		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "probe"}},
 	})
 	flood := make(chan error, 1)
-	go h.flood("rt", "notes", 9, flood)
+	go h.flood("rt", "notes", subscribeOverflowBatches, flood)
 	if err := <-flood; err != nil {
 		t.Fatal(err)
 	}

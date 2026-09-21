@@ -209,7 +209,7 @@ func commitListenersOf(st *Store, ns string) int {
 func TestListenCloseReachesBackpressureParkedSession(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
-	total := listenQueueBound + 2*MaxChangesPageLimit
+	total := ListenQueueBound + 2*MaxChangesPageLimit
 	if _, err := insertNotesChunkedErr(st, total); err != nil {
 		t.Fatalf("bulk backlog: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestListenCloseReachesBackpressureParkedSession(t *testing.T) {
 		sess.mu.Lock()
 		queued := len(sess.queue)
 		sess.mu.Unlock()
-		if queued > listenQueueBound {
+		if queued > ListenQueueBound {
 			break
 		}
 		if time.Now().After(reach) {
@@ -274,7 +274,7 @@ func TestListenCloseReachesBackpressureParkedSession(t *testing.T) {
 func TestListenRecreateReachesBackpressureParkedSession(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
-	total := listenQueueBound + 2*MaxChangesPageLimit
+	total := ListenQueueBound + 2*MaxChangesPageLimit
 	if _, err := insertNotesChunkedErr(st, total); err != nil {
 		t.Fatalf("bulk backlog: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestListenRecreateReachesBackpressureParkedSession(t *testing.T) {
 		sess.mu.Lock()
 		queued := len(sess.queue)
 		sess.mu.Unlock()
-		if queued > listenQueueBound {
+		if queued > ListenQueueBound {
 			break
 		}
 		if time.Now().After(reach) {
