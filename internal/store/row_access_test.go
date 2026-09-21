@@ -476,10 +476,14 @@ func TestScopedUpsertByKeyCannotTouchAForeignRow(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	if _, err := st.UpsertByKey(ctx, "ns", "docs", []string{"sku"},
-		[]map[string]any{{"sku": "k1", "body": "alice overwrote it"}},
-		WriteOpts{Owner: "alice"}, Embedder{}, &RowScope{Owner: "alice"}, Incarnation{}); err == nil {
-		t.Fatal("a scoped upsert_by_key matched a row owned by someone else")
+	res, err := st.UpsertByKey(ctx, "ns", "docs", []string{"sku"},
+		[]map[string]any{{"sku": "k1", "body": "alice's"}},
+		WriteOpts{Owner: "alice"}, Embedder{}, &RowScope{Owner: "alice"}, Incarnation{})
+	if err != nil {
+		t.Fatalf("scoped upsert_by_key on a key alice cannot see: %v", err)
+	}
+	if res.Inserted != 1 || res.Updated != 0 {
+		t.Fatalf("bob holds the key outside alice's visible set, so her upsert inserts: inserted %d updated %d", res.Inserted, res.Updated)
 	}
 
 	rows, err := st.GetRows(ctx, "ns", "docs", []int64{1}, nil, Incarnation{})
@@ -488,6 +492,14 @@ func TestScopedUpsertByKeyCannotTouchAForeignRow(t *testing.T) {
 	}
 	if len(rows.Rows) != 1 || rows.Rows[0]["body"] != "bob's" {
 		t.Fatalf("bob's row was modified: %v", rows.Rows)
+	}
+
+	hers, err := st.GetRows(ctx, "ns", "docs", res.Ids, &RowScope{Owner: "alice"}, Incarnation{})
+	if err != nil {
+		t.Fatalf("read back alice's row: %v", err)
+	}
+	if len(hers.Rows) != 1 || hers.Rows[0]["body"] != "alice's" {
+		t.Fatalf("alice's insert did not land in her own visible set: %v", hers.Rows)
 	}
 }
 

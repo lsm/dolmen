@@ -590,12 +590,12 @@ your own domain, so it finds your record through grant changes and even after
 Records written before authentication was turned on are kept, and replay to
 callers holding table-wide `read`, whose ids those already are.
 
-**A current limitation:** `upsert_by_key` is still refused for a caller
-restricted to their own rows. It matches on a natural key across the whole
-table, so it could update a row the caller cannot see; the visible-set rule that
-makes it safe — an invisible match counts as no match, and the insert branch
-adds a fresh row — is not built yet, so it fails closed rather than leaking.
-Inserting and reading your own rows work normally.
+`upsert_by_key` matches on the natural key within your visible set, not across
+the table. A key held by a row you cannot see counts as no match at all, so the
+insert branch runs and you get a fresh row of your own; the two rows then
+coexist under the same key, which is what natural keys do when several people
+use them. Nothing in the response — ids, counts, or errors — distinguishes a key
+someone else is using from one nobody is using.
 
 ### API keys
 

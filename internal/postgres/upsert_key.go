@@ -30,7 +30,7 @@ func databaseValue(field schema.Field, input any) (any, error) {
 	return v, nil
 }
 
-func (s *Store) matchKey(ctx context.Context, tx pgx.Tx, n namespace, state tableState, keys []string, record map[string]any, index int) (int64, error) {
+func (s *Store) matchKey(ctx context.Context, tx pgx.Tx, n namespace, state tableState, keys []string, record map[string]any, index int, scope *store.RowScope) (int64, error) {
 	predicates := make([]string, len(keys))
 	args := make([]any, len(keys))
 	for i, key := range keys {
@@ -45,7 +45,9 @@ func (s *Store) matchKey(ctx context.Context, tx pgx.Tx, n namespace, state tabl
 		args[i] = v
 		predicates[i] = ident(state.columns[key]) + "=$" + strconv.Itoa(i+1)
 	}
-	rows, err := tx.Query(ctx, "SELECT id FROM "+ident(n.physical, state.physical)+" WHERE "+strings.Join(predicates, " AND ")+" ORDER BY id LIMIT 2", args...)
+	prefix, source, scopeArgs := scopedSourceAt(ident(n.physical, state.physical), scope, len(args)+1)
+	args = append(args, scopeArgs...)
+	rows, err := tx.Query(ctx, prefix+"SELECT id FROM "+source+" WHERE "+strings.Join(predicates, " AND ")+" ORDER BY id LIMIT 2", args...)
 	if err != nil {
 		return 0, err
 	}
@@ -94,9 +96,6 @@ func updatePrepared(ctx context.Context, tx pgx.Tx, n namespace, state tableStat
 }
 
 func (s *Store) UpsertByKey(ctx context.Context, ns, table string, keys []string, records []map[string]any, opts store.WriteOpts, emb store.Embedder, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
-	if scope != nil {
-		return store.InsertResult{}, store.ErrScopedKeyUpsertUnsupported
-	}
 	records, err := normalizeRecords(records)
 	if err != nil {
 		return store.InsertResult{}, err
@@ -152,6 +151,9 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, table string, keys []string
 			if err := checkIncarnation(ns, current.incarnation, state.incarnation); err != nil {
 				return err
 			}
+			if err := scopeUsable(scope, current.schema); err != nil {
+				return err
+			}
 			now, _ := json.Marshal(current.schema)
 			if string(now) != string(before) {
 				retry = true
@@ -160,7 +162,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, table string, keys []string
 			inserted, updated := []int64{}, []int64{}
 			stamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 			for i, row := range prepared {
-				id, err := s.matchKey(ctx, tx, n, state, keys, records[i], i)
+				id, err := s.matchKey(ctx, tx, n, state, keys, records[i], i, scope)
 				if err != nil {
 					return err
 				}

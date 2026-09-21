@@ -81,10 +81,11 @@
   is off. Enabling it later through `migrate set_row_access` is refused on a table that already has
   rows, because no operation can write another principal's rows as that principal; turning it off
   keeps the column and its values and requires `admin` as well as `schema` and `read`. Scoped
-  `upsert_by_key` is refused for now: a natural-key match reaches across the whole table, so it
-  could update a row the caller cannot see. Scoped `update`, `delete`, `upsert`, filtered searches
-  and idempotent inserts were refused for the same reason and now work — see the filter language,
-  the materialization boundary, and the owner-keyed idempotency entries above.
+  `upsert_by_key` matches the natural key inside the visible set: a key held by an invisible row
+  counts as no match, so the insert branch runs and the two rows coexist under one key, and no id,
+  count, or error tells the two situations apart. Scoped `update`, `delete`, `upsert`, filtered
+  searches and idempotent inserts work the same way — see the filter language, the materialization
+  boundary, and the owner-keyed idempotency entries above.
 - **API keys.** `create_key` / `list_keys` / `revoke_key` mint credentials for machines that cannot
   do an interactive sign-in. A key authenticates as a principal and carries optional groups, but
   grants nothing by itself. The credential is shown once and stored hashed; keys are revoked by a
