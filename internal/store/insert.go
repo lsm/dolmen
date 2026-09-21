@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -31,20 +30,17 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
 		return InsertResult{}, err
 	}
-	if scope != nil && opts.IdempotencyKey != "" {
-		return InsertResult{}, errScopedIdempotencyUnsupported
-	}
 	if len(opts.IdempotencyKey) > MaxIdempotencyKeyLen {
 		return InsertResult{}, invalidf("idempotency key is %d bytes (max %d)", len(opts.IdempotencyKey), MaxIdempotencyKeyLen)
 	}
-	ids, changes, replayed, err := s.insert(ctx, nsName, table, records, emb, opts.IdempotencyKey, opts.Owner)
+	ids, changes, replayed, err := s.insert(ctx, nsName, table, records, emb, opts.IdempotencyKey, opts.Owner, domainFor(opts, scope))
 	if err != nil {
 		return InsertResult{}, err
 	}
 	return InsertResult{Ids: ids, Replayed: replayed, Changes: changes}, nil
 }
 
-func (s *Store) insert(ctx context.Context, nsName, table string, records []map[string]any, emb Embedder, idemKey, owner string) (ids []int64, changes ChangeRange, replayed bool, err error) {
+func (s *Store) insert(ctx context.Context, nsName, table string, records []map[string]any, emb Embedder, idemKey, owner string, domain idemDomain) (ids []int64, changes ChangeRange, replayed bool, err error) {
 	if len(records) == 0 {
 		return nil, ChangeRange{}, false, invalidf("no records given")
 	}
@@ -78,7 +74,7 @@ func (s *Store) insert(ctx context.Context, nsName, table string, records []map[
 		if attempt >= 3 {
 			return nil, ChangeRange{}, false, invalidf("table schema changed concurrently; retry the insert")
 		}
-		ids, changes, replayed, done, err := s.insertAttempt(ctx, n, nsName, table, records, emb, idemKey, idemHash, owner)
+		ids, changes, replayed, done, err := s.insertAttempt(ctx, n, nsName, table, records, emb, idemKey, idemHash, owner, domain)
 		if done {
 			return ids, changes, replayed, err
 		}
@@ -95,27 +91,7 @@ func payloadHash(records []map[string]any) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func lookupIdem(ctx context.Context, db rowQuerier, table, key, wantHash string) (ids []int64, found bool, err error) {
-	var gotHash, idsJSON string
-	err = db.QueryRowContext(ctx,
-		`SELECT payload_hash, ids_json FROM _dolmen_idempotency WHERE table_name = ? AND key = ?`,
-		table, key).Scan(&gotHash, &idsJSON)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	if gotHash != wantHash {
-		return nil, false, conflictf("idempotency key %q was already recorded for a different insert into %s; for a retry, re-send the identical body with the same key (a client-regenerated timestamp or nonce is the classic cause; a fresh key would insert a duplicate); for a genuinely new insert, use a fresh key", key, table)
-	}
-	if err := json.Unmarshal([]byte(idsJSON), &ids); err != nil {
-		return nil, false, fmt.Errorf("corrupt idempotency record for key %q: %w", key, err)
-	}
-	return ids, true, nil
-}
-
-func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, idemHash, owner string) (ids []int64, changes ChangeRange, replayed bool, done bool, err error) {
+func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, idemHash, owner string, domain idemDomain) (ids []int64, changes ChangeRange, replayed bool, done bool, err error) {
 
 	gen, err := tableGen(ctx, n.rw, table)
 	if err != nil {
@@ -127,7 +103,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	}
 	if idemKey != "" {
 
-		if ids, found, err := lookupIdem(ctx, n.rw, table, idemKey, idemHash); err != nil {
+		if ids, found, err := lookupIdem(ctx, n.rw, table, idemKey, idemHash, domain); err != nil {
 			return nil, ChangeRange{}, false, true, err
 		} else if found {
 			return ids, ChangeRange{}, true, true, nil
@@ -220,7 +196,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	}
 
 	if idemKey != "" {
-		ids, found, err := lookupIdem(ctx, tx, table, idemKey, idemHash)
+		ids, found, err := lookupIdem(ctx, tx, table, idemKey, idemHash, domain)
 		if err != nil {
 			return nil, ChangeRange{}, false, true, err
 		}
@@ -272,14 +248,14 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			return nil, ChangeRange{}, false, true, err
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO _dolmen_idempotency(table_name, key, payload_hash, ids_json) VALUES(?,?,?,?)`,
-			table, idemKey, idemHash, string(idsJSON)); err != nil {
+			`INSERT INTO _dolmen_idempotency(table_name, owner, key, payload_hash, ids_json) VALUES(?,?,?,?,?)`,
+			table, domain.owner, idemKey, idemHash, string(idsJSON)); err != nil {
 
 			if strings.Contains(err.Error(), "UNIQUE constraint failed: _dolmen_idempotency") {
 				if rerr := tx.Rollback(); rerr != nil {
 					return nil, ChangeRange{}, false, true, rerr
 				}
-				ids, found, lerr := lookupIdem(ctx, n.rw, table, idemKey, idemHash)
+				ids, found, lerr := lookupIdem(ctx, n.rw, table, idemKey, idemHash, domain)
 				if lerr != nil {
 					return nil, ChangeRange{}, false, true, lerr
 				}

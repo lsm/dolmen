@@ -4,6 +4,17 @@
 
 ### Added
 
+- **Idempotency keys are namespaced by owner.** A key is unique per table *and* writer principal,
+  so two principals using the same string are using two different keys — neither conflicts, neither
+  reveals the other, and the first to use a key cannot squat it. A retry consults only its own
+  domain, so it finds its own record through grant changes, gained table-wide `read`, and
+  `row_access` disablement alike; the payload comparison that rejects a changed body therefore never
+  runs against someone else's record. Records written before `-auth on` are preserved and replay to
+  callers holding table-wide `read`, whose rows those ids already are; turning auth off again
+  consults only that pre-auth domain, so `auth: off` behaves exactly as it did in v0.2.0. Existing
+  databases gain the new column on first open. This lifts the refusal of `idempotency_key` for a
+  caller restricted to their own rows.
+
 - **Filters are a row-local language when auth is on.** `update`, `delete`, `upsert`,
   `search_fulltext` and `search_vector` take a SQL `WHERE` fragment; with `-auth on` that fragment
   is now parsed and checked against a fixed allowlist before it reaches the engine — the target

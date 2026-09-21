@@ -850,8 +850,15 @@ var Ops = map[string]OpDef{
 			if err != nil {
 				return nil, err
 			}
+			wide := false
+			if key != "" {
+				wide, err = s.holdsTableWideRead(ctx, ns, normTable(req.Table))
+				if err != nil {
+					return nil, err
+				}
+			}
 			res, err := s.eng.Insert(ctx, ns, normTable(req.Table), req.Records,
-				store.WriteOpts{IdempotencyKey: key, Owner: s.writeOwner(ctx)}, s.embedder(), scope, inc)
+				store.WriteOpts{IdempotencyKey: key, Owner: s.writeOwner(ctx), TableWideRead: wide}, s.embedder(), scope, inc)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}

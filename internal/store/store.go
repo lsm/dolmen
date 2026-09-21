@@ -259,6 +259,11 @@ func (s *Store) lockedNSCtx(ctx context.Context, name string) (*nsDB, error) {
 		}
 	}
 
+	if err := ensureIdempotencyOwner(ctx, rw); err != nil {
+		rw.Close()
+		return nil, fmt.Errorf("init namespace %s: %w", name, err)
+	}
+
 	if err := ensureCatalogVersion(ctx, rw, name); err != nil {
 		rw.Close()
 		var cve *CatalogVersionError
@@ -311,11 +316,12 @@ var registryDDL = []string{
 	)`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_idempotency(
 		table_name TEXT NOT NULL,
+		owner TEXT NOT NULL DEFAULT '',
 		key TEXT NOT NULL,
 		payload_hash TEXT NOT NULL,
 		ids_json TEXT NOT NULL,
 		at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-		PRIMARY KEY(table_name, key)
+		PRIMARY KEY(table_name, owner, key)
 	)`,
 
 	`CREATE TABLE IF NOT EXISTS _dolmen_drop_gen(
