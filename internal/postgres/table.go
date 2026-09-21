@@ -141,7 +141,7 @@ func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []sche
 				return err
 			}
 		}
-		if err := s.grantQueryTable(ctx, tx, n, physical, fields, columns); err != nil {
+		if err := s.grantQueryTable(ctx, tx, n, physical, fields, columns, sc.HasOwner); err != nil {
 			return err
 		}
 		raw, err := json.Marshal(sc)

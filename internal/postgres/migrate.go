@@ -694,7 +694,7 @@ func (s *Store) Migrate(ctx context.Context, ns, table string, changes []schema.
 					return errMigrationRetry
 				}
 			}
-			if err := s.regrantQueryTable(ctx, tx, n, current.physical, work.cur.Fields, work.columns); err != nil {
+			if err := s.regrantQueryTable(ctx, tx, n, current.physical, work.cur.Fields, work.columns, work.cur.HasOwner); err != nil {
 				return err
 			}
 			return s.saveMigration(ctx, tx, n, current, work, changes)
@@ -816,11 +816,11 @@ func (s *Store) applyEmbeddings(ctx context.Context, tx pgx.Tx, physical string,
 	return false, nil
 }
 
-func (s *Store) regrantQueryTable(ctx context.Context, tx pgx.Tx, n namespace, physical string, fields []schema.Field, columns map[string]string) error {
+func (s *Store) regrantQueryTable(ctx context.Context, tx pgx.Tx, n namespace, physical string, fields []schema.Field, columns map[string]string, hasOwner bool) error {
 	if s.queryRole == "" {
 		return nil
 	}
-	return s.grantQueryTable(ctx, tx, n, physical, fields, columns)
+	return s.grantQueryTable(ctx, tx, n, physical, fields, columns, hasOwner)
 }
 
 func (s *Store) saveMigration(ctx context.Context, tx pgx.Tx, n namespace, current tableState, work *migrationWork, changes []schema.Change) error {

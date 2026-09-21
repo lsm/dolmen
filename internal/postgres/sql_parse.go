@@ -8,6 +8,7 @@ import (
 	parser "github.com/wasilibs/go-pgquery"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -111,6 +112,9 @@ func (c *sqlCompiler) walk(message protoreflect.Message, ctes map[string]bool) e
 			cols := []string{ident("id"), ident("created_at")}
 			for _, field := range table.schema.Fields {
 				cols = append(cols, ident(table.columns[field.Name])+" AS "+ident(c.names.name(field.Name)))
+			}
+			if table.schema.HasOwner {
+				cols = append(cols, ident(schema.OwnerColumn))
 			}
 			generated, err := parser.Parse("SELECT " + strings.Join(cols, ",") + " FROM ONLY " + ident(c.namespace, table.physical))
 			if err != nil {
