@@ -1023,6 +1023,53 @@ func TestPostgresListenOverflowsABlockedSubscriber(t *testing.T) {
 	}
 }
 
+func TestPostgresListenNeverDeliversSuccessorLifetimeRecords(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	listenSeed(t, s, ctx)
+	_, inc, err := s.TableState(ctx, "app", "notes", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan store.ChangeRecord, 64)
+	ended := make(chan error, 1)
+	replay, cancel, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, nil,
+		func(r store.ChangeRecord) { got <- r }, func(c error) { ended <- c })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	drainReplay(t, ctx, replay)
+	if err := s.DropTable(ctx, "app", "notes", inc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "body"}}, store.TableOpts{}, inc.NsGen); err != nil {
+		t.Fatal(err)
+	}
+	_, successor, err := s.TableState(ctx, "app", "notes", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "successor"}}, store.WriteOpts{}, store.Embedder{}, nil, successor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for {
+		select {
+		case rec := <-got:
+			t.Fatalf("a subscription pinned to the predecessor received a successor-lifetime record: %+v", rec)
+		case cause := <-ended:
+			if !errors.Is(cause, store.ErrListenLifetimeEnded) {
+				t.Fatalf("subscription ended with %v, want the lifetime sentinel", cause)
+			}
+			return
+		case <-time.After(25 * time.Second):
+			t.Fatal("a dropped table must end the subscription")
+		}
+	}
+}
+
 func listenAuthz(inc store.Incarnation) func(string) (*store.RowScope, store.Incarnation, bool) {
 	return func(string) (*store.RowScope, store.Incarnation, bool) { return nil, inc, true }
 }

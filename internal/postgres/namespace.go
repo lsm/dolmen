@@ -143,6 +143,9 @@ func (s *Store) DropNamespace(ctx context.Context, name string, expected [16]byt
 	}
 	n, err := s.namespace(ctx, tx, name, true)
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("%w: namespace %s does not exist, so nothing was dropped; list_namespaces shows what is there", store.ErrNotFound, name)
+		}
 		return err
 	}
 	if expected != [16]byte{} && expected != n.generation {

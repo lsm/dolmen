@@ -103,8 +103,15 @@ func TestPostgresCursorPinsHistoryAndLifetime(t *testing.T) {
 	if _, err := s.CreateTable(ctx, "app", "notes", fields, store.TableOpts{}, inc.NsGen); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.ChangesSince(ctx, "app", "notes", token, inc.NsGen, nil, store.Incarnation{}, store.Page{}); !errors.Is(err, store.ErrCursorExpired) {
-		t.Fatalf("table replacement reused token: %v", err)
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "successor"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	successor, _, err := s.ChangesSince(ctx, "app", "notes", token, inc.NsGen, nil, store.Incarnation{}, store.Page{})
+	if err != nil {
+		t.Fatalf("pre-drop token on the successor feed: %v", err)
+	}
+	if len(successor) != 1 || successor[0].Kind != store.ChangeInsert {
+		t.Fatalf("successor feed = %+v, want only the successor's own event", successor)
 	}
 	if err := s.DropNamespace(ctx, "app", inc.NsGen); err != nil {
 		t.Fatal(err)
