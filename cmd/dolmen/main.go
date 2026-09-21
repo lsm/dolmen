@@ -545,7 +545,10 @@ func printEnvHelp(out io.Writer) {
 	help := []envHelp{
 		{"DOLMEN_ADDR", "listen address (default 127.0.0.1:8790)"},
 		{"DOLMEN_DATA", "data directory (default data)"},
-		{"DOLMEN_ENGINE", "storage engine; empty or sqlite (default sqlite)"},
+		{"DOLMEN_ENGINE", "storage engine: sqlite (default) or postgres"},
+		{"DOLMEN_PG_DSN", "PostgreSQL connection string, required with the postgres engine"},
+		{"DOLMEN_PG_CATALOG", "PostgreSQL catalog schema (default dolmen_catalog)"},
+		{"DOLMEN_PG_QUERY_ROLE", "pre-provisioned NOLOGIN role that caller SQL runs as"},
 		{"DOLMEN_AUTH", "authentication: off (default) or on (deny-by-default)"},
 		{"DOLMEN_ADMIN_KEY", "bootstrap admin credential, required when auth is on (env-only, never a flag)"},
 		{"DOLMEN_TRUSTED_PROXIES", "comma-separated CIDRs whose peers may assert identity headers"},
