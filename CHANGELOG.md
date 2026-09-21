@@ -83,7 +83,9 @@
   keeps the column and its values and requires `admin` as well as `schema` and `read`. Realtime feeds follow the
   same rule: a caller holding only a data verb on a `row_access` table may now subscribe and
   receives its own rows, where it used to be refused outright, and every change record carries the
-  owner of the row it describes so the live feed can tell them apart. `changes_since` and `wait_for`
+  owner of the row it describes so the live feed can tell them apart. A scoped subscription that
+  would replay history recorded before those labels existed is refused rather than served with the
+  unlabelled records silently missing; starting at the current head is always available. `changes_since` and `wait_for`
   still refuse a scoped caller. Scoped
   `upsert_by_key` matches the natural key inside the visible set: a key held by an invisible row
   counts as no match, so the insert branch runs and the two rows coexist under one key, and no id,

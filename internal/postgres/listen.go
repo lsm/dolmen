@@ -584,6 +584,17 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 		if err := session.admits(table); err != nil {
 			return nil, nil, err
 		}
+		if liveAuthz != nil {
+			if scope, _, ok := liveAuthz(table); ok && scope != nil {
+				stale, serr := s.unlabeledBacklog(ctx, ns, table, from, head)
+				if serr != nil {
+					return nil, nil, listenCause(serr)
+				}
+				if stale {
+					return nil, nil, store.ErrScopedFeedPredatesLabels
+				}
+			}
+		}
 	}
 	session.release = w.register(ns, session.wake)
 	live, cancelLive := context.WithCancel(ctx)

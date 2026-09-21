@@ -257,6 +257,51 @@ func (s *Store) changeHead(ctx context.Context, ns string, expected [16]byte) (i
 	return head, err
 }
 
+func (s *Store) unlabeledBacklog(ctx context.Context, ns, table string, from store.Cursor, head int64) (bool, error) {
+	stale := false
+	err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
+		drop := int64(0)
+		if table != "" {
+			state, terr := s.loadTable(ctx, tx, n, table)
+			if terr != nil {
+				return terr
+			}
+			drop = state.incarnation.DropGen
+		}
+		position := int64(0)
+		switch {
+		case from == "":
+			position = head
+		case from != store.CursorBegin:
+			state, cerr := s.resolveCursor(ctx, tx, n, from, table, drop, s.now())
+			if cerr != nil {
+				return cerr
+			}
+			position = state.position
+		}
+		if position >= head {
+			return nil
+		}
+		stmt := "SELECT 1 FROM " + s.relation("changes") + " WHERE namespace=$1 AND position>$2 AND position<=$3 AND owner IS NULL"
+		args := []any{n.name, position, head}
+		if table != "" {
+			stmt += " AND table_name=$4 AND drop_generation=$5"
+			args = append(args, table, drop)
+		}
+		var one int
+		qerr := tx.QueryRow(ctx, stmt+" LIMIT 1", args...).Scan(&one)
+		if errors.Is(qerr, pgx.ErrNoRows) {
+			return nil
+		}
+		if qerr != nil {
+			return qerr
+		}
+		stale = true
+		return nil
+	})
+	return stale, err
+}
+
 func (s *Store) anchorListen(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, inc store.Incarnation) (store.Cursor, store.Cursor, int64, error) {
 	var replay, live store.Cursor
 	var head int64

@@ -297,6 +297,26 @@ func changeFeedOf(ctx context.Context, tx *sql.Tx, nsName, table string) (*chang
 	return &changeFeed{table: table, nsgen: nsgen, dropGen: dropGen}, nil
 }
 
+var ErrScopedFeedPredatesLabels = fmt.Errorf("%w: this feed still retains changes recorded before rows carried an owner, and a caller restricted to their own rows cannot be shown them or told they were skipped; subscribe without a cursor to start at the current head, or ask for the read verb on the table, which lifts the scope", ErrInvalid)
+
+func unlabeledChangeInRange(ctx context.Context, tx *sql.Tx, from, to int64, feed *changeFeed) (bool, error) {
+	q := `SELECT 1 FROM _dolmen_changes WHERE seq > ? AND seq <= ? AND owner IS NULL`
+	args := []any{from, to}
+	if feed != nil {
+		q += ` AND table_name = ? AND drop_gen = ? AND nsgen = ?`
+		args = append(args, feed.table, feed.dropGen, feed.nsgen[:])
+	}
+	var one int
+	err := tx.QueryRowContext(ctx, q+` LIMIT 1`, args...).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func changePageSQL(from int64, to *int64, limit int, feed *changeFeed) (string, []any) {
 	q := `SELECT seq, table_name, row_id, kind, owner, nsgen, drop_gen FROM _dolmen_changes WHERE seq > ?`
 	args := []any{from}

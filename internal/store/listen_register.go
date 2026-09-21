@@ -78,6 +78,18 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 		return nil, nil, err
 	}
 
+	if liveAuthz != nil && sess.position < sess.boundary {
+		if scope, _, ok := liveAuthz(table); ok && scope != nil {
+			stale, serr := unlabeledChangeInRange(ctx, tx, sess.position, sess.boundary, sess.feed)
+			if serr != nil {
+				return nil, nil, serr
+			}
+			if stale {
+				return nil, nil, ErrScopedFeedPredatesLabels
+			}
+		}
+	}
+
 	if sess.position < sess.boundary {
 		cq, cargs := changeCountSQL(sess.position, sess.boundary, sess.feed)
 		if err = tx.QueryRowContext(ctx, cq, cargs...).Scan(&sess.outstanding); err != nil {
