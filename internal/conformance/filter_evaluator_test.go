@@ -37,6 +37,11 @@ var sharedFilterList = []struct {
 	{"datetime with a modifier", "datetime(created_at, '+1 day') > datetime(created_at)"},
 	{"julianday with a modifier", "julianday(created_at, '+1 day') > julianday(created_at)"},
 	{"strftime with a modifier", "strftime('%Y-%m-%d', created_at, '+1 day') > strftime('%Y-%m-%d', created_at)"},
+	{"round to a given place", "round(1.234, 1) = 1.2"},
+	{"substr without a length", "substr(body, 3) = 'note from alice'"},
+	{"coalesce beyond two arguments", "coalesce(NULL, NULL, 'x') = 'x'"},
+	{"datetime with two modifiers", "datetime(created_at, '+1 day', '+1 hour') > datetime(created_at, '+1 day')"},
+	{"strftime with two modifiers", "strftime('%Y-%m-%d', created_at, '+1 day', '+1 day') > strftime('%Y-%m-%d', created_at, '+1 day')"},
 }
 
 var allowlistedOperators = []struct {
@@ -61,7 +66,9 @@ var allowlistedOperators = []struct {
 	{"IN over bound arguments", "id IN (?, ?)", "[1, 2]"},
 	{"BETWEEN", "id BETWEEN 1 AND 10", ""},
 	{"NOT BETWEEN", "id NOT BETWEEN 2 AND 10", ""},
-	{"LIKE with ESCAPE", "body LIKE 'a note%' ESCAPE '!'", ""},
+	{"LIKE with ESCAPE", "('100%' LIKE '100!%' ESCAPE '!') AND NOT ('100X' LIKE '100!%' ESCAPE '!')", ""},
+	{"LIKE with ESCAPE over an underscore", "('a_b' LIKE 'a!_b' ESCAPE '!') AND NOT ('axb' LIKE 'a!_b' ESCAPE '!')", ""},
+	{"LIKE with a bound ESCAPE", "'100%' LIKE '100!%' ESCAPE ?", `["!"]`},
 	{"NOT LIKE", "body NOT LIKE 'zzz%'", ""},
 	{"CASE", "CASE WHEN id = 1 THEN 1 ELSE 0 END = 1", ""},
 	{"a bound argument", "id = ?", "[1]"},
@@ -87,6 +94,7 @@ var notYetEvaluatedByAdapterTwo = map[string]bool{
 	"date": true, "time": true, "datetime": true, "julianday": true, "strftime": true,
 	"date with a modifier": true, "time with a modifier": true, "datetime with a modifier": true,
 	"julianday with a modifier": true, "strftime with a modifier": true,
+	"datetime with two modifiers": true, "strftime with two modifiers": true,
 }
 
 var notYetPinnedByAdapterTwo = map[string]bool{
