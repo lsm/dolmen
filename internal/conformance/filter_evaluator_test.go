@@ -63,6 +63,7 @@ var allowlistedOperators = []struct {
 	{"IS NOT", "body IS NOT NULL", ""},
 	{"IN over a literal list", "id IN (1, 2, 3)", ""},
 	{"NOT IN", "id NOT IN (2, 3)", ""},
+	{"NOT IN over an empty list", "id NOT IN ()", ""},
 	{"IN over bound arguments", "id IN (?, ?)", "[1, 2]"},
 	{"BETWEEN", "id BETWEEN 1 AND 10", ""},
 	{"NOT BETWEEN", "id NOT BETWEEN 2 AND 10", ""},
@@ -104,6 +105,7 @@ var notYetPinnedByAdapterTwo = map[string]bool{
 }
 
 var notYetSpelledByAdapterTwo = map[string]bool{
+	"NOT IN over an empty list":   true,
 	"== as a spelling of =":       true,
 	"IS against a literal":        true,
 	"IS against a bound argument": true,
