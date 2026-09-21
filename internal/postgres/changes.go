@@ -290,7 +290,24 @@ func (s *Store) unlabeledBacklog(ctx context.Context, ns, table string, from sto
 		switch {
 		case from == "":
 			position = head
-		case from != store.CursorBegin:
+		case from == store.CursorBegin:
+			now := s.now()
+			var first *int64
+			stmt := "SELECT min(position) FROM " + s.relation("changes") + " WHERE namespace=$1"
+			args := []any{n.name}
+			if s.changeRetention > 0 {
+				stmt += " AND created_at >= $2"
+				args = append(args, now.Add(-s.changeRetention))
+			}
+			if berr := tx.QueryRow(ctx, stmt, args...).Scan(&first); berr != nil {
+				return berr
+			}
+			if first == nil {
+				position = head
+			} else {
+				position = *first - 1
+			}
+		default:
 			state, cerr := s.resolveCursor(ctx, tx, n, from, table, drop, s.now())
 			if cerr != nil {
 				return cerr
