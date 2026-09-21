@@ -129,6 +129,9 @@ func resolveEngine() error {
 	if app.engine == "" {
 		app.engine = engineSQLite
 	}
+	if app.engine != engineSQLite && app.engine != enginePostgres {
+		return fmt.Errorf("DOLMEN_ENGINE=%q is not an engine this suite can drive; use %q or %q", app.engine, engineSQLite, enginePostgres)
+	}
 	if app.engine != enginePostgres {
 		return nil
 	}
@@ -171,12 +174,18 @@ func dropCatalog() {
 		for rows.Next() {
 			var physical string
 			if err := rows.Scan(&physical); err != nil {
-				fmt.Fprintln(os.Stderr, "blackbox: list the run's schemas:", err)
+				err = fmt.Errorf("scan: %w", err)
 				break
 			}
 			schemas = append(schemas, physical)
 		}
 		rows.Close()
+		if rowsErr := rows.Err(); rowsErr != nil && err == nil {
+			err = rowsErr
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "blackbox: list the schemas of catalog %s: %v; any namespace schema it did not name is left behind\n", app.pgCatalog, err)
 	}
 	schemas = append(schemas, app.pgCatalog)
 	for _, name := range schemas {
