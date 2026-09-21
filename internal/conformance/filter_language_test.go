@@ -29,8 +29,7 @@ func seedTwoTables(t *testing.T, h *harness) {
 	})
 }
 
-func TestAuthOffKeepsTheV020FilterLanguage(t *testing.T) {
-	filterLanguageEngineGap(t, "a filter subquery reaching a sibling table")
+func TestAuthOffKeepsEachEnginesV020FilterLanguage(t *testing.T) {
 	h := newHarnessMode(t, authOff)
 	seedTwoTables(t, h)
 
@@ -38,8 +37,37 @@ func TestAuthOffKeepsTheV020FilterLanguage(t *testing.T) {
 		"namespace": "acme", "table": "notes",
 		"filter": "rank IN (SELECT salary FROM payroll)", "dry_run": true,
 	})
+	if testEngine(t) == store.EnginePostgres {
+		if status != http.StatusNotFound {
+			t.Fatalf("PostgreSQL compiles a filter as a confined single-table select, so a filter naming another table must answer not_found, not %d: %v", status, out)
+		}
+		errObj, _ := out["error"].(map[string]any)
+		if errObj["code"] != "not_found" {
+			t.Fatalf("the refusal is not not_found: %v", out)
+		}
+		return
+	}
 	if status != http.StatusOK {
-		t.Fatalf("auth off must keep the v0.2.0 filter language, subqueries included: %d %v", status, out)
+		t.Fatalf("auth off must keep SQLite's v0.2.0 filter language, subqueries included: %d %v", status, out)
+	}
+}
+
+func TestTheAuthOffFilterLanguageIsTheEnginesOwnDialect(t *testing.T) {
+	h := newHarnessMode(t, authOff)
+	seedTwoTables(t, h)
+
+	status, out := h.httpCall("delete", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"filter": "md5('a') = md5('a')", "dry_run": true,
+	})
+	if testEngine(t) == store.EnginePostgres {
+		if status != http.StatusOK {
+			t.Fatalf("PostgreSQL compiles a filter through the same boundary as query, so its own functions are available under auth off: %d %v", status, out)
+		}
+		return
+	}
+	if status == http.StatusOK {
+		t.Fatalf("SQLite has no md5, so this filter cannot be accepted there: %v", out)
 	}
 }
 
@@ -104,7 +132,9 @@ func TestAuthOnKeepsTheAllowlistWorking(t *testing.T) {
 }
 
 func TestABoundClockWordIsRefused(t *testing.T) {
-	filterLanguageEngineGap(t, "the date and time functions")
+	if testEngine(t) == store.EnginePostgres {
+		t.Skipf("engine %q does not implement the date and time functions yet; D32 has the engines converging under auth: on because the allowlist binds all of them, so this is a gap to close rather than the dialect difference D32 describes for auth: off", store.EnginePostgres)
+	}
 	h := newHarnessMode(t, authGateway)
 	seedTwoTables(t, h)
 	grantTo(t, h, "principal", "alice", "acme", "notes", "read", "delete")
@@ -191,12 +221,4 @@ func TestADeeplyNestedFilterIsRefusedNotFatal(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("the server did not survive the nested filter: %d %v", status, out)
 	}
-}
-
-func filterLanguageEngineGap(t *testing.T, missing string) {
-	t.Helper()
-	if testEngine(t) != store.EnginePostgres {
-		return
-	}
-	t.Skipf("engine %q does not implement %s yet; the spec requires one shared evaluator rather than a per-engine subset, so this is a gap to close and not a recorded divergence", store.EnginePostgres, missing)
 }

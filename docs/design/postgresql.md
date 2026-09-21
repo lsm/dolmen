@@ -210,7 +210,19 @@ cleanup. Tests use the same pre-provisioned role model as production.
 Update, delete, and filter-based upsert compile their filter as a confined single-table
 `SELECT id` through the same PostgreSQL parser boundary. This preserves logical field
 names and `?` arguments while rejecting additional statements, schema-qualified
-references, and unsupported functions or operators. Matching IDs are selected and
+references, and unsupported functions or operators. Confined to a single table means
+exactly that: a filter naming another table answers `not_found`, so a cross-table
+subquery that SQLite accepts under `auth: off` does not compile here. The scoped filter
+allowlist (§4.3) forbids the same thing under `auth: on`, so the engines converge there
+and diverge only in the unauthenticated language — recorded as D32 in the governing spec,
+since §8.1's byte-for-byte rule had to be read as binding the engine v0.2.0 shipped on
+rather than every future engine. The divergence runs both ways: because a mutation filter
+compiles through the same boundary as `query`, this engine also **accepts** filter syntax
+SQLite refuses (`now`, `md5`, `regexp_match`, the JSON and regex operators), and shared
+spellings can differ in meaning — `LIKE` is case-sensitive here and ASCII-case-insensitive
+on SQLite. Naming the dialect on the capability surface is #386. `internal/conformance` pins both halves in one fixture
+rather than skipping either: PostgreSQL must answer `not_found`, SQLite must still execute
+the subquery. Matching IDs are selected and
 mutated under the namespace write lock, with row changes and durable change records in
 one transaction.
 
