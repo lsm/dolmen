@@ -204,10 +204,23 @@ Two things do not transfer, and both matter more than they look:
 
 ## Behavior differences from SQLite
 
-Both engines pass the same conformance suite, which is what "parity" means here — it is
-enforced by tests, not by shared code. The deliberate exceptions are all in full-text
-search, because each engine uses its own native implementation and ranking rather than a
-shared scorer:
+Parity here means a conformance suite that runs against both engines, not shared code.
+[The design doc's conformance matrix](design/postgresql.md) is the current status;
+what follows is the set of differences that are deliberate and will not be closed.
+
+Two of them are not about search, and both can break a query that worked on SQLite:
+
+- **`_embedding` is not readable from caller SQL on PostgreSQL.** Caller SQL runs as the
+  restricted query role, which is granted the declared columns and nothing else, so
+  `SELECT _embedding FROM t` is refused where SQLite returns the vector. Read vectors
+  through search with `include_hidden` instead, which works on both.
+- **A raw read of a boolean under an undeclared label is `true`, not `1`.** PostgreSQL
+  stores booleans as `boolean`, so that is what comes back; SQLite stores `1`. The same
+  goes for boolean expressions in caller SQL — `SELECT n > 5 AS big` is `true` on
+  PostgreSQL and `1` on SQLite. Code that compares against `1` needs to accept both.
+
+The rest are in full-text search, because each engine uses its own native implementation
+and ranking rather than a shared scorer:
 
 - SQLite uses FTS5 with BM25. PostgreSQL uses `tsvector` with `ts_rank_cd` and the
   `english` text-search configuration.
