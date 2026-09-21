@@ -406,7 +406,10 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 |---|---|---|---|
 | `-addr` | `DOLMEN_ADDR` | `127.0.0.1:8790` | HTTP listen address (`dolmen mcp` does not listen) |
 | `-data` | `DOLMEN_DATA` | `data` | Data directory (one SQLite file per namespace) |
-| `-engine` | `DOLMEN_ENGINE` | `sqlite` | Storage engine. `sqlite` is the default and currently the only engine; unknown values are rejected with an error |
+| `-engine` | `DOLMEN_ENGINE` | `sqlite` | Storage engine: `sqlite` (default) or `postgres`. `postgres` needs `-pg-dsn`; unknown values are rejected with an error |
+| `-pg-dsn` | `DOLMEN_PG_DSN` | — | PostgreSQL connection string; required with `-engine postgres` and rejected without it |
+| `-pg-catalog` | `DOLMEN_PG_CATALOG` | `dolmen_catalog` | PostgreSQL catalog schema |
+| `-pg-query-role` | `DOLMEN_PG_QUERY_ROLE` | — | Pre-provisioned restricted role that caller SQL runs as; required for the `query` op |
 | `-auth` | `DOLMEN_AUTH` | `off` | Authentication. `off` is the v0.2.0 behavior: no identity, no credential, bind to loopback. `on` is deny-by-default and requires `DOLMEN_ADMIN_KEY` (see [Authentication](#authentication)) |
 | — | `DOLMEN_ADMIN_KEY` | — | Bootstrap admin credential, required when `-auth on`. 32–256 characters of `[A-Za-z0-9_-]`, presented as `Authorization: Bearer <key>`. Environment only — flags are visible in process listings |
 | `-trusted-proxies` | `DOLMEN_TRUSTED_PROXIES` | — | Comma-separated CIDRs (bare IPs allowed) whose peers may assert `X-Dolmen-Principal` / `X-Dolmen-Groups`. Trust is decided from the immediate TCP peer, never from `X-Forwarded-For` |

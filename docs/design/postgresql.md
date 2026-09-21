@@ -447,8 +447,15 @@ dolmen -engine postgres \
 `DOLMEN_PG_DSN`, `DOLMEN_PG_CATALOG` and `DOLMEN_PG_QUERY_ROLE` are the env
 equivalents. `-engine postgres` without a DSN is refused, and a DSN without that
 engine is refused too, so a half-configured server fails at startup rather than
-silently serving SQLite. `-data` is ignored under PostgreSQL. The stdio conformance
-fixtures run the real binary against PostgreSQL through these flags.
+silently serving SQLite. The stdio conformance fixtures run the real binary against
+PostgreSQL through these flags.
+
+`-data` still matters under PostgreSQL. No table data lands there, but the grant
+registry (`<data>/_grants.db`) and the local embedding model cache (`<data>/models`)
+do, so the binary creates the directory whichever engine serves the tables. It used
+to be created as a side effect of opening the SQLite store, which meant `-auth on`
+against a missing directory failed at the grant registry under PostgreSQL and
+nowhere else.
 
 The role provisioning is the deployment's, not dolmen's: the backend role needs CREATE
 on the database, and caller SQL needs the pre-provisioned restricted query role granted

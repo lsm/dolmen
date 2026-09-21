@@ -159,6 +159,9 @@ func runStdio(args []string) error {
 
 func openStore(cfg *config) (store.Engine, error) {
 	if cfg.Engine == store.EnginePostgres {
+		if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
+			return nil, fmt.Errorf("create data directory: %w", err)
+		}
 		retention := cfg.ChangeRetention
 		st, err := postgres.Open(context.Background(), postgres.Config{
 			DSN:             cfg.PostgresDSN,
