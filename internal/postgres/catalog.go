@@ -130,11 +130,29 @@ type namespace struct {
 	generation [16]byte
 }
 
-func (s *Store) namespace(ctx context.Context, tx pgx.Tx, name string, lock bool) (namespace, error) {
-	stmt := "SELECT physical, generation FROM " + s.relation("namespaces") + " WHERE name = $1"
-	if lock {
-		stmt += " FOR UPDATE"
+type namespaceLock int
+
+const (
+	namespaceUnlocked namespaceLock = iota
+	namespaceKeyPinned
+	namespaceWriteSerialized
+	namespaceExclusive
+)
+
+func (l namespaceLock) clause() string {
+	switch l {
+	case namespaceKeyPinned:
+		return " FOR KEY SHARE"
+	case namespaceWriteSerialized:
+		return " FOR NO KEY UPDATE"
+	case namespaceExclusive:
+		return " FOR UPDATE"
 	}
+	return ""
+}
+
+func (s *Store) namespace(ctx context.Context, tx pgx.Tx, name string, lock namespaceLock) (namespace, error) {
+	stmt := "SELECT physical, generation FROM " + s.relation("namespaces") + " WHERE name = $1" + lock.clause()
 	var n namespace
 	var raw []byte
 	n.name = name
@@ -165,7 +183,7 @@ func (s *Store) writeUnlocked(ctx context.Context, name string, expected [16]byt
 		return err
 	}
 	defer rollback(tx)
-	n, err := s.namespace(ctx, tx, name, false)
+	n, err := s.namespace(ctx, tx, name, namespaceKeyPinned)
 	if err != nil {
 		return err
 	}
@@ -192,7 +210,7 @@ func (s *Store) write(ctx context.Context, name string, expected [16]byte, fn fu
 		return err
 	}
 	defer rollback(tx)
-	n, err := s.namespace(ctx, tx, name, true)
+	n, err := s.namespace(ctx, tx, name, namespaceWriteSerialized)
 	if err != nil {
 		return err
 	}

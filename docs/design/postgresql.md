@@ -564,6 +564,25 @@ it to `ErrListenLifetimeEnded` rather than letting a driver error reach the clos
 frame. The session was over either way; the caller is told why in the vocabulary the
 rest of the contract uses.
 
+Dropping the lock also inverted the lock order, which is a deadlock rather than a
+misreport. The fetch updates the cursor row it resolved and only afterwards inserts the
+page's cursors, whose foreign key takes `KEY SHARE` on the namespace row;
+`DropNamespace` takes the namespace row exclusively first and its `ON DELETE CASCADE`
+then wants those same cursor rows. Each side ends up holding what the other needs, and
+PostgreSQL breaks the cycle with SQLSTATE 40P01 — surfacing either as a driver error on
+the subscription's close frame or as a `drop_namespace` that fails for no reason the
+caller can act on. Reproduced against a live server before fixing.
+
+The order is now the same on both paths: the live read takes `FOR KEY SHARE` on the
+namespace row, so a dropper waits behind it instead of overtaking it and cascading into
+the cursors the fetch holds. That alone would have handed the contention straight back,
+because writers took the namespace row `FOR UPDATE`, which `KEY SHARE` conflicts with.
+Writers now take `FOR NO KEY UPDATE`: still mutually exclusive, still exclusive against
+a dropper, and compatible with the live read's `KEY SHARE`. The four lock modes are
+named rather than passed as a boolean, since the difference between them is the whole
+argument. Measured on a live server: `KEY SHARE` against `FOR UPDATE` blocks, `KEY
+SHARE` against `FOR NO KEY UPDATE` does not.
+
 The same drop has a second window. Cursors cascade from the namespace row, so a drop
 landing before the fetch resolves its cursor deletes that row first, and an absent
 cursor is indistinguishable from an expired one: the stream would close as
