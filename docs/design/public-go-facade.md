@@ -40,6 +40,21 @@ without requiring every library consumer or mock to implement new methods.
 Consumers can define the small interfaces they need. No `DB()`, raw SQL connection,
 public `Engine`, or backend injection option is included in the first release.
 
+**Amended when PostgreSQL became selectable.** `WithEngineOpener` is a backend
+injection option, so this paragraph no longer holds in full. Two of its three
+prohibitions do: there is still no `DB()`, no raw SQL connection, and no public
+`Engine` — `EngineOpener` names `internal/store.Engine`, which no consumer outside
+the module can import, so the option is a seam between first-party packages that
+happens to be exported rather than an injection point third parties can reach.
+
+It exists to keep the driver out of everyone else's build. Reaching the PostgreSQL
+adapter from the root package put pgx and an embedded WASM parser into the import
+graph of every consumer of the module and more than doubled a SQLite-only binary, so
+`github.com/lsm/dolmen/postgres` owns the dependency and hands the facade an opener.
+The engine stays private, and the reason the original decision gave — that backend
+interfaces must evolve without breaking consumers and mocks — is unaffected, because
+nothing outside the module can name the interface being passed.
+
 ## 2. Curated core
 
 The entry point is `Open(dataDir string, opts ...Option) (*Store, error)`, paired
