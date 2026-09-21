@@ -61,3 +61,12 @@ func scopedSource(table string, scope *store.RowScope) (string, string, []any) {
 	return "WITH " + ident(visibleRelation) + " AS MATERIALIZED (SELECT * FROM " + table + " WHERE " + cond + ") ",
 		ident(visibleRelation), args
 }
+
+func scopedSourceAt(table string, scope *store.RowScope, next int) (string, string, []any) {
+	cond, args := scopePredicate(scope, "", next)
+	if cond == "" {
+		return "", table, nil
+	}
+	return "WITH " + ident(visibleRelation) + " AS MATERIALIZED (SELECT * FROM " + table + " WHERE " + cond + ") ",
+		ident(visibleRelation), args
+}

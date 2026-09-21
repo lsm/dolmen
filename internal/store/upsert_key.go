@@ -13,9 +13,6 @@ import (
 const MaxKeyFields = 8
 
 func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
-	if scope != nil {
-		return InsertResult{}, ErrScopedKeyUpsertUnsupported
-	}
 	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
 		return InsertResult{}, err
 	}
@@ -51,7 +48,7 @@ func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields
 		if attempt >= 3 {
 			return InsertResult{}, invalidf("table schema changed concurrently; retry the upsert")
 		}
-		ids, inserted, updated, changes, done, err := s.upsertKeyAttempt(ctx, n, nsName, table, keyFields, records, emb, opts.Owner)
+		ids, inserted, updated, changes, done, err := s.upsertKeyAttempt(ctx, n, nsName, table, keyFields, records, emb, opts.Owner, scope, scopeIncarnation)
 		if done {
 			if err != nil {
 				return InsertResult{}, err
@@ -94,15 +91,16 @@ type upsertPlan struct {
 	keyVals []any
 }
 
-func matchByKey(ctx context.Context, tx *sql.Tx, table string, keyFields []string, keyDefs []*schema.Field, keyVals []any, recIdx int) (int64, error) {
+func matchByKey(ctx context.Context, tx *sql.Tx, table string, keyFields []string, keyDefs []*schema.Field, keyVals []any, recIdx int, scope *RowScope) (int64, error) {
 	where := make([]string, len(keyDefs))
 	for j, kd := range keyDefs {
 		where[j] = fmt.Sprintf(`%s = ?`, q(kd.Name))
 	}
 	whereSQL := strings.Join(where, ` AND `)
+	prefix, source, scopeArgs := scopedSource(table, scope)
 	rows, err := tx.QueryContext(ctx,
-		fmt.Sprintf(`SELECT id FROM %s WHERE %s LIMIT 2`, q(table), whereSQL),
-		keyVals...)
+		fmt.Sprintf(`%sSELECT id FROM %s WHERE %s LIMIT 2`, prefix, source, whereSQL),
+		append(append([]any{}, scopeArgs...), keyVals...)...)
 	if err != nil {
 		return 0, NewFilterError(whereSQL, err)
 	}
@@ -129,7 +127,7 @@ func matchByKey(ctx context.Context, tx *sql.Tx, table string, keyFields []strin
 	return 0, nil
 }
 
-func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table string, keyFields []string, records []map[string]any, emb Embedder, owner string) (ids []int64, inserted, updated int, changes ChangeRange, done bool, err error) {
+func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table string, keyFields []string, records []map[string]any, emb Embedder, owner string, scope *RowScope, scopeIncarnation Incarnation) (ids []int64, inserted, updated int, changes ChangeRange, done bool, err error) {
 
 	gen, err := tableGen(ctx, n.rw, table)
 	if err != nil {
@@ -244,13 +242,19 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 	if scTx.Version != sc.Version || scTx.EmbedSpace != origEmbedSpace || scTx.EmbedDim != origEmbedDim || txGen != gen {
 		return nil, 0, 0, ChangeRange{}, false, nil
 	}
+	if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
+		return nil, 0, 0, ChangeRange{}, true, err
+	}
+	if err := scopeUsable(scope, scTx); err != nil {
+		return nil, 0, 0, ChangeRange{}, true, err
+	}
 
 	ids = make([]int64, 0, len(records))
 	insertIDs := make([]int64, 0, len(records))
 	updateIDs := make([]int64, 0, len(records))
 	for i := range plans {
 		p := plans[i]
-		matchID, err := matchByKey(ctx, tx, table, keyFields, keyDefs, p.keyVals, i)
+		matchID, err := matchByKey(ctx, tx, table, keyFields, keyDefs, p.keyVals, i, scope)
 		if err != nil {
 			return nil, 0, 0, ChangeRange{}, true, err
 		}

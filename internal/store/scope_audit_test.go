@@ -38,7 +38,7 @@ func TestEveryScopedEntryPointEitherFiltersOrRefuses(t *testing.T) {
 			continue
 		}
 		switch name {
-		case "DescribeTable", "GetRows", "SearchFulltext", "Insert", "Update", "Upsert", "Delete":
+		case "DescribeTable", "GetRows", "SearchFulltext", "Insert", "Update", "Upsert", "UpsertByKey", "Delete":
 		default:
 			t.Fatalf("%s accepted a row scope without filtering by owner; an unread scope parameter is how foreign rows leak", name)
 		}
