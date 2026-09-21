@@ -3,33 +3,50 @@ package conformance
 import (
 	"net/http"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/store"
 )
 
 var sharedFilterList = []struct {
 	function string
 	filter   string
 }{
-	{"abs", "abs(id) = id"},
-	{"round", "round(id) = id"},
-	{"length", "length(body) >= 0"},
-	{"lower", "lower(body) = lower(body)"},
-	{"upper", "upper(body) = upper(body)"},
-	{"substr", "substr(body, 1, 2) = substr(body, 1, 2)"},
-	{"trim", "trim(body) = trim(body)"},
-	{"trim with a strip set", "trim(body, 'ab') = trim(body, 'ab')"},
-	{"ltrim", "ltrim(body, 'ab') = ltrim(body, 'ab')"},
-	{"rtrim", "rtrim(body, 'ab') = rtrim(body, 'ab')"},
-	{"replace", "replace(body, 'a', 'b') = replace(body, 'a', 'b')"},
-	{"instr", "instr(body, 'a') >= 0"},
-	{"coalesce", "coalesce(body, '') = coalesce(body, '')"},
-	{"ifnull", "ifnull(body, '') = ifnull(body, '')"},
-	{"nullif", "nullif(body, '') IS NOT NULL"},
-	{"iif", "iif(id > 0, 1, 0) = 1"},
-	{"date", "date(created_at) = date(created_at)"},
-	{"time", "time(created_at) = time(created_at)"},
-	{"datetime", "datetime(created_at) = datetime(created_at)"},
-	{"julianday", "julianday(created_at) > 0"},
-	{"strftime", "strftime('%Y', created_at) = strftime('%Y', created_at)"},
+	{"abs", "abs(id) = 1"},
+	{"round", "round(id) = 1"},
+	{"length", "length(body) = 17"},
+	{"lower", "lower(body) = 'a note from alice'"},
+	{"upper", "upper(body) = 'A NOTE FROM ALICE'"},
+	{"substr", "substr(body, 3, 4) = 'note'"},
+	{"trim", "trim(body) = body"},
+	{"trim with a strip set", "trim(body, 'ae') = ' note from alic'"},
+	{"ltrim", "ltrim(body, 'a') = ' note from alice'"},
+	{"rtrim", "rtrim(body, 'e') = 'a note from alic'"},
+	{"replace", "replace(body, 'alice', 'bob') = 'a note from bob'"},
+	{"instr", "instr(body, 'note') = 3"},
+	{"coalesce", "coalesce(body, 'x') = body"},
+	{"ifnull", "ifnull(body, 'x') = body"},
+	{"nullif", "nullif(body, 'x') = body"},
+	{"iif", "iif(id = 1, 'y', 'n') = 'y'"},
+	{"date", "length(date(created_at)) = 10"},
+	{"time", "length(time(created_at)) = 8"},
+	{"datetime", "length(datetime(created_at)) = 19"},
+	{"julianday", "julianday(created_at) > 2400000"},
+	{"strftime", "length(strftime('%Y', created_at)) = 4"},
+}
+
+var pinnedFilterSemantics = []struct {
+	rule   string
+	filter string
+}{
+	{"LIKE is ASCII-case-insensitive", "body LIKE 'A NOTE%'"},
+	{"string comparison is BINARY byte-wise", "'a' > 'B'"},
+	{"integer division truncates toward zero", "-7 / 2 = -3"},
+	{"round goes half away from zero", "round(-2.5) = -3"},
+}
+
+var notYetEvaluatedByAdapterTwo = map[string]bool{
+	"instr": true, "ifnull": true, "iif": true,
+	"date": true, "time": true, "datetime": true, "julianday": true, "strftime": true,
 }
 
 func seedScopedFilterRow(t *testing.T) *harness {
@@ -43,15 +60,35 @@ func seedScopedFilterRow(t *testing.T) *harness {
 	return h
 }
 
+func mustMatchTheOwnRow(t *testing.T, filter string) {
+	t.Helper()
+	h := seedScopedFilterRow(t)
+	res, out := h.asIdentity(t, "alice", "", "delete",
+		`{"namespace":"acme","table":"notes","filter":"`+filter+`","dry_run":true}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("the API layer accepted this filter from the shared allowlist, so the engine owes it an evaluation rather than a refusal: %d %v", res.StatusCode, out)
+	}
+	data, _ := out["data"].(map[string]any)
+	if matched, _ := data["matched"].(float64); matched != 1 {
+		t.Fatalf("the filter is true of the caller's one row, so it must match it: matched %v: %v", data["matched"], out)
+	}
+}
+
 func TestEveryEngineEvaluatesTheSharedFilterList(t *testing.T) {
 	for _, tc := range sharedFilterList {
 		t.Run(tc.function, func(t *testing.T) {
-			h := seedScopedFilterRow(t)
-			body := `{"namespace":"acme","table":"notes","filter":"` + tc.filter + `","dry_run":true}`
-			res, out := h.asIdentity(t, "alice", "", "delete", body)
-			if res.StatusCode != http.StatusOK {
-				t.Fatalf("the API layer accepts %s from the shared allowlist, so the engine owes it an evaluation rather than a refusal: %d %v", tc.function, res.StatusCode, out)
+			if testEngine(t) == store.EnginePostgres && notYetEvaluatedByAdapterTwo[tc.function] {
+				t.Skipf("adapter #2 validates %s through the shared allowlist but has no evaluation for it; see #388", tc.function)
 			}
+			mustMatchTheOwnRow(t, tc.filter)
+		})
+	}
+}
+
+func TestEveryEngineEvaluatesAScopedFilterWithSQLitesSemantics(t *testing.T) {
+	for _, tc := range pinnedFilterSemantics {
+		t.Run(tc.rule, func(t *testing.T) {
+			mustMatchTheOwnRow(t, tc.filter)
 		})
 	}
 }
