@@ -89,6 +89,7 @@ var pinnedFilterSemantics = []struct {
 	{"LIKE is ASCII-case-insensitive", "body LIKE 'A NOTE%'"},
 	{"string comparison is BINARY byte-wise", "'a' > 'B'"},
 	{"integer division truncates toward zero", "-7 / 2 = -3"},
+	{"integer division truncates a stored number too", "n / 2 = -3"},
 	{"division by zero is null", "(1 / 0) IS NULL"},
 	{"modulo by zero is null", "(1 % 0) IS NULL"},
 	{"round goes half away from zero", "round(-2.5) = -3"},
@@ -137,9 +138,19 @@ var notYetSpelledByAdapterTwo = map[string]bool{
 
 func seedScopedFilterRow(t *testing.T) *harness {
 	t.Helper()
-	h := seedRowAccess(t)
+	h := newHarnessMode(t, authGateway)
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "acme"})
+	h.mustHTTP("create_table", map[string]any{
+		"namespace": "acme",
+		"table":     "notes",
+		"fields": []map[string]any{
+			{"name": "body", "type": "text", "fulltext": true},
+			{"name": "n", "type": "number"},
+		},
+		"row_access": "own",
+	})
 	grantTo(t, h, "principal", "alice", "acme", "notes", "create", "delete")
-	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice"}]}`)
+	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7}]}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("seed insert: status %d %v", res.StatusCode, out)
 	}
