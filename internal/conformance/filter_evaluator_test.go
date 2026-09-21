@@ -39,6 +39,34 @@ var sharedFilterList = []struct {
 	{"strftime with a modifier", "strftime('%Y-%m-%d', created_at, '+1 day') > strftime('%Y-%m-%d', created_at)"},
 }
 
+var allowlistedOperators = []struct {
+	spelling string
+	filter   string
+	args     string
+}{
+	{"=", "id = 1", ""},
+	{"== as a spelling of =", "id == 1", ""},
+	{"!=", "id != 2", ""},
+	{"<> as a spelling of !=", "id <> 2", ""},
+	{"relational comparison", "id >= 1 AND id <= 1", ""},
+	{"arithmetic", "id + 1 = 2 AND id * 3 = 3 AND id - 1 = 0", ""},
+	{"modulo", "7 % 2 = 1", ""},
+	{"concatenation", "body || '!' = 'a note from alice!'", ""},
+	{"AND, OR and NOT", "NOT (id = 2) AND (id = 1 OR id = 3)", ""},
+	{"IS against a literal", "body IS 'a note from alice'", ""},
+	{"IS against a bound argument", "body IS ?", `["a note from alice"]`},
+	{"IS NOT", "body IS NOT NULL", ""},
+	{"IN over a literal list", "id IN (1, 2, 3)", ""},
+	{"NOT IN", "id NOT IN (2, 3)", ""},
+	{"IN over bound arguments", "id IN (?, ?)", "[1, 2]"},
+	{"BETWEEN", "id BETWEEN 1 AND 10", ""},
+	{"NOT BETWEEN", "id NOT BETWEEN 2 AND 10", ""},
+	{"LIKE with ESCAPE", "body LIKE 'a note%' ESCAPE '!'", ""},
+	{"NOT LIKE", "body NOT LIKE 'zzz%'", ""},
+	{"CASE", "CASE WHEN id = 1 THEN 1 ELSE 0 END = 1", ""},
+	{"a bound argument", "id = ?", "[1]"},
+}
+
 var pinnedFilterSemantics = []struct {
 	rule   string
 	filter string
@@ -47,6 +75,11 @@ var pinnedFilterSemantics = []struct {
 	{"string comparison is BINARY byte-wise", "'a' > 'B'"},
 	{"integer division truncates toward zero", "-7 / 2 = -3"},
 	{"round goes half away from zero", "round(-2.5) = -3"},
+	{"nonnumeric text coerces to zero in arithmetic", "body + 1 = 1"},
+	{"numeric text coerces to a number in arithmetic", "'3' + 1 = 4"},
+	{"concatenation coerces numbers to text", "1 || '2' = '12'"},
+	{"null propagates through comparison", "(NULL = 1) IS NULL"},
+	{"null is not distinct from null under IS", "NULL IS NULL"},
 }
 
 var notYetEvaluatedByAdapterTwo = map[string]bool{
@@ -57,8 +90,15 @@ var notYetEvaluatedByAdapterTwo = map[string]bool{
 }
 
 var notYetPinnedByAdapterTwo = map[string]bool{
-	"LIKE is ASCII-case-insensitive":        true,
-	"string comparison is BINARY byte-wise": true,
+	"LIKE is ASCII-case-insensitive":                true,
+	"string comparison is BINARY byte-wise":         true,
+	"nonnumeric text coerces to zero in arithmetic": true,
+}
+
+var notYetSpelledByAdapterTwo = map[string]bool{
+	"== as a spelling of =":       true,
+	"IS against a literal":        true,
+	"IS against a bound argument": true,
 }
 
 func seedScopedFilterRow(t *testing.T) *harness {
@@ -74,9 +114,18 @@ func seedScopedFilterRow(t *testing.T) *harness {
 
 func mustMatchTheOwnRow(t *testing.T, filter string) {
 	t.Helper()
+	mustMatchTheOwnRowWithArgs(t, filter, "")
+}
+
+func mustMatchTheOwnRowWithArgs(t *testing.T, filter, args string) {
+	t.Helper()
 	h := seedScopedFilterRow(t)
-	res, out := h.asIdentity(t, "alice", "", "delete",
-		`{"namespace":"acme","table":"notes","filter":"`+filter+`","dry_run":true}`)
+	body := `{"namespace":"acme","table":"notes","filter":"` + filter + `","dry_run":true`
+	if args != "" {
+		body += `,"args":` + args
+	}
+	body += `}`
+	res, out := h.asIdentity(t, "alice", "", "delete", body)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("the API layer accepted this filter from the shared allowlist, so the engine owes it an evaluation rather than a refusal: %d %v", res.StatusCode, out)
 	}
@@ -93,6 +142,17 @@ func TestEveryEngineEvaluatesTheSharedFilterList(t *testing.T) {
 				t.Skipf("adapter #2 validates %s through the shared allowlist but has no evaluation for it; see #388", tc.function)
 			}
 			mustMatchTheOwnRow(t, tc.filter)
+		})
+	}
+}
+
+func TestEveryEngineAcceptsTheAllowlistedOperatorSpellings(t *testing.T) {
+	for _, tc := range allowlistedOperators {
+		t.Run(tc.spelling, func(t *testing.T) {
+			if testEngine(t) == store.EnginePostgres && notYetSpelledByAdapterTwo[tc.spelling] {
+				t.Skipf("adapter #2 has no evaluation for this spelling; see #388")
+			}
+			mustMatchTheOwnRowWithArgs(t, tc.filter, tc.args)
 		})
 	}
 }
