@@ -222,7 +222,11 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 				}
 				result.Ids = ids
 				result.Updated = int64(len(ids))
-				result.Changes, err = s.mintChanges(ctx, tx, n, state, store.ChangeUpdate, ids)
+				var owners []string
+				if owners, err = s.ownersOf(ctx, tx, n, state, ids); err != nil {
+					return err
+				}
+				result.Changes, err = s.mintChanges(ctx, tx, n, state, store.ChangeUpdate, ids, owners)
 			} else if allowInsert {
 				var row preparedRow
 				row, err = addInsertDefaults(state, set, prepared[0], time.Now().UTC().Format("2006-01-02T15:04:05.000Z"))
@@ -240,7 +244,7 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 				}
 				result.Ids = []int64{id}
 				result.Inserted = 1
-				result.Changes, err = s.mintChanges(ctx, tx, n, state, store.ChangeInsert, result.Ids)
+				result.Changes, err = s.mintChanges(ctx, tx, n, state, store.ChangeInsert, result.Ids, sameOwner(current.schema, owner, 1))
 			}
 			if err != nil {
 				return err
@@ -335,12 +339,16 @@ func (s *Store) Delete(ctx context.Context, ns, table, filter string, args []any
 		if len(ids) == 0 {
 			return nil
 		}
+		owners, err := s.ownersOf(ctx, tx, n, state, ids)
+		if err != nil {
+			return err
+		}
 		command, err := tx.Exec(ctx, "DELETE FROM "+ident(n.physical, state.physical)+" WHERE id=ANY($1::bigint[])", ids)
 		if err != nil {
 			return queryError(ctx, err)
 		}
 		result.Deleted = command.RowsAffected()
-		result.Changes, err = s.mintChanges(ctx, tx, n, state, store.ChangeDelete, ids)
+		result.Changes, err = s.mintChanges(ctx, tx, n, state, store.ChangeDelete, ids, owners)
 		return err
 	})
 	return result, err

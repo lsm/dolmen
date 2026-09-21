@@ -91,7 +91,7 @@ type upsertPlan struct {
 	keyVals []any
 }
 
-func matchByKey(ctx context.Context, tx *sql.Tx, table string, keyFields []string, keyDefs []*schema.Field, keyVals []any, recIdx int, scope *RowScope) (int64, error) {
+func matchByKey(ctx context.Context, tx *sql.Tx, table string, keyFields []string, keyDefs []*schema.Field, keyVals []any, recIdx int, scope *RowScope, sc *schema.TableSchema) (int64, string, error) {
 	where := make([]string, len(keyDefs))
 	for j, kd := range keyDefs {
 		where[j] = fmt.Sprintf(`%s = ?`, q(kd.Name))
@@ -99,32 +99,35 @@ func matchByKey(ctx context.Context, tx *sql.Tx, table string, keyFields []strin
 	whereSQL := strings.Join(where, ` AND `)
 	prefix, source, scopeArgs := scopedSource(table, scope)
 	rows, err := tx.QueryContext(ctx,
-		fmt.Sprintf(`%sSELECT id FROM %s WHERE %s LIMIT 2`, prefix, source, whereSQL),
+		fmt.Sprintf(`%sSELECT id, %s FROM %s WHERE %s LIMIT 2`, prefix, changeOwnerColumn(sc), source, whereSQL),
 		append(append([]any{}, scopeArgs...), keyVals...)...)
 	if err != nil {
-		return 0, NewFilterError(whereSQL, err)
+		return 0, "", NewFilterError(whereSQL, err)
 	}
 	var matchIDs []int64
+	var owners []string
 	for rows.Next() {
 		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var owner sql.NullString
+		if err := rows.Scan(&id, &owner); err != nil {
 			rows.Close()
-			return 0, err
+			return 0, "", err
 		}
 		matchIDs = append(matchIDs, id)
+		owners = append(owners, owner.String)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return 0, err
+		return 0, "", err
 	}
 	rows.Close()
 	if len(matchIDs) > 1 {
-		return 0, conflictf("record %d: natural key (%s) matches multiple existing rows (ids %d and %d); the key is not unique in the table — delete the duplicate rows before upserting", recIdx, strings.Join(keyFields, ", "), matchIDs[0], matchIDs[1])
+		return 0, "", conflictf("record %d: natural key (%s) matches multiple existing rows (ids %d and %d); the key is not unique in the table — delete the duplicate rows before upserting", recIdx, strings.Join(keyFields, ", "), matchIDs[0], matchIDs[1])
 	}
 	if len(matchIDs) == 1 {
-		return matchIDs[0], nil
+		return matchIDs[0], owners[0], nil
 	}
-	return 0, nil
+	return 0, "", nil
 }
 
 func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table string, keyFields []string, records []map[string]any, emb Embedder, owner string, scope *RowScope, scopeIncarnation Incarnation) (ids []int64, inserted, updated int, changes ChangeRange, done bool, err error) {
@@ -252,9 +255,10 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 	ids = make([]int64, 0, len(records))
 	insertIDs := make([]int64, 0, len(records))
 	updateIDs := make([]int64, 0, len(records))
+	updateOwners := make([]string, 0, len(records))
 	for i := range plans {
 		p := plans[i]
-		matchID, err := matchByKey(ctx, tx, table, keyFields, keyDefs, p.keyVals, i, scope)
+		matchID, matchOwner, err := matchByKey(ctx, tx, table, keyFields, keyDefs, p.keyVals, i, scope, sc)
 		if err != nil {
 			return nil, 0, 0, ChangeRange{}, true, err
 		}
@@ -335,6 +339,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 		}
 		ids = append(ids, matchID)
 		updateIDs = append(updateIDs, matchID)
+		updateOwners = append(updateOwners, matchOwner)
 		updated++
 	}
 
@@ -359,14 +364,14 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 	}
 
 	if len(insertIDs) > 0 {
-		rng, err := mintChanges(ctx, tx, table, ChangeInsert, insertIDs, nil)
+		rng, err := mintChanges(ctx, tx, table, ChangeInsert, insertIDs, sameOwner(stampOwner(sc, owner), len(insertIDs)))
 		if err != nil {
 			return nil, 0, 0, ChangeRange{}, true, err
 		}
 		changes = rng
 	}
 	if len(updateIDs) > 0 {
-		rng, err := mintChanges(ctx, tx, table, ChangeUpdate, updateIDs, nil)
+		rng, err := mintChanges(ctx, tx, table, ChangeUpdate, updateIDs, updateOwners)
 		if err != nil {
 			return nil, 0, 0, ChangeRange{}, true, err
 		}

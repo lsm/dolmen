@@ -164,6 +164,10 @@ func (s *Server) authorizeFeed(ctx context.Context, ns, table string) error {
 	if verbs.Has(auth.VerbRead) {
 		return nil
 	}
+	if table != "" && verbs.HasAny(auth.VerbCreate, auth.VerbUpdate, auth.VerbDelete) &&
+		s.tableHasRowAccess(ctx, auth.Object{Namespace: normNS(ns), Table: table}) {
+		return nil
+	}
 	return forbidden403()
 }
 

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"github.com/lsm/dolmen/internal/schema"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -50,6 +51,24 @@ func mintChanges(ctx context.Context, tx *sql.Tx, table string, kind ChangeKind,
 	return ChangeRange{First: first, Last: last, Count: int64(len(ids))}, nil
 }
 
+func changeOwnerColumn(sc *schema.TableSchema) string {
+	if sc != nil && sc.HasOwner {
+		return q(schema.OwnerColumn)
+	}
+	return `NULL`
+}
+
+func sameOwner(owner string, n int) []string {
+	if owner == "" {
+		return nil
+	}
+	out := make([]string, n)
+	for i := range out {
+		out[i] = owner
+	}
+	return out
+}
+
 func mintChangesFromTemp(ctx context.Context, tx *sql.Tx, table string, kind ChangeKind, temp string) (ChangeRange, error) {
 	gen, err := tableGen(ctx, tx, table)
 	if err != nil {
@@ -60,7 +79,7 @@ func mintChangesFromTemp(ctx context.Context, tx *sql.Tx, table string, kind Cha
 		return ChangeRange{}, err
 	}
 	res, err := tx.ExecContext(ctx,
-		fmt.Sprintf(`INSERT INTO _dolmen_changes(table_name, row_id, kind, owner, nsgen, drop_gen) SELECT ?, id, ?, NULL, ?, ? FROM %s ORDER BY id`, temp),
+		fmt.Sprintf(`INSERT INTO _dolmen_changes(table_name, row_id, kind, owner, nsgen, drop_gen) SELECT ?, id, ?, owner, ?, ? FROM %s ORDER BY id`, temp),
 		table, string(kind), nsGen[:], gen)
 	if err != nil {
 		return ChangeRange{}, fmt.Errorf("mint change records for %s: %w", table, err)
