@@ -408,3 +408,39 @@ func TestPostgresFilterErrorsSurviveAnIdentifierNamingTheParseMessage(t *testing
 		t.Fatalf("an identifier that quotes the parse message must keep its own diagnosis, got %v", err)
 	}
 }
+
+func TestPostgresCallerSQLSeesTheImplicitOwner(t *testing.T) {
+	cfg := testConfig(t)
+	if cfg.QueryRole == "" {
+		t.Skip("set DOLMEN_TEST_PG_QUERY_ROLE to exercise caller SQL")
+	}
+	s := openTest(t, cfg)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	fields := []schema.Field{{Name: "body", Type: schema.Text}}
+	if _, err := s.CreateTable(ctx, "app", "notes", fields, store.TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "x"}}, store.WriteOpts{Owner: "alice"}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	star, err := s.Query(ctx, "app", "SELECT * FROM notes", nil, [16]byte{}, store.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(star.Rows) != 1 {
+		t.Fatalf("SELECT * returned %d rows", len(star.Rows))
+	}
+	if star.Rows[0][schema.OwnerColumn] != "alice" {
+		t.Fatalf("a row_access table must show owner in SELECT * the way it shows id and created_at, got %v", star.Rows[0])
+	}
+	explicit, err := s.Query(ctx, "app", "SELECT owner FROM notes", nil, [16]byte{}, store.Page{})
+	if err != nil {
+		t.Fatalf("naming owner explicitly must work, which needs the restricted role granted that column: %v", err)
+	}
+	if len(explicit.Rows) != 1 || explicit.Rows[0][schema.OwnerColumn] != "alice" {
+		t.Fatalf("SELECT owner returned %v", explicit.Rows)
+	}
+}

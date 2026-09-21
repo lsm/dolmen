@@ -406,13 +406,14 @@ func wantFrameError(t *testing.T, frames []sseFrame, i int) map[string]any {
 }
 
 func TestSubscribeCursorTeachingErrors(t *testing.T) {
-	h := newHarnessRetention(t, 40*time.Millisecond)
+	retention := 300 * time.Millisecond
+	h := newHarnessRetention(t, retention)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
 	h.mustHTTP("insert", map[string]any{
 		"namespace": "rt", "table": "notes", "records": []any{map[string]any{"title": "a"}},
 	})
 	cursor := nextCursorOf(t, h.mustHTTP("changes_since", map[string]any{"namespace": "rt", "cursor": "begin"}))
-	time.Sleep(250 * time.Millisecond)
+	time.Sleep(4 * retention)
 
 	frames := h.subscribeStream(t, url.Values{"namespace": {"rt"}, "cursor": {cursor}}).rest(5 * time.Second)
 	if len(frames) != 1 {

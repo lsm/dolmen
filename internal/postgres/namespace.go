@@ -73,6 +73,9 @@ func (s *Store) CreateNamespace(ctx context.Context, name string, parentGen [16]
 }
 
 func (s *Store) NamespaceState(ctx context.Context, name string, auth []store.AuthBinding) ([16]byte, error) {
+	if len(auth) != 0 {
+		return [16]byte{}, derr.New(derr.Forbidden, "PostgreSQL authorization bindings are not implemented yet")
+	}
 	done, err := s.begin(ctx)
 	if err != nil {
 		return [16]byte{}, err
@@ -80,9 +83,6 @@ func (s *Store) NamespaceState(ctx context.Context, name string, auth []store.Au
 	defer done()
 	if err := store.ValidateNamespace(name); err != nil {
 		return [16]byte{}, err
-	}
-	if len(auth) != 0 {
-		return [16]byte{}, derr.New(derr.Forbidden, "PostgreSQL authorization bindings are not implemented yet")
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -94,6 +94,9 @@ func (s *Store) NamespaceState(ctx context.Context, name string, auth []store.Au
 }
 
 func (s *Store) ListNamespaces(ctx context.Context, prefix string, auth []store.AuthBinding) ([]string, error) {
+	if len(auth) != 0 {
+		return nil, derr.New(derr.Forbidden, "PostgreSQL authorization bindings are not implemented yet")
+	}
 	done, err := s.begin(ctx)
 	if err != nil {
 		return nil, err
@@ -103,9 +106,6 @@ func (s *Store) ListNamespaces(ctx context.Context, prefix string, auth []store.
 		if err := store.ValidateNamespace(prefix); err != nil {
 			return nil, err
 		}
-	}
-	if len(auth) != 0 {
-		return nil, derr.New(derr.Forbidden, "PostgreSQL authorization bindings are not implemented yet")
 	}
 	rows, err := s.pool.Query(ctx, "SELECT name FROM "+s.relation("namespaces")+" WHERE $1 = '' OR name = $1 OR starts_with(name, $1 || '/')", prefix)
 	if err != nil {

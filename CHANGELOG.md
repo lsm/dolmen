@@ -24,6 +24,9 @@
   catalog stamp can only refuse the *next* open, not a process already running. Back up a data
   directory before the first open if you may need to downgrade.
 
+  On the PostgreSQL engine a scoped caller's `idempotency_key` is still refused: the owner-keyed
+  record is an adapter #1 change, and adapter #2 keeps failing closed until it has one.
+
 - **Filters are a row-local language when auth is on.** `update`, `delete`, `upsert`,
   `search_fulltext` and `search_vector` take a SQL `WHERE` fragment; with `-auth on` that fragment
   is now parsed and checked against a fixed allowlist before it reaches the engine — the target

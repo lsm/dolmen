@@ -169,8 +169,8 @@ func (s *Store) mintChanges(ctx context.Context, tx pgx.Tx, n namespace, state t
 }
 
 func (s *Store) Insert(ctx context.Context, ns, table string, records []map[string]any, opts store.WriteOpts, emb store.Embedder, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
-	if scope != nil || opts.Owner != "" || opts.TableWideRead {
-		return store.InsertResult{}, derr.New(derr.Forbidden, "PostgreSQL row authorization is not implemented yet")
+	if scope != nil && opts.IdempotencyKey != "" {
+		return store.InsertResult{}, store.ErrScopedIdempotencyUnsupported
 	}
 	if len(opts.IdempotencyKey) > store.MaxIdempotencyKeyLen {
 		return store.InsertResult{}, fmt.Errorf("%w: idempotency key is %d bytes (max %d)", store.ErrInvalid, len(opts.IdempotencyKey), store.MaxIdempotencyKeyLen)
@@ -196,7 +196,7 @@ func (s *Store) Insert(ctx context.Context, ns, table string, records []map[stri
 			if err != nil {
 				return err
 			}
-			if err := checkIncarnation(ns, state.incarnation, expected); err != nil {
+			if err := s.guardScope(ctx, tx, n, table, state, expected); err != nil {
 				return err
 			}
 			result, found, err = s.lookupIdempotency(ctx, tx, n, state, opts.IdempotencyKey, hash)
@@ -216,6 +216,9 @@ func (s *Store) Insert(ctx context.Context, ns, table string, records []map[stri
 			if err != nil {
 				return err
 			}
+			if err := s.guardScope(ctx, tx, n, table, current, expected); err != nil {
+				return err
+			}
 			if err := checkIncarnation(ns, current.incarnation, state.incarnation); err != nil {
 				return err
 			}
@@ -228,9 +231,16 @@ func (s *Store) Insert(ctx context.Context, ns, table string, records []map[stri
 				retry = true
 				return nil
 			}
+			if err := scopeUsable(scope, current.schema); err != nil {
+				return err
+			}
 			result.Ids = make([]int64, 0, len(rows))
 			stamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 			for _, row := range rows {
+				if opts.Owner != "" && current.schema.HasOwner {
+					row.columns = append(row.columns, ident(schema.OwnerColumn))
+					row.values = append(row.values, opts.Owner)
+				}
 				params := make([]string, len(row.values))
 				for i, v := range row.values {
 					params[i] = "$" + strconv.Itoa(i+1)

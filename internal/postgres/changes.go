@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -101,22 +100,29 @@ func (s *Store) pruneChanges(ctx context.Context, tx pgx.Tx, n namespace, now ti
 	return err
 }
 
+type feedMode int
+
+const (
+	feedRequest feedMode = iota
+	feedReplay
+	feedLive
+)
+
 func (s *Store) ChangesSince(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, scope *store.RowScope, inc store.Incarnation, page store.Page) ([]store.ChangeRecord, store.Cursor, error) {
-	return s.changesSince(ctx, ns, table, from, expected, scope, inc, page, nil)
-}
-
-func (s *Store) changesSince(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, scope *store.RowScope, inc store.Incarnation, page store.Page, boundary *int64) ([]store.ChangeRecord, store.Cursor, error) {
-	return s.changesSinceMode(ctx, ns, table, from, expected, scope, inc, page, boundary, false)
-}
-
-func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, scope *store.RowScope, inc store.Incarnation, page store.Page, boundary *int64, unlocked bool) ([]store.ChangeRecord, store.Cursor, error) {
 	if scope != nil {
-		return nil, "", derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
+		return nil, "", store.ErrScopedFeedUnsupported
+	}
+	return s.changesSinceMode(ctx, ns, table, from, expected, scope, inc, page, nil, feedRequest)
+}
+
+func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, scope *store.RowScope, inc store.Incarnation, page store.Page, boundary *int64, mode feedMode) ([]store.ChangeRecord, store.Cursor, error) {
+	if scope != nil {
+		return nil, "", store.ErrScopedFeedUnsupported
 	}
 	records := []store.ChangeRecord{}
 	var next store.Cursor
 	enter := s.write
-	if unlocked {
+	if mode == feedLive {
 		enter = s.writeUnlocked
 	}
 	err := enter(ctx, ns, expected, func(tx pgx.Tx, n namespace) error {
@@ -127,7 +133,11 @@ func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from sto
 			if err != nil {
 				return err
 			}
-			if err := checkIncarnation(ns, state.incarnation, inc); err != nil {
+			if mode == feedRequest {
+				if err := s.guardScope(ctx, tx, n, table, state, inc); err != nil {
+					return err
+				}
+			} else if err := checkIncarnation(ns, state.incarnation, inc); err != nil {
 				return err
 			}
 			drop = state.incarnation.DropGen
@@ -139,7 +149,7 @@ func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from sto
 			var err error
 			state, err = s.resolveCursor(ctx, tx, n, from, table, drop, now)
 			if err != nil {
-				if unlocked && errors.Is(err, store.ErrCursorExpired) && s.namespaceGone(ctx, tx, ns, n.generation) {
+				if mode == feedLive && errors.Is(err, store.ErrCursorExpired) && s.namespaceGone(ctx, tx, ns, n.generation) {
 					return fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, ns)
 				}
 				return err

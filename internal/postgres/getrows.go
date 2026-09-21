@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 	"github.com/lsm/dolmen/internal/value"
@@ -16,36 +15,45 @@ func (s *Store) GetRows(ctx context.Context, ns, table string, ids []int64, scop
 	if len(ids) > store.MaxReadRowsIDs {
 		return store.QueryResult{}, fmt.Errorf("%w: read_rows accepts at most %d ids per request, got %d", store.ErrInvalid, store.MaxReadRowsIDs, len(ids))
 	}
-	if scope != nil {
-		return store.QueryResult{}, derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
-	}
 	result := store.QueryResult{Rows: []map[string]any{}}
 	err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
 		state, err := s.loadTable(ctx, tx, n, table)
 		if err != nil {
 			return err
 		}
-		if err := checkIncarnation(ns, state.incarnation, expected); err != nil {
+		if err := s.guardScope(ctx, tx, n, table, state, expected); err != nil {
+			return err
+		}
+		if err := scopeUsable(scope, state.schema); err != nil {
 			return err
 		}
 		if len(ids) == 0 {
 			return nil
 		}
 		fields := append([]schema.Field{{Name: "id", Type: schema.Number}, {Name: "created_at", Type: schema.Timestamp}}, state.schema.Fields...)
+		if state.schema.HasOwner {
+			fields = append(fields, schema.Field{Name: schema.OwnerColumn, Type: schema.Text})
+		}
 		columns := make([]string, len(fields))
 		labelBytes := 0
 		for i, f := range fields {
 			physical := f.Name
-			if i >= 2 {
+			if i >= 2 && f.Name != schema.OwnerColumn {
 				physical = state.columns[f.Name]
 			}
 			columns[i] = ident(physical)
-			if f.Type == schema.Number && i >= 2 {
+			if f.Type == schema.Number && i >= 2 && f.Name != schema.OwnerColumn {
 				columns[i] += "::text"
 			}
 			labelBytes += value.EncodedSize(f.Name) + 16
 		}
-		rows, err := tx.Query(ctx, "SELECT "+strings.Join(columns, ",")+" FROM "+ident(n.physical, state.physical)+" WHERE id = ANY($1::bigint[]) ORDER BY id", ids)
+		stmt := "SELECT " + strings.Join(columns, ",") + " FROM " + ident(n.physical, state.physical) + " WHERE id = ANY($1::bigint[])"
+		args := []any{ids}
+		if clause, sargs := scopePredicate(scope, "", len(args)+1); clause != "" {
+			stmt += " AND " + clause
+			args = append(args, sargs...)
+		}
+		rows, err := tx.Query(ctx, stmt+" ORDER BY id", args...)
 		if err != nil {
 			return err
 		}

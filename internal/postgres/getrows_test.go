@@ -69,8 +69,8 @@ func TestPostgresGetRowsTypedAndLifetime(t *testing.T) {
 			t.Fatalf("JSON fidelity: %#v", metadata)
 		}
 	}
-	if _, err := s.GetRows(ctx, "app", "notes", ids, &store.RowScope{}, inc); !errors.Is(err, derr.ErrForbidden) {
-		t.Fatalf("scope accepted: %v", err)
+	if _, err := s.GetRows(ctx, "app", "notes", ids, &store.RowScope{}, inc); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("a row scope on a table that carries no owner column must be refused as invalid, the way SQLite refuses it: %v", err)
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
@@ -83,8 +83,8 @@ func TestPostgresGetRowsTypedAndLifetime(t *testing.T) {
 	if _, err := s.CreateTable(ctx, "app", "notes", fields, store.TableOpts{}, inc.NsGen); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.GetRows(ctx, "app", "notes", nil, nil, inc); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("stale lifetime: %v", err)
+	if _, err := s.GetRows(ctx, "app", "notes", nil, nil, inc); !errors.Is(err, derr.ErrConflict) {
+		t.Fatalf("an incarnation resolved against the dropped table must fail as a conflict, the way SQLite fails it, so the caller re-reads and retries: %v", err)
 	}
 }
 

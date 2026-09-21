@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 	"github.com/lsm/dolmen/internal/value"
@@ -34,6 +33,10 @@ func projectRows(state tableState, includeHidden bool) rowProjection {
 	if includeHidden && state.schema.VectorizeField() != nil {
 		fields = append(fields, schema.Field{Name: "_embedding", Type: schema.Vector, Dim: state.schema.EmbedDim})
 		physical = append(physical, "_embedding")
+	}
+	if state.schema.HasOwner {
+		fields = append(fields, schema.Field{Name: schema.OwnerColumn, Type: schema.Text})
+		physical = append(physical, schema.OwnerColumn)
 	}
 	p := rowProjection{fields: fields, columns: make([]string, len(fields))}
 	for i, f := range fields {
@@ -114,10 +117,7 @@ func (s *Store) fetchRanked(ctx context.Context, tx pgx.Tx, n namespace, state t
 	return p.scan(rows, "search result")
 }
 
-func (s *Store) SearchFulltext(ctx context.Context, ns, table, match, filter string, args []any, includeHidden bool, scope *store.RowScope, _ store.Incarnation, page store.Page) (store.SearchResult, error) {
-	if scope != nil {
-		return store.SearchResult{}, derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
-	}
+func (s *Store) SearchFulltext(ctx context.Context, ns, table, match, filter string, args []any, includeHidden bool, scope *store.RowScope, scopeIncarnation store.Incarnation, page store.Page) (store.SearchResult, error) {
 	if page.Offset < 0 {
 		return store.SearchResult{}, invalidf("offset must be non-negative")
 	}
@@ -142,12 +142,23 @@ func (s *Store) SearchFulltext(ctx context.Context, ns, table, match, filter str
 		if err != nil {
 			return err
 		}
+		if err := s.guardScope(ctx, tx, n, table, state, scopeIncarnation); err != nil {
+			return err
+		}
+		if err := scopeUsable(scope, state.schema); err != nil {
+			return err
+		}
 		if len(fulltextFields(state.schema.Fields)) == 0 {
 			return invalidf("table %s has no fulltext fields", table)
 		}
 		bound := []any{}
+		compiled := ""
 		if filter != "" {
-			bound = append(bound, args...)
+			var err error
+			compiled, bound, err = s.compileMutationFilter(ctx, tx, n, filter, args, state, scope)
+			if err != nil {
+				return err
+			}
 		}
 		tsquery, tsargs, err := compileFTSQuery(match, len(bound))
 		if err != nil {
@@ -156,12 +167,12 @@ func (s *Store) SearchFulltext(ctx context.Context, ns, table, match, filter str
 		physical := ident(n.physical, state.physical)
 		bind := append(append([]any{}, bound...), tsargs...)
 		where := ident(ftsColumn) + " @@ " + tsquery
-		if filter != "" {
-			compiled, err := compileMutationFilter(filter, len(bound), n.physical, state)
-			if err != nil {
-				return err
-			}
+		if compiled != "" {
 			where += " AND id IN (" + compiled + ")"
+		}
+		if clause, sargs := scopePredicate(scope, "", len(bind)+1); clause != "" {
+			where += " AND " + clause
+			bind = append(bind, sargs...)
 		}
 		rank := "ts_rank_cd(" + ident(ftsColumn) + "," + tsquery + ")"
 		bind = append(bind, limit+1, page.Offset)
@@ -210,10 +221,7 @@ func searchError(ctx context.Context, filter string, err error) error {
 	return queryError(ctx, err)
 }
 
-func (s *Store) SearchVector(ctx context.Context, ns, table string, q store.VectorQuery, includeHidden bool, scope *store.RowScope, _ store.Incarnation, page store.Page) (store.SearchResult, error) {
-	if scope != nil {
-		return store.SearchResult{}, derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
-	}
+func (s *Store) SearchVector(ctx context.Context, ns, table string, q store.VectorQuery, includeHidden bool, scope *store.RowScope, scopeIncarnation store.Incarnation, page store.Page) (store.SearchResult, error) {
 	if page.Offset < 0 {
 		return store.SearchResult{}, invalidf("offset must be non-negative")
 	}
@@ -242,6 +250,12 @@ func (s *Store) SearchVector(ctx context.Context, ns, table string, q store.Vect
 		if err != nil {
 			return err
 		}
+		if err := s.guardScope(ctx, tx, n, table, state, scopeIncarnation); err != nil {
+			return err
+		}
+		if err := scopeUsable(scope, state.schema); err != nil {
+			return err
+		}
 		column, dim, err := store.ResolveVectorColumn(state.schema, table, q.Column, q.EmbedModel != "", q.EmbedModel)
 		if err != nil {
 			return err
@@ -260,12 +274,16 @@ func (s *Store) SearchVector(ctx context.Context, ns, table string, q store.Vect
 		stmt := "SELECT id," + ident(physicalColumn) + " FROM " + physical + " WHERE " + ident(physicalColumn) + " IS NOT NULL"
 		bind := []any{}
 		if filter != "" {
-			bind = append(bind, args...)
-			compiled, err := compileMutationFilter(filter, len(bind), n.physical, state)
+			compiled, bound, err := s.compileMutationFilter(ctx, tx, n, filter, args, state, scope)
 			if err != nil {
 				return err
 			}
+			bind = bound
 			stmt += " AND id IN (" + compiled + ")"
+		}
+		if clause, sargs := scopePredicate(scope, "", len(bind)+1); clause != "" {
+			stmt += " AND " + clause
+			bind = append(bind, sargs...)
 		}
 		rows, err := tx.Query(ctx, stmt, bind...)
 		if err != nil {

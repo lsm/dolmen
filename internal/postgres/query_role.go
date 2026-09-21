@@ -11,13 +11,16 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-func (s *Store) grantQueryTable(ctx context.Context, tx pgx.Tx, n namespace, physical string, fields []schema.Field, columns map[string]string) error {
+func (s *Store) grantQueryTable(ctx context.Context, tx pgx.Tx, n namespace, physical string, fields []schema.Field, columns map[string]string, hasOwner bool) error {
 	if s.queryRole == "" {
 		return nil
 	}
 	cols := []string{ident("id"), ident("created_at")}
 	for _, field := range fields {
 		cols = append(cols, ident(columns[field.Name]))
+	}
+	if hasOwner {
+		cols = append(cols, ident(schema.OwnerColumn))
 	}
 	_, err := tx.Exec(ctx, "GRANT SELECT ("+strings.Join(cols, ",")+") ON "+ident(n.physical, physical)+" TO "+ident(s.queryRole))
 	return err
@@ -117,7 +120,7 @@ func (s *Store) ensureQueryRole(ctx context.Context, ns string, expected [16]byt
 			return err
 		}
 		for _, table := range tables {
-			if err := s.grantQueryTable(ctx, tx, n, table.physical, table.schema.Fields, table.columns); err != nil {
+			if err := s.grantQueryTable(ctx, tx, n, table.physical, table.schema.Fields, table.columns, table.schema.HasOwner); err != nil {
 				return err
 			}
 		}

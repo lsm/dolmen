@@ -94,8 +94,8 @@ func updatePrepared(ctx context.Context, tx pgx.Tx, n namespace, state tableStat
 }
 
 func (s *Store) UpsertByKey(ctx context.Context, ns, table string, keys []string, records []map[string]any, opts store.WriteOpts, emb store.Embedder, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
-	if scope != nil || opts.Owner != "" || opts.TableWideRead {
-		return store.InsertResult{}, derr.New(derr.Forbidden, "PostgreSQL row authorization is not implemented yet")
+	if scope != nil {
+		return store.InsertResult{}, store.ErrScopedKeyUpsertUnsupported
 	}
 	records, err := normalizeRecords(records)
 	if err != nil {
@@ -113,7 +113,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, table string, keys []string
 			if err != nil {
 				return err
 			}
-			return checkIncarnation(ns, state.incarnation, expected)
+			return s.guardScope(ctx, tx, n, table, state, expected)
 		})
 		if err != nil {
 			return store.InsertResult{}, err
@@ -144,6 +144,9 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, table string, keys []string
 		err = s.write(ctx, ns, state.incarnation.NsGen, func(tx pgx.Tx, n namespace) error {
 			current, err := s.loadTable(ctx, tx, n, table)
 			if err != nil {
+				return err
+			}
+			if err := s.guardScope(ctx, tx, n, table, current, expected); err != nil {
 				return err
 			}
 			if err := checkIncarnation(ns, current.incarnation, state.incarnation); err != nil {
@@ -182,6 +185,10 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, table string, keys []string
 						}
 						row.columns = append(row.columns, ident(state.columns[field.Name]))
 						row.values = append(row.values, v)
+					}
+					if opts.Owner != "" && state.schema.HasOwner {
+						row.columns = append(row.columns, ident(schema.OwnerColumn))
+						row.values = append(row.values, opts.Owner)
 					}
 					id, err = insertPrepared(ctx, tx, n, state, row)
 					if err != nil {

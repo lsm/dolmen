@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -51,20 +50,22 @@ func validateMutationSet(state tableState, set map[string]any) error {
 	return nil
 }
 
-func compileMutationFilter(filter string, argc int, physicalNamespace string, state tableState) (string, error) {
+func (s *Store) compileMutationFilter(ctx context.Context, tx pgx.Tx, n namespace, filter string, args []any, state tableState, scope *store.RowScope) (string, []any, error) {
 	filter = strings.TrimSpace(filter)
 	if filter == "" {
-		return "", fmt.Errorf("%w: filter is required (pass \"1=1\" to match every row)", store.ErrInvalid)
+		return "", nil, fmt.Errorf("%w: filter is required (pass \"1=1\" to match every row)", store.ErrInvalid)
 	}
 	if strings.Contains(filter, ";") {
-		return "", fmt.Errorf("%w: multiple statements are not allowed in filter", store.ErrInvalid)
+		return "", nil, fmt.Errorf("%w: multiple statements are not allowed in filter", store.ErrInvalid)
 	}
-	query := "SELECT id FROM " + ident(state.incarnation.Table) + " WHERE " + filter + " ORDER BY id"
-	compiled, _, err := compileSQL(query, argc, physicalNamespace, map[string]tableState{state.incarnation.Table: state})
+	prefix, source, lead := scopedSource(ident(state.incarnation.Table), scope)
+	query := prefix + "SELECT id FROM " + source + " WHERE " + filter + " ORDER BY id"
+	bound := append(append([]any{}, lead...), args...)
+	compiled, _, err := compileSQL(query, len(bound), n.physical, map[string]tableState{state.incarnation.Table: state})
 	if err != nil {
-		return "", filterSyntaxError(filter, err)
+		return "", nil, filterSyntaxError(filter, err)
 	}
-	return compiled, nil
+	return compiled, bound, nil
 }
 
 func filterSyntaxError(filter string, err error) error {
@@ -140,10 +141,7 @@ func validateInsertFallback(state tableState, record map[string]any) error {
 	return nil
 }
 
-func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any, set map[string]any, emb store.Embedder, allowInsert bool, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
-	if scope != nil {
-		return store.InsertResult{}, derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
-	}
+func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any, set map[string]any, emb store.Embedder, allowInsert bool, owner string, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
 	set, err := normalizeSet(set)
 	if err != nil {
 		return store.InsertResult{}, err
@@ -155,6 +153,7 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 	for attempt := 0; attempt < 3; attempt++ {
 		var state tableState
 		var compiled string
+		var bound []any
 		matched := false
 		err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
 			var err error
@@ -162,17 +161,20 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 			if err != nil {
 				return err
 			}
-			if err := checkIncarnation(ns, state.incarnation, expected); err != nil {
+			if err := s.guardScope(ctx, tx, n, table, state, expected); err != nil {
+				return err
+			}
+			if err := scopeUsable(scope, state.schema); err != nil {
 				return err
 			}
 			if err := validateMutationSet(state, set); err != nil {
 				return err
 			}
-			compiled, err = compileMutationFilter(filter, len(args), n.physical, state)
+			compiled, bound, err = s.compileMutationFilter(ctx, tx, n, filter, args, state, scope)
 			if err != nil {
 				return err
 			}
-			ids, err := selectMutationIDs(ctx, tx, compiled, args)
+			ids, err := selectMutationIDs(ctx, tx, compiled, bound)
 			matched = len(ids) > 0
 			return err
 		})
@@ -199,6 +201,9 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 			if err != nil {
 				return err
 			}
+			if err := s.guardScope(ctx, tx, n, table, current, expected); err != nil {
+				return err
+			}
 			if err := checkIncarnation(ns, current.incarnation, state.incarnation); err != nil {
 				return err
 			}
@@ -207,7 +212,7 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 				retry = true
 				return nil
 			}
-			ids, err := selectMutationIDs(ctx, tx, compiled, args)
+			ids, err := selectMutationIDs(ctx, tx, compiled, bound)
 			if err != nil {
 				return err
 			}
@@ -223,6 +228,10 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 				row, err = addInsertDefaults(state, set, prepared[0], time.Now().UTC().Format("2006-01-02T15:04:05.000Z"))
 				if err != nil {
 					return err
+				}
+				if owner != "" && current.schema.HasOwner {
+					row.columns = append(row.columns, ident(schema.OwnerColumn))
+					row.values = append(row.values, owner)
 				}
 				var id int64
 				id, err = insertPrepared(ctx, tx, n, state, row)
@@ -259,21 +268,15 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 }
 
 func (s *Store) Update(ctx context.Context, ns, table, filter string, args []any, set map[string]any, emb store.Embedder, scope *store.RowScope, expected store.Incarnation) (store.UpdateResult, error) {
-	result, err := s.mutate(ctx, ns, table, filter, args, set, emb, false, scope, expected)
+	result, err := s.mutate(ctx, ns, table, filter, args, set, emb, false, "", scope, expected)
 	return store.UpdateResult{Updated: result.Updated, Changes: result.Changes}, err
 }
 
 func (s *Store) Upsert(ctx context.Context, ns, table, filter string, args []any, set map[string]any, opts store.WriteOpts, emb store.Embedder, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
-	if opts.Owner != "" || opts.TableWideRead {
-		return store.InsertResult{}, derr.New(derr.Forbidden, "PostgreSQL row authorization is not implemented yet")
-	}
-	return s.mutate(ctx, ns, table, filter, args, set, emb, true, scope, expected)
+	return s.mutate(ctx, ns, table, filter, args, set, emb, true, opts.Owner, scope, expected)
 }
 
 func (s *Store) Delete(ctx context.Context, ns, table, filter string, args []any, opts store.DeleteOpts, scope *store.RowScope, expected store.Incarnation) (store.DeleteResult, error) {
-	if scope != nil {
-		return store.DeleteResult{}, derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
-	}
 	args, err := queryArgs(args)
 	if err != nil {
 		return store.DeleteResult{}, err
@@ -285,33 +288,39 @@ func (s *Store) Delete(ctx context.Context, ns, table, filter string, args []any
 			if err != nil {
 				return err
 			}
-			if err := checkIncarnation(ns, state.incarnation, expected); err != nil {
+			if err := s.guardScope(ctx, tx, n, table, state, expected); err != nil {
 				return err
 			}
-			compiled, err := compileMutationFilter(filter, len(args), n.physical, state)
+			if err := scopeUsable(scope, state.schema); err != nil {
+				return err
+			}
+			compiled, bound, err := s.compileMutationFilter(ctx, tx, n, filter, args, state, scope)
 			if err != nil {
 				return err
 			}
-			ids, err := selectMutationIDs(ctx, tx, compiled, args)
+			ids, err := selectMutationIDs(ctx, tx, compiled, bound)
 			result.Matched = int64(len(ids))
 			return err
 		})
 		return result, err
 	}
 	result := store.DeleteResult{}
-	err = s.write(ctx, ns, expected.NsGen, func(tx pgx.Tx, n namespace) error {
+	err = s.write(ctx, ns, [16]byte{}, func(tx pgx.Tx, n namespace) error {
 		state, err := s.loadTable(ctx, tx, n, table)
 		if err != nil {
 			return err
 		}
-		if err := checkIncarnation(ns, state.incarnation, expected); err != nil {
+		if err := s.guardScope(ctx, tx, n, table, state, expected); err != nil {
 			return err
 		}
-		compiled, err := compileMutationFilter(filter, len(args), n.physical, state)
+		if err := scopeUsable(scope, state.schema); err != nil {
+			return err
+		}
+		compiled, bound, err := s.compileMutationFilter(ctx, tx, n, filter, args, state, scope)
 		if err != nil {
 			return err
 		}
-		ids, err := selectMutationIDs(ctx, tx, compiled, args)
+		ids, err := selectMutationIDs(ctx, tx, compiled, bound)
 		if err != nil {
 			return err
 		}

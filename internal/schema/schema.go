@@ -92,6 +92,14 @@ const (
 	OpSetRowAccess = "set_row_access"
 )
 
+func TakesValue(op string) bool {
+	switch op {
+	case OpSetFulltext, OpSetVectorize, OpSetRowAccess:
+		return true
+	}
+	return false
+}
+
 var identRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
 var reserved = map[string]bool{
