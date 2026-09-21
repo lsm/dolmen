@@ -32,6 +32,11 @@ var sharedFilterList = []struct {
 	{"datetime", "length(datetime(created_at)) = 19"},
 	{"julianday", "julianday(created_at) > 2400000"},
 	{"strftime", "length(strftime('%Y', created_at)) = 4"},
+	{"date with a modifier", "date(created_at, '+1 day') > date(created_at)"},
+	{"time with a modifier", "time(created_at, '+1 hour') <> time(created_at)"},
+	{"datetime with a modifier", "datetime(created_at, '+1 day') > datetime(created_at)"},
+	{"julianday with a modifier", "julianday(created_at, '+1 day') > julianday(created_at)"},
+	{"strftime with a modifier", "strftime('%Y-%m-%d', created_at, '+1 day') > strftime('%Y-%m-%d', created_at)"},
 }
 
 var pinnedFilterSemantics = []struct {
@@ -47,6 +52,8 @@ var pinnedFilterSemantics = []struct {
 var notYetEvaluatedByAdapterTwo = map[string]bool{
 	"instr": true, "ifnull": true, "iif": true,
 	"date": true, "time": true, "datetime": true, "julianday": true, "strftime": true,
+	"date with a modifier": true, "time with a modifier": true, "datetime with a modifier": true,
+	"julianday with a modifier": true, "strftime with a modifier": true,
 }
 
 var notYetPinnedByAdapterTwo = map[string]bool{
