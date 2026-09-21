@@ -137,9 +137,12 @@ under `auth: off` and so keeps the shared v0.2.0 domain; a caller holding table-
 falls back to that empty domain after missing its own, which is how records written before
 owners existed stay replayable to whoever may read the whole table. That is the same rule
 SQLite applies, from the same `store.DomainFor`, rather than a second copy of the policy.
-Unlike every earlier catalog version, this one alters an existing table instead of adding
-one, so the bootstrap adds the column, drops the old primary key and creates the domain
-index, converging a version 5 catalog and a fresh one on the same shape.
+The records move to a new relation rather than the old one gaining a column, which is
+what SQLite does and for the same reason: the catalog version is checked when a process
+opens, not per operation, so a version 5 process already holding the catalog would keep
+querying without an owner. Against a widened relation its lookup matches several owners'
+rows and returns whichever comes first. Against a dropped one it fails, which is the
+answer a process reading a catalog it no longer understands should get.
 
 Retry keys bind to the table lifetime and normalized request body. Matching retries
 return the original IDs without generating new changes or calling an embedding

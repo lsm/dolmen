@@ -73,7 +73,7 @@ func (s *Store) lookupIdempotency(ctx context.Context, tx pgx.Tx, n namespace, s
 func (s *Store) readIdempotency(ctx context.Context, tx pgx.Tx, n namespace, state tableState, key, hash, owner string) (store.InsertResult, bool, error) {
 	var result store.InsertResult
 	var stored, raw string
-	err := tx.QueryRow(ctx, "SELECT payload_hash,result_json FROM "+s.relation("idempotency")+" WHERE namespace=$1 AND table_name=$2 AND drop_generation=$3 AND owner=$4 AND key=$5", n.name, state.incarnation.Table, state.incarnation.DropGen, owner, key).Scan(&stored, &raw)
+	err := tx.QueryRow(ctx, "SELECT payload_hash,result_json FROM "+s.relation("idempotency_owned")+" WHERE namespace=$1 AND table_name=$2 AND drop_generation=$3 AND owner=$4 AND key=$5", n.name, state.incarnation.Table, state.incarnation.DropGen, owner, key).Scan(&stored, &raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return result, false, nil
 	}
@@ -283,7 +283,7 @@ func (s *Store) Insert(ctx context.Context, ns, table string, records []map[stri
 				if err != nil {
 					return err
 				}
-				_, err = tx.Exec(ctx, "INSERT INTO "+s.relation("idempotency")+" (namespace,table_name,drop_generation,owner,key,payload_hash,result_json) VALUES($1,$2,$3,$4,$5,$6,$7)", ns, table, state.incarnation.DropGen, domain.Owner, opts.IdempotencyKey, hash, string(raw))
+				_, err = tx.Exec(ctx, "INSERT INTO "+s.relation("idempotency_owned")+" (namespace,table_name,drop_generation,owner,key,payload_hash,result_json) VALUES($1,$2,$3,$4,$5,$6,$7)", ns, table, state.incarnation.DropGen, domain.Owner, opts.IdempotencyKey, hash, string(raw))
 				return err
 			}
 			return nil

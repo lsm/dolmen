@@ -7,7 +7,7 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-func TestPostgresIdempotencyCatalogConvergesFromAnOwnerlessTable(t *testing.T) {
+func TestPostgresIdempotencyCatalogRetiresTheOwnerlessRelation(t *testing.T) {
 	cfg := testConfig(t)
 	s := openTest(t, cfg)
 	ctx := t.Context()
@@ -25,9 +25,16 @@ func TestPostgresIdempotencyCatalogConvergesFromAnOwnerlessTable(t *testing.T) {
 	}
 
 	for _, stmt := range []string{
-		"DROP INDEX " + ident(s.catalog, "idempotency_domain"),
-		"ALTER TABLE " + s.relation("idempotency") + " DROP COLUMN owner",
-		"ALTER TABLE " + s.relation("idempotency") + " ADD PRIMARY KEY (namespace,table_name,drop_generation,key)",
+		"CREATE TABLE " + s.relation("idempotency") + ` (
+ namespace text NOT NULL REFERENCES ` + s.relation("namespaces") + `(name) ON DELETE CASCADE,
+ table_name text NOT NULL, drop_generation bigint NOT NULL, key text NOT NULL,
+ payload_hash text NOT NULL, result_json text NOT NULL,
+ PRIMARY KEY(namespace,table_name,drop_generation,key))`,
+		"INSERT INTO " + s.relation("idempotency") +
+			" (namespace,table_name,drop_generation,key,payload_hash,result_json)" +
+			" SELECT namespace,table_name,drop_generation,key,payload_hash,result_json FROM " +
+			s.relation("idempotency_owned"),
+		"DROP TABLE " + s.relation("idempotency_owned"),
 		"UPDATE " + s.relation("version") + " SET version = 5",
 	} {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
@@ -43,9 +50,16 @@ func TestPostgresIdempotencyCatalogConvergesFromAnOwnerlessTable(t *testing.T) {
 	if err := s.pool.QueryRow(ctx, "SELECT version FROM "+s.relation("version")).Scan(&version); err != nil || version != catalogVersion {
 		t.Fatalf("catalog version %d after bootstrap, want %d: %v", version, catalogVersion, err)
 	}
+	var legacy *string
+	if err := s.pool.QueryRow(ctx, "SELECT to_regclass($1)::text", s.relation("idempotency")).Scan(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy != nil {
+		t.Fatalf("the ownerless relation %s outlived the migration, so a process still holding it reads a key across every owner", *legacy)
+	}
 	var owner string
-	if err := s.pool.QueryRow(ctx, "SELECT owner FROM "+s.relation("idempotency")+" WHERE key='k'").Scan(&owner); err != nil {
-		t.Fatalf("the record written before the column existed: %v", err)
+	if err := s.pool.QueryRow(ctx, "SELECT owner FROM "+s.relation("idempotency_owned")+" WHERE key='k'").Scan(&owner); err != nil {
+		t.Fatalf("the record written before owners existed: %v", err)
 	}
 	if owner != store.LegacyIdempotencyOwner {
 		t.Fatalf("a record written before owners existed landed in domain %q, want the legacy one", owner)
