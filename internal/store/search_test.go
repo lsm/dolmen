@@ -393,7 +393,7 @@ func TestSearchFulltextFilterPlanLooksUpRowsPerHit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ns: %v", err)
 	}
-	rows, err := n.ro.QueryContext(ctx, `EXPLAIN QUERY PLAN `+fulltextFilterStmt("notes", "score >= 3", 0), "note", 10, 0)
+	rows, err := n.ro.QueryContext(ctx, `EXPLAIN QUERY PLAN `+fulltextFilterStmt("notes", "score >= 3", 0, "", q("notes")), "note", 10, 0)
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}

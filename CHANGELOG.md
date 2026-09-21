@@ -14,6 +14,14 @@
   oracle over it. Date and time functions take explicit moments only — `'now'`, `'localtime'` and
   `'utc'` are refused whether written as literals or bound as arguments; compute the moment you
   mean and bind it. Under `auth: off` the filter language is exactly what it was in v0.2.0.
+- **Scoped callers can filter again.** `update`, `delete`, `upsert` and filtered searches were
+  refused outright for a caller limited to their own rows; they now work, with the scope applied
+  first at a materialization boundary so a caller's expression never evaluates against a row
+  outside their visible set. The allowlist alone cannot deliver that: `iif(body = ?,
+  abs(-9223372036854775808), 1)` is row-local and fully permitted, and as an ordinary `AND`
+  conjunct it still raises an overflow error on a foreign row — which answers what that row
+  holds. An upsert whose filter matches only invisible rows inserts a fresh row owned by the
+  writer rather than taking one over.
 
 - **`-auth on` / `DOLMEN_AUTH=on`** turns on deny-by-default authentication, with the bootstrap
   admin key (`DOLMEN_ADMIN_KEY`) as its one identity source. Every `/v1/{op}`, `/mcp`, and
@@ -50,10 +58,11 @@
   is off. Enabling it later through `migrate set_row_access` is refused on a table that already has
   rows, because no operation can write another principal's rows as that principal; turning it off
   keeps the column and its values and requires `admin` as well as `schema` and `read`. Scoped
-  `update`, `delete`, `upsert`, `upsert_by_key`, filtered searches, and inserts carrying an
-  `idempotency_key` are refused for now: caller-supplied filters, key matches, and a per-table
-  idempotency record each need work before a scoped caller can use them without probing rows they
-  cannot see.
+  `upsert_by_key` and inserts carrying an `idempotency_key` are refused for now: a natural-key match
+  reaches across the whole table, and the idempotency record is keyed per table rather than per
+  owner, so each would let a scoped caller probe rows they cannot see. Scoped `update`, `delete`,
+  `upsert` and filtered searches were refused for the same reason and now work — see the filter
+  language and materialization boundary above.
 - **API keys.** `create_key` / `list_keys` / `revoke_key` mint credentials for machines that cannot
   do an interactive sign-in. A key authenticates as a principal and carries optional groups, but
   grants nothing by itself. The credential is shown once and stored hashed; keys are revoked by a

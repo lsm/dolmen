@@ -19,13 +19,7 @@ type UpsertResult struct {
 }
 
 func (s *Store) Update(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (UpdateResult, error) {
-	if scope != nil {
-		return UpdateResult{}, errScopedFilterUnsupported
-	}
-	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
-		return UpdateResult{}, err
-	}
-	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, false, "")
+	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, false, "", scope, scopeIncarnation)
 	if err != nil {
 		return UpdateResult{}, err
 	}
@@ -33,20 +27,14 @@ func (s *Store) Update(ctx context.Context, nsName, table, where string, args []
 }
 
 func (s *Store) Upsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
-	if scope != nil {
-		return InsertResult{}, errScopedFilterUnsupported
-	}
-	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
-		return InsertResult{}, err
-	}
-	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, true, opts.Owner)
+	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, true, opts.Owner, scope, scopeIncarnation)
 	if err != nil {
 		return InsertResult{}, err
 	}
 	return InsertResult{Ids: res.Ids, Inserted: res.Inserted, Updated: res.Updated, Changes: res.Changes}, nil
 }
 
-func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, allowInsert bool, owner string) (UpsertResult, error) {
+func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, allowInsert bool, owner string, scope *RowScope, scopeIncarnation Incarnation) (UpsertResult, error) {
 	where = strings.TrimSpace(where)
 	if where == "" {
 		return UpsertResult{}, invalidf("filter is required (pass \"1=1\" to update every row)")
@@ -80,8 +68,14 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 	}
 	defer tx.Rollback()
 
+	if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
+		return UpsertResult{}, err
+	}
 	sc, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
+		return UpsertResult{}, err
+	}
+	if err := scopeUsable(scope, sc); err != nil {
 		return UpsertResult{}, err
 	}
 	for k := range set {
@@ -130,8 +124,11 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS temp._dolmen_update_ids`); err != nil {
 		return UpsertResult{}, err
 	}
+	prefix, source, scopeArgs := scopedSource(table, scope)
+	matchArgs := append(append(make([]any, 0, len(scopeArgs)+len(args)), scopeArgs...), args...)
 	if _, err := tx.ExecContext(ctx,
-		fmt.Sprintf(`CREATE TEMP TABLE _dolmen_update_ids AS SELECT id FROM %s WHERE %s`, q(table), where), args...); err != nil {
+		fmt.Sprintf(`CREATE TEMP TABLE _dolmen_update_ids AS %sSELECT id FROM %s WHERE %s`, prefix, source, where),
+		matchArgs...); err != nil {
 		return UpsertResult{}, NewFilterError(where, err)
 	}
 	var matched int64
