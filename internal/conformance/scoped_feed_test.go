@@ -188,3 +188,4 @@ func TestAScopedWaitIgnoresForeignTraffic(t *testing.T) {
 		t.Fatalf("alice's own write must wake her: %v", changes)
 	}
 }
+

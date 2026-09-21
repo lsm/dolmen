@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -144,5 +145,114 @@ func TestATableWithoutOwnersLabelsNothing(t *testing.T) {
 		if rec.Owner != "" {
 			t.Fatalf("a table with no owner column produced a labelled change: %v", rec)
 		}
+	}
+}
+
+func stripChangeLabels(t *testing.T, st *Store, nsName string) {
+	t.Helper()
+	n, err := st.ns(nsName)
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	if _, err := n.rw.ExecContext(context.Background(), `UPDATE _dolmen_changes SET owner = NULL`); err != nil {
+		t.Fatalf("strip labels: %v", err)
+	}
+}
+
+func TestAScopedSubscriptionRefusesToReplayUnlabelledHistory(t *testing.T) {
+	st := openRowAccessStore(t)
+	ctx := context.Background()
+	seedOwnedTable(t, st)
+	if _, err := st.Insert(ctx, "ns", "notes", []map[string]any{{"sku": "a", "body": "alice's"}},
+		WriteOpts{Owner: "alice"}, Embedder{}, nil, Incarnation{}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	stripChangeLabels(t, st, "ns")
+
+	authz := func(string) (*RowScope, Incarnation, bool) {
+		return &RowScope{Owner: "alice"}, Incarnation{}, true
+	}
+	_, cancel, err := st.Listen(ctx, "ns", "notes", CursorBegin, [16]byte{}, authz, func(ChangeRecord) {}, nil)
+	if cancel != nil {
+		cancel()
+	}
+	if !errors.Is(err, ErrScopedFeedPredatesLabels) {
+		t.Fatalf("a scoped replay over records written before labelling must refuse rather than skip them in silence: %v", err)
+	}
+}
+
+func TestAScopedSubscriptionFromTheHeadIgnoresUnlabelledHistory(t *testing.T) {
+	st := openRowAccessStore(t)
+	ctx := context.Background()
+	seedOwnedTable(t, st)
+	if _, err := st.Insert(ctx, "ns", "notes", []map[string]any{{"sku": "a", "body": "alice's"}},
+		WriteOpts{Owner: "alice"}, Embedder{}, nil, Incarnation{}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	stripChangeLabels(t, st, "ns")
+
+	authz := func(string) (*RowScope, Incarnation, bool) {
+		return &RowScope{Owner: "alice"}, Incarnation{}, true
+	}
+	_, cancel, err := st.Listen(ctx, "ns", "notes", "", [16]byte{}, authz, func(ChangeRecord) {}, nil)
+	if err != nil {
+		t.Fatalf("starting at the head replays nothing, so there is no unlabelled record to refuse: %v", err)
+	}
+	cancel()
+}
+
+func TestAnUnscopedSubscriptionStillReplaysUnlabelledHistory(t *testing.T) {
+	st := openRowAccessStore(t)
+	ctx := context.Background()
+	seedOwnedTable(t, st)
+	if _, err := st.Insert(ctx, "ns", "notes", []map[string]any{{"sku": "a", "body": "alice's"}},
+		WriteOpts{Owner: "alice"}, Embedder{}, nil, Incarnation{}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	stripChangeLabels(t, st, "ns")
+
+	replay, cancel, err := st.Listen(ctx, "ns", "notes", CursorBegin, [16]byte{}, nil, func(ChangeRecord) {}, nil)
+	if err != nil {
+		t.Fatalf("a table-wide reader sees every row, so an unlabelled record is nothing to hide: %v", err)
+	}
+	defer cancel()
+	if got := drainListenReplay(t, ctx, replay); len(got) != 1 {
+		t.Fatalf("the unlabelled record must still replay to an unscoped reader: %v", got)
+	}
+}
+
+func drainListenReplay(t *testing.T, ctx context.Context, replay *ChangeReplay) []ChangeRecord {
+	t.Helper()
+	out := []ChangeRecord{}
+	for {
+		records, _, done, err := replay.Next(ctx)
+		if err != nil {
+			t.Fatalf("replay: %v", err)
+		}
+		out = append(out, records...)
+		if done {
+			return out
+		}
+	}
+}
+
+func TestAScopedCatchUpRefusesUnlabelledHistory(t *testing.T) {
+	st := openRowAccessStore(t)
+	ctx := context.Background()
+	seedOwnedTable(t, st)
+	if _, err := st.Insert(ctx, "ns", "notes", []map[string]any{{"sku": "a", "body": "alice's"}},
+		WriteOpts{Owner: "alice"}, Embedder{}, nil, Incarnation{}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	stripChangeLabels(t, st, "ns")
+
+	if _, _, err := st.ChangesSince(ctx, "ns", "notes", CursorBegin, [16]byte{},
+		&RowScope{Owner: "alice"}, Incarnation{}, Page{Limit: 10}); !errors.Is(err, ErrScopedFeedPredatesLabels) {
+		t.Fatalf("changes_since owes the same refusal as the live feed: %v", err)
+	}
+
+	if _, _, err := st.ChangesSince(ctx, "ns", "notes", "", [16]byte{},
+		&RowScope{Owner: "alice"}, Incarnation{}, Page{Limit: 10}); err != nil {
+		t.Fatalf("starting at the head replays nothing, so there is nothing to refuse: %v", err)
 	}
 }

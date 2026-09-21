@@ -1216,3 +1216,55 @@ func TestListenCauseMapsAVanishedNamespace(t *testing.T) {
 		t.Fatalf("an unrelated PostgreSQL error must not be reported as a lifetime end, got %v", got)
 	}
 }
+
+func seedUnlabelledBacklog(t *testing.T, s *Store, ctx context.Context) {
+	t.Helper()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "body"}},
+		store.TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "from alice"}},
+		store.WriteOpts{Owner: "alice"}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, "UPDATE "+s.relation("changes")+" SET owner=NULL"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresScopedListenRefusesUnlabelledBacklog(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	seedUnlabelledBacklog(t, s, ctx)
+
+	_, cancel, err := s.Listen(ctx, "app", "notes", store.CursorBegin, [16]byte{},
+		func(string) (*store.RowScope, store.Incarnation, bool) {
+			return &store.RowScope{Owner: "alice"}, store.Incarnation{}, true
+		}, func(store.ChangeRecord) {}, nil)
+	if cancel != nil {
+		cancel()
+	}
+	if !errors.Is(err, store.ErrScopedFeedPredatesLabels) {
+		t.Fatalf("a scoped replay across records written before labelling must refuse rather than skip them in silence: %v", err)
+	}
+}
+
+func TestPostgresScopedCatchUpRefusesUnlabelledBacklog(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	seedUnlabelledBacklog(t, s, ctx)
+
+	_, _, err := s.ChangesSince(ctx, "app", "notes", store.CursorBegin, [16]byte{},
+		&store.RowScope{Owner: "alice"}, store.Incarnation{}, store.Page{Limit: 10})
+	if !errors.Is(err, store.ErrScopedFeedPredatesLabels) {
+		t.Fatalf("changes_since owes the same refusal as the live feed: %v", err)
+	}
+
+	if _, _, err := s.ChangesSince(ctx, "app", "notes", "", [16]byte{},
+		&store.RowScope{Owner: "alice"}, store.Incarnation{}, store.Page{Limit: 10}); err != nil {
+		t.Fatalf("starting at the head replays nothing, so there is nothing to refuse: %v", err)
+	}
+}
