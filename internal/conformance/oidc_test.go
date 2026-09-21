@@ -20,11 +20,28 @@ type issuerStub struct {
 	srv         *httptest.Server
 	sub         string
 	groups      []string
+	mu          sync.Mutex
 	lastPKCE    string
 	lastRedir   string
 	challenges  map[string]string
 	extraClaims map[string]any
 	plainField  string
+}
+
+func (s *issuerStub) recordAuthorize(challenge, redirect string, pkce bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastPKCE = challenge
+	s.lastRedir = redirect
+	if pkce {
+		s.challenges["the-code"] = challenge
+	}
+}
+
+func (s *issuerStub) pkceChallenge() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastPKCE
 }
 
 func newIssuerStub(t *testing.T, sub string, groups []string) *issuerStub {
@@ -44,13 +61,12 @@ func newIssuerStub(t *testing.T, sub string, groups []string) *issuerStub {
 	})
 	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		s.lastPKCE = q.Get("code_challenge")
-		s.lastRedir = q.Get("redirect_uri")
-		if q.Get("code_challenge_method") != "S256" {
+		pkce := q.Get("code_challenge_method") == "S256"
+		s.recordAuthorize(q.Get("code_challenge"), q.Get("redirect_uri"), pkce)
+		if !pkce {
 			http.Error(w, "PKCE S256 is required", http.StatusBadRequest)
 			return
 		}
-		s.challenges["the-code"] = q.Get("code_challenge")
 		http.Redirect(w, r, q.Get("redirect_uri")+"?state="+url.QueryEscape(q.Get("state"))+"&code=the-code", http.StatusFound)
 	})
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
@@ -115,7 +131,7 @@ func TestOIDCDanceIssuesAUsableToken(t *testing.T) {
 		t.Fatalf("the dance ended with status %d", res.StatusCode)
 	}
 	body := readAll(t, res)
-	if stub.lastPKCE == "" {
+	if stub.pkceChallenge() == "" {
 		t.Fatal("the authorization request carried no PKCE challenge")
 	}
 
