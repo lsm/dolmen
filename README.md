@@ -406,7 +406,7 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 |---|---|---|---|
 | `-addr` | `DOLMEN_ADDR` | `127.0.0.1:8790` | HTTP listen address (`dolmen mcp` does not listen) |
 | `-data` | `DOLMEN_DATA` | `data` | Data directory (one SQLite file per namespace) |
-| `-engine` | `DOLMEN_ENGINE` | `sqlite` | Storage engine. `sqlite` is the default and currently the only engine; unknown values are rejected with an error |
+| `-engine` | `DOLMEN_ENGINE` | `sqlite` | Storage engine. `sqlite` is the default and the only engine this binary serves; `postgres` is selectable from the Go facade with `github.com/lsm/dolmen/postgres`; unknown values are rejected with an error |
 | `-auth` | `DOLMEN_AUTH` | `off` | Authentication. `off` is the v0.2.0 behavior: no identity, no credential, bind to loopback. `on` is deny-by-default and requires `DOLMEN_ADMIN_KEY` (see [Authentication](#authentication)) |
 | — | `DOLMEN_ADMIN_KEY` | — | Bootstrap admin credential, required when `-auth on`. 32–256 characters of `[A-Za-z0-9_-]`, presented as `Authorization: Bearer <key>`. Environment only — flags are visible in process listings |
 | `-trusted-proxies` | `DOLMEN_TRUSTED_PROXIES` | — | Comma-separated CIDRs (bare IPs allowed) whose peers may assert `X-Dolmen-Principal` / `X-Dolmen-Groups`. Trust is decided from the immediate TCP peer, never from `X-Forwarded-For` |

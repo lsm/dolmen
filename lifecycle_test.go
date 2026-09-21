@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/lsm/dolmen/internal/store"
 )
 
 func TestChangeRetentionOptionPassesThrough(t *testing.T) {
@@ -31,8 +33,18 @@ func TestOpenRejectsInvalidOptions(t *testing.T) {
 	if _, err := Open(t.TempDir(), WithChangeRetention(-1)); err == nil {
 		t.Fatal("a negative change retention must be rejected")
 	}
-	if _, err := Open(t.TempDir(), WithEngine("postgres")); err == nil {
+	if _, err := Open(t.TempDir(), WithEngine("banana")); err == nil {
 		t.Fatal("an unknown engine name must be rejected")
+	}
+	if _, err := Open(t.TempDir(), WithEngine("postgres")); err == nil {
+		t.Fatal("the postgres engine without a connection must be rejected")
+	}
+	opener := func(context.Context, time.Duration) (store.Engine, error) { return nil, errors.New("unused") }
+	if _, err := Open(t.TempDir(), WithEngineOpener("postgres", "", opener)); err == nil {
+		t.Fatal("an engine opener without an owner key must be rejected")
+	}
+	if _, err := Open(t.TempDir(), WithEngineOpener("postgres", "key", nil)); err == nil {
+		t.Fatal("an owner key without an opener must be rejected")
 	}
 }
 
