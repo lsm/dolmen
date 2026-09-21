@@ -9,14 +9,14 @@ import (
 var _ Engine = (*Store)(nil)
 
 func TestValidateEngine(t *testing.T) {
-	for _, name := range []string{"", EngineSQLite} {
+	for _, name := range []string{"", EngineSQLite, EnginePostgres} {
 		if err := ValidateEngine(name); err != nil {
 			t.Fatalf("ValidateEngine(%q) = %v, want nil", name, err)
 		}
 	}
-	err := ValidateEngine(EnginePostgres)
-	if err == nil || err.Error() != `unknown engine "postgres" (the available engine is "sqlite")` {
-		t.Fatalf("ValidateEngine(postgres) = %v, want the teaching error", err)
+	err := ValidateEngine("banana")
+	if err == nil || err.Error() != `unknown engine "banana" (available engines are "postgres" and "sqlite")` {
+		t.Fatalf("ValidateEngine(banana) = %v, want the teaching error", err)
 	}
 }
 

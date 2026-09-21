@@ -20,11 +20,28 @@ type issuerStub struct {
 	srv         *httptest.Server
 	sub         string
 	groups      []string
+	mu          sync.Mutex
 	lastPKCE    string
 	lastRedir   string
 	challenges  map[string]string
 	extraClaims map[string]any
 	plainField  string
+}
+
+func (s *issuerStub) recordAuthorize(challenge, redirect string, pkce bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastPKCE = challenge
+	s.lastRedir = redirect
+	if pkce {
+		s.challenges["the-code"] = challenge
+	}
+}
+
+func (s *issuerStub) pkceChallenge() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastPKCE
 }
 
 func newIssuerStub(t *testing.T, sub string, groups []string) *issuerStub {
@@ -44,13 +61,12 @@ func newIssuerStub(t *testing.T, sub string, groups []string) *issuerStub {
 	})
 	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		s.lastPKCE = q.Get("code_challenge")
-		s.lastRedir = q.Get("redirect_uri")
-		if q.Get("code_challenge_method") != "S256" {
+		pkce := q.Get("code_challenge_method") == "S256"
+		s.recordAuthorize(q.Get("code_challenge"), q.Get("redirect_uri"), pkce)
+		if !pkce {
 			http.Error(w, "PKCE S256 is required", http.StatusBadRequest)
 			return
 		}
-		s.challenges["the-code"] = q.Get("code_challenge")
 		http.Redirect(w, r, q.Get("redirect_uri")+"?state="+url.QueryEscape(q.Get("state"))+"&code=the-code", http.StatusFound)
 	})
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
@@ -84,7 +100,12 @@ func (s *issuerStub) client() *http.Client {
 
 func oidcHarness(t *testing.T, stub *issuerStub) *harness {
 	t.Helper()
-	h := newHarnessMode(t, authAdminKey)
+	return oidcHarnessMode(t, stub, authAdminKey)
+}
+
+func oidcHarnessMode(t *testing.T, stub *issuerStub, mode harnessMode) *harness {
+	t.Helper()
+	h := newHarnessMode(t, mode)
 	cfg := auth.OIDCConfig{
 		Issuer:       stub.srv.URL,
 		ClientID:     "dolmen-test",
@@ -110,7 +131,7 @@ func TestOIDCDanceIssuesAUsableToken(t *testing.T) {
 		t.Fatalf("the dance ended with status %d", res.StatusCode)
 	}
 	body := readAll(t, res)
-	if stub.lastPKCE == "" {
+	if stub.pkceChallenge() == "" {
 		t.Fatal("the authorization request carried no PKCE challenge")
 	}
 
@@ -545,5 +566,111 @@ func TestOIDCRejectsATokenFromAnotherIssuerOrAudience(t *testing.T) {
 				t.Fatalf("a token carrying %s was trusted for the caller's identity", name)
 			}
 		})
+	}
+}
+
+func TestSourceBlindnessAcrossHeaderKeyAndToken(t *testing.T) {
+	stub := newIssuerStub(t, "00u1a2b3", []string{"platform"})
+	h := oidcHarnessMode(t, stub, authGateway)
+
+	digest := auth.IssuerDigest(stub.srv.URL)
+	principal := "oidc:v1:" + digest + ":00u1a2b3"
+	group := "oidc:v1:" + digest + ":platform"
+
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "acme"})
+	h.mustHTTP("create_table", map[string]any{
+		"namespace":  "acme",
+		"table":      "notes",
+		"fields":     []map[string]any{{"name": "body", "type": "text", "fulltext": true}},
+		"row_access": "own",
+	})
+	grantTo(t, h, "group", group, "acme", "notes", "create")
+	grantTo(t, h, "principal", "someone-else", "acme", "notes", "create")
+
+	_, foreignKey := mintKey(t, h, "stranger", "someone-else")
+	if status, out := h.httpCallAs(identity{bearer: foreignKey}, "insert", map[string]any{
+		"namespace": "acme", "table": "notes", "records": []map[string]any{{"body": "a note nobody else may read"}},
+	}); status != http.StatusOK {
+		t.Fatalf("seed a foreign row: %d %v", status, out)
+	}
+
+	_, keySecret := mintKey(t, h, "same", principal, group)
+	token := danceForToken(t, h)
+	sources := []string{"header", "key", "token"}
+	call := func(src, op string, body map[string]any) (int, map[string]any) {
+		t.Helper()
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal %s body: %v", op, err)
+		}
+		if src == "header" {
+			res, out := h.postNoCredential(t, h.httpURL+"/"+op, string(raw), map[string]string{
+				"X-Dolmen-Principal": principal,
+				"X-Dolmen-Groups":    group,
+			})
+			return res.StatusCode, out
+		}
+		bearer := keySecret
+		if src == "token" {
+			bearer = token
+		}
+		return h.httpCallAs(identity{bearer: bearer}, op, body)
+	}
+
+	if status, out := call("header", "insert", map[string]any{
+		"namespace": "acme", "table": "notes", "records": []map[string]any{{"body": "a note this identity owns"}},
+	}); status != http.StatusOK {
+		t.Fatalf("seed the shared identity's row: %d %v", status, out)
+	}
+
+	calls := []struct {
+		what string
+		op   string
+		body map[string]any
+	}{
+		{"scoped read by id", "read_rows", map[string]any{"namespace": "acme", "table": "notes", "ids": []int64{1, 2}}},
+		{"scoped search", "search_fulltext", map[string]any{"namespace": "acme", "table": "notes", "query": "note"}},
+		{"ungranted verb", "delete_rows", map[string]any{"namespace": "acme", "table": "notes", "ids": []int64{1}}},
+		{"ungranted table", "read_rows", map[string]any{"namespace": "acme", "table": "absent", "ids": []int64{1}}},
+	}
+	for _, c := range calls {
+		var wantStatus int
+		var wantData any
+		for i, src := range sources {
+			status, out := call(src, c.op, c.body)
+			if i == 0 {
+				wantStatus, wantData = status, out["data"]
+				continue
+			}
+			if status != wantStatus {
+				t.Fatalf("%s: %s answered %d but %s answered %d, so downstream can tell the sources apart",
+					c.what, sources[0], wantStatus, src, status)
+			}
+			assertJSONEqual(t, c.what+" via "+src, out["data"], wantData)
+		}
+	}
+
+	for _, src := range sources {
+		status, out := call(src, "whoami", map[string]any{})
+		if status != http.StatusOK {
+			t.Fatalf("whoami via %s: %d %v", src, status, out)
+		}
+		data, _ := out["data"].(map[string]any)
+		if data["principal"] != principal {
+			t.Fatalf("whoami via %s reports principal %v, want %q", src, data["principal"], principal)
+		}
+		groups, _ := data["groups"].([]any)
+		if len(groups) != 1 || groups[0] != group {
+			t.Fatalf("whoami via %s reports groups %v, want [%q]", src, groups, group)
+		}
+	}
+
+	status, out := call("header", "read_rows", map[string]any{
+		"namespace": "acme", "table": "notes", "ids": []int64{1, 2},
+	})
+	data, _ := out["data"].(map[string]any)
+	rows, _ := data["rows"].([]any)
+	if status != http.StatusOK || len(rows) != 1 {
+		t.Fatalf("the scoped read returned %d rows, so the comparison above was not exercising RowScope: %d %v", len(rows), status, out)
 	}
 }

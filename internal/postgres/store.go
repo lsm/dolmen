@@ -48,12 +48,14 @@ func (e *connectionError) Unwrap() error { return e.cause }
 
 var catalogName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 
+const DefaultCatalog = "dolmen_catalog"
+
 func Open(ctx context.Context, cfg Config) (*Store, error) {
 	if cfg.DSN == "" {
 		return nil, fmt.Errorf("%w: PostgreSQL requires an explicit connection string", store.ErrInvalid)
 	}
 	if cfg.Catalog == "" {
-		cfg.Catalog = "dolmen_catalog"
+		cfg.Catalog = DefaultCatalog
 	}
 	if !catalogName.MatchString(cfg.Catalog) || cfg.Catalog == "public" || cfg.Catalog == "information_schema" || len(cfg.Catalog) >= 3 && cfg.Catalog[:3] == "pg_" {
 		return nil, fmt.Errorf("%w: invalid PostgreSQL catalog schema", store.ErrInvalid)

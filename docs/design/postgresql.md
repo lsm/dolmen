@@ -29,7 +29,8 @@ own conformance-backed implementation.
 The first increment establishes `internal/postgres` with a pgx connection pool and
 namespace catalog. It deliberately
 does not yet implement the complete `store.Engine`: there are no placeholder CRUD or
-search methods, and `DOLMEN_ENGINE=postgres` / `WithEngine("postgres")` remain rejected.
+search methods, and `DOLMEN_ENGINE=postgres` / `WithEngine("postgres")` remained rejected
+at that point; the facade selector is described under "Selecting PostgreSQL" below.
 The namespace conformance subset runs against both implementations; PostgreSQL's
 service-backed CI job fails rather than silently skipping when its DSN is missing.
 
@@ -400,6 +401,51 @@ is waiting on the callback.
 
 The conformance matrix is clean; see "Conformance matrix status" below. What remains is
 wiring the blackbox constructor and publishing configuration and install guidance.
+
+## Selecting PostgreSQL
+
+`store.ValidateEngine` accepts `postgres`. The driver is reached through a first-party
+subpackage rather than from the facade itself:
+
+```go
+import (
+    "github.com/lsm/dolmen"
+    "github.com/lsm/dolmen/postgres"
+)
+
+st, err := dolmen.Open("", postgres.With(postgres.Config{
+    DSN:       "postgres://dolmen_backend@host:5432/dolmen?sslmode=disable",
+    Catalog:   "dolmen_catalog",
+    QueryRole: "dolmen_query",
+}))
+```
+
+The subpackage exists to keep the dependency off everyone else's build. Importing
+`internal/postgres` from the root package put pgx and the embedded WASM PostgreSQL
+parser into the import graph of every consumer of the module: the external-module
+example grew from 13.1 MB to 35.3 MB whether or not it used PostgreSQL. `postgres.With`
+returns a `dolmen.Option` carrying an engine opener, so only programs that import the
+subpackage link the driver, and the example is unchanged at 13.8 MB.
+
+`WithEngine("postgres")` without that option is refused with an error naming the import
+to add. A DSN is required: `Open` never reads one from the environment, matching the
+facade's rule that it reads no configuration of its own.
+
+The data directory argument belongs to SQLite and is unused here, so pass `""`. One
+live store per catalog per process is still enforced, keyed on catalog plus the
+connection's host, port, database and user as pgx parses them rather than on the DSN
+text, so two spellings of the same target collide instead of opening two pools over
+one catalog. Supplying a connection and then contradicting it with `WithEngine` is
+rejected by name rather than failing later as a connection error.
+
+The binary does not select PostgreSQL yet: `-engine postgres` is refused at
+configuration time with an error naming the facade import, so it fails before the
+server starts rather than part way through opening a store.
+
+The role provisioning is the deployment's, not dolmen's: the backend role needs CREATE
+on the database, and caller SQL needs the pre-provisioned restricted query role granted
+to it with `INHERIT FALSE, SET TRUE`. No runtime `CREATEROLE` is required and no
+extension is needed.
 
 ## Conformance matrix status
 

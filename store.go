@@ -1,6 +1,7 @@
 package dolmen
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -47,6 +48,9 @@ func Open(dataDir string, opts ...Option) (*Store, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+	if cfg.opener != nil {
+		return openWithOpener(cfg)
+	}
 	if dataDir == "" {
 		return nil, derr.New(derr.InvalidRequest, "data directory must not be empty")
 	}
@@ -71,6 +75,30 @@ func Open(dataDir string, opts ...Option) (*Store, error) {
 			code = derr.InvalidRequest
 		}
 		return nil, derr.Wrap(code, fmt.Errorf("open data directory: %w", err))
+	}
+	s.eng = eng
+	return s, nil
+}
+
+func openWithOpener(cfg config) (*Store, error) {
+	key := cfg.ownerKey
+	ownersMu.Lock()
+	if _, dup := owners[key]; dup {
+		ownersMu.Unlock()
+		return nil, derr.New(derr.Conflict, "this engine is already open in this process; close that store before reopening it")
+	}
+	s := &Store{dir: key, emb: cfg.embedding, changeRetention: cfg.changeRetention, closing: make(chan struct{})}
+	owners[key] = s
+	ownersMu.Unlock()
+
+	eng, err := cfg.opener(context.Background(), cfg.changeRetention)
+	if err != nil {
+		releaseOwnership(key)
+		code := derr.Internal
+		if errors.Is(err, store.ErrInvalid) || errors.Is(err, store.ErrCatalogTooNew) {
+			code = derr.InvalidRequest
+		}
+		return nil, derr.Wrap(code, fmt.Errorf("open engine: %w", err))
 	}
 	s.eng = eng
 	return s, nil
