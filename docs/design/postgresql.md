@@ -471,9 +471,9 @@ extension is needed.
 ## Conformance matrix status
 
 The conformance suite runs against either backend. `DOLMEN_ENGINE=postgres` selects
-PostgreSQL for the whole package; the knob is read by the suite's own engine resolver,
-not by `store.ValidateEngine`, so the public selector stays closed while the matrix is
-still red:
+PostgreSQL for the whole package. The knob is the suite's own, read by its engine
+resolver rather than by `store.ValidateEngine`, which is what lets the suite name an
+engine without going through the same validation the public selector uses:
 
 ```sh
 DOLMEN_ENGINE=postgres DOLMEN_TEST_PG_DSN=... DOLMEN_TEST_PG_QUERY_ROLE=dolmen_query \

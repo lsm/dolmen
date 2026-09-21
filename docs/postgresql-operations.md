@@ -12,11 +12,10 @@ why — is [docs/design/postgresql.md](design/postgresql.md).
 
 - PostgreSQL 16 or newer. The storage features dolmen uses are older than that —
   generated `STORED` columns arrived in 12, `pg_notify` and column-level `GRANT` long
-  before — but the per-grant `INHERIT FALSE, SET TRUE` options below are new in 16, and
-  they are what keeps caller SQL from inheriting the backend role. On 15 and earlier,
-  inheritance is an attribute of the member role rather than of the grant, so the same
-  containment cannot be expressed without making the backend role `NOINHERIT` for every
-  membership it holds. CI runs against 17.
+  before — but the per-grant `INHERIT FALSE, SET TRUE` options below are new in 16. On 15
+  and earlier, inheritance is an attribute of the member role rather than of the grant,
+  so keeping the backend from implicitly holding the query role's grants means making the
+  backend `NOINHERIT` for every membership it has. CI runs against 17.
 - No extensions. Full-text search uses the built-in `tsvector` machinery and vector
   search is executed in dolmen, so no `pgvector`, no `pg_trgm`, no superuser step.
 - No `CREATEROLE` at runtime. Dolmen never creates a role; it validates the roles the
@@ -42,19 +41,32 @@ CREATE ROLE dolmen_query
 GRANT dolmen_query TO dolmen_backend WITH INHERIT FALSE, SET TRUE;
 ```
 
-The `INHERIT FALSE, SET TRUE` grant is the whole mechanism. `SET TRUE` lets the backend
-switch into the query role for the duration of one caller statement. `INHERIT FALSE`
-means the backend does not silently carry the query role's privileges the rest of the
-time, and — more importantly — the query role does not carry the backend's. Reverse
-those two and caller SQL inherits the backend's `CREATE` privilege.
+`SET TRUE` is the half that does the containing. It lets the backend switch into the
+query role for the duration of one caller statement, and `SET ROLE` *replaces* the
+effective privilege set rather than adding to it, so caller SQL runs with the query
+role's privileges and nothing else — the backend's `CREATE` is simply not there. Dolmen
+requires this membership and refuses to serve caller SQL without it.
+
+`INHERIT FALSE` is the half that keeps the two privilege sets from merging: without it
+the backend implicitly holds every grant made to the query role. That is hygiene rather
+than containment, and it matters most as the query role accumulates grants over time.
+
+Note what this does *not* do, because it is easy to read the grant backwards. Membership
+flows one way: a member may hold the privileges of the role granted to it, never the
+reverse. No grant option can make the query role carry the backend's privileges. The
+escalation to avoid is therefore the grant written the other way round —
+`GRANT dolmen_backend TO dolmen_query` — and any other membership handed to the query
+role, since `SET ROLE` lands caller SQL in whatever that role can reach. Keep the query
+role's memberships empty.
 
 `CREATE` on the database is required because dolmen creates one schema per namespace.
 It is not required to be a superuser and should not be one.
 
-### What dolmen checks at startup
+### What dolmen checks before serving caller SQL
 
-The first `query` call verifies the query role before running anything, and refuses
-with a message naming the problem:
+The check is not at boot. The first `query` call against a namespace verifies the query
+role before running anything, and refuses with a message naming the problem — so a
+mis-provisioned role surfaces on the first caller query, not at startup:
 
 - The role must exist.
 - It must be `NOLOGIN`, `NOINHERIT`, `NOSUPERUSER`, `NOCREATEDB`, `NOCREATEROLE`,
