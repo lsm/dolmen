@@ -19,28 +19,36 @@ var ErrListenRevoked = errors.New("subscription authorization revoked")
 
 var ErrListenAged = errors.New("subscription reached the configured age bound")
 
-func (sess *listenSession) admit(rec ChangeRecord) (visible, revoked bool) {
+func (sess *listenSession) admit(rec ChangeRecord) (visible bool, cause error) {
 	if sess.liveAuthz == nil {
-		return true, false
+		return true, nil
 	}
 	scope, inc, ok := sess.liveAuthz(rec.Table)
 	if !ok {
-		return false, true
+		return false, ErrListenRevoked
 	}
-	if scope != nil && (scope.Empty || scope.Owner != rec.Owner) {
-		return false, false
+	if scope != nil {
+		if scope.Empty {
+			return false, nil
+		}
+		if rec.Owner == "" {
+			return false, ErrScopedFeedPredatesLabels
+		}
+		if scope.Owner != rec.Owner {
+			return false, nil
+		}
 	}
 	if inc != (Incarnation{}) {
 		if inc.NsGen != rec.Lifetime.NsGen {
-			return false, false
+			return false, nil
 		}
 		if sess.table != "" {
 			if inc.Table != rec.Lifetime.Table || inc.DropGen != rec.Lifetime.DropGen {
-				return false, false
+				return false, nil
 			}
 		}
 	}
-	return true, false
+	return true, nil
 }
 
 func (sess *listenSession) wake(table string, changes ChangeRange) {
@@ -144,10 +152,12 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 	}
 	var admitted []loggedChange
 	revoked := false
+	var revokeCause error
 	for _, lc := range scanned {
-		vis, rev := sess.admit(lc.rec)
-		if rev {
+		vis, cause := sess.admit(lc.rec)
+		if cause != nil {
 			revoked = true
+			revokeCause = cause
 			break
 		}
 		if vis {
@@ -166,7 +176,7 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 		wasEmpty := len(sess.queue) == 0
 		sess.queue = append(sess.queue, admitted...)
 		if sess.pendingDrainClose == nil {
-			sess.pendingDrainClose = ErrListenRevoked
+			sess.pendingDrainClose = revokeCause
 		}
 		sess.cond.Broadcast()
 		sess.mu.Unlock()

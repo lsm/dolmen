@@ -97,9 +97,9 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 	}
 	var admitted []loggedChange
 	for _, lc := range scanned {
-		vis, rev := sess.admit(lc.rec)
-		if rev {
-			sess.end(ErrListenRevoked)
+		vis, cause := sess.admit(lc.rec)
+		if cause != nil {
+			sess.end(cause)
 			return nil, sess.cursor(), true, pageProgress{}, sess.endCause()
 		}
 		if vis {
