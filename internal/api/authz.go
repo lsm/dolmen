@@ -69,8 +69,8 @@ var authRules = map[string]authRule{
 
 	"query": {Scope: scopeNamespace, Verbs: []auth.Verb{auth.VerbRead}},
 
-	"changes_since": {Scope: scopeTableOrNamespace, Verbs: []auth.Verb{auth.VerbRead}},
-	"wait_for":      {Scope: scopeTableOrNamespace, Verbs: []auth.Verb{auth.VerbRead}},
+	"changes_since": {Scope: scopeTableOrNamespace, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true},
+	"wait_for":      {Scope: scopeTableOrNamespace, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true},
 
 	"grant":       {Scope: scopeGrantObject, Verbs: []auth.Verb{auth.VerbAdmin}},
 	"revoke":      {Scope: scopeGrantObject, Verbs: []auth.Verb{auth.VerbAdmin}},

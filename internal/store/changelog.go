@@ -98,6 +98,8 @@ func mintChangesFromTemp(ctx context.Context, tx *sql.Tx, table string, kind Cha
 	return ChangeRange{First: last - n + 1, Last: last, Count: n}, nil
 }
 
+var ErrScopedNamespaceFeed = fmt.Errorf("%w: this request is scoped to your own rows, and the namespace-wide feed reports every table; name a table, or ask for the read verb on the namespace", ErrInvalid)
+
 var (
 	ErrCursorExpired = errors.New("cursor token is unknown or past retention")
 
@@ -297,7 +299,17 @@ func changeFeedOf(ctx context.Context, tx *sql.Tx, nsName, table string) (*chang
 	return &changeFeed{table: table, nsgen: nsgen, dropGen: dropGen}, nil
 }
 
-func changePageSQL(from int64, to *int64, limit int, feed *changeFeed) (string, []any) {
+func changeScopeSQL(scope *RowScope) (string, []any) {
+	if scope == nil {
+		return "", nil
+	}
+	if scope.Empty {
+		return ` AND 0`, nil
+	}
+	return ` AND owner = ?`, []any{scope.Owner}
+}
+
+func changePageSQL(from int64, to *int64, limit int, feed *changeFeed, scope *RowScope) (string, []any) {
 	q := `SELECT seq, table_name, row_id, kind, owner, nsgen, drop_gen FROM _dolmen_changes WHERE seq > ?`
 	args := []any{from}
 	if to != nil {
@@ -308,7 +320,8 @@ func changePageSQL(from int64, to *int64, limit int, feed *changeFeed) (string, 
 		q += ` AND table_name = ? AND drop_gen = ? AND nsgen = ?`
 		args = append(args, feed.table, feed.dropGen, feed.nsgen[:])
 	}
-	return q + ` ORDER BY seq LIMIT ?`, append(args, limit)
+	sq, sargs := changeScopeSQL(scope)
+	return q + sq + ` ORDER BY seq LIMIT ?`, append(append(args, sargs...), limit)
 }
 
 func scanChangePage(rows *sql.Rows) ([]loggedChange, error) {
@@ -359,8 +372,8 @@ func mintChangeCursors(ctx context.Context, tx *sql.Tx, now time.Time, scanned [
 }
 
 func (s *Store) ChangesSince(ctx context.Context, nsName, table string, from Cursor, nsGen [16]byte, scope *RowScope, scopeIncarnation Incarnation, page Page) ([]ChangeRecord, Cursor, error) {
-	if scope != nil {
-		return nil, "", ErrScopedFeedUnsupported
+	if scope != nil && table == "" {
+		return nil, "", ErrScopedNamespaceFeed
 	}
 	if table != "" {
 		if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
@@ -383,6 +396,13 @@ func (s *Store) ChangesSince(ctx context.Context, nsName, table string, from Cur
 		var ferr error
 		if feed, ferr = changeFeedOf(ctx, tx, nsName, table); ferr != nil {
 			return nil, "", ferr
+		}
+		sc, serr := loadSchema(ctx, tx, nsName, table)
+		if serr != nil {
+			return nil, "", serr
+		}
+		if serr := scopeUsable(scope, sc); serr != nil {
+			return nil, "", serr
 		}
 	}
 
@@ -409,7 +429,7 @@ func (s *Store) ChangesSince(ctx context.Context, nsName, table string, from Cur
 	}
 
 	limit := changesPageLimit(page.Limit)
-	query, args := changePageSQL(position, nil, limit, feed)
+	query, args := changePageSQL(position, nil, limit, feed, scope)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, "", err

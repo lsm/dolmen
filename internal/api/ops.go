@@ -296,8 +296,16 @@ func parseChangesFeed(tableRaw, cursorRaw, limitRaw json.RawMessage) (table, cur
 }
 
 func runChangesSince(ctx context.Context, s *Server, op, ns, table, cursor string, limit int) ([]store.ChangeRecord, store.Cursor, error) {
+	var scope *store.RowScope
+	var inc store.Incarnation
+	if table != "" {
+		var serr error
+		if scope, inc, serr = s.resolveScope(ctx, ns, table); serr != nil {
+			return nil, "", serr
+		}
+	}
 	records, next, err := s.eng.ChangesSince(ctx, ns, table, store.Cursor(cursor),
-		[16]byte{}, nil, store.Incarnation{}, store.Page{Limit: limit})
+		[16]byte{}, scope, inc, store.Page{Limit: limit})
 	if err != nil {
 
 		if errors.Is(err, store.ErrCursorExpired) {

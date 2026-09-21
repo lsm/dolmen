@@ -109,16 +109,13 @@ const (
 )
 
 func (s *Store) ChangesSince(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, scope *store.RowScope, inc store.Incarnation, page store.Page) ([]store.ChangeRecord, store.Cursor, error) {
-	if scope != nil {
-		return nil, "", store.ErrScopedFeedUnsupported
+	if scope != nil && table == "" {
+		return nil, "", store.ErrScopedNamespaceFeed
 	}
 	return s.changesSinceMode(ctx, ns, table, from, expected, scope, inc, page, nil, feedRequest)
 }
 
 func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, scope *store.RowScope, inc store.Incarnation, page store.Page, boundary *int64, mode feedMode) ([]store.ChangeRecord, store.Cursor, error) {
-	if scope != nil {
-		return nil, "", store.ErrScopedFeedUnsupported
-	}
 	records := []store.ChangeRecord{}
 	var next store.Cursor
 	enter := s.write
@@ -190,6 +187,14 @@ func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from sto
 		if table != "" {
 			stmt += " AND table_name=$3 AND drop_generation=$4"
 			args = append(args, table, drop)
+		}
+		if scope != nil {
+			if scope.Empty {
+				stmt += " AND false"
+			} else {
+				stmt += fmt.Sprintf(" AND owner=$%d", len(args)+1)
+				args = append(args, scope.Owner)
+			}
 		}
 		if boundary != nil {
 			stmt += fmt.Sprintf(" AND position<=$%d", len(args)+1)
