@@ -139,7 +139,7 @@ func validateInsertFallback(state tableState, record map[string]any) error {
 	return nil
 }
 
-func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any, set map[string]any, emb store.Embedder, allowInsert bool, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
+func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any, set map[string]any, emb store.Embedder, allowInsert bool, owner string, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
 	if scope != nil {
 		return store.InsertResult{}, store.ErrScopedFilterUnsupported
 	}
@@ -223,6 +223,10 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 				if err != nil {
 					return err
 				}
+				if owner != "" && current.schema.HasOwner {
+					row.columns = append(row.columns, ident(schema.OwnerColumn))
+					row.values = append(row.values, owner)
+				}
 				var id int64
 				id, err = insertPrepared(ctx, tx, n, state, row)
 				if err != nil {
@@ -258,12 +262,12 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 }
 
 func (s *Store) Update(ctx context.Context, ns, table, filter string, args []any, set map[string]any, emb store.Embedder, scope *store.RowScope, expected store.Incarnation) (store.UpdateResult, error) {
-	result, err := s.mutate(ctx, ns, table, filter, args, set, emb, false, scope, expected)
+	result, err := s.mutate(ctx, ns, table, filter, args, set, emb, false, "", scope, expected)
 	return store.UpdateResult{Updated: result.Updated, Changes: result.Changes}, err
 }
 
 func (s *Store) Upsert(ctx context.Context, ns, table, filter string, args []any, set map[string]any, opts store.WriteOpts, emb store.Embedder, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
-	return s.mutate(ctx, ns, table, filter, args, set, emb, true, scope, expected)
+	return s.mutate(ctx, ns, table, filter, args, set, emb, true, opts.Owner, scope, expected)
 }
 
 func (s *Store) Delete(ctx context.Context, ns, table, filter string, args []any, opts store.DeleteOpts, scope *store.RowScope, expected store.Incarnation) (store.DeleteResult, error) {

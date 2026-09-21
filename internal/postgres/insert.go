@@ -196,7 +196,7 @@ func (s *Store) Insert(ctx context.Context, ns, table string, records []map[stri
 			if err != nil {
 				return err
 			}
-			if err := checkIncarnation(ns, state.incarnation, expected); err != nil {
+			if err := s.guardScope(ctx, tx, n, table, state, expected); err != nil {
 				return err
 			}
 			result, found, err = s.lookupIdempotency(ctx, tx, n, state, opts.IdempotencyKey, hash)

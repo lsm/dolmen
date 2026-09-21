@@ -183,6 +183,10 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, table string, keys []string
 						row.columns = append(row.columns, ident(state.columns[field.Name]))
 						row.values = append(row.values, v)
 					}
+					if opts.Owner != "" && state.schema.HasOwner {
+						row.columns = append(row.columns, ident(schema.OwnerColumn))
+						row.values = append(row.values, opts.Owner)
+					}
 					id, err = insertPrepared(ctx, tx, n, state, row)
 					if err != nil {
 						return err
