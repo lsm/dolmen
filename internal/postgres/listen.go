@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -187,8 +186,8 @@ func (l *listenSession) admit(rec store.ChangeRecord) (bool, error) {
 	if !ok {
 		return false, store.ErrListenRevoked
 	}
-	if scope != nil {
-		return false, derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
+	if scope != nil && (scope.Empty || scope.Owner != rec.Owner) {
+		return false, nil
 	}
 	if inc == (store.Incarnation{}) {
 		return true, nil
@@ -206,12 +205,8 @@ func (l *listenSession) admits(table string) error {
 	if l.liveAuthz == nil {
 		return nil
 	}
-	scope, _, ok := l.liveAuthz(table)
-	if !ok {
+	if _, _, ok := l.liveAuthz(table); !ok {
 		return store.ErrListenRevoked
-	}
-	if scope != nil {
-		return derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
 	}
 	return nil
 }
