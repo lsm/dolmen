@@ -341,7 +341,7 @@ func (l *listenSession) fetchLive(ctx context.Context) ([]store.ChangeRecord, er
 			return nil, err
 		}
 	}
-	records, next, err := l.store.changesSince(ctx, l.ns, l.table, l.liveCursor, l.nsGen, nil, l.inc, store.Page{}, nil)
+	records, next, err := l.store.changesSinceMode(ctx, l.ns, l.table, l.liveCursor, l.nsGen, nil, l.inc, store.Page{Limit: store.MaxChangesPageLimit}, nil, true)
 	if err != nil {
 		return nil, listenCause(err)
 	}
@@ -458,35 +458,36 @@ func (l *listenSession) run(ctx context.Context) {
 			}
 		}
 		for l.pending(ctx, l.live()) {
-			records, err := l.fetchLive(ctx)
-			if err != nil {
-				if l.storeClosing() {
-					l.finish(store.ErrListenLifetimeEnded)
-					return
-				}
-				if cause, report := terminalCause(ctx, err); report {
-					l.finish(cause)
-				}
-				return
-			}
-			if len(records) == 0 {
-				break
-			}
-			for _, record := range records {
-				visible, err := l.admit(record)
+			short := false
+			for !short {
+				records, err := l.fetchLive(ctx)
 				if err != nil {
-					l.finish(err)
+					if l.storeClosing() {
+						l.finish(store.ErrListenLifetimeEnded)
+						return
+					}
+					if cause, report := terminalCause(ctx, err); report {
+						l.finish(cause)
+					}
 					return
 				}
-				if !visible {
-					continue
+				for _, record := range records {
+					visible, err := l.admit(record)
+					if err != nil {
+						l.finish(err)
+						return
+					}
+					if !visible {
+						continue
+					}
+					select {
+					case l.queue <- record:
+					default:
+						l.finish(store.ErrListenOverflow)
+						return
+					}
 				}
-				select {
-				case l.queue <- record:
-				default:
-					l.finish(store.ErrListenOverflow)
-					return
-				}
+				short = len(records) < store.MaxChangesPageLimit
 			}
 		}
 		select {

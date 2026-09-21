@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -30,6 +31,31 @@ func (s *Store) mintCursor(ctx context.Context, tx pgx.Tx, n namespace, state cu
 	token := hex.EncodeToString(raw[:])
 	_, err := tx.Exec(ctx, "INSERT INTO "+s.relation("cursors")+" (namespace,token,position,chain_origin,chain_start,issued_at,table_name,drop_generation) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", n.name, token, state.position, state.origin, state.start, now, state.table, state.drop)
 	return store.Cursor(token), err
+}
+
+func (s *Store) mintCursors(ctx context.Context, tx pgx.Tx, n namespace, state cursorState, positions []int64, now time.Time) ([]store.Cursor, error) {
+	if len(positions) == 0 {
+		return nil, nil
+	}
+	tokens := make([]store.Cursor, len(positions))
+	rows := make([]string, len(positions))
+	args := make([]any, 0, len(positions)*8)
+	for i, position := range positions {
+		var raw [16]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			return nil, err
+		}
+		token := hex.EncodeToString(raw[:])
+		tokens[i] = store.Cursor(token)
+		base := i * 8
+		rows[i] = fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)", base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8)
+		args = append(args, n.name, token, position, state.origin, state.start, now, state.table, state.drop)
+	}
+	_, err := tx.Exec(ctx, "INSERT INTO "+s.relation("cursors")+" (namespace,token,position,chain_origin,chain_start,issued_at,table_name,drop_generation) VALUES "+strings.Join(rows, ","), args...)
+	if err != nil {
+		return nil, err
+	}
+	return tokens, nil
 }
 
 func (s *Store) resolveCursor(ctx context.Context, tx pgx.Tx, n namespace, token store.Cursor, table string, drop int64, now time.Time) (cursorState, error) {
@@ -68,12 +94,20 @@ func (s *Store) ChangesSince(ctx context.Context, ns, table string, from store.C
 }
 
 func (s *Store) changesSince(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, scope *store.RowScope, inc store.Incarnation, page store.Page, boundary *int64) ([]store.ChangeRecord, store.Cursor, error) {
+	return s.changesSinceMode(ctx, ns, table, from, expected, scope, inc, page, boundary, false)
+}
+
+func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, scope *store.RowScope, inc store.Incarnation, page store.Page, boundary *int64, unlocked bool) ([]store.ChangeRecord, store.Cursor, error) {
 	if scope != nil {
 		return nil, "", derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
 	}
 	records := []store.ChangeRecord{}
 	var next store.Cursor
-	err := s.write(ctx, ns, expected, func(tx pgx.Tx, n namespace) error {
+	enter := s.write
+	if unlocked {
+		enter = s.writeUnlocked
+	}
+	err := enter(ctx, ns, expected, func(tx pgx.Tx, n namespace) error {
 		now := s.now()
 		drop := int64(0)
 		if table != "" {
@@ -159,13 +193,15 @@ func (s *Store) changesSince(ctx context.Context, ns, table string, from store.C
 		if err := rows.Err(); err != nil {
 			return err
 		}
-		for i, position := range positions {
-			state.position = position
-			token, err := s.mintCursor(ctx, tx, n, state, now)
-			if err != nil {
-				return err
-			}
-			records[i].Cursor = token
+		tokens, err := s.mintCursors(ctx, tx, n, state, positions, now)
+		if err != nil {
+			return err
+		}
+		for i := range tokens {
+			records[i].Cursor = tokens[i]
+		}
+		if len(positions) > 0 {
+			state.position = positions[len(positions)-1]
 		}
 		if len(records) == 0 && from != "" && from != store.CursorBegin {
 			next = from

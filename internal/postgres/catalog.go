@@ -151,6 +151,33 @@ func (s *Store) namespace(ctx context.Context, tx pgx.Tx, name string, lock bool
 	return n, nil
 }
 
+func (s *Store) writeUnlocked(ctx context.Context, name string, expected [16]byte, fn func(pgx.Tx, namespace) error) error {
+	done, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer done()
+	if err := store.ValidateNamespace(name); err != nil {
+		return err
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	n, err := s.namespace(ctx, tx, name, false)
+	if err != nil {
+		return err
+	}
+	if expected != [16]byte{} && expected != n.generation {
+		return fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, name)
+	}
+	if err := fn(tx, n); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *Store) write(ctx context.Context, name string, expected [16]byte, fn func(pgx.Tx, namespace) error) error {
 	done, err := s.begin(ctx)
 	if err != nil {

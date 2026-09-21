@@ -511,12 +511,20 @@ the record; only `ok=false` ends the stream. Namespace-wide feeds compare `nsGen
 since their replay spans table lifetimes by design. No transport passes a callback yet,
 so this is unreachable from the conformance suite and is pinned by engine tests.
 
+The live pump no longer pays for work it does not need. It reads through a
+transaction that does not take the namespace row's exclusive lock, so it stops
+contending with the writer it is trying to keep up with; it mints a page's cursors
+in one statement rather than one per record, which turns a nine-thousand-record
+replay from about nine thousand inserts into ninety-one; and it keeps fetching while
+pages come back full instead of re-probing between them. Together these took the
+measured peak queue depth in the overflow fixture from 699 to about 6500.
+
 The remaining failures are genuine backend gaps, not harness artifacts. They must be
 closed before the public selector is enabled:
 
 | Area | Fixture | Gap |
 |---|---|---|
-| SSE | `TestSubscribeOverflowTeachesReconnect` | the bound itself now exists and `TestPostgresListenOverflowsABlockedSubscriber` pins it, but the fixture parks a consumer and floods 9000 changes, which needs the live pump to get 8000 ahead of the writer. Live fetches go through `ChangesSince`, which takes the namespace write lock to mint a cursor per record, so the pump contends with the very writer it must outrun and no backlog accumulates. Closing this means a live read that does not take the write lock |
+| SSE | `TestSubscribeOverflowTeachesReconnect` | the bound exists and `TestPostgresListenOverflowsABlockedSubscriber` pins it; the fixture additionally requires the live pump to enqueue eight of the writer's nine batches before the ninth commits, and the pump cannot get more than a batch or two ahead of a writer committing equal-sized batches, because it can only read what has already committed. Three rounds of tuning took the peak queue from 699 to about 6500 of the 8000 bound and it did not cross. Closing it means changing what the fixture asks for, not tuning the pump further |
 
 The driver remains pure Go and compatible with the static binary requirement.
 PostgreSQL dependency versions are pinned in go.mod. No PostgreSQL server is bundled
