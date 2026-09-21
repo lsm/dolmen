@@ -44,9 +44,7 @@ func (s *Store) resolveCursor(ctx context.Context, tx pgx.Tx, n namespace, token
 	if state.table != table {
 		return state, store.ErrCursorCrossFeed
 	}
-	if table != "" && state.drop != drop {
-		return state, store.ErrCursorExpired
-	}
+	state.drop = drop
 	if s.changeRetention > 0 && (now.After(state.issued.Add(s.changeRetention)) || now.After(state.start.Add(2*s.changeRetention))) {
 		return state, store.ErrCursorExpired
 	}
