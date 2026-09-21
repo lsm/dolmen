@@ -11,6 +11,14 @@ import (
 )
 
 func TestPostgresEveryScopedEntryPointConflictsOnAStaleIncarnation(t *testing.T) {
+	scopedEntryPointsConflict(t, false)
+}
+
+func TestPostgresEveryScopedEntryPointConflictsWhenTheNamespaceIsReplaced(t *testing.T) {
+	scopedEntryPointsConflict(t, true)
+}
+
+func scopedEntryPointsConflict(t *testing.T, replaceNamespace bool) {
 	cfg := testConfig(t)
 	s := openTest(t, cfg)
 	ctx := t.Context()
@@ -25,10 +33,21 @@ func TestPostgresEveryScopedEntryPointConflictsOnAStaleIncarnation(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DropTable(ctx, "app", "notes", stale); err != nil {
+	if replaceNamespace {
+		if err := s.DropNamespace(ctx, "app", stale.NsGen); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+			t.Fatal(err)
+		}
+	} else if err := s.DropTable(ctx, "app", "notes", stale); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateTable(ctx, "app", "notes", fields, store.TableOpts{}, stale.NsGen); err != nil {
+	successor := stale.NsGen
+	if replaceNamespace {
+		successor = [16]byte{}
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", fields, store.TableOpts{}, successor); err != nil {
 		t.Fatal(err)
 	}
 	record := []map[string]any{{"body": "x"}}

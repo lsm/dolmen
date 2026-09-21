@@ -305,7 +305,7 @@ func (s *Store) Delete(ctx context.Context, ns, table, filter string, args []any
 		return result, err
 	}
 	result := store.DeleteResult{}
-	err = s.write(ctx, ns, expected.NsGen, func(tx pgx.Tx, n namespace) error {
+	err = s.write(ctx, ns, [16]byte{}, func(tx pgx.Tx, n namespace) error {
 		state, err := s.loadTable(ctx, tx, n, table)
 		if err != nil {
 			return err
