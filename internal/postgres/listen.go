@@ -186,8 +186,16 @@ func (l *listenSession) admit(rec store.ChangeRecord) (bool, error) {
 	if !ok {
 		return false, store.ErrListenRevoked
 	}
-	if scope != nil && (scope.Empty || scope.Owner != rec.Owner) {
-		return false, nil
+	if scope != nil {
+		if scope.Empty {
+			return false, nil
+		}
+		if rec.Owner == "" {
+			return false, store.ErrScopedFeedPredatesLabels
+		}
+		if scope.Owner != rec.Owner {
+			return false, nil
+		}
 	}
 	if inc == (store.Incarnation{}) {
 		return true, nil

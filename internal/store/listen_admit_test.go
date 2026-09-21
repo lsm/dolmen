@@ -71,9 +71,9 @@ func TestListenAdmitDecisions(t *testing.T) {
 			sess.table = ""
 		}
 		sess.liveAuthz = tc.resolver
-		visible, revoked := sess.admit(tc.record)
-		if visible != tc.visible || revoked != tc.revoked {
-			t.Fatalf("admit(%s) = visible %v, revoked %v; want %v, %v", tc.name, visible, revoked, tc.visible, tc.revoked)
+		visible, cause := sess.admit(tc.record)
+		if visible != tc.visible || errors.Is(cause, ErrListenRevoked) != tc.revoked {
+			t.Fatalf("admit(%s) = visible %v, cause %v; want %v, revoked %v", tc.name, visible, cause, tc.visible, tc.revoked)
 		}
 	}
 
@@ -103,8 +103,8 @@ func TestListenAdmitDecisions(t *testing.T) {
 	}
 
 	nilSess := testSession(nil)
-	if visible, revoked := nilSess.admit(rec); !visible || revoked {
-		t.Fatalf("nil liveAuthz = visible %v, revoked %v; want true, false", visible, revoked)
+	if visible, cause := nilSess.admit(rec); !visible || cause != nil {
+		t.Fatalf("nil liveAuthz = visible %v, cause %v; want true, nil", visible, cause)
 	}
 }
 

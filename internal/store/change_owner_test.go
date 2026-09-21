@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"sync/atomic"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -254,5 +256,45 @@ func TestAScopedCatchUpRefusesUnlabelledHistory(t *testing.T) {
 	if _, _, err := st.ChangesSince(ctx, "ns", "notes", "", [16]byte{},
 		&RowScope{Owner: "alice"}, Incarnation{}, Page{Limit: 10}); err != nil {
 		t.Fatalf("starting at the head replays nothing, so there is nothing to refuse: %v", err)
+
+func TestNarrowingToAScopeMidReplayRefusesUnlabelledHistory(t *testing.T) {
+	st := openRowAccessStore(t)
+	ctx := context.Background()
+	seedOwnedTable(t, st)
+	for i := 0; i < 3; i++ {
+		if _, err := st.Insert(ctx, "ns", "notes", []map[string]any{{"sku": fmt.Sprint(i), "body": "alice's"}},
+			WriteOpts{Owner: "alice"}, Embedder{}, nil, Incarnation{}); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	stripChangeLabels(t, st, "ns")
+
+	var narrowed atomic.Bool
+	authz := func(string) (*RowScope, Incarnation, bool) {
+		if narrowed.Load() {
+			return &RowScope{Owner: "alice"}, Incarnation{}, true
+		}
+		return nil, Incarnation{}, true
+	}
+	replay, cancel, err := st.Listen(ctx, "ns", "notes", CursorBegin, [16]byte{}, authz, func(ChangeRecord) {}, nil)
+	if err != nil {
+		t.Fatalf("a table-wide reader may replay unlabelled history: %v", err)
+	}
+	defer cancel()
+
+	narrowed.Store(true)
+	var last error
+	for {
+		_, _, done, nerr := replay.Next(ctx)
+		if nerr != nil {
+			last = nerr
+			break
+		}
+		if done {
+			break
+		}
+	}
+	if !errors.Is(last, ErrScopedFeedPredatesLabels) {
+		t.Fatalf("the grant narrowed to a scope mid-replay, so the unlabelled records must stop the replay rather than vanish from it: %v", last)
 	}
 }
