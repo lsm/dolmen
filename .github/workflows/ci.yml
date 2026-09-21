@@ -76,3 +76,7 @@ jobs:
         run: go test -race -count=1 ./internal/postgres
       - name: Shared namespace and table contracts on both backends
         run: go test -race -count=1 ./internal/conformance -run 'BackendConformance$'
+      - name: Packaged binary end to end on PostgreSQL
+        env:
+          DOLMEN_ENGINE: postgres
+        run: go test -race -count=1 ./internal/blackbox
