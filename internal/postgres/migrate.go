@@ -140,7 +140,7 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 		if (ch.Op == schema.OpSetFulltext || ch.Op == schema.OpSetVectorize) && ch.Value == nil {
 			return nil, invalidf("changes[%d]: %s requires an explicit value (true or false)", i, ch.Op)
 		}
-		if ch.Op != schema.OpSetFulltext && ch.Op != schema.OpSetVectorize && ch.Op != schema.OpSetRowAccess && ch.Value != nil {
+		if !schema.TakesValue(ch.Op) && ch.Value != nil {
 			return nil, invalidf("changes[%d]: value is only allowed on set_fulltext/set_vectorize/set_row_access (op %q has no flag to set)", i, ch.Op)
 		}
 		if cur.HasOwner {
@@ -879,7 +879,7 @@ func (s *Store) ListMigrations(ctx context.Context, ns, table string, inc store.
 				return fmt.Errorf("corrupt migration record %d for %s.%s: %w", m.ID, ns, table, err)
 			}
 			for j := range m.Changes {
-				if m.Changes[j].Op != schema.OpSetFulltext && m.Changes[j].Op != schema.OpSetVectorize {
+				if !schema.TakesValue(m.Changes[j].Op) {
 					m.Changes[j].Value = nil
 				}
 			}
