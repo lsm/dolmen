@@ -360,6 +360,44 @@ func TestAScopedSearchFiltersOverOwnRowsOnly(t *testing.T) {
 	}
 }
 
+func TestScopeAndFilterArgumentsBindInOrder(t *testing.T) {
+	st := openRowAccessStore(t)
+	seedScoped(t, st)
+	ctx := context.Background()
+
+	res, err := st.SearchFulltext(ctx, "ns", "notes", "alpha", "body LIKE ? AND body <> ?",
+		[]any{"%alpha%", "nothing"}, false, &RowScope{Owner: "alice"}, Incarnation{}, Page{Limit: 10})
+	if err != nil {
+		t.Fatalf("a scoped search carrying filter arguments failed, so the owner and the filter values bound to the wrong places: %v", err)
+	}
+	if len(res.Rows) != 2 {
+		t.Fatalf("the scoped filtered search returned %d rows, want alice's 2: %v", len(res.Rows), res.Rows)
+	}
+	for _, r := range res.Rows {
+		if owner, _ := r[schema.OwnerColumn].(string); owner != "alice" {
+			t.Fatalf("a scoped filtered search returned a row owned by %q: %v", owner, r)
+		}
+	}
+
+	swapped, err := st.SearchFulltext(ctx, "ns", "notes", "alpha", "body LIKE ? AND body <> ?",
+		[]any{"%alpha%", "alpha note"}, false, &RowScope{Owner: "alice"}, Incarnation{}, Page{Limit: 10})
+	if err != nil {
+		t.Fatalf("second scoped search: %v", err)
+	}
+	if len(swapped.Rows) != 1 {
+		t.Fatalf("the second filter argument was not honoured: %d rows, want 1: %v", len(swapped.Rows), swapped.Rows)
+	}
+
+	del, err := st.Delete(ctx, "ns", "notes", "body LIKE ? AND id > ?", []any{"%alpha%", 0},
+		DeleteOpts{DryRun: true}, &RowScope{Owner: "alice"}, Incarnation{})
+	if err != nil {
+		t.Fatalf("a scoped delete carrying filter arguments failed: %v", err)
+	}
+	if del.Matched != 2 {
+		t.Fatalf("the scoped dry run matched %d rows, want alice's 2", del.Matched)
+	}
+}
+
 func TestAScopedUpsertInsertsRatherThanTouchingAForeignMatch(t *testing.T) {
 	st := openRowAccessStore(t)
 	seedScoped(t, st)
@@ -448,5 +486,45 @@ func TestScopedUpsertByKeyCannotTouchAForeignRow(t *testing.T) {
 	}
 	if len(rows.Rows) != 1 || rows.Rows[0]["body"] != "bob's" {
 		t.Fatalf("bob's row was modified: %v", rows.Rows)
+	}
+}
+
+func TestScopedVectorSearchKeepsBothItsScopeAndItsFilterArguments(t *testing.T) {
+	st := openRowAccessStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "ns", "docs", []schema.Field{
+		{Name: "body", Type: schema.Text},
+		{Name: "emb", Type: schema.Vector, Dim: 4},
+	}, TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	for _, r := range []struct {
+		owner, body string
+		vec         []float32
+	}{
+		{"alice", "alpha", []float32{1, 0, 0, 0}},
+		{"alice", "beta", []float32{0, 1, 0, 0}},
+		{"bob", "alpha", []float32{1, 0, 0, 0}},
+	} {
+		if _, err := st.Insert(ctx, "ns", "docs", []map[string]any{{"body": r.body, "emb": r.vec}},
+			WriteOpts{Owner: r.owner}, Embedder{}, nil, Incarnation{}); err != nil {
+			t.Fatalf("insert for %s: %v", r.owner, err)
+		}
+	}
+
+	res, err := st.SearchVector(ctx, "ns", "docs", VectorQuery{
+		Column: "emb",
+		Vec:    []float32{1, 0, 0, 0},
+		Filter: "body = ?",
+		Args:   []any{"alpha"},
+	}, false, &RowScope{Owner: "alice"}, Incarnation{}, Page{Limit: 10})
+	if err != nil {
+		t.Fatalf("a scoped vector search carrying a filter argument failed, so the owner and the filter value bound to the wrong places: %v", err)
+	}
+	if len(res.Rows) != 1 {
+		t.Fatalf("the scoped vector search returned %d rows, want alice's 1 alpha row: %v", len(res.Rows), res.Rows)
+	}
+	if owner, _ := res.Rows[0][schema.OwnerColumn].(string); owner != "alice" {
+		t.Fatalf("a scoped vector search returned a row owned by %q: %v", owner, res.Rows[0])
 	}
 }

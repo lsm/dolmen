@@ -14,6 +14,14 @@
   oracle over it. Date and time functions take explicit moments only — `'now'`, `'localtime'` and
   `'utc'` are refused whether written as literals or bound as arguments; compute the moment you
   mean and bind it. Under `auth: off` the filter language is exactly what it was in v0.2.0.
+- **Scoped callers can filter again.** `update`, `delete`, `upsert` and filtered searches were
+  refused outright for a caller limited to their own rows; they now work, with the scope applied
+  first at a materialization boundary so a caller's expression never evaluates against a row
+  outside their visible set. The allowlist alone cannot deliver that: `iif(body = ?,
+  abs(-9223372036854775808), 1)` is row-local and fully permitted, and as an ordinary `AND`
+  conjunct it still raises an overflow error on a foreign row — which answers what that row
+  holds. An upsert whose filter matches only invisible rows inserts a fresh row owned by the
+  writer rather than taking one over.
 
 - **`-auth on` / `DOLMEN_AUTH=on`** turns on deny-by-default authentication, with the bootstrap
   admin key (`DOLMEN_ADMIN_KEY`) as its one identity source. Every `/v1/{op}`, `/mcp`, and
