@@ -11,9 +11,15 @@
   `row_access` disablement alike; the payload comparison that rejects a changed body therefore never
   runs against someone else's record. Records written before `-auth on` are preserved and replay to
   callers holding table-wide `read`, whose rows those ids already are; turning auth off again
-  consults only that pre-auth domain, so `auth: off` behaves exactly as it did in v0.2.0. Existing
-  databases gain the new column on first open. This lifts the refusal of `idempotency_key` for a
-  caller restricted to their own rows.
+  consults only that pre-auth domain, so `auth: off` behaves exactly as it did in v0.2.0. This lifts
+  the refusal of `idempotency_key` for a caller restricted to their own rows.
+
+  **This one is a one-way door.** Existing databases gain the new column on first open, and the
+  namespace's catalog minimum-reader stamp rises with it, so an older dolmen refuses to open the data
+  directory afterwards rather than opening it and reading the table as though keys were still global
+  — which is precisely the disclosure being closed, since that reader would answer one principal's
+  retry with another's ids. Back up a data directory before the first open if you may need to
+  downgrade.
 
 - **Filters are a row-local language when auth is on.** `update`, `delete`, `upsert`,
   `search_fulltext` and `search_vector` take a SQL `WHERE` fragment; with `-auth on` that fragment
