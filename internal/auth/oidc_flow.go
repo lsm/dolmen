@@ -283,7 +283,11 @@ func (s *OIDCSource) claimsFrom(ctx context.Context, tr tokenResponse, eps provi
 			}
 			sub, _ := claims["sub"].(string)
 			if sub != "" {
-				return sub, groupClaims(claims, s.cfg.GroupsClaim), nil
+				groups, err := groupClaims(claims, s.cfg.GroupsClaim)
+				if err != nil {
+					return "", nil, err
+				}
+				return sub, groups, nil
 			}
 		}
 	}
@@ -317,7 +321,11 @@ func (s *OIDCSource) claimsFrom(ctx context.Context, tr tokenResponse, eps provi
 	if sub == "" {
 		return "", nil, fmt.Errorf("%w: the identity provider returned no usable subject claim", ErrAuthFlow)
 	}
-	return sub, groupClaims(claims, s.cfg.GroupsClaim), nil
+	groups, err := groupClaims(claims, s.cfg.GroupsClaim)
+	if err != nil {
+		return "", nil, err
+	}
+	return sub, groups, nil
 }
 
 func (s *OIDCSource) checkIDTokenClaims(claims map[string]any) error {
@@ -370,25 +378,45 @@ func unverifiedClaims(idToken string) (map[string]any, error) {
 	return claims, nil
 }
 
-func groupClaims(claims map[string]any, key string) []string {
+func groupClaims(claims map[string]any, key string) ([]string, error) {
 	if key == "" {
 		key = "groups"
 	}
 	raw, ok := claims[key]
-	if !ok {
-		return nil
+	if !ok || raw == nil {
+		return nil, nil
 	}
 	list, ok := raw.([]any)
 	if !ok {
-		return nil
+		return nil, fmt.Errorf("%w: the identity provider sent the %q claim as %s rather than an array of group names; dolmen will not guess how to split it, because a name split wrongly would miss every grant written for it — point DOLMEN_AUTH_OIDC_GROUPS_CLAIM at the claim that holds the array, or at one this provider does not send", ErrAuthFlow, key, jsonTypeOf(raw))
 	}
-	var out []string
+	out := make([]string, 0, len(list))
 	for _, v := range list {
-		if s, ok := v.(string); ok && s != "" {
-			out = append(out, s)
+		name, ok := v.(string)
+		if !ok || name == "" {
+			return nil, fmt.Errorf("%w: the identity provider's %q claim holds an entry that is not a group name (%s); dropping it would silently discard a group that carries a grant, so the sign-in is refused", ErrAuthFlow, key, jsonTypeOf(v))
 		}
+		out = append(out, name)
 	}
-	return out
+	return out, nil
+}
+
+func jsonTypeOf(v any) string {
+	switch v.(type) {
+	case nil:
+		return "null"
+	case bool:
+		return "a boolean"
+	case float64:
+		return "a number"
+	case string:
+		return "a string"
+	case []any:
+		return "an array"
+	case map[string]any:
+		return "an object"
+	}
+	return "an unexpected value"
 }
 
 func (s *OIDCSource) Rotate(ctx context.Context, retirePredecessors bool) (Keyring, error) {

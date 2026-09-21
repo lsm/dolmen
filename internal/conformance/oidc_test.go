@@ -269,6 +269,24 @@ func TestAuthEndpointsAreDiscoverableWhenServed(t *testing.T) {
 	}
 }
 
+func TestAnUnusableGroupsClaimRefusesTheSignIn(t *testing.T) {
+	stub := newIssuerStub(t, "00u1a2b3", nil)
+	stub.extraClaims = map[string]any{"groups": "platform sre"}
+	h := oidcHarness(t, stub)
+
+	res, err := h.web().Get(h.srv.URL + "/v1/auth/begin")
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusOK {
+		t.Fatal("a provider sending groups as a string signed someone in with no groups, so every grant on their groups silently misses and they see 403 everywhere")
+	}
+	if body := readAll(t, res); !strings.Contains(body, "groups") {
+		t.Fatalf("the refusal does not name the claim: %s", body)
+	}
+}
+
 func TestDiscoveredEndpointsMustBeHTTPS(t *testing.T) {
 	for _, field := range []string{"token_endpoint", "authorization_endpoint", "userinfo_endpoint"} {
 		t.Run(field, func(t *testing.T) {

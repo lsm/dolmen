@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -48,5 +49,51 @@ func TestDisabledConfigValidates(t *testing.T) {
 	}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("a disabled config was rejected: %v", err)
+	}
+}
+
+func TestGroupClaimShapes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		claims map[string]any
+		key    string
+		want   []string
+		bad    bool
+	}{
+		"absent":            {claims: map[string]any{"sub": "u"}},
+		"explicit null":     {claims: map[string]any{"groups": nil}},
+		"empty array":       {claims: map[string]any{"groups": []any{}}, want: []string{}},
+		"names":             {claims: map[string]any{"groups": []any{"platform", "sre"}}, want: []string{"platform", "sre"}},
+		"configured key":    {claims: map[string]any{"roles": []any{"platform"}}, key: "roles", want: []string{"platform"}},
+		"string":            {claims: map[string]any{"groups": "platform sre"}, bad: true},
+		"number":            {claims: map[string]any{"groups": float64(3)}, bad: true},
+		"object":            {claims: map[string]any{"groups": map[string]any{"a": true}}, bad: true},
+		"number inside":     {claims: map[string]any{"groups": []any{"platform", float64(3)}}, bad: true},
+		"empty name inside": {claims: map[string]any{"groups": []any{"platform", ""}}, bad: true},
+		"nested array":      {claims: map[string]any{"groups": []any{[]any{"platform"}}}, bad: true},
+	} {
+		got, err := groupClaims(tc.claims, tc.key)
+		if tc.bad {
+			if err == nil {
+				t.Fatalf("%s: an unusable groups claim signed in with %v groups, so every grant on those groups silently misses", name, got)
+			}
+			if !errors.Is(err, ErrAuthFlow) {
+				t.Fatalf("%s: the refusal is not a sign-in flow error: %v", name, err)
+			}
+			if !strings.Contains(err.Error(), "DOLMEN_AUTH_OIDC_GROUPS_CLAIM") && !strings.Contains(err.Error(), "discard") {
+				t.Fatalf("%s: the refusal names no remediation: %v", name, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s: rejected a usable claim: %v", name, err)
+		}
+		if len(got) != len(tc.want) {
+			t.Fatalf("%s: got %v, want %v", name, got, tc.want)
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Fatalf("%s: got %v, want %v", name, got, tc.want)
+			}
+		}
 	}
 }

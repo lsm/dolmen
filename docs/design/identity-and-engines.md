@@ -402,7 +402,12 @@ OIDC covers Entra, Okta, Google, etc.
 - **Principal = the `sub` claim, never the email** — grants survive email changes; email is
   display-only and not stored (§1.6). Groups come from claims. Caveat, documented rather than
   papered over: Entra emits group claims as object GUIDs, not names, so Entra deployments either
-  sync names or grant on the GUIDs. And because OIDC subject identifiers are unique **only
+  sync names or grant on the GUIDs. The groups claim is read as an array of names and nothing else:
+  a claim present in an unusable shape — a delimited string, a number, an entry that is not a name —
+  **refuses the sign-in** rather than yielding the groups it could parse. Guessing a separator or
+  skipping an entry would authenticate someone into a body whose grants silently miss, which is the
+  same reasoning that makes over-limit groups a `401` rather than a truncation. An absent or `null`
+  claim is not a shape error: it means no groups. And because OIDC subject identifiers are unique **only
   within an issuer**, source B's principals and groups are **issuer-qualified**: the source
   yields the pair (issuer, `sub`) under a **versioned, byte-for-byte encoding, pinned so
   normalized identities are stable across implementations and releases** —
