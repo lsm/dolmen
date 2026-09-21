@@ -161,7 +161,7 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 			if err != nil {
 				return err
 			}
-			if err := checkIncarnation(ns, state.incarnation, expected); err != nil {
+			if err := s.guardScope(ctx, tx, n, table, state, expected); err != nil {
 				return err
 			}
 			if err := validateMutationSet(state, set); err != nil {
@@ -285,7 +285,7 @@ func (s *Store) Delete(ctx context.Context, ns, table, filter string, args []any
 			if err != nil {
 				return err
 			}
-			if err := checkIncarnation(ns, state.incarnation, expected); err != nil {
+			if err := s.guardScope(ctx, tx, n, table, state, expected); err != nil {
 				return err
 			}
 			compiled, err := s.compileMutationFilter(ctx, tx, n, filter, len(args), state)
@@ -304,7 +304,7 @@ func (s *Store) Delete(ctx context.Context, ns, table, filter string, args []any
 		if err != nil {
 			return err
 		}
-		if err := checkIncarnation(ns, state.incarnation, expected); err != nil {
+		if err := s.guardScope(ctx, tx, n, table, state, expected); err != nil {
 			return err
 		}
 		compiled, err := s.compileMutationFilter(ctx, tx, n, filter, len(args), state)

@@ -577,6 +577,9 @@ func (s *Store) PlanMigration(ctx context.Context, ns, table string, changes []s
 		if err != nil {
 			return err
 		}
+		if err := s.guardScope(ctx, tx, n, table, state, scopeIncarnation); err != nil {
+			return err
+		}
 		if err := checkIncarnation(ns, state.incarnation, expected); err != nil {
 			return err
 		}

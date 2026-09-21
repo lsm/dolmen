@@ -101,6 +101,20 @@ func (s *Store) pruneChanges(ctx context.Context, tx pgx.Tx, n namespace, now ti
 }
 
 func (s *Store) ChangesSince(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, scope *store.RowScope, inc store.Incarnation, page store.Page) ([]store.ChangeRecord, store.Cursor, error) {
+	if scope != nil {
+		return nil, "", store.ErrScopedFeedUnsupported
+	}
+	if table != "" && !store.IncarnationIsZero(inc) {
+		if err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
+			state, err := s.loadTable(ctx, tx, n, table)
+			if err != nil {
+				return err
+			}
+			return s.guardScope(ctx, tx, n, table, state, inc)
+		}); err != nil {
+			return nil, "", err
+		}
+	}
 	return s.changesSince(ctx, ns, table, from, expected, scope, inc, page, nil)
 }
 
