@@ -477,6 +477,17 @@ not in the common grammar, and PostgreSQL's parser treats it as punctuation, so 
 query was accepted and answered `200` with an empty result set where the contract
 requires a teaching `400`.
 
+The fixtures now carry those engine-aware pins rather than leaving them red. The golden
+error contract keeps its SQLite expectations and consults `postgresErrorPins` for the
+full-text rows, so both engines are asserted to teach the same remediation in their own
+vocabulary — a rejected query still has to be rejected, with the same status and code,
+and only the wording differs. Accent folding, the raw read of a boolean under an
+undeclared label, and `_embedding` through caller SQL are each asserted per engine, so
+PostgreSQL's behavior is pinned rather than merely tolerated: caller SQL must be refused
+the embedding column, not just happen to fail. One assertion unions a boolean with a
+string under a single label, which only a dynamically typed engine can answer; it is
+marked SQLite-only beside the existing blob-cast fixture.
+
 Two more failures are per-engine differences the design already grants, not gaps.
 
 `TestTypedReadAliasesAndFallbacks` expects an alias to an *undeclared* label to read
@@ -497,7 +508,6 @@ closed before the public selector is enabled:
 
 | Area | Fixture | Gap |
 |---|---|---|
-| Error taxonomy | `TestGoldenErrorContract` | statuses and codes now match on every case; what remains is full-text wording, where the fixture pins FTS5 strings (`fts5: syntax error`, `column "nocol" not found`, `FTS5 parses a bare "-"`) that D27 makes per-engine, so these need an engine-aware pin |
 | SSE | `TestSubscribeOverflowTeachesReconnect` | the bound itself now exists and `TestPostgresListenOverflowsABlockedSubscriber` pins it, but the fixture parks a consumer and floods 9000 changes, which needs the live pump to get 8000 ahead of the writer. Live fetches go through `ChangesSince`, which takes the namespace write lock to mint a cursor per record, so the pump contends with the very writer it must outrun and no backlog accumulates. Closing this means a live read that does not take the write lock |
 
 The driver remains pure Go and compatible with the static binary requirement.

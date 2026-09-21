@@ -2,6 +2,8 @@ package conformance
 
 import (
 	"testing"
+
+	"github.com/lsm/dolmen/internal/store"
 )
 
 func TestTypedReadCoercionMatrix(t *testing.T) {
@@ -144,7 +146,11 @@ func TestTypedReadAliasesAndFallbacks(t *testing.T) {
 	row = h.mustHTTP("query", map[string]any{
 		"namespace": "alias", "sql": "SELECT flag AS indicator FROM a",
 	})["rows"].([]any)[0].(map[string]any)
-	assertJSONEqual(t, "alias to undeclared label stays raw", row["indicator"], float64(1))
+	rawBoolean := any(float64(1))
+	if testEngine(t) == store.EnginePostgres {
+		rawBoolean = true
+	}
+	assertJSONEqual(t, "alias to undeclared label stays raw", row["indicator"], rawBoolean)
 
 	row = h.mustHTTP("query", map[string]any{
 		"namespace": "alias", "sql": "SELECT n * 2 AS doubled FROM a",
@@ -162,11 +168,14 @@ func TestTypedReadAliasesAndFallbacks(t *testing.T) {
 		}
 	})
 
-	rows := h.mustHTTP("query", map[string]any{
-		"namespace": "alias", "sql": "SELECT flag FROM a UNION ALL SELECT flag FROM b",
-	})["rows"].([]any)
-	assertJSONEqual(t, "ambiguous label falls back raw (a)", rows[0].(map[string]any)["flag"], float64(1))
-	assertJSONEqual(t, "ambiguous label falls back raw (b)", rows[1].(map[string]any)["flag"], "yes")
+	t.Run("sqlite unions a boolean and a string under one label", func(t *testing.T) {
+		sqliteOnly(t)
+		rows := h.mustHTTP("query", map[string]any{
+			"namespace": "alias", "sql": "SELECT flag FROM a UNION ALL SELECT flag FROM b",
+		})["rows"].([]any)
+		assertJSONEqual(t, "ambiguous label falls back raw (a)", rows[0].(map[string]any)["flag"], float64(1))
+		assertJSONEqual(t, "ambiguous label falls back raw (b)", rows[1].(map[string]any)["flag"], "yes")
+	})
 }
 
 func TestTypedReadEmbeddingHidden(t *testing.T) {
@@ -219,6 +228,13 @@ func TestTypedReadEmbeddingHidden(t *testing.T) {
 		}
 	}
 
+	if testEngine(t) == store.EnginePostgres {
+		status, body := h.httpCall("query", map[string]any{"namespace": "hidden", "sql": "SELECT _embedding FROM t"})
+		if status == 200 {
+			t.Fatalf("PostgreSQL caller SQL runs as the restricted query role, which must not reach _embedding: %v", body)
+		}
+		return
+	}
 	row = h.mustHTTP("query", map[string]any{
 		"namespace": "hidden", "sql": "SELECT _embedding FROM t",
 	})["rows"].([]any)[0].(map[string]any)
