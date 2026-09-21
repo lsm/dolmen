@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -152,4 +153,103 @@ func TestIdempotencyRecordsGainAnOwnerColumnOnOpen(t *testing.T) {
 	if idsJSON != "[7]" {
 		t.Fatalf("the pre-auth record's ids changed: %s", idsJSON)
 	}
+}
+
+func TestTheOwnerLayoutRaisesTheMinimumReader(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	mustNS(t, legacy(st), "ns")
+	if err := st.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	if minReader, ok := catalogMeta(t, dir, "ns", catalogMinReaderKey); !ok || minReader != strconv.Itoa(CatalogMinReader) {
+		t.Fatalf("min reader = %q (present=%v), want %d: an older binary reads this table without the owner column and would replay one principal's ids to another",
+			minReader, ok, CatalogMinReader)
+	}
+}
+
+func TestAPreAuthNamespaceIsClosedToOlderBinaries(t *testing.T) {
+	dir := t.TempDir()
+	seedNamespace(t, dir, "legacy")
+	setCatalogMeta(t, dir, "legacy", catalogFormatKey, "1")
+	setCatalogMeta(t, dir, "legacy", catalogMinReaderKey, "1")
+
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("a namespace written before the owner layout must still open: %v", err)
+	}
+	if _, err := st.ListTables(context.Background(), "legacy", nil); err != nil {
+		t.Fatalf("list tables: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	minReader, ok := catalogMeta(t, dir, "legacy", catalogMinReaderKey)
+	if !ok || minReader != strconv.Itoa(CatalogMinReader) {
+		t.Fatalf("adopting a pre-auth namespace left min reader at %q (present=%v); the rebuild permits two owners under one key, which an older reader cannot see",
+			minReader, ok)
+	}
+}
+
+func TestASecondOpenerDoesNotRebuildTwice(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	mustNS(t, legacy(st), "ns")
+	n, err := st.ns("ns")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	ctx := context.Background()
+	for _, stmt := range []string{
+		`DROP TABLE _dolmen_idempotency`,
+		`CREATE TABLE _dolmen_idempotency(
+			table_name TEXT NOT NULL,
+			key TEXT NOT NULL,
+			payload_hash TEXT NOT NULL,
+			ids_json TEXT NOT NULL,
+			at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			PRIMARY KEY(table_name, key)
+		)`,
+		`INSERT INTO _dolmen_idempotency(table_name, key, payload_hash, ids_json) VALUES('notes','k','hash','[1]')`,
+	} {
+		if _, err := n.rw.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("stage the pre-auth table: %v", err)
+		}
+	}
+	st.Close()
+
+	first, err := Open(dir)
+	if err != nil {
+		t.Fatalf("first reopen: %v", err)
+	}
+	fn, err := first.ns("ns")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	if _, err := fn.rw.ExecContext(ctx,
+		`INSERT INTO _dolmen_idempotency(table_name, owner, key, payload_hash, ids_json) VALUES('notes','alice','k','hash','[2]')`); err != nil {
+		t.Fatalf("record an owner-scoped key after the rebuild: %v", err)
+	}
+
+	if err := migrateIdempotencyOwner(ctx, fn.rw); err != nil {
+		t.Fatalf("a second opener that saw the old shape before another process rebuilt it failed: %v", err)
+	}
+
+	var owners int
+	if err := fn.rw.QueryRowContext(ctx,
+		`SELECT count(DISTINCT owner) FROM _dolmen_idempotency WHERE table_name = 'notes' AND key = 'k'`).Scan(&owners); err != nil {
+		t.Fatalf("count owners: %v", err)
+	}
+	if owners != 2 {
+		t.Fatalf("a repeated migration collapsed %d owner domains into one; the legacy record and alice's must both survive", owners)
+	}
+	first.Close()
 }

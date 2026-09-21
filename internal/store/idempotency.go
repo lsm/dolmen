@@ -10,12 +10,16 @@ import (
 
 const LegacyIdempotencyOwner = ""
 
-func ensureIdempotencyOwner(ctx context.Context, db *sql.DB) error {
+type pragmaQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func idempotencyHasOwner(ctx context.Context, db pragmaQuerier) (bool, error) {
 	rows, err := db.QueryContext(ctx, `PRAGMA table_info(_dolmen_idempotency)`)
 	if err != nil {
-		return err
+		return false, err
 	}
-	present := false
+	defer rows.Close()
 	for rows.Next() {
 		var cid int
 		var name, colType string
@@ -23,26 +27,51 @@ func ensureIdempotencyOwner(ctx context.Context, db *sql.DB) error {
 		var dflt any
 		var pk int
 		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
-			rows.Close()
-			return err
+			return false, err
 		}
 		if name == "owner" {
-			present = true
+			return true, rows.Err()
 		}
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	return false, rows.Err()
+}
+
+func ensureIdempotencyOwner(ctx context.Context, db *sql.DB) error {
+	present, err := idempotencyHasOwner(ctx, db)
+	if err != nil || present {
 		return err
 	}
-	if present {
-		return nil
-	}
+	return migrateIdempotencyOwner(ctx, db)
+}
 
-	tx, err := db.BeginTx(ctx, nil)
+func migrateIdempotencyOwner(ctx context.Context, db *sql.DB) error {
+	conn, err := db.Conn(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("give idempotency records an owner domain: %w", err)
+	}
+	done := false
+	defer func() {
+		if !done {
+			_, _ = conn.ExecContext(context.WithoutCancel(ctx), `ROLLBACK`)
+		}
+	}()
+
+	present, err := idempotencyHasOwner(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if present {
+		if _, err := conn.ExecContext(ctx, `ROLLBACK`); err != nil {
+			return err
+		}
+		done = true
+		return nil
+	}
+
 	for _, stmt := range []string{
 		`CREATE TABLE _dolmen_idempotency_owned(
 			table_name TEXT NOT NULL,
@@ -58,11 +87,15 @@ func ensureIdempotencyOwner(ctx context.Context, db *sql.DB) error {
 		`DROP TABLE _dolmen_idempotency`,
 		`ALTER TABLE _dolmen_idempotency_owned RENAME TO _dolmen_idempotency`,
 	} {
-		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("give idempotency records an owner domain: %w", err)
 		}
 	}
-	return tx.Commit()
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return fmt.Errorf("give idempotency records an owner domain: %w", err)
+	}
+	done = true
+	return nil
 }
 
 type idemDomain struct {

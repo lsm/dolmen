@@ -259,17 +259,17 @@ func (s *Store) lockedNSCtx(ctx context.Context, name string) (*nsDB, error) {
 		}
 	}
 
-	if err := ensureIdempotencyOwner(ctx, rw); err != nil {
-		rw.Close()
-		return nil, fmt.Errorf("init namespace %s: %w", name, err)
-	}
-
 	if err := ensureCatalogVersion(ctx, rw, name); err != nil {
 		rw.Close()
 		var cve *CatalogVersionError
 		if errors.As(err, &cve) {
 			return nil, err
 		}
+		return nil, fmt.Errorf("init namespace %s: %w", name, err)
+	}
+
+	if err := ensureIdempotencyOwner(ctx, rw); err != nil {
+		rw.Close()
 		return nil, fmt.Errorf("init namespace %s: %w", name, err)
 	}
 
