@@ -95,6 +95,8 @@ var pinnedFilterSemantics = []struct {
 	{"null is not distinct from null under IS", "NULL IS NULL"},
 	{"LIKE folding stops at ASCII", "'æ' NOT LIKE 'Æ'"},
 	{"a blob literal is bytes, not bits", "length(X'6162') = 2"},
+	{"text never equals a number", "NOT (body = 1)"},
+	{"text sorts after a number", "body > 1"},
 }
 
 var notYetEvaluatedByAdapterTwo = map[string]bool{
@@ -112,6 +114,8 @@ var notYetPinnedByAdapterTwo = map[string]bool{
 	"string comparison is BINARY byte-wise":         true,
 	"nonnumeric text coerces to zero in arithmetic": true,
 	"a blob literal is bytes, not bits":             true,
+	"text never equals a number":                    true,
+	"text sorts after a number":                     true,
 }
 
 var notYetSpelledByAdapterTwo = map[string]bool{
