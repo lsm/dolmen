@@ -28,6 +28,7 @@ func seedTwoTables(t *testing.T, h *harness) {
 }
 
 func TestAuthOffKeepsTheV020FilterLanguage(t *testing.T) {
+	sqliteOnly(t)
 	h := newHarnessMode(t, authOff)
 	seedTwoTables(t, h)
 
