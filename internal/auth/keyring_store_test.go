@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -202,7 +203,7 @@ func TestKeyringRefreshPropagatesRetirement(t *testing.T) {
 	}
 }
 
-func TestPendingSignInsAreCapped(t *testing.T) {
+func TestPendingSignInsAreCappedPerClient(t *testing.T) {
 	r, err := OpenRegistry(t.TempDir())
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -210,17 +211,57 @@ func TestPendingSignInsAreCapped(t *testing.T) {
 	defer r.Close()
 	ctx := context.Background()
 
-	for i := 0; i < MaxPendingSignIns; i++ {
-		if err := r.putPending(ctx, fmt.Sprintf("state-%d", i), "verifier", "https://example/cb"); err != nil {
+	for i := 0; i < MaxPendingSignInsPerPeer; i++ {
+		if err := r.putPending(ctx, fmt.Sprintf("state-%d", i), "verifier", "https://example/cb", "10.0.0.1"); err != nil {
 			t.Fatalf("pending %d: %v", i, err)
 		}
 	}
-	err = r.putPending(ctx, "one-too-many", "verifier", "https://example/cb")
+	err = r.putPending(ctx, "one-too-many", "verifier", "https://example/cb", "10.0.0.1")
 	if err == nil {
-		t.Fatal("an unauthenticated endpoint grew the registry without bound")
+		t.Fatal("one unauthenticated client grew the registry without bound")
 	}
 	if !errors.Is(err, ErrAuthFlow) {
 		t.Fatalf("the refusal is not a sign-in flow error: %v", err)
+	}
+	if !strings.Contains(err.Error(), pendingTTL.String()) {
+		t.Fatalf("the refusal does not say when the slots come back: %v", err)
+	}
+	if err := r.putPending(ctx, "from-elsewhere", "verifier", "https://example/cb", "10.0.0.2"); err != nil {
+		t.Fatalf("one client at its limit blocked a different client: %v", err)
+	}
+}
+
+func TestAFloodOfSignInsNeverLocksOutAClient(t *testing.T) {
+	r, err := OpenRegistry(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer r.Close()
+	ctx := context.Background()
+
+	for peer := 0; peer < 30; peer++ {
+		for i := 0; i < 20; i++ {
+			state := fmt.Sprintf("flood-%d-%d", peer, i)
+			if err := r.putPending(ctx, state, "verifier", "https://example/cb", fmt.Sprintf("10.0.1.%d", peer)); err != nil {
+				t.Fatalf("flood %s: %v", state, err)
+			}
+		}
+	}
+
+	if err := r.putPending(ctx, "a-real-person", "verifier", "https://example/cb", "10.0.9.9"); err != nil {
+		t.Fatalf("a flood from strangers locked out a sign-in for the whole expiry window: %v", err)
+	}
+	verifier, _, ok, err := r.takePending(ctx, "a-real-person")
+	if err != nil || !ok || verifier != "verifier" {
+		t.Fatalf("the sign-in admitted during the flood could not be completed: %q %v %v", verifier, ok, err)
+	}
+
+	var pending int
+	if err := r.db.QueryRowContext(ctx, `SELECT count(*) FROM auth_pending`).Scan(&pending); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if pending > MaxPendingSignIns {
+		t.Fatalf("the table holds %d rows, over the %d cap: admitting under pressure must evict, not grow", pending, MaxPendingSignIns)
 	}
 }
 
@@ -261,5 +302,59 @@ func TestFirstBootMintsOneDeploymentAndOneActiveKey(t *testing.T) {
 	}
 	if ringA.Active.ID != ringB.Active.ID {
 		t.Fatalf("two replicas minted different active signing keys (%q and %q)", ringA.Active.ID, ringB.Active.ID)
+	}
+}
+
+func TestConcurrentRotationsLeaveTheLiveRingNoOlderThanTheStore(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	r, err := OpenRegistry(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer r.Close()
+	dep, err := r.DeploymentID(ctx, "")
+	if err != nil {
+		t.Fatalf("deployment id: %v", err)
+	}
+	ring, err := r.LoadKeyring(ctx, dep)
+	if err != nil {
+		t.Fatalf("keyring: %v", err)
+	}
+	src := NewOIDCSource(OIDCConfig{Preset: PresetGitHub, ClientID: "c", ClientSecret: "s"}, r, ring, nil)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 6)
+	for _, retire := range []bool{true, false, true, false, true, false} {
+		wg.Add(1)
+		go func(retire bool) {
+			defer wg.Done()
+			if _, err := src.Rotate(ctx, retire); err != nil {
+				errs <- err
+			}
+		}(retire)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	stored, err := r.LoadKeyring(ctx, dep)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	held, _ := src.currentRing()
+	if held.Active.ID != stored.Active.ID {
+		t.Fatalf("the replica holds active key %q while the store says %q, so a rotation was locally undone", held.Active.ID, stored.Active.ID)
+	}
+	live := map[string]bool{stored.Active.ID: true}
+	for _, k := range stored.Verify {
+		live[k.ID] = true
+	}
+	for _, k := range append([]SigningKey{held.Active}, held.Verify...) {
+		if !live[k.ID] {
+			t.Fatalf("the replica still verifies key %q, which the store has retired: retire_previous was locally undone", k.ID)
+		}
 	}
 }

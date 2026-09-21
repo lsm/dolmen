@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"html/template"
+	"net"
 	"net/http"
 	"time"
 
@@ -47,7 +48,7 @@ func (s *Server) handleAuthBegin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errUnusableHost)
 		return
 	}
-	target, err := src.Begin(r.Context(), s.callbackURL(r))
+	target, err := src.Begin(r.Context(), s.callbackURL(r), peerOf(r))
 	if err != nil {
 		s.renderAuthError(w, r, err)
 		return
@@ -117,6 +118,14 @@ func (s *Server) renderAuthError(w http.ResponseWriter, r *http.Request, err err
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusBadRequest)
 	_ = errorPage.Execute(w, struct{ Message string }{Message: message})
+}
+
+func peerOf(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func (s *Server) callbackURL(r *http.Request) string {

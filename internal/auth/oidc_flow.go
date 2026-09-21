@@ -48,6 +48,8 @@ type OIDCSource struct {
 	endpoints providerEndpoints
 	onRing    func(Keyring)
 	ringGen   uint64
+
+	rotateMu sync.Mutex
 }
 
 func (s *OIDCSource) PublishRingTo(f func(Keyring)) {
@@ -155,7 +157,7 @@ func pkceChallenge(verifier string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-func (s *OIDCSource) Begin(ctx context.Context, redirectURI string) (string, error) {
+func (s *OIDCSource) Begin(ctx context.Context, redirectURI, peer string) (string, error) {
 	eps, err := s.resolveEndpoints(ctx)
 	if err != nil {
 		return "", err
@@ -168,7 +170,7 @@ func (s *OIDCSource) Begin(ctx context.Context, redirectURI string) (string, err
 	if err != nil {
 		return "", err
 	}
-	if err := s.reg.putPending(ctx, state, verifier, redirectURI); err != nil {
+	if err := s.reg.putPending(ctx, state, verifier, redirectURI, peer); err != nil {
 		return "", err
 	}
 
@@ -390,6 +392,8 @@ func groupClaims(claims map[string]any, key string) []string {
 }
 
 func (s *OIDCSource) Rotate(ctx context.Context, retirePredecessors bool) (Keyring, error) {
+	s.rotateMu.Lock()
+	defer s.rotateMu.Unlock()
 	cached, _ := s.currentRing()
 	ring, err := s.reg.RotateSigningKey(ctx, cached.Deployment, retirePredecessors)
 	if err != nil {

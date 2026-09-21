@@ -8,13 +8,17 @@ import (
 	"time"
 )
 
-const MaxPendingSignIns = 512
+const (
+	MaxPendingSignIns        = 512
+	MaxPendingSignInsPerPeer = 32
+)
 
 func (r *Registry) initPending() error {
 	if _, err := r.db.Exec(`CREATE TABLE IF NOT EXISTS auth_pending (
 		state        TEXT PRIMARY KEY,
 		verifier     TEXT NOT NULL,
 		redirect_uri TEXT NOT NULL,
+		peer         TEXT NOT NULL,
 		expires_at   TEXT NOT NULL
 	)`); err != nil {
 		return err
@@ -23,7 +27,7 @@ func (r *Registry) initPending() error {
 	return err
 }
 
-func (r *Registry) putPending(ctx context.Context, state, verifier, redirectURI string) error {
+func (r *Registry) putPending(ctx context.Context, state, verifier, redirectURI, peer string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, err := r.db.ExecContext(ctx,
@@ -31,16 +35,27 @@ func (r *Registry) putPending(ctx context.Context, state, verifier, redirectURI 
 		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("prune sign-in state: %w", err)
 	}
+	var fromPeer int
+	if err := r.db.QueryRowContext(ctx, `SELECT count(*) FROM auth_pending WHERE peer = ?`, peer).Scan(&fromPeer); err != nil {
+		return fmt.Errorf("count sign-in state: %w", err)
+	}
+	if fromPeer >= MaxPendingSignInsPerPeer {
+		return fmt.Errorf("%w: this client already has %d sign-ins in flight, which is the per-client limit; they expire within %s, so finish one or try again shortly", ErrAuthFlow, fromPeer, pendingTTL)
+	}
 	var pending int
 	if err := r.db.QueryRowContext(ctx, `SELECT count(*) FROM auth_pending`).Scan(&pending); err != nil {
 		return fmt.Errorf("count sign-in state: %w", err)
 	}
-	if pending >= MaxPendingSignIns {
-		return fmt.Errorf("%w: too many sign-ins are already in flight on this server (%d), so this one was not started; they expire within %s, so try again shortly", ErrAuthFlow, pending, pendingTTL)
+	if over := pending - MaxPendingSignIns + 1; over > 0 {
+		if _, err := r.db.ExecContext(ctx,
+			`DELETE FROM auth_pending WHERE state IN (SELECT state FROM auth_pending ORDER BY expires_at ASC LIMIT ?)`,
+			over); err != nil {
+			return fmt.Errorf("evict sign-in state: %w", err)
+		}
 	}
 	if _, err := r.db.ExecContext(ctx,
-		`INSERT INTO auth_pending (state, verifier, redirect_uri, expires_at) VALUES (?, ?, ?, ?)`,
-		state, verifier, redirectURI,
+		`INSERT INTO auth_pending (state, verifier, redirect_uri, peer, expires_at) VALUES (?, ?, ?, ?, ?)`,
+		state, verifier, redirectURI, peer,
 		time.Now().UTC().Add(pendingTTL).Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("store sign-in state: %w", err)
 	}

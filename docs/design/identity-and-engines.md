@@ -367,6 +367,12 @@ OIDC covers Entra, Okta, Google, etc.
   re-verified against the provider's JWKS, so a cleartext token or userinfo endpoint would hand a
   network attacker both the client secret and the ability to write `sub` and the groups. A
   discovery document naming one is refused at sign-in, not quietly followed.
+- The pending state `/v1/auth/begin` writes is bounded twice, because the endpoint is
+  unauthenticated by construction: per client (by peer address) so one caller cannot fill the
+  table, and per server, where reaching the cap **evicts the oldest entries rather than refusing**
+  — a bound that refuses would let any unauthenticated caller lock every sign-in out for the whole
+  expiry window, turning a memory guard into a denial of service. Entries are single-use and expire
+  on their own.
 - The credential is a **stateless signed token**: Ed25519-signed, presented as a bearer, with
   the TTL configured by `DOLMEN_AUTH_OIDC_TOKEN_TTL` — default `168h` (7 days, the short end of
   the design's 7–14 d window), valid range `1h`–`720h` (30 days), other values rejected at
