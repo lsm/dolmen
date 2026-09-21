@@ -1233,8 +1233,10 @@ The PostgreSQL backend is under development. It is selectable from the binary wi
 `github.com/lsm/dolmen/postgres`; SQLite remains the default on both. The implementation
 includes pooled connections, namespace and table lifecycle, schema metadata, transaction
 locking, native full-text search, and cross-process subscriptions, with PostgreSQL-backed
-CI tests. See the [implementation plan](docs/design/postgresql.md) for the conformance
-matrix, the caller-SQL role it expects, and test instructions.
+CI tests. See [Running dolmen on PostgreSQL](docs/postgresql-operations.md) for
+requirements, role provisioning, catalog layout, and operational notes, and the
+[implementation plan](docs/design/postgresql.md) for the conformance matrix and test
+instructions.
 Full-text search uses each backend's native ranking: SQLite keeps FTS5
 BM25, while PostgreSQL uses its native text-search index and ranking. Relevance and
 linguistic matching may differ when moving datasets between backends.

@@ -399,9 +399,12 @@ is waiting on the callback.
 
 ## Remaining implementation sequence
 
-1. Close the conformance gaps listed under "Conformance matrix status" below, then wire
-   the HTTP/MCP/stdio/facade/blackbox constructors, enable the public selector, and
-   publish PostgreSQL configuration/install guidance.
+The HTTP, MCP, stdio, facade, and blackbox constructors all select PostgreSQL, and the
+public selector is enabled on both the binary and the Go API. Operator-facing guidance
+lives in [postgresql-operations.md](../postgresql-operations.md); this document stays
+the design record.
+
+1. Close the conformance gap listed under "Conformance matrix status" below.
 
 ## Selecting PostgreSQL
 
