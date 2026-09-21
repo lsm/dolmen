@@ -119,10 +119,6 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 	if err := scopeUsable(scope, sc); err != nil {
 		return SearchResult{}, err
 	}
-	if scope != nil && filter != "" {
-		return SearchResult{}, errScopedFilterUnsupported
-	}
-
 	stmt := fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? ORDER BY rank, rowid LIMIT ? OFFSET ?`,
 		q(ftsTable(table)), ftsTable(table))
 	qargs := []any{match, limit + 1, offset}
@@ -139,9 +135,10 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 		return fmt.Errorf("%w: %w", ErrInvalid, NewRedactedSQLite(err))
 	}
 	if filter != "" {
-
+		prefix, source, scopeArgs := scopedSource(table, scope)
 		probe, err := tx.QueryContext(ctx,
-			fmt.Sprintf(`SELECT 1 FROM %s WHERE %s LIMIT 0`, q(table), filter), args...)
+			fmt.Sprintf(`%sSELECT 1 FROM %s WHERE %s LIMIT 0`, prefix, source, filter),
+			append(append(make([]any, 0, len(scopeArgs)+len(args)), scopeArgs...), args...)...)
 		if err != nil {
 			return SearchResult{}, NewFilterError(filter, err)
 		}
@@ -152,8 +149,9 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 			return SearchResult{}, fmt.Errorf("%w: %w", ErrInvalid, NewRedactedSQLite(err))
 		}
 		probe.Close()
-		stmt = fulltextFilterStmt(table, filter, len(args))
-		qargs = make([]any, 0, len(args)+3)
+		stmt = fulltextFilterStmt(table, filter, len(scopeArgs)+len(args), prefix, source)
+		qargs = make([]any, 0, len(scopeArgs)+len(args)+3)
+		qargs = append(qargs, scopeArgs...)
 		qargs = append(qargs, args...)
 		qargs = append(qargs, match, limit+1, offset)
 	}
@@ -185,9 +183,9 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 	return SearchResult{Rows: out, Truncated: hasMore || !complete}, nil
 }
 
-func fulltextFilterStmt(table, filter string, nargs int) string {
-	return fmt.Sprintf(`SELECT rowid FROM %s WHERE EXISTS (SELECT 1 FROM %s WHERE %s.id = %s.rowid AND (%s)) AND %s MATCH ?%d ORDER BY rank, rowid LIMIT ?%d OFFSET ?%d`,
-		q(ftsTable(table)), q(table), q(table), ftsTable(table), filter, ftsTable(table), nargs+1, nargs+2, nargs+3)
+func fulltextFilterStmt(table, filter string, nargs int, prefix, source string) string {
+	return fmt.Sprintf(`%sSELECT rowid FROM %s WHERE EXISTS (SELECT 1 FROM %s WHERE %s.id = %s.rowid AND (%s)) AND %s MATCH ?%d ORDER BY rank, rowid LIMIT ?%d OFFSET ?%d`,
+		prefix, q(ftsTable(table)), source, source, ftsTable(table), filter, ftsTable(table), nargs+1, nargs+2, nargs+3)
 }
 
 type dbQueryer interface {
@@ -307,12 +305,6 @@ type DeleteResult struct {
 }
 
 func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation) (DeleteResult, error) {
-	if scope != nil {
-		return DeleteResult{}, errScopedFilterUnsupported
-	}
-	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
-		return DeleteResult{}, err
-	}
 	where = strings.TrimSpace(where)
 	if where == "" {
 		return DeleteResult{}, invalidf("filter is required (pass \"1=1\" to delete everything)")
@@ -329,12 +321,21 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	}
 
 	if opts.DryRun {
-		if _, err := loadSchema(ctx, n.ro, nsName, table); err != nil {
+		if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
 			return DeleteResult{}, err
 		}
+		sc, err := loadSchema(ctx, n.ro, nsName, table)
+		if err != nil {
+			return DeleteResult{}, err
+		}
+		if err := scopeUsable(scope, sc); err != nil {
+			return DeleteResult{}, err
+		}
+		prefix, source, scopeArgs := scopedSource(table, scope)
 		var matched int64
 		if err := n.ro.QueryRowContext(ctx,
-			fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s`, q(table), where), args...).Scan(&matched); err != nil {
+			fmt.Sprintf(`%sSELECT count(*) FROM %s WHERE %s`, prefix, source, where),
+			append(append(make([]any, 0, len(scopeArgs)+len(args)), scopeArgs...), args...)...).Scan(&matched); err != nil {
 			return DeleteResult{}, NewFilterError(where, err)
 		}
 		return DeleteResult{Matched: matched, Deleted: 0}, nil
@@ -346,16 +347,24 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	}
 	defer tx.Rollback()
 
+	if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
+		return DeleteResult{}, err
+	}
 	sc, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
+		return DeleteResult{}, err
+	}
+	if err := scopeUsable(scope, sc); err != nil {
 		return DeleteResult{}, err
 	}
 
 	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS temp._dolmen_delete_ids`); err != nil {
 		return DeleteResult{}, err
 	}
+	prefix, source, scopeArgs := scopedSource(table, scope)
 	if _, err := tx.ExecContext(ctx,
-		fmt.Sprintf(`CREATE TEMP TABLE _dolmen_delete_ids AS SELECT id FROM %s WHERE %s`, q(table), where), args...); err != nil {
+		fmt.Sprintf(`CREATE TEMP TABLE _dolmen_delete_ids AS %sSELECT id FROM %s WHERE %s`, prefix, source, where),
+		append(append(make([]any, 0, len(scopeArgs)+len(args)), scopeArgs...), args...)...); err != nil {
 		return DeleteResult{}, NewFilterError(where, err)
 	}
 

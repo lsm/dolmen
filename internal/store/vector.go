@@ -67,19 +67,12 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq Vecto
 	if err := scopeUsable(scope, sc); err != nil {
 		return SearchResult{}, err
 	}
-	if scope != nil && filter != "" {
-		return SearchResult{}, errScopedFilterUnsupported
-	}
-
-	query := fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s IS NOT NULL`, q(column), q(table), q(column))
-	var qargs []any
-	if clause, sargs := scopeClause(scope, ""); clause != "" {
-		query = fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s AND %s IS NOT NULL`, q(column), q(table), clause, q(column))
-		qargs = append(qargs, sargs...)
-	}
+	prefix, source, scopeArgs := scopedSource(table, scope)
+	query := fmt.Sprintf(`%sSELECT id, %s FROM %s WHERE %s IS NOT NULL`, prefix, q(column), source, q(column))
+	qargs := append(make([]any, 0, len(scopeArgs)+len(args)), scopeArgs...)
 	if filter != "" {
 		query = fmt.Sprintf(`%s AND (%s)`, query, filter)
-		qargs = args
+		qargs = append(qargs, args...)
 	}
 
 	rows, err := tx.QueryContext(ctx, query, qargs...)

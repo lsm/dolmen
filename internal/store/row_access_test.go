@@ -264,23 +264,122 @@ func TestDescribeTableCountHonorsTheScope(t *testing.T) {
 	}
 }
 
-func TestScopedMutationsAreRefusedUntilTheFilterLanguageLands(t *testing.T) {
+func ownersOf(t *testing.T, st *Store, want int) map[string]string {
+	t.Helper()
+	rows, err := st.GetRows(context.Background(), "ns", "notes", []int64{1, 2, 3}, nil, Incarnation{})
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if len(rows.Rows) != want {
+		t.Fatalf("the table holds %d rows, want %d", len(rows.Rows), want)
+	}
+	out := map[string]string{}
+	for _, r := range rows.Rows {
+		owner, _ := r[schema.OwnerColumn].(string)
+		body, _ := r["body"].(string)
+		out[owner+"/"+body] = body
+	}
+	return out
+}
+
+func TestAScopedUpdateTouchesOnlyOwnRows(t *testing.T) {
 	st := openRowAccessStore(t)
 	seedScoped(t, st)
 	ctx := context.Background()
-	scope := &RowScope{Owner: "alice"}
 
-	if _, err := st.Update(ctx, "ns", "notes", "1=1", nil, map[string]any{"body": "x"}, Embedder{}, scope, Incarnation{}); err == nil {
-		t.Fatal("a scoped update was executed with a caller filter")
+	res, err := st.Update(ctx, "ns", "notes", "1=1", nil, map[string]any{"body": "rewritten"},
+		Embedder{}, &RowScope{Owner: "alice"}, Incarnation{})
+	if err != nil {
+		t.Fatalf("a scoped update was refused: %v", err)
 	}
-	if _, err := st.Delete(ctx, "ns", "notes", "1=1", nil, DeleteOpts{}, scope, Incarnation{}); err == nil {
-		t.Fatal("a scoped delete was executed with a caller filter")
+	if res.Updated != 2 {
+		t.Fatalf("a scoped update reported %d rows, want alice's 2", res.Updated)
 	}
-	if _, err := st.Upsert(ctx, "ns", "notes", "1=1", nil, map[string]any{"body": "x"}, WriteOpts{Owner: "alice"}, Embedder{}, scope, Incarnation{}); err == nil {
-		t.Fatal("a scoped upsert was executed with a caller filter")
+	got := ownersOf(t, st, 3)
+	if _, ok := got["bob/beta note"]; !ok {
+		t.Fatalf("a scoped update rewrote a foreign row: %v", got)
 	}
-	if _, err := st.SearchFulltext(ctx, "ns", "notes", "note", "body IS NOT NULL", nil, false, scope, Incarnation{}, Page{Limit: 10}); err == nil {
-		t.Fatal("a scoped filtered search was executed")
+}
+
+func TestAScopedDeleteTouchesOnlyOwnRows(t *testing.T) {
+	st := openRowAccessStore(t)
+	seedScoped(t, st)
+	ctx := context.Background()
+
+	res, err := st.Delete(ctx, "ns", "notes", "1=1", nil, DeleteOpts{Confirm: true},
+		&RowScope{Owner: "alice"}, Incarnation{})
+	if err != nil {
+		t.Fatalf("a scoped delete was refused: %v", err)
+	}
+	if res.Deleted != 2 {
+		t.Fatalf("a scoped delete removed %d rows, want alice's 2", res.Deleted)
+	}
+	got := ownersOf(t, st, 1)
+	if _, ok := got["bob/beta note"]; !ok {
+		t.Fatalf("a scoped delete removed a foreign row: %v", got)
+	}
+}
+
+func TestAScopedFilterNeverRunsAgainstAForeignRow(t *testing.T) {
+	st := openRowAccessStore(t)
+	seedScoped(t, st)
+	ctx := context.Background()
+	const oracle = `iif(body = 'beta note', abs(-9223372036854775808), 1) = 1`
+
+	res, err := st.Delete(ctx, "ns", "notes", oracle, nil, DeleteOpts{DryRun: true},
+		&RowScope{Owner: "alice"}, Incarnation{})
+	if err != nil {
+		t.Fatalf("a filter that would overflow on bob's row reached it, so its error reports what bob's row holds: %v", err)
+	}
+	if res.Matched != 2 {
+		t.Fatalf("the scoped filter matched %d rows, want alice's 2", res.Matched)
+	}
+
+	if _, err := st.Delete(ctx, "ns", "notes", oracle, nil, DeleteOpts{DryRun: true}, nil, Incarnation{}); err == nil {
+		t.Fatal("the same filter must still raise unscoped, or this test proves nothing about the boundary")
+	}
+}
+
+func TestAScopedSearchFiltersOverOwnRowsOnly(t *testing.T) {
+	st := openRowAccessStore(t)
+	seedScoped(t, st)
+	ctx := context.Background()
+
+	res, err := st.SearchFulltext(ctx, "ns", "notes", "note", "body IS NOT NULL", nil, false,
+		&RowScope{Owner: "alice"}, Incarnation{}, Page{Limit: 10})
+	if err != nil {
+		t.Fatalf("a scoped filtered search was refused: %v", err)
+	}
+	for _, r := range res.Rows {
+		if body, _ := r["body"].(string); body == "beta note" {
+			t.Fatalf("a scoped filtered search returned a foreign row: %v", res.Rows)
+		}
+	}
+	if len(res.Rows) != 1 {
+		t.Fatalf("the scoped search returned %d rows, want alice's 1 matching note", len(res.Rows))
+	}
+}
+
+func TestAScopedUpsertInsertsRatherThanTouchingAForeignMatch(t *testing.T) {
+	st := openRowAccessStore(t)
+	seedScoped(t, st)
+	ctx := context.Background()
+
+	res, err := st.Upsert(ctx, "ns", "notes", "body = ?", []any{"beta note"},
+		map[string]any{"body": "beta note"}, WriteOpts{Owner: "alice"}, Embedder{},
+		&RowScope{Owner: "alice"}, Incarnation{})
+	if err != nil {
+		t.Fatalf("a scoped upsert was refused: %v", err)
+	}
+	if res.Updated != 0 || res.Inserted != 1 {
+		t.Fatalf("a scoped upsert matching only a foreign row reported %d updated and %d inserted, want 0 and 1", res.Updated, res.Inserted)
+	}
+	rows, err := st.GetRows(ctx, "ns", "notes", []int64{3}, nil, Incarnation{})
+	if err != nil || len(rows.Rows) != 1 {
+		t.Fatalf("read back bob's row: %v", err)
+	}
+	if owner, _ := rows.Rows[0][schema.OwnerColumn].(string); owner != "bob" {
+		t.Fatalf("the upsert took over a foreign row instead of inserting: %v", rows.Rows[0])
 	}
 }
 
