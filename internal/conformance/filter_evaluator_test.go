@@ -39,6 +39,7 @@ var sharedFilterList = []struct {
 	{"strftime with a modifier", "strftime('%Y-%m-%d', created_at, '+1 day') > strftime('%Y-%m-%d', created_at)"},
 	{"round to a given place", "round(1.234, 1) = 1.2"},
 	{"substr without a length", "substr(body, 3) = 'note from alice'"},
+	{"substr from a negative start", "substr(body, -5) = 'alice'"},
 	{"coalesce beyond two arguments", "coalesce(NULL, NULL, 'x') = 'x'"},
 	{"datetime with two modifiers", "datetime(created_at, '+1 day', '+1 hour') > datetime(created_at, '+1 day')"},
 	{"strftime with two modifiers", "strftime('%Y-%m-%d', created_at, '+1 day', '+1 day') > strftime('%Y-%m-%d', created_at, '+1 day')"},
@@ -88,6 +89,8 @@ var pinnedFilterSemantics = []struct {
 	{"concatenation coerces numbers to text", "1 || '2' = '12'"},
 	{"null propagates through comparison", "(NULL = 1) IS NULL"},
 	{"null is not distinct from null under IS", "NULL IS NULL"},
+	{"LIKE folding stops at ASCII", "'æ' NOT LIKE 'Æ'"},
+	{"a blob literal is bytes, not bits", "length(X'6162') = 2"},
 }
 
 var notYetEvaluatedByAdapterTwo = map[string]bool{
@@ -96,19 +99,24 @@ var notYetEvaluatedByAdapterTwo = map[string]bool{
 	"date with a modifier": true, "time with a modifier": true, "datetime with a modifier": true,
 	"julianday with a modifier": true, "strftime with a modifier": true,
 	"datetime with two modifiers": true, "strftime with two modifiers": true,
+	"substr from a negative start": true,
 }
 
 var notYetPinnedByAdapterTwo = map[string]bool{
 	"LIKE is ASCII-case-insensitive":                true,
 	"string comparison is BINARY byte-wise":         true,
 	"nonnumeric text coerces to zero in arithmetic": true,
+	"a blob literal is bytes, not bits":             true,
 }
 
 var notYetSpelledByAdapterTwo = map[string]bool{
-	"NOT IN over an empty list":   true,
-	"== as a spelling of =":       true,
-	"IS against a literal":        true,
-	"IS against a bound argument": true,
+	"NOT IN over an empty list":           true,
+	"LIKE with ESCAPE":                    true,
+	"LIKE with ESCAPE over an underscore": true,
+	"LIKE with a bound ESCAPE":            true,
+	"== as a spelling of =":               true,
+	"IS against a literal":                true,
+	"IS against a bound argument":         true,
 }
 
 func seedScopedFilterRow(t *testing.T) *harness {
