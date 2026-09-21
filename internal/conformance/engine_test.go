@@ -145,13 +145,6 @@ func testEngine(t *testing.T) string {
 	return activeEngine
 }
 
-func serverEngineOnly(t *testing.T) {
-	t.Helper()
-	if name := testEngine(t); name != store.EngineSQLite {
-		t.Skipf("engine %q: the dolmen binary cannot select it yet", name)
-	}
-}
-
 func sqliteOnly(t *testing.T) {
 	t.Helper()
 	if name := testEngine(t); name != store.EngineSQLite {
