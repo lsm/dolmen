@@ -33,14 +33,14 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 	if len(opts.IdempotencyKey) > MaxIdempotencyKeyLen {
 		return InsertResult{}, invalidf("idempotency key is %d bytes (max %d)", len(opts.IdempotencyKey), MaxIdempotencyKeyLen)
 	}
-	ids, changes, replayed, err := s.insert(ctx, nsName, table, records, emb, opts.IdempotencyKey, opts.Owner, domainFor(opts, scope))
+	ids, changes, replayed, err := s.insert(ctx, nsName, table, records, emb, opts.IdempotencyKey, opts.Owner, DomainFor(opts, scope))
 	if err != nil {
 		return InsertResult{}, err
 	}
 	return InsertResult{Ids: ids, Replayed: replayed, Changes: changes}, nil
 }
 
-func (s *Store) insert(ctx context.Context, nsName, table string, records []map[string]any, emb Embedder, idemKey, owner string, domain idemDomain) (ids []int64, changes ChangeRange, replayed bool, err error) {
+func (s *Store) insert(ctx context.Context, nsName, table string, records []map[string]any, emb Embedder, idemKey, owner string, domain IdemDomain) (ids []int64, changes ChangeRange, replayed bool, err error) {
 	if len(records) == 0 {
 		return nil, ChangeRange{}, false, invalidf("no records given")
 	}
@@ -91,7 +91,7 @@ func payloadHash(records []map[string]any) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, idemHash, owner string, domain idemDomain) (ids []int64, changes ChangeRange, replayed bool, done bool, err error) {
+func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, idemHash, owner string, domain IdemDomain) (ids []int64, changes ChangeRange, replayed bool, done bool, err error) {
 
 	gen, err := tableGen(ctx, n.rw, table)
 	if err != nil {
@@ -249,7 +249,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO `+idempotencyTable+`(table_name, owner, key, payload_hash, ids_json) VALUES(?,?,?,?,?)`,
-			table, domain.owner, idemKey, idemHash, string(idsJSON)); err != nil {
+			table, domain.Owner, idemKey, idemHash, string(idsJSON)); err != nil {
 
 			if strings.Contains(err.Error(), "UNIQUE constraint failed: "+idempotencyTable) {
 				if rerr := tx.Rollback(); rerr != nil {

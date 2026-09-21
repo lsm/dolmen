@@ -55,13 +55,25 @@ func recordHash(records []map[string]any) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func (s *Store) lookupIdempotency(ctx context.Context, tx pgx.Tx, n namespace, state tableState, key, hash string) (store.InsertResult, bool, error) {
+func (s *Store) lookupIdempotency(ctx context.Context, tx pgx.Tx, n namespace, state tableState, key, hash string, domain store.IdemDomain) (store.InsertResult, bool, error) {
 	var result store.InsertResult
 	if key == "" {
 		return result, false, nil
 	}
+	result, found, err := s.readIdempotency(ctx, tx, n, state, key, hash, domain.Owner)
+	if err != nil || found {
+		return result, found, err
+	}
+	if domain.FallsBackToLegacy() {
+		return s.readIdempotency(ctx, tx, n, state, key, hash, store.LegacyIdempotencyOwner)
+	}
+	return result, false, nil
+}
+
+func (s *Store) readIdempotency(ctx context.Context, tx pgx.Tx, n namespace, state tableState, key, hash, owner string) (store.InsertResult, bool, error) {
+	var result store.InsertResult
 	var stored, raw string
-	err := tx.QueryRow(ctx, "SELECT payload_hash,result_json FROM "+s.relation("idempotency")+" WHERE namespace=$1 AND table_name=$2 AND drop_generation=$3 AND key=$4", n.name, state.incarnation.Table, state.incarnation.DropGen, key).Scan(&stored, &raw)
+	err := tx.QueryRow(ctx, "SELECT payload_hash,result_json FROM "+s.relation("idempotency_owned")+" WHERE namespace=$1 AND table_name=$2 AND drop_generation=$3 AND owner=$4 AND key=$5", n.name, state.incarnation.Table, state.incarnation.DropGen, owner, key).Scan(&stored, &raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return result, false, nil
 	}
@@ -217,12 +229,10 @@ func (s *Store) mintChanges(ctx context.Context, tx pgx.Tx, n namespace, state t
 }
 
 func (s *Store) Insert(ctx context.Context, ns, table string, records []map[string]any, opts store.WriteOpts, emb store.Embedder, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
-	if scope != nil && opts.IdempotencyKey != "" {
-		return store.InsertResult{}, store.ErrScopedIdempotencyUnsupported
-	}
 	if len(opts.IdempotencyKey) > store.MaxIdempotencyKeyLen {
 		return store.InsertResult{}, fmt.Errorf("%w: idempotency key is %d bytes (max %d)", store.ErrInvalid, len(opts.IdempotencyKey), store.MaxIdempotencyKeyLen)
 	}
+	domain := store.DomainFor(opts, scope)
 	records, err := normalizeRecords(records)
 	if err != nil {
 		return store.InsertResult{}, err
@@ -247,7 +257,7 @@ func (s *Store) Insert(ctx context.Context, ns, table string, records []map[stri
 			if err := s.guardScope(ctx, tx, n, table, state, expected); err != nil {
 				return err
 			}
-			result, found, err = s.lookupIdempotency(ctx, tx, n, state, opts.IdempotencyKey, hash)
+			result, found, err = s.lookupIdempotency(ctx, tx, n, state, opts.IdempotencyKey, hash, domain)
 			return err
 		})
 		if err != nil || found {
@@ -270,7 +280,7 @@ func (s *Store) Insert(ctx context.Context, ns, table string, records []map[stri
 			if err := checkIncarnation(ns, current.incarnation, state.incarnation); err != nil {
 				return err
 			}
-			result, found, err = s.lookupIdempotency(ctx, tx, n, current, opts.IdempotencyKey, hash)
+			result, found, err = s.lookupIdempotency(ctx, tx, n, current, opts.IdempotencyKey, hash, domain)
 			if err != nil || found {
 				return err
 			}
@@ -321,7 +331,7 @@ func (s *Store) Insert(ctx context.Context, ns, table string, records []map[stri
 				if err != nil {
 					return err
 				}
-				_, err = tx.Exec(ctx, "INSERT INTO "+s.relation("idempotency")+" (namespace,table_name,drop_generation,key,payload_hash,result_json) VALUES($1,$2,$3,$4,$5,$6)", ns, table, state.incarnation.DropGen, opts.IdempotencyKey, hash, string(raw))
+				_, err = tx.Exec(ctx, "INSERT INTO "+s.relation("idempotency_owned")+" (namespace,table_name,drop_generation,owner,key,payload_hash,result_json) VALUES($1,$2,$3,$4,$5,$6,$7)", ns, table, state.incarnation.DropGen, domain.Owner, opts.IdempotencyKey, hash, string(raw))
 				return err
 			}
 			return nil
