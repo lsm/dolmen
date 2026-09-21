@@ -114,6 +114,14 @@ func (l *lexer) next() (token, error) {
 		if err != nil {
 			return token{}, err
 		}
+		if len(text)%2 != 0 {
+			return token{}, errAt(start, "a blob literal needs an even number of hexadecimal digits")
+		}
+		for i := 0; i < len(text); i++ {
+			if !isHex(text[i]) {
+				return token{}, errAt(start, "%q is not a hexadecimal digit, so this is not a blob literal", string(text[i]))
+			}
+		}
 		return token{kind: tokenBlob, text: text, pos: start}, nil
 	case isIdentStart(c):
 		for l.pos < len(l.src) && isIdentPart(l.src[l.pos]) {

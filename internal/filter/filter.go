@@ -72,6 +72,11 @@ var rejectedKeywords = map[string]string{
 	"current_time":      "current_time reads the server's clock; compute the moment you mean and bind it as a ? argument",
 }
 
+const (
+	MaxNestingDepth = 1000
+	MaxFilterLength = 64 << 10
+)
+
 type argRange struct{ min, max int }
 
 type Options struct {
@@ -80,6 +85,9 @@ type Options struct {
 }
 
 func Validate(expr string, opts Options) error {
+	if len(expr) > MaxFilterLength {
+		return errAt(0, "the filter expression is %d bytes, over the %d-byte limit", len(expr), MaxFilterLength)
+	}
 	columns := make(map[string]bool, len(opts.Columns))
 	for _, c := range opts.Columns {
 		columns[strings.ToLower(c)] = true

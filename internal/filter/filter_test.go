@@ -232,3 +232,75 @@ func TestNoColumnsMeansNoColumnReferences(t *testing.T) {
 		t.Fatal("a column reference was accepted against a table with no columns")
 	}
 }
+
+func TestDeepNestingIsRefusedRatherThanExhaustingTheStack(t *testing.T) {
+	for _, shape := range []struct{ open, close string }{
+		{"(", ")"},
+		{"NOT ", ""},
+		{"- ", ""},
+	} {
+		deep := strings.Repeat(shape.open, MaxNestingDepth+50) + "1" + strings.Repeat(shape.close, MaxNestingDepth+50)
+		err := Validate(deep, Options{Columns: tableColumns})
+		if err == nil {
+			t.Fatalf("a filter nested %d deep with %q was accepted; the parser recurses, so this is a crash rather than an error", MaxNestingDepth+50, shape.open)
+		}
+		if !strings.Contains(err.Error(), "deep") {
+			t.Fatalf("the refusal does not name the nesting: %v", err)
+		}
+	}
+	shallow := strings.Repeat("(", 100) + "1=1" + strings.Repeat(")", 100)
+	accept(t, shallow)
+}
+
+func TestAnOverlongFilterIsRefusedBeforeParsing(t *testing.T) {
+	long := "title = '" + strings.Repeat("a", MaxFilterLength) + "'"
+	err := Validate(long, Options{Columns: tableColumns})
+	if err == nil {
+		t.Fatal("a filter past the length limit was parsed")
+	}
+	if !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("the refusal does not name the limit: %v", err)
+	}
+}
+
+func TestAComputedStringCannotReachTheClock(t *testing.T) {
+	for _, expr := range []string{
+		`datetime('no' || 'w') > due`,
+		`datetime(substr('znow', 2)) > due`,
+		`datetime(replace('xow', 'x', 'n')) > due`,
+		`datetime(lower('NOW')) > due`,
+		`datetime(iif(1, 'now', 'x')) > due`,
+		`datetime(CASE WHEN 1 THEN 'now' END) > due`,
+		`julianday(coalesce(NULL, 'now')) > 0`,
+	} {
+		reject(t, expr, "date or time function")
+	}
+	for _, expr := range []string{
+		`datetime(due, '+1 day') = ?`,
+		`datetime(date(due), '+1 day') = ?`,
+		`strftime('%s', due) = ?`,
+		`julianday(due) > julianday(?)`,
+		`date(NULL) IS NULL`,
+		`julianday(2451545) > 0`,
+	} {
+		args := make([]any, strings.Count(expr, "?"))
+		for i := range args {
+			args[i] = "2026-01-01"
+		}
+		accept(t, expr, args...)
+	}
+}
+
+func TestEscapeMustBeOneCharacter(t *testing.T) {
+	reject(t, `title LIKE 'a%' ESCAPE 'ab'`, "one character")
+	reject(t, `title LIKE 'a%' ESCAPE ?`, "one-character", "ab")
+	reject(t, `title LIKE 'a%' ESCAPE ?`, "one-character", 3)
+	accept(t, `title LIKE 'a%' ESCAPE '!'`)
+	accept(t, `title LIKE ? ESCAPE ?`, "a%", "!")
+}
+
+func TestBlobLiteralsMustBeHexadecimal(t *testing.T) {
+	reject(t, `body = X'GG'`, "hexadecimal")
+	reject(t, `body = X'414'`, "even number")
+	accept(t, `body = X'41'`)
+}

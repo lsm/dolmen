@@ -150,3 +150,41 @@ func quote(s string) string {
 	b.WriteByte('"')
 	return b.String()
 }
+
+func TestTheAdminKeyGetsTheSameFilterLanguage(t *testing.T) {
+	h := newHarnessMode(t, authGateway)
+	seedTwoTables(t, h)
+
+	status, out := h.httpCall("delete", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"filter": "rank IN (SELECT salary FROM payroll)", "dry_run": true,
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("the admin key was exempted from the filter language, which the spec states without a carve-out: %d %v", status, out)
+	}
+	status, out = h.httpCall("delete", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"filter": "rank > ?", "args": []any{1}, "dry_run": true,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("an allowlisted filter was refused for the admin key: %d %v", status, out)
+	}
+}
+
+func TestADeeplyNestedFilterIsRefusedNotFatal(t *testing.T) {
+	h := newHarnessMode(t, authGateway)
+	seedTwoTables(t, h)
+	grantTo(t, h, "principal", "alice", "acme", "notes", "read", "delete")
+
+	deep := strings.Repeat("(", 5000) + "1=1" + strings.Repeat(")", 5000)
+	res, out := h.asIdentity(t, "alice", "", "delete",
+		`{"namespace":"acme","table":"notes","filter":`+quote(deep)+`,"dry_run":true}`)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a filter nested thousands deep answered %d; if the parser had recursed through it the process would be gone: %v", res.StatusCode, out)
+	}
+
+	status, out := h.httpCall("describe_table", map[string]any{"namespace": "acme", "table": "notes"})
+	if status != http.StatusOK {
+		t.Fatalf("the server did not survive the nested filter: %d %v", status, out)
+	}
+}

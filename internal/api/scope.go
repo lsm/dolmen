@@ -20,15 +20,15 @@ func (s *Server) resolveScopeState(ctx context.Context, ns, table string) (*stor
 		return nil, store.Incarnation{}, nil, nil
 	}
 	id := auth.IdentityFrom(ctx)
-	if id.Principal == auth.AdminPrincipal {
-		return nil, store.Incarnation{}, nil, nil
-	}
 	sc, inc, err := s.eng.TableState(ctx, ns, table, nil)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, store.Incarnation{}, nil, nil
 		}
 		return nil, store.Incarnation{}, nil, wrapStoreErr(err)
+	}
+	if id.Principal == auth.AdminPrincipal {
+		return nil, store.Incarnation{}, sc, nil
 	}
 	if s.grants == nil {
 		return nil, store.Incarnation{}, nil, errNoGrantRegistry

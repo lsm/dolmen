@@ -29,6 +29,7 @@ type parser struct {
 	args      []any
 	params    int
 	timeDepth int
+	depth     int
 }
 
 func (p *parser) advance() error {
@@ -48,6 +49,11 @@ func (p *parser) expect(op string, what string) error {
 }
 
 func (p *parser) expression(minPrecedence int) error {
+	p.depth++
+	if p.depth > MaxNestingDepth {
+		return errAt(p.tok.pos, "this filter expression nests more than %d levels deep, which is past what any backend will evaluate; simplify it", MaxNestingDepth)
+	}
+	defer func() { p.depth-- }()
 	if err := p.prefix(); err != nil {
 		return err
 	}
@@ -168,10 +174,22 @@ func (p *parser) like(precedence int) error {
 		if err := p.advance(); err != nil {
 			return err
 		}
-		if !p.literalToken() {
+		switch p.tok.kind {
+		case tokenString:
+			if len([]rune(p.tok.text)) != 1 {
+				return errAt(p.tok.pos, "the escape of a like must be exactly one character, not %q", p.tok.text)
+			}
+		case tokenParam:
+			if p.params < len(p.args) {
+				text, ok := p.args[p.params].(string)
+				if !ok || len([]rune(text)) != 1 {
+					return errAt(p.tok.pos, "the argument bound as the escape of a like must be a one-character text value")
+				}
+			}
+		default:
 			return errAt(p.tok.pos, "the escape of a like must be a one-character text literal or a ? argument, not %s", p.tok.describe())
 		}
-		return p.advance()
+		return p.consumeLiteral()
 	}
 	return nil
 }
@@ -368,7 +386,8 @@ func (p *parser) call(name string, pos int) error {
 	if p.tok.keyword("distinct") {
 		return errAt(p.tok.pos, "%s cannot take distinct in a filter expression", name)
 	}
-	if timeFunctions[name] {
+	isTime := timeFunctions[name]
+	if isTime {
 		p.timeDepth++
 		defer func() { p.timeDepth-- }()
 	}
@@ -379,8 +398,17 @@ func (p *parser) call(name string, pos int) error {
 				return err
 			}
 		}
-		if err := p.expression(precedenceLowest); err != nil {
-			return err
+		var argErr error
+		if isTime {
+			argErr = p.timeArgument()
+		} else {
+			argErr = p.expression(precedenceLowest)
+		}
+		if argErr != nil {
+			return argErr
+		}
+		if isTime && !p.tok.is(",") && !p.tok.is(")") {
+			return errAt(p.tok.pos, "a date or time function takes a literal, a ? argument, a column, or another date or time function — %s builds a value, and what it builds could name the server's clock", p.tok.describe())
 		}
 		count++
 		if p.tok.kind == tokenEOF {
@@ -397,6 +425,46 @@ func (p *parser) call(name string, pos int) error {
 		return errAt(p.tok.pos, "%s cannot take a %s clause in a filter expression", name, strings.ToLower(p.tok.text))
 	}
 	return nil
+}
+
+func (p *parser) timeArgument() error {
+	if p.tok.is("-") || p.tok.is("+") {
+		if err := p.advance(); err != nil {
+			return err
+		}
+		if p.tok.kind != tokenNumber {
+			return errAt(p.tok.pos, "only a number may carry a sign in the arguments of a date or time function")
+		}
+	}
+	switch p.tok.kind {
+	case tokenString, tokenNumber, tokenParam:
+		return p.consumeLiteral()
+	case tokenQuotedIdent:
+		return p.column(p.tok.text, p.tok.pos)
+	case tokenIdent:
+		word := strings.ToLower(p.tok.text)
+		if word == "null" {
+			return p.advance()
+		}
+		if reason, bad := rejectedKeywords[word]; bad {
+			return errAt(p.tok.pos, "%s", reason)
+		}
+		if word == "case" || infixWords[word] {
+			return errAt(p.tok.pos, "a date or time function takes a literal, a ? argument, a column, or another date or time function — %s builds a value, and what it builds could name the server's clock", p.tok.describe())
+		}
+		name, pos := p.tok.text, p.tok.pos
+		if err := p.advance(); err != nil {
+			return err
+		}
+		if !p.tok.is("(") {
+			return p.namedColumn(name, pos)
+		}
+		if !timeFunctions[word] {
+			return errAt(pos, "a date or time function takes a moment or a modifier, not the result of %s; compute the value and bind it as a ? argument", word)
+		}
+		return p.call(word, pos)
+	}
+	return errAt(p.tok.pos, "a date or time function takes a literal, a ? argument, a column, or another date or time function — not a computed expression, whose result could name the server's clock")
 }
 
 func rejectClockWord(text string, pos int) error {
