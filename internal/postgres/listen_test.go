@@ -489,15 +489,63 @@ func TestPostgresListenMapsAgedContextCause(t *testing.T) {
 	}
 }
 
-func TestPostgresListenFailsClosedOnRowScope(t *testing.T) {
+func TestPostgresListenDeliversOnlyTheScopesOwnRows(t *testing.T) {
 	s := openTest(t, testConfig(t))
 	ctx := t.Context()
-	listenSeed(t, s, ctx)
-	scope := &store.RowScope{}
-	if _, _, err := s.Listen(ctx, "app", "notes", "", [16]byte{}, func(string) (*store.RowScope, store.Incarnation, bool) {
-		return scope, store.Incarnation{}, true
-	}, func(store.ChangeRecord) {}, nil); err == nil {
-		t.Fatal("a row scope was accepted rather than failing closed")
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "body"}},
+		store.TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, who := range []string{"bob", "alice", "bob"} {
+		if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "from " + who}},
+			store.WriteOpts{Owner: who}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	replay, cancel, err := s.Listen(ctx, "app", "notes", store.CursorBegin, [16]byte{},
+		func(string) (*store.RowScope, store.Incarnation, bool) {
+			return &store.RowScope{Owner: "alice"}, store.Incarnation{}, true
+		}, func(store.ChangeRecord) {}, nil)
+	if err != nil {
+		t.Fatalf("a row scope must be admitted now that change records carry the owner: %v", err)
+	}
+	defer cancel()
+	records := drainReplay(t, ctx, replay)
+	if len(records) != 1 {
+		t.Fatalf("alice wrote one of the three rows and must replay exactly that: %v", records)
+	}
+	if records[0].RowID != 2 {
+		t.Fatalf("the replayed record is not alice's: %v", records[0])
+	}
+}
+
+func TestPostgresListenDeliversNothingToAnEmptyScope(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "body"}},
+		store.TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "from alice"}},
+		store.WriteOpts{Owner: "alice"}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	replay, cancel, err := s.Listen(ctx, "app", "notes", store.CursorBegin, [16]byte{},
+		func(string) (*store.RowScope, store.Incarnation, bool) {
+			return &store.RowScope{Empty: true}, store.Incarnation{}, true
+		}, func(store.ChangeRecord) {}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if records := drainReplay(t, ctx, replay); len(records) != 0 {
+		t.Fatalf("an empty scope sees no row, so it must replay nothing: %v", records)
 	}
 }
 
