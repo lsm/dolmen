@@ -211,7 +211,7 @@ func TestListenOverflowTeachingClose(t *testing.T) {
 	_, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, func(cause error) { closedCause <- cause })
 	defer cancel()
 
-	if _, err := insertNotesChunkedErr(st, listenQueueBound+MaxChangesPageLimit); err != nil {
+	if _, err := insertNotesChunkedErr(st, ListenQueueBound+MaxChangesPageLimit); err != nil {
 		t.Fatalf("bulk write: %v", err)
 	}
 	select {
@@ -235,7 +235,7 @@ func TestListenOverflowCloseToleratesCancelFromCallback(t *testing.T) {
 	})
 	defer cancel()
 
-	if _, err := insertNotesChunkedErr(st, listenQueueBound+MaxChangesPageLimit); err != nil {
+	if _, err := insertNotesChunkedErr(st, ListenQueueBound+MaxChangesPageLimit); err != nil {
 		t.Fatalf("bulk write: %v", err)
 	}
 	select {
@@ -260,7 +260,7 @@ func TestListenCancelDuringFiringCallback(t *testing.T) {
 	})
 	defer cancel()
 
-	if _, err := insertNotesChunkedErr(st, listenQueueBound+MaxChangesPageLimit); err != nil {
+	if _, err := insertNotesChunkedErr(st, ListenQueueBound+MaxChangesPageLimit); err != nil {
 		t.Fatalf("bulk write: %v", err)
 	}
 	select {

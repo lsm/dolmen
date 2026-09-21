@@ -293,7 +293,7 @@ func TestListenCloseWaitsInFlightDelivery(t *testing.T) {
 		t.Fatal("no live delivery arrived to park the close against")
 	}
 
-	if _, err := insertNotesChunkedErr(st, listenQueueBound+MaxChangesPageLimit); err != nil {
+	if _, err := insertNotesChunkedErr(st, ListenQueueBound+MaxChangesPageLimit); err != nil {
 		t.Fatalf("bulk write: %v", err)
 	}
 	select {
@@ -569,7 +569,7 @@ func TestListenLifetimeEndDrainsFullPages(t *testing.T) {
 func TestListenEndedFeedParksAtTheBound(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
-	total := listenQueueBound + 2*MaxChangesPageLimit
+	total := ListenQueueBound + 2*MaxChangesPageLimit
 	if _, err := insertNotesChunkedErr(st, total); err != nil {
 		t.Fatalf("bulk backlog: %v", err)
 	}
@@ -612,7 +612,7 @@ func TestListenEndedFeedParksAtTheBound(t *testing.T) {
 		if dead {
 			t.Fatalf("session died mid-drain at %d queued — the overflow close fired on an ended feed", queued)
 		}
-		if queued > listenQueueBound {
+		if queued > ListenQueueBound {
 			break
 		}
 		if time.Now().After(reach) {
@@ -628,8 +628,8 @@ func TestListenEndedFeedParksAtTheBound(t *testing.T) {
 	if dead {
 		t.Fatal("session died while parked at the bound")
 	}
-	if queued > listenQueueBound+MaxChangesPageLimit {
-		t.Fatalf("queue held %d records, want the fill parked at ≤ bound+page (%d) — the ended feed bypassed the bound", queued, listenQueueBound+MaxChangesPageLimit)
+	if queued > ListenQueueBound+MaxChangesPageLimit {
+		t.Fatalf("queue held %d records, want the fill parked at ≤ bound+page (%d) — the ended feed bypassed the bound", queued, ListenQueueBound+MaxChangesPageLimit)
 	}
 	select {
 	case cause := <-closedCause:
@@ -652,7 +652,7 @@ func TestListenEndedFeedParksAtTheBound(t *testing.T) {
 func TestListenEndedFeedDrainsUnderBackpressure(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
-	total := listenQueueBound + MaxChangesPageLimit + 5
+	total := ListenQueueBound + MaxChangesPageLimit + 5
 	if _, err := insertNotesChunkedErr(st, total); err != nil {
 		t.Fatalf("bulk backlog: %v", err)
 	}
@@ -715,8 +715,8 @@ func TestListenEndedFeedDrainsUnderBackpressure(t *testing.T) {
 	if got != total {
 		t.Fatalf("delivered %d of %d predecessor records — the backpressure lost part of the backlog", got, total)
 	}
-	if ceiling > listenQueueBound+MaxChangesPageLimit {
-		t.Fatalf("queue peaked at %d, want ≤ bound+page (%d) — the bound was bypassed", ceiling, listenQueueBound+MaxChangesPageLimit)
+	if ceiling > ListenQueueBound+MaxChangesPageLimit {
+		t.Fatalf("queue peaked at %d, want ≤ bound+page (%d) — the bound was bypassed", ceiling, ListenQueueBound+MaxChangesPageLimit)
 	}
 	sess.cancel()
 }

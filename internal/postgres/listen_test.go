@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -1154,5 +1155,16 @@ func TestPostgresListenNamespaceFeedIgnoresTableLifetimeMismatch(t *testing.T) {
 	case <-got:
 	case <-time.After(20 * time.Second):
 		t.Fatal("a namespace-wide feed must not apply the per-record table-lifetime comparison")
+	}
+}
+
+func TestListenCauseMapsAVanishedNamespace(t *testing.T) {
+	fk := &pgconn.PgError{Code: "23503", Message: "insert or update on table violates foreign key constraint"}
+	if got := listenCause(fk); !errors.Is(got, store.ErrListenLifetimeEnded) {
+		t.Fatalf("a foreign key violation against the namespace row = %v, want the lifetime sentinel", got)
+	}
+	other := &pgconn.PgError{Code: "42703", Message: "column does not exist"}
+	if got := listenCause(other); errors.Is(got, store.ErrListenLifetimeEnded) {
+		t.Fatalf("an unrelated PostgreSQL error must not be reported as a lifetime end, got %v", got)
 	}
 }

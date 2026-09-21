@@ -1,10 +1,13 @@
 package postgres
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -121,5 +124,93 @@ func TestPostgresCursorPinsHistoryAndLifetime(t *testing.T) {
 	}
 	if _, _, err := s.ChangesSince(ctx, "app", "", token, [16]byte{}, nil, store.Incarnation{}, store.Page{}); !errors.Is(err, store.ErrCursorExpired) {
 		t.Fatalf("namespace replacement reused token: %v", err)
+	}
+}
+
+func TestPostgresNamespaceGoneDetectsDropAndReplacement(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	var live [16]byte
+	if err := s.read(ctx, "app", func(tx pgx.Tx, n namespace) error {
+		live = n.generation
+		if s.namespaceGone(ctx, tx, "app", live) {
+			t.Fatal("a live namespace must not read as gone")
+		}
+		if !s.namespaceGone(ctx, tx, "app", [16]byte{9}) {
+			t.Fatal("a different generation must read as gone")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DropNamespace(ctx, "app", live); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.read(ctx, "app", func(tx pgx.Tx, n namespace) error {
+		if !s.namespaceGone(ctx, tx, "app", live) {
+			t.Fatal("a recreated namespace must read as gone for the predecessor's generation")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DropNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresUnlockedFetchPinsTheNamespaceAgainstDropButNotAgainstWrites(t *testing.T) {
+	cfg := testConfig(t)
+	s := openTest(t, cfg)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	dropper := func() error {
+		conn, err := pgx.Connect(ctx, cfg.DSN)
+		if err != nil {
+			return err
+		}
+		defer conn.Close(ctx)
+		if _, err := conn.Exec(ctx, "SET lock_timeout='750ms'"); err != nil {
+			return err
+		}
+		var one int
+		return conn.QueryRow(ctx, "SELECT 1 FROM "+s.relation("namespaces")+" WHERE name='app' FOR UPDATE").Scan(&one)
+	}
+	blocked := func(err error) bool {
+		var pgerr *pgconn.PgError
+		return errors.As(err, &pgerr) && pgerr.Code == "55P03"
+	}
+	var dropWait, writeWait error
+	if err := s.writeUnlocked(ctx, "app", [16]byte{}, func(tx pgx.Tx, n namespace) error {
+		dropWait = dropper()
+		writer, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		done := make(chan error, 1)
+		go func() {
+			_, err := s.CreateTable(writer, "app", "notes", []schema.Field{{Name: "title", Type: schema.Text}}, store.TableOpts{}, [16]byte{})
+			done <- err
+		}()
+		select {
+		case writeWait = <-done:
+		case <-time.After(3 * time.Second):
+			writeWait = context.DeadlineExceeded
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !blocked(dropWait) {
+		t.Fatalf("a live fetch must pin the namespace row so drop_namespace waits behind it rather than locking it first and cascading into the cursors the fetch is holding, got %v", dropWait)
+	}
+	if writeWait != nil {
+		t.Fatalf("a live fetch must not stand in a writer's way; that contention is what the unlocked read exists to remove, got %v", writeWait)
 	}
 }

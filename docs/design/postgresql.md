@@ -402,9 +402,12 @@ is waiting on the callback.
 The HTTP, MCP, stdio, facade, and blackbox constructors all select PostgreSQL, and the
 public selector is enabled on both the binary and the Go API. Operator-facing guidance
 lives in [postgresql-operations.md](../postgresql-operations.md); this document stays
-the design record.
+the design record. The conformance matrix is clean and CI keeps it that way; see
+"Conformance matrix status" below.
 
-1. Close the conformance gap listed under "Conformance matrix status" below.
+Nothing in the original sequence is outstanding. What is left is the work this document
+records as unimplemented rather than pending: row authorization, which every auth-on
+conformance mode still skips on this backend.
 
 ## Selecting PostgreSQL
 
@@ -579,14 +582,75 @@ the record; only `ok=false` ends the stream. Namespace-wide feeds compare `nsGen
 since their replay spans table lifetimes by design. No transport passes a callback yet,
 so this is unreachable from the conformance suite and is pinned by engine tests.
 
-One failure remains. It is a genuine backend gap rather than a harness artifact, and it
-is tracked against the live-read work rather than against engine selection: the bound it
-exercises is implemented and pinned by an engine test, so what is missing is the
-fixture's ability to reach it on this backend, not the protection itself.
+Dropping the namespace row's exclusive lock from the live read has one consequence
+worth naming: a concurrent `drop_namespace` can now interleave with the cursors a
+fetch is inserting, and the foreign key from `cursors.namespace` answers with
+SQLSTATE 23503. That is the subscription's target disappearing, so `listenCause` maps
+it to `ErrListenLifetimeEnded` rather than letting a driver error reach the close
+frame. The session was over either way; the caller is told why in the vocabulary the
+rest of the contract uses.
 
-| Area | Fixture | Gap |
-|---|---|---|
-| SSE | `TestSubscribeOverflowTeachesReconnect` | the bound itself now exists and `TestPostgresListenOverflowsABlockedSubscriber` pins it, but the fixture parks a consumer and floods 9000 changes, which needs the live pump to get 8000 ahead of the writer. Live fetches go through `ChangesSince`, which takes the namespace write lock to mint a cursor per record, so the pump contends with the very writer it must outrun and no backlog accumulates. Closing this means a live read that does not take the write lock |
+Dropping the lock also inverted the lock order, which is a deadlock rather than a
+misreport. The fetch updates the cursor row it resolved and only afterwards inserts the
+page's cursors, whose foreign key takes `KEY SHARE` on the namespace row;
+`DropNamespace` takes the namespace row exclusively first and its `ON DELETE CASCADE`
+then wants those same cursor rows. Each side ends up holding what the other needs, and
+PostgreSQL breaks the cycle with SQLSTATE 40P01 — surfacing either as a driver error on
+the subscription's close frame or as a `drop_namespace` that fails for no reason the
+caller can act on. Reproduced against a live server before fixing.
+
+The order is now the same on both paths: the live read takes `FOR KEY SHARE` on the
+namespace row, so a dropper waits behind it instead of overtaking it and cascading into
+the cursors the fetch holds. That alone would have handed the contention straight back,
+because writers took the namespace row `FOR UPDATE`, which `KEY SHARE` conflicts with.
+Writers now take `FOR NO KEY UPDATE`: still mutually exclusive, still exclusive against
+a dropper, and compatible with the live read's `KEY SHARE`. The four lock modes are
+named rather than passed as a boolean, since the difference between them is the whole
+argument. Measured on a live server: `KEY SHARE` against `FOR UPDATE` blocks, `KEY
+SHARE` against `FOR NO KEY UPDATE` does not.
+
+The same drop has a second window. Cursors cascade from the namespace row, so a drop
+landing before the fetch resolves its cursor deletes that row first, and an absent
+cursor is indistinguishable from an expired one: the stream would close as
+`ErrListenAged` and advise re-anchoring, which cannot succeed against a namespace
+that no longer exists. On the unlocked path an expired cursor now rechecks the
+namespace generation, and a namespace that is gone or replaced reports the lifetime
+cause instead. Both windows exist only because the live read stopped taking the
+namespace row's exclusive lock; the locked path serialized against the dropper.
+
+The live pump no longer pays for work it does not need. It reads through a
+transaction that does not take the namespace row's exclusive lock, so it stops
+contending with the writer it is trying to keep up with; it mints a page's cursors
+in one statement rather than one per record, which turns a nine-thousand-record
+replay from about nine thousand inserts into ninety-one; and it keeps fetching while
+pages come back full instead of re-probing between them. Together these took the
+measured peak queue depth in the overflow fixture from 699 to about 6500.
+
+That measurement is also what closed the last conformance gap, and it showed the
+earlier reading of that gap was wrong. `TestSubscribeOverflowTeachesReconnect` parks
+the subscriber at its replay boundary and floods, expecting the queue to overflow and
+the stream to close teaching a reconnect. It flooded nine batches of
+`MaxChangesPageLimit` against a bound of eight, which is a margin of one batch. That
+margin is free under SQLite, where the writer pushes into the queue as part of the
+commit, so the queue holds everything the writer has written. It is not free under
+PostgreSQL, where the pump reads committed rows and therefore trails the writer; at
+nine batches it peaked around 6500 of 8000 and the stream simply delivered all nine
+thousand records. The earlier conclusion — that a reader of committed rows cannot get
+far enough ahead — had the mechanism backwards. The pump does not need to get ahead of
+the writer at all; it needs to put more into a parked queue than the queue holds, and
+the fixture was not asking for enough to make that certain whatever the lag.
+
+The flood is now sized from the bound rather than written as a literal, at twice
+`ListenQueueBound`, so overflow is reached however far the pump trails. That constant
+was duplicated in both engines and is now exported from `internal/store`, which is
+where the cross-engine contract the conformance suite pins belongs. Both engines pass
+the fixture repeatedly, and PostgreSQL passes it faster than it used to fail it,
+because the stream now terminates at the bound instead of delivering every record.
+
+The conformance matrix has no remaining PostgreSQL failures, and CI now runs the whole
+suite under `DOLMEN_ENGINE=postgres` rather than the `BackendConformance` subset alone.
+Until now nothing stopped a PostgreSQL-only regression landing: the matrix was clean
+only when someone ran it by hand.
 
 The driver remains pure Go and compatible with the static binary requirement.
 PostgreSQL dependency versions are pinned in go.mod. No PostgreSQL server is bundled

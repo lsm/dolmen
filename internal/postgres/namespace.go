@@ -36,7 +36,7 @@ func (s *Store) CreateNamespace(ctx context.Context, name string, parentGen [16]
 		if pos < 0 {
 			return fmt.Errorf("%w: root namespace has no parent", store.ErrInvalid)
 		}
-		parent, err := s.namespace(ctx, tx, name[:pos], true)
+		parent, err := s.namespace(ctx, tx, name[:pos], namespaceKeyPinned)
 		if err != nil {
 			return err
 		}
@@ -44,7 +44,7 @@ func (s *Store) CreateNamespace(ctx context.Context, name string, parentGen [16]
 			return fmt.Errorf("%w: parent namespace was replaced", store.ErrNotFound)
 		}
 	}
-	if _, err := s.namespace(ctx, tx, name, false); err == nil {
+	if _, err := s.namespace(ctx, tx, name, namespaceUnlocked); err == nil {
 		return fmt.Errorf("%w: namespace %s %w", store.ErrInvalid, name, store.ErrExists)
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return err
@@ -89,7 +89,7 @@ func (s *Store) NamespaceState(ctx context.Context, name string, auth []store.Au
 		return [16]byte{}, err
 	}
 	defer rollback(tx)
-	n, err := s.namespace(ctx, tx, name, false)
+	n, err := s.namespace(ctx, tx, name, namespaceUnlocked)
 	return n.generation, err
 }
 
@@ -141,7 +141,7 @@ func (s *Store) DropNamespace(ctx context.Context, name string, expected [16]byt
 	if err := s.catalogLock(ctx, tx); err != nil {
 		return err
 	}
-	n, err := s.namespace(ctx, tx, name, true)
+	n, err := s.namespace(ctx, tx, name, namespaceExclusive)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return fmt.Errorf("%w: namespace %s does not exist, so nothing was dropped; list_namespaces shows what is there", store.ErrNotFound, name)

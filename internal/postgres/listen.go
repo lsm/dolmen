@@ -10,13 +10,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/store"
 )
 
 const listenPollInterval = 250 * time.Millisecond
-
-const listenQueueBound = 8 * store.MaxChangesPageLimit
 
 func (s *Store) notifyChannel() string { return physicalCandidate("dolmen_"+s.catalog, 0) }
 
@@ -142,6 +141,10 @@ func listenCause(err error) error {
 	case errors.Is(err, store.ErrCursorExpired):
 		return store.ErrListenAged
 	case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrClosed):
+		return store.ErrListenLifetimeEnded
+	}
+	var pgerr *pgconn.PgError
+	if errors.As(err, &pgerr) && pgerr.Code == "23503" {
 		return store.ErrListenLifetimeEnded
 	}
 	return err
@@ -341,7 +344,7 @@ func (l *listenSession) fetchLive(ctx context.Context) ([]store.ChangeRecord, er
 			return nil, err
 		}
 	}
-	records, next, err := l.store.changesSince(ctx, l.ns, l.table, l.liveCursor, l.nsGen, nil, l.inc, store.Page{}, nil)
+	records, next, err := l.store.changesSinceMode(ctx, l.ns, l.table, l.liveCursor, l.nsGen, nil, l.inc, store.Page{Limit: store.MaxChangesPageLimit}, nil, true)
 	if err != nil {
 		return nil, listenCause(err)
 	}
@@ -458,35 +461,36 @@ func (l *listenSession) run(ctx context.Context) {
 			}
 		}
 		for l.pending(ctx, l.live()) {
-			records, err := l.fetchLive(ctx)
-			if err != nil {
-				if l.storeClosing() {
-					l.finish(store.ErrListenLifetimeEnded)
-					return
-				}
-				if cause, report := terminalCause(ctx, err); report {
-					l.finish(cause)
-				}
-				return
-			}
-			if len(records) == 0 {
-				break
-			}
-			for _, record := range records {
-				visible, err := l.admit(record)
+			short := false
+			for !short {
+				records, err := l.fetchLive(ctx)
 				if err != nil {
-					l.finish(err)
+					if l.storeClosing() {
+						l.finish(store.ErrListenLifetimeEnded)
+						return
+					}
+					if cause, report := terminalCause(ctx, err); report {
+						l.finish(cause)
+					}
 					return
 				}
-				if !visible {
-					continue
+				for _, record := range records {
+					visible, err := l.admit(record)
+					if err != nil {
+						l.finish(err)
+						return
+					}
+					if !visible {
+						continue
+					}
+					select {
+					case l.queue <- record:
+					default:
+						l.finish(store.ErrListenOverflow)
+						return
+					}
 				}
-				select {
-				case l.queue <- record:
-				default:
-					l.finish(store.ErrListenOverflow)
-					return
-				}
+				short = len(records) < store.MaxChangesPageLimit
 			}
 		}
 		select {
@@ -579,7 +583,7 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 		stop: make(chan struct{}), storeStop: w.stop,
 		wake: make(chan struct{}, 1), replayDone: make(chan struct{}), done: make(chan struct{}),
 		lastFetch: s.now(), boundary: head,
-		queue: make(chan store.ChangeRecord, listenQueueBound), liveCursor: liveAnchor,
+		queue: make(chan store.ChangeRecord, store.ListenQueueBound), liveCursor: liveAnchor,
 	}
 	if table != "" {
 		if err := session.admits(table); err != nil {
