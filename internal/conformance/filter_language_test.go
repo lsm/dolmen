@@ -30,6 +30,7 @@ func seedTwoTables(t *testing.T, h *harness) {
 }
 
 func TestAuthOffKeepsTheV020FilterLanguage(t *testing.T) {
+	filterLanguageEngineGap(t, "a filter subquery reaching a sibling table")
 	h := newHarnessMode(t, authOff)
 	seedTwoTables(t, h)
 

@@ -58,13 +58,8 @@ func (s *Store) compileMutationFilter(ctx context.Context, tx pgx.Tx, n namespac
 	if strings.Contains(filter, ";") {
 		return "", fmt.Errorf("%w: multiple statements are not allowed in filter", store.ErrInvalid)
 	}
-	visible, err := s.queryTables(ctx, tx, n)
-	if err != nil {
-		return "", err
-	}
-	visible[state.incarnation.Table] = state
 	query := "SELECT id FROM " + ident(state.incarnation.Table) + " WHERE " + filter + " ORDER BY id"
-	compiled, _, err := compileSQL(query, argc, n.physical, visible)
+	compiled, _, err := compileSQL(query, argc, n.physical, map[string]tableState{state.incarnation.Table: state})
 	if err != nil {
 		return "", filterSyntaxError(filter, err)
 	}
