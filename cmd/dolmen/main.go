@@ -19,6 +19,7 @@ import (
 	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/mcp"
+	"github.com/lsm/dolmen/internal/postgres"
 	"github.com/lsm/dolmen/internal/store"
 	"github.com/lsm/dolmen/internal/version"
 	"github.com/lsm/dolmen/skill"
@@ -161,9 +162,22 @@ func runStdio(args []string) error {
 	return mcpSrv.ServeStdio(ctx, os.Stdin, os.Stdout)
 }
 
-func openStore(cfg *config) (*store.Store, error) {
-	if cfg.Engine != "" && cfg.Engine != store.EngineSQLite {
-		return nil, fmt.Errorf("open store: engine %q is not implemented yet", cfg.Engine)
+func openStore(cfg *config) (store.Engine, error) {
+	if cfg.Engine == store.EnginePostgres {
+		if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
+			return nil, fmt.Errorf("create data directory: %w", err)
+		}
+		retention := cfg.ChangeRetention
+		st, err := postgres.Open(context.Background(), postgres.Config{
+			DSN:             cfg.PostgresDSN,
+			Catalog:         cfg.PostgresCatalog,
+			QueryRole:       cfg.PostgresQueryRole,
+			ChangeRetention: &retention,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("open PostgreSQL catalog: %w", err)
+		}
+		return st, nil
 	}
 	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention))
 	if err != nil {
@@ -259,6 +273,9 @@ type config struct {
 	Addr               string
 	DataDir            string
 	Engine             string
+	PostgresDSN        string
+	PostgresCatalog    string
+	PostgresQueryRole  string
 	Auth               *auth.Authenticator
 	OIDC               auth.OIDCConfig
 	oidcSource         *auth.OIDCSource
@@ -285,7 +302,10 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 
 	addr := fs.String("addr", envOr("DOLMEN_ADDR", "127.0.0.1:8790", getenv), "listen address")
 	dataDir := fs.String("data", envOr("DOLMEN_DATA", "data", getenv), "data directory (one SQLite file per namespace)")
-	engine := fs.String("engine", getenv("DOLMEN_ENGINE"), "storage engine (empty or sqlite)")
+	engine := fs.String("engine", getenv("DOLMEN_ENGINE"), "storage engine: sqlite (default) or postgres")
+	pgDSN := fs.String("pg-dsn", getenv("DOLMEN_PG_DSN"), "PostgreSQL connection string; required when -engine postgres")
+	pgCatalog := fs.String("pg-catalog", getenv("DOLMEN_PG_CATALOG"), "PostgreSQL catalog schema (default dolmen_catalog)")
+	pgQueryRole := fs.String("pg-query-role", getenv("DOLMEN_PG_QUERY_ROLE"), "pre-provisioned restricted role that caller SQL runs as; required for the query op")
 	authMode := fs.String("auth", envOr("DOLMEN_AUTH", "off", getenv), "authentication: off (default, no identity required) or on (deny-by-default; set DOLMEN_ADMIN_KEY)")
 	trustedProxies := fs.String("trusted-proxies", envOr("DOLMEN_TRUSTED_PROXIES", "", getenv), "comma-separated CIDRs (bare IPs allowed) whose peers may assert X-Dolmen-Principal / X-Dolmen-Groups")
 	maxGroupsDefault, maxGroupsErr := envIntOr("DOLMEN_MAX_GROUPS", auth.DefaultMaxGroups, getenv)
@@ -344,8 +364,14 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		fs.Usage()
 		return nil, &printedError{err}
 	}
-	if *engine == store.EnginePostgres {
-		err := fmt.Errorf("engine %q is not selectable from this binary yet; the Go facade selects it with github.com/lsm/dolmen/postgres", store.EnginePostgres)
+	if *engine == store.EnginePostgres && *pgDSN == "" {
+		err := fmt.Errorf("engine %q needs a connection; pass -pg-dsn or set DOLMEN_PG_DSN", store.EnginePostgres)
+		fmt.Fprintf(out, "config: %v\n", err)
+		fs.Usage()
+		return nil, &printedError{err}
+	}
+	if *engine != store.EnginePostgres && *pgDSN != "" {
+		err := fmt.Errorf("-pg-dsn applies only to -engine postgres")
 		fmt.Fprintf(out, "config: %v\n", err)
 		fs.Usage()
 		return nil, &printedError{err}
@@ -453,6 +479,9 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		Addr:               *addr,
 		DataDir:            *dataDir,
 		Engine:             *engine,
+		PostgresDSN:        *pgDSN,
+		PostgresCatalog:    *pgCatalog,
+		PostgresQueryRole:  *pgQueryRole,
 		Auth:               authn,
 		OIDC:               oidc,
 		AllowedOrigins:     allowedOrigins,
@@ -516,7 +545,10 @@ func printEnvHelp(out io.Writer) {
 	help := []envHelp{
 		{"DOLMEN_ADDR", "listen address (default 127.0.0.1:8790)"},
 		{"DOLMEN_DATA", "data directory (default data)"},
-		{"DOLMEN_ENGINE", "storage engine; empty or sqlite (default sqlite)"},
+		{"DOLMEN_ENGINE", "storage engine: sqlite (default) or postgres"},
+		{"DOLMEN_PG_DSN", "PostgreSQL connection string, required with the postgres engine"},
+		{"DOLMEN_PG_CATALOG", "PostgreSQL catalog schema (default dolmen_catalog)"},
+		{"DOLMEN_PG_QUERY_ROLE", "pre-provisioned NOLOGIN role that caller SQL runs as"},
 		{"DOLMEN_AUTH", "authentication: off (default) or on (deny-by-default)"},
 		{"DOLMEN_ADMIN_KEY", "bootstrap admin credential, required when auth is on (env-only, never a flag)"},
 		{"DOLMEN_TRUSTED_PROXIES", "comma-separated CIDRs whose peers may assert identity headers"},

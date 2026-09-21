@@ -406,7 +406,10 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 |---|---|---|---|
 | `-addr` | `DOLMEN_ADDR` | `127.0.0.1:8790` | HTTP listen address (`dolmen mcp` does not listen) |
 | `-data` | `DOLMEN_DATA` | `data` | Data directory (one SQLite file per namespace) |
-| `-engine` | `DOLMEN_ENGINE` | `sqlite` | Storage engine. `sqlite` is the default and the only engine this binary serves; `postgres` is selectable from the Go facade with `github.com/lsm/dolmen/postgres`; unknown values are rejected with an error |
+| `-engine` | `DOLMEN_ENGINE` | `sqlite` | Storage engine: `sqlite` (default) or `postgres`. `postgres` needs `-pg-dsn`; unknown values are rejected with an error |
+| `-pg-dsn` | `DOLMEN_PG_DSN` | — | PostgreSQL connection string; required with `-engine postgres` and rejected without it |
+| `-pg-catalog` | `DOLMEN_PG_CATALOG` | `dolmen_catalog` | PostgreSQL catalog schema |
+| `-pg-query-role` | `DOLMEN_PG_QUERY_ROLE` | — | Pre-provisioned restricted role that caller SQL runs as; required for the `query` op |
 | `-auth` | `DOLMEN_AUTH` | `off` | Authentication. `off` is the v0.2.0 behavior: no identity, no credential, bind to loopback. `on` is deny-by-default and requires `DOLMEN_ADMIN_KEY` (see [Authentication](#authentication)) |
 | — | `DOLMEN_ADMIN_KEY` | — | Bootstrap admin credential, required when `-auth on`. 32–256 characters of `[A-Za-z0-9_-]`, presented as `Authorization: Bearer <key>`. Environment only — flags are visible in process listings |
 | `-trusted-proxies` | `DOLMEN_TRUSTED_PROXIES` | — | Comma-separated CIDRs (bare IPs allowed) whose peers may assert `X-Dolmen-Principal` / `X-Dolmen-Groups`. Trust is decided from the immediate TCP peer, never from `X-Forwarded-For` |
@@ -1225,11 +1228,14 @@ make image           # build a local container image
 
 ### PostgreSQL development status
 
-The PostgreSQL backend is under development; it is not yet selectable in the CLI or
-Go API. The internal implementation includes pooled connections, namespace and table
-lifecycle, schema metadata, and transaction locking, with PostgreSQL-backed CI tests. See the
-[implementation plan](docs/design/postgresql.md) for scope and test instructions.
-The planned full-text search uses each backend's native ranking: SQLite keeps FTS5
+The PostgreSQL backend is under development. It is selectable from the binary with
+`-engine postgres -pg-dsn <dsn>` and from the Go API with `postgres.With` from
+`github.com/lsm/dolmen/postgres`; SQLite remains the default on both. The implementation
+includes pooled connections, namespace and table lifecycle, schema metadata, transaction
+locking, native full-text search, and cross-process subscriptions, with PostgreSQL-backed
+CI tests. See the [implementation plan](docs/design/postgresql.md) for the conformance
+matrix, the caller-SQL role it expects, and test instructions.
+Full-text search uses each backend's native ranking: SQLite keeps FTS5
 BM25, while PostgreSQL uses its native text-search index and ranking. Relevance and
 linguistic matching may differ when moving datasets between backends.
 

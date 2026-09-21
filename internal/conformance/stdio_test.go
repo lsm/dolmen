@@ -3,6 +3,8 @@ package conformance
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +22,7 @@ import (
 	"github.com/lsm/dolmen/internal/api"
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/mcp"
+	"github.com/lsm/dolmen/internal/store"
 )
 
 var (
@@ -65,6 +68,25 @@ type stdioProc struct {
 	}
 }
 
+func stdioEngineArgs(t *testing.T) []string {
+	t.Helper()
+	if testEngine(t) != store.EnginePostgres {
+		return nil
+	}
+	dsn := postgresDSN(t)
+	var id [12]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		t.Fatal(err)
+	}
+	catalog := "dolmen_stdio_" + hex.EncodeToString(id[:])
+	t.Cleanup(func() { dropPostgresCatalog(t, dsn, catalog) })
+	args := []string{"-pg-dsn", dsn, "-pg-catalog", catalog}
+	if role := os.Getenv("DOLMEN_TEST_PG_QUERY_ROLE"); role != "" {
+		args = append(args, "-pg-query-role", role)
+	}
+	return args
+}
+
 func stdioEnv(extra ...string) []string {
 	out := make([]string, 0, len(os.Environ())+len(extra))
 	for _, kv := range os.Environ() {
@@ -79,8 +101,8 @@ func stdioEnv(extra ...string) []string {
 
 func startStdioWithEnv(t *testing.T, extraEnv []string, args ...string) *stdioProc {
 	t.Helper()
-	serverEngineOnly(t)
-	full := append([]string{"mcp", "-data", t.TempDir(), "-engine", testEngine(t)}, args...)
+	full := append([]string{"mcp", "-data", t.TempDir(), "-engine", testEngine(t)}, stdioEngineArgs(t)...)
+	full = append(full, args...)
 	cmd := exec.Command(dolmenBinary(t), full...)
 	cmd.Env = stdioEnv(extraEnv...)
 	stdin, err := cmd.StdinPipe()

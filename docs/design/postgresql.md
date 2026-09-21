@@ -439,9 +439,26 @@ text, so two spellings of the same target collide instead of opening two pools o
 one catalog. Supplying a connection and then contradicting it with `WithEngine` is
 rejected by name rather than failing later as a connection error.
 
-The binary does not select PostgreSQL yet: `-engine postgres` is refused at
-configuration time with an error naming the facade import, so it fails before the
-server starts rather than part way through opening a store.
+The binary selects it the same way:
+
+```sh
+dolmen -engine postgres \
+  -pg-dsn 'postgres://dolmen_backend@host:5432/dolmen?sslmode=disable' \
+  -pg-catalog dolmen_catalog -pg-query-role dolmen_query
+```
+
+`DOLMEN_PG_DSN`, `DOLMEN_PG_CATALOG` and `DOLMEN_PG_QUERY_ROLE` are the env
+equivalents. `-engine postgres` without a DSN is refused, and a DSN without that
+engine is refused too, so a half-configured server fails at startup rather than
+silently serving SQLite. The stdio conformance fixtures run the real binary against
+PostgreSQL through these flags.
+
+`-data` still matters under PostgreSQL. No table data lands there, but the grant
+registry (`<data>/_grants.db`) and the local embedding model cache (`<data>/models`)
+do, so the binary creates the directory whichever engine serves the tables. It used
+to be created as a side effect of opening the SQLite store, which meant `-auth on`
+against a missing directory failed at the grant registry under PostgreSQL and
+nowhere else.
 
 The role provisioning is the deployment's, not dolmen's: the backend role needs CREATE
 on the database, and caller SQL needs the pre-provisioned restricted query role granted
@@ -461,10 +478,12 @@ DOLMEN_ENGINE=postgres DOLMEN_TEST_PG_DSN=... DOLMEN_TEST_PG_QUERY_ROLE=dolmen_q
 ```
 
 Each harness derives a catalog schema from its data directory, so a harness restart
-reconnects to the same catalog instead of a fresh one. Three groups skip deliberately:
-auth-on harness modes (row authorization is unimplemented on PostgreSQL), the embedded
-facade fixtures and the stdio subprocess fixtures (neither constructor can select the
-engine yet), and fixtures that probe SQLite storage internals directly.
+reconnects to the same catalog instead of a fresh one. The stdio subprocess fixtures
+drive the real binary against PostgreSQL through its own flags. Three groups skip
+deliberately: auth-on harness modes (row authorization is unimplemented on PostgreSQL),
+the embedded facade fixtures (the facade can select the engine, but the fixtures still
+open through `WithEngine` alone and have not been moved onto the subpackage seam), and
+fixtures that probe SQLite storage internals directly.
 
 Listen anchors a replay boundary at the namespace head, so replay terminates under
 concurrent writes and the stream reaches its ready frame, and it rejects a cursor that
@@ -557,8 +576,10 @@ the record; only `ok=false` ends the stream. Namespace-wide feeds compare `nsGen
 since their replay spans table lifetimes by design. No transport passes a callback yet,
 so this is unreachable from the conformance suite and is pinned by engine tests.
 
-The remaining failures are genuine backend gaps, not harness artifacts. They must be
-closed before the public selector is enabled:
+One failure remains. It is a genuine backend gap rather than a harness artifact, and it
+is tracked against the live-read work rather than against engine selection: the bound it
+exercises is implemented and pinned by an engine test, so what is missing is the
+fixture's ability to reach it on this backend, not the protection itself.
 
 | Area | Fixture | Gap |
 |---|---|---|
