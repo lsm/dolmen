@@ -362,7 +362,11 @@ OIDC covers Entra, Okta, Google, etc.
   code exchange. `/v1/auth/begin` and the callback are **the one deliberate non-JSON browser
   surface** — a tiny page that hands the token out — with the same exceptional status as `/mcp`;
   every op keeps the JSON envelope. Both are `auth: on`-only and unauthenticated by construction
-  (§1.2).
+  (§1.2). Every endpoint dolmen uses must be `https`, whether it comes from the preset or from the
+  discovery document: the id token's claims are trusted from the token response rather than
+  re-verified against the provider's JWKS, so a cleartext token or userinfo endpoint would hand a
+  network attacker both the client secret and the ability to write `sub` and the groups. A
+  discovery document naming one is refused at sign-in, not quietly followed.
 - The credential is a **stateless signed token**: Ed25519-signed, presented as a bearer, with
   the TTL configured by `DOLMEN_AUTH_OIDC_TOKEN_TTL` — default `168h` (7 days, the short end of
   the design's 7–14 d window), valid range `1h`–`720h` (30 days), other values rejected at

@@ -74,7 +74,11 @@ func (s *OIDCSource) resolveEndpoints(ctx context.Context) (providerEndpoints, e
 		return cached, nil
 	}
 	if s.cfg.Preset == PresetGitHub {
-		return s.cacheEndpoints(providerEndpoints{Authorize: githubAuthorizeURL, Token: githubTokenURL, UserInfo: githubUserURL}), nil
+		eps := providerEndpoints{Authorize: githubAuthorizeURL, Token: githubTokenURL, UserInfo: githubUserURL}
+		if err := eps.validate(); err != nil {
+			return providerEndpoints{}, err
+		}
+		return s.cacheEndpoints(eps), nil
 	}
 	docURL := strings.TrimRight(s.cfg.Issuer, "/") + "/.well-known/openid-configuration"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, docURL, nil)
@@ -96,11 +100,36 @@ func (s *OIDCSource) resolveEndpoints(ctx context.Context) (providerEndpoints, e
 	if doc.AuthorizationEndpoint == "" || doc.TokenEndpoint == "" {
 		return providerEndpoints{}, fmt.Errorf("%w: the identity provider's discovery document names no authorization or token endpoint", ErrAuthFlow)
 	}
-	return s.cacheEndpoints(providerEndpoints{
+	eps := providerEndpoints{
 		Authorize: doc.AuthorizationEndpoint,
 		Token:     doc.TokenEndpoint,
 		UserInfo:  doc.UserinfoEndpoint,
-	}), nil
+	}
+	if err := eps.validate(); err != nil {
+		return providerEndpoints{}, err
+	}
+	return s.cacheEndpoints(eps), nil
+}
+
+func (e providerEndpoints) validate() error {
+	for _, ep := range []struct {
+		name     string
+		raw      string
+		required bool
+	}{
+		{"authorization", e.Authorize, true},
+		{"token", e.Token, true},
+		{"userinfo", e.UserInfo, false},
+	} {
+		if ep.raw == "" && !ep.required {
+			continue
+		}
+		u, err := url.Parse(ep.raw)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("%w: the identity provider's %s endpoint is %q, which is not an https URL; dolmen will not send the client secret or read identity claims over a connection a network attacker can read and rewrite", ErrAuthFlow, ep.name, ep.raw)
+		}
+	}
+	return nil
 }
 
 func (s *OIDCSource) cacheEndpoints(e providerEndpoints) providerEndpoints {

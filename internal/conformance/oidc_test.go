@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lsm/dolmen/internal/auth"
 )
@@ -21,6 +22,7 @@ type issuerStub struct {
 	lastRedir   string
 	challenges  map[string]string
 	extraClaims map[string]any
+	plainField  string
 }
 
 func newIssuerStub(t *testing.T, sub string, groups []string) *issuerStub {
@@ -28,11 +30,15 @@ func newIssuerStub(t *testing.T, sub string, groups []string) *issuerStub {
 	s := &issuerStub{sub: sub, groups: groups, challenges: map[string]string{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		doc := map[string]any{
 			"authorization_endpoint": s.srv.URL + "/authorize",
 			"token_endpoint":         s.srv.URL + "/token",
 			"userinfo_endpoint":      s.srv.URL + "/userinfo",
-		})
+		}
+		if s.plainField != "" {
+			doc[s.plainField] = strings.Replace(doc[s.plainField].(string), "https://", "http://", 1)
+		}
+		_ = json.NewEncoder(w).Encode(doc)
 	})
 	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -63,9 +69,15 @@ func newIssuerStub(t *testing.T, sub string, groups []string) *issuerStub {
 		idToken := "e30." + base64.RawURLEncoding.EncodeToString(raw) + ".sig"
 		_ = json.NewEncoder(w).Encode(map[string]any{"id_token": idToken, "access_token": "at"})
 	})
-	s.srv = httptest.NewServer(mux)
+	s.srv = httptest.NewTLSServer(mux)
 	t.Cleanup(s.srv.Close)
 	return s
+}
+
+func (s *issuerStub) client() *http.Client {
+	c := s.srv.Client()
+	c.Timeout = 15 * time.Second
+	return c
 }
 
 func oidcHarness(t *testing.T, stub *issuerStub) *harness {
@@ -76,7 +88,8 @@ func oidcHarness(t *testing.T, stub *issuerStub) *harness {
 		ClientID:     "dolmen-test",
 		ClientSecret: "shhh",
 	}
-	src := auth.NewOIDCSource(cfg, h.grants, h.keyring(t), nil)
+	src := auth.NewOIDCSource(cfg, h.grants, h.keyring(t), stub.client())
+	h.client = stub.client()
 	h.attachOIDC(t, src)
 	return h
 }
@@ -85,7 +98,7 @@ func TestOIDCDanceIssuesAUsableToken(t *testing.T) {
 	stub := newIssuerStub(t, "00u1a2b3", []string{"platform"})
 	h := oidcHarness(t, stub)
 
-	client := &http.Client{}
+	client := h.web()
 	res, err := client.Get(h.srv.URL + "/v1/auth/begin")
 	if err != nil {
 		t.Fatalf("begin: %v", err)
@@ -145,7 +158,8 @@ func TestOIDCStateIsSingleUse(t *testing.T) {
 	stub := newIssuerStub(t, "00u1a2b3", nil)
 	h := oidcHarness(t, stub)
 
-	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	noRedirect := *h.web()
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	res, err := noRedirect.Get(h.srv.URL + "/v1/auth/begin")
 	if err != nil {
 		t.Fatalf("begin: %v", err)
@@ -161,7 +175,7 @@ func TestOIDCStateIsSingleUse(t *testing.T) {
 	}
 
 	callback := fmt.Sprintf("%s/v1/auth/callback?state=%s&code=the-code", h.srv.URL, url.QueryEscape(state))
-	first, err := http.Get(callback)
+	first, err := h.web().Get(callback)
 	if err != nil {
 		t.Fatalf("callback: %v", err)
 	}
@@ -170,7 +184,7 @@ func TestOIDCStateIsSingleUse(t *testing.T) {
 		t.Fatalf("first callback: status %d", first.StatusCode)
 	}
 
-	second, err := http.Get(callback)
+	second, err := h.web().Get(callback)
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
@@ -184,7 +198,7 @@ func TestOIDCUnknownStateIsRefused(t *testing.T) {
 	stub := newIssuerStub(t, "00u1a2b3", nil)
 	h := oidcHarness(t, stub)
 
-	res, err := http.Get(h.srv.URL + "/v1/auth/callback?state=never-issued&code=the-code")
+	res, err := h.web().Get(h.srv.URL + "/v1/auth/callback?state=never-issued&code=the-code")
 	if err != nil {
 		t.Fatalf("callback: %v", err)
 	}
@@ -197,7 +211,7 @@ func TestOIDCUnknownStateIsRefused(t *testing.T) {
 func TestAuthEndpointsAbsentWithoutTheSource(t *testing.T) {
 	h := newHarnessMode(t, authAdminKey)
 	for _, path := range []string{"/v1/auth/begin", "/v1/auth/callback"} {
-		res, err := http.Get(h.srv.URL + path)
+		res, err := h.web().Get(h.srv.URL + path)
 		if err != nil {
 			t.Fatalf("get %s: %v", path, err)
 		}
@@ -253,6 +267,29 @@ func TestAuthEndpointsAreDiscoverableWhenServed(t *testing.T) {
 	}
 }
 
+func TestDiscoveredEndpointsMustBeHTTPS(t *testing.T) {
+	for _, field := range []string{"token_endpoint", "authorization_endpoint", "userinfo_endpoint"} {
+		t.Run(field, func(t *testing.T) {
+			stub := newIssuerStub(t, "00u1a2b3", nil)
+			stub.plainField = field
+			h := oidcHarness(t, stub)
+
+			res, err := h.web().Get(h.srv.URL + "/v1/auth/begin")
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			defer res.Body.Close()
+			if res.StatusCode == http.StatusOK {
+				t.Fatalf("a provider advertising a cleartext %s signed someone in: the client secret and the identity claims would cross the network readable and rewritable", field)
+			}
+			body := readAll(t, res)
+			if !strings.Contains(body, "https") {
+				t.Fatalf("the refusal does not name the requirement: %s", body)
+			}
+		})
+	}
+}
+
 func readAll(t *testing.T, res *http.Response) string {
 	t.Helper()
 	buf := make([]byte, 1<<16)
@@ -281,7 +318,7 @@ func extractToken(t *testing.T, page string) string {
 
 func danceForToken(t *testing.T, h *harness) string {
 	t.Helper()
-	res, err := http.Get(h.srv.URL + "/v1/auth/begin")
+	res, err := h.web().Get(h.srv.URL + "/v1/auth/begin")
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
@@ -305,9 +342,10 @@ func TestOIDCRejectsOverLimitGroups(t *testing.T) {
 		ClientSecret: "shhh",
 		MaxGroups:    2,
 	}
-	h.attachOIDC(t, auth.NewOIDCSource(cfg, h.grants, h.keyring(t), nil))
+	h.client = stub.client()
+	h.attachOIDC(t, auth.NewOIDCSource(cfg, h.grants, h.keyring(t), stub.client()))
 
-	res, err := http.Get(h.srv.URL + "/v1/auth/begin")
+	res, err := h.web().Get(h.srv.URL + "/v1/auth/begin")
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
@@ -363,7 +401,7 @@ func TestSignInErrorPageIsNotDoubleEscaped(t *testing.T) {
 	stub := newIssuerStub(t, "00u1a2b3", nil)
 	h := oidcHarness(t, stub)
 
-	res, err := http.Get(h.srv.URL + "/v1/auth/callback?state=never-issued&code=the-code")
+	res, err := h.web().Get(h.srv.URL + "/v1/auth/callback?state=never-issued&code=the-code")
 	if err != nil {
 		t.Fatalf("callback: %v", err)
 	}
@@ -403,7 +441,7 @@ func TestOIDCRejectsATokenFromAnotherIssuerOrAudience(t *testing.T) {
 			stub.extraClaims = claims
 			h := oidcHarness(t, stub)
 
-			res, err := http.Get(h.srv.URL + "/v1/auth/begin")
+			res, err := h.web().Get(h.srv.URL + "/v1/auth/begin")
 			if err != nil {
 				t.Fatalf("begin: %v", err)
 			}

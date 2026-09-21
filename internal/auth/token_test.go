@@ -227,3 +227,45 @@ func TestOIDCReachabilityRejectsAStaleIssuerQualification(t *testing.T) {
 		t.Fatalf("a gateway can assert any well-formed principal, so it stays reachable: %v", err)
 	}
 }
+
+func TestAStalledRefreshDoesNotOverwriteARotation(t *testing.T) {
+	before := testKeyring(t)
+	successor, err := NewSigningKey()
+	if err != nil {
+		t.Fatalf("signing key: %v", err)
+	}
+	after := Keyring{Deployment: before.Deployment, Active: successor}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	ts := &tokenSource{
+		ring:     before,
+		loadedAt: time.Now().Add(-time.Hour),
+		every:    time.Millisecond,
+		now:      time.Now,
+	}
+	ts.load = func(context.Context) (Keyring, error) {
+		close(started)
+		<-release
+		return before, nil
+	}
+
+	done := make(chan Keyring, 1)
+	go func() { done <- ts.keyring() }()
+	<-started
+	ts.replace(after)
+	close(release)
+
+	if got := <-done; got.Active.ID != after.Active.ID {
+		t.Fatalf("the stalled refresh handed its caller the pre-rotation ring: %q, want %q", got.Active.ID, after.Active.ID)
+	}
+	ts.mu.RLock()
+	held, at := ts.ring, ts.loadedAt
+	ts.mu.RUnlock()
+	if held.Active.ID != after.Active.ID {
+		t.Fatalf("a refresh that read the pre-rotation ring overwrote the rotation, so a retired key verifies again: %q, want %q", held.Active.ID, after.Active.ID)
+	}
+	if at.Before(time.Now().Add(-time.Second)) {
+		t.Fatal("the discarded refresh pushed loadedAt backwards")
+	}
+}

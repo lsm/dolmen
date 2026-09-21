@@ -35,6 +35,7 @@ type tokenSource struct {
 	mu       sync.RWMutex
 	ring     Keyring
 	loadedAt time.Time
+	gen      uint64
 	load     func(context.Context) (Keyring, error)
 	every    time.Duration
 	now      func() time.Time
@@ -42,7 +43,7 @@ type tokenSource struct {
 
 func (t *tokenSource) keyring() Keyring {
 	t.mu.RLock()
-	ring, at := t.ring, t.loadedAt
+	ring, at, gen := t.ring, t.loadedAt, t.gen
 	load, every := t.load, t.every
 	t.mu.RUnlock()
 	if load == nil || every <= 0 || t.now().Sub(at) < every {
@@ -53,15 +54,18 @@ func (t *tokenSource) keyring() Keyring {
 		return ring
 	}
 	t.mu.Lock()
-	t.ring, t.loadedAt = fresh, t.now()
-	t.mu.Unlock()
+	defer t.mu.Unlock()
+	if t.gen != gen {
+		return t.ring
+	}
+	t.ring, t.loadedAt, t.gen = fresh, t.now(), t.gen+1
 	return fresh
 }
 
 func (t *tokenSource) replace(ring Keyring) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.ring, t.loadedAt = ring, t.now()
+	t.ring, t.loadedAt, t.gen = ring, t.now(), t.gen+1
 }
 
 func (a *Authenticator) UseTokens(ring Keyring) {

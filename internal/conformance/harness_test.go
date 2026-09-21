@@ -110,6 +110,7 @@ type harness struct {
 	grants *auth.Registry
 	authn  *auth.Authenticator
 	oidc   *auth.OIDCSource
+	client *http.Client
 
 	mode harnessMode
 
@@ -683,6 +684,13 @@ func (h *harness) keyring(t *testing.T) auth.Keyring {
 		t.Fatalf("keyring: %v", err)
 	}
 	return ring
+}
+
+func (h *harness) web() *http.Client {
+	if h.client != nil {
+		return h.client
+	}
+	return http.DefaultClient
 }
 
 func (h *harness) attachOIDC(t *testing.T, src *auth.OIDCSource) {
