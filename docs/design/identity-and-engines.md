@@ -354,12 +354,25 @@ OIDC covers Entra, Okta, Google, etc.
 
 - Config: `DOLMEN_AUTH_OIDC_ISSUER`, `DOLMEN_AUTH_OIDC_CLIENT_ID`, `DOLMEN_AUTH_OIDC_CLIENT_SECRET`
   (the secret env-only per the §1.3 convention), plus optional extra scopes and an optional GitHub
-  preset that fills in endpoints and claim mapping.
+  preset that fills in endpoints and claim mapping. The preset pins its own issuer, so a preset and
+  an explicit issuer together are a startup error rather than a silent precedence rule: principals
+  are qualified by the issuer actually used (§1.4), and the ignored one would name grants that never
+  match.
 - Flow: `/v1/auth/begin` → the IdP's authorization endpoint → callback with PKCE and state/CSRF →
   code exchange. `/v1/auth/begin` and the callback are **the one deliberate non-JSON browser
   surface** — a tiny page that hands the token out — with the same exceptional status as `/mcp`;
   every op keeps the JSON envelope. Both are `auth: on`-only and unauthenticated by construction
-  (§1.2).
+  (§1.2). Every endpoint dolmen uses must be `https`, whether it comes from the preset or from the
+  discovery document: the id token's claims are trusted from the token response rather than
+  re-verified against the provider's JWKS, so a cleartext token or userinfo endpoint would hand a
+  network attacker both the client secret and the ability to write `sub` and the groups. A
+  discovery document naming one is refused at sign-in, not quietly followed.
+- The pending state `/v1/auth/begin` writes is bounded twice, because the endpoint is
+  unauthenticated by construction: per client (by peer address) so one caller cannot fill the
+  table, and per server, where reaching the cap **evicts the oldest entries rather than refusing**
+  — a bound that refuses would let any unauthenticated caller lock every sign-in out for the whole
+  expiry window, turning a memory guard into a denial of service. Entries are single-use and expire
+  on their own.
 - The credential is a **stateless signed token**: Ed25519-signed, presented as a bearer, with
   the TTL configured by `DOLMEN_AUTH_OIDC_TOKEN_TTL` — default `168h` (7 days, the short end of
   the design's 7–14 d window), valid range `1h`–`720h` (30 days), other values rejected at
@@ -389,7 +402,12 @@ OIDC covers Entra, Okta, Google, etc.
 - **Principal = the `sub` claim, never the email** — grants survive email changes; email is
   display-only and not stored (§1.6). Groups come from claims. Caveat, documented rather than
   papered over: Entra emits group claims as object GUIDs, not names, so Entra deployments either
-  sync names or grant on the GUIDs. And because OIDC subject identifiers are unique **only
+  sync names or grant on the GUIDs. The groups claim is read as an array of names and nothing else:
+  a claim present in an unusable shape — a delimited string, a number, an entry that is not a name —
+  **refuses the sign-in** rather than yielding the groups it could parse. Guessing a separator or
+  skipping an entry would authenticate someone into a body whose grants silently miss, which is the
+  same reasoning that makes over-limit groups a `401` rather than a truncation. An absent or `null`
+  claim is not a shape error: it means no groups. And because OIDC subject identifiers are unique **only
   within an issuer**, source B's principals and groups are **issuer-qualified**: the source
   yields the pair (issuer, `sub`) under a **versioned, byte-for-byte encoding, pinned so
   normalized identities are stable across implementations and releases** —

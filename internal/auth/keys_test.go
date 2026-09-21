@@ -49,10 +49,10 @@ func TestKeyRevocationCountsHeaderReachability(t *testing.T) {
 		t.Fatalf("create key: %v", err)
 	}
 
-	if _, err := r.RevokeKey(ctx, k.ID, true, false); !errors.Is(err, ErrLastRootKey) {
+	if _, err := r.RevokeKey(ctx, k.ID, true, Reach{}); !errors.Is(err, ErrLastRootKey) {
 		t.Fatalf("key-only deployment let its last root key go: %v", err)
 	}
-	if _, err := r.RevokeKey(ctx, k.ID, true, true); err != nil {
+	if _, err := r.RevokeKey(ctx, k.ID, true, Reach{Header: true}); err != nil {
 		t.Fatalf("a gateway can still assert boss, so dropping the compromised key must be allowed: %v", err)
 	}
 }
@@ -66,7 +66,7 @@ func TestKeyRevocationAllowsAReplacement(t *testing.T) {
 	if _, _, err := r.CreateKey(ctx, "second", "boss", nil); err != nil {
 		t.Fatalf("second key: %v", err)
 	}
-	if _, err := r.RevokeKey(ctx, first.ID, true, false); err != nil {
+	if _, err := r.RevokeKey(ctx, first.ID, true, Reach{}); err != nil {
 		t.Fatalf("a replacement key exists, so the revoke should be allowed: %v", err)
 	}
 }
@@ -94,7 +94,7 @@ func TestRevokedKeyStaysListedButInactive(t *testing.T) {
 	r := seedKeyRegistry(t)
 	ctx := context.Background()
 	k, _, _ := r.CreateKey(ctx, "temp", "bot", nil)
-	if _, err := r.RevokeKey(ctx, k.ID, false, false); err != nil {
+	if _, err := r.RevokeKey(ctx, k.ID, false, Reach{}); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
 	keys, err := r.ListKeys(ctx)
@@ -105,10 +105,10 @@ func TestRevokedKeyStaysListedButInactive(t *testing.T) {
 	if len(active) != 0 {
 		t.Fatalf("a revoked key is still active: %+v", active)
 	}
-	if again, err := r.RevokeKey(ctx, k.ID, false, false); err != nil || !again.Revoked {
+	if again, err := r.RevokeKey(ctx, k.ID, false, Reach{}); err != nil || !again.Revoked {
 		t.Fatalf("re-revoking should succeed unchanged: %+v %v", again, err)
 	}
-	if missing, err := r.RevokeKey(ctx, "nosuchkey", false, false); err != nil || missing.ID != "" {
+	if missing, err := r.RevokeKey(ctx, "nosuchkey", false, Reach{}); err != nil || missing.ID != "" {
 		t.Fatalf("revoking an unknown id should succeed with no key: %+v %v", missing, err)
 	}
 }
@@ -135,5 +135,31 @@ func TestStartupRequiresAReachableRootAdministrator(t *testing.T) {
 	}
 	if err := keysOnly.CheckRootAdministrator(ctx, r); err != nil {
 		t.Fatalf("a key bearing the root principal should satisfy the check: %v", err)
+	}
+}
+
+func TestGroupOnlyRootAdminIsRefusedWithAnExplanation(t *testing.T) {
+	r := seedKeyRegistry(t)
+	ctx := context.Background()
+	mustGrant(t, r, group("ops"), Object{Namespace: RootObject}, VerbAdmin)
+
+	a, err := New(Config{Mode: ModeOn, TrustedProxies: proxies(t, "127.0.0.0/8")})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	err = a.CheckRootAdministrator(ctx, r)
+	if err == nil {
+		t.Fatal("a root grant held only by a group satisfied the startup check, but startup cannot establish the group has any member")
+	}
+	if !strings.Contains(err.Error(), "ops") || !strings.Contains(err.Error(), "API key") {
+		t.Fatalf("the refusal does not name the group or the decidable way out: %v", err)
+	}
+
+	if _, _, err := r.CreateKey(ctx, "fleet", "bot", []string{"ops"}); err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+	a.UseKeys(r)
+	if err := a.CheckRootAdministrator(ctx, r); err != nil {
+		t.Fatalf("a key whose stored groups prove membership is the one decidable exception: %v", err)
 	}
 }

@@ -18,6 +18,7 @@ type EmbeddingProvider interface {
 type config struct {
 	engine          string
 	ownerKey        string
+	openerEngine    string
 	opener          EngineOpener
 	embedding       EmbeddingProvider
 	embeddingSet    bool
@@ -44,6 +45,7 @@ func WithEngine(name string) Option {
 func WithEngineOpener(engine, ownerKey string, open EngineOpener) Option {
 	return func(c *config) {
 		c.engine = engine
+		c.openerEngine = engine
 		c.ownerKey = ownerKey
 		c.opener = open
 	}
@@ -70,6 +72,9 @@ func (c *config) validate() error {
 	}
 	if c.opener == nil && c.ownerKey != "" {
 		return derr.New(derr.InvalidRequest, "WithEngineOpener: an opener is required")
+	}
+	if c.opener != nil && c.engine != c.openerEngine {
+		return derr.New(derr.InvalidRequest, "WithEngine(%q) contradicts the %q connection already supplied; pass one engine", c.engine, c.openerEngine)
 	}
 	if c.engine == store.EnginePostgres && c.opener == nil {
 		return derr.New(derr.InvalidRequest, "WithEngine: the %q engine needs a connection; import github.com/lsm/dolmen/postgres and pass postgres.With to supply its DSN", store.EnginePostgres)

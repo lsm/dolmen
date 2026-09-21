@@ -14,6 +14,14 @@ var authOps = map[string]OpDef{}
 
 func (s *Server) authOpsEnabled() bool { return s.authn.On() }
 
+func (s *Server) opAvailable(name string) bool {
+	if name != "rotate_signing_key" {
+		return true
+	}
+	_, ok := s.oidc()
+	return ok
+}
+
 func (s *Server) OpNames() []string {
 	names := make([]string, 0, len(Ops)+len(authOps))
 	for name := range Ops {
@@ -21,7 +29,9 @@ func (s *Server) OpNames() []string {
 	}
 	if s.authOpsEnabled() {
 		for name := range authOps {
-			names = append(names, name)
+			if s.opAvailable(name) {
+				names = append(names, name)
+			}
 		}
 	}
 	sort.Strings(names)
@@ -40,7 +50,7 @@ func (s *Server) Op(name string) (OpDef, bool) {
 		}
 		return def, true
 	}
-	if s.authOpsEnabled() {
+	if s.authOpsEnabled() && s.opAvailable(name) {
 		if def, ok := authOps[name]; ok {
 			return def, true
 		}
@@ -410,7 +420,7 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			g, err := s.grants.Revoke(ctx, subj, obj, verbs, !s.authn.AdminKeyConfigured(), s.authn.HeaderSourceEnabled())
+			g, err := s.grants.Revoke(ctx, subj, obj, verbs, !s.authn.AdminKeyConfigured(), s.authn.Reach())
 			if err != nil {
 				if errors.Is(err, auth.ErrLastRootAdmin) {
 					return nil, lastRootAdminError()
@@ -626,7 +636,7 @@ func init() {
 			if s.grants == nil {
 				return nil, errNoGrantRegistry
 			}
-			k, err := s.grants.RevokeKey(ctx, req.ID, !s.authn.AdminKeyConfigured(), s.authn.HeaderSourceEnabled())
+			k, err := s.grants.RevokeKey(ctx, req.ID, !s.authn.AdminKeyConfigured(), s.authn.Reach())
 			if err != nil {
 				if errors.Is(err, auth.ErrLastRootKey) {
 					return nil, lastRootKeyError()
@@ -637,6 +647,44 @@ func init() {
 				return map[string]any{"key": nil}, nil
 			}
 			return map[string]any{"key": keyPayload(k)}, nil
+		},
+	}
+}
+
+func init() {
+	authOps["rotate_signing_key"] = OpDef{
+		Description: "Mint a new token signing key. Tokens issued from now on carry it. By default the predecessor keeps " +
+			"verifying, so tokens already in people's hands stay valid until they expire; pass retire_previous to revoke " +
+			"them immediately, which is how this deployment signs every human out at once. Requires admin on \"*\", and " +
+			"only exists when native sign-in is configured.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"retire_previous": prop("boolean", "Stop honouring tokens signed by earlier keys, signing everyone out at once (default false)"),
+			},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"key_id":           prop("string", "The new signing key's id, which appears in the kid header of tokens minted from now on"),
+			"retired_previous": prop("boolean", "Whether earlier keys stopped verifying"),
+		}, "key_id", "retired_previous"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req struct {
+				RetirePrevious bool `json:"retire_previous"`
+			}
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			src, ok := s.oidc()
+			if !ok {
+				return nil, notFound("unknown operation %q", "rotate_signing_key")
+			}
+			ring, err := src.Rotate(ctx, req.RetirePrevious)
+			if err != nil {
+				return nil, err
+			}
+			s.authn.UseTokens(ring)
+			return map[string]any{"key_id": ring.Active.ID, "retired_previous": req.RetirePrevious}, nil
 		},
 	}
 }

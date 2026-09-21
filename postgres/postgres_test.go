@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,5 +100,36 @@ func TestFacadeRejectsADuplicateCatalog(t *testing.T) {
 func TestFacadeRequiresADSN(t *testing.T) {
 	if _, err := dolmen.Open("", postgres.With(postgres.Config{})); err == nil {
 		t.Fatal("an empty DSN must be rejected")
+	}
+}
+
+func TestEquivalentDSNsShareAnOwnerKey(t *testing.T) {
+	base := testConfig(t)
+	first, err := dolmen.Open("", postgres.With(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	reordered := base
+	reordered.DSN = base.DSN + "&application_name=other"
+	if _, err := dolmen.Open("", postgres.With(reordered)); err == nil {
+		t.Fatal("a DSN naming the same host, database and catalog must collide with the open store")
+	}
+}
+
+func TestEngineOptionCannotContradictTheConnection(t *testing.T) {
+	_, conflict := dolmen.Open("", postgres.With(postgres.Config{DSN: "postgres://example/db"}), dolmen.WithEngine("sqlite"))
+	if conflict == nil {
+		t.Fatal("asking for sqlite after supplying a postgres connection must be rejected")
+	}
+	if !strings.Contains(conflict.Error(), "contradicts") {
+		t.Fatalf("a contradicting engine must be named as the problem rather than surfacing as a connection failure, got %v", conflict)
+	}
+	_, err := dolmen.Open("", dolmen.WithEngine("sqlite"), postgres.With(postgres.Config{DSN: "postgres://example/db"}))
+	if err == nil {
+		t.Fatal("an unreachable DSN must fail")
+	}
+	if strings.Contains(err.Error(), "contradicts") {
+		t.Fatalf("supplying the connection last agrees with itself and must not report a conflict, got %v", err)
 	}
 }

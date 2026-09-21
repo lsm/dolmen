@@ -108,6 +108,9 @@ type harness struct {
 
 	api    *api.Server
 	grants *auth.Registry
+	authn  *auth.Authenticator
+	oidc   *auth.OIDCSource
+	client *http.Client
 
 	mode harnessMode
 
@@ -184,6 +187,9 @@ func (h *harness) start() {
 	if err != nil {
 		h.t.Fatalf("build authenticator for mode %q: %v", h.mode.name, err)
 	}
+	if h.authn != nil {
+		authn = h.authn
+	}
 	opts := append(append([]api.Option(nil), h.apiOpts...), api.WithAuth(authn))
 	if authn.On() {
 		grants, err := auth.OpenRegistry(h.dir)
@@ -192,6 +198,7 @@ func (h *harness) start() {
 		}
 		h.grants = grants
 		authn.UseKeys(grants)
+		h.authn = authn
 		opts = append(opts, api.WithGrants(grants))
 	}
 	apiSrv := api.New(h.st, embed.Provider(h.emb), opts...)
@@ -664,4 +671,52 @@ func (h *harness) mustHTTPAs(t *testing.T, id identity, op string, body any) map
 	}
 	data, _ := out["data"].(map[string]any)
 	return data
+}
+
+func (h *harness) keyring(t *testing.T) auth.Keyring {
+	t.Helper()
+	dep, err := h.grants.DeploymentID(t.Context(), "")
+	if err != nil {
+		t.Fatalf("deployment id: %v", err)
+	}
+	ring, err := h.grants.LoadKeyring(t.Context(), dep)
+	if err != nil {
+		t.Fatalf("keyring: %v", err)
+	}
+	return ring
+}
+
+func (h *harness) web() *http.Client {
+	if h.client != nil {
+		return h.client
+	}
+	return http.DefaultClient
+}
+
+func (h *harness) attachOIDC(t *testing.T, src *auth.OIDCSource) {
+	t.Helper()
+	h.authn.UseTokens(h.keyring(t))
+	src.PublishRingTo(h.authn.UseTokens)
+	dep := h.keyring(t).Deployment
+	h.authn.RefreshTokensFrom(func(ctx context.Context) (auth.Keyring, error) {
+		return h.grants.LoadKeyring(ctx, dep)
+	}, time.Millisecond)
+	h.apiOpts = append(h.apiOpts, api.WithOIDC(src))
+	h.oidc = src
+	h.restart()
+}
+
+func (h *harness) restart() {
+	h.t.Helper()
+	h.srv.Close()
+	apiSrv := api.New(h.st, embed.Provider(h.emb), append(append([]api.Option(nil), h.apiOpts...),
+		api.WithAuth(h.authn), api.WithGrants(h.grants))...)
+	h.api = apiSrv
+	mcpSrv := mcp.New(apiSrv, nil)
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", mcpSrv)
+	mux.Handle("/", apiSrv.Handler())
+	h.srv = httptest.NewServer(api.OriginGuard(mux, nil))
+	h.httpURL = h.srv.URL + "/v1"
+	h.mcpURL = h.srv.URL + "/mcp"
 }

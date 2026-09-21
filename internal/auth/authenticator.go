@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/lsm/dolmen/internal/derr"
 )
@@ -21,8 +23,88 @@ type Authenticator struct {
 	admin  Source
 	header Source
 	keys   Source
+	tokens *tokenSource
 
-	maxGroups int
+	oidcIssuer string
+	maxGroups  int
+}
+
+const DefaultKeyringRefresh = 30 * time.Second
+
+type tokenSource struct {
+	mu       sync.RWMutex
+	ring     Keyring
+	loadedAt time.Time
+	gen      uint64
+	load     func(context.Context) (Keyring, error)
+	every    time.Duration
+	now      func() time.Time
+}
+
+func (t *tokenSource) keyring() Keyring {
+	t.mu.RLock()
+	ring, at, gen := t.ring, t.loadedAt, t.gen
+	load, every := t.load, t.every
+	t.mu.RUnlock()
+	if load == nil || every <= 0 || t.now().Sub(at) < every {
+		return ring
+	}
+	fresh, err := load(context.Background())
+	if err != nil {
+		return ring
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.gen != gen {
+		return t.ring
+	}
+	t.ring, t.loadedAt, t.gen = fresh, t.now(), t.gen+1
+	return fresh
+}
+
+func (t *tokenSource) replace(ring Keyring) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.ring, t.loadedAt, t.gen = ring, t.now(), t.gen+1
+}
+
+func (a *Authenticator) UseTokens(ring Keyring) {
+	if a == nil {
+		return
+	}
+	if a.tokens != nil {
+		a.tokens.replace(ring)
+		return
+	}
+	a.tokens = &tokenSource{ring: ring, loadedAt: time.Now(), now: time.Now}
+}
+
+func (a *Authenticator) RefreshTokensFrom(load func(context.Context) (Keyring, error), every time.Duration) {
+	if a == nil || a.tokens == nil {
+		return
+	}
+	if every <= 0 {
+		every = DefaultKeyringRefresh
+	}
+	a.tokens.mu.Lock()
+	a.tokens.load, a.tokens.every = load, every
+	a.tokens.mu.Unlock()
+}
+
+func (a *Authenticator) SetOIDCIssuer(digest string) {
+	if a == nil {
+		return
+	}
+	a.oidcIssuer = digest
+}
+
+func (a *Authenticator) OIDCEnabled() bool { return a != nil && a.tokens != nil }
+
+func (a *Authenticator) TokenKeyring() (Keyring, bool) {
+	if a == nil || a.tokens == nil {
+		return Keyring{}, false
+	}
+	return a.tokens.keyring(), true
 }
 
 func (a *Authenticator) UseKeys(r *Registry) {
@@ -100,8 +182,15 @@ func (a *Authenticator) Authenticate(r *http.Request) (Identity, error) {
 			return Identity{}, Unauthorized()
 		}
 		return id, nil
-	case strings.Contains(token, "."):
-		return Identity{}, Unauthorized()
+	case LooksLikeToken(token):
+		if a.tokens == nil {
+			return Identity{}, Unauthorized()
+		}
+		id, err := VerifyToken(a.tokens.keyring(), token, a.tokens.now())
+		if err != nil {
+			return Identity{}, Unauthorized()
+		}
+		return id, nil
 	}
 	if a.admin == nil {
 		return Identity{}, Unauthorized()
@@ -133,8 +222,8 @@ func (a *Authenticator) CheckRootAdministrator(ctx context.Context, src RootAdmi
 	if !a.On() || a.AdminKeyConfigured() {
 		return nil
 	}
-	if !a.HeaderSourceEnabled() && !a.KeySourceEnabled() {
-		return fmt.Errorf("auth is on, but no identity source is configured, so every request would answer 401: set DOLMEN_ADMIN_KEY to the bootstrap credential (%s), or DOLMEN_TRUSTED_PROXIES to accept identity asserted by a gateway", AdminPrincipal)
+	if !a.HeaderSourceEnabled() && !a.KeySourceEnabled() && !a.OIDCEnabled() {
+		return fmt.Errorf("auth is on, but no identity source is configured, so every request would answer 401: set DOLMEN_ADMIN_KEY to the bootstrap credential (%s), DOLMEN_TRUSTED_PROXIES to accept identity asserted by a gateway, or DOLMEN_AUTH_OIDC_ISSUER to sign people in directly", AdminPrincipal)
 	}
 	admins, err := src.RootAdmins(ctx)
 	if err != nil {
@@ -143,11 +232,10 @@ func (a *Authenticator) CheckRootAdministrator(ctx context.Context, src RootAdmi
 	if len(admins) == 0 {
 		return fmt.Errorf("auth is on but the deployment has no usable root administrator: no DOLMEN_ADMIN_KEY is set and nothing holds admin on \"*\", so nobody could grant anything; set DOLMEN_ADMIN_KEY and restart, which restores the bootstrap administrator while existing grants persist")
 	}
-	if a.HeaderSourceEnabled() {
-		for _, s := range admins {
-			if s.Type == SubjectPrincipal {
-				return nil
-			}
+	reach := a.Reach()
+	for _, s := range admins {
+		if s.Type == SubjectPrincipal && reach.PrincipalReachable(s.ID) {
+			return nil
 		}
 	}
 	if a.KeySourceEnabled() {
@@ -157,6 +245,18 @@ func (a *Authenticator) CheckRootAdministrator(ctx context.Context, src RootAdmi
 		}
 		if rootReachableByKey(admins, keys, "") {
 			return nil
+		}
+	}
+	if a.OIDCEnabled() {
+		for _, s := range admins {
+			if digest, qualified := OIDCIssuerOf(s.ID); qualified && digest != a.oidcIssuer {
+				return fmt.Errorf("auth is on but the only root administrator is %q, which carries a different identity provider's qualification than the configured DOLMEN_AUTH_OIDC_ISSUER: the new issuer can never produce that principal, so nobody could administer this deployment; point the issuer back, grant admin on \"*\" to a principal the current issuer yields, or set DOLMEN_ADMIN_KEY and restart", s.ID)
+			}
+		}
+	}
+	for _, s := range admins {
+		if s.Type == SubjectGroup {
+			return fmt.Errorf("auth is on but the only root administrator is the group %q, and group membership is asserted per request rather than stored, so startup cannot establish that the group has any member — an empty or retired group would satisfy the check while nobody could actually administer; grant admin on \"*\" to a principal as well, mint an API key carrying that group (a key's groups are stored, so they do prove membership), or set DOLMEN_ADMIN_KEY and restart", s.ID)
 		}
 	}
 	return fmt.Errorf("auth is on but no root administrator is reachable through an enabled identity source: a grant of admin on \"*\" exists, but no source can produce the identity it names — the key that bore it may have been revoked, or the grant may name a principal only a source this deployment no longer enables could assert; set DOLMEN_ADMIN_KEY and restart, which restores the bootstrap administrator while existing grants persist")
@@ -181,4 +281,12 @@ func rootReachableByKey(admins []Subject, keys []Key, excludeKeyID string) bool 
 		}
 	}
 	return false
+}
+
+func (a *Authenticator) mustRing(t interface{ Fatalf(string, ...any) }) Keyring {
+	ring, ok := a.TokenKeyring()
+	if !ok {
+		t.Fatalf("no token keyring is configured")
+	}
+	return ring
 }
