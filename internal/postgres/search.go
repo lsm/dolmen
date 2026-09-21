@@ -118,9 +118,6 @@ func (s *Store) fetchRanked(ctx context.Context, tx pgx.Tx, n namespace, state t
 }
 
 func (s *Store) SearchFulltext(ctx context.Context, ns, table, match, filter string, args []any, includeHidden bool, scope *store.RowScope, scopeIncarnation store.Incarnation, page store.Page) (store.SearchResult, error) {
-	if scope != nil && strings.TrimSpace(filter) != "" {
-		return store.SearchResult{}, store.ErrScopedFilterUnsupported
-	}
 	if page.Offset < 0 {
 		return store.SearchResult{}, invalidf("offset must be non-negative")
 	}
@@ -155,8 +152,13 @@ func (s *Store) SearchFulltext(ctx context.Context, ns, table, match, filter str
 			return invalidf("table %s has no fulltext fields", table)
 		}
 		bound := []any{}
+		compiled := ""
 		if filter != "" {
-			bound = append(bound, args...)
+			var err error
+			compiled, bound, err = s.compileMutationFilter(ctx, tx, n, filter, args, state, scope)
+			if err != nil {
+				return err
+			}
 		}
 		tsquery, tsargs, err := compileFTSQuery(match, len(bound))
 		if err != nil {
@@ -165,11 +167,7 @@ func (s *Store) SearchFulltext(ctx context.Context, ns, table, match, filter str
 		physical := ident(n.physical, state.physical)
 		bind := append(append([]any{}, bound...), tsargs...)
 		where := ident(ftsColumn) + " @@ " + tsquery
-		if filter != "" {
-			compiled, err := s.compileMutationFilter(ctx, tx, n, filter, len(bound), state)
-			if err != nil {
-				return err
-			}
+		if compiled != "" {
 			where += " AND id IN (" + compiled + ")"
 		}
 		if clause, sargs := scopePredicate(scope, "", len(bind)+1); clause != "" {
@@ -224,9 +222,6 @@ func searchError(ctx context.Context, filter string, err error) error {
 }
 
 func (s *Store) SearchVector(ctx context.Context, ns, table string, q store.VectorQuery, includeHidden bool, scope *store.RowScope, scopeIncarnation store.Incarnation, page store.Page) (store.SearchResult, error) {
-	if scope != nil && strings.TrimSpace(q.Filter) != "" {
-		return store.SearchResult{}, store.ErrScopedFilterUnsupported
-	}
 	if page.Offset < 0 {
 		return store.SearchResult{}, invalidf("offset must be non-negative")
 	}
@@ -279,11 +274,11 @@ func (s *Store) SearchVector(ctx context.Context, ns, table string, q store.Vect
 		stmt := "SELECT id," + ident(physicalColumn) + " FROM " + physical + " WHERE " + ident(physicalColumn) + " IS NOT NULL"
 		bind := []any{}
 		if filter != "" {
-			bind = append(bind, args...)
-			compiled, err := s.compileMutationFilter(ctx, tx, n, filter, len(bind), state)
+			compiled, bound, err := s.compileMutationFilter(ctx, tx, n, filter, args, state, scope)
 			if err != nil {
 				return err
 			}
+			bind = bound
 			stmt += " AND id IN (" + compiled + ")"
 		}
 		if clause, sargs := scopePredicate(scope, "", len(bind)+1); clause != "" {

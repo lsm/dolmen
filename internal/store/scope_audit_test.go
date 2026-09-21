@@ -38,9 +38,26 @@ func TestEveryScopedEntryPointEitherFiltersOrRefuses(t *testing.T) {
 			continue
 		}
 		switch name {
-		case "DescribeTable", "GetRows", "SearchFulltext", "Insert":
+		case "DescribeTable", "GetRows", "SearchFulltext", "Insert", "Update", "Upsert", "Delete":
 		default:
 			t.Fatalf("%s accepted a row scope without filtering by owner; an unread scope parameter is how foreign rows leak", name)
+		}
+	}
+}
+
+func TestEveryRowReadingEntryPointRefusesATableWithoutOwner(t *testing.T) {
+	st := openRowAccessStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "ns", "notes", []schema.Field{{Name: "body", Type: schema.Text, Fulltext: true}},
+		TableOpts{}, [16]byte{}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	for name, err := range scopedCalls(t, st, &RowScope{Owner: "alice"}) {
+		if name == "Insert" {
+			continue
+		}
+		if err == nil {
+			t.Fatalf("%s applied a row scope to a table with no owner column, where every row would match it silently", name)
 		}
 	}
 }

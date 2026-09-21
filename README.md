@@ -574,14 +574,19 @@ under their own identity. Turning it off keeps the column and its values and
 needs `admin` as well as `schema` and `read`, because it changes what every
 other data-verb holder may reach.
 
-**A current limitation:** `update`, `delete`, `upsert`, `upsert_by_key`,
-filtered searches, and inserts carrying an `idempotency_key` are refused for a
-caller restricted to their own rows. Those
-take caller-supplied SQL filters, match on a natural key across the table, or
-share an idempotency record keyed per table rather than per owner — each can be
-turned into a probe for rows the caller cannot see. The
-restricted filter language that makes them safe is not built yet, so they fail
-closed rather than leaking. Inserting and reading your own rows work normally.
+**Filters work under a scope, over your own rows only.** `update`, `delete`,
+`upsert` and filtered searches take a SQL `WHERE` fragment, and under auth that
+fragment is checked against a fixed allowlist and then evaluated behind a
+barrier: the scope is applied first, so a filter never runs against a row you
+cannot see. That matters beyond the rows it returns — an expression that merely
+*errors* on a foreign row would report what that row holds.
+
+**A current limitation:** `upsert_by_key` and inserts carrying an
+`idempotency_key` are still refused for a caller restricted to their own rows. A
+natural-key match reaches across the whole table, and the idempotency record is
+keyed per table rather than per owner — each would let a scoped caller probe rows
+they cannot see, so they fail closed rather than leaking. Inserting and reading
+your own rows work normally.
 
 ### API keys
 

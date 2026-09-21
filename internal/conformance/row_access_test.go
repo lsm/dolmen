@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/store"
 )
 
 func seedRowAccess(t *testing.T) *harness {
@@ -141,23 +143,63 @@ func TestOwnerIsNeverCallerSupplied(t *testing.T) {
 	}
 }
 
-func TestScopedMutationsAreRefusedForNow(t *testing.T) {
+func TestScopedMutationsReachOnlyOwnRows(t *testing.T) {
 	h := seedRowAccess(t)
 	grantTo(t, h, "principal", "alice", "acme", "notes", "create", "update", "delete")
-	h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"x"}]}`)
+	grantTo(t, h, "principal", "bob", "acme", "notes", "create")
+	h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"alice note"}]}`)
+	h.asIdentity(t, "bob", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"bob note"}]}`)
 
-	for _, tc := range []struct{ op, body string }{
-		{"update", `{"namespace":"acme","table":"notes","filter":"1=1","set":{"body":"y"}}`},
-		{"delete", `{"namespace":"acme","table":"notes","filter":"1=1","confirm":true}`},
-	} {
-		res, out := h.asIdentity(t, "alice", "", tc.op, tc.body)
-		if res.StatusCode == http.StatusOK {
-			t.Fatalf("%s executed under a row scope: %v", tc.op, out)
-		}
-		errEnv, _ := out["error"].(map[string]any)
-		if msg, _ := errEnv["message"].(string); !strings.Contains(msg, "read verb") {
-			t.Fatalf("%s refusal does not teach the way out: %v", tc.op, out)
-		}
+	res, out := h.asIdentity(t, "alice", "", "update",
+		`{"namespace":"acme","table":"notes","filter":"1=1","set":{"body":"rewritten"}}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("a scoped update was refused: %d %v", res.StatusCode, out)
+	}
+	data, _ := out["data"].(map[string]any)
+	if updated, _ := data["updated"].(float64); updated != 1 {
+		t.Fatalf("a scoped update touched %v rows, want alice's 1: %v", data["updated"], out)
+	}
+
+	res, out = h.asIdentity(t, "alice", "", "delete",
+		`{"namespace":"acme","table":"notes","filter":"1=1","confirm":true}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("a scoped delete was refused: %d %v", res.StatusCode, out)
+	}
+	data, _ = out["data"].(map[string]any)
+	if deleted, _ := data["deleted"].(float64); deleted != 1 {
+		t.Fatalf("a scoped delete removed %v rows, want alice's 1: %v", data["deleted"], out)
+	}
+
+	rows := h.mustHTTP("read_rows", map[string]any{"namespace": "acme", "table": "notes", "ids": []int64{1, 2}})
+	remaining, _ := rows["rows"].([]any)
+	if len(remaining) != 1 {
+		t.Fatalf("the table holds %d rows after alice deleted her own, want bob's 1: %v", len(remaining), rows)
+	}
+	row, _ := remaining[0].(map[string]any)
+	if row["body"] != "bob note" {
+		t.Fatalf("a scoped mutation reached a foreign row: %v", row)
+	}
+}
+
+func TestAScopedFilterCannotRaiseOnAForeignRow(t *testing.T) {
+	h := seedRowAccess(t)
+	grantTo(t, h, "principal", "alice", "acme", "notes", "create", "delete")
+	grantTo(t, h, "principal", "bob", "acme", "notes", "create")
+	h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"alice note"}]}`)
+	h.asIdentity(t, "bob", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"secret"}]}`)
+
+	raise := "abs(-9223372036854775808)"
+	if testEngine(t) == store.EnginePostgres {
+		raise = "1/(length(body)-length(body))"
+	}
+	body := `{"namespace":"acme","table":"notes","filter":"CASE WHEN body = ? THEN ` + raise + ` ELSE 1 END = 1","args":["secret"],"dry_run":true}`
+	res, out := h.asIdentity(t, "alice", "", "delete", body)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("a filter that overflows on bob's row reached it, and its error answers whether bob's row holds %q: %d %v", "secret", res.StatusCode, out)
+	}
+	data, _ := out["data"].(map[string]any)
+	if matched, _ := data["matched"].(float64); matched != 1 {
+		t.Fatalf("the scoped dry run matched %v rows, want alice's 1: %v", data["matched"], out)
 	}
 }
 
@@ -448,23 +490,76 @@ func TestScopedInsertRefusesAnIdempotencyKey(t *testing.T) {
 	}
 }
 
-func TestDataVerbHolderIsScopedEmptyOnceRowAccessIsOff(t *testing.T) {
+func TestDisablingRowAccessClosesTheReadPathButNotTheRows(t *testing.T) {
 	h := seedRowAccess(t)
 	grantTo(t, h, "principal", "alice", "acme", "notes", "create")
 	h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"alice note"}]}`)
+	h.mustHTTP("insert", map[string]any{"namespace": "acme", "table": "notes", "records": []map[string]any{{"body": "someone else"}}})
 
 	h.mustHTTP("migrate", map[string]any{
 		"namespace": "acme", "table": "notes",
 		"changes": []map[string]any{{"op": "set_row_access", "value": false}},
 	})
 
+	for _, tc := range []struct{ op, body string }{
+		{"read_rows", `{"namespace":"acme","table":"notes","ids":[1,2]}`},
+		{"search_fulltext", `{"namespace":"acme","table":"notes","query":"note"}`},
+	} {
+		res, out := h.asIdentity(t, "alice", "", tc.op, tc.body)
+		if res.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s answered %d: disabling row_access must not re-open the read path to a holder of data verbs alone: %v", tc.op, res.StatusCode, out)
+		}
+	}
+
 	res, out := h.asIdentity(t, "alice", "", "describe_table", `{"namespace":"acme","table":"notes"}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("describe_table needs any verb: status %d %v", res.StatusCode, out)
 	}
 	data, _ := out["data"].(map[string]any)
-	if got := int64val(t, "row_count", data["row_count"]); got != 0 {
-		t.Fatalf("with row_access off a create-only holder saw row_count %d, want 0: the scope must not fall back to table-wide", got)
+	if got := int64val(t, "row_count", data["row_count"]); got != 2 {
+		t.Fatalf("row_count %d, want the whole table: a table without row_access has no row-level protection left, and the count follows the visible set", got)
+	}
+}
+
+func TestMutationsReachEveryRowOnceRowAccessIsOff(t *testing.T) {
+	h := seedRowAccess(t)
+	grantTo(t, h, "principal", "alice", "acme", "notes", "create", "update", "delete")
+	h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"alice note"}]}`)
+	h.mustHTTP("insert", map[string]any{"namespace": "acme", "table": "notes", "records": []map[string]any{{"body": "someone else"}}})
+
+	h.mustHTTP("migrate", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"changes": []map[string]any{{"op": "set_row_access", "value": false}},
+	})
+
+	res, out := h.asIdentity(t, "alice", "", "update",
+		`{"namespace":"acme","table":"notes","filter":"1=1","set":{"body":"rewritten"}}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("update: %d %v", res.StatusCode, out)
+	}
+	data, _ := out["data"].(map[string]any)
+	if updated, _ := data["updated"].(float64); updated != 2 {
+		t.Fatalf("update reported %v rows, want the whole table: an empty scope here silently reports nothing changed", data["updated"])
+	}
+
+	res, out = h.asIdentity(t, "alice", "", "upsert",
+		`{"namespace":"acme","table":"notes","filter":"body = ?","args":["rewritten"],"set":{"body":"rewritten"}}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("upsert: %d %v", res.StatusCode, out)
+	}
+	data, _ = out["data"].(map[string]any)
+	if inserted, _ := data["inserted"].(float64); inserted != 0 {
+		t.Fatalf("upsert inserted %v rows though its filter matched: an empty scope makes every upsert take the no-match branch and duplicate", data["inserted"])
+	}
+
+	res, out = h.asIdentity(t, "alice", "", "delete",
+		`{"namespace":"acme","table":"notes","filter":"1=1","confirm":true}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("delete: %d %v", res.StatusCode, out)
+	}
+	data, _ = out["data"].(map[string]any)
+	if deleted, _ := data["deleted"].(float64); deleted != 2 {
+		t.Fatalf("delete removed %v rows, want the whole table", data["deleted"])
 	}
 }
 

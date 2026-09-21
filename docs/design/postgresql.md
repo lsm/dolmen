@@ -226,6 +226,16 @@ the subquery. Matching IDs are selected and
 mutated under the namespace write lock, with row changes and durable change records in
 one transaction.
 
+A scoped call confines its filter the way §4.3 requires: the visible rows are selected
+into a materialized `_dolmen_visible` relation first and the caller's expression is
+compiled against that relation, never the base table. A filter that raises on a foreign
+row therefore cannot be used as an oracle over rows the caller cannot read, because the
+expression never evaluates on them. Fulltext and vector search confine the same way.
+What remains of §4.3 is the shared evaluator rather than the shared validator: a scoped
+filter still executes with this engine's own function set, so a spelling SQLite accepts
+and PostgreSQL does not (`iif`, the date and time functions) is a `query_error` here.
+That convergence is #386.
+
 Updates patch only supplied fields. Filter upsert updates every match or inserts one
 record with defaults and required-field validation when there is no match. Delete keeps
 the existing dry-run, match limit, and explicit confirmation contract. Embedding work

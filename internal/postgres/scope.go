@@ -45,3 +45,19 @@ func (s *Store) guardScope(ctx context.Context, tx pgx.Tx, n namespace, table st
 	}
 	return nil
 }
+
+const visibleRelation = "_dolmen_visible"
+
+func scopedSource(table string, scope *store.RowScope) (string, string, []any) {
+	if scope == nil {
+		return "", table, nil
+	}
+	cond := "false"
+	var args []any
+	if !scope.Empty {
+		cond = ident(schema.OwnerColumn) + " = ?"
+		args = []any{scope.Owner}
+	}
+	return "WITH " + ident(visibleRelation) + " AS MATERIALIZED (SELECT * FROM " + table + " WHERE " + cond + ") ",
+		ident(visibleRelation), args
+}

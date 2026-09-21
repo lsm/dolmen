@@ -50,20 +50,22 @@ func validateMutationSet(state tableState, set map[string]any) error {
 	return nil
 }
 
-func (s *Store) compileMutationFilter(ctx context.Context, tx pgx.Tx, n namespace, filter string, argc int, state tableState) (string, error) {
+func (s *Store) compileMutationFilter(ctx context.Context, tx pgx.Tx, n namespace, filter string, args []any, state tableState, scope *store.RowScope) (string, []any, error) {
 	filter = strings.TrimSpace(filter)
 	if filter == "" {
-		return "", fmt.Errorf("%w: filter is required (pass \"1=1\" to match every row)", store.ErrInvalid)
+		return "", nil, fmt.Errorf("%w: filter is required (pass \"1=1\" to match every row)", store.ErrInvalid)
 	}
 	if strings.Contains(filter, ";") {
-		return "", fmt.Errorf("%w: multiple statements are not allowed in filter", store.ErrInvalid)
+		return "", nil, fmt.Errorf("%w: multiple statements are not allowed in filter", store.ErrInvalid)
 	}
-	query := "SELECT id FROM " + ident(state.incarnation.Table) + " WHERE " + filter + " ORDER BY id"
-	compiled, _, err := compileSQL(query, argc, n.physical, map[string]tableState{state.incarnation.Table: state})
+	prefix, source, lead := scopedSource(ident(state.incarnation.Table), scope)
+	query := prefix + "SELECT id FROM " + source + " WHERE " + filter + " ORDER BY id"
+	bound := append(append([]any{}, lead...), args...)
+	compiled, _, err := compileSQL(query, len(bound), n.physical, map[string]tableState{state.incarnation.Table: state})
 	if err != nil {
-		return "", filterSyntaxError(filter, err)
+		return "", nil, filterSyntaxError(filter, err)
 	}
-	return compiled, nil
+	return compiled, bound, nil
 }
 
 func filterSyntaxError(filter string, err error) error {
@@ -140,9 +142,6 @@ func validateInsertFallback(state tableState, record map[string]any) error {
 }
 
 func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any, set map[string]any, emb store.Embedder, allowInsert bool, owner string, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
-	if scope != nil {
-		return store.InsertResult{}, store.ErrScopedFilterUnsupported
-	}
 	set, err := normalizeSet(set)
 	if err != nil {
 		return store.InsertResult{}, err
@@ -154,6 +153,7 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 	for attempt := 0; attempt < 3; attempt++ {
 		var state tableState
 		var compiled string
+		var bound []any
 		matched := false
 		err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
 			var err error
@@ -164,14 +164,17 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 			if err := s.guardScope(ctx, tx, n, table, state, expected); err != nil {
 				return err
 			}
+			if err := scopeUsable(scope, state.schema); err != nil {
+				return err
+			}
 			if err := validateMutationSet(state, set); err != nil {
 				return err
 			}
-			compiled, err = s.compileMutationFilter(ctx, tx, n, filter, len(args), state)
+			compiled, bound, err = s.compileMutationFilter(ctx, tx, n, filter, args, state, scope)
 			if err != nil {
 				return err
 			}
-			ids, err := selectMutationIDs(ctx, tx, compiled, args)
+			ids, err := selectMutationIDs(ctx, tx, compiled, bound)
 			matched = len(ids) > 0
 			return err
 		})
@@ -209,7 +212,7 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 				retry = true
 				return nil
 			}
-			ids, err := selectMutationIDs(ctx, tx, compiled, args)
+			ids, err := selectMutationIDs(ctx, tx, compiled, bound)
 			if err != nil {
 				return err
 			}
@@ -274,9 +277,6 @@ func (s *Store) Upsert(ctx context.Context, ns, table, filter string, args []any
 }
 
 func (s *Store) Delete(ctx context.Context, ns, table, filter string, args []any, opts store.DeleteOpts, scope *store.RowScope, expected store.Incarnation) (store.DeleteResult, error) {
-	if scope != nil {
-		return store.DeleteResult{}, store.ErrScopedFilterUnsupported
-	}
 	args, err := queryArgs(args)
 	if err != nil {
 		return store.DeleteResult{}, err
@@ -291,11 +291,14 @@ func (s *Store) Delete(ctx context.Context, ns, table, filter string, args []any
 			if err := s.guardScope(ctx, tx, n, table, state, expected); err != nil {
 				return err
 			}
-			compiled, err := s.compileMutationFilter(ctx, tx, n, filter, len(args), state)
+			if err := scopeUsable(scope, state.schema); err != nil {
+				return err
+			}
+			compiled, bound, err := s.compileMutationFilter(ctx, tx, n, filter, args, state, scope)
 			if err != nil {
 				return err
 			}
-			ids, err := selectMutationIDs(ctx, tx, compiled, args)
+			ids, err := selectMutationIDs(ctx, tx, compiled, bound)
 			result.Matched = int64(len(ids))
 			return err
 		})
@@ -310,11 +313,14 @@ func (s *Store) Delete(ctx context.Context, ns, table, filter string, args []any
 		if err := s.guardScope(ctx, tx, n, table, state, expected); err != nil {
 			return err
 		}
-		compiled, err := s.compileMutationFilter(ctx, tx, n, filter, len(args), state)
+		if err := scopeUsable(scope, state.schema); err != nil {
+			return err
+		}
+		compiled, bound, err := s.compileMutationFilter(ctx, tx, n, filter, args, state, scope)
 		if err != nil {
 			return err
 		}
-		ids, err := selectMutationIDs(ctx, tx, compiled, args)
+		ids, err := selectMutationIDs(ctx, tx, compiled, bound)
 		if err != nil {
 			return err
 		}

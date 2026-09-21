@@ -25,7 +25,7 @@ func scopeClause(sc *RowScope, alias string) (string, []any) {
 	return sc.sql(alias)
 }
 
-func ScopeUsable(sc *RowScope, tsc *schema.TableSchema) error {
+func scopeUsable(sc *RowScope, tsc *schema.TableSchema) error {
 	if sc == nil || sc.Empty {
 		return nil
 	}
@@ -35,7 +35,16 @@ func ScopeUsable(sc *RowScope, tsc *schema.TableSchema) error {
 	return nil
 }
 
-var ErrScopedFilterUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and a filter expression is not yet accepted on a scoped call; select rows with the operation's structured arguments instead, or ask for the read verb on the table, which lifts the scope", ErrInvalid)
+const visibleRelation = "_dolmen_visible"
+
+func scopedSource(table string, scope *RowScope) (string, string, []any) {
+	clause, args := scopeClause(scope, "")
+	if clause == "" {
+		return "", q(table), nil
+	}
+	return fmt.Sprintf("WITH %s AS MATERIALIZED (SELECT * FROM %s WHERE %s) ", visibleRelation, q(table), clause),
+		visibleRelation, args
+}
 
 func (i Incarnation) zero() bool {
 	return i.Table == "" && i.Version == 0 && i.DropGen == 0 && i.NsGen == [16]byte{}
