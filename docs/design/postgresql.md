@@ -456,6 +456,22 @@ parses cleanly and fails at execution, where it keeps the generic remediation po
 at `describe_table` rather than naming the column. A failed `drop_namespace` now
 says nothing was dropped rather than pointing at `list_namespaces`.
 
+A cursor is bound to the namespace lifetime that minted it, and that check stays: a
+predecessor cursor against a recreated namespace is a lifetime error, as the engine
+design requires. Table lifetimes are not the same rule. PostgreSQL also stored the
+table's drop generation in the cursor and rejected a mismatch, so a cursor minted
+before a table was dropped and recreated failed on the successor's feed. Nothing in
+the engine design asks for that, and the records are already filtered to the current
+drop generation, so the predecessor's rows cannot leak: the cursor's position simply
+carries over and the caller sees the successor's own events, which is what SQLite does
+and what the shared fixture pins. `TestPostgresCursorPinsHistoryAndLifetime` asserted
+the rejection and now asserts the successor behavior instead; its namespace-replacement
+assertion is unchanged. Subscriptions are unaffected — they refuse to cross a table
+lifetime through `checkIncarnation` and the live guard, not through the cursor's
+stored generation. `changesSince` runs `checkIncarnation` against the session-pinned
+incarnation before it resolves the cursor, so a live fetch after a drop and recreate
+ends the subscription instead of adopting the successor's generation.
+
 A bare `-` is now rejected by the PostgreSQL query translator as it is by FTS5. It is
 not in the common grammar, and PostgreSQL's parser treats it as punctuation, so such a
 query was accepted and answered `200` with an empty result set where the contract
@@ -492,7 +508,6 @@ closed before the public selector is enabled:
 
 | Area | Fixture | Gap |
 |---|---|---|
-| Change feed | `TestChangesSinceTableFeedContract` | a live table-feed cursor is rejected as past the retention window |
 | SSE | `TestSubscribeOverflowTeachesReconnect` | the bound itself now exists and `TestPostgresListenOverflowsABlockedSubscriber` pins it, but the fixture parks a consumer and floods 9000 changes, which needs the live pump to get 8000 ahead of the writer. Live fetches go through `ChangesSince`, which takes the namespace write lock to mint a cursor per record, so the pump contends with the very writer it must outrun and no backlog accumulates. Closing this means a live read that does not take the write lock |
 
 The driver remains pure Go and compatible with the static binary requirement.
