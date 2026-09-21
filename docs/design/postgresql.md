@@ -503,6 +503,14 @@ as analysis that may produce different matches per engine (D27). Matching Postgr
 to SQLite here needs the `unaccent` extension, and this document requires that no
 extension be needed to run the backend.
 
+Live admission is per record, not per subscription. The authorization callback returns
+the incarnation its decision was resolved against, and a table-filtered feed compares
+that against each record's `Lifetime`, so a drop and recreate between the callback and
+admission cannot carry a stale decision onto the successor's records. A mismatch filters
+the record; only `ok=false` ends the stream. Namespace-wide feeds compare `nsGen` only,
+since their replay spans table lifetimes by design. No transport passes a callback yet,
+so this is unreachable from the conformance suite and is pinned by engine tests.
+
 The remaining failures are genuine backend gaps, not harness artifacts. They must be
 closed before the public selector is enabled:
 

@@ -176,6 +176,29 @@ type listenSession struct {
 	done       chan struct{}
 }
 
+func (l *listenSession) admit(rec store.ChangeRecord) (bool, error) {
+	if l.liveAuthz == nil {
+		return true, nil
+	}
+	scope, inc, ok := l.liveAuthz(rec.Table)
+	if !ok {
+		return false, store.ErrListenRevoked
+	}
+	if scope != nil {
+		return false, derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
+	}
+	if inc == (store.Incarnation{}) {
+		return true, nil
+	}
+	if inc.NsGen != rec.Lifetime.NsGen {
+		return false, nil
+	}
+	if l.table != "" && (inc.Table != rec.Lifetime.Table || inc.DropGen != rec.Lifetime.DropGen) {
+		return false, nil
+	}
+	return true, nil
+}
+
 func (l *listenSession) admits(table string) error {
 	if l.liveAuthz == nil {
 		return nil
@@ -450,9 +473,13 @@ func (l *listenSession) run(ctx context.Context) {
 				break
 			}
 			for _, record := range records {
-				if err := l.admits(record.Table); err != nil {
+				visible, err := l.admit(record)
+				if err != nil {
 					l.finish(err)
 					return
+				}
+				if !visible {
+					continue
 				}
 				select {
 				case l.queue <- record:
@@ -585,13 +612,19 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 				}
 				return nil, session.resume(), true, nil
 			}
+			admitted := batch[:0]
 			for _, record := range batch {
-				if err := session.admits(record.Table); err != nil {
+				visible, err := session.admit(record)
+				if err != nil {
 					session.finish(err)
 					session.halt()
 					return nil, "", false, err
 				}
+				if visible {
+					admitted = append(admitted, record)
+				}
 			}
+			batch = admitted
 			return batch, session.resume(), false, nil
 		},
 		Resume: func() store.Cursor { return session.resume() },
