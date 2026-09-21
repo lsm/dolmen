@@ -640,7 +640,10 @@ where the cross-engine contract the conformance suite pins belongs. Both engines
 the fixture repeatedly, and PostgreSQL passes it faster than it used to fail it,
 because the stream now terminates at the bound instead of delivering every record.
 
-The conformance matrix has no remaining PostgreSQL failures.
+The conformance matrix has no remaining PostgreSQL failures, and CI now runs the whole
+suite under `DOLMEN_ENGINE=postgres` rather than the `BackendConformance` subset alone.
+Until now nothing stopped a PostgreSQL-only regression landing: the matrix was clean
+only when someone ran it by hand.
 
 The driver remains pure Go and compatible with the static binary requirement.
 PostgreSQL dependency versions are pinned in go.mod. No PostgreSQL server is bundled
