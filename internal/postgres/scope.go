@@ -67,6 +67,6 @@ func scopedSourceAt(table string, scope *store.RowScope, next int) (string, stri
 	if cond == "" {
 		return "", table, nil
 	}
-	return "WITH " + ident(visibleRelation) + " AS MATERIALIZED (SELECT * FROM " + table + " WHERE " + cond + ") ",
+	return "WITH " + ident(visibleRelation) + " AS MATERIALIZED (SELECT * FROM ONLY " + table + " WHERE " + cond + ") ",
 		ident(visibleRelation), args
 }
