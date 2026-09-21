@@ -295,9 +295,16 @@ func parseChangesFeed(tableRaw, cursorRaw, limitRaw json.RawMessage) (table, cur
 	return table, cursor, limit, nil
 }
 
-func runChangesSince(ctx context.Context, s *Server, op, ns, table, cursor string, limit int) ([]store.ChangeRecord, store.Cursor, error) {
+func (s *Server) feedScope(ctx context.Context, ns, table string) (*store.RowScope, store.Incarnation, error) {
+	if table == "" {
+		return nil, store.Incarnation{}, nil
+	}
+	return s.resolveScope(ctx, ns, table)
+}
+
+func runChangesSince(ctx context.Context, s *Server, op, ns, table, cursor string, limit int, scope *store.RowScope, inc store.Incarnation) ([]store.ChangeRecord, store.Cursor, error) {
 	records, next, err := s.eng.ChangesSince(ctx, ns, table, store.Cursor(cursor),
-		[16]byte{}, nil, store.Incarnation{}, store.Page{Limit: limit})
+		[16]byte{}, scope, inc, store.Page{Limit: limit})
 	if err != nil {
 
 		if errors.Is(err, store.ErrCursorExpired) {
@@ -1326,7 +1333,11 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
-			records, next, err := runChangesSince(ctx, s, "changes_since", ns, table, cursor, limit)
+			scope, inc, err := s.feedScope(ctx, ns, table)
+			if err != nil {
+				return nil, err
+			}
+			records, next, err := runChangesSince(ctx, s, "changes_since", ns, table, cursor, limit, scope, inc)
 			if err != nil {
 				return nil, err
 			}
@@ -1396,11 +1407,22 @@ var Ops = map[string]OpDef{
 
 			deadline := time.Now().Add(time.Duration(timeoutMS) * time.Millisecond)
 
+			scope, inc, err := s.feedScope(ctx, ns, table)
+			if err != nil {
+				return nil, err
+			}
+			pinned := scope != nil
+
 			validated := false
 			for {
+				if !pinned {
+					if scope, inc, err = s.feedScope(ctx, ns, table); err != nil {
+						return nil, err
+					}
+				}
 
 				readCtx, cancel := context.WithTimeout(ctx, waitBudget(deadline))
-				records, next, err := runChangesSince(readCtx, s, "wait_for", ns, table, cursor, limit)
+				records, next, err := runChangesSince(readCtx, s, "wait_for", ns, table, cursor, limit, scope, inc)
 				cancel()
 				if err != nil {
 

@@ -85,8 +85,13 @@
   receives its own rows, where it used to be refused outright, and every change record carries the
   owner of the row it describes so the live feed can tell them apart. A scoped subscription that
   would replay history recorded before those labels existed is refused rather than served with the
-  unlabelled records silently missing; starting at the current head is always available. `changes_since` and `wait_for`
-  still refuse a scoped caller. Scoped
+  unlabelled records silently missing; starting at the current head is always available.
+  `changes_since` and `wait_for` follow the same rule: a scoped caller may name a table and catch up
+  on its own rows, foreign commits never wake it, and the namespace-wide feed still needs `read` on
+  the namespace because it reports every table. Cursor tokens are opaque random values, so a scoped
+  reader's sequence cannot be told from one where the foreign commits never happened, and retention
+  expires by age rather than by volume, so other principals' traffic cannot evict a quiet reader's
+  cursor. Scoped
   `upsert_by_key` matches the natural key inside the visible set: a key held by an invisible row
   counts as no match, so the insert branch runs and the two rows coexist under one key, and no id,
   count, or error tells the two situations apart. Scoped `update`, `delete`, `upsert`, filtered

@@ -238,6 +238,27 @@ func drainListenReplay(t *testing.T, ctx context.Context, replay *ChangeReplay) 
 	}
 }
 
+func TestAScopedCatchUpRefusesUnlabelledHistory(t *testing.T) {
+	st := openRowAccessStore(t)
+	ctx := context.Background()
+	seedOwnedTable(t, st)
+	if _, err := st.Insert(ctx, "ns", "notes", []map[string]any{{"sku": "a", "body": "alice's"}},
+		WriteOpts{Owner: "alice"}, Embedder{}, nil, Incarnation{}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	stripChangeLabels(t, st, "ns")
+
+	if _, _, err := st.ChangesSince(ctx, "ns", "notes", CursorBegin, [16]byte{},
+		&RowScope{Owner: "alice"}, Incarnation{}, Page{Limit: 10}); !errors.Is(err, ErrScopedFeedPredatesLabels) {
+		t.Fatalf("changes_since owes the same refusal as the live feed: %v", err)
+	}
+
+	if _, _, err := st.ChangesSince(ctx, "ns", "notes", "", [16]byte{},
+		&RowScope{Owner: "alice"}, Incarnation{}, Page{Limit: 10}); err != nil {
+		t.Fatalf("starting at the head replays nothing, so there is nothing to refuse: %v", err)
+	}
+}
+
 func TestNarrowingToAScopeMidReplayRefusesUnlabelledHistory(t *testing.T) {
 	st := openRowAccessStore(t)
 	ctx := context.Background()

@@ -237,7 +237,7 @@ func (sess *listenSession) readBatch(ctx context.Context) (scanned []loggedChang
 	sess.mu.Lock()
 	from := sess.liveRead
 	sess.mu.Unlock()
-	query, args := changePageSQL(from, nil, MaxChangesPageLimit, sess.feed)
+	query, args := changePageSQL(from, nil, MaxChangesPageLimit, sess.feed, nil)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, false, err

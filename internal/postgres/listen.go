@@ -594,7 +594,7 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 		}
 		if liveAuthz != nil {
 			if scope, _, ok := liveAuthz(table); ok && scope != nil {
-				stale, serr := s.unlabeledBacklog(ctx, ns, table, from, head)
+				stale, serr := s.unlabeledBacklog(ctx, ns, table, from)
 				if serr != nil {
 					return nil, nil, listenCause(serr)
 				}

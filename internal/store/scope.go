@@ -97,8 +97,6 @@ func (s *Store) guardIncarnation(ctx context.Context, nsName, table string, want
 	return checkScopeIncarnation(ctx, n.ro, nsName, table, want)
 }
 
-var ErrScopedFeedUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and the change feed does not yet filter records by owner; ask for the read verb on the table, which lifts the scope", ErrInvalid)
-
 var ErrScopedPlanUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and a migration plan reports table-wide information; ask for the read verb on the table, which lifts the scope", ErrInvalid)
 
 var ErrScopedIdempotencyUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and idempotency keys are recorded per table rather than per owner, so replaying someone else's key would report their rows; retry without idempotency_key, or ask for the read verb on the table, which lifts the scope", ErrInvalid)

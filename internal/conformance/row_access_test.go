@@ -228,15 +228,36 @@ func TestDefaultTablesCarryNoOwnerUnderAuthOn(t *testing.T) {
 	}
 }
 
-func TestChangeFeedsStillRequireTableWideRead(t *testing.T) {
+func TestChangeFeedsAdmitADataVerbHolderOnItsOwnRows(t *testing.T) {
 	h := seedRowAccess(t)
 	grantTo(t, h, "principal", "alice", "acme", "notes", "create")
 	h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"x"}]}`)
 
 	for _, op := range []string{"changes_since", "wait_for"} {
 		res, out := h.asIdentity(t, "alice", "", op, `{"namespace":"acme","table":"notes","cursor":"begin"}`)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("%s as a create-only holder on a row_access table: status %d, want the own-row feed §2 grants: %v", op, res.StatusCode, out)
+		}
+		data, _ := out["data"].(map[string]any)
+		if changes, _ := data["changes"].([]any); len(changes) != 1 {
+			t.Fatalf("%s: alice wrote one row and must catch up on it: %v", op, changes)
+		}
+	}
+}
+
+func TestChangeFeedsStillRefuseADataVerbHolderOnAPlainTable(t *testing.T) {
+	h := newHarnessMode(t, authGateway)
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "acme"})
+	h.mustHTTP("create_table", map[string]any{
+		"namespace": "acme", "table": "plain",
+		"fields": []map[string]any{{"name": "body", "type": "text"}},
+	})
+	grantTo(t, h, "principal", "alice", "acme", "plain", "create")
+
+	for _, op := range []string{"changes_since", "wait_for"} {
+		res, out := h.asIdentity(t, "alice", "", op, `{"namespace":"acme","table":"plain","cursor":"begin"}`)
 		if res.StatusCode != http.StatusForbidden {
-			t.Fatalf("%s as a create-only holder: status %d, want 403 until the feed honors a row scope: %v", op, res.StatusCode, out)
+			t.Fatalf("%s without row_access has no own-row reading, so a create-only holder must still be refused: %d %v", op, res.StatusCode, out)
 		}
 	}
 }

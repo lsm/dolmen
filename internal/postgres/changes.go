@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -109,16 +110,14 @@ const (
 )
 
 func (s *Store) ChangesSince(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, scope *store.RowScope, inc store.Incarnation, page store.Page) ([]store.ChangeRecord, store.Cursor, error) {
-	if scope != nil {
-		return nil, "", store.ErrScopedFeedUnsupported
+	if scope != nil && table == "" {
+		return nil, "", store.ErrScopedNamespaceFeed
 	}
+
 	return s.changesSinceMode(ctx, ns, table, from, expected, scope, inc, page, nil, feedRequest)
 }
 
 func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, scope *store.RowScope, inc store.Incarnation, page store.Page, boundary *int64, mode feedMode) ([]store.ChangeRecord, store.Cursor, error) {
-	if scope != nil {
-		return nil, "", store.ErrScopedFeedUnsupported
-	}
 	records := []store.ChangeRecord{}
 	var next store.Cursor
 	enter := s.write
@@ -128,11 +127,13 @@ func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from sto
 	err := enter(ctx, ns, expected, func(tx pgx.Tx, n namespace) error {
 		now := s.now()
 		drop := int64(0)
+		var scoped *schema.TableSchema
 		if table != "" {
 			state, err := s.loadTable(ctx, tx, n, table)
 			if err != nil {
 				return err
 			}
+			scoped = state.schema
 			if mode == feedRequest {
 				if err := s.guardScope(ctx, tx, n, table, state, inc); err != nil {
 					return err
@@ -178,6 +179,30 @@ func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from sto
 			state.table = table
 			state.drop = drop
 		}
+		if scope != nil {
+			if err := scopeUsable(scope, scoped); err != nil {
+				return err
+			}
+			var head int64
+			if err := tx.QueryRow(ctx, "SELECT next_change FROM "+s.relation("namespaces")+" WHERE name=$1", ns).Scan(&head); err != nil {
+				return err
+			}
+			if state.position < head {
+				stmt := "SELECT 1 FROM " + s.relation("changes") + " WHERE namespace=$1 AND position>$2 AND position<=$3 AND owner IS NULL"
+				args := []any{ns, state.position, head}
+				if table != "" {
+					stmt += " AND table_name=$4 AND drop_generation=$5"
+					args = append(args, table, drop)
+				}
+				var one int
+				switch qerr := tx.QueryRow(ctx, stmt+" LIMIT 1", args...).Scan(&one); {
+				case qerr == nil:
+					return store.ErrScopedFeedPredatesLabels
+				case !errors.Is(qerr, pgx.ErrNoRows):
+					return qerr
+				}
+			}
+		}
 		limit := page.Limit
 		if limit <= 0 {
 			limit = store.DefaultChangesPageLimit
@@ -190,6 +215,14 @@ func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from sto
 		if table != "" {
 			stmt += " AND table_name=$3 AND drop_generation=$4"
 			args = append(args, table, drop)
+		}
+		if scope != nil {
+			if scope.Empty {
+				stmt += " AND false"
+			} else {
+				stmt += fmt.Sprintf(" AND owner=$%d", len(args)+1)
+				args = append(args, scope.Owner)
+			}
 		}
 		if boundary != nil {
 			stmt += fmt.Sprintf(" AND position<=$%d", len(args)+1)
@@ -257,9 +290,13 @@ func (s *Store) changeHead(ctx context.Context, ns string, expected [16]byte) (i
 	return head, err
 }
 
-func (s *Store) unlabeledBacklog(ctx context.Context, ns, table string, from store.Cursor, head int64) (bool, error) {
+func (s *Store) unlabeledBacklog(ctx context.Context, ns, table string, from store.Cursor) (bool, error) {
 	stale := false
 	err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
+		var head int64
+		if herr := tx.QueryRow(ctx, "SELECT next_change FROM "+s.relation("namespaces")+" WHERE name=$1", ns).Scan(&head); herr != nil {
+			return herr
+		}
 		drop := int64(0)
 		if table != "" {
 			state, terr := s.loadTable(ctx, tx, n, table)

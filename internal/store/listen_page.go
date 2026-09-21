@@ -74,7 +74,7 @@ func (sess *listenSession) page(ctx context.Context) ([]ChangeRecord, Cursor, bo
 		return nil, "", false, pageProgress{}, err
 	}
 	boundary := sess.boundary
-	query, args := changePageSQL(sess.position, &boundary, MaxChangesPageLimit, sess.feed)
+	query, args := changePageSQL(sess.position, &boundary, MaxChangesPageLimit, sess.feed, nil)
 	rows, qerr := tx.QueryContext(ctx, query, args...)
 	var scanned []loggedChange
 	if qerr == nil {
