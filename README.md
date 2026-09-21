@@ -574,6 +574,13 @@ under their own identity. Turning it off keeps the column and its values and
 needs `admin` as well as `schema` and `read`, because it changes what every
 other data-verb holder may reach.
 
+**Filters work under a scope, over your own rows only.** `update`, `delete`,
+`upsert` and filtered searches take a SQL `WHERE` fragment, and under auth that
+fragment is checked against a fixed allowlist and then evaluated behind a
+barrier: the scope is applied first, so a filter never runs against a row you
+cannot see. That matters beyond the rows it returns — an expression that merely
+*errors* on a foreign row would report what that row holds.
+
 **Idempotency keys belong to whoever used them.** A key is unique per table
 *and owner*, so two principals using the same string are using two different
 keys: neither conflicts with the other, neither reveals the other, and the
@@ -583,12 +590,12 @@ your own domain, so it finds your record through grant changes and even after
 Records written before authentication was turned on are kept, and replay to
 callers holding table-wide `read`, whose ids those already are.
 
-**A current limitation:** `update`, `delete`, `upsert`, `upsert_by_key`, and
-filtered searches are refused for a caller restricted to their own rows. Those
-take caller-supplied SQL filters or match on a natural key across the table,
-and each can be turned into a probe for rows the caller cannot see. The
-restricted filter language that makes them safe is not built yet, so they fail
-closed rather than leaking. Inserting and reading your own rows work normally.
+**A current limitation:** `upsert_by_key` is still refused for a caller
+restricted to their own rows. It matches on a natural key across the whole
+table, so it could update a row the caller cannot see; the visible-set rule that
+makes it safe — an invisible match counts as no match, and the insert branch
+adds a fresh row — is not built yet, so it fails closed rather than leaking.
+Inserting and reading your own rows work normally.
 
 ### API keys
 
