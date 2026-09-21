@@ -484,22 +484,75 @@ func TestScopedInsertRefusesAnIdempotencyKey(t *testing.T) {
 	}
 }
 
-func TestDataVerbHolderIsScopedEmptyOnceRowAccessIsOff(t *testing.T) {
+func TestDisablingRowAccessClosesTheReadPathButNotTheRows(t *testing.T) {
 	h := seedRowAccess(t)
 	grantTo(t, h, "principal", "alice", "acme", "notes", "create")
 	h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"alice note"}]}`)
+	h.mustHTTP("insert", map[string]any{"namespace": "acme", "table": "notes", "records": []map[string]any{{"body": "someone else"}}})
 
 	h.mustHTTP("migrate", map[string]any{
 		"namespace": "acme", "table": "notes",
 		"changes": []map[string]any{{"op": "set_row_access", "value": false}},
 	})
 
+	for _, tc := range []struct{ op, body string }{
+		{"read_rows", `{"namespace":"acme","table":"notes","ids":[1,2]}`},
+		{"search_fulltext", `{"namespace":"acme","table":"notes","query":"note"}`},
+	} {
+		res, out := h.asIdentity(t, "alice", "", tc.op, tc.body)
+		if res.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s answered %d: disabling row_access must not re-open the read path to a holder of data verbs alone: %v", tc.op, res.StatusCode, out)
+		}
+	}
+
 	res, out := h.asIdentity(t, "alice", "", "describe_table", `{"namespace":"acme","table":"notes"}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("describe_table needs any verb: status %d %v", res.StatusCode, out)
 	}
 	data, _ := out["data"].(map[string]any)
-	if got := int64val(t, "row_count", data["row_count"]); got != 0 {
-		t.Fatalf("with row_access off a create-only holder saw row_count %d, want 0: the scope must not fall back to table-wide", got)
+	if got := int64val(t, "row_count", data["row_count"]); got != 2 {
+		t.Fatalf("row_count %d, want the whole table: a table without row_access has no row-level protection left, and the count follows the visible set", got)
+	}
+}
+
+func TestMutationsReachEveryRowOnceRowAccessIsOff(t *testing.T) {
+	h := seedRowAccess(t)
+	grantTo(t, h, "principal", "alice", "acme", "notes", "create", "update", "delete")
+	h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"alice note"}]}`)
+	h.mustHTTP("insert", map[string]any{"namespace": "acme", "table": "notes", "records": []map[string]any{{"body": "someone else"}}})
+
+	h.mustHTTP("migrate", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"changes": []map[string]any{{"op": "set_row_access", "value": false}},
+	})
+
+	res, out := h.asIdentity(t, "alice", "", "update",
+		`{"namespace":"acme","table":"notes","filter":"1=1","set":{"body":"rewritten"}}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("update: %d %v", res.StatusCode, out)
+	}
+	data, _ := out["data"].(map[string]any)
+	if updated, _ := data["updated"].(float64); updated != 2 {
+		t.Fatalf("update reported %v rows, want the whole table: an empty scope here silently reports nothing changed", data["updated"])
+	}
+
+	res, out = h.asIdentity(t, "alice", "", "upsert",
+		`{"namespace":"acme","table":"notes","filter":"body = ?","args":["rewritten"],"set":{"body":"rewritten"}}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("upsert: %d %v", res.StatusCode, out)
+	}
+	data, _ = out["data"].(map[string]any)
+	if inserted, _ := data["inserted"].(float64); inserted != 0 {
+		t.Fatalf("upsert inserted %v rows though its filter matched: an empty scope makes every upsert take the no-match branch and duplicate", data["inserted"])
+	}
+
+	res, out = h.asIdentity(t, "alice", "", "delete",
+		`{"namespace":"acme","table":"notes","filter":"1=1","confirm":true}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("delete: %d %v", res.StatusCode, out)
+	}
+	data, _ = out["data"].(map[string]any)
+	if deleted, _ := data["deleted"].(float64); deleted != 2 {
+		t.Fatalf("delete removed %v rows, want the whole table", data["deleted"])
 	}
 }
