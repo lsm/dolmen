@@ -119,3 +119,24 @@ func TestAVisibleKeyMatchStillUpdates(t *testing.T) {
 		t.Fatalf("the update must land on the row the insert created: %v then %v", firstIDs, secondIDs)
 	}
 }
+
+func TestAScopedBatchStillFoldsOnItsOwnEarlierRecord(t *testing.T) {
+	h := seedKeyedRowAccess(t)
+	upsertSlug(t, h, "bob", "folded", "written by bob")
+
+	res, out := h.asIdentity(t, "alice", "", "upsert_by_key",
+		`{"namespace":"acme","table":"notes","on":["slug"],"records":[`+
+			`{"slug":"folded","body":"alice first"},`+
+			`{"slug":"folded","body":"alice second"}]}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("alice batch upsert: status %d %v", res.StatusCode, out)
+	}
+	data, _ := out["data"].(map[string]any)
+	if inserted, updated := countsOf(t, data); inserted != 1 || updated != 1 {
+		t.Fatalf("the second record must fold onto the row the first one inserted, not onto bob's: inserted %v updated %v", inserted, updated)
+	}
+	ids, _ := data["ids"].([]any)
+	if len(ids) != 2 || ids[0] != ids[1] {
+		t.Fatalf("both records must land on one row of alice's own: %v", ids)
+	}
+}
