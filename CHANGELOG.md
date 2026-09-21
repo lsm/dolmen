@@ -4,6 +4,17 @@
 
 ### Added
 
+- **Filters are a row-local language when auth is on.** `update`, `delete`, `upsert`,
+  `search_fulltext` and `search_vector` take a SQL `WHERE` fragment; with `-auth on` that fragment
+  is now parsed and checked against a fixed allowlist before it reaches the engine — the target
+  table's own columns, literals, `?` arguments, and an enumerated set of operators and functions.
+  Subqueries, references to another table, aggregates, window functions and anything else are
+  `invalid_request`. Two reasons: a grant on one table must not reach the table next door through
+  a subquery, and under a row scope a filter that can read or raise on an invisible row is an
+  oracle over it. Date and time functions take explicit moments only — `'now'`, `'localtime'` and
+  `'utc'` are refused whether written as literals or bound as arguments; compute the moment you
+  mean and bind it. Under `auth: off` the filter language is exactly what it was in v0.2.0.
+
 - **`-auth on` / `DOLMEN_AUTH=on`** turns on deny-by-default authentication, with the bootstrap
   admin key (`DOLMEN_ADMIN_KEY`) as its one identity source. Every `/v1/{op}`, `/mcp`, and
   `/v1/subscribe` request without an accepted credential answers `401` with the new `unauthorized`

@@ -1130,8 +1130,11 @@ var Ops = map[string]OpDef{
 				return nil, badRequest("query must not be empty")
 			}
 			ns := normNS(req.Namespace)
-			scope, inc, err := s.resolveScope(ctx, ns, normTable(req.Table))
+			scope, inc, tsc, err := s.resolveScopeState(ctx, ns, normTable(req.Table))
 			if err != nil {
+				return nil, err
+			}
+			if err := s.checkFilter(tsc, req.Filter, req.Args); err != nil {
 				return nil, err
 			}
 			res, err := s.eng.SearchFulltext(ctx, ns, normTable(req.Table), req.Query, req.Filter, req.Args,
@@ -1253,8 +1256,11 @@ var Ops = map[string]OpDef{
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			scope, inc, err := s.resolveScope(ctx, normNS(req.Namespace), normTable(req.Table))
+			scope, inc, tsc, err := s.resolveScopeState(ctx, normNS(req.Namespace), normTable(req.Table))
 			if err != nil {
+				return nil, err
+			}
+			if err := s.checkFilter(tsc, req.Filter, req.Args); err != nil {
 				return nil, err
 			}
 			res, err := s.eng.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table), vq,
@@ -1481,8 +1487,11 @@ var Ops = map[string]OpDef{
 			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			scope, inc, err := s.resolveScope(ctx, ns, normTable(req.Table))
+			scope, inc, tsc, err := s.resolveScopeState(ctx, ns, normTable(req.Table))
 			if err != nil {
+				return nil, err
+			}
+			if err := s.checkFilter(tsc, req.Filter, req.Args); err != nil {
 				return nil, err
 			}
 			res, err := s.eng.Delete(ctx, ns, normTable(req.Table), req.Filter, req.Args, store.DeleteOptions{
@@ -1546,8 +1555,11 @@ var Ops = map[string]OpDef{
 			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			scope, inc, err := s.resolveScope(ctx, ns, normTable(req.Table))
+			scope, inc, tsc, err := s.resolveScopeState(ctx, ns, normTable(req.Table))
 			if err != nil {
+				return nil, err
+			}
+			if err := s.checkFilter(tsc, req.Filter, req.Args); err != nil {
 				return nil, err
 			}
 			res, err := s.eng.Update(ctx, ns, normTable(req.Table), req.Filter, req.Args, req.Set,
@@ -1606,8 +1618,11 @@ var Ops = map[string]OpDef{
 			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			scope, inc, err := s.resolveScope(ctx, ns, normTable(req.Table))
+			scope, inc, tsc, err := s.resolveScopeState(ctx, ns, normTable(req.Table))
 			if err != nil {
+				return nil, err
+			}
+			if err := s.checkFilter(tsc, req.Filter, req.Args); err != nil {
 				return nil, err
 			}
 			res, err := s.eng.Upsert(ctx, ns, normTable(req.Table), req.Filter, req.Args, req.Set,

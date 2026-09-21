@@ -906,6 +906,24 @@ the seam before execution, from this list — one shared rule, not per-adapter j
 namespace-wide `read` (§2), which authorizes every table its subqueries touch. Under `auth: off`
 the filter language is unchanged from v0.2.0.
 
+*Decided while building the allowlist (2026-09-21), from the "whole allowlist, not a category
+sketch" rule above.* Arithmetic means `+ - * / %` and unary sign: the bit operators
+(`& | << >> ~`) and the JSON operators (`-> ->>`) are **not** arithmetic and are
+`invalid_request`, as are `GLOB`, `REGEXP`, `MATCH`, `CAST`, `RAISE`, `ISNULL`/`NOTNULL` (write
+`IS NULL`), `IS DISTINCT FROM`, and SQL comments. `COLLATE` is refused for its own reason: the
+collation is pinned to BINARY so a filter means one thing on every engine, and an override would
+unpin it. `IN` takes literals and bound parameters, nothing else. Parameters are bare `?` bound
+in order — `?NNN`, `:name`, `@name` and `$name` are refused, since dolmen binds positionally.
+One widening, inside the listed `LIKE` rather than beyond it: `LIKE … ESCAPE x` is accepted with
+`x` a text literal or a bound parameter, because `ESCAPE` is part of SQLite's `LIKE` operator and
+without it no filter can match a literal `%`. The referenceable columns are the table's own —
+its declared fields plus `id`, `created_at`, and `owner` where it exists; the hidden `_embedding`
+is not one. **The clock rule reaches bound values, not only literals**: `datetime(?)` with `'now'`
+bound is the same clock read as `datetime('now')`, so an argument landing anywhere inside a
+date/time call is checked against the same words. And because a filter's subquery would read a
+table the caller's grant never named, the restriction applies **whenever `auth: on`** — a
+table-wide reader is scoped to nothing but still holds no grant on the table next door.
+
 **The scope is a security barrier, not a sibling conjunct.** SQL does not guarantee conjunct
 evaluation order, so `AND owner = ?` alone cannot make row-local expressions safe: a caller can
 write `iif(secret = ?, abs(-9223372036854775808), 1)` — an integer-overflow *error* on a foreign
