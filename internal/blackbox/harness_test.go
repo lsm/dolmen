@@ -3,6 +3,9 @@ package blackbox
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,12 +23,16 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 const (
 	scenarioNamespace = "acme/support"
 	mainRetention     = "1h"
 	waitBudget        = 20 * time.Second
+	enginePostgres    = "postgres"
+	engineSQLite      = "sqlite"
 )
 
 type serverProc struct {
@@ -49,6 +56,10 @@ type mcpResult struct {
 var app struct {
 	binPath    string
 	tmpDir     string
+	engine     string
+	pgDSN      string
+	pgCatalog  string
+	pgRole     string
 	srv        *serverProc
 	openapi    map[string]any
 	schemas    map[string]map[string]any
@@ -96,6 +107,13 @@ func runMain(m *testing.M) int {
 		fmt.Fprintf(os.Stderr, "blackbox: building the packaged binary: %v\n%s", err, out)
 		return 1
 	}
+	if err := resolveEngine(); err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
+	if app.engine == enginePostgres {
+		defer dropCatalog()
+	}
 	srv, err := bootServer(filepath.Join(tmp, "data"), mainRetention, true)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "blackbox:", err)
@@ -104,6 +122,77 @@ func runMain(m *testing.M) int {
 	app.srv = srv
 	defer func() { app.srv.stop() }()
 	return m.Run()
+}
+
+func resolveEngine() error {
+	app.engine = os.Getenv("DOLMEN_ENGINE")
+	if app.engine == "" {
+		app.engine = engineSQLite
+	}
+	if app.engine != engineSQLite && app.engine != enginePostgres {
+		return fmt.Errorf("DOLMEN_ENGINE=%q is not an engine this suite can drive; use %q or %q", app.engine, engineSQLite, enginePostgres)
+	}
+	if app.engine != enginePostgres {
+		return nil
+	}
+	app.pgDSN = os.Getenv("DOLMEN_TEST_PG_DSN")
+	if app.pgDSN == "" {
+		return errors.New("DOLMEN_ENGINE=postgres drives the packaged binary against PostgreSQL; set DOLMEN_TEST_PG_DSN to the connection it should use")
+	}
+	app.pgRole = os.Getenv("DOLMEN_TEST_PG_QUERY_ROLE")
+	var id [12]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return fmt.Errorf("name a catalog for this run: %w", err)
+	}
+	app.pgCatalog = "dolmen_blackbox_" + hex.EncodeToString(id[:])
+	return nil
+}
+
+func engineArgs() []string {
+	if app.engine != enginePostgres {
+		return nil
+	}
+	args := []string{"-engine", enginePostgres, "-pg-dsn", app.pgDSN, "-pg-catalog", app.pgCatalog}
+	if app.pgRole != "" {
+		args = append(args, "-pg-query-role", app.pgRole)
+	}
+	return args
+}
+
+func dropCatalog() {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, app.pgDSN)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox: reach the catalog to drop it:", err)
+		return
+	}
+	defer conn.Close(ctx)
+	schemas := []string{}
+	rows, err := conn.Query(ctx, "SELECT physical FROM "+pgx.Identifier{app.pgCatalog}.Sanitize()+".namespaces")
+	if err == nil {
+		for rows.Next() {
+			var physical string
+			if err := rows.Scan(&physical); err != nil {
+				err = fmt.Errorf("scan: %w", err)
+				break
+			}
+			schemas = append(schemas, physical)
+		}
+		rows.Close()
+		if rowsErr := rows.Err(); rowsErr != nil && err == nil {
+			err = rowsErr
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "blackbox: list the schemas of catalog %s: %v; any namespace schema it did not name is left behind\n", app.pgCatalog, err)
+	}
+	schemas = append(schemas, app.pgCatalog)
+	for _, name := range schemas {
+		if _, err := conn.Exec(ctx, "DROP SCHEMA IF EXISTS "+pgx.Identifier{name}.Sanitize()+" CASCADE"); err != nil {
+			fmt.Fprintf(os.Stderr, "blackbox: drop schema %s: %v\n", name, err)
+		}
+	}
 }
 
 func hermeticEnv() []string {
@@ -166,7 +255,7 @@ func startServer(dataDir string, retention string, withBaseURL bool) (*serverPro
 	}
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	url := "http://" + addr
-	args := []string{"-addr", addr, "-data", dataDir, "-change-retention", retention}
+	args := append([]string{"-addr", addr, "-data", dataDir, "-change-retention", retention}, engineArgs()...)
 	if withBaseURL {
 		args = append(args, "-base-url", url)
 	}
