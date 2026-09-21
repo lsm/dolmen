@@ -11,22 +11,26 @@ var sharedFilterList = []struct {
 	function string
 	filter   string
 }{
-	{"abs", "abs(id) = 1"},
-	{"round", "round(id) = 1"},
+	{"abs", "abs(0 - id) = id"},
+	{"round", "round(1.6) = 2"},
 	{"length", "length(body) = 17"},
-	{"lower", "lower(body) = 'a note from alice'"},
+	{"lower", "lower('A NOTE FROM ALICE') = body"},
 	{"upper", "upper(body) = 'A NOTE FROM ALICE'"},
 	{"substr", "substr(body, 3, 4) = 'note'"},
-	{"trim", "trim(body) = body"},
+	{"trim", "trim('  ' || body || '  ') = body"},
 	{"trim with a strip set", "trim(body, 'ae') = ' note from alic'"},
 	{"ltrim", "ltrim(body, 'a') = ' note from alice'"},
 	{"rtrim", "rtrim(body, 'e') = 'a note from alic'"},
 	{"replace", "replace(body, 'alice', 'bob') = 'a note from bob'"},
 	{"instr", "instr(body, 'note') = 3"},
 	{"coalesce", "coalesce(body, 'x') = body"},
+	{"coalesce past a null", "coalesce(NULL, body) = body"},
 	{"ifnull", "ifnull(body, 'x') = body"},
+	{"ifnull on a null", "ifnull(NULL, body) = body"},
 	{"nullif", "nullif(body, 'x') = body"},
+	{"nullif on equal arguments", "nullif(body, body) IS NULL"},
 	{"iif", "iif(id = 1, 'y', 'n') = 'y'"},
+	{"iif on a false condition", "iif(id = 2, 'y', 'n') = 'n'"},
 	{"date", "length(date(created_at)) = 10"},
 	{"time", "length(time(created_at)) = 8"},
 	{"datetime", "length(datetime(created_at)) = 19"},
@@ -100,6 +104,7 @@ var notYetEvaluatedByAdapterTwo = map[string]bool{
 	"julianday with a modifier": true, "strftime with a modifier": true,
 	"datetime with two modifiers": true, "strftime with two modifiers": true,
 	"substr from a negative start": true,
+	"ifnull on a null":             true, "iif on a false condition": true,
 }
 
 var notYetPinnedByAdapterTwo = map[string]bool{
