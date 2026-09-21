@@ -94,8 +94,8 @@ func updatePrepared(ctx context.Context, tx pgx.Tx, n namespace, state tableStat
 }
 
 func (s *Store) UpsertByKey(ctx context.Context, ns, table string, keys []string, records []map[string]any, opts store.WriteOpts, emb store.Embedder, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
-	if scope != nil || opts.Owner != "" || opts.TableWideRead {
-		return store.InsertResult{}, derr.New(derr.Forbidden, "PostgreSQL row authorization is not implemented yet")
+	if scope != nil {
+		return store.InsertResult{}, store.ErrScopedKeyUpsertUnsupported
 	}
 	records, err := normalizeRecords(records)
 	if err != nil {

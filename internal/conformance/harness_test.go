@@ -162,9 +162,6 @@ func newHarnessAt(t *testing.T, dir string, emb *fakeProvider) *harness {
 
 func newHarnessAtMode(t *testing.T, dir string, emb *fakeProvider, mode harnessMode) *harness {
 	t.Helper()
-	if mode.on() && testEngine(t) == store.EnginePostgres {
-		t.Skipf("engine %q: row authorization is not implemented yet", store.EnginePostgres)
-	}
 	h := &harness{t: t, dir: dir, emb: emb, mode: mode}
 	h.start()
 	return h

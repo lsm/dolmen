@@ -206,7 +206,7 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 
 func (s *Store) PlanMigration(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expected Incarnation, scope *RowScope, scopeIncarnation Incarnation) (*MigrationPlan, error) {
 	if scope != nil {
-		return nil, errScopedPlanUnsupported
+		return nil, ErrScopedPlanUnsupported
 	}
 	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
 		return nil, err

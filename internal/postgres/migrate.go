@@ -106,7 +106,8 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 
 	fields := make([]schema.Field, len(old.Fields))
 	copy(fields, old.Fields)
-	cur := &schema.TableSchema{Namespace: old.Namespace, Name: old.Name, Version: old.Version, Fields: fields, EmbedSpace: old.EmbedSpace, EmbedDim: old.EmbedDim}
+	cur := &schema.TableSchema{Namespace: old.Namespace, Name: old.Name, Version: old.Version, Fields: fields, EmbedSpace: old.EmbedSpace, EmbedDim: old.EmbedDim,
+		RowAccess: old.RowAccess, HasOwner: old.HasOwner}
 
 	plan := &store.MigrationPlan{FromVersion: old.Version, ToVersion: old.Version + 1, Table: cur, Operations: []string{}}
 	w := &migrationWork{cur: cur, plan: plan}
@@ -139,8 +140,19 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 		if (ch.Op == schema.OpSetFulltext || ch.Op == schema.OpSetVectorize) && ch.Value == nil {
 			return nil, invalidf("changes[%d]: %s requires an explicit value (true or false)", i, ch.Op)
 		}
-		if ch.Op != schema.OpSetFulltext && ch.Op != schema.OpSetVectorize && ch.Value != nil {
-			return nil, invalidf("changes[%d]: value is only allowed on set_fulltext/set_vectorize (op %q has no flag to set)", i, ch.Op)
+		if ch.Op != schema.OpSetFulltext && ch.Op != schema.OpSetVectorize && ch.Op != schema.OpSetRowAccess && ch.Value != nil {
+			return nil, invalidf("changes[%d]: value is only allowed on set_fulltext/set_vectorize/set_row_access (op %q has no flag to set)", i, ch.Op)
+		}
+		if cur.HasOwner {
+			targets := []string{ch.Name, ch.To}
+			if ch.Field != nil {
+				targets = append(targets, ch.Field.Name)
+			}
+			for _, t := range targets {
+				if schema.ReservedWithOwner(strings.ToLower(strings.TrimSpace(t))) {
+					return nil, invalidf("%q is the implicit owner column on this table, which carries it because row_access was declared; the name stays reserved while the column exists, even with row_access turned off, so pick another name such as %q", schema.OwnerColumn, "owner_name")
+				}
+			}
 		}
 		if ch.Op == schema.OpSetEnum && ch.Enum == nil {
 			return nil, invalidf("changes[%d]: set_enum requires an explicit enum array (the field's complete new vocabulary; pass an empty array to remove the constraint)", i)
@@ -414,8 +426,42 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 				f.Enum = nil
 			}
 			plan.Operations = append(plan.Operations, "set_enum "+ch.Name+" = "+describeValue(vals))
+		case schema.OpSetRowAccess:
+			if ch.Value == nil {
+				return nil, invalidf("set_row_access requires value: true restricts rows to the principal who wrote them, false stops the filtering")
+			}
+			if *ch.Value {
+				if cur.RowAccess == schema.RowAccessOwn {
+					plan.Operations = append(plan.Operations, "set_row_access true (already enabled)")
+					break
+				}
+				if err := store.ValidateOwnerCollision(cur.Fields); err != nil {
+					return nil, err
+				}
+				var rows int64
+				if err := tx.QueryRow(ctx, "SELECT count(*) FROM "+table).Scan(&rows); err != nil {
+					return nil, err
+				}
+				if rows > 0 {
+					return nil, invalidf("table %s already holds %d rows, so row_access cannot be enabled on it: no operation can write another principal's rows as that principal, so there is no honest way to assign owners to what is already there; create a new table with row_access and replay each owner's rows under their own identity, letting the server stamp them", old.Name, rows)
+				}
+				if !cur.HasOwner {
+					w.steps = append(w.steps, migrationStep{sql: "ALTER TABLE " + table + " ADD COLUMN " + ident(schema.OwnerColumn) + ` text COLLATE "C"`})
+				}
+				cur.RowAccess = schema.RowAccessOwn
+				cur.HasOwner = true
+				plan.Operations = append(plan.Operations, "set_row_access true")
+				break
+			}
+			if cur.RowAccess == "" {
+				plan.Operations = append(plan.Operations, "set_row_access false (already off)")
+				break
+			}
+			cur.RowAccess = ""
+			plan.Operations = append(plan.Operations, "set_row_access false (the owner column and its values are kept)")
+
 		default:
-			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum)", ch.Op)
+			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_row_access)", ch.Op)
 		}
 	}
 	if len(plan.Destructive) > 0 && expectedVersion == 0 {
@@ -517,7 +563,7 @@ func describeValue(v any) string {
 
 func (s *Store) PlanMigration(ctx context.Context, ns, table string, changes []schema.Change, emb store.Embedder, expected store.Incarnation, scope *store.RowScope, scopeIncarnation store.Incarnation) (*store.MigrationPlan, error) {
 	if scope != nil {
-		return nil, derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
+		return nil, store.ErrScopedPlanUnsupported
 	}
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")

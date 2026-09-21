@@ -105,10 +105,16 @@ func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []sche
 	if err != nil {
 		return nil, err
 	}
-	if opts.RowAccess != "" {
-		return nil, derr.New(derr.Forbidden, "PostgreSQL row-level access is not implemented yet")
+	if err := schema.ValidateRowAccess(opts.RowAccess); err != nil {
+		return nil, fmt.Errorf("%w: %w", store.ErrInvalid, err)
 	}
-	sc := &schema.TableSchema{Namespace: ns, Name: table, Version: 1, Fields: fields}
+	if opts.RowAccess != "" {
+		if err := store.ValidateOwnerCollision(fields); err != nil {
+			return nil, err
+		}
+	}
+	sc := &schema.TableSchema{Namespace: ns, Name: table, Version: 1, Fields: fields,
+		RowAccess: opts.RowAccess, HasOwner: opts.RowAccess != ""}
 	err = s.write(ctx, ns, expected, func(tx pgx.Tx, n namespace) error {
 		if _, err := s.loadTable(ctx, tx, n, table); err == nil {
 			return fmt.Errorf("%w: table %s.%s already exists", store.ErrInvalid, ns, table)
@@ -123,7 +129,7 @@ func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []sche
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, tableDDL(n.physical, physical, fields, columns)); err != nil {
+		if _, err := tx.Exec(ctx, tableDDL(n.physical, physical, fields, columns, sc.HasOwner)); err != nil {
 			return err
 		}
 		if len(fulltextFields(fields)) > 0 {
@@ -168,7 +174,7 @@ func columnType(f schema.Field) string {
 	return `text COLLATE "C"`
 }
 
-func tableDDL(ns, table string, fields []schema.Field, columns map[string]string) string {
+func tableDDL(ns, table string, fields []schema.Field, columns map[string]string, hasOwner bool) string {
 	parts := []string{"id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY", `created_at text NOT NULL DEFAULT to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`}
 	vectorized := false
 	for _, f := range fields {
@@ -181,6 +187,9 @@ func tableDDL(ns, table string, fields []schema.Field, columns map[string]string
 	}
 	if vectorized {
 		parts = append(parts, `"_embedding" bytea`)
+	}
+	if hasOwner {
+		parts = append(parts, ident(schema.OwnerColumn)+` text COLLATE "C"`)
 	}
 	if fts := ftsColumnDDL(fields, columns); fts != "" {
 		parts = append(parts, fts)
@@ -236,9 +245,6 @@ func checkIncarnation(ns string, current, expected store.Incarnation) error {
 }
 
 func (s *Store) DescribeTable(ctx context.Context, ns, table string, scope *store.RowScope, expected store.Incarnation) (*schema.TableSchema, int64, error) {
-	if scope != nil {
-		return nil, 0, derr.New(derr.Forbidden, "PostgreSQL row-level access is not implemented yet")
-	}
 	var result tableState
 	var count int64
 	err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
@@ -247,10 +253,22 @@ func (s *Store) DescribeTable(ctx context.Context, ns, table string, scope *stor
 		if err != nil {
 			return err
 		}
-		if err := checkIncarnation(ns, result.incarnation, expected); err != nil {
+		if err := s.guardScope(ctx, tx, n, table, result, expected); err != nil {
 			return err
 		}
-		return tx.QueryRow(ctx, "SELECT count(*) FROM "+ident(n.physical, result.physical)).Scan(&count)
+		if err := scopeUsable(scope, result.schema); err != nil {
+			return err
+		}
+		if scope != nil && scope.Empty {
+			count = 0
+			return nil
+		}
+		stmt := "SELECT count(*) FROM " + ident(n.physical, result.physical)
+		clause, args := scopePredicate(scope, "", 1)
+		if clause != "" {
+			stmt += " WHERE " + clause
+		}
+		return tx.QueryRow(ctx, stmt, args...).Scan(&count)
 	})
 	return result.schema, count, err
 }

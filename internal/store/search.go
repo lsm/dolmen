@@ -116,11 +116,11 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 	if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
 		return SearchResult{}, err
 	}
-	if err := scopeUsable(scope, sc); err != nil {
+	if err := ScopeUsable(scope, sc); err != nil {
 		return SearchResult{}, err
 	}
 	if scope != nil && filter != "" {
-		return SearchResult{}, errScopedFilterUnsupported
+		return SearchResult{}, ErrScopedFilterUnsupported
 	}
 
 	stmt := fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? ORDER BY rank, rowid LIMIT ? OFFSET ?`,
@@ -308,7 +308,7 @@ type DeleteResult struct {
 
 func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation) (DeleteResult, error) {
 	if scope != nil {
-		return DeleteResult{}, errScopedFilterUnsupported
+		return DeleteResult{}, ErrScopedFilterUnsupported
 	}
 	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
 		return DeleteResult{}, err

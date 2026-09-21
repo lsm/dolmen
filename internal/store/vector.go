@@ -64,11 +64,11 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq Vecto
 	if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
 		return SearchResult{}, err
 	}
-	if err := scopeUsable(scope, sc); err != nil {
+	if err := ScopeUsable(scope, sc); err != nil {
 		return SearchResult{}, err
 	}
 	if scope != nil && filter != "" {
-		return SearchResult{}, errScopedFilterUnsupported
+		return SearchResult{}, ErrScopedFilterUnsupported
 	}
 
 	query := fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s IS NOT NULL`, q(column), q(table), q(column))

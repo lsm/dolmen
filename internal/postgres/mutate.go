@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -51,7 +50,7 @@ func validateMutationSet(state tableState, set map[string]any) error {
 	return nil
 }
 
-func compileMutationFilter(filter string, argc int, physicalNamespace string, state tableState) (string, error) {
+func (s *Store) compileMutationFilter(ctx context.Context, tx pgx.Tx, n namespace, filter string, argc int, state tableState) (string, error) {
 	filter = strings.TrimSpace(filter)
 	if filter == "" {
 		return "", fmt.Errorf("%w: filter is required (pass \"1=1\" to match every row)", store.ErrInvalid)
@@ -59,8 +58,13 @@ func compileMutationFilter(filter string, argc int, physicalNamespace string, st
 	if strings.Contains(filter, ";") {
 		return "", fmt.Errorf("%w: multiple statements are not allowed in filter", store.ErrInvalid)
 	}
+	visible, err := s.queryTables(ctx, tx, n)
+	if err != nil {
+		return "", err
+	}
+	visible[state.incarnation.Table] = state
 	query := "SELECT id FROM " + ident(state.incarnation.Table) + " WHERE " + filter + " ORDER BY id"
-	compiled, _, err := compileSQL(query, argc, physicalNamespace, map[string]tableState{state.incarnation.Table: state})
+	compiled, _, err := compileSQL(query, argc, n.physical, visible)
 	if err != nil {
 		return "", filterSyntaxError(filter, err)
 	}
@@ -142,7 +146,7 @@ func validateInsertFallback(state tableState, record map[string]any) error {
 
 func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any, set map[string]any, emb store.Embedder, allowInsert bool, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
 	if scope != nil {
-		return store.InsertResult{}, derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
+		return store.InsertResult{}, store.ErrScopedFilterUnsupported
 	}
 	set, err := normalizeSet(set)
 	if err != nil {
@@ -168,7 +172,7 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 			if err := validateMutationSet(state, set); err != nil {
 				return err
 			}
-			compiled, err = compileMutationFilter(filter, len(args), n.physical, state)
+			compiled, err = s.compileMutationFilter(ctx, tx, n, filter, len(args), state)
 			if err != nil {
 				return err
 			}
@@ -264,15 +268,12 @@ func (s *Store) Update(ctx context.Context, ns, table, filter string, args []any
 }
 
 func (s *Store) Upsert(ctx context.Context, ns, table, filter string, args []any, set map[string]any, opts store.WriteOpts, emb store.Embedder, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
-	if opts.Owner != "" || opts.TableWideRead {
-		return store.InsertResult{}, derr.New(derr.Forbidden, "PostgreSQL row authorization is not implemented yet")
-	}
 	return s.mutate(ctx, ns, table, filter, args, set, emb, true, scope, expected)
 }
 
 func (s *Store) Delete(ctx context.Context, ns, table, filter string, args []any, opts store.DeleteOpts, scope *store.RowScope, expected store.Incarnation) (store.DeleteResult, error) {
 	if scope != nil {
-		return store.DeleteResult{}, derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
+		return store.DeleteResult{}, store.ErrScopedFilterUnsupported
 	}
 	args, err := queryArgs(args)
 	if err != nil {
@@ -288,7 +289,7 @@ func (s *Store) Delete(ctx context.Context, ns, table, filter string, args []any
 			if err := checkIncarnation(ns, state.incarnation, expected); err != nil {
 				return err
 			}
-			compiled, err := compileMutationFilter(filter, len(args), n.physical, state)
+			compiled, err := s.compileMutationFilter(ctx, tx, n, filter, len(args), state)
 			if err != nil {
 				return err
 			}
@@ -307,7 +308,7 @@ func (s *Store) Delete(ctx context.Context, ns, table, filter string, args []any
 		if err := checkIncarnation(ns, state.incarnation, expected); err != nil {
 			return err
 		}
-		compiled, err := compileMutationFilter(filter, len(args), n.physical, state)
+		compiled, err := s.compileMutationFilter(ctx, tx, n, filter, len(args), state)
 		if err != nil {
 			return err
 		}

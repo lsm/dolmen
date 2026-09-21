@@ -25,7 +25,7 @@ func scopeClause(sc *RowScope, alias string) (string, []any) {
 	return sc.sql(alias)
 }
 
-func scopeUsable(sc *RowScope, tsc *schema.TableSchema) error {
+func ScopeUsable(sc *RowScope, tsc *schema.TableSchema) error {
 	if sc == nil || sc.Empty {
 		return nil
 	}
@@ -35,18 +35,28 @@ func scopeUsable(sc *RowScope, tsc *schema.TableSchema) error {
 	return nil
 }
 
-var errScopedFilterUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and a filter expression is not yet accepted on a scoped call; select rows with the operation's structured arguments instead, or ask for the read verb on the table, which lifts the scope", ErrInvalid)
+var ErrScopedFilterUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and a filter expression is not yet accepted on a scoped call; select rows with the operation's structured arguments instead, or ask for the read verb on the table, which lifts the scope", ErrInvalid)
 
 func (i Incarnation) zero() bool {
 	return i.Table == "" && i.Version == 0 && i.DropGen == 0 && i.NsGen == [16]byte{}
 }
+
+func ScopeTableMismatch(want, got string) error {
+	return conflictf("this request's row scope was resolved against table %q but the operation targets %q; re-read the table and retry", want, got)
+}
+
+func ScopeIncarnationChanged(nsName, table string) error {
+	return conflictf("table %s.%s changed between the moment this request's row visibility was decided and its execution (a migration, or a drop and recreate); re-read the table and retry", nsName, table)
+}
+
+func IncarnationIsZero(i Incarnation) bool { return i.zero() }
 
 func checkScopeIncarnation(ctx context.Context, tx rowQuerier, nsName, table string, want Incarnation) error {
 	if want.zero() {
 		return nil
 	}
 	if want.Table != table {
-		return conflictf("this request's row scope was resolved against table %q but the operation targets %q; re-read the table and retry", want.Table, table)
+		return ScopeTableMismatch(want.Table, table)
 	}
 	sc, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
@@ -62,12 +72,12 @@ func checkScopeIncarnation(ctx context.Context, tx rowQuerier, nsName, table str
 	}
 	got := Incarnation{NsGen: gen, Table: table, Version: int64(sc.Version), DropGen: dropGen}
 	if got != want {
-		return conflictf("table %s.%s changed between the moment this request's row visibility was decided and its execution (a migration, or a drop and recreate); re-read the table and retry", nsName, table)
+		return ScopeIncarnationChanged(nsName, table)
 	}
 	return nil
 }
 
-var errScopedKeyUpsertUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and upsert_by_key matches on the natural key across every row, so it could update a row you cannot see; insert instead, or ask for the read verb on the table, which lifts the scope", ErrInvalid)
+var ErrScopedKeyUpsertUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and upsert_by_key matches on the natural key across every row, so it could update a row you cannot see; insert instead, or ask for the read verb on the table, which lifts the scope", ErrInvalid)
 
 func (s *Store) guardIncarnation(ctx context.Context, nsName, table string, want Incarnation) error {
 	if want.zero() {
@@ -80,8 +90,8 @@ func (s *Store) guardIncarnation(ctx context.Context, nsName, table string, want
 	return checkScopeIncarnation(ctx, n.ro, nsName, table, want)
 }
 
-var errScopedFeedUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and the change feed does not yet filter records by owner; ask for the read verb on the table, which lifts the scope", ErrInvalid)
+var ErrScopedFeedUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and the change feed does not yet filter records by owner; ask for the read verb on the table, which lifts the scope", ErrInvalid)
 
-var errScopedPlanUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and a migration plan reports table-wide information; ask for the read verb on the table, which lifts the scope", ErrInvalid)
+var ErrScopedPlanUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and a migration plan reports table-wide information; ask for the read verb on the table, which lifts the scope", ErrInvalid)
 
-var errScopedIdempotencyUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and idempotency keys are recorded per table rather than per owner, so replaying someone else's key would report their rows; retry without idempotency_key, or ask for the read verb on the table, which lifts the scope", ErrInvalid)
+var ErrScopedIdempotencyUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and idempotency keys are recorded per table rather than per owner, so replaying someone else's key would report their rows; retry without idempotency_key, or ask for the read verb on the table, which lifts the scope", ErrInvalid)

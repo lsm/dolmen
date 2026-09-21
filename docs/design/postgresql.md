@@ -405,9 +405,33 @@ lives in [postgresql-operations.md](../postgresql-operations.md); this document 
 the design record. The conformance matrix is clean and CI keeps it that way; see
 "Conformance matrix status" below.
 
-Nothing in the original sequence is outstanding. What is left is the work this document
-records as unimplemented rather than pending: row authorization, which every auth-on
-conformance mode still skips on this backend.
+Nothing in the original sequence is outstanding, and row authorization is implemented:
+the auth-on conformance modes run on this backend rather than skipping.
+
+A table declaring `row_access` carries an `owner text` column, which every insert path
+stamps from `WriteOpts.Owner` and no caller can supply. The column reads back beside
+`id` and `created_at`, and a `RowScope` becomes an `owner = $n` conjunct on row reads,
+the `describe_table` count, and both searches; an empty scope is the constant `false`,
+so a schema-only holder counts zero rather than seeing a real total. The scope's
+incarnation is re-checked inside the operation's transaction and fails `conflict` on a
+mismatch — the guard binds even to a nil scope, so a request resolved before
+`row_access` was enabled cannot execute as unscoped afterwards.
+
+Where SQLite refuses a scoped call rather than filtering it — mutations, `upsert_by_key`,
+the change feeds, migration plans, and a scoped insert carrying an idempotency key — this
+backend refuses it with the same sentence. Those messages are now exported from
+`internal/store` rather than retyped here, because the conformance suite pins the wording
+and two copies would drift.
+
+Two divergences surfaced while wiring this up, both of which had been pinned as correct
+by engine tests written while row authorization was unimplemented. A stale scope
+incarnation answered `not_found` where SQLite answers `conflict`, and a scope on a table
+with no owner column answered `forbidden` where SQLite answers `invalid_request`. Both
+now match SQLite, verified against it directly rather than by reading its code.
+
+Authorization bindings stay fail-closed here, which is deliberately stricter than SQLite,
+where they are ignored. Every call site passes nil today, so the strictness costs nothing;
+silently ignoring an authorization argument is the wrong default for the day one is passed.
 
 ## Selecting PostgreSQL
 

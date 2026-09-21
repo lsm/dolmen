@@ -20,7 +20,7 @@ type UpsertResult struct {
 
 func (s *Store) Update(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (UpdateResult, error) {
 	if scope != nil {
-		return UpdateResult{}, errScopedFilterUnsupported
+		return UpdateResult{}, ErrScopedFilterUnsupported
 	}
 	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
 		return UpdateResult{}, err
@@ -34,7 +34,7 @@ func (s *Store) Update(ctx context.Context, nsName, table, where string, args []
 
 func (s *Store) Upsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
 	if scope != nil {
-		return InsertResult{}, errScopedFilterUnsupported
+		return InsertResult{}, ErrScopedFilterUnsupported
 	}
 	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
 		return InsertResult{}, err

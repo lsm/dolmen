@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -111,7 +110,7 @@ func (s *Store) changesSince(ctx context.Context, ns, table string, from store.C
 
 func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, scope *store.RowScope, inc store.Incarnation, page store.Page, boundary *int64, unlocked bool) ([]store.ChangeRecord, store.Cursor, error) {
 	if scope != nil {
-		return nil, "", derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
+		return nil, "", store.ErrScopedFeedUnsupported
 	}
 	records := []store.ChangeRecord{}
 	var next store.Cursor
