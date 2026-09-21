@@ -436,6 +436,20 @@ The data directory argument belongs to SQLite and is unused here, so pass `""`. 
 live store per catalog per process is still enforced, keyed on DSN and catalog rather
 than on a directory, and a second `Open` against the same catalog is a conflict.
 
+The binary selects it the same way:
+
+```sh
+dolmen -engine postgres \
+  -pg-dsn 'postgres://dolmen_backend@host:5432/dolmen?sslmode=disable' \
+  -pg-catalog dolmen_catalog -pg-query-role dolmen_query
+```
+
+`DOLMEN_PG_DSN`, `DOLMEN_PG_CATALOG` and `DOLMEN_PG_QUERY_ROLE` are the env
+equivalents. `-engine postgres` without a DSN is refused, and a DSN without that
+engine is refused too, so a half-configured server fails at startup rather than
+silently serving SQLite. `-data` is ignored under PostgreSQL. The stdio conformance
+fixtures run the real binary against PostgreSQL through these flags.
+
 The role provisioning is the deployment's, not dolmen's: the backend role needs CREATE
 on the database, and caller SQL needs the pre-provisioned restricted query role granted
 to it with `INHERIT FALSE, SET TRUE`. No runtime `CREATEROLE` is required and no

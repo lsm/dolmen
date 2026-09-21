@@ -123,6 +123,18 @@ func TestLoadConfig(t *testing.T) {
 			},
 		},
 		{
+			name:    "postgres without a dsn teaches the flag",
+			args:    []string{"-engine", "postgres"},
+			env:     map[string]string{"DOLMEN_EMBED_PROVIDER": "none"},
+			wantErr: `engine "postgres" needs a connection; pass -pg-dsn or set DOLMEN_PG_DSN`,
+		},
+		{
+			name:    "a dsn without the postgres engine is refused",
+			args:    []string{"-pg-dsn", "postgres://example"},
+			env:     map[string]string{"DOLMEN_EMBED_PROVIDER": "none"},
+			wantErr: `-pg-dsn applies only to -engine postgres`,
+		},
+		{
 			name:    "unknown engine teaches the available engines",
 			args:    []string{},
 			env:     map[string]string{"DOLMEN_ENGINE": "banana", "DOLMEN_EMBED_PROVIDER": "none"},
