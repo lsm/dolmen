@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -141,6 +142,51 @@ func (s *Server) OpenAPIDoc(baseURL string) map[string]any {
 		},
 	}
 
+	if _, ok := s.oidc(); ok {
+		paths[auth.AuthBeginPath] = map[string]any{
+			"get": map[string]any{
+				"operationId": "auth_begin",
+				"summary": "Start the browser sign-in: answers with a redirect to the identity provider's authorization endpoint, " +
+					"carrying PKCE and a single-use state. Unlike the POST operations this is a GET that answers with a redirect or " +
+					"an HTML page, never a JSON envelope, and it is unauthenticated. It appears here only when the deployment has an " +
+					"identity provider configured.",
+				"responses": map[string]any{
+					"302": map[string]any{
+						"description": "Redirect to the identity provider's authorization endpoint",
+						"headers": map[string]any{
+							"Location": map[string]any{
+								"description": "The identity provider's authorization URL",
+								"schema":      map[string]any{"type": "string"},
+							},
+						},
+					},
+					"400": htmlResponse("A page naming why the sign-in could not be started"),
+					"403": errorResponse("Origin not allowed"),
+					"405": errorResponse("Method not allowed"),
+				},
+			},
+		}
+		paths[auth.AuthCallbackPath] = map[string]any{
+			"get": map[string]any{
+				"operationId": "auth_callback",
+				"summary": "Finish the browser sign-in: exchanges the authorization code and answers with an HTML page carrying a bearer " +
+					"token. Register this path as the redirect URI with the identity provider; people reach it from the provider, not " +
+					"from client code. The token is stateless and expires on its own, and the server keeps no session.",
+				"parameters": []any{
+					queryParam("state", "The single-use state issued by "+auth.AuthBeginPath, false, map[string]any{"type": "string", "minLength": 1}),
+					queryParam("code", "The identity provider's authorization code", false, map[string]any{"type": "string", "minLength": 1}),
+					queryParam("error", "Set when the identity provider refused the sign-in; no code is exchanged", false, map[string]any{"type": "string"}),
+				},
+				"responses": map[string]any{
+					"200": htmlResponse("A page carrying the bearer token and how long it lasts"),
+					"400": htmlResponse("A page naming why the sign-in could not be completed"),
+					"403": errorResponse("Origin not allowed"),
+					"405": errorResponse("Method not allowed"),
+				},
+			},
+		}
+	}
+
 	serverURL := "/"
 	if baseURL != "" {
 		serverURL = baseURL
@@ -242,6 +288,17 @@ func opResponses(dataSchema map[string]any) map[string]any {
 		"415": errorResponse("Unsupported media type"),
 		"500": errorResponse("Internal server error"),
 		"503": errorResponse("Embedding provider unavailable (the local model could not be loaded or downloaded); vectorized writes and text searches only"),
+	}
+}
+
+func htmlResponse(description string) map[string]any {
+	return map[string]any{
+		"description": description,
+		"content": map[string]any{
+			"text/html": map[string]any{
+				"schema": map[string]any{"type": "string"},
+			},
+		},
 	}
 }
 

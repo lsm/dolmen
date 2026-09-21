@@ -38,6 +38,7 @@ type Server struct {
 	proxyAdviceOnce    sync.Once
 	authn              *auth.Authenticator
 	grants             *auth.Registry
+	oidcSource         *auth.OIDCSource
 }
 
 type Option func(*Server)
@@ -75,6 +76,12 @@ func WithAuth(a *auth.Authenticator) Option {
 func WithGrants(r *auth.Registry) Option {
 	return func(s *Server) {
 		s.grants = r
+	}
+}
+
+func WithOIDC(src *auth.OIDCSource) Option {
+	return func(s *Server) {
+		s.oidcSource = src
 	}
 }
 
@@ -540,6 +547,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/skills", s.handleSkillsManifest)
 	mux.HandleFunc("/skills/", s.handleSkill)
 	mux.HandleFunc("/v1/openapi.json", s.handleOpenAPI)
+	mux.HandleFunc(auth.AuthBeginPath, s.handleAuthBegin)
+	mux.HandleFunc(auth.AuthCallbackPath, s.handleAuthCallback)
 
 	mux.HandleFunc("/v1/subscribe", func(w http.ResponseWriter, r *http.Request) {
 		r, err := s.Authenticated(r)

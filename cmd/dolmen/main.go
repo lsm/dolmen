@@ -79,7 +79,12 @@ func run() error {
 	}
 	defer grants.Close()
 
-	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithMaxSubscriptionAge(cfg.MaxSubscriptionAge), api.WithAuth(cfg.Auth), api.WithGrants(grants))
+	oidcSrc, err := buildOIDC(cfg, grants)
+	if err != nil {
+		return err
+	}
+
+	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithMaxSubscriptionAge(cfg.MaxSubscriptionAge), api.WithAuth(cfg.Auth), api.WithGrants(grants), api.WithOIDC(oidcSrc))
 	mcpSrv := newMCPServer(cfg, apiSrv)
 
 	sub := http.NewServeMux()
@@ -194,11 +199,42 @@ func openGrantRegistry(cfg *config) (*auth.Registry, error) {
 		return nil, err
 	}
 	cfg.Auth.UseKeys(r)
+	if _, err := buildOIDC(cfg, r); err != nil {
+		r.Close()
+		return nil, err
+	}
 	if err := cfg.Auth.CheckRootAdministrator(context.Background(), r); err != nil {
 		r.Close()
 		return nil, err
 	}
 	return r, nil
+}
+
+func buildOIDC(cfg *config, r *auth.Registry) (*auth.OIDCSource, error) {
+	if r == nil || !cfg.OIDC.Enabled() {
+		return nil, nil
+	}
+	if cfg.oidcSource != nil {
+		return cfg.oidcSource, nil
+	}
+	ctx := context.Background()
+	deployment, err := r.DeploymentID(ctx, cfg.OIDC.DeploymentID)
+	if err != nil {
+		return nil, err
+	}
+	ring, err := r.LoadKeyring(ctx, deployment)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Auth.UseTokens(ring)
+	cfg.Auth.RefreshTokensFrom(func(ctx context.Context) (auth.Keyring, error) {
+		return r.LoadKeyring(ctx, deployment)
+	}, 0)
+	src := auth.NewOIDCSource(cfg.OIDC, r, ring, nil)
+	src.PublishRingTo(cfg.Auth.UseTokens)
+	cfg.Auth.SetOIDCIssuer(src.IssuerDigest())
+	cfg.oidcSource = src
+	return src, nil
 }
 
 func logAuthPosture(a *auth.Authenticator) {
@@ -224,6 +260,8 @@ type config struct {
 	DataDir            string
 	Engine             string
 	Auth               *auth.Authenticator
+	OIDC               auth.OIDCConfig
+	oidcSource         *auth.OIDCSource
 	AllowedOrigins     []string
 	Embed              embedConfig
 	Version            bool
@@ -331,6 +369,32 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		fs.Usage()
 		return nil, &printedError{err}
 	}
+	oidc := auth.OIDCConfig{
+		Issuer:       getenv("DOLMEN_AUTH_OIDC_ISSUER"),
+		ClientID:     getenv("DOLMEN_AUTH_OIDC_CLIENT_ID"),
+		ClientSecret: getenv("DOLMEN_AUTH_OIDC_CLIENT_SECRET"),
+		Scopes:       auth.ParseScopes(getenv("DOLMEN_AUTH_OIDC_SCOPES")),
+		GroupsClaim:  getenv("DOLMEN_AUTH_OIDC_GROUPS_CLAIM"),
+		DeploymentID: getenv("DOLMEN_AUTH_OIDC_DEPLOYMENT_ID"),
+		Preset:       getenv("DOLMEN_AUTH_OIDC_PRESET"),
+		MaxGroups:    *maxGroups,
+	}
+	if raw := strings.TrimSpace(getenv("DOLMEN_AUTH_OIDC_TOKEN_TTL")); raw != "" {
+		d, ttlErr := time.ParseDuration(raw)
+		if ttlErr != nil {
+			e := fmt.Errorf("invalid DOLMEN_AUTH_OIDC_TOKEN_TTL %q: %w", raw, ttlErr)
+			fmt.Fprintf(out, "config: %v\n", e)
+			fs.Usage()
+			return nil, &printedError{e}
+		}
+		oidc.TokenTTL = d
+	}
+	if err := oidc.Validate(); err != nil {
+		fmt.Fprintf(out, "config: %v\n", err)
+		fs.Usage()
+		return nil, &printedError{err}
+	}
+
 	authn, err := auth.New(auth.Config{
 		Mode:           mode,
 		AdminKey:       getenv("DOLMEN_ADMIN_KEY"),
@@ -384,6 +448,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		DataDir:            *dataDir,
 		Engine:             *engine,
 		Auth:               authn,
+		OIDC:               oidc,
 		AllowedOrigins:     allowedOrigins,
 		BaseURL:            *publicBaseURL,
 		Prefix:             prefixValue,
@@ -450,6 +515,14 @@ func printEnvHelp(out io.Writer) {
 		{"DOLMEN_ADMIN_KEY", "bootstrap admin credential, required when auth is on (env-only, never a flag)"},
 		{"DOLMEN_TRUSTED_PROXIES", "comma-separated CIDRs whose peers may assert identity headers"},
 		{"DOLMEN_MAX_GROUPS", "maximum group entries accepted per request, 1 to 1024 (default 128)"},
+		{"DOLMEN_AUTH_OIDC_ISSUER", "identity provider issuer URL, enabling native sign-in"},
+		{"DOLMEN_AUTH_OIDC_CLIENT_ID", "OAuth client id registered with that provider"},
+		{"DOLMEN_AUTH_OIDC_CLIENT_SECRET", "OAuth client secret (environment only)"},
+		{"DOLMEN_AUTH_OIDC_SCOPES", "comma-separated extra scopes to request"},
+		{"DOLMEN_AUTH_OIDC_GROUPS_CLAIM", "claim carrying the caller's groups (default groups)"},
+		{"DOLMEN_AUTH_OIDC_TOKEN_TTL", "issued token lifetime, 1h to 720h (default 168h)"},
+		{"DOLMEN_AUTH_OIDC_DEPLOYMENT_ID", "pin this deployment's token issuer id"},
+		{"DOLMEN_AUTH_OIDC_PRESET", "github, to use GitHub instead of a generic OIDC provider"},
 		{"DOLMEN_ALLOWED_ORIGINS", "comma-separated allowed HTTP origins for CORS"},
 		{"DOLMEN_BASE_URL", "public base URL for skills and MCP links (default: use request Host)"},
 		{"DOLMEN_SKILL_NAMESPACE_HINT", "hint text rendered into skill markdown"},

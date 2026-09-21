@@ -50,6 +50,17 @@
   credentials; and a revoked key is refused with the same `401` as an unknown one. Downstream of
   the seam a key identity is indistinguishable from a gateway-asserted one — same verbs, same
   grants, same row scope.
+- **Native sign-in through an identity provider.** With `DOLMEN_AUTH_OIDC_ISSUER` (or
+  `DOLMEN_AUTH_OIDC_PRESET=github`) set, `/v1/auth/begin` runs the authorization-code flow with
+  PKCE and single-use state, and hands back an Ed25519-signed, stateless token. No user records, no
+  session store. Principals and groups are issuer-qualified (`oidc:v1:<digest>:<claim>`) because a
+  subject is unique only within its provider, so changing issuers mints a disjoint population
+  rather than silently reassigning grants. The signing key and the deployment's token issuer id
+  persist beside the grants, so tokens survive restarts and verify across replicas, and a
+  deployment will not accept a token minted by another that happens to share its keyring.
+  `rotate_signing_key` mints a successor; with `retire_previous` it stops honouring every token
+  signed by an earlier key, which is how a deployment signs all its people out at once — immediately on the replica that
+  served it, and within the keyring refresh interval elsewhere.
 - **`unauthorized` error code** (401) in the shared taxonomy. `auth: off` never emits it, and the
   default is still `auth: off` — nothing changes for existing deployments.
 

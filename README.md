@@ -616,9 +616,63 @@ the same `401` as an unknown one.
 Revoking a key is refused when it would leave the deployment with no usable root
 administrator; setting `DOLMEN_ADMIN_KEY` and restarting always recovers.
 
-**Not yet built:** native OIDC, for humans signing in through an identity
-provider without a gateway. The design is in
-`docs/design/identity-and-engines.md`.
+### Signing in through an identity provider
+
+For humans, dolmen can run the sign-in itself — no gateway, no proxy:
+
+```bash
+DOLMEN_AUTH=on \
+DOLMEN_ADMIN_KEY="$key" \
+DOLMEN_AUTH_OIDC_ISSUER=https://login.microsoftonline.com/<tenant>/v2.0 \
+DOLMEN_AUTH_OIDC_CLIENT_ID=... \
+DOLMEN_AUTH_OIDC_CLIENT_SECRET=... \
+./dolmen -addr 0.0.0.0:8790
+```
+
+Register `<base-url>/v1/auth/callback` as the redirect URI with your provider,
+then send people to `/v1/auth/begin`. They sign in with the provider, land back
+on a small page carrying a token, and present it as a bearer credential like any
+other. `DOLMEN_AUTH_OIDC_PRESET=github` uses GitHub instead of a generic OIDC
+provider; it brings its own issuer, so setting it alongside
+`DOLMEN_AUTH_OIDC_ISSUER` is refused at startup rather than silently preferring
+one. Those two endpoints are the only non-JSON surface dolmen serves, and they
+appear in `/v1/openapi.json` only on a deployment that serves them.
+
+**dolmen stores no users and no sessions.** The token is Ed25519-signed and
+stateless, valid for `DOLMEN_AUTH_OIDC_TOKEN_TTL` (default 7 days, range 1h to
+720h). When it expires the caller signs in again. There is no per-device
+revocation and no sliding session. To sign everyone out at once, rotate the
+signing key and retire its predecessor:
+
+```bash
+curl -sS http://localhost:8790/v1/rotate_signing_key \
+  -H "Authorization: Bearer $DOLMEN_ADMIN_KEY" \
+  -H 'Content-Type: application/json' -d '{"retire_previous":true}'
+```
+
+Without `retire_previous` the successor signs new tokens while the predecessor
+keeps verifying, so tokens already in people's hands live out their TTL — the
+overlap you want for a routine rotation. With it, every token signed by an
+earlier key stops working.
+
+On the replica that served the rotation the change is immediate. Others pick it
+up within their keyring refresh interval (30 seconds), since the keyring lives in
+the shared registry rather than in any one process.
+
+**Identities are qualified by issuer.** A subject is only unique within its
+provider, so the principal is `oidc:v1:<issuer-digest>:<sub>` — never the email,
+which changes. Groups are qualified the same way. Two consequences worth
+knowing: changing `DOLMEN_AUTH_OIDC_ISSUER` mints a completely separate set of
+principals and inherits no grants, and Entra emits group claims as object GUIDs
+rather than names, so Entra deployments grant on the GUIDs or sync names
+themselves.
+
+The signing key and the deployment's own issuer id are minted on first start and
+persist beside the grants, so tokens survive restarts and verify across
+replicas. Pin the id with `DOLMEN_AUTH_OIDC_DEPLOYMENT_ID` if you need it
+stable; a mismatch against the stored value is refused at startup, naming both.
+Two deployments that accidentally share a keyring still will not accept each
+other's tokens, because the id is checked as well as the signature.
 
 `dolmen mcp` (the stdio transport) refuses to start with `-auth on`: a pipe
 carries no per-request credential, and treating whoever launched the subprocess
