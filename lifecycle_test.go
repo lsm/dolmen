@@ -2,8 +2,6 @@ package dolmen
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/lsm/dolmen/internal/store"
 )
 
 func TestChangeRetentionOptionPassesThrough(t *testing.T) {
@@ -41,8 +39,12 @@ func TestOpenRejectsInvalidOptions(t *testing.T) {
 	if _, err := Open(t.TempDir(), WithEngine("postgres")); err == nil {
 		t.Fatal("the postgres engine without a connection must be rejected")
 	}
-	if _, err := Open(t.TempDir(), WithPostgres(PostgresConfig{})); err == nil {
-		t.Fatal("WithPostgres without a DSN must be rejected")
+	opener := func(context.Context, time.Duration) (store.Engine, error) { return nil, errors.New("unused") }
+	if _, err := Open(t.TempDir(), WithEngineOpener("postgres", "", opener)); err == nil {
+		t.Fatal("an engine opener without an owner key must be rejected")
+	}
+	if _, err := Open(t.TempDir(), WithEngineOpener("postgres", "key", nil)); err == nil {
+		t.Fatal("an owner key without an opener must be rejected")
 	}
 }
 
@@ -362,89 +364,5 @@ func TestOpenResolvesRelativeTargetThroughSymlinkAndDotDot(t *testing.T) {
 	want := filepath.Join(root, "data")
 	if st.dir != want {
 		t.Fatalf("a relative target must traverse its own symlinks before .. pops: want %s, got %s", want, st.dir)
-	}
-}
-
-func postgresFacadeConfig(t *testing.T) PostgresConfig {
-	t.Helper()
-	dsn := os.Getenv("DOLMEN_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip("set DOLMEN_TEST_PG_DSN to exercise the PostgreSQL facade")
-	}
-	var id [12]byte
-	if _, err := rand.Read(id[:]); err != nil {
-		t.Fatal(err)
-	}
-	catalog := "dolmen_facade_" + hex.EncodeToString(id[:])
-	t.Cleanup(func() { dropFacadeCatalog(t, dsn, catalog) })
-	return PostgresConfig{DSN: dsn, Catalog: catalog, QueryRole: os.Getenv("DOLMEN_TEST_PG_QUERY_ROLE")}
-}
-
-func dropFacadeCatalog(t *testing.T, dsn, catalog string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	conn, err := pgx.Connect(ctx, dsn)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	defer conn.Close(ctx)
-	schemas := []string{}
-	rows, err := conn.Query(ctx, "SELECT physical FROM "+pgx.Identifier{catalog}.Sanitize()+".namespaces")
-	if err == nil {
-		for rows.Next() {
-			var physical string
-			if err := rows.Scan(&physical); err != nil {
-				t.Error(err)
-				break
-			}
-			schemas = append(schemas, physical)
-		}
-		rows.Close()
-	}
-	schemas = append(schemas, catalog)
-	for _, name := range schemas {
-		if _, err := conn.Exec(ctx, "DROP SCHEMA IF EXISTS "+pgx.Identifier{name}.Sanitize()+" CASCADE"); err != nil {
-			t.Error(err)
-		}
-	}
-}
-
-func TestOpenWithPostgresServesTheFacade(t *testing.T) {
-	cfg := postgresFacadeConfig(t)
-	st, err := Open("", WithPostgres(cfg))
-	if err != nil {
-		t.Fatalf("open with the postgres engine: %v", err)
-	}
-	defer st.Close()
-	ctx := t.Context()
-	if err := st.CreateNamespace(ctx, "app"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.CreateTable(ctx, "app", "notes", []Field{{Name: "title"}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.Insert(ctx, "app", "notes", []map[string]any{{"title": "through the facade"}}, InsertOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	result, err := st.Query(ctx, "app", "SELECT title FROM notes", QueryOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Rows) != 1 || result.Rows[0]["title"] != "through the facade" {
-		t.Fatalf("facade query over postgres returned %+v", result.Rows)
-	}
-}
-
-func TestOpenWithPostgresRejectsADuplicateCatalog(t *testing.T) {
-	cfg := postgresFacadeConfig(t)
-	first, err := Open("", WithPostgres(cfg))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer first.Close()
-	if _, err := Open("", WithPostgres(cfg)); err == nil {
-		t.Fatal("the same catalog must not be opened twice in one process")
 	}
 }

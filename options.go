@@ -17,18 +17,14 @@ type EmbeddingProvider interface {
 
 type config struct {
 	engine          string
-	postgres        *PostgresConfig
+	ownerKey        string
+	opener          EngineOpener
 	embedding       EmbeddingProvider
 	embeddingSet    bool
 	changeRetention time.Duration
 }
 
-type PostgresConfig struct {
-	DSN       string
-	Catalog   string
-	QueryRole string
-	MaxConns  int32
-}
+type EngineOpener func(ctx context.Context, changeRetention time.Duration) (store.Engine, error)
 
 type Option func(*config)
 
@@ -45,11 +41,11 @@ func WithEngine(name string) Option {
 	}
 }
 
-func WithPostgres(cfg PostgresConfig) Option {
+func WithEngineOpener(engine, ownerKey string, open EngineOpener) Option {
 	return func(c *config) {
-		copied := cfg
-		c.postgres = &copied
-		c.engine = store.EnginePostgres
+		c.engine = engine
+		c.ownerKey = ownerKey
+		c.opener = open
 	}
 }
 
@@ -69,11 +65,14 @@ func (c *config) validate() error {
 	if err := store.ValidateEngine(c.engine); err != nil {
 		return derr.New(derr.InvalidRequest, "WithEngine: %v", err)
 	}
-	if c.postgres != nil && c.postgres.DSN == "" {
-		return derr.New(derr.InvalidRequest, "WithPostgres: DSN must not be empty")
+	if c.opener != nil && c.ownerKey == "" {
+		return derr.New(derr.InvalidRequest, "WithEngineOpener: an owner key is required so one process does not open the same engine twice")
 	}
-	if c.engine == store.EnginePostgres && c.postgres == nil {
-		return derr.New(derr.InvalidRequest, "WithEngine: the %q engine needs a connection; pass WithPostgres to supply its DSN", store.EnginePostgres)
+	if c.opener == nil && c.ownerKey != "" {
+		return derr.New(derr.InvalidRequest, "WithEngineOpener: an opener is required")
+	}
+	if c.engine == store.EnginePostgres && c.opener == nil {
+		return derr.New(derr.InvalidRequest, "WithEngine: the %q engine needs a connection; import github.com/lsm/dolmen/postgres and pass postgres.With to supply its DSN", store.EnginePostgres)
 	}
 	return nil
 }

@@ -14,7 +14,6 @@ import (
 
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/ops"
-	"github.com/lsm/dolmen/internal/postgres"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -49,8 +48,8 @@ func Open(dataDir string, opts ...Option) (*Store, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	if cfg.postgres != nil {
-		return openPostgres(dataDir, cfg)
+	if cfg.opener != nil {
+		return openWithOpener(cfg)
 	}
 	if dataDir == "" {
 		return nil, derr.New(derr.InvalidRequest, "data directory must not be empty")
@@ -81,41 +80,25 @@ func Open(dataDir string, opts ...Option) (*Store, error) {
 	return s, nil
 }
 
-func postgresOwnerKey(cfg PostgresConfig) string {
-	catalog := cfg.Catalog
-	if catalog == "" {
-		catalog = postgres.DefaultCatalog
-	}
-	return "postgres\x00" + cfg.DSN + "\x00" + catalog
-}
-
-func openPostgres(dataDir string, cfg config) (*Store, error) {
-	pg := *cfg.postgres
-	key := postgresOwnerKey(pg)
+func openWithOpener(cfg config) (*Store, error) {
+	key := cfg.ownerKey
 	ownersMu.Lock()
 	if _, dup := owners[key]; dup {
 		ownersMu.Unlock()
-		return nil, derr.New(derr.Conflict, "this PostgreSQL catalog is already open in this process; close that store before reopening it")
+		return nil, derr.New(derr.Conflict, "this engine is already open in this process; close that store before reopening it")
 	}
 	s := &Store{dir: key, emb: cfg.embedding, changeRetention: cfg.changeRetention, closing: make(chan struct{})}
 	owners[key] = s
 	ownersMu.Unlock()
 
-	retention := cfg.changeRetention
-	eng, err := postgres.Open(context.Background(), postgres.Config{
-		DSN:             pg.DSN,
-		Catalog:         pg.Catalog,
-		QueryRole:       pg.QueryRole,
-		MaxConns:        pg.MaxConns,
-		ChangeRetention: &retention,
-	})
+	eng, err := cfg.opener(context.Background(), cfg.changeRetention)
 	if err != nil {
 		releaseOwnership(key)
 		code := derr.Internal
 		if errors.Is(err, store.ErrInvalid) || errors.Is(err, store.ErrCatalogTooNew) {
 			code = derr.InvalidRequest
 		}
-		return nil, derr.Wrap(code, fmt.Errorf("open PostgreSQL catalog: %w", err))
+		return nil, derr.Wrap(code, fmt.Errorf("open engine: %w", err))
 	}
 	s.eng = eng
 	return s, nil

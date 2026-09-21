@@ -405,21 +405,32 @@ is waiting on the callback.
 
 ## Selecting PostgreSQL
 
-`store.ValidateEngine` accepts `postgres`, and the Go facade selects it with
-`WithPostgres`:
+`store.ValidateEngine` accepts `postgres`. The driver is reached through a first-party
+subpackage rather than from the facade itself:
 
 ```go
-st, err := dolmen.Open("", dolmen.WithPostgres(dolmen.PostgresConfig{
+import (
+    "github.com/lsm/dolmen"
+    "github.com/lsm/dolmen/postgres"
+)
+
+st, err := dolmen.Open("", postgres.With(postgres.Config{
     DSN:       "postgres://dolmen_backend@host:5432/dolmen?sslmode=disable",
     Catalog:   "dolmen_catalog",
     QueryRole: "dolmen_query",
 }))
 ```
 
-`WithPostgres` implies the engine, so `WithEngine("postgres")` on its own is refused
-with an error naming the option that supplies the connection. A DSN is required:
-`Open` never reads one from the environment, matching the facade's existing rule that
-it reads no configuration of its own.
+The subpackage exists to keep the dependency off everyone else's build. Importing
+`internal/postgres` from the root package put pgx and the embedded WASM PostgreSQL
+parser into the import graph of every consumer of the module: the external-module
+example grew from 13.1 MB to 35.3 MB whether or not it used PostgreSQL. `postgres.With`
+returns a `dolmen.Option` carrying an engine opener, so only programs that import the
+subpackage link the driver, and the example is unchanged at 13.8 MB.
+
+`WithEngine("postgres")` without that option is refused with an error naming the import
+to add. A DSN is required: `Open` never reads one from the environment, matching the
+facade's rule that it reads no configuration of its own.
 
 The data directory argument belongs to SQLite and is unused here, so pass `""`. One
 live store per catalog per process is still enforced, keyed on DSN and catalog rather
