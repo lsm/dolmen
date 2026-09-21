@@ -485,12 +485,6 @@ func TestAnIdempotencyKeyIsPrivateToItsOwner(t *testing.T) {
 
 	res, bobFirst := h.asIdentity(t, "bob", "", "insert",
 		`{"namespace":"acme","table":"notes","records":[{"body":"bob's"}],"idempotency_key":"shared-key"}`)
-	if testEngine(t) == store.EnginePostgres {
-		if res.StatusCode != http.StatusBadRequest {
-			t.Fatalf("PostgreSQL has no owner-keyed idempotency record yet, so a scoped key must still be refused rather than served from a per-table domain: %d %v", res.StatusCode, bobFirst)
-		}
-		return
-	}
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("a scoped insert with an idempotency key was refused: %d %v", res.StatusCode, bobFirst)
 	}
@@ -534,9 +528,6 @@ func TestAnIdempotencyKeyIsPrivateToItsOwner(t *testing.T) {
 }
 
 func TestATableWideReaderRecordsItsOwnDomain(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skipf("engine %q: owner-keyed idempotency records are not implemented there yet, so a scoped key is refused before a domain is chosen", store.EnginePostgres)
-	}
 	h := seedRowAccess(t)
 	grantTo(t, h, "principal", "alice", "acme", "notes", "create")
 	grantTo(t, h, "principal", "carol", "acme", "notes", "create", "read")

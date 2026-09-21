@@ -11,7 +11,7 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-const catalogVersion = 5
+const catalogVersion = 6
 
 func ident(parts ...string) string { return pgx.Identifier(parts).Sanitize() }
 
@@ -84,7 +84,11 @@ func (s *Store) bootstrap(ctx context.Context) error {
  namespace text NOT NULL REFERENCES ` + s.relation("namespaces") + `(name) ON DELETE CASCADE,
  table_name text NOT NULL, drop_generation bigint NOT NULL, key text NOT NULL,
  payload_hash text NOT NULL, result_json text NOT NULL,
- PRIMARY KEY(namespace,table_name,drop_generation,key))`,
+ owner text NOT NULL DEFAULT '')`,
+		"ALTER TABLE " + s.relation("idempotency") + " ADD COLUMN IF NOT EXISTS owner text NOT NULL DEFAULT ''",
+		"ALTER TABLE " + s.relation("idempotency") + " DROP CONSTRAINT IF EXISTS idempotency_pkey",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idempotency_domain ON " + s.relation("idempotency") +
+			" (namespace,table_name,drop_generation,owner,key)",
 		"CREATE TABLE IF NOT EXISTS " + s.relation("changes") + ` (
  namespace text NOT NULL REFERENCES ` + s.relation("namespaces") + `(name) ON DELETE CASCADE,
  position bigint NOT NULL, table_name text NOT NULL, drop_generation bigint NOT NULL,

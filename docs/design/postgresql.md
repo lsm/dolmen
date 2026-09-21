@@ -131,6 +131,16 @@ results atomically. Change positions serialize across independent processes usin
 namespace row lock; PostgreSQL identity sequences assign row IDs only, so aborted
 inserts may leave row-ID gaps without consuming change positions.
 
+Catalog version 6 gives the retry record an owner, so a key belongs to the principal who
+used it rather than to the table. The domain is the writer's principal, which is empty
+under `auth: off` and so keeps the shared v0.2.0 domain; a caller holding table-wide read
+falls back to that empty domain after missing its own, which is how records written before
+owners existed stay replayable to whoever may read the whole table. That is the same rule
+SQLite applies, from the same `store.DomainFor`, rather than a second copy of the policy.
+Unlike every earlier catalog version, this one alters an existing table instead of adding
+one, so the bootstrap adds the column, drops the old primary key and creates the domain
+index, converging a version 5 catalog and a fresh one on the same shape.
+
 Retry keys bind to the table lifetime and normalized request body. Matching retries
 return the original IDs without generating new changes or calling an embedding
 provider. A dropped/recreated table has a fresh retry domain. Authorization options
@@ -439,9 +449,8 @@ incarnation is re-checked inside the operation's transaction and fails `conflict
 mismatch — the guard binds even to a nil scope, so a request resolved before
 `row_access` was enabled cannot execute as unscoped afterwards.
 
-Where SQLite refuses a scoped call rather than filtering it — mutations, `upsert_by_key`,
-the change feeds, migration plans, and a scoped insert carrying an idempotency key — this
-backend refuses it with the same sentence. Those messages are now exported from
+Where SQLite refuses a scoped call rather than filtering it — `upsert_by_key`, the change
+feeds, and migration plans — this backend refuses it with the same sentence. Those messages are now exported from
 `internal/store` rather than retyped here, because the conformance suite pins the wording
 and two copies would drift.
 
