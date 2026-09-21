@@ -9,9 +9,9 @@ import (
 )
 
 const (
-	CatalogFormat = 1
+	CatalogFormat = 2
 
-	CatalogMinReader = 1
+	CatalogMinReader = 2
 
 	catalogFormatKey    = "catalog_format"
 	catalogMinReaderKey = "catalog_min_reader"
@@ -72,11 +72,12 @@ func ensureCatalogVersion(ctx context.Context, rw *sql.DB, nsName string) error 
 	if err != nil {
 		return err
 	}
+	storedMinReader := minReader
 
 	if !haveFormat {
 		format = CatalogFormat
 	}
-	if !haveMinReader {
+	if !haveMinReader || minReader < CatalogMinReader {
 		minReader = CatalogMinReader
 	}
 
@@ -84,7 +85,7 @@ func ensureCatalogVersion(ctx context.Context, rw *sql.DB, nsName string) error 
 		return &CatalogVersionError{Namespace: nsName, Format: format, MinReader: minReader, Supported: CatalogFormat}
 	}
 
-	if !haveFormat || !haveMinReader || format < CatalogFormat {
+	if !haveFormat || !haveMinReader || format < CatalogFormat || minReader > storedMinReader {
 		stamp := format
 		if stamp < CatalogFormat {
 			stamp = CatalogFormat

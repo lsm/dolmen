@@ -4,6 +4,29 @@
 
 ### Added
 
+- **Idempotency keys are namespaced by owner.** A key is unique per table *and* writer principal,
+  so two principals using the same string are using two different keys — neither conflicts, neither
+  reveals the other, and the first to use a key cannot squat it. A retry consults only its own
+  domain, so it finds its own record through grant changes, gained table-wide `read`, and
+  `row_access` disablement alike; the payload comparison that rejects a changed body therefore never
+  runs against someone else's record. Records written before `-auth on` are preserved and replay to
+  callers holding table-wide `read`, whose rows those ids already are; turning auth off again
+  consults only that pre-auth domain, so `auth: off` behaves exactly as it did in v0.2.0. This lifts
+  the refusal of `idempotency_key` for a caller restricted to their own rows.
+
+  **This one is a one-way door.** Existing databases gain the new column on first open, and the
+  namespace's catalog minimum-reader stamp rises with it, so an older dolmen refuses to open the data
+  directory afterwards rather than opening it and reading the table as though keys were still global
+  — which is precisely the disclosure being closed, since that reader would answer one principal's
+  retry with another's ids. The records also move to a new table rather than growing a column in
+  place, so an older dolmen that already had the directory open when the upgrade ran fails loudly on
+  its next idempotent insert instead of quietly reading the new layout with its ownerless lookup: the
+  catalog stamp can only refuse the *next* open, not a process already running. Back up a data
+  directory before the first open if you may need to downgrade.
+
+  On the PostgreSQL engine a scoped caller's `idempotency_key` is still refused: the owner-keyed
+  record is an adapter #1 change, and adapter #2 keeps failing closed until it has one.
+
 - **Filters are a row-local language when auth is on.** `update`, `delete`, `upsert`,
   `search_fulltext` and `search_vector` take a SQL `WHERE` fragment; with `-auth on` that fragment
   is now parsed and checked against a fixed allowlist before it reaches the engine — the target
@@ -58,11 +81,10 @@
   is off. Enabling it later through `migrate set_row_access` is refused on a table that already has
   rows, because no operation can write another principal's rows as that principal; turning it off
   keeps the column and its values and requires `admin` as well as `schema` and `read`. Scoped
-  `upsert_by_key` and inserts carrying an `idempotency_key` are refused for now: a natural-key match
-  reaches across the whole table, and the idempotency record is keyed per table rather than per
-  owner, so each would let a scoped caller probe rows they cannot see. Scoped `update`, `delete`,
-  `upsert` and filtered searches were refused for the same reason and now work — see the filter
-  language and materialization boundary above.
+  `upsert_by_key` is refused for now: a natural-key match reaches across the whole table, so it
+  could update a row the caller cannot see. Scoped `update`, `delete`, `upsert`, filtered searches
+  and idempotent inserts were refused for the same reason and now work — see the filter language,
+  the materialization boundary, and the owner-keyed idempotency entries above.
 - **API keys.** `create_key` / `list_keys` / `revoke_key` mint credentials for machines that cannot
   do an interactive sign-in. A key authenticates as a principal and carries optional groups, but
   grants nothing by itself. The credential is shown once and stored hashed; keys are revoked by a

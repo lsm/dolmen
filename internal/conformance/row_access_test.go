@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -467,26 +468,96 @@ func TestAdvertisedMigrateSchemaAcceptsSetRowAccess(t *testing.T) {
 	}
 }
 
-func TestScopedInsertRefusesAnIdempotencyKey(t *testing.T) {
+func idsOf(t *testing.T, out map[string]any) []any {
+	t.Helper()
+	data, _ := out["data"].(map[string]any)
+	ids, _ := data["ids"].([]any)
+	if len(ids) == 0 {
+		t.Fatalf("the response carries no ids: %v", out)
+	}
+	return ids
+}
+
+func TestAnIdempotencyKeyIsPrivateToItsOwner(t *testing.T) {
 	h := seedRowAccess(t)
 	grantTo(t, h, "principal", "alice", "acme", "notes", "create")
 	grantTo(t, h, "principal", "bob", "acme", "notes", "create")
 
-	res, out := h.asIdentity(t, "bob", "", "insert",
+	res, bobFirst := h.asIdentity(t, "bob", "", "insert",
 		`{"namespace":"acme","table":"notes","records":[{"body":"bob's"}],"idempotency_key":"shared-key"}`)
-	if res.StatusCode == http.StatusOK {
-		t.Fatalf("a scoped insert accepted an idempotency key, which is recorded per table and would report another owner's rows on replay: %v", out)
+	if testEngine(t) == store.EnginePostgres {
+		if res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("PostgreSQL has no owner-keyed idempotency record yet, so a scoped key must still be refused rather than served from a per-table domain: %d %v", res.StatusCode, bobFirst)
+		}
+		return
 	}
-
-	res, out = h.asIdentity(t, "alice", "", "insert",
-		`{"namespace":"acme","table":"notes","records":[{"body":"bob's"}],"idempotency_key":"shared-key"}`)
-	if res.StatusCode == http.StatusOK {
-		t.Fatalf("alice replayed bob's key: %v", out)
-	}
-
-	res, out = h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"x"}]}`)
 	if res.StatusCode != http.StatusOK {
-		t.Fatalf("a scoped insert without a key must still work: status %d %v", res.StatusCode, out)
+		t.Fatalf("a scoped insert with an idempotency key was refused: %d %v", res.StatusCode, bobFirst)
+	}
+
+	res, aliceFirst := h.asIdentity(t, "alice", "", "insert",
+		`{"namespace":"acme","table":"notes","records":[{"body":"alice's"}],"idempotency_key":"shared-key"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("another owner's use of the same key blocked alice, so the key was squatted: %d %v", res.StatusCode, aliceFirst)
+	}
+	data, _ := aliceFirst["data"].(map[string]any)
+	if data["replayed"] == true {
+		t.Fatalf("alice replayed bob's record: %v", aliceFirst)
+	}
+	if fmt.Sprint(idsOf(t, aliceFirst)) == fmt.Sprint(idsOf(t, bobFirst)) {
+		t.Fatalf("alice was handed bob's ids: %v vs %v", aliceFirst, bobFirst)
+	}
+
+	res, aliceRetry := h.asIdentity(t, "alice", "", "insert",
+		`{"namespace":"acme","table":"notes","records":[{"body":"alice's"}],"idempotency_key":"shared-key"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("alice's own retry failed: %d %v", res.StatusCode, aliceRetry)
+	}
+	data, _ = aliceRetry["data"].(map[string]any)
+	if data["replayed"] != true {
+		t.Fatalf("alice's retry did not replay her own record: %v", aliceRetry)
+	}
+	if fmt.Sprint(idsOf(t, aliceRetry)) != fmt.Sprint(idsOf(t, aliceFirst)) {
+		t.Fatalf("alice's retry returned different ids: %v vs %v", aliceRetry, aliceFirst)
+	}
+
+	res, wrongPayload := h.asIdentity(t, "alice", "", "insert",
+		`{"namespace":"acme","table":"notes","records":[{"body":"different"}],"idempotency_key":"shared-key"}`)
+	if res.StatusCode == http.StatusOK {
+		t.Fatalf("a different payload under alice's own key was accepted: %v", wrongPayload)
+	}
+
+	rows := h.mustHTTP("read_rows", map[string]any{"namespace": "acme", "table": "notes", "ids": []int64{1, 2}})
+	if got, _ := rows["rows"].([]any); len(got) != 2 {
+		t.Fatalf("the table holds %d rows, want one per owner: %v", len(got), rows)
+	}
+}
+
+func TestATableWideReaderRecordsItsOwnDomain(t *testing.T) {
+	if testEngine(t) == store.EnginePostgres {
+		t.Skipf("engine %q: owner-keyed idempotency records are not implemented there yet, so a scoped key is refused before a domain is chosen", store.EnginePostgres)
+	}
+	h := seedRowAccess(t)
+	grantTo(t, h, "principal", "alice", "acme", "notes", "create")
+	grantTo(t, h, "principal", "carol", "acme", "notes", "create", "read")
+
+	res, aliceOut := h.asIdentity(t, "alice", "", "insert",
+		`{"namespace":"acme","table":"notes","records":[{"body":"alice's"}],"idempotency_key":"k"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("alice's insert: %d %v", res.StatusCode, aliceOut)
+	}
+
+	res, carolOut := h.asIdentity(t, "carol", "", "insert",
+		`{"namespace":"acme","table":"notes","records":[{"body":"carol's"}],"idempotency_key":"k"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("a table-wide reader was blocked by a scoped caller's key: %d %v", res.StatusCode, carolOut)
+	}
+	data, _ := carolOut["data"].(map[string]any)
+	if data["replayed"] == true {
+		t.Fatalf("a table-wide reader replayed a scoped caller's record rather than recording its own: %v", carolOut)
+	}
+	if fmt.Sprint(idsOf(t, carolOut)) == fmt.Sprint(idsOf(t, aliceOut)) {
+		t.Fatalf("a table-wide reader was handed alice's ids: %v vs %v", carolOut, aliceOut)
 	}
 }
 

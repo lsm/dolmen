@@ -93,3 +93,21 @@ func (s *Server) liveAuthz(r *http.Request, ns string) func(table string) (*stor
 		return scope, inc, true
 	}
 }
+
+func (s *Server) holdsTableWideRead(ctx context.Context, ns, table string) (bool, error) {
+	if !s.authn.On() {
+		return false, nil
+	}
+	id := auth.IdentityFrom(ctx)
+	if id.Principal == auth.AdminPrincipal {
+		return true, nil
+	}
+	if s.grants == nil {
+		return false, errNoGrantRegistry
+	}
+	verbs, err := s.grants.EffectiveVerbs(ctx, id, auth.Object{Namespace: ns, Table: table})
+	if err != nil {
+		return false, err
+	}
+	return verbs.Has(auth.VerbRead), nil
+}

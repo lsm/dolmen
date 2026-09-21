@@ -2,280 +2,316 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"strconv"
 	"strings"
-	"sync"
 	"testing"
 
-	"github.com/lsm/dolmen/internal/derr"
+	"github.com/lsm/dolmen/internal/schema"
 )
 
-func TestInsertIdempotentReplayReturnsOriginalIDs(t *testing.T) {
-	st := openStore(t)
-	ctx := context.Background()
-	mustCreateNotes(t, st)
+func idemStore(t *testing.T) *Store {
+	t.Helper()
+	st := openRowAccessStore(t)
+	if _, err := st.CreateTable(context.Background(), "ns", "notes",
+		[]schema.Field{{Name: "body", Type: schema.Text}}, TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	return st
+}
 
-	rec := []map[string]any{{"title": "once", "score": 1}}
-	ids1, replayed, err := st.InsertIdempotent(ctx, "test", "notes", rec, testEmbed, "op-123")
+func insertKeyed(t *testing.T, st *Store, opts WriteOpts, scope *RowScope, body string) InsertResult {
+	t.Helper()
+	res, err := st.Insert(context.Background(), "ns", "notes", []map[string]any{{"body": body}},
+		opts, Embedder{}, scope, Incarnation{})
 	if err != nil {
-		t.Fatalf("first insert: %v", err)
+		t.Fatalf("insert %+v: %v", opts, err)
 	}
-	if replayed {
-		t.Fatal("first insert must not report replayed")
+	return res
+}
+
+func TestLegacyRecordsReplayOnlyToTableWideReaders(t *testing.T) {
+	st := idemStore(t)
+
+	legacy := insertKeyed(t, st, WriteOpts{IdempotencyKey: "k"}, nil, "written before auth")
+	if legacy.Replayed {
+		t.Fatal("the first insert replayed")
 	}
 
-	ids2, replayed, err := st.InsertIdempotent(ctx, "test", "notes", rec, testEmbed, "op-123")
-	if err != nil {
-		t.Fatalf("retry: %v", err)
+	scoped := insertKeyed(t, st, WriteOpts{IdempotencyKey: "k", Owner: "alice"}, &RowScope{Owner: "alice"}, "alice's")
+	if scoped.Replayed {
+		t.Fatalf("a scoped caller replayed a legacy record, handing them ids they cannot see: %v", scoped.Ids)
 	}
-	if !replayed {
-		t.Fatal("retry with a recorded key must report replayed")
-	}
-	if len(ids2) != 1 || ids2[0] != ids1[0] {
-		t.Fatalf("retry must return the original ids, got %v want %v", ids2, ids1)
+	if fmt.Sprint(scoped.Ids) == fmt.Sprint(legacy.Ids) {
+		t.Fatalf("a scoped caller was handed the legacy record's ids: %v", scoped.Ids)
 	}
 
-	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil, 0, 0)
-	if err != nil {
-		t.Fatalf("count: %v", err)
+	wide := insertKeyed(t, st, WriteOpts{IdempotencyKey: "k", Owner: "carol", TableWideRead: true},
+		nil, "written before auth")
+	if !wide.Replayed {
+		t.Fatal("a table-wide reader did not replay the legacy record, though its ids are rows they can already see")
 	}
-	if rows[0]["n"].(int64) != 1 {
-		t.Fatalf("retry must not insert another row: %v", rows)
+	if fmt.Sprint(wide.Ids) != fmt.Sprint(legacy.Ids) {
+		t.Fatalf("the table-wide replay returned %v, want the legacy ids %v", wide.Ids, legacy.Ids)
+	}
+
+	back := insertKeyed(t, st, WriteOpts{IdempotencyKey: "k"}, nil, "written before auth")
+	if !back.Replayed || fmt.Sprint(back.Ids) != fmt.Sprint(legacy.Ids) {
+		t.Fatalf("an auth-off retry did not replay the legacy record: replayed=%v ids=%v", back.Replayed, back.Ids)
 	}
 }
 
-func TestInsertIdempotentSurvivesRestart(t *testing.T) {
-	dir := t.TempDir()
+func TestAnAuthOffRetryNeverReplaysAnAuthOnRecord(t *testing.T) {
+	st := idemStore(t)
+
+	alice := insertKeyed(t, st, WriteOpts{IdempotencyKey: "j", Owner: "alice"}, &RowScope{Owner: "alice"}, "alice's")
+	bob := insertKeyed(t, st, WriteOpts{IdempotencyKey: "j", Owner: "bob"}, &RowScope{Owner: "bob"}, "bob's")
+	if bob.Replayed {
+		t.Fatal("bob replayed alice's record under the same key")
+	}
+
+	off := insertKeyed(t, st, WriteOpts{IdempotencyKey: "j"}, nil, "after the switch")
+	if off.Replayed {
+		t.Fatalf("an auth-off retry replayed an auth-on record, which means it chose between alice's and bob's: %v", off.Ids)
+	}
+	for _, prior := range [][]int64{alice.Ids, bob.Ids} {
+		if fmt.Sprint(off.Ids) == fmt.Sprint(prior) {
+			t.Fatalf("the auth-off insert returned a principal's ids: %v", off.Ids)
+		}
+	}
+
+	again := insertKeyed(t, st, WriteOpts{IdempotencyKey: "j"}, nil, "after the switch")
+	if !again.Replayed || fmt.Sprint(again.Ids) != fmt.Sprint(off.Ids) {
+		t.Fatalf("the auth-off record does not replay to itself: replayed=%v ids=%v", again.Replayed, again.Ids)
+	}
+}
+
+func TestOwnDomainHitComparesPayloadAgainstOwnRecordOnly(t *testing.T) {
+	st := idemStore(t)
 	ctx := context.Background()
+
+	insertKeyed(t, st, WriteOpts{IdempotencyKey: "p", Owner: "alice"}, &RowScope{Owner: "alice"}, "alice's")
+
+	if _, err := st.Insert(ctx, "ns", "notes", []map[string]any{{"body": "something else"}},
+		WriteOpts{IdempotencyKey: "p", Owner: "bob"}, Embedder{}, &RowScope{Owner: "bob"}, Incarnation{}); err != nil {
+		t.Fatalf("a different payload under a foreign owner's key must not conflict: %v", err)
+	}
+
+	if _, err := st.Insert(ctx, "ns", "notes", []map[string]any{{"body": "something else"}},
+		WriteOpts{IdempotencyKey: "p", Owner: "alice"}, Embedder{}, &RowScope{Owner: "alice"}, Incarnation{}); err == nil {
+		t.Fatal("a different payload under the caller's own key was accepted")
+	}
+}
+
+func TestIdempotencyRecordsGainAnOwnerColumnOnOpen(t *testing.T) {
+	dir := t.TempDir()
 	st, err := Open(dir)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	ls := legacy(st)
-	mustCreateNotes(t, ls)
-	ids1, replayed, err := ls.InsertIdempotent(ctx, "test", "notes",
-		[]map[string]any{{"title": "durable", "score": 2}}, testEmbed, "restart-key")
-	if err != nil || replayed {
-		t.Fatalf("first insert: %v replayed=%v", err, replayed)
+	mustNS(t, legacy(st), "ns")
+	n, err := st.ns("ns")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	ctx := context.Background()
+	for _, stmt := range []string{
+		`DROP TABLE _dolmen_idempotency_owned`,
+		`CREATE TABLE _dolmen_idempotency(
+			table_name TEXT NOT NULL,
+			key TEXT NOT NULL,
+			payload_hash TEXT NOT NULL,
+			ids_json TEXT NOT NULL,
+			at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			PRIMARY KEY(table_name, key)
+		)`,
+		`INSERT INTO _dolmen_idempotency(table_name, key, payload_hash, ids_json) VALUES('notes','k','hash','[7]')`,
+	} {
+		if _, err := n.rw.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("stage the pre-auth table: %v", err)
+		}
+	}
+	st.Close()
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer reopened.Close()
+	n2, err := reopened.ns("ns")
+	if err != nil {
+		t.Fatalf("ns after reopen: %v", err)
+	}
+	var owner, idsJSON string
+	if err := n2.rw.QueryRowContext(ctx,
+		`SELECT owner, ids_json FROM _dolmen_idempotency_owned WHERE table_name = 'notes' AND key = 'k'`).
+		Scan(&owner, &idsJSON); err != nil {
+		t.Fatalf("the pre-auth record did not survive the rebuild: %v", err)
+	}
+	if owner != LegacyIdempotencyOwner {
+		t.Fatalf("the pre-auth record landed in domain %q, want the legacy domain", owner)
+	}
+	if idsJSON != "[7]" {
+		t.Fatalf("the pre-auth record's ids changed: %s", idsJSON)
+	}
+}
+
+func TestTheOwnerLayoutRaisesTheMinimumReader(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	mustNS(t, legacy(st), "ns")
+	if err := st.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	if minReader, ok := catalogMeta(t, dir, "ns", catalogMinReaderKey); !ok || minReader != strconv.Itoa(CatalogMinReader) {
+		t.Fatalf("min reader = %q (present=%v), want %d: an older binary reads this table without the owner column and would replay one principal's ids to another",
+			minReader, ok, CatalogMinReader)
+	}
+}
+
+func TestAPreAuthNamespaceIsClosedToOlderBinaries(t *testing.T) {
+	dir := t.TempDir()
+	seedNamespace(t, dir, "legacy")
+	setCatalogMeta(t, dir, "legacy", catalogFormatKey, "1")
+	setCatalogMeta(t, dir, "legacy", catalogMinReaderKey, "1")
+
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("a namespace written before the owner layout must still open: %v", err)
+	}
+	if _, err := st.ListTables(context.Background(), "legacy", nil); err != nil {
+		t.Fatalf("list tables: %v", err)
 	}
 	if err := st.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 
-	st2, err := Open(dir)
+	minReader, ok := catalogMeta(t, dir, "legacy", catalogMinReaderKey)
+	if !ok || minReader != strconv.Itoa(CatalogMinReader) {
+		t.Fatalf("adopting a pre-auth namespace left min reader at %q (present=%v); the rebuild permits two owners under one key, which an older reader cannot see",
+			minReader, ok)
+	}
+}
+
+func TestASecondOpenerDoesNotRebuildTwice(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	mustNS(t, legacy(st), "ns")
+	n, err := st.ns("ns")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	ctx := context.Background()
+	for _, stmt := range []string{
+		`DROP TABLE _dolmen_idempotency_owned`,
+		`CREATE TABLE _dolmen_idempotency(
+			table_name TEXT NOT NULL,
+			key TEXT NOT NULL,
+			payload_hash TEXT NOT NULL,
+			ids_json TEXT NOT NULL,
+			at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			PRIMARY KEY(table_name, key)
+		)`,
+		`INSERT INTO _dolmen_idempotency(table_name, key, payload_hash, ids_json) VALUES('notes','k','hash','[1]')`,
+	} {
+		if _, err := n.rw.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("stage the pre-auth table: %v", err)
+		}
+	}
+	st.Close()
+
+	first, err := Open(dir)
+	if err != nil {
+		t.Fatalf("first reopen: %v", err)
+	}
+	fn, err := first.ns("ns")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	if _, err := fn.rw.ExecContext(ctx,
+		`INSERT INTO _dolmen_idempotency_owned(table_name, owner, key, payload_hash, ids_json) VALUES('notes','alice','k','hash','[2]')`); err != nil {
+		t.Fatalf("record an owner-scoped key after the rebuild: %v", err)
+	}
+
+	if err := migrateIdempotencyOwner(ctx, fn.rw); err != nil {
+		t.Fatalf("a second opener that saw the old shape before another process rebuilt it failed: %v", err)
+	}
+
+	var owners int
+	if err := fn.rw.QueryRowContext(ctx,
+		`SELECT count(DISTINCT owner) FROM _dolmen_idempotency_owned WHERE table_name = 'notes' AND key = 'k'`).Scan(&owners); err != nil {
+		t.Fatalf("count owners: %v", err)
+	}
+	if owners != 2 {
+		t.Fatalf("a repeated migration collapsed %d owner domains into one; the legacy record and alice's must both survive", owners)
+	}
+	first.Close()
+}
+
+func TestTheLegacyTableIsGoneAfterMigration(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	mustNS(t, legacy(st), "ns")
+	n, err := st.ns("ns")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	ctx := context.Background()
+	for _, stmt := range []string{
+		`DROP TABLE _dolmen_idempotency_owned`,
+		`CREATE TABLE _dolmen_idempotency(
+			table_name TEXT NOT NULL,
+			key TEXT NOT NULL,
+			payload_hash TEXT NOT NULL,
+			ids_json TEXT NOT NULL,
+			at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			PRIMARY KEY(table_name, key)
+		)`,
+		`INSERT INTO _dolmen_idempotency(table_name, key, payload_hash, ids_json) VALUES('notes','k','hash','[7]')`,
+	} {
+		if _, err := n.rw.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("stage the pre-auth table: %v", err)
+		}
+	}
+	st.Close()
+
+	reopened, err := Open(dir)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer st2.Close()
-	ls2 := legacy(st2)
-	ids2, replayed, err := ls2.InsertIdempotent(ctx, "test", "notes",
-		[]map[string]any{{"title": "durable", "score": 2}}, testEmbed, "restart-key")
+	defer reopened.Close()
+	n2, err := reopened.ns("ns")
 	if err != nil {
-		t.Fatalf("retry after restart: %v", err)
+		t.Fatalf("ns: %v", err)
 	}
-	if !replayed {
-		t.Fatal("retry after a process restart must dedupe against the durable key record")
-	}
-	if len(ids2) != 1 || ids2[0] != ids1[0] {
-		t.Fatalf("retry after restart must return the original ids, got %v want %v", ids2, ids1)
-	}
-	rows, _, err := ls2.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil, 0, 0)
-	if err != nil {
-		t.Fatalf("count: %v", err)
-	}
-	if rows[0]["n"].(int64) != 1 {
-		t.Fatalf("retry after restart must not insert another row: %v", rows)
-	}
-}
 
-func TestInsertIdempotentPayloadMismatchRejected(t *testing.T) {
-	st := openStore(t)
-	ctx := context.Background()
-	mustCreateNotes(t, st)
-
-	if _, _, err := st.InsertIdempotent(ctx, "test", "notes",
-		[]map[string]any{{"title": "first payload", "score": 1}}, testEmbed, "shared-key"); err != nil {
-		t.Fatalf("first insert: %v", err)
-	}
-	_, replayed, err := st.InsertIdempotent(ctx, "test", "notes",
-		[]map[string]any{{"title": "different payload", "score": 2}}, testEmbed, "shared-key")
+	var hash, ids string
+	err = n2.rw.QueryRowContext(ctx,
+		`SELECT payload_hash, ids_json FROM _dolmen_idempotency WHERE table_name = 'notes' AND key = 'k'`).
+		Scan(&hash, &ids)
 	if err == nil {
-		t.Fatal("reusing a key for a different payload must be rejected, not silently replayed")
+		t.Fatal("the pre-auth table still answers the ownerless lookup: a binary that already had this namespace open keeps replaying keys as if they were global, and the catalog gate only refuses the next open")
 	}
-	if replayed {
-		t.Fatal("a rejected mismatch must not report replayed")
-	}
-	for _, want := range []string{"different insert", "re-send the identical body", "timestamp or nonce", "fresh key would insert a duplicate", "genuinely new insert", "use a fresh key"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error must teach re-sending the identical body, missing %q, got: %v", want, err)
-		}
-	}
-	if !errors.Is(err, derr.ErrConflict) || !errors.Is(err, ErrInvalid) {
-		t.Fatalf("a key mismatch must carry typed conflict and invalid causes, got: %v", err)
-	}
-	rows, _, err := st.Query(ctx, "test", "SELECT title FROM notes", nil, 0, 0)
-	if err != nil {
-		t.Fatalf("query: %v", err)
-	}
-	if len(rows) != 1 || rows[0]["title"] != "first payload" {
-		t.Fatalf("rejected retry must leave the original row untouched: %v", rows)
-	}
-}
-
-func TestInsertIdempotentCaseVariantPayloadReplays(t *testing.T) {
-	st := openStore(t)
-	ctx := context.Background()
-	mustCreateNotes(t, st)
-
-	if _, _, err := st.InsertIdempotent(ctx, "test", "notes",
-		[]map[string]any{{"Title": "cased", "Score": 1}}, testEmbed, "case-key"); err != nil {
-		t.Fatalf("first insert: %v", err)
-	}
-	_, replayed, err := st.InsertIdempotent(ctx, "test", "notes",
-		[]map[string]any{{"title": "cased", "score": 1}}, testEmbed, "case-key")
-	if err != nil {
-		t.Fatalf("case-variant retry: %v", err)
-	}
-	if !replayed {
-		t.Fatal("payloads are hashed after field-name normalization, so a case-variant retry must replay")
-	}
-}
-
-func TestInsertIdempotentKeysScopedPerTable(t *testing.T) {
-	st := openStore(t)
-	ctx := context.Background()
-	mustCreateNotes(t, st)
-	if _, err := st.CreateTable(ctx, "test", "other", noteFields()); err != nil {
-		t.Fatalf("create other: %v", err)
+	if !strings.Contains(err.Error(), "no such table") {
+		t.Fatalf("the ownerless lookup failed for the wrong reason: %v", err)
 	}
 
-	if _, replayed, err := st.InsertIdempotent(ctx, "test", "notes",
-		[]map[string]any{{"title": "in notes"}}, testEmbed, "k"); err != nil || replayed {
-		t.Fatalf("notes insert: %v replayed=%v", err, replayed)
+	var owner string
+	if err := n2.rw.QueryRowContext(ctx,
+		`SELECT owner FROM _dolmen_idempotency_owned WHERE table_name = 'notes' AND key = 'k'`).Scan(&owner); err != nil {
+		t.Fatalf("the record did not survive the move: %v", err)
 	}
-	if _, replayed, err := st.InsertIdempotent(ctx, "test", "other",
-		[]map[string]any{{"title": "in other"}}, testEmbed, "k"); err != nil {
-		t.Fatalf("other insert with the same key text must be independent: %v", err)
-	} else if replayed {
-		t.Fatal("the same key text on a different table must not replay")
-	}
-}
-
-func TestInsertIdempotentKeyValidation(t *testing.T) {
-	st := openStore(t)
-	ctx := context.Background()
-	mustCreateNotes(t, st)
-
-	if _, _, err := st.InsertIdempotent(ctx, "test", "notes",
-		[]map[string]any{{"title": "x"}}, testEmbed, ""); err == nil {
-		t.Fatal("empty key must be rejected (plain Insert covers that case)")
-	}
-	if _, _, err := st.InsertIdempotent(ctx, "test", "notes",
-		[]map[string]any{{"title": "x"}}, testEmbed, strings.Repeat("k", MaxIdempotencyKeyLen+1)); err == nil {
-		t.Fatalf("keys longer than %d bytes must be rejected", MaxIdempotencyKeyLen)
-	}
-	if _, _, err := st.InsertIdempotent(ctx, "test", "notes",
-		[]map[string]any{{"title": "x"}}, testEmbed, strings.Repeat("k", MaxIdempotencyKeyLen)); err != nil {
-		t.Fatalf("keys of exactly %d bytes must be accepted: %v", MaxIdempotencyKeyLen, err)
-	}
-}
-
-func TestInsertIdempotentReplaySkipsEmbedding(t *testing.T) {
-	st := openStore(t)
-	ctx := context.Background()
-	mustCreateNotes(t, st)
-	calls := 0
-	counting := Embedder{Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
-		calls++
-		return fakeEmbed(ctx, texts)
-	}, Identity: "fake-space"}
-
-	if _, _, err := st.InsertIdempotent(ctx, "test", "notes",
-		[]map[string]any{{"title": "a", "body": "text"}}, counting, "embed-key"); err != nil {
-		t.Fatalf("first insert: %v", err)
-	}
-	if calls != 1 {
-		t.Fatalf("first insert should embed once, got %d calls", calls)
-	}
-	if _, replayed, err := st.InsertIdempotent(ctx, "test", "notes",
-		[]map[string]any{{"title": "a", "body": "text"}}, counting, "embed-key"); err != nil || !replayed {
-		t.Fatalf("retry: %v replayed=%v", err, replayed)
-	}
-	if calls != 1 {
-		t.Fatalf("replay must not call the embedding provider again, got %d calls", calls)
-	}
-}
-
-func TestInsertIdempotentConcurrentWritersReplay(t *testing.T) {
-	dir := t.TempDir()
-	ctx := context.Background()
-	st1, err := Open(dir)
-	if err != nil {
-		t.Fatalf("open st1: %v", err)
-	}
-	defer st1.Close()
-	st2, err := Open(dir)
-	if err != nil {
-		t.Fatalf("open st2: %v", err)
-	}
-	defer st2.Close()
-	ls1, ls2 := legacy(st1), legacy(st2)
-	mustCreateNotes(t, ls1)
-
-	const writers = 8
-	rec := []map[string]any{{"title": "raced", "score": 1}}
-	type outcome struct {
-		id       int64
-		replayed bool
-		err      error
-	}
-	out := make([]outcome, writers)
-	start := make(chan struct{})
-	var wg sync.WaitGroup
-	for i := 0; i < writers; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			w := ls1
-			if i%2 == 1 {
-				w = ls2
-			}
-			<-start
-			ids, replayed, err := w.InsertIdempotent(ctx, "test", "notes", rec, testEmbed, "race-key")
-			if len(ids) == 1 {
-				out[i] = outcome{id: ids[0], replayed: replayed, err: err}
-				return
-			}
-			out[i] = outcome{err: fmt.Errorf("expected one id, got %v", ids)}
-		}(i)
-	}
-	close(start)
-	wg.Wait()
-
-	for i, o := range out {
-		if o.err != nil {
-			t.Fatalf("writer %d failed: %v (a raced retry must replay, not error)", i, o.err)
-		}
-		if o.id != out[0].id {
-			t.Fatalf("writer %d got id %d, writer 0 got %d — all writers must converge on the winner's row", i, o.id, out[0].id)
-		}
-	}
-	inserted := 0
-	for _, o := range out {
-		if !o.replayed {
-			inserted++
-		}
-	}
-	if inserted != 1 {
-		t.Fatalf("exactly one writer should insert, got %d", inserted)
-	}
-
-	rows, _, err := ls1.Query(ctx, "test", "SELECT count(*) AS n FROM notes", nil, 0, 0)
-	if err != nil {
-		t.Fatalf("count: %v", err)
-	}
-	if rows[0]["n"].(int64) != 1 {
-		t.Fatalf("the race must leave exactly one row: %v", rows)
+	if owner != LegacyIdempotencyOwner {
+		t.Fatalf("the moved record landed in domain %q, want the legacy domain", owner)
 	}
 }
