@@ -42,8 +42,10 @@ var sharedFilterList = []struct {
 	{"julianday with a modifier", "julianday(created_at, '+1 day') > julianday(created_at)"},
 	{"strftime with a modifier", "strftime('%Y-%m-%d', created_at, '+1 day') > strftime('%Y-%m-%d', created_at)"},
 	{"round to a given place", "round(1.234, 1) = 1.2"},
+	{"round to a negative place", "round(123.4, -1) = 123"},
 	{"substr without a length", "substr(body, 3) = 'note from alice'"},
 	{"substr from a negative start", "substr(body, -5) = 'alice'"},
+	{"substr with a negative length", "substr(body, 3, -1) = ' '"},
 	{"coalesce beyond two arguments", "coalesce(NULL, NULL, 'x') = 'x'"},
 	{"datetime with two modifiers", "datetime(created_at, '+1 day', '+1 hour') > datetime(created_at, '+1 day')"},
 	{"strftime with two modifiers", "strftime('%Y-%m-%d', created_at, '+1 day', '+1 day') > strftime('%Y-%m-%d', created_at, '+1 day')"},
@@ -87,6 +89,8 @@ var pinnedFilterSemantics = []struct {
 	{"LIKE is ASCII-case-insensitive", "body LIKE 'A NOTE%'"},
 	{"string comparison is BINARY byte-wise", "'a' > 'B'"},
 	{"integer division truncates toward zero", "-7 / 2 = -3"},
+	{"division by zero is null", "(1 / 0) IS NULL"},
+	{"modulo by zero is null", "(1 % 0) IS NULL"},
 	{"round goes half away from zero", "round(-2.5) = -3"},
 	{"nonnumeric text coerces to zero in arithmetic", "body + 1 = 1"},
 	{"numeric text coerces to a number in arithmetic", "'3' + 1 = 4"},
@@ -105,8 +109,9 @@ var notYetEvaluatedByAdapterTwo = map[string]bool{
 	"date with a modifier": true, "time with a modifier": true, "datetime with a modifier": true,
 	"julianday with a modifier": true, "strftime with a modifier": true,
 	"datetime with two modifiers": true, "strftime with two modifiers": true,
-	"substr from a negative start": true,
-	"ifnull on a null":             true, "iif on a false condition": true,
+	"substr from a negative start": true, "substr with a negative length": true,
+	"round to a negative place": true,
+	"ifnull on a null":          true, "iif on a false condition": true,
 }
 
 var notYetPinnedByAdapterTwo = map[string]bool{
@@ -114,6 +119,8 @@ var notYetPinnedByAdapterTwo = map[string]bool{
 	"string comparison is BINARY byte-wise":         true,
 	"nonnumeric text coerces to zero in arithmetic": true,
 	"a blob literal is bytes, not bits":             true,
+	"division by zero is null":                      true,
+	"modulo by zero is null":                        true,
 	"text never equals a number":                    true,
 	"text sorts after a number":                     true,
 }
