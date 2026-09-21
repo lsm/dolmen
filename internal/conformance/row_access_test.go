@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/store"
 )
 
 func seedRowAccess(t *testing.T) *harness {
@@ -186,7 +188,11 @@ func TestAScopedFilterCannotRaiseOnAForeignRow(t *testing.T) {
 	h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"alice note"}]}`)
 	h.asIdentity(t, "bob", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"secret"}]}`)
 
-	body := `{"namespace":"acme","table":"notes","filter":"iif(body = ?, abs(-9223372036854775808), 1) = 1","args":["secret"],"dry_run":true}`
+	raise := "abs(-9223372036854775808)"
+	if testEngine(t) == store.EnginePostgres {
+		raise = "1/(length(body)-length(body))"
+	}
+	body := `{"namespace":"acme","table":"notes","filter":"CASE WHEN body = ? THEN ` + raise + ` ELSE 1 END = 1","args":["secret"],"dry_run":true}`
 	res, out := h.asIdentity(t, "alice", "", "delete", body)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("a filter that overflows on bob's row reached it, and its error answers whether bob's row holds %q: %d %v", "secret", res.StatusCode, out)
@@ -554,5 +560,46 @@ func TestMutationsReachEveryRowOnceRowAccessIsOff(t *testing.T) {
 	data, _ = out["data"].(map[string]any)
 	if deleted, _ := data["deleted"].(float64); deleted != 2 {
 		t.Fatalf("delete removed %v rows, want the whole table", data["deleted"])
+	}
+}
+
+func TestTheRowAccessMigrationHistoryKeepsItsDirection(t *testing.T) {
+	h := newHarnessMode(t, authGateway)
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "acme"})
+	h.mustHTTP("create_table", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"fields": []map[string]any{{"name": "body", "type": "text"}},
+	})
+	for _, on := range []bool{true, false} {
+		h.mustHTTP("migrate", map[string]any{
+			"namespace": "acme", "table": "notes",
+			"changes": []map[string]any{{"op": "set_row_access", "value": on}},
+		})
+	}
+
+	status, out := h.httpCall("migrate", map[string]any{
+		"namespace": "acme", "table": "notes",
+		"changes": []map[string]any{{"op": "set_row_access"}},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("set_row_access without a value: status %d, want 400: %v", status, out)
+	}
+
+	ms := h.mustHTTP("list_migrations", map[string]any{"namespace": "acme", "table": "notes"})["migrations"].([]any)
+	if len(ms) != 2 {
+		t.Fatalf("enabling then disabling row_access records two migrations, got %v", ms)
+	}
+	for i, want := range []bool{false, true} {
+		change := ms[i].(map[string]any)["changes"].([]any)[0].(map[string]any)
+		if change["op"] != "set_row_access" {
+			t.Fatalf("migrations[%d] records %v, want set_row_access", i, change["op"])
+		}
+		got, ok := change["value"].(bool)
+		if !ok {
+			t.Fatalf("migrations[%d] dropped its value, so the history neither says which direction was applied nor replays through migrate, which requires one: %v", i, change)
+		}
+		if got != want {
+			t.Fatalf("migrations[%d] records value %v, want %v: %v", i, got, want, change)
+		}
 	}
 }

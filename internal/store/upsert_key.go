@@ -14,7 +14,7 @@ const MaxKeyFields = 8
 
 func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
 	if scope != nil {
-		return InsertResult{}, errScopedKeyUpsertUnsupported
+		return InsertResult{}, ErrScopedKeyUpsertUnsupported
 	}
 	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
 		return InsertResult{}, err

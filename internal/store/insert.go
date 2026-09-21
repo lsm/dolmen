@@ -32,7 +32,7 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 		return InsertResult{}, err
 	}
 	if scope != nil && opts.IdempotencyKey != "" {
-		return InsertResult{}, errScopedIdempotencyUnsupported
+		return InsertResult{}, ErrScopedIdempotencyUnsupported
 	}
 	if len(opts.IdempotencyKey) > MaxIdempotencyKeyLen {
 		return InsertResult{}, invalidf("idempotency key is %d bytes (max %d)", len(opts.IdempotencyKey), MaxIdempotencyKeyLen)

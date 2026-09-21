@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -151,5 +152,68 @@ func TestPostgresNumberAffinity(t *testing.T) {
 		if err != nil || got != test.want {
 			t.Fatalf("%s: %#v want %#v (%v)", test.raw, got, test.want, err)
 		}
+	}
+}
+
+func TestPostgresOwnerStampedOnEveryInsertingPath(t *testing.T) {
+	cfg := testConfig(t)
+	s := openTest(t, cfg)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	fields := []schema.Field{{Name: "body", Type: schema.Text}, {Name: "natural_key", Type: schema.Text}}
+	if _, err := s.CreateTable(ctx, "app", "notes", fields, store.TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	owner := store.WriteOpts{Owner: "alice"}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "direct", "natural_key": "a"}}, owner, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Upsert(ctx, "app", "notes", "body = 'absent'", nil, map[string]any{"body": "upserted", "natural_key": "b"}, owner, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertByKey(ctx, "app", "notes", []string{"natural_key"}, []map[string]any{{"body": "keyed", "natural_key": "c"}}, owner, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	scoped := &store.RowScope{Owner: "alice"}
+	rows, err := s.GetRows(ctx, "app", "notes", []int64{1, 2, 3}, scoped, store.Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.Rows) != 3 {
+		t.Fatalf("every inserting path must stamp the owner, or the row is invisible to the principal who wrote it; an owner-scoped read saw %d of 3 rows", len(rows.Rows))
+	}
+	for _, row := range rows.Rows {
+		if row[schema.OwnerColumn] != "alice" {
+			t.Fatalf("row %v carries owner %v, want alice", row["body"], row[schema.OwnerColumn])
+		}
+	}
+}
+
+func TestPostgresInsertReportsAStaleScopeIncarnationAsConflict(t *testing.T) {
+	cfg := testConfig(t)
+	s := openTest(t, cfg)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	fields := []schema.Field{{Name: "body", Type: schema.Text}}
+	if _, err := s.CreateTable(ctx, "app", "notes", fields, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	_, inc, err := s.TableState(ctx, "app", "notes", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DropTable(ctx, "app", "notes", inc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", fields, store.TableOpts{}, inc.NsGen); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Insert(ctx, "app", "notes", []map[string]any{{"body": "x"}}, store.WriteOpts{}, store.Embedder{}, nil, inc)
+	if !errors.Is(err, derr.ErrConflict) {
+		t.Fatalf("an insert whose scope was resolved against the dropped table must conflict so the caller re-resolves, the way SQLite does: %v", err)
 	}
 }

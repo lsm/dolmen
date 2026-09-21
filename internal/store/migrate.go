@@ -206,7 +206,7 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 
 func (s *Store) PlanMigration(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expected Incarnation, scope *RowScope, scopeIncarnation Incarnation) (*MigrationPlan, error) {
 	if scope != nil {
-		return nil, errScopedPlanUnsupported
+		return nil, ErrScopedPlanUnsupported
 	}
 	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
 		return nil, err
@@ -254,14 +254,6 @@ func checkExpectedVersion(nsName, table string, expected int, old *schema.TableS
 	return nil
 }
 
-func takesValue(op string) bool {
-	switch op {
-	case schema.OpSetFulltext, schema.OpSetVectorize, schema.OpSetRowAccess:
-		return true
-	}
-	return false
-}
-
 func planMigration(ctx context.Context, db querier, nsName, table string, old *schema.TableSchema, changes []schema.Change, emb Embedder, expectedVersion int) (*migrationWork, error) {
 	fields := make([]schema.Field, len(old.Fields))
 	copy(fields, old.Fields)
@@ -299,10 +291,10 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 		if ch.Op != schema.OpAddField && ch.Default != nil {
 			return nil, invalidf("changes[%d]: default is only allowed on add_field (op %q has no added field to backfill)", i, ch.Op)
 		}
-		if takesValue(ch.Op) && ch.Value == nil {
+		if schema.TakesValue(ch.Op) && ch.Value == nil {
 			return nil, invalidf("changes[%d]: %s requires an explicit value (true or false)", i, ch.Op)
 		}
-		if !takesValue(ch.Op) && ch.Value != nil {
+		if !schema.TakesValue(ch.Op) && ch.Value != nil {
 			return nil, invalidf("changes[%d]: value is only allowed on set_fulltext/set_vectorize/set_row_access (op %q has no flag to set)", i, ch.Op)
 		}
 		if cur.HasOwner {

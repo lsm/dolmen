@@ -540,7 +540,7 @@ func (s *Store) ListMigrations(ctx context.Context, nsName, table string, inc In
 		}
 
 		for j := range m.Changes {
-			if m.Changes[j].Op != schema.OpSetFulltext && m.Changes[j].Op != schema.OpSetVectorize {
+			if !schema.TakesValue(m.Changes[j].Op) {
 				m.Changes[j].Value = nil
 			}
 		}
