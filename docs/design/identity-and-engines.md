@@ -906,6 +906,37 @@ the seam before execution, from this list — one shared rule, not per-adapter j
 namespace-wide `read` (§2), which authorizes every table its subqueries touch. Under `auth: off`
 the filter language is unchanged from v0.2.0.
 
+*Decided while building the allowlist (2026-09-21), from the "whole allowlist, not a category
+sketch" rule above.* Arithmetic means `+ - * / %` and unary sign: the bit operators
+(`& | << >> ~`) and the JSON operators (`-> ->>`) are **not** arithmetic and are
+`invalid_request`, as are `GLOB`, `REGEXP`, `MATCH`, `CAST`, `RAISE`, `ISNULL`/`NOTNULL` (write
+`IS NULL`), `IS DISTINCT FROM`, and SQL comments. `COLLATE` is refused for its own reason: the
+collation is pinned to BINARY so a filter means one thing on every engine, and an override would
+unpin it. `IN` takes literals and bound parameters, nothing else. Parameters are bare `?` bound
+in order — `?NNN`, `:name`, `@name` and `$name` are refused, since dolmen binds positionally.
+One widening, inside the listed `LIKE` rather than beyond it: `LIKE … ESCAPE x` is accepted with
+`x` a text literal or a bound parameter, because `ESCAPE` is part of SQLite's `LIKE` operator and
+without it no filter can match a literal `%`. The referenceable columns are the table's own —
+its declared fields plus `id`, `created_at`, and `owner` where it exists; the hidden `_embedding`
+is not one. **The clock rule reaches bound values, not only literals**: `datetime(?)` with `'now'`
+bound is the same clock read as `datetime('now')`, so an argument landing anywhere inside a
+date/time call is checked against the same words. And because a filter's subquery would read a
+table the caller's grant never named, the restriction applies **whenever `auth: on`** — a
+table-wide reader is scoped to nothing but still holds no grant on the table next door. The
+**root administrator is not exempt**: the escalation and oracle arguments do not reach them, but a
+carve-out would make the language mean one thing for them and another for everyone else, and `query`
+already exists for raw SQL they are authorized to run.
+
+*Hardened after the first implementation review (2026-09-21).* The clock rule cannot be satisfied by
+inspecting literals alone, because `datetime('no' || 'w')` and `datetime(substr('znow', 2))` compose
+the word at run time. A date or time function therefore takes only a **literal, a `?` argument, a
+column, or another date or time function** — never a computed expression, whose result is not
+decidable above the seam. `LIKE … ESCAPE` takes exactly one character, literal or bound. And because
+validation is recursive descent over caller input, the expression is bounded twice: **64 KiB** of
+text and **1000 levels** of nesting (SQLite's own default expression depth). Without the depth bound
+a few million nested parentheses are not an error but a stack exhaustion, which is a process death
+rather than a `400` — an unauthenticated-adjacent crash for any caller holding one data verb.
+
 **The scope is a security barrier, not a sibling conjunct.** SQL does not guarantee conjunct
 evaluation order, so `AND owner = ?` alone cannot make row-local expressions safe: a caller can
 write `iif(secret = ?, abs(-9223372036854775808), 1)` — an integer-overflow *error* on a foreign

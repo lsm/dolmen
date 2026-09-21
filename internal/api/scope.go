@@ -11,46 +11,51 @@ import (
 )
 
 func (s *Server) resolveScope(ctx context.Context, ns, table string) (*store.RowScope, store.Incarnation, error) {
+	scope, inc, _, err := s.resolveScopeState(ctx, ns, table)
+	return scope, inc, err
+}
+
+func (s *Server) resolveScopeState(ctx context.Context, ns, table string) (*store.RowScope, store.Incarnation, *schema.TableSchema, error) {
 	if !s.authn.On() {
-		return nil, store.Incarnation{}, nil
+		return nil, store.Incarnation{}, nil, nil
 	}
 	id := auth.IdentityFrom(ctx)
-	if id.Principal == auth.AdminPrincipal {
-		return nil, store.Incarnation{}, nil
-	}
 	sc, inc, err := s.eng.TableState(ctx, ns, table, nil)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, store.Incarnation{}, nil
+			return nil, store.Incarnation{}, nil, nil
 		}
-		return nil, store.Incarnation{}, wrapStoreErr(err)
+		return nil, store.Incarnation{}, nil, wrapStoreErr(err)
+	}
+	if id.Principal == auth.AdminPrincipal {
+		return nil, store.Incarnation{}, sc, nil
 	}
 	if s.grants == nil {
-		return nil, store.Incarnation{}, errNoGrantRegistry
+		return nil, store.Incarnation{}, nil, errNoGrantRegistry
 	}
 	verbs, err := s.grants.EffectiveVerbs(ctx, id, auth.Object{Namespace: ns, Table: table})
 	if err != nil {
-		return nil, store.Incarnation{}, err
+		return nil, store.Incarnation{}, nil, err
 	}
 	if sc.RowAccess != schema.RowAccessOwn {
 		if verbs.Has(auth.VerbRead) {
-			return nil, inc, nil
+			return nil, inc, sc, nil
 		}
 		if verbs.HasAny(auth.VerbCreate, auth.VerbUpdate, auth.VerbDelete) {
 			if sc.HasOwner {
-				return &store.RowScope{Empty: true}, inc, nil
+				return &store.RowScope{Empty: true}, inc, sc, nil
 			}
-			return nil, inc, nil
+			return nil, inc, sc, nil
 		}
-		return &store.RowScope{Empty: true}, inc, nil
+		return &store.RowScope{Empty: true}, inc, sc, nil
 	}
 	if verbs.Has(auth.VerbRead) {
-		return nil, inc, nil
+		return nil, inc, sc, nil
 	}
 	if verbs.HasAny(auth.VerbCreate, auth.VerbUpdate, auth.VerbDelete) {
-		return &store.RowScope{Owner: id.Principal}, inc, nil
+		return &store.RowScope{Owner: id.Principal}, inc, sc, nil
 	}
-	return &store.RowScope{Empty: true}, inc, nil
+	return &store.RowScope{Empty: true}, inc, sc, nil
 }
 
 func (s *Server) writeOwner(ctx context.Context) string {
