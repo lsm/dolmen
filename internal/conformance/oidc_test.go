@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -292,6 +294,10 @@ func TestDiscoveredEndpointsMustBeHTTPS(t *testing.T) {
 
 func readAll(t *testing.T, res *http.Response) string {
 	t.Helper()
+	return readBody(res)
+}
+
+func readBody(res *http.Response) string {
 	buf := make([]byte, 1<<16)
 	n, _ := res.Body.Read(buf)
 	return string(buf[:n])
@@ -299,34 +305,105 @@ func readAll(t *testing.T, res *http.Response) string {
 
 func extractToken(t *testing.T, page string) string {
 	t.Helper()
-	const open = "<pre>"
-	i := strings.Index(page, open)
-	if i < 0 {
-		t.Fatalf("the sign-in page carries no token block: %s", page)
-	}
-	rest := page[i+len(open):]
-	j := strings.Index(rest, "</pre>")
-	if j < 0 {
-		t.Fatalf("the token block is unterminated: %s", page)
-	}
-	tok := strings.TrimSpace(rest[:j])
-	if !auth.LooksLikeToken(tok) {
-		t.Fatalf("extracted %q, which is not a token", tok)
+	tok, err := tokenFromPage(page)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return tok
 }
 
+func tokenFromPage(page string) (string, error) {
+	const open = "<pre>"
+	i := strings.Index(page, open)
+	if i < 0 {
+		return "", fmt.Errorf("the sign-in page carries no token block: %s", page)
+	}
+	rest := page[i+len(open):]
+	j := strings.Index(rest, "</pre>")
+	if j < 0 {
+		return "", fmt.Errorf("the token block is unterminated: %s", page)
+	}
+	tok := strings.TrimSpace(rest[:j])
+	if !auth.LooksLikeToken(tok) {
+		return "", fmt.Errorf("extracted %q, which is not a token", tok)
+	}
+	return tok, nil
+}
+
 func danceForToken(t *testing.T, h *harness) string {
 	t.Helper()
+	tok, err := danceOnce(h)
+	if err != nil {
+		t.Fatalf("dance: %v", err)
+	}
+	return tok
+}
+
+func danceOnce(h *harness) (string, error) {
 	res, err := h.web().Get(h.srv.URL + "/v1/auth/begin")
 	if err != nil {
-		t.Fatalf("begin: %v", err)
+		return "", fmt.Errorf("begin: %w", err)
 	}
 	defer res.Body.Close()
+	body := readBody(res)
 	if res.StatusCode != http.StatusOK {
-		t.Fatalf("dance ended with status %d", res.StatusCode)
+		return "", fmt.Errorf("dance ended with status %d: %s", res.StatusCode, body)
 	}
-	return extractToken(t, readAll(t, res))
+	return tokenFromPage(body)
+}
+
+func TestRotationConcurrentWithSignInsKeepsEveryTokenUsable(t *testing.T) {
+	stub := newIssuerStub(t, "00u1a2b3", nil)
+	h := oidcHarness(t, stub)
+
+	const dancers, rounds = 6, 5
+	type minted struct {
+		token string
+		err   error
+	}
+	results := make(chan minted, dancers*rounds)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < dancers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for r := 0; r < rounds; r++ {
+				tok, err := danceOnce(h)
+				results <- minted{token: tok, err: err}
+			}
+		}()
+	}
+	rotated := make(chan error, 1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		for r := 0; r < rounds; r++ {
+			if _, err := h.oidc.Rotate(context.Background(), false); err != nil {
+				rotated <- err
+				return
+			}
+		}
+		rotated <- nil
+	}()
+
+	close(start)
+	wg.Wait()
+	close(results)
+
+	if err := <-rotated; err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	for m := range results {
+		if m.err != nil {
+			t.Fatalf("a sign-in racing a rotation failed: %v", m.err)
+		}
+		if status, out := h.httpCallAs(identity{bearer: m.token}, "whoami", map[string]any{}); status != http.StatusOK {
+			t.Fatalf("a token minted while a rotation landed does not authenticate, so the mint and the verifier disagreed on the ring: %d %v", status, out)
+		}
+	}
 }
 
 func TestOIDCRejectsOverLimitGroups(t *testing.T) {

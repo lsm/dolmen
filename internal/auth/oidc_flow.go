@@ -47,6 +47,7 @@ type OIDCSource struct {
 	mu        sync.Mutex
 	endpoints providerEndpoints
 	onRing    func(Keyring)
+	ringGen   uint64
 }
 
 func (s *OIDCSource) PublishRingTo(f func(Keyring)) {
@@ -389,28 +390,49 @@ func groupClaims(claims map[string]any, key string) []string {
 }
 
 func (s *OIDCSource) Rotate(ctx context.Context, retirePredecessors bool) (Keyring, error) {
-	ring, err := s.reg.RotateSigningKey(ctx, s.ring.Deployment, retirePredecessors)
+	cached, _ := s.currentRing()
+	ring, err := s.reg.RotateSigningKey(ctx, cached.Deployment, retirePredecessors)
 	if err != nil {
 		return Keyring{}, err
 	}
+	return s.installRing(ring), nil
+}
+
+func (s *OIDCSource) currentRing() (Keyring, uint64) {
 	s.mu.Lock()
-	s.ring = ring
+	defer s.mu.Unlock()
+	return s.ring, s.ringGen
+}
+
+func (s *OIDCSource) installRing(ring Keyring) Keyring {
+	s.mu.Lock()
+	s.ring, s.ringGen = ring, s.ringGen+1
 	publish := s.onRing
 	s.mu.Unlock()
 	if publish != nil {
 		publish(ring)
 	}
-	return ring, nil
+	return ring
 }
 
-func (s *OIDCSource) currentRing() Keyring {
+func (s *OIDCSource) installRingIfCurrent(ring Keyring, gen uint64) Keyring {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.ring
+	if s.ringGen != gen {
+		held := s.ring
+		s.mu.Unlock()
+		return held
+	}
+	s.ring, s.ringGen = ring, s.ringGen+1
+	publish := s.onRing
+	s.mu.Unlock()
+	if publish != nil {
+		publish(ring)
+	}
+	return ring
 }
 
 func (s *OIDCSource) mintingRing(ctx context.Context) (Keyring, error) {
-	cached := s.currentRing()
+	cached, gen := s.currentRing()
 	if s.reg == nil {
 		return cached, nil
 	}
@@ -418,12 +440,5 @@ func (s *OIDCSource) mintingRing(ctx context.Context) (Keyring, error) {
 	if err != nil {
 		return Keyring{}, err
 	}
-	s.mu.Lock()
-	s.ring = fresh
-	publish := s.onRing
-	s.mu.Unlock()
-	if publish != nil {
-		publish(fresh)
-	}
-	return fresh, nil
+	return s.installRingIfCurrent(fresh, gen), nil
 }
