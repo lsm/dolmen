@@ -511,6 +511,14 @@ the record; only `ok=false` ends the stream. Namespace-wide feeds compare `nsGen
 since their replay spans table lifetimes by design. No transport passes a callback yet,
 so this is unreachable from the conformance suite and is pinned by engine tests.
 
+Dropping the namespace row's exclusive lock from the live read has one consequence
+worth naming: a concurrent `drop_namespace` can now interleave with the cursors a
+fetch is inserting, and the foreign key from `cursors.namespace` answers with
+SQLSTATE 23503. That is the subscription's target disappearing, so `listenCause` maps
+it to `ErrListenLifetimeEnded` rather than letting a driver error reach the close
+frame. The session was over either way; the caller is told why in the vocabulary the
+rest of the contract uses.
+
 The live pump no longer pays for work it does not need. It reads through a
 transaction that does not take the namespace row's exclusive lock, so it stops
 contending with the writer it is trying to keep up with; it mints a page's cursors

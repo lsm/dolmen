@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -142,6 +143,10 @@ func listenCause(err error) error {
 	case errors.Is(err, store.ErrCursorExpired):
 		return store.ErrListenAged
 	case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrClosed):
+		return store.ErrListenLifetimeEnded
+	}
+	var pgerr *pgconn.PgError
+	if errors.As(err, &pgerr) && pgerr.Code == "23503" {
 		return store.ErrListenLifetimeEnded
 	}
 	return err
