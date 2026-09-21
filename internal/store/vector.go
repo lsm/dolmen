@@ -67,12 +67,19 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq Vecto
 	if err := scopeUsable(scope, sc); err != nil {
 		return SearchResult{}, err
 	}
-	prefix, source, scopeArgs := scopedSource(table, scope)
-	query := fmt.Sprintf(`%sSELECT id, %s FROM %s WHERE %s IS NOT NULL`, prefix, q(column), source, q(column))
-	qargs := append(make([]any, 0, len(scopeArgs)+len(args)), scopeArgs...)
-	if filter != "" {
-		query = fmt.Sprintf(`%s AND (%s)`, query, filter)
-		qargs = append(qargs, args...)
+	var query string
+	var qargs []any
+	if filter == "" {
+		clause, scopeArgs := scopeClause(scope, "")
+		query = fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s IS NOT NULL`, q(column), q(table), q(column))
+		if clause != "" {
+			query = fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s AND %s IS NOT NULL`, q(column), q(table), clause, q(column))
+		}
+		qargs = scopeArgs
+	} else {
+		prefix, source, scopeArgs := scopedSource(table, scope)
+		query = fmt.Sprintf(`%sSELECT id, %s FROM %s WHERE %s IS NOT NULL AND (%s)`, prefix, q(column), source, q(column), filter)
+		qargs = append(append(make([]any, 0, len(scopeArgs)+len(args)), scopeArgs...), args...)
 	}
 
 	rows, err := tx.QueryContext(ctx, query, qargs...)

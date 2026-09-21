@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
 )
 
@@ -526,5 +528,30 @@ func TestScopedVectorSearchKeepsBothItsScopeAndItsFilterArguments(t *testing.T) 
 	}
 	if owner, _ := res.Rows[0][schema.OwnerColumn].(string); owner != "alice" {
 		t.Fatalf("a scoped vector search returned a row owned by %q: %v", owner, res.Rows[0])
+	}
+}
+
+func TestAScopedDryRunSeesOneIncarnation(t *testing.T) {
+	st := openRowAccessStore(t)
+	seedScoped(t, st)
+	ctx := context.Background()
+
+	_, inc, err := st.TableState(ctx, "ns", "notes", nil)
+	if err != nil {
+		t.Fatalf("table state: %v", err)
+	}
+	if _, err := st.Migrate(ctx, "ns", "notes", []schema.Change{
+		{Op: schema.OpSetRowAccess, Value: boolPtr(false)},
+	}, Embedder{}, Incarnation{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	_, err = st.Delete(ctx, "ns", "notes", "1=1", nil, DeleteOpts{DryRun: true},
+		&RowScope{Owner: "alice"}, inc)
+	if err == nil {
+		t.Fatal("a scoped dry run ran against an incarnation resolved before a set_row_access migration, so it counted the old scope over the new table")
+	}
+	if !errors.Is(err, derr.ErrConflict) {
+		t.Fatalf("the refusal is not a conflict, so the caller cannot know to re-resolve and retry: %v", err)
 	}
 }

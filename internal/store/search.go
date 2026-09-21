@@ -321,10 +321,15 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	}
 
 	if opts.DryRun {
-		if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
+		tx, err := n.ro.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
 			return DeleteResult{}, err
 		}
-		sc, err := loadSchema(ctx, n.ro, nsName, table)
+		defer tx.Rollback()
+		if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
+			return DeleteResult{}, err
+		}
+		sc, err := loadSchema(ctx, tx, nsName, table)
 		if err != nil {
 			return DeleteResult{}, err
 		}
@@ -333,7 +338,7 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 		}
 		prefix, source, scopeArgs := scopedSource(table, scope)
 		var matched int64
-		if err := n.ro.QueryRowContext(ctx,
+		if err := tx.QueryRowContext(ctx,
 			fmt.Sprintf(`%sSELECT count(*) FROM %s WHERE %s`, prefix, source, where),
 			append(append(make([]any, 0, len(scopeArgs)+len(args)), scopeArgs...), args...)...).Scan(&matched); err != nil {
 			return DeleteResult{}, NewFilterError(where, err)
