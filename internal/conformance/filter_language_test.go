@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/store"
 )
 
 func seedTwoTables(t *testing.T, h *harness) {
@@ -27,8 +29,7 @@ func seedTwoTables(t *testing.T, h *harness) {
 	})
 }
 
-func TestAuthOffKeepsTheV020FilterLanguage(t *testing.T) {
-	sqliteOnly(t)
+func TestAuthOffKeepsEachEnginesV020FilterLanguage(t *testing.T) {
 	h := newHarnessMode(t, authOff)
 	seedTwoTables(t, h)
 
@@ -36,8 +37,18 @@ func TestAuthOffKeepsTheV020FilterLanguage(t *testing.T) {
 		"namespace": "acme", "table": "notes",
 		"filter": "rank IN (SELECT salary FROM payroll)", "dry_run": true,
 	})
+	if testEngine(t) == store.EnginePostgres {
+		if status != http.StatusNotFound {
+			t.Fatalf("PostgreSQL compiles a filter as a confined single-table select, so a filter naming another table must answer not_found, not %d: %v", status, out)
+		}
+		errObj, _ := out["error"].(map[string]any)
+		if errObj["code"] != "not_found" {
+			t.Fatalf("the refusal is not not_found: %v", out)
+		}
+		return
+	}
 	if status != http.StatusOK {
-		t.Fatalf("auth off must keep the v0.2.0 filter language, subqueries included: %d %v", status, out)
+		t.Fatalf("auth off must keep SQLite's v0.2.0 filter language, subqueries included: %d %v", status, out)
 	}
 }
 

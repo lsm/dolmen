@@ -214,8 +214,9 @@ references, and unsupported functions or operators. Confined to a single table m
 exactly that: a filter naming another table answers `not_found`, so a cross-table
 subquery that SQLite accepts under `auth: off` does not compile here. The scoped filter
 allowlist (§4.3) forbids the same thing under `auth: on`, so the engines converge there
-and diverge only in the unauthenticated language — `internal/conformance` marks the
-subquery fixture SQLite-only for that reason. Matching IDs are selected and
+and diverge only in the unauthenticated language. `internal/conformance` pins both halves
+in one fixture rather than skipping either: PostgreSQL must answer `not_found`, SQLite must
+still execute the subquery. Matching IDs are selected and
 mutated under the namespace write lock, with row changes and durable change records in
 one transaction.
 
