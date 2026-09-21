@@ -203,6 +203,10 @@ send only the `error` event, since nothing was delivered. The messages are the r
   namespace); reconnect against the current target — a same-named successor is a different feed`
 - Authorization revoked: `subscription authorization was revoked; reconnect once authorization is
   restored`
+- Own-row feed over unlabelled history: `this feed still retains changes recorded before rows
+  carried an owner, and a caller restricted to their own rows cannot be shown them or told they
+  were skipped; subscribe without a cursor to start at the current head, or ask for the read verb
+  on the table, which lifts the scope`
 - Subscription age bound: `subscription reached the maximum subscription age
   (-max-subscription-age, default 30m); reconnect from the cursor in the preceding close frame to
   resume exactly where this stream ended — the fresh connection re-asserts your credentials`
@@ -216,7 +220,9 @@ store was deleted with it), so its cursor cannot resume anything — reconnect a
 target and establish a fresh cursor (no cursor, or `cursor=begin`), as its message says; a
 same-named successor is a different feed. The registration failures are the other exception:
 their cursor was rejected — reconnect with no cursor (head) or `cursor=begin`, never the
-rejected token.
+rejected token. The own-row feed over unlabelled history is the one terminal that can arrive
+either way — at registration, or mid-replay if your grant narrows to your own rows while the
+stream is catching up — and `cursor=begin` will be refused again, so reconnect with no cursor.
 
 ## Working rules
 
