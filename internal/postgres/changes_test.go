@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -121,5 +122,43 @@ func TestPostgresCursorPinsHistoryAndLifetime(t *testing.T) {
 	}
 	if _, _, err := s.ChangesSince(ctx, "app", "", token, [16]byte{}, nil, store.Incarnation{}, store.Page{}); !errors.Is(err, store.ErrCursorExpired) {
 		t.Fatalf("namespace replacement reused token: %v", err)
+	}
+}
+
+func TestPostgresNamespaceGoneDetectsDropAndReplacement(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	var live [16]byte
+	if err := s.read(ctx, "app", func(tx pgx.Tx, n namespace) error {
+		live = n.generation
+		if s.namespaceGone(ctx, tx, "app", live) {
+			t.Fatal("a live namespace must not read as gone")
+		}
+		if !s.namespaceGone(ctx, tx, "app", [16]byte{9}) {
+			t.Fatal("a different generation must read as gone")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DropNamespace(ctx, "app", live); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.read(ctx, "app", func(tx pgx.Tx, n namespace) error {
+		if !s.namespaceGone(ctx, tx, "app", live) {
+			t.Fatal("a recreated namespace must read as gone for the predecessor's generation")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DropNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
 	}
 }

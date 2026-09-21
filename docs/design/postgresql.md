@@ -519,6 +519,15 @@ it to `ErrListenLifetimeEnded` rather than letting a driver error reach the clos
 frame. The session was over either way; the caller is told why in the vocabulary the
 rest of the contract uses.
 
+The same drop has a second window. Cursors cascade from the namespace row, so a drop
+landing before the fetch resolves its cursor deletes that row first, and an absent
+cursor is indistinguishable from an expired one: the stream would close as
+`ErrListenAged` and advise re-anchoring, which cannot succeed against a namespace
+that no longer exists. On the unlocked path an expired cursor now rechecks the
+namespace generation, and a namespace that is gone or replaced reports the lifetime
+cause instead. Both windows exist only because the live read stopped taking the
+namespace row's exclusive lock; the locked path serialized against the dropper.
+
 The live pump no longer pays for work it does not need. It reads through a
 transaction that does not take the namespace row's exclusive lock, so it stops
 contending with the writer it is trying to keep up with; it mints a page's cursors

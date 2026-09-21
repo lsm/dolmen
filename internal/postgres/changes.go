@@ -58,6 +58,18 @@ func (s *Store) mintCursors(ctx context.Context, tx pgx.Tx, n namespace, state c
 	return tokens, nil
 }
 
+func (s *Store) namespaceGone(ctx context.Context, tx pgx.Tx, ns string, generation [16]byte) bool {
+	var raw []byte
+	err := tx.QueryRow(ctx, "SELECT generation FROM "+s.relation("namespaces")+" WHERE name=$1", ns).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	return len(raw) != 16 || [16]byte(raw) != generation
+}
+
 func (s *Store) resolveCursor(ctx context.Context, tx pgx.Tx, n namespace, token store.Cursor, table string, drop int64, now time.Time) (cursorState, error) {
 	var state cursorState
 	err := tx.QueryRow(ctx, "SELECT position,chain_origin,chain_start,issued_at,table_name,drop_generation FROM "+s.relation("cursors")+" WHERE namespace=$1 AND token=$2", n.name, string(token)).Scan(&state.position, &state.origin, &state.start, &state.issued, &state.table, &state.drop)
@@ -127,6 +139,9 @@ func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from sto
 			var err error
 			state, err = s.resolveCursor(ctx, tx, n, from, table, drop, now)
 			if err != nil {
+				if unlocked && errors.Is(err, store.ErrCursorExpired) && s.namespaceGone(ctx, tx, ns, n.generation) {
+					return fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, ns)
+				}
 				return err
 			}
 		} else {
