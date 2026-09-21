@@ -17,9 +17,17 @@ type EmbeddingProvider interface {
 
 type config struct {
 	engine          string
+	postgres        *PostgresConfig
 	embedding       EmbeddingProvider
 	embeddingSet    bool
 	changeRetention time.Duration
+}
+
+type PostgresConfig struct {
+	DSN       string
+	Catalog   string
+	QueryRole string
+	MaxConns  int32
 }
 
 type Option func(*config)
@@ -34,6 +42,14 @@ func WithEmbedding(provider EmbeddingProvider) Option {
 func WithEngine(name string) Option {
 	return func(c *config) {
 		c.engine = name
+	}
+}
+
+func WithPostgres(cfg PostgresConfig) Option {
+	return func(c *config) {
+		copied := cfg
+		c.postgres = &copied
+		c.engine = store.EnginePostgres
 	}
 }
 
@@ -52,6 +68,12 @@ func (c *config) validate() error {
 	}
 	if err := store.ValidateEngine(c.engine); err != nil {
 		return derr.New(derr.InvalidRequest, "WithEngine: %v", err)
+	}
+	if c.postgres != nil && c.postgres.DSN == "" {
+		return derr.New(derr.InvalidRequest, "WithPostgres: DSN must not be empty")
+	}
+	if c.engine == store.EnginePostgres && c.postgres == nil {
+		return derr.New(derr.InvalidRequest, "WithEngine: the %q engine needs a connection; pass WithPostgres to supply its DSN", store.EnginePostgres)
 	}
 	return nil
 }

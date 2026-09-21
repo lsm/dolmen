@@ -29,7 +29,8 @@ own conformance-backed implementation.
 The first increment establishes `internal/postgres` with a pgx connection pool and
 namespace catalog. It deliberately
 does not yet implement the complete `store.Engine`: there are no placeholder CRUD or
-search methods, and `DOLMEN_ENGINE=postgres` / `WithEngine("postgres")` remain rejected.
+search methods, and `DOLMEN_ENGINE=postgres` / `WithEngine("postgres")` remained rejected
+at that point; the facade selector is described under "Selecting PostgreSQL" below.
 The namespace conformance subset runs against both implementations; PostgreSQL's
 service-backed CI job fails rather than silently skipping when its DSN is missing.
 
@@ -401,6 +402,33 @@ is waiting on the callback.
 1. Close the conformance gaps listed under "Conformance matrix status" below, then wire
    the HTTP/MCP/stdio/facade/blackbox constructors, enable the public selector, and
    publish PostgreSQL configuration/install guidance.
+
+## Selecting PostgreSQL
+
+`store.ValidateEngine` accepts `postgres`, and the Go facade selects it with
+`WithPostgres`:
+
+```go
+st, err := dolmen.Open("", dolmen.WithPostgres(dolmen.PostgresConfig{
+    DSN:       "postgres://dolmen_backend@host:5432/dolmen?sslmode=disable",
+    Catalog:   "dolmen_catalog",
+    QueryRole: "dolmen_query",
+}))
+```
+
+`WithPostgres` implies the engine, so `WithEngine("postgres")` on its own is refused
+with an error naming the option that supplies the connection. A DSN is required:
+`Open` never reads one from the environment, matching the facade's existing rule that
+it reads no configuration of its own.
+
+The data directory argument belongs to SQLite and is unused here, so pass `""`. One
+live store per catalog per process is still enforced, keyed on DSN and catalog rather
+than on a directory, and a second `Open` against the same catalog is a conflict.
+
+The role provisioning is the deployment's, not dolmen's: the backend role needs CREATE
+on the database, and caller SQL needs the pre-provisioned restricted query role granted
+to it with `INHERIT FALSE, SET TRUE`. No runtime `CREATEROLE` is required and no
+extension is needed.
 
 ## Conformance matrix status
 

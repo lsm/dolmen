@@ -123,10 +123,10 @@ func TestLoadConfig(t *testing.T) {
 			},
 		},
 		{
-			name:    "unknown engine teaches the available engine",
+			name:    "unknown engine teaches the available engines",
 			args:    []string{},
-			env:     map[string]string{"DOLMEN_ENGINE": "postgres", "DOLMEN_EMBED_PROVIDER": "none"},
-			wantErr: `unknown engine "postgres" (the available engine is "sqlite")`,
+			env:     map[string]string{"DOLMEN_ENGINE": "banana", "DOLMEN_EMBED_PROVIDER": "none"},
+			wantErr: `unknown engine "banana" (available engines are "postgres" and "sqlite")`,
 		},
 		{
 			name: "prefix flag",

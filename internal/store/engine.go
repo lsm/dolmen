@@ -14,10 +14,10 @@ const (
 
 func ValidateEngine(name string) error {
 	switch name {
-	case "", EngineSQLite:
+	case "", EngineSQLite, EnginePostgres:
 		return nil
 	default:
-		return fmt.Errorf("unknown engine %q (the available engine is %q)", name, EngineSQLite)
+		return fmt.Errorf("unknown engine %q (available engines are %q and %q)", name, EnginePostgres, EngineSQLite)
 	}
 }
 
