@@ -368,7 +368,7 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	}
 	prefix, source, scopeArgs := scopedSource(table, scope)
 	if _, err := tx.ExecContext(ctx,
-		fmt.Sprintf(`CREATE TEMP TABLE _dolmen_delete_ids AS %sSELECT id FROM %s WHERE %s`, prefix, source, where),
+		fmt.Sprintf(`CREATE TEMP TABLE _dolmen_delete_ids AS %sSELECT id, %s AS owner FROM %s WHERE %s`, prefix, changeOwnerColumn(sc), source, where),
 		append(append(make([]any, 0, len(scopeArgs)+len(args)), scopeArgs...), args...)...); err != nil {
 		return DeleteResult{}, NewFilterError(where, err)
 	}

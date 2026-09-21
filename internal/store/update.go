@@ -127,7 +127,7 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 	prefix, source, scopeArgs := scopedSource(table, scope)
 	matchArgs := append(append(make([]any, 0, len(scopeArgs)+len(args)), scopeArgs...), args...)
 	if _, err := tx.ExecContext(ctx,
-		fmt.Sprintf(`CREATE TEMP TABLE _dolmen_update_ids AS %sSELECT id FROM %s WHERE %s`, prefix, source, where),
+		fmt.Sprintf(`CREATE TEMP TABLE _dolmen_update_ids AS %sSELECT id, %s AS owner FROM %s WHERE %s`, prefix, changeOwnerColumn(sc), source, where),
 		matchArgs...); err != nil {
 		return UpsertResult{}, NewFilterError(where, err)
 	}
@@ -256,7 +256,7 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 		result.Inserted = 1
 		result.Ids = []int64{id}
 
-		if result.Changes, err = mintChanges(ctx, tx, table, ChangeInsert, []int64{id}, nil); err != nil {
+		if result.Changes, err = mintChanges(ctx, tx, table, ChangeInsert, []int64{id}, sameOwner(stampOwner(sc, owner), 1)); err != nil {
 			return UpsertResult{}, err
 		}
 	}

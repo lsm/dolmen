@@ -89,6 +89,7 @@ func (s *Store) bootstrap(ctx context.Context) error {
  namespace text NOT NULL REFERENCES ` + s.relation("namespaces") + `(name) ON DELETE CASCADE,
  position bigint NOT NULL, table_name text NOT NULL, drop_generation bigint NOT NULL,
  row_id bigint NOT NULL, kind text NOT NULL CHECK(kind IN ('insert','update','delete')),
+ owner text,
  created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
  PRIMARY KEY(namespace,position))`,
 		"CREATE TABLE IF NOT EXISTS " + s.relation("migrations") + ` (
@@ -114,6 +115,7 @@ func (s *Store) bootstrap(ctx context.Context) error {
 		return err
 	}
 	for _, stmt := range []string{
+		"ALTER TABLE " + s.relation("changes") + " ADD COLUMN IF NOT EXISTS owner text",
 		"CREATE INDEX IF NOT EXISTS changes_feed ON " + s.relation("changes") + " (namespace,table_name,drop_generation,position)",
 		"CREATE INDEX IF NOT EXISTS cursors_origin ON " + s.relation("cursors") + " (namespace,chain_origin)",
 	} {

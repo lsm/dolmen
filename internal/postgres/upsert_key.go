@@ -214,11 +214,15 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, table string, keys []string
 					return err
 				}
 			}
-			first, err := s.mintChanges(ctx, tx, n, state, store.ChangeInsert, inserted)
+			first, err := s.mintChanges(ctx, tx, n, state, store.ChangeInsert, inserted, sameOwner(state.schema, opts.Owner, len(inserted)))
 			if err != nil {
 				return err
 			}
-			second, err := s.mintChanges(ctx, tx, n, state, store.ChangeUpdate, updated)
+			updatedOwners, err := s.ownersOf(ctx, tx, n, state, updated)
+			if err != nil {
+				return err
+			}
+			second, err := s.mintChanges(ctx, tx, n, state, store.ChangeUpdate, updated, updatedOwners)
 			if err != nil {
 				return err
 			}

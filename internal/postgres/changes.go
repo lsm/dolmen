@@ -185,7 +185,7 @@ func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from sto
 		if limit > store.MaxChangesPageLimit {
 			limit = store.MaxChangesPageLimit
 		}
-		stmt := "SELECT position,table_name,drop_generation,row_id,kind FROM " + s.relation("changes") + " WHERE namespace=$1 AND position>$2"
+		stmt := "SELECT position,table_name,drop_generation,row_id,kind,owner FROM " + s.relation("changes") + " WHERE namespace=$1 AND position>$2"
 		args := []any{ns, state.position}
 		if table != "" {
 			stmt += " AND table_name=$3 AND drop_generation=$4"
@@ -205,9 +205,13 @@ func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from sto
 		for rows.Next() {
 			var rec store.ChangeRecord
 			var position int64
-			if err := rows.Scan(&position, &rec.Table, &rec.Lifetime.DropGen, &rec.RowID, &rec.Kind); err != nil {
+			var owner *string
+			if err := rows.Scan(&position, &rec.Table, &rec.Lifetime.DropGen, &rec.RowID, &rec.Kind, &owner); err != nil {
 				rows.Close()
 				return err
+			}
+			if owner != nil {
+				rec.Owner = *owner
 			}
 			rec.Lifetime.NsGen = n.generation
 			rec.Lifetime.Table = rec.Table
@@ -251,6 +255,68 @@ func (s *Store) changeHead(ctx context.Context, ns string, expected [16]byte) (i
 		return tx.QueryRow(ctx, "SELECT next_change FROM "+s.relation("namespaces")+" WHERE name=$1", ns).Scan(&head)
 	})
 	return head, err
+}
+
+func (s *Store) unlabeledBacklog(ctx context.Context, ns, table string, from store.Cursor, head int64) (bool, error) {
+	stale := false
+	err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
+		drop := int64(0)
+		if table != "" {
+			state, terr := s.loadTable(ctx, tx, n, table)
+			if terr != nil {
+				return terr
+			}
+			drop = state.incarnation.DropGen
+		}
+		position := int64(0)
+		switch {
+		case from == "":
+			position = head
+		case from == store.CursorBegin:
+			now := s.now()
+			var first *int64
+			stmt := "SELECT min(position) FROM " + s.relation("changes") + " WHERE namespace=$1"
+			args := []any{n.name}
+			if s.changeRetention > 0 {
+				stmt += " AND created_at >= $2"
+				args = append(args, now.Add(-s.changeRetention))
+			}
+			if berr := tx.QueryRow(ctx, stmt, args...).Scan(&first); berr != nil {
+				return berr
+			}
+			if first == nil {
+				position = head
+			} else {
+				position = *first - 1
+			}
+		default:
+			state, cerr := s.resolveCursor(ctx, tx, n, from, table, drop, s.now())
+			if cerr != nil {
+				return cerr
+			}
+			position = state.position
+		}
+		if position >= head {
+			return nil
+		}
+		stmt := "SELECT 1 FROM " + s.relation("changes") + " WHERE namespace=$1 AND position>$2 AND position<=$3 AND owner IS NULL"
+		args := []any{n.name, position, head}
+		if table != "" {
+			stmt += " AND table_name=$4 AND drop_generation=$5"
+			args = append(args, table, drop)
+		}
+		var one int
+		qerr := tx.QueryRow(ctx, stmt+" LIMIT 1", args...).Scan(&one)
+		if errors.Is(qerr, pgx.ErrNoRows) {
+			return nil
+		}
+		if qerr != nil {
+			return qerr
+		}
+		stale = true
+		return nil
+	})
+	return stale, err
 }
 
 func (s *Store) anchorListen(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, inc store.Incarnation) (store.Cursor, store.Cursor, int64, error) {

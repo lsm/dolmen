@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -188,7 +187,15 @@ func (l *listenSession) admit(rec store.ChangeRecord) (bool, error) {
 		return false, store.ErrListenRevoked
 	}
 	if scope != nil {
-		return false, derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
+		if scope.Empty {
+			return false, nil
+		}
+		if rec.Owner == "" {
+			return false, store.ErrScopedFeedPredatesLabels
+		}
+		if scope.Owner != rec.Owner {
+			return false, nil
+		}
 	}
 	if inc == (store.Incarnation{}) {
 		return true, nil
@@ -206,12 +213,8 @@ func (l *listenSession) admits(table string) error {
 	if l.liveAuthz == nil {
 		return nil
 	}
-	scope, _, ok := l.liveAuthz(table)
-	if !ok {
+	if _, _, ok := l.liveAuthz(table); !ok {
 		return store.ErrListenRevoked
-	}
-	if scope != nil {
-		return derr.New(derr.Forbidden, "PostgreSQL row scopes are not implemented yet")
 	}
 	return nil
 }
@@ -588,6 +591,17 @@ func (s *Store) Listen(ctx context.Context, ns, table string, from store.Cursor,
 	if table != "" {
 		if err := session.admits(table); err != nil {
 			return nil, nil, err
+		}
+		if liveAuthz != nil {
+			if scope, _, ok := liveAuthz(table); ok && scope != nil {
+				stale, serr := s.unlabeledBacklog(ctx, ns, table, from, head)
+				if serr != nil {
+					return nil, nil, listenCause(serr)
+				}
+				if stale {
+					return nil, nil, store.ErrScopedFeedPredatesLabels
+				}
+			}
 		}
 	}
 	session.release = w.register(ns, session.wake)

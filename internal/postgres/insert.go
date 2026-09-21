@@ -163,7 +163,48 @@ func prepareValues(ctx context.Context, state tableState, records []map[string]a
 	return out, nil
 }
 
-func (s *Store) mintChanges(ctx context.Context, tx pgx.Tx, n namespace, state tableState, kind store.ChangeKind, ids []int64) (store.ChangeRange, error) {
+func sameOwner(sc *schema.TableSchema, owner string, n int) []string {
+	if sc == nil || !sc.HasOwner || owner == "" {
+		return nil
+	}
+	out := make([]string, n)
+	for i := range out {
+		out[i] = owner
+	}
+	return out
+}
+
+func (s *Store) ownersOf(ctx context.Context, tx pgx.Tx, n namespace, state tableState, ids []int64) ([]string, error) {
+	if !state.schema.HasOwner || len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, "SELECT id,"+ident(schema.OwnerColumn)+" FROM "+ident(n.physical, state.physical)+" WHERE id=ANY($1::bigint[])", ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byID := map[int64]string{}
+	for rows.Next() {
+		var id int64
+		var owner *string
+		if err := rows.Scan(&id, &owner); err != nil {
+			return nil, err
+		}
+		if owner != nil {
+			byID[id] = *owner
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = byID[id]
+	}
+	return out, nil
+}
+
+func (s *Store) mintChanges(ctx context.Context, tx pgx.Tx, n namespace, state tableState, kind store.ChangeKind, ids []int64, owners []string) (store.ChangeRange, error) {
 	if len(ids) == 0 {
 		return store.ChangeRange{}, nil
 	}
@@ -171,8 +212,15 @@ func (s *Store) mintChanges(ctx context.Context, tx pgx.Tx, n namespace, state t
 	if err != nil {
 		return change, err
 	}
+	if owners != nil && len(owners) != len(ids) {
+		return store.ChangeRange{}, fmt.Errorf("mint change records for %s: %d owner labels for %d ids", state.incarnation.Table, len(owners), len(ids))
+	}
 	for i, id := range ids {
-		if _, err := tx.Exec(ctx, "INSERT INTO "+s.relation("changes")+" (namespace,position,table_name,drop_generation,row_id,kind) VALUES($1,$2,$3,$4,$5,$6)", n.name, change.First+int64(i), state.incarnation.Table, state.incarnation.DropGen, id, string(kind)); err != nil {
+		var owner any
+		if owners != nil && owners[i] != "" {
+			owner = owners[i]
+		}
+		if _, err := tx.Exec(ctx, "INSERT INTO "+s.relation("changes")+" (namespace,position,table_name,drop_generation,row_id,kind,owner) VALUES($1,$2,$3,$4,$5,$6,$7)", n.name, change.First+int64(i), state.incarnation.Table, state.incarnation.DropGen, id, string(kind), owner); err != nil {
 			return store.ChangeRange{}, err
 		}
 	}
@@ -274,7 +322,7 @@ func (s *Store) Insert(ctx context.Context, ns, table string, records []map[stri
 					return err
 				}
 			}
-			result.Changes, err = s.mintChanges(ctx, tx, n, state, store.ChangeInsert, result.Ids)
+			result.Changes, err = s.mintChanges(ctx, tx, n, state, store.ChangeInsert, result.Ids, sameOwner(state.schema, opts.Owner, len(result.Ids)))
 			if err != nil {
 				return err
 			}
