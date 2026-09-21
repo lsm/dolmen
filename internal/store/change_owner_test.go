@@ -256,6 +256,8 @@ func TestAScopedCatchUpRefusesUnlabelledHistory(t *testing.T) {
 	if _, _, err := st.ChangesSince(ctx, "ns", "notes", "", [16]byte{},
 		&RowScope{Owner: "alice"}, Incarnation{}, Page{Limit: 10}); err != nil {
 		t.Fatalf("starting at the head replays nothing, so there is nothing to refuse: %v", err)
+	}
+}
 
 func TestNarrowingToAScopeMidReplayRefusesUnlabelledHistory(t *testing.T) {
 	st := openRowAccessStore(t)
