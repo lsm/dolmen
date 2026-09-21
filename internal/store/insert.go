@@ -248,10 +248,10 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			return nil, ChangeRange{}, false, true, err
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO _dolmen_idempotency(table_name, owner, key, payload_hash, ids_json) VALUES(?,?,?,?,?)`,
+			`INSERT INTO `+idempotencyTable+`(table_name, owner, key, payload_hash, ids_json) VALUES(?,?,?,?,?)`,
 			table, domain.owner, idemKey, idemHash, string(idsJSON)); err != nil {
 
-			if strings.Contains(err.Error(), "UNIQUE constraint failed: _dolmen_idempotency") {
+			if strings.Contains(err.Error(), "UNIQUE constraint failed: "+idempotencyTable) {
 				if rerr := tx.Rollback(); rerr != nil {
 					return nil, ChangeRange{}, false, true, rerr
 				}

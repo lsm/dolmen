@@ -665,7 +665,7 @@ func TestDropTable(t *testing.T) {
 	if c := count(`SELECT count(*) FROM _dolmen_migrations WHERE table_name = 'notes'`); c != 0 {
 		t.Fatal("migration history must be gone")
 	}
-	if c := count(`SELECT count(*) FROM _dolmen_idempotency WHERE table_name = 'notes'`); c != 0 {
+	if c := count(`SELECT count(*) FROM _dolmen_idempotency_owned WHERE table_name = 'notes'`); c != 0 {
 		t.Fatal("idempotency keys must be gone")
 	}
 	if c := count(`SELECT count(*) FROM _dolmen_drop_gen WHERE table_name = 'notes' AND gen = 1`); c != 1 {

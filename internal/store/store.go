@@ -314,7 +314,7 @@ var registryDDL = []string{
 		changes_json TEXT NOT NULL,
 		at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 	)`,
-	`CREATE TABLE IF NOT EXISTS _dolmen_idempotency(
+	`CREATE TABLE IF NOT EXISTS _dolmen_idempotency_owned(
 		table_name TEXT NOT NULL,
 		owner TEXT NOT NULL DEFAULT '',
 		key TEXT NOT NULL,

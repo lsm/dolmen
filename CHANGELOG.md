@@ -18,8 +18,11 @@
   namespace's catalog minimum-reader stamp rises with it, so an older dolmen refuses to open the data
   directory afterwards rather than opening it and reading the table as though keys were still global
   — which is precisely the disclosure being closed, since that reader would answer one principal's
-  retry with another's ids. Back up a data directory before the first open if you may need to
-  downgrade.
+  retry with another's ids. The records also move to a new table rather than growing a column in
+  place, so an older dolmen that already had the directory open when the upgrade ran fails loudly on
+  its next idempotent insert instead of quietly reading the new layout with its ownerless lookup: the
+  catalog stamp can only refuse the *next* open, not a process already running. Back up a data
+  directory before the first open if you may need to downgrade.
 
 - **Filters are a row-local language when auth is on.** `update`, `delete`, `upsert`,
   `search_fulltext` and `search_vector` take a SQL `WHERE` fragment; with `-auth on` that fragment

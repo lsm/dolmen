@@ -10,35 +10,34 @@ import (
 
 const LegacyIdempotencyOwner = ""
 
+const idempotencyTable = "_dolmen_idempotency_owned"
+
+const legacyIdempotencyTable = "_dolmen_idempotency"
+
 type pragmaQuerier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-func idempotencyHasOwner(ctx context.Context, db pragmaQuerier) (bool, error) {
-	rows, err := db.QueryContext(ctx, `PRAGMA table_info(_dolmen_idempotency)`)
+func legacyIdempotencyPresent(ctx context.Context, db pragmaQuerier) (bool, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, legacyIdempotencyTable)
 	if err != nil {
 		return false, err
 	}
 	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name, colType string
-		var notNull int
-		var dflt any
-		var pk int
-		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
-			return false, err
-		}
-		if name == "owner" {
-			return true, rows.Err()
-		}
+	if !rows.Next() {
+		return false, rows.Err()
 	}
-	return false, rows.Err()
+	var n int
+	if err := rows.Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, rows.Err()
 }
 
 func ensureIdempotencyOwner(ctx context.Context, db *sql.DB) error {
-	present, err := idempotencyHasOwner(ctx, db)
-	if err != nil || present {
+	present, err := legacyIdempotencyPresent(ctx, db)
+	if err != nil || !present {
 		return err
 	}
 	return migrateIdempotencyOwner(ctx, db)
@@ -60,11 +59,11 @@ func migrateIdempotencyOwner(ctx context.Context, db *sql.DB) error {
 		}
 	}()
 
-	present, err := idempotencyHasOwner(ctx, conn)
+	present, err := legacyIdempotencyPresent(ctx, conn)
 	if err != nil {
 		return err
 	}
-	if present {
+	if !present {
 		if _, err := conn.ExecContext(ctx, `ROLLBACK`); err != nil {
 			return err
 		}
@@ -73,19 +72,9 @@ func migrateIdempotencyOwner(ctx context.Context, db *sql.DB) error {
 	}
 
 	for _, stmt := range []string{
-		`CREATE TABLE _dolmen_idempotency_owned(
-			table_name TEXT NOT NULL,
-			owner TEXT NOT NULL DEFAULT '',
-			key TEXT NOT NULL,
-			payload_hash TEXT NOT NULL,
-			ids_json TEXT NOT NULL,
-			at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-			PRIMARY KEY(table_name, owner, key)
-		)`,
-		`INSERT INTO _dolmen_idempotency_owned(table_name, owner, key, payload_hash, ids_json, at)
-			SELECT table_name, '', key, payload_hash, ids_json, at FROM _dolmen_idempotency`,
-		`DROP TABLE _dolmen_idempotency`,
-		`ALTER TABLE _dolmen_idempotency_owned RENAME TO _dolmen_idempotency`,
+		`INSERT INTO ` + idempotencyTable + `(table_name, owner, key, payload_hash, ids_json, at)
+			SELECT table_name, '', key, payload_hash, ids_json, at FROM ` + legacyIdempotencyTable,
+		`DROP TABLE ` + legacyIdempotencyTable,
 	} {
 		if _, err := conn.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("give idempotency records an owner domain: %w", err)
@@ -125,7 +114,7 @@ func lookupIdem(ctx context.Context, db rowQuerier, table, key, wantHash string,
 func readIdem(ctx context.Context, db rowQuerier, table, owner, key, wantHash string) (ids []int64, found bool, err error) {
 	var gotHash, idsJSON string
 	err = db.QueryRowContext(ctx,
-		`SELECT payload_hash, ids_json FROM _dolmen_idempotency WHERE table_name = ? AND owner = ? AND key = ?`,
+		`SELECT payload_hash, ids_json FROM `+idempotencyTable+` WHERE table_name = ? AND owner = ? AND key = ?`,
 		table, owner, key).Scan(&gotHash, &idsJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil

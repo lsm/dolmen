@@ -273,7 +273,7 @@ func (s *Store) DropTable(ctx context.Context, nsName, table string, inc Incarna
 	for _, stmt := range []string{
 		`DELETE FROM _dolmen_tables WHERE name = ?`,
 		`DELETE FROM _dolmen_migrations WHERE table_name = ?`,
-		`DELETE FROM _dolmen_idempotency WHERE table_name = ?`,
+		`DELETE FROM ` + idempotencyTable + ` WHERE table_name = ?`,
 	} {
 		if _, err := tx.ExecContext(ctx, stmt, table); err != nil {
 			return err

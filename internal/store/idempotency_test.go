@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -115,7 +116,7 @@ func TestIdempotencyRecordsGainAnOwnerColumnOnOpen(t *testing.T) {
 	}
 	ctx := context.Background()
 	for _, stmt := range []string{
-		`DROP TABLE _dolmen_idempotency`,
+		`DROP TABLE _dolmen_idempotency_owned`,
 		`CREATE TABLE _dolmen_idempotency(
 			table_name TEXT NOT NULL,
 			key TEXT NOT NULL,
@@ -143,7 +144,7 @@ func TestIdempotencyRecordsGainAnOwnerColumnOnOpen(t *testing.T) {
 	}
 	var owner, idsJSON string
 	if err := n2.rw.QueryRowContext(ctx,
-		`SELECT owner, ids_json FROM _dolmen_idempotency WHERE table_name = 'notes' AND key = 'k'`).
+		`SELECT owner, ids_json FROM _dolmen_idempotency_owned WHERE table_name = 'notes' AND key = 'k'`).
 		Scan(&owner, &idsJSON); err != nil {
 		t.Fatalf("the pre-auth record did not survive the rebuild: %v", err)
 	}
@@ -209,7 +210,7 @@ func TestASecondOpenerDoesNotRebuildTwice(t *testing.T) {
 	}
 	ctx := context.Background()
 	for _, stmt := range []string{
-		`DROP TABLE _dolmen_idempotency`,
+		`DROP TABLE _dolmen_idempotency_owned`,
 		`CREATE TABLE _dolmen_idempotency(
 			table_name TEXT NOT NULL,
 			key TEXT NOT NULL,
@@ -235,7 +236,7 @@ func TestASecondOpenerDoesNotRebuildTwice(t *testing.T) {
 		t.Fatalf("ns: %v", err)
 	}
 	if _, err := fn.rw.ExecContext(ctx,
-		`INSERT INTO _dolmen_idempotency(table_name, owner, key, payload_hash, ids_json) VALUES('notes','alice','k','hash','[2]')`); err != nil {
+		`INSERT INTO _dolmen_idempotency_owned(table_name, owner, key, payload_hash, ids_json) VALUES('notes','alice','k','hash','[2]')`); err != nil {
 		t.Fatalf("record an owner-scoped key after the rebuild: %v", err)
 	}
 
@@ -245,11 +246,72 @@ func TestASecondOpenerDoesNotRebuildTwice(t *testing.T) {
 
 	var owners int
 	if err := fn.rw.QueryRowContext(ctx,
-		`SELECT count(DISTINCT owner) FROM _dolmen_idempotency WHERE table_name = 'notes' AND key = 'k'`).Scan(&owners); err != nil {
+		`SELECT count(DISTINCT owner) FROM _dolmen_idempotency_owned WHERE table_name = 'notes' AND key = 'k'`).Scan(&owners); err != nil {
 		t.Fatalf("count owners: %v", err)
 	}
 	if owners != 2 {
 		t.Fatalf("a repeated migration collapsed %d owner domains into one; the legacy record and alice's must both survive", owners)
 	}
 	first.Close()
+}
+
+func TestTheLegacyTableIsGoneAfterMigration(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	mustNS(t, legacy(st), "ns")
+	n, err := st.ns("ns")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+	ctx := context.Background()
+	for _, stmt := range []string{
+		`DROP TABLE _dolmen_idempotency_owned`,
+		`CREATE TABLE _dolmen_idempotency(
+			table_name TEXT NOT NULL,
+			key TEXT NOT NULL,
+			payload_hash TEXT NOT NULL,
+			ids_json TEXT NOT NULL,
+			at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			PRIMARY KEY(table_name, key)
+		)`,
+		`INSERT INTO _dolmen_idempotency(table_name, key, payload_hash, ids_json) VALUES('notes','k','hash','[7]')`,
+	} {
+		if _, err := n.rw.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("stage the pre-auth table: %v", err)
+		}
+	}
+	st.Close()
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer reopened.Close()
+	n2, err := reopened.ns("ns")
+	if err != nil {
+		t.Fatalf("ns: %v", err)
+	}
+
+	var hash, ids string
+	err = n2.rw.QueryRowContext(ctx,
+		`SELECT payload_hash, ids_json FROM _dolmen_idempotency WHERE table_name = 'notes' AND key = 'k'`).
+		Scan(&hash, &ids)
+	if err == nil {
+		t.Fatal("the pre-auth table still answers the ownerless lookup: a binary that already had this namespace open keeps replaying keys as if they were global, and the catalog gate only refuses the next open")
+	}
+	if !strings.Contains(err.Error(), "no such table") {
+		t.Fatalf("the ownerless lookup failed for the wrong reason: %v", err)
+	}
+
+	var owner string
+	if err := n2.rw.QueryRowContext(ctx,
+		`SELECT owner FROM _dolmen_idempotency_owned WHERE table_name = 'notes' AND key = 'k'`).Scan(&owner); err != nil {
+		t.Fatalf("the record did not survive the move: %v", err)
+	}
+	if owner != LegacyIdempotencyOwner {
+		t.Fatalf("the moved record landed in domain %q, want the legacy domain", owner)
+	}
 }
