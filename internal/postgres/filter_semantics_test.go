@@ -87,3 +87,30 @@ func TestPostgresATextColumnRefusesAComputedNumberRatherThanGuessingItsText(t *t
 		}
 	}
 }
+
+func TestPostgresATextClassNamesItsCharactersRatherThanAskingTheLocale(t *testing.T) {
+	cols := map[string]string{"body": "body", "n": "n"}
+	types := map[string]schema.FieldType{"body": schema.Text, "n": schema.Number}
+	for _, tc := range []struct {
+		expr string
+		args []any
+	}{
+		{"n = ?", []any{" -7"}},
+		{"(n % ?) IS NULL", []any{" -7"}},
+		{"abs(body) = 0", nil},
+		{"body + 1 = 1", nil},
+		{"n = body", nil},
+	} {
+		node, err := filter.Parse(tc.expr, filter.Options{Columns: []string{"body", "n"}, Args: tc.args})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.expr, err)
+		}
+		sql, _, err := renderScopedFilter(node, cols, types, tc.args, 1)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.expr, err)
+		}
+		if strings.Contains(sql, "[:space:]") {
+			t.Fatalf("%s rendered a POSIX space class, which follows the server's locale: on a UTF-8 lc_ctype it matches U+00A0 and U+2002, which SQLite does not skip, so a numeral behind one converts here and stays text there. The Go side spells the six characters SQLite skips; the SQL side has to spell the same six. Rendered: %s", tc.expr, sql)
+		}
+	}
+}

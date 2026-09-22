@@ -629,12 +629,12 @@ const (
 const (
 	asciiUpperSet   = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 	asciiLowerSet   = "abcdefghijklmnopqrstuvwxyz"
-	sqliteNumHead   = "^[[:space:]]*([+-]?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)"
+	sqliteNumHead   = "^[\\t\\n\\v\\f\\r ]*([+-]?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)"
 	sqliteDoubleMax = "1.7976931348623157e308"
-	sqliteIntHead   = "^[[:space:]]*([+-]?[0-9]+)"
+	sqliteIntHead   = "^[\\t\\n\\v\\f\\r ]*([+-]?[0-9]+)"
 	sqliteIntMax    = "9223372036854775807"
 	sqliteIntMin    = "-9223372036854775808"
-	sqliteNumFull   = "^[[:space:]]*[+-]?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?[[:space:]]*$"
+	sqliteNumFull   = "^[\\t\\n\\v\\f\\r ]*[+-]?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?[\\t\\n\\v\\f\\r ]*$"
 )
 
 func numeralOrder(text string) string {

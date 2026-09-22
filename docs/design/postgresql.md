@@ -264,11 +264,20 @@ of `-7` while `n > 'abc'` stays a cross-class comparison. Column values that are
 known at runtime get the conversion as a SQL `CASE` over the same numeric shape.
 
 The whitespace SQLite skips around such a numeral is six ASCII characters: tab, newline,
-vertical tab, form feed, carriage return and space. The rendering-time check in Go and
-the runtime `[[:space:]]` in SQL have to agree on that set, and at first they did not:
-a POSIX class carries the vertical tab, a hand-written Go class only carries what it
-lists. A bound `'\v-7'` was therefore numeric text to one half of the renderer and not
-to the other, which answered `n = ?` with a constant false rather than matching `-7`.
+vertical tab, form feed, carriage return and space. Both halves of the renderer spell
+those six out, and each half once got it wrong in a different direction. The Go class
+first omitted the vertical tab that a POSIX `[[:space:]]` carries, so a bound `'\v-7'`
+was numeric text to the SQL side and not to the Go side, and `n = ?` answered a constant
+false instead of matching `-7`. The SQL side then used `[[:space:]]` itself, which is not
+a fixed set: it follows the server's `lc_ctype`, and on a UTF-8 one it also matches
+U+00A0 and U+2002, which SQLite does not skip. `n % ?` over a numeral behind a
+non-breaking space read a numeral there and null here.
+
+That second one is invisible on a C-locale server, which is what this repository's local
+PostgreSQL is, so the row-count test that pins it passes whether or not the bug is
+present. The guard that actually holds it is a rendering test asserting no POSIX class
+reaches the SQL, which answers the same on every server. A property that depends on
+server locale wants an assertion about the statement, not about how many rows came back.
 
 A bound argument that carries no affinity of its own — a JSON `null`, or a boolean —
 still has to reach PostgreSQL with a type, because a placeholder alone in `$1 IS NULL`

@@ -124,6 +124,8 @@ var pinnedFilterSemantics = []struct {
 	{"a bound numeric string takes a number column's affinity", "n = ?", `["-7"]`},
 	{"a bound nonnumeric string stays text against a number column", "NOT (n > ?)", `["abc"]`},
 	{"a bound numeric string skips every space SQLite skips", "n = ?", `["\u000b-7\u000b"]`},
+	{"a bound numeral behind a unicode space is not numeric text", "(n % ?) IS NULL", `["\u00a0-7"]`},
+	{"a unicode space is not a space SQLite skips", "NOT (n = ?)", `["\u2002-7"]`},
 	{"a null bound argument is not distinct from a null column", "absent IS ?", `[null]`},
 	{"a bound boolean is not distinct from a boolean column", "flag IS ?", `[true]`},
 	{"a bound fraction stays fractional as a truth value", "?", `[0.1]`},
