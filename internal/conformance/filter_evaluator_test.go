@@ -258,6 +258,9 @@ var pinnedFilterSemantics = []struct {
 	{"a date converts through its numeral head in arithmetic", "date(seen_at) + 1 = 2027", ""},
 	{"a date is a truth value through its numeral head", "date(seen_at)", ""},
 	{"a Julian day is REAL, so halving a whole one keeps the half", "julianday(date(seen_at), '+12 hours') / 2 = 1230565.5", ""},
+	{"a Julian day keeps every digit of its double", "julianday(seen_at) - 2461130.5 > 0.2125811105", ""},
+	{"a Julian day is one division, not three", "julianday('2026-03-19T14:05:09.123Z') = 2461119.086911146", ""},
+	{"a Julian number is read as SQLite rounds it", "julianday(2729462.7741404455) = 2729462.7741404516", ""},
 }
 
 var notYetEvaluatedByAdapterTwo = map[string]bool{

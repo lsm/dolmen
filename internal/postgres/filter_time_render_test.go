@@ -3,7 +3,6 @@ package postgres
 import (
 	"database/sql"
 	"errors"
-	"math"
 	"strconv"
 	"strings"
 	"testing"
@@ -67,6 +66,8 @@ var timeExpressions = []string{
 	"julianday('2026-01-01T00:00:00.123456789')",
 	"julianday('2026-12-31T23:59:59.9999')",
 	"julianday(2460000.5000004)",
+	"julianday(2729462.7741404455)",
+	"julianday(4740199.40014776)",
 	"datetime(2460000.99999999)",
 	"datetime(2460000.999999999999)",
 	"datetime(2460000.9999999999999)",
@@ -132,6 +133,7 @@ var timeMoments = []string{
 	"2026-01-01T00:00:00.9995Z",
 	"2026-01-01T00:00:00.9994Z",
 	"2026-12-31T23:59:59.9996Z",
+	"2026-03-19T14:05:09.123Z",
 }
 
 func sqliteScalar(t *testing.T, db *sql.DB, expr, moment string) (string, bool) {
@@ -154,7 +156,7 @@ func sameScalar(got, want string) bool {
 	}
 	a, aerr := strconv.ParseFloat(got, 64)
 	b, berr := strconv.ParseFloat(want, 64)
-	return aerr == nil && berr == nil && math.Abs(a-b) < 1e-9
+	return aerr == nil && berr == nil && a == b
 }
 
 func TestEveryDateExpressionAnswersWhatSQLiteAnswers(t *testing.T) {

@@ -527,8 +527,22 @@ SQLite quantizes a time value to whole milliseconds, rounding half up and then
 **clamping at 999 rather than carrying**: `.0004` is 0ms, `.0005` is 1ms, and everything
 from `.9990` to `.9999` is 999ms, which is why no fractional second ever tips a second or
 a date. Only `julianday` exposes the quantum at all, since the other four truncate to a
-second, and the cross-engine test's tolerance is 1e-9 days — at 1e-8 a whole millisecond
-of drift passes unnoticed.
+second.
+
+`julianday` has to be SQLite's double exactly rather than close to it, because a filter
+compares it with `=` and `<`. SQLite rounds once: it divides the whole number of
+milliseconds since the Julian epoch by 86400000. The rendered value does the same, taking
+`extract('epoch', t) * 1000` in exact `numeric`, shifting it to the Julian epoch, and
+dividing once in `float8`; the obvious `date_part('epoch', t) / 86400 + 2440587.5` rounds
+three times and is a unit in the last place off on about one moment in six. The way back
+is SQLite's too: a Julian number is `(int64)(r * 86400000 + 0.5)` milliseconds, and
+splitting it into whole and fractional seconds before rounding lands a millisecond off on
+about one in seven. The Go parse spells it as `modernc.org/sqlite` does, down to the
+explicit `float64` conversion that keeps Go from fusing the multiply and add on arm64; at
+these magnitudes a fused form happens to round the same, but the parse should not rest on
+that. The cross-engine test compares exactly.
+A tolerance of 1e-9 days, about two units in the last place, hid the first error, and no
+Julian number in the corpus showed the second.
 
 Both paths have to do it, which is easy to miss because only one of them is Go.
 `schema.CanonicalTimestamp` keeps a timestamp's text verbatim, so a field may legally
@@ -604,8 +618,9 @@ format must be double-quoted for `to_char`, or `%Y-%m-%dT%H:%M:%S` renders its l
 `T` as `STH24` — and inside those quotes a backslash escapes the next character, so
 backslashes have to be doubled *before* the quotes are escaped, or `a\b` comes back as
 `ab` and `\%Y` swallows the field marker entirely. SQLite echoes a backslash verbatim,
-so every one of those is a quiet wrong answer rather than an error. And `extract` is grammar rather than a function, so the `pg_catalog.`
-qualification every other rendered call carries is spelled `pg_catalog.date_part` here.
+so every one of those is a quiet wrong answer rather than an error. And `EXTRACT(… FROM …)`
+is grammar that cannot carry the `pg_catalog.` qualification every other rendered call
+does, so it is written in its function form, `pg_catalog.extract('epoch', …)`.
 
 The tests are differential rather than expectational: `filter_time_test.go` compares the
 Go parser against a real SQLite over a corpus of time strings and modifiers, and

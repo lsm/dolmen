@@ -16,6 +16,8 @@ import (
 
 const julianUnixEpoch = 2440587.5
 
+const julianUnixEpochMillis = julianUnixEpoch * 86400000
+
 var sqliteZone = `([Zz]|[+-](?:0\d|1[0-4]):[0-5]\d)`
 
 var sqliteDatedTime = regexp.MustCompile(`^(-?)(\d{4})-(\d{2})-(\d{2})(?:[T \t\n\v\f\r]*(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?` + sqliteZone + `?)?$`)
@@ -65,10 +67,7 @@ func quantizeToMillis(seconds float64) int {
 }
 
 func julianToTime(jd float64) time.Time {
-	seconds := (jd - julianUnixEpoch) * 86400
-	whole := math.Floor(seconds)
-	millis := int64(math.Round((seconds - whole) * 1000))
-	return time.Unix(int64(whole), millis*int64(time.Millisecond)).UTC()
+	return time.UnixMilli(int64(float64(jd*86400000)+0.5) - julianUnixEpochMillis).UTC()
 }
 
 var sqliteRealNumber = regexp.MustCompile(`^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$`)
@@ -556,8 +555,8 @@ func (r *filterRenderer) timeCall(node *filter.Call, next int) error {
 	}
 	moment = withinRepresentableYears(moment)
 	if !ok {
-		r.sb.WriteString(sqliteDouble("pg_catalog.date_part('epoch', " + moment + ") / 86400.0 + " +
-			strconv.FormatFloat(julianUnixEpoch, 'f', -1, 64)))
+		r.sb.WriteString(sqliteDouble("(pg_catalog.extract('epoch', " + moment + ") * 1000 + " +
+			strconv.FormatInt(julianUnixEpochMillis, 10) + ")::float8 / 86400000::float8"))
 		return nil
 	}
 	r.sb.WriteString("pg_catalog.to_char(" + moment + ", " + dollarQuote(pattern) + ")")
