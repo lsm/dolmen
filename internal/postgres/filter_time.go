@@ -24,7 +24,7 @@ var sqliteBareTime = regexp.MustCompile(`^(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?
 
 var sqliteOffsetModifier = regexp.MustCompile(`^([+-])(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?$`)
 
-var sqliteAmountModifier = regexp.MustCompile(`^([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)[ \t]+([A-Za-z]+)$`)
+var sqliteAmountModifier = regexp.MustCompile(`^([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)[ \t\n\v\f\r]+([A-Za-z]+)$`)
 
 var sqliteModifierUnits = map[string]float64{
 	"day": 86400, "days": 86400,
@@ -73,7 +73,7 @@ func julianToTime(jd float64) time.Time {
 
 func parseSQLiteJulian(text string) (time.Time, bool) {
 	jd, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
-	if err != nil || jd < 0 || jd > 5373484.5 {
+	if err != nil || math.IsNaN(jd) || jd < 0 || jd >= 5373484.5 {
 		return time.Time{}, false
 	}
 	return julianToTime(jd), true
@@ -305,7 +305,7 @@ func timeTextMoment(text string) (string, error) {
 }
 
 func julianMoment(value float64) (string, error) {
-	if value < 0 || value > 5373484.5 {
+	if math.IsNaN(value) || value < 0 || value >= 5373484.5 {
 		return "NULL::timestamp", nil
 	}
 	moment := julianToTime(value)
@@ -412,7 +412,7 @@ func (r *filterRenderer) columnMoment(node *filter.Column) (string, error) {
 	if !ok {
 		physical = node.Name
 	}
-	return timestampColumn(ident(physical)), nil
+	return quantizedToSQLitesMillisecond(timestampColumn(ident(physical))), nil
 }
 
 func (r *filterRenderer) nestedMoment(node *filter.Call, next int) (string, error) {
@@ -463,6 +463,7 @@ func (r *filterRenderer) moment(node *filter.Call, next int) (string, error) {
 		}
 		shift += seconds
 	}
+	shift = math.Round(shift*1000) / 1000
 	if shift == 0 {
 		return base, nil
 	}
@@ -518,7 +519,7 @@ func (r *filterRenderer) timeCall(node *filter.Call, next int) error {
 	if err != nil {
 		return err
 	}
-	moment = withinRepresentableYears(quantizedToSQLitesMillisecond(moment))
+	moment = withinRepresentableYears(moment)
 	if !ok {
 		r.sb.WriteString("(pg_catalog.date_part('epoch', " + moment + ") / 86400.0 + " +
 			strconv.FormatFloat(julianUnixEpoch, 'f', -1, 64) + ")")

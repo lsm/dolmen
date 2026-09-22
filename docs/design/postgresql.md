@@ -278,7 +278,9 @@ one without is read as `timestamp`, because `timestamptz` would otherwise apply 
 server's zone.
 
 Three verdicts, not two. A shape SQLite reads is rendered. A shape SQLite answers `NULL`
-for is rendered as `NULL`. A shape SQLite reads but this engine will not reproduce is
+for is rendered as `NULL` — including the ones that are not obviously time at all, since
+`strconv.ParseFloat` reads `nan` and `inf` as numbers and a Julian day must be a real one
+strictly below 5373484.5. A shape SQLite reads but this engine will not reproduce is
 **refused**, never rendered as `NULL`: these filters drive `delete`, so a wrong row set
 is data loss where a refusal is only an inconvenience. Refused today: month and year
 modifiers, because SQLite sets the month and then normalizes the day overflow
@@ -340,6 +342,13 @@ so casting `...00.1234999` rounds it to `.1235` and the quantum then rounds that
 has its fraction trimmed to four digits before the cast: four is enough to decide the
 half-millisecond and no later digit can change it, since `.4999…` never reaches `.5`.
 It needs seven stored digits to show, which `CanonicalTimestamp` accepts.
+
+The order matters as much as the rounding. SQLite quantizes when it *parses* a time and
+then shifts in whole milliseconds, so the quantum is applied to the base rather than to
+the result: a stored `.9995` shifted by `+0.5 seconds` is 1499ms there, where quantizing
+after the shift gives 1500. The column's moment is therefore quantized where it is read,
+each modifier is rounded to a whole millisecond of its own, and nothing is quantized
+again at the end.
 
 PostgreSQL has no year zero and writes earlier years with a `BC` suffix rather than as a
 negative number, so `TIMESTAMP '-4713-11-24'` and `TIMESTAMP '0000-01-01'` are both

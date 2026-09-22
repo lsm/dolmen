@@ -111,6 +111,8 @@ var timeValueCorpus = []string{
 	"2026-03-31T05:06:07-23:59",
 	"2026-03-31T05:06:07+14:60",
 	"05:06:07+15:00",
+	"nan", "+nan", "NaN", "inf", "-inf", "Infinity",
+	"5373484.5", "5373484.4999", "5373483",
 }
 
 func TestTheTimeParserAgreesWithSQLiteOnEveryShape(t *testing.T) {
@@ -149,6 +151,7 @@ var modifierCorpus = []string{
 	"+01:30", "-01:30", "+00:00:30",
 	"+00:99", "+25:00", "+00:00:99", "+24:00", "+24:59", "+23:59", "+14:59",
 	"+00:59:59", "-24:00", "-25:00", "+99:59",
+	"+1\nday", "+1\vday", "+1\fday", "+1\rday", "+1\n\tday",
 	"+1 week", "+1 weeks", "+ 1 day", "+1day", "days", "+1 dayz", "+1 hours ", " +1 hours",
 	"bogus", "", "+1  day", "+1\tday",
 }
