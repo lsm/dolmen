@@ -160,3 +160,41 @@ func TestWhatThisEngineWillNotRenderIsRefusedRatherThanAnswered(t *testing.T) {
 		}
 	}
 }
+
+var mixedClassTimeComparisons = []string{
+	"date(created_at) > 1",
+	"date(created_at) = 1",
+	"date(created_at) <= 1",
+	"strftime('%Y', created_at) = 2026",
+	"julianday(created_at) > 'abc'",
+	"datetime(created_at) != 0",
+}
+
+func TestAMixedClassComparisonRaisesRatherThanAnsweringDifferently(t *testing.T) {
+	cfg := testConfig(t)
+	s := openTest(t, cfg)
+	db := sqliteOracle(t)
+	const moment = "2026-09-21T14:05:09.123Z"
+	for _, expr := range mixedClassTimeComparisons {
+		want, wantValid := sqliteScalar(t, db, expr, moment)
+		rendered := renderFor(t, expr)
+		var got sql.NullString
+		query := "SELECT (" + rendered + ")::text FROM (VALUES (" + dollarQuote(moment) + "::text)) AS t(created_at)"
+		if err := s.pool.QueryRow(t.Context(), query).Scan(&got); err != nil {
+			continue
+		}
+		if got.Valid != wantValid || (wantValid && !sameBoolean(got.String, want)) {
+			t.Errorf("%s: SQLite answers %q and this engine answers %q. Disagreeing is allowed here only by raising: a comparison that quietly returns the other row set is a wrong delete", expr, want, got.String)
+		}
+	}
+}
+
+func sameBoolean(got, want string) bool {
+	switch want {
+	case "1":
+		return got == "true"
+	case "0":
+		return got == "false"
+	}
+	return got == want
+}

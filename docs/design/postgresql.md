@@ -290,6 +290,17 @@ through formatting unchanged as `24:00:00` but normalizes the moment any modifie
 applied. Rendered: `±N day/hour/minute/second` and `±HH:MM[:SS]` modifiers, and the
 `%Y %m %d %H %M %S %j %%` fields.
 
+One divergence is left open deliberately. `date`, `time`, `datetime` and `strftime`
+render as text and `julianday` as a number, so comparing one against the other storage
+class — `date(created_at) > 1`, `strftime('%Y', created_at) = 2026` — reaches PostgreSQL
+as `text > integer` and raises 42883, where SQLite compares storage classes and answers.
+It surfaces as a redacted `query_error`, never as a different row set, and a test pins
+exactly that: on these expressions this engine must either agree with SQLite or raise.
+Closing it is the affinity work in #404, which folds a cross-class comparison to the
+constant SQLite would produce — but only for calls its `affinityOf` classes, so the five
+time functions have to be named there (`date`, `time`, `datetime`, `strftime` as text,
+`julianday` as a number) or an unclassed call keeps falling through to the raising path.
+
 Two things are easy to get wrong and are pinned by tests. Literal runs inside a strftime
 format must be double-quoted for `to_char`, or `%Y-%m-%dT%H:%M:%S` renders its literal
 `T` as `STH24`. And `extract` is grammar rather than a function, so the `pg_catalog.`
