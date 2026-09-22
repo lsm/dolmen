@@ -30,6 +30,7 @@ type parser struct {
 	params    int
 	timeDepth int
 	depth     int
+	stack     []Node
 }
 
 func (p *parser) advance() error {
@@ -124,17 +125,27 @@ func (p *parser) peekOperator() (int, func(int) error, error) {
 }
 
 func (p *parser) binary(precedence int) error {
+	op := strings.ToLower(p.tok.text)
 	if err := p.advance(); err != nil {
 		return err
 	}
-	return p.expression(precedence)
+	if err := p.expression(precedence); err != nil {
+		return err
+	}
+	parts := p.take(2)
+	if len(parts) == 2 {
+		p.push(&Binary{Op: op, Left: parts[0], Right: parts[1]})
+	}
+	return nil
 }
 
 func (p *parser) isOperator(precedence int) error {
 	if err := p.advance(); err != nil {
 		return err
 	}
+	negated := false
 	if p.tok.keyword("not") {
+		negated = true
 		if err := p.advance(); err != nil {
 			return err
 		}
@@ -142,7 +153,14 @@ func (p *parser) isOperator(precedence int) error {
 	if p.tok.keyword("distinct") {
 		return errAt(p.tok.pos, "is distinct from is not accepted in a filter expression; write is or is not")
 	}
-	return p.expression(precedence)
+	if err := p.expression(precedence); err != nil {
+		return err
+	}
+	parts := p.take(2)
+	if len(parts) == 2 {
+		p.push(&Is{Negated: negated, Left: parts[0], Right: parts[1]})
+	}
+	return nil
 }
 
 func (p *parser) negatedOperator(precedence int) error {
@@ -152,18 +170,20 @@ func (p *parser) negatedOperator(precedence int) error {
 	}
 	switch {
 	case p.tok.keyword("in"):
-		return p.inList(precedence)
+		return p.inListNegated(precedence, true)
 	case p.tok.keyword("like"):
-		return p.like(precedence)
+		return p.likeNegated(precedence, true)
 	case p.tok.keyword("between"):
-		return p.between(precedence)
+		return p.betweenNegated(precedence, true)
 	case p.tok.keyword("null"):
 		return errAt(pos, "not null is not accepted after a value in a filter expression; write is not null")
 	}
 	return errAt(pos, "not may negate in, like or between here, but %s follows it", p.tok.describe())
 }
 
-func (p *parser) like(precedence int) error {
+func (p *parser) like(precedence int) error { return p.likeNegated(precedence, false) }
+
+func (p *parser) likeNegated(precedence int, negated bool) error {
 	if err := p.advance(); err != nil {
 		return err
 	}
@@ -189,12 +209,25 @@ func (p *parser) like(precedence int) error {
 		default:
 			return errAt(p.tok.pos, "the escape of a like must be a one-character text literal or a ? argument, not %s", p.tok.describe())
 		}
-		return p.consumeLiteral()
+		if err := p.consumeLiteral(); err != nil {
+			return err
+		}
+		parts := p.take(3)
+		if len(parts) == 3 {
+			p.push(&Like{Negated: negated, Left: parts[0], Pattern: parts[1], Escape: parts[2]})
+		}
+		return nil
+	}
+	parts := p.take(2)
+	if len(parts) == 2 {
+		p.push(&Like{Negated: negated, Left: parts[0], Pattern: parts[1]})
 	}
 	return nil
 }
 
-func (p *parser) between(precedence int) error {
+func (p *parser) between(precedence int) error { return p.betweenNegated(precedence, false) }
+
+func (p *parser) betweenNegated(precedence int, negated bool) error {
 	if err := p.advance(); err != nil {
 		return err
 	}
@@ -207,10 +240,19 @@ func (p *parser) between(precedence int) error {
 	if err := p.advance(); err != nil {
 		return err
 	}
-	return p.expression(precedenceAnd)
+	if err := p.expression(precedenceAnd); err != nil {
+		return err
+	}
+	parts := p.take(3)
+	if len(parts) == 3 {
+		p.push(&Between{Negated: negated, Value: parts[0], Low: parts[1], High: parts[2]})
+	}
+	return nil
 }
 
-func (p *parser) inList(precedence int) error {
+func (p *parser) inList(precedence int) error { return p.inListNegated(precedence, false) }
+
+func (p *parser) inListNegated(precedence int, negated bool) error {
 	if err := p.advance(); err != nil {
 		return err
 	}
@@ -221,8 +263,15 @@ func (p *parser) inList(precedence int) error {
 		return err
 	}
 	if p.tok.is(")") {
-		return p.advance()
+		if err := p.advance(); err != nil {
+			return err
+		}
+		if left := p.pop(); left != nil {
+			p.push(&In{Negated: negated, Left: left})
+		}
+		return nil
 	}
+	mark := len(p.stack)
 	for {
 		if p.tok.keyword("select") {
 			return errAt(p.tok.pos, "a filter expression may not read rows itself; it sees only the row it is applied to")
@@ -238,13 +287,22 @@ func (p *parser) inList(precedence int) error {
 		}
 		break
 	}
-	return p.expect(")", "a closing parenthesis after the list of values")
+	if err := p.expect(")", "a closing parenthesis after the list of values"); err != nil {
+		return err
+	}
+	list := p.takeFrom(mark)
+	if left := p.pop(); left != nil {
+		p.push(&In{Negated: negated, Left: left, List: list})
+	}
+	return nil
 }
 
 func (p *parser) listValue() error {
 	negated := false
+	sign := ""
 	if p.tok.is("-") || p.tok.is("+") {
 		negated = true
+		sign = p.tok.text
 		if err := p.advance(); err != nil {
 			return err
 		}
@@ -255,7 +313,15 @@ func (p *parser) listValue() error {
 	if negated && p.tok.kind != tokenNumber {
 		return errAt(p.tok.pos, "a sign may only precede a number in the list of values")
 	}
-	return p.consumeLiteral()
+	if err := p.consumeLiteral(); err != nil {
+		return err
+	}
+	if sign != "" {
+		if operand := p.pop(); operand != nil {
+			p.push(&Unary{Op: sign, Operand: operand})
+		}
+	}
+	return nil
 }
 
 func (p *parser) literalToken() bool {
@@ -287,18 +353,47 @@ func (p *parser) consumeLiteral() error {
 		}
 	}
 	if p.tok.kind == tokenParam {
+		p.push(&Param{Index: p.params})
 		p.params++
+		return p.advance()
 	}
+	p.push(&Literal{Kind: literalKindOf(p.tok), Text: p.tok.text})
 	return p.advance()
+}
+
+func literalKindOf(t token) LiteralKind {
+	switch t.kind {
+	case tokenNumber:
+		return LiteralNumber
+	case tokenBlob:
+		return LiteralBlob
+	case tokenIdent:
+		switch strings.ToLower(t.text) {
+		case "null":
+			return LiteralNull
+		case "true":
+			return LiteralTrue
+		case "false":
+			return LiteralFalse
+		}
+	}
+	return LiteralString
 }
 
 func (p *parser) prefix() error {
 	switch {
 	case p.tok.is("-"), p.tok.is("+"):
+		sign := p.tok.text
 		if err := p.advance(); err != nil {
 			return err
 		}
-		return p.expression(precedenceUnary)
+		if err := p.expression(precedenceUnary); err != nil {
+			return err
+		}
+		if operand := p.pop(); operand != nil {
+			p.push(&Unary{Op: sign, Operand: operand})
+		}
+		return nil
 	case p.tok.is("~"):
 		return errAt(p.tok.pos, "~ is a bit operator, which a filter expression may not use")
 	case p.tok.is("("):
@@ -311,12 +406,24 @@ func (p *parser) prefix() error {
 		if err := p.expression(precedenceLowest); err != nil {
 			return err
 		}
-		return p.expect(")", "a closing parenthesis")
+		if err := p.expect(")", "a closing parenthesis"); err != nil {
+			return err
+		}
+		if inner := p.pop(); inner != nil {
+			p.push(&Paren{Inner: inner})
+		}
+		return nil
 	case p.tok.keyword("not"):
 		if err := p.advance(); err != nil {
 			return err
 		}
-		return p.expression(precedenceNot)
+		if err := p.expression(precedenceNot); err != nil {
+			return err
+		}
+		if operand := p.pop(); operand != nil {
+			p.push(&Unary{Op: "not", Operand: operand})
+		}
+		return nil
 	case p.tok.keyword("case"):
 		return p.caseExpression()
 	case p.tok.kind == tokenParam:
@@ -338,6 +445,7 @@ func (p *parser) identifier() error {
 	}
 	switch word {
 	case "null", "true", "false":
+		p.push(&Literal{Kind: literalKindOf(p.tok), Text: p.tok.text})
 		return p.advance()
 	case "case":
 		return p.caseExpression()
@@ -369,6 +477,7 @@ func (p *parser) namedColumn(name string, pos int) error {
 	if !p.columns[strings.ToLower(name)] {
 		return p.unknownColumn(name, pos)
 	}
+	p.push(&Column{Name: strings.ToLower(name)})
 	return nil
 }
 
@@ -391,6 +500,7 @@ func (p *parser) call(name string, pos int) error {
 		p.timeDepth++
 		defer func() { p.timeDepth-- }()
 	}
+	mark := len(p.stack)
 	count := 0
 	for !p.tok.is(")") {
 		if count > 0 {
@@ -424,11 +534,14 @@ func (p *parser) call(name string, pos int) error {
 	if p.tok.keyword("filter") || p.tok.keyword("over") {
 		return errAt(p.tok.pos, "%s cannot take a %s clause in a filter expression", name, strings.ToLower(p.tok.text))
 	}
+	p.push(&Call{Name: name, Args: p.takeFrom(mark)})
 	return nil
 }
 
 func (p *parser) timeArgument() error {
+	sign := ""
 	if p.tok.is("-") || p.tok.is("+") {
+		sign = p.tok.text
 		if err := p.advance(); err != nil {
 			return err
 		}
@@ -438,12 +551,21 @@ func (p *parser) timeArgument() error {
 	}
 	switch p.tok.kind {
 	case tokenString, tokenNumber, tokenParam:
-		return p.consumeLiteral()
+		if err := p.consumeLiteral(); err != nil {
+			return err
+		}
+		if sign != "" {
+			if operand := p.pop(); operand != nil {
+				p.push(&Unary{Op: sign, Operand: operand})
+			}
+		}
+		return nil
 	case tokenQuotedIdent:
 		return p.column(p.tok.text, p.tok.pos)
 	case tokenIdent:
 		word := strings.ToLower(p.tok.text)
 		if word == "null" {
+			p.push(&Literal{Kind: LiteralNull, Text: p.tok.text})
 			return p.advance()
 		}
 		if reason, bad := rejectedKeywords[word]; bad {
@@ -479,10 +601,12 @@ func (p *parser) caseExpression() error {
 	if err := p.advance(); err != nil {
 		return err
 	}
+	node := &Case{}
 	if !p.tok.keyword("when") {
 		if err := p.expression(precedenceLowest); err != nil {
 			return err
 		}
+		node.Operand = p.pop()
 	}
 	if !p.tok.keyword("when") {
 		return errAt(p.tok.pos, "case needs at least one when in a filter expression, but %s follows", p.tok.describe())
@@ -503,6 +627,10 @@ func (p *parser) caseExpression() error {
 		if err := p.expression(precedenceLowest); err != nil {
 			return err
 		}
+		parts := p.take(2)
+		if len(parts) == 2 {
+			node.Branches = append(node.Branches, CaseBranch{When: parts[0], Then: parts[1]})
+		}
 	}
 	if p.tok.keyword("else") {
 		if err := p.advance(); err != nil {
@@ -511,11 +639,16 @@ func (p *parser) caseExpression() error {
 		if err := p.expression(precedenceLowest); err != nil {
 			return err
 		}
+		node.Else = p.pop()
 	}
 	if !p.tok.keyword("end") {
 		return errAt(p.tok.pos, "case needs an end in a filter expression, but %s follows", p.tok.describe())
 	}
-	return p.advance()
+	if err := p.advance(); err != nil {
+		return err
+	}
+	p.push(node)
+	return nil
 }
 
 func (r argRange) describe() string {
