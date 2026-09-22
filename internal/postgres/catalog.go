@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -12,6 +14,8 @@ import (
 )
 
 const catalogVersion = 6
+
+const minimumServerVersion = 160000
 
 func ident(parts ...string) string { return pgx.Identifier(parts).Sanitize() }
 
@@ -29,12 +33,46 @@ func rollback(tx pgx.Tx) {
 	_ = tx.Rollback(ctx)
 }
 
+type serverVersionError struct {
+	have string
+	need int
+}
+
+func (e *serverVersionError) Error() string {
+	return fmt.Sprintf("postgres: this engine needs PostgreSQL %d or newer and the server reports %s; a scoped filter that coerces text to a number calls pg_input_is_valid, which that server does not have", e.need, e.have)
+}
+
+func (e *serverVersionError) Unwrap() error { return store.ErrInvalid }
+
+func (s *Store) requireServerVersion(ctx context.Context, tx pgx.Tx) error {
+	var raw string
+	if err := tx.QueryRow(ctx, "SHOW server_version_num").Scan(&raw); err != nil {
+		return err
+	}
+	num, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("%w: PostgreSQL reported an unreadable server_version_num %q", store.ErrInvalid, raw)
+	}
+	if num >= minimumServerVersion {
+		return nil
+	}
+	shown := raw
+	var reported string
+	if err := tx.QueryRow(ctx, "SHOW server_version").Scan(&reported); err == nil {
+		shown = reported
+	}
+	return &serverVersionError{have: shown, need: minimumServerVersion / 10000}
+}
+
 func (s *Store) bootstrap(ctx context.Context) error {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return err
 	}
 	defer rollback(tx)
+	if err := s.requireServerVersion(ctx, tx); err != nil {
+		return err
+	}
 	if err := s.catalogLock(ctx, tx); err != nil {
 		return err
 	}
