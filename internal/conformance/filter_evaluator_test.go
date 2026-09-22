@@ -50,6 +50,15 @@ var sharedFilterList = []struct {
 	{"coalesce beyond two arguments", "coalesce(NULL, NULL, 'x') = 'x'"},
 	{"datetime with two modifiers", "datetime(created_at, '+1 day', '+1 hour') > datetime(created_at, '+1 day')"},
 	{"strftime with two modifiers", "strftime('%Y-%m-%d', created_at, '+1 day', '+1 day') > strftime('%Y-%m-%d', created_at, '+1 day')"},
+	{"date names the day", "date(seen_at) = '2026-03-31'"},
+	{"time names the clock", "time(seen_at) = '05:06:07'"},
+	{"datetime names both", "datetime(seen_at) = '2026-03-31 05:06:07'"},
+	{"strftime names the fields it was given", "strftime('%Y-%m-%d %H:%M:%S', seen_at) = '2026-03-31 05:06:07'"},
+	{"julianday round-trips through datetime", "datetime(julianday(seen_at)) = '2026-03-31 05:06:07'"},
+	{"a day modifier moves exactly one day", "date(seen_at, '+1 day') = '2026-04-01'"},
+	{"an hour modifier moves exactly one hour", "time(seen_at, '+1 hour') = '06:06:07'"},
+	{"a negative modifier moves back", "date(seen_at, '-1 day') = '2026-03-30'"},
+	{"two modifiers compose", "datetime(seen_at, '+1 day', '+1 hour') = '2026-04-01 06:06:07'"},
 }
 
 var allowlistedOperators = []struct {
@@ -147,11 +156,12 @@ func seedScopedFilterRow(t *testing.T) *harness {
 		"fields": []map[string]any{
 			{"name": "body", "type": "text", "fulltext": true},
 			{"name": "n", "type": "number"},
+			{"name": "seen_at", "type": "timestamp"},
 		},
 		"row_access": "own",
 	})
 	grantTo(t, h, "principal", "alice", "acme", "notes", "create", "delete")
-	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7}]}`)
+	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7,"seen_at":"2026-03-31T05:06:07.008Z"}]}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("seed insert: status %d %v", res.StatusCode, out)
 	}
