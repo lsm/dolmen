@@ -193,6 +193,12 @@ const (
 	VectorANN VectorExecution = "ann"
 )
 
+const (
+	DialectSQLite = "sqlite"
+
+	DialectPostgres = "postgresql"
+)
+
 type EngineCapabilities struct {
 	VectorExecution VectorExecution `json:"vector_execution"`
 
@@ -201,6 +207,10 @@ type EngineCapabilities struct {
 	Notifications bool `json:"notifications"`
 
 	Subscribe bool `json:"subscribe"`
+
+	QueryDialect string `json:"query_dialect"`
+
+	FilterDialect string `json:"filter_dialect"`
 }
 
 func (s *Store) Capabilities() EngineCapabilities {
@@ -209,5 +219,7 @@ func (s *Store) Capabilities() EngineCapabilities {
 		ANNRecallBound:  nil,
 		Notifications:   true,
 		Subscribe:       true,
+		QueryDialect:    DialectSQLite,
+		FilterDialect:   DialectSQLite,
 	}
 }
