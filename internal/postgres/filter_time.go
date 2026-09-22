@@ -217,7 +217,8 @@ func strftimeToCharPattern(format string) (pattern string, unsupported byte, sup
 		if literal.Len() == 0 {
 			return
 		}
-		out.WriteString(`"` + strings.ReplaceAll(literal.String(), `"`, `\"`) + `"`)
+		escaped := strings.ReplaceAll(literal.String(), `\`, `\\`)
+		out.WriteString(`"` + strings.ReplaceAll(escaped, `"`, `\"`) + `"`)
 		literal.Reset()
 	}
 	for i := 0; i < len(format); i++ {

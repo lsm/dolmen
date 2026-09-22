@@ -359,7 +359,10 @@ storage boundary, which is a change to both engines' input contract and to
 
 Two things are easy to get wrong and are pinned by tests. Literal runs inside a strftime
 format must be double-quoted for `to_char`, or `%Y-%m-%dT%H:%M:%S` renders its literal
-`T` as `STH24`. And `extract` is grammar rather than a function, so the `pg_catalog.`
+`T` as `STH24` — and inside those quotes a backslash escapes the next character, so
+backslashes have to be doubled *before* the quotes are escaped, or `a\b` comes back as
+`ab` and `\%Y` swallows the field marker entirely. SQLite echoes a backslash verbatim,
+so every one of those is a quiet wrong answer rather than an error. And `extract` is grammar rather than a function, so the `pg_catalog.`
 qualification every other rendered call carries is spelled `pg_catalog.date_part` here.
 
 The tests are differential rather than expectational: `filter_time_test.go` compares the
