@@ -445,7 +445,7 @@ func (r *filterRenderer) moment(node *filter.Call, next int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	shift := 0.0
+	shiftMillis := int64(0)
 	for _, arg := range args[1:] {
 		text, ok := r.constantText(arg)
 		if !ok {
@@ -461,12 +461,12 @@ func (r *filterRenderer) moment(node *filter.Call, next int) (string, error) {
 		case malformedInSQLite:
 			return "NULL::timestamp", nil
 		}
-		shift += seconds
+		shiftMillis += int64(math.Round(seconds * 1000))
 	}
-	shift = math.Round(shift*1000) / 1000
-	if shift == 0 {
+	if shiftMillis == 0 {
 		return base, nil
 	}
+	shift := float64(shiftMillis) / 1000
 	return "(" + base + " + pg_catalog.make_interval(secs => " + strconv.FormatFloat(shift, 'f', -1, 64) + "))", nil
 }
 
