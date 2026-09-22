@@ -613,9 +613,11 @@ var Ops = map[string]OpDef{
 					map[string]any{"type": "null"},
 				},
 			},
-			"notifications": prop("boolean", "Whether the engine implements commit notifications (wait_for)"),
-			"subscribe":     prop("boolean", "Whether the engine serves live change streams"),
-		}, "vector_execution", "ann_recall_bound", "notifications", "subscribe"),
+			"notifications":  prop("boolean", "Whether the engine implements commit notifications (wait_for)"),
+			"subscribe":      prop("boolean", "Whether the engine serves live change streams"),
+			"query_dialect":  prop("string", "The SQL dialect the query operation accepts, named by family (e.g. sqlite, postgresql); an open enum, so branch on it rather than assuming a closed set"),
+			"filter_dialect": prop("string", "The SQL dialect a filter expression is read in under auth: off, named the same way; under auth: on every engine reads the shared allowlist instead, and this field is informational"),
+		}, "vector_execution", "ann_recall_bound", "notifications", "subscribe", "query_dialect", "filter_dialect"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req struct{}
 			if err := decode(body, &req); err != nil {
