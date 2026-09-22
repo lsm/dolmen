@@ -16,7 +16,7 @@ import (
 
 const julianUnixEpoch = 2440587.5
 
-var sqliteDatedTime = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?([Zz]|[+-]\d{2}:\d{2})?)?$`)
+var sqliteDatedTime = regexp.MustCompile(`^(-?)(\d{4})-(\d{2})-(\d{2})(?:[T \t\n\v\f\r]*(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?([Zz]|[+-]\d{2}:\d{2})?)?$`)
 
 var sqliteBareTime = regexp.MustCompile(`^(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?([Zz]|[+-]\d{2}:\d{2})?$`)
 
@@ -109,23 +109,26 @@ func parseSQLiteTimeText(text string) (time.Time, timeTextKind) {
 	if moment, ok := parseSQLiteJulian(text); ok {
 		return moment, timeReadable
 	}
-	trimmed := strings.TrimRight(text, " \t\n\r")
+	trimmed := strings.TrimRight(text, " \t\n\v\f\r")
 	if sqliteClockWords[strings.ToLower(strings.TrimSpace(trimmed))] {
 		return time.Time{}, timeClockDependent
 	}
 	if m := sqliteDatedTime.FindStringSubmatch(trimmed); m != nil {
-		year, _ := strconv.Atoi(m[1])
-		month, _ := strconv.Atoi(m[2])
-		day, _ := strconv.Atoi(m[3])
-		if month < 1 || month > 12 || day < 1 {
+		year, _ := strconv.Atoi(m[2])
+		month, _ := strconv.Atoi(m[3])
+		day, _ := strconv.Atoi(m[4])
+		if month < 1 || month > 12 || day < 1 || day > 31 {
 			return time.Time{}, timeMalformed
 		}
 		clock := time.Duration(0)
-		if m[4] != "" {
+		if m[5] != "" {
 			var kind timeTextKind
-			if clock, kind = parseSQLiteClock(m[4], m[5], m[6], m[7], m[8]); kind != timeReadable {
+			if clock, kind = parseSQLiteClock(m[5], m[6], m[7], m[8], m[9]); kind != timeReadable {
 				return time.Time{}, kind
 			}
+		}
+		if m[1] == "-" {
+			return time.Time{}, timeUnrendered
 		}
 		return time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC).
 			AddDate(0, month-1, day-1).Add(clock), timeReadable
