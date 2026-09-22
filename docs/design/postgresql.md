@@ -316,8 +316,19 @@ SQLite quantizes a time value to whole milliseconds, rounding half up and then
 **clamping at 999 rather than carrying**: `.0004` is 0ms, `.0005` is 1ms, and everything
 from `.9990` to `.9999` is 999ms, which is why no fractional second ever tips a second or
 a date. Only `julianday` exposes the quantum at all, since the other four truncate to a
-second. The parser reproduces it, and the cross-engine test's tolerance is 1e-9 days —
-at 1e-8 a whole millisecond of drift passes unnoticed.
+second, and the cross-engine test's tolerance is 1e-9 days — at 1e-8 a whole millisecond
+of drift passes unnoticed.
+
+Both paths have to do it, which is easy to miss because only one of them is Go.
+`schema.CanonicalTimestamp` keeps a timestamp's text verbatim, so a field may legally
+hold `2026-09-21T14:05:09.1235Z`, and the column path casts that text straight to a
+PostgreSQL timestamp with microseconds intact. The rendered moment is therefore quantized
+in SQL as well, as `LEAST(date_trunc('milliseconds', t + interval '0.0005 second'),
+date_trunc('second', t) + interval '0.999 second')` — the first term rounds half up in one
+mention of `t` and the second supplies the clamp, which also keeps
+`9999-12-31T23:59:59.9999` inside the representable range rather than tipping it past the
+bound. Truncating rather than rounding here is a one-millisecond error that no fixture
+without a fourth fractional digit can see.
 
 PostgreSQL has no year zero and writes earlier years with a `BC` suffix rather than as a
 negative number, so `TIMESTAMP '-4713-11-24'` and `TIMESTAMP '0000-01-01'` are both

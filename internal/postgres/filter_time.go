@@ -262,6 +262,11 @@ func timestampLiteral(moment time.Time) string {
 	return "TIMESTAMP " + dollarQuote(moment.UTC().Format("2006-01-02 15:04:05.999999"))
 }
 
+func quantizedToSQLitesMillisecond(expr string) string {
+	return "LEAST(pg_catalog.date_trunc('milliseconds', " + expr + " + INTERVAL '0.0005 second')," +
+		" pg_catalog.date_trunc('second', " + expr + ") + INTERVAL '0.999 second')"
+}
+
 func withinRepresentableYears(expr string) string {
 	return "(CASE WHEN " + expr + " BETWEEN TIMESTAMP '0001-01-01 00:00:00' AND TIMESTAMP '9999-12-31 23:59:59.999'" +
 		" THEN " + expr + " END)"
@@ -473,7 +478,7 @@ func (r *filterRenderer) timeCall(node *filter.Call, next int) error {
 	if err != nil {
 		return err
 	}
-	moment = withinRepresentableYears(moment)
+	moment = withinRepresentableYears(quantizedToSQLitesMillisecond(moment))
 	if !ok {
 		r.sb.WriteString("(pg_catalog.date_part('epoch', " + moment + ") / 86400.0 + " +
 			strconv.FormatFloat(julianUnixEpoch, 'f', -1, 64) + ")")
