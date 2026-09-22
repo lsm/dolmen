@@ -385,6 +385,8 @@ func (r *filterRenderer) like(node *filter.Like, next int) error {
 		if err := r.render(node.Escape, next); err != nil {
 			return err
 		}
+	} else {
+		r.sb.WriteString(" ESCAPE ''")
 	}
 	r.sb.WriteString(")")
 	return nil
