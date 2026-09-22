@@ -164,7 +164,7 @@ func TestEveryDateExpressionAnswersWhatSQLiteAnswers(t *testing.T) {
 	for _, moment := range timeMoments {
 		for _, expr := range timeExpressions {
 			want, wantValid := sqliteScalar(t, db, expr, moment)
-			rendered := renderFor(t, expr)
+			rendered := renderValueFor(t, expr)
 			var got sql.NullString
 			query := "SELECT (" + rendered + ")::text FROM (VALUES (" + dollarQuote(moment) + "::text)) AS t(created_at)"
 			if err := s.pool.QueryRow(t.Context(), query).Scan(&got); err != nil {
@@ -180,6 +180,23 @@ func TestEveryDateExpressionAnswersWhatSQLiteAnswers(t *testing.T) {
 			}
 		}
 	}
+}
+
+func renderValueFor(t *testing.T, expr string) string {
+	t.Helper()
+	node, err := filter.Parse(expr, filter.Options{Columns: []string{"id", "body", "created_at"}})
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", expr, err)
+	}
+	r := &filterRenderer{
+		columns: map[string]string{"id": "id", "body": "c1", "created_at": "created_at"},
+		types:   map[string]schema.FieldType{"id": schema.Number, "body": schema.Text, "created_at": schema.Timestamp},
+	}
+	out, err := r.capture(node, 1)
+	if err != nil {
+		t.Fatalf("render(%q): %v", expr, err)
+	}
+	return out
 }
 
 func renderErrFor(t *testing.T, expr string) error {
@@ -220,6 +237,10 @@ func TestWhatThisEngineWillNotRenderIsRefusedRatherThanAnswered(t *testing.T) {
 		"date(+0x10)",
 		"julianday(+0x10)",
 		"strftime(body, created_at)",
+		"julianday(created_at) || ''",
+		"julianday(created_at) LIKE '24%'",
+		"created_at > julianday(created_at)",
+		"body = julianday(created_at)",
 	} {
 		err := renderErrFor(t, expr)
 		if err == nil {
@@ -245,39 +266,74 @@ var mixedClassTimeExpressions = []string{
 	"date(created_at) = 1",
 	"date(created_at) <= 1",
 	"strftime('%Y', created_at) = 2026",
+	"strftime('%Y', created_at) = '2026'",
 	"julianday(created_at) > 'abc'",
+	"julianday(created_at) > '1'",
+	"julianday(created_at) = '2461305'",
+	"julianday(created_at) = 2461305",
 	"datetime(created_at) != 0",
 	"date(created_at) + 1",
 	"strftime('%Y', created_at) + 1",
+	"strftime('%j', created_at) / 2",
 	"abs(date(created_at))",
 	"NOT date(created_at)",
+	"NOT time(created_at)",
 	"date(created_at) AND 1",
 	"julianday(created_at) + 1",
+	"julianday(created_at) / 2",
+	"julianday(created_at) - 2461305",
+	"round(julianday(created_at), 3)",
 	"length(date(created_at))",
 	"julianday(created_at) > 2400000",
+	"date(created_at) IN ('2026-09-21', 1)",
+	"julianday(created_at) BETWEEN 2461305 AND '1'",
+	"time(created_at) IS '12:00:00'",
+	"coalesce(date(created_at), 'x') = '2026-09-21'",
+	"created_at > date(created_at)",
 }
 
-func TestAMixedClassTimeExpressionRaisesRatherThanAnsweringDifferently(t *testing.T) {
+var mixedClassMoments = []string{
+	"2026-09-21T14:05:09.123Z",
+	"2026-09-21T12:00:00.000Z",
+	"2026-09-21T00:06:07.000Z",
+}
+
+func TestAMixedClassTimeExpressionAnswersWhatSQLiteAnswers(t *testing.T) {
 	cfg := testConfig(t)
 	s := openTest(t, cfg)
 	db := sqliteOracle(t)
-	const moment = "2026-09-21T14:05:09.123Z"
-	raised := 0
-	for _, expr := range mixedClassTimeExpressions {
-		want, wantValid := sqliteScalar(t, db, expr, moment)
-		rendered := renderFor(t, expr)
-		var got sql.NullString
-		query := "SELECT (" + rendered + ")::text FROM (VALUES (" + dollarQuote(moment) + "::text)) AS t(created_at)"
-		if err := s.pool.QueryRow(t.Context(), query).Scan(&got); err != nil {
-			raised++
-			continue
-		}
-		if got.Valid != wantValid || (wantValid && !answersAlike(got.String, want)) {
-			t.Errorf("%s: SQLite answers %q and this engine answers %q. Disagreeing is allowed here only by raising: an expression that quietly returns the other row set is a wrong delete", expr, want, got.String)
+	for _, moment := range mixedClassMoments {
+		for _, expr := range mixedClassTimeExpressions {
+			want, wantValid := sqliteScalar(t, db, expr, moment)
+			rendered := renderValueFor(t, expr)
+			var got sql.NullString
+			query := "SELECT (" + rendered + ")::text FROM (VALUES (" + dollarQuote(moment) + "::text)) AS t(created_at)"
+			if err := s.pool.QueryRow(t.Context(), query).Scan(&got); err != nil {
+				t.Errorf("%s at %s: %v\n%s", expr, moment, err, query)
+				continue
+			}
+			if got.Valid != wantValid || (wantValid && !answersAlike(got.String, want)) {
+				t.Errorf("%s at %s: SQLite answers %v %q and this engine answers %v %q", expr, moment, wantValid, want, got.Valid, got.String)
+			}
 		}
 	}
-	if raised == 0 {
-		t.Fatal("not one of these expressions raised, so the storage-class gap has closed: rewrite this test to assert agreement, and delete the paragraph in docs/design/postgresql.md that describes the divergence, in this same change")
+}
+
+func TestATimeFunctionComparedAsTextCarriesTheBinaryCollation(t *testing.T) {
+	for _, tc := range []struct {
+		expr string
+		args []any
+	}{
+		{"date(created_at) = '2026-09-21'", nil},
+		{"time(created_at) < ?", []any{"12:00:00"}},
+		{"strftime('%Y', created_at) > created_at", nil},
+		{"datetime(created_at) IN ('a', 'b')", nil},
+	} {
+		expr := tc.expr
+		sql := renderFor(t, expr, tc.args...)
+		if !strings.Contains(sql, `COLLATE "C"`) {
+			t.Errorf("%s rendered without the binary collation, so it answers by whatever collation the database was created with: %s", expr, sql)
+		}
 	}
 }
 
@@ -306,7 +362,7 @@ func TestAStoredMomentAgreesUnlessItPredatesTheCommonEra(t *testing.T) {
 			t.Fatalf("oracle date(%q): %v", stored, err)
 		}
 		var got sql.NullString
-		query := "SELECT (" + renderFor(t, "date(created_at)") + ")::text FROM (VALUES (" +
+		query := "SELECT (" + renderValueFor(t, "date(created_at)") + ")::text FROM (VALUES (" +
 			dollarQuote(stored) + "::text)) AS t(created_at)"
 		if err := s.pool.QueryRow(t.Context(), query).Scan(&got); err != nil {
 			t.Fatalf("%q: %v", stored, err)
@@ -346,7 +402,7 @@ func TestAShiftOutOfTheCommonEraAnswersNothingRatherThanTheWrongYear(t *testing.
 			t.Fatalf("SQLite answers nothing for %s, so there is no divergence left to record", expr)
 		}
 		var got sql.NullString
-		query := "SELECT (" + renderFor(t, expr) + ")::text"
+		query := "SELECT (" + renderValueFor(t, expr) + ")::text"
 		if err := s.pool.QueryRow(t.Context(), query).Scan(&got); err != nil {
 			t.Fatalf("%s: %v", expr, err)
 		}

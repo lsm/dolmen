@@ -556,8 +556,8 @@ func (r *filterRenderer) timeCall(node *filter.Call, next int) error {
 	}
 	moment = withinRepresentableYears(moment)
 	if !ok {
-		r.sb.WriteString("(pg_catalog.date_part('epoch', " + moment + ") / 86400.0 + " +
-			strconv.FormatFloat(julianUnixEpoch, 'f', -1, 64) + ")")
+		r.sb.WriteString(sqliteDouble("pg_catalog.date_part('epoch', " + moment + ") / 86400.0 + " +
+			strconv.FormatFloat(julianUnixEpoch, 'f', -1, 64)))
 		return nil
 	}
 	r.sb.WriteString("pg_catalog.to_char(" + moment + ", " + dollarQuote(pattern) + ")")

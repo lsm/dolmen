@@ -99,7 +99,8 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	}
 	if err != nil {
 		pool.Close()
-		if errors.Is(err, store.ErrCatalogTooNew) {
+		var tooOld *serverVersionError
+		if errors.Is(err, store.ErrCatalogTooNew) || errors.As(err, &tooOld) {
 			return nil, err
 		}
 		return nil, &connectionError{"initialize store", err}

@@ -322,6 +322,9 @@ func runChangesSince(ctx context.Context, s *Server, op, ns, table, cursor strin
 		if errors.Is(err, store.ErrCursorCrossFeed) {
 			return nil, "", badRequest("cursor was minted on a different feed (a specific table's, or the namespace-wide feed); pass it only to the feed you received it from — honoring it elsewhere would silently skip events — or start fresh with no cursor / \"begin\"")
 		}
+		if ctx.Err() != nil {
+			return nil, "", ctx.Err()
+		}
 		return nil, "", wrapStoreErr(err)
 	}
 	return records, next, nil

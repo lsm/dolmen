@@ -246,8 +246,217 @@ row therefore cannot be used as an oracle over rows the caller cannot read, beca
 expression never evaluates on them. Fulltext and vector search confine the same way.
 §4.3's shared evaluator is reached by rendering the parsed tree rather than by handing
 the caller's text to PostgreSQL, so a spelling SQLite accepts is either rendered with
-SQLite's meaning or refused by name. What is still refused is listed under the date and
-time functions below and in `notYetEvaluatedByAdapterTwo`.
+SQLite's meaning or refused by name. `iif` renders as a `CASE`, and only a wrong argument
+count is refused. What is still refused is listed under the date and time functions
+below and in `notYetEvaluatedByAdapterTwo`.
+
+### Comparison affinity
+
+A scoped comparison follows SQLite's comparison-affinity rules, not its storage-class
+ordering. Storage-class ordering — numbers before text before blobs, and text never
+equal to a number — only decides a comparison when *neither* side has a declared
+affinity, which in practice means both sides are literals or bound arguments. When one
+side is a column the rules convert the other side first: a text column compared against
+a number takes the number's text form, so `code = 1` is true of the text `'1'` and
+`mark > 1` is false of `'!zzz'`; a number column compared against text converts the text
+when it parses as a number and leaves it as text when it does not, so `n = '-7'` is true
+of `-7` while `n > 'abc'` stays a cross-class comparison. Column values that are only
+known at runtime get the conversion as a SQL `CASE` over the same numeric shape.
+
+The whitespace SQLite skips around such a numeral is six ASCII characters: tab, newline,
+vertical tab, form feed, carriage return and space. Both halves of the renderer spell
+those six out, and each half once got it wrong in a different direction. The Go class
+first omitted the vertical tab that a POSIX `[[:space:]]` carries, so a bound `'\v-7'`
+was numeric text to the SQL side and not to the Go side, and `n = ?` answered a constant
+false instead of matching `-7`. The SQL side then used `[[:space:]]` itself, which is not
+a fixed set: it follows the server's `lc_ctype`, and on a UTF-8 one it also matches
+U+00A0 and U+2002, which SQLite does not skip. `n % ?` over a numeral behind a
+non-breaking space read a numeral there and null here.
+
+That second one is invisible on a C-locale server, which is what this repository's local
+PostgreSQL is, so the row-count test that pins it passes whether or not the bug is
+present. The guard that actually holds it is a rendering test asserting no POSIX class
+reaches the SQL, which answers the same on every server. A property that depends on
+server locale wants an assertion about the statement, not about how many rows came back.
+
+A bound argument that carries no affinity of its own — a JSON `null`, or a boolean —
+still has to reach PostgreSQL with a type, because a placeholder alone in `$1 IS NULL`
+gives the planner nothing to infer from and raises 42P18. Such a parameter is cast where
+it is rendered: to `text` under a null guard, which is type-agnostic, and to `bool`
+before `int` when a boolean is wanted as SQLite's stored digit, so that the driver
+encodes the Go value it actually holds. SQLite needs none of this, so every case here is
+one the conformance suite has to carry deliberately.
+
+Giving every bound argument an explicit type is what makes the parameter cases behave
+like the column cases they mirror, because affinity is read from the Go value rather
+than guessed by the planner. A bound boolean carries the same numeric affinity a boolean
+column does, so `code LIKE ?` with `true` matches the digit `'1'` exactly as `code LIKE
+flag` does. The one place the two still part is a text column compared against a bound
+boolean, which SQLite answers and this engine refuses along with the other computed
+numbers it will not render SQLite's text for; it is a loud refusal rather than a wrong
+row set, and it is listed here so that closing it is a deliberate act.
+
+The trap this hides in is fixture choice. A fixture value like `'a note from alice'`
+answers the same under both rules, so a pinned case built on it passes whichever rule
+the engine implements and pins nothing. The conformance fixture carries `code`, `mark`
+and `huge` for exactly this reason: each was chosen because the two rules disagree about
+it.
+
+Converting a number to a column's text affinity only happens for a value known while
+rendering: a literal, a bound argument, or a sign applied to either. SQLite takes the
+text of the double, so `-1e300` is `'-1.0e+300'` and `round(2.5)` is `'3.0'`, and
+PostgreSQL's own numeric formatting reproduces neither. `LIKE` carries no escape character unless the filter names one. PostgreSQL treats a
+backslash as one by default and SQLite does not, so `body LIKE 'a\_b'` matched here and
+not there until the rendering began emitting `ESCAPE ''`. An explicit `ESCAPE '!'` is
+passed through unchanged.
+
+`LIKE` converts its operands the same way and is refused on the same ground; a blob
+operand is refused there too, and is one to measure rather than reason about, because
+SQLite stopped converting a blob to text for `LIKE` between 3.51 and the 3.53 that
+`modernc.org/sqlite` provides. A computed number compared
+against a text column is therefore refused with the usual advice to bind the value,
+because the alternative is a wrong row set on a filter that drives `delete`. If that
+refusal ever becomes an answer, this paragraph goes with it: the test that pins the
+refusal fails at that moment and says so. Numeric
+text converted the other way is rounded through a double first, the way SQLite's numeric
+affinity does, so `'0.10000000000000000001'` matches a stored `0.1`; an integer that
+fits in 64 bits keeps its exact digits instead.
+
+Most of the rules in this section were found by running the same filter through both
+engines and comparing match counts, not by reading the renderer. The corpus that finds
+them is generated from where the two grammars could disagree — boundaries, signs,
+empties, repeats, the int64 and double edges — rather than from filters a caller would
+plausibly write; a realistic corpus agrees with itself. Probe the *value* as well as the
+truth of an expression: a wrong result that keeps the same truth value is invisible to
+`(expr)` and `(expr) IS NULL` alone, which is how the arithmetic model below stayed
+wrong through three rounds of sweeping.
+
+Real arithmetic is computed in `float8`, not in PostgreSQL's exact `numeric`. SQLite
+computes a real expression in IEEE double, so `0.1 + 0.2` is not `0.3` there, and an
+exact numeric makes it equal — a filter matching rows SQLite skips. Both operands are
+cast to `float8`, the operation happens there, and the result returns through `::text`
+rather than a direct `::numeric`: the direct cast rounds `0.30000000000000004` back to
+`0.3` and undoes the whole thing. Integer operands keep exact arithmetic, so a stored
+`9007199254740993` still compares equal to itself although no double can hold it. Two
+costs come with this. `NaN` becomes null, matching SQLite, which is why every real
+result is wrapped. And PostgreSQL raises on `float8` overflow where SQLite yields
+infinity, so `1e308 * 10` is a `query_error` here rather than an infinity; that is a
+refusal rather than a wrong row set, and it is the trade for getting `0.1 + 0.2` right.
+
+Division truncates only when both operands are integers in SQLite's storage sense, which
+is not the same as being numerically whole. A literal written `7.0` or `1e1` is REAL, so
+`7.0 / 2` is `3.5` and not `3`, and text converts the same way: `'7.0'` is REAL where
+`'7'` is INTEGER. A stored number is the case where whole really does mean integer,
+because the SQLite column is `NUMERIC` and stores a lossless `7.0` as INTEGER `7`, so a
+column keeps the runtime test while a literal or a bound argument is classed while
+rendering.
+
+A function result carries a storage class of its own, and it is not its argument's.
+SQLite's `round()` returns REAL whatever it is handed, so `round(-7)` is `-7.0` and
+`round(n) / 2` is `-3.5` rather than the `-3` an integer division gives; `abs()` keeps an
+integer argument integer but answers REAL for a real one and for text, so `abs('1') / 2`
+is `0.5` while `abs(-7) / 2` is `3`. `length()` and `instr()` are always INTEGER. The
+runtime whole-number test cannot see any of this, because `round(-7)` is numerically
+whole and REAL at the same time, so a call is classed while rendering instead.
+
+Integer arithmetic that leaves int64 stops being integer arithmetic. SQLite promotes an
+overflowing `+`, `-`, `*`, and `intmin / -1` to a double, so the exact path has to check
+the result's range and not only both operands' classes; without it
+`9223372036854775807 + 2` stayed exact and missed the `9223372036854775808` SQLite
+answers. A numeral past int64 is a REAL for the same reason and renders as its double,
+while `-9223372036854775808` is int64 min and stays exact, which is why the sign is read
+together with the numeral rather than after it.
+
+**A known divergence remains here.** A REAL is carried as the numeric holding its
+double's shortest text, and at magnitudes past 2^53 that text is not the double's exact
+value: PostgreSQL prints 2^63 as `9.223372036854776e+18`, which reads back as
+`9223372036854776000`. SQLite compares an INTEGER against a REAL exactly, so
+`('-7' + -9223372036854775808) = -9223372036854775808` is true there and false here. The
+sweep counts 32 probes in this family out of 249,696. Closing it means recovering the
+double's exact value rather than its printed one — `round(v / ulp) * ulp` with
+`ulp = 2^(floor(log2(|v|)) - 52)` does that in exact numeric — and that change belongs
+with the arithmetic model rather than tacked onto it.
+
+A boolean-shaped expression is an INTEGER everywhere a boolean column is one, and that
+includes the places it is not obviously a number. Against a declared TEXT column it takes
+that column's affinity and compares as its digit, so `pad > (n > 1)` is false because
+`'  5  '` sorts before `'0'`; against a text literal, where neither side declares an
+affinity, storage-class order applies instead and the integer sorts first. Concatenation
+takes the digit too. Answering the first of those by class order rather than by affinity
+gives the same answer for `=` and the wrong one for `<` and `>`, which is the sort of
+half-right rule a fixture of equalities never catches.
+
+Being REAL costs the precision a double cannot hold, so `round()` and `abs()` over text
+pass through `float8`. SQLite's `round(9007199254740993)` is `9007199254740992.0`, and
+without that pass the two engines disagree about whether a number equals its own
+rounding. `abs()` over an integer keeps its digits, because there SQLite does too.
+
+SQLite also clamps `round()`'s second argument. A negative place is not a place left of
+the point as it is in PostgreSQL but no places at all, so `round(1234.5678, -2)` is
+`1235` and not `1200`; the place truncates toward zero, non-numeric text is no places,
+and a null place makes the whole call null. The place is bounded above at 30 as well,
+which is past every digit a double carries, because PostgreSQL's `round` takes a signed
+integer and a filter is free to name something larger than one.
+
+Coercing text to a number keeps a null null. Text with no numeral at its head converts
+to zero, which a `COALESCE` expresses, but a null column is not text with no numeral in
+it: SQLite answers `NULL + 1` with null and `'abc' + 1` with one. Conflating them makes
+`NOT body` match a null row that SQLite skips and `body + 1 IS NULL` skip one it matches,
+so the conversion tests the operand for null before the `COALESCE` rather than after.
+
+Text coerced to a number saturates the way SQLite's double does rather than raising.
+`abs(body)` over a text `'1e999999'` is infinity, matching SQLite, where a bare
+`::numeric` cast raises `22003` and kills the statement; an overflowing literal such as
+`abs(1e999999)` saturates at render time. The runtime guard is `pg_input_is_valid`,
+which requires **PostgreSQL 16 or newer** — the first hard lower bound this adapter
+places on the server version.
+
+Saturation has a direction, and sign is not it. A numeral PostgreSQL's `numeric` cannot
+parse is beyond that type's enormous range, which is reached at both ends: `'1e999999'`
+overflows and `'1e-999999'` underflows, as does a scale past 16383 digits written out in
+full. SQLite's double answers infinity for the first and zero for the second, so
+deciding by the leading `-` alone made `abs(body) > 1` true of a row holding a vanishing
+number and deleted it. The direction is taken from the numeral's decimal order — its
+exponent plus the position of its first significant digit — so a mantissa and an exponent
+that pull opposite ways, like a 131072-digit numeral written with `e-100`, still land on
+the side its magnitude actually falls.
+
+A numeral already known while rendering is converted in Go rather than by that runtime
+`CASE`. PostgreSQL folds a constant expression at plan time and will evaluate an arm the
+runtime guard would never reach, so a literal `abs('1e999999')` raised `22003` from a
+branch that `pg_input_is_valid` had already excluded — the guard works for a column,
+whose value is not a constant, and not for a literal. Folding in Go also covers a bound
+argument, which the planner may substitute the same way. The fold happens before the
+argument is captured, because capturing one and then not referencing it leaves the
+statement with a parameter it never uses.
+
+Anything in a boolean position is rendered as SQLite's truth value, at the top of the
+expression and under `NOT`, `AND` and `OR` alike. A number is true when it is nonzero, and a
+text is converted to a number first so `'a note'` is false and `'1'` is true. A blob goes
+the same way through its own bytes read as text, so `X'6162'` is false because `ab` is
+zero while `X'31'` is true because `1` is one — a blob is not simply false. Text is not only a column or a literal: concatenation, a `CASE`, and `iif`,
+`coalesce`, `ifnull` and `nullif` over text operands all carry text affinity, and a
+truth test over one of those converts before testing rather than asking PostgreSQL to
+compare text against zero. A boolean column and a bound boolean argument are already boolean and are used
+as they are: PostgreSQL has no `boolean <> numeric` operator, so wrapping them the way a
+number is wrapped raises `42883` on a filter as ordinary as `flag`.
+
+A boolean column is an integer everywhere except a boolean position. SQLite stores one
+as an integer, so `flag = 1`, `flag + 1`, `abs(flag)` and `flag || 'x'` all answer there,
+while PostgreSQL holds a real `boolean`. The column therefore renders as `(col)::int` by
+default, and only a boolean position takes it raw: a truth test, and a comparison whose
+other side is itself boolean-shaped, so `flag = TRUE` and `flag = (n > 1)` still compare
+as booleans. The condition of an `iif` and of a `CASE` without an operand is a truth test
+too, which is what lets `iif(flag, ...)` and `iif(1, ...)` work.
+
+`IN`, `BETWEEN` and `IS` apply the same rules, because they are rendered through the
+same comparison. `x IN (a, b)` becomes `x = a OR x = b`, `x BETWEEN lo AND hi` becomes
+`x >= lo AND x <= hi`, and each of those comparisons converts affinity on its own. `IS`
+is the null-safe one, so it renders `COALESCE(x = y, FALSE) OR (x IS NULL AND y IS
+NULL)`: the equality carries the affinity conversion, and the second arm restores the
+"both null is a match" rule the `COALESCE` would otherwise lose. An operand that is a
+bound argument is cast from its Go value before it reaches an `IS NULL`, because
+PostgreSQL cannot infer a bare placeholder's type there.
 
 Updates patch only supplied fields. Filter upsert updates every match or inserts one
 record with defaults and required-field validation when there is no match. Delete keeps
@@ -298,27 +507,21 @@ and seconds above 59, and reads hour 24 as zero — `+24:59` shifts by 59 minute
 a day and 59 minutes — so 25 and above render nothing, as they do there, and 24 is
 refused rather than reproduced.
 
-One divergence is left open deliberately. `date`, `time`, `datetime` and `strftime`
-render as text and `julianday` as a number, so an expression that puts one next to the
-other storage class raises where SQLite answers: `date(created_at) > 1` and
-`strftime('%Y', created_at) = 2026` reach PostgreSQL as `text > integer` (42883),
-`date(created_at) + 1` is 2027 in SQLite and 42883 here, and `NOT date(created_at)` is
-42804. Every one surfaces as a redacted `query_error`, never as a different row set, and
-a test pins that property rather than the behaviour: on these expressions this engine
-either agrees with SQLite or raises, which stays true once the gap closes. That test
-also fails if *none* of them raises any more, and says there to delete this paragraph in
-the same change — a note describing a divergence that no longer exists is the same
-defect in prose, and prose has no other alarm.
-
-Closing it is the storage-class affinity work, which folds such an expression to the
-value SQLite would produce — but only for calls its `affinityOf` classes, so the five
-time functions must be named there (`date`, `time`, `datetime`, `strftime` as text,
-`julianday` as a number). Those three lines cannot be added usefully before both halves
-are in one tree: on the affinity branch alone the calls are refused at `call()` before
-affinity is consulted, so no test can distinguish having the entries from not having
-them, and on the rendering branch alone there is no `affinityOf` to add them to. They
-belong in whichever change brings the two together, with the comparison, `truth()` and
-`captureNumeric` paths covered.
+The five functions take part in the comparison-affinity rules above like any other call.
+`date`, `time`, `datetime` and `strftime` produce text and `julianday` a REAL, and none of
+them declares an affinity, so `date(created_at) > 1` is true by storage-class order,
+`strftime('%Y', created_at) = 2026` is false while `= '2026'` is true, and
+`julianday(created_at) > '1'` is false — PostgreSQL left to itself reads that `'1'` as a
+number and answers true, which is a wrong row set rather than an error. Against a number
+column the text converts when it is numeric, so `n < strftime('%Y', created_at)`
+compares 2026 numerically. In arithmetic and as a truth value the text converts through
+its numeral head, so `date(created_at) + 1` is 2027 and `NOT time(created_at)` is true
+only in the first hour of a day. `julianday` is classed REAL while rendering, as `round`
+is, so `julianday(created_at) / 2` keeps its half at noon, when the day number is whole
+and the runtime whole-number test would call it an integer; it is also carried through
+`sqliteDouble`, because a direct `float8`-to-`numeric` cast keeps fifteen digits and
+moves the value by parts in 10⁹. A Julian day compared against a text column,
+concatenated, or matched with `LIKE` is refused, as every computed number is there.
 
 SQLite quantizes a time value to whole milliseconds, rounding half up and then
 **clamping at 999 rather than carrying**: `.0004` is 0ms, `.0005` is 1ms, and everything
