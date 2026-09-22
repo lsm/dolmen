@@ -16,9 +16,11 @@ import (
 
 const julianUnixEpoch = 2440587.5
 
-var sqliteDatedTime = regexp.MustCompile(`^(-?)(\d{4})-(\d{2})-(\d{2})(?:[T \t\n\v\f\r]*(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?([Zz]|[+-]\d{2}:\d{2})?)?$`)
+var sqliteZone = `([Zz]|[+-](?:0\d|1[0-4]):[0-5]\d)`
 
-var sqliteBareTime = regexp.MustCompile(`^(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?([Zz]|[+-]\d{2}:\d{2})?$`)
+var sqliteDatedTime = regexp.MustCompile(`^(-?)(\d{4})-(\d{2})-(\d{2})(?:[T \t\n\v\f\r]*(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?` + sqliteZone + `?)?$`)
+
+var sqliteBareTime = regexp.MustCompile(`^(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?` + sqliteZone + `?$`)
 
 var sqliteOffsetModifier = regexp.MustCompile(`^([+-])(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?$`)
 
@@ -255,7 +257,7 @@ var timeOutputPatterns = map[string]string{
 	"datetime": "YYYY-MM-DD HH24:MI:SS",
 }
 
-const timestampTextShape = `^[0-9]{4}-[0-9]{2}-[0-9]{2}([T ][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?([Zz]|[+-][0-9]{2}:[0-9]{2})?)?$`
+const timestampTextShape = `^[0-9]{4}-[0-9]{2}-[0-9]{2}([T ][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?([Zz]|[+-](0[0-9]|1[0-4]):[0-5][0-9])?)?$`
 
 const timestampTextZone = `([Zz]|[+-][0-9]{2}:[0-9]{2})$`
 

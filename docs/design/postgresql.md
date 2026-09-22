@@ -351,9 +351,17 @@ One residual is left on the column path, and it is on the wrong side of the rule
 there the era is a value rather than something decidable while the statement is built:
 the guard yields `NULL` where SQLite answers `0000-01-01`. That is the NULL-for-a-value
 direction this design otherwise forbids. It is narrow — year zero is the only shape a
-canonical stored value can take that PostgreSQL will not read — and a test pins both
-halves, that every representable year agrees and that year zero is the only one that does
-not, failing if either changes. Closing it properly means refusing year zero at the
+canonical stored value can take that SQLite reads and PostgreSQL will not — and a test
+pins both halves, that every representable year agrees and that year zero is the only one
+that does not, failing if either changes.
+
+A second canonical shape is unreadable by PostgreSQL and is *not* a divergence, because
+SQLite will not read it either. `schema.CanonicalTimestamp` accepts a UTC offset up to
+`±23:59`, PostgreSQL rejects a displacement at or beyond `±16:00`, and SQLite's own
+bound is tighter still: `+14:59` is a moment and `+15:00` is `NULL`. Both the Go parse
+and the column guard therefore bound the offset to SQLite's range rather than
+PostgreSQL's, so a stored `+15:30` answers nothing on both engines instead of answering
+on one — which was the divergence, in the direction of a value where SQLite has none. Closing it properly means refusing year zero at the
 storage boundary, which is a change to both engines' input contract and to
 `facade-input-matrix.md`, not to this renderer.
 

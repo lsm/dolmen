@@ -67,6 +67,12 @@ var timeExpressions = []string{
 	"julianday('2026-01-01T00:00:00.123456789')",
 	"julianday('2026-12-31T23:59:59.9999')",
 	"julianday(2460000.5000004)",
+	"datetime(2460000.99999999)",
+	"datetime(2460000.999999999999)",
+	"datetime(2460000.9999999999999)",
+	"julianday(2460000.99999999)",
+	"datetime('2460000.99999999')",
+	"date(2460000.99999999)",
 	"datetime(2460000.5000004)",
 	"date('not a time')",
 	"datetime('14:05:09')",
@@ -88,6 +94,9 @@ var timeMoments = []string{
 	"9999-12-31T23:59:59.9999Z",
 	"2026-09-21T14:05:09.123456789Z",
 	"2026-01-01T00:00:00.0004Z",
+	"2026-03-31T05:06:07+14:59",
+	"2026-03-31T05:06:07+15:30",
+	"2026-03-31T05:06:07+23:59",
 }
 
 func sqliteScalar(t *testing.T, db *sql.DB, expr, moment string) (string, bool) {
