@@ -284,6 +284,27 @@ text converted the other way is rounded through a double first, the way SQLite's
 affinity does, so `'0.10000000000000000001'` matches a stored `0.1`; an integer that
 fits in 64 bits keeps its exact digits instead.
 
+Most of the rules in this section were found by running the same filter through both
+engines and comparing match counts, not by reading the renderer. The corpus that finds
+them is generated from where the two grammars could disagree — boundaries, signs,
+empties, repeats, the int64 and double edges — rather than from filters a caller would
+plausibly write; a realistic corpus agrees with itself. Probe the *value* as well as the
+truth of an expression: a wrong result that keeps the same truth value is invisible to
+`(expr)` and `(expr) IS NULL` alone, which is how the arithmetic model below stayed
+wrong through three rounds of sweeping.
+
+Real arithmetic is computed in `float8`, not in PostgreSQL's exact `numeric`. SQLite
+computes a real expression in IEEE double, so `0.1 + 0.2` is not `0.3` there, and an
+exact numeric makes it equal — a filter matching rows SQLite skips. Both operands are
+cast to `float8`, the operation happens there, and the result returns through `::text`
+rather than a direct `::numeric`: the direct cast rounds `0.30000000000000004` back to
+`0.3` and undoes the whole thing. Integer operands keep exact arithmetic, so a stored
+`9007199254740993` still compares equal to itself although no double can hold it. Two
+costs come with this. `NaN` becomes null, matching SQLite, which is why every real
+result is wrapped. And PostgreSQL raises on `float8` overflow where SQLite yields
+infinity, so `1e308 * 10` is a `query_error` here rather than an infinity; that is a
+refusal rather than a wrong row set, and it is the trade for getting `0.1 + 0.2` right.
+
 Division truncates only when both operands are integers in SQLite's storage sense, which
 is not the same as being numerically whole. A literal written `7.0` or `1e1` is REAL, so
 `7.0 / 2` is `3.5` and not `3`, and text converts the same way: `'7.0'` is REAL where

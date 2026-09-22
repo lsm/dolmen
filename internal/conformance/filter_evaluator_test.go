@@ -156,6 +156,20 @@ var pinnedFilterSemantics = []struct {
 	{"LIKE compares a text column against a number's text", "code LIKE 1", ""},
 	{"LIKE does not match a note against a digit", "NOT (body LIKE 1)", ""},
 	{"a case operand converts to the branch's affinity", "CASE code WHEN 1 THEN 1 ELSE 0 END = 1", ""},
+	{"a numeral past int64 divides as a real", "NOT ('9999999999999999998' / 3 = 3333333333333333332)", ""},
+	{"a stored number past int64 divides as a real", "NOT (past / 3 = 3074457345618258602)", ""},
+	{"int64 min is still an integer", "1 / -9223372036854775808 = 0", ""},
+	{"a negated zero has no sign in its text", "'0' LIKE -0", ""},
+	{"modulo reads a text numeral as its integer prefix", "1 % '1e400' = 0", ""},
+	{"infinity divided by infinity is null", "('1e400' / '1e400') IS NULL", ""},
+	{"a blob concatenates as its bytes", "X'31' || 'x' = '1x'", ""},
+	{"a null survives the integer clamp", "(absent % 2) IS NULL", ""},
+	{"real arithmetic carries the double's rounding", "NOT (0.1 + 0.2 = 0.3)", ""},
+	{"the rounding leans the way a double leans", "0.1 + 0.2 > 0.3", ""},
+	{"a double round trip returns to where it started", "1.0 / 3 * 3 = 1", ""},
+	{"a stored real rounds like a double too", "NOT (frac + 0.2 = 0.3)", ""},
+	{"integer arithmetic stays exact past a double", "big + 0 = 9007199254740993", ""},
+	{"two numerals a double cannot tell apart divide to one", "(9223372036854775807 / 9223372036854775808) = 1", ""},
 	{"a case operand still misses a different value", "CASE code WHEN 2 THEN 1 ELSE 0 END = 0", ""},
 	{"concatenation is a truth value through its number", "NOT (body || body)", ""},
 	{"numeric concatenation is a true truth value", "code || ''", ""},
@@ -210,11 +224,12 @@ func seedScopedFilterRow(t *testing.T) *harness {
 			{"name": "zero", "type": "number"},
 			{"name": "pad", "type": "text"},
 			{"name": "empty", "type": "text"},
+			{"name": "past", "type": "number"},
 		},
 		"row_access": "own",
 	})
 	grantTo(t, h, "principal", "alice", "acme", "notes", "create", "delete")
-	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7,"code":"1","mark":"!zzz","huge":"1e999999","flag":true,"neg":"-1.0e+300","frac":0.1,"big":9007199254740993,"real":"7.0","off":false,"zero":0,"pad":"  5  ","empty":""}]}`)
+	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7,"code":"1","mark":"!zzz","huge":"1e999999","flag":true,"neg":"-1.0e+300","frac":0.1,"big":9007199254740993,"real":"7.0","off":false,"zero":0,"pad":"  5  ","empty":"","past":9223372036854775808}]}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("seed insert: status %d %v", res.StatusCode, out)
 	}

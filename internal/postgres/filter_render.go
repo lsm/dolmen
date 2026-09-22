@@ -240,6 +240,18 @@ func (r *filterRenderer) binary(node *filter.Binary, next int) error {
 		r.sb.WriteString("(" + left + " " + op + " " + right + ")")
 		return nil
 	}
+	if op == "||" {
+		left, err := r.concatOperand(node.Left, next)
+		if err != nil {
+			return err
+		}
+		right, err := r.concatOperand(node.Right, next)
+		if err != nil {
+			return err
+		}
+		r.sb.WriteString("(" + left + " || " + right + ")")
+		return nil
+	}
 	r.sb.WriteString("(")
 	if err := r.render(node.Left, next); err != nil {
 		return err
@@ -250,6 +262,31 @@ func (r *filterRenderer) binary(node *filter.Binary, next int) error {
 	}
 	r.sb.WriteString(")")
 	return nil
+}
+
+func (r *filterRenderer) concatOperand(n filter.Node, next int) (string, error) {
+	if r.affinityOf(n) == affNumber {
+		if r.isBooleanNode(n) {
+			out, err := r.capture(n, next)
+			if err != nil {
+				return "", err
+			}
+			return "(" + out + ")::text", nil
+		}
+		text, ok := r.staticNumberAsText(n)
+		if !ok {
+			return "", filterNotRenderable("concatenation of a number this engine cannot render SQLite's text for")
+		}
+		return dollarQuote(text), nil
+	}
+	out, err := r.capture(n, next)
+	if err != nil {
+		return "", err
+	}
+	if r.affinityOf(n) == affBlob {
+		return "convert_from(" + out + ", 'LATIN1')", nil
+	}
+	return out, nil
 }
 
 func (r *filterRenderer) compareVia(op string, left, right filter.Node, next int) (string, error) {
@@ -310,10 +347,19 @@ func (r *filterRenderer) in(node *filter.In, next int) error {
 func (r *filterRenderer) likeOperand(n filter.Node, next int) (string, error) {
 	switch r.affinityOf(n) {
 	case affNumber:
+		if r.isBooleanNode(n) {
+			out, err := r.capture(n, next)
+			if err != nil {
+				return "", err
+			}
+			return "(" + out + ")::text", nil
+		}
 		if text, ok := r.staticNumberAsText(n); ok {
 			return dollarQuote(text), nil
 		}
 		return "", filterNotRenderable("LIKE over a number this engine cannot render SQLite's text for")
+	case affBlob:
+		return "", filterNotRenderable("LIKE over a blob")
 	}
 	return r.capture(n, next)
 }
@@ -527,6 +573,9 @@ const (
 	asciiLowerSet   = "abcdefghijklmnopqrstuvwxyz"
 	sqliteNumHead   = "^[[:space:]]*([+-]?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)"
 	sqliteDoubleMax = "1.7976931348623157e308"
+	sqliteIntHead   = "^[[:space:]]*([+-]?[0-9]+)"
+	sqliteIntMax    = "9223372036854775807"
+	sqliteIntMin    = "-9223372036854775808"
 	sqliteNumFull   = "^[[:space:]]*[+-]?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?[[:space:]]*$"
 )
 
@@ -585,7 +634,13 @@ func sqliteRealText(f float64) (string, bool) {
 	case math.IsInf(f, -1):
 		return "-Inf", true
 	}
+	if f == 0 {
+		f = 0
+	}
 	text := strconv.FormatFloat(f, 'g', 15, 64)
+	if back, err := strconv.ParseFloat(text, 64); err != nil || back != f {
+		return "", false
+	}
 	mantissa, exponent, split := strings.Cut(text, "e")
 	if !strings.Contains(mantissa, ".") {
 		mantissa += ".0"
@@ -605,7 +660,7 @@ func sqliteTextOfNumberLiteral(text string) (string, bool) {
 		}
 		return strconv.FormatInt(int64(value), 10), true
 	}
-	if !strings.ContainsAny(text, ".eE") {
+	if !numeralIsReal(text) {
 		return text, true
 	}
 	f, err := strconv.ParseFloat(text, 64)
@@ -635,7 +690,14 @@ func (r *filterRenderer) staticNumberAsText(n filter.Node) (string, bool) {
 			return "", false
 		}
 		if !strings.ContainsAny(inner, ".eE") {
-			return "-" + inner, true
+			if whole, err := strconv.ParseInt("-"+inner, 10, 64); err == nil {
+				return strconv.FormatInt(whole, 10), true
+			}
+			f, err := strconv.ParseFloat("-"+inner, 64)
+			if err != nil {
+				return "", false
+			}
+			return sqliteRealText(f)
 		}
 		return sqliteRealText(-f)
 	case *filter.Literal:
@@ -1052,12 +1114,31 @@ func (r *filterRenderer) storageClassComparison(node *filter.Binary, op string, 
 	return nil
 }
 
+func (r *filterRenderer) moduloOperand(n filter.Node, raw, numeric string) string {
+	if r.affinityOf(n) != affText {
+		return sqliteInteger(numeric)
+	}
+	head := "(substring(" + raw + " FROM '" + sqliteIntHead + "'))"
+	return "(CASE WHEN " + raw + " IS NULL THEN NULL ELSE " +
+		sqliteInteger("COALESCE("+head+"::numeric, 0)") + " END)"
+}
+
+func sqliteInteger(text string) string {
+	return "(CASE WHEN " + text + " IS NULL THEN NULL ELSE" +
+		" trunc(least(greatest(" + text + ", " + sqliteIntMin + "), " + sqliteIntMax + ")) END)"
+}
+
 func (r *filterRenderer) staticallyReal(n filter.Node) bool {
 	switch node := n.(type) {
 	case *filter.Paren:
 		return r.staticallyReal(node.Inner)
 	case *filter.Unary:
 		if node.Op == "-" || node.Op == "+" {
+			if inner, ok := node.Operand.(*filter.Literal); ok && inner.Kind == filter.LiteralNumber &&
+				!strings.ContainsAny(inner.Text, ".eE") && !strings.HasPrefix(strings.ToLower(inner.Text), "0x") {
+				_, err := strconv.ParseInt(node.Op+strings.TrimSpace(inner.Text), 10, 64)
+				return err != nil
+			}
 			return r.staticallyReal(node.Operand)
 		}
 	case *filter.Literal:
@@ -1066,7 +1147,7 @@ func (r *filterRenderer) staticallyReal(n filter.Node) bool {
 			if strings.HasPrefix(strings.ToLower(node.Text), "0x") {
 				return false
 			}
-			return strings.ContainsAny(node.Text, ".eE")
+			return numeralIsReal(node.Text)
 		case filter.LiteralString:
 			return numeralHeadIsReal(node.Text)
 		}
@@ -1078,7 +1159,7 @@ func (r *filterRenderer) staticallyReal(n filter.Node) bool {
 		case float32, float64:
 			return true
 		case json.Number:
-			return strings.ContainsAny(value.String(), ".eE")
+			return numeralIsReal(value.String())
 		case string:
 			return numeralHeadIsReal(value)
 		}
@@ -1086,19 +1167,31 @@ func (r *filterRenderer) staticallyReal(n filter.Node) bool {
 	return false
 }
 
+func numeralIsReal(text string) bool {
+	if strings.ContainsAny(text, ".eE") {
+		return true
+	}
+	_, err := strconv.ParseInt(strings.TrimSpace(text), 10, 64)
+	return err != nil
+}
+
 func numeralHeadIsReal(text string) bool {
 	head := sqliteNumeralHead.FindString(text)
-	return strings.ContainsAny(head, ".eE")
+	if head == "" {
+		return false
+	}
+	return numeralIsReal(head)
 }
 
 func (r *filterRenderer) integerClassed(n filter.Node, raw, numeric string) string {
 	if r.staticallyReal(n) {
 		return "FALSE"
 	}
+	within := numeric + " BETWEEN " + sqliteIntMin + " AND " + sqliteIntMax
 	if r.affinityOf(n) == affText {
-		return "COALESCE((substring(" + raw + " FROM '" + sqliteNumHead + "')), '') !~ '[.eE]'"
+		return "(COALESCE((substring(" + raw + " FROM '" + sqliteNumHead + "')), '') !~ '[.eE]' AND " + within + ")"
 	}
-	return numeric + " = trunc(" + numeric + ")"
+	return "(" + numeric + " = trunc(" + numeric + ") AND " + within + ")"
 }
 
 func (r *filterRenderer) numericOperand(n filter.Node, next int) (string, string, error) {
@@ -1121,23 +1214,45 @@ func (r *filterRenderer) arithmetic(node *filter.Binary, op string, next int) er
 	if err != nil {
 		return err
 	}
+	leftClass := r.integerClassed(node.Left, rawLeft, left)
+	rightClass := r.integerClassed(node.Right, rawRight, right)
+	bothInteger := leftClass != "FALSE" && rightClass != "FALSE"
 	switch op {
 	case "/":
-		quotient := left + " / NULLIF(" + right + ", 0)"
-		leftClass := r.integerClassed(node.Left, rawLeft, left)
-		rightClass := r.integerClassed(node.Right, rawRight, right)
-		if leftClass == "FALSE" || rightClass == "FALSE" {
-			r.sb.WriteString("(" + quotient + ")")
+		exact := "NULLIF(" + left + " / NULLIF(" + right + ", 0), 'NaN'::numeric)"
+		real := doubleQuotient(left, right)
+		if !bothInteger {
+			r.sb.WriteString("(" + real + ")")
 			return nil
 		}
 		r.sb.WriteString("(CASE WHEN " + leftClass + " AND " + rightClass +
-			" THEN trunc(" + quotient + ") ELSE " + quotient + " END)")
+			" THEN trunc(" + exact + ") ELSE " + real + " END)")
 	case "%":
-		r.sb.WriteString("(trunc(" + left + ") % NULLIF(trunc(" + right + "), 0))")
+		r.sb.WriteString("(" + r.moduloOperand(node.Left, rawLeft, left) +
+			" % NULLIF(" + r.moduloOperand(node.Right, rawRight, right) + ", 0))")
 	default:
-		r.sb.WriteString("(" + left + " " + op + " " + right + ")")
+		exact := "(" + left + " " + op + " " + right + ")"
+		real := doubleArithmetic(left, op, right)
+		if !bothInteger {
+			r.sb.WriteString(real)
+			return nil
+		}
+		r.sb.WriteString("(CASE WHEN " + leftClass + " AND " + rightClass +
+			" THEN " + exact + " ELSE " + real + " END)")
 	}
 	return nil
+}
+
+func doubleArithmetic(left, op, right string) string {
+	return withoutNaN("((" + left + ")::float8 " + op + " (" + right + ")::float8)::text::numeric")
+}
+
+func doubleQuotient(left, right string) string {
+	return withoutNaN("((" + left + ")::float8 / NULLIF((" + right + ")::float8, 0))::text::numeric")
+}
+
+func withoutNaN(text string) string {
+	return "NULLIF(" + text + ", 'NaN'::numeric)"
 }
 
 func asciiFold(expr string) string {
