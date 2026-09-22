@@ -85,8 +85,13 @@ type Options struct {
 }
 
 func Validate(expr string, opts Options) error {
+	_, err := Parse(expr, opts)
+	return err
+}
+
+func Parse(expr string, opts Options) (Node, error) {
 	if len(expr) > MaxFilterLength {
-		return errAt(0, "the filter expression is %d bytes, over the %d-byte limit", len(expr), MaxFilterLength)
+		return nil, errAt(0, "the filter expression is %d bytes, over the %d-byte limit", len(expr), MaxFilterLength)
 	}
 	columns := make(map[string]bool, len(opts.Columns))
 	for _, c := range opts.Columns {
@@ -98,24 +103,27 @@ func Validate(expr string, opts Options) error {
 		args:    opts.Args,
 	}
 	if err := p.advance(); err != nil {
-		return err
+		return nil, err
 	}
 	if p.tok.kind == tokenEOF {
-		return errAt(0, "the filter expression is empty")
+		return nil, errAt(0, "the filter expression is empty")
 	}
 	if err := p.expression(precedenceLowest); err != nil {
-		return err
+		return nil, err
 	}
 	if p.tok.kind != tokenEOF {
 		if p.tok.is(";") {
-			return errAt(p.tok.pos, "a filter is one expression; it may not carry a second statement")
+			return nil, errAt(p.tok.pos, "a filter is one expression; it may not carry a second statement")
 		}
-		return errAt(p.tok.pos, "%s is left over after the end of the filter expression", p.tok.describe())
+		return nil, errAt(p.tok.pos, "%s is left over after the end of the filter expression", p.tok.describe())
 	}
 	if p.params != len(opts.Args) {
-		return errAt(0, "the filter expression has %d ? placeholder(s) but %d argument(s) were supplied", p.params, len(opts.Args))
+		return nil, errAt(0, "the filter expression has %d ? placeholder(s) but %d argument(s) were supplied", p.params, len(opts.Args))
 	}
-	return nil
+	if len(p.stack) != 1 {
+		return nil, errAt(0, "the filter expression did not parse to a single value")
+	}
+	return p.stack[0], nil
 }
 
 func (p *parser) unknownColumn(name string, pos int) error {
