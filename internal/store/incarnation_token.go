@@ -27,6 +27,9 @@ func DecodeIncarnation(token string) (Incarnation, error) {
 	}
 	var inc Incarnation
 	copy(inc.NsGen[:], raw[1:17])
+	if inc.NsGen == ([16]byte{}) {
+		return Incarnation{}, bad
+	}
 	inc.Version = int64(binary.BigEndian.Uint64(raw[17:25]))
 	inc.DropGen = int64(binary.BigEndian.Uint64(raw[25:33]))
 	nameLen := int(binary.BigEndian.Uint16(raw[33:35]))
