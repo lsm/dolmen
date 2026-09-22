@@ -86,31 +86,44 @@ var allowlistedOperators = []struct {
 var pinnedFilterSemantics = []struct {
 	rule   string
 	filter string
+	args   string
 }{
-	{"LIKE is ASCII-case-insensitive", "body LIKE 'A NOTE%'"},
-	{"string comparison is BINARY byte-wise", "'a' > 'B'"},
-	{"integer division truncates toward zero", "-7 / 2 = -3"},
-	{"integer division truncates a stored number too", "n / 2 = -3"},
-	{"a numeric function coerces nonnumeric text to zero", "abs(body) = 0"},
-	{"modulo converts fractional operands to integers", "9.2 % 2.9 = 1"},
-	{"lower case-maps ASCII only", "lower('Æ') = 'Æ'"},
-	{"upper case-maps ASCII only", "upper('æ') = 'æ'"},
-	{"division by zero is null", "(1 / 0) IS NULL"},
-	{"modulo by zero is null", "(1 % 0) IS NULL"},
-	{"round goes half away from zero", "round(-2.5) = -3"},
-	{"a coerced numeric function keeps its later arguments", "round('1.567', 1) = 1.6"},
-	{"nonnumeric text coerces to zero in arithmetic", "body + 1 = 1"},
-	{"numeric text coerces to a number in arithmetic", "'3' + 1 = 4"},
-	{"concatenation coerces numbers to text", "1 || '2' = '12'"},
-	{"null propagates through comparison", "(NULL = 1) IS NULL"},
-	{"null is not distinct from null under IS", "NULL IS NULL"},
-	{"LIKE folding stops at ASCII", "'æ' NOT LIKE 'Æ'"},
-	{"a blob literal is bytes, not bits", "length(X'6162') = 2"},
-	{"a hexadecimal integer literal", "0x1f = 31"},
-	{"a scalar is a truth value", "1"},
-	{"numeric-looking text still is not a number", "NOT ('3' = 3)"},
-	{"text never equals a number", "NOT (body = 1)"},
-	{"text sorts after a number", "body > 1"},
+	{"LIKE is ASCII-case-insensitive", "body LIKE 'A NOTE%'", ""},
+	{"string comparison is BINARY byte-wise", "'a' > 'B'", ""},
+	{"integer division truncates toward zero", "-7 / 2 = -3", ""},
+	{"integer division truncates a stored number too", "n / 2 = -3", ""},
+	{"a numeric function coerces nonnumeric text to zero", "abs(body) = 0", ""},
+	{"modulo converts fractional operands to integers", "9.2 % 2.9 = 1", ""},
+	{"lower case-maps ASCII only", "lower('Æ') = 'Æ'", ""},
+	{"upper case-maps ASCII only", "upper('æ') = 'æ'", ""},
+	{"division by zero is null", "(1 / 0) IS NULL", ""},
+	{"modulo by zero is null", "(1 % 0) IS NULL", ""},
+	{"round goes half away from zero", "round(-2.5) = -3", ""},
+	{"a coerced numeric function keeps its later arguments", "round('1.567', 1) = 1.6", ""},
+	{"nonnumeric text coerces to zero in arithmetic", "body + 1 = 1", ""},
+	{"numeric text coerces to a number in arithmetic", "'3' + 1 = 4", ""},
+	{"concatenation coerces numbers to text", "1 || '2' = '12'", ""},
+	{"null propagates through comparison", "(NULL = 1) IS NULL", ""},
+	{"null is not distinct from null under IS", "NULL IS NULL", ""},
+	{"LIKE folding stops at ASCII", "'æ' NOT LIKE 'Æ'", ""},
+	{"a blob literal is bytes, not bits", "length(X'6162') = 2", ""},
+	{"a hexadecimal integer literal", "0x1f = 31", ""},
+	{"a scalar is a truth value", "1", ""},
+	{"numeric-looking text still is not a number", "NOT ('3' = 3)", ""},
+	{"text never equals a number", "NOT (body = 1)", ""},
+	{"text sorts after a number", "body > 1", ""},
+	{"a text column takes the text form of the number it is compared to", "code = 1", ""},
+	{"a text column below the digits does not sort after a number", "NOT (mark > 1)", ""},
+	{"a number column converts numeric text before comparing", "n = '-7'", ""},
+	{"a number column leaves nonnumeric text as text", "NOT (n > 'abc')", ""},
+	{"a numeral too large for a double saturates to infinity", "abs(huge) > 1", ""},
+	{"an overflowing literal saturates rather than failing", "abs(1e999999) > 1", ""},
+	{"a number column saturates overflowing numeric text", "n < '1e999999'", ""},
+	{"a text column left of a number column keeps its own class order", "NOT (body < n)", ""},
+	{"a text column right of a number column keeps its own class order", "n < body", ""},
+	{"a bound numeric string takes a number column's affinity", "n = ?", `["-7"]`},
+	{"a bound nonnumeric string stays text against a number column", "NOT (n > ?)", `["abc"]`},
+	{"a bound number takes a text column's affinity", "code = ?", `[1]`},
 }
 
 var notYetEvaluatedByAdapterTwo = map[string]bool{
@@ -135,11 +148,14 @@ func seedScopedFilterRow(t *testing.T) *harness {
 		"fields": []map[string]any{
 			{"name": "body", "type": "text", "fulltext": true},
 			{"name": "n", "type": "number"},
+			{"name": "code", "type": "text"},
+			{"name": "mark", "type": "text"},
+			{"name": "huge", "type": "text"},
 		},
 		"row_access": "own",
 	})
 	grantTo(t, h, "principal", "alice", "acme", "notes", "create", "delete")
-	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7}]}`)
+	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7,"code":"1","mark":"!zzz","huge":"1e999999"}]}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("seed insert: status %d %v", res.StatusCode, out)
 	}
@@ -194,7 +210,7 @@ func TestEveryEngineAcceptsTheAllowlistedOperatorSpellings(t *testing.T) {
 func TestEveryEngineEvaluatesAScopedFilterWithSQLitesSemantics(t *testing.T) {
 	for _, tc := range pinnedFilterSemantics {
 		t.Run(tc.rule, func(t *testing.T) {
-			mustMatchTheOwnRow(t, tc.filter)
+			mustMatchTheOwnRowWithArgs(t, tc.filter, tc.args)
 		})
 	}
 }

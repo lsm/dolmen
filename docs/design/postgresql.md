@@ -246,8 +246,45 @@ row therefore cannot be used as an oracle over rows the caller cannot read, beca
 expression never evaluates on them. Fulltext and vector search confine the same way.
 What remains of §4.3 is the shared evaluator rather than the shared validator: a scoped
 filter still executes with this engine's own function set, so a spelling SQLite accepts
-and PostgreSQL does not (`iif`, the date and time functions) is a `query_error` here.
-That convergence is #386.
+and PostgreSQL does not (the date and time functions) is a `query_error` here. `iif` no
+longer belongs on that list: it renders as a `CASE`, and only a wrong argument count is
+refused. That convergence is #386.
+
+### Comparison affinity
+
+A scoped comparison follows SQLite's comparison-affinity rules, not its storage-class
+ordering. Storage-class ordering — numbers before text before blobs, and text never
+equal to a number — only decides a comparison when *neither* side has a declared
+affinity, which in practice means both sides are literals or bound arguments. When one
+side is a column the rules convert the other side first: a text column compared against
+a number takes the number's text form, so `code = 1` is true of the text `'1'` and
+`mark > 1` is false of `'!zzz'`; a number column compared against text converts the text
+when it parses as a number and leaves it as text when it does not, so `n = '-7'` is true
+of `-7` while `n > 'abc'` stays a cross-class comparison. Column values that are only
+known at runtime get the conversion as a SQL `CASE` over the same numeric shape.
+
+The trap this hides in is fixture choice. A fixture value like `'a note from alice'`
+answers the same under both rules, so a pinned case built on it passes whichever rule
+the engine implements and pins nothing. The conformance fixture carries `code`, `mark`
+and `huge` for exactly this reason: each was chosen because the two rules disagree about
+it.
+
+Text coerced to a number saturates the way SQLite's double does rather than raising.
+`abs(body)` over a text `'1e999999'` is infinity, matching SQLite, where a bare
+`::numeric` cast raises `22003` and kills the statement; an overflowing literal such as
+`abs(1e999999)` saturates at render time. The runtime guard is `pg_input_is_valid`,
+which requires **PostgreSQL 16 or newer** — the first hard lower bound this adapter
+places on the server version.
+
+A scalar is a truth value only at the top of the expression. `1` is wrapped into
+`1 <> 0` there, but `NOT 1` and `1 AND 1` render the bare scalar into a boolean position
+and raise. SQLite accepts all three.
+
+`IN`, `BETWEEN` and `IS` do not yet apply these rules. SQLite converts across affinity
+for them exactly as it does for `=` and `<`, so `body IN (1, 2)`, `body BETWEEN 1 AND
+10` and `body IS 1` over a text column answer there and raise `42883` here. That is a
+refusal rather than a wrong row set, and it predates the comparison work rather than
+being introduced by it, so it stays a recorded gap for a later slice.
 
 Updates patch only supplied fields. Filter upsert updates every match or inserts one
 record with defaults and required-field validation when there is no match. Delete keeps

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -140,6 +142,16 @@ func (r *filterRenderer) number(text string) error {
 		}
 		r.sb.WriteString(strconv.FormatInt(int64(value), 10))
 		return nil
+	}
+	if f, err := strconv.ParseFloat(text, 64); err == nil || errors.Is(err, strconv.ErrRange) {
+		if math.IsInf(f, 1) || f > math.MaxFloat64 {
+			r.sb.WriteString("'Infinity'::numeric")
+			return nil
+		}
+		if math.IsInf(f, -1) || f < -math.MaxFloat64 {
+			r.sb.WriteString("'-Infinity'::numeric")
+			return nil
+		}
 	}
 	r.sb.WriteString(text)
 	return nil
@@ -425,10 +437,129 @@ const (
 )
 
 const (
-	asciiUpperSet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-	asciiLowerSet = "abcdefghijklmnopqrstuvwxyz"
-	sqliteNumHead = "^[[:space:]]*([+-]?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)"
+	asciiUpperSet   = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	asciiLowerSet   = "abcdefghijklmnopqrstuvwxyz"
+	sqliteNumHead   = "^[[:space:]]*([+-]?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)"
+	sqliteDoubleMax = "1.7976931348623157e308"
+	sqliteNumFull   = "^[[:space:]]*[+-]?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?[[:space:]]*$"
 )
+
+func saturatingNumeric(text string) string {
+	return "(CASE WHEN " + text + " IS NULL THEN NULL" +
+		" WHEN NOT pg_input_is_valid(" + text + ", 'numeric')" +
+		" THEN (CASE WHEN left(btrim(" + text + "), 1) = '-' THEN '-Infinity' ELSE 'Infinity' END)::numeric" +
+		" WHEN " + text + "::numeric > " + sqliteDoubleMax + " THEN 'Infinity'::numeric" +
+		" WHEN " + text + "::numeric < -" + sqliteDoubleMax + " THEN '-Infinity'::numeric" +
+		" ELSE " + text + "::numeric END)"
+}
+
+var sqliteNumericText = regexp.MustCompile(`^[\t\n\f\r ]*[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?[\t\n\f\r ]*$`)
+
+func (r *filterRenderer) declaredAffinityOf(n filter.Node) affinity {
+	switch node := n.(type) {
+	case *filter.Paren:
+		return r.declaredAffinityOf(node.Inner)
+	case *filter.Column:
+		switch r.types[node.Name] {
+		case schema.Number, schema.Boolean:
+			return affNumber
+		case schema.String, schema.Text, schema.Timestamp, schema.JSON:
+			return affText
+		}
+	}
+	return affUnknown
+}
+
+func (r *filterRenderer) staticTextOf(n filter.Node) (string, bool) {
+	switch node := n.(type) {
+	case *filter.Paren:
+		return r.staticTextOf(node.Inner)
+	case *filter.Literal:
+		if node.Kind == filter.LiteralString {
+			return node.Text, true
+		}
+	case *filter.Param:
+		if node.Index >= 0 && node.Index < len(r.args) {
+			if text, ok := r.args[node.Index].(string); ok {
+				return text, true
+			}
+		}
+	}
+	return "", false
+}
+
+func sqliteRealText(f float64) (string, bool) {
+	switch {
+	case math.IsNaN(f):
+		return "", false
+	case math.IsInf(f, 1):
+		return "Inf", true
+	case math.IsInf(f, -1):
+		return "-Inf", true
+	}
+	text := strconv.FormatFloat(f, 'g', 15, 64)
+	mantissa, exponent, split := strings.Cut(text, "e")
+	if !strings.Contains(mantissa, ".") {
+		mantissa += ".0"
+	}
+	if split {
+		return mantissa + "e" + exponent, true
+	}
+	return mantissa, true
+}
+
+func sqliteTextOfNumberLiteral(text string) (string, bool) {
+	lowered := strings.ToLower(text)
+	if strings.HasPrefix(lowered, "0x") {
+		value, err := strconv.ParseUint(lowered[2:], 16, 64)
+		if err != nil {
+			return "", false
+		}
+		return strconv.FormatInt(int64(value), 10), true
+	}
+	if !strings.ContainsAny(text, ".eE") {
+		return text, true
+	}
+	f, err := strconv.ParseFloat(text, 64)
+	if err != nil {
+		return "", false
+	}
+	return sqliteRealText(f)
+}
+
+func (r *filterRenderer) staticNumberAsText(n filter.Node) (string, bool) {
+	switch node := n.(type) {
+	case *filter.Paren:
+		return r.staticNumberAsText(node.Inner)
+	case *filter.Literal:
+		if node.Kind == filter.LiteralNumber {
+			return sqliteTextOfNumberLiteral(node.Text)
+		}
+	case *filter.Param:
+		if node.Index < 0 || node.Index >= len(r.args) {
+			return "", false
+		}
+		switch value := r.args[node.Index].(type) {
+		case int:
+			return strconv.Itoa(value), true
+		case int8:
+			return strconv.FormatInt(int64(value), 10), true
+		case int16:
+			return strconv.FormatInt(int64(value), 10), true
+		case int32:
+			return strconv.FormatInt(int64(value), 10), true
+		case int64:
+			return strconv.FormatInt(value, 10), true
+		case float32:
+			return sqliteRealText(float64(value))
+		case float64:
+			return sqliteRealText(value)
+		case json.Number:
+			return sqliteTextOfNumberLiteral(value.String())
+		}
+	}
+	return "", false
+}
 
 func (r *filterRenderer) affinityOf(n filter.Node) affinity {
 	switch node := n.(type) {
@@ -557,20 +688,158 @@ func (r *filterRenderer) captureNumeric(n filter.Node, next int) (string, error)
 		return "", err
 	}
 	if r.affinityOf(n) == affText {
-		return "COALESCE((substring(" + text + " FROM '" + sqliteNumHead + "'))::numeric, 0)", nil
+		head := "(substring(" + text + " FROM '" + sqliteNumHead + "'))"
+		return "COALESCE(" + saturatingNumeric(head) + ", 0)", nil
 	}
 	return "(" + text + ")::numeric", nil
 }
 
 func (r *filterRenderer) comparison(node *filter.Binary, op string, next int) error {
+	la, ra := r.declaredAffinityOf(node.Left), r.declaredAffinityOf(node.Right)
+	switch {
+	case la == affNumber && ra != affNumber:
+		return r.numericAffinity(node, op, next, true)
+	case ra == affNumber && la != affNumber:
+		return r.numericAffinity(node, op, next, false)
+	case la == affText && ra == affUnknown:
+		return r.textAffinity(node, op, next, true)
+	case ra == affText && la == affUnknown:
+		return r.textAffinity(node, op, next, false)
+	}
+	return r.storageClassComparison(node, op, next)
+}
+
+func (r *filterRenderer) substitutedComparison(node *filter.Binary, op string, next int, otherIsRight bool, replacement, suffix string) error {
+	var left, right string
+	var err error
+	if otherIsRight {
+		if left, err = r.capture(node.Left, next); err != nil {
+			return err
+		}
+		right = replacement
+	} else {
+		left = replacement
+		if right, err = r.capture(node.Right, next); err != nil {
+			return err
+		}
+	}
+	r.sb.WriteString("(" + left + " " + op + " " + right + suffix + ")")
+	return nil
+}
+
+func (r *filterRenderer) textAffinity(node *filter.Binary, op string, next int, otherIsRight bool) error {
+	other := node.Left
+	if otherIsRight {
+		other = node.Right
+	}
+	if r.affinityOf(other) != affNumber {
+		return r.storageClassComparison(node, op, next)
+	}
+	if text, ok := r.staticNumberAsText(other); ok {
+		return r.substitutedComparison(node, op, next, otherIsRight, dollarQuote(text), ` COLLATE "C"`)
+	}
+	rendered, err := r.capture(other, next)
+	if err != nil {
+		return err
+	}
+	return r.substitutedComparison(node, op, next, otherIsRight, "("+rendered+")::text", ` COLLATE "C"`)
+}
+
+func staticNumericLiteral(text string) string {
+	trimmed := strings.TrimSpace(text)
+	f, err := strconv.ParseFloat(trimmed, 64)
+	if err == nil || errors.Is(err, strconv.ErrRange) {
+		if math.IsInf(f, 1) || f > math.MaxFloat64 {
+			return "'Infinity'::numeric"
+		}
+		if math.IsInf(f, -1) || f < -math.MaxFloat64 {
+			return "'-Infinity'::numeric"
+		}
+	}
+	return "(" + trimmed + ")"
+}
+
+func (r *filterRenderer) numericAffinity(node *filter.Binary, op string, next int, otherIsRight bool) error {
+	other := node.Left
+	if otherIsRight {
+		other = node.Right
+	}
+	if r.affinityOf(other) != affText {
+		return r.storageClassComparison(node, op, next)
+	}
+	if text, ok := r.staticTextOf(other); ok {
+		if !sqliteNumericText.MatchString(text) {
+			return r.storageClassComparison(node, op, next)
+		}
+		return r.substitutedComparison(node, op, next, otherIsRight, staticNumericLiteral(text), "")
+	}
+	return r.runtimeNumericAffinity(node, op, next, otherIsRight)
+}
+
+func (r *filterRenderer) runtimeNumericAffinity(node *filter.Binary, op string, next int, otherIsRight bool) error {
+	left, err := r.capture(node.Left, next)
+	if err != nil {
+		return err
+	}
+	right, err := r.capture(node.Right, next)
+	if err != nil {
+		return err
+	}
+	text := left
+	if otherIsRight {
+		text = right
+	}
+	converted := saturatingNumeric(left) + " " + op + " " + right
+	if otherIsRight {
+		converted = left + " " + op + " " + saturatingNumeric(right)
+	}
+	answer, ok := crossClassAnswer(op, r.affinityOf(node.Left), r.affinityOf(node.Right))
+	if !ok {
+		return r.storageClassComparison(node, op, next)
+	}
+	r.sb.WriteString("(CASE WHEN " + text + " ~ '" + sqliteNumFull + "' THEN (" + converted + ")" +
+		" ELSE (CASE WHEN " + left + " IS NULL OR " + right + " IS NULL THEN NULL ELSE " + answer + " END) END)")
+	return nil
+}
+
+func isParamNode(n filter.Node) bool {
+	switch node := n.(type) {
+	case *filter.Paren:
+		return isParamNode(node.Inner)
+	case *filter.Param:
+		return true
+	}
+	return false
+}
+
+func (r *filterRenderer) captureGuard(n filter.Node, next int) (string, error) {
+	out, err := r.capture(n, next)
+	if err != nil {
+		return "", err
+	}
+	if !isParamNode(n) {
+		return out, nil
+	}
+	switch r.affinityOf(n) {
+	case affNumber:
+		return out + "::numeric", nil
+	case affText:
+		return out + "::text", nil
+	case affBlob:
+		return out + "::bytea", nil
+	}
+	return out, nil
+}
+
+func (r *filterRenderer) storageClassComparison(node *filter.Binary, op string, next int) error {
 	left, right := r.affinityOf(node.Left), r.affinityOf(node.Right)
 	if comparisonIsAcrossClasses(left, right) {
 		if answer, ok := crossClassAnswer(op, left, right); ok {
-			subject, err := r.capture(node.Left, next)
+			subject, err := r.captureGuard(node.Left, next)
 			if err != nil {
 				return err
 			}
-			object, err := r.capture(node.Right, next)
+			object, err := r.captureGuard(node.Right, next)
 			if err != nil {
 				return err
 			}
