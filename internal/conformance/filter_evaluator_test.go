@@ -170,6 +170,14 @@ var pinnedFilterSemantics = []struct {
 	{"a stored real rounds like a double too", "NOT (frac + 0.2 = 0.3)", ""},
 	{"integer arithmetic stays exact past a double", "big + 0 = 9007199254740993", ""},
 	{"two numerals a double cannot tell apart divide to one", "(9223372036854775807 / 9223372036854775808) = 1", ""},
+	{"runtime numeric text rounds through a double too", "frac = code2", ""},
+	{"a boolean expression is one in a numeric position", "(flag OR off) = 1", ""},
+	{"a false boolean expression is zero", "(flag AND off) = 0", ""},
+	{"a comparison is a number when compared to one", "(n = -7) = 1", ""},
+	{"a boolean expression converts on either side", "1 = (flag OR off)", ""},
+	{"a boolean expression multiplies as its integer", "(flag OR off) * 5 = 5", ""},
+	{"a boolean column inside LIKE is its digit", "1 LIKE flag", ""},
+	{"integer text keeps its digits through a comparison", "big = '9007199254740993'", ""},
 	{"a case operand still misses a different value", "CASE code WHEN 2 THEN 1 ELSE 0 END = 0", ""},
 	{"concatenation is a truth value through its number", "NOT (body || body)", ""},
 	{"numeric concatenation is a true truth value", "code || ''", ""},
@@ -225,11 +233,12 @@ func seedScopedFilterRow(t *testing.T) *harness {
 			{"name": "pad", "type": "text"},
 			{"name": "empty", "type": "text"},
 			{"name": "past", "type": "number"},
+			{"name": "code2", "type": "text"},
 		},
 		"row_access": "own",
 	})
 	grantTo(t, h, "principal", "alice", "acme", "notes", "create", "delete")
-	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7,"code":"1","mark":"!zzz","huge":"1e999999","flag":true,"neg":"-1.0e+300","frac":0.1,"big":9007199254740993,"real":"7.0","off":false,"zero":0,"pad":"  5  ","empty":"","past":9223372036854775808}]}`)
+	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7,"code":"1","mark":"!zzz","huge":"1e999999","flag":true,"neg":"-1.0e+300","frac":0.1,"big":9007199254740993,"real":"7.0","off":false,"zero":0,"pad":"  5  ","empty":"","past":9223372036854775808,"code2":"0.10000000000000000001"}]}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("seed insert: status %d %v", res.StatusCode, out)
 	}

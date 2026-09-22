@@ -930,7 +930,14 @@ func (r *filterRenderer) captureNumeric(n filter.Node, next int) (string, error)
 
 func sqliteNumberOfText(text string) string {
 	head := "(substring(" + text + " FROM '" + sqliteNumHead + "'))"
-	return "(CASE WHEN " + text + " IS NULL THEN NULL ELSE COALESCE(" + saturatingNumeric(head) + ", 0) END)"
+	value := "COALESCE(" + saturatingNumeric(head) + ", 0)"
+	return "(CASE WHEN " + text + " IS NULL THEN NULL ELSE " + asSQLiteStorage(head, value) + " END)"
+}
+
+func asSQLiteStorage(head, value string) string {
+	return "(CASE WHEN COALESCE(" + head + ", '') !~ '[.eE]' AND " + value +
+		" BETWEEN " + sqliteIntMin + " AND " + sqliteIntMax +
+		" THEN " + value + " ELSE " + value + "::float8::text::numeric END)"
 }
 
 func (r *filterRenderer) comparison(node *filter.Binary, op string, next int) error {
@@ -945,6 +952,19 @@ func (r *filterRenderer) comparison(node *filter.Binary, op string, next int) er
 		}
 		r.sb.WriteString("(" + left + " " + op + " " + right + ")")
 		return nil
+	}
+	if r.booleanShaped(node.Left) != r.booleanShaped(node.Right) {
+		boolean, other := node.Left, node.Right
+		if r.booleanShaped(node.Right) {
+			boolean, other = node.Right, node.Left
+		}
+		if !r.isBooleanNode(boolean) && r.affinityOf(other) == affNumber {
+			rendered, err := r.capture(boolean, next)
+			if err != nil {
+				return err
+			}
+			return r.substitutedComparison(node, op, next, r.booleanShaped(node.Right), "("+rendered+")::int", "")
+		}
 	}
 	la, ra := r.declaredAffinityOf(node.Left), r.declaredAffinityOf(node.Right)
 	switch {
@@ -1040,9 +1060,11 @@ func (r *filterRenderer) runtimeNumericAffinity(node *filter.Binary, op string, 
 	if otherIsRight {
 		text = right
 	}
-	converted := saturatingNumeric(left) + " " + op + " " + right
+	leftHead := "(substring(" + left + " FROM '" + sqliteNumHead + "'))"
+	rightHead := "(substring(" + right + " FROM '" + sqliteNumHead + "'))"
+	converted := asSQLiteStorage(leftHead, saturatingNumeric(leftHead)) + " " + op + " " + right
 	if otherIsRight {
-		converted = left + " " + op + " " + saturatingNumeric(right)
+		converted = left + " " + op + " " + asSQLiteStorage(rightHead, saturatingNumeric(rightHead))
 	}
 	answer, ok := crossClassAnswer(op, r.affinityOf(node.Left), r.affinityOf(node.Right))
 	if !ok {
@@ -1198,6 +1220,9 @@ func (r *filterRenderer) numericOperand(n filter.Node, next int) (string, string
 	raw, err := r.capture(n, next)
 	if err != nil {
 		return "", "", err
+	}
+	if r.booleanShaped(n) && !r.isBooleanNode(n) {
+		return raw, "(" + raw + ")::int::numeric", nil
 	}
 	if r.affinityOf(n) == affText {
 		return raw, sqliteNumberOfText(raw), nil
