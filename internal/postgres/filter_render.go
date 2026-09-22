@@ -34,14 +34,47 @@ func filterNotRenderable(name string) error {
 
 func renderScopedFilter(node filter.Node, columns map[string]string, types map[string]schema.FieldType, args []any, next int) (string, []any, error) {
 	r := &filterRenderer{columns: columns, types: types, args: args}
-	if err := r.render(node, next); err != nil {
+	rendered, err := r.truth(node, next)
+	if err != nil {
 		return "", nil, err
 	}
-	rendered := r.sb.String()
-	if !rendersAsTruthValue(node) {
-		rendered = "(" + rendered + " <> 0)"
-	}
 	return rendered, r.bound, nil
+}
+
+func (r *filterRenderer) isBooleanNode(n filter.Node) bool {
+	switch node := n.(type) {
+	case *filter.Paren:
+		return r.isBooleanNode(node.Inner)
+	case *filter.Column:
+		return r.types[node.Name] == schema.Boolean
+	case *filter.Param:
+		if node.Index >= 0 && node.Index < len(r.args) {
+			_, ok := r.args[node.Index].(bool)
+			return ok
+		}
+	}
+	return false
+}
+
+func (r *filterRenderer) truth(n filter.Node, next int) (string, error) {
+	if rendersAsTruthValue(n) || r.isBooleanNode(n) {
+		return r.capture(n, next)
+	}
+	if r.affinityOf(n) == affText {
+		num, err := r.captureNumeric(n, next)
+		if err != nil {
+			return "", err
+		}
+		return "(" + num + " <> 0)", nil
+	}
+	out, err := r.capture(n, next)
+	if err != nil {
+		return "", err
+	}
+	if r.affinityOf(n) == affBlob {
+		return "(CASE WHEN " + out + " IS NULL THEN NULL ELSE FALSE END)", nil
+	}
+	return "(" + out + " <> 0)", nil
 }
 
 func (r *filterRenderer) placeholder(next int) int { return next + len(r.bound) }
@@ -73,11 +106,11 @@ func (r *filterRenderer) render(n filter.Node, next int) error {
 		return nil
 	case *filter.Unary:
 		if strings.EqualFold(node.Op, "not") {
-			r.sb.WriteString("NOT (")
-			if err := r.render(node.Operand, next); err != nil {
+			inner, err := r.truth(node.Operand, next)
+			if err != nil {
 				return err
 			}
-			r.sb.WriteString(")")
+			r.sb.WriteString("NOT (" + inner + ")")
 			return nil
 		}
 		r.sb.WriteString("(" + node.Op + " ")
@@ -172,6 +205,17 @@ func (r *filterRenderer) binary(node *filter.Binary, next int) error {
 		return r.comparison(node, op, next)
 	case "+", "-", "*", "/", "%":
 		return r.arithmetic(node, op, next)
+	case "AND", "OR":
+		left, err := r.truth(node.Left, next)
+		if err != nil {
+			return err
+		}
+		right, err := r.truth(node.Right, next)
+		if err != nil {
+			return err
+		}
+		r.sb.WriteString("(" + left + " " + op + " " + right + ")")
+		return nil
 	}
 	r.sb.WriteString("(")
 	if err := r.render(node.Left, next); err != nil {

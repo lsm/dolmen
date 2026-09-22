@@ -276,9 +276,17 @@ Text coerced to a number saturates the way SQLite's double does rather than rais
 which requires **PostgreSQL 16 or newer** — the first hard lower bound this adapter
 places on the server version.
 
-A scalar is a truth value only at the top of the expression. `1` is wrapped into
-`1 <> 0` there, but `NOT 1` and `1 AND 1` render the bare scalar into a boolean position
-and raise. SQLite accepts all three.
+Anything in a boolean position is rendered as SQLite's truth value, at the top of the
+expression and under `NOT`, `AND` and `OR` alike. A number is true when it is nonzero, a
+text is converted to a number first so `'a note'` is false and `'1'` is true, and a blob
+is false. A boolean column and a bound boolean argument are already boolean and are used
+as they are: PostgreSQL has no `boolean <> numeric` operator, so wrapping them the way a
+number is wrapped raises `42883` on a filter as ordinary as `flag`.
+
+A boolean column is not yet usable in a *numeric* position. SQLite stores one as an
+integer, so `flag + 1`, `abs(flag)` and `flag = 1` all answer there, while this engine
+renders a real `boolean` into arithmetic and raises. That predates the comparison work
+and is a refusal rather than a wrong answer, so it stays a recorded gap.
 
 `IN`, `BETWEEN` and `IS` do not yet apply these rules. SQLite converts across affinity
 for them exactly as it does for `=` and `<`, so `body IN (1, 2)`, `body BETWEEN 1 AND
