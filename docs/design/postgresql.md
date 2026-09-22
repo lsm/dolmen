@@ -279,6 +279,14 @@ text converted the other way is rounded through a double first, the way SQLite's
 affinity does, so `'0.10000000000000000001'` matches a stored `0.1`; an integer that
 fits in 64 bits keeps its exact digits instead.
 
+Division truncates only when both operands are integers in SQLite's storage sense, which
+is not the same as being numerically whole. A literal written `7.0` or `1e1` is REAL, so
+`7.0 / 2` is `3.5` and not `3`, and text converts the same way: `'7.0'` is REAL where
+`'7'` is INTEGER. A stored number is the case where whole really does mean integer,
+because the SQLite column is `NUMERIC` and stores a lossless `7.0` as INTEGER `7`, so a
+column keeps the runtime test while a literal or a bound argument is classed while
+rendering.
+
 Text coerced to a number saturates the way SQLite's double does rather than raising.
 `abs(body)` over a text `'1e999999'` is infinity, matching SQLite, where a bare
 `::numeric` cast raises `22003` and kills the statement; an overflowing literal such as
@@ -296,16 +304,22 @@ compare text against zero. A boolean column and a bound boolean argument are alr
 as they are: PostgreSQL has no `boolean <> numeric` operator, so wrapping them the way a
 number is wrapped raises `42883` on a filter as ordinary as `flag`.
 
-A boolean column is not yet usable in a *numeric* position. SQLite stores one as an
-integer, so `flag + 1`, `abs(flag)` and `flag = 1` all answer there, while this engine
-renders a real `boolean` into arithmetic and raises. That predates the comparison work
-and is a refusal rather than a wrong answer, so it stays a recorded gap.
+A boolean column is an integer everywhere except a boolean position. SQLite stores one
+as an integer, so `flag = 1`, `flag + 1`, `abs(flag)` and `flag || 'x'` all answer there,
+while PostgreSQL holds a real `boolean`. The column therefore renders as `(col)::int` by
+default, and only a boolean position takes it raw: a truth test, and a comparison whose
+other side is itself boolean-shaped, so `flag = TRUE` and `flag = (n > 1)` still compare
+as booleans. The condition of an `iif` and of a `CASE` without an operand is a truth test
+too, which is what lets `iif(flag, ...)` and `iif(1, ...)` work.
 
-`IN`, `BETWEEN` and `IS` do not yet apply these rules. SQLite converts across affinity
-for them exactly as it does for `=` and `<`, so `body IN (1, 2)`, `body BETWEEN 1 AND
-10` and `body IS 1` over a text column answer there and raise `42883` here. That is a
-refusal rather than a wrong row set, and it predates the comparison work rather than
-being introduced by it, so it stays a recorded gap for a later slice.
+`IN`, `BETWEEN` and `IS` apply the same rules, because they are rendered through the
+same comparison. `x IN (a, b)` becomes `x = a OR x = b`, `x BETWEEN lo AND hi` becomes
+`x >= lo AND x <= hi`, and each of those comparisons converts affinity on its own. `IS`
+is the null-safe one, so it renders `COALESCE(x = y, FALSE) OR (x IS NULL AND y IS
+NULL)`: the equality carries the affinity conversion, and the second arm restores the
+"both null is a match" rule the `COALESCE` would otherwise lose. An operand that is a
+bound argument is cast from its Go value before it reaches an `IS NULL`, because
+PostgreSQL cannot infer a bare placeholder's type there.
 
 Updates patch only supplied fields. Filter upsert updates every match or inserts one
 record with defaults and required-field validation when there is no match. Delete keeps

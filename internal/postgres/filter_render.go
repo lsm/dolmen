@@ -15,11 +15,12 @@ import (
 )
 
 type filterRenderer struct {
-	columns map[string]string
-	types   map[string]schema.FieldType
-	args    []any
-	bound   []any
-	sb      strings.Builder
+	columns    map[string]string
+	types      map[string]schema.FieldType
+	args       []any
+	bound      []any
+	sb         strings.Builder
+	rawBoolean bool
 }
 
 var renderedFunctions = map[string]string{
@@ -56,8 +57,23 @@ func (r *filterRenderer) isBooleanNode(n filter.Node) bool {
 	return false
 }
 
+func (r *filterRenderer) captureBoolean(n filter.Node, next int) (string, error) {
+	saved := r.rawBoolean
+	r.rawBoolean = true
+	out, err := r.capture(n, next)
+	r.rawBoolean = saved
+	return out, err
+}
+
+func (r *filterRenderer) booleanShaped(n filter.Node) bool {
+	return r.isBooleanNode(n) || rendersAsTruthValue(n)
+}
+
 func (r *filterRenderer) truth(n filter.Node, next int) (string, error) {
-	if rendersAsTruthValue(n) || r.isBooleanNode(n) {
+	if r.isBooleanNode(n) {
+		return r.captureBoolean(n, next)
+	}
+	if rendersAsTruthValue(n) {
 		return r.capture(n, next)
 	}
 	if r.affinityOf(n) == affText {
@@ -86,6 +102,10 @@ func (r *filterRenderer) render(n filter.Node, next int) error {
 		if !ok {
 			physical = node.Name
 		}
+		if r.types[node.Name] == schema.Boolean && !r.rawBoolean {
+			r.sb.WriteString("(" + ident(physical) + ")::int")
+			return nil
+		}
 		r.sb.WriteString(ident(physical))
 		return nil
 	case *filter.Param:
@@ -93,6 +113,9 @@ func (r *filterRenderer) render(n filter.Node, next int) error {
 			return fmt.Errorf("%w: filter argument %d was not supplied", store.ErrInvalid, node.Index+1)
 		}
 		r.sb.WriteString("$" + fmt.Sprint(r.placeholder(next)))
+		if _, isBool := r.args[node.Index].(bool); isBool && !r.rawBoolean {
+			r.sb.WriteString("::int")
+		}
 		r.bound = append(r.bound, r.args[node.Index])
 		return nil
 	case *filter.Literal:
@@ -229,20 +252,33 @@ func (r *filterRenderer) binary(node *filter.Binary, next int) error {
 	return nil
 }
 
+func (r *filterRenderer) compareVia(op string, left, right filter.Node, next int) (string, error) {
+	saved := r.sb
+	r.sb = strings.Builder{}
+	err := r.comparison(&filter.Binary{Op: op, Left: left, Right: right}, op, next)
+	out := r.sb.String()
+	r.sb = saved
+	return out, err
+}
+
 func (r *filterRenderer) is(node *filter.Is, next int) error {
-	op := " IS NOT DISTINCT FROM "
+	equal, err := r.compareVia("=", node.Left, node.Right, next)
+	if err != nil {
+		return err
+	}
+	left, err := r.captureGuard(node.Left, next)
+	if err != nil {
+		return err
+	}
+	right, err := r.captureGuard(node.Right, next)
+	if err != nil {
+		return err
+	}
+	joined := "(COALESCE(" + equal + ", FALSE) OR (" + left + " IS NULL AND " + right + " IS NULL))"
 	if node.Negated {
-		op = " IS DISTINCT FROM "
+		joined = "(NOT " + joined + ")"
 	}
-	r.sb.WriteString("(")
-	if err := r.render(node.Left, next); err != nil {
-		return err
-	}
-	r.sb.WriteString(op)
-	if err := r.render(node.Right, next); err != nil {
-		return err
-	}
-	r.sb.WriteString(")")
+	r.sb.WriteString(joined)
 	return nil
 }
 
@@ -255,24 +291,19 @@ func (r *filterRenderer) in(node *filter.In, next int) error {
 		}
 		return nil
 	}
-	r.sb.WriteString("(")
-	if err := r.render(node.Left, next); err != nil {
-		return err
-	}
-	if node.Negated {
-		r.sb.WriteString(" NOT IN (")
-	} else {
-		r.sb.WriteString(" IN (")
-	}
-	for i, item := range node.List {
-		if i > 0 {
-			r.sb.WriteString(", ")
-		}
-		if err := r.render(item, next); err != nil {
+	parts := make([]string, 0, len(node.List))
+	for _, item := range node.List {
+		part, err := r.compareVia("=", node.Left, item, next)
+		if err != nil {
 			return err
 		}
+		parts = append(parts, part)
 	}
-	r.sb.WriteString("))")
+	joined := "(" + strings.Join(parts, " OR ") + ")"
+	if node.Negated {
+		joined = "(NOT " + joined + ")"
+	}
+	r.sb.WriteString(joined)
 	return nil
 }
 
@@ -303,23 +334,19 @@ func (r *filterRenderer) like(node *filter.Like, next int) error {
 }
 
 func (r *filterRenderer) between(node *filter.Between, next int) error {
-	r.sb.WriteString("(")
-	if err := r.render(node.Value, next); err != nil {
+	low, err := r.compareVia(">=", node.Value, node.Low, next)
+	if err != nil {
 		return err
 	}
+	high, err := r.compareVia("<=", node.Value, node.High, next)
+	if err != nil {
+		return err
+	}
+	joined := "(" + low + " AND " + high + ")"
 	if node.Negated {
-		r.sb.WriteString(" NOT BETWEEN ")
-	} else {
-		r.sb.WriteString(" BETWEEN ")
+		joined = "(NOT " + joined + ")"
 	}
-	if err := r.render(node.Low, next); err != nil {
-		return err
-	}
-	r.sb.WriteString(" AND ")
-	if err := r.render(node.High, next); err != nil {
-		return err
-	}
-	r.sb.WriteString(")")
+	r.sb.WriteString(joined)
 	return nil
 }
 
@@ -333,10 +360,11 @@ func (r *filterRenderer) call(node *filter.Call, next int) error {
 		if len(node.Args) != 3 {
 			return filterNotRenderable("iif")
 		}
-		r.sb.WriteString("(CASE WHEN ")
-		if err := r.render(node.Args[0], next); err != nil {
+		condition, err := r.truth(node.Args[0], next)
+		if err != nil {
 			return err
 		}
+		r.sb.WriteString("(CASE WHEN " + condition)
 		r.sb.WriteString(" THEN ")
 		if err := r.render(node.Args[1], next); err != nil {
 			return err
@@ -412,7 +440,13 @@ func (r *filterRenderer) caseExpr(node *filter.Case, next int) error {
 	}
 	for _, branch := range node.Branches {
 		r.sb.WriteString(" WHEN ")
-		if err := r.render(branch.When, next); err != nil {
+		if node.Operand == nil {
+			condition, err := r.truth(branch.When, next)
+			if err != nil {
+				return err
+			}
+			r.sb.WriteString(condition)
+		} else if err := r.render(branch.When, next); err != nil {
 			return err
 		}
 		r.sb.WriteString(" THEN ")
@@ -496,6 +530,8 @@ func saturatingNumeric(text string) string {
 		" WHEN " + text + "::numeric < -" + sqliteDoubleMax + " THEN '-Infinity'::numeric" +
 		" ELSE " + text + "::numeric END)"
 }
+
+var sqliteNumeralHead = regexp.MustCompile(`^[\t\n\f\r ]*[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?`)
 
 var sqliteNumericText = regexp.MustCompile(`^[\t\n\f\r ]*[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?[\t\n\f\r ]*$`)
 
@@ -824,6 +860,18 @@ func (r *filterRenderer) captureNumeric(n filter.Node, next int) (string, error)
 }
 
 func (r *filterRenderer) comparison(node *filter.Binary, op string, next int) error {
+	if r.booleanShaped(node.Left) && r.booleanShaped(node.Right) {
+		left, err := r.captureBoolean(node.Left, next)
+		if err != nil {
+			return err
+		}
+		right, err := r.captureBoolean(node.Right, next)
+		if err != nil {
+			return err
+		}
+		r.sb.WriteString("(" + left + " " + op + " " + right + ")")
+		return nil
+	}
 	la, ra := r.declaredAffinityOf(node.Left), r.declaredAffinityOf(node.Right)
 	switch {
 	case la == affNumber && ra != affNumber:
@@ -992,19 +1040,86 @@ func (r *filterRenderer) storageClassComparison(node *filter.Binary, op string, 
 	return nil
 }
 
+func (r *filterRenderer) staticallyReal(n filter.Node) bool {
+	switch node := n.(type) {
+	case *filter.Paren:
+		return r.staticallyReal(node.Inner)
+	case *filter.Unary:
+		if node.Op == "-" || node.Op == "+" {
+			return r.staticallyReal(node.Operand)
+		}
+	case *filter.Literal:
+		switch node.Kind {
+		case filter.LiteralNumber:
+			if strings.HasPrefix(strings.ToLower(node.Text), "0x") {
+				return false
+			}
+			return strings.ContainsAny(node.Text, ".eE")
+		case filter.LiteralString:
+			return numeralHeadIsReal(node.Text)
+		}
+	case *filter.Param:
+		if node.Index < 0 || node.Index >= len(r.args) {
+			return false
+		}
+		switch value := r.args[node.Index].(type) {
+		case float32, float64:
+			return true
+		case json.Number:
+			return strings.ContainsAny(value.String(), ".eE")
+		case string:
+			return numeralHeadIsReal(value)
+		}
+	}
+	return false
+}
+
+func numeralHeadIsReal(text string) bool {
+	head := sqliteNumeralHead.FindString(text)
+	return strings.ContainsAny(head, ".eE")
+}
+
+func (r *filterRenderer) integerClassed(n filter.Node, raw, numeric string) string {
+	if r.staticallyReal(n) {
+		return "FALSE"
+	}
+	if r.affinityOf(n) == affText {
+		return "COALESCE((substring(" + raw + " FROM '" + sqliteNumHead + "')), '') !~ '[.eE]'"
+	}
+	return numeric + " = trunc(" + numeric + ")"
+}
+
+func (r *filterRenderer) numericOperand(n filter.Node, next int) (string, string, error) {
+	raw, err := r.capture(n, next)
+	if err != nil {
+		return "", "", err
+	}
+	if r.affinityOf(n) == affText {
+		head := "(substring(" + raw + " FROM '" + sqliteNumHead + "'))"
+		return raw, "COALESCE(" + saturatingNumeric(head) + ", 0)", nil
+	}
+	return raw, "(" + raw + ")::numeric", nil
+}
+
 func (r *filterRenderer) arithmetic(node *filter.Binary, op string, next int) error {
-	left, err := r.captureNumeric(node.Left, next)
+	rawLeft, left, err := r.numericOperand(node.Left, next)
 	if err != nil {
 		return err
 	}
-	right, err := r.captureNumeric(node.Right, next)
+	rawRight, right, err := r.numericOperand(node.Right, next)
 	if err != nil {
 		return err
 	}
 	switch op {
 	case "/":
 		quotient := left + " / NULLIF(" + right + ", 0)"
-		r.sb.WriteString("(CASE WHEN " + left + " = trunc(" + left + ") AND " + right + " = trunc(" + right + ")" +
+		leftClass := r.integerClassed(node.Left, rawLeft, left)
+		rightClass := r.integerClassed(node.Right, rawRight, right)
+		if leftClass == "FALSE" || rightClass == "FALSE" {
+			r.sb.WriteString("(" + quotient + ")")
+			return nil
+		}
+		r.sb.WriteString("(CASE WHEN " + leftClass + " AND " + rightClass +
 			" THEN trunc(" + quotient + ") ELSE " + quotient + " END)")
 	case "%":
 		r.sb.WriteString("(trunc(" + left + ") % NULLIF(trunc(" + right + "), 0))")

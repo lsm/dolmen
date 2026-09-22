@@ -133,12 +133,28 @@ var pinnedFilterSemantics = []struct {
 	{"a bound boolean is its own truth value", "?", `[true]`},
 	{"a negated literal takes the text form SQLite gives it", "neg = -1e300", ""},
 	{"numeric text rounds through a double before comparing", "frac = '0.10000000000000000001'", ""},
-	{"an integer beyond a double keeps its digits", "n = '-7'", ""},
+	{"an integer beyond a double keeps its digits", "big = '9007199254740993'", ""},
+	{"a real literal divides as a real", "7.0 / 2 = 3.5", ""},
+	{"a real divisor divides as a real", "7 / 2.0 = 3.5", ""},
+	{"an exponent literal divides as a real", "1e1 / 4 = 2.5", ""},
+	{"real text divides as a real", "real / 2 = 3.5", ""},
+	{"integer text still divides as an integer", "code / 2 = 0", ""},
 	{"concatenation is a truth value through its number", "NOT (body || body)", ""},
 	{"numeric concatenation is a true truth value", "code || ''", ""},
 	{"a text case expression is a truth value", "NOT (CASE WHEN 1 = 1 THEN 'a' ELSE 'b' END)", ""},
 	{"a text iif is a truth value", "NOT iif(1 = 1, 'a', 'b')", ""},
 	{"a text coalesce is a truth value", "NOT coalesce(body, 'x')", ""},
+	{"a boolean column compares as the integer SQLite stores", "flag = 1", ""},
+	{"a boolean column adds as an integer", "flag + 1 = 2", ""},
+	{"a boolean column passes through a numeric function", "abs(flag) = 1", ""},
+	{"a boolean column concatenates as its digit", "flag || 'x' = '1x'", ""},
+	{"a boolean column drives iif", "iif(flag, 'a', 'b') = 'a'", ""},
+	{"a boolean column drives a case", "CASE WHEN flag THEN 1 ELSE 0 END = 1", ""},
+	{"IN converts the list to the column's affinity", "code IN (1, 2)", ""},
+	{"BETWEEN converts its bounds to the column's affinity", "code BETWEEN 1 AND 10", ""},
+	{"IS converts to the column's affinity", "code IS 1", ""},
+	{"IS is still null-safe", "nullif(body, body) IS NULL", ""},
+	{"a scalar drives iif", "iif(1, 'a', 'b') = 'a'", ""},
 }
 
 var notYetEvaluatedByAdapterTwo = map[string]bool{
@@ -169,11 +185,13 @@ func seedScopedFilterRow(t *testing.T) *harness {
 			{"name": "flag", "type": "boolean"},
 			{"name": "neg", "type": "text"},
 			{"name": "frac", "type": "number"},
+			{"name": "big", "type": "number"},
+			{"name": "real", "type": "text"},
 		},
 		"row_access": "own",
 	})
 	grantTo(t, h, "principal", "alice", "acme", "notes", "create", "delete")
-	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7,"code":"1","mark":"!zzz","huge":"1e999999","flag":true,"neg":"-1.0e+300","frac":0.1}]}`)
+	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7,"code":"1","mark":"!zzz","huge":"1e999999","flag":true,"neg":"-1.0e+300","frac":0.1,"big":9007199254740993,"real":"7.0"}]}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("seed insert: status %d %v", res.StatusCode, out)
 	}
