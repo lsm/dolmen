@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/lsm/dolmen/internal/filter"
@@ -105,11 +106,19 @@ func (r *filterRenderer) literal(node *filter.Literal) error {
 	case filter.LiteralNumber:
 		return r.number(node.Text)
 	case filter.LiteralBlob:
-		r.sb.WriteString("'\\x" + strings.ToLower(node.Text) + "'::bytea")
+		r.sb.WriteString(dollarQuote(`\x`+strings.ToLower(node.Text)) + "::bytea")
 	default:
-		r.sb.WriteString("'" + strings.ReplaceAll(node.Text, "'", "''") + "'")
+		r.sb.WriteString(dollarQuote(node.Text))
 	}
 	return nil
+}
+
+func dollarQuote(text string) string {
+	tag := "$dolmen$"
+	for i := 0; strings.Contains(text, tag); i++ {
+		tag = "$dolmen" + strconv.Itoa(i) + "$"
+	}
+	return tag + text + tag
 }
 
 func (r *filterRenderer) number(text string) error {
