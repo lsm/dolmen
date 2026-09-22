@@ -359,6 +359,17 @@ is `0.5` while `abs(-7) / 2` is `3`. `length()` and `instr()` are always INTEGER
 runtime whole-number test cannot see any of this, because `round(-7)` is numerically
 whole and REAL at the same time, so a call is classed while rendering instead.
 
+The same holds for every expression, not only a call: its class comes from how it was
+computed, not from whether its value came out whole. `(1.5 + 1.5) / 2` is `1.5` because
+the sum is REAL `3.0`, and `(7.5 % 2) / 2` is `0.5` because SQLite's `%` answers REAL
+when either operand is REAL, even though the remainder is integral. The renderer builds
+each arithmetic result's class from its operands' classes as it renders them, and a
+conditional — `iif`, `CASE`, `coalesce` — takes the class of whichever branch it chose,
+with the same conditions it chose by, so `iif(id = 1, 3, 0.5) / 2` stays an integer
+division while `iif(1, 3.0, 0) / 2` does not. The runtime whole-number test is left only
+where a value arrives from storage. Classing a result by that test is what made
+`((1.5 + 1.5) / 2) > 1` false, a wrong row set on a delete.
+
 Integer arithmetic that leaves int64 stops being integer arithmetic. SQLite promotes an
 overflowing `+`, `-`, `*`, and `intmin / -1` to a double, so the exact path has to check
 the result's range and not only both operands' classes; without it
