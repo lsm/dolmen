@@ -58,7 +58,7 @@ var outputSchemas = map[string]map[string]any{
 	"delete":          objectSchema(false, map[string]any{"deleted": integer(0)}, []string{"deleted"}),
 	"update":          objectSchema(false, map[string]any{"updated": integer(0)}, []string{"updated"}),
 	"upsert":          writeDataSchema,
-	"migrate":         objectSchema(false, map[string]any{"table": ref("TableSchema")}, []string{"table"}),
+	"migrate":         migrateOutSchema(ref("TableSchema"), ref("TableSchema")),
 }
 
 func init() {

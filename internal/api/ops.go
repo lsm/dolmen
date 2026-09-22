@@ -116,7 +116,15 @@ func changeOutSchema(desc string) map[string]any {
 	}
 }
 
-func planOutSchema(desc string) map[string]any {
+func migrateOutSchema(table, planTable map[string]any) map[string]any {
+	return outSchema(map[string]any{
+		"table":   table,
+		"dry_run": prop("boolean", "True when this was a validation-only preview (nothing applied)"),
+		"plan":    planOutSchema("Migration preview (present when dry_run)", planTable),
+	}, "table")
+}
+
+func planOutSchema(desc string, table map[string]any) map[string]any {
 	return map[string]any{
 		"type":        "object",
 		"description": desc,
@@ -124,7 +132,7 @@ func planOutSchema(desc string) map[string]any {
 			"dry_run":               prop("boolean", "Always true for a plan (nothing was applied)"),
 			"from_version":          prop("integer", "Schema version the changes were planned against"),
 			"to_version":            prop("integer", "Version the table would have after applying"),
-			"table":                 tableOutSchema("Prospective schema after the changes"),
+			"table":                 table,
 			"operations":            map[string]any{"type": "array", "description": "Human-readable operations, in order", "items": map[string]any{"type": "string"}},
 			"destructive":           map[string]any{"type": "array", "description": "Destructive changes with their consequence (present when any)", "items": map[string]any{"type": "string"}},
 			"backfill_rows":         prop("integer", "Existing rows that receive an added field's default"),
@@ -1794,11 +1802,9 @@ var Ops = map[string]OpDef{
 			},
 			"required": []string{"namespace", "table", "changes"},
 		},
-		OutputSchema: outSchema(map[string]any{
-			"table":   tableOutSchema("Schema of the migrated table (version bumped); for dry_run, the prospective schema"),
-			"dry_run": prop("boolean", "True when this was a validation-only preview (nothing applied)"),
-			"plan":    planOutSchema("Migration preview (present when dry_run)"),
-		}, "table"),
+		OutputSchema: migrateOutSchema(
+			tableOutSchema("Schema of the migrated table (version bumped); for dry_run, the prospective schema"),
+			tableOutSchema("Prospective schema after the changes")),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var shadow struct {
 				Namespace           string           `json:"namespace"`
