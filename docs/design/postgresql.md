@@ -291,15 +291,23 @@ applied. Rendered: `±N day/hour/minute/second` and `±HH:MM[:SS]` modifiers, an
 `%Y %m %d %H %M %S %j %%` fields.
 
 One divergence is left open deliberately. `date`, `time`, `datetime` and `strftime`
-render as text and `julianday` as a number, so comparing one against the other storage
-class — `date(created_at) > 1`, `strftime('%Y', created_at) = 2026` — reaches PostgreSQL
-as `text > integer` and raises 42883, where SQLite compares storage classes and answers.
-It surfaces as a redacted `query_error`, never as a different row set, and a test pins
-exactly that: on these expressions this engine must either agree with SQLite or raise.
-Closing it is the affinity work in #404, which folds a cross-class comparison to the
-constant SQLite would produce — but only for calls its `affinityOf` classes, so the five
-time functions have to be named there (`date`, `time`, `datetime`, `strftime` as text,
-`julianday` as a number) or an unclassed call keeps falling through to the raising path.
+render as text and `julianday` as a number, so an expression that puts one next to the
+other storage class raises where SQLite answers: `date(created_at) > 1` and
+`strftime('%Y', created_at) = 2026` reach PostgreSQL as `text > integer` (42883),
+`date(created_at) + 1` is 2027 in SQLite and 42883 here, and `NOT date(created_at)` is
+42804. Every one surfaces as a redacted `query_error`, never as a different row set, and
+a test pins that property rather than the behaviour: on these expressions this engine
+either agrees with SQLite or raises, which stays true once the gap closes.
+
+Closing it is the storage-class affinity work, which folds such an expression to the
+value SQLite would produce — but only for calls its `affinityOf` classes, so the five
+time functions must be named there (`date`, `time`, `datetime`, `strftime` as text,
+`julianday` as a number). Those three lines cannot be added usefully before both halves
+are in one tree: on the affinity branch alone the calls are refused at `call()` before
+affinity is consulted, so no test can distinguish having the entries from not having
+them, and on the rendering branch alone there is no `affinityOf` to add them to. They
+belong in whichever change brings the two together, with the comparison, `truth()` and
+`captureNumeric` paths covered.
 
 Two things are easy to get wrong and are pinned by tests. Literal runs inside a strftime
 format must be double-quoted for `to_char`, or `%Y-%m-%dT%H:%M:%S` renders its literal

@@ -161,40 +161,57 @@ func TestWhatThisEngineWillNotRenderIsRefusedRatherThanAnswered(t *testing.T) {
 	}
 }
 
-var mixedClassTimeComparisons = []string{
+var mixedClassTimeExpressions = []string{
 	"date(created_at) > 1",
 	"date(created_at) = 1",
 	"date(created_at) <= 1",
 	"strftime('%Y', created_at) = 2026",
 	"julianday(created_at) > 'abc'",
 	"datetime(created_at) != 0",
+	"date(created_at) + 1",
+	"strftime('%Y', created_at) + 1",
+	"abs(date(created_at))",
+	"NOT date(created_at)",
+	"date(created_at) AND 1",
+	"julianday(created_at) + 1",
+	"length(date(created_at))",
+	"julianday(created_at) > 2400000",
 }
 
-func TestAMixedClassComparisonRaisesRatherThanAnsweringDifferently(t *testing.T) {
+func TestAMixedClassTimeExpressionRaisesRatherThanAnsweringDifferently(t *testing.T) {
 	cfg := testConfig(t)
 	s := openTest(t, cfg)
 	db := sqliteOracle(t)
 	const moment = "2026-09-21T14:05:09.123Z"
-	for _, expr := range mixedClassTimeComparisons {
+	raised := 0
+	for _, expr := range mixedClassTimeExpressions {
 		want, wantValid := sqliteScalar(t, db, expr, moment)
 		rendered := renderFor(t, expr)
 		var got sql.NullString
 		query := "SELECT (" + rendered + ")::text FROM (VALUES (" + dollarQuote(moment) + "::text)) AS t(created_at)"
 		if err := s.pool.QueryRow(t.Context(), query).Scan(&got); err != nil {
+			raised++
 			continue
 		}
-		if got.Valid != wantValid || (wantValid && !sameBoolean(got.String, want)) {
-			t.Errorf("%s: SQLite answers %q and this engine answers %q. Disagreeing is allowed here only by raising: a comparison that quietly returns the other row set is a wrong delete", expr, want, got.String)
+		if got.Valid != wantValid || (wantValid && !answersAlike(got.String, want)) {
+			t.Errorf("%s: SQLite answers %q and this engine answers %q. Disagreeing is allowed here only by raising: an expression that quietly returns the other row set is a wrong delete", expr, want, got.String)
 		}
+	}
+	if raised == 0 {
+		t.Fatal("not one of these expressions raised, so this test is no longer covering the storage-class gap it exists for")
 	}
 }
 
-func sameBoolean(got, want string) bool {
+func answersAlike(got, want string) bool {
 	switch want {
 	case "1":
-		return got == "true"
+		if got == "true" {
+			return true
+		}
 	case "0":
-		return got == "false"
+		if got == "false" {
+			return true
+		}
 	}
-	return got == want
+	return sameScalar(got, want)
 }
