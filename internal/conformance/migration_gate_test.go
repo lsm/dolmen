@@ -8,6 +8,11 @@ import (
 
 func seedGatedTable(t *testing.T) *harness {
 	t.Helper()
+	return seedGatedTableWithRows(t, true)
+}
+
+func seedGatedTableWithRows(t *testing.T, withRows bool) *harness {
+	t.Helper()
 	h := newHarnessMode(t, authGateway)
 	h.mustHTTP("create_namespace", map[string]any{"namespace": "acme"})
 	h.mustHTTP("create_table", map[string]any{
@@ -19,27 +24,30 @@ func seedGatedTable(t *testing.T) *harness {
 			{"name": "scratch", "type": "string"},
 		},
 	})
-	h.mustHTTP("insert", map[string]any{
-		"namespace": "acme", "table": "notes",
-		"records": []map[string]any{
-			{"body": "the merger closes friday", "kind": "confidential", "scratch": "x"},
-			{"body": "second hidden note", "kind": "internal", "scratch": "y"},
-		},
-	})
+	if withRows {
+		h.mustHTTP("insert", map[string]any{
+			"namespace": "acme", "table": "notes",
+			"records": []map[string]any{
+				{"body": "the merger closes friday", "kind": "confidential", "scratch": "x"},
+				{"body": "second hidden note", "kind": "internal", "scratch": "y"},
+			},
+		})
+	}
 	return h
 }
 
 var dataDependentMigrations = []struct {
 	name    string
 	changes string
+	noRows  bool
 }{
-	{"set_enum", `[{"op":"set_enum","name":"kind","values":["public"]}]`},
-	{"set_vectorize enabling", `[{"op":"set_vectorize","name":"body","value":true}]`},
-	{"set_fulltext enabling", `[{"op":"set_fulltext","name":"body","value":true}]`},
-	{"add_field with a backfill default", `[{"op":"add_field","field":{"name":"tag","type":"string"},"default":"none"}]`},
-	{"add_field of a required field", `[{"op":"add_field","field":{"name":"owner_ref","type":"string","required":true},"default":"none"}]`},
-	{"drop_field", `[{"op":"drop_field","name":"scratch"}]`},
-	{"set_row_access enabling", `[{"op":"set_row_access","value":true}]`},
+	{name: "set_enum", changes: `[{"op":"set_enum","name":"kind","enum":["confidential","internal"]}]`},
+	{name: "set_vectorize enabling", changes: `[{"op":"set_vectorize","name":"body","value":true}]`},
+	{name: "set_fulltext enabling", changes: `[{"op":"set_fulltext","name":"body","value":true}]`},
+	{name: "add_field with a backfill default", changes: `[{"op":"add_field","field":{"name":"tag","type":"string"},"default":"none"}]`},
+	{name: "add_field of a required field", changes: `[{"op":"add_field","field":{"name":"owner_ref","type":"string","required":true},"default":"none"}]`},
+	{name: "drop_field", changes: `[{"op":"drop_field","name":"scratch"}]`},
+	{name: "set_row_access enabling", changes: `[{"op":"set_row_access","value":true}]`, noRows: true},
 }
 
 func migrateAs(t *testing.T, h *harness, who, changes string) (int, map[string]any) {
@@ -49,10 +57,29 @@ func migrateAs(t *testing.T, h *harness, who, changes string) (int, map[string]a
 	return res.StatusCode, out
 }
 
+func applyWithPrecondition(t *testing.T, h *harness, who, changes string) (int, map[string]any) {
+	t.Helper()
+	res, out := h.asIdentity(t, who, "", "migrate",
+		`{"namespace":"acme","table":"notes","changes":`+changes+`,"expected_version":1,"dry_run":true}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("the dry run a destructive apply needs a token from: status %d %v", res.StatusCode, out)
+	}
+	data, _ := out["data"].(map[string]any)
+	plan, _ := data["plan"].(map[string]any)
+	token, _ := plan["expected_incarnation"].(string)
+	if token == "" {
+		t.Fatalf("the dry run returned no expected_incarnation: %v", plan)
+	}
+	res, out = h.asIdentity(t, who, "", "migrate",
+		`{"namespace":"acme","table":"notes","changes":`+changes+
+			`,"expected_version":1,"expected_incarnation":"`+token+`"}`)
+	return res.StatusCode, out
+}
+
 func TestEveryDataDependentMigrationNeedsTableWideRead(t *testing.T) {
 	for _, tc := range dataDependentMigrations {
 		t.Run(tc.name, func(t *testing.T) {
-			h := seedGatedTable(t)
+			h := seedGatedTableWithRows(t, !tc.noRows)
 			grantTo(t, h, "principal", "dave", "acme", "notes", "schema")
 
 			status, out := migrateAs(t, h, "dave", tc.changes)
@@ -67,8 +94,8 @@ func TestEveryDataDependentMigrationNeedsTableWideRead(t *testing.T) {
 			}
 
 			grantTo(t, h, "principal", "dave", "acme", "notes", "read")
-			if status, out := migrateAs(t, h, "dave", tc.changes); status == http.StatusForbidden {
-				t.Fatalf("the same migration is still refused once table-wide read is granted, so the 403 above was not this gate: %v", out)
+			if status, out := applyWithPrecondition(t, h, "dave", tc.changes); status != http.StatusOK {
+				t.Fatalf("the same migration must run once table-wide read is granted, or the 403 above is not evidence of this gate: status %d %v", status, out)
 			}
 		})
 	}
