@@ -128,6 +128,7 @@ func planOutSchema(desc string) map[string]any {
 			"operations":            map[string]any{"type": "array", "description": "Human-readable operations, in order", "items": map[string]any{"type": "string"}},
 			"destructive":           map[string]any{"type": "array", "description": "Destructive changes with their consequence (present when any)", "items": map[string]any{"type": "string"}},
 			"backfill_rows":         prop("integer", "Existing rows that receive an added field's default"),
+			"expected_incarnation":  prop("string", "Opaque token naming the table this plan was made against; pass it to apply as expected_incarnation and the migration is refused if the table moved on or was recreated"),
 			"rebuild_fulltext":      prop("boolean", "Whether the FTS index is rebuilt"),
 			"fulltext_reindex_rows": prop("integer", "Rows the rebuilt full-text index would hold"),
 			"clears_embeddings":     prop("boolean", "Whether existing embeddings are cleared"),
@@ -1788,7 +1789,8 @@ var Ops = map[string]OpDef{
 					"description": "Schema version the changes were planned against (from describe_table); the migration aborts with a conflict if the table has moved past it. Required for rename_field and drop_field.",
 					"minimum":     1,
 				},
-				"dry_run": prop("boolean", "Validate and preview the migration without applying anything (no writes, no embedding calls)"),
+				"expected_incarnation": prop("string", "Opaque token from a dry run's plan, naming the exact table the plan was made against. Pass it back on apply and the migration is refused if the table was dropped and recreated, or moved on, since the preview. Under authentication a precondition must use this rather than expected_version alone"),
+				"dry_run":              prop("boolean", "Validate and preview the migration without applying anything (no writes, no embedding calls)"),
 			},
 			"required": []string{"namespace", "table", "changes"},
 		},
@@ -1799,12 +1801,14 @@ var Ops = map[string]OpDef{
 		}, "table"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var shadow struct {
-				Namespace       string           `json:"namespace"`
-				Table           string           `json:"table"`
-				Changes         []map[string]any `json:"changes"`
-				ExpectedVersion *int             `json:"expected_version"`
-				DryRun          bool             `json:"dry_run"`
+				Namespace           string           `json:"namespace"`
+				Table               string           `json:"table"`
+				Changes             []map[string]any `json:"changes"`
+				ExpectedVersion     *int             `json:"expected_version"`
+				ExpectedIncarnation *string          `json:"expected_incarnation"`
+				DryRun              bool             `json:"dry_run"`
 			}
+
 			if err := decodeData(body, &shadow); err != nil {
 				return nil, err
 			}
@@ -1838,8 +1842,21 @@ var Ops = map[string]OpDef{
 				}
 				return map[string]any{"table": plan.Table, "dry_run": true, "plan": plan}, nil
 			}
+			expected := store.Incarnation{Version: int64(ver)}
+			if req.ExpectedIncarnation != nil {
+				bound, derr := store.DecodeIncarnation(*req.ExpectedIncarnation)
+				if derr != nil {
+					return nil, wrapStoreErr(derr)
+				}
+				if ver > 0 && bound.Version != int64(ver) {
+					return nil, badRequest("expected_version and expected_incarnation disagree about the schema version; pass the token from the dry run and drop expected_version, or drop the token")
+				}
+				expected = bound
+			} else if s.authn.On() && ver > 0 {
+				return nil, badRequest("under authentication, a migration precondition must carry expected_incarnation from a dry run: version 1 cannot tell a table from a same-named predecessor, so expected_version alone would let a plan apply to a table that was dropped and recreated under it")
+			}
 			sc, err := s.eng.Migrate(ctx, ns, normTable(req.Table), req.Changes, s.embedder(),
-				store.Incarnation{Version: int64(ver)})
+				expected)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -2032,9 +2049,10 @@ type updateReq struct {
 }
 
 type migrateReq struct {
-	Namespace       string          `json:"namespace"`
-	Table           string          `json:"table"`
-	Changes         []schema.Change `json:"changes"`
-	ExpectedVersion *int            `json:"expected_version"`
-	DryRun          bool            `json:"dry_run"`
+	Namespace           string          `json:"namespace"`
+	Table               string          `json:"table"`
+	Changes             []schema.Change `json:"changes"`
+	ExpectedVersion     *int            `json:"expected_version"`
+	ExpectedIncarnation *string         `json:"expected_incarnation"`
+	DryRun              bool            `json:"dry_run"`
 }
