@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -124,11 +125,14 @@ func dollarQuote(text string) string {
 func (r *filterRenderer) number(text string) error {
 	lowered := strings.ToLower(text)
 	if strings.HasPrefix(lowered, "0x") {
-		var value int64
-		if _, err := fmt.Sscanf(lowered[2:], "%x", &value); err != nil {
+		value, err := strconv.ParseUint(lowered[2:], 16, 64)
+		if err != nil {
+			if errors.Is(err, strconv.ErrRange) {
+				return fmt.Errorf("%w: the hexadecimal literal %q does not fit in 64 bits", store.ErrInvalid, text)
+			}
 			return fmt.Errorf("%w: %q is not a hexadecimal integer", store.ErrInvalid, text)
 		}
-		r.sb.WriteString(fmt.Sprint(value))
+		r.sb.WriteString(strconv.FormatInt(int64(value), 10))
 		return nil
 	}
 	r.sb.WriteString(text)

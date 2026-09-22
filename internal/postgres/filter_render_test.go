@@ -57,3 +57,16 @@ func TestABlobLiteralIsNotAnEscapeSequence(t *testing.T) {
 		t.Fatalf("a bytea literal written with an ordinary quote loses its backslash when standard_conforming_strings is off: %s", sql)
 	}
 }
+
+func TestAHexLiteralCarriesSQLitesTwosComplementValue(t *testing.T) {
+	for _, tc := range []struct{ expr, want string }{
+		{"0x1f", "31"},
+		{"0x7fffffffffffffff", "9223372036854775807"},
+		{"0xffffffffffffffff", "-1"},
+	} {
+		sql := renderFor(t, "id = "+tc.expr)
+		if !strings.Contains(sql, tc.want) {
+			t.Fatalf("render of %s is %s, want the value %s that SQLite reads it as", tc.expr, sql, tc.want)
+		}
+	}
+}
