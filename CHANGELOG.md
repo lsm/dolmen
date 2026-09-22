@@ -91,7 +91,11 @@
   the namespace because it reports every table. Cursor tokens are opaque random values, so a scoped
   reader's sequence cannot be told from one where the foreign commits never happened, and retention
   expires by age rather than by volume, so other principals' traffic cannot evict a quiet reader's
-  cursor. Scoped
+  cursor. A migration plan's
+  `backfill_rows`, `fulltext_reindex_rows` and `embed_rows` now count only the rows the caller can
+  see — a schema-only holder sees zeroes — while the rules they feed still run against every row,
+  so redacting a count never redacts a constraint. The plan and its apply each verify the
+  incarnation they were resolved against inside their own transaction. Scoped
   `upsert_by_key` matches the natural key inside the visible set: a key held by an invisible row
   counts as no match, so the insert branch runs and the two rows coexist under one key, and no id,
   count, or error tells the two situations apart. Scoped `update`, `delete`, `upsert`, filtered

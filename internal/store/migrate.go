@@ -70,6 +70,11 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 	}
 	defer tx.Rollback()
 
+	if expected.Table != "" {
+		if err := checkScopeIncarnation(ctx, tx, nsName, table, expected); err != nil {
+			return nil, err
+		}
+	}
 	old, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
 		return nil, err
@@ -77,7 +82,7 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 	if err := checkExpectedVersion(nsName, table, expectedVersion, old); err != nil {
 		return nil, err
 	}
-	w, err := planMigration(ctx, tx, nsName, table, old, changes, emb, expectedVersion)
+	w, err := planMigration(ctx, tx, nsName, table, old, changes, emb, expectedVersion, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -205,12 +210,6 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 }
 
 func (s *Store) PlanMigration(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expected Incarnation, scope *RowScope, scopeIncarnation Incarnation) (*MigrationPlan, error) {
-	if scope != nil {
-		return nil, ErrScopedPlanUnsupported
-	}
-	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
-		return nil, err
-	}
 	expectedVersion := int(expected.Version)
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
@@ -219,19 +218,25 @@ func (s *Store) PlanMigration(ctx context.Context, nsName, table string, changes
 	if err != nil {
 		return nil, err
 	}
-	tx, err := n.ro.BeginTx(ctx, nil)
+	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+	if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
+		return nil, err
+	}
 	old, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
+		return nil, err
+	}
+	if err := scopeUsable(scope, old); err != nil {
 		return nil, err
 	}
 	if err := checkExpectedVersion(nsName, table, expectedVersion, old); err != nil {
 		return nil, err
 	}
-	w, err := planMigration(ctx, tx, nsName, table, old, changes, emb, expectedVersion)
+	w, err := planMigration(ctx, tx, nsName, table, old, changes, emb, expectedVersion, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +259,7 @@ func checkExpectedVersion(nsName, table string, expected int, old *schema.TableS
 	return nil
 }
 
-func planMigration(ctx context.Context, db querier, nsName, table string, old *schema.TableSchema, changes []schema.Change, emb Embedder, expectedVersion int) (*migrationWork, error) {
+func planMigration(ctx context.Context, db querier, nsName, table string, old *schema.TableSchema, changes []schema.Change, emb Embedder, expectedVersion int, scope *RowScope) (*migrationWork, error) {
 	fields := make([]schema.Field, len(old.Fields))
 	copy(fields, old.Fields)
 	cur := &schema.TableSchema{Namespace: nsName, Name: table, Version: old.Version, Fields: fields,
@@ -368,7 +373,11 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 					return nil, invalidf("cannot add required field %q to a table with %d existing rows (no backfill value can be supplied); add it nullable instead, or pass a default", f.Name, rowCount)
 				}
 				if ch.Default != nil {
-					plan.BackfillRows += rowCount
+					visible, err := visibleCount(ctx, db, table, scope)
+					if err != nil {
+						return nil, err
+					}
+					plan.BackfillRows += visible
 				}
 			}
 			cur.Fields = append(cur.Fields, f)
@@ -659,8 +668,9 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 		}
 		if len(preds) > 0 {
 			var n int64
+			vis, visArgs := visiblePredicate(scope)
 			if err := db.QueryRowContext(ctx,
-				fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s`, q(table), strings.Join(preds, ` OR `))).Scan(&n); err != nil {
+				fmt.Sprintf(`SELECT count(*) FROM %s WHERE (%s)%s`, q(table), strings.Join(preds, ` OR `), vis), visArgs...).Scan(&n); err != nil {
 				return nil, err
 			}
 			plan.FulltextReindexRows = n
@@ -681,7 +691,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 
 			if phys := physicalName[newVec.Name]; phys == "" {
 				if s, ok := defaults[newVec.Name].(string); ok && s != "" {
-					n, err := countRows(ctx, db, table)
+					n, err := visibleCount(ctx, db, table, scope)
 					if err != nil {
 						return nil, err
 					}
@@ -689,8 +699,9 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				}
 			} else {
 				var n int64
+				vis, visArgs := visiblePredicate(scope)
 				if err := db.QueryRowContext(ctx,
-					fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s IS NOT NULL AND %s != ''`, q(table), q(phys), q(phys))).Scan(&n); err != nil {
+					fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s IS NOT NULL AND %s != ''%s`, q(table), q(phys), q(phys), vis), visArgs...).Scan(&n); err != nil {
 					return nil, err
 				}
 				plan.EmbedRows = n
@@ -713,6 +724,25 @@ func countRows(ctx context.Context, db querier, table string) (int64, error) {
 	var n int64
 	err := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT count(*) FROM %s`, q(table))).Scan(&n)
 	return n, err
+}
+
+func visibleCount(ctx context.Context, db querier, table string, scope *RowScope) (int64, error) {
+	clause, args := scopeClause(scope, "")
+	if clause == "" {
+		return countRows(ctx, db, table)
+	}
+	var n int64
+	err := db.QueryRowContext(ctx,
+		fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s`, q(table), clause), args...).Scan(&n)
+	return n, err
+}
+
+func visiblePredicate(scope *RowScope) (string, []any) {
+	clause, args := scopeClause(scope, "")
+	if clause == "" {
+		return "", nil
+	}
+	return ` AND (` + clause + `)`, args
 }
 
 func sqlLiteral(v any) (string, error) {
