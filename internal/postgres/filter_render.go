@@ -307,12 +307,23 @@ func (r *filterRenderer) in(node *filter.In, next int) error {
 	return nil
 }
 
+func (r *filterRenderer) likeOperand(n filter.Node, next int) (string, error) {
+	switch r.affinityOf(n) {
+	case affNumber:
+		if text, ok := r.staticNumberAsText(n); ok {
+			return dollarQuote(text), nil
+		}
+		return "", filterNotRenderable("LIKE over a number this engine cannot render SQLite's text for")
+	}
+	return r.capture(n, next)
+}
+
 func (r *filterRenderer) like(node *filter.Like, next int) error {
-	subject, err := r.capture(node.Left, next)
+	subject, err := r.likeOperand(node.Left, next)
 	if err != nil {
 		return err
 	}
-	pattern, err := r.capture(node.Pattern, next)
+	pattern, err := r.likeOperand(node.Pattern, next)
 	if err != nil {
 		return err
 	}
