@@ -145,6 +145,13 @@ var pinnedFilterSemantics = []struct {
 	{"nonnumeric text is still zero rather than null", "body + 1 = 1", ""},
 	{"a digit shaped blob is a true truth value", "X'31'", ""},
 	{"a letter shaped blob is a false truth value", "NOT X'6162'", ""},
+	{"a false boolean column is a false truth value", "NOT off", ""},
+	{"a false boolean column is the integer zero", "off = 0", ""},
+	{"a zero number is a false truth value", "NOT zero", ""},
+	{"empty text is a false truth value", "NOT empty", ""},
+	{"empty text coerces to zero rather than null", "empty + 1 = 1", ""},
+	{"a numeral head tolerates leading spaces", "pad + 1 = 6", ""},
+	{"text affinity keeps the spaces the numeral head skipped", "NOT (pad = 5)", ""},
 	{"concatenation is a truth value through its number", "NOT (body || body)", ""},
 	{"numeric concatenation is a true truth value", "code || ''", ""},
 	{"a text case expression is a truth value", "NOT (CASE WHEN 1 = 1 THEN 'a' ELSE 'b' END)", ""},
@@ -194,11 +201,15 @@ func seedScopedFilterRow(t *testing.T) *harness {
 			{"name": "big", "type": "number"},
 			{"name": "real", "type": "text"},
 			{"name": "absent", "type": "text"},
+			{"name": "off", "type": "boolean"},
+			{"name": "zero", "type": "number"},
+			{"name": "pad", "type": "text"},
+			{"name": "empty", "type": "text"},
 		},
 		"row_access": "own",
 	})
 	grantTo(t, h, "principal", "alice", "acme", "notes", "create", "delete")
-	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7,"code":"1","mark":"!zzz","huge":"1e999999","flag":true,"neg":"-1.0e+300","frac":0.1,"big":9007199254740993,"real":"7.0"}]}`)
+	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7,"code":"1","mark":"!zzz","huge":"1e999999","flag":true,"neg":"-1.0e+300","frac":0.1,"big":9007199254740993,"real":"7.0","off":false,"zero":0,"pad":"  5  ","empty":""}]}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("seed insert: status %d %v", res.StatusCode, out)
 	}
