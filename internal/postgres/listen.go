@@ -670,5 +670,7 @@ func (s *Store) Capabilities() store.EngineCapabilities {
 		ANNRecallBound:  nil,
 		Notifications:   true,
 		Subscribe:       true,
+		QueryDialect:    store.DialectPostgres,
+		FilterDialect:   store.DialectPostgres,
 	}
 }

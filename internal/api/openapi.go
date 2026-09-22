@@ -27,9 +27,11 @@ var capabilitiesOutSchema = objectSchema(false, map[string]any{
 			map[string]any{"type": "null"},
 		},
 	},
-	"notifications": propBool(),
-	"subscribe":     propBool(),
-}, []string{"vector_execution", "ann_recall_bound", "notifications", "subscribe"})
+	"notifications":  propBool(),
+	"subscribe":      propBool(),
+	"query_dialect":  stringProp(""),
+	"filter_dialect": stringProp(""),
+}, []string{"vector_execution", "ann_recall_bound", "notifications", "subscribe", "query_dialect", "filter_dialect"})
 
 var changesOutSchema = objectSchema(false, map[string]any{
 	"changes": arrayOf(objectSchema(false, map[string]any{

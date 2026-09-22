@@ -590,7 +590,9 @@ var Ops = map[string]OpDef{
 		Description: "Report the storage engine's static capabilities: vector_execution (\"exact\" or \"ann\"), " +
 			"ann_recall_bound (explicitly null when execution is exact — never omitted; a number in (0,1] iff ann, " +
 			"the guaranteed minimum recall versus the exact path), notifications (whether commit notifications are " +
-			"implemented), and subscribe (whether live streams are available). Field names and types are pinned, so " +
+			"implemented), subscribe (whether live streams are available), query_dialect (the SQL dialect query " +
+			"accepts) and filter_dialect (the dialect a filter is read in under auth: off; under auth: on the " +
+			"shared allowlist binds instead). Field names and types are pinned, so " +
 			"the discovery is portable across conforming engines; unknown future fields are additive. Read-only, " +
 			"engine-reported verbatim — the single discovery surface under auth: off, and what describe_server inlines under auth: on.",
 		InputSchema: map[string]any{
@@ -611,9 +613,11 @@ var Ops = map[string]OpDef{
 					map[string]any{"type": "null"},
 				},
 			},
-			"notifications": prop("boolean", "Whether the engine implements commit notifications (wait_for)"),
-			"subscribe":     prop("boolean", "Whether the engine serves live change streams"),
-		}, "vector_execution", "ann_recall_bound", "notifications", "subscribe"),
+			"notifications":  prop("boolean", "Whether the engine implements commit notifications (wait_for)"),
+			"subscribe":      prop("boolean", "Whether the engine serves live change streams"),
+			"query_dialect":  prop("string", "The SQL dialect the query operation accepts, named by family (e.g. sqlite, postgresql); an open enum, so branch on it rather than assuming a closed set"),
+			"filter_dialect": prop("string", "The SQL dialect a filter expression is read in under auth: off, named the same way; under auth: on every engine reads the shared allowlist instead, and this field is informational"),
+		}, "vector_execution", "ann_recall_bound", "notifications", "subscribe", "query_dialect", "filter_dialect"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req struct{}
 			if err := decode(body, &req); err != nil {

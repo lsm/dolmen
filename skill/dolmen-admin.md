@@ -217,9 +217,13 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
   fewer ids (it never fires for missing ids); at most 1,000 ids per request. Prefer it over
   `query` whenever the ids are already in hand — no SQL to write, no filter to get wrong.
 - `capabilities` reports the engine's static surface: `vector_execution` (`exact` or `ann`),
-  `ann_recall_bound` (`null` when exact — a number in (0,1] iff `ann`), `notifications`, and
-  `subscribe`. Field names and types are pinned across conforming engines; check it before
-  relying on approximate vector search or live streams.
+  `ann_recall_bound` (`null` when exact — a number in (0,1] iff `ann`), `notifications`,
+  `subscribe`, `query_dialect` and `filter_dialect`. Field names and types are pinned across
+  conforming engines; check it before relying on approximate vector search or live streams. The two
+  dialect fields name a SQL family (`sqlite`, `postgresql`) so you can branch on it instead of
+  provoking a syntax error: `query_dialect` is the dialect `query` accepts, `filter_dialect` the one
+  a `filter` is read in with authentication off. With authentication on, every engine reads a
+  filter against one shared allowlist and `filter_dialect` is informational.
 - `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's
   columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
