@@ -1827,8 +1827,12 @@ var Ops = map[string]OpDef{
 				return nil, wrapStoreErr(err)
 			}
 			if req.DryRun {
+				scope, inc, err := s.resolveScope(ctx, ns, normTable(req.Table))
+				if err != nil {
+					return nil, err
+				}
 				plan, err := s.eng.PlanMigration(ctx, ns, normTable(req.Table), req.Changes, s.embedder(),
-					store.Incarnation{Version: int64(ver)}, nil, store.Incarnation{})
+					store.Incarnation{Version: int64(ver)}, scope, inc)
 				if err != nil {
 					return nil, wrapStoreErr(err)
 				}

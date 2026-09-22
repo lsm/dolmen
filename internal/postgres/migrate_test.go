@@ -505,3 +505,71 @@ func TestPostgresMigrateBackfillsInPagedBatches(t *testing.T) {
 		t.Fatalf("backfilled %d rows, want %d", embedded, rows)
 	}
 }
+
+func TestPostgresPlanCountsOnlyVisibleRows(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "body"}},
+		store.TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, who := range []string{"alice", "bob", "bob", "bob"} {
+		if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "from " + who}},
+			store.WriteOpts{Owner: who}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backfill := func(scope *store.RowScope) int64 {
+		t.Helper()
+		plan, err := s.PlanMigration(ctx, "app", "notes", []schema.Change{
+			{Op: schema.OpAddField, Field: &schema.Field{Name: "tag", Type: schema.String}, Default: "x"},
+		}, store.Embedder{}, store.Incarnation{}, scope, store.Incarnation{})
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		return plan.BackfillRows
+	}
+	if got := backfill(nil); got != 4 {
+		t.Fatalf("a table-wide reader sees every row: backfill_rows %d, want 4", got)
+	}
+	if got := backfill(&store.RowScope{Owner: "alice"}); got != 1 {
+		t.Fatalf("alice wrote one of the four rows, so the plan may disclose only that: backfill_rows %d, want 1", got)
+	}
+	if got := backfill(&store.RowScope{Empty: true}); got != 0 {
+		t.Fatalf("a schema-only holder sees no row at all: backfill_rows %d, want 0", got)
+	}
+}
+
+func TestPostgresSetEnumRejectionRedactsValuesForAScopedCaller(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "state", Type: schema.String}},
+		store.TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"state": "wontfix"}},
+		store.WriteOpts{Owner: "bob"}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	allowed := []string{"open", "done"}
+	change := []schema.Change{{Op: schema.OpSetEnum, Name: "state", Enum: &allowed}}
+
+	_, err := s.PlanMigration(ctx, "app", "notes", change, store.Embedder{}, store.Incarnation{}, nil, store.Incarnation{})
+	if err == nil || !strings.Contains(err.Error(), "wontfix") {
+		t.Fatalf("a table-wide reader is told which value blocks the enum: %v", err)
+	}
+
+	_, err = s.PlanMigration(ctx, "app", "notes", change, store.Embedder{}, store.Incarnation{}, &store.RowScope{Empty: true}, store.Incarnation{})
+	if err == nil {
+		t.Fatal("the enum is still refused, whoever asks: a rule is not a disclosure")
+	}
+	if strings.Contains(err.Error(), "wontfix") {
+		t.Fatalf("the rejection handed a scoped caller the contents of a field they cannot read: %v", err)
+	}
+}

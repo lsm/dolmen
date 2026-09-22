@@ -96,5 +96,3 @@ func (s *Store) guardIncarnation(ctx context.Context, nsName, table string, want
 	}
 	return checkScopeIncarnation(ctx, n.ro, nsName, table, want)
 }
-
-var ErrScopedPlanUnsupported = fmt.Errorf("%w: this request is scoped to your own rows, and a migration plan reports table-wide information; ask for the read verb on the table, which lifts the scope", ErrInvalid)
