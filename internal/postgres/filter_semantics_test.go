@@ -83,7 +83,7 @@ func TestPostgresATextColumnRefusesAComputedNumberRatherThanGuessingItsText(t *t
 		}
 		sql, _, err := renderScopedFilter(node, cols, types, nil, 1)
 		if err == nil {
-			t.Fatalf("%s rendered as %s; SQLite compares a text column against the double's own text, which PostgreSQL's numeric formatting does not reproduce, so answering here would be a wrong row set rather than a refusal", expr, sql)
+			t.Fatalf("%s rendered as %s rather than being refused, so the formatting gap has closed: pin the answer SQLite gives, and delete the paragraph in docs/design/postgresql.md that explains why a computed number is refused, in this same change. SQLite compares a text column against the double's own text, which PostgreSQL's numeric formatting does not reproduce, so answering without reproducing it is a wrong row set rather than a refusal", expr, sql)
 		}
 	}
 }

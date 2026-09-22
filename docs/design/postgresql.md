@@ -274,7 +274,9 @@ rendering: a literal, a bound argument, or a sign applied to either. SQLite take
 text of the double, so `-1e300` is `'-1.0e+300'` and `round(2.5)` is `'3.0'`, and
 PostgreSQL's own numeric formatting reproduces neither. A computed number compared
 against a text column is therefore refused with the usual advice to bind the value,
-because the alternative is a wrong row set on a filter that drives `delete`. Numeric
+because the alternative is a wrong row set on a filter that drives `delete`. If that
+refusal ever becomes an answer, this paragraph goes with it: the test that pins the
+refusal fails at that moment and says so. Numeric
 text converted the other way is rounded through a double first, the way SQLite's numeric
 affinity does, so `'0.10000000000000000001'` matches a stored `0.1`; an integer that
 fits in 64 bits keeps its exact digits instead.
