@@ -385,7 +385,9 @@ rounding. `abs()` over an integer keeps its digits, because there SQLite does to
 SQLite also clamps `round()`'s second argument. A negative place is not a place left of
 the point as it is in PostgreSQL but no places at all, so `round(1234.5678, -2)` is
 `1235` and not `1200`; the place truncates toward zero, non-numeric text is no places,
-and a null place makes the whole call null.
+and a null place makes the whole call null. The place is bounded above at 30 as well,
+which is past every digit a double carries, because PostgreSQL's `round` takes a signed
+integer and a filter is free to name something larger than one.
 
 Coercing text to a number keeps a null null. Text with no numeral at its head converts
 to zero, which a `COALESCE` expresses, but a null column is not text with no numeral in

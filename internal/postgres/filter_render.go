@@ -528,7 +528,7 @@ func (r *filterRenderer) roundDigits(n filter.Node, next int) (string, error) {
 		return "", err
 	}
 	return "(CASE WHEN " + numeric + " IS NULL THEN NULL ELSE" +
-		" greatest(" + sqliteInteger(numeric) + ", 0)::int END)", nil
+		" least(greatest(" + sqliteInteger(numeric) + ", 0), 30)::int END)", nil
 }
 
 func (r *filterRenderer) plainCall(name string, args []filter.Node, next int) error {

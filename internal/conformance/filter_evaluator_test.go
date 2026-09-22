@@ -138,6 +138,8 @@ var pinnedFilterSemantics = []struct {
 	{"round clamps a negative place to none", "round(1234.5678, -2) = 1235", ""},
 	{"round truncates its place toward zero", "round(2.567, 1.9) = 2.6", ""},
 	{"a null place makes the rounding null", "round(2.567, NULL) IS NULL", ""},
+	{"a place past a signed integer still rounds", "round(1.5, 1e19) = 1.5", ""},
+	{"a place past every digit a double has still rounds", "round(n, 2147483648) = -7", ""},
 	{"round loses what a double cannot hold", "NOT (big = round(big))", ""},
 	{"a rounded integer past a double is the double", "round(big) = 9007199254740992", ""},
 	{"abs over text loses what a double cannot hold", "abs('9007199254740993') = 9007199254740992", ""},
