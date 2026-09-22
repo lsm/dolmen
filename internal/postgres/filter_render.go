@@ -616,10 +616,25 @@ const (
 	sqliteNumFull   = "^[[:space:]]*[+-]?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?[[:space:]]*$"
 )
 
+func numeralOrder(text string) string {
+	trimmed := "btrim(" + text + ")"
+	mantissa := "(substring(" + trimmed + " FROM '^[^eE]*'))"
+	exponent := "(substring(" + trimmed + " FROM '[eE]([+-]?[0-9]+)'))"
+	significant := "length(regexp_replace((substring(" + mantissa + " FROM '^[+-]?([0-9]*)')), '^0+', ''))"
+	leading := "COALESCE(length((substring(COALESCE((substring(" + mantissa +
+		" FROM '[.]([0-9]*)')), '') FROM '^0+'))), 0)"
+	scale := "(CASE WHEN " + exponent + " IS NULL THEN 0" +
+		" WHEN pg_input_is_valid(" + exponent + ", 'numeric') THEN " + exponent + "::numeric" +
+		" WHEN left(" + exponent + ", 1) = '-' THEN -1e6 ELSE 1e6 END)"
+	return "(" + scale + " + (CASE WHEN " + significant + " > 0 THEN " + significant +
+		" ELSE -" + leading + " END))"
+}
+
 func saturatingNumeric(text string) string {
 	return "(CASE WHEN " + text + " IS NULL THEN NULL" +
 		" WHEN NOT pg_input_is_valid(" + text + ", 'numeric')" +
-		" THEN (CASE WHEN left(btrim(" + text + "), 1) = '-' THEN '-Infinity' ELSE 'Infinity' END)::numeric" +
+		" THEN (CASE WHEN " + numeralOrder(text) + " < 0 THEN '0'" +
+		" WHEN left(btrim(" + text + "), 1) = '-' THEN '-Infinity' ELSE 'Infinity' END)::numeric" +
 		" WHEN " + text + "::numeric > " + sqliteDoubleMax + " THEN 'Infinity'::numeric" +
 		" WHEN " + text + "::numeric < -" + sqliteDoubleMax + " THEN '-Infinity'::numeric" +
 		" ELSE " + text + "::numeric END)"
@@ -954,7 +969,20 @@ func (r *filterRenderer) capture(n filter.Node, next int) (string, error) {
 	return out, err
 }
 
+func staticNumberOfText(text string) string {
+	head := strings.TrimSpace(sqliteNumeralHead.FindString(text))
+	if head == "" {
+		return "(0)"
+	}
+	return staticNumericLiteral(head)
+}
+
 func (r *filterRenderer) captureNumeric(n filter.Node, next int) (string, error) {
+	if r.affinityOf(n) == affText {
+		if literal, ok := r.staticTextOf(n); ok {
+			return staticNumberOfText(literal), nil
+		}
+	}
 	text, err := r.capture(n, next)
 	if err != nil {
 		return "", err
@@ -1262,6 +1290,11 @@ func (r *filterRenderer) integerClassed(n filter.Node, raw, numeric string) stri
 }
 
 func (r *filterRenderer) numericOperand(n filter.Node, next int) (string, string, error) {
+	if !r.booleanShaped(n) && r.affinityOf(n) == affText {
+		if literal, ok := r.staticTextOf(n); ok {
+			return dollarQuote(literal), staticNumberOfText(literal), nil
+		}
+	}
 	raw, err := r.capture(n, next)
 	if err != nil {
 		return "", "", err

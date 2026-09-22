@@ -373,6 +373,25 @@ Text coerced to a number saturates the way SQLite's double does rather than rais
 which requires **PostgreSQL 16 or newer** — the first hard lower bound this adapter
 places on the server version.
 
+Saturation has a direction, and sign is not it. A numeral PostgreSQL's `numeric` cannot
+parse is beyond that type's enormous range, which is reached at both ends: `'1e999999'`
+overflows and `'1e-999999'` underflows, as does a scale past 16383 digits written out in
+full. SQLite's double answers infinity for the first and zero for the second, so
+deciding by the leading `-` alone made `abs(body) > 1` true of a row holding a vanishing
+number and deleted it. The direction is taken from the numeral's decimal order — its
+exponent plus the position of its first significant digit — so a mantissa and an exponent
+that pull opposite ways, like a 131072-digit numeral written with `e-100`, still land on
+the side its magnitude actually falls.
+
+A numeral already known while rendering is converted in Go rather than by that runtime
+`CASE`. PostgreSQL folds a constant expression at plan time and will evaluate an arm the
+runtime guard would never reach, so a literal `abs('1e999999')` raised `22003` from a
+branch that `pg_input_is_valid` had already excluded — the guard works for a column,
+whose value is not a constant, and not for a literal. Folding in Go also covers a bound
+argument, which the planner may substitute the same way. The fold happens before the
+argument is captured, because capturing one and then not referencing it leaves the
+statement with a parameter it never uses.
+
 Anything in a boolean position is rendered as SQLite's truth value, at the top of the
 expression and under `NOT`, `AND` and `OR` alike. A number is true when it is nonzero, and a
 text is converted to a number first so `'a note'` is false and `'1'` is true. A blob goes
