@@ -88,7 +88,7 @@ func (r *filterRenderer) truth(n filter.Node, next int) (string, error) {
 		return "", err
 	}
 	if r.affinityOf(n) == affBlob {
-		return "(CASE WHEN " + out + " IS NULL THEN NULL ELSE FALSE END)", nil
+		return "(" + sqliteNumberOfText("convert_from("+out+", 'LATIN1')") + " <> 0)", nil
 	}
 	return "(" + out + " <> 0)", nil
 }
@@ -853,10 +853,14 @@ func (r *filterRenderer) captureNumeric(n filter.Node, next int) (string, error)
 		return "", err
 	}
 	if r.affinityOf(n) == affText {
-		head := "(substring(" + text + " FROM '" + sqliteNumHead + "'))"
-		return "COALESCE(" + saturatingNumeric(head) + ", 0)", nil
+		return sqliteNumberOfText(text), nil
 	}
 	return "(" + text + ")::numeric", nil
+}
+
+func sqliteNumberOfText(text string) string {
+	head := "(substring(" + text + " FROM '" + sqliteNumHead + "'))"
+	return "(CASE WHEN " + text + " IS NULL THEN NULL ELSE COALESCE(" + saturatingNumeric(head) + ", 0) END)"
 }
 
 func (r *filterRenderer) comparison(node *filter.Binary, op string, next int) error {
@@ -1095,8 +1099,7 @@ func (r *filterRenderer) numericOperand(n filter.Node, next int) (string, string
 		return "", "", err
 	}
 	if r.affinityOf(n) == affText {
-		head := "(substring(" + raw + " FROM '" + sqliteNumHead + "'))"
-		return raw, "COALESCE(" + saturatingNumeric(head) + ", 0)", nil
+		return raw, sqliteNumberOfText(raw), nil
 	}
 	return raw, "(" + raw + ")::numeric", nil
 }

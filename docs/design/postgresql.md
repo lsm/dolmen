@@ -289,6 +289,12 @@ because the SQLite column is `NUMERIC` and stores a lossless `7.0` as INTEGER `7
 column keeps the runtime test while a literal or a bound argument is classed while
 rendering.
 
+Coercing text to a number keeps a null null. Text with no numeral at its head converts
+to zero, which a `COALESCE` expresses, but a null column is not text with no numeral in
+it: SQLite answers `NULL + 1` with null and `'abc' + 1` with one. Conflating them makes
+`NOT body` match a null row that SQLite skips and `body + 1 IS NULL` skip one it matches,
+so the conversion tests the operand for null before the `COALESCE` rather than after.
+
 Text coerced to a number saturates the way SQLite's double does rather than raising.
 `abs(body)` over a text `'1e999999'` is infinity, matching SQLite, where a bare
 `::numeric` cast raises `22003` and kills the statement; an overflowing literal such as
@@ -297,9 +303,10 @@ which requires **PostgreSQL 16 or newer** — the first hard lower bound this ad
 places on the server version.
 
 Anything in a boolean position is rendered as SQLite's truth value, at the top of the
-expression and under `NOT`, `AND` and `OR` alike. A number is true when it is nonzero, a
-text is converted to a number first so `'a note'` is false and `'1'` is true, and a blob
-is false. Text is not only a column or a literal: concatenation, a `CASE`, and `iif`,
+expression and under `NOT`, `AND` and `OR` alike. A number is true when it is nonzero, and a
+text is converted to a number first so `'a note'` is false and `'1'` is true. A blob goes
+the same way through its own bytes read as text, so `X'6162'` is false because `ab` is
+zero while `X'31'` is true because `1` is one — a blob is not simply false. Text is not only a column or a literal: concatenation, a `CASE`, and `iif`,
 `coalesce`, `ifnull` and `nullif` over text operands all carry text affinity, and a
 truth test over one of those converts before testing rather than asking PostgreSQL to
 compare text against zero. A boolean column and a bound boolean argument are already boolean and are used
