@@ -17,6 +17,7 @@ type Config struct {
 	Catalog         string
 	QueryRole       string
 	MaxConns        int32
+	SharedFilter    bool
 	ChangeRetention *time.Duration
 }
 
@@ -33,6 +34,7 @@ type Store struct {
 	done            chan struct{}
 	active          sync.WaitGroup
 	wake            *wakeSet
+	sharedFilter    bool
 }
 
 type connectionError struct {
@@ -91,7 +93,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	if err != nil {
 		return nil, &connectionError{"open pool", err}
 	}
-	s := &Store{pool: pool, catalog: cfg.Catalog, queryRole: cfg.QueryRole, done: make(chan struct{}), changeRetention: retention, now: time.Now}
+	s := &Store{pool: pool, catalog: cfg.Catalog, queryRole: cfg.QueryRole, done: make(chan struct{}), changeRetention: retention, now: time.Now, sharedFilter: cfg.SharedFilter}
 	if err = pool.Ping(ctx); err == nil {
 		err = s.bootstrap(ctx)
 	}

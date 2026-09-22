@@ -113,7 +113,6 @@ var pinnedFilterSemantics = []struct {
 }
 
 var notYetEvaluatedByAdapterTwo = map[string]bool{
-	"instr": true, "ifnull": true, "iif": true,
 	"date": true, "time": true, "datetime": true, "julianday": true, "strftime": true,
 	"date with a modifier": true, "time with a modifier": true, "datetime with a modifier": true,
 	"julianday with a modifier": true, "strftime with a modifier": true,
@@ -121,15 +120,12 @@ var notYetEvaluatedByAdapterTwo = map[string]bool{
 	"substr from a negative start": true, "substr with a negative length": true,
 	"coalesce over mixed types": true,
 	"round to a negative place": true,
-	"ifnull on a null":          true, "iif on a false condition": true,
 }
 
 var notYetPinnedByAdapterTwo = map[string]bool{
 	"LIKE is ASCII-case-insensitive":                     true,
 	"string comparison is BINARY byte-wise":              true,
 	"nonnumeric text coerces to zero in arithmetic":      true,
-	"a blob literal is bytes, not bits":                  true,
-	"a hexadecimal integer literal":                      true,
 	"a scalar is a truth value":                          true,
 	"numeric-looking text still is not a number":         true,
 	"division by zero is null":                           true,
@@ -143,15 +139,7 @@ var notYetPinnedByAdapterTwo = map[string]bool{
 	"upper case-maps ASCII only":                         true,
 }
 
-var notYetSpelledByAdapterTwo = map[string]bool{
-	"NOT IN over an empty list":           true,
-	"LIKE with ESCAPE":                    true,
-	"LIKE with ESCAPE over an underscore": true,
-	"LIKE with a bound ESCAPE":            true,
-	"== as a spelling of =":               true,
-	"IS against a literal":                true,
-	"IS against a bound argument":         true,
-}
+var notYetSpelledByAdapterTwo = map[string]bool{}
 
 func seedScopedFilterRow(t *testing.T) *harness {
 	t.Helper()

@@ -20,7 +20,7 @@ type namespaceEngine interface {
 
 func postgresNamespaceEngine(t *testing.T) namespaceEngine {
 	t.Helper()
-	return openPostgresEngine(t, t.TempDir(), nil)
+	return openPostgresEngine(t, t.TempDir(), nil, false)
 }
 
 func TestNamespaceBackendConformance(t *testing.T) {
