@@ -198,7 +198,7 @@ func TestAMixedClassTimeExpressionRaisesRatherThanAnsweringDifferently(t *testin
 		}
 	}
 	if raised == 0 {
-		t.Fatal("not one of these expressions raised, so this test is no longer covering the storage-class gap it exists for")
+		t.Fatal("not one of these expressions raised, so the storage-class gap has closed: rewrite this test to assert agreement, and delete the paragraph in docs/design/postgresql.md that describes the divergence, in this same change")
 	}
 }
 

@@ -297,7 +297,10 @@ other storage class raises where SQLite answers: `date(created_at) > 1` and
 `date(created_at) + 1` is 2027 in SQLite and 42883 here, and `NOT date(created_at)` is
 42804. Every one surfaces as a redacted `query_error`, never as a different row set, and
 a test pins that property rather than the behaviour: on these expressions this engine
-either agrees with SQLite or raises, which stays true once the gap closes.
+either agrees with SQLite or raises, which stays true once the gap closes. That test
+also fails if *none* of them raises any more, and says there to delete this paragraph in
+the same change — a note describing a divergence that no longer exists is the same
+defect in prose, and prose has no other alarm.
 
 Closing it is the storage-class affinity work, which folds such an expression to the
 value SQLite would produce — but only for calls its `affinityOf` classes, so the five
