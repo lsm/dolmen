@@ -19,11 +19,11 @@ type filterRenderer struct {
 var renderedFunctions = map[string]string{
 	"abs": "abs", "round": "round", "length": "length", "lower": "lower", "upper": "upper",
 	"substr": "substr", "trim": "btrim", "ltrim": "ltrim", "rtrim": "rtrim", "replace": "replace",
-	"instr": "strpos", "nullif": "nullif",
+	"instr": "strpos",
 }
 
 func filterNotRenderable(name string) error {
-	return store.NewBackendQueryError(fmt.Sprintf("this engine cannot yet evaluate %s in a filter with SQLite's semantics; see the filter_dialect capability", name), nil)
+	return store.NewBackendQueryError(fmt.Sprintf("%s is in the filter language this server accepts, but this storage engine cannot evaluate it yet; rewrite the filter without it, or compute the value and bind it as a ? argument", name), nil)
 }
 
 func renderScopedFilter(node filter.Node, columns map[string]string, args []any, next int) (string, []any, error) {
@@ -243,6 +243,8 @@ func (r *filterRenderer) call(node *filter.Call, next int) error {
 	switch node.Name {
 	case "ifnull", "coalesce":
 		return r.plainCall("coalesce", node.Args, next)
+	case "nullif":
+		return r.plainCall("nullif", node.Args, next)
 	case "iif":
 		if len(node.Args) != 3 {
 			return filterNotRenderable("iif")
