@@ -487,7 +487,7 @@ func (h *harness) mustMCP(op string, args any) map[string]any {
 	return sc
 }
 
-var volatileKeys = map[string]bool{"created_at": true, "at": true, "cursor": true, "next_cursor": true}
+var volatileKeys = map[string]bool{"created_at": true, "at": true, "cursor": true, "next_cursor": true, "expected_incarnation": true}
 
 var createdAtRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$`)
 
@@ -505,6 +505,12 @@ func maskVolatile(t *testing.T, v any) any {
 					t.Errorf("created_at %v does not match the documented UTC millisecond RFC3339 shape", val)
 					row[k] = "<volatile>"
 					continue
+				}
+			}
+			if k == "expected_incarnation" {
+				s, ok := val.(string)
+				if !ok || s == "" {
+					t.Errorf("expected_incarnation %v is not the documented opaque non-empty token", val)
 				}
 			}
 			if k == "cursor" || k == "next_cursor" {

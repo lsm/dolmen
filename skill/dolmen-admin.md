@@ -443,15 +443,20 @@ itself is shared — so copy the exact shape per op:
   {"op": "set_enum", "name": "severity", "enum": ["SEV0", "SEV1", "SEV2", "SEV3"]}
   ```
 
-Two top-level keys complete the request:
+Three top-level keys complete the request:
 
 - `expected_version` — the schema version from `describe_table` that the changes were planned
   against. Required for the destructive `rename_field` and `drop_field`; if the table has moved
-  past it the call fails with a version conflict — re-describe the table and re-plan.
+  past it the call fails with a version conflict — re-describe the table and re-plan. With
+  authentication on this is not enough on its own: use `expected_incarnation` instead.
+- `expected_incarnation` — the opaque token a `dry_run` returns in its `plan`. It names the exact
+  table the plan was made against, so passing it back on apply refuses a table that was dropped and
+  recreated under the same name in between, which a version cannot catch: the successor starts at
+  version 1. Under authentication, a precondition must be this token.
 - `dry_run` — `true` validates and previews without applying anything (no writes, no embedding
   calls): the response carries the prospective table schema plus a `plan` with the version
-  transition, ordered operations, destructive changes, `backfill_rows`, and the FTS-rebuild and
-  embedding workload.
+  transition, ordered operations, destructive changes, `backfill_rows`, the FTS-rebuild and
+  embedding workload, and the `expected_incarnation` token to pass back on apply.
 
 A complete call, previewed first:
 
