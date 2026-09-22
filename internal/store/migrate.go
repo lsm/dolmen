@@ -216,7 +216,7 @@ func (s *Store) PlanMigration(ctx context.Context, nsName, table string, changes
 	if err != nil {
 		return nil, err
 	}
-	tx, err := n.rw.BeginTx(ctx, nil)
+	tx, err := n.ro.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
