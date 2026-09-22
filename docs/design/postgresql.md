@@ -244,16 +244,63 @@ into a materialized `_dolmen_visible` relation first and the caller's expression
 compiled against that relation, never the base table. A filter that raises on a foreign
 row therefore cannot be used as an oracle over rows the caller cannot read, because the
 expression never evaluates on them. Fulltext and vector search confine the same way.
-What remains of §4.3 is the shared evaluator rather than the shared validator: a scoped
-filter still executes with this engine's own function set, so a spelling SQLite accepts
-and PostgreSQL does not (`iif`, the date and time functions) is a `query_error` here.
-That convergence is #386.
+§4.3's shared evaluator is reached by rendering the parsed tree rather than by handing
+the caller's text to PostgreSQL, so a spelling SQLite accepts is either rendered with
+SQLite's meaning or refused by name. What is still refused is listed under the date and
+time functions below and in `notYetEvaluatedByAdapterTwo`.
 
 Updates patch only supplied fields. Filter upsert updates every match or inserts one
 record with defaults and required-field validation when there is no match. Delete keeps
 the existing dry-run, match limit, and explicit confirmation contract. Embedding work
 runs before the write transaction and is skipped for no-match updates; invalid fields
 and values are still rejected even when a filter matches nothing.
+
+### The date and time functions
+
+SQLite's five time functions read a value that is text at rest on both engines, so the
+engine cannot lean on a `timestamp` column type. What it can lean on is where the value
+comes from. §4.3 restricts a time function's arguments to a literal, a `?` argument, a
+column, or another time function, which means every argument except a column is known
+while the statement is being built: those are parsed in Go against SQLite's own grammar
+and emitted as a constant. Only a column needs a runtime parse, and only a `timestamp`
+field reaches one, because `schema.CanonicalTimestamp` has already narrowed what such a
+column can hold. A time function over any other column is refused.
+
+The parse is not the obvious one. A guard built on `pg_input_is_valid` alone is wrong in
+both directions: it accepts `'now'`, and `'now'::timestamp` then reads the server clock
+that §4.3 exists to keep out of a filter — and the validator cannot catch it, because the
+word arrives as data rather than as a literal. It also accepts `'Jan 5 2020'`, which
+SQLite answers `NULL` for, while rejecting `'2026-02-30'`, which SQLite normalizes to
+2026-03-02. The shape is matched with a regular expression first and only then cast, with
+`pg_input_is_valid` underneath so that a surprise is a `NULL` rather than a dead
+statement. A value carrying an offset is read through `timestamptz AT TIME ZONE 'UTC'`;
+one without is read as `timestamp`, because `timestamptz` would otherwise apply the
+server's zone.
+
+Three verdicts, not two. A shape SQLite reads is rendered. A shape SQLite answers `NULL`
+for is rendered as `NULL`. A shape SQLite reads but this engine will not reproduce is
+**refused**, never rendered as `NULL`: these filters drive `delete`, so a wrong row set
+is data loss where a refusal is only an inconvenience. Refused today: month and year
+modifiers, because SQLite sets the month and then normalizes the day overflow
+(`date('2026-01-31','+1 month')` is 2026-03-03) where PostgreSQL's interval arithmetic
+clamps to the 28th; every named modifier (`start of …`, `weekday N`, `unixepoch`,
+`julianday`, `auto`, `subsec`, `ceiling`, `floor`); the `%f`, `%s`, `%w` and `%W`
+strftime fields; and an hour of 24, which SQLite carries
+through formatting unchanged as `24:00:00` but normalizes the moment any modifier is
+applied. Rendered: `±N day/hour/minute/second` and `±HH:MM[:SS]` modifiers, and the
+`%Y %m %d %H %M %S %j %%` fields.
+
+Two things are easy to get wrong and are pinned by tests. Literal runs inside a strftime
+format must be double-quoted for `to_char`, or `%Y-%m-%dT%H:%M:%S` renders its literal
+`T` as `STH24`. And `extract` is grammar rather than a function, so the `pg_catalog.`
+qualification every other rendered call carries is spelled `pg_catalog.date_part` here.
+
+The tests are differential rather than expectational: `filter_time_test.go` compares the
+Go parser against a real SQLite over a corpus of time strings and modifiers, and
+`filter_time_render_test.go` evaluates every rendered expression on PostgreSQL against
+the same expression on SQLite. The fixture values are chosen to discriminate — an
+offset-bearing moment and a sub-second one, without which removing the timezone branch
+or the second truncation makes no test fail.
 
 ## Schema migrations (implemented internally)
 

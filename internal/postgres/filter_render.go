@@ -13,6 +13,7 @@ import (
 
 type filterRenderer struct {
 	columns map[string]string
+	types   map[string]schema.FieldType
 	args    []any
 	bound   []any
 	sb      strings.Builder
@@ -28,8 +29,8 @@ func filterNotRenderable(name string) error {
 	return store.NewBackendQueryError(fmt.Sprintf("%s is in the filter language this server accepts, but this storage engine cannot evaluate it yet; rewrite the filter without it, or compute the value and bind it as a ? argument", name), nil)
 }
 
-func renderScopedFilter(node filter.Node, columns map[string]string, args []any, next int) (string, []any, error) {
-	r := &filterRenderer{columns: columns, args: args}
+func renderScopedFilter(node filter.Node, columns map[string]string, types map[string]schema.FieldType, args []any, next int) (string, []any, error) {
+	r := &filterRenderer{columns: columns, types: types, args: args}
 	if err := r.render(node, next); err != nil {
 		return "", nil, err
 	}
@@ -276,6 +277,8 @@ func (r *filterRenderer) call(node *filter.Call, next int) error {
 		}
 		r.sb.WriteString(" END)")
 		return nil
+	case "date", "time", "datetime", "julianday", "strftime":
+		return r.timeCall(node, next)
 	}
 	target, ok := renderedFunctions[node.Name]
 	if !ok {
@@ -326,6 +329,17 @@ func (r *filterRenderer) caseExpr(node *filter.Case, next int) error {
 	return nil
 }
 
+func filterTypeMap(state tableState) map[string]schema.FieldType {
+	types := map[string]schema.FieldType{"id": schema.Number, "created_at": schema.Timestamp}
+	for _, f := range state.schema.Fields {
+		types[f.Name] = f.Type
+	}
+	if state.schema.HasOwner {
+		types[schema.OwnerColumn] = schema.Text
+	}
+	return types
+}
+
 func filterColumnMap(state tableState) map[string]string {
 	columns := map[string]string{"id": "id", "created_at": "created_at"}
 	for name, physical := range state.columns {
@@ -348,7 +362,7 @@ func (s *Store) renderSharedFilter(n namespace, expr string, args []any, state t
 		return "", nil, fmt.Errorf("%w: filter: %s", store.ErrInvalid, err.Error())
 	}
 	prefix, source, lead := scopedSourceAt(ident(n.physical, state.physical), scope, 1)
-	rendered, bound, err := renderScopedFilter(node, columns, args, len(lead)+1)
+	rendered, bound, err := renderScopedFilter(node, columns, filterTypeMap(state), args, len(lead)+1)
 	if err != nil {
 		return "", nil, err
 	}

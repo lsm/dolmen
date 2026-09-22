@@ -113,10 +113,6 @@ var pinnedFilterSemantics = []struct {
 }
 
 var notYetEvaluatedByAdapterTwo = map[string]bool{
-	"date": true, "time": true, "datetime": true, "julianday": true, "strftime": true,
-	"date with a modifier": true, "time with a modifier": true, "datetime with a modifier": true,
-	"julianday with a modifier": true, "strftime with a modifier": true,
-	"datetime with two modifiers": true, "strftime with two modifiers": true,
 	"substr from a negative start": true, "substr with a negative length": true,
 	"coalesce over mixed types": true,
 	"round to a negative place": true,
