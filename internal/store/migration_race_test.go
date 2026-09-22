@@ -11,16 +11,24 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-func resolveScopeFor(t *testing.T, st *Store, owner string) (*RowScope, Incarnation) {
-	t.Helper()
+func resolveScopeFor(st *Store, owner string) (*RowScope, Incarnation, error) {
 	sc, inc, err := st.TableState(context.Background(), "ns", "notes", nil)
 	if err != nil {
-		t.Fatalf("table state: %v", err)
+		return nil, Incarnation{}, fmt.Errorf("table state: %w", err)
 	}
 	if sc.RowAccess != schema.RowAccessOwn {
-		t.Fatalf("the fixture is not a row_access table")
+		return nil, Incarnation{}, errors.New("the fixture is not a row_access table")
 	}
-	return &RowScope{Owner: owner}, inc
+	return &RowScope{Owner: owner}, inc, nil
+}
+
+func mustResolveScopeFor(t *testing.T, st *Store, owner string) (*RowScope, Incarnation) {
+	t.Helper()
+	scope, inc, err := resolveScopeFor(st, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope, inc
 }
 
 func seedRacingTable(t *testing.T, st *Store) {
@@ -56,7 +64,11 @@ func TestAMigrationRacingAScopedReadConvergesOnConflict(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			scope, inc := resolveScopeFor(t, st, "alice")
+			scope, inc, rerr := resolveScopeFor(st, "alice")
+			if rerr != nil {
+				t.Errorf("resolve alice's scope: %v", rerr)
+				return
+			}
 			<-start
 			rows, err := st.GetRows(ctx, "ns", "notes", []int64{1, 2, 3, 4, 5, 6, 7, 8}, scope, inc)
 			if err != nil {
@@ -99,7 +111,7 @@ func TestAMigrationRacingAScopedReadConvergesOnConflict(t *testing.T) {
 		}
 	}
 
-	scope, inc := resolveScopeFor(t, st, "alice")
+	scope, inc := mustResolveScopeFor(t, st, "alice")
 	rows, err := st.GetRows(ctx, "ns", "notes", []int64{1, 2, 3, 4, 5, 6, 7, 8}, scope, inc)
 	if err != nil {
 		t.Fatalf("re-resolving after the migration must succeed, which is what makes the conflict a retry: %v (%d conflicted)", err, conflicts)
@@ -121,7 +133,11 @@ func TestAMigrationRacingAScopedDeleteNeverTouchesAForeignRow(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			scope, inc := resolveScopeFor(t, st, "alice")
+			scope, inc, rerr := resolveScopeFor(st, "alice")
+			if rerr != nil {
+				t.Errorf("resolve alice's scope: %v", rerr)
+				return
+			}
 			<-start
 			res, err := st.Delete(ctx, "ns", "notes", "1=1", nil, DeleteOpts{Confirm: true}, scope, inc)
 			if err != nil {
@@ -171,7 +187,7 @@ func TestAStaleScopeConflictsAndItsRetrySucceeds(t *testing.T) {
 	ctx := context.Background()
 	seedRacingTable(t, st)
 
-	scope, stale := resolveScopeFor(t, st, "alice")
+	scope, stale := mustResolveScopeFor(t, st, "alice")
 	if _, err := st.Migrate(ctx, "ns", "notes", []schema.Change{
 		{Op: schema.OpAddField, Field: &schema.Field{Name: "tag", Type: schema.String}},
 	}, Embedder{}, Incarnation{}); err != nil {
@@ -183,7 +199,7 @@ func TestAStaleScopeConflictsAndItsRetrySucceeds(t *testing.T) {
 		t.Fatalf("a scope resolved before the migration must conflict rather than read against a table it never saw: %v", err)
 	}
 
-	fresh, freshInc := resolveScopeFor(t, st, "alice")
+	fresh, freshInc := mustResolveScopeFor(t, st, "alice")
 	rows, err := st.GetRows(ctx, "ns", "notes", []int64{1, 2, 3, 4, 5, 6, 7, 8}, fresh, freshInc)
 	if err != nil {
 		t.Fatalf("re-resolving is the whole remedy the conflict names, so it must succeed: %v", err)
