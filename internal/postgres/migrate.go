@@ -226,6 +226,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 					return nil, err
 				}
 				if f.Required && ch.Default == nil && rowCount > 0 {
+					if scope != nil {
+						return nil, invalidf("cannot add required field %q to a table that already holds rows (no backfill value can be supplied); add it nullable instead, or pass a default. How many rows is reported only to a caller holding read on the table", f.Name)
+					}
 					return nil, invalidf("cannot add required field %q to a table with %d existing rows (no backfill value can be supplied); add it nullable instead, or pass a default", f.Name, rowCount)
 				}
 				if ch.Default != nil {
@@ -468,6 +471,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 					return nil, err
 				}
 				if rows > 0 {
+					if scope != nil {
+						return nil, invalidf("table %s already holds rows, so row_access cannot be enabled on it: no operation can write another principal's rows as that principal, so there is no honest way to assign owners to what is already there; create a new table with row_access and replay each owner's rows under their own identity, letting the server stamp them. How many rows is reported only to a caller holding read on the table", old.Name)
+					}
 					return nil, invalidf("table %s already holds %d rows, so row_access cannot be enabled on it: no operation can write another principal's rows as that principal, so there is no honest way to assign owners to what is already there; create a new table with row_access and replay each owner's rows under their own identity, letting the server stamp them", old.Name, rows)
 				}
 				if !cur.HasOwner {

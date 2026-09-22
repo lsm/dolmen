@@ -53,12 +53,51 @@ func TestAPlanCountsOnlyTheRowsTheCallerCanSee(t *testing.T) {
 func TestAPlanStillValidatesAgainstEveryRow(t *testing.T) {
 	st := openRowAccessStore(t)
 	seedTwoOwners(t, st)
+	change := []schema.Change{{Op: schema.OpAddField, Field: &schema.Field{Name: "tag", Type: schema.String, Required: true}}}
 
-	_, err := st.PlanMigration(context.Background(), "ns", "notes", []schema.Change{
-		{Op: schema.OpAddField, Field: &schema.Field{Name: "tag", Type: schema.String, Required: true}},
-	}, Embedder{}, Incarnation{}, &RowScope{Empty: true}, Incarnation{})
+	_, err := st.PlanMigration(context.Background(), "ns", "notes", change,
+		Embedder{}, Incarnation{}, &RowScope{Empty: true}, Incarnation{})
 	if err == nil {
 		t.Fatal("a required field with no default cannot be added to a populated table, whatever the caller can see; redacting the count must not redact the rule")
+	}
+	if strings.Contains(err.Error(), "4") {
+		t.Fatalf("the refusal told a caller who can see no rows how many there are: %v", err)
+	}
+
+	_, err = st.PlanMigration(context.Background(), "ns", "notes", change,
+		Embedder{}, Incarnation{}, nil, Incarnation{})
+	if err == nil || !strings.Contains(err.Error(), "4 existing rows") {
+		t.Fatalf("a table-wide reader is still told the count: %v", err)
+	}
+}
+
+func TestEnablingRowAccessCountsNoRowsForAScopedCaller(t *testing.T) {
+	st := openRowAccessStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "ns", "plain", []schema.Field{{Name: "body", Type: schema.Text}},
+		TableOpts{}, [16]byte{}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	for i := 0; i < 4; i++ {
+		if _, err := st.Insert(ctx, "ns", "plain", []map[string]any{{"body": "x"}},
+			WriteOpts{}, Embedder{}, nil, Incarnation{}); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	enable := true
+	change := []schema.Change{{Op: schema.OpSetRowAccess, Value: &enable}}
+
+	_, err := st.PlanMigration(ctx, "ns", "plain", change, Embedder{}, Incarnation{}, &RowScope{Empty: true}, Incarnation{})
+	if err == nil {
+		t.Fatal("row_access cannot be enabled on a populated table, whatever the caller can see")
+	}
+	if strings.Contains(err.Error(), "4") {
+		t.Fatalf("the refusal counted rows for a caller who can see none: %v", err)
+	}
+
+	_, err = st.PlanMigration(ctx, "ns", "plain", change, Embedder{}, Incarnation{}, nil, Incarnation{})
+	if err == nil || !strings.Contains(err.Error(), "4 rows") {
+		t.Fatalf("a table-wide reader is still told the count: %v", err)
 	}
 }
 
