@@ -1,7 +1,6 @@
 package store
 
 import (
-	"github.com/lsm/dolmen/internal/schema"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -9,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/lsm/dolmen/internal/schema"
 )
 
 func mintChanges(ctx context.Context, tx *sql.Tx, table string, kind ChangeKind, ids []int64, owners []string) (ChangeRange, error) {
