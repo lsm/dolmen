@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/lsm/dolmen/internal/filter"
+	"github.com/lsm/dolmen/internal/schema"
 )
 
 func renderFor(t *testing.T, expr string, args ...any) string {
@@ -13,7 +14,7 @@ func renderFor(t *testing.T, expr string, args ...any) string {
 	if err != nil {
 		t.Fatalf("Parse(%q): %v", expr, err)
 	}
-	sql, _, err := renderScopedFilter(node, map[string]string{"id": "id", "body": "c1"}, args, 1)
+	sql, _, err := renderScopedFilter(node, map[string]string{"id": "id", "body": "c1"}, map[string]schema.FieldType{"id": schema.Number, "body": schema.Text}, args, 1)
 	if err != nil {
 		t.Fatalf("render(%q): %v", expr, err)
 	}

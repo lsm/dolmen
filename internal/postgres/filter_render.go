@@ -13,6 +13,7 @@ import (
 
 type filterRenderer struct {
 	columns map[string]string
+	types   map[string]schema.FieldType
 	args    []any
 	bound   []any
 	sb      strings.Builder
@@ -28,12 +29,16 @@ func filterNotRenderable(name string) error {
 	return store.NewBackendQueryError(fmt.Sprintf("%s is in the filter language this server accepts, but this storage engine cannot evaluate it yet; rewrite the filter without it, or compute the value and bind it as a ? argument", name), nil)
 }
 
-func renderScopedFilter(node filter.Node, columns map[string]string, args []any, next int) (string, []any, error) {
-	r := &filterRenderer{columns: columns, args: args}
+func renderScopedFilter(node filter.Node, columns map[string]string, types map[string]schema.FieldType, args []any, next int) (string, []any, error) {
+	r := &filterRenderer{columns: columns, types: types, args: args}
 	if err := r.render(node, next); err != nil {
 		return "", nil, err
 	}
-	return r.sb.String(), r.bound, nil
+	rendered := r.sb.String()
+	if !rendersAsTruthValue(node) {
+		rendered = "(" + rendered + " <> 0)"
+	}
+	return rendered, r.bound, nil
 }
 
 func (r *filterRenderer) placeholder(next int) int { return next + len(r.bound) }
@@ -149,6 +154,12 @@ func (r *filterRenderer) binary(node *filter.Binary, next int) error {
 	case "and", "or":
 		op = strings.ToUpper(op)
 	}
+	switch op {
+	case "=", "<>", "<", "<=", ">", ">=":
+		return r.comparison(node, op, next)
+	case "+", "-", "*", "/", "%":
+		return r.arithmetic(node, op, next)
+	}
 	r.sb.WriteString("(")
 	if err := r.render(node.Left, next); err != nil {
 		return err
@@ -209,18 +220,21 @@ func (r *filterRenderer) in(node *filter.In, next int) error {
 }
 
 func (r *filterRenderer) like(node *filter.Like, next int) error {
-	r.sb.WriteString("(")
-	if err := r.render(node.Left, next); err != nil {
+	subject, err := r.capture(node.Left, next)
+	if err != nil {
 		return err
 	}
+	pattern, err := r.capture(node.Pattern, next)
+	if err != nil {
+		return err
+	}
+	r.sb.WriteString("(" + asciiFold(subject))
 	if node.Negated {
 		r.sb.WriteString(" NOT LIKE ")
 	} else {
 		r.sb.WriteString(" LIKE ")
 	}
-	if err := r.render(node.Pattern, next); err != nil {
-		return err
-	}
+	r.sb.WriteString(asciiFold(pattern) + ` COLLATE "C"`)
 	if node.Escape != nil {
 		r.sb.WriteString(" ESCAPE ")
 		if err := r.render(node.Escape, next); err != nil {
@@ -277,6 +291,31 @@ func (r *filterRenderer) call(node *filter.Call, next int) error {
 		r.sb.WriteString(" END)")
 		return nil
 	}
+	switch node.Name {
+	case "lower", "upper":
+		if len(node.Args) != 1 {
+			return filterNotRenderable(node.Name)
+		}
+		arg, err := r.capture(node.Args[0], next)
+		if err != nil {
+			return err
+		}
+		from, to := asciiUpperSet, asciiLowerSet
+		if node.Name == "upper" {
+			from, to = asciiLowerSet, asciiUpperSet
+		}
+		r.sb.WriteString("translate(" + arg + ", '" + from + "', '" + to + "')")
+		return nil
+	case "abs", "round":
+		if len(node.Args) >= 1 && r.affinityOf(node.Args[0]) == affText {
+			arg, err := r.captureNumeric(node.Args[0], next)
+			if err != nil {
+				return err
+			}
+			r.sb.WriteString("pg_catalog." + node.Name + "(" + arg + ")")
+			return nil
+		}
+	}
 	target, ok := renderedFunctions[node.Name]
 	if !ok {
 		return filterNotRenderable(node.Name)
@@ -326,6 +365,17 @@ func (r *filterRenderer) caseExpr(node *filter.Case, next int) error {
 	return nil
 }
 
+func filterTypeMap(state tableState) map[string]schema.FieldType {
+	types := map[string]schema.FieldType{"id": schema.Number, "created_at": schema.Timestamp}
+	for _, f := range state.schema.Fields {
+		types[f.Name] = f.Type
+	}
+	if state.schema.HasOwner {
+		types[schema.OwnerColumn] = schema.Text
+	}
+	return types
+}
+
 func filterColumnMap(state tableState) map[string]string {
 	columns := map[string]string{"id": "id", "created_at": "created_at"}
 	for name, physical := range state.columns {
@@ -348,10 +398,202 @@ func (s *Store) renderSharedFilter(n namespace, expr string, args []any, state t
 		return "", nil, fmt.Errorf("%w: filter: %s", store.ErrInvalid, err.Error())
 	}
 	prefix, source, lead := scopedSourceAt(ident(n.physical, state.physical), scope, 1)
-	rendered, bound, err := renderScopedFilter(node, columns, args, len(lead)+1)
+	rendered, bound, err := renderScopedFilter(node, columns, filterTypeMap(state), args, len(lead)+1)
 	if err != nil {
 		return "", nil, err
 	}
 	return prefix + "SELECT id FROM " + source + " WHERE " + rendered + " ORDER BY id",
 		append(append([]any{}, lead...), bound...), nil
+}
+
+type affinity int
+
+const (
+	affUnknown affinity = iota
+	affNumber
+	affText
+	affBlob
+)
+
+const (
+	asciiUpperSet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	asciiLowerSet = "abcdefghijklmnopqrstuvwxyz"
+	sqliteNumHead = "^[[:space:]]*([+-]?(?:[0-9]+\\.?[0-9]*|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)"
+)
+
+func (r *filterRenderer) affinityOf(n filter.Node) affinity {
+	switch node := n.(type) {
+	case *filter.Paren:
+		return r.affinityOf(node.Inner)
+	case *filter.Column:
+		switch r.types[node.Name] {
+		case schema.Number, schema.Boolean:
+			return affNumber
+		case schema.String, schema.Text, schema.Timestamp, schema.JSON:
+			return affText
+		}
+		return affUnknown
+	case *filter.Literal:
+		switch node.Kind {
+		case filter.LiteralNumber:
+			return affNumber
+		case filter.LiteralString:
+			return affText
+		case filter.LiteralBlob:
+			return affBlob
+		}
+		return affUnknown
+	case *filter.Call:
+		switch node.Name {
+		case "abs", "round", "length", "instr":
+			return affNumber
+		case "lower", "upper", "substr", "trim", "ltrim", "rtrim", "replace":
+			return affText
+		}
+		return affUnknown
+	}
+	return affUnknown
+}
+
+func comparisonIsAcrossClasses(left, right affinity) bool {
+	if left == affUnknown || right == affUnknown || left == right {
+		return false
+	}
+	return true
+}
+
+func classRank(a affinity) int {
+	switch a {
+	case affNumber:
+		return 1
+	case affText:
+		return 2
+	case affBlob:
+		return 3
+	}
+	return 0
+}
+
+func crossClassAnswer(op string, left, right affinity) (string, bool) {
+	lr, rr := classRank(left), classRank(right)
+	switch op {
+	case "=", "==":
+		return "FALSE", true
+	case "!=", "<>":
+		return "TRUE", true
+	case "<":
+		return boolLiteral(lr < rr), true
+	case "<=":
+		return boolLiteral(lr < rr), true
+	case ">":
+		return boolLiteral(lr > rr), true
+	case ">=":
+		return boolLiteral(lr > rr), true
+	}
+	return "", false
+}
+
+func boolLiteral(b bool) string {
+	if b {
+		return "TRUE"
+	}
+	return "FALSE"
+}
+
+func rendersAsTruthValue(n filter.Node) bool {
+	switch node := n.(type) {
+	case *filter.Paren:
+		return rendersAsTruthValue(node.Inner)
+	case *filter.Is, *filter.In, *filter.Like, *filter.Between:
+		return true
+	case *filter.Unary:
+		return strings.EqualFold(node.Op, "not")
+	case *filter.Literal:
+		return node.Kind == filter.LiteralTrue || node.Kind == filter.LiteralFalse
+	case *filter.Binary:
+		switch node.Op {
+		case "=", "==", "!=", "<>", "<", "<=", ">", ">=", "and", "or", "AND", "OR":
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+func (r *filterRenderer) capture(n filter.Node, next int) (string, error) {
+	saved := r.sb
+	r.sb = strings.Builder{}
+	err := r.render(n, next)
+	out := r.sb.String()
+	r.sb = saved
+	return out, err
+}
+
+func (r *filterRenderer) captureNumeric(n filter.Node, next int) (string, error) {
+	text, err := r.capture(n, next)
+	if err != nil {
+		return "", err
+	}
+	if r.affinityOf(n) == affText {
+		return "COALESCE((substring(" + text + " FROM '" + sqliteNumHead + "'))::numeric, 0)", nil
+	}
+	return "(" + text + ")::numeric", nil
+}
+
+func (r *filterRenderer) comparison(node *filter.Binary, op string, next int) error {
+	left, right := r.affinityOf(node.Left), r.affinityOf(node.Right)
+	if comparisonIsAcrossClasses(left, right) {
+		if answer, ok := crossClassAnswer(op, left, right); ok {
+			subject, err := r.capture(node.Left, next)
+			if err != nil {
+				return err
+			}
+			object, err := r.capture(node.Right, next)
+			if err != nil {
+				return err
+			}
+			r.sb.WriteString("(CASE WHEN " + subject + " IS NULL OR " + object + " IS NULL" +
+				" THEN NULL ELSE " + answer + " END)")
+			return nil
+		}
+	}
+	r.sb.WriteString("(")
+	if err := r.render(node.Left, next); err != nil {
+		return err
+	}
+	r.sb.WriteString(" " + op + " ")
+	if err := r.render(node.Right, next); err != nil {
+		return err
+	}
+	if left == affText && right == affText {
+		r.sb.WriteString(` COLLATE "C"`)
+	}
+	r.sb.WriteString(")")
+	return nil
+}
+
+func (r *filterRenderer) arithmetic(node *filter.Binary, op string, next int) error {
+	left, err := r.captureNumeric(node.Left, next)
+	if err != nil {
+		return err
+	}
+	right, err := r.captureNumeric(node.Right, next)
+	if err != nil {
+		return err
+	}
+	switch op {
+	case "/":
+		quotient := left + " / NULLIF(" + right + ", 0)"
+		r.sb.WriteString("(CASE WHEN " + left + " = trunc(" + left + ") AND " + right + " = trunc(" + right + ")" +
+			" THEN trunc(" + quotient + ") ELSE " + quotient + " END)")
+	case "%":
+		r.sb.WriteString("(trunc(" + left + ") % NULLIF(trunc(" + right + "), 0))")
+	default:
+		r.sb.WriteString("(" + left + " " + op + " " + right + ")")
+	}
+	return nil
+}
+
+func asciiFold(expr string) string {
+	return "translate(" + expr + ", '" + asciiUpperSet + "', '" + asciiLowerSet + "')"
 }
