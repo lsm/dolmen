@@ -131,6 +131,14 @@ var pinnedFilterSemantics = []struct {
 	{"a scalar under NOT is a truth value", "NOT 0", ""},
 	{"a scalar under AND is a truth value", "1 AND 1", ""},
 	{"a bound boolean is its own truth value", "?", `[true]`},
+	{"a negated literal takes the text form SQLite gives it", "neg = -1e300", ""},
+	{"numeric text rounds through a double before comparing", "frac = '0.10000000000000000001'", ""},
+	{"an integer beyond a double keeps its digits", "n = '-7'", ""},
+	{"concatenation is a truth value through its number", "NOT (body || body)", ""},
+	{"numeric concatenation is a true truth value", "code || ''", ""},
+	{"a text case expression is a truth value", "NOT (CASE WHEN 1 = 1 THEN 'a' ELSE 'b' END)", ""},
+	{"a text iif is a truth value", "NOT iif(1 = 1, 'a', 'b')", ""},
+	{"a text coalesce is a truth value", "NOT coalesce(body, 'x')", ""},
 }
 
 var notYetEvaluatedByAdapterTwo = map[string]bool{
@@ -159,11 +167,13 @@ func seedScopedFilterRow(t *testing.T) *harness {
 			{"name": "mark", "type": "text"},
 			{"name": "huge", "type": "text"},
 			{"name": "flag", "type": "boolean"},
+			{"name": "neg", "type": "text"},
+			{"name": "frac", "type": "number"},
 		},
 		"row_access": "own",
 	})
 	grantTo(t, h, "principal", "alice", "acme", "notes", "create", "delete")
-	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7,"code":"1","mark":"!zzz","huge":"1e999999","flag":true}]}`)
+	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7,"code":"1","mark":"!zzz","huge":"1e999999","flag":true,"neg":"-1.0e+300","frac":0.1}]}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("seed insert: status %d %v", res.StatusCode, out)
 	}

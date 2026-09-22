@@ -269,6 +269,16 @@ the engine implements and pins nothing. The conformance fixture carries `code`, 
 and `huge` for exactly this reason: each was chosen because the two rules disagree about
 it.
 
+Converting a number to a column's text affinity only happens for a value known while
+rendering: a literal, a bound argument, or a sign applied to either. SQLite takes the
+text of the double, so `-1e300` is `'-1.0e+300'` and `round(2.5)` is `'3.0'`, and
+PostgreSQL's own numeric formatting reproduces neither. A computed number compared
+against a text column is therefore refused with the usual advice to bind the value,
+because the alternative is a wrong row set on a filter that drives `delete`. Numeric
+text converted the other way is rounded through a double first, the way SQLite's numeric
+affinity does, so `'0.10000000000000000001'` matches a stored `0.1`; an integer that
+fits in 64 bits keeps its exact digits instead.
+
 Text coerced to a number saturates the way SQLite's double does rather than raising.
 `abs(body)` over a text `'1e999999'` is infinity, matching SQLite, where a bare
 `::numeric` cast raises `22003` and kills the statement; an overflowing literal such as
@@ -279,7 +289,10 @@ places on the server version.
 Anything in a boolean position is rendered as SQLite's truth value, at the top of the
 expression and under `NOT`, `AND` and `OR` alike. A number is true when it is nonzero, a
 text is converted to a number first so `'a note'` is false and `'1'` is true, and a blob
-is false. A boolean column and a bound boolean argument are already boolean and are used
+is false. Text is not only a column or a literal: concatenation, a `CASE`, and `iif`,
+`coalesce`, `ifnull` and `nullif` over text operands all carry text affinity, and a
+truth test over one of those converts before testing rather than asking PostgreSQL to
+compare text against zero. A boolean column and a bound boolean argument are already boolean and are used
 as they are: PostgreSQL has no `boolean <> numeric` operator, so wrapping them the way a
 number is wrapped raises `42883` on a filter as ordinary as `flag`.
 

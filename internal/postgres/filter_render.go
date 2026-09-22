@@ -575,6 +575,25 @@ func (r *filterRenderer) staticNumberAsText(n filter.Node) (string, bool) {
 	switch node := n.(type) {
 	case *filter.Paren:
 		return r.staticNumberAsText(node.Inner)
+	case *filter.Unary:
+		if node.Op != "-" && node.Op != "+" {
+			return "", false
+		}
+		inner, ok := r.staticNumberAsText(node.Operand)
+		if !ok {
+			return "", false
+		}
+		if node.Op == "+" {
+			return inner, true
+		}
+		f, err := strconv.ParseFloat(inner, 64)
+		if err != nil {
+			return "", false
+		}
+		if !strings.ContainsAny(inner, ".eE") {
+			return "-" + inner, true
+		}
+		return sqliteRealText(-f)
 	case *filter.Literal:
 		if node.Kind == filter.LiteralNumber {
 			return sqliteTextOfNumberLiteral(node.Text)
@@ -646,10 +665,76 @@ func (r *filterRenderer) affinityOf(n filter.Node) affinity {
 			return affNumber
 		case "lower", "upper", "substr", "trim", "ltrim", "rtrim", "replace":
 			return affText
+		case "iif":
+			if len(node.Args) == 3 {
+				return r.agreedAffinity(node.Args[1], node.Args[2])
+			}
+		case "coalesce", "ifnull":
+			if len(node.Args) > 0 {
+				return r.agreedAffinity(node.Args...)
+			}
+		case "nullif":
+			if len(node.Args) > 0 {
+				return r.affinityOf(node.Args[0])
+			}
 		}
 		return affUnknown
+	case *filter.Binary:
+		if node.Op == "||" {
+			return affText
+		}
+		return affUnknown
+	case *filter.Unary:
+		if node.Op == "-" || node.Op == "+" {
+			return r.affinityOf(node.Operand)
+		}
+		return affUnknown
+	case *filter.Case:
+		return r.agreedAffinity(caseResults(node)...)
 	}
 	return affUnknown
+}
+
+func caseResults(node *filter.Case) []filter.Node {
+	out := make([]filter.Node, 0, len(node.Branches)+1)
+	for _, b := range node.Branches {
+		out = append(out, b.Then)
+	}
+	if node.Else != nil {
+		out = append(out, node.Else)
+	}
+	return out
+}
+
+func (r *filterRenderer) agreedAffinity(nodes ...filter.Node) affinity {
+	agreed := affUnknown
+	for _, n := range nodes {
+		if isNullLiteral(n) {
+			continue
+		}
+		a := r.affinityOf(n)
+		if a == affUnknown {
+			return affUnknown
+		}
+		if agreed == affUnknown {
+			agreed = a
+			continue
+		}
+		if agreed != a {
+			return affUnknown
+		}
+	}
+	return agreed
+}
+
+func isNullLiteral(n filter.Node) bool {
+	switch node := n.(type) {
+	case *filter.Paren:
+		return isNullLiteral(node.Inner)
+	case *filter.Literal:
+		return node.Kind == filter.LiteralNull
+	}
+	return false
 }
 
 func comparisonIsAcrossClasses(left, right affinity) bool {
@@ -782,25 +867,25 @@ func (r *filterRenderer) textAffinity(node *filter.Binary, op string, next int, 
 	if text, ok := r.staticNumberAsText(other); ok {
 		return r.substitutedComparison(node, op, next, otherIsRight, dollarQuote(text), ` COLLATE "C"`)
 	}
-	rendered, err := r.capture(other, next)
-	if err != nil {
-		return err
-	}
-	return r.substitutedComparison(node, op, next, otherIsRight, "("+rendered+")::text", ` COLLATE "C"`)
+	return filterNotRenderable("a text column compared against a computed number")
 }
 
 func staticNumericLiteral(text string) string {
 	trimmed := strings.TrimSpace(text)
-	f, err := strconv.ParseFloat(trimmed, 64)
-	if err == nil || errors.Is(err, strconv.ErrRange) {
-		if math.IsInf(f, 1) || f > math.MaxFloat64 {
-			return "'Infinity'::numeric"
-		}
-		if math.IsInf(f, -1) || f < -math.MaxFloat64 {
-			return "'-Infinity'::numeric"
-		}
+	if whole, err := strconv.ParseInt(trimmed, 10, 64); err == nil {
+		return "(" + strconv.FormatInt(whole, 10) + ")"
 	}
-	return "(" + trimmed + ")"
+	f, err := strconv.ParseFloat(trimmed, 64)
+	if err != nil && !errors.Is(err, strconv.ErrRange) {
+		return "(" + trimmed + ")"
+	}
+	if math.IsInf(f, 1) || f > math.MaxFloat64 {
+		return "'Infinity'::numeric"
+	}
+	if math.IsInf(f, -1) || f < -math.MaxFloat64 {
+		return "'-Infinity'::numeric"
+	}
+	return "(" + strconv.FormatFloat(f, 'g', -1, 64) + ")"
 }
 
 func (r *filterRenderer) numericAffinity(node *filter.Binary, op string, next int, otherIsRight bool) error {

@@ -72,3 +72,18 @@ func TestPostgresABoundTextArgumentCarriesTheBinaryCollation(t *testing.T) {
 		}
 	}
 }
+
+func TestPostgresATextColumnRefusesAComputedNumberRatherThanGuessingItsText(t *testing.T) {
+	cols := map[string]string{"code": "code"}
+	types := map[string]schema.FieldType{"code": schema.Text}
+	for _, expr := range []string{"code = round(2.5)", "code > length(code)", "abs(1) = code"} {
+		node, err := filter.Parse(expr, filter.Options{Columns: []string{"code"}})
+		if err != nil {
+			t.Fatalf("%s: %v", expr, err)
+		}
+		sql, _, err := renderScopedFilter(node, cols, types, nil, 1)
+		if err == nil {
+			t.Fatalf("%s rendered as %s; SQLite compares a text column against the double's own text, which PostgreSQL's numeric formatting does not reproduce, so answering here would be a wrong row set rather than a refusal", expr, sql)
+		}
+	}
+}
