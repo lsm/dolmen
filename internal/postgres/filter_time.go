@@ -71,8 +71,24 @@ func julianToTime(jd float64) time.Time {
 	return time.Unix(int64(whole), millis*int64(time.Millisecond)).UTC()
 }
 
+var sqliteRealNumber = regexp.MustCompile(`^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$`)
+
+const maxShiftMillis = 1e15
+
+var firstRenderableMoment = time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+var lastRenderableMoment = time.Date(9999, time.December, 31, 23, 59, 59, 999000000, time.UTC)
+
+func shiftedBy(t time.Time, millis int64) time.Time {
+	return t.AddDate(0, 0, int(millis/86400000)).Add(time.Duration(millis%86400000) * time.Millisecond)
+}
+
 func parseSQLiteJulian(text string) (time.Time, bool) {
-	jd, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
+	trimmed := strings.TrimSpace(text)
+	if !sqliteRealNumber.MatchString(trimmed) {
+		return time.Time{}, false
+	}
+	jd, err := strconv.ParseFloat(trimmed, 64)
 	if err != nil || math.IsNaN(jd) || jd < 0 || jd >= 5373484.5 {
 		return time.Time{}, false
 	}
@@ -461,13 +477,32 @@ func (r *filterRenderer) moment(node *filter.Call, next int) (string, error) {
 		case malformedInSQLite:
 			return "NULL::timestamp", nil
 		}
-		shiftMillis += int64(math.Round(seconds * 1000))
+		millis := math.Round(seconds * 1000)
+		if math.IsNaN(millis) || math.Abs(millis) > maxShiftMillis {
+			return "NULL::timestamp", nil
+		}
+		shiftMillis += int64(millis)
+		if shiftMillis > maxShiftMillis || shiftMillis < -maxShiftMillis {
+			return "NULL::timestamp", nil
+		}
 	}
 	if shiftMillis == 0 {
 		return base, nil
 	}
+	low, high := shiftedBy(firstRenderableMoment, -shiftMillis), shiftedBy(lastRenderableMoment, -shiftMillis)
+	if low.Before(firstRenderableMoment) {
+		low = firstRenderableMoment
+	}
+	if high.After(lastRenderableMoment) {
+		high = lastRenderableMoment
+	}
+	if high.Before(low) {
+		return "NULL::timestamp", nil
+	}
 	shift := float64(shiftMillis) / 1000
-	return "(" + base + " + pg_catalog.make_interval(secs => " + strconv.FormatFloat(shift, 'f', -1, 64) + "))", nil
+	bounded := "(CASE WHEN " + base + " BETWEEN " + timestampLiteral(low) + " AND " + timestampLiteral(high) +
+		" THEN " + base + " END)"
+	return "(" + bounded + " + pg_catalog.make_interval(secs => " + strconv.FormatFloat(shift, 'f', -1, 64) + "))", nil
 }
 
 func (r *filterRenderer) baseMoment(n filter.Node, next int) (string, error) {

@@ -279,8 +279,10 @@ server's zone.
 
 Three verdicts, not two. A shape SQLite reads is rendered. A shape SQLite answers `NULL`
 for is rendered as `NULL` — including the ones that are not obviously time at all, since
-`strconv.ParseFloat` reads `nan` and `inf` as numbers and a Julian day must be a real one
-strictly below 5373484.5. A shape SQLite reads but this engine will not reproduce is
+`strconv.ParseFloat` reads `nan` and `inf` as numbers, and Go's own spellings
+besides — `0x1p+21` and `2_460_000.5` are numbers to it and nothing to SQLite. A Julian
+day is therefore matched against SQLite's shape first, and must be a real one strictly
+below 5373484.5. A shape SQLite reads but this engine will not reproduce is
 **refused**, never rendered as `NULL`: these filters drive `delete`, so a wrong row set
 is data loss where a refusal is only an inconvenience. Refused today: month and year
 modifiers, because SQLite sets the month and then normalizes the day overflow
@@ -349,6 +351,15 @@ the result: a stored `.9995` shifted by `+0.5 seconds` is 1499ms there, where qu
 after the shift gives 1500. The column's moment is therefore quantized where it is read,
 each modifier is rounded to a whole millisecond of its own, and nothing is quantized
 again at the end.
+
+A shift also has to be applied somewhere PostgreSQL can hold the result. Its timestamp
+range starts at 4713 BC, so a large negative modifier over a base near year 1 raises
+rather than answering, which would be a fourth verdict beside rendered, `NULL` and
+refused. Bounding the modifier instead would refuse long shifts that are perfectly good
+— year 1 plus two million days is year 5476 — so it is the **base** that is bounded, to
+the pre-image of the renderable window under that shift, computed in Go where the shift
+is already known. Outside it the call is `NULL`, which is SQLite's answer too, and inside
+it the arithmetic cannot leave the range.
 
 PostgreSQL has no year zero and writes earlier years with a `BC` suffix rather than as a
 negative number, so `TIMESTAMP '-4713-11-24'` and `TIMESTAMP '0000-01-01'` are both
