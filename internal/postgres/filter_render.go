@@ -145,6 +145,16 @@ func (r *filterRenderer) render(n filter.Node, next int) error {
 			r.sb.WriteString("NOT (" + inner + ")")
 			return nil
 		}
+		if node.Op == "-" || node.Op == "+" {
+			if inner, ok := node.Operand.(*filter.Literal); ok && inner.Kind == filter.LiteralNumber &&
+				!strings.ContainsAny(inner.Text, ".eE") &&
+				!strings.HasPrefix(strings.ToLower(inner.Text), "0x") {
+				if whole, err := strconv.ParseInt(node.Op+strings.TrimSpace(inner.Text), 10, 64); err == nil {
+					r.sb.WriteString("(" + strconv.FormatInt(whole, 10) + ")")
+					return nil
+				}
+			}
+		}
 		r.sb.WriteString("(" + node.Op + " ")
 		if err := r.render(node.Operand, next); err != nil {
 			return err
@@ -217,6 +227,10 @@ func (r *filterRenderer) number(text string) error {
 			r.sb.WriteString("'-Infinity'::numeric")
 			return nil
 		}
+		if numeralIsReal(text) {
+			r.sb.WriteString(strconv.FormatFloat(f, 'g', -1, 64))
+			return nil
+		}
 	}
 	r.sb.WriteString(text)
 	return nil
@@ -274,6 +288,13 @@ func (r *filterRenderer) binary(node *filter.Binary, next int) error {
 }
 
 func (r *filterRenderer) concatOperand(n filter.Node, next int) (string, error) {
+	if r.booleanShaped(n) && !r.isBooleanNode(n) {
+		out, err := r.capture(n, next)
+		if err != nil {
+			return "", err
+		}
+		return "((" + out + ")::int)::text", nil
+	}
 	if r.affinityOf(n) == affNumber {
 		if r.isBooleanNode(n) {
 			out, err := r.capture(n, next)
@@ -624,7 +645,7 @@ func numeralOrder(text string) string {
 	leading := "COALESCE(length((substring(COALESCE((substring(" + mantissa +
 		" FROM '[.]([0-9]*)')), '') FROM '^0+'))), 0)"
 	scale := "(CASE WHEN " + exponent + " IS NULL THEN 0" +
-		" WHEN pg_input_is_valid(" + exponent + ", 'numeric') THEN " + exponent + "::numeric" +
+		" WHEN pg_input_is_valid(" + exponent + ", 'numeric') THEN " + guardedNumeric(exponent) +
 		" WHEN left(" + exponent + ", 1) = '-' THEN -1e6 ELSE 1e6 END)"
 	return "(" + scale + " + (CASE WHEN " + significant + " > 0 THEN " + significant +
 		" ELSE -" + leading + " END))"
@@ -635,9 +656,13 @@ func saturatingNumeric(text string) string {
 		" WHEN NOT pg_input_is_valid(" + text + ", 'numeric')" +
 		" THEN (CASE WHEN " + numeralOrder(text) + " < 0 THEN '0'" +
 		" WHEN left(btrim(" + text + "), 1) = '-' THEN '-Infinity' ELSE 'Infinity' END)::numeric" +
-		" WHEN " + text + "::numeric > " + sqliteDoubleMax + " THEN 'Infinity'::numeric" +
-		" WHEN " + text + "::numeric < -" + sqliteDoubleMax + " THEN '-Infinity'::numeric" +
-		" ELSE " + text + "::numeric END)"
+		" WHEN " + guardedNumeric(text) + " > " + sqliteDoubleMax + " THEN 'Infinity'::numeric" +
+		" WHEN " + guardedNumeric(text) + " < -" + sqliteDoubleMax + " THEN '-Infinity'::numeric" +
+		" ELSE " + guardedNumeric(text) + " END)"
+}
+
+func guardedNumeric(text string) string {
+	return "((CASE WHEN pg_input_is_valid(" + text + ", 'numeric') THEN " + text + " ELSE '0' END)::numeric)"
 }
 
 var sqliteNumeralHead = regexp.MustCompile(`^[\t\n\v\f\r ]*[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?`)
@@ -1030,6 +1055,29 @@ func (r *filterRenderer) comparison(node *filter.Binary, op string, next int) er
 			}
 			return r.substitutedComparison(node, op, next, r.booleanShaped(node.Right), "("+rendered+")::int", "")
 		}
+		if !r.isBooleanNode(boolean) && r.affinityOf(other) == affText {
+			rendered, err := r.capture(boolean, next)
+			if err != nil {
+				return err
+			}
+			if r.declaredAffinityOf(other) == affText {
+				return r.substitutedComparison(node, op, next, r.booleanShaped(node.Right),
+					"(("+rendered+")::int)::text", ` COLLATE "C"`)
+			}
+			leftClass, rightClass := affNumber, affText
+			if r.booleanShaped(node.Right) {
+				leftClass, rightClass = affText, affNumber
+			}
+			if answer, ok := crossClassAnswer(op, leftClass, rightClass); ok {
+				text, err := r.captureGuard(other, next)
+				if err != nil {
+					return err
+				}
+				r.sb.WriteString("(CASE WHEN " + rendered + " IS NULL OR " + text + " IS NULL" +
+					" THEN NULL ELSE " + answer + " END)")
+				return nil
+			}
+		}
 	}
 	la, ra := r.declaredAffinityOf(node.Left), r.declaredAffinityOf(node.Right)
 	switch {
@@ -1329,6 +1377,7 @@ func (r *filterRenderer) arithmetic(node *filter.Binary, op string, next int) er
 			return nil
 		}
 		r.sb.WriteString("(CASE WHEN " + leftClass + " AND " + rightClass +
+			" AND trunc(" + exact + ") BETWEEN " + sqliteIntMin + " AND " + sqliteIntMax +
 			" THEN trunc(" + exact + ") ELSE " + real + " END)")
 	case "%":
 		r.sb.WriteString("(" + r.moduloOperand(node.Left, rawLeft, left) +
@@ -1341,6 +1390,7 @@ func (r *filterRenderer) arithmetic(node *filter.Binary, op string, next int) er
 			return nil
 		}
 		r.sb.WriteString("(CASE WHEN " + leftClass + " AND " + rightClass +
+			" AND " + exact + " BETWEEN " + sqliteIntMin + " AND " + sqliteIntMax +
 			" THEN " + exact + " ELSE " + real + " END)")
 	}
 	return nil

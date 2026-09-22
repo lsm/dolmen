@@ -350,6 +350,33 @@ is `0.5` while `abs(-7) / 2` is `3`. `length()` and `instr()` are always INTEGER
 runtime whole-number test cannot see any of this, because `round(-7)` is numerically
 whole and REAL at the same time, so a call is classed while rendering instead.
 
+Integer arithmetic that leaves int64 stops being integer arithmetic. SQLite promotes an
+overflowing `+`, `-`, `*`, and `intmin / -1` to a double, so the exact path has to check
+the result's range and not only both operands' classes; without it
+`9223372036854775807 + 2` stayed exact and missed the `9223372036854775808` SQLite
+answers. A numeral past int64 is a REAL for the same reason and renders as its double,
+while `-9223372036854775808` is int64 min and stays exact, which is why the sign is read
+together with the numeral rather than after it.
+
+**A known divergence remains here.** A REAL is carried as the numeric holding its
+double's shortest text, and at magnitudes past 2^53 that text is not the double's exact
+value: PostgreSQL prints 2^63 as `9.223372036854776e+18`, which reads back as
+`9223372036854776000`. SQLite compares an INTEGER against a REAL exactly, so
+`('-7' + -9223372036854775808) = -9223372036854775808` is true there and false here. The
+sweep counts 32 probes in this family out of 249,696. Closing it means recovering the
+double's exact value rather than its printed one — `round(v / ulp) * ulp` with
+`ulp = 2^(floor(log2(|v|)) - 52)` does that in exact numeric — and that change belongs
+with the arithmetic model rather than tacked onto it.
+
+A boolean-shaped expression is an INTEGER everywhere a boolean column is one, and that
+includes the places it is not obviously a number. Against a declared TEXT column it takes
+that column's affinity and compares as its digit, so `pad > (n > 1)` is false because
+`'  5  '` sorts before `'0'`; against a text literal, where neither side declares an
+affinity, storage-class order applies instead and the integer sorts first. Concatenation
+takes the digit too. Answering the first of those by class order rather than by affinity
+gives the same answer for `=` and the wrong one for `<` and `>`, which is the sort of
+half-right rule a fixture of equalities never catches.
+
 Being REAL costs the precision a double cannot hold, so `round()` and `abs()` over text
 pass through `float8`. SQLite's `round(9007199254740993)` is `9007199254740992.0`, and
 without that pass the two engines disagree about whether a number equals its own
