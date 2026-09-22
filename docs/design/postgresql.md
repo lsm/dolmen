@@ -714,6 +714,48 @@ The driver remains pure Go and compatible with the static binary requirement.
 PostgreSQL dependency versions are pinned in go.mod. No PostgreSQL server is bundled
 with dolmen and no service is started by opening a store.
 
+## Changing the catalog
+
+The catalog carries a version, but it is read when a process **opens** the catalog, not
+per operation. A process already holding the catalog is never re-checked, so during a
+rolling upgrade an older process keeps issuing its own queries against the new shape for
+as long as it runs. That is the constraint every catalog change has to survive, and it
+decides between the two available shapes:
+
+**Widen in place** when the change cannot alter which rows an existing query matches.
+Adding a nullable column under an unchanged key is the safe case: an older process's
+query returns exactly the rows it did before, whatever it selects. `changes.owner` is
+this shape — `PRIMARY KEY(namespace,position)` is untouched and `changes_owner_feed` is
+a plain index, so nothing an older reader asks for can answer differently.
+
+**Move to a new relation and drop the old one** when it can. Touching a primary key, a
+unique constraint, or anything an older query's matching depends on changes results
+under a running process rather than failing in front of it. The idempotency record is
+this shape: widening its key from `(namespace,table_name,drop_generation,key)` to
+include `owner` took an older four-column lookup from matching at most one row to
+matching one per owner, and `QueryRow` returns whichever comes first — another
+principal's result, silently. Dropping the old relation makes that process fail instead,
+which is the right answer for one reading a catalog it no longer understands.
+
+A migration that leaves records without the new column needs the reading side to fail
+closed on them rather than filter them away: a caller shown a page with its own rows
+silently missing has been told something false. `ErrScopedFeedPredatesLabels` and the
+idempotency legacy-owner domain are the two shapes of that, one refusing and one
+admitting the unlabelled domain to callers who may read the whole table.
+
+**Every PostgreSQL test builds its own catalog schema** (`testConfig` mints
+`dolmen_test_<random>`), so the conformance suite only ever exercises a *fresh* catalog.
+No migration path is covered by it. A catalog change is untested until a test shapes a
+catalog backwards — creates the older relation, re-runs `bootstrap`, and asserts what
+survived. `TestPostgresIdempotencyCatalogRetiresTheOwnerlessRelation` and
+`TestPostgresChangeLogGainsItsOwnerColumnOnUpgrade` are the two worked examples.
+
+A related trap outside the catalog: a guard belongs **in a transaction**, which is not
+the same as **on the writer**. `PlanMigration` moved onto the single writer connection
+to get its incarnation check inside a transaction, which queued every write in the
+namespace behind a dry run's full-table counts. A read-only transaction on the read pool
+gives the same snapshot without the queue.
+
 ## Running the current tests
 
 Against a disposable PostgreSQL database:
