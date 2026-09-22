@@ -54,10 +54,19 @@ const (
 
 var sqliteClockWords = map[string]bool{"now": true, "localtime": true, "utc": true}
 
+func quantizeToMillis(seconds float64) int {
+	millis := int(math.Round(seconds * 1000))
+	if millis > 999 {
+		return 999
+	}
+	return millis
+}
+
 func julianToTime(jd float64) time.Time {
 	seconds := (jd - julianUnixEpoch) * 86400
 	whole := math.Floor(seconds)
-	return time.Unix(int64(whole), int64(math.Round((seconds-whole)*1e9))).UTC()
+	millis := int64(math.Round((seconds - whole) * 1000))
+	return time.Unix(int64(whole), millis*int64(time.Millisecond)).UTC()
 }
 
 func parseSQLiteJulian(text string) (time.Time, bool) {
@@ -83,15 +92,11 @@ func parseSQLiteClock(hour, minute, second, fraction, zone string) (time.Duratio
 	}
 	d := time.Duration(h)*time.Hour + time.Duration(m)*time.Minute + time.Duration(s)*time.Second
 	if fraction != "" {
-		scaled := fraction
-		for len(scaled) < 9 {
-			scaled += "0"
-		}
-		nanos, err := strconv.Atoi(scaled[:9])
+		seconds, err := strconv.ParseFloat("0."+fraction, 64)
 		if err != nil {
 			return 0, timeMalformed
 		}
-		d += time.Duration(nanos)
+		d += time.Duration(quantizeToMillis(seconds)) * time.Millisecond
 	}
 	if zone != "" && zone != "Z" && zone != "z" {
 		sign := time.Duration(1)
@@ -130,8 +135,12 @@ func parseSQLiteTimeText(text string) (time.Time, timeTextKind) {
 		if m[1] == "-" {
 			return time.Time{}, timeUnrendered
 		}
-		return time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC).
-			AddDate(0, month-1, day-1).Add(clock), timeReadable
+		moment := time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC).
+			AddDate(0, month-1, day-1).Add(clock)
+		if moment.Year() < 1 {
+			return time.Time{}, timeUnrendered
+		}
+		return moment, timeReadable
 	}
 	if m := sqliteBareTime.FindStringSubmatch(trimmed); m != nil {
 		clock, kind := parseSQLiteClock(m[1], m[2], m[3], m[4], m[5])
@@ -276,7 +285,11 @@ func julianMoment(value float64) (string, error) {
 	if value < 0 || value > 5373484.5 {
 		return "NULL::timestamp", nil
 	}
-	return timestampLiteral(julianToTime(value)), nil
+	moment := julianToTime(value)
+	if moment.Year() < 1 {
+		return "", filterNotRenderable("a moment before 0001-01-01, which PostgreSQL writes with a BC suffix rather than as a negative year")
+	}
+	return timestampLiteral(moment), nil
 }
 
 func (r *filterRenderer) constantText(n filter.Node) (string, bool) {

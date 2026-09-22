@@ -312,6 +312,30 @@ them, and on the rendering branch alone there is no `affinityOf` to add them to.
 belong in whichever change brings the two together, with the comparison, `truth()` and
 `captureNumeric` paths covered.
 
+SQLite quantizes a time value to whole milliseconds, rounding half up and then
+**clamping at 999 rather than carrying**: `.0004` is 0ms, `.0005` is 1ms, and everything
+from `.9990` to `.9999` is 999ms, which is why no fractional second ever tips a second or
+a date. Only `julianday` exposes the quantum at all, since the other four truncate to a
+second. The parser reproduces it, and the cross-engine test's tolerance is 1e-9 days —
+at 1e-8 a whole millisecond of drift passes unnoticed.
+
+PostgreSQL has no year zero and writes earlier years with a `BC` suffix rather than as a
+negative number, so `TIMESTAMP '-4713-11-24'` and `TIMESTAMP '0000-01-01'` are both
+rejected outright. A literal or argument naming such a moment — `date(0)`, `date(1000000)`,
+any Julian value below 1721426, `date('0000-01-01')` — is refused rather than rendered,
+because rendering it would be a dead statement.
+
+One residual is left on the column path, and it is on the wrong side of the rule.
+`schema.CanonicalTimestamp` accepts `0000-01-01`, so a `timestamp` field can hold it, and
+there the era is a value rather than something decidable while the statement is built:
+the guard yields `NULL` where SQLite answers `0000-01-01`. That is the NULL-for-a-value
+direction this design otherwise forbids. It is narrow — year zero is the only shape a
+canonical stored value can take that PostgreSQL will not read — and a test pins both
+halves, that every representable year agrees and that year zero is the only one that does
+not, failing if either changes. Closing it properly means refusing year zero at the
+storage boundary, which is a change to both engines' input contract and to
+`facade-input-matrix.md`, not to this renderer.
+
 Two things are easy to get wrong and are pinned by tests. Literal runs inside a strftime
 format must be double-quoted for `to_char`, or `%Y-%m-%dT%H:%M:%S` renders its literal
 `T` as `STH24`. And `extract` is grammar rather than a function, so the `pg_catalog.`

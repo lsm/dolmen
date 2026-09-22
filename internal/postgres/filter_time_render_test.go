@@ -54,6 +54,12 @@ var timeExpressions = []string{
 	"datetime('2026-09-2114:05:09')",
 	"datetime('2460000.5')",
 	"datetime(2460000.5)",
+	"julianday('2026-01-01T00:00:00.0004')",
+	"julianday('2026-01-01T00:00:00.0005')",
+	"julianday('2026-01-01T00:00:00.123456789')",
+	"julianday('2026-12-31T23:59:59.9999')",
+	"julianday(2460000.5000004)",
+	"datetime(2460000.5000004)",
 	"date('not a time')",
 	"datetime('14:05:09')",
 	"date('2026-09-21T14:05:09+02:00')",
@@ -91,7 +97,7 @@ func sameScalar(got, want string) bool {
 	}
 	a, aerr := strconv.ParseFloat(got, 64)
 	b, berr := strconv.ParseFloat(want, 64)
-	return aerr == nil && berr == nil && math.Abs(a-b) < 1e-8
+	return aerr == nil && berr == nil && math.Abs(a-b) < 1e-9
 }
 
 func TestEveryDateExpressionAnswersWhatSQLiteAnswers(t *testing.T) {
@@ -146,6 +152,10 @@ func TestWhatThisEngineWillNotRenderIsRefusedRatherThanAnswered(t *testing.T) {
 		"date(body)",
 		"date('2026-09-21 24:00:00')",
 		"date('-2026-09-21')",
+		"date(0)",
+		"datetime(0)",
+		"date(1000000)",
+		"date('0000-01-01')",
 		"strftime(body, created_at)",
 	} {
 		err := renderErrFor(t, expr)
@@ -220,4 +230,41 @@ func answersAlike(got, want string) bool {
 		}
 	}
 	return sameScalar(got, want)
+}
+
+func TestAStoredMomentAgreesUnlessItPredatesTheCommonEra(t *testing.T) {
+	cfg := testConfig(t)
+	s := openTest(t, cfg)
+	db := sqliteOracle(t)
+	answered := func(stored string) (sql.NullString, sql.NullString) {
+		t.Helper()
+		var want sql.NullString
+		if err := db.QueryRow("SELECT date(?)", stored).Scan(&want); err != nil {
+			t.Fatalf("oracle date(%q): %v", stored, err)
+		}
+		var got sql.NullString
+		query := "SELECT (" + renderFor(t, "date(created_at)") + ")::text FROM (VALUES (" +
+			dollarQuote(stored) + "::text)) AS t(created_at)"
+		if err := s.pool.QueryRow(t.Context(), query).Scan(&got); err != nil {
+			t.Fatalf("%q: %v", stored, err)
+		}
+		return want, got
+	}
+
+	for _, stored := range []string{"0001-01-01", "0001-01-01T00:00:00Z", "9999-12-31T23:59:59.999Z", "1582-10-15"} {
+		want, got := answered(stored)
+		if !got.Valid || got.String != want.String {
+			t.Errorf("a stored %q reads as %q on SQLite and %q here; only a year before 0001 is allowed to diverge", stored, want.String, got.String)
+		}
+	}
+
+	for _, stored := range []string{"0000-01-01", "0000-12-31T23:59:59"} {
+		want, got := answered(stored)
+		if !want.Valid {
+			t.Fatalf("SQLite answers nothing for a stored %q, so there is no divergence left to record", stored)
+		}
+		if got.Valid {
+			t.Fatalf("a stored %q now reads as %q rather than NULL: the era gap has closed on the column path, so delete this test and the paragraph in docs/design/postgresql.md that records it", stored, got.String)
+		}
+	}
 }
