@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -312,7 +313,15 @@ func (r *filterRenderer) call(node *filter.Call, next int) error {
 			if err != nil {
 				return err
 			}
-			r.sb.WriteString("pg_catalog." + node.Name + "(" + arg + ")")
+			rest := make([]string, 0, len(node.Args)-1)
+			for _, extra := range node.Args[1:] {
+				text, err := r.capture(extra, next)
+				if err != nil {
+					return err
+				}
+				rest = append(rest, text)
+			}
+			r.sb.WriteString("pg_catalog." + node.Name + "(" + strings.Join(append([]string{arg}, rest...), ", ") + ")")
 			return nil
 		}
 	}
@@ -431,6 +440,19 @@ func (r *filterRenderer) affinityOf(n filter.Node) affinity {
 			return affNumber
 		case schema.String, schema.Text, schema.Timestamp, schema.JSON:
 			return affText
+		}
+		return affUnknown
+	case *filter.Param:
+		if node.Index < 0 || node.Index >= len(r.args) {
+			return affUnknown
+		}
+		switch r.args[node.Index].(type) {
+		case string:
+			return affText
+		case []byte:
+			return affBlob
+		case int, int8, int16, int32, int64, float32, float64, json.Number:
+			return affNumber
 		}
 		return affUnknown
 	case *filter.Literal:

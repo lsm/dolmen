@@ -1,7 +1,10 @@
 package postgres
 
 import (
+	"strings"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/filter"
 
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
@@ -42,5 +45,30 @@ func TestPostgresACrossClassComparisonStillPropagatesNull(t *testing.T) {
 				t.Fatalf("%s matched %d rows: %s", tc.filter, result.Matched, tc.why)
 			}
 		})
+	}
+}
+
+func TestPostgresABoundTextArgumentCarriesTheBinaryCollation(t *testing.T) {
+	cols := map[string]string{"body": "body"}
+	types := map[string]schema.FieldType{"body": schema.Text}
+	for _, tc := range []struct {
+		expr string
+		args []any
+	}{
+		{"? > 'B'", []any{"a"}},
+		{"'B' < ?", []any{"a"}},
+		{"body > ?", []any{"a"}},
+	} {
+		node, err := filter.Parse(tc.expr, filter.Options{Columns: []string{"body"}, Args: tc.args})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.expr, err)
+		}
+		sql, _, err := renderScopedFilter(node, cols, types, tc.args, 1)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.expr, err)
+		}
+		if !strings.Contains(sql, `COLLATE "C"`) {
+			t.Fatalf("%s rendered as %s, which compares text in whatever collation the database was created with; SQLite's order is byte-wise and a bound argument is still text", tc.expr, sql)
+		}
 	}
 }

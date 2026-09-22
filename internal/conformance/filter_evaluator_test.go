@@ -98,6 +98,7 @@ var pinnedFilterSemantics = []struct {
 	{"division by zero is null", "(1 / 0) IS NULL"},
 	{"modulo by zero is null", "(1 % 0) IS NULL"},
 	{"round goes half away from zero", "round(-2.5) = -3"},
+	{"a coerced numeric function keeps its later arguments", "round('1.567', 1) = 1.6"},
 	{"nonnumeric text coerces to zero in arithmetic", "body + 1 = 1"},
 	{"numeric text coerces to a number in arithmetic", "'3' + 1 = 4"},
 	{"concatenation coerces numbers to text", "1 || '2' = '12'"},
@@ -120,23 +121,6 @@ var notYetEvaluatedByAdapterTwo = map[string]bool{
 	"substr from a negative start": true, "substr with a negative length": true,
 	"coalesce over mixed types": true,
 	"round to a negative place": true,
-}
-
-var notYetPinnedByAdapterTwo = map[string]bool{
-	"LIKE is ASCII-case-insensitive":                     true,
-	"string comparison is BINARY byte-wise":              true,
-	"nonnumeric text coerces to zero in arithmetic":      true,
-	"a scalar is a truth value":                          true,
-	"numeric-looking text still is not a number":         true,
-	"division by zero is null":                           true,
-	"modulo by zero is null":                             true,
-	"text never equals a number":                         true,
-	"text sorts after a number":                          true,
-	"integer division truncates a stored number too":     true,
-	"a numeric function coerces nonnumeric text to zero": true,
-	"modulo converts fractional operands to integers":    true,
-	"lower case-maps ASCII only":                         true,
-	"upper case-maps ASCII only":                         true,
 }
 
 var notYetSpelledByAdapterTwo = map[string]bool{}
