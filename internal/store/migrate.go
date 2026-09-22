@@ -37,6 +37,8 @@ type MigrationPlan struct {
 	ClearsEmbeddings    bool                `json:"clears_embeddings"`
 	EmbedRows           int64               `json:"embed_rows"`
 
+	ExpectedIncarnation string `json:"expected_incarnation,omitempty"`
+
 	Expected Incarnation `json:"-"`
 }
 
@@ -239,6 +241,16 @@ func (s *Store) PlanMigration(ctx context.Context, nsName, table string, changes
 		return nil, err
 	}
 	w.plan.DryRun = true
+	gen, err := readNSGen(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	dropGen, err := tableGen(ctx, tx, table)
+	if err != nil {
+		return nil, err
+	}
+	w.plan.Expected = Incarnation{NsGen: gen, Table: table, Version: int64(old.Version), DropGen: dropGen}
+	w.plan.ExpectedIncarnation = EncodeIncarnation(w.plan.Expected)
 	return w.plan, nil
 }
 

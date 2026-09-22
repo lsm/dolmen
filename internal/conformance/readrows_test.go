@@ -98,11 +98,17 @@ func TestReadRowsIDCapEnforced(t *testing.T) {
 func TestCapabilitiesShapePinned(t *testing.T) {
 	h := newHarness(t)
 
+	dialect := "sqlite"
+	if testEngine(t) == store.EnginePostgres {
+		dialect = "postgresql"
+	}
 	want := map[string]any{
 		"vector_execution": "exact",
 		"ann_recall_bound": nil,
 		"notifications":    true,
 		"subscribe":        true,
+		"query_dialect":    dialect,
+		"filter_dialect":   dialect,
 	}
 	data := h.mustHTTP("capabilities", map[string]any{})
 	assertJSONEqual(t, "capabilities", data, want)
@@ -110,5 +116,10 @@ func TestCapabilitiesShapePinned(t *testing.T) {
 
 	if _, present := data["ann_recall_bound"]; !present {
 		t.Fatalf("ann_recall_bound must be present (explicit null under exact execution), got %v", data)
+	}
+	for _, field := range []string{"query_dialect", "filter_dialect"} {
+		if v, _ := data[field].(string); v == "" {
+			t.Fatalf("%s must name the dialect family so a client can branch instead of provoking a syntax error: %v", field, data)
+		}
 	}
 }

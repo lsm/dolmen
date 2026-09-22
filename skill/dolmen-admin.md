@@ -217,9 +217,13 @@ A failed call is not an HTTP error: the result carries `"isError":true` and the 
   fewer ids (it never fires for missing ids); at most 1,000 ids per request. Prefer it over
   `query` whenever the ids are already in hand — no SQL to write, no filter to get wrong.
 - `capabilities` reports the engine's static surface: `vector_execution` (`exact` or `ann`),
-  `ann_recall_bound` (`null` when exact — a number in (0,1] iff `ann`), `notifications`, and
-  `subscribe`. Field names and types are pinned across conforming engines; check it before
-  relying on approximate vector search or live streams.
+  `ann_recall_bound` (`null` when exact — a number in (0,1] iff `ann`), `notifications`,
+  `subscribe`, `query_dialect` and `filter_dialect`. Field names and types are pinned across
+  conforming engines; check it before relying on approximate vector search or live streams. The two
+  dialect fields name a SQL family (`sqlite`, `postgresql`) so you can branch on it instead of
+  provoking a syntax error: `query_dialect` is the dialect `query` accepts, `filter_dialect` the one
+  a `filter` is read in with authentication off. With authentication on, every engine reads a
+  filter against one shared allowlist and `filter_dialect` is informational.
 - `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's
   columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
@@ -439,15 +443,20 @@ itself is shared — so copy the exact shape per op:
   {"op": "set_enum", "name": "severity", "enum": ["SEV0", "SEV1", "SEV2", "SEV3"]}
   ```
 
-Two top-level keys complete the request:
+Three top-level keys complete the request:
 
 - `expected_version` — the schema version from `describe_table` that the changes were planned
   against. Required for the destructive `rename_field` and `drop_field`; if the table has moved
-  past it the call fails with a version conflict — re-describe the table and re-plan.
+  past it the call fails with a version conflict — re-describe the table and re-plan. With
+  authentication on this is not enough on its own: use `expected_incarnation` instead.
+- `expected_incarnation` — the opaque token a `dry_run` returns in its `plan`. It names the exact
+  table the plan was made against, so passing it back on apply refuses a table that was dropped and
+  recreated under the same name in between, which a version cannot catch: the successor starts at
+  version 1. Under authentication, a precondition must be this token.
 - `dry_run` — `true` validates and previews without applying anything (no writes, no embedding
   calls): the response carries the prospective table schema plus a `plan` with the version
-  transition, ordered operations, destructive changes, `backfill_rows`, and the FTS-rebuild and
-  embedding workload.
+  transition, ordered operations, destructive changes, `backfill_rows`, the FTS-rebuild and
+  embedding workload, and the `expected_incarnation` token to pass back on apply.
 
 A complete call, previewed first:
 

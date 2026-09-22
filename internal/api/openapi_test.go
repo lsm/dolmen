@@ -345,7 +345,11 @@ func TestOpenAPIWiredToOpsRegistry(t *testing.T) {
 }
 
 func TestOpenAPIOutputSchemasMarkRequiredGuaranteedFields(t *testing.T) {
-	optional := map[string]bool{"replayed": true}
+	optional := map[string]bool{
+		"insert.replayed": true,
+		"migrate.dry_run": true,
+		"migrate.plan":    true,
+	}
 	for _, name := range OpNames() {
 		def := Ops[name]
 		if def.OutputSchema == nil {
@@ -361,7 +365,7 @@ func TestOpenAPIOutputSchemasMarkRequiredGuaranteedFields(t *testing.T) {
 			required[f] = true
 		}
 		for prop := range props {
-			if optional[prop] {
+			if optional[name+"."+prop] {
 				if required[prop] {
 					t.Fatalf("%s: conditional field %q must not be required", name, prop)
 				}

@@ -116,7 +116,15 @@ func changeOutSchema(desc string) map[string]any {
 	}
 }
 
-func planOutSchema(desc string) map[string]any {
+func migrateOutSchema(table, planTable map[string]any) map[string]any {
+	return outSchema(map[string]any{
+		"table":   table,
+		"dry_run": prop("boolean", "True when this was a validation-only preview (nothing applied)"),
+		"plan":    planOutSchema("Migration preview (present when dry_run)", planTable),
+	}, "table")
+}
+
+func planOutSchema(desc string, table map[string]any) map[string]any {
 	return map[string]any{
 		"type":        "object",
 		"description": desc,
@@ -124,10 +132,11 @@ func planOutSchema(desc string) map[string]any {
 			"dry_run":               prop("boolean", "Always true for a plan (nothing was applied)"),
 			"from_version":          prop("integer", "Schema version the changes were planned against"),
 			"to_version":            prop("integer", "Version the table would have after applying"),
-			"table":                 tableOutSchema("Prospective schema after the changes"),
+			"table":                 table,
 			"operations":            map[string]any{"type": "array", "description": "Human-readable operations, in order", "items": map[string]any{"type": "string"}},
 			"destructive":           map[string]any{"type": "array", "description": "Destructive changes with their consequence (present when any)", "items": map[string]any{"type": "string"}},
 			"backfill_rows":         prop("integer", "Existing rows that receive an added field's default"),
+			"expected_incarnation":  prop("string", "Opaque token naming the table this plan was made against; pass it to apply as expected_incarnation and the migration is refused if the table moved on or was recreated"),
 			"rebuild_fulltext":      prop("boolean", "Whether the FTS index is rebuilt"),
 			"fulltext_reindex_rows": prop("integer", "Rows the rebuilt full-text index would hold"),
 			"clears_embeddings":     prop("boolean", "Whether existing embeddings are cleared"),
@@ -590,7 +599,9 @@ var Ops = map[string]OpDef{
 		Description: "Report the storage engine's static capabilities: vector_execution (\"exact\" or \"ann\"), " +
 			"ann_recall_bound (explicitly null when execution is exact — never omitted; a number in (0,1] iff ann, " +
 			"the guaranteed minimum recall versus the exact path), notifications (whether commit notifications are " +
-			"implemented), and subscribe (whether live streams are available). Field names and types are pinned, so " +
+			"implemented), subscribe (whether live streams are available), query_dialect (the SQL dialect query " +
+			"accepts) and filter_dialect (the dialect a filter is read in under auth: off; under auth: on the " +
+			"shared allowlist binds instead). Field names and types are pinned, so " +
 			"the discovery is portable across conforming engines; unknown future fields are additive. Read-only, " +
 			"engine-reported verbatim — the single discovery surface under auth: off, and what describe_server inlines under auth: on.",
 		InputSchema: map[string]any{
@@ -611,9 +622,11 @@ var Ops = map[string]OpDef{
 					map[string]any{"type": "null"},
 				},
 			},
-			"notifications": prop("boolean", "Whether the engine implements commit notifications (wait_for)"),
-			"subscribe":     prop("boolean", "Whether the engine serves live change streams"),
-		}, "vector_execution", "ann_recall_bound", "notifications", "subscribe"),
+			"notifications":  prop("boolean", "Whether the engine implements commit notifications (wait_for)"),
+			"subscribe":      prop("boolean", "Whether the engine serves live change streams"),
+			"query_dialect":  prop("string", "The SQL dialect the query operation accepts, named by family (e.g. sqlite, postgresql); an open enum, so branch on it rather than assuming a closed set"),
+			"filter_dialect": prop("string", "The SQL dialect a filter expression is read in under auth: off, named the same way; under auth: on every engine reads the shared allowlist instead, and this field is informational"),
+		}, "vector_execution", "ann_recall_bound", "notifications", "subscribe", "query_dialect", "filter_dialect"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req struct{}
 			if err := decode(body, &req); err != nil {
@@ -1788,23 +1801,24 @@ var Ops = map[string]OpDef{
 					"description": "Schema version the changes were planned against (from describe_table); the migration aborts with a conflict if the table has moved past it. Required for rename_field and drop_field.",
 					"minimum":     1,
 				},
-				"dry_run": prop("boolean", "Validate and preview the migration without applying anything (no writes, no embedding calls)"),
+				"expected_incarnation": prop("string", "Opaque token from a dry run's plan, naming the exact table the plan was made against. Pass it back on apply and the migration is refused if the table was dropped and recreated, or moved on, since the preview. Under authentication a precondition must use this rather than expected_version alone"),
+				"dry_run":              prop("boolean", "Validate and preview the migration without applying anything (no writes, no embedding calls)"),
 			},
 			"required": []string{"namespace", "table", "changes"},
 		},
-		OutputSchema: outSchema(map[string]any{
-			"table":   tableOutSchema("Schema of the migrated table (version bumped); for dry_run, the prospective schema"),
-			"dry_run": prop("boolean", "True when this was a validation-only preview (nothing applied)"),
-			"plan":    planOutSchema("Migration preview (present when dry_run)"),
-		}, "table"),
+		OutputSchema: migrateOutSchema(
+			tableOutSchema("Schema of the migrated table (version bumped); for dry_run, the prospective schema"),
+			tableOutSchema("Prospective schema after the changes")),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var shadow struct {
-				Namespace       string           `json:"namespace"`
-				Table           string           `json:"table"`
-				Changes         []map[string]any `json:"changes"`
-				ExpectedVersion *int             `json:"expected_version"`
-				DryRun          bool             `json:"dry_run"`
+				Namespace           string           `json:"namespace"`
+				Table               string           `json:"table"`
+				Changes             []map[string]any `json:"changes"`
+				ExpectedVersion     *int             `json:"expected_version"`
+				ExpectedIncarnation *string          `json:"expected_incarnation"`
+				DryRun              bool             `json:"dry_run"`
 			}
+
 			if err := decodeData(body, &shadow); err != nil {
 				return nil, err
 			}
@@ -1838,8 +1852,21 @@ var Ops = map[string]OpDef{
 				}
 				return map[string]any{"table": plan.Table, "dry_run": true, "plan": plan}, nil
 			}
+			expected := store.Incarnation{Version: int64(ver)}
+			if req.ExpectedIncarnation != nil {
+				bound, derr := store.DecodeIncarnation(*req.ExpectedIncarnation)
+				if derr != nil {
+					return nil, wrapStoreErr(derr)
+				}
+				if ver > 0 && bound.Version != int64(ver) {
+					return nil, badRequest("expected_version and expected_incarnation disagree about the schema version; pass the token from the dry run and drop expected_version, or drop the token")
+				}
+				expected = bound
+			} else if s.authn.On() && ver > 0 {
+				return nil, badRequest("under authentication, a migration precondition must carry expected_incarnation from a dry run: version 1 cannot tell a table from a same-named predecessor, so expected_version alone would let a plan apply to a table that was dropped and recreated under it")
+			}
 			sc, err := s.eng.Migrate(ctx, ns, normTable(req.Table), req.Changes, s.embedder(),
-				store.Incarnation{Version: int64(ver)})
+				expected)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
@@ -2032,9 +2059,10 @@ type updateReq struct {
 }
 
 type migrateReq struct {
-	Namespace       string          `json:"namespace"`
-	Table           string          `json:"table"`
-	Changes         []schema.Change `json:"changes"`
-	ExpectedVersion *int            `json:"expected_version"`
-	DryRun          bool            `json:"dry_run"`
+	Namespace           string          `json:"namespace"`
+	Table               string          `json:"table"`
+	Changes             []schema.Change `json:"changes"`
+	ExpectedVersion     *int            `json:"expected_version"`
+	ExpectedIncarnation *string         `json:"expected_incarnation"`
+	DryRun              bool            `json:"dry_run"`
 }

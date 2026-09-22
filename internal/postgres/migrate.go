@@ -623,6 +623,7 @@ func (s *Store) PlanMigration(ctx context.Context, ns, table string, changes []s
 		plan = w.plan
 		plan.DryRun = true
 		plan.Expected = state.incarnation
+		plan.ExpectedIncarnation = store.EncodeIncarnation(state.incarnation)
 		return nil
 	})
 	if err != nil {
