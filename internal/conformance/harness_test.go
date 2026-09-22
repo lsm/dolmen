@@ -169,7 +169,7 @@ func newHarnessAtMode(t *testing.T, dir string, emb *fakeProvider, mode harnessM
 
 func (h *harness) start() {
 	h.t.Helper()
-	h.st = openEngineStore(h.t, h.dir, h.retention)
+	h.st = openEngineStoreShared(h.t, h.dir, h.retention, h.mode.authMode() != auth.ModeOff)
 
 	trusted, err := auth.ParseTrustedProxies(h.mode.trustedProxies)
 	if err != nil {

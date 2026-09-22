@@ -17,9 +17,13 @@ import (
 )
 
 func openEngineStore(t *testing.T, dir string, retention *time.Duration) store.Engine {
+	return openEngineStoreShared(t, dir, retention, false)
+}
+
+func openEngineStoreShared(t *testing.T, dir string, retention *time.Duration, sharedFilter bool) store.Engine {
 	t.Helper()
 	if testEngine(t) == store.EnginePostgres {
-		return openPostgresEngine(t, dir, retention)
+		return openPostgresEngine(t, dir, retention, sharedFilter)
 	}
 	opts := []store.OpenOption{}
 	if retention != nil {
@@ -79,11 +83,11 @@ func postgresFacadeOption(t *testing.T, dir string) dolmen.Option {
 	return pgfacade.With(pgfacade.Config{DSN: dsn, Catalog: catalog, QueryRole: os.Getenv("DOLMEN_TEST_PG_QUERY_ROLE")})
 }
 
-func openPostgresEngine(t *testing.T, dir string, retention *time.Duration) *postgres.Store {
+func openPostgresEngine(t *testing.T, dir string, retention *time.Duration, sharedFilter bool) *postgres.Store {
 	t.Helper()
 	dsn := postgresDSN(t)
 	catalog := postgresCatalog(dir)
-	cfg := postgres.Config{DSN: dsn, Catalog: catalog, QueryRole: os.Getenv("DOLMEN_TEST_PG_QUERY_ROLE"), ChangeRetention: retention}
+	cfg := postgres.Config{DSN: dsn, Catalog: catalog, QueryRole: os.Getenv("DOLMEN_TEST_PG_QUERY_ROLE"), ChangeRetention: retention, SharedFilter: sharedFilter}
 	s, err := postgres.Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
