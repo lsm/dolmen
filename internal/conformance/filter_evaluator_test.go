@@ -155,6 +155,8 @@ var pinnedFilterSemantics = []struct {
 	{"LIKE takes a number as its text", "1 LIKE '1'", ""},
 	{"LIKE compares a text column against a number's text", "code LIKE 1", ""},
 	{"LIKE does not match a note against a digit", "NOT (body LIKE 1)", ""},
+	{"a case operand converts to the branch's affinity", "CASE code WHEN 1 THEN 1 ELSE 0 END = 1", ""},
+	{"a case operand still misses a different value", "CASE code WHEN 2 THEN 1 ELSE 0 END = 0", ""},
 	{"concatenation is a truth value through its number", "NOT (body || body)", ""},
 	{"numeric concatenation is a true truth value", "code || ''", ""},
 	{"a text case expression is a truth value", "NOT (CASE WHEN 1 = 1 THEN 'a' ELSE 'b' END)", ""},

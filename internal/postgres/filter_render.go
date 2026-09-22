@@ -441,25 +441,22 @@ func (r *filterRenderer) plainCall(name string, args []filter.Node, next int) er
 	return nil
 }
 
+func (r *filterRenderer) caseCondition(operand, when filter.Node, next int) (string, error) {
+	if operand == nil {
+		return r.truth(when, next)
+	}
+	return r.compareVia("=", operand, when, next)
+}
+
 func (r *filterRenderer) caseExpr(node *filter.Case, next int) error {
 	r.sb.WriteString("(CASE")
-	if node.Operand != nil {
-		r.sb.WriteString(" ")
-		if err := r.render(node.Operand, next); err != nil {
-			return err
-		}
-	}
 	for _, branch := range node.Branches {
 		r.sb.WriteString(" WHEN ")
-		if node.Operand == nil {
-			condition, err := r.truth(branch.When, next)
-			if err != nil {
-				return err
-			}
-			r.sb.WriteString(condition)
-		} else if err := r.render(branch.When, next); err != nil {
+		condition, err := r.caseCondition(node.Operand, branch.When, next)
+		if err != nil {
 			return err
 		}
+		r.sb.WriteString(condition)
 		r.sb.WriteString(" THEN ")
 		if err := r.render(branch.Then, next); err != nil {
 			return err
