@@ -263,6 +263,13 @@ when it parses as a number and leaves it as text when it does not, so `n = '-7'`
 of `-7` while `n > 'abc'` stays a cross-class comparison. Column values that are only
 known at runtime get the conversion as a SQL `CASE` over the same numeric shape.
 
+The whitespace SQLite skips around such a numeral is six ASCII characters: tab, newline,
+vertical tab, form feed, carriage return and space. The rendering-time check in Go and
+the runtime `[[:space:]]` in SQL have to agree on that set, and at first they did not:
+a POSIX class carries the vertical tab, a hand-written Go class only carries what it
+lists. A bound `'\v-7'` was therefore numeric text to one half of the renderer and not
+to the other, which answered `n = ?` with a constant false rather than matching `-7`.
+
 The trap this hides in is fixture choice. A fixture value like `'a note from alice'`
 answers the same under both rules, so a pinned case built on it passes whichever rule
 the engine implements and pins nothing. The conformance fixture carries `code`, `mark`

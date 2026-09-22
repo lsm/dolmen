@@ -590,9 +590,9 @@ func saturatingNumeric(text string) string {
 		" ELSE " + text + "::numeric END)"
 }
 
-var sqliteNumeralHead = regexp.MustCompile(`^[\t\n\f\r ]*[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?`)
+var sqliteNumeralHead = regexp.MustCompile(`^[\t\n\v\f\r ]*[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?`)
 
-var sqliteNumericText = regexp.MustCompile(`^[\t\n\f\r ]*[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?[\t\n\f\r ]*$`)
+var sqliteNumericText = regexp.MustCompile(`^[\t\n\v\f\r ]*[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?[\t\n\v\f\r ]*$`)
 
 func (r *filterRenderer) declaredAffinityOf(n filter.Node) affinity {
 	switch node := n.(type) {

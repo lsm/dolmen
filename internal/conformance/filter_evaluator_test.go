@@ -123,6 +123,7 @@ var pinnedFilterSemantics = []struct {
 	{"a text column right of a number column keeps its own class order", "n < body", ""},
 	{"a bound numeric string takes a number column's affinity", "n = ?", `["-7"]`},
 	{"a bound nonnumeric string stays text against a number column", "NOT (n > ?)", `["abc"]`},
+	{"a bound numeric string skips every space SQLite skips", "n = ?", `["\u000b-7\u000b"]`},
 	{"a bound number takes a text column's affinity", "code = ?", `[1]`},
 	{"a boolean column is its own truth value", "flag", ""},
 	{"a boolean column joins a numeric truth value", "flag AND n", ""},
