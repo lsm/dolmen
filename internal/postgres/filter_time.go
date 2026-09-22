@@ -112,6 +112,9 @@ func parseSQLiteClock(hour, minute, second, fraction, zone string) (time.Duratio
 
 func parseSQLiteTimeText(text string) (time.Time, timeTextKind) {
 	if moment, ok := parseSQLiteJulian(text); ok {
+		if moment.Year() < 1 {
+			return time.Time{}, timeUnrendered
+		}
 		return moment, timeReadable
 	}
 	trimmed := strings.TrimRight(text, " \t\n\v\f\r")
@@ -257,6 +260,11 @@ const timestampTextZone = `([Zz]|[+-][0-9]{2}:[0-9]{2})$`
 
 func timestampLiteral(moment time.Time) string {
 	return "TIMESTAMP " + dollarQuote(moment.UTC().Format("2006-01-02 15:04:05.999999"))
+}
+
+func withinRepresentableYears(expr string) string {
+	return "(CASE WHEN " + expr + " BETWEEN TIMESTAMP '0001-01-01 00:00:00' AND TIMESTAMP '9999-12-31 23:59:59.999'" +
+		" THEN " + expr + " END)"
 }
 
 func timestampColumn(expr string) string {
@@ -429,6 +437,17 @@ func (r *filterRenderer) baseMoment(n filter.Node, next int) (string, error) {
 		return r.columnMoment(node)
 	case *filter.Call:
 		return r.nestedMoment(node, next)
+	case *filter.Unary:
+		if lit, ok := node.Operand.(*filter.Literal); ok && lit.Kind == filter.LiteralNumber && (node.Op == "-" || node.Op == "+") {
+			value, err := strconv.ParseFloat(lit.Text, 64)
+			if err != nil {
+				return "NULL::timestamp", nil
+			}
+			if node.Op == "-" {
+				value = -value
+			}
+			return julianMoment(value)
+		}
 	}
 	return "", filterNotRenderable("a date or time function over this expression")
 }
@@ -454,6 +473,7 @@ func (r *filterRenderer) timeCall(node *filter.Call, next int) error {
 	if err != nil {
 		return err
 	}
+	moment = withinRepresentableYears(moment)
 	if !ok {
 		r.sb.WriteString("(pg_catalog.date_part('epoch', " + moment + ") / 86400.0 + " +
 			strconv.FormatFloat(julianUnixEpoch, 'f', -1, 64) + ")")

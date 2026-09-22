@@ -325,6 +325,16 @@ rejected outright. A literal or argument naming such a moment — `date(0)`, `da
 any Julian value below 1721426, `date('0000-01-01')` — is refused rather than rendered,
 because rendering it would be a dead statement.
 
+The same range has to hold after a modifier, and there the stakes are higher than a
+refusal. PostgreSQL happily computes `TIMESTAMP '0001-01-01' - 1 day`, storing it as
+`0001-12-31 BC`, and `to_char(…, 'YYYY-MM-DD')` then writes `0001-12-31` **with no era
+marker at all** — a plausible-looking date that is off by a year and an era from SQLite's
+`0000-12-31`. The rendered moment is therefore bounded to `0001-01-01 … 9999-12-31`
+once, at the outermost call rather than at each nested one, so that an inner value that
+leaves the range and a later modifier that brings it back still agrees. Beyond 9999 that
+bound answers nothing and so does SQLite; below 0001 it answers nothing where SQLite
+answers a date, which is the same era gap as below and far better than the wrong year.
+
 One residual is left on the column path, and it is on the wrong side of the rule.
 `schema.CanonicalTimestamp` accepts `0000-01-01`, so a `timestamp` field can hold it, and
 there the era is a value rather than something decidable while the statement is built:

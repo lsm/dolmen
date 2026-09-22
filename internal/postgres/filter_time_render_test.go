@@ -54,6 +54,14 @@ var timeExpressions = []string{
 	"datetime('2026-09-2114:05:09')",
 	"datetime('2460000.5')",
 	"datetime(2460000.5)",
+	"date('9999-12-31', '+1 day')",
+	"datetime('9999-12-31 23:59:00', '+1 hour')",
+	"date(-1)",
+	"datetime(-1)",
+	"date(-0.5)",
+	"date(+1721426)",
+	"date('5373485')",
+	"date('5373484')",
 	"julianday('2026-01-01T00:00:00.0004')",
 	"julianday('2026-01-01T00:00:00.0005')",
 	"julianday('2026-01-01T00:00:00.123456789')",
@@ -153,6 +161,9 @@ func TestWhatThisEngineWillNotRenderIsRefusedRatherThanAnswered(t *testing.T) {
 		"date('2026-09-21 24:00:00')",
 		"date('-2026-09-21')",
 		"date(0)",
+		"date('0')",
+		"datetime('1000000')",
+		"date('1721425')",
 		"datetime(0)",
 		"date(1000000)",
 		"date('0000-01-01')",
@@ -265,6 +276,33 @@ func TestAStoredMomentAgreesUnlessItPredatesTheCommonEra(t *testing.T) {
 		}
 		if got.Valid {
 			t.Fatalf("a stored %q now reads as %q rather than NULL: the era gap has closed on the column path, so delete this test and the paragraph in docs/design/postgresql.md that records it", stored, got.String)
+		}
+	}
+}
+
+func TestAShiftOutOfTheCommonEraAnswersNothingRatherThanTheWrongYear(t *testing.T) {
+	cfg := testConfig(t)
+	s := openTest(t, cfg)
+	db := sqliteOracle(t)
+	for _, expr := range []string{
+		"date('0001-01-01', '-1 day')",
+		"datetime('0001-01-01 00:00:00', '-1 second')",
+		"julianday('0001-01-01', '-1 day')",
+	} {
+		want, wantValid := sqliteScalar(t, db, expr, "2026-09-21T14:05:09.123Z")
+		if !wantValid {
+			t.Fatalf("SQLite answers nothing for %s, so there is no divergence left to record", expr)
+		}
+		var got sql.NullString
+		query := "SELECT (" + renderFor(t, expr) + ")::text"
+		if err := s.pool.QueryRow(t.Context(), query).Scan(&got); err != nil {
+			t.Fatalf("%s: %v", expr, err)
+		}
+		if got.Valid {
+			if got.String == want {
+				t.Fatalf("%s now answers %q as SQLite does: the era gap has closed, so fold these cases back into timeExpressions and delete the paragraph in docs/design/postgresql.md that records it", expr, got.String)
+			}
+			t.Fatalf("%s answers %q where SQLite says %q. PostgreSQL writes that era BC and to_char drops the marker, so the only safe answer is nothing at all", expr, got.String, want)
 		}
 	}
 }
