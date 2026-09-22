@@ -750,11 +750,14 @@ catalog backwards — creates the older relation, re-runs `bootstrap`, and asser
 survived. `TestPostgresIdempotencyCatalogRetiresTheOwnerlessRelation` and
 `TestPostgresChangeLogGainsItsOwnerColumnOnUpgrade` are the two worked examples.
 
-A related trap outside the catalog: a guard belongs **in a transaction**, which is not
-the same as **on the writer**. `PlanMigration` moved onto the single writer connection
-to get its incarnation check inside a transaction, which queued every write in the
-namespace behind a dry run's full-table counts. A read-only transaction on the read pool
-gives the same snapshot without the queue.
+A related trap outside the catalog, which this engine does **not** escape. A guard
+belongs in a transaction, and that is not the same as belonging on the writer — but the
+distinction that matters here is narrower still. `PlanMigration` runs under `s.read`,
+which is not read-only: `readMode` takes `FOR SHARE` on the namespace row for every
+caller except `readOnly`, and `FOR SHARE` conflicts with the `FOR NO KEY UPDATE` that
+`s.write` takes. A dry run therefore holds every write in the namespace for as long as
+its full-table counts run, exactly as it would on the writer. Reaching for a non-writing
+transaction is not enough; it has to be a genuinely read-only one.
 
 ## Running the current tests
 
