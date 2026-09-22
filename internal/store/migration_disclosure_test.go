@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -72,5 +73,34 @@ func TestAScopedPlanIsGuardedInsideItsTransaction(t *testing.T) {
 		Incarnation{NsGen: [16]byte{9}, Table: "notes", Version: 1})
 	if err == nil {
 		t.Fatal("a plan resolved against another namespace incarnation must conflict rather than report on this one")
+	}
+}
+
+func TestASetEnumRejectionNamesNoValuesToAScopedCaller(t *testing.T) {
+	st := openRowAccessStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "ns", "notes", []schema.Field{
+		{Name: "state", Type: schema.String},
+	}, TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := st.Insert(ctx, "ns", "notes", []map[string]any{{"state": "wontfix"}},
+		WriteOpts{Owner: "bob"}, Embedder{}, nil, Incarnation{}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	allowed := []string{"open", "done"}
+	change := []schema.Change{{Op: schema.OpSetEnum, Name: "state", Enum: &allowed}}
+
+	_, err := st.PlanMigration(ctx, "ns", "notes", change, Embedder{}, Incarnation{}, nil, Incarnation{})
+	if err == nil || !strings.Contains(err.Error(), "wontfix") {
+		t.Fatalf("a table-wide reader is told which value blocks the enum: %v", err)
+	}
+
+	_, err = st.PlanMigration(ctx, "ns", "notes", change, Embedder{}, Incarnation{}, &RowScope{Empty: true}, Incarnation{})
+	if err == nil {
+		t.Fatal("the enum is still refused, whoever asks: a rule is not a disclosure")
+	}
+	if strings.Contains(err.Error(), "wontfix") {
+		t.Fatalf("the rejection handed a scoped caller the contents of a field they cannot read: %v", err)
 	}
 }

@@ -425,6 +425,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 				}
 				rows.Close()
 				if len(inUse) > 0 {
+					if scope != nil {
+						return nil, invalidf("field %q: cannot apply this enum — rows hold values it does not allow; update those rows to a kept value first (update with set %s = ...), or keep the values in the enum. Which values, and how many rows, is reported only to a caller holding read on the table", f.Name, f.Name)
+					}
 					parts := make([]string, len(inUse))
 					for k, u := range inUse {
 						parts[k] = fmt.Sprintf("%q is stored by %d rows", u.val, u.n)

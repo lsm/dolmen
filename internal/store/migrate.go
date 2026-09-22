@@ -70,10 +70,8 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 	}
 	defer tx.Rollback()
 
-	if expected.Table != "" {
-		if err := checkScopeIncarnation(ctx, tx, nsName, table, expected); err != nil {
-			return nil, err
-		}
+	if err := checkBoundLifetime(ctx, tx, nsName, table, expected); err != nil {
+		return nil, err
 	}
 	old, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
@@ -242,6 +240,32 @@ func (s *Store) PlanMigration(ctx context.Context, nsName, table string, changes
 	}
 	w.plan.DryRun = true
 	return w.plan, nil
+}
+
+func checkBoundLifetime(ctx context.Context, tx rowQuerier, nsName, table string, want Incarnation) error {
+	bound := want.NsGen != [16]byte{} || want.Table != "" || want.DropGen != 0
+	if !bound {
+		return nil
+	}
+	replaced := fmt.Errorf("%w: table %s.%s was replaced; describe the current table", ErrNotFound, nsName, table)
+	if want.Table != "" && want.Table != table {
+		return replaced
+	}
+	gen, err := readNSGen(ctx, tx)
+	if err != nil {
+		return err
+	}
+	dropGen, err := tableGen(ctx, tx, table)
+	if err != nil {
+		return err
+	}
+	if want.NsGen != [16]byte{} && want.NsGen != gen {
+		return replaced
+	}
+	if want.DropGen != dropGen {
+		return replaced
+	}
+	return nil
 }
 
 func checkExpectedVersion(nsName, table string, expected int, old *schema.TableSchema) error {
@@ -571,6 +595,9 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 					}
 					rows.Close()
 					if len(inUse) > 0 {
+						if scope != nil {
+							return nil, invalidf("field %q: cannot apply this enum — rows hold values it does not allow; update those rows to a kept value first (update with set %s = ...), or keep the values in the enum. Which values, and how many rows, is reported only to a caller holding read on the table", f.Name, f.Name)
+						}
 						parts := make([]string, len(inUse))
 						for k, u := range inUse {
 							parts[k] = fmt.Sprintf("%q is stored by %d rows", u.val, u.n)
