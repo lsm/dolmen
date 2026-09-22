@@ -173,11 +173,17 @@ func parseSQLiteModifier(text string) (seconds float64, support filterSupport) {
 	if m := sqliteOffsetModifier.FindStringSubmatch(text); m != nil {
 		hours, _ := strconv.Atoi(m[2])
 		minutes, _ := strconv.Atoi(m[3])
-		total := float64(hours)*3600 + float64(minutes)*60
+		seconds := 0
 		if m[4] != "" {
-			extra, _ := strconv.Atoi(m[4])
-			total += float64(extra)
+			seconds, _ = strconv.Atoi(m[4])
 		}
+		if hours > 24 || minutes > 59 || seconds > 59 {
+			return 0, malformedInSQLite
+		}
+		if hours == 24 {
+			return 0, sqliteOnly
+		}
+		total := float64(hours)*3600 + float64(minutes)*60 + float64(seconds)
 		if m[5] != "" {
 			frac, err := strconv.ParseFloat("0."+m[5], 64)
 			if err != nil {
@@ -275,7 +281,8 @@ func withinRepresentableYears(expr string) string {
 		" THEN " + expr + " END)"
 }
 
-func timestampColumn(expr string) string {
+func timestampColumn(raw string) string {
+	expr := "pg_catalog.regexp_replace(" + raw + ", " + dollarQuote(`(\.[0-9]{4})[0-9]+`) + ", " + dollarQuote(`\1`) + ")"
 	return "(CASE WHEN " + expr + " !~ " + dollarQuote(timestampTextShape) + " THEN NULL" +
 		" WHEN " + expr + " ~ " + dollarQuote(timestampTextZone) +
 		" THEN (CASE WHEN pg_catalog.pg_input_is_valid(" + expr + ", 'timestamptz')" +

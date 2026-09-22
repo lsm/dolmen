@@ -288,7 +288,11 @@ clamps to the 28th; every named modifier (`start of …`, `weekday N`, `unixepoc
 strftime fields; and an hour of 24, which SQLite carries
 through formatting unchanged as `24:00:00` but normalizes the moment any modifier is
 applied. Rendered: `±N day/hour/minute/second` and `±HH:MM[:SS]` modifiers, and the
-`%Y %m %d %H %M %S %j %%` fields.
+`%Y %m %d %H %M %S %j %%` fields. The offset modifier carries its own bounds, which are
+not the value side's: SQLite takes hours up to 24 there rather than 14, rejects minutes
+and seconds above 59, and reads hour 24 as zero — `+24:59` shifts by 59 minutes, not by
+a day and 59 minutes — so 25 and above render nothing, as they do there, and 24 is
+refused rather than reproduced.
 
 One divergence is left open deliberately. `date`, `time`, `datetime` and `strftime`
 render as text and `julianday` as a number, so an expression that puts one next to the
@@ -329,6 +333,13 @@ mention of `t` and the second supplies the clamp, which also keeps
 `9999-12-31T23:59:59.9999` inside the representable range rather than tipping it past the
 bound. Truncating rather than rounding here is a one-millisecond error that no fixture
 without a fourth fractional digit can see.
+
+The cast itself has to be kept out of the rounding, too. PostgreSQL stores microseconds,
+so casting `...00.1234999` rounds it to `.1235` and the quantum then rounds that up to
+`.124`, where SQLite rounds the exact decimal down to `.123`. The stored text therefore
+has its fraction trimmed to four digits before the cast: four is enough to decide the
+half-millisecond and no later digit can change it, since `.4999…` never reaches `.5`.
+It needs seven stored digits to show, which `CanonicalTimestamp` accepts.
 
 PostgreSQL has no year zero and writes earlier years with a `BC` suffix rather than as a
 negative number, so `TIMESTAMP '-4713-11-24'` and `TIMESTAMP '0000-01-01'` are both

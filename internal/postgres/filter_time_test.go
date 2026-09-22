@@ -147,6 +147,8 @@ var modifierCorpus = []string{
 	"start of day", "start of month", "start of year",
 	"weekday 0", "weekday 3", "auto", "subsec", "subsecond", "ceiling", "floor",
 	"+01:30", "-01:30", "+00:00:30",
+	"+00:99", "+25:00", "+00:00:99", "+24:00", "+24:59", "+23:59", "+14:59",
+	"+00:59:59", "-24:00", "-25:00", "+99:59",
 	"+1 week", "+1 weeks", "+ 1 day", "+1day", "days", "+1 dayz", "+1 hours ", " +1 hours",
 	"bogus", "", "+1  day", "+1\tday",
 }
