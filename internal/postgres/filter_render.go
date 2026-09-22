@@ -113,8 +113,17 @@ func (r *filterRenderer) render(n filter.Node, next int) error {
 			return fmt.Errorf("%w: filter argument %d was not supplied", store.ErrInvalid, node.Index+1)
 		}
 		r.sb.WriteString("$" + fmt.Sprint(r.placeholder(next)))
-		if _, isBool := r.args[node.Index].(bool); isBool && !r.rawBoolean {
-			r.sb.WriteString("::int")
+		switch r.args[node.Index].(type) {
+		case bool:
+			if !r.rawBoolean {
+				r.sb.WriteString("::bool::int")
+			}
+		case int, int8, int16, int32, int64, float32, float64, json.Number:
+			r.sb.WriteString("::numeric")
+		case string:
+			r.sb.WriteString("::text")
+		case []byte:
+			r.sb.WriteString("::bytea")
 		}
 		r.bound = append(r.bound, r.args[node.Index])
 		return nil
@@ -753,7 +762,7 @@ func (r *filterRenderer) affinityOf(n filter.Node) affinity {
 			return affText
 		case []byte:
 			return affBlob
-		case int, int8, int16, int32, int64, float32, float64, json.Number:
+		case bool, int, int8, int16, int32, int64, float32, float64, json.Number:
 			return affNumber
 		}
 		return affUnknown
@@ -1103,7 +1112,7 @@ func (r *filterRenderer) captureGuard(n filter.Node, next int) (string, error) {
 	case affBlob:
 		return out + "::bytea", nil
 	}
-	return out, nil
+	return out + "::text", nil
 }
 
 func (r *filterRenderer) storageClassComparison(node *filter.Binary, op string, next int) error {

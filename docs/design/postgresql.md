@@ -270,6 +270,23 @@ a POSIX class carries the vertical tab, a hand-written Go class only carries wha
 lists. A bound `'\v-7'` was therefore numeric text to one half of the renderer and not
 to the other, which answered `n = ?` with a constant false rather than matching `-7`.
 
+A bound argument that carries no affinity of its own — a JSON `null`, or a boolean —
+still has to reach PostgreSQL with a type, because a placeholder alone in `$1 IS NULL`
+gives the planner nothing to infer from and raises 42P18. Such a parameter is cast where
+it is rendered: to `text` under a null guard, which is type-agnostic, and to `bool`
+before `int` when a boolean is wanted as SQLite's stored digit, so that the driver
+encodes the Go value it actually holds. SQLite needs none of this, so every case here is
+one the conformance suite has to carry deliberately.
+
+Giving every bound argument an explicit type is what makes the parameter cases behave
+like the column cases they mirror, because affinity is read from the Go value rather
+than guessed by the planner. A bound boolean carries the same numeric affinity a boolean
+column does, so `code LIKE ?` with `true` matches the digit `'1'` exactly as `code LIKE
+flag` does. The one place the two still part is a text column compared against a bound
+boolean, which SQLite answers and this engine refuses along with the other computed
+numbers it will not render SQLite's text for; it is a loud refusal rather than a wrong
+row set, and it is listed here so that closing it is a deliberate act.
+
 The trap this hides in is fixture choice. A fixture value like `'a note from alice'`
 answers the same under both rules, so a pinned case built on it passes whichever rule
 the engine implements and pins nothing. The conformance fixture carries `code`, `mark`
