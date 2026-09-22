@@ -342,6 +342,24 @@ because the SQLite column is `NUMERIC` and stores a lossless `7.0` as INTEGER `7
 column keeps the runtime test while a literal or a bound argument is classed while
 rendering.
 
+A function result carries a storage class of its own, and it is not its argument's.
+SQLite's `round()` returns REAL whatever it is handed, so `round(-7)` is `-7.0` and
+`round(n) / 2` is `-3.5` rather than the `-3` an integer division gives; `abs()` keeps an
+integer argument integer but answers REAL for a real one and for text, so `abs('1') / 2`
+is `0.5` while `abs(-7) / 2` is `3`. `length()` and `instr()` are always INTEGER. The
+runtime whole-number test cannot see any of this, because `round(-7)` is numerically
+whole and REAL at the same time, so a call is classed while rendering instead.
+
+Being REAL costs the precision a double cannot hold, so `round()` and `abs()` over text
+pass through `float8`. SQLite's `round(9007199254740993)` is `9007199254740992.0`, and
+without that pass the two engines disagree about whether a number equals its own
+rounding. `abs()` over an integer keeps its digits, because there SQLite does too.
+
+SQLite also clamps `round()`'s second argument. A negative place is not a place left of
+the point as it is in PostgreSQL but no places at all, so `round(1234.5678, -2)` is
+`1235` and not `1200`; the place truncates toward zero, non-numeric text is no places,
+and a null place makes the whole call null.
+
 Coercing text to a number keeps a null null. Text with no numeral at its head converts
 to zero, which a `COALESCE` expresses, but a null column is not text with no numeral in
 it: SQLite answers `NULL + 1` with null and `'abc' + 1` with one. Conflating them makes

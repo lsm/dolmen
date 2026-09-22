@@ -131,6 +131,16 @@ var pinnedFilterSemantics = []struct {
 	{"a bound text argument is its own truth value", "?", `["1"]`},
 	{"nonnumeric bound text is false as a truth value", "NOT ?", `["abc"]`},
 	{"a bound boolean inside LIKE is its digit", "code LIKE ?", `[true]`},
+	{"round always yields a real, so its quotient is not truncated", "round(n) / 2 = -3.5", ""},
+	{"a rounded integer does not divide as an integer", "NOT (round(n) / 2 = -3)", ""},
+	{"abs over text yields a real", "abs(code) / 2 = 0.5", ""},
+	{"abs over an integer stays an integer", "abs(n) / 2 = 3", ""},
+	{"round clamps a negative place to none", "round(1234.5678, -2) = 1235", ""},
+	{"round truncates its place toward zero", "round(2.567, 1.9) = 2.6", ""},
+	{"a null place makes the rounding null", "round(2.567, NULL) IS NULL", ""},
+	{"round loses what a double cannot hold", "NOT (big = round(big))", ""},
+	{"a rounded integer past a double is the double", "round(big) = 9007199254740992", ""},
+	{"abs over text loses what a double cannot hold", "abs('9007199254740993') = 9007199254740992", ""},
 	{"a bound number takes a text column's affinity", "code = ?", `[1]`},
 	{"a boolean column is its own truth value", "flag", ""},
 	{"a boolean column joins a numeric truth value", "flag AND n", ""},
@@ -215,7 +225,6 @@ var notYetEvaluatedByAdapterTwo = map[string]bool{
 	"datetime with two modifiers": true, "strftime with two modifiers": true,
 	"substr from a negative start": true, "substr with a negative length": true,
 	"coalesce over mixed types": true,
-	"round to a negative place": true,
 }
 
 var notYetSpelledByAdapterTwo = map[string]bool{}

@@ -459,21 +459,31 @@ func (r *filterRenderer) call(node *filter.Call, next int) error {
 		}
 		r.sb.WriteString("translate(" + arg + ", '" + from + "', '" + to + "')")
 		return nil
-	case "abs", "round":
-		if len(node.Args) >= 1 && r.affinityOf(node.Args[0]) == affText {
+	case "round":
+		if len(node.Args) < 1 || len(node.Args) > 2 {
+			return filterNotRenderable("round")
+		}
+		arg, err := r.roundSubject(node.Args[0], next)
+		if err != nil {
+			return err
+		}
+		rounded := "pg_catalog.round((" + arg + ")::numeric"
+		if len(node.Args) == 2 {
+			digits, err := r.roundDigits(node.Args[1], next)
+			if err != nil {
+				return err
+			}
+			rounded += ", " + digits
+		}
+		r.sb.WriteString(sqliteDouble(rounded + ")"))
+		return nil
+	case "abs":
+		if len(node.Args) == 1 && r.affinityOf(node.Args[0]) == affText {
 			arg, err := r.captureNumeric(node.Args[0], next)
 			if err != nil {
 				return err
 			}
-			rest := make([]string, 0, len(node.Args)-1)
-			for _, extra := range node.Args[1:] {
-				text, err := r.capture(extra, next)
-				if err != nil {
-					return err
-				}
-				rest = append(rest, text)
-			}
-			r.sb.WriteString("pg_catalog." + node.Name + "(" + strings.Join(append([]string{arg}, rest...), ", ") + ")")
+			r.sb.WriteString(sqliteDouble("pg_catalog.abs(" + arg + ")"))
 			return nil
 		}
 	}
@@ -482,6 +492,22 @@ func (r *filterRenderer) call(node *filter.Call, next int) error {
 		return filterNotRenderable(node.Name)
 	}
 	return r.plainCall("pg_catalog."+target, node.Args, next)
+}
+
+func (r *filterRenderer) roundSubject(n filter.Node, next int) (string, error) {
+	if r.affinityOf(n) == affText {
+		return r.captureNumeric(n, next)
+	}
+	return r.capture(n, next)
+}
+
+func (r *filterRenderer) roundDigits(n filter.Node, next int) (string, error) {
+	_, numeric, err := r.numericOperand(n, next)
+	if err != nil {
+		return "", err
+	}
+	return "(CASE WHEN " + numeric + " IS NULL THEN NULL ELSE" +
+		" greatest(" + sqliteInteger(numeric) + ", 0)::int END)", nil
 }
 
 func (r *filterRenderer) plainCall(name string, args []filter.Node, next int) error {
@@ -1196,6 +1222,14 @@ func (r *filterRenderer) staticallyReal(n filter.Node) bool {
 		case string:
 			return numeralHeadIsReal(value)
 		}
+	case *filter.Call:
+		switch node.Name {
+		case "round":
+			return true
+		case "abs":
+			return len(node.Args) == 1 &&
+				(r.affinityOf(node.Args[0]) == affText || r.staticallyReal(node.Args[0]))
+		}
 	}
 	return false
 }
@@ -1285,6 +1319,10 @@ func doubleArithmetic(left, op, right string) string {
 
 func doubleQuotient(left, right string) string {
 	return withoutNaN("((" + left + ")::float8 / NULLIF((" + right + ")::float8, 0))::text::numeric")
+}
+
+func sqliteDouble(expr string) string {
+	return "((" + expr + ")::float8::text::numeric)"
 }
 
 func withoutNaN(text string) string {
