@@ -73,6 +73,14 @@ var timeExpressions = []string{
 	"julianday(2460000.99999999)",
 	"datetime('2460000.99999999')",
 	"date(2460000.99999999)",
+	"date('2026-03-31', 5)",
+	"date('2026-03-31', 0)",
+	"date('2026-03-31', 1.5)",
+	"datetime('2026-03-31', -1)",
+	"date('2026-03-31', NULL)",
+	"date(+0x1f4bd8)",
+	"date(-0x10)",
+	"datetime(+0x1f4bd8)",
 	"datetime(2460000.5000004)",
 	"date('not a time')",
 	"datetime('14:05:09')",
@@ -181,6 +189,8 @@ func TestWhatThisEngineWillNotRenderIsRefusedRatherThanAnswered(t *testing.T) {
 		"datetime(0)",
 		"date(1000000)",
 		"date('0000-01-01')",
+		"date(+0x10)",
+		"julianday(+0x10)",
 		"strftime(body, created_at)",
 	} {
 		err := renderErrFor(t, expr)

@@ -324,6 +324,35 @@ func (r *filterRenderer) constantText(n filter.Node) (string, bool) {
 	return "", false
 }
 
+func numericLiteralValue(text string) (float64, bool, error) {
+	lowered := strings.ToLower(text)
+	if strings.HasPrefix(lowered, "0x") {
+		value, err := strconv.ParseUint(lowered[2:], 16, 64)
+		if err != nil {
+			return 0, false, fmt.Errorf("%w: the hexadecimal literal %q does not fit in 64 bits", store.ErrInvalid, text)
+		}
+		return float64(int64(value)), true, nil
+	}
+	value, err := strconv.ParseFloat(text, 64)
+	if err != nil {
+		return 0, false, nil
+	}
+	return value, true, nil
+}
+
+func constantAtRenderTime(n filter.Node) bool {
+	switch node := n.(type) {
+	case *filter.Literal:
+		return true
+	case *filter.Param:
+		return true
+	case *filter.Unary:
+		_, ok := node.Operand.(*filter.Literal)
+		return ok
+	}
+	return false
+}
+
 func (r *filterRenderer) literalMoment(node *filter.Literal) (string, error) {
 	switch node.Kind {
 	case filter.LiteralNull:
@@ -331,16 +360,11 @@ func (r *filterRenderer) literalMoment(node *filter.Literal) (string, error) {
 	case filter.LiteralString:
 		return timeTextMoment(node.Text)
 	case filter.LiteralNumber:
-		lowered := strings.ToLower(node.Text)
-		if strings.HasPrefix(lowered, "0x") {
-			value, err := strconv.ParseUint(lowered[2:], 16, 64)
-			if err != nil {
-				return "", fmt.Errorf("%w: the hexadecimal literal %q does not fit in 64 bits", store.ErrInvalid, node.Text)
-			}
-			return julianMoment(float64(int64(value)))
-		}
-		value, err := strconv.ParseFloat(node.Text, 64)
+		value, ok, err := numericLiteralValue(node.Text)
 		if err != nil {
+			return "", err
+		}
+		if !ok {
 			return "NULL::timestamp", nil
 		}
 		return julianMoment(value)
@@ -418,7 +442,10 @@ func (r *filterRenderer) moment(node *filter.Call, next int) (string, error) {
 	for _, arg := range args[1:] {
 		text, ok := r.constantText(arg)
 		if !ok {
-			return "", filterNotRenderable("a date or time modifier that is not text")
+			if constantAtRenderTime(arg) {
+				return "NULL::timestamp", nil
+			}
+			return "", filterNotRenderable("a date or time modifier this engine cannot read while building the statement")
 		}
 		seconds, support := parseSQLiteModifier(text)
 		switch support {
@@ -447,8 +474,11 @@ func (r *filterRenderer) baseMoment(n filter.Node, next int) (string, error) {
 		return r.nestedMoment(node, next)
 	case *filter.Unary:
 		if lit, ok := node.Operand.(*filter.Literal); ok && lit.Kind == filter.LiteralNumber && (node.Op == "-" || node.Op == "+") {
-			value, err := strconv.ParseFloat(lit.Text, 64)
+			value, known, err := numericLiteralValue(lit.Text)
 			if err != nil {
+				return "", err
+			}
+			if !known {
 				return "NULL::timestamp", nil
 			}
 			if node.Op == "-" {
