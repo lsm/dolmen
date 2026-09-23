@@ -189,6 +189,7 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsG
 	if err != nil {
 		return QueryResult{}, err
 	}
+	defer n.unpin()
 
 	tx, done, err := beginCallerTx(ctx, n.ro, nil)
 	if err != nil {

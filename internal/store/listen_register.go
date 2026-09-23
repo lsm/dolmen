@@ -34,6 +34,7 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 			sess.ctxCancel()
 			sess.unregister()
 			s.untrackSession(sess)
+			n.unpin()
 		}
 	}()
 
@@ -117,5 +118,6 @@ func (s *Store) Listen(ctx context.Context, nsName, table string, from Cursor, n
 	go sess.pump()
 	go sess.drain()
 	go sess.pollWake()
+	go sess.unpinWhenDone()
 	return &ChangeReplay{Next: sess.next, Resume: sess.cursor}, sess.cancel, nil
 }

@@ -66,6 +66,7 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 	if err != nil {
 		return nil, err
 	}
+	defer n.unpin()
 	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -218,6 +219,7 @@ func (s *Store) PlanMigration(ctx context.Context, nsName, table string, changes
 	if err != nil {
 		return nil, err
 	}
+	defer n.unpin()
 	tx, err := n.ro.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err

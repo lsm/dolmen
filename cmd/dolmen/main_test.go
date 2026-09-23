@@ -77,6 +77,7 @@ func TestLoadConfig(t *testing.T) {
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
 				Timeouts:           api.DefaultTimeouts(),
+				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
 		{
@@ -92,6 +93,7 @@ func TestLoadConfig(t *testing.T) {
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
 				Timeouts:           api.DefaultTimeouts(),
+				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
 		{
@@ -108,6 +110,7 @@ func TestLoadConfig(t *testing.T) {
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
 				Timeouts:           api.DefaultTimeouts(),
+				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
 		{
@@ -124,6 +127,7 @@ func TestLoadConfig(t *testing.T) {
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
 				Timeouts:           api.DefaultTimeouts(),
+				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
 		{
@@ -160,6 +164,7 @@ func TestLoadConfig(t *testing.T) {
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
 				Timeouts:           api.DefaultTimeouts(),
+				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
 		{
@@ -177,6 +182,7 @@ func TestLoadConfig(t *testing.T) {
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
 				Timeouts:           api.DefaultTimeouts(),
+				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
 		{
@@ -200,6 +206,7 @@ func TestLoadConfig(t *testing.T) {
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
 				Timeouts:           api.DefaultTimeouts(),
+				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
 		{
@@ -228,6 +235,7 @@ func TestLoadConfig(t *testing.T) {
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
 				Timeouts:           api.DefaultTimeouts(),
+				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
 		{
@@ -248,6 +256,7 @@ func TestLoadConfig(t *testing.T) {
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
 				Timeouts:           api.DefaultTimeouts(),
+				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
 		{
@@ -269,6 +278,7 @@ func TestLoadConfig(t *testing.T) {
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
 				Timeouts:           api.DefaultTimeouts(),
+				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
 		{
@@ -290,6 +300,7 @@ func TestLoadConfig(t *testing.T) {
 				ChangeRetention:    0,
 				MaxSubscriptionAge: 30 * time.Minute,
 				Timeouts:           api.DefaultTimeouts(),
+				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
 		{
@@ -305,6 +316,7 @@ func TestLoadConfig(t *testing.T) {
 				ChangeRetention:    48 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
 				Timeouts:           api.DefaultTimeouts(),
+				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
 		{
@@ -320,6 +332,7 @@ func TestLoadConfig(t *testing.T) {
 				ChangeRetention:    time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
 				Timeouts:           api.DefaultTimeouts(),
+				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
 		{
@@ -365,6 +378,7 @@ func TestLoadConfig(t *testing.T) {
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 0,
 				Timeouts:           api.DefaultTimeouts(),
+				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
 		{
@@ -380,6 +394,7 @@ func TestLoadConfig(t *testing.T) {
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 5 * time.Minute,
 				Timeouts:           api.DefaultTimeouts(),
+				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
 		{
@@ -395,6 +410,7 @@ func TestLoadConfig(t *testing.T) {
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 24 * time.Hour,
 				Timeouts:           api.DefaultTimeouts(),
+				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
 		{
@@ -963,6 +979,32 @@ func TestLoadConfigMaxGroupsRange(t *testing.T) {
 		if _, err := loadWithEnv(t, []string{"-max-groups", raw}, map[string]string{"DOLMEN_EMBED_PROVIDER": "none"}, false); err == nil {
 			t.Fatalf("-max-groups %s accepted, but the documented range is 1 to 1024", raw)
 		}
+	}
+}
+
+func TestLoadConfigMaxOpenNamespaces(t *testing.T) {
+	cfg, err := loadWithEnv(t, nil, map[string]string{"DOLMEN_EMBED_PROVIDER": "none"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxOpenNamespaces != store.DefaultMaxOpenNamespaces {
+		t.Fatalf("default max open namespaces %d, want %d", cfg.MaxOpenNamespaces, store.DefaultMaxOpenNamespaces)
+	}
+	cfg, err = loadWithEnv(t, nil, map[string]string{"DOLMEN_MAX_OPEN_NAMESPACES": "7", "DOLMEN_EMBED_PROVIDER": "none"}, false)
+	if err != nil || cfg.MaxOpenNamespaces != 7 {
+		t.Fatalf("DOLMEN_MAX_OPEN_NAMESPACES=7 gave %v, %v", cfg, err)
+	}
+	cfg, err = loadWithEnv(t, []string{"-max-open-namespaces", "3"}, map[string]string{"DOLMEN_MAX_OPEN_NAMESPACES": "7", "DOLMEN_EMBED_PROVIDER": "none"}, false)
+	if err != nil || cfg.MaxOpenNamespaces != 3 {
+		t.Fatalf("the flag must win over the environment: %v, %v", cfg, err)
+	}
+	for _, raw := range []string{"0", "-1", "many"} {
+		if _, err := loadWithEnv(t, nil, map[string]string{"DOLMEN_MAX_OPEN_NAMESPACES": raw, "DOLMEN_EMBED_PROVIDER": "none"}, false); err == nil {
+			t.Fatalf("DOLMEN_MAX_OPEN_NAMESPACES=%s accepted, but at least 1 namespace must be allowed open", raw)
+		}
+	}
+	if _, err := loadWithEnv(t, []string{"-max-open-namespaces", "0"}, map[string]string{"DOLMEN_EMBED_PROVIDER": "none"}, false); err == nil {
+		t.Fatal("-max-open-namespaces 0 accepted")
 	}
 }
 
