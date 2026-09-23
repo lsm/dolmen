@@ -298,6 +298,9 @@ func (h *harness) httpCallAs(id identity, op string, body any) (int, map[string]
 	if h.mode.off() {
 		h.assertIdentityIgnored(id, "/v1/"+op, raw, res.StatusCode, out)
 	}
+	if res.StatusCode == http.StatusOK && out["ok"] == true {
+		h.checkOutputSchema(h.t, op, out["data"])
+	}
 	return res.StatusCode, out
 }
 
@@ -432,6 +435,9 @@ func (h *harness) mcpCallAs(id identity, op string, args any) mcpResult {
 				h.assertIdentityIgnored(id, "tools/call "+op, argsRaw, res.status, payload)
 			}
 		}
+	}
+	if res.proto == nil && !res.isError() && res.result != nil {
+		h.checkOutputSchema(h.t, op, res.structured())
 	}
 	return res
 }
