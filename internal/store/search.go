@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -28,6 +29,37 @@ func ftsWordByte(c byte) bool {
 		return false
 	}
 	return c > ' '
+}
+
+var (
+	ftsSyntaxNearRe = regexp.MustCompile(`^fts5: syntax error near "(.)"$`)
+	ftsNoColumnRe   = regexp.MustCompile(`^column "([^"]+)" not found$`)
+)
+
+func ftsMatchError(match string, err error) error {
+	redacted := NewRedactedSQLite(err)
+	msg := redacted.Error()
+	if m := ftsSyntaxNearRe.FindStringSubmatch(msg); m != nil && ftsPunctuation(m[1]) {
+		return invalidf(`query %q: FTS5 reads %q as query syntax, not text, so a term that contains punctuation must be double-quoted (e.g. "don't", "v1.2", "c++"), or written without the punctuation`, match, m[1])
+	}
+	if m := ftsNoColumnRe.FindStringSubmatch(msg); m != nil {
+		return invalidf(`query %q: FTS5 reads a word before a colon as the name of a column to search, and this table has no full-text field named %q; double-quote the term to search for it as text, or put one of the table's full-text fields before the colon`, match, m[1])
+	}
+	return fmt.Errorf("%w: %w", ErrInvalid, redacted)
+}
+
+func ftsPunctuation(tok string) bool {
+	if len(tok) != 1 {
+		return false
+	}
+	c := tok[0]
+	switch {
+	case c <= ' ' || c >= 0x80, c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_':
+		return false
+	case c == '(' || c == ')' || c == '"':
+		return false
+	}
+	return true
 }
 
 func bareHyphenTerm(match string) bool {
@@ -132,7 +164,7 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 		if filter != "" {
 			return NewFilterError(filter, err)
 		}
-		return fmt.Errorf("%w: %w", ErrInvalid, NewRedactedSQLite(err))
+		return ftsMatchError(match, err)
 	}
 	if filter != "" {
 		prefix, source, scopeArgs := scopedSource(table, scope)
@@ -146,7 +178,7 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 		probe, err = tx.QueryContext(ctx,
 			fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? LIMIT 1`, q(ftsTable(table)), ftsTable(table)), match)
 		if err != nil {
-			return SearchResult{}, fmt.Errorf("%w: %w", ErrInvalid, NewRedactedSQLite(err))
+			return SearchResult{}, ftsMatchError(match, err)
 		}
 		probe.Close()
 		stmt = fulltextFilterStmt(table, filter, len(scopeArgs)+len(args), prefix, source)

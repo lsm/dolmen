@@ -110,6 +110,28 @@ func TestSearchFulltextSyntaxAcceptReject(t *testing.T) {
 		t.Fatalf("bare hyphenated term must teach the quoting fix:\n got %s\nwant %s", msg, want)
 	}
 
+	teaching := map[string][2]string{
+		"can't": {
+			`query "can't": FTS5 reads "'" as query syntax, not text, so a term that contains punctuation must be double-quoted (e.g. "don't", "v1.2", "c++"), or written without the punctuation`,
+			`query "can't": bare single quotes are not a term; double-quote terms that contain punctuation`,
+		},
+		"nocol:payment": {
+			`query "nocol:payment": FTS5 reads a word before a colon as the name of a column to search, and this table has no full-text field named "nocol"; double-quote the term to search for it as text, or put one of the table's full-text fields before the colon`,
+			`query "nocol:payment": PostgreSQL full-text search does not support the field:term column filter; drop it and filter with the filter parameter instead`,
+		},
+	}
+	for q, msgs := range teaching {
+		_, body := h.httpCall("search_fulltext", map[string]any{"namespace": "fts", "table": "t", "query": q})
+		got, _ := envelopeOf(t, body)["message"].(string)
+		want := msgs[0]
+		if testEngine(t) == store.EnginePostgres {
+			want = msgs[1]
+		}
+		if got != want {
+			t.Fatalf("%s must teach the fix:\n got %s\nwant %s", q, got, want)
+		}
+	}
+
 	data = h.mustHTTP("search_fulltext", map[string]any{
 		"namespace": "fts", "table": "t", "query": "payment OR refund",
 	})

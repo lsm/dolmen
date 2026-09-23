@@ -578,3 +578,44 @@ func TestFulltextSentinelRowNeverFailsThePage(t *testing.T) {
 		t.Fatalf("expected 2 valid rows with truncated=true, got %d rows truncated=%v", len(rows), truncated)
 	}
 }
+
+func TestPunctuationInABareFTSTermTeachesQuoting(t *testing.T) {
+	st := openStore(t)
+	mustCreateNotes(t, st)
+	mustInsertNotes(t, st)
+	for q, near := range map[string]string{"don't": "'", "v1.2": ".", "a/b": "/", "c++": "+", "hello, world": ",", "what?": "?", "50%": "%", "#tag": "#", "@user": "@", "a&b": "&"} {
+		_, _, err := st.SearchFulltext(context.Background(), "test", "notes", q, 0, 10, false, "", nil)
+		if err == nil || !errors.Is(err, ErrInvalid) {
+			t.Fatalf("query %q: expected invalid request, got %v", q, err)
+		}
+		want := fmt.Sprintf(`invalid request: query %q: FTS5 reads %q as query syntax, not text, so a term that contains punctuation must be double-quoted (e.g. "don't", "v1.2", "c++"), or written without the punctuation`, q, near)
+		if err.Error() != want {
+			t.Fatalf("query %q message:\n got %s\nwant %s", q, err.Error(), want)
+		}
+		if _, _, err := st.SearchFulltext(context.Background(), "test", "notes", `"`+q+`"`, 0, 10, false, "", nil); err != nil {
+			t.Fatalf("the remedy the message names must work: %q quoted still fails: %v", q, err)
+		}
+	}
+	for _, q := range []string{"(unbalanced", "payment AND", `"unterminated`} {
+		_, _, err := st.SearchFulltext(context.Background(), "test", "notes", q, 0, 10, false, "", nil)
+		if err == nil || strings.Contains(err.Error(), "double-quoted") {
+			t.Fatalf("query %q is a grammar mistake, not punctuation in a term; quoting advice would mislead: %v", q, err)
+		}
+	}
+}
+
+func TestAnUnknownFTSColumnFilterTeachesQuoting(t *testing.T) {
+	st := openStore(t)
+	mustCreateNotes(t, st)
+	_, _, err := st.SearchFulltext(context.Background(), "test", "notes", "foo:bar", 0, 10, false, "", nil)
+	want := `invalid request: query "foo:bar": FTS5 reads a word before a colon as the name of a column to search, and this table has no full-text field named "foo"; double-quote the term to search for it as text, or put one of the table's full-text fields before the colon`
+	if err == nil || err.Error() != want {
+		t.Fatalf("got %v\nwant %s", err, want)
+	}
+	if _, _, err := st.SearchFulltext(context.Background(), "test", "notes", `"foo:bar"`, 0, 10, false, "", nil); err != nil {
+		t.Fatalf("the quoted form must search: %v", err)
+	}
+	if _, _, err := st.SearchFulltext(context.Background(), "test", "notes", "foo:bar", 0, 10, false, "id > 0", nil); err == nil || err.Error() != want {
+		t.Fatalf("the filtered path must teach the same way, got %v", err)
+	}
+}
