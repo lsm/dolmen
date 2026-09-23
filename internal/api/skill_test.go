@@ -252,3 +252,32 @@ func TestEveryOperationIsNamedInASkill(t *testing.T) {
 		}
 	}
 }
+
+func TestEverySampleErrorEnvelopeInASkillIsARealOne(t *testing.T) {
+	samples := 0
+	for name, body := range renderedSkills(t) {
+		for _, line := range strings.Split(body, "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, `{"ok":false,"error":{`) {
+				continue
+			}
+			samples++
+			var env struct {
+				OK    bool           `json:"ok"`
+				Error map[string]any `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(line), &env); err != nil {
+				t.Errorf("the %s skill shows an error envelope that is not JSON: %s: %v", name, line, err)
+				continue
+			}
+			for _, key := range []string{"code", "message", "request_id"} {
+				if s, _ := env.Error[key].(string); s == "" {
+					t.Errorf("the %s skill shows an error envelope without %s, which every real one carries: %s", name, key, line)
+				}
+			}
+		}
+	}
+	if samples == 0 {
+		t.Fatal("no sample error envelope found in the skills, so this test checks nothing")
+	}
+}
