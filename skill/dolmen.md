@@ -158,7 +158,7 @@ Success envelope:
 The same call with a typo'd field name returns the error envelope:
 
 ```json
-{"ok":false,"error":{"code":"invalid_request","message":"unknown field \"titel\" on table findings (see describe_table)"}}
+{"ok":false,"error":{"code":"invalid_request","message":"unknown field \"titel\" on table findings (see describe_table)","request_id":"7c3e9a1f5b2d4e8a9c0f6b1d3e5a7c9f"}}
 ```
 
 ## JSON-RPC fallback
