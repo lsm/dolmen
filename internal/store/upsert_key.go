@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -354,12 +353,12 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 				break
 			}
 		}
-		raw, err := json.Marshal(sc)
+		raw, err := encodeSchemaOver(ctx, tx, table, sc)
 		if err != nil {
 			return nil, 0, 0, ChangeRange{}, true, err
 		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE _dolmen_tables SET schema_json = ? WHERE name = ?`, string(raw), table); err != nil {
+			`UPDATE _dolmen_tables SET schema_json = ? WHERE name = ?`, raw, table); err != nil {
 			return nil, 0, 0, ChangeRange{}, true, err
 		}
 	}
