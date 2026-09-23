@@ -143,7 +143,7 @@ logical mechanism exists for.
 
 ## What stays open, and what stays local
 
-`/healthz`, `/version`, `/skills*` and `/v1/openapi.json` answer without a credential in every
+`/livez`, `/readyz`, `/healthz`, `/version`, `/skills*` and `/v1/openapi.json` answer without a credential in every
 mode. They carry no row data: probes, and the documents clients discover the API from.
 
 `dolmen mcp`, the stdio transport, refuses to start with `-auth on`. A pipe carries no per-request
@@ -217,4 +217,27 @@ from elsewhere. The mode is logged at startup, and a namespace whose writer does
 chosen mode when it opens is refused rather than served with weaker durability. The Go library
 always uses `full`. The grant registry (`_grants.db`) always uses `full` too: a revoked
 grant or key must stay revoked after a power loss.
+
+## Probes
+
+`/livez` answers `200 {"status":"ok"}` while the process runs; `/healthz` is the same probe under
+its old name. Point liveness checks at it.
+
+`/readyz` answers `200 {"status":"ready","embedding":{...}}` when the server is safe to route
+to, and `503 {"status":"not_ready","reasons":[...],"embedding":{...}}` while it drains for
+shutdown, when the data directory is not writable, or when a namespace found unreadable at
+startup still cannot be read; repairing or removing the file clears that without a restart. On
+PostgreSQL it checks that the database answers and the catalog schema exists. The probe creates no namespace and scans no table. `embedding` names the provider and
+reports `configured` or `none` without calling it, because only embedding operations depend on
+it: a failing provider degrades vector writes and text vector search, not readiness.
+
+## Shutting down
+
+On SIGTERM or an interrupt the server stops accepting connections and `/readyz` turns
+`not_ready`, and each open `subscribe` stream ends with a close frame carrying its resume cursor.
+Running requests get `-shutdown-grace` (default `60s`) to finish. Past it they are cancelled,
+which rolls back any open transaction, including a migration's, so a write either committed
+before the answer or did not happen. The store is then closed, and a close or checkpoint error
+is reported alongside the drain result: the process exits non-zero if either failed. Each phase
+is logged with the number of requests still running.
 

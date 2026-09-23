@@ -97,6 +97,9 @@ type Store struct {
 	useTick uint64
 	sync    SyncMode
 
+	unreadableMu sync.Mutex
+	unreadable   []string
+
 	notifyMu  sync.Mutex
 	listeners map[string][]*commitListener
 
@@ -177,12 +180,14 @@ func (s *Store) verifyOneCatalogVersion(ctx context.Context, name string) error 
 	ro, err := sql.Open("sqlite", dsn(s.nsPath(name), true))
 	if err != nil {
 		slog.Warn("namespace is unreadable; requests to it fail until it is repaired", "namespace", name, "err", err)
+		s.unreadable = append(s.unreadable, name)
 		return nil
 	}
 	defer ro.Close()
 	format, minReader, err := readCatalogVersion(ctx, ro)
 	if err != nil {
 		slog.Warn("namespace is unreadable; requests to it fail until it is repaired", "namespace", name, "err", err)
+		s.unreadable = append(s.unreadable, name)
 		return nil
 	}
 	if minReader > CatalogFormat {
@@ -837,4 +842,49 @@ func repopulateFTS(ctx context.Context, tx *sql.Tx, table string, fts []schema.F
 func dropFTS(ctx context.Context, tx *sql.Tx, table string) error {
 	_, err := tx.ExecContext(ctx, fmt.Sprintf(`DROP TABLE IF EXISTS %s`, q(ftsTable(table))))
 	return err
+}
+
+func (s *Store) Ready(ctx context.Context) error {
+	if s.closed.Load() {
+		return ErrClosed
+	}
+	f, err := os.CreateTemp(s.dir, ".ready-*")
+	if err != nil {
+		return fmt.Errorf("the data directory is not writable, so no write can succeed: %w", err)
+	}
+	name := f.Name()
+	f.Close()
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("the data directory is not writable, so no write can succeed: %w", err)
+	}
+	if n := s.stillUnreadable(ctx); n > 0 {
+		return fmt.Errorf("%d namespace(s) cannot be read (the startup log names them); repair or remove the file and readiness recovers on its own", n)
+	}
+	return ctx.Err()
+}
+
+func (s *Store) stillUnreadable(ctx context.Context) int {
+	s.unreadableMu.Lock()
+	defer s.unreadableMu.Unlock()
+	kept := s.unreadable[:0]
+	for _, name := range s.unreadable {
+		if s.namespaceUnreadable(ctx, name) {
+			kept = append(kept, name)
+		}
+	}
+	s.unreadable = kept
+	return len(kept)
+}
+
+func (s *Store) namespaceUnreadable(ctx context.Context, name string) bool {
+	if _, err := os.Stat(s.nsPath(name)); errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	ro, err := sql.Open("sqlite", dsn(s.nsPath(name), true))
+	if err != nil {
+		return true
+	}
+	defer ro.Close()
+	_, minReader, err := readCatalogVersion(ctx, ro)
+	return err != nil || minReader > CatalogFormat
 }

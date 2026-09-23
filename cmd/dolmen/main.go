@@ -74,7 +74,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	storeOpen := true
+	defer func() {
+		if storeOpen {
+			st.Close()
+		}
+	}()
 
 	emb, err := newEmbedProvider(cfg)
 	if err != nil {
@@ -85,7 +90,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer grants.Close()
+	grantsOpen := true
+	defer func() {
+		if grantsOpen {
+			grants.Close()
+		}
+	}()
 
 	oidcSrc, err := buildOIDC(cfg, grants)
 	if err != nil {
@@ -102,7 +112,7 @@ func run() error {
 
 	httpSrv := &http.Server{
 		Addr:    cfg.Addr,
-		Handler: api.OriginGuard(router, cfg.AllowedOrigins),
+		Handler: apiSrv.Track(api.OriginGuard(router, cfg.AllowedOrigins)),
 	}
 	cfg.Timeouts.Configure(httpSrv)
 
@@ -112,7 +122,7 @@ func run() error {
 	errCh := make(chan error, 1)
 	go func() {
 		slog.Info("dolmen listening", "addr", cfg.Addr, "data", cfg.DataDir, "sync", cfg.Sync, "embed", emb.Name(), "version", version.Version)
-		slog.Info("endpoints", "mcp", "http://"+cfg.Addr+cfg.Prefix+"/mcp", "api", "http://"+cfg.Addr+cfg.Prefix+"/v1/{op}", "health", "http://"+cfg.Addr+cfg.Prefix+"/healthz", "version", "http://"+cfg.Addr+cfg.Prefix+"/version", "skills", "http://"+cfg.Addr+cfg.Prefix+"/skills")
+		slog.Info("endpoints", "mcp", "http://"+cfg.Addr+cfg.Prefix+"/mcp", "api", "http://"+cfg.Addr+cfg.Prefix+"/v1/{op}", "live", "http://"+cfg.Addr+cfg.Prefix+"/livez", "ready", "http://"+cfg.Addr+cfg.Prefix+"/readyz", "version", "http://"+cfg.Addr+cfg.Prefix+"/version", "skills", "http://"+cfg.Addr+cfg.Prefix+"/skills")
 		logAuthPosture(cfg.Auth)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
@@ -123,10 +133,42 @@ func run() error {
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return httpSrv.Shutdown(shutdownCtx)
+		storeOpen, grantsOpen = false, false
+		return shutdown(httpSrv, apiSrv, cfg.ShutdownGrace, st.Close, grants.Close)
 	}
+}
+
+func shutdown(httpSrv *http.Server, apiSrv *api.Server, grace time.Duration, closers ...func() error) error {
+	apiSrv.Drain()
+	slog.Info("shutdown: draining; readiness reports not_ready and no new requests are accepted", "active", apiSrv.Inflight(), "grace", grace)
+	drainCtx := context.Background()
+	if grace > 0 {
+		var cancel context.CancelFunc
+		drainCtx, cancel = context.WithTimeout(drainCtx, grace)
+		defer cancel()
+	}
+	var errs []error
+	if err := httpSrv.Shutdown(drainCtx); err != nil {
+		slog.Warn("shutdown: grace period ended with requests still running; cancelling them, and any open transaction rolls back", "active", apiSrv.Inflight())
+		errs = append(errs, fmt.Errorf("drain: %w", err))
+		if cerr := httpSrv.Close(); cerr != nil {
+			errs = append(errs, fmt.Errorf("close listeners: %w", cerr))
+		}
+	} else {
+		slog.Info("shutdown: every request finished")
+	}
+	for _, c := range closers {
+		if err := c(); err != nil {
+			errs = append(errs, fmt.Errorf("close: %w", err))
+		}
+	}
+	err := errors.Join(errs...)
+	if err != nil {
+		slog.Error("shutdown: finished with errors", "err", err)
+	} else {
+		slog.Info("shutdown: complete")
+	}
+	return err
 }
 
 func runStdio(args []string) error {
@@ -296,6 +338,7 @@ type config struct {
 	ChangeRetention    time.Duration
 	MaxSubscriptionAge time.Duration
 	Sync               store.SyncMode
+	ShutdownGrace      time.Duration
 	Timeouts           api.Timeouts
 	MaxOpenNamespaces  int
 }
@@ -328,6 +371,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	maxOpenDefault, maxOpenErr := envIntOr("DOLMEN_MAX_OPEN_NAMESPACES", store.DefaultMaxOpenNamespaces, getenv)
 	maxOpenNamespaces := fs.Int("max-open-namespaces", maxOpenDefault, "namespaces held open at once; past it, the least recently used idle namespace is closed until it is next used (at least 1; sqlite engine)")
 	syncMode := fs.String("sync", envOr("DOLMEN_SYNC", string(store.DefaultSync), getenv), "commit durability: full (an acknowledged commit survives power loss) or normal (it survives a process crash; the last commits before a power loss may be lost); sqlite engine")
+	shutdownGrace := fs.String("shutdown-grace", envOr("DOLMEN_SHUTDOWN_GRACE", "60s", getenv), "on SIGTERM, how long running requests may finish before they are cancelled: 0 waits for them without a bound, otherwise 1s to 24h")
 	changeRetention := fs.String("change-retention", envOr("DOLMEN_CHANGE_RETENTION", "168h", getenv), "change-log retention: 0 disables pruning (records and cursors never expire); otherwise 1h to 2160h")
 	maxSubscriptionAge := fs.String("max-subscription-age", envOr("DOLMEN_MAX_SUBSCRIPTION_AGE", "30m", getenv), "subscribe connection age bound: the stream teaching-closes at the bound and the client reconnects from its cursor; 0 disables the bound (the identity-refresh backstop is lost), otherwise 1s to 24h")
 	readTimeout := fs.String("read-timeout", envOr("DOLMEN_READ_TIMEOUT", api.DefaultReadTimeout.String(), getenv), "time to read one request, headers and body: 0 disables the bound, otherwise 1s to 24h")
@@ -461,6 +505,13 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		return nil, &printedError{err}
 	}
 
+	grace, err := parseBound("shutdown grace", *shutdownGrace)
+	if err != nil {
+		fmt.Fprintf(out, "config: %v\n", err)
+		fs.Usage()
+		return nil, &printedError{err}
+	}
+
 	sync, err := store.ParseSyncMode(*syncMode)
 	if err != nil {
 		fmt.Fprintf(out, "config: %v\n", err)
@@ -535,6 +586,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		ChangeRetention:    retention,
 		MaxSubscriptionAge: maxAge,
 		Sync:               sync,
+		ShutdownGrace:      grace,
 		Timeouts:           timeouts,
 		MaxOpenNamespaces:  *maxOpenNamespaces,
 		Embed: embedConfig{
@@ -659,6 +711,7 @@ func printEnvHelp(out io.Writer) {
 		{"DOLMEN_BASE_URL", "public base URL for skills and MCP links (default: use request Host)"},
 		{"DOLMEN_SKILL_NAMESPACE_HINT", "hint text rendered into skill markdown"},
 		{"DOLMEN_SYNC", "commit durability: full (default; survives power loss) or normal (survives a process crash)"},
+		{"DOLMEN_SHUTDOWN_GRACE", "on SIGTERM, time running requests may finish: 0 waits unbounded, else 1s to 24h (default 60s)"},
 		{"DOLMEN_CHANGE_RETENTION", "change-log retention: 0 disables pruning, else 1h to 2160h (default 168h)"},
 		{"DOLMEN_MAX_SUBSCRIPTION_AGE", "subscribe connection age bound: 0 disables, else 1s to 24h (default 30m)"},
 		{"DOLMEN_READ_TIMEOUT", "time to read one request, headers and body: 0 disables, else 1s to 24h (default 2m)"},
