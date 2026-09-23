@@ -709,3 +709,24 @@ func TestRequestDerivedDocumentsAreNotSharedCacheable(t *testing.T) {
 		}
 	}
 }
+
+func TestAMissingTableSaysWhereToLook(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("papertrack", "papers", []map[string]any{{"name": "title", "type": "string"}})
+	cases := map[string]string{
+		"paper":      "table papertrack.paper does not exist; list_tables shows the tables papertrack holds",
+		"my-papers!": `invalid table name "my-papers!": must start with a lowercase letter, contain only a-z, 0-9, and underscores, and be at most 64 characters; no such table exists in papertrack, and list_tables shows the tables it holds`,
+		"select":     `table name "select" is a reserved SQLite/SQL keyword; use a different name such as "my_select"; no such table exists in papertrack, and list_tables shows the tables it holds`,
+	}
+	for table, want := range cases {
+		status, body := h.httpCall("describe_table", map[string]any{"namespace": "papertrack", "table": table})
+		errObj := envelopeOf(t, body)
+		if status != http.StatusNotFound || errObj["code"] != "not_found" || errObj["message"] != want {
+			t.Fatalf("%s over /v1: %d %v\nwant not_found %q", table, status, errObj, want)
+		}
+		env := h.mcpCall("describe_table", map[string]any{"namespace": "papertrack", "table": table}).toolError()
+		if env == nil || env["code"] != "not_found" || env["message"] != want {
+			t.Fatalf("%s over MCP: %v\nwant not_found %q", table, env, want)
+		}
+	}
+}

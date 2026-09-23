@@ -26,7 +26,7 @@ func (s *Store) loadTable(ctx context.Context, tx pgx.Tx, n namespace, table str
 	var generation int64
 	err := tx.QueryRow(ctx, "SELECT physical, schema_json, columns_json, drop_generation FROM "+s.relation("tables")+" WHERE namespace=$1 AND name=$2 AND active", n.name, table).Scan(&result.physical, &raw, &columns, &generation)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return result, fmt.Errorf("%w: table %s.%s", store.ErrNotFound, n.name, table)
+		return result, store.TableNotFound(n.name, table)
 	}
 	if err != nil {
 		return result, err
