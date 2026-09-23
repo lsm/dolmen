@@ -2013,7 +2013,7 @@ func longestVector(body []byte, limit int) int {
 		if err != nil {
 			return longest
 		}
-		if key != "vector" {
+		if name, _ := key.(string); !strings.EqualFold(name, "vector") {
 			var skip json.RawMessage
 			if dec.Decode(&skip) != nil {
 				return longest

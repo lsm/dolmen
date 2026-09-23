@@ -10,7 +10,15 @@ import (
 )
 
 func TestAnOversizedQueryVectorIsRefusedBeforeItIsDecoded(t *testing.T) {
-	body := []byte(`{"namespace":"ns","table":"t","vector":[` + strings.Repeat("0.5,", 2_000_000) + `0.5]}`)
+	for _, key := range []string{"vector", "Vector", "VECTOR"} {
+		t.Run(key, func(t *testing.T) {
+			refusesBeforeDecoding(t, []byte(`{"namespace":"ns","table":"t","`+key+`":[`+strings.Repeat("0.5,", 2_000_000)+`0.5]}`))
+		})
+	}
+}
+
+func refusesBeforeDecoding(t *testing.T, body []byte) {
+	t.Helper()
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
@@ -34,6 +42,7 @@ func TestLongestVectorSeesEveryVectorKey(t *testing.T) {
 		`{"vector":[[1,2],[3]]}`:                           2,
 		`not json`:                                         0,
 		`{"vector":[` + strings.Repeat("1,", 5000) + `1]}`: schema.MaxVectorDim + 1,
+		`{"Vector":[1],"vECTOR":[` + strings.Repeat("1,", 5000) + `1]}`: schema.MaxVectorDim + 1,
 	}
 	for body, want := range cases {
 		if got := longestVector([]byte(body), schema.MaxVectorDim); got != want {
