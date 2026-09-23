@@ -1196,6 +1196,7 @@ Every row has two implicit columns:
 | Search `limit` (`search_fulltext`, `search_vector`) | default 10, hard max 200 | omit `limit` for the default of 10; the tool schema enforces 1–200 for schema-validating clients, and the server clamps values above 200 to 200 (0 or negative selects the default on direct `/v1` calls) |
 | `query` result rows | 1,000 | truncated; `truncated` is `true` in the response |
 | `query` / search result bytes | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
+| A single value built by SQL (in `query` or a search `filter`), SQLite engine | 64 MiB | `query_error` before the value is built |
 | Request body size | 32 MiB | rejected with `413 Request Entity Too Large` |
 | `query` `args` | 100 | rejected |
 | `infer_schema` samples | 1–50 | rejected |

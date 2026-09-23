@@ -36,6 +36,7 @@ var (
 	malformedJSONRe = regexp.MustCompile(`(?i)\bmalformed\s+JSON\b`)
 	tooManyVarsRe   = regexp.MustCompile(`(?i)too\s+many\s+SQL\s+variables`)
 	misuseRe        = regexp.MustCompile(`(?i)misuse\s+at.*`)
+	tooBigRe        = regexp.MustCompile(`(?i)string or blob too big`)
 )
 
 func NewBackendQueryError(msg string, cause error) error {
@@ -78,6 +79,7 @@ func newSQLExecError(sql string, err error, filter bool) error {
 		hint = "the limit is 100 query parameters"
 	case strings.HasPrefix(base, "unknown SQL function "):
 		hint = "only standard SQL functions and table/column names from describe_table are supported"
+	case strings.HasPrefix(base, "a string or blob in the SQL is larger than"):
 	default:
 		hint = defaultHint
 	}
@@ -98,7 +100,7 @@ func recognizedQueryError(raw string) bool {
 	}
 	for _, re := range []*regexp.Regexp{
 		nearRe, unrecognizedRe, noSuchTableRe, noSuchColumnRe, noSuchFuncRe,
-		missingArgRe, incompleteRe, malformedJSONRe, tooManyVarsRe, misuseRe,
+		missingArgRe, incompleteRe, malformedJSONRe, tooManyVarsRe, misuseRe, tooBigRe,
 	} {
 		if re.MatchString(raw) {
 			return true
@@ -141,6 +143,9 @@ func RedactSQLMessage(raw string) string {
 	}
 	if tooManyVarsRe.MatchString(msg) {
 		return "too many query parameters"
+	}
+	if tooBigRe.MatchString(msg) {
+		return fmt.Sprintf("a string or blob in the SQL is larger than the %d MiB a single value may hold; select or compute smaller values", MaxValueBytes>>20)
 	}
 	if misuseRe.MatchString(msg) {
 		return "invalid use of SQL"
