@@ -180,6 +180,26 @@ anything and never overwrites a namespace. The README's
 reconnects later gets a teaching error and restarts from the head. `0` disables pruning:
 records accumulate and cursors never expire, which costs disk and nothing else.
 
+## Open namespaces and file descriptors
+
+Each namespace is a SQLite file, and an open one holds a single write connection plus a read pool
+of up to 16 connections, two of which stay open while idle. A connection keeps about three file
+descriptors: the database, its write-ahead log, and the shared-memory index. An idle namespace
+therefore costs around nine descriptors, and a busy one up to about fifty.
+
+`-max-open-namespaces` (default `128`) caps how many namespaces stay open. Opening one past the cap
+first closes the least recently used idle namespace, and that namespace reopens on its next
+request at the cost of a few milliseconds. A namespace in use is never closed: an operation holds
+its namespace until it returns, and a `subscribe` stream holds it until the stream ends. The cap
+therefore bounds the idle namespaces, and the open count can exceed it by the number in use at
+that moment. Size the process's descriptor limit for the cap times nine, plus fifty for each
+namespace you expect to be busy at once.
+
+No connection has an idle timeout while its namespace is open; the read pool only closes
+connections beyond the two it keeps. A read-only connection cannot recreate the shared-memory file
+SQLite removes when the last connection to a database closes, so the write connection stays open
+for as long as the namespace does.
+
 ## Durability
 
 `-sync` (default `full`) sets what an acknowledged write survives. Every namespace runs in WAL
@@ -195,5 +215,6 @@ latest commits a crash can take with it.
 makes small writes faster. Choose `normal` only where the last moments of writes can be replayed
 from elsewhere. The mode is logged at startup, and a namespace whose writer does not report the
 chosen mode when it opens is refused rather than served with weaker durability. The Go library
-always uses `full`.
+always uses `full`. The grant registry (`_grants.db`) always uses `full` too: a revoked
+grant or key must stay revoked after a power loss.
 

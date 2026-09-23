@@ -201,6 +201,17 @@ func (sess *listenSession) fireClosed(cause error) {
 	})
 }
 
+func (sess *listenSession) unpinWhenDone() {
+	<-sess.stop
+	sess.pumps.Wait()
+	sess.mu.Lock()
+	for sess.replayActive {
+		sess.cond.Wait()
+	}
+	sess.mu.Unlock()
+	sess.n.unpin()
+}
+
 func (sess *listenSession) cancel() {
 	sess.cancelOnce.Do(func() {
 		if sess.s != nil {

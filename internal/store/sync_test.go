@@ -53,3 +53,14 @@ func TestANamespaceNotRunningTheChosenModeIsRefused(t *testing.T) {
 		t.Fatal("a writer that did not take the chosen mode must be refused, not silently weaker")
 	}
 }
+
+func TestASyncModeIsNormalizedBeforeUse(t *testing.T) {
+	st, err := Open(t.TempDir(), WithSync(" Normal "))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if st.sync != SyncNormal {
+		t.Fatalf("WithSync(\" Normal \") runs as %q; validation and behavior must agree", st.sync)
+	}
+}

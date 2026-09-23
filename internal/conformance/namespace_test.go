@@ -264,16 +264,18 @@ func TestReadOpsNeverCreateNamespaceFiles(t *testing.T) {
 }
 
 func TestWriteOpsStillCreateNamespacesImplicitly(t *testing.T) {
-	sqliteOnly(t)
 	h := newHarness(t)
 
 	h.mustHTTP("create_table", map[string]any{
 		"namespace": "born01", "table": "notes",
 		"fields": []any{map[string]any{"name": "body", "type": "text"}},
 	})
-	if _, err := os.Stat(filepath.Join(h.dir, "born01.db")); err != nil {
-		t.Fatalf("create_table must create its namespace implicitly: %v", err)
-	}
+	t.Run("sqlite namespace file appears on write", func(t *testing.T) {
+		sqliteOnly(t)
+		if _, err := os.Stat(filepath.Join(h.dir, "born01.db")); err != nil {
+			t.Fatalf("create_table must create its namespace implicitly: %v", err)
+		}
+	})
 
 	names := h.mustHTTP("list_namespaces", map[string]any{})
 	list, _ := names["namespaces"].([]any)

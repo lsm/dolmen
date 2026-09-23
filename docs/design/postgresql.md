@@ -981,9 +981,9 @@ Each harness derives a catalog schema from its data directory, so a harness rest
 reconnects to the same catalog instead of a fresh one. The stdio subprocess fixtures
 drive the real binary against PostgreSQL through its own flags, and the embedded facade
 fixtures derive their catalog the same way and open through `postgres.With`, so both
-constructors are exercised rather than skipped. Two groups skip deliberately: auth-on
-harness modes (row authorization is unimplemented on PostgreSQL) and fixtures that probe
-SQLite storage internals directly.
+constructors are exercised rather than skipped. The auth-on harness modes run here too.
+What skips deliberately is the checks that probe SQLite storage internals directly, and
+the full-text syntax that native search refuses (see "Native search").
 
 Listen anchors a replay boundary at the namespace head, so replay terminates under
 concurrent writes and the stream reaches its ready frame, and it rejects a cursor that

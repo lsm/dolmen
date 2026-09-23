@@ -44,6 +44,7 @@ func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields
 	if err != nil {
 		return InsertResult{}, err
 	}
+	defer n.unpin()
 	for attempt := 0; ; attempt++ {
 		if attempt >= 3 {
 			return InsertResult{}, invalidf("table schema changed concurrently; retry the upsert")
