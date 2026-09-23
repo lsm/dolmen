@@ -69,14 +69,14 @@ func (r *filterRenderer) captureBoolean(n filter.Node, next int) (string, error)
 }
 
 func (r *filterRenderer) booleanShaped(n filter.Node) bool {
-	return r.isBooleanNode(n) || rendersAsTruthValue(n)
+	return r.isBooleanNode(n) || rendersAsTruthValue(n) || choosesAmongTruthValues(n)
 }
 
 func (r *filterRenderer) truth(n filter.Node, next int) (string, error) {
 	if r.isBooleanNode(n) {
 		return r.captureBoolean(n, next)
 	}
-	if rendersAsTruthValue(n) {
+	if rendersAsTruthValue(n) || choosesAmongTruthValues(n) {
 		return r.capture(n, next)
 	}
 	if r.affinityOf(n) == affText {
@@ -1905,4 +1905,32 @@ func (r *filterRenderer) comparedClassOf(n filter.Node) affinity {
 		return agreed
 	}
 	return affUnknown
+}
+
+func choosesAmongTruthValues(n filter.Node) bool {
+	var results []filter.Node
+	switch node := unparen(n).(type) {
+	case *filter.Call:
+		switch {
+		case node.Name == "iif" && len(node.Args) == 3:
+			results = node.Args[1:]
+		case node.Name == "coalesce" || node.Name == "ifnull":
+			results = node.Args
+		case node.Name == "nullif" && len(node.Args) > 0:
+			results = node.Args[:1]
+		}
+	case *filter.Case:
+		results = caseResults(node)
+	}
+	found := false
+	for _, result := range results {
+		if isNullLiteral(result) {
+			continue
+		}
+		if !rendersAsTruthValue(result) && !choosesAmongTruthValues(result) {
+			return false
+		}
+		found = true
+	}
+	return found
 }

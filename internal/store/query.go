@@ -191,11 +191,11 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsG
 	}
 	defer n.unpin()
 
-	tx, err := n.ro.BeginTx(ctx, nil)
+	tx, done, err := beginCallerTx(ctx, n.ro, nil)
 	if err != nil {
 		return QueryResult{}, err
 	}
-	defer tx.Rollback()
+	defer done()
 	registered, err := registeredTables(ctx, tx)
 	if err != nil {
 		return QueryResult{}, err

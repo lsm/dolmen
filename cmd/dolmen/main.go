@@ -46,8 +46,15 @@ func main() {
 
 func run() error {
 	args := os.Args[1:]
-	if len(args) > 0 && args[0] == "mcp" {
-		return runStdio(args[1:])
+	if len(args) > 0 {
+		switch args[0] {
+		case "mcp":
+			return runStdio(args[1:])
+		case "backup":
+			return runBackup(args[1:], os.Getenv, os.Stdout, os.Stderr)
+		case "restore":
+			return runRestore(args[1:], os.Getenv, os.Stdout, os.Stderr)
+		}
 	}
 	cfg, err := loadConfig(args, os.Getenv, os.LookupEnv, os.Stderr, false)
 	if err != nil {
@@ -330,7 +337,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	migrateTimeout := fs.String("migrate-timeout", envOr("DOLMEN_MIGRATE_TIMEOUT", "0", getenv), "time for one migrate call, which may backfill every row: 0 (default) leaves it unbounded, otherwise 1s to 24h")
 
 	fs.Usage = func() {
-		fmt.Fprint(out, "Usage: dolmen [flags]\n       dolmen mcp [flags]\n\nFlags:\n")
+		fmt.Fprint(out, "Usage: dolmen [flags]\n       dolmen mcp [flags]\n       dolmen backup -out DIR [-data DIR]\n       dolmen restore -from DIR [-data DIR]\n\nFlags:\n")
 		fs.PrintDefaults()
 		printEnvHelp(out)
 	}

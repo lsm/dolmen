@@ -166,6 +166,13 @@ committed, and answered `504` with code `timeout`. Two interactions with a proxy
   connection dolmen has just closed turns the next request into a `502`, so set `-idle-timeout`
   above the balancer's own idle timeout.
 
+## Backups
+
+Back up with `dolmen backup`, which snapshots every namespace and the grant registry while the
+server keeps serving, and restore with `dolmen restore`, which verifies a backup before it writes
+anything and never overwrites a namespace. The README's
+[Backup and restore](../README.md#backup-and-restore) section has the commands.
+
 ## Change retention
 
 `-change-retention` (default `168h`) bounds how long a cursor from `changes_since`, `wait_for` or
