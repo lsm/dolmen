@@ -1199,7 +1199,7 @@ func (r *filterRenderer) textAffinity(node *filter.Binary, op string, next int, 
 	if otherIsRight {
 		other = node.Right
 	}
-	if r.affinityOf(other) != affNumber {
+	if r.comparedClassOf(other) != affNumber {
 		return r.storageClassComparison(node, op, next)
 	}
 	if text, ok := r.staticNumberAsText(other); ok {

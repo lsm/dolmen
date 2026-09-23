@@ -428,6 +428,11 @@ see an arithmetic result as having no known class, and it let PostgreSQL coerce 
 text to a number and compare the values. That was a wrong row set whenever the value
 was large enough. An arithmetic result, a signed one, and a conditional whose branches
 are all such results now count as numbers when a comparison asks for their class.
+The class-order answer is only for text that carries no affinity. A declared TEXT column
+applies its affinity to the number and compares the number's text form, and the
+refusal described earlier covers that. `code = (n + 100)` is refused, not answered
+`false`, because the text of a computed double isn't something PostgreSQL can
+reproduce.
 
 A boolean-shaped expression is an INTEGER everywhere a boolean column is one, and that
 includes the places it is not obviously a number. Against a declared TEXT column it takes
