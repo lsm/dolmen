@@ -118,9 +118,9 @@ func TestGoldenErrorContract(t *testing.T) {
 
 		{"write sql rejected", "query", map[string]any{"namespace": "errc", "sql": "INSERT INTO t (title) VALUES ('x')"}, 400, "invalid_request", `^query must begin with SELECT or WITH \(got "INSERT"\); query is read-only`},
 		{"multiple statements rejected", "query", map[string]any{"namespace": "errc", "sql": "SELECT 1; SELECT 2"}, 400, "invalid_request", `multiple statements are not allowed`},
-		{"fts syntax error", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "don't"}, 400, "invalid_request", `fts5: syntax error`},
-		{"fts unknown column filter", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "nocol:x"}, 400, "invalid_request", `column "nocol" not found`},
-		{"fts syntax error with filter", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "don't", "filter": "id > 0"}, 400, "invalid_request", `fts5: syntax error`},
+		{"fts syntax error", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "don't"}, 400, "invalid_request", `^query "don't": FTS5 reads "'" as query syntax, not text, so a term that contains punctuation must be double-quoted`},
+		{"fts unknown column filter", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "nocol:x"}, 400, "invalid_request", `^query "nocol:x": FTS5 reads a word before a colon as the name of a column to search, and this table has no full-text field named "nocol"`},
+		{"fts syntax error with filter", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "don't", "filter": "id > 0"}, 400, "invalid_request", `^query "don't": FTS5 reads "'" as query syntax, not text, so a term that contains punctuation must be double-quoted`},
 		{"fts gate substring in query", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "SQLITE_-x"}, 400, "invalid_request", `query "SQLITE_-x": FTS5 parses a bare "-".*double-quoted`},
 		{"fts misuse framing in query", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "misuse at line 1 -x"}, 400, "invalid_request", `query "misuse at line 1 -x": FTS5 parses a bare "-".*double-quoted`},
 		{"field name echoing gate substring", "create_table", map[string]any{
