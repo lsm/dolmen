@@ -182,6 +182,31 @@ var pinnedFilterSemantics = []struct {
 	{"a nullif double divides as a double", "nullif(3.0, 0) / 2 = 1.5", ""},
 	{"a modulo of a double is a double", "(7.5 % 2) / 2 = 0.5", ""},
 	{"a modulo of integers is an integer", "(7 % 4) / 2 = 1", ""},
+	{"substr from position zero takes one fewer", "substr(body, 0, 3) = 'a '", ""},
+	{"substr from before the start keeps what overlaps", "substr(body, -100, 103) = body", ""},
+	{"substr with a length reaching past the start", "substr(body, 5, -100) = 'a no'", ""},
+	{"substr converts its positions to integers", "substr(body, '3', 2.9) = 'no'", ""},
+	{"substr from a null start is null", "substr(body, NULL) IS NULL", ""},
+	{"substr with a null length is null", "substr(body, 2, NULL) IS NULL", ""},
+	{"substr counts characters, not bytes", "substr('h\u00e9llo', -4, 2) = '\u00e9l'", ""},
+	{"substr from past the end is empty", "substr(body, 9223372036854775807, 2) = ''", ""},
+	{"substr from int64 min is empty", "substr(body, -9223372036854775808, 3) = ''", ""},
+	{"substr with an int64 min length", "substr(body, 2, -9223372036854775808) = 'a'", ""},
+	{"substr of a blob counts bytes", "substr(X'616263', -2) = X'6263'", ""},
+	{"a coalesced text column loses its affinity", "NOT (coalesce(code, 1) = 1)", ""},
+	{"a chosen text column loses its affinity", "NOT (iif(1, code, 1) = 1)", ""},
+	{"a coalesced number still meets a text column's affinity", "coalesce(absent, 1) = code", ""},
+	{"a coalesced number divides as an integer", "coalesce(absent, 4) / 2 = 2", ""},
+	{"a coalesced number sorts before text", "coalesce(absent, 1) < 'a'", ""},
+	{"a coalesced number column loses its affinity", "NOT (coalesce(n, 'x') = '-7')", ""},
+	{"a coalesced number after a null loses its affinity", "NOT (coalesce(absent, n) = '-7')", ""},
+	{"a CASE over mixed types", "CASE WHEN id = 1 THEN 'x' ELSE 2 END = 'x'", ""},
+	{"a simple CASE over mixed types", "CASE id WHEN 1 THEN body WHEN 2 THEN 3 END = body", ""},
+	{"mixed types nested inside mixed types", "coalesce(absent, iif(id = 1, 3, 'y')) + 1 = 4", ""},
+	{"a coalesced comparison is its digit", "coalesce(absent, n > 1) = 0", ""},
+	{"a coalesced boolean column is its digit", "coalesce(absent, flag) = 1", ""},
+	{"a coalesced date divides as a number", "coalesce(strftime('%Y', created_at), 0) / 2 > 900", ""},
+	{"a chosen hour divides as a number", "iif(0, 1.5, strftime('%H', created_at)) / 5 >= 0", ""},
 	{"a constant text expression saturates too", "abs('1e999999' || '') > 1", ""},
 	{"a coalesced constant text saturates too", "abs(coalesce('1e-999999', 'x')) = 0", ""},
 	{"a boolean expression never equals text", "NOT ((n > 1) = body)", ""},
@@ -277,10 +302,7 @@ var pinnedFilterSemantics = []struct {
 	{"a Julian number is read as SQLite rounds it", "julianday(2729462.7741404455) = 2729462.7741404516", ""},
 }
 
-var notYetEvaluatedByAdapterTwo = map[string]bool{
-	"substr from a negative start": true, "substr with a negative length": true,
-	"coalesce over mixed types": true,
-}
+var notYetEvaluatedByAdapterTwo = map[string]bool{}
 
 var notYetSpelledByAdapterTwo = map[string]bool{}
 

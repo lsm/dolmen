@@ -22,6 +22,8 @@ type filterRenderer struct {
 	sb         strings.Builder
 	rawBoolean bool
 	classes    map[filter.Node]string
+	stripped   map[filter.Node]bool
+	lifted     int
 }
 
 var renderedFunctions = map[string]string{
@@ -36,7 +38,7 @@ func filterNotRenderable(name string) error {
 
 func renderScopedFilter(node filter.Node, columns map[string]string, types map[string]schema.FieldType, args []any, next int) (string, []any, error) {
 	r := &filterRenderer{columns: columns, types: types, args: args}
-	rendered, err := r.truth(node, next)
+	rendered, err := r.liftedTruth(node, next)
 	if err != nil {
 		return "", nil, err
 	}
@@ -502,6 +504,11 @@ func (r *filterRenderer) call(node *filter.Call, next int) error {
 		}
 		r.sb.WriteString(sqliteDouble(rounded + ")"))
 		return nil
+	case "substr":
+		if len(node.Args) < 2 || len(node.Args) > 3 {
+			return filterNotRenderable("substr")
+		}
+		return r.substr(node, next)
 	case "abs":
 		if len(node.Args) == 1 && r.affinityOf(node.Args[0]) == affText {
 			arg, err := r.captureNumeric(node.Args[0], next)
@@ -727,6 +734,9 @@ var sqliteNumeralHead = regexp.MustCompile(`^[\t\n\v\f\r ]*[+-]?(?:[0-9]+\.?[0-9
 var sqliteNumericText = regexp.MustCompile(`^[\t\n\v\f\r ]*[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?[\t\n\v\f\r ]*$`)
 
 func (r *filterRenderer) declaredAffinityOf(n filter.Node) affinity {
+	if r.stripped[n] {
+		return affUnknown
+	}
 	switch node := n.(type) {
 	case *filter.Paren:
 		return r.declaredAffinityOf(node.Inner)
@@ -900,6 +910,9 @@ func (r *filterRenderer) affinityOf(n filter.Node) affinity {
 		}
 		return affUnknown
 	case *filter.Call:
+		if node.Name == "substr" && len(node.Args) > 0 && r.affinityOf(node.Args[0]) == affBlob {
+			return affBlob
+		}
 		switch node.Name {
 		case "abs", "round", "length", "instr", "julianday":
 			return affNumber
@@ -1522,4 +1535,260 @@ func withoutNaN(text string) string {
 
 func asciiFold(expr string) string {
 	return "translate(" + expr + ", '" + asciiUpperSet + "', '" + asciiLowerSet + "')"
+}
+
+func (r *filterRenderer) substr(node *filter.Call, next int) error {
+	subject, err := r.capture(node.Args[0], next)
+	if err != nil {
+		return err
+	}
+	start, err := r.substrInteger(node.Args[1], next)
+	if err != nil {
+		return err
+	}
+	length := "1000000000"
+	if len(node.Args) == 3 {
+		if length, err = r.substrInteger(node.Args[2], next); err != nil {
+			return err
+		}
+	}
+	size := "char_length(" + subject + ")"
+	if r.affinityOf(node.Args[0]) == affBlob {
+		size = "octet_length(" + subject + ")"
+	}
+	anchor := "(CASE WHEN " + start + " > 0 THEN " + start + " - 1 WHEN " + start + " = 0 THEN -1 ELSE " +
+		start + " + " + size + " END)"
+	low := "(" + anchor + " + least(" + length + ", 0))"
+	count := "greatest(least(" + low + " + abs(" + length + "), abs(" + length + ")), 0)"
+	r.sb.WriteString("(CASE WHEN " + start + " IS NULL OR " + length + " IS NULL THEN NULL ELSE pg_catalog.substr(" +
+		subject + ", (least(greatest(" + low + ", 0), 2147483646) + 1)::int, least(" + count + ", 2147483647)::int) END)")
+	return nil
+}
+
+func (r *filterRenderer) substrInteger(n filter.Node, next int) (string, error) {
+	raw, numeric, err := r.numericOperand(n, next)
+	if err != nil {
+		return "", err
+	}
+	return r.moduloOperand(n, raw, numeric), nil
+}
+
+const maxLiftedBranches = 64
+
+type liftedChoice struct {
+	when   filter.Node
+	result filter.Node
+}
+
+func (r *filterRenderer) liftedTruth(root filter.Node, next int) (string, error) {
+	target := r.mixedConditional(root)
+	if target == nil {
+		return r.truth(root, next)
+	}
+	choices := chosenBranches(target)
+	r.lifted += len(choices)
+	if r.lifted > maxLiftedBranches {
+		return "", filterNotRenderable("a filter choosing among this many values of different types")
+	}
+	out := "(CASE"
+	for _, choice := range choices {
+		if r.stripped == nil {
+			r.stripped = map[filter.Node]bool{}
+		}
+		r.stripped[choice.result] = true
+		body, err := r.liftedTruth(substituted(root, target, choice.result), next)
+		if err != nil {
+			return "", err
+		}
+		if choice.when == nil {
+			out += " ELSE " + body
+			continue
+		}
+		condition, err := r.truth(choice.when, next)
+		if err != nil {
+			return "", err
+		}
+		out += " WHEN " + condition + " THEN " + body
+	}
+	return out + " END)", nil
+}
+
+func chosenBranches(n filter.Node) []liftedChoice {
+	null := func() filter.Node { return &filter.Literal{Kind: filter.LiteralNull} }
+	var out []liftedChoice
+	switch node := n.(type) {
+	case *filter.Call:
+		if node.Name == "iif" {
+			return []liftedChoice{{node.Args[0], node.Args[1]}, {nil, node.Args[2]}}
+		}
+		for i, arg := range node.Args {
+			if i == len(node.Args)-1 {
+				out = append(out, liftedChoice{nil, arg})
+				continue
+			}
+			out = append(out, liftedChoice{&filter.Is{Negated: true, Left: arg, Right: null()}, arg})
+		}
+	case *filter.Case:
+		for _, branch := range node.Branches {
+			when := branch.When
+			if node.Operand != nil {
+				when = &filter.Binary{Op: "=", Left: node.Operand, Right: branch.When}
+			}
+			out = append(out, liftedChoice{when, branch.Then})
+		}
+		otherwise := node.Else
+		if otherwise == nil {
+			otherwise = null()
+		}
+		out = append(out, liftedChoice{nil, otherwise})
+	}
+	return out
+}
+
+func (r *filterRenderer) mixedConditional(n filter.Node) filter.Node {
+	var results []filter.Node
+	switch node := n.(type) {
+	case *filter.Call:
+		switch {
+		case node.Name == "iif" && len(node.Args) == 3:
+			results = node.Args[1:]
+		case (node.Name == "coalesce" || node.Name == "ifnull") && len(node.Args) > 0:
+			results = node.Args
+		}
+	case *filter.Case:
+		results = caseResults(node)
+	}
+	kinds := map[string]bool{}
+	for _, result := range results {
+		if kind := r.valueKind(result); kind != "" {
+			kinds[kind] = true
+		}
+	}
+	if len(kinds) > 1 {
+		return n
+	}
+	for _, child := range filterChildren(n) {
+		if found := r.mixedConditional(child); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func (r *filterRenderer) valueKind(n filter.Node) string {
+	if isNullLiteral(n) {
+		return ""
+	}
+	if r.booleanShaped(n) && !r.isBooleanNode(n) {
+		return "boolean"
+	}
+	switch r.affinityOf(n) {
+	case affText:
+		return "text"
+	case affNumber:
+		return "number"
+	case affBlob:
+		return "blob"
+	}
+	if b, ok := unparen(n).(*filter.Binary); ok && strings.Contains("+-*/%", b.Op) {
+		return "number"
+	}
+	return "unknown"
+}
+
+func filterChildren(n filter.Node) []filter.Node {
+	switch node := n.(type) {
+	case *filter.Call:
+		return node.Args
+	case *filter.Binary:
+		return []filter.Node{node.Left, node.Right}
+	case *filter.Unary:
+		return []filter.Node{node.Operand}
+	case *filter.Paren:
+		return []filter.Node{node.Inner}
+	case *filter.Is:
+		return []filter.Node{node.Left, node.Right}
+	case *filter.In:
+		return append([]filter.Node{node.Left}, node.List...)
+	case *filter.Like:
+		out := []filter.Node{node.Left, node.Pattern}
+		if node.Escape != nil {
+			out = append(out, node.Escape)
+		}
+		return out
+	case *filter.Between:
+		return []filter.Node{node.Value, node.Low, node.High}
+	case *filter.Case:
+		var out []filter.Node
+		if node.Operand != nil {
+			out = append(out, node.Operand)
+		}
+		for _, branch := range node.Branches {
+			out = append(out, branch.When, branch.Then)
+		}
+		if node.Else != nil {
+			out = append(out, node.Else)
+		}
+		return out
+	}
+	return nil
+}
+
+func substituted(n, target, replacement filter.Node) filter.Node {
+	if n == target {
+		return replacement
+	}
+	if !contains(n, target) {
+		return n
+	}
+	sub := func(child filter.Node) filter.Node {
+		if child == nil {
+			return nil
+		}
+		return substituted(child, target, replacement)
+	}
+	subs := func(children []filter.Node) []filter.Node {
+		out := make([]filter.Node, len(children))
+		for i, child := range children {
+			out[i] = sub(child)
+		}
+		return out
+	}
+	switch node := n.(type) {
+	case *filter.Call:
+		return &filter.Call{Name: node.Name, Args: subs(node.Args)}
+	case *filter.Binary:
+		return &filter.Binary{Op: node.Op, Left: sub(node.Left), Right: sub(node.Right)}
+	case *filter.Unary:
+		return &filter.Unary{Op: node.Op, Operand: sub(node.Operand)}
+	case *filter.Paren:
+		return &filter.Paren{Inner: sub(node.Inner)}
+	case *filter.Is:
+		return &filter.Is{Negated: node.Negated, Left: sub(node.Left), Right: sub(node.Right)}
+	case *filter.In:
+		return &filter.In{Negated: node.Negated, Left: sub(node.Left), List: subs(node.List)}
+	case *filter.Like:
+		return &filter.Like{Negated: node.Negated, Left: sub(node.Left), Pattern: sub(node.Pattern), Escape: sub(node.Escape)}
+	case *filter.Between:
+		return &filter.Between{Negated: node.Negated, Value: sub(node.Value), Low: sub(node.Low), High: sub(node.High)}
+	case *filter.Case:
+		branches := make([]filter.CaseBranch, len(node.Branches))
+		for i, branch := range node.Branches {
+			branches[i] = filter.CaseBranch{When: sub(branch.When), Then: sub(branch.Then)}
+		}
+		return &filter.Case{Operand: sub(node.Operand), Branches: branches, Else: sub(node.Else)}
+	}
+	return n
+}
+
+func contains(n, target filter.Node) bool {
+	if n == target {
+		return true
+	}
+	for _, child := range filterChildren(n) {
+		if child != nil && contains(child, target) {
+			return true
+		}
+	}
+	return false
 }
