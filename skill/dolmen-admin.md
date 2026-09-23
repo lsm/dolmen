@@ -104,7 +104,7 @@ curl -s -X POST "${base%/}/v1/insert" \
 ```
 
 ```json
-{"ok":false,"error":{"code":"invalid_request","message":"unknown field \"titel\" on table findings (see describe_table)"}}
+{"ok":false,"error":{"code":"invalid_request","message":"unknown field \"titel\" on table findings (see describe_table)","request_id":"7c3e9a1f5b2d4e8a9c0f6b1d3e5a7c9f"}}
 ```
 
 ## JSON-RPC fallback
@@ -267,12 +267,15 @@ locked-out server.
    `search_vector` calls and to avoid inventing field names. Avoid calling it before every read or
    write on large tables — it runs a full `count(*)`, so cache the schema for the session.
 3. **Prefer `infer_schema` → review → `create_table`.** Never invent a schema blind when sample
-   records exist. Note: inference proposes plain types only — during review, mark the main text
-   field `vectorize: true` yourself if you want semantic recall (the built-in `local` embedding
-   provider is enabled by default; set `DOLMEN_EMBED_PROVIDER=openai` for an external endpoint, or
-   `none` to disable server-side embeddings; `describe_server` reports which one is active and
-   usable). Keep tables small and purposeful — a sprawl of near-duplicate tables is a
-   failure mode.
+   records exist. Read `warnings` first: a key that was sanitized, renamed, merged or split must be
+   renamed the same way in the records you insert, and `provenance` says which key feeds which
+   field. `evidence` shows how many samples carried each field and how many as null, which is
+   what tells you whether marking it `required` is safe. Note: inference proposes plain types
+   only — during review, mark the main text field `vectorize: true` yourself if you want semantic
+   recall (the built-in `local` embedding provider is enabled by default; set
+   `DOLMEN_EMBED_PROVIDER=openai` for an external endpoint, or `none` to disable server-side
+   embeddings; `describe_server` reports which one is active and usable). Keep tables small and
+   purposeful — a sprawl of near-duplicate tables is a failure mode.
 4. **Record as you go.** After finishing a meaningful unit of work, `insert` a record summarizing it
    (what/where/outcome). Future sessions recall it via search.
 5. **Read with the cheapest tool that answers the question:** `describe_table` → exact lookups via
@@ -590,6 +593,7 @@ A complete call, previewed first:
 | Natural key fields per `upsert_by_key` | 8 | rejected |
 | Idempotency key length | 1–256 bytes; use printable ASCII; omit the field for a non-idempotent insert | empty and over-256-byte keys are rejected; the JSON Schema enforces non-empty printable ASCII for schema-validating clients |
 | Vector dimension (declared `vector` fields) | 1–4096 | rejected |
+| `search_vector` query vector | at most 4096 numbers | rejected before the request is decoded |
 | Search `limit` | default 10, max 200 | omit `limit` for the default of 10; the tool schema enforces 1–200 for schema-validating clients, and the server clamps values above 200 to 200 (0 or negative selects the default on direct `/v1` calls) |
 | `query` result rows | 1,000 | truncated with `truncated: true` |
 | `query` / search result size | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |

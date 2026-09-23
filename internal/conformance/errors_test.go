@@ -118,9 +118,9 @@ func TestGoldenErrorContract(t *testing.T) {
 
 		{"write sql rejected", "query", map[string]any{"namespace": "errc", "sql": "INSERT INTO t (title) VALUES ('x')"}, 400, "invalid_request", `^query must begin with SELECT or WITH \(got "INSERT"\); query is read-only`},
 		{"multiple statements rejected", "query", map[string]any{"namespace": "errc", "sql": "SELECT 1; SELECT 2"}, 400, "invalid_request", `multiple statements are not allowed`},
-		{"fts syntax error", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "don't"}, 400, "invalid_request", `fts5: syntax error`},
-		{"fts unknown column filter", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "nocol:x"}, 400, "invalid_request", `column "nocol" not found`},
-		{"fts syntax error with filter", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "don't", "filter": "id > 0"}, 400, "invalid_request", `fts5: syntax error`},
+		{"fts syntax error", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "don't"}, 400, "invalid_request", `^query "don't": FTS5 reads "'" as query syntax, not text, so a term that contains punctuation must be double-quoted`},
+		{"fts unknown column filter", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "nocol:x"}, 400, "invalid_request", `^query "nocol:x": FTS5 reads a word before a colon as the name of a column to search, and this table has no full-text field named "nocol"`},
+		{"fts syntax error with filter", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "don't", "filter": "id > 0"}, 400, "invalid_request", `^query "don't": FTS5 reads "'" as query syntax, not text, so a term that contains punctuation must be double-quoted`},
 		{"fts gate substring in query", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "SQLITE_-x"}, 400, "invalid_request", `query "SQLITE_-x": FTS5 parses a bare "-".*double-quoted`},
 		{"fts misuse framing in query", "search_fulltext", map[string]any{"namespace": "errc", "table": "t", "query": "misuse at line 1 -x"}, 400, "invalid_request", `query "misuse at line 1 -x": FTS5 parses a bare "-".*double-quoted`},
 		{"field name echoing gate substring", "create_table", map[string]any{
@@ -706,6 +706,27 @@ func TestRequestDerivedDocumentsAreNotSharedCacheable(t *testing.T) {
 			if !strings.Contains(vary, want) {
 				t.Errorf("%s Vary = %q, missing %q", path, vary, want)
 			}
+		}
+	}
+}
+
+func TestAMissingTableSaysWhereToLook(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("papertrack", "papers", []map[string]any{{"name": "title", "type": "string"}})
+	cases := map[string]string{
+		"paper":      "table papertrack.paper does not exist; list_tables shows the tables papertrack holds",
+		"my-papers!": `invalid table name "my-papers!": must start with a lowercase letter, contain only a-z, 0-9, and underscores, and be at most 64 characters; no such table exists in papertrack, and list_tables shows the tables it holds`,
+		"select":     `table name "select" is a reserved SQLite/SQL keyword; use a different name such as "my_select"; no such table exists in papertrack, and list_tables shows the tables it holds`,
+	}
+	for table, want := range cases {
+		status, body := h.httpCall("describe_table", map[string]any{"namespace": "papertrack", "table": table})
+		errObj := envelopeOf(t, body)
+		if status != http.StatusNotFound || errObj["code"] != "not_found" || errObj["message"] != want {
+			t.Fatalf("%s over /v1: %d %v\nwant not_found %q", table, status, errObj, want)
+		}
+		env := h.mcpCall("describe_table", map[string]any{"namespace": "papertrack", "table": table}).toolError()
+		if env == nil || env["code"] != "not_found" || env["message"] != want {
+			t.Fatalf("%s over MCP: %v\nwant not_found %q", table, env, want)
 		}
 	}
 }

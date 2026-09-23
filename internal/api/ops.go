@@ -746,6 +746,8 @@ var Ops = map[string]OpDef{
 	},
 	"infer_schema": {
 		Description: "Propose table fields from sample JSON records (types, fulltext and timestamp detection). " +
+			"Field names are always valid for create_table: keys are sanitized, and keys that collapse to the same name are merged only when no sample carries two of them. " +
+			"warnings explains every rename or merge, provenance maps each field to its source keys, and evidence counts how many samples carried each field, how many as null, and which JSON types appeared. " +
 			"Review the proposal, adjust, then call create_table. Nothing is created by this call.",
 		InputSchema: map[string]any{
 			"type":                 "object",
@@ -777,7 +779,8 @@ var Ops = map[string]OpDef{
 				"description":          "Map from inferred field name to the original key(s) that produced it",
 				"additionalProperties": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			},
-		}, "fields", "warnings", "provenance"),
+			"evidence": inferEvidenceSchema,
+		}, "fields", "warnings", "provenance", "evidence"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req inferReq
 			if err := decodeData(body, &req); err != nil {
@@ -804,10 +807,17 @@ var Ops = map[string]OpDef{
 			if inf.Provenance == nil {
 				inf.Provenance = map[string][]string{}
 			}
+			if inf.Evidence == nil {
+				inf.Evidence = map[string]schema.FieldEvidence{}
+			}
+			if len(inf.Fields) > store.MaxFieldsPerTable {
+				inf.Warnings = append(inf.Warnings, fmt.Sprintf("the samples carry %d distinct fields but a table holds at most %d; create_table will refuse this proposal until %d of them are dropped", len(inf.Fields), store.MaxFieldsPerTable, len(inf.Fields)-store.MaxFieldsPerTable))
+			}
 			return map[string]any{
 				"fields":     inf.Fields,
 				"warnings":   inf.Warnings,
 				"provenance": inf.Provenance,
+				"evidence":   inf.Evidence,
 			}, nil
 		},
 	},
@@ -1200,13 +1210,14 @@ var Ops = map[string]OpDef{
 				},
 				"vector": map[string]any{
 					"type":        "array",
-					"description": "Raw query vector",
+					"description": fmt.Sprintf("Raw query vector, at most %d numbers (the largest dimension a vector field can declare)", schema.MaxVectorDim),
 					"items": map[string]any{
 						"type":    "number",
 						"minimum": -3.4028234663852886e+38,
 						"maximum": 3.4028234663852886e+38,
 					},
 					"minItems": 1,
+					"maxItems": schema.MaxVectorDim,
 				},
 				"column": prop("string", "Vector column to search (raw-vector queries only; text queries always search the vectorize _embedding space)"),
 				"limit": map[string]any{
@@ -1271,6 +1282,9 @@ var Ops = map[string]OpDef{
 			"skipped_vectors": prop("integer", "Rows whose stored vector was corrupt or dimension-mismatched and could not be scored; nonzero means those rows are missing from results"),
 		}, "results", "truncated", "skipped_vectors"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			if longestVector(body, schema.MaxVectorDim) > schema.MaxVectorDim {
+				return nil, wrapStoreErr(ops.QueryVectorTooLong())
+			}
 			var req vecReq
 			if err := decodeAllowNullArgs(body, &req); err != nil {
 				return nil, err
@@ -1996,6 +2010,45 @@ type ftsReq struct {
 	IncludeHidden bool   `json:"include_hidden"`
 	Filter        string `json:"filter"`
 	Args          []any  `json:"args"`
+}
+
+func longestVector(body []byte, limit int) int {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return 0
+	}
+	longest := 0
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return longest
+		}
+		if name, _ := key.(string); !strings.EqualFold(name, "vector") {
+			var skip json.RawMessage
+			if dec.Decode(&skip) != nil {
+				return longest
+			}
+			continue
+		}
+		if tok, err := dec.Token(); err != nil || tok != json.Delim('[') {
+			return longest
+		}
+		n := 0
+		for dec.More() {
+			if n++; n > limit {
+				return n
+			}
+			var skip json.RawMessage
+			if dec.Decode(&skip) != nil {
+				return longest
+			}
+		}
+		if _, err := dec.Token(); err != nil {
+			return longest
+		}
+		longest = max(longest, n)
+	}
+	return longest
 }
 
 type vecReq struct {

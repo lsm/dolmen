@@ -211,9 +211,8 @@ type rpcErr struct {
 }
 
 func parseMessage(body []byte) (rpcMessage, *rpcErr) {
-	var probe any
+	var probe json.RawMessage
 	probeDec := json.NewDecoder(bytes.NewReader(body))
-	probeDec.UseNumber()
 	if err := probeDec.Decode(&probe); err != nil {
 		return rpcMessage{}, &rpcErr{Code: jsonRPCParseError, Message: "invalid JSON"}
 	}
@@ -325,17 +324,15 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage, instr string) (any,
 		if params.Name == "" {
 			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "tools/call params must carry the tool name"}
 		}
-		if _, e := ensureObjectParams(msg.Params, "tools/call"); e != nil {
+		if _, e := objectParams(msg.Params, "tools/call"); e != nil {
 			return nil, e
 		}
 		args := params.Arguments
 		if len(bytes.TrimSpace(args)) == 0 {
 			args = json.RawMessage("{}")
 		} else {
-			argDec := json.NewDecoder(bytes.NewReader(args))
-			argDec.UseNumber()
-			var argProbe map[string]any
-			if err := argDec.Decode(&argProbe); err != nil || argProbe == nil {
+			var argProbe map[string]json.RawMessage
+			if err := json.Unmarshal(args, &argProbe); err != nil || argProbe == nil {
 				return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: "tools/call arguments must be an object"}
 			}
 		}
@@ -425,20 +422,20 @@ func validateCapabilityShapes(caps map[string]any) *rpcErr {
 	return nil
 }
 
-func ensureObjectParams(raw []byte, what string) (map[string]any, *rpcErr) {
+func objectParams(raw []byte, what string) (map[string]json.RawMessage, *rpcErr) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
 		return nil, nil
 	}
-	dec := json.NewDecoder(bytes.NewReader(trimmed))
-	dec.UseNumber()
-	var probe map[string]any
-	if err := dec.Decode(&probe); err != nil || probe == nil {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &probe); err != nil || probe == nil {
 		return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: fmt.Sprintf("invalid %s params", what)}
 	}
 	if meta, ok := probe["_meta"]; ok {
-		m, isObj := meta.(map[string]any)
-		if !isObj {
+		var m map[string]any
+		dec := json.NewDecoder(bytes.NewReader(meta))
+		dec.UseNumber()
+		if err := dec.Decode(&m); err != nil || m == nil {
 			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: fmt.Sprintf("invalid %s _meta", what)}
 		}
 		if pt, ok := m["progressToken"]; ok {
@@ -450,6 +447,24 @@ func ensureObjectParams(raw []byte, what string) (map[string]any, *rpcErr) {
 		}
 	}
 	return probe, nil
+}
+
+func ensureObjectParams(raw []byte, what string) (map[string]any, *rpcErr) {
+	shape, e := objectParams(raw, what)
+	if e != nil || shape == nil {
+		return nil, e
+	}
+	out := make(map[string]any, len(shape))
+	for k, v := range shape {
+		dec := json.NewDecoder(bytes.NewReader(v))
+		dec.UseNumber()
+		var val any
+		if err := dec.Decode(&val); err != nil {
+			return nil, &rpcErr{Code: jsonRPCInvalidParam, Message: fmt.Sprintf("invalid %s params", what)}
+		}
+		out[k] = val
+	}
+	return out, nil
 }
 
 func toolResult(structured any) map[string]any {
