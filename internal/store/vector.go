@@ -21,6 +21,7 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq Vecto
 	if err != nil {
 		return SearchResult{}, err
 	}
+	defer n.unpin()
 	tx, done, err := beginCallerTx(ctx, n.ro, nil)
 	if err != nil {
 		return SearchResult{}, err

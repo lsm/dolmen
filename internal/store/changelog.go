@@ -405,6 +405,7 @@ func (s *Store) ChangesSince(ctx context.Context, nsName, table string, from Cur
 	if err != nil {
 		return nil, "", err
 	}
+	defer n.unpin()
 	now := time.Now()
 	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1570,5 +1571,54 @@ func TestEmbedEstimateUsesCoercedDefault(t *testing.T) {
 	}
 	if n[0]["n"].(int64) != 2 {
 		t.Fatalf("apply must embed every backfilled row, got %v", n)
+	}
+}
+
+func TestAnInsertDuringALongMigrationWaitsAndSucceeds(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustNS(t, st, "test")
+	if _, err := st.CreateTable(ctx, "test", "plain", []schema.Field{{Name: "note", Type: schema.Text}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Insert(ctx, "test", "plain", []map[string]any{{"note": "before"}}, testEmbed); err != nil {
+		t.Fatal(err)
+	}
+	embedding := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	slow := Embedder{Identity: "fake-space", Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+		once.Do(func() { close(embedding) })
+		<-release
+		return fakeEmbed(ctx, texts)
+	}}
+	migrated := make(chan error, 1)
+	go func() {
+		_, err := st.Migrate(ctx, "test", "plain", []schema.Change{
+			{Op: schema.OpSetVectorize, Name: "note", Value: boolPtr(true)},
+		}, slow, 0)
+		migrated <- err
+	}()
+	<-embedding
+	inserted := make(chan error, 1)
+	go func() {
+		_, err := st.Insert(ctx, "test", "plain", []map[string]any{{"note": "during"}}, testEmbed)
+		inserted <- err
+	}()
+	select {
+	case err := <-inserted:
+		t.Fatalf("the insert finished while the migration still held the writer: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	if err := <-migrated; err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := <-inserted; err != nil {
+		t.Fatalf("an insert that waited out a migration must succeed against the new schema, got %v", err)
+	}
+	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM plain WHERE _embedding IS NOT NULL", nil, 0, 1)
+	if err != nil || rows[0]["n"] != int64(2) {
+		t.Fatalf("both rows must be embedded: %v %v", rows, err)
 	}
 }

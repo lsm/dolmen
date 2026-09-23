@@ -57,5 +57,6 @@ func (s *Store) NamespaceState(ctx context.Context, nsName string, auth []AuthBi
 	if err != nil {
 		return [16]byte{}, err
 	}
+	defer n.unpin()
 	return readNSGen(ctx, n.ro)
 }

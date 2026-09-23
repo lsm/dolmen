@@ -15,6 +15,7 @@ func (s *Store) GetRows(ctx context.Context, nsName, table string, ids []int64, 
 	if err != nil {
 		return QueryResult{}, err
 	}
+	defer n.unpin()
 	tx, err := n.ro.BeginTx(ctx, nil)
 	if err != nil {
 		return QueryResult{}, err
