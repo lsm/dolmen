@@ -61,6 +61,72 @@ If the `dolmen` MCP tools are not connected, do not improvise — ask the user t
 connection command above. MCP servers cannot be hot-loaded into an already-running session; when
 no user is available to re-run it, use the JSON-RPC fallback below instead.
 
+## When the server requires a credential
+
+A server running with authentication on answers any operation that arrives without an accepted
+credential with `401` and error code `unauthorized`. `/healthz`, `/version`, these skills and
+`/v1/openapi.json` stay open, so reaching them says nothing about access.
+
+Send the credential with every request, `/mcp` and `/v1/subscribe` included, as a bearer token:
+
+```bash
+base='{{ .BaseURL }}'
+curl -s -X POST "${base%/}/v1/whoami" \
+  -H "Authorization: Bearer $DOLMEN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{}'
+```
+
+```bash
+claude mcp add --transport http dolmen '{{ .MCPURL }}' --header "Authorization: Bearer $DOLMEN_TOKEN"
+```
+
+The people who run the server issue credentials: an API key minted for you (it starts with
+`dlm_`), or a token a person receives by signing in at `{{ .BaseURL }}/v1/auth/begin` in a browser,
+on servers that offer sign-in. You cannot complete that sign-in yourself. If you hold no
+credential, ask the user for one, and never put one in a URL, a filter, or a record.
+
+`unauthorized` and `forbidden` call for different responses:
+
+- `unauthorized` (401): no credential this server accepts. A missing, malformed, expired, or
+  revoked credential all get the same message, so retrying with the same one cannot help.
+- `forbidden` (403): you are authenticated, but no grant covers this operation on this object. Do
+  not retry, and do not probe other tables for one that works. Call `whoami`, which needs no
+  grant, and tell the user its `principal` and `groups` along with the operation and table you
+  need, so an administrator can grant it.
+
+A grant gives verbs on a namespace (covering its tables and sub-namespaces), on one table, or on
+the whole server. What each operation needs:
+
+| Operation | Needs |
+|---|---|
+| `read_rows`, `search_fulltext`, `search_vector`, `changes_since`, `wait_for`, `/v1/subscribe` | `read`, or on a table with `row_access` any of `create`, `update`, `delete` for your own rows |
+| `insert` | `create` |
+| `update` | `update` |
+| `delete` | `delete` |
+| `upsert`, `upsert_by_key` | `create` and `update` |
+| `query` | `read` on the whole namespace, since SQL can reach any table in it |
+| `describe_table` | any verb on the table |
+| `whoami`, `list_namespaces`, `list_tables`, `describe_server`, `capabilities`, `infer_schema` | nothing |
+
+Absence is not proof: `list_namespaces` lists only what you can reach, and `list_tables` answers
+`not_found` for a namespace you hold nothing under. A write to a namespace that does not exist
+answers `not_found` rather than creating it.
+
+**Tables with `row_access: "own"`.** The server records who wrote each row. Unless you hold
+`read`, you see and change only your own rows: reads, searches, filters, `update`, `delete`,
+`upsert_by_key` and the change feed all run over them alone, and a row you cannot see never shows
+up in a result, a count, or an error. Never send an `owner` field; the server stamps it, and
+supplying it is refused like any unknown field. Idempotency keys are yours alone, so the same
+string used by someone else is a different key.
+
+**Filters under authentication** are checked against a fixed allowlist: comparison, arithmetic,
+`||` and boolean operators, `LIKE`, `IN`, `BETWEEN`, `IS`, `CASE`, and the functions `abs`,
+`round`, `length`, `lower`, `upper`, `substr`, `trim`, `ltrim`, `rtrim`, `replace`, `instr`,
+`coalesce`, `ifnull`, `nullif`, `iif`, `date`, `time`, `datetime`, `julianday`, `strftime`. A filter
+sees only the row it is applied to, so no subqueries and no other tables, and nothing in it may
+read the clock: `'now'`, `CURRENT_TIMESTAMP`, `localtime` and `utc` are refused. Compute the moment
+you mean and bind it as a `?` argument. The error names whatever it refused.
+
 ## Raw HTTP
 
 Every tool in this skill is also a plain HTTP operation: `POST /v1/{operation}` with the tool's input
@@ -69,7 +135,7 @@ operation whose input fields are all optional (for example `list_namespaces`) ca
 body at all. Responses are enveloped — success is
 `{"ok":true,"data":...}` and failure is `{"ok":false,"error":{"code","message","request_id"}}`
 with a stable machine-readable `code` (`invalid_request`, `not_found`, `query_error`, `conflict`,
-`forbidden`, `embedder_unavailable`, `canceled`, `internal_error`); `request_id` is the request's
+`unauthorized`, `forbidden`, `embedder_unavailable`, `canceled`, `internal_error`); `request_id` is the request's
 `X-Request-Id` header when one was sent, otherwise a server-generated id, echoed back as the
 `X-Request-Id` response header — when a message says the underlying cause is in the server log
 under this id, this is the id. The full list of operations and their request schemas is in the OpenAPI document (`GET /v1/openapi.json`).

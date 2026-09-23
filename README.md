@@ -575,6 +575,9 @@ sees then depends on the verbs they hold on the table:
 
 Own-row visibility rides with **any** data verb, so a `create`-only appender can
 search back what it appended without being able to read anyone else's rows.
+When teams must not see each other's schema at all, a sub-namespace per team is
+the other tool; [Separating tenants](docs/deployment.md#separating-tenants)
+compares the two.
 
 `row_access` can be turned on later with `migrate`, but only while the table is
 empty — there is no honest way to assign owners to rows that already exist,
@@ -705,6 +708,10 @@ other's tokens, because the id is checked as well as the signature.
 carries no per-request credential, and treating whoever launched the subprocess
 as an administrator would be a silent bypass. Stdio is reachable only by its
 parent process, so run it with auth off.
+
+Running authentication for a team — which identity sources to enable, the first
+start and hand-over, what a gateway must do, and how sign-in behaves across
+replicas — is covered in the [deployment guide](docs/deployment.md).
 
 ## Reverse proxy / sub-path hosting
 

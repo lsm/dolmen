@@ -209,3 +209,49 @@ func TestAuthOffNeverEmitsUnauthorized(t *testing.T) {
 		}
 	}
 }
+
+func openAPIErrorCodes(t *testing.T, h *harness) []any {
+	t.Helper()
+	res, body := h.getNoCredential(t, "/v1/openapi.json")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("/v1/openapi.json: status %d", res.StatusCode)
+	}
+	var doc struct {
+		Components struct {
+			Schemas struct {
+				ErrorEnvelope struct {
+					Properties struct {
+						Error struct {
+							Properties struct {
+								Code struct {
+									Enum []any `json:"enum"`
+								} `json:"code"`
+							} `json:"properties"`
+						} `json:"error"`
+					} `json:"properties"`
+				} `json:"ErrorEnvelope"`
+			} `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal([]byte(body), &doc); err != nil {
+		t.Fatalf("decode /v1/openapi.json: %v", err)
+	}
+	return doc.Components.Schemas.ErrorEnvelope.Properties.Error.Properties.Code.Enum
+}
+
+func TestTheOpenAPIErrorEnumNamesUnauthorizedExactlyWhenAuthIsOn(t *testing.T) {
+	for _, tc := range []struct {
+		mode harnessMode
+		want bool
+	}{{authOff, false}, {authAdminKey, true}} {
+		named := false
+		for _, code := range openAPIErrorCodes(t, newHarnessMode(t, tc.mode)) {
+			if code == "unauthorized" {
+				named = true
+			}
+		}
+		if named != tc.want {
+			t.Errorf("auth %s: the error envelope's code enum names unauthorized: %v, want %v; a client validating a real 401 against the published schema must find its code there, and auth off never emits it", tc.mode.name, named, tc.want)
+		}
+	}
+}

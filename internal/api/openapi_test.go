@@ -112,7 +112,7 @@ func TestOpenAPIErrorEnvelopeMatchesObjectErrors(t *testing.T) {
 	for _, c := range enum {
 		got[c] = true
 	}
-	for _, want := range errorCodeEnum {
+	for _, want := range errorCodeEnum(false) {
 		if !got[want] {
 			t.Fatalf("ErrorEnvelope.error.code enum must contain %q, got %v", want, enum)
 		}
