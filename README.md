@@ -988,7 +988,7 @@ atomically with your side effects rather than deduplicating on frame content.
 | `read_rows` | Fetch rows by id — each found row once, ascending id order; missing ids are simply absent (never an error); `truncated` is true only when the response budget dropped rows for existing ids (retry with fewer); at most 1,000 ids per request |
 | `capabilities` | The engine's static capability surface — `vector_execution` (`exact` / `ann`), `ann_recall_bound` (explicit `null` when exact), `notifications`, `subscribe`, `query_dialect`, `filter_dialect`; reported verbatim |
 | `create_table` | Typed fields with `fulltext` / `vector` / `vectorize` / `enum` / `default` annotations (`enum` restricts a string field to a closed vocabulary; `default` is stored by inserts that omit the field — a timestamp field may declare `"now()"`, stamped server-side at write time so idempotent retries can omit the field and replay) |
-| `infer_schema` | Propose fields from sample records (creates nothing) |
+| `infer_schema` | Propose fields from sample records (creates nothing). Names are always valid for `create_table`; `warnings` explains every rename or merge, `provenance` maps fields to source keys, and `evidence` counts presence, nulls and observed types per field |
 | `insert` | Validated records; indexes and embeddings update automatically; `idempotency_key` makes retries replay the original ids |
 | `upsert_by_key` | Insert-or-update keyed by natural field(s) (`on`); converges instead of duplicating on retry |
 | `query` | Read-only SQL (SELECT/WITH), parameter binding via `args`, typed results |
