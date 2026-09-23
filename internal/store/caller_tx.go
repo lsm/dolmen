@@ -22,6 +22,7 @@ func beginCallerTx(ctx context.Context, db *sql.DB, opts *sql.TxOptions) (*sql.T
 	}
 	tx, err := c.BeginTx(ctx, opts)
 	if err != nil {
+		sqlite.Limit(c, sqlite3.SQLITE_LIMIT_LENGTH, prev)
 		c.Close()
 		return nil, nil, err
 	}

@@ -62,11 +62,11 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 	if err != nil {
 		return UpsertResult{}, err
 	}
-	tx, done, err := beginCallerTx(ctx, n.rw, nil)
+	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {
 		return UpsertResult{}, err
 	}
-	defer done()
+	defer tx.Rollback()
 
 	if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
 		return UpsertResult{}, err

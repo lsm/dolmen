@@ -386,11 +386,11 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 		return DeleteResult{Matched: matched, Deleted: 0}, nil
 	}
 
-	tx, done, err := beginCallerTx(ctx, n.rw, nil)
+	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {
 		return DeleteResult{}, err
 	}
-	defer done()
+	defer tx.Rollback()
 
 	if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
 		return DeleteResult{}, err

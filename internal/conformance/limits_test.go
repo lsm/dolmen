@@ -678,8 +678,6 @@ func TestLimitsAValueTooLargeIsRefusedBeforeItIsBuilt(t *testing.T) {
 		{"query", map[string]any{"namespace": "toobig", "sql": "SELECT hex(zeroblob(200000000)) AS b"}},
 		{"search_fulltext", map[string]any{"namespace": "toobig", "table": "t", "query": "one", "filter": huge}},
 		{"search_vector", map[string]any{"namespace": "toobig", "table": "t", "vector": []float64{1, 0}, "column": "v", "filter": huge}},
-		{"delete", map[string]any{"namespace": "toobig", "table": "t", "filter": huge}},
-		{"update", map[string]any{"namespace": "toobig", "table": "t", "filter": huge, "set": map[string]any{"title": "x"}}},
 	} {
 		status, out := h.httpCall(c.op, c.body)
 		errObj, _ := out["error"].(map[string]any)
@@ -688,7 +686,7 @@ func TestLimitsAValueTooLargeIsRefusedBeforeItIsBuilt(t *testing.T) {
 		}
 	}
 	if rows := h.mustHTTP("query", map[string]any{"namespace": "toobig", "sql": "SELECT count(*) AS n FROM t"})["rows"].([]any); rows[0].(map[string]any)["n"] != float64(1) {
-		t.Fatalf("a refused delete must delete nothing, got %v", rows)
+		t.Fatalf("the refused reads must leave the table as it was, got %v", rows)
 	}
 
 	big := strings.Repeat("x", 30<<20)
