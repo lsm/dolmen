@@ -21,6 +21,7 @@ type filterRenderer struct {
 	bound      []any
 	sb         strings.Builder
 	rawBoolean bool
+	classes    map[filter.Node]string
 }
 
 var renderedFunctions = map[string]string{
@@ -442,7 +443,7 @@ func (r *filterRenderer) between(node *filter.Between, next int) error {
 func (r *filterRenderer) call(node *filter.Call, next int) error {
 	switch node.Name {
 	case "ifnull", "coalesce":
-		return r.plainCall("coalesce", node.Args, next)
+		return r.coalesce(node, next)
 	case "nullif":
 		return r.plainCall("nullif", node.Args, next)
 	case "iif":
@@ -463,6 +464,7 @@ func (r *filterRenderer) call(node *filter.Call, next int) error {
 			return err
 		}
 		r.sb.WriteString(" END)")
+		r.recordChosenClass(node, []string{condition}, node.Args[1:])
 		return nil
 	case "date", "time", "datetime", "julianday", "strftime":
 		return r.timeCall(node, next)
@@ -547,6 +549,56 @@ func (r *filterRenderer) plainCall(name string, args []filter.Node, next int) er
 	return nil
 }
 
+func (r *filterRenderer) coalesce(node *filter.Call, next int) error {
+	args := make([]string, 0, len(node.Args))
+	for _, arg := range node.Args {
+		out, err := r.capture(arg, next)
+		if err != nil {
+			return err
+		}
+		args = append(args, out)
+	}
+	r.sb.WriteString("coalesce(" + strings.Join(args, ", ") + ")")
+	conditions := make([]string, 0, len(args))
+	for _, arg := range args {
+		conditions = append(conditions, "("+arg+") IS NOT NULL")
+	}
+	r.recordChosenClass(node, conditions, node.Args)
+	return nil
+}
+
+func (r *filterRenderer) recordChosenClass(n filter.Node, conditions []string, results []filter.Node) {
+	classes := make([]string, 0, len(results))
+	agreed := true
+	for _, result := range results {
+		class := r.structuralClass(result)
+		agreed = agreed && (len(classes) == 0 || classes[0] == class)
+		classes = append(classes, class)
+	}
+	if len(classes) == 0 {
+		return
+	}
+	if agreed {
+		r.recordClass(n, classes[0])
+		return
+	}
+	out := "(CASE"
+	for i, condition := range conditions {
+		out += " WHEN " + condition + " THEN " + classes[i]
+	}
+	if len(classes) > len(conditions) {
+		out += " ELSE " + classes[len(conditions)]
+	}
+	r.recordClass(n, out+" END)")
+}
+
+func (r *filterRenderer) recordClass(n filter.Node, class string) {
+	if r.classes == nil {
+		r.classes = map[filter.Node]string{}
+	}
+	r.classes[n] = class
+}
+
 func (r *filterRenderer) caseCondition(operand, when filter.Node, next int) (string, error) {
 	if operand == nil {
 		return r.truth(when, next)
@@ -556,12 +608,14 @@ func (r *filterRenderer) caseCondition(operand, when filter.Node, next int) (str
 
 func (r *filterRenderer) caseExpr(node *filter.Case, next int) error {
 	r.sb.WriteString("(CASE")
+	conditions := make([]string, 0, len(node.Branches))
 	for _, branch := range node.Branches {
 		r.sb.WriteString(" WHEN ")
 		condition, err := r.caseCondition(node.Operand, branch.When, next)
 		if err != nil {
 			return err
 		}
+		conditions = append(conditions, condition)
 		r.sb.WriteString(condition)
 		r.sb.WriteString(" THEN ")
 		if err := r.render(branch.Then, next); err != nil {
@@ -575,6 +629,7 @@ func (r *filterRenderer) caseExpr(node *filter.Case, next int) error {
 		}
 	}
 	r.sb.WriteString(" END)")
+	r.recordChosenClass(node, conditions, caseResults(node))
 	return nil
 }
 
@@ -1329,14 +1384,57 @@ func numeralHeadIsReal(text string) bool {
 }
 
 func (r *filterRenderer) integerClassed(n filter.Node, raw, numeric string) string {
+	structural := r.structuralClass(n)
+	if structural == "FALSE" {
+		return "FALSE"
+	}
+	if _, ok := unparen(n).(*filter.Binary); ok && structural != "TRUE" {
+		return structural
+	}
+	within := numeric + " BETWEEN " + sqliteIntMin + " AND " + sqliteIntMax
+	runtime := "(" + numeric + " = trunc(" + numeric + ") AND " + within + ")"
+	if r.affinityOf(n) == affText {
+		runtime = "(COALESCE((substring(" + raw + " FROM '" + sqliteNumHead + "')), '') !~ '[.eE]' AND " + within + ")"
+	}
+	if structural == "TRUE" {
+		return runtime
+	}
+	return "(" + structural + " AND " + runtime + ")"
+}
+
+func (r *filterRenderer) structuralClass(n filter.Node) string {
 	if r.staticallyReal(n) {
 		return "FALSE"
 	}
-	within := numeric + " BETWEEN " + sqliteIntMin + " AND " + sqliteIntMax
-	if r.affinityOf(n) == affText {
-		return "(COALESCE((substring(" + raw + " FROM '" + sqliteNumHead + "')), '') !~ '[.eE]' AND " + within + ")"
+	switch node := n.(type) {
+	case *filter.Paren:
+		return r.structuralClass(node.Inner)
+	case *filter.Unary:
+		if _, literal := node.Operand.(*filter.Literal); !literal && (node.Op == "-" || node.Op == "+") {
+			return r.structuralClass(node.Operand)
+		}
+	case *filter.Call:
+		switch node.Name {
+		case "abs", "nullif":
+			if len(node.Args) > 0 {
+				return r.structuralClass(node.Args[0])
+			}
+		}
 	}
-	return "(" + numeric + " = trunc(" + numeric + ") AND " + within + ")"
+	if class, ok := r.classes[n]; ok {
+		return class
+	}
+	return "TRUE"
+}
+
+func unparen(n filter.Node) filter.Node {
+	for {
+		p, ok := n.(*filter.Paren)
+		if !ok {
+			return n
+		}
+		n = p.Inner
+	}
 }
 
 func (r *filterRenderer) numericOperand(n filter.Node, next int) (string, string, error) {
@@ -1370,6 +1468,9 @@ func (r *filterRenderer) arithmetic(node *filter.Binary, op string, next int) er
 	leftClass := r.integerClassed(node.Left, rawLeft, left)
 	rightClass := r.integerClassed(node.Right, rawRight, right)
 	bothInteger := leftClass != "FALSE" && rightClass != "FALSE"
+	if !bothInteger {
+		r.recordClass(node, "FALSE")
+	}
 	switch op {
 	case "/":
 		exact := "NULLIF(" + left + " / NULLIF(" + right + ", 0), 'NaN'::numeric)"
@@ -1378,10 +1479,14 @@ func (r *filterRenderer) arithmetic(node *filter.Binary, op string, next int) er
 			r.sb.WriteString("(" + real + ")")
 			return nil
 		}
-		r.sb.WriteString("(CASE WHEN " + leftClass + " AND " + rightClass +
-			" AND trunc(" + exact + ") BETWEEN " + sqliteIntMin + " AND " + sqliteIntMax +
-			" THEN trunc(" + exact + ") ELSE " + real + " END)")
+		class := "(" + leftClass + " AND " + rightClass +
+			" AND trunc(" + exact + ") BETWEEN " + sqliteIntMin + " AND " + sqliteIntMax + ")"
+		r.recordClass(node, class)
+		r.sb.WriteString("(CASE WHEN " + class + " THEN trunc(" + exact + ") ELSE " + real + " END)")
 	case "%":
+		if bothInteger {
+			r.recordClass(node, "("+leftClass+" AND "+rightClass+")")
+		}
 		r.sb.WriteString("(" + r.moduloOperand(node.Left, rawLeft, left) +
 			" % NULLIF(" + r.moduloOperand(node.Right, rawRight, right) + ", 0))")
 	default:
@@ -1391,9 +1496,10 @@ func (r *filterRenderer) arithmetic(node *filter.Binary, op string, next int) er
 			r.sb.WriteString(real)
 			return nil
 		}
-		r.sb.WriteString("(CASE WHEN " + leftClass + " AND " + rightClass +
-			" AND " + exact + " BETWEEN " + sqliteIntMin + " AND " + sqliteIntMax +
-			" THEN " + exact + " ELSE " + real + " END)")
+		class := "(" + leftClass + " AND " + rightClass +
+			" AND " + exact + " BETWEEN " + sqliteIntMin + " AND " + sqliteIntMax + ")"
+		r.recordClass(node, class)
+		r.sb.WriteString("(CASE WHEN " + class + " THEN " + exact + " ELSE " + real + " END)")
 	}
 	return nil
 }
