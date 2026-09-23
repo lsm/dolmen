@@ -1031,8 +1031,12 @@ atomically with your side effects rather than deduplicating on frame content.
   original ids; reusing a key for different records is an error), and `upsert_by_key` writes
   records keyed by a natural field set (`on`), updating the matched row partially or inserting
   when nothing matches.
-- **Vectors** stored as float32 blobs; KNN is a brute-force cosine scan in Go — fine into the low
-  millions of rows, zero index infrastructure. (This is the deliberate MVP trade.)
+- **Vectors** stored as float32 blobs; KNN is a brute-force cosine scan in Go, with zero index
+  infrastructure. (This is the deliberate MVP trade.) A query's cost grows with rows × dimensions:
+  on a recent laptop it scans about 200 million row-dimensions a second, so 50,000 rows take about
+  0.1 s at 384 dimensions (the default `local` model) and 0.3 s at 1,536 (OpenAI's
+  `text-embedding-3-small`). A million rows at those sizes take roughly 2 s and 6 s. A `filter`
+  narrows the rows that get scored.
 - **Vector-search spaces** are kept honest: `text` queries are embedded by the active provider and
   only search the server-managed `vectorize` (`_embedding`) space, whose model identity is pinned
   per table — a provider change is rejected until the table is re-embedded. Caller-provided `vector`
