@@ -400,7 +400,7 @@ type rowQuerier interface {
 
 func TableNotFound(nsName, table string) error {
 	if err := schema.ValidateTableName(table); err != nil {
-		return fmt.Errorf("%w: %v, so no such table exists in %s; list_tables shows the tables it holds", ErrNotFound, err, nsName)
+		return fmt.Errorf("%w: %v; no such table exists in %s, and list_tables shows the tables it holds", ErrNotFound, err, nsName)
 	}
 	return fmt.Errorf("%w: table %s.%s does not exist; list_tables shows the tables %s holds", ErrNotFound, nsName, table, nsName)
 }
