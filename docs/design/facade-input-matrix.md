@@ -35,6 +35,17 @@ façade-side test pins normalization at all. The `InputSchema` pattern sees the 
 schema-conforming client on either wire transport rejects a spelling the server runtime
 accepts. The table above classifies names that remain invalid after normalization.
 
+This split is deliberate (#43). The advertised schemas are the strict contract; the server is
+the lenient reader, and it reads alike on every transport, because `/v1` and MCP share one
+dispatch table: it trims and lowercases names, and it clamps a search `limit` (≤ 0 selects the
+default of 10, anything above 200 becomes 200) rather than refusing it. A client that validates
+against the schemas never sends what the server would normalize; one that does not gets the same
+answer on either transport. `TestTransportParityOnInputTheSchemasWouldRefuse` pins that
+agreement case by case. The one bound the server enforces before decoding is the query vector's
+length (`maxItems` = 4096 on `search_vector.vector`), because an unbounded array is expanded in
+memory before any dimension check can reject it; the façade applies the same bound through
+`ops.PrepareVectorQuery`.
+
 The #309 premise correction: the grammar lives in the shared `InputSchema`, advertised on both
 wire transports — MCP `tools/list` and `/v1/openapi.json`, whose request bodies are built from
 the same `OpDef.InputSchema` (`internal/api/openapi.go`, pinned identical by
@@ -61,6 +72,7 @@ to a ruling; this doc records the status quo.
 | Limit | Value | MCP schema | Engine runtime | Façade |
 | --- | --- | --- | --- | --- |
 | Fields per table | `store.MaxFieldsPerTable` = 100 | `create_table` `fields.maxItems` | `CreateTable` (`internal/store/store.go:498`) | Same bound via engine |
+| Query vector length | `schema.MaxVectorDim` = 4096 | `search_vector` `vector.maxItems` | Streaming count before the body is decoded (`internal/api/ops.go`), then `ops.PrepareVectorQuery` | Same bound via `ops.PrepareVectorQuery` |
 | Records per insert | `store.MaxRecordsPerInsert` = 1000 | `insert` `records.maxItems` | `Insert` (`internal/store/insert.go:45`) | Same bound via engine |
 | Records per upsert | `store.MaxRecordsPerInsert` = 1000 | `upsert_by_key` `records.maxItems` | `UpsertByKey` (`internal/store/upsert_key.go:19`) | Same bound via engine |
 | Delete limit, lower range | wire runtime rejects < 1 with 400 (`parseOptPosInt`, `internal/api/ops.go:1923`); schema advertises `minimum: 1` | `delete` `limit` | — | negatives rejected (root `write.go:145`); explicit 0 = default threshold — an at-zero divergence with the wire (code-verified) |

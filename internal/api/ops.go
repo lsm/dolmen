@@ -1200,13 +1200,14 @@ var Ops = map[string]OpDef{
 				},
 				"vector": map[string]any{
 					"type":        "array",
-					"description": "Raw query vector",
+					"description": fmt.Sprintf("Raw query vector, at most %d numbers (the largest dimension a vector field can declare)", schema.MaxVectorDim),
 					"items": map[string]any{
 						"type":    "number",
 						"minimum": -3.4028234663852886e+38,
 						"maximum": 3.4028234663852886e+38,
 					},
 					"minItems": 1,
+					"maxItems": schema.MaxVectorDim,
 				},
 				"column": prop("string", "Vector column to search (raw-vector queries only; text queries always search the vectorize _embedding space)"),
 				"limit": map[string]any{
@@ -1271,6 +1272,9 @@ var Ops = map[string]OpDef{
 			"skipped_vectors": prop("integer", "Rows whose stored vector was corrupt or dimension-mismatched and could not be scored; nonzero means those rows are missing from results"),
 		}, "results", "truncated", "skipped_vectors"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			if longestVector(body, schema.MaxVectorDim) > schema.MaxVectorDim {
+				return nil, wrapStoreErr(ops.QueryVectorTooLong())
+			}
 			var req vecReq
 			if err := decodeAllowNullArgs(body, &req); err != nil {
 				return nil, err
@@ -1996,6 +2000,45 @@ type ftsReq struct {
 	IncludeHidden bool   `json:"include_hidden"`
 	Filter        string `json:"filter"`
 	Args          []any  `json:"args"`
+}
+
+func longestVector(body []byte, limit int) int {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return 0
+	}
+	longest := 0
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return longest
+		}
+		if key != "vector" {
+			var skip json.RawMessage
+			if dec.Decode(&skip) != nil {
+				return longest
+			}
+			continue
+		}
+		if tok, err := dec.Token(); err != nil || tok != json.Delim('[') {
+			return longest
+		}
+		n := 0
+		for dec.More() {
+			if n++; n > limit {
+				return n
+			}
+			var skip json.RawMessage
+			if dec.Decode(&skip) != nil {
+				return longest
+			}
+		}
+		if _, err := dec.Token(); err != nil {
+			return longest
+		}
+		longest = max(longest, n)
+	}
+	return longest
 }
 
 type vecReq struct {

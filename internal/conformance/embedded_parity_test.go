@@ -937,3 +937,20 @@ func TestEmbeddedParityWritesStillCreateNamespaces(t *testing.T) {
 		t.Fatalf("the created table must be listed, got %v (%v)", tables, err)
 	}
 }
+
+func TestEmbeddedParityQueryVectorCap(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("par", "notes", []map[string]any{{"name": "body", "type": "text"}})
+	st, _ := embeddedStore(t)
+	seedParityTableEmbedded(t, st)
+
+	status, body := h.httpCall("search_vector", map[string]any{"namespace": "par", "table": "notes", "vector": make([]float64, 4097)})
+	wire, _ := body["error"].(map[string]any)
+	if status != http.StatusBadRequest || wire["code"] != "invalid_request" {
+		t.Fatalf("wire: %d %v", status, body)
+	}
+	_, err := st.SearchVector(context.Background(), "par", "notes", dolmen.VectorQuery{Vec: make([]float32, 4097)}, dolmen.SearchOptions{})
+	if !errors.Is(err, dolmen.ErrInvalidRequest) || err.Error() != wire["message"] {
+		t.Fatalf("the façade must refuse the same vector with the wire's message:\n got %v\nwant %v", err, wire["message"])
+	}
+}

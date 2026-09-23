@@ -263,3 +263,41 @@ func TestMCPToolResultShape(t *testing.T) {
 		t.Fatal("structuredContent must carry the result object")
 	}
 }
+
+func TestTransportParityOnInputTheSchemasWouldRefuse(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("production", "t", []map[string]any{{"name": "title", "type": "string", "fulltext": true}})
+	h.mustHTTP("insert", map[string]any{"namespace": "production", "table": "t", "records": []map[string]any{{"title": "one"}, {"title": "one more"}}})
+
+	cases := []struct {
+		name string
+		op   string
+		body map[string]any
+	}{
+		{"limit -1", "search_fulltext", map[string]any{"namespace": "production", "table": "t", "query": "one", "limit": -1}},
+		{"limit 0", "search_fulltext", map[string]any{"namespace": "production", "table": "t", "query": "one", "limit": 0}},
+		{"limit 201", "search_fulltext", map[string]any{"namespace": "production", "table": "t", "query": "one", "limit": 201}},
+		{"limit 999999", "search_fulltext", map[string]any{"namespace": "production", "table": "t", "query": "one", "limit": 999999}},
+		{"padded mixed-case namespace", "list_tables", map[string]any{"namespace": " Production "}},
+		{"padded mixed-case table", "describe_table", map[string]any{"namespace": "production", "table": " T "}},
+		{"query vector past the largest dimension", "search_vector", map[string]any{"namespace": "production", "table": "t", "vector": make([]float64, 4097)}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			httpStatus, httpBody := h.httpCall(c.op, c.body)
+			res := h.mcpCall(c.op, c.body)
+			if httpStatus != http.StatusOK {
+				httpErr, _ := httpBody["error"].(map[string]any)
+				if !res.isError() {
+					t.Fatalf("/v1 refused with %d %v, but MCP answered %+v", httpStatus, httpErr, res)
+				}
+				assertJSONEqual(t, c.name, withoutRequestID(res.toolError()), withoutRequestID(httpErr))
+				return
+			}
+			if res.isError() {
+				t.Fatalf("/v1 answered, but MCP refused: %v", res.toolError())
+			}
+			assertJSONEqual(t, c.name, res.structured(), httpBody["data"])
+		})
+	}
+}
