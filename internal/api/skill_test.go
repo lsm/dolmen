@@ -214,3 +214,41 @@ func TestSkillBaseURLFromConfiguredValue(t *testing.T) {
 		t.Fatalf("manifest mcp_url: got %q", m.MCPURL)
 	}
 }
+
+func renderedSkills(t *testing.T) map[string]string {
+	t.Helper()
+	ctx := skill.Context{BaseURL: "http://127.0.0.1:8790", MCPURL: "http://127.0.0.1:8790/mcp", Version: version.Version, NamespaceHint: skill.DefaultNamespaceHint}
+	out := map[string]string{}
+	for _, name := range []string{"dolmen", "dolmen-admin"} {
+		body, err := skill.Render(name, ctx)
+		if err != nil {
+			t.Fatalf("render %s: %v", name, err)
+		}
+		out[name] = string(body)
+	}
+	return out
+}
+
+func TestEverySkillNamesEveryErrorCode(t *testing.T) {
+	for name, body := range renderedSkills(t) {
+		for _, code := range errorCodeEnum(true) {
+			if !strings.Contains(body, "`"+code+"`") {
+				t.Errorf("the %s skill never names the error code %s, so an agent that receives it has nothing in the skill to act on", name, code)
+			}
+		}
+	}
+}
+
+func TestEveryOperationIsNamedInASkill(t *testing.T) {
+	var all strings.Builder
+	for _, body := range renderedSkills(t) {
+		all.WriteString(body)
+	}
+	for _, table := range []map[string]OpDef{Ops, authOps} {
+		for name := range table {
+			if !strings.Contains(all.String(), "`"+name+"`") {
+				t.Errorf("no served skill names the %s operation, so an agent reading them cannot learn it exists", name)
+			}
+		}
+	}
+}

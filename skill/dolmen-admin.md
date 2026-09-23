@@ -71,7 +71,7 @@ operation whose input fields are all optional (for example `list_namespaces`) ca
 body at all. Responses are enveloped — success is
 `{"ok":true,"data":...}` and failure is `{"ok":false,"error":{"code","message","request_id"}}`
 with a stable machine-readable `code` (`invalid_request`, `not_found`, `query_error`, `conflict`,
-`forbidden`, `embedder_unavailable`, `canceled`, `internal_error`); `request_id` is the request's
+`unauthorized`, `forbidden`, `embedder_unavailable`, `canceled`, `internal_error`); `request_id` is the request's
 `X-Request-Id` header when one was sent, otherwise a server-generated id, echoed back as the
 `X-Request-Id` response header — when a message says the underlying cause is in the server log
 under this id, this is the id. The full list of operations and their request schemas is in the OpenAPI document (`GET /v1/openapi.json`).
@@ -144,6 +144,119 @@ curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0",
 
 A failed call is not an HTTP error: the result carries `"isError":true` and the error object
 (`{"code","message","request_id"}`) as JSON text in `content[0].text`.
+
+## Authentication and access control
+
+Everything in this section applies only to a server running with authentication on. With it off
+there are no identities, and every call is allowed.
+
+Present your credential on every request, `/mcp` and `/v1/subscribe` included, as
+`Authorization: Bearer <credential>`; for MCP, connect with
+`claude mcp add --transport http dolmen '{{ .MCPURL }}' --header "Authorization: Bearer $DOLMEN_TOKEN"`.
+A request without an accepted credential answers `401` `unauthorized`. `403` `forbidden` means you
+are authenticated but no grant covers the operation. Then call `whoami`, which needs no grant, and
+report its `principal` and `groups` with the operation and object you need, rather than retrying.
+
+### Grants
+
+A grant gives a **subject**, a principal or a group, **verbs** on an **object**: a namespace
+(covering its tables and every sub-namespace), one table, or `*` for the whole server. The verbs
+are `create`, `read`, `update`, `delete`, `schema` and `admin`. A caller's access is the union of
+every grant matching their principal or any of their groups, on the object or anything covering it.
+There are no deny grants.
+
+```bash
+base='{{ .BaseURL }}'
+curl -s -X POST "${base%/}/v1/grant" \
+  -H "Authorization: Bearer $DOLMEN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"subject":{"type":"group","id":"team-a"},"object":{"namespace":"acme","table":"notes"},"verbs":["create","read"]}'
+```
+
+`grant` merges verbs into an existing grant for the same subject and object. `revoke` takes the
+verbs to remove, with no implicit "all", and the grant disappears with its last verb. `list_grants`
+filters by `subject` (exact) or `object` (that object and everything under it). All three need
+`admin` on the object or something covering it; `list_grants` without an `object` needs it on `*`.
+Dropping a table or namespace removes the grants on it.
+
+What the schema and administration operations need:
+
+| Operation | Needs |
+|---|---|
+| `create_table` | `schema` on the namespace |
+| `migrate`, `list_migrations` | `schema` on the table. Every `migrate` change except `rename_field` also needs `read`, because its outcome depends on the existing rows |
+| `drop_table` | `schema` and `admin`, since dropping a table deletes the grants on it |
+| `create_namespace` | `admin` on the parent namespace, or on `*` for a top-level one |
+| `drop_namespace` | `admin` on the namespace |
+| `grant`, `revoke`, `list_grants` | `admin` on the object or something covering it |
+| `create_key`, `list_keys`, `revoke_key`, `rotate_signing_key` | `admin` on `*` |
+
+The data operations need what the core skill lists ({{ .BaseURL }}/skills/dolmen): `read` for
+reads, searches and the change feed, `create`, `update` and `delete` for the matching writes, and
+`read` on the whole namespace for `query`. With authentication on, a write never creates a
+namespace implicitly, so create it first.
+
+### Separating tenants: two knobs
+
+The same grant language drives both, so choose by what must stay private:
+
+- **Structural**: give a team its own sub-namespace (`acme/team-a`) when it must never see another
+  team's schema or data. A grant on `acme/team-a` covers only that subtree, and `query` cannot
+  cross into it.
+- **Logical**: one table with `row_access: "own"` when people share the table but keep their rows
+  private. Everyone gets the same data verbs on the table, and each sees their own rows.
+
+Do not create a namespace per user. It multiplies namespaces and rules out shared tables, such as
+usage telemetry where every user appends with `create` and only the developer holds `read`.
+
+### Per-row ownership
+
+```bash
+base='{{ .BaseURL }}'
+curl -s -X POST "${base%/}/v1/create_table" \
+  -H "Authorization: Bearer $DOLMEN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"namespace":"acme","table":"notes","fields":[{"name":"body","type":"text"}],"row_access":"own"}'
+```
+
+The server adds an `owner` column and stamps it on every insert; callers never supply it. What a
+caller sees depends on their verbs: `read` sees every row, any of `create`, `update` or `delete`
+without `read` sees only the rows that caller wrote, and `schema` or `admin` alone sees none.
+
+A table can adopt `row_access` later with the `migrate` change `{"op":"set_row_access","value":true}`,
+but only while it is empty, because no operation can assign existing rows to their owners. Turning
+it off keeps the `owner` values and needs `admin` as well as `schema` and `read`, because it widens
+every data-verb holder from their own rows to all rows.
+
+### API keys
+
+For a machine, mint a key:
+
+```bash
+base='{{ .BaseURL }}'
+curl -s -X POST "${base%/}/v1/create_key" \
+  -H "Authorization: Bearer $DOLMEN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"ci runner","principal":"ci-bot","groups":["builders"]}'
+```
+
+The response shows the credential once. It is stored hashed, so hand it over now or mint another.
+A key grants nothing by itself: it authenticates as its principal and groups, which need grants
+like anyone else. `list_keys` reports ids, names, principals, groups and revocation state, never
+credentials, and `revoke_key` takes the id.
+
+### People who sign in
+
+On a server configured with an identity provider, people sign in at `{{ .BaseURL }}/v1/auth/begin`
+and receive a token. Their principal is qualified by the provider, as
+`oidc:v1:<issuer-digest>:<sub>`, and so are their groups, so grant on exactly what `whoami` reports
+after they sign in, never on an email address. `rotate_signing_key` with `{"retire_previous":true}`
+signs everyone out at once. Without it, tokens already issued live out their lifetime.
+
+### Bootstrap and hand-over
+
+The bootstrap key in `DOLMEN_ADMIN_KEY` authenticates as `dolmen-admin`, which holds `admin` on
+`*`. It exists to make the first real administrator: grant `admin` on `*` to a principal, after
+which the operator can remove the key. Revoking a grant or a key that would leave no usable root
+administrator is refused, and setting the admin key again and restarting always recovers a
+locked-out server.
 
 ## Working rules
 
