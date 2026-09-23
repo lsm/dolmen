@@ -341,7 +341,7 @@ type inferReq struct {
 }
 
 func decode(body []byte, v any) error {
-	if len(body) == 0 {
+	if len(bytes.TrimSpace(body)) == 0 {
 		body = []byte("{}")
 	}
 	var probe any
@@ -357,7 +357,7 @@ func decode(body []byte, v any) error {
 }
 
 func decodeData(body []byte, v any) error {
-	if len(body) == 0 {
+	if len(bytes.TrimSpace(body)) == 0 {
 		body = []byte("{}")
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
@@ -386,7 +386,7 @@ func decodeData(body []byte, v any) error {
 }
 
 func decodeAllowNullArgs(body []byte, v any) error {
-	if len(body) == 0 {
+	if len(bytes.TrimSpace(body)) == 0 {
 		body = []byte("{}")
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))

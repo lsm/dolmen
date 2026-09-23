@@ -95,6 +95,23 @@ The family audit (#309) dispositioned every unaudited cousin line from the parit
 | #302 delete-limit range | wire schema has `minimum: 1`, no maximum; the wire handler also rejects < 1 at runtime (`parseOptPosInt`), so explicit 0 diverges — wire 400, façade default threshold; façade rejects negatives (`TestDeleteRejectsNegativeLimit`, root `write_test.go`), no upper bound either | Cleared — no upper-range divergence exists; parity by construction; the at-zero divergence is code-verified, unpinned |
 | #302 record-data floats | NaN stored silently and read back as NULL; ±Inf poisoned the row (every later read errored) | Fixed (`finiteNumber` guard) + pinned; details in [numeric-fidelity-matrix.md](numeric-fidelity-matrix.md) |
 
+## Divergences recorded from the pre-v0.3.0 audit (#328)
+
+Each row was code-verified when recorded. The façade is the stricter surface in every row but the
+last. The two transports differ only in the decode rows, where MCP screens the JSON-RPC envelope
+before the shared dispatch table sees the arguments.
+
+| Input | Façade | `/v1` | MCP |
+| --- | --- | --- | --- |
+| Search `Limit` outside 1–200 | `invalid_request` (root `search.go`) | clamped, as #43 records | clamped |
+| Search `Offset` above 1,000,000,000 | `invalid_request` | accepted; the bound is schema-only | accepted |
+| Blank but non-empty search `Filter` | `invalid_request` | treated as no filter | treated as no filter |
+| Empty `IdempotencyKey` | treated as no key | `invalid_request` | `invalid_request` |
+| Empty query vector | `vector must have at least one element` | `pass either text or vector` | same as `/v1` |
+| Body that is not a JSON object | — | `400 invalid_request`, naming the object requirement | JSON-RPC `-32602`, `tools/call arguments must be an object` |
+| `null` body | — | treated as `{}`, as v0.2.0 did | JSON-RPC `-32602` |
+| Empty or whitespace-only body | — | treated as `{}` | absent `arguments` are treated as `{}` |
+
 ## Namespace creation on reads (#39)
 
 Parity by construction, no divergence: **no read creates a namespace on either surface.** The write

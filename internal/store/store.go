@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/url"
 	"os"
@@ -148,11 +149,13 @@ func (s *Store) verifyCatalogVersions(ctx context.Context) error {
 func (s *Store) verifyOneCatalogVersion(ctx context.Context, name string) error {
 	ro, err := sql.Open("sqlite", dsn(s.nsPath(name), true))
 	if err != nil {
+		slog.Warn("namespace is unreadable; requests to it fail until it is repaired", "namespace", name, "err", err)
 		return nil
 	}
 	defer ro.Close()
 	format, minReader, err := readCatalogVersion(ctx, ro)
 	if err != nil {
+		slog.Warn("namespace is unreadable; requests to it fail until it is repaired", "namespace", name, "err", err)
 		return nil
 	}
 	if minReader > CatalogFormat {
