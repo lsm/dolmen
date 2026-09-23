@@ -3,6 +3,7 @@ package conformance
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -447,6 +448,15 @@ func TestEmptyBodyIsAnEmptyObject(t *testing.T) {
 			t.Fatalf("no-body data %v must equal {} data %v", emptyEnv["data"], objEnv["data"])
 		}
 	})
+
+	for _, blank := range []string{" ", "\n", "\r\n\t "} {
+		t.Run(fmt.Sprintf("whitespace-only body %q counts as {}", blank), func(t *testing.T) {
+			res, body := h.httpCallRaw("list_namespaces", blank, "application/json")
+			if res.StatusCode != 200 {
+				t.Fatalf("status %d, want 200: a body with nothing but whitespace is as empty as no body: %s", res.StatusCode, body)
+			}
+		})
+	}
 }
 
 func TestDecodeErrorFraming(t *testing.T) {

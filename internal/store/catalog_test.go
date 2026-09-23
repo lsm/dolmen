@@ -1,9 +1,11 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -272,5 +274,24 @@ func TestCatalogGateToleratesAPreMetaNamespace(t *testing.T) {
 	}
 	if format, ok := catalogMeta(t, dir, "legacy", catalogFormatKey); !ok || format != strconv.Itoa(CatalogFormat) {
 		t.Fatalf("it must then be adopted at the current format, got %q (present=%v)", format, ok)
+	}
+}
+
+func TestAnUnreadableNamespaceIsNamedAtStartup(t *testing.T) {
+	dir := t.TempDir()
+	seedNamespace(t, dir, "bad")
+	setCatalogMeta(t, dir, "bad", catalogFormatKey, "not-a-number")
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("a corrupt stamp must not fail the whole data directory at open: %v", err)
+	}
+	defer st.Close()
+	if logged := buf.String(); !strings.Contains(logged, "namespace is unreadable") || !strings.Contains(logged, "namespace=bad") {
+		t.Fatalf("startup must name the unreadable namespace so the operator hears of it before a client does, logged %q", logged)
 	}
 }
