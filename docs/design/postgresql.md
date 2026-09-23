@@ -334,9 +334,9 @@ wrong through three rounds of sweeping.
 Real arithmetic is computed in `float8`, not in PostgreSQL's exact `numeric`. SQLite
 computes a real expression in IEEE double, so `0.1 + 0.2` is not `0.3` there, and an
 exact numeric makes it equal — a filter matching rows SQLite skips. Both operands are
-cast to `float8`, the operation happens there, and the result returns through `::text`
-rather than a direct `::numeric`: the direct cast rounds `0.30000000000000004` back to
-`0.3` and undoes the whole thing. Integer operands keep exact arithmetic, so a stored
+cast to `float8`, the operation happens there, and the result returns through the
+canonical conversion described below rather than a direct `::numeric`: the direct cast
+rounds `0.30000000000000004` back to `0.3` and undoes the whole thing. Integer operands keep exact arithmetic, so a stored
 `9007199254740993` still compares equal to itself although no double can hold it. Two
 costs come with this. `NaN` becomes null, matching SQLite, which is why every real
 result is wrapped. And PostgreSQL raises on `float8` overflow where SQLite yields
@@ -401,15 +401,33 @@ answers. A numeral past int64 is a REAL for the same reason and renders as its d
 while `-9223372036854775808` is int64 min and stays exact, which is why the sign is read
 together with the numeral rather than after it.
 
-**A known divergence remains here.** A REAL is carried as the numeric holding its
-double's shortest text, and at magnitudes past 2^53 that text is not the double's exact
-value: PostgreSQL prints 2^63 as `9.223372036854776e+18`, which reads back as
-`9223372036854776000`. SQLite compares an INTEGER against a REAL exactly, so
-`('-7' + -9223372036854775808) = -9223372036854775808` is true there and false here. The
-sweep counts 32 probes in this family out of 249,696. Closing it means recovering the
-double's exact value rather than its printed one — `round(v / ulp) * ulp` with
-`ulp = 2^(floor(log2(|v|)) - 52)` does that in exact numeric — and that change belongs
-with the arithmetic model rather than tacked onto it.
+A REAL is carried as one canonical numeric per double, and that numeric is the double's
+exact value wherever an INTEGER could meet it. The double's shortest printed text is only
+exact below 2^53: PostgreSQL prints 2^63 as `9.223372036854776e+18`, which reads back as
+`9223372036854776000`, and prints 2^60 as `1152921504606847000`. SQLite compares an
+INTEGER against a REAL exactly and converts a REAL to its exact integer for `%`. So a
+double from 2^53 up to, but not including, 2^63 (and -2^63 itself) is carried as
+`v::int8::numeric`, which is exact because every double that large is a whole number.
+Anything else keeps its shortest text, which is exact below 2^53 and orders correctly
+against every INTEGER beyond int64. Before this, `('-7' + -9223372036854775808) =
+-9223372036854775808` was false here and true in SQLite. Every place a double enters
+`numeric` uses the same conversion: float arithmetic, `round`, `abs` of text,
+`julianday`, text read as a number, real literals (with a leading sign folded in first,
+so `-9223372036854775808.0` is -2^63 rather than the negation of 2^63's printed form), and
+bound float arguments, which are bound as their canonical text rather than handed to the
+driver. The SQL form names the double once in a scalar subquery, so that a nested
+expression isn't copied into every branch of the test. `%` takes part too: SQLite
+converts both operands to integers, but its result is a REAL whenever either operand
+was one, so `9007199254740993 % 4611686018427387904.0` is the double
+`9007199254740992`, not the integer the remainder produced.
+
+A computed number is still a number when it meets text. With no declared affinity on
+either side, SQLite orders every INTEGER and REAL below every TEXT, so `'7' > (n + 100)`
+is true and `'93' = (n + 100)` is false even where `n + 100` is 93. The renderer used to
+see an arithmetic result as having no known class, and it let PostgreSQL coerce the
+text to a number and compare the values. That was a wrong row set whenever the value
+was large enough. An arithmetic result, a signed one, and a conditional whose branches
+are all such results now count as numbers when a comparison asks for their class.
 
 A boolean-shaped expression is an INTEGER everywhere a boolean column is one, and that
 includes the places it is not obviously a number. Against a declared TEXT column it takes
