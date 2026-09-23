@@ -76,7 +76,7 @@ func TestReadinessFailsOnAnUnreadableNamespace(t *testing.T) {
 	}
 	_, srv := healthServer(t, dir)
 	status, body := probe(t, srv.URL+"/readyz")
-	if status != 503 || !strings.Contains(strings.Join(anyStrings(body["reasons"]), " "), "could not be read") {
+	if status != 503 || !strings.Contains(strings.Join(anyStrings(body["reasons"]), " "), "cannot be read") {
 		t.Fatalf("readyz with a corrupt namespace: %d %v", status, body)
 	}
 	if strings.Contains(strings.Join(anyStrings(body["reasons"]), " "), dir) {
@@ -149,4 +149,22 @@ func anyStrings(v any) []string {
 		out = append(out, x.(string))
 	}
 	return out
+}
+
+func TestReadinessRecoversOnceAnUnreadableNamespaceIsRemoved(t *testing.T) {
+	dir := t.TempDir()
+	broken := filepath.Join(dir, "broken.db")
+	if err := os.WriteFile(broken, []byte("not a database, just bytes long enough to be read as a header ......."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, srv := healthServer(t, dir)
+	if status, _ := probe(t, srv.URL+"/readyz"); status != 503 {
+		t.Fatalf("readyz with a corrupt namespace: %d", status)
+	}
+	if err := os.Remove(broken); err != nil {
+		t.Fatal(err)
+	}
+	if status, body := probe(t, srv.URL+"/readyz"); status != 200 {
+		t.Fatalf("readiness must recover without a restart once the file is gone: %d %v", status, body)
+	}
 }

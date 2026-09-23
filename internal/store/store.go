@@ -96,7 +96,8 @@ type Store struct {
 	maxOpen int
 	useTick uint64
 
-	unreadable []string
+	unreadableMu sync.Mutex
+	unreadable   []string
 
 	notifyMu  sync.Mutex
 	listeners map[string][]*commitListener
@@ -797,8 +798,34 @@ func (s *Store) Ready(ctx context.Context) error {
 	if err := os.Remove(name); err != nil {
 		return fmt.Errorf("the data directory is not writable, so no write can succeed: %w", err)
 	}
-	if n := len(s.unreadable); n > 0 {
-		return fmt.Errorf("%d namespace(s) could not be read at startup (the log names them); requests to them fail until they are repaired or dropped", n)
+	if n := s.stillUnreadable(ctx); n > 0 {
+		return fmt.Errorf("%d namespace(s) cannot be read (the startup log names them); repair or remove the file and readiness recovers on its own", n)
 	}
 	return ctx.Err()
+}
+
+func (s *Store) stillUnreadable(ctx context.Context) int {
+	s.unreadableMu.Lock()
+	defer s.unreadableMu.Unlock()
+	kept := s.unreadable[:0]
+	for _, name := range s.unreadable {
+		if s.namespaceUnreadable(ctx, name) {
+			kept = append(kept, name)
+		}
+	}
+	s.unreadable = kept
+	return len(kept)
+}
+
+func (s *Store) namespaceUnreadable(ctx context.Context, name string) bool {
+	if _, err := os.Stat(s.nsPath(name)); errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	ro, err := sql.Open("sqlite", dsn(s.nsPath(name), true))
+	if err != nil {
+		return true
+	}
+	defer ro.Close()
+	_, minReader, err := readCatalogVersion(ctx, ro)
+	return err != nil || minReader > CatalogFormat
 }

@@ -207,8 +207,9 @@ its old name. Point liveness checks at it.
 
 `/readyz` answers `200 {"status":"ready","embedding":{...}}` when the server is safe to route
 to, and `503 {"status":"not_ready","reasons":[...],"embedding":{...}}` while it drains for
-shutdown, when the data directory is not writable, or when a namespace could not be read at
-startup. The probe creates no namespace and scans no table. `embedding` names the provider and
+shutdown, when the data directory is not writable, or when a namespace found unreadable at
+startup still cannot be read; repairing or removing the file clears that without a restart. On
+PostgreSQL it checks that the database answers and the catalog schema exists. The probe creates no namespace and scans no table. `embedding` names the provider and
 reports `configured` or `none` without calling it, because only embedding operations depend on
 it: a failing provider degrades vector writes and text vector search, not readiness.
 

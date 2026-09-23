@@ -181,7 +181,7 @@ func TestAuthOnIgnoresAssertedIdentityHeaders(t *testing.T) {
 func TestAuthOnLeavesDiscoveryPathsUnauthenticated(t *testing.T) {
 	h := newHarnessMode(t, authAdminKey)
 
-	for _, path := range []string{"/healthz", "/version", "/skills", "/skills/dolmen", "/v1/openapi.json"} {
+	for _, path := range []string{"/healthz", "/livez", "/readyz", "/version", "/skills", "/skills/dolmen", "/v1/openapi.json"} {
 		res, body := h.getNoCredential(t, path)
 		if res.StatusCode != http.StatusOK {
 			t.Fatalf("%s without a credential: status %d, want 200: %s", path, res.StatusCode, body)
