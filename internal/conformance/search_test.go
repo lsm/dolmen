@@ -115,6 +115,10 @@ func TestSearchFulltextSyntaxAcceptReject(t *testing.T) {
 			`query "can't": FTS5 reads "'" as query syntax, not text, so a term that contains punctuation must be double-quoted (e.g. "don't", "v1.2", "c++"), or written without the punctuation`,
 			`query "can't": bare single quotes are not a term; double-quote terms that contain punctuation`,
 		},
+		`"payment`: {
+			`query "\"payment": a double-quoted phrase is never closed; add the closing " (a quote inside a phrase is written as two, "")`,
+			`query "\"payment": unterminated double-quoted phrase`,
+		},
 		"nocol:payment": {
 			`query "nocol:payment": FTS5 reads a word before a colon as the name of a column to search, and this table has no full-text field named "nocol"; double-quote the term to search for it as text, or put one of the table's full-text fields before the colon`,
 			`query "nocol:payment": PostgreSQL full-text search does not support the field:term column filter; drop it and filter with the filter parameter instead`,

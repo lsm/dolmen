@@ -107,6 +107,18 @@ curl -s -X POST "${base%/}/v1/insert" \
 {"ok":false,"error":{"code":"invalid_request","message":"unknown field \"titel\" on table findings (see describe_table)","request_id":"7c3e9a1f5b2d4e8a9c0f6b1d3e5a7c9f"}}
 ```
 
+Searches answer with `results`, where `query` and `read_rows` answer with `rows`:
+
+```json
+{"ok":true,"data":{"results":[{"id":1,"created_at":"2026-09-23T16:19:06.326Z","title":"auth flow","body":"token expiry not checked"}],"truncated":false}}
+```
+
+`search_vector` adds `_score` to each result and reports `skipped_vectors`:
+
+```json
+{"ok":true,"data":{"results":[{"id":1,"created_at":"2026-09-23T16:19:06.326Z","title":"auth flow","body":"token expiry not checked","_score":0.9046}],"truncated":false,"skipped_vectors":0}}
+```
+
 ## JSON-RPC fallback
 
 When the `dolmen` tools are not connected and no user is available to re-run the connection
@@ -303,7 +315,8 @@ locked-out server.
   (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, `usable`, and —
   for the `local` provider — `model_cached`, whether the model weights are complete on the server so
   no first-use download is needed (`false` means the first vectorized write or `text` search
-  downloads a Hugging Face model, which can fail transiently — retry, or pre-seed; with
+  downloads a Hugging Face model, so it can take ten seconds or more and can fail transiently —
+  retry, or pre-seed; with
   `DOLMEN_EMBED_MODEL` naming a directory, `false` means the directory is incomplete and no
   download repairs it). `vectorize` in `create_table`/`migrate` and `search_vector` `text` queries
   fail while `usable` is false; a table whose `embed_space` (see `describe_table`) differs from
@@ -374,7 +387,7 @@ locked-out server.
   pass `include_hidden: true` to a search when you really need it. Naming it in the SQL (outside
   string literals and comments) also works where the backend exposes it to caller SQL, but that is
   backend-dependent — `include_hidden: true` is the portable way to reach it.
-- Vector search results carry `_score` (cosine similarity; higher is closer).
+- Vector search results carry `_score` (cosine similarity; higher is closer). Judge a score against the other results of the same query, not against a fixed cutoff: with the default `local` model, relevant matches commonly score only about 0.2 to 0.6.
 - `search_vector` has two query forms with different reach: `text` (server embeds it) searches only
   the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`; `vector`
   (raw numbers) searches any `vector` column, and only you know which embedding space produced both
