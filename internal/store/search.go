@@ -112,11 +112,11 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 	if err != nil {
 		return SearchResult{}, err
 	}
-	tx, err := n.ro.BeginTx(ctx, nil)
+	tx, done, err := beginCallerTx(ctx, n.ro, nil)
 	if err != nil {
 		return SearchResult{}, err
 	}
-	defer tx.Rollback()
+	defer done()
 	sc, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
 		return SearchResult{}, err
@@ -353,11 +353,11 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	}
 
 	if opts.DryRun {
-		tx, err := n.ro.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		tx, done, err := beginCallerTx(ctx, n.ro, &sql.TxOptions{ReadOnly: true})
 		if err != nil {
 			return DeleteResult{}, err
 		}
-		defer tx.Rollback()
+		defer done()
 		if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
 			return DeleteResult{}, err
 		}
@@ -378,11 +378,11 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 		return DeleteResult{Matched: matched, Deleted: 0}, nil
 	}
 
-	tx, err := n.rw.BeginTx(ctx, nil)
+	tx, done, err := beginCallerTx(ctx, n.rw, nil)
 	if err != nil {
 		return DeleteResult{}, err
 	}
-	defer tx.Rollback()
+	defer done()
 
 	if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
 		return DeleteResult{}, err

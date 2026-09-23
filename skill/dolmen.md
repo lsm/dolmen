@@ -406,6 +406,7 @@ The optional `filter` parameter is separate from the MATCH `query`: it is regula
 | Search `limit` | default 10, max 200 | omit `limit` for the default of 10; the tool schema enforces 1–200 for schema-validating clients, and the server clamps values above 200 to 200 (0 or negative selects the default on direct `/v1` calls) |
 | `query` result rows | 1,000 | truncated with `truncated: true` |
 | `query` / search result size | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
+| A single value built by SQL (in `query` or a `filter`) | 64 MiB | `query_error` before the value is built |
 | Request body | 32 MiB | rejected |
 | `query` / search filter `args` | 100 | rejected |
 

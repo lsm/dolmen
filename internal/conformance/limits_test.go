@@ -658,3 +658,43 @@ func shortName(s string) string {
 	}
 	return s
 }
+
+func TestLimitsAValueTooLargeIsRefusedBeforeItIsBuilt(t *testing.T) {
+	sqliteOnly(t)
+	h := newHarness(t)
+	h.seedTable("toobig", "t", []map[string]any{
+		{"name": "title", "type": "string", "fulltext": true},
+		{"name": "blob", "type": "text"},
+		{"name": "v", "type": "vector", "dim": 2},
+	})
+	h.mustHTTP("insert", map[string]any{"namespace": "toobig", "table": "t", "records": []map[string]any{{"title": "one", "v": []float64{1, 0}}}})
+
+	const huge = "length(hex(zeroblob(200000000))) > 0"
+	want := "a string or blob in the SQL is larger than the 64 MiB a single value may hold; select or compute smaller values"
+	for _, c := range []struct {
+		op   string
+		body map[string]any
+	}{
+		{"query", map[string]any{"namespace": "toobig", "sql": "SELECT hex(zeroblob(200000000)) AS b"}},
+		{"search_fulltext", map[string]any{"namespace": "toobig", "table": "t", "query": "one", "filter": huge}},
+		{"search_vector", map[string]any{"namespace": "toobig", "table": "t", "vector": []float64{1, 0}, "column": "v", "filter": huge}},
+		{"delete", map[string]any{"namespace": "toobig", "table": "t", "filter": huge}},
+		{"update", map[string]any{"namespace": "toobig", "table": "t", "filter": huge, "set": map[string]any{"title": "x"}}},
+	} {
+		status, out := h.httpCall(c.op, c.body)
+		errObj, _ := out["error"].(map[string]any)
+		if status != 400 || errObj["code"] != "query_error" || errObj["message"] != want {
+			t.Fatalf("%s: %d %v\nwant 400 query_error %q", c.op, status, errObj, want)
+		}
+	}
+	if rows := h.mustHTTP("query", map[string]any{"namespace": "toobig", "sql": "SELECT count(*) AS n FROM t"})["rows"].([]any); rows[0].(map[string]any)["n"] != float64(1) {
+		t.Fatalf("a refused delete must delete nothing, got %v", rows)
+	}
+
+	big := strings.Repeat("x", 30<<20)
+	h.mustHTTP("insert", map[string]any{"namespace": "toobig", "table": "t", "records": []map[string]any{{"title": "two", "blob": big}}})
+	rows := h.mustHTTP("query", map[string]any{"namespace": "toobig", "sql": "SELECT length(blob) AS n FROM t WHERE title = 'two'"})["rows"].([]any)
+	if rows[0].(map[string]any)["n"] != float64(30<<20) {
+		t.Fatalf("a 30 MiB value is under the limit and must round-trip, got %v", rows)
+	}
+}

@@ -21,11 +21,11 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq Vecto
 	if err != nil {
 		return SearchResult{}, err
 	}
-	tx, err := n.ro.BeginTx(ctx, nil)
+	tx, done, err := beginCallerTx(ctx, n.ro, nil)
 	if err != nil {
 		return SearchResult{}, err
 	}
-	defer tx.Rollback()
+	defer done()
 	sc, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
 		return SearchResult{}, err
