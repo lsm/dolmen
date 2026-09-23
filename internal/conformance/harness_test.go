@@ -98,6 +98,8 @@ var authOff = harnessMode{name: "off"}
 
 var authAdminKey = harnessMode{name: "admin-key", adminKey: "Tt5vQ2rXm9LbHc0wPqZaJ4yNfE7sUgKdRi1oCnBxV3M"}
 
+var authOffProxied = harnessMode{name: "off-proxied", trustedProxies: "127.0.0.0/8,::1/128"}
+
 var authGateway = harnessMode{name: "gateway", adminKey: authAdminKey.adminKey, trustedProxies: "127.0.0.0/8,::1/128"}
 
 var authGatewayNoKey = harnessMode{name: "gateway-no-key", trustedProxies: "127.0.0.0/8,::1/128", noAdminKey: true}
@@ -226,7 +228,11 @@ func (h *harness) start() {
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcpSrv)
 	mux.Handle("/", apiSrv.Handler())
-	h.serve(api.OriginGuard(mux, nil))
+	forwarders, err := auth.ParseTrustedProxies(h.mode.trustedProxies)
+	if err != nil {
+		h.t.Fatalf("parse trusted proxies for mode %q: %v", h.mode.name, err)
+	}
+	h.serve(api.ForwardingGuard(api.OriginGuard(mux, nil), forwarders))
 
 	h.t.Cleanup(h.close)
 }

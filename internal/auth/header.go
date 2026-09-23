@@ -75,6 +75,10 @@ func NewHeaderSource(trusted []*net.IPNet, maxGroups int) Source {
 func (s *headerSource) Name() string { return HeaderSourceName }
 
 func (s *headerSource) trusts(r *http.Request) bool {
+	return PeerTrusted(r, s.trusted)
+}
+
+func PeerTrusted(r *http.Request, trusted []*net.IPNet) bool {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
@@ -83,7 +87,7 @@ func (s *headerSource) trusts(r *http.Request) bool {
 	if ip == nil {
 		return false
 	}
-	for _, cidr := range s.trusted {
+	for _, cidr := range trusted {
 		if cidr.Contains(ip) {
 			return true
 		}
