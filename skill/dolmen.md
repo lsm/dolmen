@@ -161,6 +161,18 @@ The same call with a typo'd field name returns the error envelope:
 {"ok":false,"error":{"code":"invalid_request","message":"unknown field \"titel\" on table findings (see describe_table)","request_id":"7c3e9a1f5b2d4e8a9c0f6b1d3e5a7c9f"}}
 ```
 
+Searches answer with `results`, where `query` and `read_rows` answer with `rows`:
+
+```json
+{"ok":true,"data":{"results":[{"id":1,"created_at":"2026-09-23T16:19:06.326Z","title":"auth flow","body":"token expiry not checked"}],"truncated":false}}
+```
+
+`search_vector` adds `_score` to each result and reports `skipped_vectors`:
+
+```json
+{"ok":true,"data":{"results":[{"id":1,"created_at":"2026-09-23T16:19:06.326Z","title":"auth flow","body":"token expiry not checked","_score":0.9046}],"truncated":false,"skipped_vectors":0}}
+```
+
 ## JSON-RPC fallback
 
 When the `dolmen` tools are not connected and no user is available to re-run the connection
@@ -305,7 +317,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 - Core tools: `describe_server`, `list_namespaces`, `list_tables`, `describe_table`, `insert`, `query`, `search_fulltext`, `search_vector`, `changes_since`, `wait_for`, `delete`.
 - Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`, and `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field).
 - Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field — enables `search_vector` with `text`; the built-in `local` provider is enabled by default; set `DOLMEN_EMBED_PROVIDER=openai` for an external endpoint, or `none` to disable server-side embeddings), `required: true`, `enum: [values]` (closed vocabulary for a string field — writes with any other value are rejected naming the field, the value, and the allowed list; exact match, no case folding; a declared `default` must be a member).
-- `describe_server` reports the embedding provider status without attempting a write: `provider` (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, `usable`, and — for the `local` provider — `model_cached`, whether the model weights are complete on the server so no first-use download is needed (`false` means the first vectorized write or `text` search downloads a Hugging Face model, which can fail transiently — retry, or pre-seed; with `DOLMEN_EMBED_MODEL` naming a directory, `false` means the directory is incomplete and no download repairs it). `vectorize` fields and `search_vector` `text` queries fail while `usable` is false; a table whose `embed_space` (see `describe_table`) differs from `identity` was embedded by a different provider/model and rejects inserts and text searches until it is re-embedded.
+- `describe_server` reports the embedding provider status without attempting a write: `provider` (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, `usable`, and — for the `local` provider — `model_cached`, whether the model weights are complete on the server so no first-use download is needed (`false` means the first vectorized write or `text` search downloads a Hugging Face model, so it can take ten seconds or more and can fail transiently — retry, or pre-seed; with `DOLMEN_EMBED_MODEL` naming a directory, `false` means the directory is incomplete and no download repairs it). `vectorize` fields and `search_vector` `text` queries fail while `usable` is false; a table whose `embed_space` (see `describe_table`) differs from `identity` was embedded by a different provider/model and rejects inserts and text searches until it is re-embedded.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
 - `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
@@ -314,7 +326,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 - Every table has implicit `id` and `created_at` columns; `SELECT *` includes them.
 - Results honor declared field types in every read (`query`, `search_fulltext`, `search_vector`): `boolean` → `true`/`false`, `json` → the decoded value, `vector` → a number array, SQL `NULL` → `null`. In `query`, coercion is by result-column label (aliases count as their label); labels that match no declared field fall back to raw values (blobs as base64).
 - The hidden `_embedding` column (from `vectorize`) is excluded from `SELECT *` and search results; pass `include_hidden: true` to a search when you really need it. Naming it in `query` SQL (outside string literals and comments) also works where the backend exposes it to caller SQL, but that is backend-dependent — `include_hidden: true` is the portable way to reach it.
-- Vector search results carry `_score` (cosine similarity; higher is closer).
+- Vector search results carry `_score` (cosine similarity; higher is closer). Judge a score against the other results of the same query, not against a fixed cutoff: with the default `local` model, relevant matches commonly score only about 0.2 to 0.6.
 - `search_vector` has two query forms with different reach: `text` (server embeds it) searches only the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`; `vector` (raw numbers) searches any `vector` column, and only you know which embedding space produced both the stored and the query vectors, so keep them from the same model.
   **Rows whose `vectorize` source is `null`/empty/missing have `_embedding` `null` and are silently excluded from any `search_vector` that searches `_embedding` (a `text` query, or a raw `vector` query with `column` omitted or set to `_embedding`). If recall matters, and the backend exposes `_embedding` to caller SQL, call `query` with `SELECT COUNT(*) FROM <table_name> WHERE _embedding IS NULL AND (<same filter>)` (substitute the table name; bind the same `args`; drop the `AND (...)` clause when no filter is used) to find unembedded rows eligible for the search; if that column is not reachable, or you compare counts instead, do it against `SELECT COUNT(*) FROM <table_name> WHERE <same filter>` after exhausting all pages with `min_score` unset (omit the WHERE clause when no filter is used).**
 - `skipped_vectors` in a `search_vector` response counts stored vectors that were corrupt or dimension-mismatched and could not be scored; **it does not count rows with a `null`/empty/missing `vectorize` source — those rows are silently excluded and will not raise `skipped_vectors`.**

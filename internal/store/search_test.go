@@ -596,10 +596,16 @@ func TestPunctuationInABareFTSTermTeachesQuoting(t *testing.T) {
 			t.Fatalf("the remedy the message names must work: %q quoted still fails: %v", q, err)
 		}
 	}
-	for _, q := range []string{"(unbalanced", "payment AND", `"unterminated`} {
+	grammar := map[string]string{
+		"(unbalanced":   `query "(unbalanced": the query ends where FTS5 expects a term; drop a trailing AND, OR or NOT, or close an open parenthesis`,
+		"payment AND":   `query "payment AND": the query ends where FTS5 expects a term; drop a trailing AND, OR or NOT, or close an open parenthesis`,
+		`"unterminated`: `query "\"unterminated": a double-quoted phrase is never closed; add the closing " (a quote inside a phrase is written as two, "")`,
+		"*":             `query "*": FTS5 reads a query that starts with * as a special command; put * after a word to search by prefix (e.g. pay*)`,
+	}
+	for q, want := range grammar {
 		_, _, err := st.SearchFulltext(context.Background(), "test", "notes", q, 0, 10, false, "", nil)
-		if err == nil || strings.Contains(err.Error(), "double-quoted") {
-			t.Fatalf("query %q is a grammar mistake, not punctuation in a term; quoting advice would mislead: %v", q, err)
+		if err == nil || err.Error() != "invalid request: "+want {
+			t.Fatalf("query %q is a grammar mistake and must be taught as one, not as punctuation in a term:\n got %v\nwant %s", q, err, want)
 		}
 	}
 }
