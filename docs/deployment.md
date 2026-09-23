@@ -200,6 +200,24 @@ connections beyond the two it keeps. A read-only connection cannot recreate the 
 SQLite removes when the last connection to a database closes, so the write connection stays open
 for as long as the namespace does.
 
+## Durability
+
+`-sync` (default `full`) sets what an acknowledged write survives. Every namespace runs in WAL
+mode, so a crash never leaves a namespace inconsistent; the setting only decides which of the
+latest commits a crash can take with it.
+
+| Mode | A process crash (kill, panic, OOM) | Power or OS failure |
+|------|------------------------------------|---------------------|
+| `full` | loses nothing acknowledged | loses nothing acknowledged |
+| `normal` | loses nothing acknowledged | may lose the last commits acknowledged before it |
+
+`full` syncs the write-ahead log on every commit; `normal` syncs it only at checkpoints, which
+makes small writes faster. Choose `normal` only where the last moments of writes can be replayed
+from elsewhere. The mode is logged at startup, and a namespace whose writer does not report the
+chosen mode when it opens is refused rather than served with weaker durability. The Go library
+always uses `full`. The grant registry (`_grants.db`) always uses `full` too: a revoked
+grant or key must stay revoked after a power loss.
+
 ## Probes
 
 `/livez` answers `200 {"status":"ok"}` while the process runs; `/healthz` is the same probe under

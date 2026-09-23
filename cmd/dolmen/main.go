@@ -121,7 +121,7 @@ func run() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("dolmen listening", "addr", cfg.Addr, "data", cfg.DataDir, "embed", emb.Name(), "version", version.Version)
+		slog.Info("dolmen listening", "addr", cfg.Addr, "data", cfg.DataDir, "sync", cfg.Sync, "embed", emb.Name(), "version", version.Version)
 		slog.Info("endpoints", "mcp", "http://"+cfg.Addr+cfg.Prefix+"/mcp", "api", "http://"+cfg.Addr+cfg.Prefix+"/v1/{op}", "live", "http://"+cfg.Addr+cfg.Prefix+"/livez", "ready", "http://"+cfg.Addr+cfg.Prefix+"/readyz", "version", "http://"+cfg.Addr+cfg.Prefix+"/version", "skills", "http://"+cfg.Addr+cfg.Prefix+"/skills")
 		logAuthPosture(cfg.Auth)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -207,7 +207,7 @@ func runStdio(args []string) error {
 		stop()
 	}()
 
-	slog.Info("dolmen mcp serving stdio", "data", cfg.DataDir, "embed", emb.Name(), "version", version.Version)
+	slog.Info("dolmen mcp serving stdio", "data", cfg.DataDir, "sync", cfg.Sync, "embed", emb.Name(), "version", version.Version)
 	return mcpSrv.ServeStdio(ctx, os.Stdin, os.Stdout)
 }
 
@@ -229,7 +229,7 @@ func openStore(cfg *config) (store.Engine, error) {
 		}
 		return st, nil
 	}
-	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention), store.WithMaxOpenNamespaces(cfg.MaxOpenNamespaces))
+	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention), store.WithMaxOpenNamespaces(cfg.MaxOpenNamespaces), store.WithSync(cfg.Sync))
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
@@ -337,6 +337,7 @@ type config struct {
 	SkillNamespaceHint string
 	ChangeRetention    time.Duration
 	MaxSubscriptionAge time.Duration
+	Sync               store.SyncMode
 	ShutdownGrace      time.Duration
 	Timeouts           api.Timeouts
 	MaxOpenNamespaces  int
@@ -369,6 +370,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 
 	maxOpenDefault, maxOpenErr := envIntOr("DOLMEN_MAX_OPEN_NAMESPACES", store.DefaultMaxOpenNamespaces, getenv)
 	maxOpenNamespaces := fs.Int("max-open-namespaces", maxOpenDefault, "namespaces held open at once; past it, the least recently used idle namespace is closed until it is next used (at least 1; sqlite engine)")
+	syncMode := fs.String("sync", envOr("DOLMEN_SYNC", string(store.DefaultSync), getenv), "commit durability: full (an acknowledged commit survives power loss) or normal (it survives a process crash; the last commits before a power loss may be lost); sqlite engine")
 	shutdownGrace := fs.String("shutdown-grace", envOr("DOLMEN_SHUTDOWN_GRACE", "60s", getenv), "on SIGTERM, how long running requests may finish before they are cancelled: 0 waits for them without a bound, otherwise 1s to 24h")
 	changeRetention := fs.String("change-retention", envOr("DOLMEN_CHANGE_RETENTION", "168h", getenv), "change-log retention: 0 disables pruning (records and cursors never expire); otherwise 1h to 2160h")
 	maxSubscriptionAge := fs.String("max-subscription-age", envOr("DOLMEN_MAX_SUBSCRIPTION_AGE", "30m", getenv), "subscribe connection age bound: the stream teaching-closes at the bound and the client reconnects from its cursor; 0 disables the bound (the identity-refresh backstop is lost), otherwise 1s to 24h")
@@ -510,6 +512,13 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		return nil, &printedError{err}
 	}
 
+	sync, err := store.ParseSyncMode(*syncMode)
+	if err != nil {
+		fmt.Fprintf(out, "config: %v\n", err)
+		fs.Usage()
+		return nil, &printedError{err}
+	}
+
 	retention, err := parseChangeRetention(*changeRetention)
 	if err != nil {
 		fmt.Fprintf(out, "config: %v\n", err)
@@ -576,6 +585,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		SkillNamespaceHint: skillNamespaceHint,
 		ChangeRetention:    retention,
 		MaxSubscriptionAge: maxAge,
+		Sync:               sync,
 		ShutdownGrace:      grace,
 		Timeouts:           timeouts,
 		MaxOpenNamespaces:  *maxOpenNamespaces,
@@ -700,6 +710,7 @@ func printEnvHelp(out io.Writer) {
 		{"DOLMEN_ALLOWED_ORIGINS", "comma-separated allowed HTTP origins for CORS"},
 		{"DOLMEN_BASE_URL", "public base URL for skills and MCP links (default: use request Host)"},
 		{"DOLMEN_SKILL_NAMESPACE_HINT", "hint text rendered into skill markdown"},
+		{"DOLMEN_SYNC", "commit durability: full (default; survives power loss) or normal (survives a process crash)"},
 		{"DOLMEN_SHUTDOWN_GRACE", "on SIGTERM, time running requests may finish: 0 waits unbounded, else 1s to 24h (default 60s)"},
 		{"DOLMEN_CHANGE_RETENTION", "change-log retention: 0 disables pruning, else 1h to 2160h (default 168h)"},
 		{"DOLMEN_MAX_SUBSCRIPTION_AGE", "subscribe connection age bound: 0 disables, else 1s to 24h (default 30m)"},
