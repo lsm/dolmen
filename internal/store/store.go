@@ -398,13 +398,20 @@ type rowQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
+func TableNotFound(nsName, table string) error {
+	if err := schema.ValidateTableName(table); err != nil {
+		return fmt.Errorf("%w: %v, so no such table exists in %s; list_tables shows the tables it holds", ErrNotFound, err, nsName)
+	}
+	return fmt.Errorf("%w: table %s.%s does not exist; list_tables shows the tables %s holds", ErrNotFound, nsName, table, nsName)
+}
+
 func loadSchema(ctx context.Context, db rowQuerier, nsName, table string) (*schema.TableSchema, error) {
 
 	var raw string
 	err := db.QueryRowContext(ctx,
 		`SELECT schema_json FROM _dolmen_tables WHERE name = ?`, table).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("%w: table %s.%s", ErrNotFound, nsName, table)
+		return nil, TableNotFound(nsName, table)
 	}
 	if err != nil {
 		return nil, err

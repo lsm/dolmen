@@ -54,7 +54,9 @@ The divergence is pinned
 by-design in `TestEmbeddedParityErrorTaxonomy` (`internal/conformance/embedded_parity_test.go`):
 the same malformed name yields wire `not_found` and façade `invalid_request`, each surface's
 assert naming the divergence. Wire-side tightening (400 on `/v1`) is a contract change deferred
-to a ruling; this doc records the status quo.
+to a ruling; this doc records the status quo. Until then the wire's `not_found` message says why
+(#325): a name that breaks the grammar is reported with the rule it breaks, and a well-formed name
+that matches no table points at `list_tables`, on both engines.
 
 ## Input limits and where each is enforced
 
