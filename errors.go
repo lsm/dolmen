@@ -14,5 +14,6 @@ var (
 	ErrForbidden           = derr.ErrForbidden
 	ErrEmbedderUnavailable = derr.ErrEmbedderUnavailable
 	ErrCanceled            = derr.ErrCanceled
+	ErrTimeout             = derr.ErrTimeout
 	ErrInternal            = derr.ErrInternal
 )

@@ -39,6 +39,7 @@ type Server struct {
 	authn              *auth.Authenticator
 	grants             *auth.Registry
 	oidcSource         *auth.OIDCSource
+	timeouts           Timeouts
 }
 
 type Option func(*Server)
@@ -481,11 +482,13 @@ func (s *Server) Dispatch(ctx context.Context, op string, body []byte) (any, err
 	if !ok {
 		return nil, notFound("unknown operation %q", op)
 	}
+	ctx, cancel, overran := s.withOpDeadline(ctx, op)
+	defer cancel()
 	if err := s.authorizeOp(ctx, op, body); err != nil {
-		return nil, err
+		return nil, overran(err)
 	}
 	res, err := def.Func(ctx, s, body)
-	if err != nil {
+	if err = overran(err); err != nil {
 		if framed := frameUnknownField(err, op); framed != nil {
 			return res, framed
 		}
@@ -584,15 +587,21 @@ func (s *Server) Handler() http.Handler {
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20))
 		if err != nil {
+			s.ArmResponseWrite(w)
 			var maxErr *http.MaxBytesError
 			if errors.As(err, &maxErr) {
 				writeError(w, r, &Error{Status: http.StatusRequestEntityTooLarge, Code: ErrCodeInvalid, Message: "request body exceeds the 32 MiB limit"})
+				return
+			}
+			if bodyReadTimedOut(err) {
+				writeError(w, r, s.bodyTimeoutError())
 				return
 			}
 			writeError(w, r, badRequest("cannot read body"))
 			return
 		}
 		res, err := s.Dispatch(r.Context(), op, body)
+		s.ArmResponseWrite(w)
 		if err != nil {
 			slog.Debug("op failed", WithPrincipal(r, "op", op, "err", err)...)
 			writeError(w, r, err)

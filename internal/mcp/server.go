@@ -159,9 +159,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20))
 	if err != nil {
+		s.api.ArmResponseWrite(w)
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			http.Error(w, "request body exceeds the 32 MiB limit", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if msg, timedOut := s.api.BodyReadTimeout(err); timedOut {
+			http.Error(w, msg, http.StatusRequestTimeout)
 			return
 		}
 		writeRPCError(w, nil, jsonRPCParseError, "cannot read request body")
@@ -184,6 +189,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	instr := skill.MCPInstructions(s.api.PublicContext(r))
 	result, rpcErr := s.handle(r.Context(), msg, instr)
+	s.api.ArmResponseWrite(w)
 	if rpcErr != nil {
 		writeRPCError(w, msg.ID, rpcErr.Code, rpcErr.Message)
 		return

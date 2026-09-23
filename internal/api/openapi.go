@@ -81,6 +81,7 @@ var errorCodes = []ErrorCode{
 	ErrCodeForbidden,
 	ErrCodeEmbedderUnavailable,
 	ErrCodeCanceled,
+	ErrCodeTimeout,
 	ErrCodeInternal,
 }
 

@@ -54,6 +54,7 @@ func TestSentinelsAreStableValues(t *testing.T) {
 		{ErrForbidden, Forbidden},
 		{ErrEmbedderUnavailable, EmbedderUnavailable},
 		{ErrCanceled, Canceled},
+		{ErrTimeout, Timeout},
 		{ErrInternal, Internal},
 	}
 	for _, p := range pairs {

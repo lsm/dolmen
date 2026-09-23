@@ -27,6 +27,7 @@ type fakeProvider struct {
 	calls int
 	texts []string
 	fail  error
+	delay time.Duration
 }
 
 func (p *fakeProvider) Name() string      { return "conformance" }
@@ -37,10 +38,17 @@ func (p *fakeProvider) Embed(ctx context.Context, texts []string) ([][]float32, 
 	p.mu.Lock()
 	p.calls++
 	p.texts = append(p.texts, texts...)
-	fail := p.fail
+	fail, delay := p.fail, p.delay
 	p.mu.Unlock()
 	if fail != nil {
 		return nil, fail
+	}
+	if delay > 0 {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
 	}
 	out := make([][]float32, len(texts))
 	for i, t := range texts {
@@ -116,6 +124,7 @@ type harness struct {
 
 	retention *time.Duration
 	apiOpts   []api.Option
+	timeouts  *api.Timeouts
 
 	httpURL string
 	mcpURL  string
@@ -151,6 +160,15 @@ func newHarnessKeepalive(t *testing.T, d time.Duration) *harness {
 	t.Helper()
 	h := newHarnessAtMode(t, t.TempDir(), &fakeProvider{}, authOff)
 	h.apiOpts = []api.Option{api.WithKeepaliveInterval(d)}
+	h.reopen()
+	return h
+}
+
+func newHarnessTimeouts(t *testing.T, to api.Timeouts) *harness {
+	t.Helper()
+	h := newHarnessAtMode(t, t.TempDir(), &fakeProvider{}, authOff)
+	h.timeouts = &to
+	h.apiOpts = []api.Option{api.WithTimeouts(to)}
 	h.reopen()
 	return h
 }
@@ -204,11 +222,20 @@ func (h *harness) start() {
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcpSrv)
 	mux.Handle("/", apiSrv.Handler())
-	h.srv = httptest.NewServer(api.OriginGuard(mux, nil))
-	h.httpURL = h.srv.URL + "/v1"
-	h.mcpURL = h.srv.URL + "/mcp"
+	h.serve(api.OriginGuard(mux, nil))
 
 	h.t.Cleanup(h.close)
+}
+
+func (h *harness) serve(handler http.Handler) {
+	srv := httptest.NewUnstartedServer(handler)
+	if h.timeouts != nil {
+		h.timeouts.Configure(srv.Config)
+	}
+	srv.Start()
+	h.srv = srv
+	h.httpURL = h.srv.URL + "/v1"
+	h.mcpURL = h.srv.URL + "/mcp"
 }
 
 func (h *harness) reopen() {
@@ -719,7 +746,5 @@ func (h *harness) restart() {
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcpSrv)
 	mux.Handle("/", apiSrv.Handler())
-	h.srv = httptest.NewServer(api.OriginGuard(mux, nil))
-	h.httpURL = h.srv.URL + "/v1"
-	h.mcpURL = h.srv.URL + "/mcp"
+	h.serve(api.OriginGuard(mux, nil))
 }
