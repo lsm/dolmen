@@ -74,10 +74,12 @@ func TestPostgresABoundTextArgumentCarriesTheBinaryCollation(t *testing.T) {
 }
 
 func TestPostgresATextColumnRefusesAComputedNumberRatherThanGuessingItsText(t *testing.T) {
-	cols := map[string]string{"code": "code"}
-	types := map[string]schema.FieldType{"code": schema.Text}
-	for _, expr := range []string{"code = round(2.5)", "code > length(code)", "abs(1) = code"} {
-		node, err := filter.Parse(expr, filter.Options{Columns: []string{"code"}})
+	cols := map[string]string{"code": "code", "n": "n"}
+	types := map[string]schema.FieldType{"code": schema.Text, "n": schema.Number}
+	for _, expr := range []string{"code = round(2.5)", "code > length(code)", "abs(1) = code",
+		"code = (n + 100)", "(n * 1.5) > code", "code < -(n + 1)", "code = iif(n > 1, n + 1, n - 1)",
+		"code = coalesce(n + 1, 2)"} {
+		node, err := filter.Parse(expr, filter.Options{Columns: []string{"code", "n"}})
 		if err != nil {
 			t.Fatalf("%s: %v", expr, err)
 		}

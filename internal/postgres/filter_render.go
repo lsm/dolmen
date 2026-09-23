@@ -121,8 +121,12 @@ func (r *filterRenderer) render(n filter.Node, next int) error {
 			if !r.rawBoolean {
 				r.sb.WriteString("::bool::int")
 			}
-		case int, int8, int16, int32, int64, float32, float64, json.Number:
+		case int, int8, int16, int32, int64:
 			r.sb.WriteString("::numeric")
+		case float32, float64, json.Number:
+			r.sb.WriteString("::text::numeric")
+			r.bound = append(r.bound, canonicalArgument(r.args[node.Index]))
+			return nil
 		case string:
 			r.sb.WriteString("::text")
 		case []byte:
@@ -156,6 +160,15 @@ func (r *filterRenderer) render(n filter.Node, next int) error {
 					r.sb.WriteString("(" + strconv.FormatInt(whole, 10) + ")")
 					return nil
 				}
+			}
+			if inner, ok := node.Operand.(*filter.Literal); ok && inner.Kind == filter.LiteralNumber &&
+				!strings.HasPrefix(strings.ToLower(inner.Text), "0x") && numeralIsReal(inner.Text) {
+				r.sb.WriteString("(")
+				if err := r.number(node.Op + strings.TrimSpace(inner.Text)); err != nil {
+					return err
+				}
+				r.sb.WriteString(")")
+				return nil
 			}
 		}
 		r.sb.WriteString("(" + node.Op + " ")
@@ -231,7 +244,7 @@ func (r *filterRenderer) number(text string) error {
 			return nil
 		}
 		if numeralIsReal(text) {
-			r.sb.WriteString(strconv.FormatFloat(f, 'g', -1, 64))
+			r.sb.WriteString(canonicalDouble(f))
 			return nil
 		}
 	}
@@ -1097,7 +1110,7 @@ func sqliteNumberOfText(text string) string {
 func asSQLiteStorage(head, value string) string {
 	return "(CASE WHEN COALESCE(" + head + ", '') !~ '[.eE]' AND " + value +
 		" BETWEEN " + sqliteIntMin + " AND " + sqliteIntMax +
-		" THEN " + value + " ELSE " + value + "::float8::text::numeric END)"
+		" THEN " + value + " ELSE " + exactDouble("("+value+")::float8") + " END)"
 }
 
 func (r *filterRenderer) comparison(node *filter.Binary, op string, next int) error {
@@ -1186,7 +1199,7 @@ func (r *filterRenderer) textAffinity(node *filter.Binary, op string, next int, 
 	if otherIsRight {
 		other = node.Right
 	}
-	if r.affinityOf(other) != affNumber {
+	if r.comparedClassOf(other) != affNumber {
 		return r.storageClassComparison(node, op, next)
 	}
 	if text, ok := r.staticNumberAsText(other); ok {
@@ -1210,7 +1223,7 @@ func staticNumericLiteral(text string) string {
 	if math.IsInf(f, -1) || f < -math.MaxFloat64 {
 		return "'-Infinity'::numeric"
 	}
-	return "(" + strconv.FormatFloat(f, 'g', -1, 64) + ")"
+	return "(" + canonicalDouble(f) + ")"
 }
 
 func (r *filterRenderer) numericAffinity(node *filter.Binary, op string, next int, otherIsRight bool) error {
@@ -1288,7 +1301,7 @@ func (r *filterRenderer) captureGuard(n filter.Node, next int) (string, error) {
 }
 
 func (r *filterRenderer) storageClassComparison(node *filter.Binary, op string, next int) error {
-	left, right := r.affinityOf(node.Left), r.affinityOf(node.Right)
+	left, right := r.comparedClassOf(node.Left), r.comparedClassOf(node.Right)
 	if comparisonIsAcrossClasses(left, right) {
 		if answer, ok := crossClassAnswer(op, left, right); ok {
 			subject, err := r.captureGuard(node.Left, next)
@@ -1497,11 +1510,15 @@ func (r *filterRenderer) arithmetic(node *filter.Binary, op string, next int) er
 		r.recordClass(node, class)
 		r.sb.WriteString("(CASE WHEN " + class + " THEN trunc(" + exact + ") ELSE " + real + " END)")
 	case "%":
-		if bothInteger {
-			r.recordClass(node, "("+leftClass+" AND "+rightClass+")")
+		remainder := "(" + r.moduloOperand(node.Left, rawLeft, left) +
+			" % NULLIF(" + r.moduloOperand(node.Right, rawRight, right) + ", 0))"
+		if !bothInteger {
+			r.sb.WriteString(sqliteDouble(remainder))
+			return nil
 		}
-		r.sb.WriteString("(" + r.moduloOperand(node.Left, rawLeft, left) +
-			" % NULLIF(" + r.moduloOperand(node.Right, rawRight, right) + ", 0))")
+		class := "(" + leftClass + " AND " + rightClass + ")"
+		r.recordClass(node, class)
+		r.sb.WriteString("(CASE WHEN " + class + " THEN " + remainder + " ELSE " + sqliteDouble(remainder) + " END)")
 	default:
 		exact := "(" + left + " " + op + " " + right + ")"
 		real := doubleArithmetic(left, op, right)
@@ -1518,15 +1535,69 @@ func (r *filterRenderer) arithmetic(node *filter.Binary, op string, next int) er
 }
 
 func doubleArithmetic(left, op, right string) string {
-	return withoutNaN("((" + left + ")::float8 " + op + " (" + right + ")::float8)::text::numeric")
+	return withoutNaN(exactDouble("((" + left + ")::float8 " + op + " (" + right + ")::float8)"))
 }
 
 func doubleQuotient(left, right string) string {
-	return withoutNaN("((" + left + ")::float8 / NULLIF((" + right + ")::float8, 0))::text::numeric")
+	return withoutNaN(exactDouble("((" + left + ")::float8 / NULLIF((" + right + ")::float8, 0))"))
 }
 
 func sqliteDouble(expr string) string {
-	return "((" + expr + ")::float8::text::numeric)"
+	return exactDouble("(" + expr + ")::float8")
+}
+
+func exactDouble(double string) string {
+	return "(SELECT CASE WHEN abs(real_value.v) >= 9007199254740992" +
+		" AND real_value.v >= '-9223372036854775808'::float8 AND real_value.v < '9223372036854775808'::float8" +
+		" THEN real_value.v::int8::numeric ELSE real_value.v::text::numeric END" +
+		" FROM (SELECT " + double + " AS v) AS real_value)"
+}
+
+func canonicalDouble(f float64) string {
+	if math.IsInf(f, 0) {
+		return "'" + canonicalDoubleText(f) + "'::numeric"
+	}
+	return canonicalDoubleText(f)
+}
+
+func canonicalDoubleText(f float64) string {
+	switch {
+	case math.IsInf(f, 1):
+		return "Infinity"
+	case math.IsInf(f, -1):
+		return "-Infinity"
+	case math.Abs(f) >= 9007199254740992 && f >= -9223372036854775808 && f < 9223372036854775808:
+		return strconv.FormatInt(int64(f), 10)
+	}
+	return strconv.FormatFloat(f, 'g', -1, 64)
+}
+
+func storedNumber(v any) any {
+	switch x := v.(type) {
+	case float64:
+		return canonicalDoubleText(x)
+	case float32:
+		return canonicalDoubleText(float64(x))
+	}
+	return fmt.Sprint(v)
+}
+
+func canonicalArgument(v any) any {
+	var f float64
+	switch value := v.(type) {
+	case float32:
+		f = float64(value)
+	case float64:
+		f = value
+	case json.Number:
+		if _, err := value.Int64(); err == nil {
+			return v
+		}
+		f, _ = value.Float64()
+	default:
+		return v
+	}
+	return canonicalDoubleText(f)
 }
 
 func withoutNaN(text string) string {
@@ -1791,4 +1862,47 @@ func contains(n, target filter.Node) bool {
 		}
 	}
 	return false
+}
+
+func (r *filterRenderer) comparedClassOf(n filter.Node) affinity {
+	if class := r.affinityOf(n); class != affUnknown {
+		return class
+	}
+	switch node := unparen(n).(type) {
+	case *filter.Binary:
+		if strings.Contains("+-*/%", node.Op) {
+			return affNumber
+		}
+	case *filter.Unary:
+		if node.Op == "-" || node.Op == "+" {
+			return r.comparedClassOf(node.Operand)
+		}
+	case *filter.Call, *filter.Case:
+		var results []filter.Node
+		if call, ok := node.(*filter.Call); ok {
+			switch {
+			case call.Name == "iif" && len(call.Args) == 3:
+				results = call.Args[1:]
+			case call.Name == "coalesce" || call.Name == "ifnull":
+				results = call.Args
+			case call.Name == "nullif" && len(call.Args) > 0:
+				results = call.Args[:1]
+			}
+		} else {
+			results = caseResults(node.(*filter.Case))
+		}
+		agreed := affUnknown
+		for _, result := range results {
+			if isNullLiteral(result) {
+				continue
+			}
+			class := r.comparedClassOf(result)
+			if class == affUnknown || (agreed != affUnknown && class != agreed) {
+				return affUnknown
+			}
+			agreed = class
+		}
+		return agreed
+	}
+	return affUnknown
 }

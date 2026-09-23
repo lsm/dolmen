@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -182,6 +183,24 @@ var pinnedFilterSemantics = []struct {
 	{"a nullif double divides as a double", "nullif(3.0, 0) / 2 = 1.5", ""},
 	{"a modulo of a double is a double", "(7.5 % 2) / 2 = 0.5", ""},
 	{"a modulo of integers is an integer", "(7 % 4) / 2 = 1", ""},
+	{"an overflowing sum is the double's exact value", "('-7' + -9223372036854775808) = -9223372036854775808", ""},
+	{"a real int64 min equals the integer", "-9223372036854775808.0 = -9223372036854775808", ""},
+	{"a numeral just below int64 min is int64 min as a double", "-9223372036854775809 = -9223372036854775808", ""},
+	{"a large double product equals the integer it holds", "(1152921504606846976 * 1.0) = 1152921504606846976", ""},
+	{"a large real literal equals the integer it holds", "1152921504606846976.0 = 1152921504606846976", ""},
+	{"a large real text equals the integer it holds", "('1152921504606846976.0' + 0) = 1152921504606846976", ""},
+	{"a large double converts to its own integer", "(1152921504606846976.0 % 7) = (1152921504606846976 % 7)", ""},
+	{"a large double stored number keeps its rounding", "(big * 1.0) = 9007199254740992 AND (big * 1.0) <> big", ""},
+	{"a bound large real is the double it rounds to", "? = 9007199254740992 AND ? <> 9007199254740993", `[9007199254740993.0, 9007199254740993.0]`},
+	{"a modulo of a large double is a double", "(9007199254740993 % 4611686018427387904.0) = 9007199254740992", ""},
+	{"a modulo past int64 is a double", "(9223372036854775808 % -9223372036854775808) = 9223372036854775808", ""},
+	{"text sorts above a computed number", "'7' > (n + 100) AND (n + 100) < '7'", ""},
+	{"text never equals a computed number", "NOT ('93' = (n + 100))", ""},
+	{"a stored large real equals the integer it holds", "bigreal = 1152921504606846976", ""},
+	{"a stored large real equals its own literal", "bigreal = 1152921504606846976.0 AND NOT (bigreal <> 1152921504606846976.0)", ""},
+	{"a stored large real equals its own bound argument", "bigreal = ?", `[1152921504606846976.0]`},
+	{"a bound text never equals a computed number", "NOT ((1 / 2) = ?)", `["0"]`},
+	{"a bound text never equals a chosen computed number", "NOT (iif(id = 1, 1.5 + 1.5, 1) = ?)", `["3"]`},
 	{"substr from position zero takes one fewer", "substr(body, 0, 3) = 'a '", ""},
 	{"substr from before the start keeps what overlaps", "substr(body, -100, 103) = body", ""},
 	{"substr with a length reaching past the start", "substr(body, 5, -100) = 'a no'", ""},
@@ -332,12 +351,13 @@ func seedScopedFilterRow(t *testing.T) *harness {
 			{"name": "past", "type": "number"},
 			{"name": "code2", "type": "text"},
 			{"name": "tiny", "type": "text"},
+			{"name": "bigreal", "type": "number"},
 			{"name": "seen_at", "type": "timestamp"},
 		},
 		"row_access": "own",
 	})
 	grantTo(t, h, "principal", "alice", "acme", "notes", "create", "delete")
-	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7,"code":"1","mark":"!zzz","huge":"1e999999","flag":true,"neg":"-1.0e+300","frac":0.1,"big":9007199254740993,"real":"7.0","off":false,"zero":0,"pad":"  5  ","empty":"","past":9223372036854775808,"code2":"0.10000000000000000001","tiny":"1e-999999","seen_at":"2026-03-31T05:06:07.008Z"}]}`)
+	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7,"code":"1","mark":"!zzz","huge":"1e999999","flag":true,"neg":"-1.0e+300","frac":0.1,"big":9007199254740993,"real":"7.0","off":false,"zero":0,"pad":"  5  ","empty":"","past":9223372036854775808,"code2":"0.10000000000000000001","tiny":"1e-999999","bigreal":1152921504606846976.0,"seen_at":"2026-03-31T05:06:07.008Z"}]}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("seed insert: status %d %v", res.StatusCode, out)
 	}
@@ -394,5 +414,20 @@ func TestEveryEngineEvaluatesAScopedFilterWithSQLitesSemantics(t *testing.T) {
 		t.Run(tc.rule, func(t *testing.T) {
 			mustMatchTheOwnRowWithArgs(t, tc.filter, tc.args)
 		})
+	}
+}
+
+func TestEveryEngineStoresAnUpdatedLargeRealAsTheIntegerItHolds(t *testing.T) {
+	h := seedScopedFilterRow(t)
+	status, out := h.httpCall("update", map[string]any{"namespace": "acme", "table": "notes", "filter": "id = 1",
+		"set": map[string]any{"n": json.Number("4611686018427387904.0")}})
+	if status != http.StatusOK || out["ok"] != true {
+		t.Fatalf("update failed: %d %v", status, out)
+	}
+	_, out = h.httpCall("delete", map[string]any{"namespace": "acme", "table": "notes",
+		"filter": "n = 4611686018427387904", "dry_run": true})
+	data, _ := out["data"].(map[string]any)
+	if data["matched"] != float64(1) {
+		t.Fatalf("SQLite stores the REAL 2^62 as the INTEGER it losslessly holds, so the updated row must match that integer: %v", out)
 	}
 }

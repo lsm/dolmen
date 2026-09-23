@@ -134,7 +134,7 @@ func prepareValues(ctx context.Context, state tableState, records []map[string]a
 				coerced = coerced.(int64) != 0
 			}
 			if f.Type == schema.Number && coerced != nil {
-				coerced = fmt.Sprint(coerced)
+				coerced = storedNumber(coerced)
 			}
 			out[i].columns = append(out[i].columns, ident(state.columns[f.Name]))
 			out[i].values = append(out[i].values, coerced)
