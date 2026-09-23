@@ -82,10 +82,15 @@ All successful `/v1/{operation}` POSTs return `{"ok":true,"data":{...}}`; errors
 request's `X-Request-Id` header when one was sent, otherwise a server-generated id, echoed back as
 the `X-Request-Id` response header so any error can be correlated with the server log — with a
 matching 4xx/5xx status. Error codes are stable for branching: `invalid_request`, `not_found`,
-`query_error`, `conflict`, `forbidden`, `embedder_unavailable`, `canceled`, `internal_error`.
+`query_error`, `conflict`, `unauthorized`, `forbidden`, `embedder_unavailable`, `canceled`,
+`timeout`, `internal_error`.
 `canceled` means the request was cancelled before it completed (over the stdio transport, by a
 client cancellation notification or the shutdown drain); the operation may or may not have
 finished server-side — check with a query before retrying a write.
+`timeout` means the server stopped the request at one of its time limits: `504` when an operation
+ran past `-op-timeout` (or `-migrate-timeout`), `408` when the request body arrived too slowly. A
+timed-out read can be narrowed and retried; a timed-out write may or may not have committed, so
+check before retrying it.
 `embedder_unavailable` (503) means the server's embedding provider could not load its model — with
 the `local` provider, typically the first-use Hugging Face download failing — and its message names
 the offline remediations (pre-seed the model cache, or point `DOLMEN_EMBED_MODEL` at a local model
@@ -427,6 +432,12 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 | `-base-url` | `DOLMEN_BASE_URL` | — | Public base URL for the links rendered into the skills manifest, the skill markdown, and the MCP `initialize` instructions. Default: derive from the request `Host` and forwarded headers. Refused when it ends with `-prefix` |
 | `-change-retention` | `DOLMEN_CHANGE_RETENTION` | `168h` | Change-log retention for `changes_since` / `wait_for` / `subscribe`. `0` disables pruning (records and cursors never expire); otherwise `1h` to `2160h` |
 | `-max-subscription-age` | `DOLMEN_MAX_SUBSCRIPTION_AGE` | `30m` | `subscribe` connection age bound: the stream teaching-closes at the bound and the client reconnects from its cursor. `0` disables the bound; otherwise `1s` to `24h` |
+| `-read-timeout` | `DOLMEN_READ_TIMEOUT` | `2m` | Time to read one request, headers and body; a body that arrives too slowly is answered `408` with code `timeout`. `0` disables the bound; otherwise `1s` to `24h` |
+| `-write-timeout` | `DOLMEN_WRITE_TIMEOUT` | `2m` | Time to write one response once it starts, so a client that stops reading cannot hold the connection. `subscribe` streams bound each frame instead. `0` disables the bound; otherwise `1s` to `24h` |
+| `-idle-timeout` | `DOLMEN_IDLE_TIMEOUT` | `2m` | Time a keep-alive connection may wait for its next request. `0` disables the bound; otherwise `1s` to `24h` |
+| `-max-header-bytes` | `DOLMEN_MAX_HEADER_BYTES` | `1048576` | Largest request header block accepted; larger ones are answered `431`. `4096` to `16777216` |
+| `-op-timeout` | `DOLMEN_OP_TIMEOUT` | `2m` | Time for one operation's work over HTTP, MCP or stdio; `wait_for` gets its `timeout_ms` on top, and `migrate` answers to `-migrate-timeout` instead. An operation past it is stopped and answered `504` with code `timeout`. `0` disables the bound; otherwise `1s` to `24h` |
+| `-migrate-timeout` | `DOLMEN_MIGRATE_TIMEOUT` | `0` | Time for one `migrate` call, which may backfill every row inside one transaction. `0` leaves it unbounded; otherwise `1s` to `24h` |
 | — | `DOLMEN_SKILL_NAMESPACE_HINT` | built-in default | Hint text rendered into the served skill markdown |
 | — | `DOLMEN_ALLOWED_ORIGINS` | — | Comma-separated allowed HTTP origins for CORS; `localhost`, `127.0.0.1`, and `::1` are always allowed |
 | — | `DOLMEN_EMBED_PROVIDER` | `local` | Embedding provider: `local` (built-in in-process embeddings via [rembed](https://github.com/rostamlabs/rembed), default), `openai` (any OpenAI-compatible endpoint), or `none` (caller supplies vectors). Unknown values produce an error |
@@ -1185,7 +1196,7 @@ Every row has two implicit columns:
 | Search `limit` (`search_fulltext`, `search_vector`) | default 10, hard max 200 | omit `limit` for the default of 10; the tool schema enforces 1–200 for schema-validating clients, and the server clamps values above 200 to 200 (0 or negative selects the default on direct `/v1` calls) |
 | `query` result rows | 1,000 | truncated; `truncated` is `true` in the response |
 | `query` / search result bytes | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
-| A single value built by SQL (in `query` or a `filter`) | 64 MiB | `query_error` before the value is built |
+| A single value built by SQL (in `query` or a `filter`), SQLite engine | 64 MiB | `query_error` before the value is built |
 | Request body size | 32 MiB | rejected with `413 Request Entity Too Large` |
 | `query` `args` | 100 | rejected |
 | `infer_schema` samples | 1–50 | rejected |

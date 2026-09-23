@@ -13,6 +13,7 @@ const (
 	Forbidden           Code = "forbidden"
 	EmbedderUnavailable Code = "embedder_unavailable"
 	Canceled            Code = "canceled"
+	Timeout             Code = "timeout"
 	Internal            Code = "internal_error"
 )
 
@@ -51,5 +52,6 @@ var (
 	ErrForbidden           = &Error{Code: Forbidden}
 	ErrEmbedderUnavailable = &Error{Code: EmbedderUnavailable}
 	ErrCanceled            = &Error{Code: Canceled}
+	ErrTimeout             = &Error{Code: Timeout}
 	ErrInternal            = &Error{Code: Internal}
 )

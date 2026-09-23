@@ -135,7 +135,7 @@ operation whose input fields are all optional (for example `list_namespaces`) ca
 body at all. Responses are enveloped — success is
 `{"ok":true,"data":...}` and failure is `{"ok":false,"error":{"code","message","request_id"}}`
 with a stable machine-readable `code` (`invalid_request`, `not_found`, `query_error`, `conflict`,
-`unauthorized`, `forbidden`, `embedder_unavailable`, `canceled`, `internal_error`); `request_id` is the request's
+`unauthorized`, `forbidden`, `embedder_unavailable`, `canceled`, `timeout`, `internal_error`); `request_id` is the request's
 `X-Request-Id` header when one was sent, otherwise a server-generated id, echoed back as the
 `X-Request-Id` response header — when a message says the underlying cause is in the server log
 under this id, this is the id. The full list of operations and their request schemas is in the OpenAPI document (`GET /v1/openapi.json`).
@@ -159,6 +159,18 @@ The same call with a typo'd field name returns the error envelope:
 
 ```json
 {"ok":false,"error":{"code":"invalid_request","message":"unknown field \"titel\" on table findings (see describe_table)","request_id":"7c3e9a1f5b2d4e8a9c0f6b1d3e5a7c9f"}}
+```
+
+Searches answer with `results`, where `query` and `read_rows` answer with `rows`:
+
+```json
+{"ok":true,"data":{"results":[{"id":1,"created_at":"2026-09-23T16:19:06.326Z","title":"auth flow","body":"token expiry not checked"}],"truncated":false}}
+```
+
+`search_vector` adds `_score` to each result and reports `skipped_vectors`:
+
+```json
+{"ok":true,"data":{"results":[{"id":1,"created_at":"2026-09-23T16:19:06.326Z","title":"auth flow","body":"token expiry not checked","_score":0.9046}],"truncated":false,"skipped_vectors":0}}
 ```
 
 ## JSON-RPC fallback
@@ -305,7 +317,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 - Core tools: `describe_server`, `list_namespaces`, `list_tables`, `describe_table`, `insert`, `query`, `search_fulltext`, `search_vector`, `changes_since`, `wait_for`, `delete`.
 - Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`, and `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field).
 - Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field — enables `search_vector` with `text`; the built-in `local` provider is enabled by default; set `DOLMEN_EMBED_PROVIDER=openai` for an external endpoint, or `none` to disable server-side embeddings), `required: true`, `enum: [values]` (closed vocabulary for a string field — writes with any other value are rejected naming the field, the value, and the allowed list; exact match, no case folding; a declared `default` must be a member).
-- `describe_server` reports the embedding provider status without attempting a write: `provider` (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, `usable`, and — for the `local` provider — `model_cached`, whether the model weights are complete on the server so no first-use download is needed (`false` means the first vectorized write or `text` search downloads a Hugging Face model, which can fail transiently — retry, or pre-seed; with `DOLMEN_EMBED_MODEL` naming a directory, `false` means the directory is incomplete and no download repairs it). `vectorize` fields and `search_vector` `text` queries fail while `usable` is false; a table whose `embed_space` (see `describe_table`) differs from `identity` was embedded by a different provider/model and rejects inserts and text searches until it is re-embedded.
+- `describe_server` reports the embedding provider status without attempting a write: `provider` (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, `usable`, and — for the `local` provider — `model_cached`, whether the model weights are complete on the server so no first-use download is needed (`false` means the first vectorized write or `text` search downloads a Hugging Face model, so it can take ten seconds or more and can fail transiently — retry, or pre-seed; with `DOLMEN_EMBED_MODEL` naming a directory, `false` means the directory is incomplete and no download repairs it). `vectorize` fields and `search_vector` `text` queries fail while `usable` is false; a table whose `embed_space` (see `describe_table`) differs from `identity` was embedded by a different provider/model and rejects inserts and text searches until it is re-embedded.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
 - `truncated: true` means the response left results out. On `query`, `search_fulltext` and `search_vector`, more exist beyond the page, cut either by `limit` (1,000 rows by default and at most on `query`; 10 by default and 200 at most on the searches) or by the 32 MiB response budget, so fetch the next page with `offset`. On `read_rows` only the budget cuts, so retry with fewer ids.
 - `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
@@ -315,7 +327,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 - Every table has implicit `id` and `created_at` columns; `SELECT *` includes them.
 - Results honor declared field types in every read (`query`, `search_fulltext`, `search_vector`): `boolean` → `true`/`false`, `json` → the decoded value, `vector` → a number array, SQL `NULL` → `null`. In `query`, coercion is by result-column label (aliases count as their label); labels that match no declared field fall back to raw values (blobs as base64).
 - The hidden `_embedding` column (from `vectorize`) is excluded from `SELECT *` and search results; pass `include_hidden: true` to a search when you really need it. Naming it in `query` SQL (outside string literals and comments) also works where the backend exposes it to caller SQL, but that is backend-dependent — `include_hidden: true` is the portable way to reach it.
-- Vector search results carry `_score` (cosine similarity; higher is closer).
+- Vector search results carry `_score` (cosine similarity; higher is closer). Judge a score against the other results of the same query, not against a fixed cutoff: with the default `local` model, relevant matches commonly score only about 0.2 to 0.6.
 - `search_vector` has two query forms with different reach: `text` (server embeds it) searches only the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`; `vector` (raw numbers) searches any `vector` column, and only you know which embedding space produced both the stored and the query vectors, so keep them from the same model.
   **Rows whose `vectorize` source is `null`/empty/missing have `_embedding` `null` and are silently excluded from any `search_vector` that searches `_embedding` (a `text` query, or a raw `vector` query with `column` omitted or set to `_embedding`). If recall matters, and the backend exposes `_embedding` to caller SQL, call `query` with `SELECT COUNT(*) FROM <table_name> WHERE _embedding IS NULL AND (<same filter>)` (substitute the table name; bind the same `args`; drop the `AND (...)` clause when no filter is used) to find unembedded rows eligible for the search; if that column is not reachable, or you compare counts instead, do it against `SELECT COUNT(*) FROM <table_name> WHERE <same filter>` after exhausting all pages with `min_score` unset (omit the WHERE clause when no filter is used).**
 - `skipped_vectors` in a `search_vector` response counts stored vectors that were corrupt or dimension-mismatched and could not be scored; **it does not count rows with a `null`/empty/missing `vectorize` source — those rows are silently excluded and will not raise `skipped_vectors`.**
@@ -406,8 +418,9 @@ The optional `filter` parameter is separate from the MATCH `query`: it is regula
 | Search `limit` | default 10, max 200 | omit `limit` for the default of 10; the tool schema enforces 1–200 for schema-validating clients, and the server clamps values above 200 to 200 (0 or negative selects the default on direct `/v1` calls) |
 | `query` result rows | 1,000 | truncated with `truncated: true` |
 | `query` / search result size | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
-| A single value built by SQL (in `query` or a `filter`) | 64 MiB | `query_error` before the value is built |
-| Request body | 32 MiB | rejected |
+| A single value built by SQL (in `query` or a `filter`), SQLite engine | 64 MiB | `query_error` before the value is built |
+| Request body | 32 MiB, sent within the server's read limit (2 minutes by default) | over 32 MiB is rejected; a body that arrives too slowly is `timeout` (408) |
+| Time per operation | set by the server, 2 minutes by default; `wait_for` gets its `timeout_ms` on top | `timeout` (504): narrow a read (a filter, a smaller limit) and retry it; a write may or may not have committed, so check with a query before retrying it |
 | `query` / search filter `args` | 100 | rejected |
 
 Vector search is a brute-force scan whose cost grows with rows × dimensions — about a tenth of a second per 50,000 rows at 384 dimensions, three times that at 1,536 — so pass `filter` on large tables; FTS5 uses an inverted index and is much faster.

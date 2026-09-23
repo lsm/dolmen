@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lsm/dolmen/internal/api"
 	"github.com/lsm/dolmen/internal/embed"
@@ -1549,6 +1551,39 @@ func TestToolErrorEmbedderUnavailable(t *testing.T) {
 	}
 	if reqID, _ := env["request_id"].(string); reqID == "" {
 		t.Fatalf("tool error must carry a request id, got %v", env)
+	}
+}
+
+type slowEncoding time.Duration
+
+func (d slowEncoding) MarshalJSON() ([]byte, error) {
+	time.Sleep(time.Duration(d))
+	return []byte(`"encoded"`), nil
+}
+
+func TestAToolResultSlowerToEncodeThanTheWriteLimitStillArrives(t *testing.T) {
+	api.Ops["zz_slow_encode"] = api.OpDef{
+		InputSchema:  map[string]any{"type": "object"},
+		OutputSchema: map[string]any{"type": "object"},
+		Func: func(ctx context.Context, s *api.Server, body []byte) (any, error) {
+			return map[string]any{"v": slowEncoding(400 * time.Millisecond)}, nil
+		},
+	}
+	t.Cleanup(func() { delete(api.Ops, "zz_slow_encode") })
+	timeouts := api.Timeouts{Write: 150 * time.Millisecond}
+	srv := httptest.NewUnstartedServer(New(api.New(nil, nil, api.WithTimeouts(timeouts)), nil))
+	timeouts.Configure(srv.Config)
+	srv.Start()
+	defer srv.Close()
+
+	res, err := http.Post(srv.URL, "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"zz_slow_encode","arguments":{}}}`))
+	if err != nil {
+		t.Fatalf("the response was lost: the write limit must start when the first byte is written: %v", err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || !strings.Contains(string(body), `"encoded"`) {
+		t.Fatalf("status %d: %s", res.StatusCode, body)
 	}
 }
 

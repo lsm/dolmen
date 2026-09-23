@@ -42,6 +42,14 @@ func ftsMatchError(match string, err error) error {
 	if m := ftsSyntaxNearRe.FindStringSubmatch(msg); m != nil && ftsPunctuation(m[1]) {
 		return invalidf(`query %q: FTS5 reads %q as query syntax, not text, so a term that contains punctuation must be double-quoted (e.g. "don't", "v1.2", "c++"), or written without the punctuation`, match, m[1])
 	}
+	switch {
+	case msg == "unterminated string":
+		return invalidf(`query %q: a double-quoted phrase is never closed; add the closing " (a quote inside a phrase is written as two, "")`, match)
+	case msg == `fts5: syntax error near ""`:
+		return invalidf(`query %q: the query ends where FTS5 expects a term; drop a trailing AND, OR or NOT, or close an open parenthesis`, match)
+	case strings.HasPrefix(msg, "unknown special query"):
+		return invalidf(`query %q: FTS5 reads a query that starts with * as a special command; put * after a word to search by prefix (e.g. pay*)`, match)
+	}
 	if m := ftsNoColumnRe.FindStringSubmatch(msg); m != nil {
 		return invalidf(`query %q: FTS5 reads a word before a colon as the name of a column to search, and this table has no full-text field named %q; double-quote the term to search for it as text, or put one of the table's full-text fields before the colon`, match, m[1])
 	}

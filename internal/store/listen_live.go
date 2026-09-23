@@ -319,24 +319,29 @@ func (sess *listenSession) protectQueue() {
 		}
 	}
 	ctx := sess.ctx
+	failed := func(stage string, err error) {
+		if ctx.Err() == nil {
+			slog.Error("listen queue protection: "+stage, "namespace", sess.nsName, "err", err)
+		}
+	}
 	tx, err := sess.n.rw.BeginTx(ctx, nil)
 	if err != nil {
-		slog.Error("listen queue protection: begin", "namespace", sess.nsName, "err", err)
+		failed("begin", err)
 		return
 	}
 	defer tx.Rollback()
 	now := time.Now()
 	replacement := newCursorChain(now, floor-1)
 	if _, err := mintCursorToken(ctx, tx, now, floor, sess.table, replacement); err != nil {
-		slog.Error("listen queue protection: mint", "namespace", sess.nsName, "err", err)
+		failed("mint", err)
 		return
 	}
 	if err := pruneChanges(ctx, tx, now, sess.s.changeRetention); err != nil {
-		slog.Error("listen queue protection: prune", "namespace", sess.nsName, "err", err)
+		failed("prune", err)
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		slog.Error("listen queue protection: commit", "namespace", sess.nsName, "err", err)
+		failed("commit", err)
 		return
 	}
 	sess.mu.Lock()

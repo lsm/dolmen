@@ -401,8 +401,11 @@ func TestWrapErrorClassifiesWrappedCancellation(t *testing.T) {
 	if got := WrapError(context.Canceled); got.Code != ErrCodeCanceled {
 		t.Fatalf("a bare cancellation must classify as canceled, got %s", got.Code)
 	}
-	if got := WrapError(context.DeadlineExceeded); got.Code != ErrCodeInternal {
-		t.Fatalf("a deadline must keep the internal classification, got %s", got.Code)
+	if got := WrapError(context.DeadlineExceeded); got.Code != ErrCodeTimeout || got.Status != http.StatusGatewayTimeout {
+		t.Fatalf("a bare deadline must classify as timeout with 504, got %s %d", got.Code, got.Status)
+	}
+	if got := WrapError(wrapStoreErr(context.DeadlineExceeded)); got.Code != ErrCodeTimeout {
+		t.Fatalf("a store-wrapped deadline must classify as timeout, got %s", got.Code)
 	}
 }
 

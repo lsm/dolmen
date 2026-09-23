@@ -29,7 +29,8 @@ func TestClassifyMatchesTheWireTaxonomy(t *testing.T) {
 		{"provider error", &ProviderError{Cause: errors.New("upstream 429")}, derr.EmbedderUnavailable},
 		{"load error wrapped by the provider boundary", &ProviderError{Cause: &embed.LoadError{Model: "m"}}, derr.EmbedderUnavailable},
 		{"canceled", context.Canceled, derr.Canceled},
-		{"deadline keeps the wire classification", context.DeadlineExceeded, derr.Internal},
+		{"deadline", context.DeadlineExceeded, derr.Timeout},
+		{"wrapped deadline", fmt.Errorf("outer: %w", context.DeadlineExceeded), derr.Timeout},
 		{"unknown", errors.New("mystery"), derr.Internal},
 	}
 	for _, tc := range cases {
