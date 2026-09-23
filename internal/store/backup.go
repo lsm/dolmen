@@ -296,5 +296,18 @@ func activate(src, target string) error {
 	if err := out.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, target)
+	for _, side := range []string{target + "-wal", target + "-shm"} {
+		if _, err := os.Stat(side); err == nil {
+			os.Remove(tmp)
+			return fmt.Errorf("%s came into use during the restore (its %s file appeared); nothing was overwritten, so stop the server and run the restore again", target, filepath.Ext(side))
+		}
+	}
+	if err := os.Link(tmp, target); err != nil {
+		os.Remove(tmp)
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("%s appeared during the restore; restore never overwrites data, so stop the server and run the restore again", target)
+		}
+		return err
+	}
+	return os.Remove(tmp)
 }

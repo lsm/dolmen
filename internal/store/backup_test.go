@@ -224,3 +224,20 @@ func TestABackupKeepsNestedNamespacesInPlace(t *testing.T) {
 		t.Fatalf("restored namespaces %v %v", names, err)
 	}
 }
+
+func TestARestoreNeverReplacesAFileThatAppearsMidway(t *testing.T) {
+	_, outDir := seededBackup(t)
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "test.db"), []byte("live"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := activate(filepath.Join(outDir, "test.db"), filepath.Join(target, "test.db")); err == nil {
+		t.Fatal("a file that appeared after the first pass must not be replaced")
+	}
+	if raw, _ := os.ReadFile(filepath.Join(target, "test.db")); string(raw) != "live" {
+		t.Fatal("the live file was overwritten")
+	}
+	if _, err := os.Stat(filepath.Join(target, "test.db"+restoringSuffix)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the partial copy must be cleaned up")
+	}
+}
