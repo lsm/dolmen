@@ -244,11 +244,11 @@ into a materialized `_dolmen_visible` relation first and the caller's expression
 compiled against that relation, never the base table. A filter that raises on a foreign
 row therefore cannot be used as an oracle over rows the caller cannot read, because the
 expression never evaluates on them. Fulltext and vector search confine the same way.
-What remains of §4.3 is the shared evaluator rather than the shared validator: a scoped
-filter still executes with this engine's own function set, so a spelling SQLite accepts
-and PostgreSQL does not (the date and time functions) is a `query_error` here. `iif` no
-longer belongs on that list: it renders as a `CASE`, and only a wrong argument count is
-refused. That convergence is #386.
+§4.3's shared evaluator is reached by rendering the parsed tree rather than by handing
+the caller's text to PostgreSQL, so a spelling SQLite accepts is either rendered with
+SQLite's meaning or refused by name. `iif` renders as a `CASE`, and only a wrong argument
+count is refused. What is still refused is listed under the date and time functions
+below and in `notYetEvaluatedByAdapterTwo`.
 
 ### Comparison affinity
 
@@ -474,6 +474,173 @@ record with defaults and required-field validation when there is no match. Delet
 the existing dry-run, match limit, and explicit confirmation contract. Embedding work
 runs before the write transaction and is skipped for no-match updates; invalid fields
 and values are still rejected even when a filter matches nothing.
+
+### The date and time functions
+
+SQLite's five time functions read a value that is text at rest on both engines, so the
+engine cannot lean on a `timestamp` column type. What it can lean on is where the value
+comes from. §4.3 restricts a time function's arguments to a literal, a `?` argument, a
+column, or another time function, which means every argument except a column is known
+while the statement is being built: those are parsed in Go against SQLite's own grammar
+and emitted as a constant. Only a column needs a runtime parse, and only a `timestamp`
+field reaches one, because `schema.CanonicalTimestamp` has already narrowed what such a
+column can hold. A time function over any other column is refused.
+
+The parse is not the obvious one. A guard built on `pg_input_is_valid` alone is wrong in
+both directions: it accepts `'now'`, and `'now'::timestamp` then reads the server clock
+that §4.3 exists to keep out of a filter — and the validator cannot catch it, because the
+word arrives as data rather than as a literal. It also accepts `'Jan 5 2020'`, which
+SQLite answers `NULL` for, while rejecting `'2026-02-30'`, which SQLite normalizes to
+2026-03-02. The shape is matched with a regular expression first and only then cast, with
+`pg_input_is_valid` underneath so that a surprise is a `NULL` rather than a dead
+statement. A value carrying an offset is read through `timestamptz AT TIME ZONE 'UTC'`;
+one without is read as `timestamp`, because `timestamptz` would otherwise apply the
+server's zone.
+
+Three verdicts, not two. A shape SQLite reads is rendered. A shape SQLite answers `NULL`
+for is rendered as `NULL` — including the ones that are not obviously time at all, since
+`strconv.ParseFloat` reads `nan` and `inf` as numbers, and Go's own spellings
+besides — `0x1p+21` and `2_460_000.5` are numbers to it and nothing to SQLite. A Julian
+day is therefore matched against SQLite's shape first, and must be a real one strictly
+below 5373484.5. A shape SQLite reads but this engine will not reproduce is
+**refused**, never rendered as `NULL`: these filters drive `delete`, so a wrong row set
+is data loss where a refusal is only an inconvenience. Refused today: month and year
+modifiers, because SQLite sets the month and then normalizes the day overflow
+(`date('2026-01-31','+1 month')` is 2026-03-03) where PostgreSQL's interval arithmetic
+clamps to the 28th; every named modifier (`start of …`, `weekday N`, `unixepoch`,
+`julianday`, `auto`, `subsec`, `ceiling`, `floor`); the `%f`, `%s`, `%w` and `%W`
+strftime fields; a `strftime` inside another time function, whose text SQLite parses
+again and reads as a Julian day number when it is all digits, so that
+`date(strftime('%Y%m%d', '0500-01-01'))` is 8977-09-16; and an hour of 24, which SQLite
+carries through formatting unchanged as `24:00:00` but normalizes the moment any modifier
+is applied. Rendered: `±N day/hour/minute/second` and `±HH:MM[:SS]` modifiers, and the
+`%Y %m %d %H %M %S %j %%` fields. The offset modifier carries its own bounds, which are
+not the value side's: SQLite takes hours up to 24 there rather than 14, rejects minutes
+and seconds above 59, and reads hour 24 as zero — `+24:59` shifts by 59 minutes, not by
+a day and 59 minutes — so 25 and above render nothing, as they do there, and 24 is
+refused rather than reproduced.
+
+The five functions take part in the comparison-affinity rules above like any other call.
+`date`, `time`, `datetime` and `strftime` produce text and `julianday` a REAL, and none of
+them declares an affinity, so `date(created_at) > 1` is true by storage-class order,
+`strftime('%Y', created_at) = 2026` is false while `= '2026'` is true, and
+`julianday(created_at) > '1'` is false — PostgreSQL left to itself reads that `'1'` as a
+number and answers true, which is a wrong row set rather than an error. Against a number
+column the text converts when it is numeric, so `n < strftime('%Y', created_at)`
+compares 2026 numerically. In arithmetic and as a truth value the text converts through
+its numeral head, so `date(created_at) + 1` is 2027 and `NOT time(created_at)` is true
+only in the first hour of a day. `julianday` is classed REAL while rendering, as `round`
+is, so `julianday(created_at) / 2` keeps its half at noon, when the day number is whole
+and the runtime whole-number test would call it an integer; it is also carried through
+`sqliteDouble`, because a direct `float8`-to-`numeric` cast keeps fifteen digits and
+moves the value by parts in 10⁹. A Julian day compared against a text column,
+concatenated, or matched with `LIKE` is refused, as every computed number is there.
+
+SQLite quantizes a time value to whole milliseconds, rounding half up and then
+**clamping at 999 rather than carrying**: `.0004` is 0ms, `.0005` is 1ms, and everything
+from `.9990` to `.9999` is 999ms, which is why no fractional second ever tips a second or
+a date. Only `julianday` exposes the quantum at all, since the other four truncate to a
+second.
+
+`julianday` has to be SQLite's double exactly rather than close to it, because a filter
+compares it with `=` and `<`. SQLite rounds once: it divides the whole number of
+milliseconds since the Julian epoch by 86400000. The rendered value does the same, taking
+`extract('epoch', t) * 1000` in exact `numeric`, shifting it to the Julian epoch, and
+dividing once in `float8`; the obvious `date_part('epoch', t) / 86400 + 2440587.5` rounds
+three times and is a unit in the last place off on about one moment in six. The way back
+is SQLite's too: a Julian number is `(int64)(r * 86400000 + 0.5)` milliseconds, and
+splitting it into whole and fractional seconds before rounding lands a millisecond off on
+about one in seven. The Go parse spells it as `modernc.org/sqlite` does, down to the
+explicit `float64` conversion that keeps Go from fusing the multiply and add on arm64; at
+these magnitudes a fused form happens to round the same, but the parse should not rest on
+that. The cross-engine test compares exactly.
+A tolerance of 1e-9 days, about two units in the last place, hid the first error, and no
+Julian number in the corpus showed the second.
+
+Both paths have to do it, which is easy to miss because only one of them is Go.
+`schema.CanonicalTimestamp` keeps a timestamp's text verbatim, so a field may legally
+hold `2026-09-21T14:05:09.1235Z`, and the column path casts that text straight to a
+PostgreSQL timestamp with microseconds intact. The rendered moment is therefore quantized
+in SQL as well, as `LEAST(date_trunc('milliseconds', t + interval '0.0005 second'),
+date_trunc('second', t) + interval '0.999 second')` — the first term rounds half up in one
+mention of `t` and the second supplies the clamp, which also keeps
+`9999-12-31T23:59:59.9999` inside the representable range rather than tipping it past the
+bound. Truncating rather than rounding here is a one-millisecond error that no fixture
+without a fourth fractional digit can see.
+
+The cast itself has to be kept out of the rounding, too. PostgreSQL stores microseconds,
+so casting `...00.1234999` rounds it to `.1235` and the quantum then rounds that up to
+`.124`, where SQLite rounds the exact decimal down to `.123`. The stored text therefore
+has its fraction trimmed to four digits before the cast: four is enough to decide the
+half-millisecond and no later digit can change it, since `.4999…` never reaches `.5`.
+It needs seven stored digits to show, which `CanonicalTimestamp` accepts.
+
+The order matters as much as the rounding. SQLite quantizes when it *parses* a time and
+then shifts in whole milliseconds, so the quantum is applied to the base rather than to
+the result: a stored `.9995` shifted by `+0.5 seconds` is 1499ms there, where quantizing
+after the shift gives 1500. The column's moment is therefore quantized where it is read,
+each modifier is rounded to a whole millisecond of its own, and nothing is quantized
+again at the end.
+
+A shift also has to be applied somewhere PostgreSQL can hold the result. Its timestamp
+range starts at 4713 BC, so a large negative modifier over a base near year 1 raises
+rather than answering, which would be a fourth verdict beside rendered, `NULL` and
+refused. Bounding the modifier instead would refuse long shifts that are perfectly good
+— year 1 plus two million days is year 5476 — so it is the **base** that is bounded, to
+the pre-image of the renderable window under that shift, computed in Go where the shift
+is already known. Outside it the call is `NULL`, which is SQLite's answer too, and inside
+it the arithmetic cannot leave the range.
+
+PostgreSQL has no year zero and writes earlier years with a `BC` suffix rather than as a
+negative number, so `TIMESTAMP '-4713-11-24'` and `TIMESTAMP '0000-01-01'` are both
+rejected outright. A literal or argument naming such a moment — `date(0)`, `date(1000000)`,
+any Julian value below 1721426, `date('0000-01-01')` — is refused rather than rendered,
+because rendering it would be a dead statement.
+
+The same range has to hold after a modifier, and there the stakes are higher than a
+refusal. PostgreSQL happily computes `TIMESTAMP '0001-01-01' - 1 day`, storing it as
+`0001-12-31 BC`, and `to_char(…, 'YYYY-MM-DD')` then writes `0001-12-31` **with no era
+marker at all** — a plausible-looking date that is off by a year and an era from SQLite's
+`0000-12-31`. The rendered moment is therefore bounded to `0001-01-01 … 9999-12-31`
+once, at the outermost call rather than at each nested one, so that an inner value that
+leaves the range and a later modifier that brings it back still agrees. Beyond 9999 that
+bound answers nothing and so does SQLite; below 0001 it answers nothing where SQLite
+answers a date, which is the same era gap as below and far better than the wrong year.
+
+One residual is left on the column path, and it is on the wrong side of the rule.
+`schema.CanonicalTimestamp` accepts `0000-01-01`, so a `timestamp` field can hold it, and
+there the era is a value rather than something decidable while the statement is built:
+the guard yields `NULL` where SQLite answers `0000-01-01`. That is the NULL-for-a-value
+direction this design otherwise forbids. It is narrow — year zero is the only shape a
+canonical stored value can take that SQLite reads and PostgreSQL will not — and a test
+pins both halves, that every representable year agrees and that year zero is the only one
+that does not, failing if either changes. Closing it properly means refusing year zero at
+the storage boundary, which is a change to both engines' input contract and to
+`facade-input-matrix.md`, not to this renderer.
+
+A second canonical shape is unreadable by PostgreSQL and is *not* a divergence, because
+SQLite will not read it either. `schema.CanonicalTimestamp` accepts a UTC offset up to
+`±23:59`, PostgreSQL rejects a displacement at or beyond `±16:00`, and SQLite's own
+bound is tighter still: `+14:59` is a moment and `+15:00` is `NULL`. Both the Go parse
+and the column guard therefore bound the offset to SQLite's range rather than
+PostgreSQL's, so a stored `+15:30` answers nothing on both engines instead of answering
+on one — which was the divergence, in the direction of a value where SQLite has none.
+
+Two things are easy to get wrong and are pinned by tests. Literal runs inside a strftime
+format must be double-quoted for `to_char`, or `%Y-%m-%dT%H:%M:%S` renders its literal
+`T` as `STH24` — and inside those quotes a backslash escapes the next character, so
+backslashes have to be doubled *before* the quotes are escaped, or `a\b` comes back as
+`ab` and `\%Y` swallows the field marker entirely. SQLite echoes a backslash verbatim,
+so every one of those is a quiet wrong answer rather than an error. And `EXTRACT(… FROM …)`
+is grammar that cannot carry the `pg_catalog.` qualification every other rendered call
+does, so it is written in its function form, `pg_catalog.extract('epoch', …)`.
+
+The tests are differential rather than expectational: `filter_time_test.go` compares the
+Go parser against a real SQLite over a corpus of time strings and modifiers, and
+`filter_time_render_test.go` evaluates every rendered expression on PostgreSQL against
+the same expression on SQLite. The fixture values are chosen to discriminate — an
+offset-bearing moment and a sub-second one, without which removing the timezone branch
+or the second truncation makes no test fail.
 
 ## Schema migrations (implemented internally)
 

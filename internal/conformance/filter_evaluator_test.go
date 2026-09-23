@@ -50,6 +50,15 @@ var sharedFilterList = []struct {
 	{"coalesce beyond two arguments", "coalesce(NULL, NULL, 'x') = 'x'"},
 	{"datetime with two modifiers", "datetime(created_at, '+1 day', '+1 hour') > datetime(created_at, '+1 day')"},
 	{"strftime with two modifiers", "strftime('%Y-%m-%d', created_at, '+1 day', '+1 day') > strftime('%Y-%m-%d', created_at, '+1 day')"},
+	{"date names the day", "date(seen_at) = '2026-03-31'"},
+	{"time names the clock", "time(seen_at) = '05:06:07'"},
+	{"datetime names both", "datetime(seen_at) = '2026-03-31 05:06:07'"},
+	{"strftime names the fields it was given", "strftime('%Y-%m-%d %H:%M:%S', seen_at) = '2026-03-31 05:06:07'"},
+	{"julianday round-trips through datetime", "datetime(julianday(seen_at)) = '2026-03-31 05:06:07'"},
+	{"a day modifier moves exactly one day", "date(seen_at, '+1 day') = '2026-04-01'"},
+	{"an hour modifier moves exactly one hour", "time(seen_at, '+1 hour') = '06:06:07'"},
+	{"a negative modifier moves back", "date(seen_at, '-1 day') = '2026-03-30'"},
+	{"two modifiers compose", "datetime(seen_at, '+1 day', '+1 hour') = '2026-04-01 06:06:07'"},
 }
 
 var allowlistedOperators = []struct {
@@ -256,13 +265,19 @@ var pinnedFilterSemantics = []struct {
 	{"IS converts to the column's affinity", "code IS 1", ""},
 	{"IS is still null-safe", "nullif(body, body) IS NULL", ""},
 	{"a scalar drives iif", "iif(1, 'a', 'b') = 'a'", ""},
+	{"a date is text, so it sorts after a number", "date(seen_at) > 1", ""},
+	{"a date's digits are still not a number", "NOT (strftime('%Y', seen_at) = 2026)", ""},
+	{"a Julian day is a number, so it sorts before text", "NOT (julianday(seen_at) > '1')", ""},
+	{"a number column converts a date's numeric text", "big > strftime('%Y', seen_at)", ""},
+	{"a date converts through its numeral head in arithmetic", "date(seen_at) + 1 = 2027", ""},
+	{"a date is a truth value through its numeral head", "date(seen_at)", ""},
+	{"a Julian day is REAL, so halving a whole one keeps the half", "julianday(date(seen_at), '+12 hours') / 2 = 1230565.5", ""},
+	{"a Julian day keeps every digit of its double", "julianday(seen_at) - 2461130.5 > 0.2125811105", ""},
+	{"a Julian day is one division, not three", "julianday('2026-03-19T14:05:09.123Z') = 2461119.086911146", ""},
+	{"a Julian number is read as SQLite rounds it", "julianday(2729462.7741404455) = 2729462.7741404516", ""},
 }
 
 var notYetEvaluatedByAdapterTwo = map[string]bool{
-	"date": true, "time": true, "datetime": true, "julianday": true, "strftime": true,
-	"date with a modifier": true, "time with a modifier": true, "datetime with a modifier": true,
-	"julianday with a modifier": true, "strftime with a modifier": true,
-	"datetime with two modifiers": true, "strftime with two modifiers": true,
 	"substr from a negative start": true, "substr with a negative length": true,
 	"coalesce over mixed types": true,
 }
@@ -295,11 +310,12 @@ func seedScopedFilterRow(t *testing.T) *harness {
 			{"name": "past", "type": "number"},
 			{"name": "code2", "type": "text"},
 			{"name": "tiny", "type": "text"},
+			{"name": "seen_at", "type": "timestamp"},
 		},
 		"row_access": "own",
 	})
 	grantTo(t, h, "principal", "alice", "acme", "notes", "create", "delete")
-	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7,"code":"1","mark":"!zzz","huge":"1e999999","flag":true,"neg":"-1.0e+300","frac":0.1,"big":9007199254740993,"real":"7.0","off":false,"zero":0,"pad":"  5  ","empty":"","past":9223372036854775808,"code2":"0.10000000000000000001","tiny":"1e-999999"}]}`)
+	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7,"code":"1","mark":"!zzz","huge":"1e999999","flag":true,"neg":"-1.0e+300","frac":0.1,"big":9007199254740993,"real":"7.0","off":false,"zero":0,"pad":"  5  ","empty":"","past":9223372036854775808,"code2":"0.10000000000000000001","tiny":"1e-999999","seen_at":"2026-03-31T05:06:07.008Z"}]}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("seed insert: status %d %v", res.StatusCode, out)
 	}

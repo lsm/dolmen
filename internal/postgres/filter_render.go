@@ -466,6 +466,8 @@ func (r *filterRenderer) call(node *filter.Call, next int) error {
 		r.sb.WriteString(" END)")
 		r.recordChosenClass(node, []string{condition}, node.Args[1:])
 		return nil
+	case "date", "time", "datetime", "julianday", "strftime":
+		return r.timeCall(node, next)
 	}
 	switch node.Name {
 	case "lower", "upper":
@@ -899,9 +901,9 @@ func (r *filterRenderer) affinityOf(n filter.Node) affinity {
 		return affUnknown
 	case *filter.Call:
 		switch node.Name {
-		case "abs", "round", "length", "instr":
+		case "abs", "round", "length", "instr", "julianday":
 			return affNumber
-		case "lower", "upper", "substr", "trim", "ltrim", "rtrim", "replace":
+		case "lower", "upper", "substr", "trim", "ltrim", "rtrim", "replace", "date", "time", "datetime", "strftime":
 			return affText
 		case "iif":
 			if len(node.Args) == 3 {
@@ -1355,7 +1357,7 @@ func (r *filterRenderer) staticallyReal(n filter.Node) bool {
 		}
 	case *filter.Call:
 		switch node.Name {
-		case "round":
+		case "round", "julianday":
 			return true
 		case "abs":
 			return len(node.Args) == 1 &&

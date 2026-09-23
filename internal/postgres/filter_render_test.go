@@ -10,11 +10,14 @@ import (
 
 func renderFor(t *testing.T, expr string, args ...any) string {
 	t.Helper()
-	node, err := filter.Parse(expr, filter.Options{Columns: []string{"id", "body"}, Args: args})
+	node, err := filter.Parse(expr, filter.Options{Columns: []string{"id", "body", "created_at"}, Args: args})
 	if err != nil {
 		t.Fatalf("Parse(%q): %v", expr, err)
 	}
-	sql, _, err := renderScopedFilter(node, map[string]string{"id": "id", "body": "c1"}, map[string]schema.FieldType{"id": schema.Number, "body": schema.Text}, args, 1)
+	sql, _, err := renderScopedFilter(node,
+		map[string]string{"id": "id", "body": "c1", "created_at": "created_at"},
+		map[string]schema.FieldType{"id": schema.Number, "body": schema.Text, "created_at": schema.Timestamp},
+		args, 1)
 	if err != nil {
 		t.Fatalf("render(%q): %v", expr, err)
 	}
