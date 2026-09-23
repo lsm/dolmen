@@ -72,15 +72,27 @@ func init() {
 	}
 }
 
-var errorCodeEnum = []string{
-	string(ErrCodeInvalid),
-	string(ErrCodeNotFound),
-	string(ErrCodeQuery),
-	string(ErrCodeConflict),
-	string(ErrCodeForbidden),
-	string(ErrCodeEmbedderUnavailable),
-	string(ErrCodeCanceled),
-	string(ErrCodeInternal),
+var errorCodes = []ErrorCode{
+	ErrCodeInvalid,
+	ErrCodeNotFound,
+	ErrCodeQuery,
+	ErrCodeConflict,
+	ErrCodeUnauthorized,
+	ErrCodeForbidden,
+	ErrCodeEmbedderUnavailable,
+	ErrCodeCanceled,
+	ErrCodeInternal,
+}
+
+func errorCodeEnum(authOn bool) []string {
+	out := make([]string, 0, len(errorCodes))
+	for _, code := range errorCodes {
+		if code == ErrCodeUnauthorized && !authOn {
+			continue
+		}
+		out = append(out, string(code))
+	}
+	return out
 }
 
 func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
@@ -204,7 +216,7 @@ func (s *Server) OpenAPIDoc(baseURL string) map[string]any {
 			map[string]any{"url": serverURL},
 		},
 		"paths":      paths,
-		"components": components(),
+		"components": components(s.authOpsEnabled()),
 	}
 }
 
@@ -218,7 +230,7 @@ func queryParam(name, desc string, required bool, schema map[string]any) map[str
 	}
 }
 
-func components() map[string]any {
+func components(authOn bool) map[string]any {
 	fieldTypeEnum := []schema.FieldType{
 		schema.String, schema.Text, schema.Number, schema.Boolean,
 		schema.Timestamp, schema.JSON, schema.Vector,
@@ -228,7 +240,7 @@ func components() map[string]any {
 			"ErrorEnvelope": objectSchema(false, map[string]any{
 				"ok": map[string]any{"const": false},
 				"error": objectSchema(false, map[string]any{
-					"code":       map[string]any{"type": "string", "enum": errorCodeEnum},
+					"code":       map[string]any{"type": "string", "enum": errorCodeEnum(authOn)},
 					"message":    stringProp(""),
 					"request_id": stringProp(""),
 				}, []string{"code", "message", "request_id"}),
