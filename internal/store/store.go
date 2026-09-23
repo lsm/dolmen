@@ -88,6 +88,8 @@ type Store struct {
 	mu  ctxMutex
 	nss map[string]*nsDB
 
+	unreadable []string
+
 	notifyMu  sync.Mutex
 	listeners map[string][]*commitListener
 
@@ -150,12 +152,14 @@ func (s *Store) verifyOneCatalogVersion(ctx context.Context, name string) error 
 	ro, err := sql.Open("sqlite", dsn(s.nsPath(name), true))
 	if err != nil {
 		slog.Warn("namespace is unreadable; requests to it fail until it is repaired", "namespace", name, "err", err)
+		s.unreadable = append(s.unreadable, name)
 		return nil
 	}
 	defer ro.Close()
 	format, minReader, err := readCatalogVersion(ctx, ro)
 	if err != nil {
 		slog.Warn("namespace is unreadable; requests to it fail until it is repaired", "namespace", name, "err", err)
+		s.unreadable = append(s.unreadable, name)
 		return nil
 	}
 	if minReader > CatalogFormat {
@@ -714,4 +718,23 @@ func repopulateFTS(ctx context.Context, tx *sql.Tx, table string, fts []schema.F
 func dropFTS(ctx context.Context, tx *sql.Tx, table string) error {
 	_, err := tx.ExecContext(ctx, fmt.Sprintf(`DROP TABLE IF EXISTS %s`, q(ftsTable(table))))
 	return err
+}
+
+func (s *Store) Ready(ctx context.Context) error {
+	if s.closed.Load() {
+		return ErrClosed
+	}
+	f, err := os.CreateTemp(s.dir, ".ready-*")
+	if err != nil {
+		return fmt.Errorf("the data directory is not writable, so no write can succeed: %w", err)
+	}
+	name := f.Name()
+	f.Close()
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("the data directory is not writable, so no write can succeed: %w", err)
+	}
+	if n := len(s.unreadable); n > 0 {
+		return fmt.Errorf("%d namespace(s) could not be read at startup (the log names them); requests to them fail until they are repaired or dropped", n)
+	}
+	return ctx.Err()
 }

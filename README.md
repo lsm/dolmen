@@ -96,7 +96,7 @@ the `local` provider, typically the first-use Hugging Face download failing — 
 the offline remediations (pre-seed the model cache, or point `DOLMEN_EMBED_MODEL` at a local model
 directory); retrying the same request makes no sense until the model can load.
 The one exception is `GET /v1/openapi.json`, which serves the raw OpenAPI document.
-`/healthz` returns `{"status":"ok"}` and `/mcp` returns JSON-RPC responses.
+`/livez` (and its alias `/healthz`) returns `{"status":"ok"}`, `/readyz` returns `{"status":"ready", ...}`, and `/mcp` returns JSON-RPC responses.
 
 ### First API calls
 
@@ -428,8 +428,9 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 | — | `DOLMEN_AUTH_OIDC_TOKEN_TTL` | `168h` | Lifetime of an issued token, `1h` to `720h` |
 | — | `DOLMEN_AUTH_OIDC_DEPLOYMENT_ID` | minted on first start | Pins this deployment's token issuer id. A mismatch against the stored value is refused at startup |
 | `-version` | — | — | Print version and exit |
-| `-prefix` | `DOLMEN_PREFIX` | — | Mount all endpoints (`/healthz`, `/version`, `/skills*`, `/v1/*`, `/mcp`) under this URL prefix. Use with a pass-through proxy that forwards the full path |
+| `-prefix` | `DOLMEN_PREFIX` | — | Mount all endpoints (`/livez`, `/readyz`, `/healthz`, `/version`, `/skills*`, `/v1/*`, `/mcp`) under this URL prefix. Use with a pass-through proxy that forwards the full path |
 | `-base-url` | `DOLMEN_BASE_URL` | — | Public base URL for the links rendered into the skills manifest, the skill markdown, and the MCP `initialize` instructions. Default: derive from the request `Host` and forwarded headers. Refused when it ends with `-prefix` |
+| `-shutdown-grace` | `DOLMEN_SHUTDOWN_GRACE` | `60s` | On SIGTERM, how long running requests may finish before they are cancelled (an open transaction rolls back). `0` waits without a bound; otherwise `1s` to `24h`. See [Shutting down](docs/deployment.md#shutting-down) |
 | `-change-retention` | `DOLMEN_CHANGE_RETENTION` | `168h` | Change-log retention for `changes_since` / `wait_for` / `subscribe`. `0` disables pruning (records and cursors never expire); otherwise `1h` to `2160h` |
 | `-max-subscription-age` | `DOLMEN_MAX_SUBSCRIPTION_AGE` | `30m` | `subscribe` connection age bound: the stream teaching-closes at the bound and the client reconnects from its cursor. `0` disables the bound; otherwise `1s` to `24h` |
 | `-read-timeout` | `DOLMEN_READ_TIMEOUT` | `2m` | Time to read one request, headers and body; a body that arrives too slowly is answered `408` with code `timeout`. `0` disables the bound; otherwise `1s` to `24h` |
@@ -477,7 +478,7 @@ Every `/v1/{op}`, `/mcp`, and `/v1/subscribe` request without an accepted
 credential answers `401` with error code `unauthorized`. Rejections are
 deliberately uniform — a wrong key, a malformed one, and a missing one produce
 the same message, so the response never says which part failed.
-`/healthz`, `/version`, `/skills*`, and `/v1/openapi.json` stay unauthenticated
+`/livez`, `/readyz`, `/healthz`, `/version`, `/skills*`, and `/v1/openapi.json` stay unauthenticated
 in both modes: they are liveness probes and client-side schema discovery, and
 expose no row data.
 
@@ -1280,7 +1281,7 @@ no CGO is required.
 | Operating systems | Linux, macOS, and Windows are supported. |
 | Filesystem | Local filesystems (ext4, APFS, NTFS, etc.) are required. SQLite WAL uses shared-memory coordination that does not work reliably over network or shared filesystems (NFS, SMB); these are unsupported and the first namespace open may fail or operate without WAL locking guarantees. |
 | WAL | Enabled per namespace (`journal_mode=WAL`, `synchronous=NORMAL`). Expect `<ns>.db`, `<ns>.db-wal`, and `<ns>.db-shm` files. |
-| Permissions | On Unix the data directory is created `0700` and namespace `.db`/`-wal`/`-shm` files are set `0600` (owner only); on Windows `os.Chmod` only toggles the read-only attribute, so use NTFS ACLs for owner-only isolation. Permission failures surface when a namespace is first opened, not necessarily at server startup, so `/healthz` can succeed before that point. |
+| Permissions | On Unix the data directory is created `0700` and namespace `.db`/`-wal`/`-shm` files are set `0600` (owner only); on Windows `os.Chmod` only toggles the read-only attribute, so use NTFS ACLs for owner-only isolation. Permission failures surface when a namespace is first opened, not necessarily at server startup, so `/livez` can succeed before that point; `/readyz` reports an unwritable data directory and namespaces unreadable at startup. |
 | Locking | Each namespace has one writer connection (`MaxOpenConns=1`) with `BEGIN IMMEDIATE` locking, plus a separate read-only connection pool. WAL mode allows multiple concurrent readers, but only one writer per file at a time. |
 | Multi-process | SQLite's file locking makes concurrent processes safe in principle, but running two dolmen servers against the same data directory can cause `database is locked` errors and is not recommended. |
 | Deleting a namespace | Prefer `drop_namespace` (confirm-guarded, closes the server's own connections first). Manually: stop the dolmen process, then delete the three `<ns>.db*` files. |

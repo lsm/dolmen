@@ -58,8 +58,20 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ns := normNS(q.Get("namespace"))
-	ctx, stop := context.WithCancel(r.Context())
+	ctx, stopCause := context.WithCancelCause(r.Context())
+	stop := func() { stopCause(nil) }
 	defer stop()
+	go func() {
+		select {
+		case <-s.drainCh():
+			stopCause(errDraining)
+		case <-ctx.Done():
+		}
+	}()
+	closing := func() bool {
+		c := context.Cause(ctx)
+		return errors.Is(c, store.ErrListenAged) || errors.Is(c, errDraining)
+	}
 	if s.maxSubscriptionAge > 0 {
 		var ageStop context.CancelFunc
 		ctx, ageStop = context.WithTimeoutCause(ctx, s.maxSubscriptionAge, store.ErrListenAged)
@@ -119,7 +131,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	for {
 		records, _, done, nerr := replay.Next(ctx)
 		if nerr != nil {
-			if ctx.Err() != nil && !errors.Is(context.Cause(ctx), store.ErrListenAged) {
+			if ctx.Err() != nil && !closing() {
 				return
 			}
 
@@ -171,10 +183,10 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-ctx.Done():
-			if !errors.Is(context.Cause(ctx), store.ErrListenAged) {
+			if !closing() {
 				return
 			}
-			closeWith(subscribeErr(store.ErrListenAged))
+			closeWith(subscribeErr(context.Cause(ctx)))
 			return
 		}
 	}
@@ -212,6 +224,8 @@ func subscribeErr(err error) *Error {
 		return badRequest("the subscription's target ended (a dropped table, or a dropped or replaced namespace); reconnect against the current target — a same-named successor is a different feed")
 	case errors.Is(err, store.ErrListenRevoked):
 		return badRequest("subscription authorization was revoked; reconnect once authorization is restored")
+	case errors.Is(err, errDraining):
+		return badRequest("the server is shutting down; reconnect from the cursor in the preceding close frame to resume exactly where this stream ended, on a server that is still serving")
 	case errors.Is(err, store.ErrListenAged):
 		return badRequest("subscription reached the maximum subscription age (-max-subscription-age, default 30m); reconnect from the cursor in the preceding close frame to resume exactly where this stream ended — the fresh connection re-asserts your credentials")
 	default:

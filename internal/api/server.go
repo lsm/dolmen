@@ -40,6 +40,7 @@ type Server struct {
 	grants             *auth.Registry
 	oidcSource         *auth.OIDCSource
 	timeouts           Timeouts
+	drain              drainState
 }
 
 type Option func(*Server)
@@ -541,9 +542,9 @@ func OriginGuard(next http.Handler, extraOrigins []string) http.Handler {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
-	})
+	mux.HandleFunc("/healthz", s.handleLivez)
+	mux.HandleFunc("/livez", s.handleLivez)
+	mux.HandleFunc("/readyz", s.handleReadyz)
 	mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"name": "dolmen", "version": version.Version})
 	})
