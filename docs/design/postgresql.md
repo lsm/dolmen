@@ -370,6 +370,29 @@ division while `iif(1, 3.0, 0) / 2` does not. The runtime whole-number test is l
 where a value arrives from storage. Classing a result by that test is what made
 `((1.5 + 1.5) / 2) > 1` false, a wrong row set on a delete.
 
+A conditional whose branches are of different types has no single PostgreSQL type, so
+`coalesce(body, 1)` raises `42804` there and SQLite simply answers with whichever value it
+picked. Such a filter is rendered once per branch instead. The whole filter becomes
+`CASE WHEN <branch 1 chosen> THEN <filter with branch 1> … END`, so each copy is typed on
+its own. The branch is chosen by `x IS NOT NULL` for `coalesce`, by the condition for `iif`,
+and by the `WHEN` for `CASE`. This is exact rather than approximate, because a filter is
+a pure function of the value the conditional produced. The one thing substitution could
+change is affinity: `coalesce(code, 1) = 1` is false in SQLite even though `code = 1` is
+true, because a function result carries no declared affinity. So a substituted branch is
+stripped of its column's affinity and keeps only its value's class. Every mixed
+conditional multiplies the copies, and a filter that would need more than 64 is refused
+rather than rendered.
+
+`substr` follows SQLite's position arithmetic rather than PostgreSQL's. The two agree
+for a positive start and length but not otherwise: SQLite counts a negative start from
+the end, takes a negative length as that many characters before the start, treats
+position 0 as the one before the first character, and converts both positions to
+integers the way `%` converts its operands. Worked through, SQLite's steps reduce to a
+window of `|length|` characters starting at `start - 1` (from the end when `start` is
+negative, and moved back by `|length|` when the length is negative), clipped to the
+string. That window is what the rendering computes. A blob subject counts bytes and
+stays a blob.
+
 Integer arithmetic that leaves int64 stops being integer arithmetic. SQLite promotes an
 overflowing `+`, `-`, `*`, and `intmin / -1` to a double, so the exact path has to check
 the result's range and not only both operands' classes; without it

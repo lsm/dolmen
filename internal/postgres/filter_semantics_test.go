@@ -114,3 +114,28 @@ func TestPostgresATextClassNamesItsCharactersRatherThanAskingTheLocale(t *testin
 		}
 	}
 }
+
+func TestPostgresRefusesAFilterChoosingAmongTooManyValuesOfDifferentTypes(t *testing.T) {
+	cols := map[string]string{"body": "body", "n": "n"}
+	types := map[string]schema.FieldType{"body": schema.Text, "n": schema.Number}
+	render := func(count int) error {
+		terms := make([]string, count)
+		for i := range terms {
+			terms[i] = "coalesce(body, 1) = body"
+		}
+		expr := strings.Join(terms, " AND ")
+		node, err := filter.Parse(expr, filter.Options{Columns: []string{"body", "n"}})
+		if err != nil {
+			t.Fatalf("parse %q: %v", expr, err)
+		}
+		_, _, err = renderScopedFilter(node, cols, types, nil, 1)
+		return err
+	}
+	if err := render(5); err != nil {
+		t.Fatalf("five mixed coalesces need 62 copies, within the limit, but rendering failed: %v", err)
+	}
+	err := render(6)
+	if err == nil || !strings.Contains(err.Error(), "choosing among this many values of different types") {
+		t.Fatalf("six mixed coalesces need 126 copies and must be refused, got %v", err)
+	}
+}
