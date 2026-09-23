@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -102,7 +103,7 @@ func run() error {
 
 	httpSrv := &http.Server{
 		Addr:    cfg.Addr,
-		Handler: api.OriginGuard(router, cfg.AllowedOrigins),
+		Handler: api.ForwardingGuard(api.OriginGuard(router, cfg.AllowedOrigins), cfg.TrustedProxies),
 	}
 	cfg.Timeouts.Configure(httpSrv)
 
@@ -285,6 +286,7 @@ type config struct {
 	PostgresCatalog    string
 	PostgresQueryRole  string
 	Auth               *auth.Authenticator
+	TrustedProxies     []*net.IPNet
 	OIDC               auth.OIDCConfig
 	oidcSource         *auth.OIDCSource
 	AllowedOrigins     []string
@@ -318,7 +320,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	pgCatalog := fs.String("pg-catalog", getenv("DOLMEN_PG_CATALOG"), "PostgreSQL catalog schema (default dolmen_catalog)")
 	pgQueryRole := fs.String("pg-query-role", getenv("DOLMEN_PG_QUERY_ROLE"), "pre-provisioned restricted role that caller SQL runs as; required for the query op")
 	authMode := fs.String("auth", envOr("DOLMEN_AUTH", "off", getenv), "authentication: off (default, no identity required) or on (deny-by-default; set DOLMEN_ADMIN_KEY on first start)")
-	trustedProxies := fs.String("trusted-proxies", envOr("DOLMEN_TRUSTED_PROXIES", "", getenv), "comma-separated CIDRs (bare IPs allowed) whose peers may assert X-Dolmen-Principal / X-Dolmen-Groups")
+	trustedProxies := fs.String("trusted-proxies", envOr("DOLMEN_TRUSTED_PROXIES", "", getenv), "comma-separated CIDRs (bare IPs allowed) whose peers may assert X-Dolmen-Principal / X-Dolmen-Groups and the forwarding headers public links are built from (X-Forwarded-*, Forwarded)")
 	maxGroupsDefault, maxGroupsErr := envIntOr("DOLMEN_MAX_GROUPS", auth.DefaultMaxGroups, getenv)
 	maxGroups := fs.Int("max-groups", maxGroupsDefault, "maximum group entries accepted per request (1 to 1024)")
 	showVersion := fs.Bool("version", false, "print version and exit")
@@ -527,6 +529,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		PostgresCatalog:    *pgCatalog,
 		PostgresQueryRole:  *pgQueryRole,
 		Auth:               authn,
+		TrustedProxies:     proxies,
 		OIDC:               oidc,
 		AllowedOrigins:     allowedOrigins,
 		BaseURL:            *publicBaseURL,
@@ -645,7 +648,7 @@ func printEnvHelp(out io.Writer) {
 		{"DOLMEN_PG_QUERY_ROLE", "pre-provisioned NOLOGIN role that caller SQL runs as"},
 		{"DOLMEN_AUTH", "authentication: off (default) or on (deny-by-default)"},
 		{"DOLMEN_ADMIN_KEY", "bootstrap admin credential, needed with auth on until a root administrator is granted (env-only, never a flag)"},
-		{"DOLMEN_TRUSTED_PROXIES", "comma-separated CIDRs whose peers may assert identity headers"},
+		{"DOLMEN_TRUSTED_PROXIES", "comma-separated CIDRs whose peers may assert identity and forwarding headers"},
 		{"DOLMEN_MAX_GROUPS", "maximum group entries accepted per request, 1 to 1024 (default 128)"},
 		{"DOLMEN_AUTH_OIDC_ISSUER", "identity provider issuer URL, enabling native sign-in"},
 		{"DOLMEN_AUTH_OIDC_CLIENT_ID", "OAuth client id registered with that provider"},
