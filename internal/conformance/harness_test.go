@@ -119,6 +119,8 @@ type harness struct {
 
 	httpURL string
 	mcpURL  string
+
+	schemaComponents map[string]any
 }
 
 func newHarness(t *testing.T) *harness {
@@ -244,6 +246,9 @@ func (h *harness) httpCall(op string, body any) (int, map[string]any) {
 	var out map[string]any
 	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
 		h.t.Fatalf("decode /v1/%s response: %v", op, err)
+	}
+	if res.StatusCode == http.StatusOK && out["ok"] == true {
+		h.checkOutputSchema(h.t, op, out["data"])
 	}
 	return res.StatusCode, out
 }
@@ -400,12 +405,16 @@ var mcpCallID int
 
 func (h *harness) mcpCall(op string, args any) mcpResult {
 	h.t.Helper()
-	return h.rpc(map[string]any{
+	res := h.rpc(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      mcpNextID(),
 		"method":  "tools/call",
 		"params":  map[string]any{"name": op, "arguments": args},
 	})
+	if res.proto == nil && !res.isError() && res.result != nil {
+		h.checkOutputSchema(h.t, op, res.structured())
+	}
+	return res
 }
 
 func (h *harness) mcpCallAs(id identity, op string, args any) mcpResult {
