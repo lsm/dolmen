@@ -709,8 +709,8 @@ carries no per-request credential, and treating whoever launched the subprocess
 as an administrator would be a silent bypass. Stdio is reachable only by its
 parent process, so run it with auth off.
 
-Running authentication for a team — which identity sources to enable, the first
-start and hand-over, what a gateway must do, and how sign-in behaves across
+Running authentication for a team — which identity sources to enable, TLS, the
+first start and hand-over, what a gateway must do, and how sign-in behaves across
 replicas — is covered in the [deployment guide](docs/deployment.md).
 
 ## Reverse proxy / sub-path hosting
@@ -1238,9 +1238,8 @@ no CGO is required.
 
 ## Not yet (deliberately)
 
-Authn/authz, quotas, multi-node, time travel, compaction, a UI, an Iceberg adapter. The MVP exists
-to validate the tool surface with real agents. **Until auth exists, dolmen binds to 127.0.0.1 —
-keep it on a private interface.**
+Quotas, replication, time travel, compaction, a UI, webhooks, an Iceberg adapter. The MVP exists
+to validate the tool surface with real agents.
 
 ## Development
 
@@ -1293,7 +1292,7 @@ The workflow creates a GitHub Release with static binaries for `linux/darwin/win
 docker run --rm -it -p 127.0.0.1:8790:8790 -v dolmen-data:/data ghcr.io/lsm/dolmen:v0.3.0
 ```
 
-The image contains a single static Go binary in a `gcr.io/distroless/static` base. `/data` is exposed as a volume and is created by the container if not mounted. The default container command binds to `0.0.0.0:8790` so the port can be published from Docker. As with the native binary, keep this on a private network until authn/authz lands.
+The image contains a single static Go binary in a `gcr.io/distroless/static` base. `/data` is exposed as a volume and is created by the container if not mounted. The default container command binds to `0.0.0.0:8790` so the port can be published from Docker. Auth is off unless you set `DOLMEN_AUTH=on`, so keep the published port on a private network until you do; the [deployment guide](docs/deployment.md) covers running it for a team.
 
 ### Verifying artifacts
 
