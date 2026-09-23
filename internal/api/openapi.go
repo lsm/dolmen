@@ -69,10 +69,10 @@ var outputSchemas = map[string]map[string]any{
 	"read_rows":       objectSchema(false, map[string]any{"rows": arrayOf(ref("Row")), "row_count": integer(0), "truncated": propBool()}, []string{"rows", "row_count", "truncated"}),
 	"capabilities":    capabilitiesOutSchema,
 	"search_fulltext": objectSchema(false, map[string]any{"results": arrayOf(ref("Row")), "truncated": propBool()}, []string{"results", "truncated"}),
-	"search_vector":   objectSchema(false, map[string]any{"results": arrayOf(ref("Row")), "truncated": propBool()}, []string{"results", "truncated"}),
+	"search_vector":   objectSchema(false, map[string]any{"results": arrayOf(ref("Row")), "truncated": propBool(), "skipped_vectors": integer(0)}, []string{"results", "truncated", "skipped_vectors"}),
 	"changes_since":   changesOutSchema,
 	"wait_for":        changesOutSchema,
-	"delete":          objectSchema(false, map[string]any{"deleted": integer(0)}, []string{"deleted"}),
+	"delete":          objectSchema(false, map[string]any{"matched": integer(0), "deleted": integer(0)}, []string{"matched", "deleted"}),
 	"update":          objectSchema(false, map[string]any{"updated": integer(0)}, []string{"updated"}),
 	"upsert":          writeDataSchema,
 	"migrate":         migrateOutSchema(ref("TableSchema"), ref("TableSchema")),
@@ -274,14 +274,7 @@ func components(authOn bool) map[string]any {
 				},
 				"default": map[string]any{"description": "Value stored when an insert omits the field; exactly as declared (present when set) — \"now()\" on a timestamp field stamps the server's current time at each write"},
 			}, []string{"name", "type"}),
-			"TableSchema": objectSchema(false, map[string]any{
-				"namespace":   stringProp(store.NSPathPattern()),
-				"name":        stringProp(`^[a-z][a-z0-9_]{0,63}$`),
-				"version":     intProp(1, 0),
-				"fields":      arrayOf(ref("Field")),
-				"embed_space": stringProp(""),
-				"embed_dim":   intProp(0, 0),
-			}, []string{"namespace", "name", "version", "fields"}),
+			"TableSchema": tableSchemaComponent(authOn),
 			"Row": map[string]any{
 				"type":                 "object",
 				"description":          "A result row keyed by column or field name; values are typed per the table schema.",
@@ -289,6 +282,22 @@ func components(authOn bool) map[string]any {
 			},
 		},
 	}
+}
+
+func tableSchemaComponent(authOn bool) map[string]any {
+	props := map[string]any{
+		"namespace":   stringProp(store.NSPathPattern()),
+		"name":        stringProp(`^[a-z][a-z0-9_]{0,63}$`),
+		"version":     intProp(1, 0),
+		"fields":      arrayOf(ref("Field")),
+		"embed_space": stringProp(""),
+		"embed_dim":   intProp(0, 0),
+	}
+	if authOn {
+		props["row_access"] = map[string]any{"type": "string", "enum": []string{schema.RowAccessOwn}, "description": "Present when the table keeps each row private to the principal that wrote it"}
+		props["has_owner"] = map[string]any{"type": "boolean", "description": "Present when the table carries the owner column that per-row access is enforced on"}
+	}
+	return objectSchema(false, props, []string{"namespace", "name", "version", "fields"})
 }
 
 func requestBody(inputSchema map[string]any) map[string]any {

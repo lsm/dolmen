@@ -55,6 +55,9 @@ func (h *harness) postNoCredential(t *testing.T, url, body string, hdr ...map[st
 	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
 		t.Fatalf("decode %s response: %v", url, err)
 	}
+	if op, ok := strings.CutPrefix(url, h.httpURL+"/"); ok && res.StatusCode == http.StatusOK && out["ok"] == true {
+		h.checkOutputSchema(t, op, out["data"])
+	}
 	return res, out
 }
 
