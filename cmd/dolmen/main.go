@@ -180,7 +180,7 @@ func openStore(cfg *config) (store.Engine, error) {
 		}
 		return st, nil
 	}
-	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention))
+	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention), store.WithMaxOpenNamespaces(cfg.MaxOpenNamespaces))
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
@@ -288,6 +288,7 @@ type config struct {
 	SkillNamespaceHint string
 	ChangeRetention    time.Duration
 	MaxSubscriptionAge time.Duration
+	MaxOpenNamespaces  int
 }
 
 type embedConfig struct {
@@ -315,6 +316,8 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	publicBaseURL := fs.String("base-url", envOr("DOLMEN_BASE_URL", "", getenv), "public base URL for skills and MCP links (default: use request Host)")
 	prefix := fs.String("prefix", envOr("DOLMEN_PREFIX", "", getenv), "mount all endpoints under this URL prefix (pass-through proxy)")
 
+	maxOpenDefault, maxOpenErr := envIntOr("DOLMEN_MAX_OPEN_NAMESPACES", store.DefaultMaxOpenNamespaces, getenv)
+	maxOpenNamespaces := fs.Int("max-open-namespaces", maxOpenDefault, "namespaces held open at once; past it, the least recently used idle namespace is closed until it is next used (at least 1; sqlite engine)")
 	changeRetention := fs.String("change-retention", envOr("DOLMEN_CHANGE_RETENTION", "168h", getenv), "change-log retention: 0 disables pruning (records and cursors never expire); otherwise 1h to 2160h")
 	maxSubscriptionAge := fs.String("max-subscription-age", envOr("DOLMEN_MAX_SUBSCRIPTION_AGE", "30m", getenv), "subscribe connection age bound: the stream teaching-closes at the bound and the client reconnects from its cursor; 0 disables the bound (the identity-refresh backstop is lost), otherwise 1s to 24h")
 
@@ -448,6 +451,15 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		return nil, &printedError{err}
 	}
 
+	if maxOpenErr == nil && *maxOpenNamespaces < 1 {
+		maxOpenErr = fmt.Errorf("invalid max open namespaces %d: must be at least 1", *maxOpenNamespaces)
+	}
+	if maxOpenErr != nil {
+		fmt.Fprintf(out, "config: %v\n", maxOpenErr)
+		fs.Usage()
+		return nil, &printedError{maxOpenErr}
+	}
+
 	var maxAge time.Duration
 	if !stdio {
 		maxAge, err = parseMaxSubscriptionAge(*maxSubscriptionAge)
@@ -491,6 +503,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		SkillNamespaceHint: skillNamespaceHint,
 		ChangeRetention:    retention,
 		MaxSubscriptionAge: maxAge,
+		MaxOpenNamespaces:  *maxOpenNamespaces,
 		Embed: embedConfig{
 			Provider: provider,
 			BaseURL:  baseURL,
@@ -567,6 +580,7 @@ func printEnvHelp(out io.Writer) {
 		{"DOLMEN_SKILL_NAMESPACE_HINT", "hint text rendered into skill markdown"},
 		{"DOLMEN_CHANGE_RETENTION", "change-log retention: 0 disables pruning, else 1h to 2160h (default 168h)"},
 		{"DOLMEN_MAX_SUBSCRIPTION_AGE", "subscribe connection age bound: 0 disables, else 1s to 24h (default 30m)"},
+		{"DOLMEN_MAX_OPEN_NAMESPACES", "namespaces held open at once before idle ones are closed, at least 1 (default 128)"},
 		{"", ""},
 		{"DOLMEN_EMBED_PROVIDER", "embedding provider: none, local (default), or openai"},
 		{"DOLMEN_EMBED_MODEL", "model name or absolute model-directory path"},

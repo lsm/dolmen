@@ -189,6 +189,7 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsG
 	if err != nil {
 		return QueryResult{}, err
 	}
+	defer n.unpin()
 
 	tx, err := n.ro.BeginTx(ctx, nil)
 	if err != nil {

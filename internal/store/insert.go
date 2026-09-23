@@ -51,6 +51,7 @@ func (s *Store) insert(ctx context.Context, nsName, table string, records []map[
 	if err != nil {
 		return nil, ChangeRange{}, false, err
 	}
+	defer n.unpin()
 	normalized := make([]map[string]any, len(records))
 	for i, rec := range records {
 		nr := make(map[string]any, len(rec))

@@ -94,5 +94,6 @@ func (s *Store) guardIncarnation(ctx context.Context, nsName, table string, want
 	if err != nil {
 		return err
 	}
+	defer n.unpin()
 	return checkScopeIncarnation(ctx, n.ro, nsName, table, want)
 }

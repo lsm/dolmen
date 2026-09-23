@@ -253,6 +253,7 @@ func (s *Store) DropTable(ctx context.Context, nsName, table string, inc Incarna
 	if err != nil {
 		return err
 	}
+	defer n.unpin()
 	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -297,6 +298,7 @@ func (s *Store) TableState(ctx context.Context, nsName, table string, auth []Aut
 	if err != nil {
 		return nil, Incarnation{}, err
 	}
+	defer n.unpin()
 
 	tx, err := n.ro.BeginTx(ctx, nil)
 	if err != nil {

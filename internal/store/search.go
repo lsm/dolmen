@@ -120,6 +120,7 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 	if err != nil {
 		return SearchResult{}, err
 	}
+	defer n.unpin()
 	tx, err := n.ro.BeginTx(ctx, nil)
 	if err != nil {
 		return SearchResult{}, err
@@ -359,6 +360,7 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	if err != nil {
 		return DeleteResult{}, err
 	}
+	defer n.unpin()
 
 	if opts.DryRun {
 		tx, err := n.ro.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})

@@ -51,6 +51,12 @@ func NSPathPattern() string {
 
 const DefaultChangeRetention = 168 * time.Hour
 
+const (
+	DefaultMaxOpenNamespaces = 128
+	readConnsPerNS           = 16
+	idleReadConnsPerNS       = 2
+)
+
 type ctxMutex struct {
 	ch chan struct{}
 }
@@ -84,9 +90,11 @@ func (m *ctxMutex) Unlock() {
 }
 
 type Store struct {
-	dir string
-	mu  ctxMutex
-	nss map[string]*nsDB
+	dir     string
+	mu      ctxMutex
+	nss     map[string]*nsDB
+	maxOpen int
+	useTick uint64
 
 	notifyMu  sync.Mutex
 	listeners map[string][]*commitListener
@@ -101,14 +109,24 @@ type Store struct {
 }
 
 type nsDB struct {
-	rw *sql.DB
-	ro *sql.DB
+	rw      *sql.DB
+	ro      *sql.DB
+	pins    atomic.Int64
+	lastUse uint64
+}
+
+func (n *nsDB) unpin() {
+	n.pins.Add(-1)
 }
 
 type OpenOption func(*Store)
 
 func WithChangeRetention(d time.Duration) OpenOption {
 	return func(s *Store) { s.changeRetention = d }
+}
+
+func WithMaxOpenNamespaces(n int) OpenOption {
+	return func(s *Store) { s.maxOpen = n }
 }
 
 func Open(dir string, opts ...OpenOption) (*Store, error) {
@@ -122,9 +140,12 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 	if err := os.Chmod(abs, 0o700); err != nil {
 		return nil, fmt.Errorf("cannot secure data directory %s (owner-only permissions): %w", abs, err)
 	}
-	s := &Store{dir: abs, mu: newCtxMutex(), nss: map[string]*nsDB{}, changeRetention: DefaultChangeRetention}
+	s := &Store{dir: abs, mu: newCtxMutex(), nss: map[string]*nsDB{}, maxOpen: DefaultMaxOpenNamespaces, changeRetention: DefaultChangeRetention}
 	for _, opt := range opts {
 		opt(s)
+	}
+	if s.maxOpen < 1 {
+		return nil, fmt.Errorf("max open namespaces must be at least 1, got %d", s.maxOpen)
 	}
 	if err := s.verifyCatalogVersions(context.Background()); err != nil {
 		return nil, err
@@ -206,7 +227,7 @@ func (s *Store) ns(name string) (*nsDB, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.lockedNS(name)
+	return s.pinLocked(s.lockedNS(name))
 }
 
 func (s *Store) nsCtx(ctx context.Context, name string) (*nsDB, error) {
@@ -217,7 +238,42 @@ func (s *Store) nsCtx(ctx context.Context, name string) (*nsDB, error) {
 		return nil, err
 	}
 	defer s.mu.Unlock()
-	return s.lockedNSCtx(ctx, name)
+	return s.pinLocked(s.lockedNSCtx(ctx, name))
+}
+
+func (s *Store) pinLocked(n *nsDB, err error) (*nsDB, error) {
+	if err != nil {
+		return nil, err
+	}
+	n.pins.Add(1)
+	s.useTick++
+	n.lastUse = s.useTick
+	return n, nil
+}
+
+func (s *Store) evictIdleLocked() {
+	for len(s.nss) >= s.maxOpen {
+		var victim string
+		var oldest *nsDB
+		for name, n := range s.nss {
+			if n.pins.Load() > 0 || n.ro.Stats().InUse > 0 || n.rw.Stats().InUse > 0 {
+				continue
+			}
+			if oldest == nil || n.lastUse < oldest.lastUse {
+				victim, oldest = name, n
+			}
+		}
+		if oldest == nil {
+			return
+		}
+		if err := oldest.ro.Close(); err != nil {
+			slog.Warn("closing an idle namespace's read pool failed", "namespace", victim, "err", err)
+		}
+		if err := oldest.rw.Close(); err != nil {
+			slog.Warn("closing an idle namespace's write connection failed", "namespace", victim, "err", err)
+		}
+		delete(s.nss, victim)
+	}
 }
 
 func (s *Store) lockedNS(name string) (*nsDB, error) {
@@ -246,11 +302,13 @@ func (s *Store) lockedNSCtx(ctx context.Context, name string) (*nsDB, error) {
 	if !fi.Mode().IsRegular() {
 		return nil, invalidf("namespace %s: %s is not a regular file", name, path)
 	}
+	s.evictIdleLocked()
 	rw, err := sql.Open("sqlite", dsn(path, false))
 	if err != nil {
 		return nil, err
 	}
 	rw.SetMaxOpenConns(1)
+	rw.SetMaxIdleConns(1)
 	if err := refuseNewerCatalog(ctx, rw, name); err != nil {
 		rw.Close()
 		return nil, err
@@ -297,6 +355,8 @@ func (s *Store) lockedNSCtx(ctx context.Context, name string) (*nsDB, error) {
 		rw.Close()
 		return nil, err
 	}
+	ro.SetMaxOpenConns(readConnsPerNS)
+	ro.SetMaxIdleConns(idleReadConnsPerNS)
 	n := &nsDB{rw: rw, ro: ro}
 	s.nss[name] = n
 	return n, nil
@@ -454,6 +514,7 @@ func (s *Store) ListTables(ctx context.Context, nsName string, bindings []AuthBi
 	if err != nil {
 		return nil, err
 	}
+	defer n.unpin()
 	rows, err := n.ro.QueryContext(ctx, `SELECT name FROM _dolmen_tables ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -496,6 +557,7 @@ func (s *Store) DescribeTable(ctx context.Context, nsName, table string, scope *
 	if err != nil {
 		return nil, 0, err
 	}
+	defer n.unpin()
 	sc, err := loadSchema(ctx, n.ro, nsName, table)
 	if err != nil {
 		return nil, 0, err
@@ -535,6 +597,7 @@ func (s *Store) ListMigrations(ctx context.Context, nsName, table string, inc In
 	if err != nil {
 		return nil, err
 	}
+	defer n.unpin()
 	if _, err := loadSchema(ctx, n.ro, nsName, table); err != nil {
 		return nil, err
 	}
@@ -588,6 +651,7 @@ func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []
 	if err != nil {
 		return nil, err
 	}
+	defer n.unpin()
 
 	tx, err := n.rw.BeginTx(ctx, nil)
 	if err != nil {
