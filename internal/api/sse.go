@@ -61,13 +61,13 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	ctx, stopCause := context.WithCancelCause(r.Context())
 	stop := func() { stopCause(nil) }
 	defer stop()
-	go func() {
+	go func(done <-chan struct{}) {
 		select {
 		case <-s.drainCh():
 			stopCause(errDraining)
-		case <-ctx.Done():
+		case <-done:
 		}
-	}()
+	}(ctx.Done())
 	closing := func() bool {
 		c := context.Cause(ctx)
 		return errors.Is(c, store.ErrListenAged) || errors.Is(c, errDraining)
