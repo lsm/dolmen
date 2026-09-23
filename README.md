@@ -410,10 +410,18 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 | `-pg-dsn` | `DOLMEN_PG_DSN` | — | PostgreSQL connection string; required with `-engine postgres` and rejected without it |
 | `-pg-catalog` | `DOLMEN_PG_CATALOG` | `dolmen_catalog` | PostgreSQL catalog schema |
 | `-pg-query-role` | `DOLMEN_PG_QUERY_ROLE` | — | Pre-provisioned restricted role that caller SQL runs as; required for the `query` op |
-| `-auth` | `DOLMEN_AUTH` | `off` | Authentication. `off` is the v0.2.0 behavior: no identity, no credential, bind to loopback. `on` is deny-by-default and requires `DOLMEN_ADMIN_KEY` (see [Authentication](#authentication)) |
-| — | `DOLMEN_ADMIN_KEY` | — | Bootstrap admin credential, required when `-auth on`. 32–256 characters of `[A-Za-z0-9_-]`, presented as `Authorization: Bearer <key>`. Environment only — flags are visible in process listings |
+| `-auth` | `DOLMEN_AUTH` | `off` | Authentication. `off` is the v0.2.0 behavior: no identity, no credential, bind to loopback. `on` is deny-by-default and refuses to start without an identity source and a reachable root administrator, which on first start means `DOLMEN_ADMIN_KEY` (see [Authentication](#authentication)) |
+| — | `DOLMEN_ADMIN_KEY` | — | Bootstrap admin credential. Needed with `-auth on` until another source yields a root administrator, and removable after the hand-over (see [Permissions](#permissions)). 32–256 characters of `[A-Za-z0-9_-]`, presented as `Authorization: Bearer <key>`. Environment only — flags are visible in process listings |
 | `-trusted-proxies` | `DOLMEN_TRUSTED_PROXIES` | — | Comma-separated CIDRs (bare IPs allowed) whose peers may assert `X-Dolmen-Principal` / `X-Dolmen-Groups`. Trust is decided from the immediate TCP peer, never from `X-Forwarded-For` |
 | `-max-groups` | `DOLMEN_MAX_GROUPS` | `128` | Maximum group entries accepted per request, `1` to `1024`. An over-limit list fails the identity rather than dropping a group |
+| — | `DOLMEN_AUTH_OIDC_ISSUER` | — | Identity provider issuer URL. Enables sign-in at `/v1/auth/begin` (see [Signing in through an identity provider](#signing-in-through-an-identity-provider)) |
+| — | `DOLMEN_AUTH_OIDC_CLIENT_ID` | — | OAuth client id registered with the provider |
+| — | `DOLMEN_AUTH_OIDC_CLIENT_SECRET` | — | OAuth client secret. Environment only |
+| — | `DOLMEN_AUTH_OIDC_PRESET` | — | `github` signs in with GitHub instead of a generic OIDC provider. Refused alongside `DOLMEN_AUTH_OIDC_ISSUER` |
+| — | `DOLMEN_AUTH_OIDC_SCOPES` | — | Comma-separated extra scopes to request |
+| — | `DOLMEN_AUTH_OIDC_GROUPS_CLAIM` | `groups` | Claim carrying the caller's groups |
+| — | `DOLMEN_AUTH_OIDC_TOKEN_TTL` | `168h` | Lifetime of an issued token, `1h` to `720h` |
+| — | `DOLMEN_AUTH_OIDC_DEPLOYMENT_ID` | minted on first start | Pins this deployment's token issuer id. A mismatch against the stored value is refused at startup |
 | `-version` | — | — | Print version and exit |
 | `-prefix` | `DOLMEN_PREFIX` | — | Mount all endpoints (`/healthz`, `/version`, `/skills*`, `/v1/*`, `/mcp`) under this URL prefix. Use with a pass-through proxy that forwards the full path |
 | `-base-url` | `DOLMEN_BASE_URL` | — | Public base URL for the links rendered into the skills manifest, the skill markdown, and the MCP `initialize` instructions. Default: derive from the request `Host` and forwarded headers. Refused when it ends with `-prefix` |
@@ -435,8 +443,10 @@ Dolmen defaults to `-auth off`: no credential is required, no identity exists, a
 the server binds to loopback. That is the right mode for a local agent and it is
 not going away.
 
-`-auth on` turns on deny-by-default. In this release it enables exactly one
-identity source — the bootstrap admin key:
+`-auth on` turns on deny-by-default. Identity can come from four sources: the
+bootstrap admin key, a gateway's headers, API keys, and sign-in through an
+identity provider, each covered below. The admin key comes first, because it is
+how the first grants get made:
 
 ```bash
 DOLMEN_AUTH=on \

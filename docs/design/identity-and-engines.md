@@ -162,7 +162,7 @@ which source fired. `auth: off` = no sources enabled, byte-identical v0.2.0 — 
 | Source | Config | Credential | Notes |
 |---|---|---|---|
 | A — trusted-proxy headers (v1) | `-trusted-proxies` CIDRs (§1.2) | asserted headers (gateway session) | unchanged (D1/D2) |
-| B — native OIDC (designed; built on demand) | `DOLMEN_AUTH_OIDC_ISSUER` / `_CLIENT_ID` / `_CLIENT_SECRET` (+ optional scopes; optional GitHub preset) | stateless signed token (Ed25519, default 7–14 d TTL, configurable) | §1.4 |
+| B — native OIDC | `DOLMEN_AUTH_OIDC_ISSUER` / `_CLIENT_ID` / `_CLIENT_SECRET` (+ optional scopes; optional GitHub preset) | stateless signed token (Ed25519, default 7–14 d TTL, configurable) | §1.4 |
 | C — API keys | `create_key` / `list_keys` / `revoke_key` ops (§1.5) | `dlm_…` bearer, stored hashed | §1.5 |
 | D — admin key (bootstrap) | `DOLMEN_ADMIN_KEY` env (§1.3) | bearer → `dolmen-admin` | unchanged (D4) |
 
@@ -344,7 +344,7 @@ vanishes while its grants persist. The removal is permanently safe: §1.2's star
 a usable root administrator (the key **or** a durable `admin` on `*` grant), and the last-admin
 guard (§3.4) then keeps that root grant un-revocable.
 
-### 1.4 Native OIDC (source B — designed, not built)
+### 1.4 Native OIDC (source B)
 
 Motivation: the gateway-less small-team tier — everything needed to run behind an IdP without
 standing up a proxy. PocketBase-shaped by intent: the provider abstraction is endpoints + scopes +
@@ -428,8 +428,7 @@ OIDC covers Entra, Okta, Google, etc.
   issuer never match (fail-closed), and if the old issuer's principals held the only root
   grants, §1.2's usable-root-administrator check names that at startup rather than letting a
   stranger in silently.
-- Built on demand; until then it exists as this design. The `dolmen-admin` reservation applies
-  (§1.3).
+- Built in #361. The `dolmen-admin` reservation applies (§1.3).
 
 ### 1.5 API keys (source C)
 
@@ -1619,10 +1618,10 @@ reorder) — the harness is already mode-parameterized, so this adds fixtures, n
   `401`. The verb and grant fixtures fill in on top of the same mode.
 - `native+keys` — `DOLMEN_AUTH=on` with the OIDC source enabled against a **local issuer stub**:
   fixtures run the real dance (`/v1/auth/begin` → stub → callback → bearer token) and exercise key
-  issuance (`create_key` → use → `list_keys` → `revoke_key` → 401). **Arrives with the native-OIDC
-  stream** — source B is designed-not-built (§1.4/D21), so this mode is contingent on that stream
-  landing; until then the matrix runs `off` + `gateway`, and the key-issuance fixtures may ride
-  earlier (API keys have no such dependency).
+  issuance (`create_key` → use → `list_keys` → `revoke_key` → 401). Landed with source B (#361):
+  the OIDC fixtures attach the source to an auth-on harness against the stub
+  (`internal/conformance/oidc_test.go`), the key fixtures run in `api_keys_test.go`, and
+  `TestSourceBlindnessAcrossHeaderKeyAndToken` runs one grant matrix under all three sources.
 
 ### 8.3 What auth:on adds to the suite
 
@@ -1670,9 +1669,9 @@ reorder) — the harness is already mode-parameterized, so this adds fixtures, n
 
 ### 8.4 CI wiring
 
-**Every matrix mode that has landed runs in CI** — `auth: off`, `admin-key`, and `gateway`,
-`native+keys` when the OIDC stream lands (§8.2): skipping an available mode fails CI, so the native fixtures (source-blindness, the OIDC dance, key issuance)
-can never silently drop out.
+**Every matrix mode runs in CI** — `auth: off`, `admin-key`, `gateway`, and `native+keys`
+(§8.2): skipping one fails CI, so the native fixtures (source-blindness, the OIDC dance, key
+issuance) can never silently drop out.
 Each is an ordinary `go test ./...` run inside `make test` — mode selection happens inside the
 harness per test group, no CI matrix, no new make targets.
 
@@ -1920,7 +1919,7 @@ ETL layer (an ETL layer in dolmen would be fiso-shaped, not dolmen-shaped).
 | D18 | Grant lifecycle: no owner concept (inheritance covers creators); last-admin-on-`*` revoke guard (409); drop cascades grant deletion (clean slate on recreation, count reported in drop confirm); grants target existing objects only | §3.4 |
 | D19 | Consistency contract: op atomicity; per-namespace serial observability + read-your-writes; 409-or-nothing collision surfacing; engine-declared deployment topology (sqlite = 1 process/data-dir; shared engines = N pods) | §0.6 |
 | D20 | Data portability SKIPPED and audit surface DEFERRED, deliberately — no features without real-world demanders (#32 open, unrescoped) | §0.6 |
-| D21 | Identity is additive, pluggable **sources** behind one seam; a request is authenticated when any enabled source yields a principal; everything downstream is source-blind. Trusted-proxy headers = v1; native OIDC designed-not-built (PocketBase-shaped provider abstraction, Ed25519 signed tokens, PKCE+state, principal = `sub` never email, `/v1/auth/begin` + callback as the one non-JSON browser surface); API keys `dlm_…` hashed in the registry; the authn stream builds the seam | §1, §1.4–1.5 |
+| D21 | Identity is additive, pluggable **sources** behind one seam; a request is authenticated when any enabled source yields a principal; everything downstream is source-blind. Trusted-proxy headers = v1; native OIDC (built in #361: PocketBase-shaped provider abstraction, Ed25519 signed tokens, PKCE+state, principal = `sub` never email, `/v1/auth/begin` + callback as the one non-JSON browser surface); API keys `dlm_…` hashed in the registry; the authn stream builds the seam | §1, §1.4–1.5 |
 | D22 | Credential model on record: humans get expiring signed tokens, machines get hashed revocable named keys carrying principal + optional groups; no sessions/refresh/email/user records (deliberate — nothing user-shaped to leak, IdP owns recovery); accepted losses on record — no per-device revocation (revoke = rotate the signing secret), no sliding sessions; enterprises use the gateway tier | §1.4–1.6 |
 | D23 | Bootstrap written up explicitly: the deadlock rationale; the admin key is a kingmaker, not a king (implicit grant on the credential, identity vanishes with the env, grants persist; `dolmen-admin` reserved across all sources; removal safe via the root-admin startup check + last-admin guard). Namespace-creation gates: `auth: off` implicit forever; `auth: on` `not_found`-after-authz; `create_namespace` requires `admin` on the parent; `schema` creates content, never tenancy | §1.3, §2 |
 | D24 | Realtime change notifications join the spec ("one bag" — auth, authz, and subscription designed together): four layers in build order (durable per-namespace change log + `changes_since` → `wait_for` long-poll ≤60s → SSE `subscribe` for agent hosts → webhooks designed-not-built); a subscription is a **standing read** (`read` verb — or any data verb under `row_access`, own rows only — visible set, **per-event** scope AND credential evaluation, mid-subscription revocation drops the stream, source-A streams duration-bounded with the documented gateway termination obligation); change records and cursors are **minted inside the write transaction** (per-record table-lifetime key and internal owner label; no CDC; notification after commit only, never the durability mechanism; order = §0.6 serial observability; cross-pod fan-out = engine-declared capability); durable gap-free per-namespace cursors with a retention knob (beyond retention = teaching error); realtime ops exist in both modes (data ops, not auth surface); decoding stays OUT (agent decodes; fiso is the codec layer for non-LLM pipelines) | §9 |
