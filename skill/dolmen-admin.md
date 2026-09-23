@@ -601,8 +601,9 @@ A complete call, previewed first:
 | `query` / search filter `args` | 100 | rejected |
 | `infer_schema` samples | 1–50 | rejected |
 
-Vector search is brute-force (fine into the low millions of rows); FTS5 uses an inverted index and
-is much faster.
+Vector search is a brute-force scan whose cost grows with rows × dimensions — about a tenth of a
+second per 50,000 rows at 384 dimensions, three times that at 1,536 — so pass `filter` on large
+tables; FTS5 uses an inverted index and is much faster.
 
 Validation notes:
 
