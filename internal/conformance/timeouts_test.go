@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -218,18 +217,25 @@ func TestAResponseIsCutOffWhenItsReaderStalls(t *testing.T) {
 	body := fmt.Sprintf(`{"namespace":"big","sql":%q}`, sql)
 	fmt.Fprintf(conn, "POST /v1/query HTTP/1.1\r\nHost: dolmen\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
 
-	time.Sleep(2 * time.Second)
+	client := conn.LocalAddr().String()
+	gaveUp := time.After(30 * time.Second)
+	for closed := false; !closed; {
+		select {
+		case addr := <-h.closed:
+			closed = addr == client
+		case <-gaveUp:
+			t.Fatal("the server still holds the connection of a client that never read its response; it must give up at the write limit")
+		}
+	}
+
 	_ = conn.SetReadDeadline(time.Now().Add(20 * time.Second))
 	head := make([]byte, len("HTTP/1.1 200"))
 	if _, err := io.ReadFull(conn, head); err != nil || string(head) != "HTTP/1.1 200" {
-		t.Fatalf("the query must start a successful response for this to test anything, got %q: %v", head, err)
+		t.Fatalf("the query must have started a successful response for this to test anything, got %q: %v", head, err)
 	}
-	got, err := io.Copy(io.Discard, conn)
-	if errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Fatalf("the server kept the stalled connection open after %d bytes; it must give up at the write limit", got)
-	}
+	got, _ := io.Copy(io.Discard, conn)
 	if got >= payload {
-		t.Fatalf("the whole %d-byte response arrived although its reader stalled past the 300ms write limit", got)
+		t.Fatalf("all %d bytes arrived although the client never read until the server had closed the connection", got)
 	}
 }
 

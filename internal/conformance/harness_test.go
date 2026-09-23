@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -125,6 +126,7 @@ type harness struct {
 	retention *time.Duration
 	apiOpts   []api.Option
 	timeouts  *api.Timeouts
+	closed    chan string
 
 	httpURL string
 	mcpURL  string
@@ -231,6 +233,16 @@ func (h *harness) serve(handler http.Handler) {
 	srv := httptest.NewUnstartedServer(handler)
 	if h.timeouts != nil {
 		h.timeouts.Configure(srv.Config)
+		h.closed = make(chan string, 64)
+		closed := h.closed
+		srv.Config.ConnState = func(c net.Conn, state http.ConnState) {
+			if state == http.StateClosed {
+				select {
+				case closed <- c.RemoteAddr().String():
+				default:
+				}
+			}
+		}
 	}
 	srv.Start()
 	h.srv = srv
