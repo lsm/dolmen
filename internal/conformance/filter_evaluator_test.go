@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -195,6 +196,9 @@ var pinnedFilterSemantics = []struct {
 	{"a modulo past int64 is a double", "(9223372036854775808 % -9223372036854775808) = 9223372036854775808", ""},
 	{"text sorts above a computed number", "'7' > (n + 100) AND (n + 100) < '7'", ""},
 	{"text never equals a computed number", "NOT ('93' = (n + 100))", ""},
+	{"a stored large real equals the integer it holds", "bigreal = 1152921504606846976", ""},
+	{"a stored large real equals its own literal", "bigreal = 1152921504606846976.0 AND NOT (bigreal <> 1152921504606846976.0)", ""},
+	{"a stored large real equals its own bound argument", "bigreal = ?", `[1152921504606846976.0]`},
 	{"a bound text never equals a computed number", "NOT ((1 / 2) = ?)", `["0"]`},
 	{"a bound text never equals a chosen computed number", "NOT (iif(id = 1, 1.5 + 1.5, 1) = ?)", `["3"]`},
 	{"substr from position zero takes one fewer", "substr(body, 0, 3) = 'a '", ""},
@@ -347,12 +351,13 @@ func seedScopedFilterRow(t *testing.T) *harness {
 			{"name": "past", "type": "number"},
 			{"name": "code2", "type": "text"},
 			{"name": "tiny", "type": "text"},
+			{"name": "bigreal", "type": "number"},
 			{"name": "seen_at", "type": "timestamp"},
 		},
 		"row_access": "own",
 	})
 	grantTo(t, h, "principal", "alice", "acme", "notes", "create", "delete")
-	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7,"code":"1","mark":"!zzz","huge":"1e999999","flag":true,"neg":"-1.0e+300","frac":0.1,"big":9007199254740993,"real":"7.0","off":false,"zero":0,"pad":"  5  ","empty":"","past":9223372036854775808,"code2":"0.10000000000000000001","tiny":"1e-999999","seen_at":"2026-03-31T05:06:07.008Z"}]}`)
+	res, out := h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"notes","records":[{"body":"a note from alice","n":-7,"code":"1","mark":"!zzz","huge":"1e999999","flag":true,"neg":"-1.0e+300","frac":0.1,"big":9007199254740993,"real":"7.0","off":false,"zero":0,"pad":"  5  ","empty":"","past":9223372036854775808,"code2":"0.10000000000000000001","tiny":"1e-999999","bigreal":1152921504606846976.0,"seen_at":"2026-03-31T05:06:07.008Z"}]}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("seed insert: status %d %v", res.StatusCode, out)
 	}
@@ -409,5 +414,20 @@ func TestEveryEngineEvaluatesAScopedFilterWithSQLitesSemantics(t *testing.T) {
 		t.Run(tc.rule, func(t *testing.T) {
 			mustMatchTheOwnRowWithArgs(t, tc.filter, tc.args)
 		})
+	}
+}
+
+func TestEveryEngineStoresAnUpdatedLargeRealAsTheIntegerItHolds(t *testing.T) {
+	h := seedScopedFilterRow(t)
+	status, out := h.httpCall("update", map[string]any{"namespace": "acme", "table": "notes", "filter": "id = 1",
+		"set": map[string]any{"n": json.Number("4611686018427387904.0")}})
+	if status != http.StatusOK || out["ok"] != true {
+		t.Fatalf("update failed: %d %v", status, out)
+	}
+	_, out = h.httpCall("delete", map[string]any{"namespace": "acme", "table": "notes",
+		"filter": "n = 4611686018427387904", "dry_run": true})
+	data, _ := out["data"].(map[string]any)
+	if data["matched"] != float64(1) {
+		t.Fatalf("SQLite stores the REAL 2^62 as the INTEGER it losslessly holds, so the updated row must match that integer: %v", out)
 	}
 }

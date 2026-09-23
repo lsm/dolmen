@@ -415,7 +415,10 @@ against every INTEGER beyond int64. Before this, `('-7' + -9223372036854775808) 
 `julianday`, text read as a number, real literals (with a leading sign folded in first,
 so `-9223372036854775808.0` is -2^63 rather than the negation of 2^63's printed form), and
 bound float arguments, which are bound as their canonical text rather than handed to the
-driver. The SQL form names the double once in a scalar subquery, so that a nested
+driver. Storage uses the same conversion: SQLite's NUMERIC column keeps a REAL that
+holds a whole number as that INTEGER, so an inserted, updated, upserted, defaulted or
+backfilled `1152921504606846976.0` is stored as `1152921504606846976`. Were it stored
+as its printed text, a filter on its own value would miss it. The SQL form names the double once in a scalar subquery, so that a nested
 expression isn't copied into every branch of the test. `%` takes part too: SQLite
 converts both operands to integers, but its result is a REAL whenever either operand
 was one, so `9007199254740993 % 4611686018427387904.0` is the double

@@ -24,7 +24,7 @@ func databaseValue(field schema.Field, input any) (any, error) {
 		if field.Type == schema.Boolean {
 			v = v.(int64) != 0
 		} else if field.Type == schema.Number {
-			v = fmt.Sprint(v)
+			v = storedNumber(v)
 		}
 	}
 	return v, nil

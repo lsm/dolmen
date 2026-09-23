@@ -1554,15 +1554,32 @@ func exactDouble(double string) string {
 }
 
 func canonicalDouble(f float64) string {
+	if math.IsInf(f, 0) {
+		return "'" + canonicalDoubleText(f) + "'::numeric"
+	}
+	return canonicalDoubleText(f)
+}
+
+func canonicalDoubleText(f float64) string {
 	switch {
 	case math.IsInf(f, 1):
-		return "'Infinity'::numeric"
+		return "Infinity"
 	case math.IsInf(f, -1):
-		return "'-Infinity'::numeric"
+		return "-Infinity"
 	case math.Abs(f) >= 9007199254740992 && f >= -9223372036854775808 && f < 9223372036854775808:
 		return strconv.FormatInt(int64(f), 10)
 	}
 	return strconv.FormatFloat(f, 'g', -1, 64)
+}
+
+func storedNumber(v any) any {
+	switch x := v.(type) {
+	case float64:
+		return canonicalDoubleText(x)
+	case float32:
+		return canonicalDoubleText(float64(x))
+	}
+	return fmt.Sprint(v)
 }
 
 func canonicalArgument(v any) any {
@@ -1580,13 +1597,7 @@ func canonicalArgument(v any) any {
 	default:
 		return v
 	}
-	switch {
-	case math.IsInf(f, 1):
-		return "Infinity"
-	case math.IsInf(f, -1):
-		return "-Infinity"
-	}
-	return strings.Trim(canonicalDouble(f), "()")
+	return canonicalDoubleText(f)
 }
 
 func withoutNaN(text string) string {

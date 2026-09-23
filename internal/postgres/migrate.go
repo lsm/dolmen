@@ -55,7 +55,7 @@ func pgLiteral(f schema.Field, v any) (string, error) {
 		case int64:
 			return strconv.FormatInt(x, 10), nil
 		case float64:
-			return strconv.FormatFloat(x, 'g', -1, 64), nil
+			return canonicalDoubleText(x), nil
 		}
 	case schema.Boolean:
 		switch x := v.(type) {
@@ -89,7 +89,7 @@ func pgWriteValue(f schema.Field, v any) any {
 		}
 	}
 	if f.Type == schema.Number && v != nil {
-		return fmt.Sprint(v)
+		return storedNumber(v)
 	}
 	return v
 }
