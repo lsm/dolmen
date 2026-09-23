@@ -100,6 +100,16 @@ func TakesValue(op string) bool {
 	return false
 }
 
+func (c Change) ReadsRows() bool {
+	switch c.Op {
+	case OpAddField:
+		return c.Field == nil || c.Field.Required || c.Field.Fulltext || c.Field.Vectorize || c.Default != nil
+	case OpSetEnum, OpSetVectorize, OpSetFulltext, OpSetRowAccess, OpDropField:
+		return true
+	}
+	return false
+}
+
 var identRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
 var reserved = map[string]bool{

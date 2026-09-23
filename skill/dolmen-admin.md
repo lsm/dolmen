@@ -183,7 +183,7 @@ What the schema and administration operations need:
 | Operation | Needs |
 |---|---|
 | `create_table` | `schema` on the namespace |
-| `migrate`, `list_migrations` | `schema` on the table. Every `migrate` change except `rename_field` also needs `read`, because its outcome depends on the existing rows |
+| `migrate`, `list_migrations` | `schema` on the table. A change whose outcome depends on the existing rows also needs `read`: `set_enum`, `set_fulltext`, `set_vectorize`, `set_row_access`, `drop_field`, and an `add_field` that is required, full-text, vectorized, or carries a `default` |
 | `drop_table` | `schema` and `admin`, since dropping a table deletes the grants on it |
 | `create_namespace` | `admin` on the parent namespace, or on `*` for a top-level one |
 | `drop_namespace` | `admin` on the namespace |

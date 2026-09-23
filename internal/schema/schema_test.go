@@ -641,3 +641,30 @@ func TestInferSchemaReportsSanitizationWarnings(t *testing.T) {
 		}
 	}
 }
+
+func TestAChangeReadsRowsExactlyWhenItsOutcomeDependsOnThem(t *testing.T) {
+	plain := &Field{Name: "tag", Type: String}
+	for _, tc := range []struct {
+		name   string
+		change Change
+		want   bool
+	}{
+		{"a nullable add_field", Change{Op: OpAddField, Field: plain}, false},
+		{"an add_field of a caller-supplied vector", Change{Op: OpAddField, Field: &Field{Name: "v", Type: Vector, Dim: 4}}, false},
+		{"an add_field with a default", Change{Op: OpAddField, Field: plain, Default: "none"}, true},
+		{"a required add_field", Change{Op: OpAddField, Field: &Field{Name: "tag", Type: String, Required: true}}, true},
+		{"a full-text add_field", Change{Op: OpAddField, Field: &Field{Name: "tag", Type: Text, Fulltext: true}}, true},
+		{"a vectorized add_field", Change{Op: OpAddField, Field: &Field{Name: "tag", Type: Text, Vectorize: true}}, true},
+		{"an add_field with no field", Change{Op: OpAddField}, true},
+		{"rename_field", Change{Op: OpRenameField, From: "a", To: "b"}, false},
+		{"drop_field", Change{Op: OpDropField, Name: "a"}, true},
+		{"set_enum", Change{Op: OpSetEnum, Name: "a"}, true},
+		{"set_fulltext", Change{Op: OpSetFulltext, Name: "a"}, true},
+		{"set_vectorize", Change{Op: OpSetVectorize, Name: "a"}, true},
+		{"set_row_access", Change{Op: OpSetRowAccess}, true},
+	} {
+		if got := tc.change.ReadsRows(); got != tc.want {
+			t.Errorf("%s: ReadsRows() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
