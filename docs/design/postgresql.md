@@ -498,9 +498,11 @@ modifiers, because SQLite sets the month and then normalizes the day overflow
 (`date('2026-01-31','+1 month')` is 2026-03-03) where PostgreSQL's interval arithmetic
 clamps to the 28th; every named modifier (`start of …`, `weekday N`, `unixepoch`,
 `julianday`, `auto`, `subsec`, `ceiling`, `floor`); the `%f`, `%s`, `%w` and `%W`
-strftime fields; and an hour of 24, which SQLite carries
-through formatting unchanged as `24:00:00` but normalizes the moment any modifier is
-applied. Rendered: `±N day/hour/minute/second` and `±HH:MM[:SS]` modifiers, and the
+strftime fields; a `strftime` inside another time function, whose text SQLite parses
+again and reads as a Julian day number when it is all digits, so that
+`date(strftime('%Y%m%d', '0500-01-01'))` is 8977-09-16; and an hour of 24, which SQLite
+carries through formatting unchanged as `24:00:00` but normalizes the moment any modifier
+is applied. Rendered: `±N day/hour/minute/second` and `±HH:MM[:SS]` modifiers, and the
 `%Y %m %d %H %M %S %j %%` fields. The offset modifier carries its own bounds, which are
 not the value side's: SQLite takes hours up to 24 there rather than 14, rejects minutes
 and seconds above 59, and reads hour 24 as zero — `+24:59` shifts by 59 minutes, not by
@@ -601,7 +603,9 @@ the guard yields `NULL` where SQLite answers `0000-01-01`. That is the NULL-for-
 direction this design otherwise forbids. It is narrow — year zero is the only shape a
 canonical stored value can take that SQLite reads and PostgreSQL will not — and a test
 pins both halves, that every representable year agrees and that year zero is the only one
-that does not, failing if either changes.
+that does not, failing if either changes. Closing it properly means refusing year zero at
+the storage boundary, which is a change to both engines' input contract and to
+`facade-input-matrix.md`, not to this renderer.
 
 A second canonical shape is unreadable by PostgreSQL and is *not* a divergence, because
 SQLite will not read it either. `schema.CanonicalTimestamp` accepts a UTC offset up to
@@ -609,9 +613,7 @@ SQLite will not read it either. `schema.CanonicalTimestamp` accepts a UTC offset
 bound is tighter still: `+14:59` is a moment and `+15:00` is `NULL`. Both the Go parse
 and the column guard therefore bound the offset to SQLite's range rather than
 PostgreSQL's, so a stored `+15:30` answers nothing on both engines instead of answering
-on one — which was the divergence, in the direction of a value where SQLite has none. Closing it properly means refusing year zero at the
-storage boundary, which is a change to both engines' input contract and to
-`facade-input-matrix.md`, not to this renderer.
+on one — which was the divergence, in the direction of a value where SQLite has none.
 
 Two things are easy to get wrong and are pinned by tests. Literal runs inside a strftime
 format must be double-quoted for `to_char`, or `%Y-%m-%dT%H:%M:%S` renders its literal

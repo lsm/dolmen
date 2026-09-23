@@ -240,6 +240,8 @@ func TestWhatThisEngineWillNotRenderIsRefusedRatherThanAnswered(t *testing.T) {
 		"julianday(+0x10)",
 		"strftime(body, created_at)",
 		"julianday(created_at) || ''",
+		"date(strftime('%Y-%m-%d', created_at))",
+		"julianday(strftime('%j', created_at))",
 		"julianday(created_at) LIKE '24%'",
 		"created_at > julianday(created_at)",
 		"body = julianday(created_at)",
@@ -260,6 +262,13 @@ func TestWhatThisEngineWillNotRenderIsRefusedRatherThanAnswered(t *testing.T) {
 		if !out.Valid {
 			t.Errorf("%s: refused, but SQLite answers NULL for it, so there is nothing here this engine fails to reproduce", expr)
 		}
+	}
+}
+
+func TestANestedStrftimeIsRefusedByName(t *testing.T) {
+	err := renderErrFor(t, "date(strftime('%Y-%m-%d', created_at))")
+	if err == nil || !strings.Contains(err.Error(), "strftime inside another date or time function") {
+		t.Fatalf("a nested strftime must be refused by name, since SQLite reparses its text and reads an all-digit one as a Julian day: %v", err)
 	}
 }
 

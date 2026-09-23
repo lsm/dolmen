@@ -445,7 +445,7 @@ func (r *filterRenderer) nestedMoment(node *filter.Call, next int) (string, erro
 	case "julianday":
 		return inner, nil
 	}
-	return "", filterNotRenderable("a date or time function over the text " + node.Name + " returns")
+	return "", filterNotRenderable(node.Name + " inside another date or time function")
 }
 
 func (r *filterRenderer) moment(node *filter.Call, next int) (string, error) {
