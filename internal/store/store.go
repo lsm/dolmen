@@ -84,9 +84,10 @@ func (m *ctxMutex) Unlock() {
 }
 
 type Store struct {
-	dir string
-	mu  ctxMutex
-	nss map[string]*nsDB
+	dir  string
+	mu   ctxMutex
+	nss  map[string]*nsDB
+	sync SyncMode
 
 	notifyMu  sync.Mutex
 	listeners map[string][]*commitListener
@@ -122,9 +123,12 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 	if err := os.Chmod(abs, 0o700); err != nil {
 		return nil, fmt.Errorf("cannot secure data directory %s (owner-only permissions): %w", abs, err)
 	}
-	s := &Store{dir: abs, mu: newCtxMutex(), nss: map[string]*nsDB{}, changeRetention: DefaultChangeRetention}
+	s := &Store{dir: abs, mu: newCtxMutex(), nss: map[string]*nsDB{}, sync: DefaultSync, changeRetention: DefaultChangeRetention}
 	for _, opt := range opts {
 		opt(s)
+	}
+	if _, err := ParseSyncMode(string(s.sync)); err != nil {
+		return nil, err
 	}
 	if err := s.verifyCatalogVersions(context.Background()); err != nil {
 		return nil, err
@@ -246,11 +250,15 @@ func (s *Store) lockedNSCtx(ctx context.Context, name string) (*nsDB, error) {
 	if !fi.Mode().IsRegular() {
 		return nil, invalidf("namespace %s: %s is not a regular file", name, path)
 	}
-	rw, err := sql.Open("sqlite", dsn(path, false))
+	rw, err := sql.Open("sqlite", writerDSN(path, s.sync))
 	if err != nil {
 		return nil, err
 	}
 	rw.SetMaxOpenConns(1)
+	if err := verifySync(ctx, rw, name, s.sync); err != nil {
+		rw.Close()
+		return nil, err
+	}
 	if err := refuseNewerCatalog(ctx, rw, name); err != nil {
 		rw.Close()
 		return nil, err
@@ -371,7 +379,37 @@ var registryDDL = []string{
 	`CREATE INDEX IF NOT EXISTS _dolmen_cursor_tokens_chain_origin ON _dolmen_cursor_tokens(chain_origin)`,
 }
 
+type SyncMode string
+
+const (
+	SyncFull    SyncMode = "full"
+	SyncNormal  SyncMode = "normal"
+	DefaultSync          = SyncFull
+)
+
+func ParseSyncMode(raw string) (SyncMode, error) {
+	switch m := SyncMode(strings.ToLower(strings.TrimSpace(raw))); m {
+	case SyncFull, SyncNormal:
+		return m, nil
+	}
+	return "", fmt.Errorf("invalid sync mode %q: use full (a commit survives power loss once acknowledged) or normal (a commit survives a process crash; the last commits before a power loss may be lost)", raw)
+}
+
+func (m SyncMode) pragma() int {
+	if m == SyncNormal {
+		return 1
+	}
+	return 2
+}
+
+func WithSync(m SyncMode) OpenOption {
+	return func(s *Store) { s.sync = m }
+}
+
 func dsn(path string, readonly bool) string {
+	if !readonly {
+		return writerDSN(path, DefaultSync)
+	}
 	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
 	q := url.Values{}
 	q.Add("_pragma", "busy_timeout(10000)")
@@ -380,13 +418,32 @@ func dsn(path string, readonly bool) string {
 	} else {
 
 		q.Add("mode", "rw")
-		q.Add("_pragma", "journal_mode(WAL)")
-		q.Add("_pragma", "synchronous(NORMAL)")
-
-		q.Add("_txlock", "immediate")
 	}
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+func writerDSN(path string, m SyncMode) string {
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	q := url.Values{}
+	q.Add("_pragma", "busy_timeout(10000)")
+	q.Add("mode", "rw")
+	q.Add("_pragma", "journal_mode(WAL)")
+	q.Add("_pragma", fmt.Sprintf("synchronous(%d)", m.pragma()))
+	q.Add("_txlock", "immediate")
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func verifySync(ctx context.Context, db *sql.DB, name string, m SyncMode) error {
+	var got int
+	if err := db.QueryRowContext(ctx, `PRAGMA synchronous`).Scan(&got); err != nil {
+		return err
+	}
+	if got != m.pragma() {
+		return fmt.Errorf("namespace %s runs with synchronous=%d, not the %d that sync mode %s requires", name, got, m.pragma(), m)
+	}
+	return nil
 }
 
 func q(name string) string {

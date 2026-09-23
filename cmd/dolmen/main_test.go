@@ -76,6 +76,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Sync:               store.DefaultSync,
 				Timeouts:           api.DefaultTimeouts(),
 			},
 		},
@@ -91,6 +92,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Sync:               store.DefaultSync,
 				Timeouts:           api.DefaultTimeouts(),
 			},
 		},
@@ -107,6 +109,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Sync:               store.DefaultSync,
 				Timeouts:           api.DefaultTimeouts(),
 			},
 		},
@@ -123,6 +126,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Sync:               store.DefaultSync,
 				Timeouts:           api.DefaultTimeouts(),
 			},
 		},
@@ -159,6 +163,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Sync:               store.DefaultSync,
 				Timeouts:           api.DefaultTimeouts(),
 			},
 		},
@@ -176,6 +181,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Sync:               store.DefaultSync,
 				Timeouts:           api.DefaultTimeouts(),
 			},
 		},
@@ -199,6 +205,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Sync:               store.DefaultSync,
 				Timeouts:           api.DefaultTimeouts(),
 			},
 		},
@@ -227,6 +234,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Sync:               store.DefaultSync,
 				Timeouts:           api.DefaultTimeouts(),
 			},
 		},
@@ -247,6 +255,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Sync:               store.DefaultSync,
 				Timeouts:           api.DefaultTimeouts(),
 			},
 		},
@@ -268,6 +277,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Sync:               store.DefaultSync,
 				Timeouts:           api.DefaultTimeouts(),
 			},
 		},
@@ -289,6 +299,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    0,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Sync:               store.DefaultSync,
 				Timeouts:           api.DefaultTimeouts(),
 			},
 		},
@@ -304,6 +315,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    48 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Sync:               store.DefaultSync,
 				Timeouts:           api.DefaultTimeouts(),
 			},
 		},
@@ -319,6 +331,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Sync:               store.DefaultSync,
 				Timeouts:           api.DefaultTimeouts(),
 			},
 		},
@@ -364,6 +377,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 0,
+				Sync:               store.DefaultSync,
 				Timeouts:           api.DefaultTimeouts(),
 			},
 		},
@@ -379,6 +393,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 5 * time.Minute,
+				Sync:               store.DefaultSync,
 				Timeouts:           api.DefaultTimeouts(),
 			},
 		},
@@ -394,6 +409,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 24 * time.Hour,
+				Sync:               store.DefaultSync,
 				Timeouts:           api.DefaultTimeouts(),
 			},
 		},
@@ -1037,5 +1053,17 @@ func TestOIDCSourceRegistersBeforeTheReachabilityCheck(t *testing.T) {
 	defer r.Close()
 	if !cfg.Auth.OIDCEnabled() {
 		t.Fatal("the OIDC source was not registered before the check ran")
+	}
+}
+
+func TestLoadConfigSync(t *testing.T) {
+	for raw, want := range map[string]store.SyncMode{"full": store.SyncFull, "NORMAL": store.SyncNormal} {
+		cfg, err := loadWithEnv(t, nil, map[string]string{"DOLMEN_SYNC": raw, "DOLMEN_EMBED_PROVIDER": "none"}, false)
+		if err != nil || cfg.Sync != want {
+			t.Fatalf("DOLMEN_SYNC=%s gave %v, %v", raw, cfg, err)
+		}
+	}
+	if _, err := loadWithEnv(t, []string{"-sync", "off"}, map[string]string{"DOLMEN_EMBED_PROVIDER": "none"}, false); err == nil {
+		t.Fatal("-sync off accepted; only full and normal are durability modes")
 	}
 }

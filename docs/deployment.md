@@ -179,3 +179,21 @@ anything and never overwrites a namespace. The README's
 `subscribe` stays usable, and the change log keeps records for up to twice that. A client that
 reconnects later gets a teaching error and restarts from the head. `0` disables pruning:
 records accumulate and cursors never expire, which costs disk and nothing else.
+
+## Durability
+
+`-sync` (default `full`) sets what an acknowledged write survives. Every namespace runs in WAL
+mode, so a crash never leaves a namespace inconsistent; the setting only decides which of the
+latest commits a crash can take with it.
+
+| Mode | A process crash (kill, panic, OOM) | Power or OS failure |
+|------|------------------------------------|---------------------|
+| `full` | loses nothing acknowledged | loses nothing acknowledged |
+| `normal` | loses nothing acknowledged | may lose the last commits acknowledged before it |
+
+`full` syncs the write-ahead log on every commit; `normal` syncs it only at checkpoints, which
+makes small writes faster. Choose `normal` only where the last moments of writes can be replayed
+from elsewhere. The mode is logged at startup, and a namespace whose writer does not report the
+chosen mode when it opens is refused rather than served with weaker durability. The Go library
+always uses `full`.
+
