@@ -35,7 +35,7 @@ func queryError(ctx context.Context, err error) error {
 	message := "PostgreSQL query failed; check the SQL and parameter types"
 	switch {
 	case pgerr.Code == "57014":
-		code = derr.Canceled
+		code = derr.Timeout
 		message = "PostgreSQL statement timed out; narrow the query or reduce its work"
 	case pgerr.Code == "42501" || pgerr.Code == "28000":
 		code = derr.Forbidden

@@ -150,6 +150,22 @@ mode. They carry no row data: probes, and the documents clients discover the API
 credential, and treating whoever launched the process as an administrator would be a silent
 bypass. Stdio is reachable only by its parent process, so run it with auth off.
 
+## Timeouts
+
+dolmen bounds each connection and each operation, and every bound has a knob: `-read-timeout`,
+`-write-timeout`, `-idle-timeout` and `-op-timeout` default to two minutes, and `-migrate-timeout`
+leaves migrations unbounded. An operation past its bound is stopped, rolled back if it had not
+committed, and answered `504` with code `timeout`. Two interactions with a proxy in front:
+
+- **The proxy's upstream timeout must outlast dolmen's.** Give it at least `-op-timeout` plus a
+  minute, since `wait_for` holds a request for up to 60 seconds on top of the operation bound, and
+  as long as the largest migration you run. Otherwise the proxy answers first, and the client gets
+  a bare gateway error instead of dolmen's teaching one. `subscribe` streams need the proxy's read
+  timeout above the 20-second keepalive.
+- **dolmen's idle timeout must outlast the proxy's.** A load balancer that reuses a keep-alive
+  connection dolmen has just closed turns the next request into a `502`, so set `-idle-timeout`
+  above the balancer's own idle timeout.
+
 ## Backups
 
 Back up with `dolmen backup`, which snapshots every namespace and the grant registry while the

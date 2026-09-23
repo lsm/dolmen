@@ -49,6 +49,7 @@ func (s *Server) handleAuthBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target, err := src.Begin(r.Context(), s.callbackURL(r), peerOf(r))
+	s.ArmResponseWrite(w)
 	if err != nil {
 		s.renderAuthError(w, r, err)
 		return
@@ -79,6 +80,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token, ttl, err := src.Complete(r.Context(), state, code)
+	s.ArmResponseWrite(w)
 	if err != nil {
 		s.renderAuthError(w, r, err)
 		return
