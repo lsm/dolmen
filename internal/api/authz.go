@@ -107,15 +107,6 @@ func forbidden403() error {
 
 const forbiddenMessage = "the caller holds no grant permitting this operation on this object; an administrator grants access with the grant op, and whoami reports the principal and groups this request authenticated as"
 
-var readDependentMigrations = map[string]struct{}{
-	"set_enum":       {},
-	"set_vectorize":  {},
-	"add_field":      {},
-	"drop_field":     {},
-	"set_fulltext":   {},
-	"set_row_access": {},
-}
-
 func parseAuthTarget(body []byte) authTarget {
 	var t authTarget
 	if len(body) == 0 {
@@ -177,7 +168,7 @@ func (s *Server) authorizeOp(ctx context.Context, op string, body []byte) error 
 		return forbidden403()
 	}
 	if op == "migrate" {
-		if migrationReadsRows(target) && !held.Has(auth.VerbRead) {
+		if migrationReadsRows(body) && !held.Has(auth.VerbRead) {
 			return derr.New(derr.Forbidden, "this migration's outcome depends on the table's existing rows, so it requires the read verb in addition to schema; without it a schema-only caller could learn about rows they cannot see")
 		}
 		if disablesRowAccess(target) && !held.Has(auth.VerbAdmin) {
@@ -187,9 +178,13 @@ func (s *Server) authorizeOp(ctx context.Context, op string, body []byte) error 
 	return nil
 }
 
-func migrationReadsRows(t authTarget) bool {
-	for _, c := range t.Changes {
-		if _, ok := readDependentMigrations[c.Op]; ok {
+func migrationReadsRows(body []byte) bool {
+	var req migrateReq
+	if err := decode(body, &req); err != nil {
+		return true
+	}
+	for _, c := range req.Changes {
+		if c.ReadsRows() {
 			return true
 		}
 	}

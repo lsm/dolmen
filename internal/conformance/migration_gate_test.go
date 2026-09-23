@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -46,6 +47,9 @@ var dataDependentMigrations = []struct {
 	{name: "set_fulltext enabling", changes: `[{"op":"set_fulltext","name":"body","value":true}]`},
 	{name: "add_field with a backfill default", changes: `[{"op":"add_field","field":{"name":"tag","type":"string"},"default":"none"}]`},
 	{name: "add_field of a required field", changes: `[{"op":"add_field","field":{"name":"owner_ref","type":"string","required":true},"default":"none"}]`},
+	{name: "add_field of a required field with no default", changes: `[{"op":"add_field","field":{"name":"must","type":"string","required":true}}]`, noRows: true},
+	{name: "add_field of a full-text field", changes: `[{"op":"add_field","field":{"name":"summary","type":"text","fulltext":true}}]`},
+	{name: "add_field of a vectorized field", changes: `[{"op":"add_field","field":{"name":"gist","type":"text","vectorize":true}}]`},
 	{name: "drop_field", changes: `[{"op":"drop_field","name":"scratch"}]`},
 	{name: "set_row_access enabling", changes: `[{"op":"set_row_access","value":true}]`, noRows: true},
 }
@@ -128,27 +132,69 @@ func TestADeniedMigrationNeverReachesTheEmbeddingProvider(t *testing.T) {
 	}
 }
 
-var specUngatedMigrations = []struct {
+var dataIndependentMigrations = []struct {
 	name    string
 	changes string
 }{
 	{"add_field of a nullable field with no backfill", `[{"op":"add_field","field":{"name":"tag","type":"string"}}]`},
 	{"add_field of a vector field with no backfill", `[{"op":"add_field","field":{"name":"v","type":"vector","dim":4}}]`},
+	{"add_field of an enum field with no backfill", `[{"op":"add_field","field":{"name":"stage","type":"string","enum":["a","b"]}}]`},
 }
 
-func TestTheGateIsStricterThanTheSpecForABackfillFreeAddField(t *testing.T) {
-	for _, tc := range specUngatedMigrations {
+func TestADataIndependentMigrationNeedsOnlySchema(t *testing.T) {
+	for _, tc := range dataIndependentMigrations {
 		t.Run(tc.name, func(t *testing.T) {
 			h := seedGatedTable(t)
 			grantTo(t, h, "principal", "dave", "acme", "notes", "schema")
-			status, out := migrateAs(t, h, "dave", tc.changes)
-			if status != http.StatusForbidden {
-				t.Fatalf("this migration is no longer refused to a schema-only caller (status %d), so the gate now matches identity-and-engines.md line 547: delete this test and fold the case into TestEveryDataDependentMigrationNeedsTableWideRead's counterpart", status)
+			res, out := h.asIdentity(t, "dave", "", "migrate",
+				`{"namespace":"acme","table":"notes","changes":`+tc.changes+`,"dry_run":true}`)
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("a schema-only caller's dry run: status %d %v; the spec leaves this migration on the schema verb alone, because nothing it plans or applies touches a row", res.StatusCode, out)
 			}
-			body := mustJSON(t, out)
-			if !strings.Contains(body, "depends on the table's existing rows") {
-				t.Fatalf("refused for some other reason than the data-dependent gate, so this test is not recording what it claims: %s", body)
+			if status, out := migrateAs(t, h, "dave", tc.changes); status != http.StatusOK {
+				t.Fatalf("a schema-only caller's apply: status %d %v", status, out)
 			}
 		})
+	}
+}
+
+func schemaOnlyDryRun(t *testing.T, withRows bool, changes string) string {
+	t.Helper()
+	h := seedGatedTableWithRows(t, withRows)
+	grantTo(t, h, "principal", "dave", "acme", "notes", "schema")
+	res, out := h.asIdentity(t, "dave", "", "migrate",
+		`{"namespace":"acme","table":"notes","changes":`+changes+`,"expected_version":1,"dry_run":true}`)
+	if errEnv, _ := out["error"].(map[string]any); errEnv != nil {
+		delete(errEnv, "request_id")
+	}
+	if data, _ := out["data"].(map[string]any); data != nil {
+		if plan, _ := data["plan"].(map[string]any); plan != nil {
+			delete(plan, "expected_incarnation")
+		}
+	}
+	return fmt.Sprintf("%d %s", res.StatusCode, mustJSON(t, out))
+}
+
+func TestASchemaOnlyCallerCannotTellAnEmptyTableFromAPopulatedOne(t *testing.T) {
+	var corpus []string
+	for _, tc := range dataDependentMigrations {
+		corpus = append(corpus, tc.changes)
+	}
+	for _, tc := range dataIndependentMigrations {
+		corpus = append(corpus, tc.changes)
+	}
+	corpus = append(corpus, `[{"op":"rename_field","from":"scratch","to":"notes_scratch"}]`)
+	allowed := 0
+	for _, changes := range corpus {
+		empty, populated := schemaOnlyDryRun(t, false, changes), schemaOnlyDryRun(t, true, changes)
+		if empty != populated {
+			t.Errorf("%s: a schema-only caller sees\n  %s\non an empty table and\n  %s\non a populated one, so the answer discloses rows they may not read", changes, empty, populated)
+		}
+		if strings.HasPrefix(empty, "200 ") {
+			allowed++
+		}
+	}
+	if allowed == 0 {
+		t.Fatal("no migration in the corpus was allowed to a schema-only caller, so every comparison above was between two refusals and proves nothing about the ones the gate lets through")
 	}
 }
