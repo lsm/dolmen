@@ -32,6 +32,21 @@ how it is read: a `dlm_` prefix is an API key, a signed-token shape is a sign-in
 else is compared against the admin key. A bearer that fails the reading its shape selects is `401`;
 it is never retried as something weaker.
 
+## TLS
+
+dolmen serves plain HTTP and never terminates TLS itself. The admin key, API keys and sign-in tokens
+are all bearers: whoever reads one off the wire acts as its principal for as long as it stays
+valid, and the sign-in page hands its token to the browser in the response body. Terminate TLS in
+front of dolmen, at the gateway in the gateway tier or at a reverse proxy or load balancer in the
+native tier. Keep the hop from there to dolmen on a private network, because it carries those
+credentials in the clear, and in the gateway tier the identity headers that dolmen trusts by peer
+address alone.
+
+Behind a proxy, the URLs dolmen advertises, the sign-in callback among them, take their scheme from
+`X-Forwarded-Proto` or `Forwarded`. When the proxy sends neither, set `-base-url` to the `https`
+URL; [Reverse proxy / sub-path hosting](../README.md#reverse-proxy--sub-path-hosting) has the
+details.
+
 ## First start and hand-over
 
 Every deployment starts the same way:
