@@ -255,7 +255,7 @@ func fetchByIDsScoped(ctx context.Context, db dbQueryer, table string, ids []int
 		fmt.Sprintf(`WITH _ranked(pos, id) AS (VALUES %s) SELECT t.* FROM _ranked JOIN %s t ON t.id = _ranked.id ORDER BY _ranked.pos`,
 			strings.Join(values, ", "), source), args...)
 	if err != nil {
-		return nil, false, err
+		return nil, false, storedTooBig(err)
 	}
 	defer rows.Close()
 	cols, err := rows.Columns()
@@ -319,7 +319,7 @@ scan:
 		byID[id] = m
 	}
 	if err := rows.Err(); err != nil {
-		return nil, false, err
+		return nil, false, storedTooBig(err)
 	}
 	out := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
@@ -455,4 +455,11 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 
 	s.notifyCommitted(nsName, table, changes)
 	return DeleteResult{Matched: matched, Deleted: deleted, Changes: changes}, nil
+}
+
+func storedTooBig(err error) error {
+	if tooBigRe.MatchString(err.Error()) {
+		return invalidf("a matching row holds a value larger than the %d MiB response budget", MaxQueryBytes>>20)
+	}
+	return err
 }

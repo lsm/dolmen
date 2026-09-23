@@ -123,7 +123,7 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq Vecto
 		hits = append(hits, hit{id: id, score: score})
 	}
 	if err := rows.Err(); err != nil {
-		return SearchResult{}, err
+		return SearchResult{}, NewFilterError(filter, err)
 	}
 
 	sort.SliceStable(hits, func(i, j int) bool {

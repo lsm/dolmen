@@ -15,7 +15,8 @@ func beginCallerTx(ctx context.Context, db *sql.DB, opts *sql.TxOptions) (*sql.T
 	if err != nil {
 		return nil, nil, err
 	}
-	if _, err := sqlite.Limit(c, sqlite3.SQLITE_LIMIT_LENGTH, MaxValueBytes); err != nil {
+	prev, err := sqlite.Limit(c, sqlite3.SQLITE_LIMIT_LENGTH, MaxValueBytes)
+	if err != nil {
 		c.Close()
 		return nil, nil, err
 	}
@@ -26,6 +27,7 @@ func beginCallerTx(ctx context.Context, db *sql.DB, opts *sql.TxOptions) (*sql.T
 	}
 	return tx, func() {
 		tx.Rollback()
+		sqlite.Limit(c, sqlite3.SQLITE_LIMIT_LENGTH, prev)
 		c.Close()
 	}, nil
 }
