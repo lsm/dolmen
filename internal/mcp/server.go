@@ -19,12 +19,13 @@ import (
 )
 
 const (
-	protocolVersion     = "2025-06-18"
-	serverName          = "dolmen"
-	jsonRPCParseError   = -32700
-	jsonRPCMethodError  = -32601
-	jsonRPCInvalidReq   = -32600
-	jsonRPCInvalidParam = -32602
+	protocolVersion      = "2025-06-18"
+	serverName           = "dolmen"
+	jsonRPCParseError    = -32700
+	jsonRPCMethodError   = -32601
+	jsonRPCInvalidReq    = -32600
+	jsonRPCInvalidParam  = -32602
+	jsonRPCInternalError = -32603
 )
 
 type Server struct {
@@ -189,12 +190,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	instr := skill.MCPInstructions(s.api.PublicContext(r))
 	result, rpcErr := s.handle(r.Context(), msg, instr)
-	s.api.ArmResponseWrite(w)
 	if rpcErr != nil {
+		s.api.ArmResponseWrite(w)
 		writeRPCError(w, msg.ID, rpcErr.Code, rpcErr.Message)
 		return
 	}
-	writeRPCResult(w, msg.ID, result)
+	payload, err := api.EncodeJSON(rpcResultEnvelope(msg.ID, result))
+	s.api.ArmResponseWrite(w)
+	if err != nil {
+		writeRPCError(w, msg.ID, jsonRPCInternalError, "internal error")
+		return
+	}
+	api.WriteJSONPayload(w, http.StatusOK, payload)
 }
 
 type rpcErr struct {
@@ -470,14 +477,6 @@ func rpcErrorEnvelope(id json.RawMessage, code int, message string) map[string]a
 		"id":      id,
 		"error":   map[string]any{"code": code, "message": message},
 	}
-}
-
-func writeRPCResult(w http.ResponseWriter, id json.RawMessage, result any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(rpcResultEnvelope(id, result))
 }
 
 func writeRPCError(w http.ResponseWriter, id json.RawMessage, code int, message string) {

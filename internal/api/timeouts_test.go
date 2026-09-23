@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -64,5 +66,43 @@ func TestACallersOwnDeadlineIsNotBlamedOnTheOperationLimit(t *testing.T) {
 	_, err = srv.Dispatch(context.Background(), "wait_for", []byte(`{"namespace":"cancelns","table":"t","timeout_ms":0}`))
 	if err != nil {
 		t.Fatalf("an immediate wait finishes inside any limit: %v", err)
+	}
+}
+
+type slowJSON time.Duration
+
+func (d slowJSON) MarshalJSON() ([]byte, error) {
+	time.Sleep(time.Duration(d))
+	return []byte(`"encoded"`), nil
+}
+
+func withSlowEncodingOp(t *testing.T, name string, d time.Duration) {
+	t.Helper()
+	Ops[name] = OpDef{
+		InputSchema:  map[string]any{"type": "object"},
+		OutputSchema: map[string]any{"type": "object"},
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			return map[string]any{"v": slowJSON(d)}, nil
+		},
+	}
+	t.Cleanup(func() { delete(Ops, name) })
+}
+
+func TestAResponseSlowerToEncodeThanTheWriteLimitStillArrives(t *testing.T) {
+	withSlowEncodingOp(t, "zz_slow_encode", 400*time.Millisecond)
+	s := New(nil, nil, WithTimeouts(Timeouts{Write: 150 * time.Millisecond}))
+	srv := httptest.NewUnstartedServer(s.Handler())
+	s.timeouts.Configure(srv.Config)
+	srv.Start()
+	defer srv.Close()
+
+	res, err := http.Post(srv.URL+"/v1/zz_slow_encode", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("the response was lost: the write limit must start when the first byte is written, not before the response is encoded: %v", err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || !strings.Contains(string(body), `"encoded"`) {
+		t.Fatalf("status %d: %s", res.StatusCode, body)
 	}
 }

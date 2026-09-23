@@ -601,13 +601,19 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		res, err := s.Dispatch(r.Context(), op, body)
-		s.ArmResponseWrite(w)
 		if err != nil {
 			slog.Debug("op failed", WithPrincipal(r, "op", op, "err", err)...)
+			s.ArmResponseWrite(w)
 			writeError(w, r, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": res})
+		payload, err := EncodeJSON(map[string]any{"ok": true, "data": res})
+		s.ArmResponseWrite(w)
+		if err != nil {
+			writeError(w, r, internal(err))
+			return
+		}
+		WriteJSONPayload(w, http.StatusOK, payload)
 	})
 	return mux
 }
@@ -749,6 +755,22 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	writeJSONStatus(w, status, v)
+}
+
+func EncodeJSON(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func WriteJSONPayload(w http.ResponseWriter, status int, payload []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(payload)
 }
 
 func writeJSONStatus(w http.ResponseWriter, status int, v any) {
