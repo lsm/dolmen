@@ -326,6 +326,7 @@ locked-out server.
   `changes_since`, `wait_for`, `list_migrations`, `subscribe`, and `drop_table`. A mistyped
   namespace therefore costs an error, never a stray database file.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
+- `truncated: true` means the response left results out. On `query`, `search_fulltext` and `search_vector`, more exist beyond the page, cut either by `limit` (1,000 rows by default and at most on `query`; 10 by default and 200 at most on the searches) or by the 32 MiB response budget, so fetch the next page with `offset`. On `read_rows` only the budget cuts, so retry with fewer ids.
 - `read_rows` is the by-id fetch: pass `"ids": [...]` (the ids a write returned, a query projected,
   or a feed carried), get the full rows back — each found row once, in ascending id order, typed
   like every other read. Missing ids are simply absent (`row_count` counts what came back), never
