@@ -280,8 +280,23 @@ func TestAHeaderBlockOverTheLimitIsRefused(t *testing.T) {
 	}
 }
 
-func TestASubscriptionOutlivesTheWriteLimit(t *testing.T) {
-	h := newHarnessTimeouts(t, api.Timeouts{Write: 200 * time.Millisecond})
+func TestAnOperationOutlivesTheReadLimit(t *testing.T) {
+	h := newHarnessTimeouts(t, api.Timeouts{Read: 200 * time.Millisecond})
+	h.seedTable("slowread", "t", []map[string]any{{"name": "body", "type": "text"}})
+	status, out, took := postWithin(t, h.httpURL+"/wait_for", map[string]any{"namespace": "slowread", "table": "t", "timeout_ms": 700}, 20*time.Second)
+	if status != http.StatusOK || out["ok"] != true {
+		t.Fatalf("the read limit bounds reading the request, not the work after it: status %d %v", status, out)
+	}
+	if took < 600*time.Millisecond {
+		t.Fatalf("the wait returned after %s, before its own timeout_ms, so it proves nothing about the read limit", took)
+	}
+	if res := h.mcpCall("wait_for", map[string]any{"namespace": "slowread", "table": "t", "timeout_ms": 700}); res.isError() || res.proto != nil {
+		t.Fatalf("the same wait over MCP must end as an empty page, got %+v", res)
+	}
+}
+
+func TestASubscriptionOutlivesTheReadAndWriteLimits(t *testing.T) {
+	h := newHarnessTimeouts(t, api.Timeouts{Read: 200 * time.Millisecond, Write: 200 * time.Millisecond})
 	h.seedTable("live", "t", []map[string]any{{"name": "body", "type": "text"}})
 	req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/v1/subscribe?namespace=live&table=t", nil)
 	if err != nil {
