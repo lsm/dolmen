@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lsm/dolmen/internal/api"
+	"github.com/lsm/dolmen/internal/store"
 )
 
 const endlessQuery = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT count(*) FROM c"
@@ -205,21 +206,29 @@ func TestASlowBodyAnswersTimeoutWith408(t *testing.T) {
 func TestAResponseIsCutOffWhenItsReaderStalls(t *testing.T) {
 	h := newHarnessTimeouts(t, api.Timeouts{Write: 300 * time.Millisecond})
 	h.ensureNS("big")
-	const payload = 12 << 20
+	const payload = 24 << 20
+	sql := fmt.Sprintf("SELECT hex(zeroblob(%d)) AS b", payload/2)
+	if testEngine(t) == store.EnginePostgres {
+		sql = fmt.Sprintf("SELECT repeat('0', %d) AS b", payload)
+	}
 	conn := dialServer(t, h)
 	if tcp, ok := conn.(*net.TCPConn); ok {
 		_ = tcp.SetReadBuffer(16 << 10)
 	}
-	body := fmt.Sprintf(`{"namespace":"big","sql":"SELECT hex(zeroblob(%d)) AS b"}`, payload)
-	fmt.Fprintf(conn, "POST /v1/query HTTP/1.1\r\nHost: dolmen\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
+	body := fmt.Sprintf(`{"namespace":"big","sql":%q}`, sql)
+	fmt.Fprintf(conn, "POST /v1/query HTTP/1.1\r\nHost: dolmen\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
 
 	time.Sleep(2 * time.Second)
 	_ = conn.SetReadDeadline(time.Now().Add(20 * time.Second))
+	head := make([]byte, len("HTTP/1.1 200"))
+	if _, err := io.ReadFull(conn, head); err != nil || string(head) != "HTTP/1.1 200" {
+		t.Fatalf("the query must start a successful response for this to test anything, got %q: %v", head, err)
+	}
 	got, err := io.Copy(io.Discard, conn)
 	if errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("the server kept the stalled connection open after %d bytes; it must give up at the write limit", got)
 	}
-	if got >= 2*payload {
+	if got >= payload {
 		t.Fatalf("the whole %d-byte response arrived although its reader stalled past the 300ms write limit", got)
 	}
 }
