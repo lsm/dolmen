@@ -82,7 +82,7 @@ func registryDSN(path string) string {
 	q.Add("_pragma", "busy_timeout(10000)")
 	q.Add("mode", "rwc")
 	q.Add("_pragma", "journal_mode(WAL)")
-	q.Add("_pragma", "synchronous(NORMAL)")
+	q.Add("_pragma", "synchronous(FULL)")
 	q.Add("_txlock", "immediate")
 	u.RawQuery = q.Encode()
 	return u.String()
