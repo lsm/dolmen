@@ -76,6 +76,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Timeouts:           api.DefaultTimeouts(),
 				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
@@ -91,6 +92,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Timeouts:           api.DefaultTimeouts(),
 				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
@@ -107,6 +109,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Timeouts:           api.DefaultTimeouts(),
 				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
@@ -123,6 +126,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Timeouts:           api.DefaultTimeouts(),
 				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
@@ -159,6 +163,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Timeouts:           api.DefaultTimeouts(),
 				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
@@ -176,6 +181,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Timeouts:           api.DefaultTimeouts(),
 				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
@@ -199,6 +205,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Timeouts:           api.DefaultTimeouts(),
 				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
@@ -227,6 +234,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Timeouts:           api.DefaultTimeouts(),
 				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
@@ -247,6 +255,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Timeouts:           api.DefaultTimeouts(),
 				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
@@ -268,6 +277,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Timeouts:           api.DefaultTimeouts(),
 				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
@@ -289,6 +299,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    0,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Timeouts:           api.DefaultTimeouts(),
 				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
@@ -304,6 +315,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    48 * time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Timeouts:           api.DefaultTimeouts(),
 				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
@@ -319,6 +331,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    time.Hour,
 				MaxSubscriptionAge: 30 * time.Minute,
+				Timeouts:           api.DefaultTimeouts(),
 				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
@@ -364,6 +377,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 0,
+				Timeouts:           api.DefaultTimeouts(),
 				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
@@ -379,6 +393,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 5 * time.Minute,
+				Timeouts:           api.DefaultTimeouts(),
 				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
@@ -394,6 +409,7 @@ func TestLoadConfig(t *testing.T) {
 				SkillNamespaceHint: skill.DefaultNamespaceHint,
 				ChangeRetention:    168 * time.Hour,
 				MaxSubscriptionAge: 24 * time.Hour,
+				Timeouts:           api.DefaultTimeouts(),
 				MaxOpenNamespaces:  store.DefaultMaxOpenNamespaces,
 			},
 		},
@@ -734,6 +750,89 @@ func TestLoadConfigStdioSkipsSubscriptionAgeValidation(t *testing.T) {
 		func(k string) (string, bool) { v, ok := env[k]; return v, ok }, io.Discard, false)
 	if err == nil {
 		t.Fatal("the serve mode must still reject an out-of-range max subscription age")
+	}
+}
+
+func TestLoadConfigTimeouts(t *testing.T) {
+	base := map[string]string{"DOLMEN_EMBED_PROVIDER": "none"}
+	with := func(extra map[string]string) map[string]string {
+		env := map[string]string{}
+		for k, v := range base {
+			env[k] = v
+		}
+		for k, v := range extra {
+			env[k] = v
+		}
+		return env
+	}
+	cases := []struct {
+		name    string
+		args    []string
+		env     map[string]string
+		stdio   bool
+		want    api.Timeouts
+		wantErr string
+	}{
+		{name: "defaults", env: base, want: api.DefaultTimeouts()},
+		{
+			name: "flags",
+			args: []string{"-read-timeout", "30s", "-write-timeout", "45s", "-idle-timeout", "5m", "-max-header-bytes", "65536", "-op-timeout", "10s", "-migrate-timeout", "1h"},
+			env:  base,
+			want: api.Timeouts{Read: 30 * time.Second, Write: 45 * time.Second, Idle: 5 * time.Minute, MaxHeaderBytes: 65536, Op: 10 * time.Second, Migrate: time.Hour},
+		},
+		{
+			name: "environment",
+			env: with(map[string]string{
+				"DOLMEN_READ_TIMEOUT": "1m", "DOLMEN_WRITE_TIMEOUT": "90s", "DOLMEN_IDLE_TIMEOUT": "10s",
+				"DOLMEN_MAX_HEADER_BYTES": "8192", "DOLMEN_OP_TIMEOUT": "3m", "DOLMEN_MIGRATE_TIMEOUT": "2h",
+			}),
+			want: api.Timeouts{Read: time.Minute, Write: 90 * time.Second, Idle: 10 * time.Second, MaxHeaderBytes: 8192, Op: 3 * time.Minute, Migrate: 2 * time.Hour},
+		},
+		{
+			name: "flags override the environment",
+			args: []string{"-op-timeout", "5s"},
+			env:  with(map[string]string{"DOLMEN_OP_TIMEOUT": "3m"}),
+			want: api.Timeouts{Read: api.DefaultReadTimeout, Write: api.DefaultWriteTimeout, Idle: api.DefaultIdleTimeout, MaxHeaderBytes: api.DefaultMaxHeaderBytes, Op: 5 * time.Second},
+		},
+		{
+			name: "zero disables every bound",
+			args: []string{"-read-timeout", "0", "-write-timeout", "0", "-idle-timeout", "0", "-op-timeout", "0"},
+			env:  base,
+			want: api.Timeouts{MaxHeaderBytes: api.DefaultMaxHeaderBytes},
+		},
+		{name: "a bound under a second", args: []string{"-op-timeout", "500ms"}, env: base, wantErr: `invalid op timeout "500ms": must be 0 (no bound) or between 1s and 24h`},
+		{name: "a bound over a day", args: []string{"-read-timeout", "25h"}, env: base, wantErr: `invalid read timeout "25h": must be 0 (no bound) or between 1s and 24h`},
+		{name: "a negative bound", args: []string{"-idle-timeout", "-1s"}, env: base, wantErr: `invalid idle timeout "-1s"`},
+		{name: "an unparseable bound", env: with(map[string]string{"DOLMEN_WRITE_TIMEOUT": "soon"}), wantErr: `invalid write timeout "soon"`},
+		{name: "an unparseable migrate bound", env: with(map[string]string{"DOLMEN_MIGRATE_TIMEOUT": "later"}), wantErr: `invalid migrate timeout "later"`},
+		{name: "a header limit too small", args: []string{"-max-header-bytes", "1024"}, env: base, wantErr: "invalid max header bytes 1024: must be between 4096 and 16777216"},
+		{name: "a header limit too large", args: []string{"-max-header-bytes", "33554432"}, env: base, wantErr: "invalid max header bytes 33554432"},
+		{name: "an unparseable header limit", env: with(map[string]string{"DOLMEN_MAX_HEADER_BYTES": "lots"}), wantErr: `invalid DOLMEN_MAX_HEADER_BYTES "lots"`},
+		{
+			name:  "stdio reads only the operation bounds",
+			args:  []string{"-read-timeout", "5ms", "-max-header-bytes", "1", "-op-timeout", "7s"},
+			env:   base,
+			stdio: true,
+			want:  api.Timeouts{Op: 7 * time.Second},
+		},
+		{name: "stdio still checks the operation bounds", args: []string{"-migrate-timeout", "5ms"}, env: base, stdio: true, wantErr: `invalid migrate timeout "5ms"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := loadWithEnv(t, tc.args, tc.env, tc.stdio)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("got %v, want an error containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Timeouts != tc.want {
+				t.Fatalf("got %+v, want %+v", cfg.Timeouts, tc.want)
+			}
+		})
 	}
 }
 

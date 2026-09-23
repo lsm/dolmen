@@ -61,5 +61,8 @@ func Classify(err error) derr.Code {
 	if errors.Is(err, context.Canceled) {
 		return derr.Canceled
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return derr.Timeout
+	}
 	return derr.Internal
 }

@@ -233,8 +233,8 @@ func TestEmbedderPreservesCancellation(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("deadline must survive the provider boundary, got %v", err)
 	}
-	if Classify(err) != derr.Internal {
-		t.Fatalf("a provider-honored deadline keeps the wire classification, got %s", Classify(err))
+	if Classify(err) != derr.Timeout {
+		t.Fatalf("a provider-honored deadline must classify timeout, got %s", Classify(err))
 	}
 	emb = Embedder(failingProvider{err: errors.New("upstream 429")})
 	_, err = emb.Embed(context.Background(), []string{"a"})
