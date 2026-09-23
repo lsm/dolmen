@@ -43,11 +43,26 @@ var changesOutSchema = objectSchema(false, map[string]any{
 	"next_cursor": stringProp(""),
 }, []string{"changes", "next_cursor"})
 
+var inferEvidenceSchema = map[string]any{
+	"type":        "object",
+	"description": "Map from inferred field name to what the samples showed: how many carried the field, how many of those as null, and which JSON types appeared",
+	"additionalProperties": objectSchema(false, map[string]any{
+		"present": integer(0),
+		"nulls":   integer(0),
+		"types":   arrayOf(map[string]any{"type": "string", "enum": []string{"array", "boolean", "number", "object", "string"}}),
+	}, []string{"present", "nulls", "types"}),
+}
+
 var outputSchemas = map[string]map[string]any{
-	"list_tables":     objectSchema(false, map[string]any{"tables": arrayOf(map[string]any{"type": "string"})}, []string{"tables"}),
-	"describe_table":  objectSchema(false, map[string]any{"table": ref("TableSchema"), "row_count": integer(0)}, []string{"table", "row_count"}),
-	"create_table":    objectSchema(false, map[string]any{"table": ref("TableSchema")}, []string{"table"}),
-	"infer_schema":    objectSchema(false, map[string]any{"fields": arrayOf(ref("Field"))}, []string{"fields"}),
+	"list_tables":    objectSchema(false, map[string]any{"tables": arrayOf(map[string]any{"type": "string"})}, []string{"tables"}),
+	"describe_table": objectSchema(false, map[string]any{"table": ref("TableSchema"), "row_count": integer(0)}, []string{"table", "row_count"}),
+	"create_table":   objectSchema(false, map[string]any{"table": ref("TableSchema")}, []string{"table"}),
+	"infer_schema": objectSchema(false, map[string]any{
+		"fields":     arrayOf(ref("Field")),
+		"warnings":   arrayOf(map[string]any{"type": "string"}),
+		"provenance": map[string]any{"type": "object", "additionalProperties": arrayOf(map[string]any{"type": "string"})},
+		"evidence":   inferEvidenceSchema,
+	}, []string{"fields", "warnings", "provenance", "evidence"}),
 	"insert":          objectSchema(false, map[string]any{"ids": arrayOf(integer(1)), "inserted": integer(0), "replayed": propBool()}, []string{"ids", "inserted"}),
 	"upsert_by_key":   writeDataSchema,
 	"query":           objectSchema(false, map[string]any{"rows": arrayOf(ref("Row")), "row_count": integer(0), "truncated": propBool()}, []string{"rows", "row_count", "truncated"}),

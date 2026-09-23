@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -665,6 +666,121 @@ func TestAChangeReadsRowsExactlyWhenItsOutcomeDependsOnThem(t *testing.T) {
 	} {
 		if got := tc.change.ReadsRows(); got != tc.want {
 			t.Errorf("%s: ReadsRows() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func inferByName(r Inference) map[string]Field {
+	out := map[string]Field{}
+	for _, f := range r.Fields {
+		out[f.Name] = f
+	}
+	return out
+}
+
+func TestInferNeverProposesAFieldCreateTableRejects(t *testing.T) {
+	long := strings.Repeat("word ", 60)
+	k64 := strings.Repeat("k", 64)
+	corpus := [][]map[string]any{
+		{{"rank": long}},
+		{{"RANK": long, "rank_": "x"}},
+		{{"id": 1, "created_at": "x", "_embedding": "y", "rowid": 2, "_score": 1, "_rank": 2, "record_id": 3}},
+		{{"select": 1, "select_": 2, "from": 3, "order": "x"}},
+		{{"": 1, "-": 2, "1": 3, "x": 4, "x_": 5, "x1": 6}},
+		{{"a.b": 1, "a_b": 2, "A-B": 3, "a_b_2": 4}},
+		{{strings.Repeat("k", 70): 1, k64 + "zz": 2, k64: 3}},
+		{{"Name": "a"}, {"name": "b", "NAME": "c"}},
+		{{"__fts": 1, "x__fts": 2}},
+	}
+	for _, samples := range corpus {
+		r := InferSchema(samples)
+		if err := Validate(r.Fields); err != nil {
+			t.Errorf("%v: create_table would reject the proposal %+v: %v", samples, r.Fields, err)
+		}
+		seen := map[string]bool{}
+		for _, raws := range r.Provenance {
+			for _, raw := range raws {
+				if seen[raw] {
+					t.Errorf("%v: key %q feeds two fields", samples, raw)
+				}
+				seen[raw] = true
+			}
+		}
+		for _, s := range samples {
+			for raw := range s {
+				if !seen[raw] {
+					t.Errorf("%v: key %q was dropped from the proposal", samples, raw)
+				}
+			}
+		}
+		if len(r.Evidence) != len(r.Fields) {
+			t.Errorf("%v: evidence for %d fields, want %d", samples, len(r.Evidence), len(r.Fields))
+		}
+	}
+}
+
+func TestInferKeysCarriedTogetherKeepTheirOwnFields(t *testing.T) {
+	r := InferSchema([]map[string]any{{"a.b": 1, "a_b": "x", "A-B": true}})
+	by := inferByName(r)
+	if len(by) != 3 || by["a_b"].Type != String || by["a_b_2"].Type != Boolean || by["a_b_3"].Type != Number {
+		t.Fatalf("three keys carried by one record must stay three fields, the natural name kept by the key that already had it: %+v", r.Fields)
+	}
+	if got := r.Provenance["a_b_2"]; len(got) != 1 || got[0] != "A-B" {
+		t.Fatalf("provenance for a_b_2: %v", got)
+	}
+	if len(r.Warnings) != 1 || !strings.Contains(r.Warnings[0], `"A-B" as "a_b_2"`) || !strings.Contains(r.Warnings[0], `"a.b" as "a_b_3"`) {
+		t.Fatalf("one warning must name every key's field: %v", r.Warnings)
+	}
+}
+
+func TestInferGeneratedNamesNeverTakeANaturalOne(t *testing.T) {
+	r := InferSchema([]map[string]any{{"a_b": 1, "A-B": 2, "a_b_2": 3}})
+	if got := r.Provenance["a_b_2"]; len(got) != 1 || got[0] != "a_b_2" {
+		t.Fatalf("the key already named a_b_2 must keep that name, got %v", r.Provenance)
+	}
+	if got := r.Provenance["a_b_3"]; len(got) != 1 || got[0] != "A-B" {
+		t.Fatalf("the colliding key must take the next free name, got %v", r.Provenance)
+	}
+}
+
+func TestInferAFullTextRankIsRenamed(t *testing.T) {
+	r := InferSchema([]map[string]any{{"rank": strings.Repeat("word ", 60)}})
+	by := inferByName(r)
+	if f, ok := by["rank_"]; !ok || !f.Fulltext {
+		t.Fatalf("a full-text field named rank must be renamed, got %+v", r.Fields)
+	}
+	if len(r.Warnings) != 1 || !strings.Contains(r.Warnings[0], "FTS5") {
+		t.Fatalf("the rename must say why: %v", r.Warnings)
+	}
+	if by := inferByName(InferSchema([]map[string]any{{"rank": 3}})); by["rank"].Type != Number {
+		t.Fatalf("a rank that is not full-text keeps its name, got %+v", by)
+	}
+}
+
+func TestInferEvidenceCountsPresenceNullsAndTypes(t *testing.T) {
+	r := InferSchema([]map[string]any{{"x": 1}, {"x": nil}, {"x": "s"}, {"y": true}, {"Y": false}})
+	if got := r.Evidence["x"]; got.Present != 3 || got.Nulls != 1 || strings.Join(got.Types, ",") != "number,string" {
+		t.Fatalf("evidence for x: %+v", got)
+	}
+	if got := r.Evidence["y"]; got.Present != 2 || got.Nulls != 0 || strings.Join(got.Types, ",") != "boolean" {
+		t.Fatalf("evidence for a merged field must count both keys: %+v", got)
+	}
+}
+
+func TestInferIsIndependentOfSampleOrder(t *testing.T) {
+	samples := []map[string]any{
+		{"a.b": 1, "a_b": "x", "Name": "n", "rank": strings.Repeat("w ", 150)},
+		{"name": "m", "when": "2026-09-23T10:00:00Z", "a_b_2": nil},
+		{"A-B": true, "select": 1},
+	}
+	want := InferSchema(samples)
+	for _, order := range [][]int{{1, 0, 2}, {2, 1, 0}, {2, 0, 1}} {
+		permuted := make([]map[string]any, len(order))
+		for i, j := range order {
+			permuted[i] = samples[j]
+		}
+		if got := InferSchema(permuted); !reflect.DeepEqual(got, want) {
+			t.Fatalf("order %v changed the proposal:\n got %+v\nwant %+v", order, got, want)
 		}
 	}
 }

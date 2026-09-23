@@ -506,107 +506,240 @@ func validRFC3339Offset(s string) bool {
 }
 
 type Inference struct {
-	Fields     []Field             `json:"fields"`
-	Warnings   []string            `json:"warnings"`
-	Provenance map[string][]string `json:"provenance"`
+	Fields     []Field                  `json:"fields"`
+	Warnings   []string                 `json:"warnings"`
+	Provenance map[string][]string      `json:"provenance"`
+	Evidence   map[string]FieldEvidence `json:"evidence"`
+}
+
+type FieldEvidence struct {
+	Present int      `json:"present"`
+	Nulls   int      `json:"nulls"`
+	Types   []string `json:"types"`
+}
+
+type inferredKey struct {
+	kinds   map[string]bool
+	present int
+	nulls   int
+}
+
+type inferUnit struct {
+	base    string
+	desired string
+	raws    []string
+	split   bool
+	natural bool
+	field   Field
 }
 
 func InferSchema(samples []map[string]any) Inference {
-	rawKinds := map[string]map[string]bool{}
+	keys := map[string]*inferredKey{}
 	for _, s := range samples {
 		for k, v := range s {
-			if rawKinds[k] == nil {
-				rawKinds[k] = map[string]bool{}
+			st := keys[k]
+			if st == nil {
+				st = &inferredKey{kinds: map[string]bool{}}
+				keys[k] = st
 			}
+			st.present++
 			if isNilValue(v) {
+				st.nulls++
 				continue
 			}
-			rawKinds[k][goKind(v)] = true
+			st.kinds[jsonKind(goKind(v))] = true
 		}
 	}
 
-	type group struct {
-		raws  []string
-		kinds map[string]bool
-	}
-	groups := map[string]*group{}
-	for raw, ks := range rawKinds {
-		final := cleanName(raw)
-		g, ok := groups[final]
-		if !ok {
-			g = &group{kinds: map[string]bool{}}
-			groups[final] = g
-		}
-		g.raws = append(g.raws, raw)
-		for k := range ks {
-			g.kinds[k] = true
-		}
+	groups := map[string][]string{}
+	for raw := range keys {
+		base := cleanName(raw)
+		groups[base] = append(groups[base], raw)
 	}
 
-	finals := make([]string, 0, len(groups))
-	for f := range groups {
-		finals = append(finals, f)
-	}
-	sort.Strings(finals)
-
-	var result Inference
-	result.Provenance = map[string][]string{}
-	for _, final := range finals {
-		g := groups[final]
-		sort.Strings(g.raws)
-
-		f := Field{Name: final}
-		distinct := 0
-		for _, present := range g.kinds {
-			if present {
-				distinct++
+	var units []*inferUnit
+	for base, raws := range groups {
+		sort.Strings(raws)
+		if len(raws) > 1 && carriedTogether(samples, raws) {
+			for _, raw := range raws {
+				units = append(units, &inferUnit{base: base, raws: []string{raw}, split: true, natural: raw == base})
 			}
+			continue
 		}
-		switch {
-		case distinct > 1:
-			f.Type = JSON
-		case g.kinds["bool"]:
-			f.Type = Boolean
-		case g.kinds["number"]:
-			f.Type = Number
-		case g.kinds["object"] || g.kinds["array"]:
-			f.Type = JSON
-		case g.kinds["string"]:
-			f.Type = String
-			if allStringsMatch(samples, func(k string) bool { return cleanName(k) == final }, LooksLikeTimestamp) {
-				f.Type = Timestamp
-			} else if allStringsMatch(samples, func(k string) bool { return cleanName(k) == final }, func(s string) bool {
-				return len(s) > 200 || strings.ContainsAny(s, "\n")
-			}) {
-				f.Type = Text
-				f.Fulltext = true
-			}
-		default:
-			f.Type = JSON
-		}
+		units = append(units, &inferUnit{base: base, raws: raws, natural: len(raws) == 1 && raws[0] == base})
+	}
 
+	for _, u := range units {
+		u.field = inferField(samples, keys, u.raws)
+		u.desired = u.base
+		if u.field.Fulltext && u.base == "rank" {
+			u.desired = "rank_"
+			u.natural = false
+		}
+	}
+	sort.Slice(units, func(i, j int) bool {
+		a, b := units[i], units[j]
+		if a.desired != b.desired {
+			return a.desired < b.desired
+		}
+		if a.natural != b.natural {
+			return a.natural
+		}
+		return a.raws[0] < b.raws[0]
+	})
+
+	names := make([]string, len(units))
+	taken := map[string]bool{}
+	for i, u := range units {
+		if !taken[u.desired] {
+			taken[u.desired] = true
+			names[i] = u.desired
+		}
+	}
+	for i, u := range units {
+		if names[i] == "" {
+			names[i] = freeName(u.desired, taken)
+			taken[names[i]] = true
+		}
+	}
+
+	result := Inference{Provenance: map[string][]string{}, Evidence: map[string]FieldEvidence{}}
+	splitNamed := map[string][]string{}
+	for i, u := range units {
+		if u.split {
+			splitNamed[u.base] = append(splitNamed[u.base], fmt.Sprintf("%q as %q", u.raws[0], names[i]))
+		}
+	}
+	reported := map[string]bool{}
+	for i, u := range units {
+		name := names[i]
+		f := u.field
+		f.Name = name
 		result.Fields = append(result.Fields, f)
-		result.Provenance[final] = g.raws
+		result.Provenance[name] = u.raws
+		result.Evidence[name] = evidenceFor(keys, u.raws)
 
-		if len(g.raws) > 1 {
+		switch {
+		case u.split:
+			if !reported[u.base] {
+				reported[u.base] = true
+				raws := append([]string(nil), groups[u.base]...)
+				sort.Strings(raws)
+				named := splitNamed[u.base]
+				sort.Strings(named)
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("keys %s all collapse to %q but appear together in a sample, so each keeps a field of its own: %s", quotedList(raws), u.base, strings.Join(named, ", ")))
+			}
+		case len(u.raws) > 1:
 			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("keys %s are variants that collapse to %q; they were merged into field %q", quotedList(g.raws), final, final))
-		} else if g.raws[0] != final {
-			raw := g.raws[0]
+				fmt.Sprintf("keys %s collapse to %q and no sample carries two of them, so they were merged into field %q", quotedList(u.raws), u.base, name))
+		case u.raws[0] != name:
+			raw := u.raws[0]
 			switch {
+			case u.desired == "rank_" && strings.ToLower(raw) == "rank":
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("key %q was renamed to %q: a full-text field cannot be named rank (reserved by the FTS5 index)", raw, name))
 			case reserved[strings.ToLower(raw)]:
 				result.Warnings = append(result.Warnings,
-					fmt.Sprintf("reserved key %q was renamed to %q", raw, final))
+					fmt.Sprintf("reserved key %q was renamed to %q", raw, name))
 			case sqlKeywords[strings.ToLower(raw)]:
 				result.Warnings = append(result.Warnings,
-					fmt.Sprintf("SQL keyword key %q was renamed to %q", raw, final))
+					fmt.Sprintf("SQL keyword key %q was renamed to %q", raw, name))
 			default:
 				result.Warnings = append(result.Warnings,
-					fmt.Sprintf("key %q was sanitized to %q", raw, final))
+					fmt.Sprintf("key %q was sanitized to %q", raw, name))
 			}
 		}
 	}
+	sort.SliceStable(result.Fields, func(i, j int) bool { return result.Fields[i].Name < result.Fields[j].Name })
 	return result
+}
+
+func inferField(samples []map[string]any, keys map[string]*inferredKey, raws []string) Field {
+	member := map[string]bool{}
+	kinds := map[string]bool{}
+	for _, raw := range raws {
+		member[raw] = true
+		for k := range keys[raw].kinds {
+			kinds[k] = true
+		}
+	}
+	matches := func(k string) bool { return member[k] }
+	var f Field
+	switch {
+	case len(kinds) > 1:
+		f.Type = JSON
+	case kinds["boolean"]:
+		f.Type = Boolean
+	case kinds["number"]:
+		f.Type = Number
+	case kinds["string"]:
+		f.Type = String
+		if allStringsMatch(samples, matches, LooksLikeTimestamp) {
+			f.Type = Timestamp
+		} else if allStringsMatch(samples, matches, func(s string) bool {
+			return len(s) > 200 || strings.ContainsAny(s, "\n")
+		}) {
+			f.Type = Text
+			f.Fulltext = true
+		}
+	default:
+		f.Type = JSON
+	}
+	return f
+}
+
+func carriedTogether(samples []map[string]any, raws []string) bool {
+	for _, s := range samples {
+		carried := 0
+		for _, raw := range raws {
+			if _, ok := s[raw]; ok {
+				carried++
+			}
+		}
+		if carried > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func freeName(desired string, taken map[string]bool) string {
+	for n := 2; ; n++ {
+		suffix := fmt.Sprintf("_%d", n)
+		stem := desired
+		if len(stem)+len(suffix) > 64 {
+			stem = stem[:64-len(suffix)]
+		}
+		if candidate := stem + suffix; !taken[candidate] && ValidIdent(candidate) {
+			return candidate
+		}
+	}
+}
+
+func evidenceFor(keys map[string]*inferredKey, raws []string) FieldEvidence {
+	ev := FieldEvidence{Types: []string{}}
+	kinds := map[string]bool{}
+	for _, raw := range raws {
+		st := keys[raw]
+		ev.Present += st.present
+		ev.Nulls += st.nulls
+		for k := range st.kinds {
+			kinds[k] = true
+		}
+	}
+	for k := range kinds {
+		ev.Types = append(ev.Types, k)
+	}
+	sort.Strings(ev.Types)
+	return ev
+}
+
+func jsonKind(kind string) string {
+	if kind == "bool" {
+		return "boolean"
+	}
+	return kind
 }
 
 func InferFields(samples []map[string]any) []Field {

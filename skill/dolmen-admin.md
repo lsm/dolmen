@@ -267,12 +267,15 @@ locked-out server.
    `search_vector` calls and to avoid inventing field names. Avoid calling it before every read or
    write on large tables — it runs a full `count(*)`, so cache the schema for the session.
 3. **Prefer `infer_schema` → review → `create_table`.** Never invent a schema blind when sample
-   records exist. Note: inference proposes plain types only — during review, mark the main text
-   field `vectorize: true` yourself if you want semantic recall (the built-in `local` embedding
-   provider is enabled by default; set `DOLMEN_EMBED_PROVIDER=openai` for an external endpoint, or
-   `none` to disable server-side embeddings; `describe_server` reports which one is active and
-   usable). Keep tables small and purposeful — a sprawl of near-duplicate tables is a
-   failure mode.
+   records exist. Read `warnings` first: a key that was sanitized, renamed, merged or split must be
+   renamed the same way in the records you insert, and `provenance` says which key feeds which
+   field. `evidence` shows how many samples carried each field and how many as null, which is
+   what tells you whether marking it `required` is safe. Note: inference proposes plain types
+   only — during review, mark the main text field `vectorize: true` yourself if you want semantic
+   recall (the built-in `local` embedding provider is enabled by default; set
+   `DOLMEN_EMBED_PROVIDER=openai` for an external endpoint, or `none` to disable server-side
+   embeddings; `describe_server` reports which one is active and usable). Keep tables small and
+   purposeful — a sprawl of near-duplicate tables is a failure mode.
 4. **Record as you go.** After finishing a meaningful unit of work, `insert` a record summarizing it
    (what/where/outcome). Future sessions recall it via search.
 5. **Read with the cheapest tool that answers the question:** `describe_table` → exact lookups via

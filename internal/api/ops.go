@@ -746,6 +746,8 @@ var Ops = map[string]OpDef{
 	},
 	"infer_schema": {
 		Description: "Propose table fields from sample JSON records (types, fulltext and timestamp detection). " +
+			"Field names are always valid for create_table: keys are sanitized, and keys that collapse to the same name are merged only when no sample carries two of them. " +
+			"warnings explains every rename or merge, provenance maps each field to its source keys, and evidence counts how many samples carried each field, how many as null, and which JSON types appeared. " +
 			"Review the proposal, adjust, then call create_table. Nothing is created by this call.",
 		InputSchema: map[string]any{
 			"type":                 "object",
@@ -777,7 +779,8 @@ var Ops = map[string]OpDef{
 				"description":          "Map from inferred field name to the original key(s) that produced it",
 				"additionalProperties": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			},
-		}, "fields", "warnings", "provenance"),
+			"evidence": inferEvidenceSchema,
+		}, "fields", "warnings", "provenance", "evidence"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req inferReq
 			if err := decodeData(body, &req); err != nil {
@@ -804,10 +807,17 @@ var Ops = map[string]OpDef{
 			if inf.Provenance == nil {
 				inf.Provenance = map[string][]string{}
 			}
+			if inf.Evidence == nil {
+				inf.Evidence = map[string]schema.FieldEvidence{}
+			}
+			if len(inf.Fields) > store.MaxFieldsPerTable {
+				inf.Warnings = append(inf.Warnings, fmt.Sprintf("the samples carry %d distinct fields but a table holds at most %d; create_table will refuse this proposal until %d of them are dropped", len(inf.Fields), store.MaxFieldsPerTable, len(inf.Fields)-store.MaxFieldsPerTable))
+			}
 			return map[string]any{
 				"fields":     inf.Fields,
 				"warnings":   inf.Warnings,
 				"provenance": inf.Provenance,
+				"evidence":   inf.Evidence,
 			}, nil
 		},
 	},
