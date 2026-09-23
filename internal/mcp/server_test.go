@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -1548,5 +1549,24 @@ func TestToolErrorEmbedderUnavailable(t *testing.T) {
 	}
 	if reqID, _ := env["request_id"].(string); reqID == "" {
 		t.Fatalf("tool error must carry a request id, got %v", env)
+	}
+}
+
+func TestAnOversizedQueryVectorIsRefusedBeforeMCPDecodesIt(t *testing.T) {
+	srv := New(api.New(nil, nil), nil)
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_vector","arguments":{"namespace":"ns","table":"t","vector":[` + strings.Repeat("0.5,", 2_000_000) + `0.5]}}}`
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.ServeHTTP(rec, req)
+	runtime.ReadMemStats(&after)
+	if !strings.Contains(rec.Body.String(), "vector has more than 4096 numbers") {
+		t.Fatalf("the oversized vector must be refused as a tool error: %s", rec.Body.String()[:min(400, rec.Body.Len())])
+	}
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 96<<20 {
+		t.Fatalf("refusing a 2,000,001-number vector over MCP allocated %d bytes; the message, its params and its arguments must be checked as raw JSON, not expanded into values", grew)
 	}
 }

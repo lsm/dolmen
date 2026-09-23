@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/lsm/dolmen/internal/derr"
+	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -69,6 +70,10 @@ type VectorQuery struct {
 	MinScore *float64
 }
 
+func QueryVectorTooLong() error {
+	return derr.New(derr.InvalidRequest, "vector has more than %d numbers, the most a query vector may carry (the largest dimension a vector field can declare); send a vector of the column's dimension, or search a vectorized field with text instead", schema.MaxVectorDim)
+}
+
 func PrepareVectorQuery(ctx context.Context, eng store.Engine, ns, table string, in VectorQuery, emb EmbeddingProvider, providerHelp string) (store.VectorQuery, error) {
 	if in.Text != "" && len(in.Vec) > 0 {
 		return store.VectorQuery{}, derr.New(derr.InvalidRequest, "pass either text or vector, not both")
@@ -100,6 +105,9 @@ func PrepareVectorQuery(ctx context.Context, eng store.Engine, ns, table string,
 		}
 		vec = qv
 	case len(in.Vec) > 0:
+		if len(in.Vec) > schema.MaxVectorDim {
+			return store.VectorQuery{}, QueryVectorTooLong()
+		}
 		vec = make([]float32, len(in.Vec))
 		for i, x := range in.Vec {
 			if math.IsNaN(x) || math.Abs(x) > math.MaxFloat32 {
