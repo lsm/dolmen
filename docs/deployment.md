@@ -150,6 +150,13 @@ mode. They carry no row data: probes, and the documents clients discover the API
 credential, and treating whoever launched the process as an administrator would be a silent
 bypass. Stdio is reachable only by its parent process, so run it with auth off.
 
+## Backups
+
+Back up with `dolmen backup`, which snapshots every namespace and the grant registry while the
+server keeps serving, and restore with `dolmen restore`, which verifies a backup before it writes
+anything and never overwrites a namespace. The README's
+[Backup and restore](../README.md#backup-and-restore) section has the commands.
+
 ## Change retention
 
 `-change-retention` (default `168h`) bounds how long a cursor from `changes_since`, `wait_for` or

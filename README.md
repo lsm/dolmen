@@ -1226,6 +1226,38 @@ Coercion and validation rules:
   with a caller-supplied `vector` need no provider and are not checked against any embedding
   space — only you know which model produced the stored and query vectors.
 
+## Backup and restore
+
+A namespace is a SQLite file in WAL mode, so copying `<ns>.db` while the server runs can miss
+commits still in the `-wal` file. Back up with the binary instead, which takes a consistent
+snapshot of every namespace, and of the grant registry when auth is on, while writes continue:
+
+```bash
+dolmen backup -data ./data -out ./backups/2026-09-23
+```
+
+The backup directory must be new or empty. It gets one file per namespace, laid out as in the
+data directory, and a `manifest.json`, written last, that records each file's size, SHA-256 and
+catalog version. A backup interrupted before its manifest is written is never mistaken for a
+finished one.
+
+```bash
+dolmen restore -from ./backups/2026-09-23 -data ./data
+```
+
+Restore checks every file against its manifest, runs SQLite's integrity check, and confirms this
+binary can read each catalog before it writes anything. It then moves each file into place
+atomically. It never overwrites: a namespace that already exists, or is open in a running
+server, is refused. Restore into an empty data directory, or drop the namespace first. A file
+already in place with the backed-up content is skipped, so a restore interrupted partway can
+simply be run again.
+
+A backup holds the data as of when it ran, so anything written afterwards is lost on restore. Run
+backups as often as you can afford to lose writes, and keep them off the machine that holds
+`-data`. The embedding model cache under `<data>/models` is not backed up, since it downloads
+again. On `-engine postgres` both commands refuse: back up with `pg_dump`, as
+[Running dolmen on PostgreSQL](docs/postgresql-operations.md) describes.
+
 ## Platform and filesystem support
 
 Dolmen uses [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite), a pure-Go SQLite driver, so
