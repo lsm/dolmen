@@ -39,6 +39,8 @@ const (
 
 	ErrCodeCanceled ErrorCode = "canceled"
 
+	ErrCodeTimeout ErrorCode = "timeout"
+
 	ErrCodeInternal ErrorCode = "internal_error"
 )
 
@@ -351,6 +353,8 @@ func statusFor(code derr.Code) (int, ErrorCode) {
 		return http.StatusServiceUnavailable, ErrCodeEmbedderUnavailable
 	case derr.Canceled:
 		return http.StatusOK, ErrCodeCanceled
+	case derr.Timeout:
+		return http.StatusGatewayTimeout, ErrCodeTimeout
 	default:
 		return http.StatusInternalServerError, ErrCodeInternal
 	}
@@ -365,10 +369,16 @@ func WrapError(err error) *Error {
 		if apiErr.Code == ErrCodeInternal && errors.Is(apiErr, context.Canceled) {
 			return canceled(err)
 		}
+		if apiErr.Code == ErrCodeInternal && errors.Is(apiErr, context.DeadlineExceeded) {
+			return timedOut(err)
+		}
 		return apiErr
 	}
 	if errors.Is(err, context.Canceled) {
 		return canceled(err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return timedOut(err)
 	}
 	var shared *derr.Error
 	if errors.As(err, &shared) {

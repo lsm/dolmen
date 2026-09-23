@@ -85,7 +85,7 @@ func run() error {
 		return err
 	}
 
-	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithMaxSubscriptionAge(cfg.MaxSubscriptionAge), api.WithAuth(cfg.Auth), api.WithGrants(grants), api.WithOIDC(oidcSrc))
+	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithMaxSubscriptionAge(cfg.MaxSubscriptionAge), api.WithAuth(cfg.Auth), api.WithGrants(grants), api.WithOIDC(oidcSrc), api.WithTimeouts(cfg.Timeouts))
 	mcpSrv := newMCPServer(cfg, apiSrv)
 
 	sub := http.NewServeMux()
@@ -94,10 +94,10 @@ func run() error {
 	router := withPrefix(cfg.Prefix, sub)
 
 	httpSrv := &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           api.OriginGuard(router, cfg.AllowedOrigins),
-		ReadHeaderTimeout: 10 * time.Second,
+		Addr:    cfg.Addr,
+		Handler: api.OriginGuard(router, cfg.AllowedOrigins),
 	}
+	cfg.Timeouts.Configure(httpSrv)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -148,7 +148,7 @@ func runStdio(args []string) error {
 		return err
 	}
 
-	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithAuth(cfg.Auth))
+	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithAuth(cfg.Auth), api.WithTimeouts(cfg.Timeouts))
 	mcpSrv := newMCPServer(cfg, apiSrv)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -288,6 +288,7 @@ type config struct {
 	SkillNamespaceHint string
 	ChangeRetention    time.Duration
 	MaxSubscriptionAge time.Duration
+	Timeouts           api.Timeouts
 }
 
 type embedConfig struct {
@@ -317,6 +318,13 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 
 	changeRetention := fs.String("change-retention", envOr("DOLMEN_CHANGE_RETENTION", "168h", getenv), "change-log retention: 0 disables pruning (records and cursors never expire); otherwise 1h to 2160h")
 	maxSubscriptionAge := fs.String("max-subscription-age", envOr("DOLMEN_MAX_SUBSCRIPTION_AGE", "30m", getenv), "subscribe connection age bound: the stream teaching-closes at the bound and the client reconnects from its cursor; 0 disables the bound (the identity-refresh backstop is lost), otherwise 1s to 24h")
+	readTimeout := fs.String("read-timeout", envOr("DOLMEN_READ_TIMEOUT", api.DefaultReadTimeout.String(), getenv), "time to read one request, headers and body: 0 disables the bound, otherwise 1s to 24h")
+	writeTimeout := fs.String("write-timeout", envOr("DOLMEN_WRITE_TIMEOUT", api.DefaultWriteTimeout.String(), getenv), "time to write one response once it starts: 0 disables the bound, otherwise 1s to 24h")
+	idleTimeout := fs.String("idle-timeout", envOr("DOLMEN_IDLE_TIMEOUT", api.DefaultIdleTimeout.String(), getenv), "time a keep-alive connection may wait for its next request: 0 disables the bound, otherwise 1s to 24h")
+	maxHeaderBytesDefault, maxHeaderBytesErr := envIntOr("DOLMEN_MAX_HEADER_BYTES", api.DefaultMaxHeaderBytes, getenv)
+	maxHeaderBytes := fs.Int("max-header-bytes", maxHeaderBytesDefault, fmt.Sprintf("largest request header block accepted, in bytes (%d to %d)", minHeaderBytes, maxHeaderBytesLimit))
+	opTimeout := fs.String("op-timeout", envOr("DOLMEN_OP_TIMEOUT", api.DefaultOpTimeout.String(), getenv), "time for one operation's work, beyond wait_for's own timeout_ms; migrate has -migrate-timeout instead: 0 disables the bound, otherwise 1s to 24h")
+	migrateTimeout := fs.String("migrate-timeout", envOr("DOLMEN_MIGRATE_TIMEOUT", "0", getenv), "time for one migrate call, which may backfill every row: 0 (default) leaves it unbounded, otherwise 1s to 24h")
 
 	fs.Usage = func() {
 		fmt.Fprint(out, "Usage: dolmen [flags]\n       dolmen mcp [flags]\n\nFlags:\n")
@@ -458,6 +466,13 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		}
 	}
 
+	timeouts, err := parseTimeouts(stdio, *readTimeout, *writeTimeout, *idleTimeout, *opTimeout, *migrateTimeout, *maxHeaderBytes, maxHeaderBytesErr)
+	if err != nil {
+		fmt.Fprintf(out, "config: %v\n", err)
+		fs.Usage()
+		return nil, &printedError{err}
+	}
+
 	skillNamespaceHint := envOr("DOLMEN_SKILL_NAMESPACE_HINT", skill.DefaultNamespaceHint, getenv)
 	prefixValue := skill.NormalizePrefix(*prefix)
 	if *prefix != "" && prefixValue == "" {
@@ -491,6 +506,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		SkillNamespaceHint: skillNamespaceHint,
 		ChangeRetention:    retention,
 		MaxSubscriptionAge: maxAge,
+		Timeouts:           timeouts,
 		Embed: embedConfig{
 			Provider: provider,
 			BaseURL:  baseURL,
@@ -521,6 +537,53 @@ func parseMaxSubscriptionAge(raw string) (time.Duration, error) {
 		return d, nil
 	}
 	return 0, fmt.Errorf("invalid max subscription age %q: must be 0 (disable the bound) or between 1s and 24h", raw)
+}
+
+const (
+	minHeaderBytes      = 4 << 10
+	maxHeaderBytesLimit = 16 << 20
+)
+
+func parseTimeouts(stdio bool, read, write, idle, op, migrate string, headerBytes int, headerBytesErr error) (api.Timeouts, error) {
+	var t api.Timeouts
+	var err error
+	if t.Op, err = parseBound("op timeout", op); err != nil {
+		return t, err
+	}
+	if t.Migrate, err = parseBound("migrate timeout", migrate); err != nil {
+		return t, err
+	}
+	if stdio {
+		return t, nil
+	}
+	if t.Read, err = parseBound("read timeout", read); err != nil {
+		return t, err
+	}
+	if t.Write, err = parseBound("write timeout", write); err != nil {
+		return t, err
+	}
+	if t.Idle, err = parseBound("idle timeout", idle); err != nil {
+		return t, err
+	}
+	if headerBytesErr != nil {
+		return t, headerBytesErr
+	}
+	if headerBytes < minHeaderBytes || headerBytes > maxHeaderBytesLimit {
+		return t, fmt.Errorf("invalid max header bytes %d: must be between %d and %d", headerBytes, minHeaderBytes, maxHeaderBytesLimit)
+	}
+	t.MaxHeaderBytes = headerBytes
+	return t, nil
+}
+
+func parseBound(name, raw string) (time.Duration, error) {
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: %w", name, raw, err)
+	}
+	if d == 0 || (d >= time.Second && d <= 24*time.Hour) {
+		return d, nil
+	}
+	return 0, fmt.Errorf("invalid %s %q: must be 0 (no bound) or between 1s and 24h", name, raw)
 }
 
 func envIntOr(key string, fallback int, getenv func(string) string) (int, error) {
@@ -567,6 +630,12 @@ func printEnvHelp(out io.Writer) {
 		{"DOLMEN_SKILL_NAMESPACE_HINT", "hint text rendered into skill markdown"},
 		{"DOLMEN_CHANGE_RETENTION", "change-log retention: 0 disables pruning, else 1h to 2160h (default 168h)"},
 		{"DOLMEN_MAX_SUBSCRIPTION_AGE", "subscribe connection age bound: 0 disables, else 1s to 24h (default 30m)"},
+		{"DOLMEN_READ_TIMEOUT", "time to read one request, headers and body: 0 disables, else 1s to 24h (default 2m)"},
+		{"DOLMEN_WRITE_TIMEOUT", "time to write one response once it starts: 0 disables, else 1s to 24h (default 2m)"},
+		{"DOLMEN_IDLE_TIMEOUT", "time a keep-alive connection may sit idle: 0 disables, else 1s to 24h (default 2m)"},
+		{"DOLMEN_MAX_HEADER_BYTES", "largest request header block accepted, in bytes (default 1048576)"},
+		{"DOLMEN_OP_TIMEOUT", "time for one operation's work: 0 disables, else 1s to 24h (default 2m)"},
+		{"DOLMEN_MIGRATE_TIMEOUT", "time for one migrate call: 0 (default) is unbounded, else 1s to 24h"},
 		{"", ""},
 		{"DOLMEN_EMBED_PROVIDER", "embedding provider: none, local (default), or openai"},
 		{"DOLMEN_EMBED_MODEL", "model name or absolute model-directory path"},

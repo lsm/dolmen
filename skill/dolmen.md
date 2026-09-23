@@ -135,7 +135,7 @@ operation whose input fields are all optional (for example `list_namespaces`) ca
 body at all. Responses are enveloped — success is
 `{"ok":true,"data":...}` and failure is `{"ok":false,"error":{"code","message","request_id"}}`
 with a stable machine-readable `code` (`invalid_request`, `not_found`, `query_error`, `conflict`,
-`unauthorized`, `forbidden`, `embedder_unavailable`, `canceled`, `internal_error`); `request_id` is the request's
+`unauthorized`, `forbidden`, `embedder_unavailable`, `canceled`, `timeout`, `internal_error`); `request_id` is the request's
 `X-Request-Id` header when one was sent, otherwise a server-generated id, echoed back as the
 `X-Request-Id` response header — when a message says the underlying cause is in the server log
 under this id, this is the id. The full list of operations and their request schemas is in the OpenAPI document (`GET /v1/openapi.json`).
@@ -418,7 +418,8 @@ The optional `filter` parameter is separate from the MATCH `query`: it is regula
 | Search `limit` | default 10, max 200 | omit `limit` for the default of 10; the tool schema enforces 1–200 for schema-validating clients, and the server clamps values above 200 to 200 (0 or negative selects the default on direct `/v1` calls) |
 | `query` result rows | 1,000 | truncated with `truncated: true` |
 | `query` / search result size | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
-| Request body | 32 MiB | rejected |
+| Request body | 32 MiB, sent within the server's read limit (2 minutes by default) | over 32 MiB is rejected; a body that arrives too slowly is `timeout` (408) |
+| Time per operation | set by the server, 2 minutes by default; `wait_for` gets its `timeout_ms` on top | `timeout` (504): narrow a read (a filter, a smaller limit) and retry it; a write may or may not have committed, so check with a query before retrying it |
 | `query` / search filter `args` | 100 | rejected |
 
 Vector search is a brute-force scan whose cost grows with rows × dimensions — about a tenth of a second per 50,000 rows at 384 dimensions, three times that at 1,536 — so pass `filter` on large tables; FTS5 uses an inverted index and is much faster.

@@ -130,8 +130,8 @@ func TestNamespaceOperationsHonorCanceledContexts(t *testing.T) {
 	if _, err := st.ListNamespaces(canceled, ListNamespacesOptions{}); !errors.Is(err, ErrCanceled) {
 		t.Fatalf("list on a canceled context must classify canceled, got %v", err)
 	}
-	if err := st.DropNamespace(deadlineCtx, "app"); !errors.Is(err, ErrInternal) {
-		t.Fatalf("drop on an expired deadline keeps the wire classification, got %v", err)
+	if err := st.DropNamespace(deadlineCtx, "app"); !errors.Is(err, ErrTimeout) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("drop on an expired deadline must classify timeout and keep the deadline as its cause, got %v", err)
 	}
 	if _, err := st.ListNamespaces(context.Background(), ListNamespacesOptions{}); err != nil {
 		t.Fatalf("nothing must have been created or dropped, got %v", err)
