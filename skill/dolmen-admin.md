@@ -357,7 +357,14 @@ locked-out server.
 - `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's
   columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
-- `drop_table` / `drop_namespace` are irreversible deletions (rows, search indexes, schema, history);
+{{ if eq .Dialect "postgresql" }}- **This server is PostgreSQL-backed.** `query`, and `filter` when authentication is off, are
+  PostgreSQL SQL (`capabilities` reports `query_dialect`/`filter_dialect` as `postgresql`). SQLite
+  functions such as `date()`, `strftime()`, `julianday()`, `iif()`, `instr()` and `ifnull()` do
+  not exist here; use `CASE`, `coalesce`, `strpos`, `extract`, `date_trunc` and `to_char`.
+  `timestamp` fields are stored as ISO-8601 text, so cast before date arithmetic, and pin the zone:
+  `extract(year from (published_at::timestamptz AT TIME ZONE 'UTC'))`. Only an allowlist of
+  standard functions is accepted; the error names anything refused.
+{{ end }}- `drop_table` / `drop_namespace` are irreversible deletions (rows, search indexes, schema, history);
   both require `confirm` to repeat the name being dropped (normalized like the name itself — case and
   surrounding whitespace don't matter). Prefer `delete` unless the table or namespace itself must go.
 - `list_migrations` reads that history: a table's recorded migrations, newest first, with the exact
@@ -416,10 +423,32 @@ locked-out server.
   the statement is read-only, not that the identifiers are safe.
 - SQL string literals use single quotes (`'value'`), escaped by doubling (`'can''t'`). Prefer `?`.
 - Double quotes are for SQL identifiers, not string values.
-- `search_fulltext` takes a raw FTS5 `MATCH` expression in `query`; it is **not** SQL, so do not wrap
+- `search_fulltext` takes a raw {{ if eq .Dialect "postgresql" }}full-text search{{ else }}FTS5 `MATCH`{{ end }} expression in `query`; it is **not** SQL, so do not wrap
   the whole expression in single quotes.
 
-### Full-text (FTS5) search syntax
+{{ if eq .Dialect "postgresql" }}### Full-text search syntax (PostgreSQL)
+
+This server indexes `fulltext` fields with PostgreSQL's `english` text-search configuration
+(stemming, stop words and accent handling are PostgreSQL's) and ranks with `ts_rank_cd`, highest
+first, ties by id. Ranking is PostgreSQL's own and differs from a SQLite-backed server's BM25.
+
+Supported in `query`:
+
+- `payment refund` — both terms (implicit AND); `AND`, `OR` and binary `NOT` (`payment NOT refund`)
+  work as written, uppercase only.
+- `"refund processed"` — an exact phrase; also double-quote terms containing punctuation.
+- `pay*` — a prefix term.
+- Parentheses group expressions.
+
+Refused, each with an error naming the alternative: the `field:term` column filter (use the
+`filter` parameter instead), `NEAR()` (use a quoted phrase for adjacent words), the `^`
+first-token operator and `+` adjacency. A query made only of stop words (`the`, `and`) matches
+nothing.
+
+The optional `filter` parameter is separate from the search `query`: it is SQL over the table's
+columns (a WHERE expression with `?`-bound `args`) and selects which rows may match, before ranking.
+
+{{ else }}### Full-text (FTS5) search syntax
 
 Dolmen indexes `fulltext` fields with SQLite FTS5 using the `porter` stemmer over the `unicode61`
 tokenizer: case-insensitive, diacritic-insensitive for most Latin characters (some non-Latin or
@@ -468,7 +497,7 @@ The optional `filter` parameter is separate from the MATCH `query`: it is regula
 columns (a WHERE expression with `?`-bound `args`, like `delete`'s filter) and selects which rows may
 match, before ranking.
 
-### Vectors and semantic recall
+{{ end }}### Vectors and semantic recall
 
 - `vector` fields accept JSON number arrays of the declared `dim`; stored as float32 blobs, returned
   as `[]float64`.

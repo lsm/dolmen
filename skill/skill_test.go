@@ -603,3 +603,34 @@ func TestPublicURLVaryHeaderCoversEveryInput(t *testing.T) {
 		}
 	}
 }
+
+func TestAPostgreSQLServerServesPostgreSQLGuidance(t *testing.T) {
+	base := Context{BaseURL: "http://h", MCPURL: "http://h/mcp", Version: "v", NamespaceHint: DefaultNamespaceHint}
+	for _, name := range []string{"dolmen", "dolmen-admin"} {
+		pgCtx := base
+		pgCtx.Dialect = "postgresql"
+		pg, err := Render(name, pgCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"This server is PostgreSQL-backed", "Full-text search syntax (PostgreSQL)", "::timestamptz", "`field:term` column filter"} {
+			if !strings.Contains(string(pg), want) {
+				t.Fatalf("%s on a PostgreSQL server must say %q", name, want)
+			}
+		}
+		if strings.Contains(string(pg), "### Full-text (FTS5) search syntax") {
+			t.Fatalf("%s on a PostgreSQL server must not teach FTS5 syntax", name)
+		}
+		for _, dialect := range []string{"sqlite", ""} {
+			sqCtx := base
+			sqCtx.Dialect = dialect
+			sq, err := Render(name, sqCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(sq), "PostgreSQL-backed") || !strings.Contains(string(sq), "### Full-text (FTS5) search syntax") {
+				t.Fatalf("%s on a %q server must keep the SQLite guidance", name, dialect)
+			}
+		}
+	}
+}

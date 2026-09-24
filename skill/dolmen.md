@@ -106,7 +106,7 @@ the whole server. What each operation needs:
 | `upsert`, `upsert_by_key` | `create` and `update` |
 | `query` | `read` on the whole namespace, since SQL can reach any table in it |
 | `describe_table` | any verb on the table |
-| `whoami`, `list_namespaces`, `list_tables`, `describe_server`, `capabilities`, `infer_schema` | nothing |
+| `whoami` (exists only when authentication is on), `list_namespaces`, `list_tables`, `describe_server`, `capabilities`, `infer_schema` | nothing |
 
 Absence is not proof: `list_namespaces` lists only what you can reach, and `list_tables` answers
 `not_found` for a namespace you hold nothing under. A write to a namespace that does not exist
@@ -119,7 +119,8 @@ up in a result, a count, or an error. Never send an `owner` field; the server st
 supplying it is refused like any unknown field. Idempotency keys are yours alone, so the same
 string used by someone else is a different key.
 
-**Filters under authentication** are checked against a fixed allowlist: comparison, arithmetic,
+With authentication off, a `filter` is a plain SQL WHERE expression in the server's dialect
+(`filter_dialect` in `capabilities`). **Filters under authentication** are checked against a fixed allowlist, in SQLite's semantics on every engine: comparison, arithmetic,
 `||` and boolean operators, `LIKE`, `IN`, `BETWEEN`, `IS`, `CASE`, and the functions `abs`,
 `round`, `length`, `lower`, `upper`, `substr`, `trim`, `ltrim`, `rtrim`, `replace`, `instr`,
 `coalesce`, `ifnull`, `nullif`, `iif`, `date`, `time`, `datetime`, `julianday`, `strftime`. A filter
@@ -322,7 +323,14 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 - `truncated: true` means the response left results out. On `query`, `search_fulltext` and `search_vector`, more exist beyond the page, cut either by `limit` (1,000 rows by default and at most on `query`; 10 by default and 200 at most on the searches) or by the 32 MiB response budget, so fetch the next page with `offset`. On `read_rows` only the budget cuts, so retry with fewer ids.
 - `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
-- `drop_table` / `drop_namespace` are irreversible deletions and are **not** part of this skill; do not use them. Ask the user to use `dolmen-admin` if a table or namespace must go.
+{{ if eq .Dialect "postgresql" }}- **This server is PostgreSQL-backed.** `query`, and `filter` when authentication is off, are
+  PostgreSQL SQL (`capabilities` reports `query_dialect`/`filter_dialect` as `postgresql`). SQLite
+  functions such as `date()`, `strftime()`, `julianday()`, `iif()`, `instr()` and `ifnull()` do
+  not exist here; use `CASE`, `coalesce`, `strpos`, `extract`, `date_trunc` and `to_char`.
+  `timestamp` fields are stored as ISO-8601 text, so cast before date arithmetic, and pin the zone:
+  `extract(year from (published_at::timestamptz AT TIME ZONE 'UTC'))`. Only an allowlist of
+  standard functions is accepted; the error names anything refused.
+{{ end }}- `drop_table` / `drop_namespace` are irreversible deletions and are **not** part of this skill; do not use them. Ask the user to use `dolmen-admin` if a table or namespace must go.
 - `insert` with an `idempotency_key` (any unique string) makes retries replay the original ids; the same key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes.
 - Every table has implicit `id` and `created_at` columns; `SELECT *` includes them.
 - Results honor declared field types in every read (`query`, `search_fulltext`, `search_vector`): `boolean` → `true`/`false`, `json` → the decoded value, `vector` → a number array, SQL `NULL` → `null`. In `query`, coercion is by result-column label (aliases count as their label); labels that match no declared field fall back to raw values (blobs as base64).
@@ -342,9 +350,31 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 - `query` only accepts read-only `SELECT`/`WITH` statements. Bind all values with `?` and pass them in `args`. Identifiers and table names cannot be bound with `?`; write them directly from `list_tables`/`describe_table` and never let untrusted input choose them. `query` only checks that the statement is read-only, not that the identifiers are safe.
 - SQL string literals use single quotes (`'value'`), escaped by doubling (`'can''t'`). Prefer `?`.
 - Double quotes are for SQL identifiers, not string values.
-- `search_fulltext` takes a raw FTS5 `MATCH` expression in `query`; it is **not** SQL, so do not wrap the whole expression in single quotes.
+- `search_fulltext` takes a raw {{ if eq .Dialect "postgresql" }}full-text search{{ else }}FTS5 `MATCH`{{ end }} expression in `query`; it is **not** SQL, so do not wrap the whole expression in single quotes.
 
-### Full-text (FTS5) search syntax
+{{ if eq .Dialect "postgresql" }}### Full-text search syntax (PostgreSQL)
+
+This server indexes `fulltext` fields with PostgreSQL's `english` text-search configuration
+(stemming, stop words and accent handling are PostgreSQL's) and ranks with `ts_rank_cd`, highest
+first, ties by id. Ranking is PostgreSQL's own and differs from a SQLite-backed server's BM25.
+
+Supported in `query`:
+
+- `payment refund` — both terms (implicit AND); `AND`, `OR` and binary `NOT` (`payment NOT refund`)
+  work as written, uppercase only.
+- `"refund processed"` — an exact phrase; also double-quote terms containing punctuation.
+- `pay*` — a prefix term.
+- Parentheses group expressions.
+
+Refused, each with an error naming the alternative: the `field:term` column filter (use the
+`filter` parameter instead), `NEAR()` (use a quoted phrase for adjacent words), the `^`
+first-token operator and `+` adjacency. A query made only of stop words (`the`, `and`) matches
+nothing.
+
+The optional `filter` parameter is separate from the search `query`: it is SQL over the table's
+columns (a WHERE expression with `?`-bound `args`) and selects which rows may match, before ranking.
+
+{{ else }}### Full-text (FTS5) search syntax
 
 Dolmen indexes `fulltext` fields with SQLite FTS5 using the `porter` stemmer over the `unicode61`
 tokenizer: case-insensitive, diacritic-insensitive for most Latin characters (some non-Latin or
@@ -386,7 +416,7 @@ Results are ordered by FTS5 `rank` (BM25 by default): more relevant rows have a 
 
 The optional `filter` parameter is separate from the MATCH `query`: it is regular SQL over the table's columns (a WHERE expression with `?`-bound `args`, like `delete`'s filter) and selects which rows may match, before ranking.
 
-### Vectors and semantic recall
+{{ end }}### Vectors and semantic recall
 
 - `vector` fields accept JSON number arrays of the declared `dim`; stored as float32 blobs, returned as `[]float64`.
 - `vectorize: true` on a string/text field stores one embedding per non-empty row in `_embedding`. Only one field per table can be vectorized.

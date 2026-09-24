@@ -29,6 +29,7 @@ type Context struct {
 	MCPURL        string
 	Version       string
 	NamespaceHint string
+	Dialect       string
 }
 
 var ErrNotFound = errors.New("unknown skill")

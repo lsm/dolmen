@@ -113,6 +113,9 @@ var errUnusableHost = &Error{
 
 func (s *Server) publicContext(r *http.Request) skill.Context {
 	ctx := skill.ContextFor(r, s.baseURL, s.namespaceHint, version.Version, s.prefix)
+	if s.eng != nil {
+		ctx.Dialect = s.eng.Capabilities().QueryDialect
+	}
 	if s.baseURL == "" && skill.Proxied(r) && skill.UnreachableBaseURL(ctx.BaseURL) {
 		s.proxyAdviceOnce.Do(func() {
 			slog.Warn("advertising a base URL no proxied client can reach",
