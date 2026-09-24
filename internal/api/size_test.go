@@ -32,3 +32,18 @@ func TestAWritePastTheNamespaceSizeLimitAnswers507(t *testing.T) {
 	}
 	t.Fatal("the size limit never refused a write")
 }
+
+func TestAValueQuotingTheDiskFullTextStaysInvalidRequest(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := httptest.NewServer(New(st, fakeEmb{}).Handler())
+	defer srv.Close()
+	post(t, srv.URL, "create_table", map[string]any{"namespace": "q", "table": "t", "fields": []map[string]any{{"name": "at", "type": "timestamp"}}})
+	status, out := post(t, srv.URL, "insert", map[string]any{"namespace": "q", "table": "t", "records": []map[string]any{{"at": "database or disk is full"}}})
+	if errObj, _ := out["error"].(map[string]any); status != 400 || errObj["code"] != "invalid_request" {
+		t.Fatalf("user input must not rewrite the error: %d %v", status, out)
+	}
+}

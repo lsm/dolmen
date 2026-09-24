@@ -21,7 +21,8 @@ import (
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -944,4 +945,9 @@ func ParseSize(raw string) (int64, error) {
 		return 0, fmt.Errorf("invalid size %q: use a whole number of bytes, optionally with KiB, MiB, GiB or TiB (0 means unbounded)", raw)
 	}
 	return n * mult, nil
+}
+
+func IsFull(err error) bool {
+	var se *sqlite.Error
+	return errors.As(err, &se) && se.Code()&0xff == sqlite3.SQLITE_FULL
 }
