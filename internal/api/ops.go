@@ -1078,6 +1078,7 @@ var Ops = map[string]OpDef{
 			},
 			"row_count": prop("integer", "Number of rows returned"),
 			"truncated": prop("boolean", "True when more results are available beyond the returned page (because the limit was reached or the response budget was hit)"),
+			"limit":     prop("integer", "The limit this search applied: the one requested, 10 when none was given, or 200 when a larger one was requested"),
 		}, "rows", "row_count", "truncated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req queryReq
@@ -1160,6 +1161,7 @@ var Ops = map[string]OpDef{
 				"items":       map[string]any{"type": "object", "description": "Matching record"},
 			},
 			"truncated": prop("boolean", "True when more results are available beyond the returned page (because the limit was reached or the response budget was hit)"),
+			"limit":     prop("integer", "The limit this search applied: the one requested, 10 when none was given, or 200 when a larger one was requested"),
 		}, "results", "truncated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req ftsReq
@@ -1182,7 +1184,7 @@ var Ops = map[string]OpDef{
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"results": res.Rows, "truncated": res.Truncated}, nil
+			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "limit": limit(req.Limit)}, nil
 		},
 	},
 	"search_vector": {
@@ -1312,7 +1314,7 @@ var Ops = map[string]OpDef{
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "skipped_vectors": res.SkippedVectors}, nil
+			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "skipped_vectors": res.SkippedVectors, "limit": limit(req.Limit)}, nil
 		},
 	},
 
