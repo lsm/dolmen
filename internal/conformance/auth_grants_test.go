@@ -167,6 +167,10 @@ func TestQueryRequiresNamespaceWideRead(t *testing.T) {
 
 	res, out := h.asAlice(t, "query", `{"namespace":"acme","sql":"SELECT 1"}`)
 	assertForbiddenEnvelope(t, "query with a table-only read grant", res, out)
+	errEnv, _ := out["error"].(map[string]any)
+	if msg, _ := errEnv["message"].(string); !strings.Contains(msg, "query needs read on the whole namespace") {
+		t.Fatalf("a caller holding table-level read must be told query needs namespace-wide read, got %q", msg)
+	}
 
 	grantTo(t, h, "principal", "alice", "acme", "", "read")
 	res, out = h.asAlice(t, "query", `{"namespace":"acme","sql":"SELECT 1 AS n"}`)

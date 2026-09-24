@@ -663,3 +663,13 @@ func TestThePostgreSQLSkillsShowADayBucketingQuery(t *testing.T) {
 		}
 	}
 }
+
+func TestTheAdminSkillWarnsThatReadDefeatsPerRowPrivacy(t *testing.T) {
+	out, err := Render("dolmen-admin", Context{BaseURL: "http://h", MCPURL: "http://h/mcp", Version: "v", NamespaceHint: DefaultNamespaceHint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "Do not grant `read` to the people a `row_access` table keeps apart") {
+		t.Fatal("dolmen-admin must warn that granting read on a row_access table shows every row to that caller")
+	}
+}
