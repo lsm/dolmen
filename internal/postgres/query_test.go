@@ -444,3 +444,28 @@ func TestPostgresCallerSQLSeesTheImplicitOwner(t *testing.T) {
 		t.Fatalf("SELECT owner returned %v", explicit.Rows)
 	}
 }
+
+func TestPostgresQueryAcceptsExtractAndUntypedArguments(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.Query(ctx, "app", "SELECT extract(year from DATE '2026-03-01') AS y", nil, [16]byte{}, store.Page{})
+	if err != nil || len(result.Rows) != 1 {
+		t.Fatalf("extract is standard SQL and must be allowed: %+v %v", result, err)
+	}
+	for _, c := range []struct {
+		arg  any
+		want any
+	}{{5, int64(5)}, {int64(7), int64(7)}, {1.5, 1.5}, {true, int64(1)}, {"x", "x"}} {
+		result, err := s.Query(ctx, "app", "SELECT ? AS a", []any{c.arg}, [16]byte{}, store.Page{})
+		if err != nil || len(result.Rows) != 1 || result.Rows[0]["a"] != c.want {
+			t.Fatalf("SELECT ? AS a with %v: want %v, got %+v %v", c.arg, c.want, result, err)
+		}
+	}
+	result, err = s.Query(ctx, "app", "SELECT x FROM generate_series(1, 5) x WHERE x > ? LIMIT ?", []any{int64(3), int64(1)}, [16]byte{}, store.Page{})
+	if err != nil || len(result.Rows) != 1 || result.Rows[0]["x"] != int64(4) {
+		t.Fatalf("typed parameters keep their inferred types: %+v %v", result, err)
+	}
+}

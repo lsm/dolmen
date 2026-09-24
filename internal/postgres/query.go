@@ -294,6 +294,13 @@ func (s *Store) runQuery(ctx context.Context, ns, input string, args []any, expe
 		if limit > store.MaxPageLimit {
 			limit = store.MaxPageLimit
 		}
+		sql, args, err = typeUntypedArguments(ctx, tx, sql, args, func(casts map[int32]string) (string, error) {
+			recompiled, _, err := compileSQLWithCasts(input, len(args), n.physical, tables, casts)
+			return recompiled, err
+		})
+		if err != nil {
+			return queryError(ctx, err)
+		}
 		sql = fmt.Sprintf("SELECT * FROM (%s) AS dolmen_result LIMIT $%d OFFSET $%d", sql, len(args)+1, len(args)+2)
 		bind := append(append([]any{}, args...), limit+1, page.Offset)
 		rows, err := tx.Query(ctx, sql, bind...)
@@ -308,4 +315,45 @@ func (s *Store) runQuery(ctx context.Context, ns, input string, args []any, expe
 		return store.QueryResult{}, err
 	}
 	return result, nil
+}
+
+func typeUntypedArguments(ctx context.Context, tx pgx.Tx, sql string, args []any, recompile func(map[int32]string) (string, error)) (string, []any, error) {
+	needed := false
+	for _, arg := range args {
+		switch arg.(type) {
+		case int, int8, int16, int32, int64, uint8, uint16, uint32, float32, float64, bool:
+			needed = true
+		}
+	}
+	if !needed {
+		return sql, args, nil
+	}
+	description, err := tx.Conn().PgConn().Prepare(ctx, "", sql, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	casts := map[int32]string{}
+	out := append([]any{}, args...)
+	for i, arg := range args {
+		if i >= len(description.ParamOIDs) || description.ParamOIDs[i] != pgtype.TextOID {
+			continue
+		}
+		switch v := arg.(type) {
+		case int, int8, int16, int32, int64, uint8, uint16, uint32:
+			casts[int32(i+1)] = "int8"
+		case float32, float64:
+			casts[int32(i+1)] = "float8"
+		case bool:
+			casts[int32(i+1)] = "int8"
+			out[i] = int64(0)
+			if v {
+				out[i] = int64(1)
+			}
+		}
+	}
+	if len(casts) == 0 {
+		return sql, args, nil
+	}
+	sql, err = recompile(casts)
+	return sql, out, err
 }

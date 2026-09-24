@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -99,5 +100,27 @@ func TestQueryBackendConformance(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestQueryBindsAnUntypedNumberAsANumber(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("qargs", "t", []map[string]any{{"name": "n", "type": "number"}})
+	for _, c := range []struct {
+		args string
+		want any
+	}{
+		{"[5]", float64(5)},
+		{"[1.5]", 1.5},
+		{"[9223372036854775807]", float64(9223372036854775807)},
+		{"[true]", float64(1)},
+		{`["x"]`, "x"},
+	} {
+		status, out := h.httpCall("query", map[string]any{"namespace": "qargs", "sql": "SELECT ? AS a", "args": json.RawMessage(c.args)})
+		data, _ := out["data"].(map[string]any)
+		rows, _ := data["rows"].([]any)
+		if status != 200 || len(rows) != 1 || rows[0].(map[string]any)["a"] != c.want {
+			t.Fatalf("SELECT ? AS a with %s: SQLite answers %v, got %d %v", c.args, c.want, status, out)
+		}
 	}
 }
