@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lsm/dolmen/internal/schema"
@@ -485,5 +486,24 @@ func TestPostgresQueryRunsTheSkillsZonePinnedExample(t *testing.T) {
 	result, err := s.Query(ctx, "app", "SELECT extract(year from (published_at::timestamptz AT TIME ZONE 'UTC')) AS y FROM papers", nil, [16]byte{}, store.Page{})
 	if err != nil || len(result.Rows) != 1 {
 		t.Fatalf("the PostgreSQL skill teaches this exact query to pin a zone, so it must run: %+v %v", result, err)
+	}
+}
+
+func TestPostgresQueryRunsTheSkillsDayBucketingExample(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "meetings", []schema.Field{{Name: "started_at", Type: schema.Timestamp}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	recent := time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339)
+	if _, err := s.Insert(ctx, "app", "meetings", []map[string]any{{"started_at": recent}, {"started_at": recent}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.Query(ctx, "app", "SELECT date_trunc('day', started_at::timestamptz AT TIME ZONE 'UTC') AS day, count(*) FROM meetings WHERE started_at::timestamptz > now() - interval '14 days' GROUP BY 1 ORDER BY 1", nil, [16]byte{}, store.Page{})
+	if err != nil || len(result.Rows) != 1 || result.Rows[0]["count"] != int64(2) {
+		t.Fatalf("the PostgreSQL skill teaches this exact per-day query, so it must run: %+v %v", result, err)
 	}
 }

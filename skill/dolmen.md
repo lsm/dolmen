@@ -329,7 +329,9 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
   not exist here; use `CASE`, `coalesce`, `strpos`, `extract`, `date_trunc` and `to_char`.
   `timestamp` fields are stored as ISO-8601 text, so cast before date arithmetic, and pin the zone:
   `extract(year from (published_at::timestamptz AT TIME ZONE 'UTC'))`. Only an allowlist of
-  standard functions is accepted; the error names anything refused.
+  standard functions is accepted; the error names anything refused. Per-day counts over the last two
+  weeks: `SELECT date_trunc('day', started_at::timestamptz AT TIME ZONE 'UTC') AS day, count(*) FROM
+  meetings WHERE started_at::timestamptz > now() - interval '14 days' GROUP BY 1 ORDER BY 1`.
 {{ end }}- `drop_table` / `drop_namespace` are irreversible deletions and are **not** part of this skill; do not use them. Ask the user to use `dolmen-admin` if a table or namespace must go.
 - `insert` with an `idempotency_key` (any unique string) makes retries replay the original ids; the same key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes.
 - Every table has implicit `id` and `created_at` columns; `SELECT *` includes them.
