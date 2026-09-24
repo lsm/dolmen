@@ -50,21 +50,21 @@ func RenamesOf(changes any) map[string]string {
 	if !ok {
 		return nil
 	}
-	out := map[string]string{}
+	origin := map[string]string{}
 	for _, c := range cs {
-		if c.Op == schema.OpRenameField {
-			for newName, oldName := range out {
-				if newName == c.From {
-					delete(out, newName)
-					out[c.To] = oldName
-				}
+		switch c.Op {
+		case schema.OpDropField:
+			origin[c.Name] = ""
+		case schema.OpRenameField:
+			src, known := origin[c.From]
+			if !known {
+				src = c.From
 			}
-			if _, chained := out[c.To]; !chained {
-				out[c.To] = c.From
-			}
+			delete(origin, c.From)
+			origin[c.To] = src
 		}
 	}
-	return out
+	return origin
 }
 
 func MergeUnknownSchemaKeys(prev string, next []byte, renames map[string]string) (string, error) {
@@ -99,6 +99,9 @@ func MergeUnknownSchemaKeys(prev string, next []byte, renames map[string]string)
 			}
 			source := name
 			if was, ok := renames[name]; ok {
+				if was == "" {
+					continue
+				}
 				source = was
 			}
 			for k, v := range byName[source] {

@@ -76,3 +76,26 @@ func TestARenamedFieldKeepsItsUnknownKeys(t *testing.T) {
 		t.Fatalf("unknown keys must follow a field through a chain of renames: %s", got)
 	}
 }
+
+func TestAFieldDroppedAndAddedAgainStartsClean(t *testing.T) {
+	prev := `{"name":"t","fields":[{"name":"a","type":"string","future":1}]}`
+	next := []byte(`{"name":"t","fields":[{"name":"a","type":"number"}]}`)
+	renames := RenamesOf([]schema.Change{{Op: schema.OpDropField, Name: "a"}, {Op: schema.OpAddField, Field: &schema.Field{Name: "a", Type: schema.Number}}})
+	got, err := MergeUnknownSchemaKeys(prev, next, renames)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != string(next) {
+		t.Fatalf("a new field must not inherit a dropped field's keys because they share a name: %s", got)
+	}
+}
+
+func TestARenameOntoADroppedNameCarriesTheRenamedField(t *testing.T) {
+	r := RenamesOf([]schema.Change{{Op: schema.OpDropField, Name: "b"}, {Op: schema.OpRenameField, From: "a", To: "b"}})
+	if r["b"] != "a" {
+		t.Fatalf("b now holds a's data, so it must carry a's keys: %v", r)
+	}
+	if _, stillA := r["a"]; stillA {
+		t.Fatalf("a no longer exists after the rename: %v", r)
+	}
+}
