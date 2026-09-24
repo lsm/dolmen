@@ -638,6 +638,32 @@ func TestAPostgreSQLServerServesPostgreSQLGuidance(t *testing.T) {
 	}
 }
 
+func TestTheAdminSkillTeachesHowToResumeTheChangeFeed(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "postgresql"} {
+		out, err := Render("dolmen-admin", Context{BaseURL: "http://h", MCPURL: "http://h/mcp", Version: "v", NamespaceHint: DefaultNamespaceHint, Dialect: dialect})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"`changes_since` replays", "`wait_for` REPLACES polling", "or pass `\"begin\"` to replay"} {
+			if !strings.Contains(string(out), want) {
+				t.Fatalf("dolmen-admin (%s) must explain the change feed's cursor, missing %q", dialect, want)
+			}
+		}
+	}
+}
+
+func TestThePostgreSQLSkillsShowADayBucketingQuery(t *testing.T) {
+	for _, name := range []string{"dolmen", "dolmen-admin"} {
+		out, err := Render(name, Context{BaseURL: "http://h", MCPURL: "http://h/mcp", Version: "v", NamespaceHint: DefaultNamespaceHint, Dialect: "postgresql"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), "date_trunc('day'") || !strings.Contains(string(out), "interval '14 days'") {
+			t.Fatalf("%s on PostgreSQL must show a per-day bucketing query", name)
+		}
+	}
+}
+
 func TestTheAdminSkillWarnsThatReadDefeatsPerRowPrivacy(t *testing.T) {
 	out, err := Render("dolmen-admin", Context{BaseURL: "http://h", MCPURL: "http://h/mcp", Version: "v", NamespaceHint: DefaultNamespaceHint})
 	if err != nil {
