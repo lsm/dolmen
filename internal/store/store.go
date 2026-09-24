@@ -111,6 +111,8 @@ type Store struct {
 
 	changeRetention time.Duration
 
+	tok tokenizer
+
 	closed   atomic.Bool
 	closeErr error
 }
@@ -210,6 +212,9 @@ func (s *Store) Close() error {
 	}
 	s.closed.Store(true)
 	s.closeErr = s.lockedClose()
+	if s.tok.db != nil {
+		s.tok.db.Close()
+	}
 	return s.closeErr
 }
 

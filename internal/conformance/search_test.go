@@ -2,6 +2,8 @@ package conformance
 
 import (
 	"math"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -533,6 +535,29 @@ func TestSearchTruncatedContract(t *testing.T) {
 		if data["truncated"] != c.wantTruncated {
 			t.Fatalf("limit %d offset %d: truncated %v, want %v", c.limit, c.offset, data["truncated"], c.wantTruncated)
 		}
+	}
+}
+
+func TestTokenizeShowsTheTermsTheIndexStores(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("tok", "t", []map[string]any{
+		{"name": "title", "type": "string", "fulltext": true},
+		{"name": "n", "type": "number"},
+	})
+	h.mustHTTP("create_table", map[string]any{"namespace": "tok", "table": "plain", "fields": []map[string]any{{"name": "n", "type": "number"}}})
+	want := []any{"overh", "payment"}
+	for _, call := range []struct {
+		name string
+		do   func(string, any) map[string]any
+	}{{"http", h.mustHTTP}, {"mcp", h.mustMCP}} {
+		got := call.do("tokenize", map[string]any{"namespace": "tok", "table": "t", "text": "Overheating payments"})["terms"]
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s tokenize: %v, want %v", call.name, got, want)
+		}
+	}
+	status, out := h.httpCall("tokenize", map[string]any{"namespace": "tok", "table": "plain", "text": "x"})
+	if errObj, _ := out["error"].(map[string]any); status != 400 || errObj["code"] != "invalid_request" || !strings.Contains(errObj["message"].(string), "set_fulltext") {
+		t.Fatalf("tokenize on a table without an index must say how to add one: %d %v", status, out)
 	}
 }
 

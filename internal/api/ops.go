@@ -1189,6 +1189,52 @@ var Ops = map[string]OpDef{
 			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "limit": limit(req.Limit)}, nil
 		},
 	},
+	"tokenize": {
+		Description: "Show the terms a table's full-text index stores for a piece of text, in order. Use it before a prefix " +
+			"search: prefix terms match stems, not words, and a stem is often shorter than the word (overheating is stored " +
+			"as overh, so overh* matches it and overheat* does not). Returns no row data.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace of the table"),
+				"table":     existingTableProp("Table with fulltext fields"),
+				"text": map[string]any{
+					"type":        "string",
+					"description": "Text to tokenize exactly as the index would, up to 65,536 characters",
+					"maxLength":   store.MaxTokenizeRunes,
+				},
+			},
+			"required": []string{"namespace", "table", "text"},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"terms": map[string]any{
+				"type":        "array",
+				"description": "Index terms in the order they occur; stop words the engine drops are absent",
+				"items":       map[string]any{"type": "string"},
+			},
+		}, "terms"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req struct {
+				Namespace string `json:"namespace"`
+				Table     string `json:"table"`
+				Text      string `json:"text"`
+			}
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			ns := normNS(req.Namespace)
+			_, inc, err := s.resolveScope(ctx, ns, normTable(req.Table))
+			if err != nil {
+				return nil, err
+			}
+			terms, err := s.eng.Tokenize(ctx, ns, normTable(req.Table), req.Text, inc)
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"terms": terms}, nil
+		},
+	},
 	"search_vector": {
 		Description: "Nearest-neighbor vector search. Pass text (the server embeds it) or a raw vector. " +
 			"column is optional for raw vectors: defaults to the auto-embedding of a vectorized field, else the first vector field. " +

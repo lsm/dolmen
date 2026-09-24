@@ -68,6 +68,9 @@ func parityScript() []parityStep {
 		{"search_fulltext", "search_fulltext", map[string]any{
 			"namespace": ns, "table": "docs", "query": "bug OR crash",
 		}, false},
+		{"tokenize", "tokenize", map[string]any{
+			"namespace": ns, "table": "docs", "text": "Overheating payments",
+		}, false},
 		{"search_fulltext_filtered", "search_fulltext", map[string]any{
 			"namespace": ns, "table": "docs", "query": "bug OR crash",
 			"filter": "score >= ?", "args": []any{1},

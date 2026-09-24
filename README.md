@@ -915,7 +915,7 @@ claude mcp add dolmen -- /path/to/dolmen mcp -data /path/to/data
 
 `dolmen mcp` takes the same flags and environment as `dolmen`; the HTTP-only ones (`-addr`, `-max-subscription-age`, `DOLMEN_ALLOWED_ORIGINS`) have no effect. The `initialize` handshake works as over HTTP (its instructions describe the stdio transport; set `-base-url` when an HTTP deployment also exists, and its links appear there). Over stdio there is no `MCP-Protocol-Version` header, so version negotiation happens in `initialize` alone.
 
-The MCP server exposes the same twenty-three operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
+The MCP server exposes the same twenty-four operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
 
 Skill distribution is built into the server. `GET /skills` returns a JSON manifest with links to the layered skill markdown; `GET /skills/dolmen` is the end-user skill and `GET /skills/dolmen-admin` is the developer skill. Agents should fetch the skill from the running binary instead of copying a static file. Over `dolmen mcp` there is no HTTP listener — the skills are served by the HTTP deployment named by `-base-url`, when one exists.
 
@@ -1020,6 +1020,7 @@ atomically with your side effects rather than deduplicating on frame content.
 | `upsert_by_key` | Insert-or-update keyed by natural field(s) (`on`); converges instead of duplicating on retry |
 | `query` | Read-only SQL (SELECT/WITH), parameter binding via `args`, typed results |
 | `search_fulltext` | FTS5 MATCH over `fulltext` fields, relevance-ordered, typed results; optional `filter` + `args` restrict rows before ranking |
+| `tokenize` | The terms a table's full-text index stores for a piece of text, in order: use it to find the stem a prefix search must start from. Returns no row data; any data grant on the table allows it |
 | `search_vector` | Cosine KNN; `text` (server embeds; searches only the vectorize `_embedding` space) or raw `vector` (any vector column, caller owns the space); optional `filter` + `args` and `min_score` threshold; results carry `_score` and `skipped_vectors` |
 | `changes_since` | Replay the namespace's durable change log: changes committed after a cursor, in commit order, as a bounded page plus `next_cursor`. No cursor = start at the current head (future commits only); `"begin"` = retained history; optional `table` filters to that table's current lifetime. Changes carry `cursor`/`table`/`row_id`/`kind` only |
 | `wait_for` | Long-poll the change feed: block until a change commits after the cursor or `timeout_ms` elapses (default 30000, max 60000, `0` = immediate conditional poll), then return exactly a `changes_since` page. A timeout is an empty page carrying the unchanged `next_cursor` — never an error; pass it back in to keep waiting. |
@@ -1128,6 +1129,7 @@ Stemming notes:
   `pays`, and `paid` stem to `pai`/`paid` and do **not** match `payment`.
 - Phrases match on stems: each word of the phrase is stemmed before matching, so `"payments were"`
   matches `"the payments were refunded"` (stems `payment`, `were`).
+- `tokenize` shows the terms a table's index stores for any text (`overheating` → `overh`), so a prefix search can start from the right stem.
 - Prefix queries operate on stems: `pay*` stems to `pai*`, so it matches `paid`/`paying`/`pays` but
   not `payment` (whose stem is `payment`).
 - Stemming is English-focused. CJK text is untouched by the stemmer — an uninterrupted CJK run is
