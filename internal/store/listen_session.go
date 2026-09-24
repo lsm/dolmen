@@ -43,6 +43,7 @@ type listenSession struct {
 	pendingClose      error
 	pendingCloseYield bool
 	pendingDrainClose error
+	queueBound        int
 	deathCause        error
 	deathCauseYield   bool
 

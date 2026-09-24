@@ -652,7 +652,8 @@ func TestListenEndedFeedParksAtTheBound(t *testing.T) {
 func TestListenEndedFeedDrainsUnderBackpressure(t *testing.T) {
 	st := openChangeStore(t)
 	ctx := context.Background()
-	total := ListenQueueBound + MaxChangesPageLimit + 5
+	const bound = 16
+	total := bound + MaxChangesPageLimit + 5
 	if _, err := insertNotesChunkedErr(st, total); err != nil {
 		t.Fatalf("bulk backlog: %v", err)
 	}
@@ -682,6 +683,7 @@ func TestListenEndedFeedDrainsUnderBackpressure(t *testing.T) {
 	closedCause := make(chan error, 1)
 	sess := testSession(func(cause error) { closedCause <- cause })
 	sess.s, sess.n = st, n
+	sess.queueBound = bound
 	sess.feed = feed
 	sess.chain = newCursorChain(time.Now(), 0)
 	sess.notify = func(r ChangeRecord) {
@@ -715,8 +717,8 @@ func TestListenEndedFeedDrainsUnderBackpressure(t *testing.T) {
 	if got != total {
 		t.Fatalf("delivered %d of %d predecessor records — the backpressure lost part of the backlog", got, total)
 	}
-	if ceiling > ListenQueueBound+MaxChangesPageLimit {
-		t.Fatalf("queue peaked at %d, want ≤ bound+page (%d) — the bound was bypassed", ceiling, ListenQueueBound+MaxChangesPageLimit)
+	if ceiling > bound+MaxChangesPageLimit {
+		t.Fatalf("queue peaked at %d, want ≤ bound+page (%d) — the bound was bypassed", ceiling, bound+MaxChangesPageLimit)
 	}
 	sess.cancel()
 }
