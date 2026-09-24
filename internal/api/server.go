@@ -108,7 +108,7 @@ func setPublicURLCacheHeaders(w http.ResponseWriter) {
 
 var errUnusableHost = &Error{
 	Status: http.StatusBadRequest, Code: ErrCodeInvalid,
-	Message: "the request Host header is not a usable host name, and this response would have to quote it back as this server's public URL; send a valid Host, have the proxy send X-Forwarded-Host, or set DOLMEN_BASE_URL",
+	Message: "the request Host header is not a usable host name, and this response would have to quote it back as this server's public URL; send a valid Host, have a proxy listed in DOLMEN_TRUSTED_PROXIES send X-Forwarded-Host, or set DOLMEN_BASE_URL",
 }
 
 func (s *Server) publicContext(r *http.Request) skill.Context {

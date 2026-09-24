@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -112,7 +113,7 @@ func run() error {
 
 	httpSrv := &http.Server{
 		Addr:    cfg.Addr,
-		Handler: apiSrv.Track(api.OriginGuard(router, cfg.AllowedOrigins)),
+		Handler: apiSrv.Track(api.ForwardingGuard(api.OriginGuard(router, cfg.AllowedOrigins), cfg.TrustedProxies)),
 	}
 	cfg.Timeouts.Configure(httpSrv)
 
@@ -229,7 +230,7 @@ func openStore(cfg *config) (store.Engine, error) {
 		}
 		return st, nil
 	}
-	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention), store.WithMaxOpenNamespaces(cfg.MaxOpenNamespaces), store.WithSync(cfg.Sync))
+	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention), store.WithMaxOpenNamespaces(cfg.MaxOpenNamespaces), store.WithSync(cfg.Sync), store.WithMaxNamespaceSize(cfg.MaxNamespaceSize))
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
@@ -327,6 +328,7 @@ type config struct {
 	PostgresCatalog    string
 	PostgresQueryRole  string
 	Auth               *auth.Authenticator
+	TrustedProxies     []*net.IPNet
 	OIDC               auth.OIDCConfig
 	oidcSource         *auth.OIDCSource
 	AllowedOrigins     []string
@@ -338,6 +340,7 @@ type config struct {
 	ChangeRetention    time.Duration
 	MaxSubscriptionAge time.Duration
 	Sync               store.SyncMode
+	MaxNamespaceSize   int64
 	LogLevel           slog.Level
 	ShutdownGrace      time.Duration
 	Timeouts           api.Timeouts
@@ -362,7 +365,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	pgCatalog := fs.String("pg-catalog", getenv("DOLMEN_PG_CATALOG"), "PostgreSQL catalog schema (default dolmen_catalog)")
 	pgQueryRole := fs.String("pg-query-role", getenv("DOLMEN_PG_QUERY_ROLE"), "pre-provisioned restricted role that caller SQL runs as; required for the query op")
 	authMode := fs.String("auth", envOr("DOLMEN_AUTH", "off", getenv), "authentication: off (default, no identity required) or on (deny-by-default; set DOLMEN_ADMIN_KEY on first start)")
-	trustedProxies := fs.String("trusted-proxies", envOr("DOLMEN_TRUSTED_PROXIES", "", getenv), "comma-separated CIDRs (bare IPs allowed) whose peers may assert X-Dolmen-Principal / X-Dolmen-Groups")
+	trustedProxies := fs.String("trusted-proxies", envOr("DOLMEN_TRUSTED_PROXIES", "", getenv), "comma-separated CIDRs (bare IPs allowed) whose peers may assert X-Dolmen-Principal / X-Dolmen-Groups and the forwarding headers public links are built from (X-Forwarded-*, Forwarded)")
 	maxGroupsDefault, maxGroupsErr := envIntOr("DOLMEN_MAX_GROUPS", auth.DefaultMaxGroups, getenv)
 	maxGroups := fs.Int("max-groups", maxGroupsDefault, "maximum group entries accepted per request (1 to 1024)")
 	showVersion := fs.Bool("version", false, "print version and exit")
@@ -371,6 +374,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 
 	maxOpenDefault, maxOpenErr := envIntOr("DOLMEN_MAX_OPEN_NAMESPACES", store.DefaultMaxOpenNamespaces, getenv)
 	maxOpenNamespaces := fs.Int("max-open-namespaces", maxOpenDefault, "namespaces held open at once; past it, the least recently used idle namespace is closed until it is next used (at least 1; sqlite engine)")
+	maxNamespaceSize := fs.String("max-namespace-size", envOr("DOLMEN_MAX_NAMESPACE_SIZE", "0", getenv), "largest a namespace file may grow, e.g. 10GiB; a write past it is refused with 507 and nothing is written. 0 (default) is unbounded; sqlite engine")
 	logLevel := fs.String("log-level", envOr("DOLMEN_LOG_LEVEL", "info", getenv), "log verbosity: debug (adds one line per operation: op, outcome, status, duration, request size, request id), info (default), warn, or error")
 	syncMode := fs.String("sync", envOr("DOLMEN_SYNC", string(store.DefaultSync), getenv), "commit durability: full (an acknowledged commit survives power loss) or normal (it survives a process crash; the last commits before a power loss may be lost); sqlite engine")
 	shutdownGrace := fs.String("shutdown-grace", envOr("DOLMEN_SHUTDOWN_GRACE", "60s", getenv), "on SIGTERM, how long running requests may finish before they are cancelled: 0 waits for them without a bound, otherwise 1s to 24h")
@@ -522,6 +526,13 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		return nil, &printedError{e}
 	}
 
+	nsSize, err := store.ParseSize(*maxNamespaceSize)
+	if err != nil {
+		fmt.Fprintf(out, "config: %v\n", err)
+		fs.Usage()
+		return nil, &printedError{err}
+	}
+
 	sync, err := store.ParseSyncMode(*syncMode)
 	if err != nil {
 		fmt.Fprintf(out, "config: %v\n", err)
@@ -588,6 +599,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		PostgresCatalog:    *pgCatalog,
 		PostgresQueryRole:  *pgQueryRole,
 		Auth:               authn,
+		TrustedProxies:     proxies,
 		OIDC:               oidc,
 		AllowedOrigins:     allowedOrigins,
 		BaseURL:            *publicBaseURL,
@@ -596,6 +608,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		ChangeRetention:    retention,
 		MaxSubscriptionAge: maxAge,
 		Sync:               sync,
+		MaxNamespaceSize:   nsSize,
 		LogLevel:           level,
 		ShutdownGrace:      grace,
 		Timeouts:           timeouts,
@@ -708,7 +721,7 @@ func printEnvHelp(out io.Writer) {
 		{"DOLMEN_PG_QUERY_ROLE", "pre-provisioned NOLOGIN role that caller SQL runs as"},
 		{"DOLMEN_AUTH", "authentication: off (default) or on (deny-by-default)"},
 		{"DOLMEN_ADMIN_KEY", "bootstrap admin credential, needed with auth on until a root administrator is granted (env-only, never a flag)"},
-		{"DOLMEN_TRUSTED_PROXIES", "comma-separated CIDRs whose peers may assert identity headers"},
+		{"DOLMEN_TRUSTED_PROXIES", "comma-separated CIDRs whose peers may assert identity and forwarding headers"},
 		{"DOLMEN_MAX_GROUPS", "maximum group entries accepted per request, 1 to 1024 (default 128)"},
 		{"DOLMEN_AUTH_OIDC_ISSUER", "identity provider issuer URL, enabling native sign-in"},
 		{"DOLMEN_AUTH_OIDC_CLIENT_ID", "OAuth client id registered with that provider"},
@@ -721,6 +734,7 @@ func printEnvHelp(out io.Writer) {
 		{"DOLMEN_ALLOWED_ORIGINS", "comma-separated allowed HTTP origins for CORS"},
 		{"DOLMEN_BASE_URL", "public base URL for skills and MCP links (default: use request Host)"},
 		{"DOLMEN_SKILL_NAMESPACE_HINT", "hint text rendered into skill markdown"},
+		{"DOLMEN_MAX_NAMESPACE_SIZE", "largest a namespace file may grow, e.g. 10GiB; 0 (default) is unbounded"},
 		{"DOLMEN_LOG_LEVEL", "log verbosity: debug (adds a line per operation), info (default), warn, or error"},
 		{"DOLMEN_SYNC", "commit durability: full (default; survives power loss) or normal (survives a process crash)"},
 		{"DOLMEN_SHUTDOWN_GRACE", "on SIGTERM, time running requests may finish: 0 waits unbounded, else 1s to 24h (default 60s)"},
