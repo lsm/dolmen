@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -188,5 +189,17 @@ func TestEngineKnobResolution(t *testing.T) {
 		if got != c.want {
 			t.Fatalf("DOLMEN_ENGINE=%q: engine %q, want %q", c.env["DOLMEN_ENGINE"], got, c.want)
 		}
+	}
+}
+
+func TestTheServedSkillNamesTheEnginesDialect(t *testing.T) {
+	h := newHarness(t)
+	res, body := h.getNoCredential(t, "/skills/dolmen")
+	if res.StatusCode != 200 {
+		t.Fatalf("GET /skills/dolmen: %d", res.StatusCode)
+	}
+	postgres := strings.Contains(body, "This server is PostgreSQL-backed")
+	if want := testEngine(t) == store.EnginePostgres; postgres != want {
+		t.Fatalf("engine %q: the served skill says PostgreSQL-backed = %v, want %v", testEngine(t), postgres, want)
 	}
 }
