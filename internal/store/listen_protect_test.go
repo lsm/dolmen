@@ -351,8 +351,8 @@ func TestListenPollIntervalShrinksBelowRetention(t *testing.T) {
 }
 
 func TestListenPollPumpProtectsParkedDrainClose(t *testing.T) {
-	st := openStampedStore(t)
-	old := time.Now().Add(-200 * time.Millisecond)
+	st := openStampedStoreFor(t, stampedRetention)
+	old := time.Now().Add(-3 * stampedRetention)
 	seedStampedChanges(t, st, "notes", []time.Time{old, old, old})
 	n, err := st.ns("test")
 	if err != nil {
@@ -366,7 +366,13 @@ func TestListenPollPumpProtectsParkedDrainClose(t *testing.T) {
 
 	sess.pumps.Add(1)
 	go sess.pollWake()
-	time.Sleep(150 * time.Millisecond)
+	deadline := time.Now().Add(10 * time.Second)
+	for countTokens(t, n) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the poll pump never minted a protection token for the parked queue")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	sess.endParked(nil)
 
 	ctx := context.Background()
