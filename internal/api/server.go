@@ -478,7 +478,9 @@ func OpNames() []string {
 	return names
 }
 
-func (s *Server) Dispatch(ctx context.Context, op string, body []byte) (any, error) {
+func (s *Server) Dispatch(ctx context.Context, op string, body []byte) (res any, err error) {
+	start := time.Now()
+	defer func() { logOp(ctx, op, len(body), start, err) }()
 	def, ok := s.Op(op)
 	if !ok {
 		return nil, notFound("unknown operation %q", op)
@@ -488,7 +490,7 @@ func (s *Server) Dispatch(ctx context.Context, op string, body []byte) (any, err
 	if err := s.authorizeOp(ctx, op, body); err != nil {
 		return nil, overran(err)
 	}
-	res, err := def.Func(ctx, s, body)
+	res, err = def.Func(ctx, s, body)
 	if err = overran(err); err != nil {
 		if framed := frameUnknownField(err, op); framed != nil {
 			return res, framed

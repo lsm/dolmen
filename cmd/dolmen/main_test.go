@@ -1125,3 +1125,15 @@ func TestLoadConfigSync(t *testing.T) {
 		t.Fatal("-sync off accepted; only full and normal are durability modes")
 	}
 }
+
+func TestLoadConfigLogLevel(t *testing.T) {
+	cfg, err := loadWithEnv(t, []string{"-log-level", "DEBUG"}, map[string]string{"DOLMEN_EMBED_PROVIDER": "none"}, false)
+	if err != nil || cfg.LogLevel != slog.LevelDebug {
+		t.Fatalf("got %v, %v", cfg, err)
+	}
+	for _, raw := range []string{"verbose", "debug+2"} {
+		if _, err := loadWithEnv(t, []string{"-log-level", raw}, map[string]string{"DOLMEN_EMBED_PROVIDER": "none"}, false); err == nil {
+			t.Fatalf("-log-level %s accepted", raw)
+		}
+	}
+}
