@@ -910,6 +910,9 @@ func (s *Store) namespaceUnreadable(ctx context.Context, name string) bool {
 }
 
 func sqliteURIPath(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
 	p := filepath.ToSlash(path)
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p
