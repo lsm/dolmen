@@ -29,7 +29,7 @@ func jsonKeys(t reflect.Type) map[string]bool {
 	return out
 }
 
-func encodeSchemaOver(ctx context.Context, db rowQuerier, table string, sc *schema.TableSchema) (string, error) {
+func encodeSchemaOver(ctx context.Context, db rowQuerier, table string, sc *schema.TableSchema, renames map[string]string) (string, error) {
 	raw, err := json.Marshal(sc)
 	if err != nil {
 		return "", err
@@ -42,10 +42,32 @@ func encodeSchemaOver(ctx context.Context, db rowQuerier, table string, sc *sche
 	if err != nil {
 		return "", err
 	}
-	return mergeUnknownSchemaKeys(prev, raw)
+	return MergeUnknownSchemaKeys(prev, raw, renames)
 }
 
-func mergeUnknownSchemaKeys(prev string, next []byte) (string, error) {
+func RenamesOf(changes any) map[string]string {
+	cs, ok := changes.([]schema.Change)
+	if !ok {
+		return nil
+	}
+	out := map[string]string{}
+	for _, c := range cs {
+		if c.Op == schema.OpRenameField {
+			for newName, oldName := range out {
+				if newName == c.From {
+					delete(out, newName)
+					out[c.To] = oldName
+				}
+			}
+			if _, chained := out[c.To]; !chained {
+				out[c.To] = c.From
+			}
+		}
+	}
+	return out
+}
+
+func MergeUnknownSchemaKeys(prev string, next []byte, renames map[string]string) (string, error) {
 	var old, cur map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(prev), &old); err != nil {
 		return string(next), nil
@@ -75,7 +97,11 @@ func mergeUnknownSchemaKeys(prev string, next []byte) (string, error) {
 			if json.Unmarshal(f["name"], &name) != nil {
 				continue
 			}
-			for k, v := range byName[name] {
+			source := name
+			if was, ok := renames[name]; ok {
+				source = was
+			}
+			for k, v := range byName[source] {
 				if !knownFieldKeys[k] {
 					f[k] = v
 					fieldsChanged = true

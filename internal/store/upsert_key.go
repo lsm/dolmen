@@ -353,7 +353,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 				break
 			}
 		}
-		raw, err := encodeSchemaOver(ctx, tx, table, sc)
+		raw, err := encodeSchemaOver(ctx, tx, table, sc, nil)
 		if err != nil {
 			return nil, 0, 0, ChangeRange{}, true, err
 		}

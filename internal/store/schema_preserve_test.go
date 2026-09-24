@@ -59,3 +59,20 @@ func TestARewriteKeepsCatalogKeysThisBinaryDoesNotKnow(t *testing.T) {
 		}
 	}
 }
+
+func TestARenamedFieldKeepsItsUnknownKeys(t *testing.T) {
+	prev := `{"name":"t","fields":[{"name":"a","type":"string","future":1},{"name":"b","type":"string","other":2}]}`
+	next := []byte(`{"name":"t","fields":[{"name":"c","type":"string"},{"name":"b","type":"string"}]}`)
+	renames := RenamesOf([]schema.Change{{Op: schema.OpRenameField, From: "a", To: "x"}, {Op: schema.OpRenameField, From: "x", To: "c"}})
+	got, err := MergeUnknownSchemaKeys(prev, next, renames)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Fields []map[string]any `json:"fields"`
+	}
+	json.Unmarshal([]byte(got), &doc)
+	if doc.Fields[0]["future"] != 1.0 || doc.Fields[1]["other"] != 2.0 {
+		t.Fatalf("unknown keys must follow a field through a chain of renames: %s", got)
+	}
+}

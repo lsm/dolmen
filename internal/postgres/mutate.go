@@ -258,6 +258,9 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 					return err
 				}
 				if string(after) != string(before) {
+					if after, err = s.keepUnknownKeys(ctx, tx, ns, table, after, nil); err != nil {
+						return err
+					}
 					_, err = tx.Exec(ctx, "UPDATE "+s.relation("tables")+" SET schema_json=$1 WHERE namespace=$2 AND name=$3", string(after), ns, table)
 					return err
 				}

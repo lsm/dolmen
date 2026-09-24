@@ -554,7 +554,7 @@ func loadSchema(ctx context.Context, db rowQuerier, nsName, table string) (*sche
 }
 
 func saveSchemaTx(ctx context.Context, tx *sql.Tx, nsName string, sc *schema.TableSchema, fromVersion int, changes any) error {
-	raw, err := encodeSchemaOver(ctx, tx, sc.Name, sc)
+	raw, err := encodeSchemaOver(ctx, tx, sc.Name, sc, RenamesOf(changes))
 	if err != nil {
 		return err
 	}

@@ -229,7 +229,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 				break
 			}
 		}
-		raw, err := encodeSchemaOver(ctx, tx, table, sc)
+		raw, err := encodeSchemaOver(ctx, tx, table, sc, nil)
 		if err != nil {
 			return nil, ChangeRange{}, false, true, err
 		}
