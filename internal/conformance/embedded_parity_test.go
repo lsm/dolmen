@@ -352,11 +352,11 @@ func TestEmbeddedParityErrorTaxonomy(t *testing.T) {
 
 	status, body = h.httpCallNumbered("describe_table", map[string]any{"namespace": "par", "table": "sqlite_notes"})
 	errObj, _ = body["error"].(map[string]any)
-	if status != 404 || errObj["code"] != "not_found" {
-		t.Fatalf("http malformed table name (the /v1 surface does not enforce the MCP grammar): %d %v", status, body)
+	if status != 400 || errObj["code"] != "invalid_request" {
+		t.Fatalf("http malformed table name must be invalid_request, as on the façade: %d %v", status, body)
 	}
 	if _, _, err := st.DescribeTable(ctx, "par", "sqlite_notes"); !errors.Is(err, dolmen.ErrInvalidRequest) {
-		t.Fatalf("embedded malformed table name is rejected invalid_request by the curated façade (by-design stricter than /v1, which reports not_found), got %v", err)
+		t.Fatalf("embedded malformed table name must be invalid_request, as on /v1, got %v", err)
 	}
 	if err := st.DropTable(ctx, "par", "sqlite_notes"); !errors.Is(err, dolmen.ErrInvalidRequest) {
 		t.Fatalf("embedded malformed table name on drop is rejected invalid_request by the curated façade, got %v", err)

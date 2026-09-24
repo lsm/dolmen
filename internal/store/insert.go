@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -207,13 +206,15 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	}
 
 	ids = make([]int64, 0, len(records))
+	stmts := newStmtCache(tx)
+	defer stmts.close()
 	for i, row := range coercedRows {
 		stampNowVals(row.vals)
 		var vec []float32
 		if ev, ok := embFor[i]; ok {
 			vec = ev
 		}
-		id, err := execInsertWithFTS(ctx, tx, table, fts, row.rec, row.cols, row.vals, vec, stampOwner(sc, owner))
+		id, err := execInsertWithFTS(ctx, stmts, table, fts, row.rec, row.cols, row.vals, vec, stampOwner(sc, owner))
 		if err != nil {
 			return nil, ChangeRange{}, false, true, err
 		}
@@ -370,7 +371,7 @@ func embedTexts(ctx context.Context, sc *schema.TableSchema, table string, texts
 	return vecs, nil
 }
 
-func execInsertWithFTS(ctx context.Context, tx *sql.Tx, table string, fts []schema.Field, rec map[string]any, cols []string, vals []any, vec []float32, owner string) (int64, error) {
+func execInsertWithFTS(ctx context.Context, tx stmtExecer, table string, fts []schema.Field, rec map[string]any, cols []string, vals []any, vec []float32, owner string) (int64, error) {
 	if vec != nil {
 		cols = append(cols, `"_embedding"`)
 		vals = append(vals, schema.EncodeVector(vec))
@@ -402,7 +403,7 @@ func execInsertWithFTS(ctx context.Context, tx *sql.Tx, table string, fts []sche
 	return id, nil
 }
 
-func writeFTSRowFor(ctx context.Context, tx *sql.Tx, table string, fts []schema.Field, id int64, rec map[string]any) error {
+func writeFTSRowFor(ctx context.Context, tx stmtExecer, table string, fts []schema.Field, id int64, rec map[string]any) error {
 	fcols := make([]string, len(fts))
 	fvals := make([]any, len(fts)+1)
 	fvals[0] = id

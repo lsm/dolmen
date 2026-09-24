@@ -15,7 +15,7 @@ One engine serves all three surfaces:
 | Surface | Input gate | Name invalid after normalization |
 | --- | --- | --- |
 | MCP tools | `InputSchema` advertised on `tools/list`: `existingTableProp` grammar, `maxItems` bounds | Grammar is the tool's schema contract |
-| `/v1` HTTP | Struct decode (`decode`/`decodeData`, `internal/api/server.go`): `UseNumber` + `DisallowUnknownFields`, no name grammar | Existing-table ops → engine lookup → 404 `not_found`; `create_table` → 400 `invalid_request` |
+| `/v1` HTTP | Struct decode (`decode`/`decodeData`, `internal/api/server.go`): `UseNumber` + `DisallowUnknownFields`, no name grammar | Existing-table ops → engine lookup; a name that breaks the grammar → 400 `invalid_request`, a well-formed name matching no table → 404 `not_found` |
 | Public Go façade | Curated pre-checks (`validTableName`, root `read.go:22`) before `EnsureNamespace`, on guarded methods only | `invalid_request` on reads/search and describe/drop; writes classify via the engine |
 
 `existingTableProp` (`internal/api/server.go:254`) pins the grammar `^[a-z][a-z0-9_]{0,63}$`,
@@ -50,24 +50,21 @@ The #309 premise correction: the grammar lives in the shared `InputSchema`, adve
 wire transports — MCP `tools/list` and `/v1/openapi.json`, whose request bodies are built from
 the same `OpDef.InputSchema` (`internal/api/openapi.go`, pinned identical by
 `TestMCPInputSchemasMatchOpenAPIRequestSchemas`) — but neither wire runtime re-validates it.
-Probing live `/v1` showed the wire classifying malformed names `not_found` on `describe_table`
-and `search_fulltext` alike, because the wire decodes typed request structs and applies no
-grammar gate. The façade instead rejects impossible names early with `invalid_request` — the
-curated-stricter reading that keeps #304's merged decision coherent. The pre-check covers
-reads/search and describe/drop only: the write methods (`Insert`, `Update`, `Delete`,
-`UpsertByKey` in root `write.go`) normalize the name and hand it to the engine, where a
-malformed name matches no table and classifies `not_found` — the same answer the wire gives.
+The wire decodes typed request structs and applies no grammar gate of its own. The engine
+does, when resolving the table: `store.TableNotFound` answers a name that breaks the grammar
+with `invalid_request` naming the rule it breaks, and a well-formed name that matches no table
+with `not_found` pointing at `list_tables`, on both engines (#325). The façade additionally
+rejects impossible names early on reads/search and describe/drop; its write methods
+(`Insert`, `Update`, `Delete`, `UpsertByKey` in root `write.go`) hand the name to the engine
+and get the same `invalid_request` the wire does.
 `CreateTable` (root `table.go`) carries no pre-check either, but its engine path enforces the
 grammar itself (`schema.ValidateTableName`, `internal/store/store.go:495`), so a malformed name
-on create classifies `invalid_request` on both surfaces; the wire's 404 is specifically the
-existing-table resolution path.
-The divergence is pinned
-by-design in `TestEmbeddedParityErrorTaxonomy` (`internal/conformance/embedded_parity_test.go`):
-the same malformed name yields wire `not_found` and façade `invalid_request`, each surface's
-assert naming the divergence. Wire-side tightening (400 on `/v1`) is a contract change deferred
-to a ruling; this doc records the status quo. Until then the wire's `not_found` message says why
-(#325): a name that breaks the grammar is reported with the rule it breaks, and a well-formed name
-that matches no table points at `list_tables`, on both engines.
+on create classifies `invalid_request` on both surfaces too.
+The wire used to answer a malformed name on the existing-table path with 404 `not_found`, a
+recorded divergence from the façade. That was ruled a contract change worth making (#325): a
+hyphen in a table name is a common first mistake, and `not_found` sent callers looking for a
+table they never created. Both surfaces now agree, pinned in `TestEmbeddedParityErrorTaxonomy`
+(`internal/conformance/embedded_parity_test.go`).
 
 ## Input limits and where each is enforced
 
@@ -90,7 +87,7 @@ The family audit (#309) dispositioned every unaudited cousin line from the parit
 | Cousin | Audit result | Disposition |
 | --- | --- | --- |
 | #301 fields count | engine `CreateTable` enforces `MaxFieldsPerTable`; same bound both surfaces | Cleared + pinned (`TestCreateTableRejectsTooManyFields`, root `familyaudit_test.go`). Order note: on both surfaces the namespace is ensured before the engine rejects, so a rejected create may leave an empty namespace behind — documented, and unchanged by #39, which removed the ensure from reads only |
-| #301 table-name grammar on describe/drop | `/v1` does not enforce the MCP grammar (404 `not_found`); the façade classified `not_found` too | Fixed per the curated-stricter reading + pinned cross-surface with the by-design flag (above) |
+| #301 table-name grammar on describe/drop | `/v1` did not enforce the MCP grammar (404 `not_found`); the façade classified `not_found` too | Fixed: both surfaces answer `invalid_request` (#325), pinned cross-surface (above) |
 | #302 records count | engine `Insert`/`UpsertByKey` enforce `MaxRecordsPerInsert`; same bound both surfaces | Cleared + pinned (`TestInsertRejectsTooManyRecords`, both ops) |
 | #302 delete-limit range | wire schema has `minimum: 1`, no maximum; the wire handler also rejects < 1 at runtime (`parseOptPosInt`), so explicit 0 diverges — wire 400, façade default threshold; façade rejects negatives (`TestDeleteRejectsNegativeLimit`, root `write_test.go`), no upper bound either | Cleared — no upper-range divergence exists; parity by construction; the at-zero divergence is code-verified, unpinned |
 | #302 record-data floats | NaN stored silently and read back as NULL; ±Inf poisoned the row (every later read errored) | Fixed (`finiteNumber` guard) + pinned; details in [numeric-fidelity-matrix.md](numeric-fidelity-matrix.md) |

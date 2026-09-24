@@ -256,6 +256,8 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 	insertIDs := make([]int64, 0, len(records))
 	updateIDs := make([]int64, 0, len(records))
 	updateOwners := make([]string, 0, len(records))
+	stmts := newStmtCache(tx)
+	defer stmts.close()
 	for i := range plans {
 		p := plans[i]
 		matchID, matchOwner, err := matchByKey(ctx, tx, table, keyFields, keyDefs, p.keyVals, i, scope, sc)
@@ -293,7 +295,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 			if v, ok := embFor[i]; ok {
 				vec = v
 			}
-			id, err := execInsertWithFTS(ctx, tx, table, fts, p.rec, p.cols, p.vals, vec, stampOwner(sc, owner))
+			id, err := execInsertWithFTS(ctx, stmts, table, fts, p.rec, p.cols, p.vals, vec, stampOwner(sc, owner))
 			if err != nil {
 				return nil, 0, 0, ChangeRange{}, true, err
 			}
