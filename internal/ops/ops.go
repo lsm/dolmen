@@ -3,6 +3,7 @@ package ops
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 
@@ -17,14 +18,24 @@ type EmbeddingProvider interface {
 	EmbedQuery(ctx context.Context, text string) ([]float32, error)
 }
 
+const EmbedBatchSize = 64
+
 func Embedder(emb EmbeddingProvider) store.Embedder {
 	return store.Embedder{
 		Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
-			vecs, err := emb.Embed(ctx, texts)
-			if err != nil {
-				return nil, asProviderError(err)
+			out := make([][]float32, 0, len(texts))
+			for start := 0; start < len(texts); start += EmbedBatchSize {
+				end := min(start+EmbedBatchSize, len(texts))
+				vecs, err := emb.Embed(ctx, texts[start:end])
+				if err != nil {
+					return nil, asProviderError(err)
+				}
+				if len(vecs) != end-start {
+					return nil, asProviderError(fmt.Errorf("embedding provider returned %d vectors for %d texts", len(vecs), end-start))
+				}
+				out = append(out, vecs...)
 			}
-			return vecs, nil
+			return out, nil
 		},
 		Identity: emb.Identity(),
 	}
