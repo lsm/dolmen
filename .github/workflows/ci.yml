@@ -43,7 +43,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Namespace files, WAL, concurrency, shutdown, and the binary end to end
+      - name: Namespace files, WAL, concurrency, auth registry, shutdown; the binary end to end on macOS
         shell: bash
         run: |
           if [ "$(uname -s)" = Darwin ]; then export TMPDIR="$(cd "${RUNNER_TEMP}" && pwd -P)"; fi
