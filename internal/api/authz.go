@@ -166,6 +166,9 @@ func (s *Server) authorizeOp(ctx context.Context, op string, body []byte) error 
 		if rule.OwnRows && held.HasAny(dataVerbs...) && s.tableHasRowAccess(ctx, obj) {
 			return nil
 		}
+		if op == "query" {
+			return derr.New(derr.Forbidden, "%s; query needs read on the whole namespace, not on one table, because its SQL can reach every table in it, so read the table with read_rows or a search instead, or ask for read on the namespace", forbiddenMessage)
+		}
 		return forbidden403()
 	}
 	if op == "migrate" {
