@@ -31,6 +31,26 @@ jobs:
           go vet ./...
           go run .
 
+  platform-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Namespace files, WAL, concurrency, auth registry, shutdown; the binary end to end on macOS
+        shell: bash
+        run: |
+          if [ "$(uname -s)" = Darwin ]; then export TMPDIR="$(cd "${RUNNER_TEMP}" && pwd -P)"; fi
+          pkgs="./internal/store ./internal/auth ./cmd/dolmen"
+          if [ "$(uname -s)" = Darwin ]; then pkgs="$pkgs ./internal/blackbox"; fi
+          go test -count=1 $pkgs
+
   no-comments:
     runs-on: ubuntu-latest
     steps:

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -73,6 +74,9 @@ func TestListenStoreCloseEndsSessions(t *testing.T) {
 }
 
 func TestListenRecreateEndsPredecessorSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows refuses to delete a file another handle holds open")
+	}
 	st := openChangeStore(t)
 	insertNotes(t, st, 2)
 
@@ -272,6 +276,9 @@ func TestListenCloseReachesBackpressureParkedSession(t *testing.T) {
 }
 
 func TestListenRecreateReachesBackpressureParkedSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows refuses to delete a file another handle holds open")
+	}
 	st := openChangeStore(t)
 	ctx := context.Background()
 	total := ListenQueueBound + 2*MaxChangesPageLimit
