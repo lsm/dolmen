@@ -1019,7 +1019,7 @@ func TestSubscribeRouteRegistered(t *testing.T) {
 }
 
 func TestProxyRewriteAdvertisesThePublicPrefix(t *testing.T) {
-	h := newHarness(t)
+	h := newHarnessMode(t, authOffProxied)
 
 	req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/skills", nil)
 	if err != nil {
@@ -1049,7 +1049,7 @@ func TestProxyRewriteAdvertisesThePublicPrefix(t *testing.T) {
 }
 
 func TestProxyRewriteAdvertisesThePublicPrefixOnOpenAPI(t *testing.T) {
-	h := newHarness(t)
+	h := newHarnessMode(t, authOffProxied)
 
 	req, err := http.NewRequest(http.MethodGet, h.srv.URL+"/v1/openapi.json", nil)
 	if err != nil {
@@ -1075,5 +1075,41 @@ func TestProxyRewriteAdvertisesThePublicPrefixOnOpenAPI(t *testing.T) {
 	first, _ := servers[0].(map[string]any)
 	if got := first["url"]; got != "https://example.com/dolmen" {
 		t.Fatalf("openapi servers url = %v, want https://example.com/dolmen", got)
+	}
+}
+
+func TestAnUntrustedPeerCannotSteerThePublicURLs(t *testing.T) {
+	h := newHarness(t)
+	forged := func(path string, body io.Reader, method string) string {
+		req, err := http.NewRequest(method, h.srv.URL+path, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Forwarded-Proto", "https")
+		req.Header.Set("X-Forwarded-Host", "evil.example")
+		req.Header.Set("X-Forwarded-Prefix", "/phish")
+		req.Header.Set("Forwarded", "host=evil.example;proto=https")
+		req.Header.Set("X-Original-URI", "/phish"+path)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		raw, _ := io.ReadAll(res.Body)
+		return string(raw)
+	}
+	for _, c := range []struct{ path, method, body string }{
+		{"/skills", http.MethodGet, ""},
+		{"/v1/openapi.json", http.MethodGet, ""},
+		{"/mcp", http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`},
+	} {
+		got := forged(c.path, strings.NewReader(c.body), c.method)
+		if strings.Contains(got, "evil.example") || strings.Contains(got, "/phish") {
+			t.Fatalf("%s: a peer outside -trusted-proxies steered the advertised URL: %s", c.path, got)
+		}
+		if !strings.Contains(got, h.srv.URL) {
+			t.Fatalf("%s: want the request's own host %s advertised: %.300s", c.path, h.srv.URL, got)
+		}
 	}
 }

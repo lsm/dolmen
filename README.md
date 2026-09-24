@@ -417,7 +417,7 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 | `-pg-query-role` | `DOLMEN_PG_QUERY_ROLE` | — | Pre-provisioned restricted role that caller SQL runs as; required for the `query` op |
 | `-auth` | `DOLMEN_AUTH` | `off` | Authentication. `off` is the v0.2.0 behavior: no identity, no credential, bind to loopback. `on` is deny-by-default and refuses to start without an identity source and a reachable root administrator, which on first start means `DOLMEN_ADMIN_KEY` (see [Authentication](#authentication)) |
 | — | `DOLMEN_ADMIN_KEY` | — | Bootstrap admin credential. Needed with `-auth on` until another source yields a root administrator, and removable after the hand-over (see [Permissions](#permissions)). 32–256 characters of `[A-Za-z0-9_-]`, presented as `Authorization: Bearer <key>`. Environment only — flags are visible in process listings |
-| `-trusted-proxies` | `DOLMEN_TRUSTED_PROXIES` | — | Comma-separated CIDRs (bare IPs allowed) whose peers may assert `X-Dolmen-Principal` / `X-Dolmen-Groups`. Trust is decided from the immediate TCP peer, never from `X-Forwarded-For` |
+| `-trusted-proxies` | `DOLMEN_TRUSTED_PROXIES` | — | Comma-separated CIDRs (bare IPs allowed) whose peers may assert `X-Dolmen-Principal` / `X-Dolmen-Groups`. The same peers are the only ones whose forwarding headers (`X-Forwarded-Host`/`-Proto`/`-Prefix`, `Forwarded`, original-URI headers) shape the public links dolmen advertises; from other peers they are dropped. Trust is decided from the immediate TCP peer, never from `X-Forwarded-For` |
 | `-max-groups` | `DOLMEN_MAX_GROUPS` | `128` | Maximum group entries accepted per request, `1` to `1024`. An over-limit list fails the identity rather than dropping a group |
 | — | `DOLMEN_AUTH_OIDC_ISSUER` | — | Identity provider issuer URL. Enables sign-in at `/v1/auth/begin` (see [Signing in through an identity provider](#signing-in-through-an-identity-provider)) |
 | — | `DOLMEN_AUTH_OIDC_CLIENT_ID` | — | OAuth client id registered with the provider |
@@ -739,6 +739,16 @@ The proxy removes the sub-path before forwarding to dolmen. Set the public base
 URL explicitly or rely on forwarded headers (`X-Forwarded-Proto`,
 `X-Forwarded-Host`, `X-Forwarded-Prefix`).
 
+Forwarding headers count only from a peer listed in `-trusted-proxies` /
+`DOLMEN_TRUSTED_PROXIES`; from any other peer they are dropped, so a client
+cannot make dolmen advertise links to another host. For a proxy on the same
+machine, that means `DOLMEN_TRUSTED_PROXIES=127.0.0.1` (add `::1` if it connects
+over IPv6). With `-auth on`, a listed peer may also assert identity through
+`X-Dolmen-Principal` / `X-Dolmen-Groups`, so a proxy you trust only for its
+URL must remove those headers from what clients send
+(`proxy_set_header X-Dolmen-Principal "";` and the same for `X-Dolmen-Groups`
+in nginx).
+
 nginx:
 
 ```nginx
@@ -760,8 +770,9 @@ handle_path /dolmen/* {
 }
 ```
 
-With the forwarded header, no extra dolmen configuration is needed. If your
-proxy does not add `X-Forwarded-*` headers, set `DOLMEN_BASE_URL` to the full
+With the forwarded header and the proxy listed in `DOLMEN_TRUSTED_PROXIES`, no
+other dolmen configuration is needed. If your proxy does not add `X-Forwarded-*`
+headers, or you would rather not list it, set `DOLMEN_BASE_URL` to the full
 public URL instead:
 
 ```bash
@@ -776,9 +787,9 @@ one to get wrong, because nginx supplies none of the context dolmen needs:
 sends `X-Forwarded-Prefix` on its own. Left alone, dolmen advertises links to
 its own loopback address with no sub-path.
 
-Dolmen recovers the sub-path by itself when the proxy forwards the original
-request URI — nginx's `$request_uri` — so this config works without naming the
-prefix twice:
+Dolmen recovers the sub-path by itself when a trusted proxy forwards the
+original request URI — nginx's `$request_uri` — so this config, with
+`DOLMEN_TRUSTED_PROXIES=127.0.0.1`, works without naming the prefix twice:
 
 ```nginx
 location /dolmen/ {
