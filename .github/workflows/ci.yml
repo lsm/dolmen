@@ -46,7 +46,7 @@ jobs:
       - name: Namespace files, WAL, concurrency, shutdown, and the binary end to end
         shell: bash
         run: |
-          export TMPDIR="$(cd "${RUNNER_TEMP}" && pwd -P)"
+          if [ "$(uname -s)" = Darwin ]; then export TMPDIR="$(cd "${RUNNER_TEMP}" && pwd -P)"; fi
           go test -count=1 ./internal/store ./cmd/dolmen ./internal/blackbox
 
   no-comments:
