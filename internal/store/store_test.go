@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -240,6 +241,9 @@ func TestFTSShadowTableNamesRejected(t *testing.T) {
 }
 
 func TestStoragePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix permission bits; the README documents NTFS ACLs instead")
+	}
 	dir := t.TempDir()
 	st, err := Open(dir)
 	if err != nil {

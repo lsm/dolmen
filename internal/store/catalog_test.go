@@ -269,6 +269,7 @@ func TestCatalogGateToleratesAPreMetaNamespace(t *testing.T) {
 	db.Close()
 
 	st := &Store{dir: dir, mu: newCtxMutex(), nss: map[string]*nsDB{}, changeRetention: DefaultChangeRetention}
+	t.Cleanup(func() { st.Close() })
 	if _, err := st.ns("legacy"); err != nil {
 		t.Fatalf("a namespace with no meta table at all must still open: %v", err)
 	}

@@ -47,7 +47,9 @@ jobs:
         shell: bash
         run: |
           if [ "$(uname -s)" = Darwin ]; then export TMPDIR="$(cd "${RUNNER_TEMP}" && pwd -P)"; fi
-          go test -count=1 ./internal/store ./cmd/dolmen ./internal/blackbox
+          pkgs="./internal/store ./internal/auth ./cmd/dolmen"
+          if [ "$(uname -s)" = Darwin ]; then pkgs="$pkgs ./internal/blackbox"; fi
+          go test -count=1 $pkgs
 
   no-comments:
     runs-on: ubuntu-latest
