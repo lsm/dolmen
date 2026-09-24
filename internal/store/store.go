@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,7 +21,8 @@ import (
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -90,12 +92,13 @@ func (m *ctxMutex) Unlock() {
 }
 
 type Store struct {
-	dir     string
-	mu      ctxMutex
-	nss     map[string]*nsDB
-	maxOpen int
-	useTick uint64
-	sync    SyncMode
+	dir      string
+	mu       ctxMutex
+	nss      map[string]*nsDB
+	maxOpen  int
+	useTick  uint64
+	sync     SyncMode
+	maxBytes int64
 
 	unreadableMu sync.Mutex
 	unreadable   []string
@@ -147,6 +150,9 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 	s := &Store{dir: abs, mu: newCtxMutex(), nss: map[string]*nsDB{}, maxOpen: DefaultMaxOpenNamespaces, sync: DefaultSync, changeRetention: DefaultChangeRetention}
 	for _, opt := range opts {
 		opt(s)
+	}
+	if s.maxBytes < 0 {
+		return nil, fmt.Errorf("max namespace size must not be negative (0 means unbounded), got %d", s.maxBytes)
 	}
 	mode, err := ParseSyncMode(string(s.sync))
 	if err != nil {
@@ -314,7 +320,7 @@ func (s *Store) lockedNSCtx(ctx context.Context, name string) (*nsDB, error) {
 		return nil, invalidf("namespace %s: %s is not a regular file", name, path)
 	}
 	s.evictIdleLocked()
-	rw, err := sql.Open("sqlite", writerDSN(path, s.sync))
+	rw, err := s.openWriter(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -469,6 +475,10 @@ func (m SyncMode) pragma() int {
 	return 2
 }
 
+func WithMaxNamespaceSize(bytes int64) OpenOption {
+	return func(s *Store) { s.maxBytes = bytes }
+}
+
 func WithSync(m SyncMode) OpenOption {
 	return func(s *Store) { s.sync = m }
 }
@@ -490,13 +500,23 @@ func dsn(path string, readonly bool) string {
 	return u.String()
 }
 
+const walSizeLimit = 64 << 20
+
 func writerDSN(path string, m SyncMode) string {
+	return writerDSNPages(path, m, 0)
+}
+
+func writerDSNPages(path string, m SyncMode, maxPages int64) string {
 	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
 	q := url.Values{}
 	q.Add("_pragma", "busy_timeout(10000)")
 	q.Add("mode", "rw")
 	q.Add("_pragma", "journal_mode(WAL)")
 	q.Add("_pragma", fmt.Sprintf("synchronous(%d)", m.pragma()))
+	q.Add("_pragma", fmt.Sprintf("journal_size_limit(%d)", walSizeLimit))
+	if maxPages > 0 {
+		q.Add("_pragma", fmt.Sprintf("max_page_count(%d)", maxPages))
+	}
 	q.Add("_txlock", "immediate")
 	u.RawQuery = q.Encode()
 	return u.String()
@@ -887,4 +907,47 @@ func (s *Store) namespaceUnreadable(ctx context.Context, name string) bool {
 	defer ro.Close()
 	_, minReader, err := readCatalogVersion(ctx, ro)
 	return err != nil || minReader > CatalogFormat
+}
+
+func (s *Store) openWriter(ctx context.Context, path string) (*sql.DB, error) {
+	rw, err := sql.Open("sqlite", writerDSN(path, s.sync))
+	if err != nil || s.maxBytes <= 0 {
+		return rw, err
+	}
+	var pageSize int64
+	err = rw.QueryRowContext(ctx, `PRAGMA page_size`).Scan(&pageSize)
+	rw.Close()
+	if err != nil {
+		return nil, err
+	}
+	pages := s.maxBytes / pageSize
+	if pages < 1 {
+		pages = 1
+	}
+	return sql.Open("sqlite", writerDSNPages(path, s.sync, pages))
+}
+
+func ParseSize(raw string) (int64, error) {
+	t := strings.TrimSpace(raw)
+	units := []struct {
+		suffix string
+		mult   int64
+	}{{"TiB", 1 << 40}, {"GiB", 1 << 30}, {"MiB", 1 << 20}, {"KiB", 1 << 10}, {"B", 1}}
+	mult := int64(1)
+	for _, u := range units {
+		if strings.HasSuffix(t, u.suffix) {
+			t, mult = strings.TrimSpace(strings.TrimSuffix(t, u.suffix)), u.mult
+			break
+		}
+	}
+	n, err := strconv.ParseInt(t, 10, 64)
+	if err != nil || n < 0 || n > (1<<62)/mult {
+		return 0, fmt.Errorf("invalid size %q: use a whole number of bytes, optionally with KiB, MiB, GiB or TiB (0 means unbounded)", raw)
+	}
+	return n * mult, nil
+}
+
+func IsFull(err error) bool {
+	var se *sqlite.Error
+	return errors.As(err, &se) && se.Code()&0xff == sqlite3.SQLITE_FULL
 }
