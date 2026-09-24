@@ -111,6 +111,8 @@ type Store struct {
 
 	changeRetention time.Duration
 
+	tok tokenizer
+
 	closed   atomic.Bool
 	closeErr error
 }
@@ -210,6 +212,9 @@ func (s *Store) Close() error {
 	}
 	s.closed.Store(true)
 	s.closeErr = s.lockedClose()
+	if s.tok.db != nil {
+		s.tok.db.Close()
+	}
 	return s.closeErr
 }
 
@@ -487,7 +492,7 @@ func dsn(path string, readonly bool) string {
 	if !readonly {
 		return writerDSN(path, DefaultSync)
 	}
-	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	u := url.URL{Scheme: "file", Path: sqliteURIPath(path)}
 	q := url.Values{}
 	q.Add("_pragma", "busy_timeout(10000)")
 	if readonly {
@@ -507,7 +512,7 @@ func writerDSN(path string, m SyncMode) string {
 }
 
 func writerDSNPages(path string, m SyncMode, maxPages int64) string {
-	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	u := url.URL{Scheme: "file", Path: sqliteURIPath(path)}
 	q := url.Values{}
 	q.Add("_pragma", "busy_timeout(10000)")
 	q.Add("mode", "rw")
@@ -907,6 +912,17 @@ func (s *Store) namespaceUnreadable(ctx context.Context, name string) bool {
 	defer ro.Close()
 	_, minReader, err := readCatalogVersion(ctx, ro)
 	return err != nil || minReader > CatalogFormat
+}
+
+func sqliteURIPath(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	p := filepath.ToSlash(path)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return p
 }
 
 func (s *Store) openWriter(ctx context.Context, path string) (*sql.DB, error) {

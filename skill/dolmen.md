@@ -315,7 +315,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 
 ## Quick reference
 
-- Core tools: `describe_server`, `list_namespaces`, `list_tables`, `describe_table`, `insert`, `query`, `search_fulltext`, `search_vector`, `changes_since`, `wait_for`, `delete`.
+- Core tools: `describe_server`, `list_namespaces`, `list_tables`, `describe_table`, `insert`, `query`, `search_fulltext`, `tokenize`, `search_vector`, `changes_since`, `wait_for`, `delete`.
 - Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`, and `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field).
 - Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field — enables `search_vector` with `text`; the built-in `local` provider is enabled by default; set `DOLMEN_EMBED_PROVIDER=openai` for an external endpoint, or `none` to disable server-side embeddings), `required: true`, `enum: [values]` (closed vocabulary for a string field — writes with any other value are rejected naming the field, the value, and the allowed list; exact match, no case folding; a declared `default` must be a member).
 - `describe_server` reports the embedding provider status without attempting a write: `provider` (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, `usable`, and — for the `local` provider — `model_cached`, whether the model weights are complete on the server so no first-use download is needed (`false` means the first vectorized write or `text` search downloads a Hugging Face model, so it can take ten seconds or more and can fail transiently — retry, or pre-seed; with `DOLMEN_EMBED_MODEL` naming a directory, `false` means the directory is incomplete and no download repairs it). `vectorize` fields and `search_vector` `text` queries fail while `usable` is false; a table whose `embed_space` (see `describe_table`) differs from `identity` was embedded by a different provider/model and rejects inserts and text searches until it is re-embedded.
@@ -386,7 +386,9 @@ English words to stems, so plural/inflected terms just match (`payments` ↔ `pa
 same root but not different derivations — `paying`/`pays`/`paid` stem to `pai`/`paid` and do **not**
 match `payment`. Phrases match on stems (`"payments were"` matches `the payments were refunded`).
 Prefix queries operate on stems: `pay*` stems to `pai*`, matching `paid`/`paying`/`pays` but not
-`payment`. Stemming is English-focused. Tables created before stemming became the default keep
+`payment`. To see what a word stems to, call `tokenize` with the table and the word:
+`{"namespace": "…", "table": "…", "text": "overheating"}` returns `{"terms": ["overh"]}`, so
+search `overh*`, not `overheat*`. Stemming is English-focused. Tables created before stemming became the default keep
 their exact-token index (they keep working); reindex one with `migrate`:
 `{"op": "set_fulltext", "name": "<fulltext field>", "value": true}` — re-asserting `true` on an
 already-indexed field rebuilds the index under the current tokenizer.

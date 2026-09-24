@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -899,6 +900,9 @@ func TestCreateNamespaceConcurrentReservation(t *testing.T) {
 }
 
 func TestNamespaceFileRemovedOutOfBand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows refuses to delete a file another handle holds open")
+	}
 	st := openStore(t)
 	ctx := context.Background()
 	mustCreateNotes(t, st)

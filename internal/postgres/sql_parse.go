@@ -12,7 +12,7 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-var queryFunctions = wordSet("timezone abs ceil ceiling floor round trunc sqrt power exp ln log mod sign greatest least lower upper length char_length character_length octet_length trim btrim ltrim rtrim substring substr replace concat concat_ws left right strpos position reverse repeat split_part regexp_replace regexp_match regexp_matches regexp_split_to_array regexp_split_to_table format coalesce nullif count sum avg min max bool_and bool_or every string_agg array_agg json_agg jsonb_agg json_object_agg jsonb_object_agg json_build_object jsonb_build_object json_build_array jsonb_build_array json_array_length jsonb_array_length json_extract_path json_extract_path_text jsonb_extract_path jsonb_extract_path_text json_typeof jsonb_typeof json_array_elements json_array_elements_text jsonb_array_elements jsonb_array_elements_text json_each json_each_text jsonb_each jsonb_each_text to_json to_jsonb date_part date_trunc to_char to_date to_timestamp make_date make_time make_timestamp age overlaps now transaction_timestamp statement_timestamp clock_timestamp row_number rank dense_rank percent_rank cume_dist ntile lag lead first_value last_value nth_value generate_series unnest cardinality array_length array_position array_to_string string_to_array encode decode md5")
+var queryFunctions = wordSet("extract timezone abs ceil ceiling floor round trunc sqrt power exp ln log mod sign greatest least lower upper length char_length character_length octet_length trim btrim ltrim rtrim substring substr replace concat concat_ws left right strpos position reverse repeat split_part regexp_replace regexp_match regexp_matches regexp_split_to_array regexp_split_to_table format coalesce nullif count sum avg min max bool_and bool_or every string_agg array_agg json_agg jsonb_agg json_object_agg jsonb_object_agg json_build_object jsonb_build_object json_build_array jsonb_build_array json_array_length jsonb_array_length json_extract_path json_extract_path_text jsonb_extract_path jsonb_extract_path_text json_typeof jsonb_typeof json_array_elements json_array_elements_text jsonb_array_elements jsonb_array_elements_text json_each json_each_text jsonb_each jsonb_each_text to_json to_jsonb date_part date_trunc to_char to_date to_timestamp make_date make_time make_timestamp age overlaps now transaction_timestamp statement_timestamp clock_timestamp row_number rank dense_rank percent_rank cume_dist ntile lag lead first_value last_value nth_value generate_series unnest cardinality array_length array_position array_to_string string_to_array encode decode md5")
 var queryTypes = wordSet("bool boolean int2 int4 int8 smallint integer bigint float4 float8 real double numeric decimal text varchar bpchar char name bytea json jsonb date time timetz timestamp timestamptz interval")
 var queryOperators = wordSet("= <> != < <= > >= + - * / % || ~ ~* !~ !~* ~~ ~~* !~~ !~~* ^ & | # << >> -> ->> #> #>> @> <@ ? ?| ?& @? @@ &&")
 var queryMessages = wordSet("Node SelectStmt RangeVar RangeSubselect RangeFunction JoinExpr Alias ResTarget ColumnRef A_Star A_Const Integer Float String Boolean BitString ParamRef A_Expr BoolExpr NullTest BooleanTest TypeCast TypeName FuncCall CaseExpr CaseWhen CoalesceExpr MinMaxExpr SubLink List IntList OidList SortBy WindowDef GroupingSet RowExpr A_ArrayExpr A_Indices A_Indirection NamedArgExpr SQLValueFunction CollateClause CommonTableExpr WithClause")
@@ -66,6 +66,10 @@ type sqlCompiler struct {
 }
 
 func compileSQL(input string, argc int, namespace string, tables map[string]tableState) (string, *sqlNames, error) {
+	return compileSQLWithCasts(input, argc, namespace, tables, nil)
+}
+
+func compileSQLWithCasts(input string, argc int, namespace string, tables map[string]tableState, casts map[int32]string) (string, *sqlNames, error) {
 	names := newSQLNames(tables)
 	rewritten, count, err := rewriteSQL(input, names)
 	if err != nil {
@@ -84,6 +88,9 @@ func compileSQL(input string, argc int, namespace string, tables map[string]tabl
 	compiler := sqlCompiler{namespace: namespace, tables: tables, names: names, parameters: argc}
 	if err := compiler.walk(tree.Stmts[0].Stmt.ProtoReflect(), map[string]bool{}); err != nil {
 		return "", nil, err
+	}
+	if len(casts) > 0 {
+		castParameters(tree.Stmts[0].Stmt.ProtoReflect(), casts)
 	}
 	output, err := parser.Deparse(tree)
 	return output, names, err
@@ -227,4 +234,32 @@ func (c *sqlCompiler) walk(message protoreflect.Message, ctes map[string]bool) e
 		return true
 	})
 	return failure
+}
+
+func castParameters(message protoreflect.Message, casts map[int32]string) {
+	if node, ok := message.Interface().(*pg.Node); ok {
+		if param := node.GetParamRef(); param != nil {
+			if typ, ok := casts[param.Number]; ok {
+				node.Node = &pg.Node_TypeCast{TypeCast: &pg.TypeCast{
+					Arg:      &pg.Node{Node: &pg.Node_ParamRef{ParamRef: param}},
+					TypeName: &pg.TypeName{Names: []*pg.Node{pg.MakeStrNode("pg_catalog"), pg.MakeStrNode(typ)}, Typemod: -1},
+				}}
+				return
+			}
+		}
+	}
+	message.Range(func(field protoreflect.FieldDescriptor, value protoreflect.Value) bool {
+		switch {
+		case field.IsList():
+			list := value.List()
+			for i := 0; i < list.Len(); i++ {
+				if item, ok := list.Get(i).Interface().(protoreflect.Message); ok {
+					castParameters(item, casts)
+				}
+			}
+		case field.Message() != nil && !field.IsMap():
+			castParameters(value.Message(), casts)
+		}
+		return true
+	})
 }

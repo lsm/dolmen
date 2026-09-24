@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -100,6 +101,9 @@ func runMain(m *testing.M) int {
 		return 1
 	}
 	app.binPath = filepath.Join(binDir, "dolmen")
+	if runtime.GOOS == "windows" {
+		app.binPath += ".exe"
+	}
 	build := exec.Command(goBin, "build", "-o", app.binPath, "./cmd/dolmen")
 	build.Dir = root
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")

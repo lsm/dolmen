@@ -217,10 +217,44 @@ func seedStampedChanges(t *testing.T, st *Store, table string, ats []time.Time) 
 	}
 }
 
+const stampedRetention = time.Hour
+
 func openStampedStore(t *testing.T) *Store {
 	t.Helper()
+	return openStampedStoreFor(t, 40*time.Millisecond)
+}
+
+func ageOutSessions(t *testing.T, st *Store) {
+	t.Helper()
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.unpin()
+	shift := 3 * stampedRetention.Milliseconds()
+	if _, err := n.rw.Exec(`UPDATE _dolmen_cursor_tokens SET issued_at = issued_at - ?, chain_start = chain_start - ?`, shift, shift); err != nil {
+		t.Fatalf("age cursor tokens: %v", err)
+	}
+}
+
+func ageChanges(t *testing.T, st *Store, seqs ...int64) {
+	t.Helper()
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.unpin()
+	for _, seq := range seqs {
+		if _, err := n.rw.Exec(`UPDATE _dolmen_changes SET at = ? WHERE seq = ?`, isoChangeStamp(time.Now().Add(-3*stampedRetention)), seq); err != nil {
+			t.Fatalf("age change %d: %v", seq, err)
+		}
+	}
+}
+
+func openStampedStoreFor(t *testing.T, retention time.Duration) *Store {
+	t.Helper()
 	dir := t.TempDir()
-	st, err := Open(dir, WithChangeRetention(40*time.Millisecond))
+	st, err := Open(dir, WithChangeRetention(retention))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -243,12 +277,13 @@ func pruneWithReader(t *testing.T, st *Store) {
 }
 
 func TestListenReplayOutlivesRetention(t *testing.T) {
-	st := openStampedStore(t)
+	st := openStampedStoreFor(t, stampedRetention)
 	insertNotes(t, st, 3)
 
 	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
 	defer cancel()
-	time.Sleep(150 * time.Millisecond)
+	ageChanges(t, st, 1, 2, 3)
+	ageOutSessions(t, st)
 	pruneWithReader(t, st)
 
 	if _, _, _, err := replay.Next(context.Background()); !errors.Is(err, ErrCursorExpired) {
@@ -257,17 +292,14 @@ func TestListenReplayOutlivesRetention(t *testing.T) {
 }
 
 func TestListenReplayInteriorHoleFailsLoudly(t *testing.T) {
-	st := openStampedStore(t)
+	st := openStampedStoreFor(t, stampedRetention)
 
-	seedStampedChanges(t, st, "notes", []time.Time{
-		time.Now().Add(100 * time.Millisecond),
-		time.Now().Add(-200 * time.Millisecond),
-		time.Now().Add(100 * time.Millisecond),
-	})
+	seedStampedChanges(t, st, "notes", []time.Time{time.Now(), time.Now(), time.Now()})
 
 	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
 	defer cancel()
-	time.Sleep(150 * time.Millisecond)
+	ageChanges(t, st, 2)
+	ageOutSessions(t, st)
 	pruneWithReader(t, st)
 
 	if _, _, _, err := replay.Next(context.Background()); !errors.Is(err, ErrCursorExpired) {
@@ -276,17 +308,14 @@ func TestListenReplayInteriorHoleFailsLoudly(t *testing.T) {
 }
 
 func TestListenReplayMissingTailFailsLoudly(t *testing.T) {
-	st := openStampedStore(t)
+	st := openStampedStoreFor(t, stampedRetention)
 
-	seedStampedChanges(t, st, "notes", []time.Time{
-		time.Now().Add(100 * time.Millisecond),
-		time.Now().Add(-200 * time.Millisecond),
-		time.Now().Add(-200 * time.Millisecond),
-	})
+	seedStampedChanges(t, st, "notes", []time.Time{time.Now(), time.Now(), time.Now()})
 
 	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
 	defer cancel()
-	time.Sleep(150 * time.Millisecond)
+	ageChanges(t, st, 2, 3)
+	ageOutSessions(t, st)
 	pruneWithReader(t, st)
 
 	if _, _, _, err := replay.Next(context.Background()); !errors.Is(err, ErrCursorExpired) {
@@ -295,14 +324,15 @@ func TestListenReplayMissingTailFailsLoudly(t *testing.T) {
 }
 
 func TestListenChainRotatesBeforeCap(t *testing.T) {
-	st := openStampedStore(t)
+	const retention = 400 * time.Millisecond
+	st := openStampedStoreFor(t, retention)
 	ctx := context.Background()
 	insertNotes(t, st, 2)
 
 	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
 	defer cancel()
 
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(retention + retention/2)
 	replayed := drainReplay(t, replay)
 	if len(replayed) != 2 {
 		t.Fatalf("replay delivered %d records, want the 2-record backlog", len(replayed))
