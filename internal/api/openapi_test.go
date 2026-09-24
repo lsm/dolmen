@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -439,5 +440,16 @@ func TestOpenAPIIsStableJSON(t *testing.T) {
 	}
 	if string(raw1) != string(raw2) {
 		t.Fatalf("OpenAPIDoc must be deterministic")
+	}
+}
+
+func TestTheFullTextToolDescriptionDoesNotAssumeOneEngine(t *testing.T) {
+	op := Ops["search_fulltext"]
+	text := op.Description
+	if raw, err := json.Marshal(op.InputSchema); err == nil {
+		text += string(raw)
+	}
+	if strings.Contains(text, "FTS5") {
+		t.Fatalf("search_fulltext is served by SQLite and PostgreSQL alike, so its tool description must not teach FTS5 syntax: %s", text)
 	}
 }

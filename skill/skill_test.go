@@ -618,6 +618,9 @@ func TestAPostgreSQLServerServesPostgreSQLGuidance(t *testing.T) {
 				t.Fatalf("%s on a PostgreSQL server must say %q", name, want)
 			}
 		}
+		if strings.Contains(string(pg), "SQLite date/time functions") {
+			t.Fatalf("%s on a PostgreSQL server must not point at SQLite date/time functions", name)
+		}
 		if strings.Contains(string(pg), "### Full-text (FTS5) search syntax") {
 			t.Fatalf("%s on a PostgreSQL server must not teach FTS5 syntax", name)
 		}

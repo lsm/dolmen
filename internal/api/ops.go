@@ -1100,11 +1100,11 @@ var Ops = map[string]OpDef{
 		},
 	},
 	"search_fulltext": {
-		Description: "Full-text search over fields marked fulltext, using SQLite FTS5 MATCH syntax " +
-			"(e.g. \"payment\", \"credit refund\", \"status:ok AND retry\"). The index stems English words " +
-			"(porter over unicode61), so plural and inflected query terms match (payments <-> payment, refunds <-> refund); " +
-			"phrases and prefix terms operate on stems (pay* stems to pai*, matching paid/paying/pays but not payment). " +
-			"Returns matching records ordered by relevance (stable rowid tie-breaking). " +
+		Description: "Full-text search over fields marked fulltext (e.g. \"payment\", \"credit refund\", \"payment AND retry\", " +
+			"\"\\\"exact phrase\\\"\", \"pay*\"). The query is a search expression, not SQL. The index stems English words, " +
+			"so plural and inflected query terms match (payments <-> payment); the exact grammar, stemming and ranking depend on " +
+			"the storage engine (capabilities reports it), and the served skill documents this server's. " +
+			"Returns matching records ordered by relevance (stable id tie-breaking). " +
 			"Optional filter and args restrict matches to rows satisfying a SQL WHERE expression over the table's columns " +
 			"(same semantics as search_vector's filter) before ranking. " +
 			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array) " +
@@ -1117,7 +1117,7 @@ var Ops = map[string]OpDef{
 				"table":     existingTableProp("Table name"),
 				"query": map[string]any{
 					"type":        "string",
-					"description": "FTS5 MATCH expression",
+					"description": "Full-text search expression (not SQL); see the skill for this server's grammar",
 					"minLength":   1,
 					"pattern":     `\S`,
 				},

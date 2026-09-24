@@ -545,7 +545,7 @@ match, before ranking.
 - `id` is `AUTOINCREMENT` — monotonically increasing and never reused after deletes — so it is safe
   to key off across sessions.
 - `created_at` is a UTC millisecond ISO string, e.g. `2026-09-03T12:34:56.123Z`. Use string
-  comparisons or SQLite date/time functions.
+  comparisons or {{ if eq .Dialect "postgresql" }}cast it with `::timestamptz` as described above{{ else }}SQLite date/time functions{{ end }}.
 
 ### The `migrate` payload
 

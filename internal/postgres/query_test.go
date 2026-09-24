@@ -444,3 +444,21 @@ func TestPostgresCallerSQLSeesTheImplicitOwner(t *testing.T) {
 		t.Fatalf("SELECT owner returned %v", explicit.Rows)
 	}
 }
+
+func TestPostgresQueryRunsTheSkillsZonePinnedExample(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "papers", []schema.Field{{Name: "published_at", Type: schema.Timestamp}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "app", "papers", []map[string]any{{"published_at": "2026-01-01T02:00:00Z"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.Query(ctx, "app", "SELECT extract(year from (published_at::timestamptz AT TIME ZONE 'UTC')) AS y FROM papers", nil, [16]byte{}, store.Page{})
+	if err != nil || len(result.Rows) != 1 {
+		t.Fatalf("the PostgreSQL skill teaches this exact query to pin a zone, so it must run: %+v %v", result, err)
+	}
+}

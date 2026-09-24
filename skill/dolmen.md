@@ -430,7 +430,7 @@ The optional `filter` parameter is separate from the MATCH `query`: it is regula
 
 - Every row has `id` and `created_at`. You cannot supply them; they are assigned on insert and returned in reads.
 - `id` is `AUTOINCREMENT` — monotonically increasing and never reused after deletes — so it is safe to key off across sessions.
-- `created_at` is a UTC millisecond ISO string, e.g. `2026-09-03T12:34:56.123Z`. Use string comparisons or SQLite date/time functions.
+- `created_at` is a UTC millisecond ISO string, e.g. `2026-09-03T12:34:56.123Z`. Use string comparisons or {{ if eq .Dialect "postgresql" }}cast it with `::timestamptz` as described above{{ else }}SQLite date/time functions{{ end }}.
 
 ### Limits and guardrails
 
