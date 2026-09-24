@@ -164,13 +164,13 @@ The same call with a typo'd field name returns the error envelope:
 Searches answer with `results`, where `query` and `read_rows` answer with `rows`:
 
 ```json
-{"ok":true,"data":{"results":[{"id":1,"created_at":"2026-09-23T16:19:06.326Z","title":"auth flow","body":"token expiry not checked"}],"truncated":false}}
+{"ok":true,"data":{"results":[{"id":1,"created_at":"2026-09-23T16:19:06.326Z","title":"auth flow","body":"token expiry not checked"}],"truncated":false,"limit":10}}
 ```
 
 `search_vector` adds `_score` to each result and reports `skipped_vectors`:
 
 ```json
-{"ok":true,"data":{"results":[{"id":1,"created_at":"2026-09-23T16:19:06.326Z","title":"auth flow","body":"token expiry not checked","_score":0.9046}],"truncated":false,"skipped_vectors":0}}
+{"ok":true,"data":{"results":[{"id":1,"created_at":"2026-09-23T16:19:06.326Z","title":"auth flow","body":"token expiry not checked","_score":0.9046}],"truncated":false,"skipped_vectors":0,"limit":10}}
 ```
 
 ## JSON-RPC fallback

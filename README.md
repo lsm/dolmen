@@ -170,7 +170,7 @@ curl.exe -s http://127.0.0.1:8790/v1/search_fulltext -H "Content-Type: applicati
 Expected output:
 
 ```json
-{"ok":true,"data":{"results":[{"id":1,"created_at":"...","title":"first bug","detail":"token expiry not checked","score":0.75,"embedding":[0.5,0.25,-0.5,0.0]}],"truncated":false}}
+{"ok":true,"data":{"results":[{"id":1,"created_at":"...","title":"first bug","detail":"token expiry not checked","score":0.75,"embedding":[0.5,0.25,-0.5,0.0]}],"truncated":false,"limit":10}}
 ```
 
 Raw vector search on a caller-supplied embedding column (no provider needed; `text` queries instead

@@ -1078,7 +1078,6 @@ var Ops = map[string]OpDef{
 			},
 			"row_count": prop("integer", "Number of rows returned"),
 			"truncated": prop("boolean", "True when more results are available beyond the returned page (because the limit was reached or the response budget was hit)"),
-			"limit":     prop("integer", "The limit this search applied: the one requested, 10 when none was given, or 200 when a larger one was requested"),
 		}, "rows", "row_count", "truncated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req queryReq
@@ -1282,6 +1281,7 @@ var Ops = map[string]OpDef{
 			},
 			"truncated":       prop("boolean", "True when more results are available beyond the returned page (because the limit was reached or the response budget was hit)"),
 			"skipped_vectors": prop("integer", "Rows whose stored vector was corrupt or dimension-mismatched and could not be scored; nonzero means those rows are missing from results"),
+			"limit":           prop("integer", "The limit this search applied: the one requested, 10 when none was given, or 200 when a larger one was requested"),
 		}, "results", "truncated", "skipped_vectors"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			if longestVector(body, schema.MaxVectorDim) > schema.MaxVectorDim {
