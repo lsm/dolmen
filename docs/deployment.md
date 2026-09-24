@@ -241,3 +241,15 @@ before the answer or did not happen. The store is then closed, and a close or ch
 is reported alongside the drain result: the process exits non-zero if either failed. Each phase
 is logged with the number of requests still running.
 
+## Disk use
+
+`-max-namespace-size` (default `0`, unbounded) caps each namespace file, for example `10GiB`. A
+write that would grow a namespace past it is refused with `507` and writes nothing, so one busy
+namespace cannot fill the disk for the rest; reads keep working, and deleting rows frees room
+inside the file for later writes. The same `507` answers a write when the disk itself is full.
+
+Deleted rows leave free pages that later writes reuse, so a file does not shrink on its own. The
+write-ahead log beside it is trimmed back to at most 64 MiB after each checkpoint, so a burst of
+writes does not leave a large `-wal` file behind. To give space back to the filesystem, stop the
+server and run `sqlite3 <ns>.db 'VACUUM'`, or back up and restore the data directory.
+

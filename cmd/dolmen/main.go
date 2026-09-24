@@ -229,7 +229,7 @@ func openStore(cfg *config) (store.Engine, error) {
 		}
 		return st, nil
 	}
-	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention), store.WithMaxOpenNamespaces(cfg.MaxOpenNamespaces), store.WithSync(cfg.Sync))
+	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention), store.WithMaxOpenNamespaces(cfg.MaxOpenNamespaces), store.WithSync(cfg.Sync), store.WithMaxNamespaceSize(cfg.MaxNamespaceSize))
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
@@ -338,6 +338,7 @@ type config struct {
 	ChangeRetention    time.Duration
 	MaxSubscriptionAge time.Duration
 	Sync               store.SyncMode
+	MaxNamespaceSize   int64
 	ShutdownGrace      time.Duration
 	Timeouts           api.Timeouts
 	MaxOpenNamespaces  int
@@ -370,6 +371,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 
 	maxOpenDefault, maxOpenErr := envIntOr("DOLMEN_MAX_OPEN_NAMESPACES", store.DefaultMaxOpenNamespaces, getenv)
 	maxOpenNamespaces := fs.Int("max-open-namespaces", maxOpenDefault, "namespaces held open at once; past it, the least recently used idle namespace is closed until it is next used (at least 1; sqlite engine)")
+	maxNamespaceSize := fs.String("max-namespace-size", envOr("DOLMEN_MAX_NAMESPACE_SIZE", "0", getenv), "largest a namespace file may grow, e.g. 10GiB; a write past it is refused with 507 and nothing is written. 0 (default) is unbounded; sqlite engine")
 	syncMode := fs.String("sync", envOr("DOLMEN_SYNC", string(store.DefaultSync), getenv), "commit durability: full (an acknowledged commit survives power loss) or normal (it survives a process crash; the last commits before a power loss may be lost); sqlite engine")
 	shutdownGrace := fs.String("shutdown-grace", envOr("DOLMEN_SHUTDOWN_GRACE", "60s", getenv), "on SIGTERM, how long running requests may finish before they are cancelled: 0 waits for them without a bound, otherwise 1s to 24h")
 	changeRetention := fs.String("change-retention", envOr("DOLMEN_CHANGE_RETENTION", "168h", getenv), "change-log retention: 0 disables pruning (records and cursors never expire); otherwise 1h to 2160h")
@@ -512,6 +514,13 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		return nil, &printedError{err}
 	}
 
+	nsSize, err := store.ParseSize(*maxNamespaceSize)
+	if err != nil {
+		fmt.Fprintf(out, "config: %v\n", err)
+		fs.Usage()
+		return nil, &printedError{err}
+	}
+
 	sync, err := store.ParseSyncMode(*syncMode)
 	if err != nil {
 		fmt.Fprintf(out, "config: %v\n", err)
@@ -586,6 +595,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		ChangeRetention:    retention,
 		MaxSubscriptionAge: maxAge,
 		Sync:               sync,
+		MaxNamespaceSize:   nsSize,
 		ShutdownGrace:      grace,
 		Timeouts:           timeouts,
 		MaxOpenNamespaces:  *maxOpenNamespaces,
@@ -710,6 +720,7 @@ func printEnvHelp(out io.Writer) {
 		{"DOLMEN_ALLOWED_ORIGINS", "comma-separated allowed HTTP origins for CORS"},
 		{"DOLMEN_BASE_URL", "public base URL for skills and MCP links (default: use request Host)"},
 		{"DOLMEN_SKILL_NAMESPACE_HINT", "hint text rendered into skill markdown"},
+		{"DOLMEN_MAX_NAMESPACE_SIZE", "largest a namespace file may grow, e.g. 10GiB; 0 (default) is unbounded"},
 		{"DOLMEN_SYNC", "commit durability: full (default; survives power loss) or normal (survives a process crash)"},
 		{"DOLMEN_SHUTDOWN_GRACE", "on SIGTERM, time running requests may finish: 0 waits unbounded, else 1s to 24h (default 60s)"},
 		{"DOLMEN_CHANGE_RETENTION", "change-log retention: 0 disables pruning, else 1h to 2160h (default 168h)"},
