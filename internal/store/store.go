@@ -574,13 +574,13 @@ func loadSchema(ctx context.Context, db rowQuerier, nsName, table string) (*sche
 }
 
 func saveSchemaTx(ctx context.Context, tx *sql.Tx, nsName string, sc *schema.TableSchema, fromVersion int, changes any) error {
-	raw, err := json.Marshal(sc)
+	raw, err := encodeSchemaOver(ctx, tx, sc.Name, sc, RenamesOf(changes))
 	if err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE _dolmen_tables SET version = ?, schema_json = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE name = ?`,
-		sc.Version, string(raw), sc.Name); err != nil {
+		sc.Version, raw, sc.Name); err != nil {
 		return err
 	}
 	cj, err := json.Marshal(changes)
