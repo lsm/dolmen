@@ -79,7 +79,8 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	live := make(chan store.ChangeRecord, 1)
 	ended := make(chan error, 1)
-	replay, cancel, err := s.eng.Listen(ctx, ns, table, cursor, [16]byte{}, s.liveAuthz(r, ns),
+	authz := s.liveAuthz(r, ns)
+	replay, cancel, err := s.eng.Listen(ctx, ns, table, cursor, [16]byte{}, authz,
 		func(rec store.ChangeRecord) {
 			select {
 			case live <- rec:
@@ -179,6 +180,12 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 			closeWith(subscribeErr(cause))
 			return
 		case <-keepalive:
+			if authz != nil {
+				if _, _, ok := authz(table); !ok {
+					closeWith(subscribeErr(store.ErrListenRevoked))
+					return
+				}
+			}
 			if !sseComment(w, ": keepalive") {
 				return
 			}

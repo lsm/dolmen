@@ -216,8 +216,12 @@ The same grant language drives both, so choose by what must stay private:
   cross into it.
 - **Logical**: one table with `row_access: "own"` when people share the table but keep their rows
   private. Everyone gets the same data verbs on the table (`create`, `update`, `delete`), and each
-  sees their own rows. Do not grant `read` to the people a `row_access` table keeps apart: `read`
-  shows every owner's rows, so it is for whoever should see all of them, such as the developer.
+  sees their own rows.
+
+  **Never grant `read` to the people a `row_access` table keeps apart.** `read` shows every
+  owner's rows, even alongside other verbs, so "create and read, own rows only" is not a grant
+  that exists: grant `create` (plus `update`/`delete`) for own rows, and `read` only to whoever
+  should see all of them, such as an auditor or the developer.
 
 Do not create a namespace per user. It multiplies namespaces and rules out shared tables, such as
 usage telemetry where every user appends with `create` and only the developer holds `read`.

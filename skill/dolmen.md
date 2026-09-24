@@ -281,7 +281,8 @@ send only the `error` event, since nothing was delivered. The messages are the r
 - Target ended: `the subscription's target ended (a dropped table, or a dropped or replaced
   namespace); reconnect against the current target — a same-named successor is a different feed`
 - Authorization revoked: `subscription authorization was revoked; reconnect once authorization is
-  restored`
+  restored`. The server rechecks access on every change it delivers and on every keepalive (every 20 seconds),
+  so a revoked caller's stream ends within about 20 seconds even when nothing is being written.
 - Own-row feed over unlabelled history: `this feed still retains changes recorded before rows
   carried an owner, and a caller restricted to their own rows cannot be shown them or told they
   were skipped; subscribe without a cursor to start at the current head, or ask for the read verb

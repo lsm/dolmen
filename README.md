@@ -589,6 +589,11 @@ sees then depends on the verbs they hold on the table:
 | any of `create`, `update`, `delete` | only the rows they wrote |
 | only `schema` or `admin` | no rows; `describe_table` reports `row_count` 0 |
 
+> **Never grant `read` to the people a `row_access` table keeps apart.** `read`
+> shows every owner's rows, even alongside other verbs. For "each person sees
+> only their own rows", grant `create` (plus `update`/`delete` if they edit), and
+> keep `read` for whoever should see everyone's rows, such as an auditor.
+
 Own-row visibility rides with **any** data verb, so a `create`-only appender can
 search back what it appended without being able to read anyone else's rows.
 When teams must not see each other's schema at all, a sub-namespace per team is
@@ -980,7 +985,8 @@ a missing table — send only the `error` event, since nothing was delivered. Th
 - Target ended: "the subscription's target ended (a dropped table, or a dropped or replaced
   namespace); reconnect against the current target — a same-named successor is a different feed"
 - Authorization revoked: "subscription authorization was revoked; reconnect once authorization
-  is restored"
+  is restored". The server rechecks access on every change it delivers and on every keepalive (every 20 seconds),
+  so a revoked caller's stream ends within about 20 seconds even when nothing is being written.
 - Subscription age bound (`-max-subscription-age`, default 30m): "subscription reached the
   maximum subscription age (-max-subscription-age, default 30m); reconnect from the cursor in
   the preceding close frame to resume exactly where this stream ended — the fresh connection
