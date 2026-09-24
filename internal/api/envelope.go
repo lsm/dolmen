@@ -269,6 +269,9 @@ func wrapStoreErr(err error) *Error {
 	if errors.As(err, &apiErr) {
 		return apiErr
 	}
+	if store.IsFull(err) {
+		return &Error{Status: http.StatusInsufficientStorage, Code: ErrCodeInternal, Message: "the namespace reached its size limit (-max-namespace-size) or the disk is full, so nothing was written; delete rows, or have the operator raise the limit or free disk space", Cause: err}
+	}
 	var cve *store.CatalogVersionError
 	if errors.As(err, &cve) {
 		return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: cve.Error(), Cause: err}

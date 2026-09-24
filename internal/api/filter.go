@@ -8,6 +8,9 @@ import (
 )
 
 func (s *Server) checkFilter(sc *schema.TableSchema, expr string, args []any) error {
+	if err := scalarArgs(args); err != nil {
+		return err
+	}
 	if !s.authn.On() || sc == nil || strings.TrimSpace(expr) == "" {
 		return nil
 	}
@@ -27,4 +30,21 @@ func filterColumns(sc *schema.TableSchema) []string {
 		cols = append(cols, schema.OwnerColumn)
 	}
 	return cols
+}
+
+func scalarArgs(args []any) error {
+	for i, arg := range args {
+		switch arg.(type) {
+		case []any, map[string]any:
+			return badRequest("args[%d] is %s, but a bound argument must be a string, number, boolean or null; pass a JSON value as a string and parse it in SQL", i, jsonKind(arg))
+		}
+	}
+	return nil
+}
+
+func jsonKind(v any) string {
+	if _, ok := v.([]any); ok {
+		return "an array"
+	}
+	return "an object"
 }

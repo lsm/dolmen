@@ -230,12 +230,12 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 				break
 			}
 		}
-		raw, err := json.Marshal(sc)
+		raw, err := encodeSchemaOver(ctx, tx, table, sc, nil)
 		if err != nil {
 			return nil, ChangeRange{}, false, true, err
 		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE _dolmen_tables SET schema_json = ? WHERE name = ?`, string(raw), table); err != nil {
+			`UPDATE _dolmen_tables SET schema_json = ? WHERE name = ?`, raw, table); err != nil {
 			return nil, ChangeRange{}, false, true, err
 		}
 	}
