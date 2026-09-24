@@ -210,6 +210,10 @@ var PublicURLVaryHeader = strings.Join(append([]string{
 	"Host", "Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Forwarded-Prefix",
 }, originalURIHeaders...), ", ")
 
+var ForwardingHeaders = append([]string{
+	"Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Forwarded-Prefix",
+}, originalURIHeaders...)
+
 var originalURIHeaders = []string{
 	"X-Forwarded-Uri",
 	"X-Original-Uri",
@@ -317,7 +321,7 @@ func UnreachableBaseURL(base string) bool {
 	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
 }
 
-const ProxyAdvice = "the public links dolmen advertises (the skills manifest, the skill markdown, openapi.json servers, and the MCP initialize instructions) are built from this request, and it arrived through a proxy that did not say what the public URL is; set DOLMEN_BASE_URL to the full public URL, or have the proxy send Host/X-Forwarded-Host, X-Forwarded-Proto, and X-Forwarded-Prefix (nginx defaults Host to the upstream address and never sends X-Forwarded-Prefix on its own)"
+const ProxyAdvice = "the public links dolmen advertises (the skills manifest, the skill markdown, openapi.json servers, and the MCP initialize instructions) are built from this request, and it arrived through a proxy that did not say what the public URL is; set DOLMEN_BASE_URL to the full public URL, or list the proxy in DOLMEN_TRUSTED_PROXIES and have it send Host/X-Forwarded-Host, X-Forwarded-Proto, and X-Forwarded-Prefix (forwarding headers from unlisted peers are dropped; nginx defaults Host to the upstream address and never sends X-Forwarded-Prefix on its own)"
 
 var hostLabelRe = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$`)
 

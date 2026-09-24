@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -257,6 +256,8 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 	insertIDs := make([]int64, 0, len(records))
 	updateIDs := make([]int64, 0, len(records))
 	updateOwners := make([]string, 0, len(records))
+	stmts := newStmtCache(tx)
+	defer stmts.close()
 	for i := range plans {
 		p := plans[i]
 		matchID, matchOwner, err := matchByKey(ctx, tx, table, keyFields, keyDefs, p.keyVals, i, scope, sc)
@@ -294,7 +295,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 			if v, ok := embFor[i]; ok {
 				vec = v
 			}
-			id, err := execInsertWithFTS(ctx, tx, table, fts, p.rec, p.cols, p.vals, vec, stampOwner(sc, owner))
+			id, err := execInsertWithFTS(ctx, stmts, table, fts, p.rec, p.cols, p.vals, vec, stampOwner(sc, owner))
 			if err != nil {
 				return nil, 0, 0, ChangeRange{}, true, err
 			}
@@ -354,12 +355,12 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 				break
 			}
 		}
-		raw, err := json.Marshal(sc)
+		raw, err := encodeSchemaOver(ctx, tx, table, sc, nil)
 		if err != nil {
 			return nil, 0, 0, ChangeRange{}, true, err
 		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE _dolmen_tables SET schema_json = ? WHERE name = ?`, string(raw), table); err != nil {
+			`UPDATE _dolmen_tables SET schema_json = ? WHERE name = ?`, raw, table); err != nil {
 			return nil, 0, 0, ChangeRange{}, true, err
 		}
 	}

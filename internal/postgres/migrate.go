@@ -865,6 +865,9 @@ func (s *Store) saveMigration(ctx context.Context, tx pgx.Tx, n namespace, curre
 	if err != nil {
 		return err
 	}
+	if raw, err = s.keepUnknownKeys(ctx, tx, n.name, current.incarnation.Table, raw, store.RenamesOf(changes)); err != nil {
+		return err
+	}
 	columnJSON, err := json.Marshal(work.columns)
 	if err != nil {
 		return err

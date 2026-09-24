@@ -745,3 +745,28 @@ func TestAMissingTableSaysWhereToLookAndAnImpossibleNameIsInvalid(t *testing.T) 
 		}
 	}
 }
+
+func TestANonScalarArgumentIsInvalidRequestOnEveryOperation(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("argshape", "t", []map[string]any{{"name": "body", "type": "text", "fulltext": true}, {"name": "v", "type": "vector", "dim": 2}})
+	for _, arg := range []any{[]any{1, 2}, map[string]any{"a": 1}} {
+		for _, c := range []struct {
+			op   string
+			body map[string]any
+		}{
+			{"query", map[string]any{"namespace": "argshape", "sql": "SELECT ? AS a"}},
+			{"delete", map[string]any{"namespace": "argshape", "table": "t", "filter": "body = ?", "dry_run": true}},
+			{"update", map[string]any{"namespace": "argshape", "table": "t", "filter": "body = ?", "set": map[string]any{"body": "x"}}},
+			{"search_fulltext", map[string]any{"namespace": "argshape", "table": "t", "query": "x", "filter": "body = ?"}},
+			{"search_vector", map[string]any{"namespace": "argshape", "table": "t", "vector": []float64{1, 0}, "column": "v", "filter": "body = ?"}},
+		} {
+			c.body["args"] = []any{arg}
+			status, out := h.httpCall(c.op, c.body)
+			errObj := envelopeOf(t, out)
+			msg, _ := errObj["message"].(string)
+			if status != http.StatusBadRequest || errObj["code"] != "invalid_request" || !strings.Contains(msg, "args[0]") {
+				t.Fatalf("%s with a %T argument: the schema allows only string, number, boolean or null, so this must be invalid_request naming args[0], got %d %v", c.op, arg, status, errObj)
+			}
+		}
+	}
+}

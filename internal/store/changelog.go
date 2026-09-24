@@ -28,13 +28,15 @@ func mintChanges(ctx context.Context, tx *sql.Tx, table string, kind ChangeKind,
 		return ChangeRange{}, err
 	}
 	var first, last int64
+	stmts := newStmtCache(tx)
+	defer stmts.close()
 	for i, id := range ids {
 
 		var owner any
 		if owners != nil && owners[i] != "" {
 			owner = owners[i]
 		}
-		res, err := tx.ExecContext(ctx,
+		res, err := stmts.ExecContext(ctx,
 			`INSERT INTO _dolmen_changes(table_name, row_id, kind, owner, nsgen, drop_gen) VALUES(?,?,?,?,?,?)`,
 			table, id, string(kind), owner, nsGen[:], gen)
 		if err != nil {
