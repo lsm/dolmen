@@ -191,13 +191,16 @@ func (sess *listenSession) fillBatch() (read int, err error) {
 	}
 	wasEmpty := len(sess.queue) == 0
 	sess.queue = append(sess.queue, admitted...)
+	if len(admitted) > 0 {
+		sess.cond.Broadcast()
+	}
 
-	over := len(sess.queue) > ListenQueueBound
+	over := len(sess.queue) > sess.bound()
 	short := len(scanned) < MaxChangesPageLimit
 
 	for over && ended && !sess.dead {
 		sess.cond.Wait()
-		over = len(sess.queue) > ListenQueueBound
+		over = len(sess.queue) > sess.bound()
 	}
 	dead := sess.dead
 	if ended && short {
@@ -347,4 +350,11 @@ func (sess *listenSession) protectQueue() {
 	sess.mu.Lock()
 	sess.queueChain = replacement
 	sess.mu.Unlock()
+}
+
+func (sess *listenSession) bound() int {
+	if sess.queueBound > 0 {
+		return sess.queueBound
+	}
+	return ListenQueueBound
 }
