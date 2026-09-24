@@ -1087,6 +1087,9 @@ var Ops = map[string]OpDef{
 			if utf8.RuneCountInString(req.SQL) > store.MaxQueryRunes {
 				return nil, badRequest("sql exceeds %d characters", store.MaxQueryRunes)
 			}
+			if err := scalarArgs(req.Args); err != nil {
+				return nil, err
+			}
 			ns := normNS(req.Namespace)
 			res, err := s.eng.Query(ctx, ns, req.SQL, req.Args, [16]byte{},
 				store.Page{Offset: req.Offset, Limit: req.Limit})
