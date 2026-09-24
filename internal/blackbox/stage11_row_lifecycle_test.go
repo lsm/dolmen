@@ -185,12 +185,12 @@ func TestStage11RowLifecycleAndPinnedErrors(t *testing.T) {
 	}
 
 	code, envelope = opErrorEnvelope(t, "read_rows", map[string]any{"namespace": stage11Namespace, "table": "sqlite_meta", "ids": []any{1}})
-	if code != 404 {
-		t.Fatalf("a reserved table prefix must be not_found, got %d %v", code, envelope)
+	if code != 400 {
+		t.Fatalf("a reserved table prefix must be invalid_request, got %d %v", code, envelope)
 	}
 	errObj, _ = envelope["error"].(map[string]any)
-	if errObj == nil || asStr(t, errObj["code"], "reserved-table code") != "not_found" {
-		t.Fatalf("a reserved table prefix must read not_found, got %v", envelope)
+	if errObj == nil || asStr(t, errObj["code"], "reserved-table code") != "invalid_request" {
+		t.Fatalf("a reserved table prefix must read invalid_request, got %v", envelope)
 	}
 
 	caps := op(t, "capabilities", map[string]any{})
