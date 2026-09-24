@@ -643,7 +643,7 @@ func TestTheAdminSkillWarnsThatReadDefeatsPerRowPrivacy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), "Do not grant `read` to the people a `row_access` table keeps apart") {
+	if !strings.Contains(string(out), "Never grant `read` to the people a `row_access` table keeps apart") {
 		t.Fatal("dolmen-admin must warn that granting read on a row_access table shows every row to that caller")
 	}
 }
