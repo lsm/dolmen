@@ -68,7 +68,7 @@ func run() error {
 		return nil
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel})))
 
 	st, err := openStore(cfg)
 	if err != nil {
@@ -184,7 +184,7 @@ func runStdio(args []string) error {
 		return nil
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel})))
 
 	st, err := openStore(cfg)
 	if err != nil {
@@ -338,6 +338,7 @@ type config struct {
 	ChangeRetention    time.Duration
 	MaxSubscriptionAge time.Duration
 	Sync               store.SyncMode
+	LogLevel           slog.Level
 	ShutdownGrace      time.Duration
 	Timeouts           api.Timeouts
 	MaxOpenNamespaces  int
@@ -370,6 +371,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 
 	maxOpenDefault, maxOpenErr := envIntOr("DOLMEN_MAX_OPEN_NAMESPACES", store.DefaultMaxOpenNamespaces, getenv)
 	maxOpenNamespaces := fs.Int("max-open-namespaces", maxOpenDefault, "namespaces held open at once; past it, the least recently used idle namespace is closed until it is next used (at least 1; sqlite engine)")
+	logLevel := fs.String("log-level", envOr("DOLMEN_LOG_LEVEL", "info", getenv), "log verbosity: debug (adds one line per operation: op, outcome, status, duration, request size, request id), info (default), warn, or error")
 	syncMode := fs.String("sync", envOr("DOLMEN_SYNC", string(store.DefaultSync), getenv), "commit durability: full (an acknowledged commit survives power loss) or normal (it survives a process crash; the last commits before a power loss may be lost); sqlite engine")
 	shutdownGrace := fs.String("shutdown-grace", envOr("DOLMEN_SHUTDOWN_GRACE", "60s", getenv), "on SIGTERM, how long running requests may finish before they are cancelled: 0 waits for them without a bound, otherwise 1s to 24h")
 	changeRetention := fs.String("change-retention", envOr("DOLMEN_CHANGE_RETENTION", "168h", getenv), "change-log retention: 0 disables pruning (records and cursors never expire); otherwise 1h to 2160h")
@@ -512,6 +514,14 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		return nil, &printedError{err}
 	}
 
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(strings.TrimSpace(*logLevel))); err != nil || !knownLogLevel(level) {
+		e := fmt.Errorf("invalid log level %q: use debug, info, warn, or error", *logLevel)
+		fmt.Fprintf(out, "config: %v\n", e)
+		fs.Usage()
+		return nil, &printedError{e}
+	}
+
 	sync, err := store.ParseSyncMode(*syncMode)
 	if err != nil {
 		fmt.Fprintf(out, "config: %v\n", err)
@@ -586,6 +596,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		ChangeRetention:    retention,
 		MaxSubscriptionAge: maxAge,
 		Sync:               sync,
+		LogLevel:           level,
 		ShutdownGrace:      grace,
 		Timeouts:           timeouts,
 		MaxOpenNamespaces:  *maxOpenNamespaces,
@@ -710,6 +721,7 @@ func printEnvHelp(out io.Writer) {
 		{"DOLMEN_ALLOWED_ORIGINS", "comma-separated allowed HTTP origins for CORS"},
 		{"DOLMEN_BASE_URL", "public base URL for skills and MCP links (default: use request Host)"},
 		{"DOLMEN_SKILL_NAMESPACE_HINT", "hint text rendered into skill markdown"},
+		{"DOLMEN_LOG_LEVEL", "log verbosity: debug (adds a line per operation), info (default), warn, or error"},
 		{"DOLMEN_SYNC", "commit durability: full (default; survives power loss) or normal (survives a process crash)"},
 		{"DOLMEN_SHUTDOWN_GRACE", "on SIGTERM, time running requests may finish: 0 waits unbounded, else 1s to 24h (default 60s)"},
 		{"DOLMEN_CHANGE_RETENTION", "change-log retention: 0 disables pruning, else 1h to 2160h (default 168h)"},
@@ -781,4 +793,12 @@ func withPrefix(prefix string, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r2)
 	})
+}
+
+func knownLogLevel(l slog.Level) bool {
+	switch l {
+	case slog.LevelDebug, slog.LevelInfo, slog.LevelWarn, slog.LevelError:
+		return true
+	}
+	return false
 }
