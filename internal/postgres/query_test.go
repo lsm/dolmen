@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
+	"github.com/lsm/dolmen/skill"
 )
 
 func TestPostgresQueryNamespaceBoundary(t *testing.T) {
@@ -483,7 +485,8 @@ func TestPostgresQueryRunsTheSkillsZonePinnedExample(t *testing.T) {
 	if _, err := s.Insert(ctx, "app", "papers", []map[string]any{{"published_at": "2026-01-01T02:00:00Z"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := s.Query(ctx, "app", "SELECT extract(year from (published_at::timestamptz AT TIME ZONE 'UTC')) AS y FROM papers", nil, [16]byte{}, store.Page{})
+	expr := skillExample(t, "`(extract\\(year from \\(published_at[^`]*)`")
+	result, err := s.Query(ctx, "app", "SELECT "+expr+" AS y FROM papers", nil, [16]byte{}, store.Page{})
 	if err != nil || len(result.Rows) != 1 {
 		t.Fatalf("the PostgreSQL skill teaches this exact query to pin a zone, so it must run: %+v %v", result, err)
 	}
@@ -502,8 +505,23 @@ func TestPostgresQueryRunsTheSkillsDayBucketingExample(t *testing.T) {
 	if _, err := s.Insert(ctx, "app", "meetings", []map[string]any{{"started_at": recent}, {"started_at": recent}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := s.Query(ctx, "app", "SELECT date_trunc('day', started_at::timestamptz AT TIME ZONE 'UTC') AS day, count(*) FROM meetings WHERE started_at::timestamptz > now() - interval '14 days' GROUP BY 1 ORDER BY 1", nil, [16]byte{}, store.Page{})
+	result, err := s.Query(ctx, "app", skillExample(t, "`(SELECT date_trunc[^`]*)`"), nil, [16]byte{}, store.Page{})
 	if err != nil || len(result.Rows) != 1 || result.Rows[0]["count"] != int64(2) {
 		t.Fatalf("the PostgreSQL skill teaches this exact per-day query, so it must run: %+v %v", result, err)
 	}
+}
+
+func skillExample(t *testing.T, pattern string) string {
+	t.Helper()
+	for _, name := range []string{"dolmen", "dolmen-admin"} {
+		out, err := skill.Render(name, skill.Context{BaseURL: "http://h", MCPURL: "http://h/mcp", Version: "v", NamespaceHint: skill.DefaultNamespaceHint, Dialect: "postgresql"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m := regexp.MustCompile(pattern).FindStringSubmatch(string(out)); m != nil {
+			return strings.Join(strings.Fields(m[1]), " ")
+		}
+	}
+	t.Fatalf("no example matching %s in the PostgreSQL skills; the test must run what the skill teaches", pattern)
+	return ""
 }
