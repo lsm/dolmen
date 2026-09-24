@@ -55,6 +55,7 @@ var inferEvidenceSchema = map[string]any{
 
 var outputSchemas = map[string]map[string]any{
 	"list_tables":    objectSchema(false, map[string]any{"tables": arrayOf(map[string]any{"type": "string"})}, []string{"tables"}),
+	"tokenize":       objectSchema(false, map[string]any{"terms": arrayOf(map[string]any{"type": "string"})}, []string{"terms"}),
 	"describe_table": objectSchema(false, map[string]any{"table": ref("TableSchema"), "row_count": integer(0)}, []string{"table", "row_count"}),
 	"create_table":   objectSchema(false, map[string]any{"table": ref("TableSchema")}, []string{"table"}),
 	"infer_schema": objectSchema(false, map[string]any{

@@ -37,6 +37,7 @@ type Engine interface {
 	CreateTable(ctx context.Context, ns, table string, fields []schema.Field, opts TableOpts, nsGen [16]byte) (*schema.TableSchema, error)
 
 	DescribeTable(ctx context.Context, ns, table string, scope *RowScope, scopeIncarnation Incarnation) (*schema.TableSchema, int64, error)
+	Tokenize(ctx context.Context, ns, table, text string, scopeIncarnation Incarnation) ([]string, error)
 
 	DropTable(ctx context.Context, ns, table string, inc Incarnation) error
 

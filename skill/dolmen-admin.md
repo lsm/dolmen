@@ -431,7 +431,9 @@ English words to stems, so plural/inflected terms just match (`payments` ↔ `pa
 same root but not different derivations — `paying`/`pays`/`paid` stem to `pai`/`paid` and do **not**
 match `payment`. Phrases match on stems (`"payments were"` matches `the payments were refunded`).
 Prefix queries operate on stems: `pay*` stems to `pai*`, matching `paid`/`paying`/`pays` but not
-`payment`. Stemming is English-focused. Tables created before stemming became the default keep
+`payment`. To see what a word stems to, call `tokenize` with the table and the word:
+`{"namespace": "…", "table": "…", "text": "overheating"}` returns `{"terms": ["overh"]}`, so
+search `overh*`, not `overheat*`. Stemming is English-focused. Tables created before stemming became the default keep
 their exact-token index (they keep working); reindex one with `migrate`:
 `{"op": "set_fulltext", "name": "<fulltext field>", "value": true}` — re-asserting `true` on an
 already-indexed field rebuilds the index under the current tokenizer.
