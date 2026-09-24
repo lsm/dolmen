@@ -560,3 +560,32 @@ func TestTokenizeShowsTheTermsTheIndexStores(t *testing.T) {
 		t.Fatalf("tokenize on a table without an index must say how to add one: %d %v", status, out)
 	}
 }
+
+func TestSearchesReportTheLimitTheyApplied(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("lim", "t", []map[string]any{
+		{"name": "title", "type": "string", "fulltext": true},
+		{"name": "v", "type": "vector", "dim": 2},
+	})
+	h.mustHTTP("insert", map[string]any{"namespace": "lim", "table": "t", "records": []map[string]any{{"title": "alpha", "v": []float64{1, 0}}}})
+	for _, c := range []struct {
+		requested any
+		want      float64
+	}{{nil, 10}, {5, 5}, {999999, 200}} {
+		fts := map[string]any{"namespace": "lim", "table": "t", "query": "alpha"}
+		vec := map[string]any{"namespace": "lim", "table": "t", "vector": []float64{1, 0}, "column": "v"}
+		if c.requested != nil {
+			fts["limit"], vec["limit"] = c.requested, c.requested
+		}
+		for _, call := range []struct {
+			name string
+			do   func(string, any) map[string]any
+		}{{"http", h.mustHTTP}, {"mcp", h.mustMCP}} {
+			for op, body := range map[string]map[string]any{"search_fulltext": fts, "search_vector": vec} {
+				if got := call.do(op, body)["limit"]; got != c.want {
+					t.Fatalf("%s %s with limit %v: reported limit %v, want %v", call.name, op, c.requested, got, c.want)
+				}
+			}
+		}
+	}
+}

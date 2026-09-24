@@ -1087,6 +1087,9 @@ var Ops = map[string]OpDef{
 			if utf8.RuneCountInString(req.SQL) > store.MaxQueryRunes {
 				return nil, badRequest("sql exceeds %d characters", store.MaxQueryRunes)
 			}
+			if err := scalarArgs(req.Args); err != nil {
+				return nil, err
+			}
 			ns := normNS(req.Namespace)
 			res, err := s.eng.Query(ctx, ns, req.SQL, req.Args, [16]byte{},
 				store.Page{Offset: req.Offset, Limit: req.Limit})
@@ -1160,6 +1163,7 @@ var Ops = map[string]OpDef{
 				"items":       map[string]any{"type": "object", "description": "Matching record"},
 			},
 			"truncated": prop("boolean", "True when more results are available beyond the returned page (because the limit was reached or the response budget was hit)"),
+			"limit":     prop("integer", "The limit this search applied: the one requested, 10 when none was given, or 200 when a larger one was requested"),
 		}, "results", "truncated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req ftsReq
@@ -1182,7 +1186,7 @@ var Ops = map[string]OpDef{
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"results": res.Rows, "truncated": res.Truncated}, nil
+			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "limit": limit(req.Limit)}, nil
 		},
 	},
 	"tokenize": {
@@ -1197,8 +1201,8 @@ var Ops = map[string]OpDef{
 				"table":     existingTableProp("Table with fulltext fields"),
 				"text": map[string]any{
 					"type":        "string",
-					"description": "Text to tokenize exactly as the index would, up to 64 KiB",
-					"maxLength":   store.MaxTokenizeBytes,
+					"description": "Text to tokenize exactly as the index would, up to 65,536 characters",
+					"maxLength":   store.MaxTokenizeRunes,
 				},
 			},
 			"required": []string{"namespace", "table", "text"},
@@ -1326,6 +1330,7 @@ var Ops = map[string]OpDef{
 			},
 			"truncated":       prop("boolean", "True when more results are available beyond the returned page (because the limit was reached or the response budget was hit)"),
 			"skipped_vectors": prop("integer", "Rows whose stored vector was corrupt or dimension-mismatched and could not be scored; nonzero means those rows are missing from results"),
+			"limit":           prop("integer", "The limit this search applied: the one requested, 10 when none was given, or 200 when a larger one was requested"),
 		}, "results", "truncated", "skipped_vectors"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			if longestVector(body, schema.MaxVectorDim) > schema.MaxVectorDim {
@@ -1358,7 +1363,7 @@ var Ops = map[string]OpDef{
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "skipped_vectors": res.SkippedVectors}, nil
+			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "skipped_vectors": res.SkippedVectors, "limit": limit(req.Limit)}, nil
 		},
 	},
 

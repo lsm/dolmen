@@ -8,18 +8,18 @@ import (
 	"fmt"
 	"regexp"
 	"sync"
+	"unicode/utf8"
 )
 
-const MaxTokenizeBytes = 64 << 10
+const MaxTokenizeRunes = 64 << 10
 
 var tokenizeOptRe = regexp.MustCompile(`(?i)tokenize\s*=\s*'([^']*)'`)
 
 type tokenizer struct {
-	once   sync.Once
-	db     *sql.DB
-	err    error
-	mu     sync.Mutex
-	tables map[string]string
+	once sync.Once
+	db   *sql.DB
+	err  error
+	mu   sync.Mutex
 }
 
 func (t *tokenizer) open() error {
@@ -28,7 +28,6 @@ func (t *tokenizer) open() error {
 		if t.err == nil {
 			t.db.SetMaxOpenConns(1)
 		}
-		t.tables = map[string]string{}
 	})
 	return t.err
 }
@@ -39,19 +38,15 @@ func (t *tokenizer) terms(ctx context.Context, spec, text string) ([]string, err
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	name, ok := t.tables[spec]
-	if !ok {
-		sum := sha256.Sum256([]byte(spec))
-		name = "tok_" + hex.EncodeToString(sum[:8])
-		for _, ddl := range []string{
-			fmt.Sprintf(`CREATE VIRTUAL TABLE IF NOT EXISTS %s USING fts5(t, tokenize='%s')`, name, spec),
-			fmt.Sprintf(`CREATE VIRTUAL TABLE IF NOT EXISTS %s_v USING fts5vocab(%s, 'instance')`, name, name),
-		} {
-			if _, err := t.db.ExecContext(ctx, ddl); err != nil {
-				return nil, err
-			}
+	sum := sha256.Sum256([]byte(spec))
+	name := "tok_" + hex.EncodeToString(sum[:8])
+	for _, ddl := range []string{
+		fmt.Sprintf(`CREATE VIRTUAL TABLE IF NOT EXISTS %s USING fts5(t, tokenize='%s')`, name, spec),
+		fmt.Sprintf(`CREATE VIRTUAL TABLE IF NOT EXISTS %s_v USING fts5vocab(%s, 'instance')`, name, name),
+	} {
+		if _, err := t.db.ExecContext(ctx, ddl); err != nil {
+			return nil, err
 		}
-		t.tables[spec] = name
 	}
 	tx, err := t.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -78,8 +73,8 @@ func (t *tokenizer) terms(ctx context.Context, spec, text string) ([]string, err
 }
 
 func (s *Store) Tokenize(ctx context.Context, nsName, table, text string, inc Incarnation) ([]string, error) {
-	if len(text) > MaxTokenizeBytes {
-		return nil, invalidf("text is %d bytes; tokenize takes at most %d, which covers any query or field value worth checking", len(text), MaxTokenizeBytes)
+	if n := utf8.RuneCountInString(text); n > MaxTokenizeRunes {
+		return nil, invalidf("text is %d characters; tokenize takes at most %d, which covers any query or field value worth checking", n, MaxTokenizeRunes)
 	}
 	n, err := s.ns(nsName)
 	if err != nil {

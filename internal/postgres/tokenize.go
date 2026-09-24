@@ -2,14 +2,15 @@ package postgres
 
 import (
 	"context"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lsm/dolmen/internal/store"
 )
 
 func (s *Store) Tokenize(ctx context.Context, ns, table, text string, expected store.Incarnation) ([]string, error) {
-	if len(text) > store.MaxTokenizeBytes {
-		return nil, invalidf("text is %d bytes; tokenize takes at most %d, which covers any query or field value worth checking", len(text), store.MaxTokenizeBytes)
+	if n := utf8.RuneCountInString(text); n > store.MaxTokenizeRunes {
+		return nil, invalidf("text is %d characters; tokenize takes at most %d, which covers any query or field value worth checking", n, store.MaxTokenizeRunes)
 	}
 	out := []string{}
 	err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
