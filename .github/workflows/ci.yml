@@ -31,6 +31,24 @@ jobs:
           go vet ./...
           go run .
 
+  platform-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Namespace files, WAL, concurrency, shutdown, and the binary end to end
+        shell: bash
+        run: |
+          export TMPDIR="$(cd "${RUNNER_TEMP}" && pwd -P)"
+          go test -count=1 ./internal/store ./cmd/dolmen ./internal/blackbox
+
   no-comments:
     runs-on: ubuntu-latest
     steps:
