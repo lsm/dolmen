@@ -477,7 +477,7 @@ func dsn(path string, readonly bool) string {
 	if !readonly {
 		return writerDSN(path, DefaultSync)
 	}
-	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	u := url.URL{Scheme: "file", Path: sqliteURIPath(path)}
 	q := url.Values{}
 	q.Add("_pragma", "busy_timeout(10000)")
 	if readonly {
@@ -491,7 +491,7 @@ func dsn(path string, readonly bool) string {
 }
 
 func writerDSN(path string, m SyncMode) string {
-	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	u := url.URL{Scheme: "file", Path: sqliteURIPath(path)}
 	q := url.Values{}
 	q.Add("_pragma", "busy_timeout(10000)")
 	q.Add("mode", "rw")
@@ -887,4 +887,12 @@ func (s *Store) namespaceUnreadable(ctx context.Context, name string) bool {
 	defer ro.Close()
 	_, minReader, err := readCatalogVersion(ctx, ro)
 	return err != nil || minReader > CatalogFormat
+}
+
+func sqliteURIPath(path string) string {
+	p := filepath.ToSlash(path)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return p
 }

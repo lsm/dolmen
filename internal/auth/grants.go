@@ -77,7 +77,7 @@ type Registry struct {
 }
 
 func registryDSN(path string) string {
-	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	u := url.URL{Scheme: "file", Path: sqliteURIPath(path)}
 	q := url.Values{}
 	q.Add("_pragma", "busy_timeout(10000)")
 	q.Add("mode", "rwc")
@@ -454,4 +454,12 @@ func (r *Registry) rootAdminsLocked(ctx context.Context) ([]Subject, error) {
 		}
 	}
 	return out, rows.Err()
+}
+
+func sqliteURIPath(path string) string {
+	p := filepath.ToSlash(path)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return p
 }
