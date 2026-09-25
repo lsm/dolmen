@@ -379,3 +379,14 @@ func TestTruncateKeepsRunesWhole(t *testing.T) {
 		t.Fatalf("clean(%q) = %q", s, out)
 	}
 }
+
+func TestURLPathKeepsTheMountPrefix(t *testing.T) {
+	tr, rec := newRecorded()
+	h := tr.Server("/x/v1/{op}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	req := httptest.NewRequest(http.MethodPost, "/x/v1/insert", nil)
+	req.URL.Path = "/v1/insert"
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if got := attrs(rec.Ended()[0])["url.path"].AsString(); got != "/x/v1/insert" {
+		t.Fatalf("url.path = %q, want the path the client sent", got)
+	}
+}

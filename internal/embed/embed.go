@@ -20,13 +20,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-type propagatorKey struct{}
+type traceContextKey struct{}
 
-func WithPropagator(ctx context.Context, p propagation.TextMapPropagator) context.Context {
-	if p == nil {
-		return ctx
-	}
-	return context.WithValue(ctx, propagatorKey{}, p)
+func WithTraceContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, traceContextKey{}, true)
 }
 
 const usageInputTokensKey = attribute.Key("gen_ai.usage.input_tokens")
@@ -169,8 +166,8 @@ func (o *OpenAI) embed(ctx context.Context, texts []string, prefix string) ([][]
 		if o.APIKey != "" {
 			req.Header.Set("Authorization", "Bearer "+o.APIKey)
 		}
-		if p, ok := ctx.Value(propagatorKey{}).(propagation.TextMapPropagator); ok {
-			p.Inject(ctx, propagation.HeaderCarrier(req.Header))
+		if on, _ := ctx.Value(traceContextKey{}).(bool); on {
+			propagation.TraceContext{}.Inject(ctx, propagation.HeaderCarrier(req.Header))
 		}
 		res, err := client.Do(req)
 		if err != nil {

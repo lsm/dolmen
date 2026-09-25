@@ -3,6 +3,7 @@ package telemetry
 import (
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,7 +57,7 @@ func (t *Tracing) Server(route string, next http.Handler, opts ...ServerOption) 
 		attrs = append(attrs,
 			semconv.HTTPRoute(route),
 			semconv.URLScheme(scheme),
-			semconv.URLPath(clean(r.URL.Path, maxRequestAttr)),
+			semconv.URLPath(clean(requestPath(r), maxRequestAttr)),
 		)
 		if host, port := splitHostPort(r.Host); host != "" {
 			attrs = append(attrs, semconv.ServerAddress(clean(host, maxNameAttr)))
@@ -83,6 +84,13 @@ func (t *Tracing) Server(route string, next http.Handler, opts ...ServerOption) 
 		defer rw.finish()
 		next.ServeHTTP(rw, r.WithContext(ctx))
 	})
+}
+
+func requestPath(r *http.Request) string {
+	if u, err := url.ParseRequestURI(r.RequestURI); err == nil && u.Path != "" {
+		return u.Path
+	}
+	return r.URL.Path
 }
 
 func splitHostPort(hostport string) (string, int) {

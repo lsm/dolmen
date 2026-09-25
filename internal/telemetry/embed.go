@@ -86,7 +86,7 @@ func (e *tracedEmbedder) start(ctx context.Context, n int) (context.Context, tra
 	}
 	attrs := append(append([]attribute.KeyValue(nil), e.attrs...), EmbedBatchSizeKey.Int(n))
 	ctx, span := e.t.tracer.Start(ctx, name, trace.WithSpanKind(e.kind), trace.WithAttributes(attrs...))
-	return embed.WithPropagator(ctx, e.t.prop), span
+	return embed.WithTraceContext(ctx), span
 }
 
 func finishEmbed(span trace.Span, err error) {

@@ -398,3 +398,31 @@ func TestOpenAIEmbeddingSpanInjectsTraceparent(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenAICallsDoNotForwardInboundBaggage(t *testing.T) {
+	var gotTP, gotBaggage string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTP, gotBaggage = r.Header.Get("traceparent"), r.Header.Get("baggage")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"index":0,"embedding":[0.1,0.2]}]}`))
+	}))
+	defer upstream.Close()
+	rec := tracetest.NewSpanRecorder()
+	tr := telemetry.New(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)), propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}), false)
+	p := tr.Embedder(&embed.OpenAI{BaseURL: upstream.URL, Model: "m"})
+	h := tr.Server("/v1/{op}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := p.Embed(r.Context(), []string{"x"}); err != nil {
+			t.Error(err)
+		}
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/v1/insert", nil)
+	req.Header.Set("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+	req.Header.Set("baggage", "user=alice,tenant="+secret)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if !strings.HasPrefix(gotTP, "00-4bf92f3577b34da6a3ce929d0e0e4736-") {
+		t.Fatalf("traceparent = %q", gotTP)
+	}
+	if gotBaggage != "" {
+		t.Fatalf("inbound baggage reached the provider: %q", gotBaggage)
+	}
+}

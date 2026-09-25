@@ -1316,7 +1316,8 @@ What is traced:
 
 Privacy: spans never carry SQL text, filter arguments, row payloads, embedded text, API keys or other
 credentials; error statuses carry the error code, not the message. The principal (`enduser.id`) is recorded only
-with `DOLMEN_OTEL_INCLUDE_PRINCIPAL=true`.
+with `DOLMEN_OTEL_INCLUDE_PRINCIPAL=true`. Outbound calls to the `openai` embedding provider carry only
+`traceparent`; inbound W3C `baggage` is never forwarded to it.
 
 [`docs/otel-collector.yaml`](docs/otel-collector.yaml) is a minimal OpenTelemetry Collector
 configuration that receives dolmen's traces:
