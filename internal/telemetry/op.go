@@ -14,7 +14,7 @@ const (
 	OpNameKey    = attribute.Key("dolmen.op.name")
 	OpOutcomeKey = attribute.Key("dolmen.op.outcome")
 	TableKey     = attribute.Key("dolmen.table")
-	PrincipalKey = attribute.Key("principal")
+	PrincipalKey = semconv.EnduserIDKey
 )
 
 const maxNameAttr = 256

@@ -773,6 +773,19 @@ func printEnvHelp(out io.Writer) {
 		{"OPENAI_API_KEY", "fallback API key when DOLMEN_EMBED_API_KEY is unset"},
 		{"REMBED_CACHE", "model cache directory for the local provider"},
 		{"HF_TOKEN", "Hugging Face token for gated repos downloaded by the local provider"},
+		{"", ""},
+		{"OTEL_EXPORTER_OTLP_ENDPOINT", "OTLP http/protobuf endpoint; setting it (or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT) turns tracing on (default off)"},
+		{"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "traces-only OTLP endpoint"},
+		{"OTEL_EXPORTER_OTLP_HEADERS", "headers sent with each export (also _TIMEOUT, _COMPRESSION, _CERTIFICATE and the _TRACES_ variants)"},
+		{"OTEL_EXPORTER_OTLP_PROTOCOL", "only http/protobuf is supported"},
+		{"OTEL_TRACES_EXPORTER", "otlp or none"},
+		{"OTEL_SDK_DISABLED", "true turns tracing off"},
+		{"OTEL_SERVICE_NAME", "service.name (default dolmen)"},
+		{"OTEL_RESOURCE_ATTRIBUTES", "extra resource attributes, k=v,k2=v2"},
+		{"OTEL_TRACES_SAMPLER", "sampler (default parentbased_always_on); OTEL_TRACES_SAMPLER_ARG sets the ratio"},
+		{"OTEL_PROPAGATORS", "tracecontext, baggage or none (default tracecontext,baggage)"},
+		{"OTEL_BSP_*", "batch span processor tuning"},
+		{"DOLMEN_OTEL_INCLUDE_PRINCIPAL", "true adds the caller's principal to operation spans as enduser.id (default false)"},
 	}
 
 	fmt.Fprintln(out, "\nEnvironment variables:")

@@ -306,7 +306,7 @@ func TestPrincipalOnlyWhenOptedIn(t *testing.T) {
 		tr := New(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)), nil, include)
 		_, span := tr.StartOp(context.Background(), "insert", "", "alice")
 		span.End("ok")
-		got, ok := attrs(rec.Ended()[0])["principal"]
+		got, ok := attrs(rec.Ended()[0])["enduser.id"]
 		if ok != include || (include && got.AsString() != "alice") {
 			t.Fatalf("include=%v: principal present=%v value=%v", include, ok, got.AsString())
 		}

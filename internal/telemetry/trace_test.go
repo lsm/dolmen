@@ -166,7 +166,7 @@ func TestHTTPOpSpanTree(t *testing.T) {
 	if id, _ := attr(op, "dolmen.request_id").(string); id == "" || attr(server, "dolmen.request_id") != id {
 		t.Errorf("request id: op=%v server=%v", attr(op, "dolmen.request_id"), attr(server, "dolmen.request_id"))
 	}
-	if attr(op, "principal") != nil {
+	if attr(op, "enduser.id") != nil {
 		t.Error("principal must be off by default")
 	}
 	for k, v := range map[string]any{"gen_ai.operation.name": "embeddings", "gen_ai.request.model": "fake-model", "gen_ai.provider.name": "fake", "dolmen.embed.batch_size": int64(1)} {

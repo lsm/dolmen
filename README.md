@@ -1291,7 +1291,7 @@ instrumentation is a no-op. It is configured only through the standard `OTEL_*` 
 | `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` | `parentbased_always_on` | `always_on`, `always_off`, `traceidratio`, and the `parentbased_*` forms. |
 | `OTEL_PROPAGATORS` | `tracecontext,baggage` | `tracecontext`, `baggage` or `none`. |
 | `OTEL_BSP_*` | SDK defaults | Batch span processor tuning. |
-| `DOLMEN_OTEL_INCLUDE_PRINCIPAL` | `false` | `true` adds the caller's `principal` to operation spans. |
+| `DOLMEN_OTEL_INCLUDE_PRINCIPAL` | `false` | `true` adds the caller's principal to operation spans as `enduser.id`. |
 
 An unsupported value (a gRPC protocol, an unknown sampler or propagator) stops startup with an error
 naming the variable. The resource carries `service.name`, `service.version`, `service.instance.id`
@@ -1313,7 +1313,7 @@ What is traced:
 - Every log line written during a traced request carries `trace_id` and `span_id`.
 
 Privacy: spans never carry SQL text, filter arguments, row payloads, embedded text, API keys or other
-credentials; error statuses carry the error code, not the message. The principal is recorded only
+credentials; error statuses carry the error code, not the message. The principal (`enduser.id`) is recorded only
 with `DOLMEN_OTEL_INCLUDE_PRINCIPAL=true`.
 
 [`docs/otel-collector.yaml`](docs/otel-collector.yaml) is a minimal OpenTelemetry Collector
