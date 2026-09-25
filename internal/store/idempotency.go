@@ -136,33 +136,55 @@ func readIdem(ctx context.Context, db rowQuerier, table, owner, key, wantHash st
 const secretIdemPurgedKey = "secret_idempotency_purged"
 
 func purgeSecretIdempotency(ctx context.Context, db *sql.DB) error {
-	tx, err := db.BeginTx(ctx, nil)
+	conn, err := db.Conn(ctx)
 	if err != nil {
 		return err
+	}
+	defer conn.Close()
+	var prev int
+	if err := conn.QueryRowContext(ctx, `PRAGMA secure_delete`).Scan(&prev); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `PRAGMA secure_delete = ON`); err != nil {
+		return err
+	}
+	defer conn.ExecContext(context.WithoutCancel(ctx), fmt.Sprintf(`PRAGMA secure_delete = %d`, prev))
+	purged, err := purgeSecretIdempotencyTx(ctx, conn)
+	if err != nil || !purged {
+		return err
+	}
+	_, _ = conn.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
+	return nil
+}
+
+func purgeSecretIdempotencyTx(ctx context.Context, conn *sql.Conn) (bool, error) {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
 	}
 	defer tx.Rollback()
 	var done int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM _dolmen_meta WHERE key = ?`, secretIdemPurgedKey).Scan(&done); err != nil {
-		return err
+		return false, err
 	}
 	if done > 0 {
-		return nil
+		return false, nil
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT name, schema_json FROM _dolmen_tables`)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var secretTables []string
 	for rows.Next() {
 		var name, raw string
 		if err := rows.Scan(&name, &raw); err != nil {
 			rows.Close()
-			return err
+			return false, err
 		}
 		var sc schema.TableSchema
 		if err := json.Unmarshal([]byte(raw), &sc); err != nil {
 			rows.Close()
-			return fmt.Errorf("purge secret idempotency records: table %s: %w", name, err)
+			return false, fmt.Errorf("purge secret idempotency records: table %s: %w", name, err)
 		}
 		if len(sc.SecretFields()) > 0 {
 			secretTables = append(secretTables, name)
@@ -170,15 +192,15 @@ func purgeSecretIdempotency(ctx context.Context, db *sql.DB) error {
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return err
+		return false, err
 	}
 	for _, name := range secretTables {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+idempotencyTable+` WHERE table_name = ?`, name); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO _dolmen_meta(key, value) VALUES(?, ?)`, secretIdemPurgedKey, []byte("1")); err != nil {
-		return err
+		return false, err
 	}
-	return tx.Commit()
+	return true, tx.Commit()
 }
