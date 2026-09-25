@@ -154,7 +154,7 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 	wasTooBig := e.tooBig
 	e.tooBig = false
 	if wasTooBig || e.seq < 0 || e.fp != fp || e.seq > head {
-		if e.seq > head {
+		if e.fp == fp && e.seq > head {
 			e.mu.Unlock()
 			return nil, 0, false, nil
 		}

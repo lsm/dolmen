@@ -328,3 +328,37 @@ func TestAnEntryEvictedMidBuildIsAccountedOnceWhenItReturns(t *testing.T) {
 		t.Fatalf("accounting drifted after a rejection: used %d, entries hold %d", c.used, sum)
 	}
 }
+
+func TestTheVectorCacheEngagesAgainForARecreatedNamespace(t *testing.T) {
+	p := openVecPair(t, DefaultVectorCacheBytes)
+	ctx := context.Background()
+	fields := []schema.Field{{Name: "k", Type: schema.Number}, {Name: "emb", Type: schema.Vector, Dim: 3}}
+	many := make([]map[string]any, 50)
+	for i := range many {
+		many[i] = map[string]any{"k": i, "emb": []float32{float32(i), 1, 0}}
+	}
+	p.both(t, func(l legacyStore) error {
+		_, err := l.Insert(ctx, "v", "t", many, testEmbed)
+		return err
+	})
+	p.same(t, "before the namespace is dropped")
+	p.both(t, func(l legacyStore) error {
+		if err := l.DropNamespace("v"); err != nil {
+			return err
+		}
+		if err := l.CreateNamespace("v"); err != nil {
+			return err
+		}
+		if _, err := l.CreateTable(ctx, "v", "t", fields); err != nil {
+			return err
+		}
+		_, err := l.Insert(ctx, "v", "t", []map[string]any{{"k": 1, "emb": []float32{0, 0, 1}}}, testEmbed)
+		return err
+	})
+	p.same(t, "after the namespace is recreated")
+	for k, e := range p.cached.vcache.entries {
+		if k.ns == "v" && (e.vecs == nil || len(e.ids) != 1) {
+			t.Fatalf("a recreated namespace must be cached again, entry holds %d rows", len(e.ids))
+		}
+	}
+}
