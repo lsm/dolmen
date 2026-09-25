@@ -225,6 +225,7 @@ func openStore(cfg *config) (store.Engine, error) {
 			QueryRole:       cfg.PostgresQueryRole,
 			ChangeRetention: &retention,
 			SharedFilter:    cfg.Auth.On(),
+			Secrets:         cfg.Secrets,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("open PostgreSQL catalog: %w", err)

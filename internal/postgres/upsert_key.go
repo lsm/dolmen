@@ -125,7 +125,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, table string, keys []string
 			switch field.Type {
 			case schema.String, schema.Text, schema.Number, schema.Boolean, schema.Timestamp:
 			default:
-				return store.InsertResult{}, fmt.Errorf("%w: key field %q has type %s; keys must be string, text, number, boolean, or timestamp", store.ErrInvalid, key, field.Type)
+				return store.InsertResult{}, fmt.Errorf("%w: key field %q has type %s; keys must be string, text, number, boolean, or timestamp (vector and json values do not compare reliably, and secret values are encrypted under a fresh nonce so equal values never match)", store.ErrInvalid, key, field.Type)
 			}
 			for i, record := range records {
 				if record[key] == nil {
@@ -134,7 +134,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, table string, keys []string
 			}
 		}
 		before, _ := json.Marshal(state.schema)
-		prepared, err := prepareValues(ctx, state, records, emb, false)
+		prepared, err := s.prepareValues(ctx, state, records, emb, false)
 		if err != nil {
 			return store.InsertResult{}, err
 		}

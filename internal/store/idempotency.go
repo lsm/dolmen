@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/lsm/dolmen/internal/schema"
 )
 
 const LegacyIdempotencyOwner = ""
@@ -129,4 +131,54 @@ func readIdem(ctx context.Context, db rowQuerier, table, owner, key, wantHash st
 		return nil, false, fmt.Errorf("corrupt idempotency record for key %q: %w", key, err)
 	}
 	return ids, true, nil
+}
+
+const secretIdemPurgedKey = "secret_idempotency_purged"
+
+func purgeSecretIdempotency(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var done int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM _dolmen_meta WHERE key = ?`, secretIdemPurgedKey).Scan(&done); err != nil {
+		return err
+	}
+	if done > 0 {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT name, schema_json FROM _dolmen_tables`)
+	if err != nil {
+		return err
+	}
+	var secretTables []string
+	for rows.Next() {
+		var name, raw string
+		if err := rows.Scan(&name, &raw); err != nil {
+			rows.Close()
+			return err
+		}
+		var sc schema.TableSchema
+		if err := json.Unmarshal([]byte(raw), &sc); err != nil {
+			rows.Close()
+			return fmt.Errorf("purge secret idempotency records: table %s: %w", name, err)
+		}
+		if len(sc.SecretFields()) > 0 {
+			secretTables = append(secretTables, name)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, name := range secretTables {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+idempotencyTable+` WHERE table_name = ?`, name); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO _dolmen_meta(key, value) VALUES(?, ?)`, secretIdemPurgedKey, []byte("1")); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

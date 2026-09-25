@@ -197,15 +197,11 @@ func newHarnessAtMode(t *testing.T, dir string, emb *fakeProvider, mode harnessM
 
 func (h *harness) start() {
 	h.t.Helper()
-	h.st = openEngineStoreShared(h.t, h.dir, h.retention, h.mode.authMode() != auth.ModeOff)
+	keyring := conformanceKeyring(h.t)
 	if h.secretKeySet {
-		_ = h.st.Close()
-		st, err := store.Open(h.dir, store.WithSecretKey(h.secretKey))
-		if err != nil {
-			h.t.Fatalf("open store with the overridden secret key: %v", err)
-		}
-		h.st = st
+		keyring = h.secretKey
 	}
+	h.st = openEngineStoreKeyed(h.t, h.dir, h.retention, h.mode.authMode() != auth.ModeOff, keyring)
 
 	trusted, err := auth.ParseTrustedProxies(h.mode.trustedProxies)
 	if err != nil {

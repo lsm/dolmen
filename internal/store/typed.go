@@ -181,13 +181,9 @@ func (p *projection) decodeColumn(col string, v any) (any, error) {
 		return normalizeVal(v), nil
 	}
 	if t == schema.Secret && v != nil && p.reveal[col] {
-		raw, isBlob := v.([]byte)
-		if !isBlob {
-			return nil, fmt.Errorf("field %q: %w", col, secret.ErrCorrupt)
-		}
-		plain, err := p.secrets.Open(raw)
+		plain, err := OpenSecret(p.secrets, col, v)
 		if err != nil {
-			return nil, fmt.Errorf("field %q: %w", col, err)
+			return nil, err
 		}
 		return plain, nil
 	}

@@ -10,7 +10,6 @@ import (
 
 	dolmen "github.com/lsm/dolmen"
 	"github.com/lsm/dolmen/internal/secret"
-	"github.com/lsm/dolmen/internal/store"
 )
 
 const conformanceSecret = "sk-conformance-PLAINTEXT-42"
@@ -56,21 +55,7 @@ func tokensOf(t *testing.T, rows any) map[string]any {
 	return out
 }
 
-func TestSecretFieldPostgresRefused(t *testing.T) {
-	if testEngine(t) != store.EnginePostgres {
-		t.Skip("postgres refusal only")
-	}
-	h := newHarness(t)
-	h.ensureNS("sec")
-	status, body := h.httpCall("create_table", map[string]any{"namespace": "sec", "table": "creds", "fields": secretTableFields()})
-	if status != http.StatusBadRequest {
-		t.Fatalf("status %d: %v", status, body)
-	}
-	wantMessage(t, "postgres secret", envelopeOf(t, body)["message"].(string), `not yet supported on the postgres engine`)
-}
-
 func TestSecretFieldContract(t *testing.T) {
-	sqliteOnly(t)
 	h := newHarness(t)
 	h.seedTable("sec", "creds", secretTableFields())
 	h.mustHTTP("insert", map[string]any{"namespace": "sec", "table": "creds", "records": []map[string]any{
@@ -117,6 +102,8 @@ func TestSecretFieldContract(t *testing.T) {
 		t.Fatalf("SQL sees only ciphertext, so a plaintext comparison must match nothing, matched %d", n)
 	}
 
+	wantNoPlaintextInStorage(t, h)
+
 	status, body := h.httpCall("read_rows", map[string]any{"namespace": "sec", "table": "creds", "ids": []any{1}, "reveal": []string{"label"}})
 	if status != http.StatusBadRequest {
 		t.Fatalf("reveal of a non-secret field: status %d: %v", status, body)
@@ -133,6 +120,11 @@ func TestSecretFieldContract(t *testing.T) {
 			t.Fatalf("secret with %s: status %d: %v", option, status, body)
 		}
 		wantMessage(t, "secret "+option, envelopeOf(t, body)["message"].(string), pattern)
+	}
+
+	h.mustHTTP("insert", map[string]any{"namespace": "sec", "table": "creds", "records": []map[string]any{{"label": "control-PLAINTEXT"}}})
+	if len(storageHoldsPlaintext(t, h)) == 0 {
+		t.Fatal("the storage scan misses plaintext in an ordinary string field, so its clean result above proves nothing")
 	}
 
 	emb := openEmbedded(t, t.TempDir(), dolmen.WithSecretKey(conformanceKey()))

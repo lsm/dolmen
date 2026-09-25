@@ -193,7 +193,7 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 			}
 		}
 		before, _ := json.Marshal(state.schema)
-		prepared, err := prepareValues(ctx, state, []map[string]any{set}, emb, false)
+		prepared, err := s.prepareValues(ctx, state, []map[string]any{set}, emb, false)
 		if err != nil {
 			return store.InsertResult{}, err
 		}

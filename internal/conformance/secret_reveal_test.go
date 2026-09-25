@@ -2,11 +2,8 @@ package conformance
 
 import (
 	"bytes"
-	"context"
-	"database/sql"
 	"encoding/json"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -15,7 +12,6 @@ import (
 
 func seedRevealHarness(t *testing.T) *harness {
 	t.Helper()
-	sqliteOnly(t)
 	h := newHarnessMode(t, authGateway)
 	h.mustHTTP("create_namespace", map[string]any{"namespace": "sec"})
 	h.mustHTTP("create_table", map[string]any{"namespace": "sec", "table": "creds", "fields": secretTableFields()})
@@ -240,7 +236,6 @@ func wantRevealServerError(t *testing.T, h *harness, what, logWant string) {
 }
 
 func TestRevealKeyFailuresAreInternalErrors(t *testing.T) {
-	sqliteOnly(t)
 	h := newHarness(t)
 	h.seedTable("sec", "creds", secretTableFields())
 	h.mustHTTP("insert", map[string]any{"namespace": "sec", "table": "creds", "records": []map[string]any{{"label": "alpha", "token": conformanceSecret}}})
@@ -259,23 +254,7 @@ func TestRevealKeyFailuresAreInternalErrors(t *testing.T) {
 	wantRevealServerError(t, h, "missing key", secret.EnvKey)
 
 	h.secretKey = conformanceKeyring(t)
-	h.srv.Close()
-	if err := h.st.Close(); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", filepath.Join(h.dir, "sec.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var blob []byte
-	if err := db.QueryRowContext(context.Background(), "SELECT token FROM creds WHERE id = 1").Scan(&blob); err != nil {
-		t.Fatal(err)
-	}
-	blob[len(blob)-1] ^= 0xff
-	if _, err := db.ExecContext(context.Background(), "UPDATE creds SET token = ? WHERE id = 1", blob); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-	h.start()
+	tamperSecret(t, h, "sec", "creds", "token", 1)
+	h.reopen()
 	wantRevealServerError(t, h, "tampered value", "tamper")
 }

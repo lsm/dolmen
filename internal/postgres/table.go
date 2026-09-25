@@ -105,7 +105,7 @@ func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []sche
 	if err != nil {
 		return nil, err
 	}
-	if err := refuseSecretFields(fields); err != nil {
+	if err := store.RequireSecretKey(s.secrets, fields); err != nil {
 		return nil, err
 	}
 	if err := schema.ValidateRowAccess(opts.RowAccess); err != nil {
@@ -171,7 +171,7 @@ func columnType(f schema.Field) string {
 		return "numeric"
 	case schema.Boolean:
 		return "boolean"
-	case schema.Vector:
+	case schema.Vector, schema.Secret:
 		return "bytea"
 	}
 	return `text COLLATE "C"`
