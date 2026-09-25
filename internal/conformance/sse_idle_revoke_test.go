@@ -30,6 +30,9 @@ func wantRevokedClose(t *testing.T, stream *sseReader) {
 			if !strings.Contains(frame.data, "subscription authorization was revoked") {
 				t.Fatalf("the stream ended with the wrong error: %s", frame.data)
 			}
+			if !strings.Contains(frame.data, `"code":"forbidden"`) {
+				t.Fatalf("a revoked subscription must end as forbidden, not as a malformed request: %s", frame.data)
+			}
 			return
 		}
 	}

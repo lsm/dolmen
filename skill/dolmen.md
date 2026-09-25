@@ -108,6 +108,9 @@ the whole server. What each operation needs:
 | `describe_table` | any verb on the table |
 | `whoami` (exists only when authentication is on), `list_namespaces`, `list_tables`, `describe_server`, `capabilities`, `infer_schema` | nothing |
 
+A feed without `table` (namespace-wide `changes_since`, `wait_for` or `/v1/subscribe`) needs
+`read` on the namespace itself; a grant on one table covers only that table's filtered feed.
+
 Absence is not proof: `list_namespaces` lists only what you can reach, and `list_tables` answers
 `not_found` for a namespace you hold nothing under. A write to a namespace that does not exist
 answers `not_found` rather than creating it.
@@ -280,7 +283,7 @@ send only the `error` event, since nothing was delivered. The messages are the r
   path, the buffer never was`
 - Target ended: `the subscription's target ended (a dropped table, or a dropped or replaced
   namespace); reconnect against the current target — a same-named successor is a different feed`
-- Authorization revoked: `subscription authorization was revoked; reconnect once authorization is
+- Authorization revoked (code `forbidden`): `subscription authorization was revoked; reconnect once authorization is
   restored`. The server rechecks access on every change it delivers and on every keepalive (every 20 seconds),
   so a revoked caller's stream ends within about 20 seconds even when nothing is being written.
 - Own-row feed over unlabelled history: `this feed still retains changes recorded before rows
@@ -316,7 +319,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 
 ## Quick reference
 
-- Core tools: `describe_server`, `list_namespaces`, `list_tables`, `describe_table`, `insert`, `query`, `search_fulltext`, `tokenize`, `search_vector`, `changes_since`, `wait_for`, `delete`.
+- Core tools: `describe_server`, `list_namespaces`, `list_tables`, `describe_table`, `insert`, `query`, `search_fulltext`, `tokenize` (takes `namespace`, `table` and `text`), `search_vector`, `changes_since`, `wait_for`, `delete`.
 - Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`, and `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field).
 - Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field — enables `search_vector` with `text`; the built-in `local` provider is enabled by default; set `DOLMEN_EMBED_PROVIDER=openai` for an external endpoint, or `none` to disable server-side embeddings), `required: true`, `enum: [values]` (closed vocabulary for a string field — writes with any other value are rejected naming the field, the value, and the allowed list; exact match, no case folding; a declared `default` must be a member).
 - `describe_server` reports the embedding provider status without attempting a write: `provider` (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, `usable`, and — for the `local` provider — `model_cached`, whether the model weights are complete on the server so no first-use download is needed (`false` means the first vectorized write or `text` search downloads a Hugging Face model, so it can take ten seconds or more and can fail transiently — retry, or pre-seed; with `DOLMEN_EMBED_MODEL` naming a directory, `false` means the directory is incomplete and no download repairs it). `vectorize` fields and `search_vector` `text` queries fail while `usable` is false; a table whose `embed_space` (see `describe_table`) differs from `identity` was embedded by a different provider/model and rejects inserts and text searches until it is re-embedded.
@@ -353,7 +356,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 - `query` only accepts read-only `SELECT`/`WITH` statements. Bind all values with `?` and pass them in `args`. Identifiers and table names cannot be bound with `?`; write them directly from `list_tables`/`describe_table` and never let untrusted input choose them. `query` only checks that the statement is read-only, not that the identifiers are safe.
 - SQL string literals use single quotes (`'value'`), escaped by doubling (`'can''t'`). Prefer `?`.
 - Double quotes are for SQL identifiers, not string values.
-- `search_fulltext` takes a raw {{ if eq .Dialect "postgresql" }}full-text search{{ else }}FTS5 `MATCH`{{ end }} expression in `query`; it is **not** SQL, so do not wrap the whole expression in single quotes.
+- `search_fulltext` takes a raw {{ if eq .Dialect "postgresql" }}full-text search{{ else }}FTS5 `MATCH`{{ end }} expression in `query`; it is **not** SQL, so do not wrap the whole expression in single quotes. Punctuation inside a term is not searchable text: a hyphenated slug, SKU or compound word (`gpt-4`, `e-mail`) must go in double quotes (`"gpt-4"`), or the bare `-` is rejected.
 
 {{ if eq .Dialect "postgresql" }}### Full-text search syntax (PostgreSQL)
 
@@ -442,7 +445,7 @@ The optional `filter` parameter is separate from the MATCH `query`: it is regula
 | Resource | Limit | Behavior |
 |---|---|---|
 | Namespace path | 1–3 segments (`a/b/c`), each `^[a-z0-9][a-z0-9_-]{0,63}$` (max 64 chars per segment) | rejected |
-| Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
+| Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, SQL keywords (`key`, `order`, `group`, `from`, `value` and the rest of SQLite's list) are rejected with a suggested replacement, and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
 | Records per `insert` / `upsert_by_key` | 1,000 | rejected |
 | Ids per `read_rows` | 1,000 | rejected |

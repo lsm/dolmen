@@ -190,6 +190,10 @@ filters by `subject` (exact) or `object` (that object and everything under it). 
 `admin` on the object or something covering it; `list_grants` without an `object` needs it on `*`.
 Dropping a table or namespace removes the grants on it.
 
+Before granting `read` on a table with `row_access: "own"`, stop: `read` shows every owner's rows,
+so it undoes the privacy for whoever holds it. Give the people it keeps apart `create`, `update`
+and `delete` instead (see "Per-row ownership" below).
+
 What the schema and administration operations need:
 
 | Operation | Needs |
@@ -404,7 +408,8 @@ locked-out server.
   `idempotency_key` also returns `replayed` (`true` when the original ids were returned instead of
   inserting again).
 - Every table has implicit `id` and `created_at` columns; `SELECT *` includes them.
-- Retried writes must not duplicate rows: pass `idempotency_key` (any unique string) to `insert`, or use `upsert_by_key` with `"on": [field, ...]` naming the record's natural key (e.g. email, url) when the data identifies itself.
+- Retried writes must not duplicate rows: pass `idempotency_key` (any unique string) to `insert`, or use `upsert_by_key` with `"on": [field, ...]` naming the record's natural key (e.g. email, url) when the data identifies itself. Its body takes
+  `records` as a list, like `insert`: `{"namespace":"crm","table":"contacts","on":["email"],"records":[{"email":"ada@example.com","name":"Ada"}]}`.
 - Results honor declared field types in every read (`query`, `read_rows`, `search_fulltext`, `search_vector`):
   `boolean` → `true`/`false`, `json` → the decoded value, `vector` → a number array, SQL `NULL` →
   `null`. In `query`, coercion is by result-column label (aliases count as their label); labels that
@@ -650,7 +655,7 @@ A complete call, previewed first:
 | Resource | Limit | Behavior |
 |---|---|---|
 | Namespace path | 1–3 segments (`a/b/c`), each `^[a-z0-9][a-z0-9_-]{0,63}$` (max 64 chars per segment) | rejected |
-| Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
+| Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, SQL keywords (`key`, `order`, `group`, `from`, `value` and the rest of SQLite's list) are rejected with a suggested replacement, and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
 | Records per `insert` / `upsert_by_key` | 1,000 | rejected |
 | Ids per `read_rows` | 1,000 | rejected |
