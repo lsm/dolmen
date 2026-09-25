@@ -34,6 +34,7 @@ type Server struct {
 	baseURL       string
 	namespaceHint string
 	prefix        string
+	traced        http.Handler
 }
 
 var toolAnnotations = map[string]map[string]any{
@@ -107,6 +108,9 @@ func New(a *api.Server, extraOrigins []string, opts ...Option) *Server {
 	for _, opt := range opts {
 		opt(s)
 	}
+	if t := a.Tracing(); t.On() {
+		s.traced = t.Server(s.prefix+"/mcp", http.HandlerFunc(s.serveHTTP))
+	}
 	return s
 }
 
@@ -118,6 +122,14 @@ type rpcMessage struct {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.traced != nil {
+		s.traced.ServeHTTP(w, r)
+		return
+	}
+	s.serveHTTP(w, r)
+}
+
+func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("MCP-Protocol-Version", protocolVersion)
 
 	r = r.WithContext(api.WithRequestID(r.Context(), api.RequestIDFor(r)))
@@ -156,7 +168,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = authed
 	if authErr != nil {
 		apiErr := api.WrapError(authErr)
-		slog.Info("mcp denial", api.WithPrincipal(r, "code", apiErr.Code, "status", apiErr.Status,
+		slog.InfoContext(r.Context(), "mcp denial", api.WithPrincipal(r, "code", apiErr.Code, "status", apiErr.Status,
 			"request_id", api.RequestIDFrom(r.Context()))...)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(apiErr.Status)
@@ -352,11 +364,11 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage, instr string) (any,
 			attrs := api.WithPrincipalCtx(ctx, "op", params.Name, "code", apiErr.Code, "request_id", reqID, "cause", apiErr.Cause)
 			switch status := apiErr.Status; {
 			case status == 0 || status >= http.StatusInternalServerError:
-				slog.Error("mcp tool error", attrs...)
+				slog.ErrorContext(ctx, "mcp tool error", attrs...)
 			case api.Denial(apiErr.Code):
-				slog.Info("mcp denial", attrs...)
+				slog.InfoContext(ctx, "mcp denial", attrs...)
 			default:
-				slog.Debug("mcp tool error", attrs...)
+				slog.DebugContext(ctx, "mcp tool error", attrs...)
 			}
 			env := apiErr.Public(reqID)
 			text, _ := json.Marshal(env)
@@ -368,7 +380,7 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage, instr string) (any,
 		if mErr := enc.Encode(res); mErr != nil {
 			apiErr := api.WrapError(mErr)
 			reqID := api.RequestIDFrom(ctx)
-			slog.Error("mcp tool result marshal error", "op", params.Name, "code", apiErr.Code, "request_id", reqID, "cause", apiErr.Cause)
+			slog.ErrorContext(ctx, "mcp tool result marshal error", "op", params.Name, "code", apiErr.Code, "request_id", reqID, "cause", apiErr.Cause)
 			env := apiErr.Public(reqID)
 			text, _ := json.Marshal(env)
 			return toolError(string(text)), nil

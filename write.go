@@ -55,10 +55,12 @@ func (s *Store) embedder() store.Embedder {
 	if s.emb == nil {
 		return store.Embedder{}
 	}
-	return ops.Embedder(s.emb)
+	return ops.Embedder(s.tracing.Embedder(s.emb))
 }
 
-func (s *Store) Insert(ctx context.Context, namespace, table string, records []map[string]any, opts InsertOptions) (InsertResult, error) {
+func (s *Store) Insert(ctx context.Context, namespace, table string, records []map[string]any, opts InsertOptions) (r0 InsertResult, err error) {
+	ctx, span := s.startOp(ctx, "insert", namespace, table)
+	defer func() { endOp(span, err) }()
 	if err := s.begin(); err != nil {
 		return InsertResult{}, err
 	}
@@ -92,7 +94,9 @@ func (s *Store) Insert(ctx context.Context, namespace, table string, records []m
 	}, nil
 }
 
-func (s *Store) UpsertByKey(ctx context.Context, namespace, table string, on []string, records []map[string]any) (InsertResult, error) {
+func (s *Store) UpsertByKey(ctx context.Context, namespace, table string, on []string, records []map[string]any) (r0 InsertResult, err error) {
+	ctx, span := s.startOp(ctx, "upsert_by_key", namespace, table)
+	defer func() { endOp(span, err) }()
 	if err := s.begin(); err != nil {
 		return InsertResult{}, err
 	}
@@ -118,7 +122,9 @@ func (s *Store) UpsertByKey(ctx context.Context, namespace, table string, on []s
 	}, nil
 }
 
-func (s *Store) Update(ctx context.Context, namespace, table string, opts UpdateOptions) (UpdateResult, error) {
+func (s *Store) Update(ctx context.Context, namespace, table string, opts UpdateOptions) (r0 UpdateResult, err error) {
+	ctx, span := s.startOp(ctx, "update", namespace, table)
+	defer func() { endOp(span, err) }()
 	if err := s.begin(); err != nil {
 		return UpdateResult{}, err
 	}
@@ -139,7 +145,9 @@ func (s *Store) Update(ctx context.Context, namespace, table string, opts Update
 	return UpdateResult{Updated: res.Updated, Changes: ChangeRange(res.Changes)}, nil
 }
 
-func (s *Store) Delete(ctx context.Context, namespace, table string, opts DeleteOptions) (DeleteResult, error) {
+func (s *Store) Delete(ctx context.Context, namespace, table string, opts DeleteOptions) (r0 DeleteResult, err error) {
+	ctx, span := s.startOp(ctx, "delete", namespace, table)
+	defer func() { endOp(span, err) }()
 	if err := s.begin(); err != nil {
 		return DeleteResult{}, err
 	}

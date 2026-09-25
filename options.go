@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
@@ -29,6 +31,9 @@ type config struct {
 	retiredKeys     [][]byte
 	secretKeySet    bool
 	secrets         *secret.Keyring
+
+	tracerProvider    trace.TracerProvider
+	tracerProviderSet bool
 }
 
 type EngineOpener func(ctx context.Context, changeRetention time.Duration) (store.Engine, error)
@@ -100,6 +105,9 @@ func (c *config) validate() error {
 		}
 		c.secrets = k
 	}
+	if c.tracerProviderSet && nilProvider(c.tracerProvider) {
+		return derr.New(derr.InvalidRequest, "WithTracerProvider: provider must not be nil; omit the option to leave tracing off")
+	}
 	if c.changeRetention < 0 {
 		return derr.New(derr.InvalidRequest, "WithChangeRetention: duration must not be negative (0 disables pruning)")
 	}
@@ -121,7 +129,7 @@ func (c *config) validate() error {
 	return nil
 }
 
-func nilProvider(p EmbeddingProvider) bool {
+func nilProvider(p any) bool {
 	if p == nil {
 		return true
 	}

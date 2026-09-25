@@ -96,7 +96,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 
 	sseOpenStream(w, reqID)
 	if err != nil {
-		sseErrorEvent(w, subscribeErr(err), reqID)
+		sseErrorEvent(r.Context(), w, subscribeErr(err), reqID)
 		return
 	}
 	s.metrics.subscriptions.Add(1)
@@ -125,7 +125,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 				}
 			default:
 				sseEvent(w, "close", sseCursor{Cursor: string(resume)})
-				sseErrorEvent(w, apiErr, reqID)
+				sseErrorEvent(r.Context(), w, apiErr, reqID)
 				return
 			}
 		}
@@ -266,16 +266,16 @@ func sseEvent(w http.ResponseWriter, event string, data any) bool {
 	return werr == nil && ferr == nil
 }
 
-func sseErrorEvent(w http.ResponseWriter, apiErr *Error, reqID string) {
+func sseErrorEvent(ctx context.Context, w http.ResponseWriter, apiErr *Error, reqID string) {
 	status := apiErr.Status
 	if status == 0 {
 		status = http.StatusInternalServerError
 	}
 
 	if status >= http.StatusInternalServerError {
-		slog.Error("sse error", "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
+		slog.ErrorContext(ctx, "sse error", "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
 	} else {
-		slog.Debug("sse error", "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
+		slog.DebugContext(ctx, "sse error", "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
 	}
 	sseEvent(w, "error", map[string]any{"ok": false, "error": apiErr.Public(reqID)})
 }

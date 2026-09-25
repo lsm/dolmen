@@ -51,7 +51,9 @@ func validateSearchOptions(opts SearchOptions) error {
 	return nil
 }
 
-func (s *Store) SearchFulltext(ctx context.Context, namespace, table, query string, opts SearchOptions) (SearchResult, error) {
+func (s *Store) SearchFulltext(ctx context.Context, namespace, table, query string, opts SearchOptions) (r0 SearchResult, err error) {
+	ctx, span := s.startOp(ctx, "search_fulltext", namespace, table)
+	defer func() { endOp(span, err) }()
 	if err := s.begin(); err != nil {
 		return SearchResult{}, err
 	}
@@ -79,7 +81,9 @@ func (s *Store) SearchFulltext(ctx context.Context, namespace, table, query stri
 	return SearchResult{Rows: res.Rows, Truncated: res.Truncated, SkippedVectors: res.SkippedVectors}, nil
 }
 
-func (s *Store) SearchVector(ctx context.Context, namespace, table string, query VectorQuery, opts SearchOptions) (SearchResult, error) {
+func (s *Store) SearchVector(ctx context.Context, namespace, table string, query VectorQuery, opts SearchOptions) (r0 SearchResult, err error) {
+	ctx, span := s.startOp(ctx, "search_vector", namespace, table)
+	defer func() { endOp(span, err) }()
 	if err := s.begin(); err != nil {
 		return SearchResult{}, err
 	}
@@ -111,7 +115,7 @@ func (s *Store) SearchVector(ctx context.Context, namespace, table string, query
 	}
 	emb := ops.EmbeddingProvider(disabledEmbedding{})
 	if s.emb != nil {
-		emb = s.emb
+		emb = s.tracing.Embedder(s.emb)
 	}
 	args := append([]any(nil), opts.Args...)
 	vq, err := ops.PrepareVectorQuery(ctx, s.eng, ops.NormalizeNamespace(namespace), ops.NormalizeTable(table), ops.VectorQuery{

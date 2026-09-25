@@ -289,8 +289,9 @@ locked-out server.
    namespace or table when one fits. Only create tables for genuinely new kinds of data.
 2. **Inspect when the schema is unknown or may have changed.** Call `describe_table` to get its
    schema, version, and row count. Use that to build correct `query` / `search_fulltext` /
-   `search_vector` calls and to avoid inventing field names. Avoid calling it before every read or
-   write on large tables — it runs a full `count(*)`, so cache the schema for the session.
+   `search_vector` calls and to avoid inventing field names. Its `row_count` is kept up to date by
+   every write, so reading it costs the same on a table of any size; still cache the schema for
+   the session instead of calling it before every read or write.
 3. **Prefer `infer_schema` → review → `create_table`.** Never invent a schema blind when sample
    records exist. Read `warnings` first: a key that was sanitized, renamed, merged or split must be
    renamed the same way in the records you insert, and `provenance` says which key feeds which

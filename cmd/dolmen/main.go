@@ -70,7 +70,10 @@ func run() error {
 		return nil
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel})))
+	tel, err := startTelemetry(cfg.LogLevel, os.Getenv)
+	if err != nil {
+		return err
+	}
 
 	st, err := openStore(cfg)
 	if err != nil {
@@ -104,7 +107,7 @@ func run() error {
 		return err
 	}
 
-	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithMaxSubscriptionAge(cfg.MaxSubscriptionAge), api.WithAuth(cfg.Auth), api.WithGrants(grants), api.WithOIDC(oidcSrc), api.WithTimeouts(cfg.Timeouts))
+	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithMaxSubscriptionAge(cfg.MaxSubscriptionAge), api.WithAuth(cfg.Auth), api.WithGrants(grants), api.WithOIDC(oidcSrc), api.WithTimeouts(cfg.Timeouts), api.WithTracing(tel.Tracing))
 	mcpSrv := newMCPServer(cfg, apiSrv)
 
 	sub := http.NewServeMux()
@@ -136,7 +139,7 @@ func run() error {
 		return err
 	case <-ctx.Done():
 		storeOpen, grantsOpen = false, false
-		return shutdown(httpSrv, apiSrv, cfg.ShutdownGrace, st.Close, grants.Close)
+		return shutdown(httpSrv, apiSrv, cfg.ShutdownGrace, st.Close, grants.Close, stopTelemetry(tel, cfg.ShutdownGrace))
 	}
 }
 
@@ -186,7 +189,10 @@ func runStdio(args []string) error {
 		return nil
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel})))
+	tel, err := startTelemetry(cfg.LogLevel, os.Getenv)
+	if err != nil {
+		return err
+	}
 
 	st, err := openStore(cfg)
 	if err != nil {
@@ -199,8 +205,9 @@ func runStdio(args []string) error {
 		return err
 	}
 
-	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithAuth(cfg.Auth), api.WithTimeouts(cfg.Timeouts))
+	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithAuth(cfg.Auth), api.WithTimeouts(cfg.Timeouts), api.WithTracing(tel.Tracing))
 	mcpSrv := newMCPServer(cfg, apiSrv)
+	defer stopTelemetry(tel, 0)()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -792,6 +799,19 @@ func printEnvHelp(out io.Writer) {
 		{"OPENAI_API_KEY", "fallback API key when DOLMEN_EMBED_API_KEY is unset"},
 		{"REMBED_CACHE", "model cache directory for the local provider"},
 		{"HF_TOKEN", "Hugging Face token for gated repos downloaded by the local provider"},
+		{"", ""},
+		{"OTEL_EXPORTER_OTLP_ENDPOINT", "OTLP http/protobuf endpoint; setting it (or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT) turns tracing on (default off)"},
+		{"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "traces-only OTLP endpoint"},
+		{"OTEL_EXPORTER_OTLP_HEADERS", "headers sent with each export (also _TIMEOUT, _COMPRESSION, _CERTIFICATE and the _TRACES_ variants)"},
+		{"OTEL_EXPORTER_OTLP_PROTOCOL", "only http/protobuf is supported"},
+		{"OTEL_TRACES_EXPORTER", "otlp or none"},
+		{"OTEL_SDK_DISABLED", "true turns tracing off"},
+		{"OTEL_SERVICE_NAME", "service.name (default dolmen)"},
+		{"OTEL_RESOURCE_ATTRIBUTES", "extra resource attributes, k=v,k2=v2"},
+		{"OTEL_TRACES_SAMPLER", "sampler (default parentbased_always_on); OTEL_TRACES_SAMPLER_ARG sets the ratio"},
+		{"OTEL_PROPAGATORS", "tracecontext, baggage or none (default tracecontext,baggage)"},
+		{"OTEL_BSP_*", "batch span processor tuning"},
+		{"DOLMEN_OTEL_INCLUDE_PRINCIPAL", "true adds the caller's principal to operation spans as enduser.id (default false)"},
 	}
 
 	fmt.Fprintln(out, "\nEnvironment variables:")
