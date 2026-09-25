@@ -29,10 +29,10 @@ func (t *Tracing) StartOp(ctx context.Context, op, requestID, principal string) 
 	}
 	attrs := []attribute.KeyValue{OpNameKey.String(op)}
 	if requestID != "" {
-		attrs = append(attrs, RequestIDKey.String(truncate(requestID, 128)))
+		attrs = append(attrs, RequestIDKey.String(clean(requestID, 128)))
 	}
 	if t.includePrincipal && principal != "" {
-		attrs = append(attrs, PrincipalKey.String(truncate(principal, maxNameAttr)))
+		attrs = append(attrs, PrincipalKey.String(clean(principal, maxNameAttr)))
 	}
 	ctx, span := t.tracer.Start(ctx, "dolmen.op "+op, trace.WithSpanKind(trace.SpanKindInternal), trace.WithAttributes(attrs...))
 	return ctx, &OpSpan{span: span}
@@ -45,10 +45,10 @@ func (o *OpSpan) SetScope(namespace, table string) {
 		return
 	}
 	if namespace != "" {
-		o.span.SetAttributes(semconv.DBNamespace(truncate(namespace, maxNameAttr)))
+		o.span.SetAttributes(semconv.DBNamespace(clean(namespace, maxNameAttr)))
 	}
 	if table != "" {
-		o.span.SetAttributes(TableKey.String(truncate(table, maxNameAttr)))
+		o.span.SetAttributes(TableKey.String(clean(table, maxNameAttr)))
 	}
 }
 

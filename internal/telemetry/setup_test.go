@@ -9,9 +9,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -321,5 +323,59 @@ func TestPeekScope(t *testing.T) {
 	ns, tbl = PeekScope([]byte(`{"namespace":7}`))
 	if ns != "" || tbl != "" {
 		t.Fatalf("non-string scope must be ignored: %q %q", ns, tbl)
+	}
+}
+
+func TestRequestDataAttributesStayValidUTF8(t *testing.T) {
+	var got int
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got++
+		w.Header().Set("Content-Type", "application/x-protobuf")
+	}))
+	defer collector.Close()
+	rec := tracetest.NewSpanRecorder()
+	p, err := setup(context.Background(), envOf(map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": collector.URL}), "v1", func(ctx context.Context) (sdktrace.SpanExporter, error) {
+		return otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(collector.URL+"/v1/traces"))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := "x\xff\xfe" + strings.Repeat("\u00e9", 200)
+	tr := p.Tracing
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	both := []*Tracing{tr, New(tp, propagation.TraceContext{}, true)}
+	for _, x := range both {
+		h := x.Server("/v1/{op}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Request-Id", bad)
+			_, span := x.StartOp(r.Context(), "insert", bad, bad)
+			span.SetScope(bad, bad)
+			span.End("ok")
+		}))
+		req := httptest.NewRequest(http.MethodPost, "/v1/%FF", nil)
+		req.Header.Set("User-Agent", bad)
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	if len(rec.Ended()) != 2 {
+		t.Fatalf("got %d spans", len(rec.Ended()))
+	}
+	for _, s := range rec.Ended() {
+		for _, kv := range s.Attributes() {
+			if !utf8.ValidString(kv.Value.Emit()) {
+				t.Errorf("%s: %s is not valid UTF-8", s.Name(), kv.Key)
+			}
+		}
+	}
+	if err := p.Shutdown(context.Background()); err != nil {
+		t.Fatalf("OTLP export failed: %v", err)
+	}
+	if got == 0 {
+		t.Fatal("the collector received no export")
+	}
+}
+
+func TestTruncateKeepsRunesWhole(t *testing.T) {
+	s := strings.Repeat("a", 127) + "\u00e9"
+	if out := clean(s, 128); !utf8.ValidString(out) || len(out) > 128 {
+		t.Fatalf("clean(%q) = %q", s, out)
 	}
 }

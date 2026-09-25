@@ -4,7 +4,9 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -45,7 +47,7 @@ func (t *Tracing) Server(route string, next http.Handler, opts ...ServerOption) 
 			attrs = append(attrs, semconv.HTTPRequestMethodKey.String(method))
 		} else {
 			method = "HTTP"
-			attrs = append(attrs, semconv.HTTPRequestMethodKey.String("_OTHER"), semconv.HTTPRequestMethodOriginal(r.Method))
+			attrs = append(attrs, semconv.HTTPRequestMethodKey.String("_OTHER"), semconv.HTTPRequestMethodOriginal(clean(r.Method, maxNameAttr)))
 		}
 		scheme := "http"
 		if r.TLS != nil {
@@ -54,19 +56,19 @@ func (t *Tracing) Server(route string, next http.Handler, opts ...ServerOption) 
 		attrs = append(attrs,
 			semconv.HTTPRoute(route),
 			semconv.URLScheme(scheme),
-			semconv.URLPath(r.URL.Path),
+			semconv.URLPath(clean(r.URL.Path, maxRequestAttr)),
 		)
 		if host, port := splitHostPort(r.Host); host != "" {
-			attrs = append(attrs, semconv.ServerAddress(host))
+			attrs = append(attrs, semconv.ServerAddress(clean(host, maxNameAttr)))
 			if port > 0 {
 				attrs = append(attrs, semconv.ServerPort(port))
 			}
 		}
 		if host, _ := splitHostPort(r.RemoteAddr); host != "" {
-			attrs = append(attrs, semconv.ClientAddress(host))
+			attrs = append(attrs, semconv.ClientAddress(clean(host, maxNameAttr)))
 		}
 		if ua := r.UserAgent(); ua != "" {
-			attrs = append(attrs, semconv.UserAgentOriginal(ua))
+			attrs = append(attrs, semconv.UserAgentOriginal(clean(ua, maxRequestAttr)))
 		}
 		switch {
 		case r.ProtoMajor == 1 && r.ProtoMinor == 1:
@@ -138,7 +140,7 @@ func (w *statusWriter) finish() {
 		}
 		w.span.SetAttributes(semconv.HTTPResponseStatusCode(status))
 		if id := w.ResponseWriter.Header().Get("X-Request-Id"); id != "" {
-			w.span.SetAttributes(RequestIDKey.String(truncate(id, 128)))
+			w.span.SetAttributes(RequestIDKey.String(clean(id, 128)))
 		}
 		if status >= http.StatusInternalServerError {
 			w.span.SetAttributes(semconv.ErrorTypeKey.String(strconv.Itoa(status)))
@@ -148,9 +150,16 @@ func (w *statusWriter) finish() {
 	})
 }
 
-func truncate(s string, n int) string {
+const maxRequestAttr = 1024
+
+func clean(s string, n int) string {
+	s = strings.ToValidUTF8(s, "\uFFFD")
 	if len(s) <= n {
 		return s
 	}
-	return s[:n]
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
