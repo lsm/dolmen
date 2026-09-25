@@ -9,9 +9,9 @@ import (
 )
 
 const (
-	CatalogFormat = 2
+	CatalogFormat = 3
 
-	CatalogMinReader = 2
+	CatalogMinReader = 3
 
 	catalogFormatKey    = "catalog_format"
 	catalogMinReaderKey = "catalog_min_reader"

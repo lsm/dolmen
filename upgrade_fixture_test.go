@@ -29,7 +29,7 @@ func TestANamespaceWrittenByV030IsReadAndWrittenByThisRelease(t *testing.T) {
 	st := openReleaseFixture(t, "v0.3.0")
 	ctx := context.Background()
 
-	sc, _, err := st.DescribeTable(ctx, "fixture", "notes")
+	sc, count, err := st.DescribeTable(ctx, "fixture", "notes")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,6 +57,9 @@ func TestANamespaceWrittenByV030IsReadAndWrittenByThisRelease(t *testing.T) {
 
 	if _, err := st.Insert(ctx, "fixture", "notes", []map[string]any{{"title": "new pump", "body": "overheats again", "emb": []float32{1, 0, 0}}}, InsertOptions{}); err != nil {
 		t.Fatalf("this release must write into a v0.3.0 namespace: %v", err)
+	}
+	if _, after, err := st.DescribeTable(ctx, "fixture", "notes"); err != nil || count != 2 || after != 3 {
+		t.Fatalf("a v0.3.0 namespace must be counted on open and counted on write: %d then %d, %v", count, after, err)
 	}
 	fts, err = st.SearchFulltext(ctx, "fixture", "notes", "overheat*", SearchOptions{})
 	if err != nil || len(fts.Rows) != 2 {

@@ -479,6 +479,7 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 				if !cur.HasOwner {
 					w.steps = append(w.steps, migrationStep{sql: "ALTER TABLE " + table + " ADD COLUMN " + ident(schema.OwnerColumn) + ` text COLLATE "C"`})
 				}
+				w.steps = append(w.steps, s.rowCountSteps(table, rowCountKey{namespace: n.name, table: old.Name, gen: state.incarnation.DropGen}, true)...)
 				cur.RowAccess = schema.RowAccessOwn
 				cur.HasOwner = true
 				plan.Operations = append(plan.Operations, "set_row_access true")

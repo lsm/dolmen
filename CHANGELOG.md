@@ -4,6 +4,13 @@
 
 ### Added
 
+- **`describe_table` reads a kept row count instead of scanning the table.** Every write keeps
+  a per-table count current (per owner on `row_access` tables), so `row_count` costs the same on a
+  table of any size. Existing namespaces are counted once on first open. On SQLite this raises the
+  namespace's catalog minimum-reader stamp to 3, so an older dolmen refuses the directory afterwards;
+  on PostgreSQL the catalog moves to version 7. Back up before the first open if you may need to
+  downgrade.
+
 - **Idempotency keys are namespaced by owner.** A key is unique per table *and* writer principal,
   so two principals using the same string are using two different keys — neither conflicts, neither
   reveals the other, and the first to use a key cannot squat it. A retry consults only its own

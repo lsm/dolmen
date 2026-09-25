@@ -379,6 +379,10 @@ func (s *Store) lockedNSCtx(ctx context.Context, name string) (*nsDB, error) {
 		rw.Close()
 		return nil, fmt.Errorf("init namespace %s: %w", name, err)
 	}
+	if err := ensureRowCounts(ctx, rw, name); err != nil {
+		rw.Close()
+		return nil, fmt.Errorf("init namespace %s: %w", name, err)
+	}
 
 	if err := ensureNSGen(ctx, rw); err != nil {
 		rw.Close()
@@ -462,6 +466,14 @@ var registryDDL = []string{
 		chain_origin INTEGER NOT NULL,
 		chain_start INTEGER NOT NULL,
 		feed_table TEXT NOT NULL DEFAULT ''
+	)`,
+
+	`CREATE TABLE IF NOT EXISTS _dolmen_row_counts(
+		table_name TEXT NOT NULL,
+		scoped INTEGER NOT NULL,
+		owner TEXT NOT NULL DEFAULT '',
+		n INTEGER NOT NULL,
+		PRIMARY KEY(table_name, scoped, owner)
 	)`,
 
 	`CREATE INDEX IF NOT EXISTS _dolmen_changes_table_feed
@@ -684,13 +696,19 @@ func (s *Store) DescribeTable(ctx context.Context, nsName, table string, scope *
 	if scope != nil && scope.Empty {
 		return sc, 0, nil
 	}
+	count, err := readRowCount(ctx, n.ro, table, scope)
+	if err != nil {
+		return nil, 0, err
+	}
+	if count >= 0 {
+		return sc, count, nil
+	}
 	countStmt := fmt.Sprintf(`SELECT count(*) FROM %s`, q(table))
 	var cargs []any
 	if clause, sargs := scopeClause(scope, ""); clause != "" {
 		countStmt = fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s`, q(table), clause)
 		cargs = sargs
 	}
-	var count int64
 	if err := n.ro.QueryRowContext(ctx, countStmt, cargs...).Scan(&count); err != nil {
 		return nil, 0, err
 	}
@@ -783,6 +801,9 @@ func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []
 		if err := createFTS(ctx, tx, table, fts); err != nil {
 			return nil, err
 		}
+	}
+	if err := installRowCount(ctx, tx, table, opts.RowAccess != ""); err != nil {
+		return nil, err
 	}
 	sc := &schema.TableSchema{Namespace: nsName, Name: table, Version: 1, Fields: fields,
 		RowAccess: opts.RowAccess, HasOwner: opts.RowAccess != ""}
