@@ -2,8 +2,6 @@ package postgres
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,15 +44,6 @@ func normalizeRecords(records []map[string]any) ([]map[string]any, error) {
 	return out, nil
 }
 
-func recordHash(records []map[string]any) (string, error) {
-	raw, err := json.Marshal(records)
-	if err != nil {
-		return "", fmt.Errorf("%w: cannot encode records: %v", store.ErrInvalid, err)
-	}
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:]), nil
-}
-
 func (s *Store) lookupIdempotency(ctx context.Context, tx pgx.Tx, n namespace, state tableState, key, hash string, domain store.IdemDomain) (store.InsertResult, bool, error) {
 	var result store.InsertResult
 	if key == "" {
@@ -91,11 +80,11 @@ func (s *Store) readIdempotency(ctx context.Context, tx pgx.Tx, n namespace, sta
 	return result, true, nil
 }
 
-func prepareRows(ctx context.Context, state tableState, records []map[string]any, emb store.Embedder) ([]preparedRow, error) {
-	return prepareValues(ctx, state, records, emb, true)
+func (s *Store) prepareRows(ctx context.Context, state tableState, records []map[string]any, emb store.Embedder) ([]preparedRow, error) {
+	return s.prepareValues(ctx, state, records, emb, true)
 }
 
-func prepareValues(ctx context.Context, state tableState, records []map[string]any, emb store.Embedder, insert bool) ([]preparedRow, error) {
+func (s *Store) prepareValues(ctx context.Context, state tableState, records []map[string]any, emb store.Embedder, insert bool) ([]preparedRow, error) {
 	out := make([]preparedRow, len(records))
 	texts := []string{}
 	indices := []int{}
@@ -135,6 +124,13 @@ func prepareValues(ctx context.Context, state tableState, records []map[string]a
 			}
 			if f.Type == schema.Number && coerced != nil {
 				coerced = storedNumber(coerced)
+			}
+			if f.Type == schema.Secret && coerced != nil {
+				sealed, err := s.sealWrite(f, coerced)
+				if err != nil {
+					return nil, err
+				}
+				coerced = sealed
 			}
 			out[i].columns = append(out[i].columns, ident(state.columns[f.Name]))
 			out[i].values = append(out[i].values, coerced)
@@ -238,11 +234,13 @@ func (s *Store) Insert(ctx context.Context, ns, table string, records []map[stri
 		return store.InsertResult{}, err
 	}
 	hash := ""
-	if opts.IdempotencyKey != "" {
-		hash, err = recordHash(records)
-		if err != nil {
-			return store.InsertResult{}, err
+	hashFor := func(sc *schema.TableSchema) error {
+		if opts.IdempotencyKey == "" {
+			return nil
 		}
+		var err error
+		hash, err = s.recordHash(sc, records)
+		return err
 	}
 	for attempt := 0; attempt < 3; attempt++ {
 		var state tableState
@@ -257,6 +255,9 @@ func (s *Store) Insert(ctx context.Context, ns, table string, records []map[stri
 			if err := s.guardScope(ctx, tx, n, table, state, expected); err != nil {
 				return err
 			}
+			if err := hashFor(state.schema); err != nil {
+				return err
+			}
 			result, found, err = s.lookupIdempotency(ctx, tx, n, state, opts.IdempotencyKey, hash, domain)
 			return err
 		})
@@ -264,7 +265,7 @@ func (s *Store) Insert(ctx context.Context, ns, table string, records []map[stri
 			return result, err
 		}
 		before, _ := json.Marshal(state.schema)
-		rows, err := prepareRows(ctx, state, records, emb)
+		rows, err := s.prepareRows(ctx, state, records, emb)
 		if err != nil {
 			return store.InsertResult{}, err
 		}
@@ -278,6 +279,9 @@ func (s *Store) Insert(ctx context.Context, ns, table string, records []map[stri
 				return err
 			}
 			if err := checkIncarnation(ns, current.incarnation, state.incarnation); err != nil {
+				return err
+			}
+			if err := hashFor(current.schema); err != nil {
 				return err
 			}
 			result, found, err = s.lookupIdempotency(ctx, tx, n, current, opts.IdempotencyKey, hash, domain)

@@ -55,8 +55,8 @@ never matches.
 **Change feed and backups.** Change records carry ids, never row values, so `changes_since`,
 `wait_for` and SSE never hold a secret. Backups copy the database file, which holds only ciphertext.
 
-**PostgreSQL.** `create_table` or `migrate add_field` with a secret field, and any `reveal`, is
-refused on the postgres engine with a "not yet supported on the postgres engine" error until slice 3.
+**PostgreSQL.** Slice 1 refused secret fields and `reveal` on the postgres engine; slice 3 lifted
+that (see below).
 
 ## Slice 2
 
@@ -88,5 +88,32 @@ and the configured key's id; a GCM authentication failure is logged as possible 
 field that hash would let a short secret be brute-forced offline, so each secret value is replaced,
 before hashing, by HMAC-SHA256 under a key derived from the secret key (HMAC(key, "dolmen
 idempotency")). A replay carrying the same secret still matches. Insert is the only write path that
-records a request hash; PostgreSQL has none over secret values until slice 3 brings secret fields
-there.
+records a request hash; slice 3 gives PostgreSQL the same fingerprint.
+
+## Slice 3
+
+**PostgreSQL parity.** The postgres engine takes the same keyring (`postgres.Config.Secrets`; the
+server passes the one built from `DOLMEN_SECRET_KEY`, and the `dolmen/postgres` facade opener
+receives `WithSecretKey`'s keyring through the open context, so `EngineOpener` keeps its
+signature). A secret column is `bytea` holding the same blob format as SQLite. The two engines
+share the helpers in `internal/store/secret.go` (`RequireSecretKey`, `SealSecret`, `RevealSet`,
+`OpenSecret`, `FingerprintSecrets`), so the refusals, error messages, error classes (a missing key,
+a wrong key and tampering stay unclassified, which the API reports as `internal_error`) and the
+idempotency fingerprint are one implementation. Every `create_table` and `migrate` refusal applies
+on postgres too, including `set_fulltext`, `set_vectorize` and `set_enum` on an existing secret.
+`query` masks by result-column label as on SQLite; an aliased secret column comes back as base64
+of the `bytea`, and comparing it with a plaintext matches nothing.
+
+**No catalog change.** Secret columns live in the data tables, created by `CREATE TABLE` or
+`ALTER TABLE ... ADD COLUMN`, and the idempotency relation keeps its shape (only what goes into
+`payload_hash` changed), so the catalog version is unchanged and no live relation is widened.
+
+**Purging plaintext-derived idempotency hashes on SQLite.** Between slices 1 and 2, an insert into
+a table with a secret field stored SHA-256 over the request including the plaintext. The records
+carry no version, and a keyed fingerprint cannot be told from a plain hash by its shape, so the
+first open of each namespace after this change deletes every idempotency record of every table that
+has a secret field, once, and records `secret_idempotency_purged` in `_dolmen_meta` so it never runs
+again. The cost is that a retry of an insert made before the upgrade no longer replays and inserts
+again; that window only existed on unreleased builds (no tag contains slice 1 without slice 2), and
+a replayable hash of a secret is the worse failure. PostgreSQL never stored a hash over a secret, so
+it needs no purge.

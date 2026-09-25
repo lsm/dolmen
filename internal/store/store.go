@@ -391,6 +391,11 @@ func (s *Store) lockedNSCtx(ctx context.Context, name string) (*nsDB, error) {
 		return nil, fmt.Errorf("init namespace %s: %w", name, err)
 	}
 
+	if err := purgeSecretIdempotency(ctx, rw); err != nil {
+		rw.Close()
+		return nil, fmt.Errorf("init namespace %s: %w", name, err)
+	}
+
 	if err := ensureNSGen(ctx, rw); err != nil {
 		rw.Close()
 		return nil, fmt.Errorf("init namespace %s: %w", name, err)

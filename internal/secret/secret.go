@@ -2,6 +2,7 @@ package secret
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -143,4 +144,18 @@ func (k *Keyring) Open(blob []byte) (string, error) {
 		return "", ErrTampered
 	}
 	return string(plain), nil
+}
+
+type keyringKey struct{}
+
+func WithKeyring(ctx context.Context, k *Keyring) context.Context {
+	if k == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, keyringKey{}, k)
+}
+
+func KeyringFrom(ctx context.Context) *Keyring {
+	k, _ := ctx.Value(keyringKey{}).(*Keyring)
+	return k
 }

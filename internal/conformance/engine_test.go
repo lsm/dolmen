@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/lsm/dolmen"
 	"github.com/lsm/dolmen/internal/postgres"
+	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
 	pgfacade "github.com/lsm/dolmen/postgres"
 )
@@ -23,10 +24,15 @@ func openEngineStore(t *testing.T, dir string, retention *time.Duration) store.E
 
 func openEngineStoreShared(t *testing.T, dir string, retention *time.Duration, sharedFilter bool) store.Engine {
 	t.Helper()
+	return openEngineStoreKeyed(t, dir, retention, sharedFilter, conformanceKeyring(t))
+}
+
+func openEngineStoreKeyed(t *testing.T, dir string, retention *time.Duration, sharedFilter bool, keyring *secret.Keyring) store.Engine {
+	t.Helper()
 	if testEngine(t) == store.EnginePostgres {
-		return openPostgresEngine(t, dir, retention, sharedFilter)
+		return openPostgresEngineKeyed(t, dir, retention, sharedFilter, keyring)
 	}
-	opts := []store.OpenOption{store.WithSecretKey(conformanceKeyring(t))}
+	opts := []store.OpenOption{store.WithSecretKey(keyring)}
 	if retention != nil {
 		opts = append(opts, store.WithChangeRetention(*retention))
 	}
@@ -86,9 +92,14 @@ func postgresFacadeOption(t *testing.T, dir string) dolmen.Option {
 
 func openPostgresEngine(t *testing.T, dir string, retention *time.Duration, sharedFilter bool) *postgres.Store {
 	t.Helper()
+	return openPostgresEngineKeyed(t, dir, retention, sharedFilter, conformanceKeyring(t))
+}
+
+func openPostgresEngineKeyed(t *testing.T, dir string, retention *time.Duration, sharedFilter bool, keyring *secret.Keyring) *postgres.Store {
+	t.Helper()
 	dsn := postgresDSN(t)
 	catalog := postgresCatalog(dir)
-	cfg := postgres.Config{DSN: dsn, Catalog: catalog, QueryRole: os.Getenv("DOLMEN_TEST_PG_QUERY_ROLE"), ChangeRetention: retention, SharedFilter: sharedFilter}
+	cfg := postgres.Config{DSN: dsn, Catalog: catalog, QueryRole: os.Getenv("DOLMEN_TEST_PG_QUERY_ROLE"), ChangeRetention: retention, SharedFilter: sharedFilter, Secrets: keyring}
 	s, err := postgres.Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)

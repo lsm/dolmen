@@ -572,8 +572,8 @@ match, before ranking.
 - A `secret` field holds a string encrypted with AES-256-GCM under the server key from
   `DOLMEN_SECRET_KEY` (base64, 32 bytes; `openssl rand -base64 32`) or `DOLMEN_SECRET_KEY_FILE`.
   Without a key, `create_table` or `migrate add_field` with a secret field, and any write carrying
-  a secret value, is refused.{{ if eq .Dialect "postgresql" }} This server's PostgreSQL engine does
-  not support secret fields yet.{{ end }}
+  a secret value, is refused. Both engines store the ciphertext the same way (a SQLite BLOB, a
+  PostgreSQL `bytea` column), so the key and every rule below apply to either.
 - `fulltext`, `vectorize`, `enum` and `default` are refused on a secret field, because each would
   store or disclose the plaintext. A secret cannot be an `upsert` natural key.
 - Every read returns the mask `"••••"` for a set secret and `null` for an unset one. Pass

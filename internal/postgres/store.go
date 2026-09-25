@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -19,6 +20,7 @@ type Config struct {
 	MaxConns        int32
 	SharedFilter    bool
 	ChangeRetention *time.Duration
+	Secrets         *secret.Keyring
 }
 
 type Store struct {
@@ -35,6 +37,7 @@ type Store struct {
 	active          sync.WaitGroup
 	wake            *wakeSet
 	sharedFilter    bool
+	secrets         *secret.Keyring
 }
 
 type connectionError struct {
@@ -93,7 +96,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	if err != nil {
 		return nil, &connectionError{"open pool", err}
 	}
-	s := &Store{pool: pool, catalog: cfg.Catalog, queryRole: cfg.QueryRole, done: make(chan struct{}), changeRetention: retention, now: time.Now, sharedFilter: cfg.SharedFilter}
+	s := &Store{pool: pool, catalog: cfg.Catalog, queryRole: cfg.QueryRole, done: make(chan struct{}), changeRetention: retention, now: time.Now, sharedFilter: cfg.SharedFilter, secrets: cfg.Secrets}
 	if err = pool.Ping(ctx); err == nil {
 		err = s.bootstrap(ctx)
 	}

@@ -77,17 +77,7 @@ func (s *Store) insert(ctx context.Context, nsName, table string, records []map[
 }
 
 func (s *Store) payloadHash(sc *schema.TableSchema, records []map[string]any) string {
-	hashed := make([]map[string]any, len(records))
-	for i, rec := range records {
-		hashed[i] = make(map[string]any, len(rec))
-		for k, v := range rec {
-			if f := sc.Field(k); f != nil && f.Type == schema.Secret && v != nil {
-				v = s.secretFingerprint(v)
-			}
-			hashed[i][k] = v
-		}
-	}
-	raw, err := json.Marshal(hashed)
+	raw, err := json.Marshal(FingerprintSecrets(s.secrets, sc, records))
 	if err != nil {
 
 		raw = []byte("marshal error: " + err.Error())

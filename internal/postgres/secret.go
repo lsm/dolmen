@@ -2,36 +2,51 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
 
-func secretUnsupported(field string) error {
-	return invalidf("field %q has type secret, which is not yet supported on the postgres engine; store it on a server running -engine sqlite, or use another field type until postgres support lands", field)
+func (s *Store) HasSecretKey() bool { return s.secrets != nil }
+
+func (s *Store) sealWrite(f schema.Field, cv any) (any, error) {
+	return store.SealSecret(s.secrets, f, cv)
 }
 
-func refuseSecretFields(fields []schema.Field) error {
-	for _, f := range fields {
-		if f.Type == schema.Secret {
-			return secretUnsupported(f.Name)
-		}
+func (s *Store) revealSet(ctx context.Context, sc *schema.TableSchema) (map[string]bool, error) {
+	return store.RevealSet(ctx, sc, s.secrets)
+}
+
+func (s *Store) presentSecret(reveal map[string]bool, f schema.Field, v any) (any, bool, error) {
+	if f.Type != schema.Secret || v == nil || !reveal[f.Name] {
+		return nil, false, nil
 	}
-	return nil
+	plain, err := store.OpenSecret(s.secrets, f.Name, v)
+	if err != nil {
+		return nil, true, err
+	}
+	return plain, true, nil
 }
 
-func refuseSecretChanges(changes []schema.Change) error {
+func (s *Store) recordHash(sc *schema.TableSchema, records []map[string]any) (string, error) {
+	raw, err := json.Marshal(store.FingerprintSecrets(s.secrets, sc, records))
+	if err != nil {
+		return "", fmt.Errorf("%w: cannot encode records: %v", store.ErrInvalid, err)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func addedFields(changes []schema.Change) []schema.Field {
+	var out []schema.Field
 	for _, ch := range changes {
-		if ch.Op == schema.OpAddField && ch.Field != nil && ch.Field.Type == schema.Secret {
-			return secretUnsupported(ch.Field.Name)
+		if ch.Op == schema.OpAddField && ch.Field != nil {
+			out = append(out, *ch.Field)
 		}
 	}
-	return nil
-}
-
-func refuseReveal(ctx context.Context) error {
-	if names := store.RevealFrom(ctx); len(names) > 0 {
-		return invalidf("reveal names %q, but the postgres engine does not yet support secret fields, so no table here has one to reveal; omit reveal", names[0])
-	}
-	return nil
+	return out
 }
