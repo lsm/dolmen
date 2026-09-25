@@ -1,0 +1,31 @@
+# Minimal OpenTelemetry Collector configuration for dolmen traces.
+#
+#   docker run --rm -p 4318:4318 \
+#     -v "$PWD/docs/otel-collector.yaml:/etc/otelcol/config.yaml" \
+#     otel/opentelemetry-collector:latest
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 ./dolmen
+#
+# dolmen exports OTLP over HTTP (http/protobuf) only, so enable the http
+# receiver. Swap the debug exporter for your backend (Tempo, Jaeger, Honeycomb,
+# ...) with an otlphttp or otlp exporter.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  debug:
+    verbosity: detailed
+  # otlphttp/tempo:
+  #   endpoint: http://tempo:4318
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]

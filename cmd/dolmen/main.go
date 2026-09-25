@@ -69,7 +69,10 @@ func run() error {
 		return nil
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel})))
+	tel, err := startTelemetry(cfg.LogLevel, os.Getenv)
+	if err != nil {
+		return err
+	}
 
 	st, err := openStore(cfg)
 	if err != nil {
@@ -103,7 +106,7 @@ func run() error {
 		return err
 	}
 
-	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithMaxSubscriptionAge(cfg.MaxSubscriptionAge), api.WithAuth(cfg.Auth), api.WithGrants(grants), api.WithOIDC(oidcSrc), api.WithTimeouts(cfg.Timeouts))
+	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithMaxSubscriptionAge(cfg.MaxSubscriptionAge), api.WithAuth(cfg.Auth), api.WithGrants(grants), api.WithOIDC(oidcSrc), api.WithTimeouts(cfg.Timeouts), api.WithTracing(tel.Tracing))
 	mcpSrv := newMCPServer(cfg, apiSrv)
 
 	sub := http.NewServeMux()
@@ -135,7 +138,7 @@ func run() error {
 		return err
 	case <-ctx.Done():
 		storeOpen, grantsOpen = false, false
-		return shutdown(httpSrv, apiSrv, cfg.ShutdownGrace, st.Close, grants.Close)
+		return shutdown(httpSrv, apiSrv, cfg.ShutdownGrace, st.Close, grants.Close, stopTelemetry(tel, cfg.ShutdownGrace))
 	}
 }
 
@@ -185,7 +188,10 @@ func runStdio(args []string) error {
 		return nil
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel})))
+	tel, err := startTelemetry(cfg.LogLevel, os.Getenv)
+	if err != nil {
+		return err
+	}
 
 	st, err := openStore(cfg)
 	if err != nil {
@@ -198,8 +204,9 @@ func runStdio(args []string) error {
 		return err
 	}
 
-	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithAuth(cfg.Auth), api.WithTimeouts(cfg.Timeouts))
+	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithAuth(cfg.Auth), api.WithTimeouts(cfg.Timeouts), api.WithTracing(tel.Tracing))
 	mcpSrv := newMCPServer(cfg, apiSrv)
+	defer stopTelemetry(tel, 0)()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

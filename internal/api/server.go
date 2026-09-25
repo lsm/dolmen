@@ -22,6 +22,7 @@ import (
 	"github.com/lsm/dolmen/internal/ops"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
+	"github.com/lsm/dolmen/internal/telemetry"
 	"github.com/lsm/dolmen/internal/version"
 	"github.com/lsm/dolmen/skill"
 )
@@ -42,6 +43,7 @@ type Server struct {
 	timeouts           Timeouts
 	drain              drainState
 	metrics            metrics
+	tracing            *telemetry.Tracing
 }
 
 type Option func(*Server)
@@ -86,6 +88,23 @@ func WithOIDC(src *auth.OIDCSource) Option {
 	return func(s *Server) {
 		s.oidcSource = src
 	}
+}
+
+func WithTracing(t *telemetry.Tracing) Option {
+	return func(s *Server) {
+		s.tracing = t
+	}
+}
+
+func (s *Server) Tracing() *telemetry.Tracing {
+	return s.tracing
+}
+
+func (s *Server) tracedEmbedder() ops.EmbeddingProvider {
+	if s.emb == nil {
+		return nil
+	}
+	return s.tracing.Embedder(s.emb)
 }
 
 func WithNamespaceHint(h string) Option {
@@ -317,7 +336,7 @@ func existingTableProp(desc string) map[string]any {
 }
 
 func (s *Server) embedder() store.Embedder {
-	return ops.Embedder(s.emb)
+	return ops.Embedder(s.tracedEmbedder())
 }
 
 type nsReq struct {
@@ -494,6 +513,20 @@ func (s *Server) Dispatch(ctx context.Context, op string, body []byte) (res any,
 	if !ok {
 		return nil, notFound("unknown operation %q", op)
 	}
+	if s.tracing.On() {
+		var span *telemetry.OpSpan
+		ctx, span = s.tracing.StartOp(ctx, op, RequestIDFrom(ctx), auth.IdentityFrom(ctx).Principal)
+		if span.Recording() {
+			span.SetScope(telemetry.PeekScope(body))
+		}
+		defer func() {
+			outcome := "ok"
+			if err != nil {
+				outcome = string(WrapError(err).Code)
+			}
+			span.End(outcome)
+		}()
+	}
 	ctx, cancel, overran := s.withOpDeadline(ctx, op)
 	defer cancel()
 	if err := s.authorizeOp(ctx, op, body); err != nil {
@@ -566,15 +599,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc(auth.AuthBeginPath, s.handleAuthBegin)
 	mux.HandleFunc(auth.AuthCallbackPath, s.handleAuthCallback)
 
-	mux.HandleFunc("/v1/subscribe", func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("/v1/subscribe", s.tracing.Server(s.prefix+"/v1/subscribe", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r, err := s.Authenticated(r)
 		if err != nil {
 			writeError(w, r, WrapError(err))
 			return
 		}
 		s.HandleSubscribe(w, r)
-	})
-	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
+	}), telemetry.EndAtHeaders))
+	mux.Handle("/v1/", s.tracing.Server(s.prefix+"/v1/{op}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 		r = r.WithContext(WithRequestID(r.Context(), RequestIDFor(r)))
 		w.Header().Set("X-Request-Id", RequestIDFrom(r.Context()))
@@ -615,7 +648,7 @@ func (s *Server) Handler() http.Handler {
 		}
 		res, err := s.Dispatch(r.Context(), op, body)
 		if err != nil {
-			slog.Debug("op failed", WithPrincipal(r, "op", op, "err", err)...)
+			slog.DebugContext(r.Context(), "op failed", WithPrincipal(r, "op", op, "err", err)...)
 			s.ArmResponseWrite(w)
 			writeError(w, r, err)
 			return
@@ -627,7 +660,7 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		WriteJSONPayload(w, http.StatusOK, payload)
-	})
+	})))
 	return mux
 }
 
@@ -757,11 +790,11 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	attrs := WithPrincipal(r, "code", apiErr.Code, "status", status, "request_id", reqID, "cause", apiErr.Cause)
 	switch {
 	case status >= http.StatusInternalServerError:
-		slog.Error("api error", attrs...)
+		slog.ErrorContext(r.Context(), "api error", attrs...)
 	case Denial(apiErr.Code):
-		slog.Info("api denial", attrs...)
+		slog.InfoContext(r.Context(), "api denial", attrs...)
 	default:
-		slog.Debug("api error", attrs...)
+		slog.DebugContext(r.Context(), "api error", attrs...)
 	}
 	writeJSONStatus(w, status, map[string]any{"ok": false, "error": apiErr.Public(reqID)})
 }

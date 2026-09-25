@@ -1272,6 +1272,57 @@ Coercion and validation rules:
   with a caller-supplied `vector` need no provider and are not checked against any embedding
   space — only you know which model produced the stored and query vectors.
 
+## Observability
+
+Dolmen emits OpenTelemetry traces over OTLP (`http/protobuf`). Tracing is **off by default**: no
+span is recorded or exported until an OTLP endpoint is configured, and while it is off the
+instrumentation is a no-op. It is configured only through the standard `OTEL_*` variables (both
+`dolmen` and `dolmen mcp`):
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | unset | Setting either turns tracing on, e.g. `http://collector:4318`. |
+| `OTEL_TRACES_EXPORTER` | `otlp` when an endpoint is set | `otlp` turns tracing on (endpoint defaults to `http://localhost:4318`); `none` keeps it off. |
+| `OTEL_SDK_DISABLED` | `false` | `true` turns tracing off whatever else is set. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` / `_TRACES_PROTOCOL` | `http/protobuf` | Only `http/protobuf` is supported; gRPC is left out to keep the binary small. |
+| `OTEL_EXPORTER_OTLP_HEADERS`, `_TIMEOUT`, `_COMPRESSION`, `_CERTIFICATE`, and the `_TRACES_` variants | | Passed to the OTLP exporter. |
+| `OTEL_SERVICE_NAME` | `dolmen` | `service.name`. |
+| `OTEL_RESOURCE_ATTRIBUTES` | | Extra resource attributes (`k=v,k2=v2`, percent-encoded values). |
+| `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` | `parentbased_always_on` | `always_on`, `always_off`, `traceidratio`, and the `parentbased_*` forms. |
+| `OTEL_PROPAGATORS` | `tracecontext,baggage` | `tracecontext`, `baggage` or `none`. |
+| `OTEL_BSP_*` | SDK defaults | Batch span processor tuning. |
+| `DOLMEN_OTEL_INCLUDE_PRINCIPAL` | `false` | `true` adds the caller's `principal` to operation spans. |
+
+An unsupported value (a gRPC protocol, an unknown sampler or propagator) stops startup with an error
+naming the variable. The resource carries `service.name`, `service.version`, `service.instance.id`
+(random per process), host and runtime attributes. Spans are batched and flushed on shutdown, bounded
+by `-shutdown-grace` (at most 10s).
+
+What is traced:
+
+- A SERVER span per request on `/v1/{op}`, `/mcp` and `/v1/subscribe`, following the HTTP semantic
+  conventions (`http.request.method`, `http.route`, `http.response.status_code`, `url.scheme`,
+  `server.address`, ...), continuing an inbound W3C `traceparent`. The subscribe span covers setup
+  only and ends when the stream opens.
+- A `dolmen.op <name>` span per operation, over HTTP, MCP over HTTP and MCP over stdio, with
+  `dolmen.op.name`, `dolmen.op.outcome` (`ok` or the error code), `db.namespace`, `dolmen.table` and
+  `dolmen.request_id` (the `X-Request-Id`). A failed operation sets the span's error status.
+- An `embeddings <model>` span per embedding call (`gen_ai.operation.name=embeddings`,
+  `gen_ai.request.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens` when the provider
+  reports it); CLIENT for `openai`, which also sends `traceparent` upstream, INTERNAL for `local`.
+- Every log line written during a traced request carries `trace_id` and `span_id`.
+
+Privacy: spans never carry SQL text, filter arguments, row payloads, embedded text, API keys or other
+credentials; error statuses carry the error code, not the message. The principal is recorded only
+with `DOLMEN_OTEL_INCLUDE_PRINCIPAL=true`.
+
+[`docs/otel-collector.yaml`](docs/otel-collector.yaml) is a minimal OpenTelemetry Collector
+configuration that receives dolmen's traces:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 OTEL_SERVICE_NAME=dolmen-dev ./dolmen
+```
+
 ## Backup and restore
 
 A namespace is a SQLite file in WAL mode, so copying `<ns>.db` while the server runs can miss

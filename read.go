@@ -34,7 +34,9 @@ type QueryResult struct {
 	Truncated bool
 }
 
-func (s *Store) GetRows(ctx context.Context, namespace, table string, ids []int64) (QueryResult, error) {
+func (s *Store) GetRows(ctx context.Context, namespace, table string, ids []int64) (r0 QueryResult, err error) {
+	ctx, span := s.startOp(ctx, "read_rows", namespace, table)
+	defer func() { endOp(span, err) }()
 	if err := s.begin(); err != nil {
 		return QueryResult{}, err
 	}
@@ -60,7 +62,9 @@ func (s *Store) GetRows(ctx context.Context, namespace, table string, ids []int6
 	return QueryResult{Rows: res.Rows, Truncated: res.Truncated}, nil
 }
 
-func (s *Store) Query(ctx context.Context, namespace, sql string, opts QueryOptions) (QueryResult, error) {
+func (s *Store) Query(ctx context.Context, namespace, sql string, opts QueryOptions) (r0 QueryResult, err error) {
+	ctx, span := s.startOp(ctx, "query", namespace, "")
+	defer func() { endOp(span, err) }()
 	if err := s.begin(); err != nil {
 		return QueryResult{}, err
 	}

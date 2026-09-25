@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -24,6 +26,9 @@ type config struct {
 	embeddingSet    bool
 	changeRetention time.Duration
 	vectorCache     int64
+
+	tracerProvider    trace.TracerProvider
+	tracerProviderSet bool
 }
 
 type EngineOpener func(ctx context.Context, changeRetention time.Duration) (store.Engine, error)
@@ -71,6 +76,9 @@ func (c *config) validate() error {
 	if c.embeddingSet && nilProvider(c.embedding) {
 		return derr.New(derr.InvalidRequest, "WithEmbedding: provider must not be nil")
 	}
+	if c.tracerProviderSet && nilProvider(c.tracerProvider) {
+		return derr.New(derr.InvalidRequest, "WithTracerProvider: provider must not be nil; omit the option to leave tracing off")
+	}
 	if c.changeRetention < 0 {
 		return derr.New(derr.InvalidRequest, "WithChangeRetention: duration must not be negative (0 disables pruning)")
 	}
@@ -92,7 +100,7 @@ func (c *config) validate() error {
 	return nil
 }
 
-func nilProvider(p EmbeddingProvider) bool {
+func nilProvider(p any) bool {
 	if p == nil {
 		return true
 	}
