@@ -49,6 +49,7 @@ var authRules = map[string]authRule{
 
 	"create_namespace": {Scope: scopeParentNamespace, Verbs: []auth.Verb{auth.VerbAdmin}},
 	"drop_namespace":   {Scope: scopeNamespace, Verbs: []auth.Verb{auth.VerbAdmin}},
+	"vacuum":           {Scope: scopeNamespace, Verbs: []auth.Verb{auth.VerbAdmin}},
 
 	"describe_table": {Scope: scopeTable, AnyVerb: true, Verbs: auth.VerbOrder},
 	"tokenize":       {Scope: scopeTable, AnyVerb: true, Verbs: auth.VerbOrder},

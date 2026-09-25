@@ -922,7 +922,7 @@ claude mcp add dolmen -- /path/to/dolmen mcp -data /path/to/data
 
 `dolmen mcp` takes the same flags and environment as `dolmen`; the HTTP-only ones (`-addr`, `-max-subscription-age`, `DOLMEN_ALLOWED_ORIGINS`) have no effect. The `initialize` handshake works as over HTTP (its instructions describe the stdio transport; set `-base-url` when an HTTP deployment also exists, and its links appear there). Over stdio there is no `MCP-Protocol-Version` header, so version negotiation happens in `initialize` alone.
 
-The MCP server exposes the same twenty-four operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
+The MCP server exposes the same twenty-five operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
 
 Skill distribution is built into the server. `GET /skills` returns a JSON manifest with links to the layered skill markdown; `GET /skills/dolmen` is the end-user skill and `GET /skills/dolmen-admin` is the developer skill. Agents should fetch the skill from the running binary instead of copying a static file. Over `dolmen mcp` there is no HTTP listener — the skills are served by the HTTP deployment named by `-base-url`, when one exists.
 
@@ -1017,6 +1017,7 @@ atomically with your side effects rather than deduplicating on frame content.
 | `list_namespaces` | Namespaces on this server; an optional `prefix` (a namespace path) lists only that path's subtree, recursively |
 | `create_namespace` | Reserve a namespace up front (the write ops create implicitly on first use otherwise; every read — including `wait_for` and the `subscribe` stream — never creates, and a missing namespace is `not_found`) |
 | `drop_namespace` | Delete a namespace and all its tables; `confirm` must repeat the name; a namespace with child namespaces is refused — drop the children first |
+| `vacuum` | Reclaim free space in one namespace (SQLite: rebuild the file and truncate its WAL; PostgreSQL: `VACUUM` its tables) and report `bytes_before` / `bytes_after` |
 | `list_tables` | Tables in a namespace |
 | `describe_server` | Server's embedding provider status — provider (`none` / `local` / `openai`), model, the identity that pins vectorized tables, whether server-side embedding is usable, and (local only) whether the model is cached; read-only, no secrets |
 | `describe_table` | Schema, version, row count |

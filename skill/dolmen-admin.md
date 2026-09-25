@@ -199,6 +199,7 @@ What the schema and administration operations need:
 | `drop_table` | `schema` and `admin`, since dropping a table deletes the grants on it |
 | `create_namespace` | `admin` on the parent namespace, or on `*` for a top-level one |
 | `drop_namespace` | `admin` on the namespace |
+| `vacuum` | `admin` on the namespace |
 | `grant`, `revoke`, `list_grants` | `admin` on the object or something covering it |
 | `create_key`, `list_keys`, `revoke_key`, `rotate_signing_key` | `admin` on `*` |
 
@@ -378,6 +379,13 @@ locked-out server.
 - `drop_table` / `drop_namespace` are irreversible deletions (rows, search indexes, schema, history);
   both require `confirm` to repeat the name being dropped (normalized like the name itself — case and
   surrounding whitespace don't matter). Prefer `delete` unless the table or namespace itself must go.
+- `vacuum` reclaims the space a namespace still holds after large deletes, updates, or dropped
+  tables, and returns `bytes_before`/`bytes_after` (its on-disk size). On SQLite it rebuilds the
+  file and empties its write-ahead log; writes to the namespace wait while it runs (one still waiting at its operation timeout answers `timeout`; retry it), and it needs free
+  disk about the size of the namespace. Run it when a namespace refuses writes at
+  `-max-namespace-size` after you deleted rows to make room. Like every read, it never creates a
+  namespace. A `conflict` means another process held the file or a reader held the log; the
+  message says which, and retrying once it lets go is safe.
 - `list_migrations` reads that history: a table's recorded migrations, newest first, with the exact
   changes and timestamps — check it after `migrate` to confirm what changed; the newest entry's
   `to_version` is the current schema version.
