@@ -262,3 +262,33 @@ func searchShape(r VectorSearchResult) searchSummary {
 	}
 	return out
 }
+
+func TestATooBigTableThatLaterFitsIsRebuiltWhole(t *testing.T) {
+	p := openVecPair(t, 64)
+	ctx := context.Background()
+	p.both(t, func(l legacyStore) error {
+		_, err := l.Insert(ctx, "v", "t", []map[string]any{{"k": 1, "emb": []float32{1, 0, 0}}, {"k": 2, "emb": []float32{0, 1, 0}}, {"k": 3, "emb": []float32{0, 0, 1}}}, testEmbed)
+		return err
+	})
+	p.same(t, "too big")
+	batch := make([]map[string]any, tooBigRetryChanges)
+	for i := range batch {
+		batch[i] = map[string]any{"k": 100 + i, "emb": []float32{float32(i%7) - 3, 1, float32(i % 5)}}
+	}
+	p.both(t, func(l legacyStore) error {
+		_, err := l.Insert(ctx, "v", "t", batch, testEmbed)
+		return err
+	})
+	c := &p.cached.vcache
+	c.mu.Lock()
+	c.max = DefaultVectorCacheBytes
+	c.mu.Unlock()
+	p.same(t, "a too-big table retried after it fits")
+	var sum int64
+	for _, e := range c.entries {
+		sum += e.bytes
+	}
+	if c.used != sum {
+		t.Fatalf("cache accounting drifted: used %d, entries hold %d", c.used, sum)
+	}
+}

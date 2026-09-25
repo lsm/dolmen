@@ -133,8 +133,9 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 		e.mu.Unlock()
 		return nil, 0, false, nil
 	}
+	wasTooBig := e.tooBig
 	e.tooBig = false
-	if e.seq < 0 || e.fp != fp || e.seq > head {
+	if wasTooBig || e.seq < 0 || e.fp != fp || e.seq > head {
 		if e.seq > head {
 			e.mu.Unlock()
 			return nil, 0, false, nil
@@ -165,6 +166,7 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 	if !kept {
 		e.tooBig, e.fp, e.seq = true, fp, head
 		e.pos, e.ids, e.vecs, e.sq = nil, nil, nil, nil
+		e.bytes = 0
 		c.remember(k, e)
 		e.mu.Unlock()
 		return nil, 0, false, nil
