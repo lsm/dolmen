@@ -35,10 +35,11 @@ func (s *Store) Vacuum(ctx context.Context, nsName string) (VacuumResult, error)
 		return VacuumResult{}, &derr.Error{Code: derr.Conflict, Cause: err, Message: "vacuum of namespace " + nsName + " did not run: another process (a second dolmen, a backup tool, a sqlite3 shell) held its file locked; nothing changed, so retry vacuum once that process lets go"}
 	}
 	var busy, logPages, checkpointed int
-	if err := conn.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logPages, &checkpointed); err != nil {
+	err = conn.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logPages, &checkpointed)
+	if err != nil && (ctx.Err() != nil || IsFull(err)) {
 		return VacuumResult{}, err
 	}
-	if busy != 0 {
+	if err != nil || busy != 0 {
 		return VacuumResult{}, derr.New(derr.Conflict, "vacuum of namespace %s rebuilt its file, but a reader held the write-ahead log open, so the log was not truncated and its space is not yet returned; retry vacuum once those reads finish (an open subscribe stream or long query counts)", nsName)
 	}
 	after, err := namespaceBytes(path)
