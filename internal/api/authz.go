@@ -29,6 +29,7 @@ type authRule struct {
 	AnyVerb bool
 
 	OwnRows bool
+	Reveal  bool
 }
 
 var dataVerbs = []auth.Verb{auth.VerbCreate, auth.VerbUpdate, auth.VerbDelete}
@@ -65,9 +66,9 @@ var authRules = map[string]authRule{
 	"delete":          {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbDelete}},
 	"upsert":          {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbCreate, auth.VerbUpdate}},
 	"upsert_by_key":   {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbCreate, auth.VerbUpdate}},
-	"read_rows":       {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true},
-	"search_fulltext": {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true},
-	"search_vector":   {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true},
+	"read_rows":       {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true, Reveal: true},
+	"search_fulltext": {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true, Reveal: true},
+	"search_vector":   {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true, Reveal: true},
 
 	"query": {Scope: scopeNamespace, Verbs: []auth.Verb{auth.VerbRead}},
 
@@ -83,6 +84,7 @@ type authTarget struct {
 	Namespace string          `json:"namespace"`
 	Table     string          `json:"table"`
 	Object    *grantObjectRaw `json:"object"`
+	Reveal    []string        `json:"reveal"`
 	Changes   []struct {
 		Op    string `json:"op"`
 		Value *bool  `json:"value"`
@@ -130,6 +132,37 @@ func (s *Server) authorizeOp(ctx context.Context, op string, body []byte) error 
 	if !s.authn.On() {
 		return nil
 	}
+	if err := s.authorizeVerbs(ctx, op, body); err != nil {
+		return err
+	}
+	if rule := authRules[op]; rule.Reveal {
+		return s.authorizeReveal(ctx, parseAuthTarget(body))
+	}
+	return nil
+}
+
+func (s *Server) authorizeReveal(ctx context.Context, t authTarget) error {
+	if len(t.Reveal) == 0 {
+		return nil
+	}
+	id := auth.IdentityFrom(ctx)
+	if id.Principal == auth.AdminPrincipal {
+		return derr.New(derr.Forbidden, "%s", revealAdminKeyMessage)
+	}
+	if s.grants == nil {
+		return errNoGrantRegistry
+	}
+	held, err := s.grants.EffectiveVerbs(ctx, id, auth.Object{Namespace: t.Namespace, Table: t.Table})
+	if err != nil {
+		return err
+	}
+	if !held.Has(auth.VerbReveal) {
+		return derr.New(derr.Forbidden, "%s", revealDeniedMessage)
+	}
+	return nil
+}
+
+func (s *Server) authorizeVerbs(ctx context.Context, op string, body []byte) error {
 	id := auth.IdentityFrom(ctx)
 	if id.Principal == auth.AdminPrincipal {
 		return nil

@@ -21,7 +21,7 @@ deviates. Terminology follows the vocabulary in §0 exactly.
 | **principal** | An opaque identity string produced by an enabled identity source (§1): header-asserted by a trusted proxy, an OIDC issuer-qualified subject, an API key's stored principal, or the bootstrap admin key. Dolmen never interprets its bytes; grants and `owner` values compare it exactly. |
 | **group** | An opaque string naming a set of principals, part of the normalized identity (§1) whatever the source. Membership is never stored by dolmen for per-request sources — headers and OIDC claims arrive with each request (invariant 3: identity is consumed, never produced) — with **one storage exception**: an API key's groups are stored with the key (§1.5), the sole dolmen-persisted identity fact, so machine groups can be locally proven (§1.2). |
 | **trusted proxy** | A peer whose TCP source address falls inside a configured CIDR. Only trusted proxies may assert identity headers. |
-| **verb** | One of `create`, `read`, `update`, `delete`, `schema`, `admin` (§2). |
+| **verb** | One of `create`, `read`, `update`, `delete`, `schema`, `admin`, `reveal` (§2). |
 | **object** | A namespace path, a namespace/table pair, or the server root `*` (§3, §5). |
 | **grant** | A durable (subject, object, verbs) tuple. Grants are additive; there are no deny grants. |
 | **visible set** | For one request against one table: the rows the principal may observe. All rows when the table has no `row_access`; `owner = principal` otherwise, for callers without table-wide read (§4). |
@@ -508,7 +508,7 @@ Accepted losses, on record (amended 2026-09-06):
 
 ## 2. Verbs
 
-Exactly six, CRUD-shaped, never extended without editing this spec:
+Exactly seven, six CRUD-shaped plus `reveal`, never extended without editing this spec:
 
 | Verb | Grants | Notes |
 |---|---|---|
@@ -518,13 +518,20 @@ Exactly six, CRUD-shaped, never extended without editing this spec:
 | `delete` | Remove rows | Own rows only on `row_access` tables (§4.3). |
 | `schema` | DDL + migration | Table structure and its history. |
 | `admin` | Grants + namespace lifecycle | The only verb that can change what others may do, or delete a namespace. |
+| `reveal` | Plaintext of `secret` fields | Never implied by `admin`, including the bootstrap admin key's implicit `admin` on `*`. Adds nothing on its own: it widens what a read returns, never which rows. |
 
-*Pending seventh verb, `reveal` (amended 2026-09-25 for #467; see `secret-fields.md`):* a `secret`
-field reads as the fixed mask `"••••"` under `read`, and returning its plaintext will need `reveal`
-on the table, its namespace, or `*`. `admin` does not imply it, and every reveal will write an audit
-line naming the principal, table, row id and field, never the value. It ships in #467 slice 2. Until
-then the op table refuses any `reveal` input under `auth: on` with `forbidden`, for every principal
-including root administrators, and accepts it under `auth: off`.
+*The seventh verb, `reveal` (amended 2026-09-25 for #467 slice 2; see `secret-fields.md`):* a
+`secret` field reads as the fixed mask `"••••"` under `read`. Naming it in the `reveal` input of
+`read_rows`, `search_fulltext` or `search_vector` additionally requires `reveal` on the table, its
+namespace, or `*`; without it the op fails `403 forbidden` with a message naming the verb to grant.
+`admin` does not imply it: an administrator can grant `reveal` (to others or, for a real principal,
+to themselves, which leaves a durable grant on record) but never reads plaintext by holding `admin`
+alone, and the bootstrap key's principal `dolmen-admin` cannot reveal at all. `reveal` never widens
+the row set: the op's own rule decides which rows return (§4.3), so on a `row_access` table a caller
+holding `reveal` with only `create`/`update`/`delete` reveals only its own rows, and a table-wide
+reveal needs table-wide `read`. Every successful reveal writes one `Info` audit log line naming the
+principal, namespace, table, row id, revealed fields and request id, never the value. Under
+`auth: off` reveal needs no verb and still writes the audit line, without a principal.
 
 *Why CRUD-shaped verbs (amended 2026-09-04 from design review; supersedes the four-verb
 `read`/`write`/`schema`/`admin` set):* append-only tables must be expressible in grants — the
@@ -545,7 +552,7 @@ in §3, `whoami` and the key ops in §1.4–1.5):
 | `create_namespace` | `admin` | The **parent**: `*` for depth-1 namespaces, the containing namespace for deeper ones. Under `auth: on` this is the only way a namespace comes to exist (see below). |
 | `drop_namespace` | `admin` | The namespace itself. Leaf-only (§5.4). |
 | `list_tables` | none (any authenticated principal) | Authorization runs **before** the existence check: unless the caller holds any grant on or under the namespace, the response is `not_found` — indistinguishable from a nonexistent namespace, so listing cannot be used to enumerate names. Holders see the tables they hold any grant on. |
-| `describe_table` | any verb (`read`, `create`, `update`, `delete`, `schema`, `admin`) | The table. `row_count` follows the caller's visible set (§4.3) — table-wide for `read`, own rows for the other data verbs on `row_access` tables, 0 for `schema`/`admin` holders; no data visibility beyond the caller's set is implied. |
+| `describe_table` | any verb (`read`, `create`, `update`, `delete`, `schema`, `admin`, `reveal`) | The table. `row_count` follows the caller's visible set (§4.3) — table-wide for `read`, own rows for the other data verbs on `row_access` tables, 0 for `schema`/`admin` holders; no data visibility beyond the caller's set is implied. |
 | `describe_server`, `infer_schema` | none (any authenticated principal) | Untargeted: provider status is no secret; `infer_schema` is pure computation. `describe_server` is **extended, not replaced** (amended 2026-09-06), **under `auth: on` only** — under `auth: off` its response stays byte-identical v0.2.0 (§8.1): the extension reports the auth mode, the enabled identity sources — read-only, no secrets (names like `trusted-proxy`/`oidc`/`api-keys`, never key material or issuer secrets) — and the engine's **capability surface**, including vector-search execution (exact, or declared-ANN with its recall bound, §7) — the established provider-status pattern applied to identity and engine capabilities. |
 | `whoami` | none (any authenticated principal) | Untargeted self-description: the caller's principal and groups (§1), whatever the source. The teaching-error philosophy applied to auth — an agent that just got a `403` self-diagnoses in one call. `auth: on`-only (meaningless without identity; see transport parity below). |
 | `create_key`, `list_keys`, `revoke_key` | `admin` on `*` | Untargeted (§1.5): a key bears any principal and optional groups, so minting one is administrative at the root — above any one namespace — even though the grants the minted identity can use still have to be granted separately. `auth: on`-only. |
@@ -669,7 +676,7 @@ requires a concrete namespace: `{"namespace": "*", "table": …}` is `invalid_re
 - `verbs` is required, non-empty, duplicate-free; unknown verbs are `invalid_request`. Requests
   may list verbs in any order, but `grant.verbs` in every response (`grant`, `revoke`,
   `list_grants`) is serialized in the fixed §2 order — `create`, `read`, `update`, `delete`,
-  `schema`, `admin` — so the same durable grant never serializes differently across re-grants,
+  `schema`, `admin`, `reveal` — so the same durable grant never serializes differently across re-grants,
   restarts, or listings.
 - Re-granting verbs an existing (subject, object) grant already holds is a no-op success returning
   the stored grant; new verbs are merged into it, keeping the original `created_at`. Grants are

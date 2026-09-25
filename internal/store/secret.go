@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -76,9 +77,28 @@ func (s *Store) readProjection(ctx context.Context, sc *schema.TableSchema, incl
 		reveal[name] = true
 	}
 	if s.secrets == nil {
-		return nil, invalidf("reveal cannot decrypt without a key: %s", secret.ErrNoKey)
+		return nil, fmt.Errorf("reveal cannot decrypt without a key: %w", secret.ErrNoKey)
 	}
 	p.reveal = reveal
 	p.secrets = s.secrets
 	return p, nil
+}
+
+func (s *Store) secretFingerprint(v any) string {
+	if s.secrets == nil {
+		return "secret-unkeyed"
+	}
+	stored, ok := storedString(v)
+	if !ok {
+		b, err := json.Marshal(v)
+		if err != nil {
+			b = []byte(fmt.Sprintf("%v", v))
+		}
+		return "secret-unstorable:" + s.secrets.Fingerprint(fmt.Sprintf("%T:%s", v, b))
+	}
+	tag := "string"
+	if _, isNumber := v.(json.Number); isNumber {
+		tag = "number"
+	}
+	return "secret-" + tag + ":" + s.secrets.Fingerprint(stored)
 }

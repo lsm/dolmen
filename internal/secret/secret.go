@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -26,14 +28,34 @@ const (
 
 var (
 	ErrNoKey    = errors.New("no secret key is configured; set DOLMEN_SECRET_KEY to a base64-encoded 32-byte key (or DOLMEN_SECRET_KEY_FILE to a file holding one) and restart, or pass WithSecretKey to the Go library")
-	ErrWrongKey = errors.New("this secret value was encrypted under a different key than the one configured; start the server with the key the value was written under")
+	ErrWrongKey = errors.New("this secret value was encrypted under a different key than the one configured")
 	ErrCorrupt  = errors.New("this secret value is not a well-formed dolmen ciphertext; it was changed outside dolmen and cannot be decrypted")
-	ErrTampered = errors.New("this secret value failed authentication under the configured key; the stored ciphertext was altered and cannot be decrypted")
+	ErrTampered = errors.New("this secret value failed authentication under the configured key; the stored ciphertext was altered outside dolmen (possible tampering) and cannot be decrypted")
 )
 
+type WrongKeyError struct {
+	Stored     string
+	Configured string
+}
+
+func (e *WrongKeyError) Error() string {
+	return fmt.Sprintf("%s: the value was written under key id %s, and the configured key has id %s; set %s (or %s) to the key whose id is %s and restart", ErrWrongKey, e.Stored, e.Configured, EnvKey, EnvKeyFile, e.Stored)
+}
+
+func (e *WrongKeyError) Is(target error) bool { return target == ErrWrongKey }
+
 type Keyring struct {
-	aead cipher.AEAD
-	id   [keyIDSize]byte
+	aead    cipher.AEAD
+	id      [keyIDSize]byte
+	idemKey []byte
+}
+
+func (k *Keyring) ID() string { return hex.EncodeToString(k.id[:]) }
+
+func (k *Keyring) Fingerprint(plaintext string) string {
+	mac := hmac.New(sha256.New, k.idemKey)
+	mac.Write([]byte(plaintext))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func New(key []byte) (*Keyring, error) {
@@ -48,7 +70,9 @@ func New(key []byte) (*Keyring, error) {
 	if err != nil {
 		return nil, err
 	}
-	k := &Keyring{aead: aead}
+	derive := hmac.New(sha256.New, key)
+	derive.Write([]byte("dolmen idempotency"))
+	k := &Keyring{aead: aead, idemKey: derive.Sum(nil)}
 	sum := sha256.Sum256(key)
 	copy(k.id[:], sum[:keyIDSize])
 	return k, nil
@@ -112,7 +136,7 @@ func (k *Keyring) Open(blob []byte) (string, error) {
 		return "", ErrCorrupt
 	}
 	if !bytes.Equal(blob[1:1+keyIDSize], k.id[:]) {
-		return "", ErrWrongKey
+		return "", &WrongKeyError{Stored: hex.EncodeToString(blob[1 : 1+keyIDSize]), Configured: k.ID()}
 	}
 	plain, err := k.aead.Open(nil, blob[1+keyIDSize:headerSize], blob[headerSize:], blob[:1+keyIDSize])
 	if err != nil {

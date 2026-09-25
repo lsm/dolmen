@@ -44,3 +44,22 @@ func TestAuthorizationRulesNameRealVerbs(t *testing.T) {
 		}
 	}
 }
+
+func TestEveryRevealInputIsGatedByTheRevealVerb(t *testing.T) {
+	for name, def := range Ops {
+		props, _ := def.InputSchema["properties"].(map[string]any)
+		_, takesReveal := props["reveal"]
+		if takesReveal != authRules[name].Reveal {
+			t.Fatalf("operation %q: input takes reveal = %v but its authRules Reveal = %v, so a reveal could skip the reveal verb check", name, takesReveal, authRules[name].Reveal)
+		}
+	}
+}
+
+func TestAdminDoesNotImplyReveal(t *testing.T) {
+	if auth.NewVerbSet(auth.VerbAdmin).Has(auth.VerbReveal) {
+		t.Fatal("admin must not imply reveal")
+	}
+	if _, err := auth.ParseVerb("reveal"); err != nil {
+		t.Fatal(err)
+	}
+}

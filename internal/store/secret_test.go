@@ -215,7 +215,7 @@ func TestSecretWrongOrMissingKey(t *testing.T) {
 		t.Fatalf("masked read must not need the right key: %v %v", res.Rows, err)
 	}
 	_, err = other.GetRows(reveal, "test", "creds", []int64{1}, nil, Incarnation{})
-	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "different key") {
+	if !errors.Is(err, secret.ErrWrongKey) || !strings.Contains(err.Error(), "different key") {
 		t.Fatalf("wrong key reveal: %v", err)
 	}
 	other.Close()
