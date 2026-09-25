@@ -1385,7 +1385,7 @@ var Ops = map[string]OpDef{
 				Filter:   req.Filter,
 				Args:     req.Args,
 				MinScore: req.MinScore,
-			}, s.emb, embedProviderHelp)
+			}, s.tracedEmbedder(), embedProviderHelp)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}

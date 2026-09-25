@@ -1,0 +1,448 @@
+package telemetry
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"unicode/utf8"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
+)
+
+func envOf(kv map[string]string) func(string) string {
+	return func(k string) string { return kv[k] }
+}
+
+type keptExporter struct {
+	*tracetest.InMemoryExporter
+}
+
+func (keptExporter) Shutdown(context.Context) error { return nil }
+
+func recordingFactory(called *bool, exp sdktrace.SpanExporter) exporterFactory {
+	return func(context.Context) (sdktrace.SpanExporter, error) {
+		*called = true
+		return exp, nil
+	}
+}
+
+func TestSetupIsOffWithoutAnEndpoint(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"empty":            {},
+		"sdk disabled":     {"OTEL_SDK_DISABLED": "true", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4318"},
+		"exporter none":    {"OTEL_TRACES_EXPORTER": "none", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4318"},
+		"only service env": {"OTEL_SERVICE_NAME": "x", "OTEL_TRACES_SAMPLER": "always_on"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			p, err := setup(context.Background(), envOf(env), "v1", recordingFactory(&called, tracetest.NewInMemoryExporter()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if called || p.Tracing.On() {
+				t.Fatalf("tracing must stay off: exporter built=%v on=%v", called, p.Tracing.On())
+			}
+			if err := p.Shutdown(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestSetupOnWithEndpointOrExplicitExporter(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"endpoint":        {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4318"},
+		"traces endpoint": {"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://collector:4318/v1/traces"},
+		"explicit otlp":   {"OTEL_TRACES_EXPORTER": "otlp", "OTEL_SDK_DISABLED": "false"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			p, err := setup(context.Background(), envOf(env), "v1", recordingFactory(&called, tracetest.NewInMemoryExporter()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer p.Shutdown(context.Background())
+			if !called || !p.Tracing.On() {
+				t.Fatalf("tracing must be on: exporter built=%v", called)
+			}
+		})
+	}
+}
+
+func TestSetupRejectsUnsupportedSettings(t *testing.T) {
+	for name, tc := range map[string]struct {
+		env  map[string]string
+		want string
+	}{
+		"grpc":       {map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "x", "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc"}, "http/protobuf"},
+		"sampler":    {map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "x", "OTEL_TRACES_SAMPLER": "jaeger_remote"}, "OTEL_TRACES_SAMPLER"},
+		"ratio":      {map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "x", "OTEL_TRACES_SAMPLER": "traceidratio", "OTEL_TRACES_SAMPLER_ARG": "2"}, "between 0 and 1"},
+		"propagator": {map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "x", "OTEL_PROPAGATORS": "b3"}, "OTEL_PROPAGATORS"},
+		"exporter":   {map[string]string{"OTEL_TRACES_EXPORTER": "zipkin"}, "OTEL_TRACES_EXPORTER"},
+		"principal":  {map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "x", "DOLMEN_OTEL_INCLUDE_PRINCIPAL": "yes"}, "DOLMEN_OTEL_INCLUDE_PRINCIPAL"},
+		"attrs":      {map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "x", "OTEL_RESOURCE_ATTRIBUTES": "novalue"}, "key=value"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			_, err := setup(context.Background(), envOf(tc.env), "v1", recordingFactory(&called, tracetest.NewInMemoryExporter()))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want mention of %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func resourceOf(t *testing.T, env map[string]string) map[attribute.Key]string {
+	t.Helper()
+	exp := tracetest.NewInMemoryExporter()
+	called := false
+	p, err := setup(context.Background(), envOf(env), "v9.9.9", recordingFactory(&called, keptExporter{exp}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, span := p.Tracing.tracer.Start(context.Background(), "probe")
+	span.End()
+	if err := p.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	spans := exp.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+	out := map[attribute.Key]string{}
+	for _, kv := range spans[0].Resource.Attributes() {
+		out[kv.Key] = kv.Value.Emit()
+	}
+	return out
+}
+
+func TestResourceAttributes(t *testing.T) {
+	res := resourceOf(t, map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "x", "OTEL_RESOURCE_ATTRIBUTES": "deployment.environment.name=prod,team=data%2Cinfra"})
+	if res["service.name"] != "dolmen" || res["service.version"] != "v9.9.9" || res["service.instance.id"] == "" {
+		t.Fatalf("resource = %v", res)
+	}
+	if res["deployment.environment.name"] != "prod" || res["team"] != "data,infra" {
+		t.Fatalf("OTEL_RESOURCE_ATTRIBUTES not applied: %v", res)
+	}
+	res = resourceOf(t, map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "x", "OTEL_SERVICE_NAME": "dolmen-eu", "OTEL_RESOURCE_ATTRIBUTES": "service.name=ignored"})
+	if res["service.name"] != "dolmen-eu" {
+		t.Fatalf("OTEL_SERVICE_NAME must win: %v", res)
+	}
+	res = resourceOf(t, map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "x", "OTEL_RESOURCE_ATTRIBUTES": "service.name=from-attrs"})
+	if res["service.name"] != "from-attrs" {
+		t.Fatalf("OTEL_RESOURCE_ATTRIBUTES service.name must apply without OTEL_SERVICE_NAME: %v", res)
+	}
+}
+
+func TestDefaultSamplerFollowsParent(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	called := false
+	p, err := setup(context.Background(), envOf(map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "x"}), "v1", recordingFactory(&called, keptExporter{exp}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := p.Tracing.Server("/v1/{op}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	req := httptest.NewRequest(http.MethodPost, "/v1/query", nil)
+	req.Header.Set("traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	req = httptest.NewRequest(http.MethodPost, "/v1/query", nil)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	_ = p.Shutdown(context.Background())
+	if n := len(exp.GetSpans()); n != 1 {
+		t.Fatalf("an unsampled parent must not be exported by default, and a root must be: got %d spans, want 1", n)
+	}
+}
+
+func newRecorded() (*Tracing, *tracetest.SpanRecorder) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	return New(tp, propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}), false), rec
+}
+
+func attrs(s sdktrace.ReadOnlySpan) map[attribute.Key]attribute.Value {
+	out := map[attribute.Key]attribute.Value{}
+	for _, kv := range s.Attributes() {
+		out[kv.Key] = kv.Value
+	}
+	return out
+}
+
+func TestServerSpanFollowsHTTPSemconv(t *testing.T) {
+	tr, rec := newRecorded()
+	h := tr.Server("/v1/{op}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-Id", "req-1")
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "http://db.example:8790/v1/insert", nil)
+	req.Header.Set("User-Agent", "probe/1")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	spans := rec.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans", len(spans))
+	}
+	s := spans[0]
+	if s.Name() != "POST /v1/{op}" || s.SpanKind() != trace.SpanKindServer {
+		t.Fatalf("name=%q kind=%v", s.Name(), s.SpanKind())
+	}
+	a := attrs(s)
+	want := map[attribute.Key]any{
+		"http.request.method":       "POST",
+		"http.route":                "/v1/{op}",
+		"url.scheme":                "http",
+		"url.path":                  "/v1/insert",
+		"server.address":            "db.example",
+		"server.port":               int64(8790),
+		"http.response.status_code": int64(418),
+		"user_agent.original":       "probe/1",
+		"dolmen.request_id":         "req-1",
+	}
+	for k, v := range want {
+		if a[k].AsInterface() != v {
+			t.Errorf("%s = %v, want %v", k, a[k].AsInterface(), v)
+		}
+	}
+	if s.Status().Code == codes.Error {
+		t.Fatal("a 4xx must not mark a server span as an error")
+	}
+}
+
+func TestServerSpanMarksServerErrors(t *testing.T) {
+	tr, rec := newRecorded()
+	h := tr.Server("/mcp", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/mcp", nil))
+	s := rec.Ended()[0]
+	if s.Status().Code != codes.Error || attrs(s)["error.type"].AsString() != "500" {
+		t.Fatalf("status=%v attrs=%v", s.Status(), attrs(s))
+	}
+}
+
+func TestServerSpanContinuesInboundTraceparent(t *testing.T) {
+	tr, rec := newRecorded()
+	var inner trace.SpanContext
+	h := tr.Server("/v1/{op}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inner = trace.SpanContextFromContext(r.Context())
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/v1/query", nil)
+	req.Header.Set("traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	s := rec.Ended()[0]
+	if s.SpanContext().TraceID().String() != "0af7651916cd43dd8448eb211c80319c" || s.Parent().SpanID().String() != "b7ad6b7169203331" || !s.Parent().IsRemote() {
+		t.Fatalf("trace=%s parent=%s", s.SpanContext().TraceID(), s.Parent().SpanID())
+	}
+	if inner.SpanID() != s.SpanContext().SpanID() {
+		t.Fatal("the handler must run inside the server span")
+	}
+}
+
+func TestSetupSpanEndsWhenStreamOpens(t *testing.T) {
+	tr, rec := newRecorded()
+	endedBeforeReturn := -1
+	h := tr.Server("/v1/subscribe", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		http.NewResponseController(w).Flush()
+		endedBeforeReturn = len(rec.Ended())
+	}), EndAtHeaders)
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/v1/subscribe", nil))
+	if endedBeforeReturn != 1 {
+		t.Fatalf("the subscribe span must end once the stream opens, ended=%d", endedBeforeReturn)
+	}
+	if len(rec.Ended()) != 1 {
+		t.Fatalf("the span must end exactly once, got %d", len(rec.Ended()))
+	}
+}
+
+func TestOffTracingIsTransparent(t *testing.T) {
+	var off *Tracing
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	if h := off.Server("/x", next); h == nil {
+		t.Fatal("nil handler")
+	}
+	ctx, span := off.StartOp(context.Background(), "insert", "", "")
+	span.SetScope("ns", "t")
+	span.End("ok")
+	if trace.SpanContextFromContext(ctx).IsValid() {
+		t.Fatal("off tracing must not create span contexts")
+	}
+	if New(nil, nil, false).On() {
+		t.Fatal("a nil provider must mean off")
+	}
+}
+
+func TestLogHandlerAddsTraceIDs(t *testing.T) {
+	tr, _ := newRecorded()
+	var buf bytes.Buffer
+	log := slog.New(LogHandler(slog.NewJSONHandler(&buf, nil)))
+	ctx, span := tr.StartOp(context.Background(), "insert", "", "")
+	log.InfoContext(ctx, "inside")
+	log.InfoContext(context.Background(), "outside")
+	span.End("ok")
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	var in, out map[string]any
+	_ = json.Unmarshal([]byte(lines[0]), &in)
+	_ = json.Unmarshal([]byte(lines[1]), &out)
+	sc := span.span.SpanContext()
+	if in["trace_id"] != sc.TraceID().String() || in["span_id"] != sc.SpanID().String() {
+		t.Fatalf("log line inside a span = %v", in)
+	}
+	if _, ok := out["trace_id"]; ok {
+		t.Fatalf("log line outside a span must not carry a trace id: %v", out)
+	}
+}
+
+func TestPrincipalOnlyWhenOptedIn(t *testing.T) {
+	for _, include := range []bool{false, true} {
+		rec := tracetest.NewSpanRecorder()
+		tr := New(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)), nil, include)
+		_, span := tr.StartOp(context.Background(), "insert", "", "alice")
+		span.End("ok")
+		got, ok := attrs(rec.Ended()[0])["enduser.id"]
+		if ok != include || (include && got.AsString() != "alice") {
+			t.Fatalf("include=%v: principal present=%v value=%v", include, ok, got.AsString())
+		}
+	}
+}
+
+func TestPeekScope(t *testing.T) {
+	ns, tbl := PeekScope([]byte(`{"table":"notes","records":[{"namespace":"inner"}],"namespace":"app/eu"}`))
+	if ns != "app/eu" || tbl != "notes" {
+		t.Fatalf("ns=%q table=%q", ns, tbl)
+	}
+	ns, tbl = PeekScope([]byte(`{"namespace":7}`))
+	if ns != "" || tbl != "" {
+		t.Fatalf("non-string scope must be ignored: %q %q", ns, tbl)
+	}
+}
+
+func TestRequestDataAttributesStayValidUTF8(t *testing.T) {
+	var got int
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got++
+		w.Header().Set("Content-Type", "application/x-protobuf")
+	}))
+	defer collector.Close()
+	rec := tracetest.NewSpanRecorder()
+	p, err := setup(context.Background(), envOf(map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": collector.URL}), "v1", func(ctx context.Context) (sdktrace.SpanExporter, error) {
+		return otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(collector.URL+"/v1/traces"))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := "x\xff\xfe" + strings.Repeat("\u00e9", 200)
+	tr := p.Tracing
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	both := []*Tracing{tr, New(tp, propagation.TraceContext{}, true)}
+	for _, x := range both {
+		h := x.Server("/v1/{op}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Request-Id", bad)
+			_, span := x.StartOp(r.Context(), "insert", bad, bad)
+			span.SetScope(bad, bad)
+			span.End("ok")
+		}))
+		req := httptest.NewRequest(http.MethodPost, "/v1/%FF", nil)
+		req.Header.Set("User-Agent", bad)
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	if len(rec.Ended()) != 2 {
+		t.Fatalf("got %d spans", len(rec.Ended()))
+	}
+	for _, s := range rec.Ended() {
+		for _, kv := range s.Attributes() {
+			if !utf8.ValidString(kv.Value.Emit()) {
+				t.Errorf("%s: %s is not valid UTF-8", s.Name(), kv.Key)
+			}
+		}
+	}
+	if err := p.Shutdown(context.Background()); err != nil {
+		t.Fatalf("OTLP export failed: %v", err)
+	}
+	if got == 0 {
+		t.Fatal("the collector received no export")
+	}
+}
+
+func TestTruncateKeepsRunesWhole(t *testing.T) {
+	s := strings.Repeat("a", 127) + "\u00e9"
+	if out := clean(s, 128); !utf8.ValidString(out) || len(out) > 128 {
+		t.Fatalf("clean(%q) = %q", s, out)
+	}
+}
+
+func TestURLPathKeepsTheMountPrefix(t *testing.T) {
+	tr, rec := newRecorded()
+	h := tr.Server("/x/v1/{op}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	req := httptest.NewRequest(http.MethodPost, "/x/v1/insert", nil)
+	req.URL.Path = "/v1/insert"
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if got := attrs(rec.Ended()[0])["url.path"].AsString(); got != "/x/v1/insert" {
+		t.Fatalf("url.path = %q, want the path the client sent", got)
+	}
+}
+
+func TestPeekScopeStopsOnceBothKeysAreFound(t *testing.T) {
+	ns, tbl := PeekScope([]byte(`{"namespace":"app","table":"notes","records":[{"body":` + strings.Repeat("x", 1<<16)))
+	if ns != "app" || tbl != "notes" {
+		t.Fatalf("a scan that stops early never sees the malformed tail: ns=%q table=%q", ns, tbl)
+	}
+	for _, body := range []string{``, `[]`, `{"namespace":`, `nonsense`, `{"records":[1,2,"namespace"],"table":"t"`} {
+		if ns, _ := PeekScope([]byte(body)); ns != "" {
+			t.Errorf("PeekScope(%q) namespace = %q, want empty", body, ns)
+		}
+	}
+	if ns, tbl := PeekScope([]byte(`{"records":[{"namespace":"inner"}],"table":"t","namespace":"outer"}`)); ns != "outer" || tbl != "t" {
+		t.Fatalf("nested keys must be skipped: %q %q", ns, tbl)
+	}
+}
+
+func BenchmarkPeekScopeLargeInsert(b *testing.B) {
+	var sb strings.Builder
+	sb.WriteString(`{"namespace":"app","table":"notes","records":[`)
+	for i := 0; i < 20000; i++ {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteString(`{"body":"some text to embed","n":1}`)
+	}
+	sb.WriteString(`]}`)
+	body := []byte(sb.String())
+	b.SetBytes(int64(len(body)))
+	for b.Loop() {
+		PeekScope(body)
+	}
+}
+
+type errEmbedder struct{ err error }
+
+func (e errEmbedder) Identity() string { return "x" }
+func (e errEmbedder) Embed(context.Context, []string) ([][]float32, error) {
+	return nil, e.err
+}
+func (e errEmbedder) EmbedQuery(context.Context, string) ([]float32, error) { return nil, e.err }
+
+func TestEmbeddingErrorTypeIsClassified(t *testing.T) {
+	for want, err := range map[string]error{
+		"canceled":             fmt.Errorf("post: %w", context.Canceled),
+		"timeout":              fmt.Errorf("post: %w", context.DeadlineExceeded),
+		"embedder_unavailable": errors.New("embeddings API returned 503"),
+	} {
+		tr, rec := newRecorded()
+		_, _ = tr.Embedder(errEmbedder{err}).Embed(context.Background(), []string{"x"})
+		if got := attrs(rec.Ended()[0])["error.type"].AsString(); got != want {
+			t.Errorf("error.type = %q, want %q", got, want)
+		}
+	}
+}

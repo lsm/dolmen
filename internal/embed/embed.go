@@ -14,7 +14,19 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
+
+type traceContextKey struct{}
+
+func WithTraceContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, traceContextKey{}, true)
+}
+
+const usageInputTokensKey = attribute.Key("gen_ai.usage.input_tokens")
 
 type Provider interface {
 	Name() string
@@ -134,6 +146,7 @@ func (o *OpenAI) embed(ctx context.Context, texts []string, prefix string) ([][]
 	}
 	out := make([][]float32, len(texts))
 	dim := 0
+	var inputTokens int64
 	for start := 0; start < len(texts); start += openAIBatch {
 		end := start + openAIBatch
 		if end > len(texts) {
@@ -152,6 +165,9 @@ func (o *OpenAI) embed(ctx context.Context, texts []string, prefix string) ([][]
 		req.Header.Set("Content-Type", "application/json")
 		if o.APIKey != "" {
 			req.Header.Set("Authorization", "Bearer "+o.APIKey)
+		}
+		if on, _ := ctx.Value(traceContextKey{}).(bool); on {
+			propagation.TraceContext{}.Inject(ctx, propagation.HeaderCarrier(req.Header))
 		}
 		res, err := client.Do(req)
 		if err != nil {
@@ -173,12 +189,20 @@ func (o *OpenAI) embed(ctx context.Context, texts []string, prefix string) ([][]
 			Error *struct {
 				Message string `json:"message"`
 			} `json:"error"`
+			Usage *struct {
+				PromptTokens *int64 `json:"prompt_tokens"`
+			} `json:"usage"`
 		}
 		if err := json.Unmarshal(raw, &decoded); err != nil {
 			return nil, err
 		}
 		if decoded.Error != nil {
 			return nil, fmt.Errorf("embeddings API error: %s", decoded.Error.Message)
+		}
+		if decoded.Usage != nil && decoded.Usage.PromptTokens != nil && inputTokens >= 0 {
+			inputTokens += *decoded.Usage.PromptTokens
+		} else {
+			inputTokens = -1
 		}
 		if len(decoded.Data) != len(batch) {
 			return nil, fmt.Errorf("embeddings API returned %d vectors for %d texts", len(decoded.Data), len(batch))
@@ -213,6 +237,9 @@ func (o *OpenAI) embed(ctx context.Context, texts []string, prefix string) ([][]
 			}
 			out[start+i] = vec
 		}
+	}
+	if span := trace.SpanFromContext(ctx); inputTokens > 0 && span.IsRecording() {
+		span.SetAttributes(usageInputTokensKey.Int64(inputTokens))
 	}
 	return out, nil
 }

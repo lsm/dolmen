@@ -144,6 +144,12 @@ is built in or supplied by the embedding application.
 The initial options are `WithEmbedding(provider)` and `WithChangeRetention(duration)`.
 `WithVectorCacheBytes(n)` sizes the SQLite engine's in-memory vector cache (default 512 MiB, the
 server's `-vector-cache-size`; 0 disables it). Memory is only used by tables that are vector-searched.
+`WithTracerProvider(tp)` records a `dolmen.op <op>` span per facade call (named after the wire
+operation, with `dolmen.op.outcome`, `db.namespace` and `dolmen.table`) and an `embeddings` span
+per provider call, on the given `trace.TracerProvider`. It never reads or sets OpenTelemetry's global
+provider or propagator and does not read `OTEL_*` variables; omitting it leaves tracing off, and a nil
+provider is `invalid_request`. The same privacy rule as the server holds: no SQL, filter arguments,
+record values or embedded text in spans.
 Default embedding is disabled. `Open` does not read environment variables, install
 signal handlers, replace the global logger, or start a server. CLI environment/flag
 interpretation remains in the executable.

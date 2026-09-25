@@ -14,7 +14,9 @@ type ListNamespacesOptions struct {
 	Prefix string
 }
 
-func (s *Store) CreateNamespace(ctx context.Context, namespace string) error {
+func (s *Store) CreateNamespace(ctx context.Context, namespace string) (err error) {
+	ctx, span := s.startOp(ctx, "create_namespace", namespace, "")
+	defer func() { endOp(span, err) }()
 	if err := s.begin(); err != nil {
 		return err
 	}
@@ -26,7 +28,9 @@ func (s *Store) CreateNamespace(ctx context.Context, namespace string) error {
 	return facadeErr(s.eng.CreateNamespace(ctx, ns, [16]byte{}))
 }
 
-func (s *Store) ListNamespaces(ctx context.Context, opts ListNamespacesOptions) ([]string, error) {
+func (s *Store) ListNamespaces(ctx context.Context, opts ListNamespacesOptions) (r0 []string, err error) {
+	ctx, span := s.startOp(ctx, "list_namespaces", "", "")
+	defer func() { endOp(span, err) }()
 	if err := s.begin(); err != nil {
 		return nil, err
 	}
@@ -48,7 +52,9 @@ func (s *Store) ListNamespaces(ctx context.Context, opts ListNamespacesOptions) 
 	return nss, nil
 }
 
-func (s *Store) DropNamespace(ctx context.Context, namespace string) error {
+func (s *Store) DropNamespace(ctx context.Context, namespace string) (err error) {
+	ctx, span := s.startOp(ctx, "drop_namespace", namespace, "")
+	defer func() { endOp(span, err) }()
 	if err := s.begin(); err != nil {
 		return err
 	}

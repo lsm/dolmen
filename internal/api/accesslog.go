@@ -16,5 +16,5 @@ func logOp(ctx context.Context, op string, bodyBytes int, start time.Time, err e
 		e := WrapError(err)
 		outcome, status = string(e.Code), e.Status
 	}
-	slog.Debug("op", "op", op, "outcome", outcome, "status", status, "duration_ms", time.Since(start).Milliseconds(), "request_bytes", bodyBytes, "request_id", RequestIDFrom(ctx))
+	slog.DebugContext(ctx, "op", "op", op, "outcome", outcome, "status", status, "duration_ms", time.Since(start).Milliseconds(), "request_bytes", bodyBytes, "request_id", RequestIDFrom(ctx))
 }

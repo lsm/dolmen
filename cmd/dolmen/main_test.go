@@ -1154,6 +1154,16 @@ func TestLoadConfigLogLevel(t *testing.T) {
 	}
 }
 
+func TestEnvHelpListsTelemetryVariables(t *testing.T) {
+	var buf bytes.Buffer
+	printEnvHelp(&buf)
+	for _, key := range []string{"OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_TRACES_EXPORTER", "OTEL_SDK_DISABLED", "OTEL_SERVICE_NAME", "OTEL_RESOURCE_ATTRIBUTES", "OTEL_TRACES_SAMPLER", "OTEL_PROPAGATORS", "DOLMEN_OTEL_INCLUDE_PRINCIPAL"} {
+		if !strings.Contains(buf.String(), "  "+key+"  ") {
+			t.Errorf("env help does not list %s", key)
+		}
+	}
+}
+
 func TestLoadConfigSecretKey(t *testing.T) {
 	load := func(env map[string]string) (*config, error) {
 		return loadConfig([]string{}, func(k string) string { return env[k] },

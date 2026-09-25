@@ -9,7 +9,9 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-func (s *Store) CreateTable(ctx context.Context, namespace, table string, fields []Field) (TableSchema, error) {
+func (s *Store) CreateTable(ctx context.Context, namespace, table string, fields []Field) (r0 TableSchema, err error) {
+	ctx, span := s.startOp(ctx, "create_table", namespace, table)
+	defer func() { endOp(span, err) }()
 	if err := s.begin(); err != nil {
 		return TableSchema{}, err
 	}
@@ -44,7 +46,9 @@ func (s *Store) providerUsable() bool {
 	return s.emb != nil && s.emb.Identity() != ""
 }
 
-func (s *Store) ListTables(ctx context.Context, namespace string) ([]string, error) {
+func (s *Store) ListTables(ctx context.Context, namespace string) (r0 []string, err error) {
+	ctx, span := s.startOp(ctx, "list_tables", namespace, "")
+	defer func() { endOp(span, err) }()
 	if err := s.begin(); err != nil {
 		return nil, err
 	}
@@ -63,7 +67,9 @@ func (s *Store) ListTables(ctx context.Context, namespace string) ([]string, err
 	return tables, nil
 }
 
-func (s *Store) DescribeTable(ctx context.Context, namespace, table string) (TableSchema, int64, error) {
+func (s *Store) DescribeTable(ctx context.Context, namespace, table string) (r0 TableSchema, r1 int64, err error) {
+	ctx, span := s.startOp(ctx, "describe_table", namespace, table)
+	defer func() { endOp(span, err) }()
 	if err := s.begin(); err != nil {
 		return TableSchema{}, 0, err
 	}
@@ -82,7 +88,9 @@ func (s *Store) DescribeTable(ctx context.Context, namespace, table string) (Tab
 	return schemaToTableSchema(sc), count, nil
 }
 
-func (s *Store) DropTable(ctx context.Context, namespace, table string) error {
+func (s *Store) DropTable(ctx context.Context, namespace, table string) (err error) {
+	ctx, span := s.startOp(ctx, "drop_table", namespace, table)
+	defer func() { endOp(span, err) }()
 	if err := s.begin(); err != nil {
 		return err
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/lsm/dolmen/internal/ops"
 	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
+	"github.com/lsm/dolmen/internal/telemetry"
 )
 
 var ErrClosed = errors.New("dolmen: store is closed")
@@ -24,6 +25,7 @@ type Store struct {
 	dir             string
 	eng             store.Engine
 	emb             ops.EmbeddingProvider
+	tracing         *telemetry.Tracing
 	changeRetention time.Duration
 
 	mu       sync.Mutex
@@ -64,7 +66,7 @@ func Open(dataDir string, opts ...Option) (*Store, error) {
 		ownersMu.Unlock()
 		return nil, derr.New(derr.Conflict, "data directory %s is already open in this process; close that store before reopening the directory", dataDir)
 	}
-	s := &Store{dir: dir, emb: cfg.embedding, changeRetention: cfg.changeRetention, closing: make(chan struct{})}
+	s := &Store{dir: dir, emb: cfg.embedding, tracing: telemetry.New(cfg.tracerProvider, nil, false), changeRetention: cfg.changeRetention, closing: make(chan struct{})}
 	owners[dir] = s
 	ownersMu.Unlock()
 
@@ -88,7 +90,7 @@ func openWithOpener(cfg config) (*Store, error) {
 		ownersMu.Unlock()
 		return nil, derr.New(derr.Conflict, "this engine is already open in this process; close that store before reopening it")
 	}
-	s := &Store{dir: key, emb: cfg.embedding, changeRetention: cfg.changeRetention, closing: make(chan struct{})}
+	s := &Store{dir: key, emb: cfg.embedding, tracing: telemetry.New(cfg.tracerProvider, nil, false), changeRetention: cfg.changeRetention, closing: make(chan struct{})}
 	owners[key] = s
 	ownersMu.Unlock()
 
