@@ -6,3 +6,4 @@
 /dist/
 /dist-models/
 examples/basic/basic
+!testdata/**/fixture.db
