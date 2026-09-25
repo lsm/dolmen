@@ -507,7 +507,7 @@ var Ops = map[string]OpDef{
 	"vacuum": {
 		Description: "Reclaim the free space a namespace holds after deletes, updates, and dropped tables. " +
 			"On SQLite this rebuilds the namespace file (VACUUM) and truncates its write-ahead log; on PostgreSQL it runs VACUUM on the namespace's tables. " +
-			"Writes to the namespace wait while it runs, and it needs free disk space about the size of the namespace. " +
+			"Writes to the namespace wait while it runs (a write still waiting at its operation timeout answers timeout; retry it), and it needs free disk space about the size of the namespace. " +
 			"Returns the namespace's on-disk size in bytes before and after. " +
 			"Use it after large deletes, or when writes fail because the namespace reached -max-namespace-size. " +
 			"Answers not_found for a namespace that does not exist and creates nothing.",

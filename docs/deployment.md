@@ -252,6 +252,6 @@ Deleted rows leave free pages that later writes reuse, so a file does not shrink
 write-ahead log beside it is trimmed back to at most 64 MiB after each checkpoint, so a burst of
 writes does not leave a large `-wal` file behind. To give space back to the filesystem, call the
 `vacuum` operation on the namespace: it rebuilds the file, truncates the log, and reports the size
-before and after. Writes to that namespace wait while it runs, and it needs free disk about the
+before and after. Writes to that namespace wait while it runs (a write still waiting at its operation timeout answers `timeout` and is safe to retry), and it needs free disk about the
 size of the namespace file.
 

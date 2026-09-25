@@ -381,7 +381,7 @@ locked-out server.
   surrounding whitespace don't matter). Prefer `delete` unless the table or namespace itself must go.
 - `vacuum` reclaims the space a namespace still holds after large deletes, updates, or dropped
   tables, and returns `bytes_before`/`bytes_after` (its on-disk size). On SQLite it rebuilds the
-  file and empties its write-ahead log; writes to the namespace wait while it runs, and it needs free
+  file and empties its write-ahead log; writes to the namespace wait while it runs (one still waiting at its operation timeout answers `timeout`; retry it), and it needs free
   disk about the size of the namespace. Run it when a namespace refuses writes at
   `-max-namespace-size` after you deleted rows to make room. Like every read, it never creates a
   namespace. A `conflict` means another process held the file or a reader held the log; the
