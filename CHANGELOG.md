@@ -7,8 +7,8 @@
 - **`secret` field type (SQLite).** Values are encrypted at rest with AES-256-GCM under
   `DOLMEN_SECRET_KEY` / `DOLMEN_SECRET_KEY_FILE` (or `WithSecretKey` in Go), read back as `"••••"`
   on every path, and are returned in plaintext only when named in `reveal` on `read_rows` or a
-  search. Reveal is refused under `-auth on` until the `reveal` verb ships; PostgreSQL refuses
-  secret fields for now. See `docs/design/secret-fields.md`.
+  search. Under `-auth on` reveal needs the new `reveal` verb, which `admin` does not imply, and
+  every reveal writes an audit log line without the value; PostgreSQL refuses secret fields for now. See `docs/design/secret-fields.md`.
 
 - **Idempotency keys are namespaced by owner.** A key is unique per table *and* writer principal,
   so two principals using the same string are using two different keys — neither conflicts, neither

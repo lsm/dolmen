@@ -59,6 +59,22 @@ func TestIdempotencyHashNeverCoversSecretPlaintext(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "different insert") {
 		t.Fatalf("a replay sending the secret as a number must conflict, not replay the string write: %v", err)
 	}
+
+	num := WriteOpts{IdempotencyKey: "num"}
+	first, err = st.Store.Insert(ctx, "test", "creds", []map[string]any{{"name": "c", "token": json.Number("5")}}, num, testEmbed, nil, Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err = st.Store.Insert(ctx, "test", "creds", []map[string]any{{"name": "c", "token": json.Number("5")}}, num, testEmbed, nil, Incarnation{})
+	if err != nil || !replay.Replayed || replay.Ids[0] != first.Ids[0] {
+		t.Fatalf("the same number secret must replay: %+v %v", replay, err)
+	}
+	for _, v := range []any{json.Number("7"), "5", true} {
+		_, err = st.Store.Insert(ctx, "test", "creds", []map[string]any{{"name": "c", "token": v}}, num, testEmbed, nil, Incarnation{})
+		if err == nil || !strings.Contains(err.Error(), "different insert") {
+			t.Fatalf("secret %#v under the key of the number 5 must conflict: %v", v, err)
+		}
+	}
 }
 
 func TestRevealFailuresAreServerErrors(t *testing.T) {
