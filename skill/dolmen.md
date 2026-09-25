@@ -458,7 +458,7 @@ The optional `filter` parameter is separate from the MATCH `query`: it is regula
 | Time per operation | set by the server, 2 minutes by default; `wait_for` gets its `timeout_ms` on top | `timeout` (504): narrow a read (a filter, a smaller limit) and retry it; a write may or may not have committed, so check with a query before retrying it |
 | `query` / search filter `args` | 100 | rejected |
 
-Vector search is exact: it scores every row. With the server's vector cache warm (SQLite engine), an unfiltered search takes about 1 ms per 20,000 rows at 384 dimensions and 3 ms at 1,536. A `filter`, a `row_access: own` table, or a table too large for the cache reads vectors from disk instead, about a tenth of a second per 50,000 rows at 384 dimensions — so on large tables prefer an unfiltered search, and narrow afterwards.
+Vector search is exact: it scores every row. With the server's vector cache warm (SQLite engine), a search takes about 1 ms per 20,000 rows at 384 dimensions and 3 ms at 1,536, including on `row_access: own` tables. A `filter` adds the time SQLite takes to read the table and evaluate it, roughly 3 ms per 1,000 rows at 384 dimensions, unless it only touches `id`. A table too large for the cache reads vectors from disk, about a tenth of a second per 50,000 rows at 384 dimensions.
 
 Validation notes:
 

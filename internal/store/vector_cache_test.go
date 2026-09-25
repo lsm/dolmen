@@ -397,7 +397,7 @@ func TestATableTooBigForTheCacheIsNotDecodedWhole(t *testing.T) {
 	}
 	defer n.unpin()
 	e := &vecEntry{}
-	fits, err := e.rebuild(ctx, n.ro, "t", "emb", 400)
+	fits, err := e.rebuild(ctx, n.ro, "t", "emb", false, 400)
 	if err != nil {
 		t.Fatal(err)
 	}
