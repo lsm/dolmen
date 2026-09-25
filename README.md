@@ -1292,7 +1292,7 @@ instrumentation is a no-op. It is configured only through the standard `OTEL_*` 
 | `OTEL_RESOURCE_ATTRIBUTES` | | Extra resource attributes (`k=v,k2=v2`, percent-encoded values). |
 | `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` | `parentbased_always_on` | `always_on`, `always_off`, `traceidratio`, and the `parentbased_*` forms. |
 | `OTEL_PROPAGATORS` | `tracecontext,baggage` | `tracecontext`, `baggage` or `none`. |
-| `OTEL_BSP_*` | SDK defaults | Batch span processor tuning. |
+| `OTEL_BSP_*` | SDK defaults | Batch span processor tuning (`OTEL_BSP_MAX_QUEUE_SIZE`, `OTEL_BSP_MAX_EXPORT_BATCH_SIZE`, `OTEL_BSP_SCHEDULE_DELAY`, `OTEL_BSP_EXPORT_TIMEOUT`), read by the OpenTelemetry Go SDK itself. |
 | `DOLMEN_OTEL_INCLUDE_PRINCIPAL` | `false` | `true` adds the caller's principal to operation spans as `enduser.id`. |
 
 An unsupported value (a gRPC protocol, an unknown sampler or propagator) stops startup with an error
