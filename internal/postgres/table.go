@@ -155,9 +155,13 @@ func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []sche
 		if err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, "INSERT INTO "+s.relation("tables")+`(namespace,name,physical,schema_json,columns_json) VALUES($1,$2,$3,$4,$5)
-  ON CONFLICT(namespace,name) DO UPDATE SET physical=EXCLUDED.physical,schema_json=EXCLUDED.schema_json,columns_json=EXCLUDED.columns_json,active=true`, ns, table, physical, string(raw), string(columnJSON))
-		return err
+		var generation int64
+		if err := tx.QueryRow(ctx, "INSERT INTO "+s.relation("tables")+`(namespace,name,physical,schema_json,columns_json) VALUES($1,$2,$3,$4,$5)
+  ON CONFLICT(namespace,name) DO UPDATE SET physical=EXCLUDED.physical,schema_json=EXCLUDED.schema_json,columns_json=EXCLUDED.columns_json,active=true
+  RETURNING drop_generation`, ns, table, physical, string(raw), string(columnJSON)).Scan(&generation); err != nil {
+			return err
+		}
+		return s.installRowCount(ctx, tx, ident(n.physical, physical), rowCountKey{namespace: ns, table: table, gen: generation}, sc.HasOwner)
 	})
 	if err != nil {
 		return nil, err
@@ -266,6 +270,11 @@ func (s *Store) DescribeTable(ctx context.Context, ns, table string, scope *stor
 			count = 0
 			return nil
 		}
+		kept, found, err := s.readRowCount(ctx, tx, rowCountKey{namespace: n.name, table: table, gen: result.incarnation.DropGen}, scope)
+		if err != nil || found {
+			count = kept
+			return err
+		}
 		stmt := "SELECT count(*) FROM " + ident(n.physical, result.physical)
 		clause, args := scopePredicate(scope, "", 1)
 		if clause != "" {
@@ -286,6 +295,9 @@ func (s *Store) DropTable(ctx context.Context, ns, table string, expected store.
 			return err
 		}
 		if _, err := tx.Exec(ctx, "DROP TABLE "+ident(n.physical, current.physical)); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, "DELETE FROM "+s.relation("row_counts")+" WHERE namespace=$1 AND table_name=$2", ns, table); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, "DELETE FROM "+s.relation("migrations")+" WHERE namespace=$1 AND table_name=$2", ns, table); err != nil {

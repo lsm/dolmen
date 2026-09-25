@@ -689,6 +689,9 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 						return err
 					})
 				}
+				w.steps = append(w.steps, func(ctx context.Context, tx *sql.Tx) error {
+					return installRowCount(ctx, tx, table, true)
+				})
 				cur.RowAccess = schema.RowAccessOwn
 				cur.HasOwner = true
 				plan.Operations = append(plan.Operations, "set_row_access true")

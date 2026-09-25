@@ -156,6 +156,20 @@ invalid dimensions, and non-finite vectors. Durable replay and retention are des
 
 ## Durable replay and retention (implemented internally)
 
+Catalog version 7 keeps each table's row count, so `describe_table` reads one row instead
+of scanning the table. Statement-level `AFTER INSERT` and `AFTER DELETE` triggers with
+transition tables fold each statement's rows into a `row_counts` relation, so every write
+path is covered without each one remembering to count; updates never change a row's
+owner and are not counted. A table with `row_access` also keeps one count per owner,
+which is what a scoped caller reads. Counts are keyed by namespace, table and drop
+generation, and cascade with the namespace. Creating a table, adopting `row_access`, and
+opening a catalog that has tables without the trigger all install it and recount from the
+table itself, under the lock `CREATE TRIGGER` takes, so no write slips between the count
+and the trigger. A process that opened the catalog at version 6 keeps running after
+another upgrades it and maintains no counts, so `describe_table` scans instead of reading
+a count it cannot trust: when no count exists for the table's current drop generation,
+or when a scoped caller asks and the counts do not track owners.
+
 Catalog version 4 adds opaque, random cursor tokens. `ChangesSince` supports a
 current-head cursor, retained-history `begin`, bounded pages, per-event resume, and
 stable empty-page cursors. Tokens survive process restart and bind to their namespace,

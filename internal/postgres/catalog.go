@@ -13,7 +13,7 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-const catalogVersion = 6
+const catalogVersion = 7
 
 const minimumServerVersion = 160000
 
@@ -161,6 +161,14 @@ func (s *Store) bootstrap(ctx context.Context) error {
 		if _, err := tx.Exec(ctx, stmt); err != nil {
 			return err
 		}
+	}
+	for _, stmt := range s.rowCountCatalogDDL() {
+		if _, err := tx.Exec(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	if err := s.backfillRowCounts(ctx, tx); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx, "UPDATE "+s.relation("version")+" SET version = $1", catalogVersion); err != nil {
 		return err
