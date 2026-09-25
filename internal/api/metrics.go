@@ -31,12 +31,9 @@ type metrics struct {
 	latency       map[string]*opLatency
 	inFlight      atomic.Int64
 	subscriptions atomic.Int64
-	started       time.Time
 }
 
-func newMetrics() *metrics {
-	return &metrics{ops: map[opKey]uint64{}, latency: map[string]*opLatency{}, started: time.Now()}
-}
+var processStart = time.Now()
 
 func (s *Server) metricOp(op string) string {
 	if _, ok := s.Op(op); ok {
@@ -53,6 +50,9 @@ func (m *metrics) observe(op string, err error, d time.Duration) {
 	secs := d.Seconds()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.ops == nil {
+		m.ops, m.latency = map[opKey]uint64{}, map[string]*opLatency{}
+	}
 	m.ops[opKey{op, outcome}]++
 	l := m.latency[op]
 	if l == nil {
@@ -82,7 +82,7 @@ func (m *metrics) write(w io.Writer) {
 	})
 	var b strings.Builder
 	fmt.Fprintf(&b, "# HELP dolmen_build_info The running dolmen version.\n# TYPE dolmen_build_info gauge\ndolmen_build_info{version=%q} 1\n", version.Version)
-	fmt.Fprintf(&b, "# HELP dolmen_uptime_seconds Seconds since the server started.\n# TYPE dolmen_uptime_seconds gauge\ndolmen_uptime_seconds %g\n", time.Since(m.started).Seconds())
+	fmt.Fprintf(&b, "# HELP dolmen_uptime_seconds Seconds since the server started.\n# TYPE dolmen_uptime_seconds gauge\ndolmen_uptime_seconds %g\n", time.Since(processStart).Seconds())
 	b.WriteString("# HELP dolmen_operations_total Operations finished, by operation and outcome (ok or an error code).\n# TYPE dolmen_operations_total counter\n")
 	for _, k := range keys {
 		fmt.Fprintf(&b, "dolmen_operations_total{op=%q,outcome=%q} %d\n", k.op, k.outcome, m.ops[k])

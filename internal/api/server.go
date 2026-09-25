@@ -41,7 +41,7 @@ type Server struct {
 	oidcSource         *auth.OIDCSource
 	timeouts           Timeouts
 	drain              drainState
-	metrics            *metrics
+	metrics            metrics
 }
 
 type Option func(*Server)
@@ -95,7 +95,7 @@ func WithNamespaceHint(h string) Option {
 }
 
 func New(eng store.Engine, emb embed.Provider, opts ...Option) *Server {
-	s := &Server{eng: eng, emb: emb, keepaliveInterval: defaultKeepaliveInterval, metrics: newMetrics()}
+	s := &Server{eng: eng, emb: emb, keepaliveInterval: defaultKeepaliveInterval}
 	for _, opt := range opts {
 		opt(s)
 	}
