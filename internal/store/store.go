@@ -201,6 +201,7 @@ func (s *Store) verifyOneCatalogVersion(ctx context.Context, name string) error 
 	if minReader > CatalogFormat {
 		return &CatalogVersionError{Namespace: name, Format: format, MinReader: minReader, Supported: CatalogFormat}
 	}
+	warnCatalogDrift(ctx, ro, name)
 	return nil
 }
 
