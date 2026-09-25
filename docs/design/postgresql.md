@@ -490,6 +490,16 @@ argument, which the planner may substitute the same way. The fold happens before
 argument is captured, because capturing one and then not referencing it leaves the
 statement with a parameter it never uses.
 
+The same folding makes an error a matter of where it sits, not whether a row reaches it.
+SQLite raises `integer overflow` for `abs()` of int64 min only when a row evaluates that
+call, so `iif(n = 6, abs(-9223372036854775808), 1)` answers there whenever no row has
+`n = 6`. PostgreSQL computed `abs()` of that bigint constant while planning and refused the
+whole filter (#454). `abs()` of an integer now runs in `numeric`, which cannot overflow, and
+the int64-min case raises through an expression built from the row's `id`
+(`(id * 0 + 9223372036854775807)::int8 + 1`). The planner cannot fold that expression, so
+the overflow fires only on a row that actually takes the branch, which is exactly when
+SQLite raises.
+
 Anything in a boolean position is rendered as SQLite's truth value, at the top of the
 expression and under `NOT`, `AND` and `OR` alike. A number is true when it is nonzero, and a
 text is converted to a number first so `'a note'` is false and `'1'` is true. A blob goes
