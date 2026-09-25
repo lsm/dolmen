@@ -108,6 +108,7 @@ before the shared dispatch table sees the arguments.
 | Body that is not a JSON object | — | `400 invalid_request`, naming the object requirement | JSON-RPC `-32602`, `tools/call arguments must be an object` |
 | `null` body | — | treated as `{}`, as v0.2.0 did | JSON-RPC `-32602` |
 | Empty or whitespace-only body | — | treated as `{}` | absent `arguments` are treated as `{}` |
+| Secret `reveal` (#467) | always allowed: the façade has no auth | allowed with `-auth off`; `forbidden` with `-auth on` until the `reveal` verb | same as `/v1` |
 
 ## Namespace creation on reads (#39)
 

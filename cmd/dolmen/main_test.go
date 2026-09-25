@@ -1153,3 +1153,32 @@ func TestLoadConfigLogLevel(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadConfigSecretKey(t *testing.T) {
+	load := func(env map[string]string) (*config, error) {
+		return loadConfig([]string{}, func(k string) string { return env[k] },
+			func(k string) (string, bool) { v, ok := env[k]; return v, ok }, io.Discard, false)
+	}
+	cfg, err := load(map[string]string{})
+	if err != nil || cfg.Secrets != nil {
+		t.Fatalf("no key: cfg.Secrets=%v err=%v", cfg.Secrets, err)
+	}
+	cfg, err = load(map[string]string{"DOLMEN_SECRET_KEY": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="})
+	if err != nil || cfg.Secrets == nil {
+		t.Fatalf("key: cfg.Secrets=%v err=%v", cfg.Secrets, err)
+	}
+	_, err = load(map[string]string{"DOLMEN_SECRET_KEY": "dG9vIHNob3J0"})
+	if err == nil || !strings.Contains(err.Error(), "openssl rand -base64 32") {
+		t.Fatalf("short key: err=%v", err)
+	}
+	if strings.Contains(err.Error(), "dG9vIHNob3J0") {
+		t.Fatal("the error must never echo the key")
+	}
+	var help strings.Builder
+	printEnvHelp(&help)
+	for _, k := range []string{"DOLMEN_SECRET_KEY", "DOLMEN_SECRET_KEY_FILE"} {
+		if !strings.Contains(help.String(), k) {
+			t.Errorf("env help does not list %s", k)
+		}
+	}
+}

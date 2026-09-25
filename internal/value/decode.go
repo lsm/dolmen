@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/lsm/dolmen/internal/schema"
+	"github.com/lsm/dolmen/internal/secret"
 )
 
 func Decode(t schema.FieldType, v any) any {
@@ -13,6 +14,8 @@ func Decode(t schema.FieldType, v any) any {
 		return nil
 	}
 	switch t {
+	case schema.Secret:
+		return secret.Mask
 	case schema.Boolean:
 		switch b := v.(type) {
 		case bool:

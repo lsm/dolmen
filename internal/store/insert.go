@@ -145,9 +145,9 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			if !present {
 				continue
 			}
-			cv, err := coerceValue(f, v)
+			cv, err := s.coerceWrite(f, v)
 			if err != nil {
-				return nil, ChangeRange{}, false, true, fmt.Errorf("%w: %w", ErrInvalid, err)
+				return nil, ChangeRange{}, false, true, err
 			}
 			cols = append(cols, q(f.Name))
 			vals = append(vals, cv)

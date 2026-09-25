@@ -598,6 +598,9 @@ func (s *Store) PlanMigration(ctx context.Context, ns, table string, changes []s
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
 	}
+	if err := refuseSecretChanges(changes); err != nil {
+		return nil, err
+	}
 	if expected.Version < 0 {
 		return nil, invalidf("expected_version must be a positive schema version, got %d", expected.Version)
 	}
@@ -635,6 +638,9 @@ func (s *Store) PlanMigration(ctx context.Context, ns, table string, changes []s
 func (s *Store) Migrate(ctx context.Context, ns, table string, changes []schema.Change, emb store.Embedder, expected store.Incarnation) (*schema.TableSchema, error) {
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
+	}
+	if err := refuseSecretChanges(changes); err != nil {
+		return nil, err
 	}
 	if expected.Version < 0 {
 		return nil, invalidf("expected_version must be a positive schema version, got %d", expected.Version)

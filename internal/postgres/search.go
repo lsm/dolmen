@@ -118,6 +118,9 @@ func (s *Store) fetchRanked(ctx context.Context, tx pgx.Tx, n namespace, state t
 }
 
 func (s *Store) SearchFulltext(ctx context.Context, ns, table, match, filter string, args []any, includeHidden bool, scope *store.RowScope, scopeIncarnation store.Incarnation, page store.Page) (store.SearchResult, error) {
+	if err := refuseReveal(ctx); err != nil {
+		return store.SearchResult{}, err
+	}
 	if page.Offset < 0 {
 		return store.SearchResult{}, invalidf("offset must be non-negative")
 	}
@@ -222,6 +225,9 @@ func searchError(ctx context.Context, filter string, err error) error {
 }
 
 func (s *Store) SearchVector(ctx context.Context, ns, table string, q store.VectorQuery, includeHidden bool, scope *store.RowScope, scopeIncarnation store.Incarnation, page store.Page) (store.SearchResult, error) {
+	if err := refuseReveal(ctx); err != nil {
+		return store.SearchResult{}, err
+	}
 	if page.Offset < 0 {
 		return store.SearchResult{}, invalidf("offset must be non-negative")
 	}

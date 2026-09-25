@@ -153,7 +153,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 		switch f.Type {
 		case schema.String, schema.Text, schema.Number, schema.Boolean, schema.Timestamp:
 		default:
-			return nil, 0, 0, ChangeRange{}, true, invalidf("key field %q has type %s; natural keys must be string, text, number, boolean, or timestamp fields (vector and json values do not compare reliably)", name, f.Type)
+			return nil, 0, 0, ChangeRange{}, true, invalidf("key field %q has type %s; natural keys must be string, text, number, boolean, or timestamp fields (vector and json values do not compare reliably, and secret values are encrypted under a fresh nonce so equal values never match)", name, f.Type)
 		}
 		keyDefs[i] = f
 	}
@@ -176,9 +176,9 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 			if !present {
 				continue
 			}
-			cv, err := coerceValue(f, v)
+			cv, err := s.coerceWrite(f, v)
 			if err != nil {
-				return nil, 0, 0, ChangeRange{}, true, fmt.Errorf("%w: %w", ErrInvalid, err)
+				return nil, 0, 0, ChangeRange{}, true, err
 			}
 			for j, kd := range keyDefs {
 				if kd.Name == f.Name {

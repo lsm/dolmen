@@ -345,14 +345,14 @@ func TestCreateTableFieldTypeEnumDeclared(t *testing.T) {
 	items := fields["items"].(map[string]any)
 	typ := items["properties"].(map[string]any)["type"].(map[string]any)
 	enum, ok := typ["enum"].([]schema.FieldType)
-	if !ok || len(enum) != 7 {
-		t.Fatalf(`field "type" must enumerate the seven supported types, got %v`, typ["enum"])
+	if !ok || len(enum) != 8 {
+		t.Fatalf(`field "type" must enumerate the eight supported types, got %v`, typ["enum"])
 	}
 	raw, err := json.Marshal(enum)
 	if err != nil {
 		t.Fatalf("marshal enum: %v", err)
 	}
-	for _, want := range []schema.FieldType{schema.String, schema.Text, schema.Number, schema.Boolean, schema.Timestamp, schema.JSON, schema.Vector} {
+	for _, want := range []schema.FieldType{schema.String, schema.Text, schema.Number, schema.Boolean, schema.Timestamp, schema.JSON, schema.Vector, schema.Secret} {
 		if !strings.Contains(string(raw), string(want)) {
 			t.Fatalf("enum must contain %q: %s", want, raw)
 		}

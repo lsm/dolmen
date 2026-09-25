@@ -95,9 +95,9 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 		if f.Required && v == nil {
 			return UpsertResult{}, invalidf("field %q is required and cannot be set to null", f.Name)
 		}
-		cv, err := coerceValue(f, v)
+		cv, err := s.coerceWrite(f, v)
 		if err != nil {
-			return UpsertResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+			return UpsertResult{}, err
 		}
 		cols = append(cols, q(f.Name))
 		vals = append(vals, cv)
