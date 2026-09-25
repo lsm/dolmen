@@ -479,6 +479,8 @@ var registryDDL = []string{
 		table_name TEXT NOT NULL,
 		scoped INTEGER NOT NULL,
 		owner TEXT NOT NULL DEFAULT '',
+		drop_gen INTEGER NOT NULL DEFAULT 0,
+		tracks_owners INTEGER NOT NULL DEFAULT 0,
 		n INTEGER NOT NULL,
 		PRIMARY KEY(table_name, scoped, owner)
 	)`,

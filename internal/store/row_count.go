@@ -20,15 +20,19 @@ func sqlString(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
-func rowCountTriggerDDL(table string, hasOwner bool) []string {
+func rowCountTriggerDDL(table string, gen int64, hasOwner bool) []string {
 	insert, del := rowCountTriggers(table)
+	tracks := 0
+	if hasOwner {
+		tracks = 1
+	}
 	bump := func(row, sign string) string {
-		stmt := fmt.Sprintf(`INSERT INTO %s(table_name, scoped, owner, n) VALUES(%s, 0, '', %s) ON CONFLICT(table_name, scoped, owner) DO UPDATE SET n = n + (%s);`,
-			rowCountsTable, sqlString(table), sign, sign)
+		stmt := fmt.Sprintf(`INSERT INTO %s(table_name, scoped, owner, drop_gen, tracks_owners, n) VALUES(%s, 0, '', %d, %d, %s) ON CONFLICT(table_name, scoped, owner) DO UPDATE SET n = n + (%s);`,
+			rowCountsTable, sqlString(table), gen, tracks, sign, sign)
 		if hasOwner {
 			owner := row + "." + q(schema.OwnerColumn)
-			stmt += fmt.Sprintf(` INSERT INTO %s(table_name, scoped, owner, n) SELECT %s, 1, %s, %s WHERE %s IS NOT NULL ON CONFLICT(table_name, scoped, owner) DO UPDATE SET n = n + (%s);`,
-				rowCountsTable, sqlString(table), owner, sign, owner, sign)
+			stmt += fmt.Sprintf(` INSERT INTO %s(table_name, scoped, owner, drop_gen, tracks_owners, n) SELECT %s, 1, %s, %d, 1, %s WHERE %s IS NOT NULL ON CONFLICT(table_name, scoped, owner) DO UPDATE SET n = n + (%s);`,
+				rowCountsTable, sqlString(table), owner, gen, sign, owner, sign)
 		}
 		return stmt
 	}
@@ -39,12 +43,16 @@ func rowCountTriggerDDL(table string, hasOwner bool) []string {
 }
 
 func installRowCount(ctx context.Context, tx *sql.Tx, table string, hasOwner bool) error {
+	gen, err := tableGen(ctx, tx, table)
+	if err != nil {
+		return err
+	}
 	insert, del := rowCountTriggers(table)
 	stmts := []string{
 		fmt.Sprintf(`DROP TRIGGER IF EXISTS %s`, q(insert)),
 		fmt.Sprintf(`DROP TRIGGER IF EXISTS %s`, q(del)),
 	}
-	stmts = append(stmts, rowCountTriggerDDL(table, hasOwner)...)
+	stmts = append(stmts, rowCountTriggerDDL(table, gen, hasOwner)...)
 	for _, stmt := range stmts {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("install row count for %s: %w", table, err)
@@ -53,12 +61,12 @@ func installRowCount(ctx context.Context, tx *sql.Tx, table string, hasOwner boo
 	if _, err := tx.ExecContext(ctx, `DELETE FROM `+rowCountsTable+` WHERE table_name = ?`, table); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s(table_name, scoped, owner, n) SELECT ?, 0, '', count(*) FROM %s`, rowCountsTable, q(table)), table); err != nil {
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s(table_name, scoped, owner, drop_gen, tracks_owners, n) SELECT ?, 0, '', ?, ?, count(*) FROM %s`, rowCountsTable, q(table)), table, gen, hasOwner); err != nil {
 		return err
 	}
 	if hasOwner {
 		owner := q(schema.OwnerColumn)
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s(table_name, scoped, owner, n) SELECT ?, 1, %s, count(*) FROM %s WHERE %s IS NOT NULL GROUP BY %s`, rowCountsTable, owner, q(table), owner, owner), table); err != nil {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s(table_name, scoped, owner, drop_gen, tracks_owners, n) SELECT ?, 1, %s, ?, 1, count(*) FROM %s WHERE %s IS NOT NULL GROUP BY %s`, rowCountsTable, owner, q(table), owner, owner), table, gen); err != nil {
 			return err
 		}
 	}
@@ -107,17 +115,32 @@ func ensureRowCounts(ctx context.Context, rw *sql.DB, nsName string) error {
 }
 
 func readRowCount(ctx context.Context, db rowQuerier, table string, scope *RowScope) (int64, error) {
-	scoped, owner := 0, ""
-	if scope != nil {
-		scoped, owner = 1, scope.Owner
+	var total, countedGen int64
+	var tracksOwners bool
+	err := db.QueryRowContext(ctx, `SELECT n, drop_gen, tracks_owners FROM `+rowCountsTable+` WHERE table_name = ? AND scoped = 0 AND owner = ''`, table).Scan(&total, &countedGen, &tracksOwners)
+	if errors.Is(err, sql.ErrNoRows) {
+		return -1, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	gen, err := tableGen(ctx, db, table)
+	if err != nil {
+		return 0, err
+	}
+	if gen != countedGen {
+		return -1, nil
+	}
+	if scope == nil {
+		return total, nil
+	}
+	if !tracksOwners {
+		return -1, nil
 	}
 	var n int64
-	err := db.QueryRowContext(ctx, `SELECT n FROM `+rowCountsTable+` WHERE table_name = ? AND scoped = ? AND owner = ?`, table, scoped, owner).Scan(&n)
+	err = db.QueryRowContext(ctx, `SELECT n FROM `+rowCountsTable+` WHERE table_name = ? AND scoped = 1 AND owner = ?`, table, scope.Owner).Scan(&n)
 	if errors.Is(err, sql.ErrNoRows) {
-		if scope != nil {
-			return 0, nil
-		}
-		return -1, nil
+		return 0, nil
 	}
 	return n, err
 }

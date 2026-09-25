@@ -99,3 +99,69 @@ func TestOpeningANamespaceBackfillsCountsItNeverKept(t *testing.T) {
 		t.Fatalf("after the backfill an insert must be counted: got %d, %v; want 6", count, err)
 	}
 }
+
+func TestDescribeTableDistrustsCountsAnOlderProcessLeft(t *testing.T) {
+	dir := t.TempDir()
+	seedCountedTable(t, dir, 3)
+	ctx := context.Background()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	if _, count, err := st.DescribeTable(ctx, "rc", "items", nil, Incarnation{}); err != nil || count != 3 {
+		t.Fatalf("describe before the older process acts: %d, %v", count, err)
+	}
+	db := rawNamespace(t, dir)
+	for _, stmt := range []string{
+		`DROP TABLE items`,
+		`INSERT INTO _dolmen_drop_gen(table_name, gen) VALUES('items', 1) ON CONFLICT(table_name) DO UPDATE SET gen = gen + 1`,
+		`CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL DEFAULT '', sku TEXT)`,
+		`INSERT INTO items(sku) VALUES('a'), ('b')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("shape a table an older process dropped and recreated (%s): %v", stmt, err)
+		}
+	}
+	if _, count, err := st.DescribeTable(ctx, "rc", "items", nil, Incarnation{}); err != nil || count != 2 {
+		t.Fatalf("counts kept for an earlier incarnation reported %d (%v), want the table's 2", count, err)
+	}
+}
+
+func TestScopedDescribeDistrustsCountsThatNeverTrackedOwners(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := st.CreateNamespace(ctx, "rc", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateTable(ctx, "rc", "items", []schema.Field{{Name: "sku", Type: schema.String}}, TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	db := rawNamespace(t, dir)
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := installRowCount(ctx, tx, "items", false); err != nil {
+		t.Fatalf("shape counts an older process's migration left: %v", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO items(sku, owner) VALUES('a', 'bob'), ('b', 'bob')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	st, err = Open(dir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	if _, count, err := st.DescribeTable(ctx, "rc", "items", &RowScope{Owner: "bob"}, Incarnation{}); err != nil || count != 2 {
+		t.Fatalf("counts that never tracked owners reported %d (%v) for bob, want the scanned 2", count, err)
+	}
+}
