@@ -10,3 +10,5 @@ run it with `DOLMEN_EMBED_PROVIDER=none -data <dir>`, create namespace `fixture`
 with the same writes as `v0.3.0` (a full-text field, an enum, a default, a 3-dim vector, an update, a
 delete, and an `add_field` migration), stop the server so the WAL is checkpointed, and copy
 `<dir>/fixture.db` here.
+
+`.gitignore` ignores `*.db` but excepts `testdata/**/fixture.db`; check `git status` shows the new file before committing.
