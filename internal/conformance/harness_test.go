@@ -547,7 +547,7 @@ func (h *harness) mustMCP(op string, args any) map[string]any {
 	return sc
 }
 
-var volatileKeys = map[string]bool{"created_at": true, "at": true, "cursor": true, "next_cursor": true, "expected_incarnation": true}
+var volatileKeys = map[string]bool{"created_at": true, "at": true, "cursor": true, "next_cursor": true, "expected_incarnation": true, "bytes_before": true, "bytes_after": true}
 
 var createdAtRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$`)
 

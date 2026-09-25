@@ -504,6 +504,37 @@ var Ops = map[string]OpDef{
 			return map[string]any{"dropped": ns}, nil
 		},
 	},
+	"vacuum": {
+		Description: "Reclaim the free space a namespace holds after deletes, updates, and dropped tables. " +
+			"On SQLite this rebuilds the namespace file (VACUUM) and truncates its write-ahead log; on PostgreSQL it runs VACUUM on the namespace's tables. " +
+			"Writes to the namespace wait while it runs, and it needs free disk space about the size of the namespace. " +
+			"Returns the namespace's on-disk size in bytes before and after. " +
+			"Use it after large deletes, or when writes fail because the namespace reached -max-namespace-size. " +
+			"Answers not_found for a namespace that does not exist and creates nothing.",
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{"namespace": nsProp("Namespace to vacuum")},
+			"required":             []string{"namespace"},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"namespace":    prop("string", "The vacuumed namespace name"),
+			"bytes_before": map[string]any{"type": "integer", "minimum": 0, "description": "On-disk size of the namespace in bytes before the vacuum"},
+			"bytes_after":  map[string]any{"type": "integer", "minimum": 0, "description": "On-disk size of the namespace in bytes after the vacuum"},
+		}, "namespace", "bytes_before", "bytes_after"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req nsReq
+			if err := decode(body, &req); err != nil {
+				return nil, err
+			}
+			ns := normNS(req.Namespace)
+			res, err := s.eng.Vacuum(ctx, ns)
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"namespace": ns, "bytes_before": res.BytesBefore, "bytes_after": res.BytesAfter}, nil
+		},
+	},
 	"drop_table": {
 		Description: "Drop a table: its rows, its full-text index, its schema and migration history, and its " +
 			"idempotency keys. Irreversible. confirm must repeat the exact table name — a guard against dropping " +

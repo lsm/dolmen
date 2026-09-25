@@ -108,6 +108,7 @@ func parityScript() []parityStep {
 		{"infer_schema", "infer_schema", map[string]any{
 			"samples": []map[string]any{{"a": 1, "b": "x", "c": true}},
 		}, false},
+		{"vacuum", "vacuum", map[string]any{"namespace": ns}, false},
 		{"drop_table", "drop_table", map[string]any{"namespace": ns, "table": "docs", "confirm": "docs"}, false},
 		{"list_namespaces", "list_namespaces", map[string]any{}, false},
 		{"describe_server", "describe_server", map[string]any{}, false},
