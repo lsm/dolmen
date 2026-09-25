@@ -669,10 +669,12 @@ A complete call, previewed first:
 | `infer_schema` samples | 1–50 | rejected |
 
 Vector search is exact: it scores every row. On SQLite, `-vector-cache-size` (default 512 MiB) keeps
-decoded vectors in memory, so a warm unfiltered search takes about 1 ms per 20,000 rows at 384
-dimensions and 3 ms at 1,536. A `filter`, a `row_access: own` table, or a table larger than the cache
-(about 4 bytes per dimension plus 100 per row) reads vectors from disk, about a tenth of a second per
-50,000 rows at 384 dimensions; raise the cache size if large tables are searched often.
+decoded vectors and each row's owner in memory, so a warm search takes about 1 ms per 20,000 rows at
+384 dimensions and 3 ms at 1,536, on `row_access: own` tables too. A `filter` still makes SQLite read
+the table to evaluate it (about 70 ms per 20,000 rows at 384 dimensions), then scores only the matching
+rows from memory. A table larger than the cache (about 4 bytes per dimension plus 125 per row) reads
+vectors from disk, about a tenth of a second per 50,000 rows at 384 dimensions; raise the cache size if
+large tables are searched often.
 
 Validation notes:
 

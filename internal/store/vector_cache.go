@@ -7,13 +7,15 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+
+	"github.com/lsm/dolmen/internal/schema"
 )
 
 const (
 	DefaultVectorCacheBytes = 512 << 20
 	parallelScoreRows       = 8192
 	tooBigRetryChanges      = 1000
-	vecRowOverhead          = 24 + 8 + 8 + 64
+	vecRowOverhead          = 24 + 8 + 8 + 64 + 24
 )
 
 type vecKey struct {
@@ -34,6 +36,8 @@ type vecEntry struct {
 	ids     []int64
 	vecs    [][]float32
 	sq      []float64
+	owners  []sql.NullString
+	owned   bool
 	bytes   int64
 	lastUse uint64
 	tooBig  bool
@@ -125,7 +129,7 @@ func (c *vecCache) drop(k vecKey, e *vecEntry) {
 	}
 }
 
-func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column string, vec []float32, threshold float64) ([]vecHit, int, bool, error) {
+func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column string, vec []float32, threshold float64, only []int64, scope *RowScope, owned bool) ([]vecHit, int, bool, error) {
 	if c.max <= 0 {
 		return nil, 0, false, nil
 	}
@@ -159,7 +163,7 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 			e.mu.Unlock()
 			return nil, 0, false, nil
 		}
-		if fits, err = e.rebuild(ctx, db, table, column, c.max); err != nil {
+		if fits, err = e.rebuild(ctx, db, table, column, owned, c.max); err != nil {
 			e.mu.Unlock()
 			c.drop(k, e)
 			return nil, 0, false, err
@@ -173,7 +177,7 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 			return nil, 0, false, err
 		}
 		if !ok {
-			if fits, err = e.rebuild(ctx, db, table, column, c.max); err != nil {
+			if fits, err = e.rebuild(ctx, db, table, column, owned, c.max); err != nil {
 				e.mu.Unlock()
 				c.drop(k, e)
 				return nil, 0, false, err
@@ -189,7 +193,7 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 	}
 	if !kept {
 		e.tooBig, e.fp, e.seq = true, fp, head
-		e.pos, e.ids, e.vecs, e.sq = nil, nil, nil, nil
+		e.pos, e.ids, e.vecs, e.sq, e.owners = nil, nil, nil, nil, nil
 		c.remember(k, e)
 		e.mu.Unlock()
 		return nil, 0, false, nil
@@ -205,8 +209,34 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 	for _, x := range vec {
 		qa += float64(x) * float64(x)
 	}
+	n := len(e.vecs)
+	var rows []int
+	if only != nil {
+		rows = make([]int, len(only))
+		for i, id := range only {
+			at, ok := e.pos[id]
+			if !ok {
+				return nil, 0, false, nil
+			}
+			rows[i] = at
+		}
+		n = len(rows)
+	} else if scope != nil {
+		if !scope.Empty && !e.owned {
+			return nil, 0, false, nil
+		}
+		rows = []int{}
+		if !scope.Empty {
+			for i, o := range e.owners {
+				if o.Valid && o.String == scope.Owner {
+					rows = append(rows, i)
+				}
+			}
+		}
+		n = len(rows)
+	}
 	workers := 1
-	if n := len(e.vecs); n >= parallelScoreRows {
+	if n >= parallelScoreRows {
 		workers = min(runtime.GOMAXPROCS(0), n/(parallelScoreRows/4))
 	}
 	type part struct {
@@ -214,15 +244,19 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 		skipped int
 	}
 	parts := make([]part, workers)
-	chunk := (len(e.vecs) + workers - 1) / workers
+	chunk := (n + workers - 1) / workers
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
-		lo, hi := w*chunk, min((w+1)*chunk, len(e.vecs))
+		lo, hi := w*chunk, min((w+1)*chunk, n)
 		wg.Add(1)
 		go func(w, lo, hi int) {
 			defer wg.Done()
 			p := &parts[w]
-			for i := lo; i < hi; i++ {
+			for j := lo; j < hi; j++ {
+				i := j
+				if rows != nil {
+					i = rows[j]
+				}
 				stored := e.vecs[i]
 				if stored == nil || len(stored) != len(vec) {
 					p.skipped++
@@ -268,12 +302,14 @@ func (e *vecEntry) size() int64 {
 	return n + int64(len(e.ids))*vecRowOverhead
 }
 
-func (e *vecEntry) rebuild(ctx context.Context, db rowsQuerier, table, column string, limit int64) (bool, error) {
+func (e *vecEntry) rebuild(ctx context.Context, db rowsQuerier, table, column string, owned bool, limit int64) (bool, error) {
 	e.pos = map[int64]int{}
 	e.ids = e.ids[:0]
 	e.vecs = e.vecs[:0]
 	e.sq = e.sq[:0]
-	rows, err := db.QueryContext(ctx, fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s IS NOT NULL ORDER BY id`, q(column), q(table), q(column)))
+	e.owners = e.owners[:0]
+	e.owned = owned
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`SELECT id, %s, %s FROM %s WHERE %s IS NOT NULL ORDER BY id`, q(column), e.ownerExpr(), q(table), q(column)))
 	if err != nil {
 		return false, err
 	}
@@ -282,10 +318,11 @@ func (e *vecEntry) rebuild(ctx context.Context, db rowsQuerier, table, column st
 	for rows.Next() {
 		var id int64
 		var raw any
-		if err := rows.Scan(&id, &raw); err != nil {
+		var owner sql.NullString
+		if err := rows.Scan(&id, &raw, &owner); err != nil {
 			return false, err
 		}
-		e.put(id, raw)
+		e.put(id, raw, owner)
 		bytes += int64(len(e.vecs[len(e.vecs)-1]))*4 + vecRowOverhead
 		if bytes > limit {
 			return false, nil
@@ -294,7 +331,14 @@ func (e *vecEntry) rebuild(ctx context.Context, db rowsQuerier, table, column st
 	return true, rows.Err()
 }
 
-func (e *vecEntry) put(id int64, raw any) {
+func (e *vecEntry) ownerExpr() string {
+	if e.owned {
+		return q(schema.OwnerColumn)
+	}
+	return "NULL"
+}
+
+func (e *vecEntry) put(id int64, raw any, owner sql.NullString) {
 	stored, ok := decodeStoredVector(raw)
 	if !ok {
 		stored = nil
@@ -304,13 +348,14 @@ func (e *vecEntry) put(id int64, raw any) {
 		sq += float64(x) * float64(x)
 	}
 	if i, exists := e.pos[id]; exists {
-		e.vecs[i], e.sq[i] = stored, sq
+		e.vecs[i], e.sq[i], e.owners[i] = stored, sq, owner
 		return
 	}
 	e.pos[id] = len(e.ids)
 	e.ids = append(e.ids, id)
 	e.vecs = append(e.vecs, stored)
 	e.sq = append(e.sq, sq)
+	e.owners = append(e.owners, owner)
 }
 
 func (e *vecEntry) remove(id int64) {
@@ -319,9 +364,9 @@ func (e *vecEntry) remove(id int64) {
 		return
 	}
 	last := len(e.ids) - 1
-	e.ids[i], e.vecs[i], e.sq[i] = e.ids[last], e.vecs[last], e.sq[last]
+	e.ids[i], e.vecs[i], e.sq[i], e.owners[i] = e.ids[last], e.vecs[last], e.sq[last], e.owners[last]
 	e.pos[e.ids[i]] = i
-	e.ids, e.vecs, e.sq = e.ids[:last], e.vecs[:last], e.sq[:last]
+	e.ids, e.vecs, e.sq, e.owners = e.ids[:last], e.vecs[:last], e.sq[:last], e.owners[:last]
 	delete(e.pos, id)
 }
 
@@ -362,18 +407,19 @@ func (e *vecEntry) catchUp(ctx context.Context, db interface {
 			e.remove(id)
 		}
 		ph := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
-		rows, err := db.QueryContext(ctx, fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s IS NOT NULL AND id IN (%s)`, q(column), q(table), q(column), ph), args...)
+		rows, err := db.QueryContext(ctx, fmt.Sprintf(`SELECT id, %s, %s FROM %s WHERE %s IS NOT NULL AND id IN (%s)`, q(column), e.ownerExpr(), q(table), q(column), ph), args...)
 		if err != nil {
 			return false, err
 		}
 		for rows.Next() {
 			var id int64
 			var raw any
-			if err := rows.Scan(&id, &raw); err != nil {
+			var owner sql.NullString
+			if err := rows.Scan(&id, &raw, &owner); err != nil {
 				rows.Close()
 				return false, err
 			}
-			e.put(id, raw)
+			e.put(id, raw, owner)
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {

@@ -432,7 +432,7 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 | `-version` | — | — | Print version and exit |
 | `-prefix` | `DOLMEN_PREFIX` | — | Mount all endpoints (`/livez`, `/readyz`, `/healthz`, `/metrics`, `/version`, `/skills*`, `/v1/*`, `/mcp`) under this URL prefix. Use with a pass-through proxy that forwards the full path |
 | `-base-url` | `DOLMEN_BASE_URL` | — | Public base URL for the links rendered into the skills manifest, the skill markdown, and the MCP `initialize` instructions. Default: derive from the request `Host` and forwarded headers. Refused when it ends with `-prefix` |
-| `-vector-cache-size` | `DOLMEN_VECTOR_CACHE_SIZE` | `512MiB` | Memory for decoded vectors kept between vector searches, shared by all tables; about 4 bytes per dimension plus about 100 bytes per row. `0` disables it and every search reads vectors from disk. Results are identical either way. SQLite engine only |
+| `-vector-cache-size` | `DOLMEN_VECTOR_CACHE_SIZE` | `512MiB` | Memory for decoded vectors kept between vector searches, shared by all tables; about 4 bytes per dimension plus about 125 bytes per row. `0` disables it and every search reads vectors from disk. Results are identical either way. SQLite engine only |
 | `-max-namespace-size` | `DOLMEN_MAX_NAMESPACE_SIZE` | `0` | Largest a namespace file may grow, as bytes or with `KiB`/`MiB`/`GiB`/`TiB`. A write that would pass it is refused with `507` and writes nothing; reads keep working. `0` is unbounded. SQLite engine only (see [Disk use](docs/deployment.md#disk-use)) |
 | `-log-level` | `DOLMEN_LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, or `error`. `debug` adds one line per operation over HTTP, MCP or stdio with the operation, outcome code, status, duration, request size, and request id, and never the payload, SQL, arguments, or credentials |
 | `-sync` | `DOLMEN_SYNC` | `full` | Commit durability. `full`: an acknowledged commit survives power loss. `normal`: it survives a process crash, but the last commits before a power or OS failure may be lost, for faster writes. Each namespace's writer is checked at open, and a mismatch is refused. SQLite engine only (see [Durability](docs/deployment.md#durability)) |
@@ -1075,10 +1075,12 @@ atomically with your side effects rather than deduplicating on frame content.
   from memory across all cores instead of reading every vector back. On a recent laptop, a top-10
   search over 20,000 rows takes about 1 ms at 384 dimensions (the default `local` model) and 3 ms at
   1,536 (OpenAI's `text-embedding-3-small`); 100,000 rows take about 4 ms at 384 dimensions. A
-  table's cache costs about 4 bytes per dimension plus about 100 bytes per row, so 100,000 rows at 1,536 dimensions need
-  about 620 MB: raise `-vector-cache-size` to cover your largest vector tables. A table that does
-  not fit, and any search with a `filter` or under `row_access`, reads the vectors from disk
-  instead, at about 200 million row-dimensions a second (0.6 s for 100,000 rows at 1,536).
+  table's cache costs about 4 bytes per dimension plus about 125 bytes per row, so 100,000 rows at 1,536 dimensions need
+  about 620 MB: raise `-vector-cache-size` to cover your largest vector tables. Searches on
+  `row_access: own` tables use the cache too, since it also holds each row's owner. A `filter` is
+  evaluated by SQLite first, which reads the table (about 70 ms for 20,000 rows at 384 dimensions),
+  and only the matching rows are then scored from memory. A table that does not fit reads the vectors
+  from disk instead, at about 200 million row-dimensions a second (0.6 s for 100,000 rows at 1,536).
 - **Vector-search spaces** are kept honest: `text` queries are embedded by the active provider and
   only search the server-managed `vectorize` (`_embedding`) space, whose model identity is pinned
   per table — a provider change is rejected until the table is re-embedded. Caller-provided `vector`

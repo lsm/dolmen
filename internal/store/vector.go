@@ -76,8 +76,14 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq Vecto
 	var hits []vecHit
 	skipped := 0
 	cached := false
-	if filter == "" && scope == nil {
-		hits, skipped, cached, err = s.vcache.score(ctx, tx, nsName, table, column, vec, threshold)
+	if s.vcache.max > 0 {
+		var only []int64
+		if filter != "" {
+			if only, err = candidateIDs(ctx, tx, table, column, filter, args, scope); err != nil {
+				return SearchResult{}, err
+			}
+		}
+		hits, skipped, cached, err = s.vcache.score(ctx, tx, nsName, table, column, vec, threshold, only, scope, sc.HasOwner)
 		if err != nil {
 			return SearchResult{}, err
 		}
@@ -249,21 +255,42 @@ func decodeStoredVector(raw any) ([]float32, bool) {
 	return stored, true
 }
 
-func scanVectors(ctx context.Context, tx rowsQuerier, table, column, filter string, args []any, scope *RowScope, vec []float32, threshold float64) ([]vecHit, int, error) {
-	var query string
-	var qargs []any
+func vectorSource(table, column, filter string, args []any, scope *RowScope, cols string) (string, []any) {
 	if filter == "" {
 		clause, scopeArgs := scopeClause(scope, "")
-		query = fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s IS NOT NULL`, q(column), q(table), q(column))
 		if clause != "" {
-			query = fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s AND %s IS NOT NULL`, q(column), q(table), clause, q(column))
+			return fmt.Sprintf(`SELECT %s FROM %s WHERE %s AND %s IS NOT NULL`, cols, q(table), clause, q(column)), scopeArgs
 		}
-		qargs = scopeArgs
-	} else {
-		prefix, source, scopeArgs := scopedSource(table, scope)
-		query = fmt.Sprintf(`%sSELECT id, %s FROM %s WHERE %s IS NOT NULL AND (%s)`, prefix, q(column), source, q(column), filter)
-		qargs = append(append(make([]any, 0, len(scopeArgs)+len(args)), scopeArgs...), args...)
+		return fmt.Sprintf(`SELECT %s FROM %s WHERE %s IS NOT NULL`, cols, q(table), q(column)), scopeArgs
 	}
+	prefix, source, scopeArgs := scopedSource(table, scope)
+	query := fmt.Sprintf(`%sSELECT %s FROM %s WHERE %s IS NOT NULL AND (%s)`, prefix, cols, source, q(column), filter)
+	return query, append(append(make([]any, 0, len(scopeArgs)+len(args)), scopeArgs...), args...)
+}
+
+func candidateIDs(ctx context.Context, tx rowsQuerier, table, column, filter string, args []any, scope *RowScope) ([]int64, error) {
+	query, qargs := vectorSource(table, column, filter, args, scope, "id")
+	rows, err := tx.QueryContext(ctx, query, qargs...)
+	if err != nil {
+		return nil, NewFilterError(filter, err)
+	}
+	defer rows.Close()
+	ids := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, NewFilterError(filter, err)
+	}
+	return ids, nil
+}
+
+func scanVectors(ctx context.Context, tx rowsQuerier, table, column, filter string, args []any, scope *RowScope, vec []float32, threshold float64) ([]vecHit, int, error) {
+	query, qargs := vectorSource(table, column, filter, args, scope, "id, "+q(column))
 	rows, err := tx.QueryContext(ctx, query, qargs...)
 	if err != nil {
 		return nil, 0, NewFilterError(filter, err)
