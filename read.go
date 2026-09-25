@@ -35,6 +35,10 @@ type QueryResult struct {
 }
 
 func (s *Store) GetRows(ctx context.Context, namespace, table string, ids []int64) (QueryResult, error) {
+	return s.RevealRows(ctx, namespace, table, ids, nil)
+}
+
+func (s *Store) RevealRows(ctx context.Context, namespace, table string, ids []int64, reveal []string) (QueryResult, error) {
 	if err := s.begin(); err != nil {
 		return QueryResult{}, err
 	}
@@ -53,7 +57,7 @@ func (s *Store) GetRows(ctx context.Context, namespace, table string, ids []int6
 	}
 	ns := ops.NormalizeNamespace(namespace)
 	ownIds := append([]int64(nil), ids...)
-	res, err := s.eng.GetRows(ctx, ns, ops.NormalizeTable(table), ownIds, nil, store.Incarnation{})
+	res, err := s.eng.GetRows(store.WithReveal(ctx, reveal), ns, ops.NormalizeTable(table), ownIds, nil, store.Incarnation{})
 	if err != nil {
 		return QueryResult{}, facadeErr(err)
 	}

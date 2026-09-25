@@ -34,7 +34,11 @@ func (s *Store) GetRows(ctx context.Context, nsName, table string, ids []int64, 
 	}
 	slices.Sort(ids)
 	ids = slices.Compact(ids)
-	rows, complete, err := fetchByIDsScoped(ctx, tx, table, ids, projectionFromSchema(sc, false), scope)
+	proj, err := s.readProjection(ctx, sc, false)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	rows, complete, err := fetchByIDsScoped(ctx, tx, table, ids, proj, scope)
 	if err != nil {
 		return QueryResult{}, err
 	}

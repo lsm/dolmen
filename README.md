@@ -419,6 +419,8 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 | `-pg-query-role` | `DOLMEN_PG_QUERY_ROLE` | — | Pre-provisioned restricted role that caller SQL runs as; required for the `query` op |
 | `-auth` | `DOLMEN_AUTH` | `off` | Authentication. `off` is the v0.2.0 behavior: no identity, no credential, bind to loopback. `on` is deny-by-default and refuses to start without an identity source and a reachable root administrator, which on first start means `DOLMEN_ADMIN_KEY` (see [Authentication](#authentication)) |
 | — | `DOLMEN_ADMIN_KEY` | — | Bootstrap admin credential. Needed with `-auth on` until another source yields a root administrator, and removable after the hand-over (see [Permissions](#permissions)). 32–256 characters of `[A-Za-z0-9_-]`, presented as `Authorization: Bearer <key>`. Environment only — flags are visible in process listings |
+| — | `DOLMEN_SECRET_KEY` | — | Key that encrypts `secret` fields at rest (AES-256-GCM): 32 bytes, base64-encoded (`openssl rand -base64 32`). Without it, creating a secret field or writing a secret value is refused. Environment only; never logged |
+| — | `DOLMEN_SECRET_KEY_FILE` | — | Path to a file holding that key instead. Set at most one of the two |
 | `-trusted-proxies` | `DOLMEN_TRUSTED_PROXIES` | — | Comma-separated CIDRs (bare IPs allowed) whose peers may assert `X-Dolmen-Principal` / `X-Dolmen-Groups`. The same peers are the only ones whose forwarding headers (`X-Forwarded-Host`/`-Proto`/`-Prefix`, `Forwarded`, original-URI headers) shape the public links dolmen advertises; from other peers they are dropped. Trust is decided from the immediate TCP peer, never from `X-Forwarded-For` |
 | `-max-groups` | `DOLMEN_MAX_GROUPS` | `128` | Maximum group entries accepted per request, `1` to `1024`. An over-limit list fails the identity rather than dropping a group |
 | — | `DOLMEN_AUTH_OIDC_ISSUER` | — | Identity provider issuer URL. Enables sign-in at `/v1/auth/begin` (see [Signing in through an identity provider](#signing-in-through-an-identity-provider)) |
@@ -517,9 +519,11 @@ An authenticated caller starts with nothing. Access comes from **grants**: a
 subject (a principal or a group) gets **verbs** on an **object** (a namespace, a
 table, or `*` for the whole server).
 
-The six verbs are `create`, `read`, `update`, `delete`, `schema`, and `admin`.
-They are CRUD-shaped on purpose — an append-only table is `create` without
-`update` or `delete`, which a bundled "write" permission could not express.
+The seven verbs are `create`, `read`, `update`, `delete`, `schema`, `admin`,
+and `reveal`. The first six are CRUD-shaped on purpose — an append-only table is
+`create` without `update` or `delete`, which a bundled "write" permission could
+not express. `reveal` returns `secret` fields in plaintext; `admin` does not
+imply it, and every reveal is written to the audit log without the value.
 
 ```bash
 # The bootstrap admin key can grant. Give a group read access to a namespace:

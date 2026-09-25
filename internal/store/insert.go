@@ -65,24 +65,29 @@ func (s *Store) insert(ctx context.Context, nsName, table string, records []map[
 	}
 	records = normalized
 
-	var idemHash string
-	if idemKey != "" {
-		idemHash = payloadHash(records)
-	}
-
 	for attempt := 0; ; attempt++ {
 		if attempt >= 3 {
 			return nil, ChangeRange{}, false, invalidf("table schema changed concurrently; retry the insert")
 		}
-		ids, changes, replayed, done, err := s.insertAttempt(ctx, n, nsName, table, records, emb, idemKey, idemHash, owner, domain)
+		ids, changes, replayed, done, err := s.insertAttempt(ctx, n, nsName, table, records, emb, idemKey, owner, domain)
 		if done {
 			return ids, changes, replayed, err
 		}
 	}
 }
 
-func payloadHash(records []map[string]any) string {
-	raw, err := json.Marshal(records)
+func (s *Store) payloadHash(sc *schema.TableSchema, records []map[string]any) string {
+	hashed := make([]map[string]any, len(records))
+	for i, rec := range records {
+		hashed[i] = make(map[string]any, len(rec))
+		for k, v := range rec {
+			if f := sc.Field(k); f != nil && f.Type == schema.Secret && v != nil {
+				v = s.secretFingerprint(v)
+			}
+			hashed[i][k] = v
+		}
+	}
+	raw, err := json.Marshal(hashed)
 	if err != nil {
 
 		raw = []byte("marshal error: " + err.Error())
@@ -91,7 +96,7 @@ func payloadHash(records []map[string]any) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, idemHash, owner string, domain IdemDomain) (ids []int64, changes ChangeRange, replayed bool, done bool, err error) {
+func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, owner string, domain IdemDomain) (ids []int64, changes ChangeRange, replayed bool, done bool, err error) {
 
 	gen, err := tableGen(ctx, n.rw, table)
 	if err != nil {
@@ -101,8 +106,9 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	if err != nil {
 		return nil, ChangeRange{}, false, true, err
 	}
+	var idemHash string
 	if idemKey != "" {
-
+		idemHash = s.payloadHash(sc, records)
 		if ids, found, err := lookupIdem(ctx, n.rw, table, idemKey, idemHash, domain); err != nil {
 			return nil, ChangeRange{}, false, true, err
 		} else if found {
@@ -145,9 +151,9 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			if !present {
 				continue
 			}
-			cv, err := coerceValue(f, v)
+			cv, err := s.coerceWrite(f, v)
 			if err != nil {
-				return nil, ChangeRange{}, false, true, fmt.Errorf("%w: %w", ErrInvalid, err)
+				return nil, ChangeRange{}, false, true, err
 			}
 			cols = append(cols, q(f.Name))
 			vals = append(vals, cv)

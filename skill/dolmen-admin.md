@@ -173,7 +173,8 @@ report its `principal` and `groups` with the operation and object you need, rath
 
 A grant gives a **subject**, a principal or a group, **verbs** on an **object**: a namespace
 (covering its tables and every sub-namespace), one table, or `*` for the whole server. The verbs
-are `create`, `read`, `update`, `delete`, `schema` and `admin`. A caller's access is the union of
+are `create`, `read`, `update`, `delete`, `schema`, `admin` and `reveal`. `reveal` returns secret
+fields in plaintext; `admin` does not imply it, and the bootstrap admin key cannot reveal. A caller's access is the union of
 every grant matching their principal or any of their groups, on the object or anything covering it.
 There are no deny grants.
 
@@ -312,7 +313,8 @@ locked-out server.
 ## Quick reference
 
 - Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`,
-  and `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field).
+  `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field), and
+  `secret` (a string encrypted at rest; see "Secret fields" below).
 - Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field —
   enables `search_vector` with `text`), `required: true`, `enum: [values]` (closed vocabulary for a
   string field — writes with any other value are rejected naming the field, the rejected value, and
@@ -564,6 +566,28 @@ match, before ranking.
   embeddings (mathematically `-1`–`1`).
 - `_embedding` is hidden from `SELECT *` and search results unless referenced explicitly or
   `include_hidden: true`.
+
+### Secret fields
+
+- A `secret` field holds a string encrypted with AES-256-GCM under the server key from
+  `DOLMEN_SECRET_KEY` (base64, 32 bytes; `openssl rand -base64 32`) or `DOLMEN_SECRET_KEY_FILE`.
+  Without a key, `create_table` or `migrate add_field` with a secret field, and any write carrying
+  a secret value, is refused.{{ if eq .Dialect "postgresql" }} This server's PostgreSQL engine does
+  not support secret fields yet.{{ end }}
+- `fulltext`, `vectorize`, `enum` and `default` are refused on a secret field, because each would
+  store or disclose the plaintext. A secret cannot be an `upsert` natural key.
+- Every read returns the mask `"••••"` for a set secret and `null` for an unset one. Pass
+  `"reveal": ["field"]` to `read_rows`, `search_fulltext` or `search_vector` for the plaintext;
+  under `-auth on` this needs the `reveal` verb on the table, its namespace or `*` (a caller without
+  it gets `forbidden`), and it never widens the rows returned: on a `row_access` table a caller
+  without table-wide `read` reveals only its own rows. Every reveal writes an `Info` audit line
+  (`secret reveal`) with the principal, namespace, table, row ids, fields and request id, never the
+  value.
+- A reveal that cannot decrypt (no key configured, a different key than the value was written
+  under, or a tampered value) is `internal_error`; the server log names the cause and, for a wrong
+  key, the key id the value was written under.
+- SQL (`query`, search and write `filter`s) sees only the ciphertext blob, and the change feed and
+  backups carry only ciphertext. Losing the key loses the values; a different key cannot decrypt them.
 
 ### Id, `created_at`, and stability
 

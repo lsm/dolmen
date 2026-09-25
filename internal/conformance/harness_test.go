@@ -20,6 +20,7 @@ import (
 	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/mcp"
+	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -134,6 +135,9 @@ type harness struct {
 	mcpURL  string
 
 	schemaComponents map[string]any
+
+	secretKeySet bool
+	secretKey    *secret.Keyring
 }
 
 func newHarness(t *testing.T) *harness {
@@ -194,6 +198,14 @@ func newHarnessAtMode(t *testing.T, dir string, emb *fakeProvider, mode harnessM
 func (h *harness) start() {
 	h.t.Helper()
 	h.st = openEngineStoreShared(h.t, h.dir, h.retention, h.mode.authMode() != auth.ModeOff)
+	if h.secretKeySet {
+		_ = h.st.Close()
+		st, err := store.Open(h.dir, store.WithSecretKey(h.secretKey))
+		if err != nil {
+			h.t.Fatalf("open store with the overridden secret key: %v", err)
+		}
+		h.st = st
+	}
 
 	trusted, err := auth.ParseTrustedProxies(h.mode.trustedProxies)
 	if err != nil {

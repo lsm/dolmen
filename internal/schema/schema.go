@@ -22,6 +22,7 @@ const (
 	Timestamp FieldType = "timestamp"
 	JSON      FieldType = "json"
 	Vector    FieldType = "vector"
+	Secret    FieldType = "secret"
 )
 
 const MaxVectorDim = 4096
@@ -331,9 +332,14 @@ func validate(fields []Field, legacy map[string]Field) error {
 		}
 		seen[f.Name] = true
 		switch f.Type {
-		case String, Text, Number, Boolean, Timestamp, JSON, Vector:
+		case String, Text, Number, Boolean, Timestamp, JSON, Vector, Secret:
 		default:
-			return fmt.Errorf("field %q: unknown type %q (valid: string, text, number, boolean, timestamp, json, vector)", f.Name, f.Type)
+			return fmt.Errorf("field %q: unknown type %q (valid: string, text, number, boolean, timestamp, json, vector, secret)", f.Name, f.Type)
+		}
+		if f.Type == Secret {
+			if err := secretRefusal(f); err != nil {
+				return err
+			}
 		}
 		if f.Fulltext && f.Type != String && f.Type != Text {
 			return fmt.Errorf("field %q: fulltext is only allowed on string or text fields", f.Name)
@@ -382,6 +388,44 @@ func validate(fields []Field, legacy map[string]Field) error {
 	return nil
 }
 
+func SecretRefusal(field, option string) error {
+	switch option {
+	case "fulltext":
+		return fmt.Errorf("field %q: fulltext is not allowed on secret fields, because the full-text index would hold the plaintext; keep searchable text in a separate string or text field", field)
+	case "vectorize":
+		return fmt.Errorf("field %q: vectorize is not allowed on secret fields, because the embedding is computed from the plaintext and would leak it; keep text to embed in a separate string or text field", field)
+	case "enum":
+		return fmt.Errorf("field %q: enum is not allowed on secret fields, because the list of allowed values would disclose what is stored; use a string field for enumerated values", field)
+	case "default":
+		return fmt.Errorf("field %q: default is not allowed on secret fields, because the schema stores a default in plaintext; pass the value on each write instead", field)
+	}
+	return fmt.Errorf("field %q: %s is not allowed on secret fields", field, option)
+}
+
+func secretRefusal(f Field) error {
+	switch {
+	case f.Fulltext:
+		return SecretRefusal(f.Name, "fulltext")
+	case f.Vectorize:
+		return SecretRefusal(f.Name, "vectorize")
+	case f.Enum != nil:
+		return SecretRefusal(f.Name, "enum")
+	case f.Default != nil:
+		return SecretRefusal(f.Name, "default")
+	}
+	return nil
+}
+
+func (t TableSchema) SecretFields() []Field {
+	var out []Field
+	for _, f := range t.Fields {
+		if f.Type == Secret {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 func (t TableSchema) Field(name string) *Field {
 	for i := range t.Fields {
 		if t.Fields[i].Name == name {
@@ -426,7 +470,7 @@ func SQLType(f Field) string {
 		return "NUMERIC"
 	case Boolean:
 		return "INTEGER"
-	case Vector:
+	case Vector, Secret:
 		return "BLOB"
 	default:
 		return "TEXT"

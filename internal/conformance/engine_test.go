@@ -26,7 +26,7 @@ func openEngineStoreShared(t *testing.T, dir string, retention *time.Duration, s
 	if testEngine(t) == store.EnginePostgres {
 		return openPostgresEngine(t, dir, retention, sharedFilter)
 	}
-	opts := []store.OpenOption{}
+	opts := []store.OpenOption{store.WithSecretKey(conformanceKeyring(t))}
 	if retention != nil {
 		opts = append(opts, store.WithChangeRetention(*retention))
 	}

@@ -120,7 +120,11 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq Vecto
 		ids[i] = h.id
 		scoreByID[h.id] = h.score
 	}
-	out, complete, err := fetchByIDs(ctx, tx, table, ids, projectionFromSchema(sc, includeHidden))
+	proj, err := s.readProjection(ctx, sc, includeHidden)
+	if err != nil {
+		return SearchResult{}, err
+	}
+	out, complete, err := fetchByIDs(ctx, tx, table, ids, proj)
 	if err != nil {
 		return SearchResult{}, err
 	}

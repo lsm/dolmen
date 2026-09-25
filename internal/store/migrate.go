@@ -62,6 +62,9 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
 	}
+	if err := s.requireSecretKey(addedFields(changes)); err != nil {
+		return nil, err
+	}
 	n, err := s.ns(nsName)
 	if err != nil {
 		return nil, err
@@ -215,6 +218,9 @@ func (s *Store) PlanMigration(ctx context.Context, nsName, table string, changes
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
 	}
+	if err := s.requireSecretKey(addedFields(changes)); err != nil {
+		return nil, err
+	}
 	n, err := s.ns(nsName)
 	if err != nil {
 		return nil, err
@@ -367,6 +373,9 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				return nil, invalidf("changes[%d]: add_field takes default on the change (\"default\": ...), not inside field; a field default would silently change future inserts", i)
 			}
 			f := schema.Normalize([]schema.Field{*ch.Field})[0]
+			if f.Type == schema.Secret && ch.Default != nil {
+				return nil, invalidf("%s", schema.SecretRefusal(f.Name, "default"))
+			}
 			if err := schema.ValidateIdent(f.Name, "field name"); err != nil {
 				return nil, invalidf("%s", err)
 			}
@@ -536,6 +545,9 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			if err != nil {
 				return nil, err
 			}
+			if *ch.Value && f.Type == schema.Secret {
+				return nil, invalidf("%s", schema.SecretRefusal(f.Name, "fulltext"))
+			}
 			if *ch.Value && f.Type != schema.String && f.Type != schema.Text {
 				return nil, invalidf("field %q: fulltext is only allowed on string or text fields", f.Name)
 			}
@@ -553,6 +565,9 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				return nil, err
 			}
 			if *ch.Value {
+				if f.Type == schema.Secret {
+					return nil, invalidf("%s", schema.SecretRefusal(f.Name, "vectorize"))
+				}
 				if f.Type != schema.String && f.Type != schema.Text {
 					return nil, invalidf("field %q: vectorize is only allowed on string or text fields", f.Name)
 				}
@@ -571,6 +586,9 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			f, err := findField(ch.Name)
 			if err != nil {
 				return nil, err
+			}
+			if f.Type == schema.Secret && len(*ch.Enum) > 0 {
+				return nil, invalidf("%s", schema.SecretRefusal(f.Name, "enum"))
 			}
 			if f.Type != schema.String {
 				return nil, invalidf("field %q: enum is only allowed on string fields (this field has type %s)", f.Name, f.Type)
@@ -816,4 +834,14 @@ func describeValue(v any) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return string(b)
+}
+
+func addedFields(changes []schema.Change) []schema.Field {
+	var out []schema.Field
+	for _, ch := range changes {
+		if ch.Op == schema.OpAddField && ch.Field != nil {
+			out = append(out, *ch.Field)
+		}
+	}
+	return out
 }

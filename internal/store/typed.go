@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/lsm/dolmen/internal/schema"
+	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/value"
 )
 
@@ -20,6 +21,8 @@ type projection struct {
 	dims      map[string]int
 	ambiguous map[string]bool
 	hidden    map[string]bool
+	reveal    map[string]bool
+	secrets   *secret.Keyring
 }
 
 func newProjection() *projection {
@@ -172,11 +175,23 @@ func decodeValue(t schema.FieldType, v any) any {
 	return value.Decode(t, v)
 }
 
-func (p *projection) decodeColumn(col string, v any) any {
-	if t, ok := p.fieldType(col); ok {
-		return decodeValue(t, v)
+func (p *projection) decodeColumn(col string, v any) (any, error) {
+	t, ok := p.fieldType(col)
+	if !ok {
+		return normalizeVal(v), nil
 	}
-	return normalizeVal(v)
+	if t == schema.Secret && v != nil && p.reveal[col] {
+		raw, isBlob := v.([]byte)
+		if !isBlob {
+			return nil, fmt.Errorf("field %q: %w", col, secret.ErrCorrupt)
+		}
+		plain, err := p.secrets.Open(raw)
+		if err != nil {
+			return nil, fmt.Errorf("field %q: %w", col, err)
+		}
+		return plain, nil
+	}
+	return decodeValue(t, v), nil
 }
 
 func (p *projection) presentedSize(col string, raw, v any) int {
