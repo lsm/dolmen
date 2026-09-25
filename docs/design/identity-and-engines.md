@@ -519,6 +519,13 @@ Exactly six, CRUD-shaped, never extended without editing this spec:
 | `schema` | DDL + migration | Table structure and its history. |
 | `admin` | Grants + namespace lifecycle | The only verb that can change what others may do, or delete a namespace. |
 
+*Pending seventh verb, `reveal` (amended 2026-09-25 for #467; see `secret-fields.md`):* a `secret`
+field reads as the fixed mask `"••••"` under `read`, and returning its plaintext will need `reveal`
+on the table, its namespace, or `*`. `admin` does not imply it, and every reveal will write an audit
+line naming the principal, table, row id and field, never the value. It ships in #467 slice 2. Until
+then the op table refuses any `reveal` input under `auth: on` with `forbidden`, for every principal
+including root administrators, and accepts it under `auth: off`.
+
 *Why CRUD-shaped verbs (amended 2026-09-04 from design review; supersedes the four-verb
 `read`/`write`/`schema`/`admin` set):* append-only tables must be expressible in grants — the
 canonical shared **usage-telemetry** table lets every user append usage records while nobody,
