@@ -13,6 +13,7 @@ const (
 	DefaultVectorCacheBytes = 512 << 20
 	parallelScoreRows       = 8192
 	tooBigRetryChanges      = 1000
+	vecRowOverhead          = 24 + 8 + 8 + 64
 )
 
 type vecKey struct {
@@ -256,9 +257,9 @@ func vectorFingerprint(ctx context.Context, q rowQuerier, table string) (vecFing
 func (e *vecEntry) size() int64 {
 	var n int64
 	for _, v := range e.vecs {
-		n += int64(len(v))*4 + 32
+		n += int64(len(v)) * 4
 	}
-	return n + int64(len(e.ids))*8
+	return n + int64(len(e.ids))*vecRowOverhead
 }
 
 func (e *vecEntry) rebuild(ctx context.Context, db rowsQuerier, table, column string) error {
