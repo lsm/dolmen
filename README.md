@@ -98,6 +98,8 @@ directory); retrying the same request makes no sense until the model can load.
 The one exception is `GET /v1/openapi.json`, which serves the raw OpenAPI document.
 `/livez` (and its alias `/healthz`) returns `{"status":"ok"}`, `/readyz` returns `{"status":"ready", ...}`, and `/mcp` returns JSON-RPC responses.
 
+`GET /metrics` serves Prometheus text format: `dolmen_operations_total{op,outcome}` (outcome is `ok` or an error code such as `forbidden` or `timeout`), the `dolmen_operation_duration_seconds{op}` histogram, `dolmen_operations_in_flight`, `dolmen_subscriptions_active`, `dolmen_uptime_seconds` and `dolmen_build_info{version}`. Labels are bounded: only operation names and error codes, never namespaces, tables, principals or request ids, so the series count stays under a few hundred. A useful baseline alert is a rising rate of `outcome="internal_error"` or `outcome="timeout"`, or p99 latency of a hot operation. Correlate a single request through the access log (`-log-level debug`) by its `X-Request-Id`.
+
 ### First API calls
 
 These examples are shown with Bash `curl`. Windows PowerShell variants follow each command; use
@@ -428,7 +430,7 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 | — | `DOLMEN_AUTH_OIDC_TOKEN_TTL` | `168h` | Lifetime of an issued token, `1h` to `720h` |
 | — | `DOLMEN_AUTH_OIDC_DEPLOYMENT_ID` | minted on first start | Pins this deployment's token issuer id. A mismatch against the stored value is refused at startup |
 | `-version` | — | — | Print version and exit |
-| `-prefix` | `DOLMEN_PREFIX` | — | Mount all endpoints (`/livez`, `/readyz`, `/healthz`, `/version`, `/skills*`, `/v1/*`, `/mcp`) under this URL prefix. Use with a pass-through proxy that forwards the full path |
+| `-prefix` | `DOLMEN_PREFIX` | — | Mount all endpoints (`/livez`, `/readyz`, `/healthz`, `/metrics`, `/version`, `/skills*`, `/v1/*`, `/mcp`) under this URL prefix. Use with a pass-through proxy that forwards the full path |
 | `-base-url` | `DOLMEN_BASE_URL` | — | Public base URL for the links rendered into the skills manifest, the skill markdown, and the MCP `initialize` instructions. Default: derive from the request `Host` and forwarded headers. Refused when it ends with `-prefix` |
 | `-max-namespace-size` | `DOLMEN_MAX_NAMESPACE_SIZE` | `0` | Largest a namespace file may grow, as bytes or with `KiB`/`MiB`/`GiB`/`TiB`. A write that would pass it is refused with `507` and writes nothing; reads keep working. `0` is unbounded. SQLite engine only (see [Disk use](docs/deployment.md#disk-use)) |
 | `-log-level` | `DOLMEN_LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, or `error`. `debug` adds one line per operation over HTTP, MCP or stdio with the operation, outcome code, status, duration, request size, and request id, and never the payload, SQL, arguments, or credentials |
@@ -482,9 +484,9 @@ Every `/v1/{op}`, `/mcp`, and `/v1/subscribe` request without an accepted
 credential answers `401` with error code `unauthorized`. Rejections are
 deliberately uniform — a wrong key, a malformed one, and a missing one produce
 the same message, so the response never says which part failed.
-`/livez`, `/readyz`, `/healthz`, `/version`, `/skills*`, and `/v1/openapi.json` stay unauthenticated
-in both modes: they are liveness probes and client-side schema discovery, and
-expose no row data.
+`/livez`, `/readyz`, `/healthz`, `/metrics`, `/version`, `/skills*`, and `/v1/openapi.json` stay unauthenticated
+in both modes: they are probes, counters and client-side schema discovery, and
+expose no row data. `/metrics` reveals request volume per operation; if that matters, block it at your proxy.
 
 ### Identity from a gateway
 
