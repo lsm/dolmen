@@ -330,7 +330,10 @@ scan:
 				hasMore = true
 				break scan
 			}
-			v := proj.decodeColumn(c, vals[j])
+			v, err := proj.decodeColumn(c, vals[j])
+			if err != nil {
+				return nil, false, err
+			}
 			m[c] = v
 			rowBytes += proj.presentedSize(c, vals[j], v)
 			if total+rowBytes+labelBytes > MaxQueryBytes {

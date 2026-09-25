@@ -8,6 +8,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/lsm/dolmen/internal/derr"
+	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -26,6 +27,9 @@ type config struct {
 	embeddingSet    bool
 	changeRetention time.Duration
 	vectorCache     int64
+	secretKey       []byte
+	secretKeySet    bool
+	secrets         *secret.Keyring
 
 	tracerProvider    trace.TracerProvider
 	tracerProviderSet bool
@@ -63,6 +67,13 @@ func WithChangeRetention(d time.Duration) Option {
 	}
 }
 
+func WithSecretKey(key []byte) Option {
+	return func(c *config) {
+		c.secretKey = append([]byte(nil), key...)
+		c.secretKeySet = true
+	}
+}
+
 func WithVectorCacheBytes(n int64) Option {
 	return func(c *config) {
 		c.vectorCache = n
@@ -75,6 +86,15 @@ func (c *config) validate() error {
 	}
 	if c.embeddingSet && nilProvider(c.embedding) {
 		return derr.New(derr.InvalidRequest, "WithEmbedding: provider must not be nil")
+	}
+	if c.secretKeySet {
+		k, err := secret.New(c.secretKey)
+		clear(c.secretKey)
+		c.secretKey = nil
+		if err != nil {
+			return derr.New(derr.InvalidRequest, "WithSecretKey: %v", err)
+		}
+		c.secrets = k
 	}
 	if c.tracerProviderSet && nilProvider(c.tracerProvider) {
 		return derr.New(derr.InvalidRequest, "WithTracerProvider: provider must not be nil; omit the option to leave tracing off")

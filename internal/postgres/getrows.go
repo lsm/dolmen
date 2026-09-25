@@ -15,6 +15,9 @@ func (s *Store) GetRows(ctx context.Context, ns, table string, ids []int64, scop
 	if len(ids) > store.MaxReadRowsIDs {
 		return store.QueryResult{}, fmt.Errorf("%w: read_rows accepts at most %d ids per request, got %d", store.ErrInvalid, store.MaxReadRowsIDs, len(ids))
 	}
+	if err := refuseReveal(ctx); err != nil {
+		return store.QueryResult{}, err
+	}
 	result := store.QueryResult{Rows: []map[string]any{}}
 	err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
 		state, err := s.loadTable(ctx, tx, n, table)

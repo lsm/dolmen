@@ -38,7 +38,7 @@ func fieldOutSchema(desc string) map[string]any {
 				"description": "Field type",
 				"enum": []schema.FieldType{
 					schema.String, schema.Text, schema.Number, schema.Boolean,
-					schema.Timestamp, schema.JSON, schema.Vector,
+					schema.Timestamp, schema.JSON, schema.Vector, schema.Secret,
 				},
 			},
 			"fulltext":  prop("boolean", "Present and true when the field is full-text indexed"),
@@ -1004,7 +1004,7 @@ var Ops = map[string]OpDef{
 			"ids address a set: each found row appears once, in ascending id order, " +
 			"and ids that are missing are simply absent from the response — never an error; row_count reports how many came back. " +
 			"truncated is true only when the response budget dropped rows for existing ids (retry with fewer ids) — it never fires for missing ids. " +
-			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array) " +
+			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array, secret -> the mask \"••••\" unless named in reveal) " +
 			"and omit the hidden _embedding column. At most " + strconv.Itoa(store.MaxReadRowsIDs) + " ids per request.",
 		InputSchema: map[string]any{
 			"type":                 "object",
@@ -1018,6 +1018,7 @@ var Ops = map[string]OpDef{
 					"items":       map[string]any{"type": "integer"},
 					"maxItems":    store.MaxReadRowsIDs,
 				},
+				"reveal": revealProp(),
 			},
 			"required": []string{"namespace", "table", "ids"},
 		},
@@ -1040,6 +1041,10 @@ var Ops = map[string]OpDef{
 			}
 			ns := normNS(req.Namespace)
 			scope, inc, err := s.resolveScope(ctx, ns, normTable(req.Table))
+			if err != nil {
+				return nil, err
+			}
+			ctx, err = s.revealContext(ctx, req.Reveal)
 			if err != nil {
 				return nil, err
 			}
@@ -1138,7 +1143,7 @@ var Ops = map[string]OpDef{
 			"Returns matching records ordered by relevance (stable id tie-breaking). " +
 			"Optional filter and args restrict matches to rows satisfying a SQL WHERE expression over the table's columns " +
 			"(same semantics as search_vector's filter) before ranking. " +
-			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array) " +
+			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array, secret -> the mask \"••••\" unless named in reveal) " +
 			"and omit the hidden _embedding column unless include_hidden is true.",
 		InputSchema: map[string]any{
 			"type":                 "object",
@@ -1184,6 +1189,7 @@ var Ops = map[string]OpDef{
 					},
 					"maxItems": 100,
 				},
+				"reveal": revealProp(),
 			},
 			"required": []string{"namespace", "table", "query"},
 		},
@@ -1210,6 +1216,10 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			if err := s.checkFilter(tsc, req.Filter, req.Args); err != nil {
+				return nil, err
+			}
+			ctx, err = s.revealContext(ctx, req.Reveal)
+			if err != nil {
 				return nil, err
 			}
 			res, err := s.eng.SearchFulltext(ctx, ns, normTable(req.Table), req.Query, req.Filter, req.Args,
@@ -1275,7 +1285,7 @@ var Ops = map[string]OpDef{
 			"Optional filter and args restrict rows with a SQL WHERE expression (like delete's filter) " +
 			"before scoring; optional min_score drops lower-similarity results before the ranking/limit. " +
 			"Results carry _score (cosine similarity, higher is closer), ordered by score with stable id tie-breaking, honor declared field types " +
-			"(boolean -> true/false, json -> decoded value, vector -> number array), and omit the hidden " +
+			"(boolean -> true/false, json -> decoded value, vector -> number array, secret -> the mask \"••••\" unless named in reveal), and omit the hidden " +
 			"_embedding column unless include_hidden is true. skipped_vectors counts rows whose stored vector " +
 			"was corrupt or dimension-mismatched and could not be scored; a nonzero count means those rows are missing from results.",
 		InputSchema: map[string]any{
@@ -1337,6 +1347,7 @@ var Ops = map[string]OpDef{
 					"type":        "number",
 					"description": "Optional minimum cosine-similarity score (inclusive); results below this are dropped before ranking and limit",
 				},
+				"reveal": revealProp(),
 			},
 			"required": []string{"namespace", "table"},
 			"oneOf": []any{
@@ -1387,6 +1398,10 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			if err := s.checkFilter(tsc, req.Filter, req.Args); err != nil {
+				return nil, err
+			}
+			ctx, err = s.revealContext(ctx, req.Reveal)
+			if err != nil {
 				return nil, err
 			}
 			res, err := s.eng.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table), vq,
@@ -2058,6 +2073,7 @@ type readRowsReq struct {
 	Namespace string   `json:"namespace"`
 	Table     string   `json:"table"`
 	Ids       *[]int64 `json:"ids"`
+	Reveal    []string `json:"reveal"`
 }
 
 type queryReq struct {
@@ -2084,14 +2100,15 @@ type waitForReq struct {
 }
 
 type ftsReq struct {
-	Namespace     string `json:"namespace"`
-	Table         string `json:"table"`
-	Query         string `json:"query"`
-	Offset        int    `json:"offset"`
-	Limit         int    `json:"limit"`
-	IncludeHidden bool   `json:"include_hidden"`
-	Filter        string `json:"filter"`
-	Args          []any  `json:"args"`
+	Namespace     string   `json:"namespace"`
+	Table         string   `json:"table"`
+	Query         string   `json:"query"`
+	Offset        int      `json:"offset"`
+	Limit         int      `json:"limit"`
+	IncludeHidden bool     `json:"include_hidden"`
+	Filter        string   `json:"filter"`
+	Args          []any    `json:"args"`
+	Reveal        []string `json:"reveal"`
 }
 
 func longestVector(body []byte, limit int) int {
@@ -2145,6 +2162,7 @@ type vecReq struct {
 	Filter        string    `json:"filter"`
 	Args          []any     `json:"args"`
 	MinScore      *float64  `json:"min_score"`
+	Reveal        []string  `json:"reveal"`
 }
 
 type deleteReq struct {

@@ -162,6 +162,15 @@ embedding space, including preprocessing, and remain stable for the provider's
 lifetime. Reject unusable identity when an operation requires generated embeddings;
 raw-vector search does not require a provider.
 
+`WithSecretKey(key []byte)` supplies the 32-byte key that encrypts `secret` fields
+(`secret-fields.md`). `Open` rejects a key of any other length with `invalid_request`, copies the
+key, and keeps only the derived cipher. Without it, secret fields cannot be created and secret
+values cannot be written, the way vector features are refused without `WithEmbedding`; masked
+reads still work. `GetRows` and the searches return the mask `"••••"` for a set secret.
+`RevealRows(ctx, ns, table, ids, fields)` is `GetRows` with the named secret fields decrypted, and
+`SearchOptions.Reveal` does the same for both searches. The facade has no auth, so reveal is always
+allowed there; the transports refuse it under `-auth on` until the `reveal` verb ships.
+
 Share the current vector-column/model validation and query-vector validation between
 Go and HTTP. Preserve table identity pinning and failed-write atomicity/idempotency.
 The application owns an injected provider and its cleanup; closing a store does not

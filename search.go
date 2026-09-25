@@ -17,6 +17,7 @@ type SearchOptions struct {
 	Offset        int
 	Limit         int
 	IncludeHidden bool
+	Reveal        []string
 }
 
 type VectorQuery struct {
@@ -71,6 +72,7 @@ func (s *Store) SearchFulltext(ctx context.Context, namespace, table, query stri
 	}
 	ns := ops.NormalizeNamespace(namespace)
 	args := append([]any(nil), opts.Args...)
+	ctx = store.WithReveal(ctx, opts.Reveal)
 	res, err := s.eng.SearchFulltext(ctx, ns, ops.NormalizeTable(table), query, opts.Filter, args,
 		opts.IncludeHidden, nil, store.Incarnation{}, store.Page{Offset: opts.Offset, Limit: opts.Limit})
 	if err != nil {
@@ -127,6 +129,7 @@ func (s *Store) SearchVector(ctx context.Context, namespace, table string, query
 	if err != nil {
 		return SearchResult{}, facadeErr(err)
 	}
+	ctx = store.WithReveal(ctx, opts.Reveal)
 	res, err := s.eng.SearchVector(ctx, ops.NormalizeNamespace(namespace), ops.NormalizeTable(table), vq,
 		opts.IncludeHidden, nil, store.Incarnation{}, store.Page{Offset: opts.Offset, Limit: opts.Limit})
 	if err != nil {

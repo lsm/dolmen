@@ -21,6 +21,7 @@ import (
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/mcp"
 	"github.com/lsm/dolmen/internal/postgres"
+	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
 	"github.com/lsm/dolmen/internal/version"
 	"github.com/lsm/dolmen/skill"
@@ -237,7 +238,7 @@ func openStore(cfg *config) (store.Engine, error) {
 		}
 		return st, nil
 	}
-	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention), store.WithMaxOpenNamespaces(cfg.MaxOpenNamespaces), store.WithSync(cfg.Sync), store.WithMaxNamespaceSize(cfg.MaxNamespaceSize), store.WithVectorCacheBytes(cfg.VectorCacheSize))
+	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention), store.WithMaxOpenNamespaces(cfg.MaxOpenNamespaces), store.WithSync(cfg.Sync), store.WithMaxNamespaceSize(cfg.MaxNamespaceSize), store.WithVectorCacheBytes(cfg.VectorCacheSize), store.WithSecretKey(cfg.Secrets))
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
@@ -353,6 +354,7 @@ type config struct {
 	ShutdownGrace      time.Duration
 	Timeouts           api.Timeouts
 	MaxOpenNamespaces  int
+	Secrets            *secret.Keyring
 }
 
 type embedConfig struct {
@@ -607,7 +609,19 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		}
 	}
 
+	secretKey, err := secret.LoadKey(getenv)
+	if err != nil {
+		return nil, err
+	}
+	var keyring *secret.Keyring
+	if secretKey != nil {
+		if keyring, err = secret.New(secretKey); err != nil {
+			return nil, err
+		}
+	}
+
 	return &config{
+		Secrets:            keyring,
 		Addr:               *addr,
 		DataDir:            *dataDir,
 		Engine:             *engine,
@@ -738,6 +752,8 @@ func printEnvHelp(out io.Writer) {
 		{"DOLMEN_PG_QUERY_ROLE", "pre-provisioned NOLOGIN role that caller SQL runs as"},
 		{"DOLMEN_AUTH", "authentication: off (default) or on (deny-by-default)"},
 		{"DOLMEN_ADMIN_KEY", "bootstrap admin credential, needed with auth on until a root administrator is granted (env-only, never a flag)"},
+		{"DOLMEN_SECRET_KEY", "base64-encoded 32-byte key that encrypts secret fields; without one, secret fields are refused (env-only, never a flag)"},
+		{"DOLMEN_SECRET_KEY_FILE", "path to a file holding that key instead (env-only, never a flag)"},
 		{"DOLMEN_TRUSTED_PROXIES", "comma-separated CIDRs whose peers may assert identity and forwarding headers"},
 		{"DOLMEN_MAX_GROUPS", "maximum group entries accepted per request, 1 to 1024 (default 128)"},
 		{"DOLMEN_AUTH_OIDC_ISSUER", "identity provider issuer URL, enabling native sign-in"},

@@ -69,7 +69,7 @@ func Open(dataDir string, opts ...Option) (*Store, error) {
 	owners[dir] = s
 	ownersMu.Unlock()
 
-	eng, err := store.Open(dir, store.WithChangeRetention(cfg.changeRetention), store.WithVectorCacheBytes(cfg.vectorCache))
+	eng, err := store.Open(dir, store.WithChangeRetention(cfg.changeRetention), store.WithVectorCacheBytes(cfg.vectorCache), store.WithSecretKey(cfg.secrets))
 	if err != nil {
 		releaseOwnership(dir)
 		code := derr.Internal

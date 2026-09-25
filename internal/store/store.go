@@ -20,6 +20,7 @@ import (
 
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
+	"github.com/lsm/dolmen/internal/secret"
 
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -114,6 +115,8 @@ type Store struct {
 	tok    tokenizer
 	vcache vecCache
 
+	secrets *secret.Keyring
+
 	closed   atomic.Bool
 	closeErr error
 }
@@ -133,6 +136,10 @@ type OpenOption func(*Store)
 
 func WithChangeRetention(d time.Duration) OpenOption {
 	return func(s *Store) { s.changeRetention = d }
+}
+
+func WithSecretKey(k *secret.Keyring) OpenOption {
+	return func(s *Store) { s.secrets = k }
 }
 
 func WithMaxOpenNamespaces(n int) OpenOption {
@@ -759,6 +766,9 @@ func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []
 		if err := ValidateOwnerCollision(fields); err != nil {
 			return nil, err
 		}
+	}
+	if err := s.requireSecretKey(fields); err != nil {
+		return nil, err
 	}
 	n, err := s.ns(nsName)
 	if err != nil {
