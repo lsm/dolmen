@@ -1302,9 +1302,9 @@ no CGO is required.
 | Concern | Policy |
 |---|---|
 | Operating systems | Linux, macOS, and Windows are supported. |
-| Filesystem | Local filesystems (ext4, APFS, NTFS, etc.) are required. SQLite WAL uses shared-memory coordination that does not work reliably over network or shared filesystems (NFS, SMB); these are unsupported and the first namespace open may fail or operate without WAL locking guarantees. |
+| Filesystem | Local filesystems (ext4, APFS, NTFS, etc.) are required. SQLite WAL uses shared-memory coordination that does not work reliably over network or shared filesystems (NFS, SMB); these are unsupported. The server detects NFS, SMB/CIFS, AFP, WebDAV, FUSE, 9p and cluster filesystems (and Windows network drives) at startup and logs a warning naming the filesystem. |
 | WAL | Enabled per namespace (`journal_mode=WAL`, with `synchronous` set by `-sync`: `FULL` by default, `NORMAL` when opted out). Expect `<ns>.db`, `<ns>.db-wal`, and `<ns>.db-shm` files. |
-| Permissions | On Unix the data directory is created `0700` and namespace `.db`/`-wal`/`-shm` files are set `0600` (owner only); on Windows `os.Chmod` only toggles the read-only attribute, so use NTFS ACLs for owner-only isolation. Permission failures surface when a namespace is first opened, not necessarily at server startup, so `/healthz` can succeed before that point. |
+| Permissions | On Unix the data directory is created `0700` and namespace `.db`/`-wal`/`-shm` files are set `0600` (owner only); on Windows `os.Chmod` only toggles the read-only attribute, so use NTFS ACLs for owner-only isolation. Startup refuses a data directory it cannot secure or write to (for example a read-only mount), naming the directory and the fix. |
 | Locking | Each namespace has one writer connection (`MaxOpenConns=1`) with `BEGIN IMMEDIATE` locking, plus a separate read-only connection pool. WAL mode allows multiple concurrent readers, but only one writer per file at a time. |
 | Multi-process | SQLite's file locking makes concurrent processes safe in principle, but running two dolmen servers against the same data directory can cause `database is locked` errors and is not recommended. |
 | Deleting a namespace | Prefer `drop_namespace` (confirm-guarded, closes the server's own connections first). Manually: stop the dolmen process, then delete the three `<ns>.db*` files. |

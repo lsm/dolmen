@@ -138,6 +138,18 @@ func WithMaxOpenNamespaces(n int) OpenOption {
 	return func(s *Store) { s.maxOpen = n }
 }
 
+var detectNetworkFS = networkFilesystem
+
+func probeWritable(dir string) error {
+	f, err := os.CreateTemp(dir, ".dolmen-probe-*")
+	if err != nil {
+		return fmt.Errorf("data directory %s is not writable (check its owner, permissions, and that the volume is not mounted read-only): %w", dir, err)
+	}
+	name := f.Name()
+	f.Close()
+	return os.Remove(name)
+}
+
 func Open(dir string, opts ...OpenOption) (*Store, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -148,6 +160,12 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 	}
 	if err := os.Chmod(abs, 0o700); err != nil {
 		return nil, fmt.Errorf("cannot secure data directory %s (owner-only permissions): %w", abs, err)
+	}
+	if err := probeWritable(abs); err != nil {
+		return nil, err
+	}
+	if fs, remote := detectNetworkFS(abs); remote {
+		slog.Warn("data directory is on a network filesystem; SQLite WAL needs local shared memory and file locks, so concurrent access can corrupt data. Move the data directory to a local disk", "dir", abs, "filesystem", fs)
 	}
 	s := &Store{dir: abs, mu: newCtxMutex(), nss: map[string]*nsDB{}, maxOpen: DefaultMaxOpenNamespaces, sync: DefaultSync, changeRetention: DefaultChangeRetention}
 	for _, opt := range opts {
