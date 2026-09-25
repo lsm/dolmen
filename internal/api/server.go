@@ -41,6 +41,7 @@ type Server struct {
 	oidcSource         *auth.OIDCSource
 	timeouts           Timeouts
 	drain              drainState
+	metrics            metrics
 }
 
 type Option func(*Server)
@@ -483,7 +484,12 @@ func OpNames() []string {
 
 func (s *Server) Dispatch(ctx context.Context, op string, body []byte) (res any, err error) {
 	start := time.Now()
-	defer func() { logOp(ctx, op, len(body), start, err) }()
+	s.metrics.inFlight.Add(1)
+	defer func() {
+		s.metrics.inFlight.Add(-1)
+		s.metrics.observe(s.metricOp(op), err, time.Since(start))
+		logOp(ctx, op, len(body), start, err)
+	}()
 	def, ok := s.Op(op)
 	if !ok {
 		return nil, notFound("unknown operation %q", op)
@@ -550,6 +556,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/healthz", s.handleLivez)
 	mux.HandleFunc("/livez", s.handleLivez)
 	mux.HandleFunc("/readyz", s.handleReadyz)
+	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"name": "dolmen", "version": version.Version})
 	})

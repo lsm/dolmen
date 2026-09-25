@@ -201,6 +201,8 @@ var pinnedFilterSemantics = []struct {
 	{"a stored large real equals its own bound argument", "bigreal = ?", `[1152921504606846976.0]`},
 	{"a bound text never equals a computed number", "NOT ((1 / 2) = ?)", `["0"]`},
 	{"a bound text never equals a chosen computed number", "NOT (iif(id = 1, 1.5 + 1.5, 1) = ?)", `["3"]`},
+	{"an overflow in a branch no row takes is never raised", "iif(n = 6, abs(-9223372036854775808), 1) = 1", ""},
+	{"an overflow in a CASE arm no row takes is never raised", "CASE WHEN n > 100 THEN abs(-9223372036854775808) ELSE 1 END = 1", ""},
 	{"a chosen comparison is a number in arithmetic", "(iif(id = 1, n > 1, NULL) + 0) = 0", ""},
 	{"a CASE over comparisons is a number in arithmetic", "(CASE WHEN id = 1 THEN n < 1 ELSE n > 1 END) / 2 = 0", ""},
 	{"a coalesced comparison is a number in modulo", "(coalesce(NULL, n < 1) % 2) = 1", ""},
@@ -435,5 +437,17 @@ func TestEveryEngineStoresAnUpdatedLargeRealAsTheIntegerItHolds(t *testing.T) {
 	data, _ := out["data"].(map[string]any)
 	if data["matched"] != float64(1) {
 		t.Fatalf("SQLite stores the REAL 2^62 as the INTEGER it losslessly holds, so the updated row must match that integer: %v", out)
+	}
+}
+
+func TestEveryEngineRefusesAnOverflowARowActuallyReaches(t *testing.T) {
+	h := seedScopedFilterRow(t)
+	for _, f := range []string{"abs(-9223372036854775808) > 0", "iif(n = -7, abs(-9223372036854775808), 1) = 1"} {
+		raw, _ := json.Marshal(map[string]any{"namespace": "acme", "table": "notes", "filter": f, "dry_run": true})
+		res, out := h.asIdentity(t, "alice", "", "delete", string(raw))
+		errEnv, _ := out["error"].(map[string]any)
+		if res.StatusCode != http.StatusBadRequest || errEnv["code"] != "query_error" {
+			t.Fatalf("%s: SQLite raises integer overflow when abs(int64 min) is evaluated, so this must be query_error, got %d %v", f, res.StatusCode, out)
+		}
 	}
 }

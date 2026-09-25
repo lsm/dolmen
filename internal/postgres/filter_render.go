@@ -531,6 +531,16 @@ func (r *filterRenderer) call(node *filter.Call, next int) error {
 			r.sb.WriteString(sqliteDouble("pg_catalog.abs(" + arg + ")"))
 			return nil
 		}
+		if len(node.Args) == 1 && !r.staticallyReal(node.Args[0]) && !r.booleanShaped(node.Args[0]) {
+			raw, numeric, err := r.numericOperand(node.Args[0], next)
+			if err != nil {
+				return err
+			}
+			class := r.integerClassed(node.Args[0], raw, numeric)
+			r.sb.WriteString("(CASE WHEN " + numeric + " = " + sqliteIntMin + " AND " + class +
+				" THEN " + r.rowDependentOverflow() + " ELSE pg_catalog.abs(" + numeric + ") END)")
+			return nil
+		}
 	}
 	target, ok := renderedFunctions[node.Name]
 	if !ok {
@@ -1933,4 +1943,12 @@ func choosesAmongTruthValues(n filter.Node) bool {
 		found = true
 	}
 	return found
+}
+
+func (r *filterRenderer) rowDependentOverflow() string {
+	id, ok := r.columns["id"]
+	if !ok {
+		id = "id"
+	}
+	return "((" + ident(id) + " * 0 + " + sqliteIntMax + ")::int8 + 1)::numeric"
 }

@@ -98,6 +98,8 @@ directory); retrying the same request makes no sense until the model can load.
 The one exception is `GET /v1/openapi.json`, which serves the raw OpenAPI document.
 `/livez` (and its alias `/healthz`) returns `{"status":"ok"}`, `/readyz` returns `{"status":"ready", ...}`, and `/mcp` returns JSON-RPC responses.
 
+`GET /metrics` serves Prometheus text format: `dolmen_operations_total{op,outcome}` (outcome is `ok` or an error code such as `forbidden` or `timeout`), the `dolmen_operation_duration_seconds{op}` histogram, `dolmen_operations_in_flight`, `dolmen_subscriptions_active`, `dolmen_uptime_seconds` and `dolmen_build_info{version}`. Labels are bounded: only operation names and error codes, never namespaces, tables, principals or request ids, so the series count stays under a few hundred. A useful baseline alert is a rising rate of `outcome="internal_error"` or `outcome="timeout"`, or p99 latency of a hot operation. Correlate a single request through the access log (`-log-level debug`) by its `X-Request-Id`.
+
 ### First API calls
 
 These examples are shown with Bash `curl`. Windows PowerShell variants follow each command; use
@@ -428,7 +430,7 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 | — | `DOLMEN_AUTH_OIDC_TOKEN_TTL` | `168h` | Lifetime of an issued token, `1h` to `720h` |
 | — | `DOLMEN_AUTH_OIDC_DEPLOYMENT_ID` | minted on first start | Pins this deployment's token issuer id. A mismatch against the stored value is refused at startup |
 | `-version` | — | — | Print version and exit |
-| `-prefix` | `DOLMEN_PREFIX` | — | Mount all endpoints (`/livez`, `/readyz`, `/healthz`, `/version`, `/skills*`, `/v1/*`, `/mcp`) under this URL prefix. Use with a pass-through proxy that forwards the full path |
+| `-prefix` | `DOLMEN_PREFIX` | — | Mount all endpoints (`/livez`, `/readyz`, `/healthz`, `/metrics`, `/version`, `/skills*`, `/v1/*`, `/mcp`) under this URL prefix. Use with a pass-through proxy that forwards the full path |
 | `-base-url` | `DOLMEN_BASE_URL` | — | Public base URL for the links rendered into the skills manifest, the skill markdown, and the MCP `initialize` instructions. Default: derive from the request `Host` and forwarded headers. Refused when it ends with `-prefix` |
 | `-vector-cache-size` | `DOLMEN_VECTOR_CACHE_SIZE` | `512MiB` | Memory for decoded vectors kept between vector searches, shared by all tables; about 4 bytes per dimension plus about 100 bytes per row. `0` disables it and every search reads vectors from disk. Results are identical either way. SQLite engine only |
 | `-max-namespace-size` | `DOLMEN_MAX_NAMESPACE_SIZE` | `0` | Largest a namespace file may grow, as bytes or with `KiB`/`MiB`/`GiB`/`TiB`. A write that would pass it is refused with `507` and writes nothing; reads keep working. `0` is unbounded. SQLite engine only (see [Disk use](docs/deployment.md#disk-use)) |
@@ -483,9 +485,9 @@ Every `/v1/{op}`, `/mcp`, and `/v1/subscribe` request without an accepted
 credential answers `401` with error code `unauthorized`. Rejections are
 deliberately uniform — a wrong key, a malformed one, and a missing one produce
 the same message, so the response never says which part failed.
-`/livez`, `/readyz`, `/healthz`, `/version`, `/skills*`, and `/v1/openapi.json` stay unauthenticated
-in both modes: they are liveness probes and client-side schema discovery, and
-expose no row data.
+`/livez`, `/readyz`, `/healthz`, `/metrics`, `/version`, `/skills*`, and `/v1/openapi.json` stay unauthenticated
+in both modes: they are probes, counters and client-side schema discovery, and
+expose no row data. `/metrics` reveals request volume per operation; if that matters, block it at your proxy.
 
 ### Identity from a gateway
 
@@ -1307,9 +1309,9 @@ no CGO is required.
 | Concern | Policy |
 |---|---|
 | Operating systems | Linux, macOS, and Windows are supported. |
-| Filesystem | Local filesystems (ext4, APFS, NTFS, etc.) are required. SQLite WAL uses shared-memory coordination that does not work reliably over network or shared filesystems (NFS, SMB); these are unsupported and the first namespace open may fail or operate without WAL locking guarantees. |
+| Filesystem | Local filesystems (ext4, APFS, NTFS, etc.) are required. SQLite WAL uses shared-memory coordination that does not work reliably over network or shared filesystems (NFS, SMB); these are unsupported. The server detects NFS, SMB/CIFS, AFP, WebDAV, FUSE, 9p and cluster filesystems (and Windows network drives) at startup and logs a warning naming the filesystem. |
 | WAL | Enabled per namespace (`journal_mode=WAL`, with `synchronous` set by `-sync`: `FULL` by default, `NORMAL` when opted out). Expect `<ns>.db`, `<ns>.db-wal`, and `<ns>.db-shm` files. |
-| Permissions | On Unix the data directory is created `0700` and namespace `.db`/`-wal`/`-shm` files are set `0600` (owner only); on Windows `os.Chmod` only toggles the read-only attribute, so use NTFS ACLs for owner-only isolation. Permission failures surface when a namespace is first opened, not necessarily at server startup, so `/healthz` can succeed before that point. |
+| Permissions | On Unix the data directory is created `0700` and namespace `.db`/`-wal`/`-shm` files are set `0600` (owner only); on Windows `os.Chmod` only toggles the read-only attribute, so use NTFS ACLs for owner-only isolation. Startup refuses a data directory it cannot secure or write to (for example a read-only mount), naming the directory and the fix. |
 | Locking | Each namespace has one writer connection (`MaxOpenConns=1`) with `BEGIN IMMEDIATE` locking, plus a separate read-only connection pool. WAL mode allows multiple concurrent readers, but only one writer per file at a time. |
 | Multi-process | SQLite's file locking makes concurrent processes safe in principle, but running two dolmen servers against the same data directory can cause `database is locked` errors and is not recommended. |
 | Deleting a namespace | Prefer `drop_namespace` (confirm-guarded, closes the server's own connections first). Manually: stop the dolmen process, then delete the three `<ns>.db*` files. |
