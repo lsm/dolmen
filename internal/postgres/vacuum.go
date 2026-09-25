@@ -3,10 +3,10 @@ package postgres
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -41,10 +41,16 @@ func (s *Store) Vacuum(ctx context.Context, ns string) (store.VacuumResult, erro
 	for _, rel := range relations {
 		if _, err := s.pool.Exec(ctx, "VACUUM "+ident(physical, rel)); err != nil {
 			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+			if !errors.As(err, &pgErr) || ctx.Err() != nil {
+				return store.VacuumResult{}, err
+			}
+			if pgErr.Code == "42P01" {
 				continue
 			}
-			return store.VacuumResult{}, fmt.Errorf("vacuum of namespace %s failed on %s: %w; the backend role must own the namespace's tables, and a long-running transaction elsewhere keeps dead rows from being reclaimed", ns, rel, err)
+			if pgErr.Code == "42501" {
+				return store.VacuumResult{}, &derr.Error{Code: derr.Forbidden, Cause: err, Message: "vacuum of namespace " + ns + " was refused: the server's database role does not own the namespace's tables; have the operator run dolmen with the role that created them"}
+			}
+			return store.VacuumResult{}, &derr.Error{Code: derr.Conflict, Cause: err, Message: "vacuum of namespace " + ns + " did not finish: PostgreSQL refused it (" + pgErr.Code + "), most often because another session holds a lock on one of its tables; retry vacuum once that session finishes"}
 		}
 	}
 	if err := s.pool.QueryRow(ctx, namespaceSizeSQL, physical).Scan(&res.BytesAfter); err != nil {

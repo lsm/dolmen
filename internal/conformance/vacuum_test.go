@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"database/sql"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -60,6 +61,68 @@ func TestVacuumOfAMissingNamespaceIsNotFound(t *testing.T) {
 	}
 	if list := h.mustHTTP("list_namespaces", map[string]any{}); strings.Contains(mustJSON(t, list), "nosuchns") {
 		t.Fatal("vacuum must not create the namespace")
+	}
+}
+
+func vacuumFixture(t *testing.T) (*harness, *sql.Conn) {
+	t.Helper()
+	sqliteOnly(t)
+	h := newHarness(t)
+	h.seedTable("vacheld", "notes", []map[string]any{{"name": "body", "type": "text"}})
+	h.mustHTTP("insert", map[string]any{"namespace": "vacheld", "table": "notes", "records": []map[string]any{{"body": "x"}}})
+	db, err := sql.Open("sqlite", "file:"+h.dir+"/vacheld.db?mode=rw&_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	conn, err := db.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return h, conn
+}
+
+func assertVacuumTeaches(t *testing.T, h *harness, want string) {
+	t.Helper()
+	status, out := h.httpCall("vacuum", map[string]any{"namespace": "vacheld"})
+	errEnv, _ := out["error"].(map[string]any)
+	msg, _ := errEnv["message"].(string)
+	if status == 200 || errEnv["code"] != "conflict" || !strings.Contains(msg, want) || strings.Contains(msg, h.dir) {
+		t.Fatalf("vacuum must answer conflict naming %q without the file path, got %d %v", want, status, out)
+	}
+	res := h.mcpCall("vacuum", map[string]any{"namespace": "vacheld"})
+	if !res.isError() || !strings.Contains(mustJSON(t, res.result), want) {
+		t.Fatalf("mcp vacuum must carry the same teaching message, got %v", res.result)
+	}
+}
+
+func TestVacuumReportsAReaderHoldingTheLog(t *testing.T) {
+	h, conn := vacuumFixture(t)
+	ctx := t.Context()
+	if _, err := conn.ExecContext(ctx, "BEGIN"); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := conn.QueryRowContext(ctx, "SELECT count(*) FROM notes").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	assertVacuumTeaches(t, h, "retry vacuum once those reads finish")
+	if _, err := conn.ExecContext(ctx, "ROLLBACK"); err != nil {
+		t.Fatal(err)
+	}
+	h.mustHTTP("vacuum", map[string]any{"namespace": "vacheld"})
+}
+
+func TestVacuumTeachesWhenAnotherWriterHoldsTheNamespace(t *testing.T) {
+	h, conn := vacuumFixture(t)
+	ctx := t.Context()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	assertVacuumTeaches(t, h, "another process")
+	if _, err := conn.ExecContext(ctx, "ROLLBACK"); err != nil {
+		t.Fatal(err)
 	}
 }
 

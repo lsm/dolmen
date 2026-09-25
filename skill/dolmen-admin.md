@@ -384,7 +384,8 @@ locked-out server.
   file and empties its write-ahead log; writes to the namespace wait while it runs, and it needs free
   disk about the size of the namespace. Run it when a namespace refuses writes at
   `-max-namespace-size` after you deleted rows to make room. Like every read, it never creates a
-  namespace.
+  namespace. A `conflict` means another process held the file or a reader held the log; the
+  message says which, and retrying once it lets go is safe.
 - `list_migrations` reads that history: a table's recorded migrations, newest first, with the exact
   changes and timestamps — check it after `migrate` to confirm what changed; the newest entry's
   `to_version` is the current schema version.
