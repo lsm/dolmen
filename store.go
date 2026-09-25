@@ -38,7 +38,7 @@ var (
 )
 
 func Open(dataDir string, opts ...Option) (*Store, error) {
-	cfg := config{changeRetention: store.DefaultChangeRetention}
+	cfg := config{changeRetention: store.DefaultChangeRetention, vectorCache: store.DefaultVectorCacheBytes}
 	for _, opt := range opts {
 		if opt == nil {
 			return nil, derr.New(derr.InvalidRequest, "options must not be nil")
@@ -67,7 +67,7 @@ func Open(dataDir string, opts ...Option) (*Store, error) {
 	owners[dir] = s
 	ownersMu.Unlock()
 
-	eng, err := store.Open(dir, store.WithChangeRetention(cfg.changeRetention))
+	eng, err := store.Open(dir, store.WithChangeRetention(cfg.changeRetention), store.WithVectorCacheBytes(cfg.vectorCache))
 	if err != nil {
 		releaseOwnership(dir)
 		code := derr.Internal

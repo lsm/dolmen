@@ -292,3 +292,39 @@ func TestATooBigTableThatLaterFitsIsRebuiltWhole(t *testing.T) {
 		t.Fatalf("cache accounting drifted: used %d, entries hold %d", c.used, sum)
 	}
 }
+
+func TestAnEntryEvictedMidBuildIsAccountedOnceWhenItReturns(t *testing.T) {
+	c := &vecCache{max: 100}
+	ka, kb := vecKey{table: "a"}, vecKey{table: "b"}
+	a := c.entry(ka)
+	b := c.entry(kb)
+	if !c.account(kb, b, 60) {
+		t.Fatal("b fits")
+	}
+	if !c.account(ka, a, 60) {
+		t.Fatal("a fits after evicting b")
+	}
+	if !c.account(kb, b, 30) {
+		t.Fatal("b fits again")
+	}
+	if c.entries[kb] != b {
+		t.Fatal("an entry evicted while it was being built must be cached again when it is accounted")
+	}
+	var sum int64
+	for _, e := range c.entries {
+		sum += e.bytes
+	}
+	if c.used != sum || c.used > c.max {
+		t.Fatalf("accounting drifted: used %d, entries hold %d, max %d", c.used, sum, c.max)
+	}
+	if c.account(kb, b, 500) {
+		t.Fatal("b cannot fit")
+	}
+	sum = 0
+	for _, e := range c.entries {
+		sum += e.bytes
+	}
+	if c.used != sum || c.used < 0 {
+		t.Fatalf("accounting drifted after a rejection: used %d, entries hold %d", c.used, sum)
+	}
+}

@@ -23,6 +23,7 @@ type config struct {
 	embedding       EmbeddingProvider
 	embeddingSet    bool
 	changeRetention time.Duration
+	vectorCache     int64
 }
 
 type EngineOpener func(ctx context.Context, changeRetention time.Duration) (store.Engine, error)
@@ -57,7 +58,16 @@ func WithChangeRetention(d time.Duration) Option {
 	}
 }
 
+func WithVectorCacheBytes(n int64) Option {
+	return func(c *config) {
+		c.vectorCache = n
+	}
+}
+
 func (c *config) validate() error {
+	if c.vectorCache < 0 {
+		return derr.New(derr.InvalidRequest, "WithVectorCacheBytes: size must not be negative (0 disables the cache)")
+	}
 	if c.embeddingSet && nilProvider(c.embedding) {
 		return derr.New(derr.InvalidRequest, "WithEmbedding: provider must not be nil")
 	}

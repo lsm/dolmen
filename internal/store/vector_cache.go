@@ -65,10 +65,12 @@ func (c *vecCache) entry(k vecKey) *vecEntry {
 func (c *vecCache) account(k vecKey, e *vecEntry, bytes int64) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.claim(k, e)
 	c.used += bytes - e.bytes
 	e.bytes = bytes
 	if bytes > c.max {
 		c.used -= bytes
+		e.bytes = 0
 		delete(c.entries, k)
 		return false
 	}
@@ -87,15 +89,29 @@ func (c *vecCache) account(k vecKey, e *vecEntry, bytes int64) bool {
 			break
 		}
 		c.used -= oldest.bytes
+		oldest.bytes = 0
 		delete(c.entries, victim)
 	}
 	return true
 }
 
+func (c *vecCache) claim(k vecKey, e *vecEntry) {
+	if c.entries == nil {
+		c.entries = map[vecKey]*vecEntry{}
+	}
+	if cur := c.entries[k]; cur != e {
+		if cur != nil {
+			c.used -= cur.bytes
+			cur.bytes = 0
+		}
+		c.entries[k] = e
+	}
+}
+
 func (c *vecCache) remember(k vecKey, e *vecEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries[k] = e
+	c.claim(k, e)
 }
 
 func (c *vecCache) drop(k vecKey, e *vecEntry) {
@@ -103,6 +119,7 @@ func (c *vecCache) drop(k vecKey, e *vecEntry) {
 	defer c.mu.Unlock()
 	if c.entries[k] == e {
 		c.used -= e.bytes
+		e.bytes = 0
 		delete(c.entries, k)
 	}
 }
@@ -166,7 +183,6 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 	if !kept {
 		e.tooBig, e.fp, e.seq = true, fp, head
 		e.pos, e.ids, e.vecs, e.sq = nil, nil, nil, nil
-		e.bytes = 0
 		c.remember(k, e)
 		e.mu.Unlock()
 		return nil, 0, false, nil
