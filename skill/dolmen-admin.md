@@ -660,9 +660,11 @@ A complete call, previewed first:
 | `query` / search filter `args` | 100 | rejected |
 | `infer_schema` samples | 1–50 | rejected |
 
-Vector search is a brute-force scan whose cost grows with rows × dimensions — about a tenth of a
-second per 50,000 rows at 384 dimensions, three times that at 1,536 — so pass `filter` on large
-tables; FTS5 uses an inverted index and is much faster.
+Vector search is exact: it scores every row. On SQLite, `-vector-cache-size` (default 512 MiB) keeps
+decoded vectors in memory, so a warm unfiltered search takes about 1 ms per 20,000 rows at 384
+dimensions and 3 ms at 1,536. A `filter`, a `row_access: own` table, or a table larger than the cache
+(about 4 bytes per dimension plus 100 per row) reads vectors from disk, about a tenth of a second per
+50,000 rows at 384 dimensions; raise the cache size if large tables are searched often.
 
 Validation notes:
 
