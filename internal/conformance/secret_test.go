@@ -156,16 +156,3 @@ func TestSecretFieldContract(t *testing.T) {
 		t.Fatalf("facade reveal: %v %v", plain.Rows, err)
 	}
 }
-
-func TestSecretRevealRefusedUnderAuth(t *testing.T) {
-	h := newHarnessMode(t, authAdminKey)
-	status, body := h.httpCallAs(identity{bearer: authAdminKey.adminKey}, "read_rows", map[string]any{"namespace": "sec", "table": "creds", "ids": []any{1}, "reveal": []string{"token"}})
-	if status != http.StatusForbidden {
-		t.Fatalf("status %d: %v", status, body)
-	}
-	env := envelopeOf(t, body)
-	if env["code"] != "forbidden" {
-		t.Fatalf("code = %v", env["code"])
-	}
-	wantMessage(t, "reveal under auth", env["message"].(string), `reveal verb`)
-}

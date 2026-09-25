@@ -519,9 +519,11 @@ An authenticated caller starts with nothing. Access comes from **grants**: a
 subject (a principal or a group) gets **verbs** on an **object** (a namespace, a
 table, or `*` for the whole server).
 
-The six verbs are `create`, `read`, `update`, `delete`, `schema`, and `admin`.
-They are CRUD-shaped on purpose — an append-only table is `create` without
-`update` or `delete`, which a bundled "write" permission could not express.
+The seven verbs are `create`, `read`, `update`, `delete`, `schema`, `admin`,
+and `reveal`. The first six are CRUD-shaped on purpose — an append-only table is
+`create` without `update` or `delete`, which a bundled "write" permission could
+not express. `reveal` returns `secret` fields in plaintext; `admin` does not
+imply it, and every reveal is written to the audit log without the value.
 
 ```bash
 # The bootstrap admin key can grant. Give a group read access to a namespace:

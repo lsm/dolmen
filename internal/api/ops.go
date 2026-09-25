@@ -1044,14 +1044,12 @@ var Ops = map[string]OpDef{
 			if err != nil {
 				return nil, err
 			}
-			ctx, err = s.revealContext(ctx, req.Reveal)
-			if err != nil {
-				return nil, err
-			}
+			ctx = store.WithReveal(ctx, req.Reveal)
 			res, err := s.eng.GetRows(ctx, ns, normTable(req.Table), *req.Ids, scope, inc)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
+			s.auditReveal(ctx, ns, normTable(req.Table), req.Reveal, res.Rows)
 			return map[string]any{"rows": res.Rows, "row_count": len(res.Rows), "truncated": res.Truncated}, nil
 		},
 	},
@@ -1218,15 +1216,13 @@ var Ops = map[string]OpDef{
 			if err := s.checkFilter(tsc, req.Filter, req.Args); err != nil {
 				return nil, err
 			}
-			ctx, err = s.revealContext(ctx, req.Reveal)
-			if err != nil {
-				return nil, err
-			}
+			ctx = store.WithReveal(ctx, req.Reveal)
 			res, err := s.eng.SearchFulltext(ctx, ns, normTable(req.Table), req.Query, req.Filter, req.Args,
 				req.IncludeHidden, scope, inc, store.Page{Offset: req.Offset, Limit: limit(req.Limit)})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
+			s.auditReveal(ctx, ns, normTable(req.Table), req.Reveal, res.Rows)
 			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "limit": limit(req.Limit)}, nil
 		},
 	},
@@ -1400,15 +1396,13 @@ var Ops = map[string]OpDef{
 			if err := s.checkFilter(tsc, req.Filter, req.Args); err != nil {
 				return nil, err
 			}
-			ctx, err = s.revealContext(ctx, req.Reveal)
-			if err != nil {
-				return nil, err
-			}
+			ctx = store.WithReveal(ctx, req.Reveal)
 			res, err := s.eng.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table), vq,
 				req.IncludeHidden, scope, inc, store.Page{Offset: req.Offset, Limit: limit(req.Limit)})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
+			s.auditReveal(ctx, normNS(req.Namespace), normTable(req.Table), req.Reveal, res.Rows)
 			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "skipped_vectors": res.SkippedVectors, "limit": limit(req.Limit)}, nil
 		},
 	},

@@ -14,9 +14,10 @@ const (
 	VerbDelete Verb = "delete"
 	VerbSchema Verb = "schema"
 	VerbAdmin  Verb = "admin"
+	VerbReveal Verb = "reveal"
 )
 
-var VerbOrder = []Verb{VerbCreate, VerbRead, VerbUpdate, VerbDelete, VerbSchema, VerbAdmin}
+var VerbOrder = []Verb{VerbCreate, VerbRead, VerbUpdate, VerbDelete, VerbSchema, VerbAdmin, VerbReveal}
 
 type VerbSet uint8
 

@@ -183,11 +183,11 @@ func (p *projection) decodeColumn(col string, v any) (any, error) {
 	if t == schema.Secret && v != nil && p.reveal[col] {
 		raw, isBlob := v.([]byte)
 		if !isBlob {
-			return nil, invalidf("field %q: %s", col, secret.ErrCorrupt)
+			return nil, fmt.Errorf("field %q: %w", col, secret.ErrCorrupt)
 		}
 		plain, err := p.secrets.Open(raw)
 		if err != nil {
-			return nil, invalidf("field %q: %s", col, err)
+			return nil, fmt.Errorf("field %q: %w", col, err)
 		}
 		return plain, nil
 	}

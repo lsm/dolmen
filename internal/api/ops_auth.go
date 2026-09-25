@@ -260,7 +260,7 @@ func verbsSchema() map[string]any {
 	return map[string]any{
 		"type":        "array",
 		"minItems":    1,
-		"description": "Verbs to grant or revoke. Responses always serialize them in the order create, read, update, delete, schema, admin",
+		"description": "Verbs to grant or revoke. Responses always serialize them in the order create, read, update, delete, schema, admin, reveal. admin does not imply reveal, which alone returns secret fields in plaintext",
 		"items":       map[string]any{"type": "string", "enum": auth.NewVerbSet(auth.VerbOrder...).Strings()},
 	}
 }
