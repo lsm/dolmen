@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"strconv"
 	"strings"
@@ -11,7 +12,9 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/embed"
+	"github.com/lsm/dolmen/internal/ops"
 )
 
 const (
@@ -89,9 +92,22 @@ func (e *tracedEmbedder) start(ctx context.Context, n int) (context.Context, tra
 	return embed.WithTraceContext(ctx), span
 }
 
+func embedErrorType(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return string(derr.Canceled)
+	case errors.Is(err, context.DeadlineExceeded):
+		return string(derr.Timeout)
+	}
+	if code := ops.Classify(err); code != derr.Internal {
+		return string(code)
+	}
+	return string(derr.EmbedderUnavailable)
+}
+
 func finishEmbed(span trace.Span, err error) {
 	if err != nil {
-		span.SetAttributes(semconv.ErrorTypeKey.String("embedder_unavailable"))
+		span.SetAttributes(semconv.ErrorTypeKey.String(embedErrorType(err)))
 		span.SetStatus(codes.Error, "embedding call failed")
 	}
 	span.End()

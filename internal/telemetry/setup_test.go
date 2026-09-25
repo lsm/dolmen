@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -388,5 +390,59 @@ func TestURLPathKeepsTheMountPrefix(t *testing.T) {
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	if got := attrs(rec.Ended()[0])["url.path"].AsString(); got != "/x/v1/insert" {
 		t.Fatalf("url.path = %q, want the path the client sent", got)
+	}
+}
+
+func TestPeekScopeStopsOnceBothKeysAreFound(t *testing.T) {
+	ns, tbl := PeekScope([]byte(`{"namespace":"app","table":"notes","records":[{"body":` + strings.Repeat("x", 1<<16)))
+	if ns != "app" || tbl != "notes" {
+		t.Fatalf("a scan that stops early never sees the malformed tail: ns=%q table=%q", ns, tbl)
+	}
+	for _, body := range []string{``, `[]`, `{"namespace":`, `nonsense`, `{"records":[1,2,"namespace"],"table":"t"`} {
+		if ns, _ := PeekScope([]byte(body)); ns != "" {
+			t.Errorf("PeekScope(%q) namespace = %q, want empty", body, ns)
+		}
+	}
+	if ns, tbl := PeekScope([]byte(`{"records":[{"namespace":"inner"}],"table":"t","namespace":"outer"}`)); ns != "outer" || tbl != "t" {
+		t.Fatalf("nested keys must be skipped: %q %q", ns, tbl)
+	}
+}
+
+func BenchmarkPeekScopeLargeInsert(b *testing.B) {
+	var sb strings.Builder
+	sb.WriteString(`{"namespace":"app","table":"notes","records":[`)
+	for i := 0; i < 20000; i++ {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteString(`{"body":"some text to embed","n":1}`)
+	}
+	sb.WriteString(`]}`)
+	body := []byte(sb.String())
+	b.SetBytes(int64(len(body)))
+	for b.Loop() {
+		PeekScope(body)
+	}
+}
+
+type errEmbedder struct{ err error }
+
+func (e errEmbedder) Identity() string { return "x" }
+func (e errEmbedder) Embed(context.Context, []string) ([][]float32, error) {
+	return nil, e.err
+}
+func (e errEmbedder) EmbedQuery(context.Context, string) ([]float32, error) { return nil, e.err }
+
+func TestEmbeddingErrorTypeIsClassified(t *testing.T) {
+	for want, err := range map[string]error{
+		"canceled":             fmt.Errorf("post: %w", context.Canceled),
+		"timeout":              fmt.Errorf("post: %w", context.DeadlineExceeded),
+		"embedder_unavailable": errors.New("embeddings API returned 503"),
+	} {
+		tr, rec := newRecorded()
+		_, _ = tr.Embedder(errEmbedder{err}).Embed(context.Background(), []string{"x"})
+		if got := attrs(rec.Ended()[0])["error.type"].AsString(); got != want {
+			t.Errorf("error.type = %q, want %q", got, want)
+		}
 	}
 }

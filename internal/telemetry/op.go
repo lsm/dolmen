@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 
@@ -68,14 +69,63 @@ func (o *OpSpan) End(outcome string) {
 }
 
 func PeekScope(body []byte) (namespace, table string) {
-	var probe struct {
-		Namespace json.RawMessage `json:"namespace"`
-		Table     json.RawMessage `json:"table"`
-	}
-	if json.Unmarshal(body, &probe) != nil {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
 		return "", ""
 	}
-	return rawString(probe.Namespace), rawString(probe.Table)
+	var ns, tbl string
+	var sawNS, sawTable bool
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return "", ""
+		}
+		key, ok := tok.(string)
+		if !ok {
+			return "", ""
+		}
+		if key != "namespace" && key != "table" {
+			if skipValue(dec) != nil {
+				return "", ""
+			}
+			continue
+		}
+		var raw json.RawMessage
+		if dec.Decode(&raw) != nil {
+			return "", ""
+		}
+		if key == "namespace" {
+			ns, sawNS = rawString(raw), true
+		} else {
+			tbl, sawTable = rawString(raw), true
+		}
+		if sawNS && sawTable {
+			return ns, tbl
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return "", ""
+	}
+	return ns, tbl
+}
+
+func skipValue(dec *json.Decoder) error {
+	depth := 0
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		switch tok {
+		case json.Delim('{'), json.Delim('['):
+			depth++
+		case json.Delim('}'), json.Delim(']'):
+			depth--
+		}
+		if depth == 0 {
+			return nil
+		}
+	}
 }
 
 func rawString(raw json.RawMessage) string {
