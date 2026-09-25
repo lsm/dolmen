@@ -88,7 +88,11 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq Vecto
 		}
 	}
 
-	hits = topHits(hits, offset+limit+1)
+	k := offset + limit + 1
+	if offset >= len(hits) || k > len(hits) {
+		k = len(hits)
+	}
+	hits = topHits(hits, k)
 
 	if offset > len(hits) {
 		offset = len(hits)
@@ -312,7 +316,7 @@ func topHits(hits []vecHit, k int) []vecHit {
 	if k <= 0 {
 		return hits[:0]
 	}
-	if len(hits) > 4*k {
+	if k < len(hits)/4 {
 		h := make(worstFirst, 0, k)
 		for _, x := range hits {
 			if len(h) < k {

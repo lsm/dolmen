@@ -362,3 +362,47 @@ func TestTheVectorCacheEngagesAgainForARecreatedNamespace(t *testing.T) {
 		}
 	}
 }
+
+func TestAHugeVectorSearchOffsetAnswersAnEmptyPage(t *testing.T) {
+	p := openVecPair(t, DefaultVectorCacheBytes)
+	ctx := context.Background()
+	p.both(t, func(l legacyStore) error {
+		_, err := l.Insert(ctx, "v", "t", []map[string]any{{"k": 1, "emb": []float32{1, 0, 0}}, {"k": 2, "emb": []float32{0, 1, 0}}}, testEmbed)
+		return err
+	})
+	for _, l := range []legacyStore{p.cached, p.plain} {
+		for _, offset := range []int{1 << 61, 1<<62 + 3, int(^uint(0)>>1) - 20} {
+			res, err := l.SearchVector(ctx, "v", "t", "emb", []float32{1, 0, 0}, "", offset, 10, false, "", nil, nil)
+			if err != nil || len(res.Rows) != 0 {
+				t.Fatalf("offset %d must answer an empty page: %d rows, %v", offset, len(res.Rows), err)
+			}
+		}
+	}
+}
+
+func TestATableTooBigForTheCacheIsNotDecodedWhole(t *testing.T) {
+	p := openVecPair(t, 400)
+	ctx := context.Background()
+	many := make([]map[string]any, 200)
+	for i := range many {
+		many[i] = map[string]any{"k": i, "emb": []float32{float32(i), 1, 0}}
+	}
+	p.both(t, func(l legacyStore) error {
+		_, err := l.Insert(ctx, "v", "t", many, testEmbed)
+		return err
+	})
+	n, err := p.cached.ns("v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.unpin()
+	e := &vecEntry{}
+	fits, err := e.rebuild(ctx, n.ro, "t", "emb", 400)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fits || len(e.ids) >= 200 || e.size() > 400+vecRowOverhead+64 {
+		t.Fatalf("a rebuild past the cache limit must stop early: fits=%v, decoded %d rows, %d bytes", fits, len(e.ids), e.size())
+	}
+	p.same(t, "a table larger than the cache")
+}

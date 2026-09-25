@@ -153,12 +153,13 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 	}
 	wasTooBig := e.tooBig
 	e.tooBig = false
+	fits := true
 	if wasTooBig || e.seq < 0 || e.fp != fp || e.seq > head {
 		if e.fp == fp && e.seq > head {
 			e.mu.Unlock()
 			return nil, 0, false, nil
 		}
-		if err := e.rebuild(ctx, db, table, column); err != nil {
+		if fits, err = e.rebuild(ctx, db, table, column, c.max); err != nil {
 			e.mu.Unlock()
 			c.drop(k, e)
 			return nil, 0, false, err
@@ -172,7 +173,7 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 			return nil, 0, false, err
 		}
 		if !ok {
-			if err := e.rebuild(ctx, db, table, column); err != nil {
+			if fits, err = e.rebuild(ctx, db, table, column, c.max); err != nil {
 				e.mu.Unlock()
 				c.drop(k, e)
 				return nil, 0, false, err
@@ -180,7 +181,12 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 		}
 		e.seq = head
 	}
-	kept := c.account(k, e, e.size())
+	kept := false
+	if fits {
+		kept = c.account(k, e, e.size())
+	} else {
+		c.drop(k, e)
+	}
 	if !kept {
 		e.tooBig, e.fp, e.seq = true, fp, head
 		e.pos, e.ids, e.vecs, e.sq = nil, nil, nil, nil
@@ -262,25 +268,30 @@ func (e *vecEntry) size() int64 {
 	return n + int64(len(e.ids))*vecRowOverhead
 }
 
-func (e *vecEntry) rebuild(ctx context.Context, db rowsQuerier, table, column string) error {
+func (e *vecEntry) rebuild(ctx context.Context, db rowsQuerier, table, column string, limit int64) (bool, error) {
 	e.pos = map[int64]int{}
 	e.ids = e.ids[:0]
 	e.vecs = e.vecs[:0]
 	e.sq = e.sq[:0]
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s IS NOT NULL ORDER BY id`, q(column), q(table), q(column)))
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer rows.Close()
+	var bytes int64
 	for rows.Next() {
 		var id int64
 		var raw any
 		if err := rows.Scan(&id, &raw); err != nil {
-			return err
+			return false, err
 		}
 		e.put(id, raw)
+		bytes += int64(len(e.vecs[len(e.vecs)-1]))*4 + vecRowOverhead
+		if bytes > limit {
+			return false, nil
+		}
 	}
-	return rows.Err()
+	return true, rows.Err()
 }
 
 func (e *vecEntry) put(id int64, raw any) {
