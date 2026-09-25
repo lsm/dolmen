@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -87,11 +86,10 @@ func (s *Store) readProjection(ctx context.Context, sc *schema.TableSchema, incl
 func (s *Store) secretFingerprint(v any) string {
 	plain, ok := v.(string)
 	if !ok {
-		b, _ := json.Marshal(v)
-		plain = string(b)
+		return "secret-nonstring"
 	}
 	if s.secrets == nil {
-		return "secret:unkeyed"
+		return "secret-unkeyed"
 	}
-	return "secret:" + s.secrets.Fingerprint(plain)
+	return "secret-string:" + s.secrets.Fingerprint(plain)
 }
