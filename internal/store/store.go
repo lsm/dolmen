@@ -111,7 +111,8 @@ type Store struct {
 
 	changeRetention time.Duration
 
-	tok tokenizer
+	tok    tokenizer
+	vcache vecCache
 
 	closed   atomic.Bool
 	closeErr error
@@ -167,7 +168,7 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 	if fs, remote := detectNetworkFS(abs); remote {
 		slog.Warn("data directory is on a network filesystem; SQLite WAL needs local shared memory and file locks, so concurrent access can corrupt data. Move the data directory to a local disk", "dir", abs, "filesystem", fs)
 	}
-	s := &Store{dir: abs, mu: newCtxMutex(), nss: map[string]*nsDB{}, maxOpen: DefaultMaxOpenNamespaces, sync: DefaultSync, changeRetention: DefaultChangeRetention}
+	s := &Store{dir: abs, mu: newCtxMutex(), nss: map[string]*nsDB{}, maxOpen: DefaultMaxOpenNamespaces, vcache: vecCache{max: DefaultVectorCacheBytes}, sync: DefaultSync, changeRetention: DefaultChangeRetention}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -501,6 +502,10 @@ func (m SyncMode) pragma() int {
 
 func WithMaxNamespaceSize(bytes int64) OpenOption {
 	return func(s *Store) { s.maxBytes = bytes }
+}
+
+func WithVectorCacheBytes(n int64) OpenOption {
+	return func(s *Store) { s.vcache.max = n }
 }
 
 func WithSync(m SyncMode) OpenOption {

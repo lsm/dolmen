@@ -458,7 +458,7 @@ The optional `filter` parameter is separate from the MATCH `query`: it is regula
 | Time per operation | set by the server, 2 minutes by default; `wait_for` gets its `timeout_ms` on top | `timeout` (504): narrow a read (a filter, a smaller limit) and retry it; a write may or may not have committed, so check with a query before retrying it |
 | `query` / search filter `args` | 100 | rejected |
 
-Vector search is a brute-force scan whose cost grows with rows × dimensions — about a tenth of a second per 50,000 rows at 384 dimensions, three times that at 1,536 — so pass `filter` on large tables; FTS5 uses an inverted index and is much faster.
+Vector search is exact: it scores every row. With the server's vector cache warm (SQLite engine), an unfiltered search takes about 1 ms per 20,000 rows at 384 dimensions and 3 ms at 1,536. A `filter`, a `row_access: own` table, or a table too large for the cache reads vectors from disk instead, about a tenth of a second per 50,000 rows at 384 dimensions — so on large tables prefer an unfiltered search, and narrow afterwards.
 
 Validation notes:
 

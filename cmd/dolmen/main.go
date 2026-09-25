@@ -230,7 +230,7 @@ func openStore(cfg *config) (store.Engine, error) {
 		}
 		return st, nil
 	}
-	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention), store.WithMaxOpenNamespaces(cfg.MaxOpenNamespaces), store.WithSync(cfg.Sync), store.WithMaxNamespaceSize(cfg.MaxNamespaceSize))
+	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention), store.WithMaxOpenNamespaces(cfg.MaxOpenNamespaces), store.WithSync(cfg.Sync), store.WithMaxNamespaceSize(cfg.MaxNamespaceSize), store.WithVectorCacheBytes(cfg.VectorCacheSize))
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
@@ -341,6 +341,7 @@ type config struct {
 	MaxSubscriptionAge time.Duration
 	Sync               store.SyncMode
 	MaxNamespaceSize   int64
+	VectorCacheSize    int64
 	LogLevel           slog.Level
 	ShutdownGrace      time.Duration
 	Timeouts           api.Timeouts
@@ -374,6 +375,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 
 	maxOpenDefault, maxOpenErr := envIntOr("DOLMEN_MAX_OPEN_NAMESPACES", store.DefaultMaxOpenNamespaces, getenv)
 	maxOpenNamespaces := fs.Int("max-open-namespaces", maxOpenDefault, "namespaces held open at once; past it, the least recently used idle namespace is closed until it is next used (at least 1; sqlite engine)")
+	vectorCacheSize := fs.String("vector-cache-size", envOr("DOLMEN_VECTOR_CACHE_SIZE", "512MiB", getenv), "memory for decoded vectors kept between vector searches, e.g. 2GiB; 0 disables the cache and every search reads vectors from disk (sqlite engine)")
 	maxNamespaceSize := fs.String("max-namespace-size", envOr("DOLMEN_MAX_NAMESPACE_SIZE", "0", getenv), "largest a namespace file may grow, e.g. 10GiB; a write past it is refused with 507 and nothing is written. 0 (default) is unbounded; sqlite engine")
 	logLevel := fs.String("log-level", envOr("DOLMEN_LOG_LEVEL", "info", getenv), "log verbosity: debug (adds one line per operation: op, outcome, status, duration, request size, request id), info (default), warn, or error")
 	syncMode := fs.String("sync", envOr("DOLMEN_SYNC", string(store.DefaultSync), getenv), "commit durability: full (an acknowledged commit survives power loss) or normal (it survives a process crash; the last commits before a power loss may be lost); sqlite engine")
@@ -526,6 +528,13 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		return nil, &printedError{e}
 	}
 
+	vcSize, err := store.ParseSize(*vectorCacheSize)
+	if err != nil {
+		fmt.Fprintf(out, "config: %v\n", err)
+		fs.Usage()
+		return nil, &printedError{err}
+	}
+
 	nsSize, err := store.ParseSize(*maxNamespaceSize)
 	if err != nil {
 		fmt.Fprintf(out, "config: %v\n", err)
@@ -609,6 +618,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		MaxSubscriptionAge: maxAge,
 		Sync:               sync,
 		MaxNamespaceSize:   nsSize,
+		VectorCacheSize:    vcSize,
 		LogLevel:           level,
 		ShutdownGrace:      grace,
 		Timeouts:           timeouts,
@@ -734,6 +744,7 @@ func printEnvHelp(out io.Writer) {
 		{"DOLMEN_ALLOWED_ORIGINS", "comma-separated allowed HTTP origins for CORS"},
 		{"DOLMEN_BASE_URL", "public base URL for skills and MCP links (default: use request Host)"},
 		{"DOLMEN_SKILL_NAMESPACE_HINT", "hint text rendered into skill markdown"},
+		{"DOLMEN_VECTOR_CACHE_SIZE", "memory for decoded vectors kept between searches, e.g. 2GiB; 0 disables (default 512MiB)"},
 		{"DOLMEN_MAX_NAMESPACE_SIZE", "largest a namespace file may grow, e.g. 10GiB; 0 (default) is unbounded"},
 		{"DOLMEN_LOG_LEVEL", "log verbosity: debug (adds a line per operation), info (default), warn, or error"},
 		{"DOLMEN_SYNC", "commit durability: full (default; survives power loss) or normal (survives a process crash)"},

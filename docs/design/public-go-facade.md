@@ -142,6 +142,8 @@ is built in or supplied by the embedding application.
 ## 4. Embedding configuration
 
 The initial options are `WithEmbedding(provider)` and `WithChangeRetention(duration)`.
+`WithVectorCacheBytes(n)` sizes the SQLite engine's in-memory vector cache (default 512 MiB, the
+server's `-vector-cache-size`; 0 disables it). Memory is only used by tables that are vector-searched.
 Default embedding is disabled. `Open` does not read environment variables, install
 signal handlers, replace the global logger, or start a server. CLI environment/flag
 interpretation remains in the executable.

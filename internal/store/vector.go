@@ -1,6 +1,7 @@
 package store
 
 import (
+	"container/heap"
 	"context"
 	"fmt"
 	"math"
@@ -68,71 +69,30 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq Vecto
 	if err := scopeUsable(scope, sc); err != nil {
 		return SearchResult{}, err
 	}
-	var query string
-	var qargs []any
-	if filter == "" {
-		clause, scopeArgs := scopeClause(scope, "")
-		query = fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s IS NOT NULL`, q(column), q(table), q(column))
-		if clause != "" {
-			query = fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s AND %s IS NOT NULL`, q(column), q(table), clause, q(column))
-		}
-		qargs = scopeArgs
-	} else {
-		prefix, source, scopeArgs := scopedSource(table, scope)
-		query = fmt.Sprintf(`%sSELECT id, %s FROM %s WHERE %s IS NOT NULL AND (%s)`, prefix, q(column), source, q(column), filter)
-		qargs = append(append(make([]any, 0, len(scopeArgs)+len(args)), scopeArgs...), args...)
-	}
-
-	rows, err := tx.QueryContext(ctx, query, qargs...)
-	if err != nil {
-		return SearchResult{}, NewFilterError(filter, err)
-	}
-	defer rows.Close()
-
 	threshold := math.Inf(-1)
 	if minScore != nil {
 		threshold = *minScore
 	}
-
-	type hit struct {
-		id    int64
-		score float64
-	}
-	var hits []hit
+	var hits []vecHit
 	skipped := 0
-	for rows.Next() {
-		var id int64
-		var raw any
-		if err := rows.Scan(&id, &raw); err != nil {
+	cached := false
+	if filter == "" && scope == nil {
+		hits, skipped, cached, err = s.vcache.score(ctx, tx, nsName, table, column, vec, threshold)
+		if err != nil {
 			return SearchResult{}, err
 		}
-
-		blob, isBlob := raw.([]byte)
-		if !isBlob {
-			skipped++
-			continue
-		}
-		stored, err := schema.DecodeVector(blob)
-		if err != nil || len(stored) != len(vec) || !allFinite(stored) {
-			skipped++
-			continue
-		}
-		score := cosine(vec, stored)
-		if score < threshold {
-			continue
-		}
-		hits = append(hits, hit{id: id, score: score})
 	}
-	if err := rows.Err(); err != nil {
-		return SearchResult{}, NewFilterError(filter, err)
+	if !cached {
+		if hits, skipped, err = scanVectors(ctx, tx, table, column, filter, args, scope, vec, threshold); err != nil {
+			return SearchResult{}, err
+		}
 	}
 
-	sort.SliceStable(hits, func(i, j int) bool {
-		if hits[i].score == hits[j].score {
-			return hits[i].id < hits[j].id
-		}
-		return hits[i].score > hits[j].score
-	})
+	k := offset + limit + 1
+	if offset >= len(hits) || k > len(hits) {
+		k = len(hits)
+	}
+	hits = topHits(hits, k)
 
 	if offset > len(hits) {
 		offset = len(hits)
@@ -240,6 +200,17 @@ func allFinite(v []float32) bool {
 	return true
 }
 
+func cosineKnown(a, b []float32, na, nb float64) float64 {
+	var dot float64
+	for i := range a {
+		dot += float64(a[i]) * float64(b[i])
+	}
+	if na == 0 || nb == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(na) * math.Sqrt(nb))
+}
+
 func cosine(a, b []float32) float64 {
 	var dot, na, nb float64
 	for i := range a {
@@ -260,3 +231,103 @@ func ResolveVectorColumn(sc *schema.TableSchema, table, column string, textQuery
 func Cosine(a, b []float32) float64 { return cosine(a, b) }
 
 func AllFinite(v []float32) bool { return allFinite(v) }
+
+type vecHit struct {
+	id    int64
+	score float64
+}
+
+func decodeStoredVector(raw any) ([]float32, bool) {
+	blob, isBlob := raw.([]byte)
+	if !isBlob {
+		return nil, false
+	}
+	stored, err := schema.DecodeVector(blob)
+	if err != nil || !allFinite(stored) {
+		return nil, false
+	}
+	return stored, true
+}
+
+func scanVectors(ctx context.Context, tx rowsQuerier, table, column, filter string, args []any, scope *RowScope, vec []float32, threshold float64) ([]vecHit, int, error) {
+	var query string
+	var qargs []any
+	if filter == "" {
+		clause, scopeArgs := scopeClause(scope, "")
+		query = fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s IS NOT NULL`, q(column), q(table), q(column))
+		if clause != "" {
+			query = fmt.Sprintf(`SELECT id, %s FROM %s WHERE %s AND %s IS NOT NULL`, q(column), q(table), clause, q(column))
+		}
+		qargs = scopeArgs
+	} else {
+		prefix, source, scopeArgs := scopedSource(table, scope)
+		query = fmt.Sprintf(`%sSELECT id, %s FROM %s WHERE %s IS NOT NULL AND (%s)`, prefix, q(column), source, q(column), filter)
+		qargs = append(append(make([]any, 0, len(scopeArgs)+len(args)), scopeArgs...), args...)
+	}
+	rows, err := tx.QueryContext(ctx, query, qargs...)
+	if err != nil {
+		return nil, 0, NewFilterError(filter, err)
+	}
+	defer rows.Close()
+	var hits []vecHit
+	skipped := 0
+	for rows.Next() {
+		var id int64
+		var raw any
+		if err := rows.Scan(&id, &raw); err != nil {
+			return nil, 0, err
+		}
+		stored, ok := decodeStoredVector(raw)
+		if !ok || len(stored) != len(vec) {
+			skipped++
+			continue
+		}
+		if score := cosine(vec, stored); score >= threshold {
+			hits = append(hits, vecHit{id: id, score: score})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, NewFilterError(filter, err)
+	}
+	return hits, skipped, nil
+}
+
+func ranksBefore(a, b vecHit) bool {
+	if a.score == b.score {
+		return a.id < b.id
+	}
+	return a.score > b.score
+}
+
+type worstFirst []vecHit
+
+func (h worstFirst) Len() int           { return len(h) }
+func (h worstFirst) Less(i, j int) bool { return ranksBefore(h[j], h[i]) }
+func (h worstFirst) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *worstFirst) Push(x any)        { *h = append(*h, x.(vecHit)) }
+func (h *worstFirst) Pop() any {
+	old := *h
+	last := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return last
+}
+
+func topHits(hits []vecHit, k int) []vecHit {
+	if k <= 0 {
+		return hits[:0]
+	}
+	if k < len(hits)/4 {
+		h := make(worstFirst, 0, k)
+		for _, x := range hits {
+			if len(h) < k {
+				heap.Push(&h, x)
+			} else if ranksBefore(x, h[0]) {
+				h[0] = x
+				heap.Fix(&h, 0)
+			}
+		}
+		hits = h
+	}
+	sort.Slice(hits, func(i, j int) bool { return ranksBefore(hits[i], hits[j]) })
+	return hits
+}
