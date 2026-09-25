@@ -18,6 +18,8 @@ type rowProjection struct {
 	fields     []schema.Field
 	columns    []string
 	labelBytes int
+	reveal     map[string]bool
+	store      *Store
 }
 
 func projectRows(state tableState, includeHidden bool) rowProjection {
@@ -77,6 +79,11 @@ func (p rowProjection) scan(rows pgx.Rows, budgetLabel string) ([]map[string]any
 				return out, true, nil
 			}
 			decoded := value.Decode(f.Type, v)
+			if plain, ok, err := p.store.presentSecret(p.reveal, f, v); err != nil {
+				return nil, false, err
+			} else if ok {
+				decoded = plain
+			}
 			presented := value.ApproxSize(decoded)
 			if f.Type == schema.Vector {
 				if vec, ok := decoded.([]float64); ok {
@@ -107,6 +114,11 @@ func (s *Store) fetchRanked(ctx context.Context, tx pgx.Tx, n namespace, state t
 		return []map[string]any{}, false, nil
 	}
 	p := projectRows(state, includeHidden)
+	reveal, err := s.revealSet(ctx, state.schema)
+	if err != nil {
+		return nil, false, err
+	}
+	p.reveal, p.store = reveal, s
 	stmt := "SELECT " + strings.Join(p.columns, ",") + " FROM " + ident(n.physical, state.physical) +
 		" JOIN unnest($1::bigint[]) WITH ORDINALITY AS ranked(rid, pos) ON ranked.rid = id ORDER BY ranked.pos"
 	rows, err := tx.Query(ctx, stmt, ids)
@@ -118,9 +130,6 @@ func (s *Store) fetchRanked(ctx context.Context, tx pgx.Tx, n namespace, state t
 }
 
 func (s *Store) SearchFulltext(ctx context.Context, ns, table, match, filter string, args []any, includeHidden bool, scope *store.RowScope, scopeIncarnation store.Incarnation, page store.Page) (store.SearchResult, error) {
-	if err := refuseReveal(ctx); err != nil {
-		return store.SearchResult{}, err
-	}
 	if page.Offset < 0 {
 		return store.SearchResult{}, invalidf("offset must be non-negative")
 	}
@@ -225,9 +234,6 @@ func searchError(ctx context.Context, filter string, err error) error {
 }
 
 func (s *Store) SearchVector(ctx context.Context, ns, table string, q store.VectorQuery, includeHidden bool, scope *store.RowScope, scopeIncarnation store.Incarnation, page store.Page) (store.SearchResult, error) {
-	if err := refuseReveal(ctx); err != nil {
-		return store.SearchResult{}, err
-	}
 	if page.Offset < 0 {
 		return store.SearchResult{}, invalidf("offset must be non-negative")
 	}

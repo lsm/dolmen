@@ -9,6 +9,7 @@ import (
 
 	"github.com/lsm/dolmen"
 	"github.com/lsm/dolmen/internal/postgres"
+	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -41,6 +42,7 @@ func With(cfg Config) dolmen.Option {
 			QueryRole:       cfg.QueryRole,
 			MaxConns:        cfg.MaxConns,
 			ChangeRetention: &retention,
+			Secrets:         secret.KeyringFrom(ctx),
 		})
 	})
 }

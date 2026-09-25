@@ -15,9 +15,6 @@ func (s *Store) GetRows(ctx context.Context, ns, table string, ids []int64, scop
 	if len(ids) > store.MaxReadRowsIDs {
 		return store.QueryResult{}, fmt.Errorf("%w: read_rows accepts at most %d ids per request, got %d", store.ErrInvalid, store.MaxReadRowsIDs, len(ids))
 	}
-	if err := refuseReveal(ctx); err != nil {
-		return store.QueryResult{}, err
-	}
 	result := store.QueryResult{Rows: []map[string]any{}}
 	err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
 		state, err := s.loadTable(ctx, tx, n, table)
@@ -28,6 +25,10 @@ func (s *Store) GetRows(ctx context.Context, ns, table string, ids []int64, scop
 			return err
 		}
 		if err := scopeUsable(scope, state.schema); err != nil {
+			return err
+		}
+		reveal, err := s.revealSet(ctx, state.schema)
+		if err != nil {
 			return err
 		}
 		if len(ids) == 0 {
@@ -88,6 +89,11 @@ func (s *Store) GetRows(ctx context.Context, ns, table string, ids []int64, scop
 					return nil
 				}
 				decoded := value.Decode(f.Type, v)
+				if plain, ok, err := s.presentSecret(reveal, f, v); err != nil {
+					return err
+				} else if ok {
+					decoded = plain
+				}
 				presented := value.ApproxSize(decoded)
 				if f.Type == schema.Vector {
 					if vec, ok := decoded.([]float64); ok {

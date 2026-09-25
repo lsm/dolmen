@@ -26,7 +26,11 @@ func RevealFrom(ctx context.Context) []string {
 func (s *Store) HasSecretKey() bool { return s.secrets != nil }
 
 func (s *Store) requireSecretKey(fields []schema.Field) error {
-	if s.secrets != nil {
+	return RequireSecretKey(s.secrets, fields)
+}
+
+func RequireSecretKey(k *secret.Keyring, fields []schema.Field) error {
+	if k != nil {
 		return nil
 	}
 	for _, f := range fields {
@@ -42,6 +46,10 @@ func (s *Store) coerceWrite(f schema.Field, v any) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
+	return SealSecret(s.secrets, f, cv)
+}
+
+func SealSecret(k *secret.Keyring, f schema.Field, cv any) (any, error) {
 	if f.Type != schema.Secret || cv == nil {
 		return cv, nil
 	}
@@ -49,10 +57,10 @@ func (s *Store) coerceWrite(f schema.Field, v any) (any, error) {
 	if !ok {
 		return nil, invalidf("field %q: expected a string", f.Name)
 	}
-	if s.secrets == nil {
+	if k == nil {
 		return nil, invalidf("field %q is a secret field and cannot be written: %s", f.Name, secret.ErrNoKey)
 	}
-	blob, err := s.secrets.Seal(plain)
+	blob, err := k.Seal(plain)
 	if err != nil {
 		return nil, err
 	}
@@ -61,9 +69,19 @@ func (s *Store) coerceWrite(f schema.Field, v any) (any, error) {
 
 func (s *Store) readProjection(ctx context.Context, sc *schema.TableSchema, includeHidden bool) (*projection, error) {
 	p := projectionFromSchema(sc, includeHidden)
+	reveal, err := RevealSet(ctx, sc, s.secrets)
+	if err != nil || reveal == nil {
+		return p, err
+	}
+	p.reveal = reveal
+	p.secrets = s.secrets
+	return p, nil
+}
+
+func RevealSet(ctx context.Context, sc *schema.TableSchema, k *secret.Keyring) (map[string]bool, error) {
 	names := RevealFrom(ctx)
 	if len(names) == 0 {
-		return p, nil
+		return nil, nil
 	}
 	reveal := make(map[string]bool, len(names))
 	for _, name := range names {
@@ -76,16 +94,40 @@ func (s *Store) readProjection(ctx context.Context, sc *schema.TableSchema, incl
 		}
 		reveal[name] = true
 	}
-	if s.secrets == nil {
+	if k == nil {
 		return nil, fmt.Errorf("reveal cannot decrypt without a key: %w", secret.ErrNoKey)
 	}
-	p.reveal = reveal
-	p.secrets = s.secrets
-	return p, nil
+	return reveal, nil
 }
 
-func (s *Store) secretFingerprint(v any) string {
-	if s.secrets == nil {
+func OpenSecret(k *secret.Keyring, col string, v any) (string, error) {
+	raw, isBlob := v.([]byte)
+	if !isBlob {
+		return "", fmt.Errorf("field %q: %w", col, secret.ErrCorrupt)
+	}
+	plain, err := k.Open(raw)
+	if err != nil {
+		return "", fmt.Errorf("field %q: %w", col, err)
+	}
+	return plain, nil
+}
+
+func FingerprintSecrets(k *secret.Keyring, sc *schema.TableSchema, records []map[string]any) []map[string]any {
+	hashed := make([]map[string]any, len(records))
+	for i, rec := range records {
+		hashed[i] = make(map[string]any, len(rec))
+		for name, v := range rec {
+			if f := sc.Field(name); f != nil && f.Type == schema.Secret && v != nil {
+				v = SecretFingerprint(k, v)
+			}
+			hashed[i][name] = v
+		}
+	}
+	return hashed
+}
+
+func SecretFingerprint(k *secret.Keyring, v any) string {
+	if k == nil {
 		return "secret-unkeyed"
 	}
 	stored, ok := storedString(v)
@@ -94,11 +136,11 @@ func (s *Store) secretFingerprint(v any) string {
 		if err != nil {
 			b = []byte(fmt.Sprintf("%v", v))
 		}
-		return "secret-unstorable:" + s.secrets.Fingerprint(fmt.Sprintf("%T:%s", v, b))
+		return "secret-unstorable:" + k.Fingerprint(fmt.Sprintf("%T:%s", v, b))
 	}
 	tag := "string"
 	if _, isNumber := v.(json.Number); isNumber {
 		tag = "number"
 	}
-	return "secret-" + tag + ":" + s.secrets.Fingerprint(stored)
+	return "secret-" + tag + ":" + k.Fingerprint(stored)
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/ops"
+	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -91,7 +92,7 @@ func openWithOpener(cfg config) (*Store, error) {
 	owners[key] = s
 	ownersMu.Unlock()
 
-	eng, err := cfg.opener(context.Background(), cfg.changeRetention)
+	eng, err := cfg.opener(secret.WithKeyring(context.Background(), cfg.secrets), cfg.changeRetention)
 	if err != nil {
 		releaseOwnership(key)
 		code := derr.Internal
