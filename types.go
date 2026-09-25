@@ -14,6 +14,7 @@ const (
 	Timestamp FieldType = "timestamp"
 	JSON      FieldType = "json"
 	Vector    FieldType = "vector"
+	Secret    FieldType = "secret"
 )
 
 type Field struct {

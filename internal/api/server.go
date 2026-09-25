@@ -172,10 +172,10 @@ func fieldItemSchema(desc string, withDefault bool) map[string]any {
 		},
 		"type": map[string]any{
 			"type":        "string",
-			"description": "One of: string, text, number, boolean, timestamp, json, vector (omit to default to string)",
+			"description": "One of: string, text, number, boolean, timestamp, json, vector, secret (omit to default to string); a secret is encrypted at rest and reads back as a mask unless revealed",
 			"enum": []schema.FieldType{
 				schema.String, schema.Text, schema.Number, schema.Boolean,
-				schema.Timestamp, schema.JSON, schema.Vector,
+				schema.Timestamp, schema.JSON, schema.Vector, schema.Secret,
 			},
 		},
 		"fulltext":  prop("boolean", "Index this field for full-text search (string/text only)"),
@@ -238,7 +238,7 @@ func fieldItemSchema(desc string, withDefault bool) map[string]any {
 	}
 	if withDefault {
 		properties["default"] = map[string]any{
-			"description": "Value stored when an insert omits the field — string/text: a string; timestamp: an ISO/RFC3339 string or \"now()\" (the server stamps its current time on each write that omits the field); number: a number; boolean: a boolean; json: any JSON value; vector: a number array of dim entries. Must match the field's type; not allowed on required or vectorize fields; \"now()\" is allowed on timestamp fields only",
+			"description": "Value stored when an insert omits the field — string/text: a string; timestamp: an ISO/RFC3339 string or \"now()\" (the server stamps its current time on each write that omits the field); number: a number; boolean: a boolean; json: any JSON value; vector: a number array of dim entries. Must match the field's type; not allowed on required, vectorize or secret fields; \"now()\" is allowed on timestamp fields only",
 		}
 		allOf = append(allOf,
 			map[string]any{

@@ -250,7 +250,7 @@ func queryParam(name, desc string, required bool, schema map[string]any) map[str
 func components(authOn bool) map[string]any {
 	fieldTypeEnum := []schema.FieldType{
 		schema.String, schema.Text, schema.Number, schema.Boolean,
-		schema.Timestamp, schema.JSON, schema.Vector,
+		schema.Timestamp, schema.JSON, schema.Vector, schema.Secret,
 	}
 	return map[string]any{
 		"schemas": map[string]any{

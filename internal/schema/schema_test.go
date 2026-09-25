@@ -784,3 +784,24 @@ func TestInferIsIndependentOfSampleOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestSecretFieldOptionsRefused(t *testing.T) {
+	if err := Validate([]Field{{Name: "token", Type: Secret, Required: true}}); err != nil {
+		t.Fatalf("a plain secret field must be accepted: %v", err)
+	}
+	cases := map[string]Field{
+		"full-text index would hold the plaintext": {Name: "token", Type: Secret, Fulltext: true},
+		"embedding is computed from the plaintext": {Name: "token", Type: Secret, Vectorize: true},
+		"allowed values would disclose":            {Name: "token", Type: Secret, Enum: []string{"a"}},
+		"schema stores a default in plaintext":     {Name: "token", Type: Secret, Default: "x"},
+	}
+	for want, f := range cases {
+		err := Validate([]Field{f})
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%+v: err = %v, want it to mention %q", f, err, want)
+		}
+	}
+	if SQLType(Field{Type: Secret}) != "BLOB" {
+		t.Fatal("secret values are stored as ciphertext blobs")
+	}
+}

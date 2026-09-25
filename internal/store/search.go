@@ -217,7 +217,11 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 	if hasMore {
 		ids = ids[:limit]
 	}
-	out, complete, err := fetchByIDs(ctx, tx, table, ids, projectionFromSchema(sc, includeHidden))
+	proj, err := s.readProjection(ctx, sc, includeHidden)
+	if err != nil {
+		return SearchResult{}, err
+	}
+	out, complete, err := fetchByIDs(ctx, tx, table, ids, proj)
 	if err != nil {
 		return SearchResult{}, err
 	}
@@ -305,7 +309,10 @@ scan:
 				complete = false
 				break scan
 			}
-			v := proj.decodeColumn(c, vals[i])
+			v, err := proj.decodeColumn(c, vals[i])
+			if err != nil {
+				return nil, false, err
+			}
 			m[c] = v
 			rowBytes += proj.presentedSize(c, vals[i], v)
 			if total+rowBytes+labelBytes > MaxQueryBytes {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/lsm/dolmen/internal/derr"
+	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -24,6 +25,9 @@ type config struct {
 	embeddingSet    bool
 	changeRetention time.Duration
 	vectorCache     int64
+	secretKey       []byte
+	secretKeySet    bool
+	secrets         *secret.Keyring
 }
 
 type EngineOpener func(ctx context.Context, changeRetention time.Duration) (store.Engine, error)
@@ -58,6 +62,13 @@ func WithChangeRetention(d time.Duration) Option {
 	}
 }
 
+func WithSecretKey(key []byte) Option {
+	return func(c *config) {
+		c.secretKey = append([]byte(nil), key...)
+		c.secretKeySet = true
+	}
+}
+
 func WithVectorCacheBytes(n int64) Option {
 	return func(c *config) {
 		c.vectorCache = n
@@ -70,6 +81,15 @@ func (c *config) validate() error {
 	}
 	if c.embeddingSet && nilProvider(c.embedding) {
 		return derr.New(derr.InvalidRequest, "WithEmbedding: provider must not be nil")
+	}
+	if c.secretKeySet {
+		k, err := secret.New(c.secretKey)
+		clear(c.secretKey)
+		c.secretKey = nil
+		if err != nil {
+			return derr.New(derr.InvalidRequest, "WithSecretKey: %v", err)
+		}
+		c.secrets = k
 	}
 	if c.changeRetention < 0 {
 		return derr.New(derr.InvalidRequest, "WithChangeRetention: duration must not be negative (0 disables pruning)")
