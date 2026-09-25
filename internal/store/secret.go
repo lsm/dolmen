@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/secret"
@@ -86,25 +85,20 @@ func (s *Store) readProjection(ctx context.Context, sc *schema.TableSchema, incl
 }
 
 func (s *Store) secretFingerprint(v any) string {
-	tag, literal := "string", ""
-	switch x := v.(type) {
-	case string:
-		literal = x
-	case bool:
-		tag, literal = "bool", strconv.FormatBool(x)
-	case json.Number:
-		tag, literal = "number", x.String()
-	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
-		tag, literal = "number", fmt.Sprint(x)
-	default:
-		b, err := json.Marshal(v)
-		if err != nil {
-			b = []byte(fmt.Sprintf("%T:%v", v, v))
-		}
-		tag, literal = "json", string(b)
-	}
 	if s.secrets == nil {
 		return "secret-unkeyed"
 	}
-	return "secret-" + tag + ":" + s.secrets.Fingerprint(literal)
+	stored, ok := storedString(v)
+	if !ok {
+		b, err := json.Marshal(v)
+		if err != nil {
+			b = []byte(fmt.Sprintf("%v", v))
+		}
+		return "secret-unstorable:" + s.secrets.Fingerprint(fmt.Sprintf("%T:%s", v, b))
+	}
+	tag := "string"
+	if _, isNumber := v.(json.Number); isNumber {
+		tag = "number"
+	}
+	return "secret-" + tag + ":" + s.secrets.Fingerprint(stored)
 }

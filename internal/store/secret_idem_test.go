@@ -69,7 +69,7 @@ func TestIdempotencyHashNeverCoversSecretPlaintext(t *testing.T) {
 	if err != nil || !replay.Replayed || replay.Ids[0] != first.Ids[0] {
 		t.Fatalf("the same number secret must replay: %+v %v", replay, err)
 	}
-	for _, v := range []any{json.Number("7"), "5", true} {
+	for _, v := range []any{json.Number("7"), json.Number("5.0"), json.Number("5e0"), float64(5), int64(5), "5", true} {
 		_, err = st.Store.Insert(ctx, "test", "creds", []map[string]any{{"name": "c", "token": v}}, num, testEmbed, nil, Incarnation{})
 		if err == nil || !strings.Contains(err.Error(), "different insert") {
 			t.Fatalf("secret %#v under the key of the number 5 must conflict: %v", v, err)
