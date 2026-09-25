@@ -99,6 +99,8 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		sseErrorEvent(w, subscribeErr(err), reqID)
 		return
 	}
+	s.metrics.subscriptions.Add(1)
+	defer s.metrics.subscriptions.Add(-1)
 	defer func() {
 		stop()
 		cancel()
