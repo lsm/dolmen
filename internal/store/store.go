@@ -111,7 +111,8 @@ type Store struct {
 
 	changeRetention time.Duration
 
-	tok tokenizer
+	tok    tokenizer
+	vcache vecCache
 
 	closed   atomic.Bool
 	closeErr error
@@ -149,7 +150,7 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 	if err := os.Chmod(abs, 0o700); err != nil {
 		return nil, fmt.Errorf("cannot secure data directory %s (owner-only permissions): %w", abs, err)
 	}
-	s := &Store{dir: abs, mu: newCtxMutex(), nss: map[string]*nsDB{}, maxOpen: DefaultMaxOpenNamespaces, sync: DefaultSync, changeRetention: DefaultChangeRetention}
+	s := &Store{dir: abs, mu: newCtxMutex(), nss: map[string]*nsDB{}, maxOpen: DefaultMaxOpenNamespaces, vcache: vecCache{max: DefaultVectorCacheBytes}, sync: DefaultSync, changeRetention: DefaultChangeRetention}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -482,6 +483,10 @@ func (m SyncMode) pragma() int {
 
 func WithMaxNamespaceSize(bytes int64) OpenOption {
 	return func(s *Store) { s.maxBytes = bytes }
+}
+
+func WithVectorCacheBytes(n int64) OpenOption {
+	return func(s *Store) { s.vcache.max = n }
 }
 
 func WithSync(m SyncMode) OpenOption {
