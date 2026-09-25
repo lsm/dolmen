@@ -17,14 +17,16 @@ import (
 )
 
 const (
-	Mask       = "••••"
-	KeySize    = 32
-	version    = 1
-	keyIDSize  = 8
-	nonceSize  = 12
-	headerSize = 1 + keyIDSize + nonceSize
-	EnvKey     = "DOLMEN_SECRET_KEY"
-	EnvKeyFile = "DOLMEN_SECRET_KEY_FILE"
+	Mask           = "••••"
+	KeySize        = 32
+	version        = 1
+	keyIDSize      = 8
+	nonceSize      = 12
+	headerSize     = 1 + keyIDSize + nonceSize
+	EnvKey         = "DOLMEN_SECRET_KEY"
+	EnvKeyFile     = "DOLMEN_SECRET_KEY_FILE"
+	EnvOldKeys     = "DOLMEN_SECRET_KEYS_OLD"
+	EnvOldKeysFile = "DOLMEN_SECRET_KEYS_OLD_FILE"
 )
 
 var (
@@ -40,43 +42,113 @@ type WrongKeyError struct {
 }
 
 func (e *WrongKeyError) Error() string {
-	return fmt.Sprintf("%s: the value was written under key id %s, and the configured key has id %s; set %s (or %s) to the key whose id is %s and restart", ErrWrongKey, e.Stored, e.Configured, EnvKey, EnvKeyFile, e.Stored)
+	return fmt.Sprintf("%s: the value was written under key id %s, and the configured keys have ids %s; add the key whose id is %s to %s (or %s) and restart, then run rotate_secret_key", ErrWrongKey, e.Stored, e.Configured, e.Stored, EnvOldKeys, EnvOldKeysFile)
 }
 
 func (e *WrongKeyError) Is(target error) bool { return target == ErrWrongKey }
 
-type Keyring struct {
+type keyEntry struct {
 	aead    cipher.AEAD
 	id      [keyIDSize]byte
 	idemKey []byte
 }
 
+type Keyring struct {
+	keyEntry
+	retired []keyEntry
+}
+
 func (k *Keyring) ID() string { return hex.EncodeToString(k.id[:]) }
 
+func (k *Keyring) IDs() []string {
+	out := []string{k.ID()}
+	for _, e := range k.retired {
+		out = append(out, hex.EncodeToString(e.id[:]))
+	}
+	return out
+}
+
+func (k *Keyring) ActiveID() []byte { return append([]byte(nil), k.id[:]...) }
+
 func (k *Keyring) Fingerprint(plaintext string) string {
-	mac := hmac.New(sha256.New, k.idemKey)
+	return k.keyEntry.fingerprint(plaintext)
+}
+
+func (e *keyEntry) fingerprint(plaintext string) string {
+	mac := hmac.New(sha256.New, e.idemKey)
 	mac.Write([]byte(plaintext))
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func New(key []byte) (*Keyring, error) {
+func (k *Keyring) Retired() []*Keyring {
+	if k == nil {
+		return nil
+	}
+	out := make([]*Keyring, len(k.retired))
+	for i, e := range k.retired {
+		out[i] = &Keyring{keyEntry: e}
+	}
+	return out
+}
+
+func newEntry(key []byte) (keyEntry, error) {
 	if len(key) != KeySize {
-		return nil, fmt.Errorf("a secret key must be exactly %d bytes, got %d; generate one with: openssl rand -base64 32", KeySize, len(key))
+		return keyEntry{}, fmt.Errorf("a secret key must be exactly %d bytes, got %d; generate one with: openssl rand -base64 32", KeySize, len(key))
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return nil, err
+		return keyEntry{}, err
 	}
 	aead, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, err
+		return keyEntry{}, err
 	}
 	derive := hmac.New(sha256.New, key)
 	derive.Write([]byte("dolmen idempotency"))
-	k := &Keyring{aead: aead, idemKey: derive.Sum(nil)}
+	e := keyEntry{aead: aead, idemKey: derive.Sum(nil)}
 	sum := sha256.Sum256(key)
-	copy(k.id[:], sum[:keyIDSize])
+	copy(e.id[:], sum[:keyIDSize])
+	return e, nil
+}
+
+func New(key []byte, retired ...[]byte) (*Keyring, error) {
+	active, err := newEntry(key)
+	if err != nil {
+		return nil, err
+	}
+	k := &Keyring{keyEntry: active}
+	seen := map[[keyIDSize]byte]bool{active.id: true}
+	for i, r := range retired {
+		e, err := newEntry(r)
+		if err != nil {
+			return nil, fmt.Errorf("retired key %d: %w", i+1, err)
+		}
+		if seen[e.id] {
+			continue
+		}
+		seen[e.id] = true
+		k.retired = append(k.retired, e)
+	}
 	return k, nil
+}
+
+func KeyID(blob []byte) (string, bool) {
+	if len(blob) < headerSize || blob[0] != version {
+		return "", false
+	}
+	return hex.EncodeToString(blob[1 : 1+keyIDSize]), true
+}
+
+func (k *Keyring) entry(id []byte) *keyEntry {
+	if bytes.Equal(id, k.id[:]) {
+		return &k.keyEntry
+	}
+	for i := range k.retired {
+		if bytes.Equal(id, k.retired[i].id[:]) {
+			return &k.retired[i]
+		}
+	}
+	return nil
 }
 
 func ParseKey(encoded string) ([]byte, error) {
@@ -115,6 +187,34 @@ func LoadKey(getenv func(string) string) ([]byte, error) {
 	return nil, nil
 }
 
+func LoadOldKeys(getenv func(string) string) ([][]byte, error) {
+	inline, file := getenv(EnvOldKeys), getenv(EnvOldKeysFile)
+	var raw, name string
+	switch {
+	case inline != "" && file != "":
+		return nil, fmt.Errorf("set only one of %s and %s", EnvOldKeys, EnvOldKeysFile)
+	case inline != "":
+		raw, name = inline, EnvOldKeys
+	case file != "":
+		b, err := os.ReadFile(file)
+		if err != nil {
+			return nil, fmt.Errorf("%s: cannot read the key file: %w", EnvOldKeysFile, err)
+		}
+		raw, name = string(b), EnvOldKeysFile
+	default:
+		return nil, nil
+	}
+	var keys [][]byte
+	for i, f := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ' ' || r == '\n' || r == '\r' || r == '\t' }) {
+		k, err := ParseKey(f)
+		if err != nil {
+			return nil, fmt.Errorf("%s: key %d: %w", name, i+1, err)
+		}
+		keys = append(keys, k)
+	}
+	return keys, nil
+}
+
 func (k *Keyring) Seal(plaintext string) ([]byte, error) {
 	if k == nil {
 		return nil, ErrNoKey
@@ -136,10 +236,11 @@ func (k *Keyring) Open(blob []byte) (string, error) {
 	if len(blob) < headerSize+k.aead.Overhead() || blob[0] != version {
 		return "", ErrCorrupt
 	}
-	if !bytes.Equal(blob[1:1+keyIDSize], k.id[:]) {
-		return "", &WrongKeyError{Stored: hex.EncodeToString(blob[1 : 1+keyIDSize]), Configured: k.ID()}
+	e := k.entry(blob[1 : 1+keyIDSize])
+	if e == nil {
+		return "", &WrongKeyError{Stored: hex.EncodeToString(blob[1 : 1+keyIDSize]), Configured: strings.Join(k.IDs(), ", ")}
 	}
-	plain, err := k.aead.Open(nil, blob[1+keyIDSize:headerSize], blob[headerSize:], blob[:1+keyIDSize])
+	plain, err := e.aead.Open(nil, blob[1+keyIDSize:headerSize], blob[headerSize:], blob[:1+keyIDSize])
 	if err != nil {
 		return "", ErrTampered
 	}

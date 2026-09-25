@@ -1176,7 +1176,19 @@ func TestLoadConfigSecretKey(t *testing.T) {
 	}
 	var help strings.Builder
 	printEnvHelp(&help)
-	for _, k := range []string{"DOLMEN_SECRET_KEY", "DOLMEN_SECRET_KEY_FILE"} {
+	cfg, err = load(map[string]string{"DOLMEN_SECRET_KEY": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=", "DOLMEN_SECRET_KEYS_OLD": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI="})
+	if err != nil || cfg.Secrets == nil || len(cfg.Secrets.IDs()) != 2 {
+		t.Fatalf("retired key: cfg.Secrets=%v err=%v", cfg.Secrets, err)
+	}
+	_, err = load(map[string]string{"DOLMEN_SECRET_KEYS_OLD": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI="})
+	if err == nil || !strings.Contains(err.Error(), "DOLMEN_SECRET_KEY") {
+		t.Fatalf("retired keys without an active key: err=%v", err)
+	}
+	_, err = load(map[string]string{"DOLMEN_SECRET_KEY": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=", "DOLMEN_SECRET_KEYS_OLD": "dG9vIHNob3J0"})
+	if err == nil || strings.Contains(err.Error(), "dG9vIHNob3J0") {
+		t.Fatalf("bad retired key: err=%v", err)
+	}
+	for _, k := range []string{"DOLMEN_SECRET_KEY", "DOLMEN_SECRET_KEY_FILE", "DOLMEN_SECRET_KEYS_OLD", "DOLMEN_SECRET_KEYS_OLD_FILE"} {
 		if !strings.Contains(help.String(), k) {
 			t.Errorf("env help does not list %s", k)
 		}

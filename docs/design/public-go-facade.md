@@ -164,6 +164,11 @@ reads still work. `GetRows` and the searches return the mask `"••••"` fo
 `RevealRows(ctx, ns, table, ids, fields)` is `GetRows` with the named secret fields decrypted, and
 `SearchOptions.Reveal` does the same for both searches. The facade has no auth, so reveal is always
 allowed there; the transports refuse it under `-auth on` until the `reveal` verb ships.
+`WithSecretKey(key, retired...)` also takes retired keys, used only to decrypt, and
+`RotateSecretKey(ctx, namespace, limit)` re-encrypts one namespace's values under the active key
+(limit 0 means no limit; the facade has no operation timeout to bound it) and returns rotated,
+remaining and values per key id. Both were cheap because the engine does the work; the facade
+covers one namespace per call, and a caller wanting every namespace loops over `ListNamespaces`.
 
 Share the current vector-column/model validation and query-vector validation between
 Go and HTTP. Preserve table identity pinning and failed-write atomicity/idempotency.

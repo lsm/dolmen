@@ -117,3 +117,38 @@ again. The cost is that a retry of an insert made before the upgrade no longer r
 again; that window only existed on unreleased builds (no tag contains slice 1 without slice 2), and
 a replayable hash of a secret is the worse failure. PostgreSQL never stored a hash over a secret, so
 it needs no purge.
+
+## Slice 4
+
+**Keyring.** `DOLMEN_SECRET_KEY` (or `_FILE`) stays the one active key; every write seals under
+it. `DOLMEN_SECRET_KEYS_OLD` (comma or whitespace separated) or `DOLMEN_SECRET_KEYS_OLD_FILE` (one
+per line) adds retired keys that only decrypt. Retired keys without an active one are refused at
+startup. `Open` picks the key by the key id in the blob; an id no configured key has stays
+`internal_error` on reveal, and the log names that id and says to add the key to
+`DOLMEN_SECRET_KEYS_OLD`. The facade takes retired keys as `WithSecretKey(key, retired...)`.
+
+**`rotate_secret_key`.** Server-scope `admin`. It runs synchronously and does a bounded amount of
+work per call rather than running a background job: at most `limit` values (default 10000, max
+100000) and, when the call has a deadline, no new batch after half of the time left. It returns
+`rotated`, `remaining`, `done`, per-table progress and `keys` (values per key id, active included),
+and the caller loops until `done`. A background job would need its own status op, a place to keep
+state across restarts and a story for two servers on one PostgreSQL catalog; a bounded call needs
+none of that, and the op timeout still holds. Each batch (200 values of one column) is one short
+write transaction: SQLite's single writer connection, PostgreSQL's serialized namespace write with
+`FOR UPDATE` on the rows, so a concurrent write waits one batch at most and a value written in
+between is already under the active key. Selection is "key id is not the active one", so the op is
+idempotent and resumable with no cursor, and a crash leaves every value under one of the two keys.
+Before touching a table it counts values per key id; one under a key not configured answers
+`conflict` naming the id and the variable to add it to, since the fix is the operator's and nothing
+was lost. Rotation writes no change-feed record: the row's value is unchanged. With `namespace` it
+covers that namespace only (not its children).
+
+**Idempotency fingerprints across rotation.** The fingerprint key is derived from the secret key,
+so a rotation would turn a replay into a conflict. A stored hash is now accepted if it matches the
+request's hash under the active key or under any retired key; new records are written under the
+active key. The alternative, a separate stable fingerprint key, is one more secret to provision
+and back up, and if it were derived from anything that rotates it would not be stable; deriving it
+from nothing secret would reopen the offline brute force slice 2 closed. Checking under each
+configured key adds no key material, keeps the fingerprint keyed by a secret the operator already
+guards, and fails closed: once a retired key is removed, a replay of an insert recorded under it
+answers `conflict` instead of inserting twice.

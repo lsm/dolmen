@@ -53,6 +53,8 @@ var toolAnnotations = map[string]map[string]any{
 		"idempotentHint": false, "openWorldHint": false},
 	"vacuum": {"title": "Vacuum namespace", "readOnlyHint": false, "destructiveHint": false,
 		"idempotentHint": true, "openWorldHint": false},
+	"rotate_secret_key": {"title": "Rotate secret key", "readOnlyHint": false, "destructiveHint": false,
+		"idempotentHint": true, "openWorldHint": false},
 	"drop_table": {"title": "Drop table", "readOnlyHint": false, "destructiveHint": true,
 		"idempotentHint": false, "openWorldHint": false},
 	"describe_server": {"title": "Describe server", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},

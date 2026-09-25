@@ -102,7 +102,7 @@ func (d IdemDomain) FallsBackToLegacy() bool {
 	return d.Owner != LegacyIdempotencyOwner && d.TableWideRead
 }
 
-func lookupIdem(ctx context.Context, db rowQuerier, table, key, wantHash string, domain IdemDomain) (ids []int64, found bool, err error) {
+func lookupIdem(ctx context.Context, db rowQuerier, table, key string, wantHash IdemHash, domain IdemDomain) (ids []int64, found bool, err error) {
 	ids, found, err = readIdem(ctx, db, table, domain.Owner, key, wantHash)
 	if err != nil || found {
 		return ids, found, err
@@ -113,7 +113,7 @@ func lookupIdem(ctx context.Context, db rowQuerier, table, key, wantHash string,
 	return nil, false, nil
 }
 
-func readIdem(ctx context.Context, db rowQuerier, table, owner, key, wantHash string) (ids []int64, found bool, err error) {
+func readIdem(ctx context.Context, db rowQuerier, table, owner, key string, wantHash IdemHash) (ids []int64, found bool, err error) {
 	var gotHash, idsJSON string
 	err = db.QueryRowContext(ctx,
 		`SELECT payload_hash, ids_json FROM `+idempotencyTable+` WHERE table_name = ? AND owner = ? AND key = ?`,
@@ -124,7 +124,7 @@ func readIdem(ctx context.Context, db rowQuerier, table, owner, key, wantHash st
 	if err != nil {
 		return nil, false, err
 	}
-	if gotHash != wantHash {
+	if !wantHash.Matches(gotHash) {
 		return nil, false, conflictf("idempotency key %q was already recorded for a different insert into %s; for a retry, re-send the identical body with the same key (a client-regenerated timestamp or nonce is the classic cause; a fresh key would insert a duplicate); for a genuinely new insert, use a fresh key", key, table)
 	}
 	if err := json.Unmarshal([]byte(idsJSON), &ids); err != nil {

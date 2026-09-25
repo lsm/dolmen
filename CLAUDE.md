@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Dolmen is a single static Go binary that gives AI agents a data layer: typed tables, FTS5 full-text search, and cosine vector search over one SQLite file per namespace. It exposes 25 operations over two wire transports, plus seven more under `-auth on` (grants, API keys, `whoami`) and `rotate_signing_key` when native sign-in is configured: HTTP `POST /v1/{op}` and MCP `tools/call` (over HTTP at `/mcp` or over stdio via `dolmen mcp`). An in-process Go library (the root `dolmen` package) exposes a subset of those operations over the same engine, with a few recorded per-surface differences; see the root-package entry under Architecture for what it covers. Module path is `github.com/lsm/dolmen`; the executable lives at `./cmd/dolmen`.
+Dolmen is a single static Go binary that gives AI agents a data layer: typed tables, FTS5 full-text search, and cosine vector search over one SQLite file per namespace. It exposes 26 operations over two wire transports, plus seven more under `-auth on` (grants, API keys, `whoami`) and `rotate_signing_key` when native sign-in is configured: HTTP `POST /v1/{op}` and MCP `tools/call` (over HTTP at `/mcp` or over stdio via `dolmen mcp`). An in-process Go library (the root `dolmen` package) exposes a subset of those operations over the same engine, with a few recorded per-surface differences; see the root-package entry under Architecture for what it covers. Module path is `github.com/lsm/dolmen`; the executable lives at `./cmd/dolmen`.
 
 ## Commands
 
