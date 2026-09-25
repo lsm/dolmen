@@ -77,13 +77,13 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq Vecto
 	skipped := 0
 	cached := false
 	if s.vcache.max > 0 {
-		var only []int64
+		var candidates func() ([]int64, error)
 		if filter != "" {
-			if only, err = candidateIDs(ctx, tx, table, column, filter, args, scope); err != nil {
-				return SearchResult{}, err
+			candidates = func() ([]int64, error) {
+				return candidateIDs(ctx, tx, table, column, filter, args, scope)
 			}
 		}
-		hits, skipped, cached, err = s.vcache.score(ctx, tx, nsName, table, column, vec, threshold, only, scope, sc.HasOwner)
+		hits, skipped, cached, err = s.vcache.score(ctx, tx, nsName, table, column, vec, threshold, candidates, scope, sc.HasOwner)
 		if err != nil {
 			return SearchResult{}, err
 		}

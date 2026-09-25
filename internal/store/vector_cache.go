@@ -129,7 +129,7 @@ func (c *vecCache) drop(k vecKey, e *vecEntry) {
 	}
 }
 
-func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column string, vec []float32, threshold float64, only []int64, scope *RowScope, owned bool) ([]vecHit, int, bool, error) {
+func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column string, vec []float32, threshold float64, candidates func() ([]int64, error), scope *RowScope, owned bool) ([]vecHit, int, bool, error) {
 	if c.max <= 0 {
 		return nil, 0, false, nil
 	}
@@ -200,6 +200,12 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 	}
 	e.mu.Unlock()
 
+	var only []int64
+	if candidates != nil {
+		if only, err = candidates(); err != nil {
+			return nil, 0, false, err
+		}
+	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	if e.seq != head || e.fp != fp {

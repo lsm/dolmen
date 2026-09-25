@@ -157,3 +157,35 @@ func TestAScopedSearchWithoutAFilterIsServedFromTheCache(t *testing.T) {
 		t.Fatal("a scoped search must fill the cache")
 	}
 }
+
+func TestAFilterIsNotRunForTheCacheWhenTheTableDoesNotFit(t *testing.T) {
+	st, err := Open(t.TempDir(), WithVectorCacheBytes(64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	l := legacy(st)
+	mustNS(t, l, "v")
+	ctx := context.Background()
+	if _, err := l.CreateTable(ctx, "v", "t", []schema.Field{{Name: "k", Type: schema.Number}, {Name: "emb", Type: schema.Vector, Dim: 3}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Insert(ctx, "v", "t", []map[string]any{{"k": 1, "emb": []float32{1, 0, 0}}, {"k": 2, "emb": []float32{0, 1, 0}}}, testEmbed); err != nil {
+		t.Fatal(err)
+	}
+	n, err := st.ns("v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.unpin()
+	for i := 0; i < 2; i++ {
+		calls := 0
+		_, _, cached, err := st.vcache.score(ctx, n.ro, "v", "t", "emb", []float32{1, 0, 0}, -1, func() ([]int64, error) {
+			calls++
+			return []int64{1}, nil
+		}, nil, false)
+		if err != nil || cached || calls != 0 {
+			t.Fatalf("search %d on a table too big for the cache must not run the filter for it: cached=%v calls=%d %v", i, cached, calls, err)
+		}
+	}
+}
