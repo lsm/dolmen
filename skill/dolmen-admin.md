@@ -110,7 +110,7 @@ curl -s -X POST "${base%/}/v1/insert" \
 Searches answer with `results`, where `query` and `read_rows` answer with `rows`:
 
 ```json
-{"ok":true,"data":{"results":[{"id":1,"created_at":"2026-09-23T16:19:06.326Z","title":"auth flow","body":"token expiry not checked"}],"truncated":false,"limit":10}}
+{"ok":true,"data":{"results":[{"id":1,"created_at":"2026-09-23T16:19:06.326Z","title":"auth flow","body":"token expiry not checked","_score":1.2145}],"truncated":false,"limit":10}}
 ```
 
 `search_vector` adds `_score` to each result and reports `skipped_vectors`:
@@ -369,6 +369,7 @@ locked-out server.
   provoking a syntax error: `query_dialect` is the dialect `query` accepts, `filter_dialect` the one
   a `filter` is read in with authentication off. With authentication on, every engine reads a
   filter against one shared allowlist and `filter_dialect` is informational.
+- Both searches score every hit as `_score`, higher being more relevant, and return results in that order. The two scales are different and engine-specific — full-text relevance is the engine's own ({{ if eq .Dialect "postgresql" }}PostgreSQL `ts_rank_cd`{{ else }}FTS5 BM25, negated so higher wins{{ end }}), vector `_score` is cosine similarity — so compare scores only within one query's results, never across queries, tables or servers, and never threshold full-text `_score` against a fixed number.
 - `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's
   columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.

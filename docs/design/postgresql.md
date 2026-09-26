@@ -764,7 +764,9 @@ fields with a GIN index, matched with `@@` and ordered by `ts_rank_cd` descendin
 id ascending. The text-search configuration is the explicit `english` one, never the
 server's ambient default, and fields carry equal weight. Relevance is PostgreSQL-native
 and does not agree with SQLite's BM25 ordering; ranking is tested within each backend,
-not across them.
+not across them. Each hit carries that rank as `_score`, higher being more relevant, which
+is why SQLite negates its BM25 rank: the direction is the contract, the scale is not, and
+a score is comparable only within one query's results.
 
 The match grammar is translated to a tsquery expression rather than passed through.
 Terms become `plainto_tsquery`, phrases `phraseto_tsquery`, and prefixes a quoted
