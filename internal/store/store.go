@@ -234,6 +234,9 @@ func (s *Store) verifyOneCatalogVersion(ctx context.Context, name string) error 
 	defer ro.Close()
 	format, minReader, err := readCatalogVersion(ctx, ro)
 	if err != nil {
+		if preGateNamespace(ctx, ro) {
+			return nil
+		}
 		s.markUnreadable(name, err)
 		return nil
 	}
@@ -994,6 +997,9 @@ func (s *Store) namespaceUnreadable(ctx context.Context, name string) bool {
 	}
 	defer ro.Close()
 	_, minReader, err := readCatalogVersion(ctx, ro)
+	if err != nil && preGateNamespace(ctx, ro) {
+		return false
+	}
 	return err != nil || minReader > CatalogFormat
 }
 

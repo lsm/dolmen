@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"os"
@@ -174,6 +175,63 @@ func TestATruncatedNamespaceCanStillBeDropped(t *testing.T) {
 	}
 	if err := st.Ready(context.Background()); err != nil {
 		t.Fatalf("readiness must recover once the namespace is gone: %v", err)
+	}
+}
+
+func TestANamespaceWithNoCatalogTableIsStillAdopted(t *testing.T) {
+	dir := t.TempDir()
+	seedTwoNamespaces(t, dir)
+	db, err := sql.Open("sqlite", dsn(filepath.Join(dir, "broken.db"), false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP TABLE _dolmen_meta`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if st.markedUnreadable("broken") {
+		t.Error("a namespace with no catalog table is pre-gate, not unreadable: the first operation must adopt it")
+	}
+	rows, err := st.GetRows(context.Background(), "broken", "t", []int64{1}, nil, Incarnation{})
+	if err != nil {
+		t.Fatalf("a pre-gate namespace must serve: %v", err)
+	}
+	if len(rows.Rows) != 1 {
+		t.Fatalf("the adopted namespace lost its row: %v", rows.Rows)
+	}
+	st.Close()
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if reopened.markedUnreadable("broken") {
+		t.Error("the adopted namespace must be stamped on the next open, not refused")
+	}
+}
+
+func TestACorruptCatalogStampKeepsItsOwnErrorThroughTheScan(t *testing.T) {
+	dir := t.TempDir()
+	seedTwoNamespaces(t, dir)
+	setCatalogMeta(t, dir, "broken", catalogFormatKey, "not-a-number")
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	_, err = st.GetRows(context.Background(), "broken", "t", []int64{1}, nil, Incarnation{})
+	if !errors.Is(err, ErrCatalogCorrupt) {
+		t.Fatalf("a corrupt stamp must stay matchable with errors.Is through the startup scan, got %v", err)
+	}
+	if !errors.Is(err, ErrNamespaceUnreadable) {
+		t.Errorf("the refusal must still say the namespace cannot be read, got %v", err)
 	}
 }
 

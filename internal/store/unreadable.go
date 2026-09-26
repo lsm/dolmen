@@ -10,27 +10,23 @@ var ErrNamespaceUnreadable = fmt.Errorf("namespace file cannot be read")
 
 type unreadableNamespace struct {
 	name   string
-	reason string
+	reason error
 }
 
 func (s *Store) markUnreadable(name string, err error) {
 	slog.Warn("namespace is unreadable; requests to it fail until it is repaired", "namespace", name, "err", err)
-	reason := ""
-	if err != nil {
-		reason = err.Error()
-	}
 	s.unreadableMu.Lock()
 	defer s.unreadableMu.Unlock()
 	for i, kept := range s.unreadable {
 		if kept.name == name {
-			s.unreadable[i].reason = reason
+			s.unreadable[i].reason = err
 			return
 		}
 	}
-	s.unreadable = append(s.unreadable, unreadableNamespace{name: name, reason: reason})
+	s.unreadable = append(s.unreadable, unreadableNamespace{name: name, reason: err})
 }
 
-func (s *Store) unreadableReason(name string) (string, bool) {
+func (s *Store) unreadableReason(name string) (error, bool) {
 	s.unreadableMu.Lock()
 	defer s.unreadableMu.Unlock()
 	for _, kept := range s.unreadable {
@@ -38,7 +34,12 @@ func (s *Store) unreadableReason(name string) (string, bool) {
 			return kept.reason, true
 		}
 	}
-	return "", false
+	return nil, false
+}
+
+func (s *Store) markedUnreadable(name string) bool {
+	_, marked := s.unreadableReason(name)
+	return marked
 }
 
 func (s *Store) refuseIfUnreadable(ctx context.Context, name string) error {
@@ -52,8 +53,24 @@ func (s *Store) refuseIfUnreadable(ctx context.Context, name string) error {
 		return nil
 	}
 	why := ""
-	if reason != "" {
-		why = " (" + reason + ")"
+	if reason != nil {
+		why = " (" + reason.Error() + ")"
 	}
-	return fmt.Errorf("%w: namespace %s cannot be read%s, so no operation on it can be served; restore it from a backup (dolmen restore), or drop_namespace it to start over; the other namespaces in this data directory are unaffected", ErrNamespaceUnreadable, name, why)
+	return fmt.Errorf("%w: %w: namespace %s cannot be read%s, so no operation on it can be served; restore it from a backup (dolmen restore), or drop_namespace it to start over; the other namespaces in this data directory are unaffected", ErrNamespaceUnreadable, reason, name, why)
+}
+
+func preGateNamespace(ctx context.Context, db rowQuerier) bool {
+	var tables, meta int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name <> 'sqlite_sequence'`).Scan(&tables); err != nil {
+		return false
+	}
+	if tables == 0 {
+		return false
+	}
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '_dolmen_meta'`).Scan(&meta); err != nil {
+		return false
+	}
+	return meta == 0
 }
