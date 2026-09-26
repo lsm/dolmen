@@ -195,12 +195,12 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsG
 
 	tx, done, err := beginCallerTx(ctx, n.ro, nil)
 	if err != nil {
-		return QueryResult{}, err
+		return QueryResult{}, cancelled(ctx, err)
 	}
 	defer done()
 	registered, err := registeredTables(ctx, tx)
 	if err != nil {
-		return QueryResult{}, err
+		return QueryResult{}, cancelled(ctx, err)
 	}
 	scan, err := scanQueryTables(trimmed, registered)
 	if err != nil {
@@ -208,7 +208,7 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsG
 	}
 	masked, err := maskedProjections(ctx, tx, nsName, scan.rewrites)
 	if err != nil {
-		return QueryResult{}, err
+		return QueryResult{}, cancelled(ctx, err)
 	}
 	if err := scan.refuseMaskedShapes(masked); err != nil {
 		return QueryResult{}, err
@@ -220,6 +220,9 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsG
 
 	rows, err := tx.QueryContext(ctx, paginated, args...)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return QueryResult{}, ctxErr
+		}
 
 		first := err
 		userArgs := args[:len(args)-2]
@@ -262,13 +265,20 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsG
 
 	proj, err := s.nsProjection(ctx, tx, userSQL)
 	if err != nil {
-		return QueryResult{}, err
+		return QueryResult{}, cancelled(ctx, err)
 	}
 	rowsOut, truncated, err := rowsToMaps(rows, proj, limit)
 	if err != nil {
-		return QueryResult{}, err
+		return QueryResult{}, cancelled(ctx, err)
 	}
 	return QueryResult{Rows: rowsOut, Truncated: truncated}, nil
+}
+
+func cancelled(ctx context.Context, err error) error {
+	if err != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
 }
 
 const (

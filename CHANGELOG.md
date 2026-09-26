@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- **A cancelled `query` is reported as `canceled`, not as a query error.** SQLite reports a statement
+  interrupted by the caller's own cancellation as `interrupted (9)`, which reached the wire as
+  `query_error` and read as a bad query rather than a caller that went away. `query` now reports the
+  cancellation wherever it can be interrupted, and its read connections are released the moment the
+  context is done.
+
 - **`query` can no longer hand out a secret's ciphertext.** Masking used to key off the result-column
   label, so `SELECT token AS t` returned base64 of the stored bytes and `length(token)` its unpadded
   length — any caller holding `read` could exfiltrate every secret's ciphertext without the `reveal`
