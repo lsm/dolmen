@@ -80,15 +80,31 @@ func (s *Server) opLimit(op string) (time.Duration, string) {
 func (s *Server) withOpDeadline(ctx context.Context, op string) (context.Context, context.CancelFunc, func(error) error) {
 	limit, described := s.opLimit(op)
 	if limit <= 0 {
-		return ctx, func() {}, func(err error) error { return err }
+		return ctx, func() {}, func(err error) error { return callerGone(ctx, err) }
 	}
 	opCtx, cancel := context.WithTimeout(ctx, limit)
 	return opCtx, cancel, func(err error) error {
-		if err == nil || ctx.Err() != nil || !errors.Is(opCtx.Err(), context.DeadlineExceeded) {
+		if err == nil {
+			return err
+		}
+		if ctx.Err() != nil {
+			return callerGone(ctx, err)
+		}
+		if !errors.Is(opCtx.Err(), context.DeadlineExceeded) {
 			return err
 		}
 		return opTimedOut(op, described, err)
 	}
+}
+
+func callerGone(ctx context.Context, err error) error {
+	if err == nil || ctx.Err() == nil {
+		return err
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return timedOut(errors.Join(err, ctx.Err()))
+	}
+	return canceled(errors.Join(err, ctx.Err()))
 }
 
 func opTimedOut(op, limit string, cause error) *Error {

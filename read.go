@@ -46,7 +46,7 @@ func (s *Store) RevealRows(ctx context.Context, namespace, table string, ids []i
 	}
 	defer s.done()
 	if err := ctx.Err(); err != nil {
-		return QueryResult{}, facadeErr(err)
+		return QueryResult{}, facadeErr(ctx, err)
 	}
 	if len(ids) > store.MaxReadRowsIDs {
 		return QueryResult{}, derr.New(derr.InvalidRequest, "GetRows accepts at most %d ids per call, got %d", store.MaxReadRowsIDs, len(ids))
@@ -61,7 +61,7 @@ func (s *Store) RevealRows(ctx context.Context, namespace, table string, ids []i
 	ownIds := append([]int64(nil), ids...)
 	res, err := s.eng.GetRows(store.WithReveal(ctx, reveal), ns, ops.NormalizeTable(table), ownIds, nil, store.Incarnation{})
 	if err != nil {
-		return QueryResult{}, facadeErr(err)
+		return QueryResult{}, facadeErr(ctx, err)
 	}
 	return QueryResult{Rows: res.Rows, Truncated: res.Truncated}, nil
 }
@@ -74,7 +74,7 @@ func (s *Store) Query(ctx context.Context, namespace, sql string, opts QueryOpti
 	}
 	defer s.done()
 	if err := ctx.Err(); err != nil {
-		return QueryResult{}, facadeErr(err)
+		return QueryResult{}, facadeErr(ctx, err)
 	}
 	if opts.Limit != 0 && (opts.Limit < 1 || opts.Limit > store.MaxPageLimit) {
 		return QueryResult{}, derr.New(derr.InvalidRequest, "QueryOptions.Limit must be between 1 and %d (0 keeps the default page size), got %d", store.MaxPageLimit, opts.Limit)
@@ -95,7 +95,7 @@ func (s *Store) Query(ctx context.Context, namespace, sql string, opts QueryOpti
 	args := append([]any(nil), opts.Args...)
 	res, err := s.eng.Query(ctx, ns, sql, args, [16]byte{}, store.Page{Offset: opts.Offset, Limit: opts.Limit})
 	if err != nil {
-		return QueryResult{}, facadeErr(err)
+		return QueryResult{}, facadeErr(ctx, err)
 	}
 	return QueryResult{Rows: res.Rows, Truncated: res.Truncated}, nil
 }
