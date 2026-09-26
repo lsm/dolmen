@@ -147,6 +147,12 @@ func TestPostgresRecordsSpansForReadsAndSchemaLifecycle(t *testing.T) {
 	if err := s.DropTable(ctx, "life", "notes", store.Incarnation{}); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.CreateNamespace(ctx, "fresh", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DropNamespace(ctx, "fresh", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.DropNamespace(ctx, "life", [16]byte{}); err != nil {
 		t.Fatal(err)
 	}
@@ -163,19 +169,21 @@ func TestPostgresRecordsSpansForReadsAndSchemaLifecycle(t *testing.T) {
 	wantSpanAttrs(t, rows, parent, map[string]string{
 		"db.system.name": "postgresql", "db.operation.name": "SELECT", "db.collection.name": "notes",
 	})
-	created := spanFor(t, spans, "CREATE notes", "life")
+	created := spanFor(t, spans, "CREATE logs", "life")
 	wantSpanAttrs(t, created, parent, map[string]string{
-		"db.system.name": "postgresql", "db.operation.name": "CREATE", "db.collection.name": "notes",
+		"db.system.name": "postgresql", "db.operation.name": "CREATE", "db.collection.name": "logs",
 	})
 	dropped := spanFor(t, spans, "DROP notes", "life")
 	wantSpanAttrs(t, dropped, parent, map[string]string{
 		"db.system.name": "postgresql", "db.operation.name": "DROP", "db.collection.name": "notes",
 	})
-	if got := spanAttr(spanFor(t, spans, "CREATE", "life"), "db.collection.name"); got != "" {
+	if got := spanAttr(spanFor(t, spans, "CREATE", "fresh"), "db.collection.name"); got != "" {
 		t.Errorf("create_namespace named a table: %q", got)
 	}
-	if got := spanAttr(spanFor(t, spans, "DROP", "life"), "db.collection.name"); got != "" {
-		t.Errorf("drop_namespace named a table: %q", got)
+	for _, ns := range []string{"fresh", "life"} {
+		if got := spanAttr(spanFor(t, spans, "DROP", ns), "db.collection.name"); got != "" {
+			t.Errorf("drop_namespace in %s named a table: %q", ns, got)
+		}
 	}
 	for _, ns := range []string{"life", "errs"} {
 		q := spanFor(t, spans, "SELECT", ns)
