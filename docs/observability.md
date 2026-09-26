@@ -71,9 +71,10 @@ Within a minute you should be able to find all three:
 
 - **Traces**: Grafana → Explore → `grafana` data source → *TraceQL* query `{.service.name="dolmen-dev"}`.
   One `insert` request is a tree: `POST /v1/{op}` → `dolmen.op insert` → `INSERT docs`, with
-  `embeddings <model>` under it, and on SQLite also `dolmen.writer.wait` and `dolmen.transaction`.
-  The last is the one to read when a write is slow: a long `dolmen.writer.wait` under it is writer
-  contention, not slow SQL.
+  `embeddings <model>` under it, and on SQLite also `dolmen.writer.wait` and `dolmen.transaction`
+  as siblings beside it. Read a slow write from those two: a long `dolmen.writer.wait` means the
+  namespace's single writer was busy, and it ends *before* `dolmen.transaction` starts, so the wait
+  is contention rather than slow SQL. A long `dolmen.transaction` is the write itself.
 - **Metrics**: Grafana → Dashboards → *LGTM Starter Dashboard*, or Explore → `prometheus` data
   source. `dolmen_operation_duration_seconds` is the one to start with; its `count` per
   `dolmen_op_name` is the operation count, and its `sum` divided by that count is the mean.
