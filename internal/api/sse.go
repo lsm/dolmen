@@ -101,6 +101,8 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	s.metrics.subscriptions.Add(1)
 	defer s.metrics.subscriptions.Add(-1)
+	s.tracing.SubscriptionOpened(ctx)
+	defer s.tracing.SubscriptionClosed(context.WithoutCancel(ctx))
 	defer func() {
 		stop()
 		cancel()

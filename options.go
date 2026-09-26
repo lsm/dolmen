@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/lsm/dolmen/internal/derr"
@@ -34,6 +35,8 @@ type config struct {
 
 	tracerProvider    trace.TracerProvider
 	tracerProviderSet bool
+	meterProvider     metric.MeterProvider
+	meterProviderSet  bool
 }
 
 type EngineOpener func(ctx context.Context, changeRetention time.Duration) (store.Engine, error)
@@ -107,6 +110,9 @@ func (c *config) validate() error {
 	}
 	if c.tracerProviderSet && nilProvider(c.tracerProvider) {
 		return derr.New(derr.InvalidRequest, "WithTracerProvider: provider must not be nil; omit the option to leave tracing off")
+	}
+	if c.meterProviderSet && nilProvider(c.meterProvider) {
+		return derr.New(derr.InvalidRequest, "WithMeterProvider: provider must not be nil; omit the option to leave metrics off")
 	}
 	if c.changeRetention < 0 {
 		return derr.New(derr.InvalidRequest, "WithChangeRetention: duration must not be negative (0 disables pruning)")

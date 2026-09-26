@@ -12,7 +12,26 @@
   `"••••"`. Search and write filters still evaluate against the ciphertext, where they select rows
   but return no values.
 
+- **Writing a masked secret back no longer destroys it.** `"••••"` is refused as a `secret`
+  value, naming the field and saying to pass the real value, `reveal` it first, or omit the field.
+  An agent that read a row without `reveal` and wrote it back edited previously stored the mask as
+  the plaintext, losing the secret silently and unrecoverably.
+
 ### Added
+
+- **OpenTelemetry metrics over OTLP.** Operation duration and outcome, operations in flight, active
+  subscriptions, `http.server.request.duration`, and the `gen_ai.client.*` embedding metrics, pushed
+  to the same collector as traces (`WithMeterProvider` in Go). `GET /metrics` still serves
+  Prometheus. **Behaviour change:** `OTEL_EXPORTER_OTLP_ENDPOINT` now turns metrics on as well as
+  traces; set `OTEL_METRICS_EXPORTER=none` to keep traces only.
+
+- **`search_fulltext` scores every hit as `_score`**, higher being more relevant, like `search_vector`.
+  The scale is the engine's own (FTS5 BM25 negated on SQLite, `ts_rank_cd` on PostgreSQL), so compare
+  scores only within one query's results.
+
+- **Log export over OTLP.** `OTEL_LOGS_EXPORTER=otlp` also sends every log line to the collector,
+  honouring `-log-level` and carrying the request's trace context; stderr is unchanged. It is off
+  unless set, even with an endpoint configured.
 
 - **`describe_table` reads a kept row count instead of scanning the table.** Every write keeps
   a per-table count current (per owner on `row_access` tables), so `row_count` costs the same on a

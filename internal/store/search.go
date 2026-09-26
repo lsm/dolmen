@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/lsm/dolmen/internal/telemetry/dbspan"
 	"regexp"
 	"strings"
+
+	"github.com/lsm/dolmen/internal/schema"
 )
 
 const (
@@ -115,7 +118,9 @@ func bareHyphenTerm(match string) bool {
 	return false
 }
 
-func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string, filter string, args []any, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (SearchResult, error) {
+func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string, filter string, args []any, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (_ SearchResult, err error) {
+	ctx, span := s.tr.Op(ctx, "SELECT", nsName, table, dbspan.SearchKindKey.String("fulltext"))
+	defer func() { s.tr.End(span, err) }()
 	n, err := s.ns(nsName)
 	if err != nil {
 		return SearchResult{}, err
@@ -160,11 +165,11 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 	if err := scopeUsable(scope, sc); err != nil {
 		return SearchResult{}, err
 	}
-	stmt := fmt.Sprintf(`SELECT rowid FROM %s WHERE %s MATCH ? ORDER BY rank, rowid LIMIT ? OFFSET ?`,
+	stmt := fmt.Sprintf(`SELECT rowid, rank FROM %s WHERE %s MATCH ? ORDER BY rank, rowid LIMIT ? OFFSET ?`,
 		q(ftsTable(table)), ftsTable(table))
 	qargs := []any{match, limit + 1, offset}
 	if clause, sargs := scopeClause(scope, "b"); clause != "" {
-		stmt = fmt.Sprintf(`SELECT rowid FROM %s WHERE EXISTS (SELECT 1 FROM %s b WHERE b.id = %s.rowid AND %s) AND %s MATCH ? ORDER BY rank, rowid LIMIT ? OFFSET ?`,
+		stmt = fmt.Sprintf(`SELECT rowid, rank FROM %s WHERE EXISTS (SELECT 1 FROM %s b WHERE b.id = %s.rowid AND %s) AND %s MATCH ? ORDER BY rank, rowid LIMIT ? OFFSET ?`,
 			q(ftsTable(table)), q(table), ftsTable(table), clause, ftsTable(table))
 		qargs = append(append([]any(nil), sargs...), match, limit+1, offset)
 	}
@@ -202,12 +207,15 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 	}
 	defer rows.Close()
 	var ids []int64
+	scoreByID := map[int64]float64{}
 	for rows.Next() {
 		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var rank float64
+		if err := rows.Scan(&id, &rank); err != nil {
 			return SearchResult{}, err
 		}
 		ids = append(ids, id)
+		scoreByID[id] = fulltextScore(rank)
 	}
 	if err := rows.Err(); err != nil {
 		return SearchResult{}, classify(err)
@@ -225,11 +233,16 @@ func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string,
 	if err != nil {
 		return SearchResult{}, err
 	}
+	for _, row := range out {
+		if id, ok := row["id"].(int64); ok {
+			row[schema.ScoreColumn] = scoreByID[id]
+		}
+	}
 	return SearchResult{Rows: out, Truncated: hasMore || !complete}, nil
 }
 
 func fulltextFilterStmt(table, filter string, nargs int, prefix, source string) string {
-	return fmt.Sprintf(`%sSELECT rowid FROM %s WHERE EXISTS (SELECT 1 FROM %s WHERE %s.id = %s.rowid AND (%s)) AND %s MATCH ?%d ORDER BY rank, rowid LIMIT ?%d OFFSET ?%d`,
+	return fmt.Sprintf(`%sSELECT rowid, rank FROM %s WHERE EXISTS (SELECT 1 FROM %s WHERE %s.id = %s.rowid AND (%s)) AND %s MATCH ?%d ORDER BY rank, rowid LIMIT ?%d OFFSET ?%d`,
 		prefix, q(ftsTable(table)), source, source, ftsTable(table), filter, ftsTable(table), nargs+1, nargs+2, nargs+3)
 }
 
@@ -352,7 +365,9 @@ type DeleteResult struct {
 	Changes ChangeRange
 }
 
-func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation) (DeleteResult, error) {
+func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation) (_ DeleteResult, err error) {
+	ctx, span := s.tr.Op(ctx, "DELETE", nsName, table)
+	defer func() { s.tr.End(span, err) }()
 	where = strings.TrimSpace(where)
 	if where == "" {
 		return DeleteResult{}, invalidf("filter is required (pass \"1=1\" to delete everything)")
@@ -395,11 +410,11 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 		return DeleteResult{Matched: matched, Deleted: 0}, nil
 	}
 
-	tx, err := n.rw.BeginTx(ctx, nil)
+	ctx, tx, txSpan, err := s.beginWrite(ctx, n)
 	if err != nil {
 		return DeleteResult{}, err
 	}
-	defer tx.Rollback()
+	defer s.endWrite(tx, txSpan)
 
 	if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
 		return DeleteResult{}, err
@@ -458,7 +473,7 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	if _, err := tx.ExecContext(ctx, `DROP TABLE _dolmen_delete_ids`); err != nil {
 		return DeleteResult{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitWrite(tx, txSpan); err != nil {
 		return DeleteResult{}, err
 	}
 
@@ -471,4 +486,11 @@ func storedTooBig(err error) error {
 		return invalidf("a matching row holds a value larger than the %d MiB response budget", MaxQueryBytes>>20)
 	}
 	return err
+}
+
+func fulltextScore(rank float64) float64 {
+	if rank > 0 {
+		return 0
+	}
+	return -rank
 }

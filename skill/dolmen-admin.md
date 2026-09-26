@@ -110,7 +110,7 @@ curl -s -X POST "${base%/}/v1/insert" \
 Searches answer with `results`, where `query` and `read_rows` answer with `rows`:
 
 ```json
-{"ok":true,"data":{"results":[{"id":1,"created_at":"2026-09-23T16:19:06.326Z","title":"auth flow","body":"token expiry not checked"}],"truncated":false,"limit":10}}
+{"ok":true,"data":{"results":[{"id":1,"created_at":"2026-09-23T16:19:06.326Z","title":"auth flow","body":"token expiry not checked","_score":1.2145}],"truncated":false,"limit":10}}
 ```
 
 `search_vector` adds `_score` to each result and reports `skipped_vectors`:
@@ -369,9 +369,10 @@ locked-out server.
   provoking a syntax error: `query_dialect` is the dialect `query` accepts, `filter_dialect` the one
   a `filter` is read in with authentication off. With authentication on, every engine reads a
   filter against one shared allowlist and `filter_dialect` is informational.
+- Both searches score every hit as `_score`, higher being more relevant, and return results in that order. The two scales are different and engine-specific — full-text relevance is the engine's own ({{ if eq .Dialect "postgresql" }}PostgreSQL `ts_rank_cd`{{ else }}FTS5 BM25, negated so higher wins{{ end }}), vector `_score` is cosine similarity — so compare scores only within one query's results, never across queries, tables or servers, and never threshold full-text `_score` against a fixed number.
 - `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's
   columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
-- `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
+- `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything. A `delete` matching more than 1,000 rows is refused unless you raise `limit` above the match count or pass `confirm: true`; `dry_run: true` reports `matched` without deleting.
 {{ if eq .Dialect "postgresql" }}- **This server is PostgreSQL-backed.** `query`, and `filter` when authentication is off, are
   PostgreSQL SQL (`capabilities` reports `query_dialect`/`filter_dialect` as `postgresql`). SQLite
   functions such as `date()`, `strftime()`, `julianday()`, `iif()`, `instr()` and `ifnull()` do
@@ -587,6 +588,9 @@ match, before ranking.
 - A reveal that cannot decrypt (no key configured, a different key than the value was written
   under, or a tampered value) is `internal_error`; the server log names the cause and, for a wrong
   key, the key id the value was written under.
+- Never write a masked value back. `"••••"` is refused as a secret value, naming the field, because
+  storing it would replace the real secret with the mask and destroy it: pass the real value, read
+  the row with `reveal` first, or omit the field to leave it as it is.
 - `query` sees the mask, never the stored bytes: every reference to a table holding a secret is
   rewritten so an alias, an expression, a subquery, `SELECT *` or `length()` all read `"••••"`.
   Search and write `filter`s still evaluate against the ciphertext, where they select rows but

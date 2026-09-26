@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/lsm/dolmen/internal/schema"
+	"github.com/lsm/dolmen/internal/telemetry/dbspan"
 )
 
 const (
@@ -44,6 +45,7 @@ type vecEntry struct {
 }
 
 type vecCache struct {
+	tr      *dbspan.Tracer
 	mu      sync.Mutex
 	max     int64
 	used    int64
@@ -129,7 +131,7 @@ func (c *vecCache) drop(k vecKey, e *vecEntry) {
 	}
 }
 
-func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column string, vec []float32, threshold float64, candidates func() ([]int64, error), scope *RowScope, owned bool) ([]vecHit, int, bool, error) {
+func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column string, vec []float32, threshold float64, candidates func() ([]int64, error), scope *RowScope, owned bool) (_ []vecHit, _ int, _ bool, err error) {
 	if c.max <= 0 {
 		return nil, 0, false, nil
 	}
@@ -140,12 +142,16 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 	if !ok {
 		return nil, 0, false, nil
 	}
+	parent := ctx
+	ctx, cspan := c.tr.Child(ctx, dbspan.VectorCache)
 	head, err := changeCounter(ctx, db)
 	if err != nil {
+		c.endCache(cspan, "error", err)
 		return nil, 0, false, err
 	}
 	fp, err := vectorFingerprint(ctx, db, table)
 	if err != nil {
+		c.endCache(cspan, "error", err)
 		return nil, 0, false, err
 	}
 	k := vecKey{ns: ns, table: table, column: column}
@@ -153,33 +159,42 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 	e.mu.Lock()
 	if e.tooBig && e.fp == fp && head-e.seq < tooBigRetryChanges {
 		e.mu.Unlock()
+		c.endCache(cspan, "too_big", nil)
 		return nil, 0, false, nil
 	}
 	wasTooBig := e.tooBig
 	e.tooBig = false
 	fits := true
+	outcome := "hit"
 	if wasTooBig || e.seq < 0 || e.fp != fp || e.seq > head {
 		if e.fp == fp && e.seq > head {
 			e.mu.Unlock()
+			c.endCache(cspan, "stale", nil)
 			return nil, 0, false, nil
 		}
+		outcome = "build"
 		if fits, err = e.rebuild(ctx, db, table, column, owned, c.max); err != nil {
 			e.mu.Unlock()
 			c.drop(k, e)
+			c.endCache(cspan, outcome, err)
 			return nil, 0, false, err
 		}
 		e.fp, e.seq = fp, head
 	} else if e.seq < head {
+		outcome = "catch_up"
 		ok, err := e.catchUp(ctx, db, table, column, head)
 		if err != nil {
 			e.mu.Unlock()
 			c.drop(k, e)
+			c.endCache(cspan, outcome, err)
 			return nil, 0, false, err
 		}
 		if !ok {
+			outcome = "build"
 			if fits, err = e.rebuild(ctx, db, table, column, owned, c.max); err != nil {
 				e.mu.Unlock()
 				c.drop(k, e)
+				c.endCache(cspan, outcome, err)
 				return nil, 0, false, err
 			}
 		}
@@ -196,15 +211,21 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 		e.pos, e.ids, e.vecs, e.sq, e.owners = nil, nil, nil, nil, nil
 		c.remember(k, e)
 		e.mu.Unlock()
+		c.endCache(cspan, "too_big", nil)
 		return nil, 0, false, nil
 	}
 	e.mu.Unlock()
+	c.endCache(cspan, outcome, nil)
 
+	_, sspan := c.tr.Child(parent, dbspan.VectorScore)
+	scored, candidateCount := 0, -1
+	defer func() { c.endScore(sspan, scored, candidateCount, err) }()
 	var only []int64
 	if candidates != nil {
 		if only, err = candidates(); err != nil {
 			return nil, 0, false, err
 		}
+		candidateCount = len(only)
 	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -241,6 +262,7 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 		}
 		n = len(rows)
 	}
+	scored = n
 	workers := 1
 	if n >= parallelScoreRows {
 		workers = min(runtime.GOMAXPROCS(0), n/(parallelScoreRows/4))

@@ -71,6 +71,9 @@ func SealSecret(k *secret.Keyring, f schema.Field, cv any) (any, error) {
 	if !ok {
 		return nil, invalidf("field %q: expected a string", f.Name)
 	}
+	if plain == secret.Mask {
+		return nil, invalidf("field %q is a secret field and %q is the mask a masked read returns, not a value: writing it back would destroy the stored secret, so pass the real value, or read the row with reveal first to get it, or omit the field to leave it as it is", f.Name, secret.Mask)
+	}
 	if k == nil {
 		return nil, invalidf("field %q is a secret field and cannot be written: %s", f.Name, secret.ErrNoKey)
 	}

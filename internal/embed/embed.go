@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -27,6 +28,18 @@ func WithTraceContext(ctx context.Context) context.Context {
 }
 
 const usageInputTokensKey = attribute.Key("gen_ai.usage.input_tokens")
+
+type usageKey struct{}
+
+func WithUsage(ctx context.Context, inputTokens *atomic.Int64) context.Context {
+	return context.WithValue(ctx, usageKey{}, inputTokens)
+}
+
+func reportUsage(ctx context.Context, inputTokens int64) {
+	if total, ok := ctx.Value(usageKey{}).(*atomic.Int64); ok && total != nil {
+		total.Add(inputTokens)
+	}
+}
 
 type Provider interface {
 	Name() string
@@ -238,8 +251,11 @@ func (o *OpenAI) embed(ctx context.Context, texts []string, prefix string) ([][]
 			out[start+i] = vec
 		}
 	}
-	if span := trace.SpanFromContext(ctx); inputTokens > 0 && span.IsRecording() {
-		span.SetAttributes(usageInputTokensKey.Int64(inputTokens))
+	if inputTokens > 0 {
+		reportUsage(ctx, inputTokens)
+		if span := trace.SpanFromContext(ctx); span.IsRecording() {
+			span.SetAttributes(usageInputTokensKey.Int64(inputTokens))
+		}
 	}
 	return out, nil
 }
