@@ -22,6 +22,7 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/telemetry/dbspan"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	"modernc.org/sqlite"
@@ -122,6 +123,10 @@ type Store struct {
 	tp trace.TracerProvider
 	tr *dbspan.Tracer
 
+	mp         metric.MeterProvider
+	gaugesOnce sync.Once
+	stopGauges func(context.Context) error
+
 	closed   atomic.Bool
 	closeErr error
 }
@@ -200,6 +205,9 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 	if err := s.verifyCatalogVersions(context.Background()); err != nil {
 		return nil, err
 	}
+	if err := s.startEngineGauges(s.mp); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -239,6 +247,7 @@ func (s *Store) verifyOneCatalogVersion(ctx context.Context, name string) error 
 }
 
 func (s *Store) Close() error {
+	s.stopEngineGauges()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed.Load() {
