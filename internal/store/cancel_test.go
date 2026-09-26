@@ -263,6 +263,26 @@ func awaitSaturation(t *testing.T, n *nsDB) {
 	}
 }
 
+func TestACancellationOutranksAFaultAndNeverHidesOne(t *testing.T) {
+	done, cancel := context.WithCancel(context.Background())
+	cancel()
+	fault := NewQueryError("SELECT * FROM (SELECT 1 LIMIT 5) LIMIT ? OFFSET ?", errors.New("interrupted (9)"))
+	if got := cancelled(done, fault); !errors.Is(got, context.Canceled) {
+		t.Fatalf("a fault on a finished context reported as %v, want context.Canceled", got)
+	}
+	if got := cancelled(done, invalidf("refuse rowid hints on a masked table")); !errors.Is(got, context.Canceled) {
+		t.Fatalf("a refusal on a finished context reported as %v, want context.Canceled", got)
+	}
+	live := NewQueryError("SELECT 1", errors.New("no such column: nope"))
+	got := cancelled(context.Background(), live)
+	if !errors.Is(got, live) {
+		t.Fatalf("a real fault with a live context became %v, want the fault itself", got)
+	}
+	if SpanErrorType(got) != "query_error" {
+		t.Fatalf("a real fault classified as %q, want query_error", SpanErrorType(got))
+	}
+}
+
 func TestCancellingAnEmbeddingCallWritesNothingAndKeepsTheWriter(t *testing.T) {
 	st, err := Open(t.TempDir())
 	if err != nil {
