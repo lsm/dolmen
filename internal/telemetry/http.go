@@ -5,15 +5,15 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 	"sync"
-	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/lsm/dolmen/internal/telemetry/dbspan"
 )
 
 const RequestIDKey = attribute.Key("dolmen.request_id")
@@ -160,14 +160,4 @@ func (w *statusWriter) finish() {
 
 const maxRequestAttr = 1024
 
-func clean(s string, n int) string {
-	s = strings.ToValidUTF8(s, "\uFFFD")
-	if len(s) <= n {
-		return s
-	}
-	cut := n
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut]
-}
+func clean(s string, n int) string { return dbspan.Clean(s, n) }

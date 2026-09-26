@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/lsm/dolmen/internal/telemetry/dbspan"
 	"regexp"
 	"strings"
 
@@ -117,7 +118,9 @@ func bareHyphenTerm(match string) bool {
 	return false
 }
 
-func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string, filter string, args []any, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (SearchResult, error) {
+func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string, filter string, args []any, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (_ SearchResult, err error) {
+	ctx, span := s.tr.Op(ctx, "SELECT", nsName, table, dbspan.SearchKindKey.String("fulltext"))
+	defer func() { s.tr.End(span, err) }()
 	n, err := s.ns(nsName)
 	if err != nil {
 		return SearchResult{}, err
@@ -362,7 +365,9 @@ type DeleteResult struct {
 	Changes ChangeRange
 }
 
-func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation) (DeleteResult, error) {
+func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation) (_ DeleteResult, err error) {
+	ctx, span := s.tr.Op(ctx, "DELETE", nsName, table)
+	defer func() { s.tr.End(span, err) }()
 	where = strings.TrimSpace(where)
 	if where == "" {
 		return DeleteResult{}, invalidf("filter is required (pass \"1=1\" to delete everything)")
@@ -405,11 +410,11 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 		return DeleteResult{Matched: matched, Deleted: 0}, nil
 	}
 
-	tx, err := n.rw.BeginTx(ctx, nil)
+	ctx, tx, txSpan, err := s.beginWrite(ctx, n)
 	if err != nil {
 		return DeleteResult{}, err
 	}
-	defer tx.Rollback()
+	defer s.endWrite(tx, txSpan)
 
 	if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
 		return DeleteResult{}, err
@@ -468,7 +473,7 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	if _, err := tx.ExecContext(ctx, `DROP TABLE _dolmen_delete_ids`); err != nil {
 		return DeleteResult{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitWrite(tx, txSpan); err != nil {
 		return DeleteResult{}, err
 	}
 

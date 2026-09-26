@@ -43,8 +43,9 @@ func New(tp trace.TracerProvider, prop propagation.TextMapPropagator, includePri
 func (t *Tracing) On() bool { return t != nil }
 
 type Provider struct {
-	Tracing  *Tracing
-	shutdown func(context.Context) error
+	Tracing        *Tracing
+	TracerProvider trace.TracerProvider
+	shutdown       func(context.Context) error
 }
 
 func (p *Provider) Shutdown(ctx context.Context) error {
@@ -100,7 +101,7 @@ func setup(ctx context.Context, getenv func(string) string, serviceVersion strin
 		sdktrace.WithSampler(sampler),
 		sdktrace.WithResource(res),
 	)
-	return &Provider{Tracing: New(tp, prop, includePrincipal), shutdown: tp.Shutdown}, nil
+	return &Provider{Tracing: New(tp, prop, includePrincipal), TracerProvider: tp, shutdown: tp.Shutdown}, nil
 }
 
 func exportEnabled(getenv func(string) string) (bool, error) {

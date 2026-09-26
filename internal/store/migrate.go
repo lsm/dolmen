@@ -57,7 +57,9 @@ type migrationWork struct {
 	vectorizeChanged bool
 }
 
-func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expected Incarnation) (*schema.TableSchema, error) {
+func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expected Incarnation) (_ *schema.TableSchema, err error) {
+	ctx, span := s.tr.Op(ctx, "MIGRATE", nsName, table)
+	defer func() { s.tr.End(span, err) }()
 	expectedVersion := int(expected.Version)
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
@@ -70,11 +72,11 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 		return nil, err
 	}
 	defer n.unpin()
-	tx, err := n.rw.BeginTx(ctx, nil)
+	ctx, tx, txSpan, err := s.beginWrite(ctx, n)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer s.endWrite(tx, txSpan)
 
 	if err := checkBoundLifetime(ctx, tx, nsName, table, expected); err != nil {
 		return nil, err
@@ -92,24 +94,32 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 	}
 	cur := w.cur
 
-	for _, st := range w.steps {
-		if err := st(ctx, tx); err != nil {
+	for i, st := range w.steps {
+		if err := s.migrateStep(ctx, "change", i, func(ctx context.Context) error { return st(ctx, tx) }); err != nil {
 			return nil, fmt.Errorf("migration step failed: %w", err)
 		}
 	}
 
 	if w.rebuildFTSNeeded {
-		if err := dropFTS(ctx, tx, table); err != nil {
-			return nil, err
-		}
-		if fts := ftsFields(cur.Fields); len(fts) > 0 {
-			if err := createFTS(ctx, tx, table, fts); err != nil {
-				return nil, err
+		if err := s.migrateStep(ctx, "fts_rebuild", len(w.steps), func(ctx context.Context) error {
+			if err := dropFTS(ctx, tx, table); err != nil {
+				return err
 			}
+			if fts := ftsFields(cur.Fields); len(fts) > 0 {
+				return createFTS(ctx, tx, table, fts)
+			}
+			return nil
+		}); err != nil {
+			return nil, err
 		}
 	}
 
+	endBackfill := func(error) {}
+	defer func() { endBackfill(err) }()
 	if w.vectorizeChanged {
+		var bctx context.Context
+		bctx, endBackfill = s.migrateStepSpan(ctx, "embedding_backfill", len(w.steps)+1)
+		ctx := bctx
 		newVec := vectorizeField(cur.Fields)
 		if newVec != nil {
 
@@ -204,10 +214,11 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 		}
 	}
 
+	endBackfill(nil)
 	if err := saveSchemaTx(ctx, tx, nsName, cur, old.Version, changes); err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitWrite(tx, txSpan); err != nil {
 		return nil, err
 	}
 	return cur, nil
