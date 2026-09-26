@@ -173,6 +173,25 @@ func TestErrorEnvelopeSanitizesBodyReadErrors(t *testing.T) {
 	}
 }
 
+func TestAnUnreadableNamespaceTeachesThroughItsError(t *testing.T) {
+	err := fmt.Errorf("%w: namespace broken cannot be read, so no operation on it can be served; restore it from a backup (dolmen restore), or drop_namespace it to start over; the other namespaces in this data directory are unaffected", store.ErrNamespaceUnreadable)
+	apiErr := wrapStoreErr(err)
+	if apiErr == nil {
+		t.Fatal("expected a wrapped error")
+	}
+	if apiErr.Status != http.StatusInternalServerError || apiErr.Code != ErrCodeInternal {
+		t.Fatalf("status %d code %v, want 500 internal_error: the file is broken, not the request", apiErr.Status, apiErr.Code)
+	}
+	for _, want := range []string{"namespace broken", "restore it from a backup", "unaffected"} {
+		if !strings.Contains(apiErr.Message, want) {
+			t.Errorf("the message must say %q: %q", want, apiErr.Message)
+		}
+	}
+	if apiErr.Message == "internal error" {
+		t.Error("the message must not be reduced to a bare internal error: the operator needs the remedy")
+	}
+}
+
 func TestRedactStoreMsgRedactsFilePaths(t *testing.T) {
 	err := fmt.Errorf("%w: open /tmp/secret: no such file", store.ErrInvalid)
 	apiErr := wrapStoreErr(err)
