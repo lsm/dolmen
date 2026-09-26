@@ -343,7 +343,7 @@ func TestStorageSpansOffByDefault(t *testing.T) {
 	}
 }
 
-func TestAnExplicitlyRolledBackTransactionIsNotTracedAsACommit(t *testing.T) {
+func TestTheTransactionSpanRecordsWhatHappenedToTheTransaction(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	st, err := Open(t.TempDir(), WithTracerProvider(tp))
@@ -351,35 +351,51 @@ func TestAnExplicitlyRolledBackTransactionIsNotTracedAsACommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	l := legacy(st)
-	mustNS(t, l, "tx")
+	mustNS(t, legacy(st), "tx")
 	ctx := context.Background()
-	if _, err := l.CreateTable(ctx, "tx", "t", []schema.Field{{Name: "k", Type: schema.Number}}); err != nil {
+	n, err := st.ns("tx")
+	if err != nil {
 		t.Fatal(err)
 	}
-	rows := []map[string]any{{"k": 1}}
-	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			st.Insert(ctx, "tx", "t", rows, WriteOpts{IdempotencyKey: "same"}, testEmbed, nil, Incarnation{})
-		}()
+	defer n.unpin()
+
+	_, tx, w, err := st.beginWrite(ctx, n)
+	if err != nil {
+		t.Fatal(err)
 	}
-	wg.Wait()
-	outcomes := map[string]int{}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	st.endWrite(tx, w)
+
+	_, tx, w, err = st.beginWrite(ctx, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := commitWrite(tx, w); err != nil {
+		t.Fatal(err)
+	}
+	st.endWrite(tx, w)
+
+	_, tx, w, err = st.beginWrite(ctx, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.endWrite(tx, w)
+
+	var outcomes []string
 	for _, s := range rec.Ended() {
 		if s.Name() != dbspan.Transaction {
 			continue
 		}
 		for _, a := range s.Attributes() {
 			if string(a.Key) == string(dbspan.TxOutcomeKey) {
-				outcomes[a.Value.Emit()]++
+				outcomes = append(outcomes, a.Value.Emit())
 			}
 		}
 	}
-	if outcomes["commit"] != 1 || outcomes["rollback"] == 0 {
-		t.Fatalf("one insert commits and the racing ones roll back; traced %v", outcomes)
+	if strings.Join(outcomes, ",") != "rollback,commit,rollback" {
+		t.Fatalf("an explicit rollback, a commit and an abandoned transaction must be traced as rollback, commit, rollback; traced %v", outcomes)
 	}
 }
 
