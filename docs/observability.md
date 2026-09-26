@@ -57,14 +57,16 @@ OTEL_LOGS_EXPORTER=otlp \
 | `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG` | `parentbased_always_on` and unused by default. To sample a tenth of traces on a busy server set **both**: `OTEL_TRACES_SAMPLER=parentbased_traceidratio` with `OTEL_TRACES_SAMPLER_ARG=0.1`. The argument alone changes nothing while the sampler is the `always_on` default. |
 | `OTEL_METRIC_EXPORT_INTERVAL` | How often metrics are pushed, in milliseconds. Default `60000`; lower it to `10000` while you are watching a dashboard fill. |
 
-Then make one request:
+Then make one request. `Content-Type: application/json` is not optional: a body sent as
+form-encoded is refused with `415`.
 
 ```bash
-curl -s localhost:8790/v1/create_namespace -d '{"namespace":"demo"}' >/dev/null
-curl -s localhost:8790/v1/create_table -d '{"namespace":"demo","table":"docs",
-  "fields":[{"name":"body","type":"text","vectorize":true}]}' >/dev/null
-curl -s localhost:8790/v1/insert -d '{"namespace":"demo","table":"docs",
-  "records":[{"body":"the quick brown fox"}]}' >/dev/null
+json='Content-Type: application/json'
+curl -s -H "$json" localhost:8790/v1/create_namespace -d '{"namespace":"demo"}'
+curl -s -H "$json" localhost:8790/v1/create_table -d '{"namespace":"demo","table":"docs",
+  "fields":[{"name":"body","type":"text","vectorize":true}]}'
+curl -s -H "$json" localhost:8790/v1/insert -d '{"namespace":"demo","table":"docs",
+  "records":[{"body":"the quick brown fox"}]}'
 ```
 
 Within a minute you should be able to find all three:
