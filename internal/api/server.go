@@ -378,19 +378,34 @@ type inferReq struct {
 }
 
 func decode(body []byte, v any) error {
-	if len(bytes.TrimSpace(body)) == 0 {
-		body = []byte("{}")
-	}
-	var probe any
-	probeDec := json.NewDecoder(bytes.NewReader(body))
-	probeDec.UseNumber()
-	if err := probeDec.Decode(&probe); err != nil {
-		return badRequest("invalid JSON: %v", err)
+	probe, err := probeObject(body)
+	if err != nil {
+		return err
 	}
 	if err := rejectNulls("", probe); err != nil {
 		return err
 	}
+	return checkedData(body, probe, v)
+}
+
+func decodeExactBody(body []byte, v any) error {
+	probe, err := probeObject(body)
+	if err != nil {
+		return err
+	}
+	return checkedData(body, probe, v)
+}
+
+func checkedData(body []byte, probe *jsonObject, v any) error {
+	if err := rejectUnknownKeys(probe, v); err != nil {
+		return unknownFieldError400(err)
+	}
 	return decodeData(body, v)
+}
+
+func unknownFieldError400(err error) error {
+	uf, _ := err.(*unknownFieldError)
+	return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: uf.Error(), Cause: uf}
 }
 
 func decodeData(body []byte, v any) error {
@@ -423,38 +438,29 @@ func decodeData(body []byte, v any) error {
 }
 
 func decodeAllowNullArgs(body []byte, v any) error {
-	if len(bytes.TrimSpace(body)) == 0 {
-		body = []byte("{}")
+	probe, err := probeObject(body)
+	if err != nil {
+		return err
 	}
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	var probe map[string]any
-	if err := dec.Decode(&probe); err != nil {
-		if tm, ok := asTypeMismatch(err); ok {
-			return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: tm.Error(), Cause: tm}
-		}
-		return badRequest("invalid JSON: %v", err)
-	}
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		return badRequest("unexpected trailing content after JSON body")
-	}
-	for k, val := range probe {
+	for _, k := range probe.keys {
 		if k == "args" {
 			continue
 		}
+		val, _ := probe.get(k)
 		if err := rejectNulls(k, val); err != nil {
 			return err
 		}
 	}
-	return decodeData(body, v)
+	return checkedData(body, probe, v)
 }
 
 var jsonDefaultPathRe = regexp.MustCompile(`^(?:changes|fields)\[\d+\]\.default(?:\.|\[)`)
 
 func rejectNulls(path string, v any) error {
 	switch t := v.(type) {
-	case map[string]any:
-		for k, val := range t {
+	case *jsonObject:
+		for _, k := range t.keys {
+			val, _ := t.get(k)
 			p := k
 			if path != "" {
 				p = path + "." + k
