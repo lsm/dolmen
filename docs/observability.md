@@ -106,7 +106,9 @@ shortest path from "insert got slow" to "here is what it was waiting on":
    operation) → `INSERT docs` (the storage work) → whatever is longest inside it. Each span carries
    its own duration, so the longest child is the answer.
 4. If the SDK did not attach exemplars (some backends drop them), filter Explore by
-   `name="dolmen.op insert" && .nested` and sort by duration instead.
+   `{.name="dolmen.op insert" && childCount > 0}` and sort by duration instead. A span with
+   `childCount > 0` is an operation, not a leaf, so the one you want is never a bare `embeddings` or
+   `INSERT` span.
 
 ## Three alerts to start with
 
@@ -174,8 +176,8 @@ Two more worth adding once these are quiet, both from the capacity gauges, both 
 ceiling is what alert 2 looks like before it fires; SQLite has no pool and reports neither series),
 and `dolmen_vector_cache_usage_bytes` against `dolmen_vector_cache_limit_bytes` on SQLite (a cache
 permanently at its limit is not caching anything new). The `_bytes` suffix is what the OTLP-to-
-Prometheus translation adds to the \`By\` unit, the same way \`dolmen_operation_duration_seconds\` comes
-from \`s\`; in a backend that keeps the OTel names, query \`dolmen.vector_cache.usage\` instead. All
+Prometheus translation adds to the `By` unit, the same way `dolmen_operation_duration_seconds` comes
+from `s`; in a backend that keeps the OTel names, query `dolmen.vector_cache.usage` instead. All
 five gauges are in the README's metric table.
 
 ## What never leaves the process
