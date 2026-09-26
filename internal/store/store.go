@@ -118,6 +118,8 @@ type Store struct {
 	tok    tokenizer
 	vcache vecCache
 
+	openDB func(dsn string) (*sql.DB, error)
+
 	secrets *secret.Keyring
 
 	tp trace.TracerProvider
@@ -156,6 +158,21 @@ func WithMaxOpenNamespaces(n int) OpenOption {
 	return func(s *Store) { s.maxOpen = n }
 }
 
+func openSQLiteDB(dsn string) (*sql.DB, error) {
+	return sql.Open("sqlite", dsn)
+}
+
+func withOpenDB(open func(string) (*sql.DB, error)) OpenOption {
+	return func(s *Store) { s.openDB = open }
+}
+
+func (s *Store) open(dsn string) (*sql.DB, error) {
+	if s.openDB == nil {
+		return openSQLiteDB(dsn)
+	}
+	return s.openDB(dsn)
+}
+
 var detectNetworkFS = networkFilesystem
 
 func probeWritable(dir string) error {
@@ -185,7 +202,7 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 	if fs, remote := detectNetworkFS(abs); remote {
 		slog.Warn("data directory is on a network filesystem; SQLite WAL needs local shared memory and file locks, so concurrent access can corrupt data. Move the data directory to a local disk", "dir", abs, "filesystem", fs)
 	}
-	s := &Store{dir: abs, mu: newCtxMutex(), nss: map[string]*nsDB{}, maxOpen: DefaultMaxOpenNamespaces, vcache: vecCache{max: DefaultVectorCacheBytes}, sync: DefaultSync, changeRetention: DefaultChangeRetention}
+	s := &Store{dir: abs, mu: newCtxMutex(), nss: map[string]*nsDB{}, maxOpen: DefaultMaxOpenNamespaces, vcache: vecCache{max: DefaultVectorCacheBytes}, sync: DefaultSync, changeRetention: DefaultChangeRetention, openDB: openSQLiteDB}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -435,7 +452,7 @@ func (s *Store) lockedNSCtx(ctx context.Context, name string) (*nsDB, error) {
 			}
 		}
 	}
-	ro, err := sql.Open("sqlite", dsn(path, true))
+	ro, err := s.open(dsn(path, true))
 	if err != nil {
 		rw.Close()
 		return nil, err
@@ -1015,7 +1032,7 @@ func sqliteURIPath(path string) string {
 }
 
 func (s *Store) openWriter(ctx context.Context, path string) (*sql.DB, error) {
-	rw, err := sql.Open("sqlite", writerDSN(path, s.sync))
+	rw, err := s.open(writerDSN(path, s.sync))
 	if err != nil || s.maxBytes <= 0 {
 		return rw, err
 	}
@@ -1029,7 +1046,7 @@ func (s *Store) openWriter(ctx context.Context, path string) (*sql.DB, error) {
 	if pages < 1 {
 		pages = 1
 	}
-	return sql.Open("sqlite", writerDSNPages(path, s.sync, pages))
+	return s.open(writerDSNPages(path, s.sync, pages))
 }
 
 func ParseSize(raw string) (int64, error) {

@@ -27,14 +27,14 @@ func (s *Store) RotateSecretKey(ctx context.Context, namespace string, limit int
 	}
 	defer s.done()
 	if err := ctx.Err(); err != nil {
-		return SecretRotation{}, facadeErr(err)
+		return SecretRotation{}, facadeErr(ctx, err)
 	}
 	if limit < 0 {
 		return SecretRotation{}, derr.New(derr.InvalidRequest, "RotateSecretKey: limit must not be negative (0 rotates everything in one call)")
 	}
 	res, err := s.eng.RotateSecrets(ctx, ops.NormalizeNamespace(namespace), store.RotateOpts{Limit: limit})
 	if err != nil {
-		return SecretRotation{}, facadeErr(err)
+		return SecretRotation{}, facadeErr(ctx, err)
 	}
 	out := SecretRotation{Rotated: res.Rotated(), Remaining: res.Remaining(), Keys: map[string]int64{}}
 	for _, t := range res.Tables {

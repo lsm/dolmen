@@ -59,7 +59,7 @@ func (s *Store) SearchFulltext(ctx context.Context, namespace, table, query stri
 	}
 	defer s.done()
 	if err := ctx.Err(); err != nil {
-		return SearchResult{}, facadeErr(err)
+		return SearchResult{}, facadeErr(ctx, err)
 	}
 	if err := validateSearchOptions(opts); err != nil {
 		return SearchResult{}, err
@@ -76,7 +76,7 @@ func (s *Store) SearchFulltext(ctx context.Context, namespace, table, query stri
 	res, err := s.eng.SearchFulltext(ctx, ns, ops.NormalizeTable(table), query, opts.Filter, args,
 		opts.IncludeHidden, nil, store.Incarnation{}, store.Page{Offset: opts.Offset, Limit: opts.Limit})
 	if err != nil {
-		return SearchResult{}, facadeErr(err)
+		return SearchResult{}, facadeErr(ctx, err)
 	}
 	return SearchResult{Rows: res.Rows, Truncated: res.Truncated, SkippedVectors: res.SkippedVectors}, nil
 }
@@ -89,7 +89,7 @@ func (s *Store) SearchVector(ctx context.Context, namespace, table string, query
 	}
 	defer s.done()
 	if err := ctx.Err(); err != nil {
-		return SearchResult{}, facadeErr(err)
+		return SearchResult{}, facadeErr(ctx, err)
 	}
 	if err := validateSearchOptions(opts); err != nil {
 		return SearchResult{}, err
@@ -127,13 +127,13 @@ func (s *Store) SearchVector(ctx context.Context, namespace, table string, query
 		MinScore: query.MinScore,
 	}, emb, noProviderHelp)
 	if err != nil {
-		return SearchResult{}, facadeErr(err)
+		return SearchResult{}, facadeErr(ctx, err)
 	}
 	ctx = store.WithReveal(ctx, opts.Reveal)
 	res, err := s.eng.SearchVector(ctx, ops.NormalizeNamespace(namespace), ops.NormalizeTable(table), vq,
 		opts.IncludeHidden, nil, store.Incarnation{}, store.Page{Offset: opts.Offset, Limit: opts.Limit})
 	if err != nil {
-		return SearchResult{}, facadeErr(err)
+		return SearchResult{}, facadeErr(ctx, err)
 	}
 	return SearchResult{Rows: res.Rows, Truncated: res.Truncated, SkippedVectors: res.SkippedVectors}, nil
 }

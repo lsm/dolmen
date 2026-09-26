@@ -26,11 +26,15 @@
   rather than refused. Other namespaces, discovery and the health probe are unaffected, and a
   namespace serves again as soon as its file is restored, with no restart.
 
-- **A cancelled `query` is answered as `canceled` and lets go of its read connections at once.**
-  `query` now decides its class from the caller's context wherever the engine can fail it, so a
-  statement the engine interrupted — or one of dolmen's own refusals, raised while the caller was
-  already leaving — is reported as the caller's cancellation rather than as a fault. The read
-  connection, the read pool and the namespace pin are free the moment the context is done.
+- **A cancelled request is answered as `canceled`, not as a server fault.** A request whose context
+  was done used to be answered with whatever the failure classified as, so a failure the caller
+  could not have acted on — an engine reporting an interrupted statement in its own words
+  (`interrupted (9)`, which dolmen does not recognise), or one of dolmen's own refusals raised while
+  the caller was already leaving — reached the wire as `500 internal_error`, and the Go library as
+  `ErrInternal`. The caller's context now decides the class at both boundaries, over `/v1`, over MCP
+  and in the Go library, for every operation and every read path: cancelled is `canceled`, an expired
+  deadline keeps its own `timeout`, and a live caller's fault is still reported as the fault it is.
+  The engine's own error is kept as the cause, so it still reaches the log.
 
 - **`query` can no longer hand out a secret's ciphertext.** Masking used to key off the result-column
   label, so `SELECT token AS t` returned base64 of the stored bytes and `length(token)` its unpadded

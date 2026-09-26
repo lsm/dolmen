@@ -22,10 +22,10 @@ func (s *Store) CreateNamespace(ctx context.Context, namespace string) (err erro
 	}
 	defer s.done()
 	if err := ctx.Err(); err != nil {
-		return facadeErr(err)
+		return facadeErr(ctx, err)
 	}
 	ns := ops.NormalizeNamespace(namespace)
-	return facadeErr(s.eng.CreateNamespace(ctx, ns, [16]byte{}))
+	return facadeErr(ctx, s.eng.CreateNamespace(ctx, ns, [16]byte{}))
 }
 
 func (s *Store) ListNamespaces(ctx context.Context, opts ListNamespacesOptions) (r0 []string, err error) {
@@ -36,7 +36,7 @@ func (s *Store) ListNamespaces(ctx context.Context, opts ListNamespacesOptions) 
 	}
 	defer s.done()
 	if err := ctx.Err(); err != nil {
-		return nil, facadeErr(err)
+		return nil, facadeErr(ctx, err)
 	}
 	prefix := ops.NormalizeNamespace(opts.Prefix)
 	if opts.Prefix != "" && prefix == "" {
@@ -44,7 +44,7 @@ func (s *Store) ListNamespaces(ctx context.Context, opts ListNamespacesOptions) 
 	}
 	nss, err := s.eng.ListNamespaces(ctx, prefix, nil)
 	if err != nil {
-		return nil, facadeErr(err)
+		return nil, facadeErr(ctx, err)
 	}
 	if nss == nil {
 		nss = []string{}
@@ -60,18 +60,28 @@ func (s *Store) DropNamespace(ctx context.Context, namespace string) (err error)
 	}
 	defer s.done()
 	if err := ctx.Err(); err != nil {
-		return facadeErr(err)
+		return facadeErr(ctx, err)
 	}
 	ns := ops.NormalizeNamespace(namespace)
-	return facadeErr(s.eng.DropNamespace(ctx, ns, [16]byte{}))
+	return facadeErr(ctx, s.eng.DropNamespace(ctx, ns, [16]byte{}))
 }
 
-func facadeErr(err error) error {
+func facadeErr(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
 	}
 	if errors.Is(err, ErrClosed) || errors.Is(err, store.ErrClosed) {
 		return ErrClosed
+	}
+	if ctx != nil && ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return &derr.Error{Code: derr.Timeout, Message: err.Error(), Cause: errors.Join(err, ctx.Err())}
+		}
+		return &derr.Error{
+			Code:    derr.Canceled,
+			Message: "the call was cancelled before it completed; the operation may or may not have finished server-side — check with a query before retrying a write",
+			Cause:   errors.Join(err, ctx.Err()),
+		}
 	}
 	msg := err.Error()
 	msg = strings.TrimPrefix(msg, store.ErrInvalid.Error()+": ")

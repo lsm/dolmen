@@ -66,7 +66,7 @@ func (s *Store) Insert(ctx context.Context, namespace, table string, records []m
 	}
 	defer s.done()
 	if err := ctx.Err(); err != nil {
-		return InsertResult{}, facadeErr(err)
+		return InsertResult{}, facadeErr(ctx, err)
 	}
 	for i, rec := range records {
 		if rec == nil {
@@ -75,12 +75,12 @@ func (s *Store) Insert(ctx context.Context, namespace, table string, records []m
 	}
 	ns := ops.NormalizeNamespace(namespace)
 	if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-		return InsertResult{}, facadeErr(err)
+		return InsertResult{}, facadeErr(ctx, err)
 	}
 	res, err := s.eng.Insert(ctx, ns, ops.NormalizeTable(table), records,
 		store.WriteOpts{IdempotencyKey: opts.IdempotencyKey}, s.embedder(), nil, store.Incarnation{})
 	if err != nil {
-		return InsertResult{}, facadeErr(err)
+		return InsertResult{}, facadeErr(ctx, err)
 	}
 	inserted := int64(len(res.Ids))
 	if res.Replayed {
@@ -102,16 +102,16 @@ func (s *Store) UpsertByKey(ctx context.Context, namespace, table string, on []s
 	}
 	defer s.done()
 	if err := ctx.Err(); err != nil {
-		return InsertResult{}, facadeErr(err)
+		return InsertResult{}, facadeErr(ctx, err)
 	}
 	ns := ops.NormalizeNamespace(namespace)
 	if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-		return InsertResult{}, facadeErr(err)
+		return InsertResult{}, facadeErr(ctx, err)
 	}
 	res, err := s.eng.UpsertByKey(ctx, ns, ops.NormalizeTable(table), on, records,
 		store.WriteOpts{}, s.embedder(), nil, store.Incarnation{})
 	if err != nil {
-		return InsertResult{}, facadeErr(err)
+		return InsertResult{}, facadeErr(ctx, err)
 	}
 	return InsertResult{
 		Ids:      res.Ids,
@@ -130,17 +130,17 @@ func (s *Store) Update(ctx context.Context, namespace, table string, opts Update
 	}
 	defer s.done()
 	if err := ctx.Err(); err != nil {
-		return UpdateResult{}, facadeErr(err)
+		return UpdateResult{}, facadeErr(ctx, err)
 	}
 	args := append([]any(nil), opts.Args...)
 	ns := ops.NormalizeNamespace(namespace)
 	if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-		return UpdateResult{}, facadeErr(err)
+		return UpdateResult{}, facadeErr(ctx, err)
 	}
 	res, err := s.eng.Update(ctx, ns, ops.NormalizeTable(table), opts.Filter, args, opts.Set,
 		s.embedder(), nil, store.Incarnation{})
 	if err != nil {
-		return UpdateResult{}, facadeErr(err)
+		return UpdateResult{}, facadeErr(ctx, err)
 	}
 	return UpdateResult{Updated: res.Updated, Changes: ChangeRange(res.Changes)}, nil
 }
@@ -153,7 +153,7 @@ func (s *Store) Delete(ctx context.Context, namespace, table string, opts Delete
 	}
 	defer s.done()
 	if err := ctx.Err(); err != nil {
-		return DeleteResult{}, facadeErr(err)
+		return DeleteResult{}, facadeErr(ctx, err)
 	}
 	if opts.Limit < 0 {
 		return DeleteResult{}, derr.New(derr.InvalidRequest, "DeleteOptions.Limit must not be negative (0 keeps the default confirm threshold)")
@@ -161,7 +161,7 @@ func (s *Store) Delete(ctx context.Context, namespace, table string, opts Delete
 	args := append([]any(nil), opts.Args...)
 	ns := ops.NormalizeNamespace(namespace)
 	if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
-		return DeleteResult{}, facadeErr(err)
+		return DeleteResult{}, facadeErr(ctx, err)
 	}
 	res, err := s.eng.Delete(ctx, ns, ops.NormalizeTable(table), opts.Filter, args, store.DeleteOptions{
 		DryRun:  opts.DryRun,
@@ -169,7 +169,7 @@ func (s *Store) Delete(ctx context.Context, namespace, table string, opts Delete
 		Confirm: opts.Confirm,
 	}, nil, store.Incarnation{})
 	if err != nil {
-		return DeleteResult{}, facadeErr(err)
+		return DeleteResult{}, facadeErr(ctx, err)
 	}
 	return DeleteResult{Matched: res.Matched, Deleted: res.Deleted, Changes: ChangeRange(res.Changes)}, nil
 }
