@@ -60,7 +60,7 @@ func collectFields(t reflect.Type, into map[string]fieldRef) {
 	}
 }
 
-func rejectUnknownKeys(probe any, v any) error {
+func rejectUnknownKeys(probe *jsonObject, v any) error {
 	t := reflect.TypeOf(v)
 	for t != nil && t.Kind() == reflect.Pointer {
 		t = t.Elem()
@@ -77,16 +77,17 @@ func checkKeys(probe any, t reflect.Type) error {
 	}
 	switch t.Kind() {
 	case reflect.Struct:
-		obj, ok := probe.(map[string]any)
+		obj, ok := probe.(*jsonObject)
 		if !ok {
 			return nil
 		}
 		idx := fieldIndexOf(t)
-		for key, val := range obj {
+		for _, key := range obj.keys {
 			field, known := idx.byName[key]
 			if !known {
 				return &unknownFieldError{Field: key}
 			}
+			val, _ := obj.get(key)
 			if err := checkKeys(val, field.typ); err != nil {
 				return err
 			}

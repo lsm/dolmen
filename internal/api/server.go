@@ -396,48 +396,11 @@ func decodeExactBody(body []byte, v any) error {
 	return checkedData(body, probe, v)
 }
 
-func checkedData(body []byte, probe map[string]any, v any) error {
+func checkedData(body []byte, probe *jsonObject, v any) error {
 	if err := rejectUnknownKeys(probe, v); err != nil {
 		return unknownFieldError400(err)
 	}
 	return decodeData(body, v)
-}
-
-func probeObject(body []byte) (map[string]any, error) {
-	if len(bytes.TrimSpace(body)) == 0 {
-		body = []byte("{}")
-	}
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	var probe any
-	if err := dec.Decode(&probe); err != nil {
-		return nil, badRequest("invalid JSON: %v", err)
-	}
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		return nil, badRequest("unexpected trailing content after JSON body")
-	}
-	obj, ok := probe.(map[string]any)
-	if !ok {
-		tm := &typeMismatchError{Got: jsonWordOf(probe)}
-		return nil, &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: tm.Error(), Cause: tm}
-	}
-	return obj, nil
-}
-
-func jsonWordOf(v any) string {
-	switch v.(type) {
-	case nil:
-		return "null"
-	case bool:
-		return "a boolean"
-	case json.Number:
-		return "a number"
-	case string:
-		return "a string"
-	case []any:
-		return "an array"
-	}
-	return "a different type"
 }
 
 func unknownFieldError400(err error) error {
@@ -479,10 +442,11 @@ func decodeAllowNullArgs(body []byte, v any) error {
 	if err != nil {
 		return err
 	}
-	for k, val := range probe {
+	for _, k := range probe.keys {
 		if k == "args" {
 			continue
 		}
+		val, _ := probe.get(k)
 		if err := rejectNulls(k, val); err != nil {
 			return err
 		}
@@ -494,8 +458,9 @@ var jsonDefaultPathRe = regexp.MustCompile(`^(?:changes|fields)\[\d+\]\.default(
 
 func rejectNulls(path string, v any) error {
 	switch t := v.(type) {
-	case map[string]any:
-		for k, val := range t {
+	case *jsonObject:
+		for _, k := range t.keys {
+			val, _ := t.get(k)
 			p := k
 			if path != "" {
 				p = path + "." + k
