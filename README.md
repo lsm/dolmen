@@ -1296,6 +1296,9 @@ variables (both `dolmen` and `dolmen mcp`), and each signal can be turned on or 
 | `OTEL_EXPORTER_OTLP_HEADERS`, `_TIMEOUT`, `_COMPRESSION`, `_CERTIFICATE`, and the `_TRACES_` / `_METRICS_` variants | | Passed to the OTLP exporters. |
 | `OTEL_METRIC_EXPORT_INTERVAL` / `OTEL_METRIC_EXPORT_TIMEOUT` | `60000` / `30000` ms | How often metrics are pushed, read by the OpenTelemetry Go SDK itself. |
 | `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` | `cumulative` | `delta` or `lowmemory` for backends that want deltas; read by the SDK's exporter. |
+| `OTEL_LOGS_EXPORTER` | unset (off) | `otlp` also sends every log line to the collector, at the same `-log-level`; stderr always gets them. Unlike traces and metrics, an endpoint alone does not turn log export on, since logs may carry namespace names and error details an operator may not want in a telemetry backend. |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` / `_LOGS_PROTOCOL` / `_LOGS_HEADERS` ... | | The logs variants of the exporter settings. |
+| `OTEL_BLRP_*` | SDK defaults | Batch log processor tuning (`OTEL_BLRP_SCHEDULE_DELAY`, `OTEL_BLRP_MAX_QUEUE_SIZE`, `OTEL_BLRP_MAX_EXPORT_BATCH_SIZE`, `OTEL_BLRP_EXPORT_TIMEOUT`), read by the SDK itself. |
 | `OTEL_SERVICE_NAME` | `dolmen` | `service.name`. |
 | `OTEL_RESOURCE_ATTRIBUTES` | | Extra resource attributes (`k=v,k2=v2`, percent-encoded values). |
 | `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` | `parentbased_always_on` | `always_on`, `always_off`, `traceidratio`, and the `parentbased_*` forms. |
@@ -1332,7 +1335,9 @@ What is traced:
 - The PostgreSQL engine records the same span for the same operations, as a CLIENT span (the
   database is a remote server) carrying `db.system.name=postgresql`, `db.namespace`,
   `db.collection.name`, `server.address` and `server.port`; never the SQL, its arguments or the DSN.
-- Every log line written during a traced request carries `trace_id` and `span_id`.
+- Every log line written during a traced request carries `trace_id` and `span_id`. With
+  `OTEL_LOGS_EXPORTER=otlp`, exported log records carry the same trace context natively, so a
+  backend links them to the request's trace.
 
 What is measured (metrics are pushed every `OTEL_METRIC_EXPORT_INTERVAL`; with traces on too, the SDK
 attaches exemplars linking a slow request's histogram bucket to its trace):
