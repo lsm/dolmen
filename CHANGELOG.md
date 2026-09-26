@@ -41,6 +41,10 @@
 
 ### Added
 
+- **An observability guide** (`docs/observability.md`): a runnable `docker compose` stack that
+  receives dolmen's traces, metrics and logs, how to get from a slow `dolmen.operation.duration`
+  bucket to the trace behind its exemplar, and three starter alerts.
+
 - **Storage spans for plain reads and schema lifecycle calls.** `read_rows` records `SELECT <table>`
   and `query` a bare `SELECT` (arbitrary SQL may span tables, so it names none), while
   `create_table`/`drop_table` record `CREATE`/`DROP <table>` and `create_namespace`/`drop_namespace`
