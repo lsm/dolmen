@@ -26,6 +26,12 @@
   rather than refused. Other namespaces, discovery and the health probe are unaffected, and a
   namespace serves again as soon as its file is restored, with no restart.
 
+- **A cancelled `query` is reported as `canceled`, not as an internal error.** SQLite reports a
+  statement interrupted by the caller's own cancellation as `interrupted (9)`, which dolmen did not
+  recognise, so the raw driver error reached the wire as `500 internal_error` — a server fault, for
+  a caller that had simply gone away. `query` now reports the cancellation wherever it can be
+  interrupted, and its read connections are released the moment the context is done.
+
 - **`query` can no longer hand out a secret's ciphertext.** Masking used to key off the result-column
   label, so `SELECT token AS t` returned base64 of the stored bytes and `length(token)` its unpadded
   length — any caller holding `read` could exfiltrate every secret's ciphertext without the `reveal`
