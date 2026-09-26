@@ -17,7 +17,9 @@ type UpsertResult struct {
 	Changes  ChangeRange
 }
 
-func (s *Store) Update(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (UpdateResult, error) {
+func (s *Store) Update(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (_ UpdateResult, err error) {
+	ctx, span := s.tr.Op(ctx, "UPDATE", nsName, table)
+	defer func() { s.tr.End(span, err) }()
 	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, false, "", scope, scopeIncarnation)
 	if err != nil {
 		return UpdateResult{}, err
@@ -25,7 +27,9 @@ func (s *Store) Update(ctx context.Context, nsName, table, where string, args []
 	return UpdateResult{Updated: res.Updated, Changes: res.Changes}, nil
 }
 
-func (s *Store) Upsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
+func (s *Store) Upsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (_ InsertResult, err error) {
+	ctx, span := s.tr.Op(ctx, "UPSERT", nsName, table)
+	defer func() { s.tr.End(span, err) }()
 	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, true, opts.Owner, scope, scopeIncarnation)
 	if err != nil {
 		return InsertResult{}, err
@@ -62,11 +66,11 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 		return UpsertResult{}, err
 	}
 	defer n.unpin()
-	tx, err := n.rw.BeginTx(ctx, nil)
+	ctx, tx, txSpan, err := s.beginWrite(ctx, n)
 	if err != nil {
 		return UpsertResult{}, err
 	}
-	defer tx.Rollback()
+	defer s.endWrite(tx, txSpan)
 
 	if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
 		return UpsertResult{}, err
@@ -278,7 +282,7 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 	if _, err := tx.ExecContext(ctx, `DROP TABLE _dolmen_update_ids`); err != nil {
 		return UpsertResult{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitWrite(tx, txSpan); err != nil {
 		return UpsertResult{}, err
 	}
 

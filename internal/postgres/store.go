@@ -10,7 +10,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lsm/dolmen/internal/secret"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/lsm/dolmen/internal/store"
+	"github.com/lsm/dolmen/internal/telemetry/dbspan"
 )
 
 type Config struct {
@@ -21,6 +24,7 @@ type Config struct {
 	SharedFilter    bool
 	ChangeRetention *time.Duration
 	Secrets         *secret.Keyring
+	TracerProvider  trace.TracerProvider
 }
 
 type Store struct {
@@ -36,6 +40,7 @@ type Store struct {
 	done            chan struct{}
 	active          sync.WaitGroup
 	wake            *wakeSet
+	tr              *dbspan.Tracer
 	sharedFilter    bool
 	secrets         *secret.Keyring
 }
@@ -96,7 +101,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	if err != nil {
 		return nil, &connectionError{"open pool", err}
 	}
-	s := &Store{pool: pool, catalog: cfg.Catalog, queryRole: cfg.QueryRole, done: make(chan struct{}), changeRetention: retention, now: time.Now, sharedFilter: cfg.SharedFilter, secrets: cfg.Secrets}
+	s := &Store{pool: pool, catalog: cfg.Catalog, queryRole: cfg.QueryRole, done: make(chan struct{}), changeRetention: retention, now: time.Now, sharedFilter: cfg.SharedFilter, secrets: cfg.Secrets, tr: newTracer(cfg.TracerProvider, pool)}
 	if err = pool.Ping(ctx); err == nil {
 		err = s.bootstrap(ctx)
 	}

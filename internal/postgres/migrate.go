@@ -699,6 +699,13 @@ func (s *Store) PlanMigration(ctx context.Context, ns, table string, changes []s
 }
 
 func (s *Store) Migrate(ctx context.Context, ns, table string, changes []schema.Change, emb store.Embedder, expected store.Incarnation) (*schema.TableSchema, error) {
+	ctx, end := s.span(ctx, "MIGRATE", ns, table)
+	res, err := s.migrateTable(ctx, ns, table, changes, emb, expected)
+	end(err)
+	return res, err
+}
+
+func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []schema.Change, emb store.Embedder, expected store.Incarnation) (*schema.TableSchema, error) {
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
 	}

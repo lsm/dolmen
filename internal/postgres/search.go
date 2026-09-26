@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
+	"github.com/lsm/dolmen/internal/telemetry/dbspan"
 	"github.com/lsm/dolmen/internal/value"
 )
 
@@ -130,6 +131,13 @@ func (s *Store) fetchRanked(ctx context.Context, tx pgx.Tx, n namespace, state t
 }
 
 func (s *Store) SearchFulltext(ctx context.Context, ns, table, match, filter string, args []any, includeHidden bool, scope *store.RowScope, scopeIncarnation store.Incarnation, page store.Page) (store.SearchResult, error) {
+	ctx, end := s.span(ctx, "SELECT", ns, table, dbspan.SearchKindKey.String("fulltext"))
+	res, err := s.searchFulltextRows(ctx, ns, table, match, filter, args, includeHidden, scope, scopeIncarnation, page)
+	end(err)
+	return res, err
+}
+
+func (s *Store) searchFulltextRows(ctx context.Context, ns, table, match, filter string, args []any, includeHidden bool, scope *store.RowScope, scopeIncarnation store.Incarnation, page store.Page) (store.SearchResult, error) {
 	if page.Offset < 0 {
 		return store.SearchResult{}, invalidf("offset must be non-negative")
 	}
@@ -242,6 +250,13 @@ func searchError(ctx context.Context, filter string, err error) error {
 }
 
 func (s *Store) SearchVector(ctx context.Context, ns, table string, q store.VectorQuery, includeHidden bool, scope *store.RowScope, scopeIncarnation store.Incarnation, page store.Page) (store.SearchResult, error) {
+	ctx, end := s.span(ctx, "SELECT", ns, table, dbspan.SearchKindKey.String("vector"))
+	res, err := s.searchVectorRows(ctx, ns, table, q, includeHidden, scope, scopeIncarnation, page)
+	end(err)
+	return res, err
+}
+
+func (s *Store) searchVectorRows(ctx context.Context, ns, table string, q store.VectorQuery, includeHidden bool, scope *store.RowScope, scopeIncarnation store.Incarnation, page store.Page) (store.SearchResult, error) {
 	if page.Offset < 0 {
 		return store.SearchResult{}, invalidf("offset must be non-negative")
 	}

@@ -12,14 +12,16 @@ type VacuumResult struct {
 	BytesAfter  int64
 }
 
-func (s *Store) Vacuum(ctx context.Context, nsName string) (VacuumResult, error) {
+func (s *Store) Vacuum(ctx context.Context, nsName string) (_ VacuumResult, err error) {
+	ctx, span := s.tr.Op(ctx, "VACUUM", nsName, "")
+	defer func() { s.tr.End(span, err) }()
 	n, err := s.nsCtx(ctx, nsName)
 	if err != nil {
 		return VacuumResult{}, err
 	}
 	defer n.unpin()
 	path := s.nsPath(nsName)
-	conn, err := n.rw.Conn(ctx)
+	conn, err := s.writerConn(ctx, n)
 	if err != nil {
 		return VacuumResult{}, err
 	}

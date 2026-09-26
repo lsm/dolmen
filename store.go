@@ -17,6 +17,7 @@ import (
 	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
 	"github.com/lsm/dolmen/internal/telemetry"
+	"github.com/lsm/dolmen/internal/telemetry/dbspan"
 )
 
 var ErrClosed = errors.New("dolmen: store is closed")
@@ -61,16 +62,20 @@ func Open(dataDir string, opts ...Option) (*Store, error) {
 	if err != nil {
 		return nil, derr.Wrap(derr.InvalidRequest, fmt.Errorf("cannot resolve data directory %s: %w", dataDir, err))
 	}
+	tel, err := cfg.instrumentation()
+	if err != nil {
+		return nil, err
+	}
 	ownersMu.Lock()
 	if _, dup := owners[dir]; dup {
 		ownersMu.Unlock()
 		return nil, derr.New(derr.Conflict, "data directory %s is already open in this process; close that store before reopening the directory", dataDir)
 	}
-	s := &Store{dir: dir, emb: cfg.embedding, tracing: telemetry.New(cfg.tracerProvider, nil, false), changeRetention: cfg.changeRetention, closing: make(chan struct{})}
+	s := &Store{dir: dir, emb: cfg.embedding, tracing: tel, changeRetention: cfg.changeRetention, closing: make(chan struct{})}
 	owners[dir] = s
 	ownersMu.Unlock()
 
-	eng, err := store.Open(dir, store.WithChangeRetention(cfg.changeRetention), store.WithVectorCacheBytes(cfg.vectorCache), store.WithSecretKey(cfg.secrets))
+	eng, err := store.Open(dir, store.WithChangeRetention(cfg.changeRetention), store.WithVectorCacheBytes(cfg.vectorCache), store.WithSecretKey(cfg.secrets), store.WithTracerProvider(cfg.tracerProvider))
 	if err != nil {
 		releaseOwnership(dir)
 		code := derr.Internal
@@ -85,16 +90,20 @@ func Open(dataDir string, opts ...Option) (*Store, error) {
 
 func openWithOpener(cfg config) (*Store, error) {
 	key := cfg.ownerKey
+	tel, err := cfg.instrumentation()
+	if err != nil {
+		return nil, err
+	}
 	ownersMu.Lock()
 	if _, dup := owners[key]; dup {
 		ownersMu.Unlock()
 		return nil, derr.New(derr.Conflict, "this engine is already open in this process; close that store before reopening it")
 	}
-	s := &Store{dir: key, emb: cfg.embedding, tracing: telemetry.New(cfg.tracerProvider, nil, false), changeRetention: cfg.changeRetention, closing: make(chan struct{})}
+	s := &Store{dir: key, emb: cfg.embedding, tracing: tel, changeRetention: cfg.changeRetention, closing: make(chan struct{})}
 	owners[key] = s
 	ownersMu.Unlock()
 
-	eng, err := cfg.opener(secret.WithKeyring(context.Background(), cfg.secrets), cfg.changeRetention)
+	eng, err := cfg.opener(dbspan.ContextWithProvider(secret.WithKeyring(context.Background(), cfg.secrets), cfg.tracerProvider), cfg.changeRetention)
 	if err != nil {
 		releaseOwnership(key)
 		code := derr.Internal

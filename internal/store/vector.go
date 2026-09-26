@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
+	"github.com/lsm/dolmen/internal/telemetry/dbspan"
 	"math"
 	"sort"
 	"strings"
@@ -17,7 +18,9 @@ type VectorSearchResult struct {
 	Skipped   int
 }
 
-func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq VectorQuery, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (SearchResult, error) {
+func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq VectorQuery, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (_ SearchResult, err error) {
+	ctx, span := s.tr.Op(ctx, "SELECT", nsName, table, dbspan.SearchKindKey.String("vector"))
+	defer func() { s.tr.End(span, err) }()
 	n, err := s.ns(nsName)
 	if err != nil {
 		return SearchResult{}, err
@@ -89,7 +92,11 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq Vecto
 		}
 	}
 	if !cached {
-		if hits, skipped, err = scanVectors(ctx, tx, table, column, filter, args, scope, vec, threshold); err != nil {
+		_, sspan := s.tr.Child(ctx, dbspan.VectorScore)
+		var scanned int
+		hits, skipped, scanned, err = scanVectors(ctx, tx, table, column, filter, args, scope, vec, threshold)
+		s.vcache.endScore(sspan, scanned, -1, err)
+		if err != nil {
 			return SearchResult{}, err
 		}
 	}
@@ -293,21 +300,22 @@ func candidateIDs(ctx context.Context, tx rowsQuerier, table, column, filter str
 	return ids, nil
 }
 
-func scanVectors(ctx context.Context, tx rowsQuerier, table, column, filter string, args []any, scope *RowScope, vec []float32, threshold float64) ([]vecHit, int, error) {
+func scanVectors(ctx context.Context, tx rowsQuerier, table, column, filter string, args []any, scope *RowScope, vec []float32, threshold float64) ([]vecHit, int, int, error) {
 	query, qargs := vectorSource(table, column, filter, args, scope, "id, "+q(column))
 	rows, err := tx.QueryContext(ctx, query, qargs...)
 	if err != nil {
-		return nil, 0, NewFilterError(filter, err)
+		return nil, 0, 0, NewFilterError(filter, err)
 	}
 	defer rows.Close()
 	var hits []vecHit
-	skipped := 0
+	skipped, scanned := 0, 0
 	for rows.Next() {
 		var id int64
 		var raw any
 		if err := rows.Scan(&id, &raw); err != nil {
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
+		scanned++
 		stored, ok := decodeStoredVector(raw)
 		if !ok || len(stored) != len(vec) {
 			skipped++
@@ -318,9 +326,9 @@ func scanVectors(ctx context.Context, tx rowsQuerier, table, column, filter stri
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, NewFilterError(filter, err)
+		return nil, 0, 0, NewFilterError(filter, err)
 	}
-	return hits, skipped, nil
+	return hits, skipped, scanned, nil
 }
 
 func ranksBefore(a, b vecHit) bool {

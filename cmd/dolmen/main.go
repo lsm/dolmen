@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/lsm/dolmen/internal/api"
 	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/embed"
@@ -75,7 +77,7 @@ func run() error {
 		return err
 	}
 
-	st, err := openStore(cfg)
+	st, err := openStore(cfg, tel.TracerProvider)
 	if err != nil {
 		return err
 	}
@@ -194,7 +196,7 @@ func runStdio(args []string) error {
 		return err
 	}
 
-	st, err := openStore(cfg)
+	st, err := openStore(cfg, tel.TracerProvider)
 	if err != nil {
 		return err
 	}
@@ -220,7 +222,7 @@ func runStdio(args []string) error {
 	return mcpSrv.ServeStdio(ctx, os.Stdin, os.Stdout)
 }
 
-func openStore(cfg *config) (store.Engine, error) {
+func openStore(cfg *config, tp trace.TracerProvider) (store.Engine, error) {
 	if cfg.Engine == store.EnginePostgres {
 		if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 			return nil, fmt.Errorf("create data directory: %w", err)
@@ -233,13 +235,14 @@ func openStore(cfg *config) (store.Engine, error) {
 			ChangeRetention: &retention,
 			SharedFilter:    cfg.Auth.On(),
 			Secrets:         cfg.Secrets,
+			TracerProvider:  tp,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("open PostgreSQL catalog: %w", err)
 		}
 		return st, nil
 	}
-	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention), store.WithMaxOpenNamespaces(cfg.MaxOpenNamespaces), store.WithSync(cfg.Sync), store.WithMaxNamespaceSize(cfg.MaxNamespaceSize), store.WithVectorCacheBytes(cfg.VectorCacheSize), store.WithSecretKey(cfg.Secrets))
+	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention), store.WithMaxOpenNamespaces(cfg.MaxOpenNamespaces), store.WithSync(cfg.Sync), store.WithMaxNamespaceSize(cfg.MaxNamespaceSize), store.WithVectorCacheBytes(cfg.VectorCacheSize), store.WithSecretKey(cfg.Secrets), store.WithTracerProvider(tp))
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
@@ -800,12 +803,16 @@ func printEnvHelp(out io.Writer) {
 		{"REMBED_CACHE", "model cache directory for the local provider"},
 		{"HF_TOKEN", "Hugging Face token for gated repos downloaded by the local provider"},
 		{"", ""},
-		{"OTEL_EXPORTER_OTLP_ENDPOINT", "OTLP http/protobuf endpoint; setting it (or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT) turns tracing on (default off)"},
-		{"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "traces-only OTLP endpoint"},
-		{"OTEL_EXPORTER_OTLP_HEADERS", "headers sent with each export (also _TIMEOUT, _COMPRESSION, _CERTIFICATE and the _TRACES_ variants)"},
+		{"OTEL_EXPORTER_OTLP_ENDPOINT", "OTLP http/protobuf endpoint; setting it turns on traces and metrics (default off)"},
+		{"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "traces-only OTLP endpoint; setting it turns tracing on"},
+		{"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "metrics-only OTLP endpoint; setting it turns metrics on"},
+		{"OTEL_EXPORTER_OTLP_HEADERS", "headers sent with each export (also _TIMEOUT, _COMPRESSION, _CERTIFICATE and the _TRACES_ / _METRICS_ variants)"},
 		{"OTEL_EXPORTER_OTLP_PROTOCOL", "only http/protobuf is supported"},
 		{"OTEL_TRACES_EXPORTER", "otlp or none"},
-		{"OTEL_SDK_DISABLED", "true turns tracing off"},
+		{"OTEL_METRICS_EXPORTER", "otlp or none; GET /metrics already serves Prometheus"},
+		{"OTEL_METRIC_EXPORT_INTERVAL", "milliseconds between metric exports (default 60000)"},
+		{"OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE", "cumulative (default), delta or lowmemory"},
+		{"OTEL_SDK_DISABLED", "true turns traces and metrics off"},
 		{"OTEL_SERVICE_NAME", "service.name (default dolmen)"},
 		{"OTEL_RESOURCE_ATTRIBUTES", "extra resource attributes, k=v,k2=v2"},
 		{"OTEL_TRACES_SAMPLER", "sampler (default parentbased_always_on); OTEL_TRACES_SAMPLER_ARG sets the ratio"},
