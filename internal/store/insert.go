@@ -76,14 +76,13 @@ func (s *Store) insert(ctx context.Context, nsName, table string, records []map[
 	}
 }
 
-func (s *Store) payloadHash(sc *schema.TableSchema, records []map[string]any) string {
-	raw, err := json.Marshal(FingerprintSecrets(s.secrets, sc, records))
+func (s *Store) payloadHash(sc *schema.TableSchema, records []map[string]any) IdemHash {
+	h, err := RequestHash(s.secrets, sc, records)
 	if err != nil {
-
-		raw = []byte("marshal error: " + err.Error())
+		sum := sha256.Sum256([]byte("marshal error: " + err.Error()))
+		return IdemHash{Primary: hex.EncodeToString(sum[:])}
 	}
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])
+	return h
 }
 
 func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, owner string, domain IdemDomain) (ids []int64, changes ChangeRange, replayed bool, done bool, err error) {
@@ -96,7 +95,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	if err != nil {
 		return nil, ChangeRange{}, false, true, err
 	}
-	var idemHash string
+	var idemHash IdemHash
 	if idemKey != "" {
 		idemHash = s.payloadHash(sc, records)
 		if ids, found, err := lookupIdem(ctx, n.rw, table, idemKey, idemHash, domain); err != nil {
@@ -247,7 +246,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO `+idempotencyTable+`(table_name, owner, key, payload_hash, ids_json) VALUES(?,?,?,?,?)`,
-			table, domain.Owner, idemKey, idemHash, string(idsJSON)); err != nil {
+			table, domain.Owner, idemKey, idemHash.Primary, string(idsJSON)); err != nil {
 
 			if strings.Contains(err.Error(), "UNIQUE constraint failed: "+idempotencyTable) {
 				if rerr := tx.Rollback(); rerr != nil {

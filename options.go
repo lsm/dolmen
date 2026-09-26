@@ -28,6 +28,7 @@ type config struct {
 	changeRetention time.Duration
 	vectorCache     int64
 	secretKey       []byte
+	retiredKeys     [][]byte
 	secretKeySet    bool
 	secrets         *secret.Keyring
 
@@ -67,9 +68,13 @@ func WithChangeRetention(d time.Duration) Option {
 	}
 }
 
-func WithSecretKey(key []byte) Option {
+func WithSecretKey(key []byte, retired ...[]byte) Option {
 	return func(c *config) {
 		c.secretKey = append([]byte(nil), key...)
+		c.retiredKeys = nil
+		for _, r := range retired {
+			c.retiredKeys = append(c.retiredKeys, append([]byte(nil), r...))
+		}
 		c.secretKeySet = true
 	}
 }
@@ -88,9 +93,13 @@ func (c *config) validate() error {
 		return derr.New(derr.InvalidRequest, "WithEmbedding: provider must not be nil")
 	}
 	if c.secretKeySet {
-		k, err := secret.New(c.secretKey)
+		k, err := secret.New(c.secretKey, c.retiredKeys...)
 		clear(c.secretKey)
 		c.secretKey = nil
+		for _, r := range c.retiredKeys {
+			clear(r)
+		}
+		c.retiredKeys = nil
 		if err != nil {
 			return derr.New(derr.InvalidRequest, "WithSecretKey: %v", err)
 		}

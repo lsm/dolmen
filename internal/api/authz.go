@@ -47,6 +47,7 @@ var authRules = map[string]authRule{
 	"revoke_key": {Scope: scopeRoot, Verbs: []auth.Verb{auth.VerbAdmin}},
 
 	"rotate_signing_key": {Scope: scopeRoot, Verbs: []auth.Verb{auth.VerbAdmin}},
+	"rotate_secret_key":  {Scope: scopeRoot, Verbs: []auth.Verb{auth.VerbAdmin}},
 
 	"create_namespace": {Scope: scopeParentNamespace, Verbs: []auth.Verb{auth.VerbAdmin}},
 	"drop_namespace":   {Scope: scopeNamespace, Verbs: []auth.Verb{auth.VerbAdmin}},

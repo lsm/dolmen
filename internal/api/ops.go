@@ -535,6 +535,7 @@ var Ops = map[string]OpDef{
 			return map[string]any{"namespace": ns, "bytes_before": res.BytesBefore, "bytes_after": res.BytesAfter}, nil
 		},
 	},
+	"rotate_secret_key": rotateSecretKeyOp,
 	"drop_table": {
 		Description: "Drop a table: its rows, its full-text index, its schema and migration history, and its " +
 			"idempotency keys. Irreversible. confirm must repeat the exact table name — a guard against dropping " +
