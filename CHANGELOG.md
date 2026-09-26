@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- **`query` can no longer hand out a secret's ciphertext.** Masking used to key off the result-column
+  label, so `SELECT token AS t` returned base64 of the stored bytes and `length(token)` its unpadded
+  length — any caller holding `read` could exfiltrate every secret's ciphertext without the `reveal`
+  verb. Every reference to a table holding a secret is now rewritten to project the mask in the
+  column's place, so aliases, expressions, subqueries, CTEs, `SELECT *` and `ORDER BY` all read
+  `"••••"`. Search and write filters still evaluate against the ciphertext, where they select rows
+  but return no values.
+
 - **Writing a masked secret back no longer destroys it.** `"••••"` is refused as a `secret`
   value, naming the field and saying to pass the real value, `reveal` it first, or omit the field.
   An agent that read a row without `reveal` and wrote it back edited previously stored the mask as

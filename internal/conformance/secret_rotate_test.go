@@ -3,7 +3,6 @@ package conformance
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -49,12 +48,10 @@ func seedRotation(t *testing.T, h *harness, ns string, n int) {
 
 func storedKeyIDs(t *testing.T, h *harness, ns string) map[string]int {
 	t.Helper()
-	data := h.mustHTTP("query", map[string]any{"namespace": ns, "sql": "SELECT token AS raw FROM creds WHERE token IS NOT NULL"})
 	out := map[string]int{}
-	for _, r := range data["rows"].([]any) {
-		raw, err := base64.StdEncoding.DecodeString(r.(map[string]any)["raw"].(string))
-		if err != nil || len(raw) < 9 {
-			t.Fatalf("stored secret is not a ciphertext blob: %v %v", r, err)
+	for _, raw := range storedSecretBlobs(t, h, ns, "creds", "token") {
+		if len(raw) < 9 {
+			t.Fatalf("stored secret is not a ciphertext blob: %x", raw)
 		}
 		out[hex.EncodeToString(raw[1:9])]++
 	}

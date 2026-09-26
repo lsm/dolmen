@@ -54,9 +54,23 @@ reads a row without `reveal` and writes it back edited would otherwise store `"�
 plaintext and destroy the secret, silently and unrecoverably, which is the likeliest way to lose one.
 The mask therefore cannot be a secret's value, the one plaintext the type refuses.
 
-**Raw SQL.** `query`, search filters and write filters see only the ciphertext blob. Aliasing the
-column (`SELECT token AS t`) returns base64 of the blob. Comparing a secret column with a plaintext
-never matches.
+**Raw SQL.** `query` never sees a secret column at all. Every reference to a table that holds one is
+rewritten to a subselect that projects the mask in its place, `CASE WHEN col IS NULL THEN NULL ELSE
+'••••' END`, so an alias, an expression, a subquery, a CTE, `SELECT *`, `ORDER BY` and `length()`
+all operate on the mask. PostgreSQL already rewrote every table reference this way and only had to
+change the projection; SQLite now splices the same subselect over the table reference its scanner
+found. Until this was closed, aliasing a secret column returned base64 of the blob, which handed any
+caller holding `read` the ciphertext of every secret without the `reveal` verb and leaked its
+unpadded length: a boundary the product advertises, defeated by one alias.
+
+On SQLite the subselect is not a table, so three table-only shapes are refused on a table holding a
+secret, each with the alternative: `rowid` (use `id`, the same value), an `INDEXED BY` or `NOT INDEXED`
+hint, and a `main.`-qualified reference. The hidden `_embedding` column stays hidden, because whether a
+query asked for it is decided from the SQL the caller wrote, not from the rewritten statement.
+
+Search filters and write filters still evaluate against the ciphertext, where they select rows but
+return no values, so comparing a secret column with a plaintext, or with the mask, never matches.
+PostgreSQL compiles filters without the masking projection for the same reason.
 
 **Change feed and backups.** Change records carry ids, never row values, so `changes_since`,
 `wait_for` and SSE never hold a secret. Backups copy the database file, which holds only ciphertext.
@@ -107,8 +121,8 @@ share the helpers in `internal/store/secret.go` (`RequireSecretKey`, `SealSecret
 a wrong key and tampering stay unclassified, which the API reports as `internal_error`) and the
 idempotency fingerprint are one implementation. Every `create_table` and `migrate` refusal applies
 on postgres too, including `set_fulltext`, `set_vectorize` and `set_enum` on an existing secret.
-`query` masks by result-column label as on SQLite; an aliased secret column comes back as base64
-of the `bytea`, and comparing it with a plaintext matches nothing.
+`query` masks a secret column inside the subselect it already rewrites every table reference into,
+so no alias or expression reaches the `bytea`, and comparing it with a plaintext matches nothing.
 
 **No catalog change.** Secret columns live in the data tables, created by `CREATE TABLE` or
 `ALTER TABLE ... ADD COLUMN`, and the idempotency relation keeps its shape (only what goes into
