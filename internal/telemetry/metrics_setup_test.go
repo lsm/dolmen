@@ -129,3 +129,24 @@ func TestShutdownFlushesPendingMetrics(t *testing.T) {
 		t.Fatalf("shutdown must flush recorded metrics; exported %v", rec.names())
 	}
 }
+
+func TestTheTracerProviderReachesTheEngineOnlyWhenTracesAreOn(t *testing.T) {
+	for _, tc := range []struct {
+		env    map[string]string
+		traces bool
+	}{
+		{map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://c:4318"}, true},
+		{map[string]string{"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "http://c:4318/v1/metrics"}, false},
+	} {
+		p, err := setup(context.Background(), envOf(tc.env), "v1",
+			recordingFactory(new(bool), tracetest.NewInMemoryExporter()),
+			metricFactory(new(bool), &recordedMetrics{}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (p.TracerProvider != nil) != tc.traces {
+			t.Errorf("env %v: TracerProvider set = %v, want %v (storage spans reach the engine through it)", tc.env, p.TracerProvider != nil, tc.traces)
+		}
+		p.Shutdown(context.Background())
+	}
+}

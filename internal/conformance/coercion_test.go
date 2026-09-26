@@ -110,8 +110,8 @@ func TestTypedReadCoercionMatrix(t *testing.T) {
 	nullRow := queryRow("SELECT absent FROM t")
 	assertJSONEqual(t, "sql null", nullRow["absent"], nil)
 
-	if _, ok := f["_score"]; ok {
-		t.Fatal("fulltext results must not carry _score")
+	if _, ok := f["_score"]; !ok {
+		t.Fatal("fulltext results must carry _score")
 	}
 	if _, ok := q["_score"]; ok {
 		t.Fatal("query rows must not carry _score")

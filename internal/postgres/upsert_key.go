@@ -96,6 +96,13 @@ func updatePrepared(ctx context.Context, tx pgx.Tx, n namespace, state tableStat
 }
 
 func (s *Store) UpsertByKey(ctx context.Context, ns, table string, keys []string, records []map[string]any, opts store.WriteOpts, emb store.Embedder, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
+	ctx, end := s.span(ctx, "UPSERT", ns, table)
+	res, err := s.upsertByKeyRows(ctx, ns, table, keys, records, opts, emb, scope, expected)
+	end(err)
+	return res, err
+}
+
+func (s *Store) upsertByKeyRows(ctx context.Context, ns, table string, keys []string, records []map[string]any, opts store.WriteOpts, emb store.Embedder, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
 	records, err := normalizeRecords(records)
 	if err != nil {
 		return store.InsertResult{}, err

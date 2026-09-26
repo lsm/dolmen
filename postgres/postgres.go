@@ -11,6 +11,7 @@ import (
 	"github.com/lsm/dolmen/internal/postgres"
 	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
+	"github.com/lsm/dolmen/internal/telemetry/dbspan"
 )
 
 type Config struct {
@@ -43,6 +44,7 @@ func With(cfg Config) dolmen.Option {
 			MaxConns:        cfg.MaxConns,
 			ChangeRetention: &retention,
 			Secrets:         secret.KeyringFrom(ctx),
+			TracerProvider:  dbspan.ProviderFrom(ctx),
 		})
 	})
 }

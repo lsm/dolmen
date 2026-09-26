@@ -21,6 +21,8 @@ import (
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/secret"
+	"github.com/lsm/dolmen/internal/telemetry/dbspan"
+	"go.opentelemetry.io/otel/trace"
 
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -117,6 +119,9 @@ type Store struct {
 
 	secrets *secret.Keyring
 
+	tp trace.TracerProvider
+	tr *dbspan.Tracer
+
 	closed   atomic.Bool
 	closeErr error
 }
@@ -187,6 +192,8 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 		return nil, err
 	}
 	s.sync = mode
+	s.tr = newSQLiteTracer(s.tp)
+	s.vcache.tr = s.tr
 	if s.maxOpen < 1 {
 		return nil, fmt.Errorf("max open namespaces must be at least 1, got %d", s.maxOpen)
 	}

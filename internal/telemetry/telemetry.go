@@ -69,8 +69,9 @@ func NewWithMeter(tp trace.TracerProvider, mp metric.MeterProvider, prop propaga
 func (t *Tracing) On() bool { return t != nil }
 
 type Provider struct {
-	Tracing  *Tracing
-	shutdown func(context.Context) error
+	Tracing        *Tracing
+	TracerProvider trace.TracerProvider
+	shutdown       func(context.Context) error
 }
 
 func (p *Provider) Shutdown(ctx context.Context) error {
@@ -164,7 +165,7 @@ func setup(ctx context.Context, getenv func(string) string, serviceVersion strin
 	if err != nil {
 		return nil, err
 	}
-	return &Provider{Tracing: t, shutdown: func(ctx context.Context) error {
+	return &Provider{Tracing: t, TracerProvider: tp, shutdown: func(ctx context.Context) error {
 		var errs []error
 		for _, stop := range shutdowns {
 			errs = append(errs, stop(ctx))

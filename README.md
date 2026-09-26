@@ -1320,6 +1320,18 @@ What is traced:
 - An `embeddings <model>` span per embedding call (`gen_ai.operation.name=embeddings`,
   `gen_ai.request.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens` when the provider
   reports it); CLIENT for `openai`, which also sends `traceparent` upstream, INTERNAL for `local`.
+- Storage spans under the operation span, SQLite engine, for writes (`insert`, `update`, `upsert`,
+  `upsert_by_key`, `delete`), both searches, `migrate` and `vacuum`: a `<db.operation.name> <table>`
+  span (`INSERT docs`, `SELECT notes`, ...) carrying
+  `db.system.name=sqlite`, `db.namespace` and `db.collection.name`. A write that waits for the
+  namespace's single writer records that wait, so contention is visible; a vector search records
+  the cache build or catch-up and the scoring pass separately, with the rows scored, the candidate
+  count when a `filter` narrowed them, and whether the table was served from cache; `migrate`
+  records a span per step, and `vacuum` its own. Plain reads (`read_rows`, `query`) and schema
+  lifecycle calls have no storage span yet.
+- The PostgreSQL engine records the same span for the same operations, as a CLIENT span (the
+  database is a remote server) carrying `db.system.name=postgresql`, `db.namespace`,
+  `db.collection.name`, `server.address` and `server.port`; never the SQL, its arguments or the DSN.
 - Every log line written during a traced request carries `trace_id` and `span_id`.
 
 What is measured (metrics are pushed every `OTEL_METRIC_EXPORT_INTERVAL`; with traces on too, the SDK

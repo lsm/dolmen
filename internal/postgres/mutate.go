@@ -278,15 +278,27 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 }
 
 func (s *Store) Update(ctx context.Context, ns, table, filter string, args []any, set map[string]any, emb store.Embedder, scope *store.RowScope, expected store.Incarnation) (store.UpdateResult, error) {
+	ctx, end := s.span(ctx, "UPDATE", ns, table)
 	result, err := s.mutate(ctx, ns, table, filter, args, set, emb, false, "", scope, expected)
+	end(err)
 	return store.UpdateResult{Updated: result.Updated, Changes: result.Changes}, err
 }
 
 func (s *Store) Upsert(ctx context.Context, ns, table, filter string, args []any, set map[string]any, opts store.WriteOpts, emb store.Embedder, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
-	return s.mutate(ctx, ns, table, filter, args, set, emb, true, opts.Owner, scope, expected)
+	ctx, end := s.span(ctx, "UPSERT", ns, table)
+	res, err := s.mutate(ctx, ns, table, filter, args, set, emb, true, opts.Owner, scope, expected)
+	end(err)
+	return res, err
 }
 
 func (s *Store) Delete(ctx context.Context, ns, table, filter string, args []any, opts store.DeleteOpts, scope *store.RowScope, expected store.Incarnation) (store.DeleteResult, error) {
+	ctx, end := s.span(ctx, "DELETE", ns, table)
+	res, err := s.deleteRows(ctx, ns, table, filter, args, opts, scope, expected)
+	end(err)
+	return res, err
+}
+
+func (s *Store) deleteRows(ctx context.Context, ns, table, filter string, args []any, opts store.DeleteOpts, scope *store.RowScope, expected store.Incarnation) (store.DeleteResult, error) {
 	args, err := queryArgs(args)
 	if err != nil {
 		return store.DeleteResult{}, err

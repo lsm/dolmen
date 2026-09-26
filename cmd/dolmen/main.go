@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/lsm/dolmen/internal/api"
 	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/embed"
@@ -75,7 +77,7 @@ func run() error {
 		return err
 	}
 
-	st, err := openStore(cfg)
+	st, err := openStore(cfg, tel.TracerProvider)
 	if err != nil {
 		return err
 	}
@@ -194,7 +196,7 @@ func runStdio(args []string) error {
 		return err
 	}
 
-	st, err := openStore(cfg)
+	st, err := openStore(cfg, tel.TracerProvider)
 	if err != nil {
 		return err
 	}
@@ -220,7 +222,7 @@ func runStdio(args []string) error {
 	return mcpSrv.ServeStdio(ctx, os.Stdin, os.Stdout)
 }
 
-func openStore(cfg *config) (store.Engine, error) {
+func openStore(cfg *config, tp trace.TracerProvider) (store.Engine, error) {
 	if cfg.Engine == store.EnginePostgres {
 		if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 			return nil, fmt.Errorf("create data directory: %w", err)
@@ -233,13 +235,14 @@ func openStore(cfg *config) (store.Engine, error) {
 			ChangeRetention: &retention,
 			SharedFilter:    cfg.Auth.On(),
 			Secrets:         cfg.Secrets,
+			TracerProvider:  tp,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("open PostgreSQL catalog: %w", err)
 		}
 		return st, nil
 	}
-	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention), store.WithMaxOpenNamespaces(cfg.MaxOpenNamespaces), store.WithSync(cfg.Sync), store.WithMaxNamespaceSize(cfg.MaxNamespaceSize), store.WithVectorCacheBytes(cfg.VectorCacheSize), store.WithSecretKey(cfg.Secrets))
+	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention), store.WithMaxOpenNamespaces(cfg.MaxOpenNamespaces), store.WithSync(cfg.Sync), store.WithMaxNamespaceSize(cfg.MaxNamespaceSize), store.WithVectorCacheBytes(cfg.VectorCacheSize), store.WithSecretKey(cfg.Secrets), store.WithTracerProvider(tp))
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
