@@ -118,7 +118,11 @@ func (c *sqlCompiler) walk(message protoreflect.Message, ctes map[string]bool) e
 			c.names.tables = append(c.names.tables, table)
 			cols := []string{ident("id"), ident("created_at")}
 			for _, field := range table.schema.Fields {
-				cols = append(cols, ident(table.columns[field.Name])+" AS "+ident(c.names.name(field.Name)))
+				physical := ident(table.columns[field.Name])
+				if field.Type == schema.Secret {
+					physical = "CASE WHEN " + physical + " IS NULL THEN NULL ELSE " + maskLiteral + " END"
+				}
+				cols = append(cols, physical+" AS "+ident(c.names.name(field.Name)))
 			}
 			if table.schema.HasOwner {
 				cols = append(cols, ident(schema.OwnerColumn))

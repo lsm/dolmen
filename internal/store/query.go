@@ -200,9 +200,15 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsG
 	if err != nil {
 		return QueryResult{}, err
 	}
-	if err := validateQueryTables(trimmed, registered); err != nil {
+	rewrites, err := scanQueryTables(trimmed, registered)
+	if err != nil {
 		return QueryResult{}, err
 	}
+	masked, err := maskedProjections(ctx, tx, nsName, rewrites)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	trimmed = maskSecretTables(trimmed, rewrites, masked)
 	paginated := trimmed + "\nLIMIT ? OFFSET ?"
 	args = append(args, limit+1, offset)
 

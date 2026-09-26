@@ -9,15 +9,42 @@ import (
 )
 
 func validateQueryTables(stmt string, registered map[string]bool) error {
+	_, err := scanQueryTables(stmt, registered)
+	return err
+}
+
+func scanQueryTables(stmt string, registered map[string]bool) ([]tableRewrite, error) {
 	if utf8.RuneCountInString(stmt) > MaxQueryRunes {
-		return invalidf("query exceeds maximum length")
+		return nil, invalidf("query exceeds maximum length")
 	}
 	s := newQueryScanner(stmt)
 	s.registered = registered
 	if err := s.parseStatement(); err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+	return s.rewrites, nil
+}
+
+func maskSecretTables(stmt string, rewrites []tableRewrite, masked map[string]string) string {
+	if len(masked) == 0 {
+		return stmt
+	}
+	var sb strings.Builder
+	last := 0
+	for _, r := range rewrites {
+		projection, ok := masked[r.table]
+		if !ok || r.start < last || r.end > len(stmt) {
+			continue
+		}
+		sb.WriteString(stmt[last:r.start])
+		sb.WriteString(projection)
+		if !r.aliased {
+			sb.WriteString(" AS " + q(r.table))
+		}
+		last = r.end
+	}
+	sb.WriteString(stmt[last:])
+	return sb.String()
 }
 
 const (
@@ -34,6 +61,10 @@ type queryScanner struct {
 
 	registered map[string]bool
 
+	tokenStart int
+
+	rewrites []tableRewrite
+
 	cteScope []map[string]bool
 
 	tableParens int
@@ -42,8 +73,10 @@ type queryScanner struct {
 }
 
 type token struct {
-	typ string
-	val string
+	typ   string
+	val   string
+	start int
+	end   int
 }
 
 func newQueryScanner(stmt string) *queryScanner {
@@ -110,10 +143,17 @@ func (s *queryScanner) expect(kw string) error {
 }
 
 func (s *queryScanner) scanToken() (token, error) {
+	t, err := s.scanTokenAt()
+	t.end = s.i
+	return t, err
+}
+
+func (s *queryScanner) scanTokenAt() (token, error) {
 	for {
 		s.skipWhitespace()
+		s.tokenStart = s.i
 		if s.i >= len(s.s) {
-			return token{typ: "eof", val: ""}, nil
+			return token{typ: "eof", val: "", start: s.tokenStart}, nil
 		}
 
 		c := s.s[s.i]
@@ -124,76 +164,76 @@ func (s *queryScanner) scanToken() (token, error) {
 				continue
 			}
 			s.i++
-			return token{typ: "op", val: "-"}, nil
+			return token{typ: "op", val: "-", start: s.tokenStart}, nil
 		case '/':
 			if s.i+1 < len(s.s) && s.s[s.i+1] == '*' {
 				s.skipBlockComment()
 				continue
 			}
 			s.i++
-			return token{typ: "op", val: "/"}, nil
+			return token{typ: "op", val: "/", start: s.tokenStart}, nil
 		case '\'':
 			v, err := s.readSingleQuoted()
 			if err != nil {
 				return token{}, err
 			}
-			return token{typ: "string", val: v}, nil
+			return token{typ: "string", val: v, start: s.tokenStart}, nil
 		case '"':
 			v, err := s.readQuoted(c)
 			if err != nil {
 				return token{}, err
 			}
-			return token{typ: "ident", val: v}, nil
+			return token{typ: "ident", val: v, start: s.tokenStart}, nil
 		case '`':
 			v, err := s.readQuoted(c)
 			if err != nil {
 				return token{}, err
 			}
-			return token{typ: "ident", val: v}, nil
+			return token{typ: "ident", val: v, start: s.tokenStart}, nil
 		case '[':
 			v, err := s.readBracketed()
 			if err != nil {
 				return token{}, err
 			}
-			return token{typ: "ident", val: v}, nil
+			return token{typ: "ident", val: v, start: s.tokenStart}, nil
 		case '(':
 			s.i++
-			return token{typ: "punct", val: "("}, nil
+			return token{typ: "punct", val: "(", start: s.tokenStart}, nil
 		case ')':
 			s.i++
-			return token{typ: "punct", val: ")"}, nil
+			return token{typ: "punct", val: ")", start: s.tokenStart}, nil
 		case ',':
 			s.i++
-			return token{typ: "punct", val: ","}, nil
+			return token{typ: "punct", val: ",", start: s.tokenStart}, nil
 		case ';':
 			s.i++
-			return token{typ: "punct", val: ";"}, nil
+			return token{typ: "punct", val: ";", start: s.tokenStart}, nil
 		case '.':
 			s.i++
-			return token{typ: "punct", val: "."}, nil
+			return token{typ: "punct", val: ".", start: s.tokenStart}, nil
 		case ':', '@', '$', '#':
 
 			if s.i+1 < len(s.s) && (isIdentCont(s.s[s.i+1]) || s.atTclSuffix(s.i+1)) {
-				return token{typ: "param", val: s.readParam()}, nil
+				return token{typ: "param", val: s.readParam(), start: s.tokenStart}, nil
 			}
 			s.i++
-			return token{typ: "op", val: string(c)}, nil
+			return token{typ: "op", val: string(c), start: s.tokenStart}, nil
 		case '?':
 
 			if s.i+1 < len(s.s) && unicode.IsDigit(rune(s.s[s.i+1])) {
-				return token{typ: "param", val: s.readNumberedParam()}, nil
+				return token{typ: "param", val: s.readNumberedParam(), start: s.tokenStart}, nil
 			}
 			s.i++
-			return token{typ: "op", val: string(c)}, nil
+			return token{typ: "op", val: string(c), start: s.tokenStart}, nil
 		default:
 			if isIdentStart(c) {
-				return token{typ: "ident", val: s.readIdent()}, nil
+				return token{typ: "ident", val: s.readIdent(), start: s.tokenStart}, nil
 			}
 			if unicode.IsDigit(rune(c)) || (c == '.' && s.i+1 < len(s.s) && unicode.IsDigit(rune(s.s[s.i+1]))) {
-				return token{typ: "number", val: s.readNumber()}, nil
+				return token{typ: "number", val: s.readNumber(), start: s.tokenStart}, nil
 			}
 			s.i++
-			return token{typ: "op", val: string(c)}, nil
+			return token{typ: "op", val: string(c), start: s.tokenStart}, nil
 		}
 	}
 }
@@ -1060,6 +1100,7 @@ func (s *queryScanner) parseTableFactor() error {
 		return invalidf("expected table name, got %q", t.val)
 	}
 	s.next()
+	refEnd := t.end
 
 	schema := ""
 	name := t.val
@@ -1072,6 +1113,7 @@ func (s *queryScanner) parseTableFactor() error {
 		if err != nil {
 			return err
 		}
+		refEnd = t3.end
 		if t3.typ != "ident" && t3.typ != "string" {
 			return invalidf("expected table name after '.', got %q", t3.val)
 		}
@@ -1101,8 +1143,29 @@ func (s *queryScanner) parseTableFactor() error {
 	if err := s.checkTableName(schema, name); err != nil {
 		return err
 	}
+	if !isCTE && s.isRegisteredRef(schema, name) {
+		s.rewrites = append(s.rewrites, tableRewrite{
+			table: asciiLower(unquoteIdent(name)),
+			start: t.start,
+			end:   refEnd,
+		})
+	}
 
-	return s.skipOptionalAlias()
+	aliased, err := s.skipOptionalAliasReported()
+	if err != nil {
+		return err
+	}
+	if aliased && len(s.rewrites) > 0 {
+		s.rewrites[len(s.rewrites)-1].aliased = true
+	}
+	return nil
+}
+
+type tableRewrite struct {
+	table   string
+	start   int
+	end     int
+	aliased bool
 }
 
 func (s *queryScanner) checkTableName(schema, rawName string) error {
@@ -1134,42 +1197,47 @@ func isUserTable(name string) bool {
 }
 
 func (s *queryScanner) skipOptionalAlias() error {
+	_, err := s.skipOptionalAliasReported()
+	return err
+}
+
+func (s *queryScanner) skipOptionalAliasReported() (bool, error) {
 	t, err := s.peek()
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if isKeyword(t, "indexed") || (isKeyword(t, "not") && s.isNotIndexed()) {
-		return s.skipIndexedBy()
+		return false, s.skipIndexedBy()
 	}
 	if isKeyword(t, "as") {
 		s.next()
 		t, err = s.next()
 		if err != nil {
-			return err
+			return false, err
 		}
 		if t.typ != "ident" && t.typ != "string" {
-			return invalidf("expected alias after AS, got %q", t.val)
+			return false, invalidf("expected alias after AS, got %q", t.val)
 		}
-		return s.skipIndexedBy()
+		return true, s.skipIndexedBy()
 	}
 
 	if t.typ != "ident" && t.typ != "string" {
-		return nil
+		return false, nil
 	}
 
 	if t.typ == "ident" && !isQuotedIdent(t.val) {
 		kw := asciiLower(t.val)
 		if isJoinOp(t) || isClauseEnd(t) || kw == "on" || kw == "using" || t.val == ")" || t.val == "," {
-			return nil
+			return false, nil
 		}
 
 		if isKeyword(t, "window") && s.isWindowClause() {
-			return nil
+			return false, nil
 		}
 	}
 	s.next()
-	return s.skipIndexedBy()
+	return true, s.skipIndexedBy()
 }
 
 func (s *queryScanner) skipIndexedBy() error {

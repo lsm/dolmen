@@ -586,7 +586,10 @@ match, before ranking.
 - A reveal that cannot decrypt (no key configured, a different key than the value was written
   under, or a tampered value) is `internal_error`; the server log names the cause and, for a wrong
   key, the key id the value was written under.
-- SQL (`query`, search and write `filter`s) sees only the ciphertext blob, and the change feed and
+- `query` sees the mask, never the stored bytes: every reference to a table holding a secret is
+  rewritten so an alias, an expression, a subquery, `SELECT *` or `length()` all read `"••••"`.
+  Search and write `filter`s still evaluate against the ciphertext, where they select rows but
+  return no values, so comparing a secret with a plaintext matches nothing. The change feed and
   backups carry only ciphertext. Losing the key loses the values; a different key cannot decrypt them.
 
 ### Id, `created_at`, and stability

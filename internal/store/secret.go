@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/secret"
@@ -143,4 +146,103 @@ func SecretFingerprint(k *secret.Keyring, v any) string {
 		tag = "number"
 	}
 	return "secret-" + tag + ":" + k.Fingerprint(stored)
+}
+
+func maskedProjections(ctx context.Context, tx queryRunner, nsName string, rewrites []tableRewrite) (map[string]string, error) {
+	var out map[string]string
+	seen := map[string]bool{}
+	for _, r := range rewrites {
+		if seen[r.table] {
+			continue
+		}
+		seen[r.table] = true
+		sc, err := loadSchema(ctx, tx, nsName, r.table)
+		if err != nil {
+			return nil, err
+		}
+		if !hasSecretField(sc) {
+			continue
+		}
+		cols, err := queryColumns(ctx, tx, r.table)
+		if err != nil {
+			return nil, err
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[r.table] = maskedProjection(sc, cols)
+	}
+	return out, nil
+}
+
+func queryColumns(ctx context.Context, tx queryRunner, table string) (map[string]bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	cols := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		cols[name] = true
+	}
+	return cols, rows.Err()
+}
+
+type queryRunner interface {
+	rowQuerier
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+var maskLiteral = "'" + strings.ReplaceAll(secret.Mask, "'", "''") + "'"
+
+func hasSecretField(sc *schema.TableSchema) bool {
+	for _, f := range sc.Fields {
+		if f.Type == schema.Secret {
+			return true
+		}
+	}
+	return false
+}
+
+func maskedProjection(sc *schema.TableSchema, cols map[string]bool) string {
+	secrets := map[string]bool{}
+	for _, f := range sc.Fields {
+		if f.Type == schema.Secret {
+			secrets[f.Name] = true
+		}
+	}
+	names := make([]string, 0, len(cols))
+	for name := range cols {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	ordered := []string{"id", "created_at"}
+	for _, f := range sc.Fields {
+		ordered = append(ordered, f.Name)
+	}
+	ordered = append(ordered, schema.OwnerColumn, "_embedding")
+	listed := map[string]bool{}
+	projected := make([]string, 0, len(names))
+	add := func(name string) {
+		if !cols[name] || listed[name] {
+			return
+		}
+		listed[name] = true
+		if secrets[name] {
+			projected = append(projected, "CASE WHEN "+q(name)+" IS NULL THEN NULL ELSE "+maskLiteral+" END AS "+q(name))
+			return
+		}
+		projected = append(projected, q(name))
+	}
+	for _, name := range ordered {
+		add(name)
+	}
+	for _, name := range names {
+		add(name)
+	}
+	return "(SELECT " + strings.Join(projected, ", ") + " FROM " + q(sc.Name) + ")"
 }
