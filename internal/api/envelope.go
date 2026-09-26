@@ -279,6 +279,9 @@ func wrapStoreErr(err error) *Error {
 	if errors.Is(err, store.ErrCatalogCorrupt) {
 		return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: redactStoreMsg(err.Error()), Cause: err}
 	}
+	if errors.Is(err, store.ErrNamespaceUnreadable) {
+		return &Error{Status: http.StatusInternalServerError, Code: ErrCodeInternal, Message: redactStoreMsg(err.Error()), Cause: err}
+	}
 	var qe *store.QueryError
 	if errors.As(err, &qe) {
 		_, code := statusFor(ops.Classify(qe))

@@ -173,6 +173,7 @@ func FuzzTheRequestDecoder(f *testing.F) {
 	}{
 		{"decode", decode},
 		{"decodeData", decodeData},
+		{"decodeExactBody", decodeExactBody},
 		{"decodeAllowNullArgs", decodeAllowNullArgs},
 	}
 	f.Fuzz(func(t *testing.T, body string) {
