@@ -36,11 +36,10 @@ func wantShapeRefusal(t *testing.T, h *harness, what, op string, body map[string
 		}
 	}
 	res := h.mcpCall(op, body)
-	env := res.toolError()
-	if env == nil {
+	mcpErr := res.toolError()
+	if mcpErr == nil {
 		t.Fatalf("%s: MCP accepted what /v1 refused", what)
 	}
-	mcpErr, _ := env["error"].(map[string]any)
 	if mcpErr["code"] != errEnv["code"] || mcpErr["message"] != errEnv["message"] {
 		t.Fatalf("%s: MCP refused differently: %v vs %v", what, mcpErr, errEnv)
 	}

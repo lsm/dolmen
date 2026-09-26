@@ -378,8 +378,15 @@ func TestCreateTableNameAndDimConstraintsDeclared(t *testing.T) {
 		t.Fatalf(`"name" must exclude the reserved field identifiers, got %v`, name["not"])
 	}
 	allOf, ok := items["allOf"].([]any)
-	if !ok || len(allOf) != 7 {
-		t.Fatalf("expected seven conditional constraints (dim, fulltext, vectorize, enum, default exclusions, now() guard), got %v", items["allOf"])
+	if !ok || len(allOf) != 8 {
+		t.Fatalf("expected eight conditional constraints (dim, fulltext, vectorize, enum, shape, default exclusions, now() guard), got %v", items["allOf"])
+	}
+	shapeRule := allOf[4].(map[string]any)
+	if req, _ := shapeRule["if"].(map[string]any)["required"].([]string); len(req) != 1 || req[0] != "shape" {
+		t.Fatalf("the shape rule must fire when shape is present, got %v", shapeRule["if"])
+	}
+	if shapeRule["then"].(map[string]any)["properties"].(map[string]any)["type"].(map[string]any)["const"] != string(schema.JSON) {
+		t.Fatalf("shape must require type json, got %v", shapeRule["then"])
 	}
 	dimRule := allOf[0].(map[string]any)
 	then, ok := dimRule["then"].(map[string]any)["required"].([]string)
@@ -400,8 +407,8 @@ func TestCreateTableFulltextAndVectorizeConstraintsDeclared(t *testing.T) {
 	fields := def.InputSchema["properties"].(map[string]any)["fields"].(map[string]any)
 	items := fields["items"].(map[string]any)
 	allOf, ok := items["allOf"].([]any)
-	if !ok || len(allOf) != 7 {
-		t.Fatalf("expected seven conditional constraints, got %v", items["allOf"])
+	if !ok || len(allOf) != 8 {
+		t.Fatalf("expected eight conditional constraints, got %v", items["allOf"])
 	}
 	fulltextThen := allOf[1].(map[string]any)["then"].(map[string]any)["properties"].(map[string]any)
 	ftTypes, ok := fulltextThen["type"].(map[string]any)["enum"].([]schema.FieldType)
@@ -475,9 +482,9 @@ func TestCreateTableDefaultConstraintsDeclared(t *testing.T) {
 	}
 	allOf := items["allOf"].([]any)
 	for i, exclude := range []string{"required", "vectorize"} {
-		rule, ok := allOf[4+i].(map[string]any)
+		rule, ok := allOf[5+i].(map[string]any)
 		if !ok {
-			t.Fatalf("default exclusion %d must be an if/then rule, got %v", i, allOf[4+i])
+			t.Fatalf("default exclusion %d must be an if/then rule, got %v", i, allOf[5+i])
 		}
 		ifCond := rule["if"].(map[string]any)
 		if ifCond["properties"].(map[string]any)[exclude].(map[string]any)["const"] != true {
@@ -488,9 +495,9 @@ func TestCreateTableDefaultConstraintsDeclared(t *testing.T) {
 			t.Fatalf("%s=true must reject default via not/required, got %v", exclude, rule["then"])
 		}
 	}
-	nowRule, ok := allOf[6].(map[string]any)
+	nowRule, ok := allOf[7].(map[string]any)
 	if !ok {
-		t.Fatalf("now() guard must be an if/then rule, got %v", allOf[6])
+		t.Fatalf("now() guard must be an if/then rule, got %v", allOf[7])
 	}
 	nowNot, ok := nowRule["if"].(map[string]any)["not"].(map[string]any)
 	if !ok || nowNot["required"].([]string)[0] != "type" {
