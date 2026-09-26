@@ -1,6 +1,7 @@
 package store
 
 import (
+	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -15,7 +16,6 @@ func validateQueryTables(stmt string, registered map[string]bool) error {
 
 type queryScan struct {
 	rewrites []tableRewrite
-	rowids   map[string]bool
 }
 
 func scanQueryTables(stmt string, registered map[string]bool) (queryScan, error) {
@@ -27,7 +27,7 @@ func scanQueryTables(stmt string, registered map[string]bool) (queryScan, error)
 	if err := s.parseStatement(); err != nil {
 		return queryScan{}, err
 	}
-	return queryScan{rewrites: s.rewrites, rowids: s.rowids}, nil
+	return queryScan{rewrites: s.rewrites}, nil
 }
 
 func (q queryScan) refuseMaskedShapes(masked map[string]maskedTable) error {
@@ -45,18 +45,20 @@ func (q queryScan) refuseMaskedShapes(masked map[string]maskedTable) error {
 			return invalidf("table %s holds secret fields, so query reads it through a masked subquery that INDEXED BY and NOT INDEXED cannot apply to; drop the index hint", r.table)
 		}
 	}
-	for name := range q.rowids {
-		shadowed := false
-		for _, m := range masked {
-			if m.columns[name] {
-				shadowed = true
-			}
-		}
-		if !shadowed {
-			return invalidf("this query reads a table holding secret fields through a masked subquery, which has no %s; use id, which holds the same value", name)
-		}
-	}
 	return nil
+}
+
+var maskedRowidErr = regexp.MustCompile(`no such column: (?:[A-Za-z_][A-Za-z0-9_]*\.)?(rowid|_rowid_|oid)\b`)
+
+func maskedRowidRefusal(masked map[string]maskedTable, err error) error {
+	if len(masked) == 0 || err == nil {
+		return nil
+	}
+	m := maskedRowidErr.FindStringSubmatch(err.Error())
+	if m == nil {
+		return nil
+	}
+	return invalidf("this query reads a table holding secret fields through a masked subquery, which has no %s; use id, which holds the same value", m[1])
 }
 
 func maskSecretTables(stmt string, rewrites []tableRewrite, masked map[string]maskedTable) string {
@@ -100,8 +102,6 @@ type queryScanner struct {
 	rewrites []tableRewrite
 
 	indexHint bool
-
-	rowids map[string]bool
 
 	cteScope []map[string]bool
 
@@ -183,15 +183,6 @@ func (s *queryScanner) expect(kw string) error {
 func (s *queryScanner) scanToken() (token, error) {
 	t, err := s.scanTokenAt()
 	t.end = s.i
-	if t.typ == "ident" {
-		switch name := asciiLower(unquoteIdent(t.val)); name {
-		case "rowid", "_rowid_", "oid":
-			if s.rowids == nil {
-				s.rowids = map[string]bool{}
-			}
-			s.rowids[name] = true
-		}
-	}
 	return t, err
 }
 

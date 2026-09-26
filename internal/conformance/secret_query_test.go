@@ -157,7 +157,17 @@ func TestShapesAMaskedTableCannotTakeAreRefusedClearly(t *testing.T) {
 		}
 	}
 
-	h.mustHTTP("query", map[string]any{"namespace": "sec", "sql": "SELECT id FROM creds ORDER BY id"})
+	h.seedTable("sec", "plain", []map[string]any{{"name": "note", "type": "string"}})
+	h.mustHTTP("insert", map[string]any{"namespace": "sec", "table": "plain", "records": []map[string]any{{"note": "a"}, {"note": "b"}}})
+	for _, sql := range []string{
+		"SELECT id FROM creds ORDER BY id",
+		"SELECT id AS rowid FROM creds ORDER BY id",
+	} {
+		h.mustHTTP("query", map[string]any{"namespace": "sec", "sql": sql})
+	}
+	if sqlite {
+		h.mustHTTP("query", map[string]any{"namespace": "sec", "sql": "SELECT p.rowid AS r FROM creds c JOIN plain p ON p.id = c.id ORDER BY r"})
+	}
 }
 
 func TestFiltersStillEvaluateAgainstTheCiphertext(t *testing.T) {

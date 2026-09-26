@@ -205,7 +205,6 @@ func SecretFingerprint(k *secret.Keyring, v any) string {
 
 type maskedTable struct {
 	projection string
-	columns    map[string]bool
 }
 
 func maskedProjections(ctx context.Context, tx queryRunner, nsName string, rewrites []tableRewrite) (map[string]maskedTable, error) {
@@ -230,7 +229,7 @@ func maskedProjections(ctx context.Context, tx queryRunner, nsName string, rewri
 		if out == nil {
 			out = map[string]maskedTable{}
 		}
-		out[r.table] = maskedTable{projection: maskedProjection(sc, cols), columns: cols}
+		out[r.table] = maskedTable{projection: maskedProjection(sc, cols)}
 	}
 	return out, nil
 }
