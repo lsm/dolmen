@@ -10,8 +10,12 @@ import (
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
@@ -25,19 +29,41 @@ type Tracing struct {
 	tracer           trace.Tracer
 	prop             propagation.TextMapPropagator
 	includePrincipal bool
+	inst             *instruments
 }
 
 func New(tp trace.TracerProvider, prop propagation.TextMapPropagator, includePrincipal bool) *Tracing {
-	if tp == nil {
-		return nil
-	}
+	t, _ := NewWithMeter(tp, nil, prop, includePrincipal)
+	return t
+}
+
+func NewWithMeter(tp trace.TracerProvider, mp metric.MeterProvider, prop propagation.TextMapPropagator, includePrincipal bool) (*Tracing, error) {
+	tracing := tp != nil
 	if _, off := tp.(noop.TracerProvider); off {
-		return nil
+		tracing = false
+	}
+	metering := mp != nil
+	if _, off := mp.(metricnoop.MeterProvider); off {
+		metering = false
+	}
+	if !tracing && !metering {
+		return nil, nil
+	}
+	if !tracing {
+		tp = noop.NewTracerProvider()
 	}
 	if prop == nil {
 		prop = propagation.NewCompositeTextMapPropagator()
 	}
-	return &Tracing{tracer: tp.Tracer(instrumentationName), prop: prop, includePrincipal: includePrincipal}
+	t := &Tracing{tracer: tp.Tracer(instrumentationName), prop: prop, includePrincipal: includePrincipal}
+	if metering {
+		inst, err := newInstruments(mp)
+		if err != nil {
+			return nil, fmt.Errorf("OpenTelemetry instruments: %w", err)
+		}
+		t.inst = inst
+	}
+	return t, nil
 }
 
 func (t *Tracing) On() bool { return t != nil }
@@ -57,28 +83,39 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 
 type exporterFactory func(ctx context.Context) (sdktrace.SpanExporter, error)
 
+type metricExporterFactory func(ctx context.Context) (sdkmetric.Exporter, error)
+
 func Setup(ctx context.Context, getenv func(string) string, serviceVersion string) (*Provider, error) {
 	return setup(ctx, getenv, serviceVersion, func(ctx context.Context) (sdktrace.SpanExporter, error) {
 		return otlptracehttp.New(ctx)
+	}, func(ctx context.Context) (sdkmetric.Exporter, error) {
+		return otlpmetrichttp.New(ctx)
 	})
 }
 
-func setup(ctx context.Context, getenv func(string) string, serviceVersion string, newExporter exporterFactory) (*Provider, error) {
-	on, err := exportEnabled(getenv)
-	if err != nil || !on {
+func setup(ctx context.Context, getenv func(string) string, serviceVersion string, newExporter exporterFactory, newMetricExporter ...metricExporterFactory) (*Provider, error) {
+	tracesOn, err := exportEnabled(getenv)
+	if err != nil {
 		return &Provider{}, err
 	}
-	for _, key := range []string{"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "OTEL_EXPORTER_OTLP_PROTOCOL"} {
-		if v := strings.TrimSpace(getenv(key)); v != "" {
-			if v != "http/protobuf" {
-				return nil, fmt.Errorf("%s=%q is not supported: dolmen exports traces over OTLP http/protobuf only (gRPC is left out to keep the binary small); unset it or set it to http/protobuf and point the endpoint at the collector's HTTP port, usually 4318", key, v)
-			}
-			break
+	metricsOn := false
+	if len(newMetricExporter) > 0 {
+		if metricsOn, err = metricsExportEnabled(getenv); err != nil {
+			return &Provider{}, err
 		}
 	}
-	sampler, err := samplerFromEnv(getenv)
-	if err != nil {
-		return nil, err
+	if !tracesOn && !metricsOn {
+		return &Provider{}, nil
+	}
+	if tracesOn {
+		if err := requireHTTPProtobuf(getenv, "traces", "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"); err != nil {
+			return nil, err
+		}
+	}
+	if metricsOn {
+		if err := requireHTTPProtobuf(getenv, "metrics", "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL"); err != nil {
+			return nil, err
+		}
 	}
 	prop, err := propagatorFromEnv(getenv)
 	if err != nil {
@@ -92,16 +129,83 @@ func setup(ctx context.Context, getenv func(string) string, serviceVersion strin
 	if err != nil {
 		return nil, err
 	}
-	exp, err := newExporter(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("OTLP trace exporter: %w (check OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_EXPORTER_OTLP_TRACES_ENDPOINT)", err)
+	var shutdowns []func(context.Context) error
+	var tp trace.TracerProvider
+	if tracesOn {
+		sampler, err := samplerFromEnv(getenv)
+		if err != nil {
+			return nil, err
+		}
+		exp, err := newExporter(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("OTLP trace exporter: %w (check OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_EXPORTER_OTLP_TRACES_ENDPOINT)", err)
+		}
+		sdktp := sdktrace.NewTracerProvider(
+			sdktrace.WithBatcher(exp),
+			sdktrace.WithSampler(sampler),
+			sdktrace.WithResource(res),
+		)
+		tp = sdktp
+		shutdowns = append(shutdowns, sdktp.Shutdown)
 	}
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exp),
-		sdktrace.WithSampler(sampler),
-		sdktrace.WithResource(res),
-	)
-	return &Provider{Tracing: New(tp, prop, includePrincipal), TracerProvider: tp, shutdown: tp.Shutdown}, nil
+	var mp metric.MeterProvider
+	if metricsOn {
+		exp, err := newMetricExporter[0](ctx)
+		if err != nil {
+			return nil, fmt.Errorf("OTLP metric exporter: %w (check OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_EXPORTER_OTLP_METRICS_ENDPOINT)", err)
+		}
+		sdkmp := sdkmetric.NewMeterProvider(
+			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)),
+			sdkmetric.WithResource(res),
+		)
+		mp = sdkmp
+		shutdowns = append(shutdowns, sdkmp.Shutdown)
+	}
+	t, err := NewWithMeter(tp, mp, prop, includePrincipal)
+	if err != nil {
+		return nil, err
+	}
+	return &Provider{Tracing: t, TracerProvider: tp, shutdown: func(ctx context.Context) error {
+		var errs []error
+		for _, stop := range shutdowns {
+			errs = append(errs, stop(ctx))
+		}
+		return errors.Join(errs...)
+	}}, nil
+}
+
+func requireHTTPProtobuf(getenv func(string) string, signal, signalKey string) error {
+	for _, key := range []string{signalKey, "OTEL_EXPORTER_OTLP_PROTOCOL"} {
+		if v := strings.TrimSpace(getenv(key)); v != "" {
+			if v != "http/protobuf" {
+				return fmt.Errorf("%s=%q is not supported: dolmen exports %s over OTLP http/protobuf only (gRPC is left out to keep the binary small); unset it or set it to http/protobuf and point the endpoint at the collector's HTTP port, usually 4318", key, v, signal)
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+func metricsExportEnabled(getenv func(string) string) (bool, error) {
+	disabled, err := boolEnv(getenv, "OTEL_SDK_DISABLED")
+	if err != nil {
+		return false, err
+	}
+	if disabled {
+		return false, nil
+	}
+	switch v := strings.ToLower(strings.TrimSpace(getenv("OTEL_METRICS_EXPORTER"))); v {
+	case "":
+		return strings.TrimSpace(getenv("OTEL_EXPORTER_OTLP_ENDPOINT")) != "" || strings.TrimSpace(getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")) != "", nil
+	case "none":
+		return false, nil
+	case "otlp":
+		return true, nil
+	case "prometheus":
+		return false, fmt.Errorf("OTEL_METRICS_EXPORTER=%q is not supported: dolmen already serves Prometheus text format at GET /metrics for scraping; set OTEL_METRICS_EXPORTER to otlp (push to a collector) or none", v)
+	default:
+		return false, fmt.Errorf("OTEL_METRICS_EXPORTER=%q is not supported: use otlp (with OTEL_EXPORTER_OTLP_ENDPOINT) or none", v)
+	}
 }
 
 func exportEnabled(getenv func(string) string) (bool, error) {

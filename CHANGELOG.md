@@ -4,6 +4,12 @@
 
 ### Added
 
+- **OpenTelemetry metrics over OTLP.** Operation duration and outcome, operations in flight, active
+  subscriptions, `http.server.request.duration`, and the `gen_ai.client.*` embedding metrics, pushed
+  to the same collector as traces (`WithMeterProvider` in Go). `GET /metrics` still serves
+  Prometheus. **Behaviour change:** `OTEL_EXPORTER_OTLP_ENDPOINT` now turns metrics on as well as
+  traces; set `OTEL_METRICS_EXPORTER=none` to keep traces only.
+
 - **`search_fulltext` scores every hit as `_score`**, higher being more relevant, like `search_vector`.
   The scale is the engine's own (FTS5 BM25 negated on SQLite, `ts_rank_cd` on PostgreSQL), so compare
   scores only within one query's results.
