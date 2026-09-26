@@ -75,7 +75,7 @@ func TestMetricsAreSwitchedOnIndependentlyOfTraces(t *testing.T) {
 			var tracesCalled, metricsCalled bool
 			p, err := setup(context.Background(), envOf(tc.env), "v1",
 				recordingFactory(&tracesCalled, tracetest.NewInMemoryExporter()),
-				metricFactory(&metricsCalled, &recordedMetrics{}))
+				withMetricExporter(metricFactory(&metricsCalled, &recordedMetrics{})))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -103,7 +103,7 @@ func TestUnsupportedMetricSettingsAreRefusedWithTheFix(t *testing.T) {
 		var called bool
 		_, err := setup(context.Background(), envOf(tc.env), "v1",
 			recordingFactory(&called, tracetest.NewInMemoryExporter()),
-			metricFactory(&called, &recordedMetrics{}))
+			withMetricExporter(metricFactory(&called, &recordedMetrics{})))
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("env %v: want an error mentioning %q, got %v", tc.env, tc.want, err)
 		}
@@ -115,7 +115,7 @@ func TestShutdownFlushesPendingMetrics(t *testing.T) {
 	rec := &recordedMetrics{}
 	p, err := setup(context.Background(), envOf(map[string]string{"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "x"}), "v1",
 		recordingFactory(new(bool), tracetest.NewInMemoryExporter()),
-		metricFactory(&called, rec))
+		withMetricExporter(metricFactory(&called, rec)))
 	if err != nil {
 		t.Fatal(err)
 	}

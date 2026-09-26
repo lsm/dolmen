@@ -10,11 +10,14 @@ import (
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -70,6 +73,7 @@ func (t *Tracing) On() bool { return t != nil }
 
 type Provider struct {
 	Tracing  *Tracing
+	logs     otellog.LoggerProvider
 	shutdown func(context.Context) error
 }
 
@@ -84,27 +88,61 @@ type exporterFactory func(ctx context.Context) (sdktrace.SpanExporter, error)
 
 type metricExporterFactory func(ctx context.Context) (sdkmetric.Exporter, error)
 
+type logExporterFactory func(ctx context.Context) (sdklog.Exporter, error)
+
+type setupConfig struct {
+	newMetricExporter metricExporterFactory
+	newLogExporter    logExporterFactory
+}
+
+type setupOption func(*setupConfig)
+
+func withMetricExporter(f metricExporterFactory) setupOption {
+	return func(c *setupConfig) { c.newMetricExporter = f }
+}
+
+func withLogExporter(f logExporterFactory) setupOption {
+	return func(c *setupConfig) { c.newLogExporter = f }
+}
+
 func Setup(ctx context.Context, getenv func(string) string, serviceVersion string) (*Provider, error) {
 	return setup(ctx, getenv, serviceVersion, func(ctx context.Context) (sdktrace.SpanExporter, error) {
 		return otlptracehttp.New(ctx)
-	}, func(ctx context.Context) (sdkmetric.Exporter, error) {
+	}, withMetricExporter(func(ctx context.Context) (sdkmetric.Exporter, error) {
 		return otlpmetrichttp.New(ctx)
-	})
+	}), withLogExporter(func(ctx context.Context) (sdklog.Exporter, error) {
+		return otlploghttp.New(ctx)
+	}))
 }
 
-func setup(ctx context.Context, getenv func(string) string, serviceVersion string, newExporter exporterFactory, newMetricExporter ...metricExporterFactory) (*Provider, error) {
+func setup(ctx context.Context, getenv func(string) string, serviceVersion string, newExporter exporterFactory, opts ...setupOption) (*Provider, error) {
+	var cfg setupConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
 	tracesOn, err := exportEnabled(getenv)
 	if err != nil {
 		return &Provider{}, err
 	}
 	metricsOn := false
-	if len(newMetricExporter) > 0 {
+	if cfg.newMetricExporter != nil {
 		if metricsOn, err = metricsExportEnabled(getenv); err != nil {
 			return &Provider{}, err
 		}
 	}
-	if !tracesOn && !metricsOn {
+	logsOn := false
+	if cfg.newLogExporter != nil {
+		if logsOn, err = logsExportEnabled(getenv); err != nil {
+			return &Provider{}, err
+		}
+	}
+	if !tracesOn && !metricsOn && !logsOn {
 		return &Provider{}, nil
+	}
+	if logsOn {
+		if err := requireHTTPProtobuf(getenv, "logs", "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"); err != nil {
+			return nil, err
+		}
 	}
 	if tracesOn {
 		if err := requireHTTPProtobuf(getenv, "traces", "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"); err != nil {
@@ -149,7 +187,7 @@ func setup(ctx context.Context, getenv func(string) string, serviceVersion strin
 	}
 	var mp metric.MeterProvider
 	if metricsOn {
-		exp, err := newMetricExporter[0](ctx)
+		exp, err := cfg.newMetricExporter(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("OTLP metric exporter: %w (check OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_EXPORTER_OTLP_METRICS_ENDPOINT)", err)
 		}
@@ -160,11 +198,24 @@ func setup(ctx context.Context, getenv func(string) string, serviceVersion strin
 		mp = sdkmp
 		shutdowns = append(shutdowns, sdkmp.Shutdown)
 	}
+	var lp otellog.LoggerProvider
+	if logsOn {
+		exp, err := cfg.newLogExporter(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("OTLP log exporter: %w (check OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_EXPORTER_OTLP_LOGS_ENDPOINT)", err)
+		}
+		sdklp := sdklog.NewLoggerProvider(
+			sdklog.WithProcessor(sdklog.NewBatchProcessor(exp)),
+			sdklog.WithResource(res),
+		)
+		lp = sdklp
+		shutdowns = append(shutdowns, sdklp.Shutdown)
+	}
 	t, err := NewWithMeter(tp, mp, prop, includePrincipal)
 	if err != nil {
 		return nil, err
 	}
-	return &Provider{Tracing: t, shutdown: func(ctx context.Context) error {
+	return &Provider{Tracing: t, logs: lp, shutdown: func(ctx context.Context) error {
 		var errs []error
 		for _, stop := range shutdowns {
 			errs = append(errs, stop(ctx))
@@ -183,6 +234,24 @@ func requireHTTPProtobuf(getenv func(string) string, signal, signalKey string) e
 		}
 	}
 	return nil
+}
+
+func logsExportEnabled(getenv func(string) string) (bool, error) {
+	disabled, err := boolEnv(getenv, "OTEL_SDK_DISABLED")
+	if err != nil {
+		return false, err
+	}
+	if disabled {
+		return false, nil
+	}
+	switch v := strings.ToLower(strings.TrimSpace(getenv("OTEL_LOGS_EXPORTER"))); v {
+	case "", "none":
+		return false, nil
+	case "otlp":
+		return true, nil
+	default:
+		return false, fmt.Errorf("OTEL_LOGS_EXPORTER=%q is not supported: use otlp to also send logs to the collector (they always go to stderr) or none", v)
+	}
 }
 
 func metricsExportEnabled(getenv func(string) string) (bool, error) {
