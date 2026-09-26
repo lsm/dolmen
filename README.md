@@ -1355,6 +1355,10 @@ attaches exemplars linking a slow request's histogram bucket to its trace):
 | `dolmen.operation.duration` | histogram, `s` | `dolmen.op.name`, `dolmen.op.outcome` (`ok` or the error code); its count is the operation count |
 | `dolmen.operations.in_flight` | up-down counter, `{operation}` | `dolmen.op.name` |
 | `dolmen.subscriptions.active` | up-down counter, `{subscription}` | |
+| `dolmen.namespaces.open` | observable up-down counter, `{namespace}` | none (SQLite) |
+| `dolmen.vector_cache.usage` / `dolmen.vector_cache.limit` | observable up-down counter, `By` | none (SQLite) |
+| `db.client.connection.count` | observable up-down counter, `{connection}` | `db.client.connection.state` (`idle`, `used`), `db.client.connection.pool.name` (PostgreSQL) |
+| `db.client.connection.max` | observable up-down counter, `{connection}` | `db.client.connection.pool.name` (PostgreSQL) |
 | `gen_ai.client.operation.duration` | histogram, `s` | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `server.address`, `error.type` on failure |
 | `gen_ai.client.token.usage` | histogram, `{token}` | the same, plus `gen_ai.token.type=input`, when the provider reports usage |
 

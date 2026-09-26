@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lsm/dolmen/internal/secret"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/lsm/dolmen/internal/store"
@@ -25,6 +26,7 @@ type Config struct {
 	ChangeRetention *time.Duration
 	Secrets         *secret.Keyring
 	TracerProvider  trace.TracerProvider
+	MeterProvider   metric.MeterProvider
 }
 
 type Store struct {
@@ -43,6 +45,8 @@ type Store struct {
 	tr              *dbspan.Tracer
 	sharedFilter    bool
 	secrets         *secret.Keyring
+	gaugesOnce      sync.Once
+	stopGauges      func(context.Context) error
 }
 
 type connectionError struct {
@@ -113,6 +117,10 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 		}
 		return nil, &connectionError{"initialize store", err}
 	}
+	if err := s.startEngineGauges(cfg.MeterProvider); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -130,6 +138,7 @@ func (s *Store) begin(ctx context.Context) (func(), error) {
 }
 
 func (s *Store) Close() error {
+	s.stopEngineGauges()
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()

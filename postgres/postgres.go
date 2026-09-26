@@ -12,6 +12,7 @@ import (
 	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
 	"github.com/lsm/dolmen/internal/telemetry/dbspan"
+	"github.com/lsm/dolmen/internal/telemetry/dbstat"
 )
 
 type Config struct {
@@ -45,6 +46,7 @@ func With(cfg Config) dolmen.Option {
 			ChangeRetention: &retention,
 			Secrets:         secret.KeyringFrom(ctx),
 			TracerProvider:  dbspan.ProviderFrom(ctx),
+			MeterProvider:   dbstat.MeterFrom(ctx),
 		})
 	})
 }

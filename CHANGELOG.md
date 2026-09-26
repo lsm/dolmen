@@ -19,6 +19,14 @@
 
 ### Added
 
+- **Engine capacity as OpenTelemetry gauges.** `dolmen.namespaces.open`, `dolmen.vector_cache.usage`
+  and `dolmen.vector_cache.limit` on SQLite, and `db.client.connection.count` (split by
+  `db.client.connection.state`, `idle` or `used`) with `db.client.connection.max` on PostgreSQL, are
+  recorded as observable up-down counters whenever a meter provider is configured, so a pool or a
+  vector cache heading for its limit is visible before requests start failing. The attributes stay
+  bounded: no namespace, table or principal is ever named. `telemetry.Provider` now exposes its
+  `MeterProvider`, the way it exposed its `TracerProvider`.
+
 - **`shape` on `json` fields** (#128). A `json` field may declare `object`, `array`, `array<string>`,
   `array<number>`, `array<boolean>` or `array<object>`; every write path refuses a value of any other
   shape, naming the field, the expected shape and what arrived. `migrate` gains `set_shape`, which

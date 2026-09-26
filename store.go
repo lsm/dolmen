@@ -18,6 +18,7 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 	"github.com/lsm/dolmen/internal/telemetry"
 	"github.com/lsm/dolmen/internal/telemetry/dbspan"
+	"github.com/lsm/dolmen/internal/telemetry/dbstat"
 )
 
 var ErrClosed = errors.New("dolmen: store is closed")
@@ -75,7 +76,7 @@ func Open(dataDir string, opts ...Option) (*Store, error) {
 	owners[dir] = s
 	ownersMu.Unlock()
 
-	eng, err := store.Open(dir, store.WithChangeRetention(cfg.changeRetention), store.WithVectorCacheBytes(cfg.vectorCache), store.WithSecretKey(cfg.secrets), store.WithTracerProvider(cfg.tracerProvider))
+	eng, err := store.Open(dir, store.WithChangeRetention(cfg.changeRetention), store.WithVectorCacheBytes(cfg.vectorCache), store.WithSecretKey(cfg.secrets), store.WithTracerProvider(cfg.tracerProvider), store.WithMeterProvider(cfg.meterProvider))
 	if err != nil {
 		releaseOwnership(dir)
 		code := derr.Internal
@@ -103,7 +104,7 @@ func openWithOpener(cfg config) (*Store, error) {
 	owners[key] = s
 	ownersMu.Unlock()
 
-	eng, err := cfg.opener(dbspan.ContextWithProvider(secret.WithKeyring(context.Background(), cfg.secrets), cfg.tracerProvider), cfg.changeRetention)
+	eng, err := cfg.opener(dbstat.ContextWithMeter(dbspan.ContextWithProvider(secret.WithKeyring(context.Background(), cfg.secrets), cfg.tracerProvider), cfg.meterProvider), cfg.changeRetention)
 	if err != nil {
 		releaseOwnership(key)
 		code := derr.Internal

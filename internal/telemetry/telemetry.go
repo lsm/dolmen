@@ -74,6 +74,7 @@ func (t *Tracing) On() bool { return t != nil }
 type Provider struct {
 	Tracing        *Tracing
 	TracerProvider trace.TracerProvider
+	MeterProvider  metric.MeterProvider
 	logs           otellog.LoggerProvider
 	shutdown       func(context.Context) error
 }
@@ -216,7 +217,7 @@ func setup(ctx context.Context, getenv func(string) string, serviceVersion strin
 	if err != nil {
 		return nil, err
 	}
-	return &Provider{Tracing: t, TracerProvider: tp, logs: lp, shutdown: func(ctx context.Context) error {
+	return &Provider{Tracing: t, TracerProvider: tp, MeterProvider: mp, logs: lp, shutdown: func(ctx context.Context) error {
 		var errs []error
 		for _, stop := range shutdowns {
 			errs = append(errs, stop(ctx))
