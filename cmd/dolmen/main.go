@@ -235,6 +235,7 @@ func openStore(cfg *config, tp trace.TracerProvider) (store.Engine, error) {
 			ChangeRetention: &retention,
 			SharedFilter:    cfg.Auth.On(),
 			Secrets:         cfg.Secrets,
+			TracerProvider:  tp,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("open PostgreSQL catalog: %w", err)

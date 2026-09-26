@@ -1325,7 +1325,10 @@ What is traced:
   the cache build or catch-up and the scoring pass separately, with the rows scored, the candidate
   count when a `filter` narrowed them, and whether the table was served from cache; `migrate`
   records a span per step, and `vacuum` its own. Plain reads (`read_rows`, `query`) and schema
-  lifecycle calls have no storage span yet, and neither does the PostgreSQL engine; both follow.
+  lifecycle calls have no storage span yet.
+- The PostgreSQL engine records the same span for the same operations, as a CLIENT span (the
+  database is a remote server) carrying `db.system.name=postgresql`, `db.namespace`,
+  `db.collection.name`, `server.address` and `server.port`; never the SQL, its arguments or the DSN.
 - Every log line written during a traced request carries `trace_id` and `span_id`.
 
 Privacy: spans never carry SQL text, filter arguments, row payloads, embedded text, API keys or other
