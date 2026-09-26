@@ -64,7 +64,7 @@ func (s *Store) compileMutationFilter(ctx context.Context, tx pgx.Tx, n namespac
 	prefix, source, lead := scopedSource(ident(state.incarnation.Table), scope)
 	query := prefix + "SELECT id FROM " + source + " WHERE " + filter + " ORDER BY id"
 	bound := append(append([]any{}, lead...), args...)
-	compiled, _, err := compileSQL(query, len(bound), n.physical, map[string]tableState{state.incarnation.Table: state})
+	compiled, _, err := compileFilterSQL(query, len(bound), n.physical, map[string]tableState{state.incarnation.Table: state})
 	if err != nil {
 		return "", nil, filterSyntaxError(filter, err)
 	}

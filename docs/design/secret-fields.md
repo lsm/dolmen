@@ -57,8 +57,14 @@ found. Until this was closed, aliasing a secret column returned base64 of the bl
 caller holding `read` the ciphertext of every secret without the `reveal` verb and leaked its
 unpadded length: a boundary the product advertises, defeated by one alias.
 
+On SQLite the subselect is not a table, so three table-only shapes are refused on a table holding a
+secret, each with the alternative: `rowid` (use `id`, the same value), an `INDEXED BY` or `NOT INDEXED`
+hint, and a `main.`-qualified reference. The hidden `_embedding` column stays hidden, because whether a
+query asked for it is decided from the SQL the caller wrote, not from the rewritten statement.
+
 Search filters and write filters still evaluate against the ciphertext, where they select rows but
-return no values, so comparing a secret column with a plaintext still never matches.
+return no values, so comparing a secret column with a plaintext, or with the mask, never matches.
+PostgreSQL compiles filters without the masking projection for the same reason.
 
 **Change feed and backups.** Change records carry ids, never row values, so `changes_since`,
 `wait_for` and SSE never hold a secret. Backups copy the database file, which holds only ciphertext.

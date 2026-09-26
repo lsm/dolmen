@@ -59,10 +59,11 @@ func builtinName(nodes []*pg.Node, allowed map[string]bool) bool {
 }
 
 type sqlCompiler struct {
-	namespace  string
-	tables     map[string]tableState
-	names      *sqlNames
-	parameters int
+	namespace   string
+	tables      map[string]tableState
+	names       *sqlNames
+	parameters  int
+	maskSecrets bool
 }
 
 func compileSQL(input string, argc int, namespace string, tables map[string]tableState) (string, *sqlNames, error) {
@@ -70,6 +71,14 @@ func compileSQL(input string, argc int, namespace string, tables map[string]tabl
 }
 
 func compileSQLWithCasts(input string, argc int, namespace string, tables map[string]tableState, casts map[int32]string) (string, *sqlNames, error) {
+	return compileSQLMode(input, argc, namespace, tables, casts, true)
+}
+
+func compileFilterSQL(input string, argc int, namespace string, tables map[string]tableState) (string, *sqlNames, error) {
+	return compileSQLMode(input, argc, namespace, tables, nil, false)
+}
+
+func compileSQLMode(input string, argc int, namespace string, tables map[string]tableState, casts map[int32]string, maskSecrets bool) (string, *sqlNames, error) {
 	names := newSQLNames(tables)
 	rewritten, count, err := rewriteSQL(input, names)
 	if err != nil {
@@ -85,7 +94,7 @@ func compileSQLWithCasts(input string, argc int, namespace string, tables map[st
 	if len(tree.Stmts) != 1 || tree.Stmts[0].Stmt.GetSelectStmt() == nil {
 		return "", nil, sqlRejected("query accepts a single SELECT or read-only WITH statement")
 	}
-	compiler := sqlCompiler{namespace: namespace, tables: tables, names: names, parameters: argc}
+	compiler := sqlCompiler{namespace: namespace, tables: tables, names: names, parameters: argc, maskSecrets: maskSecrets}
 	if err := compiler.walk(tree.Stmts[0].Stmt.ProtoReflect(), map[string]bool{}); err != nil {
 		return "", nil, err
 	}
@@ -119,7 +128,7 @@ func (c *sqlCompiler) walk(message protoreflect.Message, ctes map[string]bool) e
 			cols := []string{ident("id"), ident("created_at")}
 			for _, field := range table.schema.Fields {
 				physical := ident(table.columns[field.Name])
-				if field.Type == schema.Secret {
+				if field.Type == schema.Secret && c.maskSecrets {
 					physical = "CASE WHEN " + physical + " IS NULL THEN NULL ELSE " + maskLiteral + " END"
 				}
 				cols = append(cols, physical+" AS "+ident(c.names.name(field.Name)))

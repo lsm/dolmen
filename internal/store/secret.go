@@ -203,8 +203,13 @@ func SecretFingerprint(k *secret.Keyring, v any) string {
 	return "secret-" + tag + ":" + k.Fingerprint(stored)
 }
 
-func maskedProjections(ctx context.Context, tx queryRunner, nsName string, rewrites []tableRewrite) (map[string]string, error) {
-	var out map[string]string
+type maskedTable struct {
+	projection string
+	columns    map[string]bool
+}
+
+func maskedProjections(ctx context.Context, tx queryRunner, nsName string, rewrites []tableRewrite) (map[string]maskedTable, error) {
+	var out map[string]maskedTable
 	seen := map[string]bool{}
 	for _, r := range rewrites {
 		if seen[r.table] {
@@ -223,9 +228,9 @@ func maskedProjections(ctx context.Context, tx queryRunner, nsName string, rewri
 			return nil, err
 		}
 		if out == nil {
-			out = map[string]string{}
+			out = map[string]maskedTable{}
 		}
-		out[r.table] = maskedProjection(sc, cols)
+		out[r.table] = maskedTable{projection: maskedProjection(sc, cols), columns: cols}
 	}
 	return out, nil
 }

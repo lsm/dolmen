@@ -2,10 +2,12 @@ package conformance
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/secret"
+	"github.com/lsm/dolmen/internal/store"
 )
 
 func seedQueryableSecrets(t *testing.T, h *harness) {
@@ -100,5 +102,80 @@ func TestQueryCannotMeasureASecret(t *testing.T) {
 	matched := queryCells(t, h, "SELECT label FROM creds WHERE token = ?", "label", conformanceSecret)
 	if len(matched) != 0 {
 		t.Fatalf("comparing a secret with a plaintext matched %v", matched)
+	}
+}
+
+func TestMaskingASecretKeepsTheEmbeddingHidden(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("sec", "notes", []map[string]any{
+		{"name": "body", "type": "text", "vectorize": true},
+		{"name": "token", "type": "secret"},
+	})
+	h.mustHTTP("insert", map[string]any{"namespace": "sec", "table": "notes", "records": []map[string]any{
+		{"body": "pump overheating", "token": conformanceSecret},
+	}})
+	data := h.mustHTTP("query", map[string]any{"namespace": "sec", "sql": "SELECT * FROM notes"})
+	rows, _ := data["rows"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("SELECT * returned %d rows", len(rows))
+	}
+	row, _ := rows[0].(map[string]any)
+	if _, ok := row["_embedding"]; ok {
+		t.Fatalf("SELECT * on a table holding a secret exposed the hidden _embedding column: %v", row)
+	}
+	if row["token"] != secret.Mask {
+		t.Fatalf("SELECT * returned token %v, want the mask", row["token"])
+	}
+}
+
+func TestShapesAMaskedTableCannotTakeAreRefusedClearly(t *testing.T) {
+	h := newHarness(t)
+	seedQueryableSecrets(t, h)
+	sqlite := testEngine(t) == store.EngineSQLite
+	for _, c := range []struct {
+		sql  string
+		hint string
+	}{
+		{"SELECT rowid FROM creds", "use id"},
+		{"SELECT label FROM creds NOT INDEXED", "index hint"},
+		{"SELECT token FROM main.creds", "without a schema prefix"},
+	} {
+		status, out := h.httpCall("query", map[string]any{"namespace": "sec", "sql": c.sql})
+		if status != http.StatusBadRequest {
+			t.Fatalf("%s: status %d, want 400: %v", c.sql, status, out)
+		}
+		raw, _ := json.Marshal(out)
+		if strings.Contains(string(raw), "PLAINTEXT") {
+			t.Fatalf("%s leaked plaintext in its refusal: %s", c.sql, raw)
+		}
+		if !sqlite {
+			continue
+		}
+		errEnv, _ := out["error"].(map[string]any)
+		if msg, _ := errEnv["message"].(string); !strings.Contains(msg, c.hint) {
+			t.Fatalf("%s: the refusal %q must say %q", c.sql, msg, c.hint)
+		}
+	}
+
+	h.mustHTTP("query", map[string]any{"namespace": "sec", "sql": "SELECT id FROM creds ORDER BY id"})
+}
+
+func TestFiltersStillEvaluateAgainstTheCiphertext(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("sec", "creds", []map[string]any{
+		{"name": "label", "type": "string", "fulltext": true},
+		{"name": "token", "type": "secret"},
+	})
+	h.mustHTTP("insert", map[string]any{"namespace": "sec", "table": "creds", "records": []map[string]any{
+		{"label": "alpha", "token": conformanceSecret},
+	}})
+
+	search := h.mustHTTP("search_fulltext", map[string]any{"namespace": "sec", "table": "creds", "query": "alpha", "filter": "token = ?", "args": []any{secret.Mask}})
+	if results, _ := search["results"].([]any); len(results) != 0 {
+		t.Fatalf("a search filter compared the secret with the mask and matched: %v", results)
+	}
+	preview := h.mustHTTP("delete", map[string]any{"namespace": "sec", "table": "creds", "filter": "token = ?", "args": []any{secret.Mask}, "dry_run": true})
+	if n := int64val(t, "matched", preview["matched"]); n != 0 {
+		t.Fatalf("a write filter compared the secret with the mask and matched %d rows", n)
 	}
 }

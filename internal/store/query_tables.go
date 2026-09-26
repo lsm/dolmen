@@ -13,31 +13,65 @@ func validateQueryTables(stmt string, registered map[string]bool) error {
 	return err
 }
 
-func scanQueryTables(stmt string, registered map[string]bool) ([]tableRewrite, error) {
+type queryScan struct {
+	rewrites []tableRewrite
+	rowids   map[string]bool
+}
+
+func scanQueryTables(stmt string, registered map[string]bool) (queryScan, error) {
 	if utf8.RuneCountInString(stmt) > MaxQueryRunes {
-		return nil, invalidf("query exceeds maximum length")
+		return queryScan{}, invalidf("query exceeds maximum length")
 	}
 	s := newQueryScanner(stmt)
 	s.registered = registered
 	if err := s.parseStatement(); err != nil {
-		return nil, err
+		return queryScan{}, err
 	}
-	return s.rewrites, nil
+	return queryScan{rewrites: s.rewrites, rowids: s.rowids}, nil
 }
 
-func maskSecretTables(stmt string, rewrites []tableRewrite, masked map[string]string) string {
+func (q queryScan) refuseMaskedShapes(masked map[string]maskedTable) error {
+	if len(masked) == 0 {
+		return nil
+	}
+	for _, r := range q.rewrites {
+		if _, ok := masked[r.table]; !ok {
+			continue
+		}
+		if r.qualified {
+			return invalidf("table %s holds secret fields, so query reads it through a masked subquery; refer to it as %s, without a schema prefix", r.table, r.table)
+		}
+		if r.hinted {
+			return invalidf("table %s holds secret fields, so query reads it through a masked subquery that INDEXED BY and NOT INDEXED cannot apply to; drop the index hint", r.table)
+		}
+	}
+	for name := range q.rowids {
+		shadowed := false
+		for _, m := range masked {
+			if m.columns[name] {
+				shadowed = true
+			}
+		}
+		if !shadowed {
+			return invalidf("this query reads a table holding secret fields through a masked subquery, which has no %s; use id, which holds the same value", name)
+		}
+	}
+	return nil
+}
+
+func maskSecretTables(stmt string, rewrites []tableRewrite, masked map[string]maskedTable) string {
 	if len(masked) == 0 {
 		return stmt
 	}
 	var sb strings.Builder
 	last := 0
 	for _, r := range rewrites {
-		projection, ok := masked[r.table]
+		m, ok := masked[r.table]
 		if !ok || r.start < last || r.end > len(stmt) {
 			continue
 		}
 		sb.WriteString(stmt[last:r.start])
-		sb.WriteString(projection)
+		sb.WriteString(m.projection)
 		if !r.aliased {
 			sb.WriteString(" AS " + q(r.table))
 		}
@@ -64,6 +98,10 @@ type queryScanner struct {
 	tokenStart int
 
 	rewrites []tableRewrite
+
+	indexHint bool
+
+	rowids map[string]bool
 
 	cteScope []map[string]bool
 
@@ -145,6 +183,15 @@ func (s *queryScanner) expect(kw string) error {
 func (s *queryScanner) scanToken() (token, error) {
 	t, err := s.scanTokenAt()
 	t.end = s.i
+	if t.typ == "ident" {
+		switch name := asciiLower(unquoteIdent(t.val)); name {
+		case "rowid", "_rowid_", "oid":
+			if s.rowids == nil {
+				s.rowids = map[string]bool{}
+			}
+			s.rowids[name] = true
+		}
+	}
 	return t, err
 }
 
@@ -1143,29 +1190,36 @@ func (s *queryScanner) parseTableFactor() error {
 	if err := s.checkTableName(schema, name); err != nil {
 		return err
 	}
-	if !isCTE && s.isRegisteredRef(schema, name) {
+	recorded := !isCTE && s.isRegisteredRef(schema, name)
+	if recorded {
 		s.rewrites = append(s.rewrites, tableRewrite{
-			table: asciiLower(unquoteIdent(name)),
-			start: t.start,
-			end:   refEnd,
+			table:     asciiLower(unquoteIdent(name)),
+			start:     t.start,
+			end:       refEnd,
+			qualified: schema != "",
 		})
 	}
 
+	s.indexHint = false
 	aliased, err := s.skipOptionalAliasReported()
 	if err != nil {
 		return err
 	}
-	if aliased && len(s.rewrites) > 0 {
-		s.rewrites[len(s.rewrites)-1].aliased = true
+	if recorded {
+		last := &s.rewrites[len(s.rewrites)-1]
+		last.aliased = aliased
+		last.hinted = s.indexHint
 	}
 	return nil
 }
 
 type tableRewrite struct {
-	table   string
-	start   int
-	end     int
-	aliased bool
+	table     string
+	start     int
+	end       int
+	aliased   bool
+	qualified bool
+	hinted    bool
 }
 
 func (s *queryScanner) checkTableName(schema, rawName string) error {
@@ -1247,6 +1301,7 @@ func (s *queryScanner) skipIndexedBy() error {
 	}
 	switch {
 	case isKeyword(t, "indexed"):
+		s.indexHint = true
 		s.next()
 		if err := s.expect("by"); err != nil {
 			return err
@@ -1259,6 +1314,7 @@ func (s *queryScanner) skipIndexedBy() error {
 			return invalidf("expected index name after INDEXED BY, got %q", idx.val)
 		}
 	case isKeyword(t, "not") && s.isNotIndexed():
+		s.indexHint = true
 		s.next()
 		if err := s.expect("indexed"); err != nil {
 			return err
