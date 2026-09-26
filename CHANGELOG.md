@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Writing a masked secret back no longer destroys it.** `"••••"` is refused as a `secret`
+  value, naming the field and saying to pass the real value, `reveal` it first, or omit the field.
+  An agent that read a row without `reveal` and wrote it back edited previously stored the mask as
+  the plaintext, losing the secret silently and unrecoverably.
+
 ### Added
 
 - **`shape` on `json` fields** (#128). A `json` field may declare `object`, `array`, `array<string>`,
@@ -18,6 +25,10 @@
 - **`search_fulltext` scores every hit as `_score`**, higher being more relevant, like `search_vector`.
   The scale is the engine's own (FTS5 BM25 negated on SQLite, `ts_rank_cd` on PostgreSQL), so compare
   scores only within one query's results.
+
+- **Log export over OTLP.** `OTEL_LOGS_EXPORTER=otlp` also sends every log line to the collector,
+  honouring `-log-level` and carrying the request's trace context; stderr is unchanged. It is off
+  unless set, even with an endpoint configured.
 
 - **`describe_table` reads a kept row count instead of scanning the table.** Every write keeps
   a per-table count current (per owner on `row_access` tables), so `row_count` costs the same on a

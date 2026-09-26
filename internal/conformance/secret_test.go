@@ -148,3 +148,38 @@ func TestSecretFieldContract(t *testing.T) {
 		t.Fatalf("facade reveal: %v %v", plain.Rows, err)
 	}
 }
+
+func TestWritingTheMaskBackNeverReplacesASecret(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("sec", "creds", secretTableFields())
+	h.mustHTTP("insert", map[string]any{"namespace": "sec", "table": "creds", "records": []map[string]any{
+		{"label": "alpha", "token": conformanceSecret, "emb": []float64{1, 0, 0}},
+	}})
+
+	writes := []struct {
+		name string
+		op   string
+		body map[string]any
+	}{
+		{"insert", "insert", map[string]any{"namespace": "sec", "table": "creds", "records": []map[string]any{{"label": "beta", "token": secret.Mask, "emb": []float64{0, 1, 0}}}}},
+		{"update", "update", map[string]any{"namespace": "sec", "table": "creds", "filter": "label = ?", "args": []any{"alpha"}, "set": map[string]any{"token": secret.Mask}}},
+		{"upsert", "upsert", map[string]any{"namespace": "sec", "table": "creds", "filter": "label = ?", "args": []any{"alpha"}, "set": map[string]any{"token": secret.Mask}}},
+		{"upsert_by_key", "upsert_by_key", map[string]any{"namespace": "sec", "table": "creds", "on": []string{"label"}, "records": []map[string]any{{"label": "alpha", "token": secret.Mask}}}},
+	}
+	for _, w := range writes {
+		status, out := h.httpCall(w.op, w.body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("%s wrote the mask back as a secret value: status %d %v", w.name, status, out)
+		}
+		errEnv, _ := out["error"].(map[string]any)
+		msg, _ := errEnv["message"].(string)
+		if !strings.Contains(msg, "token") || !strings.Contains(msg, "reveal") {
+			t.Fatalf("%s: the refusal must name the field and the way to read the real value: %q", w.name, msg)
+		}
+	}
+
+	revealed := h.mustHTTP("read_rows", map[string]any{"namespace": "sec", "table": "creds", "ids": []any{1}, "reveal": []string{"token"}})
+	if got := tokensOf(t, revealed["rows"]); got["alpha"] != conformanceSecret {
+		t.Fatalf("a refused write still replaced the stored secret: %v", got)
+	}
+}
