@@ -25,7 +25,9 @@ const MaxRecordsPerInsert = 1000
 
 const MaxIdempotencyKeyLen = 256
 
-func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
+func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (_ InsertResult, err error) {
+	ctx, span := s.tr.Op(ctx, "INSERT", nsName, table)
+	defer func() { s.tr.End(span, err) }()
 	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
 		return InsertResult{}, err
 	}
@@ -88,7 +90,7 @@ func (s *Store) payloadHash(sc *schema.TableSchema, records []map[string]any) st
 
 func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, owner string, domain IdemDomain) (ids []int64, changes ChangeRange, replayed bool, done bool, err error) {
 
-	gen, err := tableGen(ctx, n.rw, table)
+	gen, err := s.writerTableGen(ctx, n, table)
 	if err != nil {
 		return nil, ChangeRange{}, false, true, err
 	}
@@ -173,11 +175,11 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	}
 
 	fts := sc.FTSFields()
-	tx, err := n.rw.BeginTx(ctx, nil)
+	ctx, tx, txSpan, err := s.beginWrite(ctx, n)
 	if err != nil {
 		return nil, ChangeRange{}, false, true, err
 	}
-	defer tx.Rollback()
+	defer s.endWrite(tx, txSpan)
 
 	scTx, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {

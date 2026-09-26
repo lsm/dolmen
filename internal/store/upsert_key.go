@@ -11,7 +11,9 @@ import (
 
 const MaxKeyFields = 8
 
-func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error) {
+func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (_ InsertResult, err error) {
+	ctx, span := s.tr.Op(ctx, "UPSERT", nsName, table)
+	defer func() { s.tr.End(span, err) }()
 	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
 		return InsertResult{}, err
 	}
@@ -21,7 +23,7 @@ func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields
 	if len(records) > MaxRecordsPerInsert {
 		return InsertResult{}, invalidf("too many records: %d > %d per call", len(records), MaxRecordsPerInsert)
 	}
-	keyFields, err := normalizeKeyFields(keyFields)
+	keyFields, err = normalizeKeyFields(keyFields)
 	if err != nil {
 		return InsertResult{}, err
 	}
@@ -132,7 +134,7 @@ func matchByKey(ctx context.Context, tx *sql.Tx, table string, keyFields []strin
 
 func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table string, keyFields []string, records []map[string]any, emb Embedder, owner string, scope *RowScope, scopeIncarnation Incarnation) (ids []int64, inserted, updated int, changes ChangeRange, done bool, err error) {
 
-	gen, err := tableGen(ctx, n.rw, table)
+	gen, err := s.writerTableGen(ctx, n, table)
 	if err != nil {
 		return nil, 0, 0, ChangeRange{}, true, err
 	}
@@ -228,11 +230,11 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 	}
 
 	fts := sc.FTSFields()
-	tx, err := n.rw.BeginTx(ctx, nil)
+	ctx, tx, txSpan, err := s.beginWrite(ctx, n)
 	if err != nil {
 		return nil, 0, 0, ChangeRange{}, true, err
 	}
-	defer tx.Rollback()
+	defer s.endWrite(tx, txSpan)
 
 	scTx, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {

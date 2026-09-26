@@ -1314,6 +1314,13 @@ What is traced:
 - An `embeddings <model>` span per embedding call (`gen_ai.operation.name=embeddings`,
   `gen_ai.request.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens` when the provider
   reports it); CLIENT for `openai`, which also sends `traceparent` upstream, INTERNAL for `local`.
+- Storage spans under the operation span, SQLite engine: a `<db.operation.name> <table>` span per
+  storage call (`INSERT docs`, `SELECT notes`, ...), carrying
+  `db.system.name=sqlite`, `db.namespace` and `db.collection.name`. A write that waits for the
+  namespace's single writer records that wait, so contention is visible; a vector search records
+  the cache build or catch-up and the scoring pass separately, with the rows scored, the candidate
+  count when a `filter` narrowed them, and whether the table was served from cache; `migrate`
+  records a span per step, and `vacuum` its own. The PostgreSQL engine's spans land in a follow-up.
 - Every log line written during a traced request carries `trace_id` and `span_id`.
 
 Privacy: spans never carry SQL text, filter arguments, row payloads, embedded text, API keys or other
