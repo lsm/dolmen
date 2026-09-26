@@ -1330,15 +1330,21 @@ What is traced:
 - An `embeddings <model>` span per embedding call (`gen_ai.operation.name=embeddings`,
   `gen_ai.request.model`, `gen_ai.provider.name`, `gen_ai.usage.input_tokens` when the provider
   reports it); CLIENT for `openai`, which also sends `traceparent` upstream, INTERNAL for `local`.
-- Storage spans under the operation span, SQLite engine, for writes (`insert`, `update`, `upsert`,
-  `upsert_by_key`, `delete`), both searches, `migrate` and `vacuum`: a `<db.operation.name> <table>`
-  span (`INSERT docs`, `SELECT notes`, ...) carrying
-  `db.system.name=sqlite`, `db.namespace` and `db.collection.name`. A write that waits for the
-  namespace's single writer records that wait, so contention is visible; a vector search records
-  the cache build or catch-up and the scoring pass separately, with the rows scored, the candidate
-  count when a `filter` narrowed them, and whether the table was served from cache; `migrate`
-  records a span per step, and `vacuum` its own. Plain reads (`read_rows`, `query`) and schema
-  lifecycle calls have no storage span yet.
+- Storage spans under the operation span, SQLite engine, for the operations whose storage work sits
+  in one place: writes (`insert`, `update`, `upsert`, `upsert_by_key`, `delete`), both searches,
+  plain reads (`read_rows`, `query`), schema lifecycle (`create_table`, `drop_table`,
+  `create_namespace`, `drop_namespace`), `migrate` and `vacuum`. The span is
+  `<db.operation.name> <table>` (`INSERT docs`, `SELECT notes`,
+  `CREATE docs`, ...) carrying `db.system.name=sqlite`, `db.namespace` and `db.collection.name`. A
+  write that waits for the namespace's single writer records that wait, so contention is visible; a
+  vector search records the cache build or catch-up and the scoring pass separately, with the rows
+  scored, the candidate count when a `filter` narrowed them, and whether the table was served from
+  cache; `migrate` records a span per step, and `vacuum` its own. `query` is traced as a bare
+  `SELECT`, since arbitrary SQL may span several tables: it names no table, and like every other
+  storage span it never carries the SQL, its arguments or a row value. `create_namespace` and
+  `drop_namespace` are traced as `CREATE` and `DROP` with `db.namespace` only. The cheap metadata
+  reads (`list_*`, `describe_table`, `tokenize`), the long-lived change feed (`changes_since`,
+  `wait_for`, `subscribe`), a `migrate` dry run and `rotate_secret_key` have no storage span.
 - The PostgreSQL engine records the same span for the same operations, as a CLIENT span (the
   database is a remote server) carrying `db.system.name=postgresql`, `db.namespace`,
   `db.collection.name`, `server.address` and `server.port`; never the SQL, its arguments or the DSN.

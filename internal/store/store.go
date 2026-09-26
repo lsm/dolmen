@@ -785,8 +785,9 @@ func (s *Store) ListMigrations(ctx context.Context, nsName, table string, inc In
 
 const MaxFieldsPerTable = 100
 
-func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []schema.Field, opts TableOpts, nsGen [16]byte) (*schema.TableSchema, error) {
-	var err error
+func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []schema.Field, opts TableOpts, nsGen [16]byte) (_ *schema.TableSchema, err error) {
+	ctx, span := s.tr.Op(ctx, "CREATE", nsName, table)
+	defer func() { s.tr.End(span, err) }()
 	fields, err = ValidateTableDefinition(table, fields)
 	if err != nil {
 		return nil, err

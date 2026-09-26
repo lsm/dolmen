@@ -122,10 +122,45 @@ func only(t *testing.T, spans []sdktrace.ReadOnlySpan, name string) sdktrace.Rea
 
 func wantDBAttrs(t *testing.T, s sdktrace.ReadOnlySpan, op string) {
 	t.Helper()
-	want := map[string]any{"db.system.name": "sqlite", "db.operation.name": op, "db.namespace": "test", "db.collection.name": "notes"}
+	wantDBAttrsFor(t, s, op, "notes")
+}
+
+func wantDBAttrsFor(t *testing.T, s sdktrace.ReadOnlySpan, op, table string) {
+	t.Helper()
+	want := map[string]any{"db.system.name": "sqlite", "db.operation.name": op, "db.namespace": "test", "db.collection.name": table}
 	for k, v := range want {
 		if got := spanAttrOf(s, k); got != v {
 			t.Errorf("%s: %s = %v, want %v", s.Name(), k, got, v)
+		}
+	}
+}
+
+func wantDBAttrsForNS(t *testing.T, s sdktrace.ReadOnlySpan, op, namespace string) {
+	t.Helper()
+	want := map[string]any{"db.system.name": "sqlite", "db.operation.name": op, "db.namespace": namespace}
+	for k, v := range want {
+		if got := spanAttrOf(s, k); got != v {
+			t.Errorf("%s: %s = %v, want %v", s.Name(), k, got, v)
+		}
+	}
+	if got := spanAttrOf(s, "db.collection.name"); got != nil {
+		t.Errorf("%s: db.collection.name = %v, want none", s.Name(), got)
+	}
+}
+
+func noSpanCarries(t *testing.T, spans []sdktrace.ReadOnlySpan, needles ...string) {
+	t.Helper()
+	for _, s := range spans {
+		for _, kv := range s.Attributes() {
+			v, _ := kv.Value.AsInterface().(string)
+			for _, needle := range needles {
+				if strings.Contains(v, needle) {
+					t.Errorf("%s leaks %q in %s = %q", s.Name(), needle, kv.Key, v)
+				}
+			}
+		}
+		if strings.Contains(s.Status().Description, needles[0]) {
+			t.Errorf("%s status description leaks %q: %s", s.Name(), needles[0], s.Status().Description)
 		}
 	}
 }
@@ -216,6 +251,73 @@ func TestStorageSpanFulltextSearch(t *testing.T) {
 	if spanAttrOf(sel, "dolmen.search.kind") != "fulltext" {
 		t.Fatalf("search kind = %v", spanAttrOf(sel, "dolmen.search.kind"))
 	}
+}
+
+func TestStorageSpanReadRows(t *testing.T) {
+	tr := openTraced(t)
+	ctx, p := tr.parent()
+	if _, err := tr.st.GetRows(ctx, "test", "notes", []int64{1, 3}, nil, Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	p.End()
+	spans := tr.rec.Ended()
+	sel := only(t, spans, "SELECT notes")
+	underParent(t, sel, p)
+	wantDBAttrs(t, sel, "SELECT")
+	noSpanCarries(t, spans, "first body", "third body")
+}
+
+func TestStorageSpanQuery(t *testing.T) {
+	tr := openTraced(t)
+	const sqlText = "SELECT title FROM notes WHERE score >= ?"
+	ctx, p := tr.parent()
+	if _, err := tr.st.Query(ctx, "test", sqlText, []any{2}, [16]byte{}, Page{Limit: 5}); err != nil {
+		t.Fatal(err)
+	}
+	p.End()
+	spans := tr.rec.Ended()
+	sel := only(t, spans, "SELECT")
+	underParent(t, sel, p)
+	wantDBAttrsForNS(t, sel, "SELECT", "test")
+	noSpanCarries(t, spans, "score >=", "notes", "beta")
+}
+
+func TestStorageSpanTableLifecycle(t *testing.T) {
+	tr := openTraced(t)
+	ctx, p := tr.parent()
+	if _, err := tr.st.CreateTable(ctx, "test", "logs", []schema.Field{{Name: "msg", Type: schema.Text}}, TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.st.DropTable(ctx, "test", "notes", Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	p.End()
+	spans := tr.rec.Ended()
+	cr := only(t, spans, "CREATE logs")
+	underParent(t, cr, p)
+	wantDBAttrsFor(t, cr, "CREATE", "logs")
+	dr := only(t, spans, "DROP notes")
+	underParent(t, dr, p)
+	wantDBAttrsFor(t, dr, "DROP", "notes")
+}
+
+func TestStorageSpanNamespaceLifecycle(t *testing.T) {
+	tr := openTraced(t)
+	ctx, p := tr.parent()
+	if err := tr.st.CreateNamespace(ctx, "fresh", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.st.DropNamespace(ctx, "fresh", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	p.End()
+	spans := tr.rec.Ended()
+	cr := only(t, spans, "CREATE")
+	underParent(t, cr, p)
+	wantDBAttrsForNS(t, cr, "CREATE", "fresh")
+	dr := only(t, spans, "DROP")
+	underParent(t, dr, p)
+	wantDBAttrsForNS(t, dr, "DROP", "fresh")
 }
 
 func TestStorageSpanMigrate(t *testing.T) {
@@ -310,6 +412,18 @@ func TestStorageSpanErrorStatus(t *testing.T) {
 	if _, err := tr.st.SearchFulltext(ctx, "test", "notes", "alpha", "nosuchcol = ?", []any{"secret-arg"}, false, nil, Incarnation{}, Page{Limit: 5}); err == nil {
 		t.Fatal("search with a bad filter succeeded")
 	}
+	if _, err := tr.st.GetRows(ctx, "test", "missing", []int64{1}, nil, Incarnation{}); err == nil {
+		t.Fatal("read_rows from a missing table succeeded")
+	}
+	if _, err := tr.st.Query(ctx, "test", "SELECT nosuchcol FROM notes WHERE title = ?", []any{"secret-arg"}, [16]byte{}, Page{Limit: 5}); err == nil {
+		t.Fatal("query on a missing column succeeded")
+	}
+	if _, err := tr.st.CreateTable(ctx, "test", "notes", []schema.Field{{Name: "x", Type: schema.Text}}, TableOpts{}, [16]byte{}); err == nil {
+		t.Fatal("create_table over an existing table succeeded")
+	}
+	if err := tr.st.DropNamespace(ctx, "nope", [16]byte{}); err == nil {
+		t.Fatal("drop_namespace on a missing namespace succeeded")
+	}
 	p.End()
 	spans := tr.rec.Ended()
 	ins := only(t, spans, "INSERT missing")
@@ -319,6 +433,25 @@ func TestStorageSpanErrorStatus(t *testing.T) {
 	sel := only(t, spans, "SELECT notes")
 	if sel.Status().Code != codes.Error || spanAttrOf(sel, "error.type") != "query_error" {
 		t.Fatalf("SELECT status = %v, error.type = %v", sel.Status(), spanAttrOf(sel, "error.type"))
+	}
+	rows := only(t, spans, "SELECT missing")
+	if rows.Status().Code != codes.Error || spanAttrOf(rows, "error.type") != "not_found" {
+		t.Fatalf("read_rows status = %v, error.type = %v", rows.Status(), spanAttrOf(rows, "error.type"))
+	}
+	query := only(t, spans, "SELECT")
+	if query.Status().Code != codes.Error || spanAttrOf(query, "error.type") != "query_error" {
+		t.Fatalf("query status = %v, error.type = %v", query.Status(), spanAttrOf(query, "error.type"))
+	}
+	cr := only(t, spans, "CREATE notes")
+	if cr.Status().Code != codes.Error || spanAttrOf(cr, "error.type") != "invalid_request" {
+		t.Fatalf("create_table status = %v, error.type = %v", cr.Status(), spanAttrOf(cr, "error.type"))
+	}
+	dr := only(t, spans, "DROP")
+	if dr.Status().Code != codes.Error || spanAttrOf(dr, "error.type") != "not_found" {
+		t.Fatalf("drop_namespace status = %v, error.type = %v", dr.Status(), spanAttrOf(dr, "error.type"))
+	}
+	if got := spanAttrOf(dr, "db.namespace"); got != "nope" {
+		t.Fatalf("drop_namespace db.namespace = %v", got)
 	}
 	for _, s := range spans {
 		if strings.Contains(s.Status().Description, "nosuchcol") {

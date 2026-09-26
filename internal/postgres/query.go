@@ -230,7 +230,9 @@ func queryRows(rows pgx.Rows, names *sqlNames, limit int) (store.QueryResult, er
 	return result, rows.Err()
 }
 
-func (s *Store) Query(ctx context.Context, ns, input string, args []any, expected [16]byte, page store.Page) (store.QueryResult, error) {
+func (s *Store) Query(ctx context.Context, ns, input string, args []any, expected [16]byte, page store.Page) (_ store.QueryResult, err error) {
+	ctx, end := s.span(ctx, "SELECT", ns, "")
+	defer func() { end(err) }()
 	if page.Offset < 0 {
 		return store.QueryResult{}, sqlRejected("query offset must not be negative")
 	}
@@ -243,7 +245,7 @@ func (s *Store) Query(ctx context.Context, ns, input string, args []any, expecte
 	if err := store.ValidateQueryShape(input); err != nil {
 		return store.QueryResult{}, err
 	}
-	args, err := queryArgs(args)
+	args, err = queryArgs(args)
 	if err != nil {
 		return store.QueryResult{}, err
 	}
