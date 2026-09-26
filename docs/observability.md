@@ -172,8 +172,11 @@ so a low-rate version of this matters more than a high-rate version of alert 1.
 Two more worth adding once these are quiet, both from the capacity gauges, both engine-specific:
 `db_client_connection_max` against `db_client_connection_count` on PostgreSQL (a pool sitting at its
 ceiling is what alert 2 looks like before it fires; SQLite has no pool and reports neither series),
-and `dolmen_vector_cache_usage` against `dolmen_vector_cache_limit` (a cache permanently at its limit
-is not caching anything new). All five gauges are in the README's metric table.
+and `dolmen_vector_cache_usage_bytes` against `dolmen_vector_cache_limit_bytes` on SQLite (a cache
+permanently at its limit is not caching anything new). The `_bytes` suffix is what the OTLP-to-
+Prometheus translation adds to the \`By\` unit, the same way \`dolmen_operation_duration_seconds\` comes
+from \`s\`; in a backend that keeps the OTel names, query \`dolmen.vector_cache.usage\` instead. All
+five gauges are in the README's metric table.
 
 ## What never leaves the process
 
