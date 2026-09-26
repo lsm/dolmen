@@ -463,7 +463,7 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 	if _, err := tx.ExecContext(ctx, `DROP TABLE _dolmen_delete_ids`); err != nil {
 		return DeleteResult{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitWrite(tx, txSpan); err != nil {
 		return DeleteResult{}, err
 	}
 

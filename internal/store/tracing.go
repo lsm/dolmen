@@ -43,7 +43,18 @@ func SpanErrorType(err error) string {
 	return string(derr.Internal)
 }
 
-func (s *Store) beginWrite(ctx context.Context, n *nsDB) (context.Context, *sql.Tx, trace.Span, error) {
+type writeSpan struct {
+	span      trace.Span
+	committed bool
+}
+
+func (w *writeSpan) commit() {
+	if w != nil {
+		w.committed = true
+	}
+}
+
+func (s *Store) beginWrite(ctx context.Context, n *nsDB) (context.Context, *sql.Tx, *writeSpan, error) {
 	if !s.tr.On() {
 		tx, err := n.rw.BeginTx(ctx, nil)
 		return ctx, tx, nil, err
@@ -55,20 +66,20 @@ func (s *Store) beginWrite(ctx context.Context, n *nsDB) (context.Context, *sql.
 		return ctx, nil, nil, err
 	}
 	ctx, span := s.tr.Child(ctx, dbspan.Transaction)
-	return ctx, tx, span, nil
+	return ctx, tx, &writeSpan{span: span}, nil
 }
 
-func (s *Store) endWrite(tx *sql.Tx, span trace.Span) {
-	err := tx.Rollback()
-	if span == nil {
+func (s *Store) endWrite(tx *sql.Tx, w *writeSpan) {
+	tx.Rollback()
+	if w == nil {
 		return
 	}
 	outcome := "rollback"
-	if errors.Is(err, sql.ErrTxDone) {
+	if w.committed {
 		outcome = "commit"
 	}
-	span.SetAttributes(dbspan.TxOutcomeKey.String(outcome))
-	span.End()
+	w.span.SetAttributes(dbspan.TxOutcomeKey.String(outcome))
+	w.span.End()
 }
 
 func (s *Store) writerConn(ctx context.Context, n *nsDB) (*sql.Conn, error) {
@@ -131,4 +142,12 @@ func (s *Store) writerTableGen(ctx context.Context, n *nsDB, table string) (int6
 	}
 	defer conn.Close()
 	return tableGen(ctx, conn, table)
+}
+
+func commitWrite(tx *sql.Tx, w *writeSpan) error {
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	w.commit()
+	return nil
 }

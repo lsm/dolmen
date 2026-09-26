@@ -218,7 +218,7 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 	if err := saveSchemaTx(ctx, tx, nsName, cur, old.Version, changes); err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitWrite(tx, txSpan); err != nil {
 		return nil, err
 	}
 	return cur, nil

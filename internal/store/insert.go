@@ -267,7 +267,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			return nil, ChangeRange{}, false, true, err
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitWrite(tx, txSpan); err != nil {
 		return nil, ChangeRange{}, false, true, err
 	}
 

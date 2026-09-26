@@ -386,7 +386,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 			changes.Count += rng.Count
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitWrite(tx, txSpan); err != nil {
 		return nil, 0, 0, ChangeRange{}, true, err
 	}
 

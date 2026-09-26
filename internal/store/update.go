@@ -282,7 +282,7 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 	if _, err := tx.ExecContext(ctx, `DROP TABLE _dolmen_update_ids`); err != nil {
 		return UpsertResult{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitWrite(tx, txSpan); err != nil {
 		return UpsertResult{}, err
 	}
 

@@ -12,6 +12,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/lsm/dolmen/internal/telemetry/dbspan"
+
 	"github.com/lsm/dolmen/internal/schema"
 )
 
@@ -338,5 +340,96 @@ func TestStorageSpansOffByDefault(t *testing.T) {
 	defer st.Close()
 	if st.tr.On() {
 		t.Fatal("tracing must be off without a provider")
+	}
+}
+
+func TestAnExplicitlyRolledBackTransactionIsNotTracedAsACommit(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	st, err := Open(t.TempDir(), WithTracerProvider(tp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	l := legacy(st)
+	mustNS(t, l, "tx")
+	ctx := context.Background()
+	if _, err := l.CreateTable(ctx, "tx", "t", []schema.Field{{Name: "k", Type: schema.Number}}); err != nil {
+		t.Fatal(err)
+	}
+	rows := []map[string]any{{"k": 1}}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			st.Insert(ctx, "tx", "t", rows, WriteOpts{IdempotencyKey: "same"}, testEmbed, nil, Incarnation{})
+		}()
+	}
+	wg.Wait()
+	outcomes := map[string]int{}
+	for _, s := range rec.Ended() {
+		if s.Name() != dbspan.Transaction {
+			continue
+		}
+		for _, a := range s.Attributes() {
+			if string(a.Key) == string(dbspan.TxOutcomeKey) {
+				outcomes[a.Value.Emit()]++
+			}
+		}
+	}
+	if outcomes["commit"] != 1 || outcomes["rollback"] == 0 {
+		t.Fatalf("one insert commits and the racing ones roll back; traced %v", outcomes)
+	}
+}
+
+func TestEveryCommittedWriteIsTracedAsACommit(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	st, err := Open(t.TempDir(), WithTracerProvider(tp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	l := legacy(st)
+	mustNS(t, l, "cw")
+	ctx := context.Background()
+	if _, err := l.CreateTable(ctx, "cw", "t", []schema.Field{{Name: "k", Type: schema.Number}}); err != nil {
+		t.Fatal(err)
+	}
+	rec.Reset()
+	if _, err := l.Insert(ctx, "cw", "t", []map[string]any{{"k": 1}, {"k": 2}}, testEmbed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Update(ctx, "cw", "t", "k = ?", []any{1}, map[string]any{"k": 3}, testEmbed); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := l.UpsertByKey(ctx, "cw", "t", []string{"k"}, []map[string]any{{"k": 9}}, testEmbed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Delete(ctx, "cw", "t", "k = ?", []any{2}, DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Migrate(ctx, "cw", "t", []schema.Change{{Op: schema.OpAddField, Field: &schema.Field{Name: "note", Type: schema.String}}}, testEmbed, 1); err != nil {
+		t.Fatal(err)
+	}
+	var outcomes []string
+	for _, s := range rec.Ended() {
+		if s.Name() != dbspan.Transaction {
+			continue
+		}
+		for _, a := range s.Attributes() {
+			if string(a.Key) == string(dbspan.TxOutcomeKey) {
+				outcomes = append(outcomes, a.Value.Emit())
+			}
+		}
+	}
+	if len(outcomes) < 5 {
+		t.Fatalf("want a transaction span per write, got %v", outcomes)
+	}
+	for _, o := range outcomes {
+		if o != "commit" {
+			t.Fatalf("a successful write must be traced as a commit; traced %v", outcomes)
+		}
 	}
 }
