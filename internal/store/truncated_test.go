@@ -133,6 +133,9 @@ func TestReopeningATruncatedNamespaceRefusesItAndSaysWhatToDo(t *testing.T) {
 			if strings.Contains(first, ".db") || strings.Contains(first, string(filepath.Separator)) {
 				t.Fatalf("the refusal must not quote a file path: %q", first)
 			}
+			if strings.Count(first, "no such table") > 1 || strings.Count(first, "malformed") > 1 {
+				t.Fatalf("the refusal must state the reason once, not twice: %q", first)
+			}
 
 			if err := os.WriteFile(path, original, 0o600); err != nil {
 				t.Fatal(err)

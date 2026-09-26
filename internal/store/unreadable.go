@@ -52,11 +52,10 @@ func (s *Store) refuseIfUnreadable(ctx context.Context, name string) error {
 	if !marked {
 		return nil
 	}
-	why := ""
-	if reason != nil {
-		why = " (" + reason.Error() + ")"
+	if reason == nil {
+		return fmt.Errorf("%w: namespace %s cannot be read, so no operation on it can be served; restore it from a backup (dolmen restore), or drop_namespace it to start over; the other namespaces in this data directory are unaffected", ErrNamespaceUnreadable, name)
 	}
-	return fmt.Errorf("%w: %w: namespace %s cannot be read%s, so no operation on it can be served; restore it from a backup (dolmen restore), or drop_namespace it to start over; the other namespaces in this data directory are unaffected", ErrNamespaceUnreadable, reason, name, why)
+	return fmt.Errorf("%w: namespace %s cannot be read (%w), so no operation on it can be served; restore it from a backup (dolmen restore), or drop_namespace it to start over; the other namespaces in this data directory are unaffected", ErrNamespaceUnreadable, name, reason)
 }
 
 func preGateNamespace(ctx context.Context, db rowQuerier) bool {
