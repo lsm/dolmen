@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -27,6 +29,15 @@ func RevealFrom(ctx context.Context) []string {
 }
 
 func (s *Store) HasSecretKey() bool { return s.secrets != nil }
+
+func (s *Store) SecretKeyID() string { return ActiveSecretKeyID(s.secrets) }
+
+func ActiveSecretKeyID(k *secret.Keyring) string {
+	if k == nil {
+		return ""
+	}
+	return k.ID()
+}
 
 func (s *Store) requireSecretKey(fields []schema.Field) error {
 	return RequireSecretKey(s.secrets, fields)
@@ -113,6 +124,50 @@ func OpenSecret(k *secret.Keyring, col string, v any) (string, error) {
 		return "", fmt.Errorf("field %q: %w", col, err)
 	}
 	return plain, nil
+}
+
+type IdemHash struct {
+	Primary    string
+	Alternates []string
+}
+
+func (h IdemHash) Matches(stored string) bool {
+	if stored == h.Primary {
+		return true
+	}
+	for _, a := range h.Alternates {
+		if stored == a {
+			return true
+		}
+	}
+	return false
+}
+
+func RequestHash(k *secret.Keyring, sc *schema.TableSchema, records []map[string]any) (IdemHash, error) {
+	sum := func(k *secret.Keyring) (string, error) {
+		raw, err := json.Marshal(FingerprintSecrets(k, sc, records))
+		if err != nil {
+			return "", fmt.Errorf("%w: cannot encode records: %v", ErrInvalid, err)
+		}
+		h := sha256.Sum256(raw)
+		return hex.EncodeToString(h[:]), nil
+	}
+	primary, err := sum(k)
+	if err != nil {
+		return IdemHash{}, err
+	}
+	out := IdemHash{Primary: primary}
+	if len(sc.SecretFields()) == 0 {
+		return out, nil
+	}
+	for _, old := range k.Retired() {
+		alt, err := sum(old)
+		if err != nil {
+			return IdemHash{}, err
+		}
+		out.Alternates = append(out.Alternates, alt)
+	}
+	return out, nil
 }
 
 func FingerprintSecrets(k *secret.Keyring, sc *schema.TableSchema, records []map[string]any) []map[string]any {

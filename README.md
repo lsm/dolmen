@@ -421,6 +421,8 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 | — | `DOLMEN_ADMIN_KEY` | — | Bootstrap admin credential. Needed with `-auth on` until another source yields a root administrator, and removable after the hand-over (see [Permissions](#permissions)). 32–256 characters of `[A-Za-z0-9_-]`, presented as `Authorization: Bearer <key>`. Environment only — flags are visible in process listings |
 | — | `DOLMEN_SECRET_KEY` | — | Key that encrypts `secret` fields at rest (AES-256-GCM) on either engine: 32 bytes, base64-encoded (`openssl rand -base64 32`). Without it, creating a secret field or writing a secret value is refused. Environment only; never logged |
 | — | `DOLMEN_SECRET_KEY_FILE` | — | Path to a file holding that key instead. Set at most one of the two |
+| — | `DOLMEN_SECRET_KEYS_OLD` | — | Retired secret keys, comma-separated base64, used only to decrypt values written before a key rotation (see "Rotating the secret key"). Needs `DOLMEN_SECRET_KEY`. Environment only |
+| — | `DOLMEN_SECRET_KEYS_OLD_FILE` | — | Path to a file holding those retired keys, one per line, instead. Set at most one of the two |
 | `-trusted-proxies` | `DOLMEN_TRUSTED_PROXIES` | — | Comma-separated CIDRs (bare IPs allowed) whose peers may assert `X-Dolmen-Principal` / `X-Dolmen-Groups`. The same peers are the only ones whose forwarding headers (`X-Forwarded-Host`/`-Proto`/`-Prefix`, `Forwarded`, original-URI headers) shape the public links dolmen advertises; from other peers they are dropped. Trust is decided from the immediate TCP peer, never from `X-Forwarded-For` |
 | `-max-groups` | `DOLMEN_MAX_GROUPS` | `128` | Maximum group entries accepted per request, `1` to `1024`. An over-limit list fails the identity rather than dropping a group |
 | — | `DOLMEN_AUTH_OIDC_ISSUER` | — | Identity provider issuer URL. Enables sign-in at `/v1/auth/begin` (see [Signing in through an identity provider](#signing-in-through-an-identity-provider)) |
@@ -927,7 +929,7 @@ claude mcp add dolmen -- /path/to/dolmen mcp -data /path/to/data
 
 `dolmen mcp` takes the same flags and environment as `dolmen`; the HTTP-only ones (`-addr`, `-max-subscription-age`, `DOLMEN_ALLOWED_ORIGINS`) have no effect. The `initialize` handshake works as over HTTP (its instructions describe the stdio transport; set `-base-url` when an HTTP deployment also exists, and its links appear there). Over stdio there is no `MCP-Protocol-Version` header, so version negotiation happens in `initialize` alone.
 
-The MCP server exposes the same twenty-five operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
+The MCP server exposes the same twenty-six operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
 
 Skill distribution is built into the server. `GET /skills` returns a JSON manifest with links to the layered skill markdown; `GET /skills/dolmen` is the end-user skill and `GET /skills/dolmen-admin` is the developer skill. Agents should fetch the skill from the running binary instead of copying a static file. Over `dolmen mcp` there is no HTTP listener — the skills are served by the HTTP deployment named by `-base-url`, when one exists.
 
@@ -1022,6 +1024,7 @@ atomically with your side effects rather than deduplicating on frame content.
 | `list_namespaces` | Namespaces on this server; an optional `prefix` (a namespace path) lists only that path's subtree, recursively |
 | `create_namespace` | Reserve a namespace up front (the write ops create implicitly on first use otherwise; every read — including `wait_for` and the `subscribe` stream — never creates, and a missing namespace is `not_found`) |
 | `drop_namespace` | Delete a namespace and all its tables; `confirm` must repeat the name; a namespace with child namespaces is refused — drop the children first |
+| `rotate_secret_key` | Re-encrypt stored `secret` values under the active key in bounded batches; reports `rotated`, `remaining`, `done` and values per key id (`admin` on `*`) |
 | `vacuum` | Reclaim free space in one namespace (SQLite: rebuild the file and truncate its WAL; PostgreSQL: `VACUUM` its tables) and report `bytes_before` / `bytes_after` |
 | `list_tables` | Tables in a namespace |
 | `describe_server` | Server's embedding provider status — provider (`none` / `local` / `openai`), model, the identity that pins vectorized tables, whether server-side embedding is usable, and (local only) whether the model is cached; read-only, no secrets |
@@ -1327,6 +1330,25 @@ configuration that receives dolmen's traces:
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 OTEL_SERVICE_NAME=dolmen-dev ./dolmen
 ```
+
+## Rotating the secret key
+
+1. Generate a new key: `openssl rand -base64 32`.
+2. Restart dolmen with the new key in `DOLMEN_SECRET_KEY` and the old one added to
+   `DOLMEN_SECRET_KEYS_OLD` (comma-separated; or `DOLMEN_SECRET_KEYS_OLD_FILE`, one per line).
+   New writes use the new key at once; values written earlier still decrypt with the old one.
+3. Call `rotate_secret_key` (needs `admin` on `*`) until it answers `"done": true`. Each call
+   re-encrypts at most `limit` values (default 10000) in short transactions, bounded by half the
+   operation timeout, so writers are not blocked for long. It is idempotent: after a crash or a
+   timeout, call it again and it continues where it stopped.
+4. Check `keys` in the last response: once the old key id shows 0 values (on a call without
+   `namespace`), remove it from `DOLMEN_SECRET_KEYS_OLD` and restart.
+
+Removing a key too early does not lose data as long as you still have it: reveals of values under
+it answer `internal_error` (the log names the missing key id) and `rotate_secret_key` answers
+`conflict` naming it; add it back and rerun. Idempotent inserts made before the rotation still
+replay while the old key is configured; after it is removed, such a replay answers `conflict`
+rather than inserting again.
 
 ## Backup and restore
 

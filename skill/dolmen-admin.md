@@ -205,6 +205,7 @@ What the schema and administration operations need:
 | `create_namespace` | `admin` on the parent namespace, or on `*` for a top-level one |
 | `drop_namespace` | `admin` on the namespace |
 | `vacuum` | `admin` on the namespace |
+| `rotate_secret_key` | `admin` on `*` |
 | `grant`, `revoke`, `list_grants` | `admin` on the object or something covering it |
 | `create_key`, `list_keys`, `revoke_key`, `rotate_signing_key` | `admin` on `*` |
 
@@ -591,6 +592,15 @@ match, before ranking.
   Search and write `filter`s still evaluate against the ciphertext, where they select rows but
   return no values, so comparing a secret with a plaintext matches nothing. The change feed and
   backups carry only ciphertext. Losing the key loses the values; a different key cannot decrypt them.
+- Key rotation: the operator sets the new key in `DOLMEN_SECRET_KEY`, moves the old one to
+  `DOLMEN_SECRET_KEYS_OLD` (comma-separated, or `DOLMEN_SECRET_KEYS_OLD_FILE`, one per line) and
+  restarts; writes use the new key at once and old values still decrypt. `rotate_secret_key`
+  (`admin` on `*`; optional `namespace`, `limit` default 10000) re-encrypts old values in short
+  batches and returns `rotated`, `remaining`, `done`, per-table progress and `keys` (values per key
+  id). Each call is bounded, so call it again until `done` is true; it is idempotent, and an
+  interrupted call is just called again. Drop a retired key only once `keys` shows 0 values under it
+  for a server-wide call. A value under a key that is not configured makes it answer `conflict`
+  naming the key id to add back.
 
 ### Id, `created_at`, and stability
 

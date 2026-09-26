@@ -44,7 +44,7 @@ func normalizeRecords(records []map[string]any) ([]map[string]any, error) {
 	return out, nil
 }
 
-func (s *Store) lookupIdempotency(ctx context.Context, tx pgx.Tx, n namespace, state tableState, key, hash string, domain store.IdemDomain) (store.InsertResult, bool, error) {
+func (s *Store) lookupIdempotency(ctx context.Context, tx pgx.Tx, n namespace, state tableState, key string, hash store.IdemHash, domain store.IdemDomain) (store.InsertResult, bool, error) {
 	var result store.InsertResult
 	if key == "" {
 		return result, false, nil
@@ -59,7 +59,7 @@ func (s *Store) lookupIdempotency(ctx context.Context, tx pgx.Tx, n namespace, s
 	return result, false, nil
 }
 
-func (s *Store) readIdempotency(ctx context.Context, tx pgx.Tx, n namespace, state tableState, key, hash, owner string) (store.InsertResult, bool, error) {
+func (s *Store) readIdempotency(ctx context.Context, tx pgx.Tx, n namespace, state tableState, key string, hash store.IdemHash, owner string) (store.InsertResult, bool, error) {
 	var result store.InsertResult
 	var stored, raw string
 	err := tx.QueryRow(ctx, "SELECT payload_hash,result_json FROM "+s.relation("idempotency_owned")+" WHERE namespace=$1 AND table_name=$2 AND drop_generation=$3 AND owner=$4 AND key=$5", n.name, state.incarnation.Table, state.incarnation.DropGen, owner, key).Scan(&stored, &raw)
@@ -69,7 +69,7 @@ func (s *Store) readIdempotency(ctx context.Context, tx pgx.Tx, n namespace, sta
 	if err != nil {
 		return result, false, err
 	}
-	if stored != hash {
+	if !hash.Matches(stored) {
 		return result, false, derr.New(derr.Conflict, "idempotency key %q was already recorded for a different insert into %s; re-send the identical body for a retry, or use a fresh key for a new insert", key, state.incarnation.Table)
 	}
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
@@ -233,7 +233,7 @@ func (s *Store) Insert(ctx context.Context, ns, table string, records []map[stri
 	if err != nil {
 		return store.InsertResult{}, err
 	}
-	hash := ""
+	var hash store.IdemHash
 	hashFor := func(sc *schema.TableSchema) error {
 		if opts.IdempotencyKey == "" {
 			return nil
@@ -338,7 +338,7 @@ func (s *Store) Insert(ctx context.Context, ns, table string, records []map[stri
 				if err != nil {
 					return err
 				}
-				_, err = tx.Exec(ctx, "INSERT INTO "+s.relation("idempotency_owned")+" (namespace,table_name,drop_generation,owner,key,payload_hash,result_json) VALUES($1,$2,$3,$4,$5,$6,$7)", ns, table, state.incarnation.DropGen, domain.Owner, opts.IdempotencyKey, hash, string(raw))
+				_, err = tx.Exec(ctx, "INSERT INTO "+s.relation("idempotency_owned")+" (namespace,table_name,drop_generation,owner,key,payload_hash,result_json) VALUES($1,$2,$3,$4,$5,$6,$7)", ns, table, state.incarnation.DropGen, domain.Owner, opts.IdempotencyKey, hash.Primary, string(raw))
 				return err
 			}
 			return nil
