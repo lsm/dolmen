@@ -7,7 +7,9 @@ import (
 
 const MaxReadRowsIDs = 1000
 
-func (s *Store) GetRows(ctx context.Context, nsName, table string, ids []int64, scope *RowScope, scopeIncarnation Incarnation) (QueryResult, error) {
+func (s *Store) GetRows(ctx context.Context, nsName, table string, ids []int64, scope *RowScope, scopeIncarnation Incarnation) (_ QueryResult, err error) {
+	ctx, span := s.tr.Op(ctx, "SELECT", nsName, table)
+	defer func() { s.tr.End(span, err) }()
 	if len(ids) > MaxReadRowsIDs {
 		return QueryResult{}, invalidf("read_rows accepts at most %d ids per request, got %d", MaxReadRowsIDs, len(ids))
 	}

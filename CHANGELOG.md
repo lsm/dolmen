@@ -19,6 +19,12 @@
 
 ### Added
 
+- **Storage spans for plain reads and schema lifecycle calls.** `read_rows` records `SELECT <table>`
+  and `query` a bare `SELECT` (arbitrary SQL may span tables, so it names none), while
+  `create_table`/`drop_table` record `CREATE`/`DROP <table>` and `create_namespace`/`drop_namespace`
+  `CREATE`/`DROP` with `db.namespace` only, on both engines. Read latency now shows its storage time
+  in a trace; nothing new is recorded when tracing is off.
+
 - **Engine capacity as OpenTelemetry gauges.** `dolmen.namespaces.open`, `dolmen.vector_cache.usage`
   and `dolmen.vector_cache.limit` on SQLite, and `db.client.connection.count` (split by
   `db.client.connection.state`, `idle` or `used`) with `db.client.connection.max` on PostgreSQL, are
