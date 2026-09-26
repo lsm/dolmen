@@ -26,6 +26,12 @@
   rather than refused. Other namespaces, discovery and the health probe are unaffected, and a
   namespace serves again as soon as its file is restored, with no restart.
 
+- **A cancelled `query` is answered as `canceled` and lets go of its read connections at once.**
+  `query` now decides its class from the caller's context wherever the engine can fail it, so a
+  statement the engine interrupted — or one of dolmen's own refusals, raised while the caller was
+  already leaving — is reported as the caller's cancellation rather than as a fault. The read
+  connection, the read pool and the namespace pin are free the moment the context is done.
+
 - **`query` can no longer hand out a secret's ciphertext.** Masking used to key off the result-column
   label, so `SELECT token AS t` returned base64 of the stored bytes and `length(token)` its unpadded
   length — any caller holding `read` could exfiltrate every secret's ciphertext without the `reveal`
