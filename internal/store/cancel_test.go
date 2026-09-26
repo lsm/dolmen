@@ -135,6 +135,17 @@ func TestCancellingAnInsertWaitingForTheWriterReleasesIt(t *testing.T) {
 	}
 }
 
+func TestAnInterruptedStatementIsNotRecognisedAsAQueryError(t *testing.T) {
+	err := NewQueryError("SELECT 1", errors.New("interrupted (9)"))
+	var qe *QueryError
+	if errors.As(err, &qe) {
+		t.Fatal("the driver's interrupt must not be dressed up as a query error: the changelog and this PR's premise both depend on it")
+	}
+	if got := SpanErrorType(err); got != "internal_error" {
+		t.Fatalf("an unrecognised driver error classified as %q, want internal_error", got)
+	}
+}
+
 func TestCancellingALongQueryReleasesTheReadPool(t *testing.T) {
 	st, err := Open(t.TempDir())
 	if err != nil {
@@ -160,13 +171,7 @@ func TestCancellingALongQueryReleasesTheReadPool(t *testing.T) {
 			done <- err
 		}(results[i])
 	}
-	deadline := time.Now().Add(cancelGrace)
-	for n.ro.Stats().InUse < readConnsPerNS && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if got := n.ro.Stats().InUse; got < readConnsPerNS {
-		t.Fatalf("only %d of the %d read connections are in use; the fan-out never saturated the pool", got, readConnsPerNS)
-	}
+	awaitSaturation(t, n)
 	for _, cancel := range cancels {
 		cancel()
 	}
@@ -244,6 +249,17 @@ func awaitBusy(t *testing.T, n *nsDB) {
 			t.Fatal("the query never took a read connection")
 		}
 		time.Sleep(200 * time.Microsecond)
+	}
+}
+
+func awaitSaturation(t *testing.T, n *nsDB) {
+	t.Helper()
+	deadline := time.Now().Add(cancelGrace)
+	for n.ro.Stats().InUse < readConnsPerNS {
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d of the %d read connections are in use; the fan-out never saturated the pool", n.ro.Stats().InUse, readConnsPerNS)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
