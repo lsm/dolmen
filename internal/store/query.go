@@ -256,9 +256,9 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsG
 		}
 		if err != nil {
 			if refusal := maskedRowidRefusal(masked, err); refusal != nil {
-				return QueryResult{}, refusal
+				return QueryResult{}, cancelled(ctx, refusal)
 			}
-			return QueryResult{}, NewQueryError(userSQL, err)
+			return QueryResult{}, cancelled(ctx, NewQueryError(userSQL, err))
 		}
 	}
 	defer rows.Close()
