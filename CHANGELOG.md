@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- **A namespace whose file cannot be read is refused, not silently re-initialized.** Reopening a
+  data directory whose namespace file was truncated to nothing used to let the next write through:
+  SQLite reads a zero-length file as an empty database, so `create_table` succeeded and the rows
+  written before the truncation were gone with no error anywhere. Every operation on a namespace the
+  startup scan found unreadable now answers `500 internal_error` naming the namespace, the reason
+  the file could not be read, and the remedy — restore it from a backup, or `drop_namespace` it,
+  which still works on an unreadable file. Other namespaces, discovery and the health probe are
+  unaffected, and a namespace serves again as soon as its file is restored, with no restart.
+
 - **`query` can no longer hand out a secret's ciphertext.** Masking used to key off the result-column
   label, so `SELECT token AS t` returned base64 of the stored bytes and `length(token)` its unpadded
   length — any caller holding `read` could exfiltrate every secret's ciphertext without the `reveal`

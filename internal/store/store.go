@@ -105,7 +105,7 @@ type Store struct {
 	maxBytes int64
 
 	unreadableMu sync.Mutex
-	unreadable   []string
+	unreadable   []unreadableNamespace
 
 	notifyMu  sync.Mutex
 	listeners map[string][]*commitListener
@@ -228,15 +228,13 @@ func (s *Store) verifyCatalogVersions(ctx context.Context) error {
 func (s *Store) verifyOneCatalogVersion(ctx context.Context, name string) error {
 	ro, err := sql.Open("sqlite", dsn(s.nsPath(name), true))
 	if err != nil {
-		slog.Warn("namespace is unreadable; requests to it fail until it is repaired", "namespace", name, "err", err)
-		s.unreadable = append(s.unreadable, name)
+		s.markUnreadable(name, err)
 		return nil
 	}
 	defer ro.Close()
 	format, minReader, err := readCatalogVersion(ctx, ro)
 	if err != nil {
-		slog.Warn("namespace is unreadable; requests to it fail until it is repaired", "namespace", name, "err", err)
-		s.unreadable = append(s.unreadable, name)
+		s.markUnreadable(name, err)
 		return nil
 	}
 	if minReader > CatalogFormat {
@@ -290,6 +288,9 @@ func (s *Store) ns(name string) (*nsDB, error) {
 	if err := validateNSPath(name); err != nil {
 		return nil, err
 	}
+	if err := s.refuseIfUnreadable(context.Background(), name); err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.pinLocked(s.lockedNS(name))
@@ -297,6 +298,9 @@ func (s *Store) ns(name string) (*nsDB, error) {
 
 func (s *Store) nsCtx(ctx context.Context, name string) (*nsDB, error) {
 	if err := validateNSPath(name); err != nil {
+		return nil, err
+	}
+	if err := s.refuseIfUnreadable(ctx, name); err != nil {
 		return nil, err
 	}
 	if err := s.mu.LockCtx(ctx); err != nil {
@@ -971,9 +975,9 @@ func (s *Store) stillUnreadable(ctx context.Context) int {
 	s.unreadableMu.Lock()
 	defer s.unreadableMu.Unlock()
 	kept := s.unreadable[:0]
-	for _, name := range s.unreadable {
-		if s.namespaceUnreadable(ctx, name) {
-			kept = append(kept, name)
+	for _, entry := range s.unreadable {
+		if s.namespaceUnreadable(ctx, entry.name) {
+			kept = append(kept, entry)
 		}
 	}
 	s.unreadable = kept

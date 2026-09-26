@@ -150,6 +150,9 @@ func (s *Store) CreateNamespace(ctx context.Context, nsName string, parentNsGen 
 	if err := validateNSPath(nsName); err != nil {
 		return err
 	}
+	if err := s.refuseIfUnreadable(ctx, nsName); err != nil {
+		return err
+	}
 	path := s.nsPath(nsName)
 
 	s.mu.Lock()
