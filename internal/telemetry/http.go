@@ -1,12 +1,14 @@
 package telemetry
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -42,12 +44,15 @@ func (t *Tracing) Server(route string, next http.Handler, opts ...ServerOption) 
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := t.prop.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+		start := time.Now()
 		method := r.Method
+		metricMethod := method
 		attrs := make([]attribute.KeyValue, 0, 12)
 		if knownMethods[method] {
 			attrs = append(attrs, semconv.HTTPRequestMethodKey.String(method))
 		} else {
 			method = "HTTP"
+			metricMethod = "_OTHER"
 			attrs = append(attrs, semconv.HTTPRequestMethodKey.String("_OTHER"), semconv.HTTPRequestMethodOriginal(clean(r.Method, maxNameAttr)))
 		}
 		scheme := "http"
@@ -71,16 +76,20 @@ func (t *Tracing) Server(route string, next http.Handler, opts ...ServerOption) 
 		if ua := r.UserAgent(); ua != "" {
 			attrs = append(attrs, semconv.UserAgentOriginal(clean(ua, maxRequestAttr)))
 		}
+		protocol := ""
 		switch {
 		case r.ProtoMajor == 1 && r.ProtoMinor == 1:
-			attrs = append(attrs, semconv.NetworkProtocolVersion("1.1"))
+			protocol = "1.1"
 		case r.ProtoMajor == 2:
-			attrs = append(attrs, semconv.NetworkProtocolVersion("2"))
+			protocol = "2"
 		case r.ProtoMajor == 1 && r.ProtoMinor == 0:
-			attrs = append(attrs, semconv.NetworkProtocolVersion("1.0"))
+			protocol = "1.0"
+		}
+		if protocol != "" {
+			attrs = append(attrs, semconv.NetworkProtocolVersion(protocol))
 		}
 		ctx, span := t.tracer.Start(ctx, method+" "+route, trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(attrs...))
-		rw := &statusWriter{ResponseWriter: w, span: span, endAtHeaders: endAtHeaders}
+		rw := &statusWriter{ResponseWriter: w, span: span, endAtHeaders: endAtHeaders, ctx: ctx, inst: t.inst, start: start, metricMethod: metricMethod, route: route, scheme: scheme, protocol: protocol}
 		defer rw.finish()
 		next.ServeHTTP(rw, r.WithContext(ctx))
 	})
@@ -108,6 +117,13 @@ type statusWriter struct {
 	endAtHeaders bool
 	status       int
 	once         sync.Once
+	ctx          context.Context
+	inst         *instruments
+	start        time.Time
+	metricMethod string
+	route        string
+	scheme       string
+	protocol     string
 }
 
 func (w *statusWriter) WriteHeader(code int) {
@@ -155,6 +171,7 @@ func (w *statusWriter) finish() {
 			w.span.SetStatus(codes.Error, "")
 		}
 		w.span.End()
+		w.inst.httpServed(w.ctx, httpMetricAttrs(w.metricMethod, w.route, w.scheme, w.protocol, status), time.Since(w.start))
 	})
 }
 

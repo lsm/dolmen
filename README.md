@@ -1281,18 +1281,21 @@ Coercion and validation rules:
 
 ## Observability
 
-Dolmen emits OpenTelemetry traces over OTLP (`http/protobuf`). Tracing is **off by default**: no
-span is recorded or exported until an OTLP endpoint is configured, and while it is off the
-instrumentation is a no-op. It is configured only through the standard `OTEL_*` variables (both
-`dolmen` and `dolmen mcp`):
+Dolmen emits OpenTelemetry traces and metrics over OTLP (`http/protobuf`). Both are **off by
+default**: nothing is recorded or exported until an OTLP endpoint is configured, and while they are
+off the instrumentation is a no-op. They are configured only through the standard `OTEL_*`
+variables (both `dolmen` and `dolmen mcp`), and each signal can be turned on or off on its own:
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | unset | Setting either turns tracing on, e.g. `http://collector:4318`. |
-| `OTEL_TRACES_EXPORTER` | `otlp` when an endpoint is set | `otlp` turns tracing on (endpoint defaults to `http://localhost:4318`); `none` keeps it off. |
-| `OTEL_SDK_DISABLED` | `false` | `true` turns tracing off whatever else is set. |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` / `_TRACES_PROTOCOL` | `http/protobuf` | Only `http/protobuf` is supported; gRPC is left out to keep the binary small. |
-| `OTEL_EXPORTER_OTLP_HEADERS`, `_TIMEOUT`, `_COMPRESSION`, `_CERTIFICATE`, and the `_TRACES_` variants | | Passed to the OTLP exporter. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Setting it turns traces and metrics on, e.g. `http://collector:4318`. |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | unset | A per-signal endpoint; setting one turns that signal on. |
+| `OTEL_TRACES_EXPORTER` / `OTEL_METRICS_EXPORTER` | `otlp` when an endpoint is set | `otlp` turns the signal on (endpoint defaults to `http://localhost:4318`); `none` keeps it off. `prometheus` is refused for metrics: scrape `GET /metrics` instead. |
+| `OTEL_SDK_DISABLED` | `false` | `true` turns traces and metrics off whatever else is set. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` / `_TRACES_PROTOCOL` / `_METRICS_PROTOCOL` | `http/protobuf` | Only `http/protobuf` is supported; gRPC is left out to keep the binary small. |
+| `OTEL_EXPORTER_OTLP_HEADERS`, `_TIMEOUT`, `_COMPRESSION`, `_CERTIFICATE`, and the `_TRACES_` / `_METRICS_` variants | | Passed to the OTLP exporters. |
+| `OTEL_METRIC_EXPORT_INTERVAL` / `OTEL_METRIC_EXPORT_TIMEOUT` | `60000` / `30000` ms | How often metrics are pushed, read by the OpenTelemetry Go SDK itself. |
+| `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` | `cumulative` | `delta` or `lowmemory` for backends that want deltas; read by the SDK's exporter. |
 | `OTEL_SERVICE_NAME` | `dolmen` | `service.name`. |
 | `OTEL_RESOURCE_ATTRIBUTES` | | Extra resource attributes (`k=v,k2=v2`, percent-encoded values). |
 | `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` | `parentbased_always_on` | `always_on`, `always_off`, `traceidratio`, and the `parentbased_*` forms. |
@@ -1319,13 +1322,31 @@ What is traced:
   reports it); CLIENT for `openai`, which also sends `traceparent` upstream, INTERNAL for `local`.
 - Every log line written during a traced request carries `trace_id` and `span_id`.
 
+What is measured (metrics are pushed every `OTEL_METRIC_EXPORT_INTERVAL`; with traces on too, the SDK
+attaches exemplars linking a slow request's histogram bucket to its trace):
+
+| Metric | Type, unit | Attributes |
+| --- | --- | --- |
+| `http.server.request.duration` | histogram, `s` | `http.request.method`, `http.route`, `http.response.status_code`, `url.scheme`, `network.protocol.version`, `error.type` on 5xx |
+| `dolmen.operation.duration` | histogram, `s` | `dolmen.op.name`, `dolmen.op.outcome` (`ok` or the error code); its count is the operation count |
+| `dolmen.operations.in_flight` | up-down counter, `{operation}` | `dolmen.op.name` |
+| `dolmen.subscriptions.active` | up-down counter, `{subscription}` | |
+| `gen_ai.client.operation.duration` | histogram, `s` | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `server.address`, `error.type` on failure |
+| `gen_ai.client.token.usage` | histogram, `{token}` | the same, plus `gen_ai.token.type=input`, when the provider reports usage |
+
+Metric attributes stay low-cardinality: never namespaces, tables, principals, request ids, paths or
+client addresses, so the series count is bounded by the operation and error-code lists. The dolmen
+names translate to the same Prometheus names `GET /metrics` serves (`dolmen_operation_duration_seconds`,
+`dolmen_operations_in_flight`, `dolmen_subscriptions_active`), so dashboards carry over between a
+scrape and an OTLP pipeline.
+
 Privacy: spans never carry SQL text, filter arguments, row payloads, embedded text, API keys or other
 credentials; error statuses carry the error code, not the message. The principal (`enduser.id`) is recorded only
 with `DOLMEN_OTEL_INCLUDE_PRINCIPAL=true`. Outbound calls to the `openai` embedding provider carry only
 `traceparent`; inbound W3C `baggage` is never forwarded to it.
 
 [`docs/otel-collector.yaml`](docs/otel-collector.yaml) is a minimal OpenTelemetry Collector
-configuration that receives dolmen's traces:
+configuration that receives dolmen's traces and metrics:
 
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 OTEL_SERVICE_NAME=dolmen-dev ./dolmen

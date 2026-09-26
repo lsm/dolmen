@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -82,14 +84,35 @@ func (e *tracedEmbedder) ModelName() string { return e.model }
 
 func (e *tracedEmbedder) Identity() string { return e.inner.Identity() }
 
-func (e *tracedEmbedder) start(ctx context.Context, n int) (context.Context, trace.Span) {
+type embedCall struct {
+	ctx    context.Context
+	span   trace.Span
+	start  time.Time
+	tokens atomic.Int64
+}
+
+func (e *tracedEmbedder) start(ctx context.Context, n int) *embedCall {
 	name := "embeddings"
 	if e.model != "" {
 		name += " " + e.model
 	}
 	attrs := append(append([]attribute.KeyValue(nil), e.attrs...), EmbedBatchSizeKey.Int(n))
 	ctx, span := e.t.tracer.Start(ctx, name, trace.WithSpanKind(e.kind), trace.WithAttributes(attrs...))
-	return embed.WithTraceContext(ctx), span
+	c := &embedCall{span: span, start: time.Now()}
+	c.ctx = embed.WithUsage(embed.WithTraceContext(ctx), &c.tokens)
+	return c
+}
+
+func (e *tracedEmbedder) finish(c *embedCall, err error) {
+	finishEmbed(c.span, err)
+	if e.t.inst == nil {
+		return
+	}
+	attrs := e.attrs
+	if err != nil {
+		attrs = append(append(make([]attribute.KeyValue, 0, len(e.attrs)+1), e.attrs...), semconv.ErrorTypeKey.String(embedErrorType(err)))
+	}
+	e.t.inst.embedded(c.ctx, attrs, c.tokens.Load(), time.Since(c.start))
 }
 
 func embedErrorType(err error) string {
@@ -114,15 +137,15 @@ func finishEmbed(span trace.Span, err error) {
 }
 
 func (e *tracedEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	ctx, span := e.start(ctx, len(texts))
-	out, err := e.inner.Embed(ctx, texts)
-	finishEmbed(span, err)
+	c := e.start(ctx, len(texts))
+	out, err := e.inner.Embed(c.ctx, texts)
+	e.finish(c, err)
 	return out, err
 }
 
 func (e *tracedEmbedder) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
-	ctx, span := e.start(ctx, 1)
-	out, err := e.inner.EmbedQuery(ctx, text)
-	finishEmbed(span, err)
+	c := e.start(ctx, 1)
+	out, err := e.inner.EmbedQuery(c.ctx, text)
+	e.finish(c, err)
 	return out, err
 }

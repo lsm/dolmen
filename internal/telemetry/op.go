@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -21,7 +22,11 @@ const (
 const maxNameAttr = 256
 
 type OpSpan struct {
-	span trace.Span
+	span  trace.Span
+	ctx   context.Context
+	inst  *instruments
+	op    string
+	start time.Time
 }
 
 func (t *Tracing) StartOp(ctx context.Context, op, requestID, principal string) (context.Context, *OpSpan) {
@@ -36,7 +41,8 @@ func (t *Tracing) StartOp(ctx context.Context, op, requestID, principal string) 
 		attrs = append(attrs, PrincipalKey.String(clean(principal, maxNameAttr)))
 	}
 	ctx, span := t.tracer.Start(ctx, "dolmen.op "+op, trace.WithSpanKind(trace.SpanKindInternal), trace.WithAttributes(attrs...))
-	return ctx, &OpSpan{span: span}
+	t.inst.opStarted(ctx, op)
+	return ctx, &OpSpan{span: span, ctx: ctx, inst: t.inst, op: op, start: time.Now()}
 }
 
 func (o *OpSpan) Recording() bool { return o != nil && o.span.IsRecording() }
@@ -66,6 +72,7 @@ func (o *OpSpan) End(outcome string) {
 		o.span.SetStatus(codes.Error, outcome)
 	}
 	o.span.End()
+	o.inst.opEnded(o.ctx, o.op, outcome, time.Since(o.start))
 }
 
 func PeekScope(body []byte) (namespace, table string) {

@@ -150,6 +150,11 @@ per provider call, on the given `trace.TracerProvider`. It never reads or sets O
 provider or propagator and does not read `OTEL_*` variables; omitting it leaves tracing off, and a nil
 provider is `invalid_request`. The same privacy rule as the server holds: no SQL, filter arguments,
 record values or embedded text in spans.
+`WithMeterProvider(mp)` records the same metrics as the server on the given `metric.MeterProvider`:
+`dolmen.operation.duration` and `dolmen.operations.in_flight` per facade call, and the
+`gen_ai.client.*` embedding metrics. Like the tracer option it never touches OpenTelemetry's global
+state, omitting it leaves metrics off, and a nil provider is `invalid_request`. Either option may be
+given without the other.
 Default embedding is disabled. `Open` does not read environment variables, install
 signal handlers, replace the global logger, or start a server. CLI environment/flag
 interpretation remains in the executable.

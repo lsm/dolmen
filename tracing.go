@@ -2,9 +2,12 @@ package dolmen
 
 import (
 	"context"
+	"fmt"
 
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/ops"
 	"github.com/lsm/dolmen/internal/telemetry"
 )
@@ -14,6 +17,21 @@ func WithTracerProvider(tp trace.TracerProvider) Option {
 		c.tracerProvider = tp
 		c.tracerProviderSet = true
 	}
+}
+
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(c *config) {
+		c.meterProvider = mp
+		c.meterProviderSet = true
+	}
+}
+
+func (c *config) instrumentation() (*telemetry.Tracing, error) {
+	t, err := telemetry.NewWithMeter(c.tracerProvider, c.meterProvider, nil, false)
+	if err != nil {
+		return nil, derr.Wrap(derr.InvalidRequest, fmt.Errorf("WithMeterProvider: %w", err))
+	}
+	return t, nil
 }
 
 func (s *Store) startOp(ctx context.Context, op, namespace, table string) (context.Context, *telemetry.OpSpan) {
