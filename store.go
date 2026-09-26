@@ -17,6 +17,7 @@ import (
 	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
 	"github.com/lsm/dolmen/internal/telemetry"
+	"github.com/lsm/dolmen/internal/telemetry/dbspan"
 )
 
 var ErrClosed = errors.New("dolmen: store is closed")
@@ -94,7 +95,7 @@ func openWithOpener(cfg config) (*Store, error) {
 	owners[key] = s
 	ownersMu.Unlock()
 
-	eng, err := cfg.opener(secret.WithKeyring(context.Background(), cfg.secrets), cfg.changeRetention)
+	eng, err := cfg.opener(dbspan.ContextWithProvider(secret.WithKeyring(context.Background(), cfg.secrets), cfg.tracerProvider), cfg.changeRetention)
 	if err != nil {
 		releaseOwnership(key)
 		code := derr.Internal

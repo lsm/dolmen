@@ -225,6 +225,13 @@ func (s *Store) mintChanges(ctx context.Context, tx pgx.Tx, n namespace, state t
 }
 
 func (s *Store) Insert(ctx context.Context, ns, table string, records []map[string]any, opts store.WriteOpts, emb store.Embedder, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
+	ctx, end := s.span(ctx, "INSERT", ns, table)
+	res, err := s.insertRows(ctx, ns, table, records, opts, emb, scope, expected)
+	end(err)
+	return res, err
+}
+
+func (s *Store) insertRows(ctx context.Context, ns, table string, records []map[string]any, opts store.WriteOpts, emb store.Embedder, scope *store.RowScope, expected store.Incarnation) (store.InsertResult, error) {
 	if len(opts.IdempotencyKey) > store.MaxIdempotencyKeyLen {
 		return store.InsertResult{}, fmt.Errorf("%w: idempotency key is %d bytes (max %d)", store.ErrInvalid, len(opts.IdempotencyKey), store.MaxIdempotencyKeyLen)
 	}
