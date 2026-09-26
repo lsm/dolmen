@@ -1375,6 +1375,11 @@ credentials; error statuses carry the error code, not the message. The principal
 with `DOLMEN_OTEL_INCLUDE_PRINCIPAL=true`. Outbound calls to the `openai` embedding provider carry only
 `traceparent`; inbound W3C `baggage` is never forwarded to it.
 
+[`docs/observability.md`](docs/observability.md) is the guide for running this: a one-command local
+stack (Grafana + Tempo + Prometheus + Loki) to send traces, metrics and logs to, how to get from a
+slow `dolmen.operation.duration` bucket to the trace behind it through its exemplar, and three starter
+alerts (failure rate, p99 of a hot operation, embedding failures).
+
 [`docs/otel-collector.yaml`](docs/otel-collector.yaml) is a minimal OpenTelemetry Collector
 configuration that receives dolmen's traces and metrics:
 

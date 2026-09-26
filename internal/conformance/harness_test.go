@@ -22,6 +22,9 @@ import (
 	"github.com/lsm/dolmen/internal/mcp"
 	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
+	"github.com/lsm/dolmen/internal/telemetry"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type fakeProvider struct {
@@ -138,6 +141,8 @@ type harness struct {
 
 	secretKeySet bool
 	secretKey    *secret.Keyring
+
+	tracerProvider trace.TracerProvider
 }
 
 func newHarness(t *testing.T) *harness {
@@ -188,6 +193,14 @@ func newHarnessAt(t *testing.T, dir string, emb *fakeProvider) *harness {
 	return newHarnessAtMode(t, dir, emb, authOff)
 }
 
+func newTracedHarness(t *testing.T, tp trace.TracerProvider) *harness {
+	t.Helper()
+	h := newHarnessAtMode(t, t.TempDir(), &fakeProvider{}, authOff)
+	h.tracerProvider = tp
+	h.reopen()
+	return h
+}
+
 func newHarnessAtMode(t *testing.T, dir string, emb *fakeProvider, mode harnessMode) *harness {
 	t.Helper()
 	h := &harness{t: t, dir: dir, emb: emb, mode: mode}
@@ -201,7 +214,7 @@ func (h *harness) start() {
 	if h.secretKeySet {
 		keyring = h.secretKey
 	}
-	h.st = openEngineStoreKeyed(h.t, h.dir, h.retention, h.mode.authMode() != auth.ModeOff, keyring)
+	h.st = openEngineStoreTraced(h.t, h.dir, h.retention, h.mode.authMode() != auth.ModeOff, keyring, h.tracerProvider)
 
 	trusted, err := auth.ParseTrustedProxies(h.mode.trustedProxies)
 	if err != nil {
@@ -220,6 +233,13 @@ func (h *harness) start() {
 		authn = h.authn
 	}
 	opts := append(append([]api.Option(nil), h.apiOpts...), api.WithAuth(authn))
+	if h.tracerProvider != nil {
+		tracing, err := telemetry.NewWithMeter(h.tracerProvider, nil, propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}), false)
+		if err != nil {
+			h.t.Fatalf("build instrumentation for the traced harness: %v", err)
+		}
+		opts = append(opts, api.WithTracing(tracing))
+	}
 	if authn.On() {
 		grants, err := auth.OpenRegistry(h.dir)
 		if err != nil {
