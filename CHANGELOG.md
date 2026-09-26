@@ -11,6 +11,12 @@
 
 ### Added
 
+- **Storage spans for plain reads and schema lifecycle calls.** `read_rows` records `SELECT <table>`
+  and `query` a bare `SELECT` (arbitrary SQL may span tables, so it names none), while
+  `create_table`/`drop_table` record `CREATE`/`DROP <table>` and `create_namespace`/`drop_namespace`
+  `CREATE`/`DROP` with `db.namespace` only, on both engines. Read latency now shows its storage time
+  in a trace; nothing new is recorded when tracing is off.
+
 - **`shape` on `json` fields** (#128). A `json` field may declare `object`, `array`, `array<string>`,
   `array<number>`, `array<boolean>` or `array<object>`; every write path refuses a value of any other
   shape, naming the field, the expected shape and what arrived. `migrate` gains `set_shape`, which

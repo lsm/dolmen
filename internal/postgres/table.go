@@ -100,8 +100,10 @@ func (s *Store) readMode(ctx context.Context, name string, readOnly bool, fn fun
 	return fn(tx, n)
 }
 
-func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []schema.Field, opts store.TableOpts, expected [16]byte) (*schema.TableSchema, error) {
-	fields, err := store.ValidateTableDefinition(table, fields)
+func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []schema.Field, opts store.TableOpts, expected [16]byte) (_ *schema.TableSchema, err error) {
+	ctx, end := s.span(ctx, "CREATE", ns, table)
+	defer func() { end(err) }()
+	fields, err = store.ValidateTableDefinition(table, fields)
 	if err != nil {
 		return nil, err
 	}
@@ -285,7 +287,9 @@ func (s *Store) DescribeTable(ctx context.Context, ns, table string, scope *stor
 	return result.schema, count, err
 }
 
-func (s *Store) DropTable(ctx context.Context, ns, table string, expected store.Incarnation) error {
+func (s *Store) DropTable(ctx context.Context, ns, table string, expected store.Incarnation) (err error) {
+	ctx, end := s.span(ctx, "DROP", ns, table)
+	defer func() { end(err) }()
 	return s.write(ctx, ns, expected.NsGen, func(tx pgx.Tx, n namespace) error {
 		current, err := s.loadTable(ctx, tx, n, table)
 		if err != nil {

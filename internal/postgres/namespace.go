@@ -14,7 +14,9 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-func (s *Store) CreateNamespace(ctx context.Context, name string, parentGen [16]byte) error {
+func (s *Store) CreateNamespace(ctx context.Context, name string, parentGen [16]byte) (err error) {
+	ctx, end := s.span(ctx, "CREATE", name, "")
+	defer func() { end(err) }()
 	done, err := s.begin(ctx)
 	if err != nil {
 		return err
@@ -124,7 +126,9 @@ func (s *Store) ListNamespaces(ctx context.Context, prefix string, auth []store.
 	return out, rows.Err()
 }
 
-func (s *Store) DropNamespace(ctx context.Context, name string, expected [16]byte) error {
+func (s *Store) DropNamespace(ctx context.Context, name string, expected [16]byte) (err error) {
+	ctx, end := s.span(ctx, "DROP", name, "")
+	defer func() { end(err) }()
 	done, err := s.begin(ctx)
 	if err != nil {
 		return err

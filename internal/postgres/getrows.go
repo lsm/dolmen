@@ -11,12 +11,14 @@ import (
 	"github.com/lsm/dolmen/internal/value"
 )
 
-func (s *Store) GetRows(ctx context.Context, ns, table string, ids []int64, scope *store.RowScope, expected store.Incarnation) (store.QueryResult, error) {
+func (s *Store) GetRows(ctx context.Context, ns, table string, ids []int64, scope *store.RowScope, expected store.Incarnation) (_ store.QueryResult, err error) {
+	ctx, end := s.span(ctx, "SELECT", ns, table)
+	defer func() { end(err) }()
 	if len(ids) > store.MaxReadRowsIDs {
 		return store.QueryResult{}, fmt.Errorf("%w: read_rows accepts at most %d ids per request, got %d", store.ErrInvalid, store.MaxReadRowsIDs, len(ids))
 	}
 	result := store.QueryResult{Rows: []map[string]any{}}
-	err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
+	err = s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
 		state, err := s.loadTable(ctx, tx, n, table)
 		if err != nil {
 			return err

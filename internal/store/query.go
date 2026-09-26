@@ -168,7 +168,9 @@ func ValidateQueryShape(query string) error {
 	return nil
 }
 
-func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsGen [16]byte, page Page) (QueryResult, error) {
+func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsGen [16]byte, page Page) (_ QueryResult, err error) {
+	ctx, span := s.tr.Op(ctx, "SELECT", nsName, "")
+	defer func() { s.tr.End(span, err) }()
 	trimmed := strings.TrimRight(strings.TrimSpace(query), ";")
 	trimmed = stripUnterminatedBlockComment(trimmed)
 	if err := ValidateQueryShape(query); err != nil {
