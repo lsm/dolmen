@@ -172,6 +172,7 @@ func FuzzTheRequestDecoder(f *testing.F) {
 		fn   func([]byte, any) error
 	}{
 		{"decode", decode},
+		{"decodeData", decodeData},
 		{"decodeAllowNullArgs", decodeAllowNullArgs},
 	}
 	f.Fuzz(func(t *testing.T, body string) {
