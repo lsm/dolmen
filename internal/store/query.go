@@ -223,7 +223,6 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsG
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return QueryResult{}, ctxErr
 		}
-
 		first := err
 		userArgs := args[:len(args)-2]
 		if !strings.Contains(first.Error(), "no such table") {
