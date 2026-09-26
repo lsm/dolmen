@@ -188,20 +188,23 @@ func (s *Store) SearchFulltext(ctx context.Context, ns, table, match, filter str
 		}
 		rank := "ts_rank_cd(" + ident(ftsColumn) + "," + tsquery + ")"
 		bind = append(bind, limit+1, page.Offset)
-		stmt := "SELECT id FROM " + physical + " WHERE " + where +
+		stmt := "SELECT id, " + rank + " FROM " + physical + " WHERE " + where +
 			" ORDER BY " + rank + " DESC, id ASC LIMIT $" + strconv.Itoa(len(bind)-1) + " OFFSET $" + strconv.Itoa(len(bind))
 		rows, err := tx.Query(ctx, stmt, bind...)
 		if err != nil {
 			return searchError(ctx, filter, err)
 		}
 		ids := []int64{}
+		scoreByID := map[int64]float64{}
 		for rows.Next() {
 			var id int64
-			if err := rows.Scan(&id); err != nil {
+			var score float32
+			if err := rows.Scan(&id, &score); err != nil {
 				rows.Close()
 				return err
 			}
 			ids = append(ids, id)
+			scoreByID[id] = float64(score)
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
@@ -215,6 +218,11 @@ func (s *Store) SearchFulltext(ctx context.Context, ns, table, match, filter str
 		out, truncated, err := s.fetchRanked(ctx, tx, n, state, ids, includeHidden)
 		if err != nil {
 			return err
+		}
+		for _, row := range out {
+			if id, ok := row["id"].(int64); ok {
+				row[schema.ScoreColumn] = scoreByID[id]
+			}
 		}
 		result.Rows = out
 		result.Truncated = hasMore || truncated

@@ -113,6 +113,8 @@ func (c Change) ReadsRows() bool {
 
 var identRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
+const ScoreColumn = "_score"
+
 var reserved = map[string]bool{
 	"id":         true,
 	"created_at": true,

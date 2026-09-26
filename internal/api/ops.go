@@ -1138,7 +1138,7 @@ var Ops = map[string]OpDef{
 			"\"\\\"exact phrase\\\"\", \"pay*\"). The query is a search expression, not SQL. The index stems English words, " +
 			"so plural and inflected query terms match (payments <-> payment); the exact grammar, stemming and ranking depend on " +
 			"the storage engine (capabilities reports it), and the served skill documents this server's. " +
-			"Returns matching records ordered by relevance (stable id tie-breaking). " +
+			"Returns matching records ordered by relevance (stable id tie-breaking), each carrying _score, higher being more relevant; the scale is the engine's own, so compare within one query's results only. " +
 			"Optional filter and args restrict matches to rows satisfying a SQL WHERE expression over the table's columns " +
 			"(same semantics as search_vector's filter) before ranking. " +
 			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array, secret -> the mask \"••••\" unless named in reveal) " +
@@ -1194,8 +1194,17 @@ var Ops = map[string]OpDef{
 		OutputSchema: outSchema(map[string]any{
 			"results": map[string]any{
 				"type":        "array",
-				"description": "Matching records ordered by relevance (id, created_at, and table fields)",
-				"items":       map[string]any{"type": "object", "description": "Matching record"},
+				"description": "Matching records ordered by relevance, highest _score first (id, created_at, and table fields)",
+				"items": map[string]any{
+					"type":        "object",
+					"description": "Matching record with _score",
+					"properties": map[string]any{
+						"_score": map[string]any{
+							"type":        "number",
+							"description": "Relevance of this row to the query, higher is more relevant. The scale is the storage engine's own, so compare scores only within one query's results, never across queries, tables or engines",
+						},
+					},
+				},
 			},
 			"truncated": prop("boolean", "True when more results are available beyond the returned page (because the limit was reached or the response budget was hit)"),
 			"limit":     prop("integer", "The limit this search applied: the one requested, 10 when none was given, or 200 when a larger one was requested"),
