@@ -206,6 +206,11 @@ func fieldItemSchema(desc string, withDefault bool) map[string]any {
 			"maximum":     schema.MaxVectorDim,
 		},
 		"required": prop("boolean", "Reject inserts that omit this field"),
+		"shape": map[string]any{
+			"type":        "string",
+			"description": "Required JSON shape for a json field: object, array, array<string>, array<number>, array<boolean> or array<object>. Writes of any other shape are rejected naming the field and the expected shape; omit for free-form JSON; change it later with migrate set_shape",
+			"enum":        schema.Shapes,
+		},
 		"enum": map[string]any{
 			"type":        "array",
 			"description": "Closed vocabulary for a string field: writes carrying any other value are rejected. Exact match, no case folding — values are stored as written. The field's default (when set) must be one of these values; change the vocabulary later with migrate set_enum",
@@ -253,6 +258,13 @@ func fieldItemSchema(desc string, withDefault bool) map[string]any {
 				"required":   []string{"type"},
 			},
 			"then": map[string]any{"not": map[string]any{"required": []string{"enum"}}},
+		},
+		map[string]any{
+			"if": map[string]any{"required": []string{"shape"}},
+			"then": map[string]any{
+				"required":   []string{"type"},
+				"properties": map[string]any{"type": map[string]any{"const": string(schema.JSON)}},
+			},
 		},
 	}
 	if withDefault {

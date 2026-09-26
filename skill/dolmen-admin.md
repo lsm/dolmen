@@ -200,7 +200,7 @@ What the schema and administration operations need:
 | Operation | Needs |
 |---|---|
 | `create_table` | `schema` on the namespace |
-| `migrate`, `list_migrations` | `schema` on the table. A change whose outcome depends on the existing rows also needs `read`: `set_enum`, `set_fulltext`, `set_vectorize`, `set_row_access`, `drop_field`, and an `add_field` that is required, full-text, vectorized, or carries a `default` |
+| `migrate`, `list_migrations` | `schema` on the table. A change whose outcome depends on the existing rows also needs `read`: `set_enum`, `set_shape`, `set_fulltext`, `set_vectorize`, `set_row_access`, `drop_field`, and an `add_field` that is required, full-text, vectorized, or carries a `default` |
 | `drop_table` | `schema` and `admin`, since dropping a table deletes the grants on it |
 | `create_namespace` | `admin` on the parent namespace, or on `*` for a top-level one |
 | `drop_namespace` | `admin` on the namespace |
@@ -309,7 +309,7 @@ locked-out server.
    meaning-based recall.
 6. **Never write SQL that mutates.** `query` rejects it by design; use `insert`/`upsert_by_key`/`update`/`upsert`/`delete`/`migrate`.
 7. **Evolve, don't fork.** When a table is missing a field, use `migrate` (add_field, rename_field,
-   set_fulltext, set_vectorize, set_enum) — do not create a parallel v2 table.
+   set_fulltext, set_vectorize, set_enum, set_shape) — do not create a parallel v2 table.
 
 ## Quick reference
 
@@ -320,7 +320,11 @@ locked-out server.
   enables `search_vector` with `text`), `required: true`, `enum: [values]` (closed vocabulary for a
   string field — writes with any other value are rejected naming the field, the rejected value, and
   the allowed list; exact match, no case folding; a declared `default` must be a member; evolve it
-  with `migrate` `set_enum`, which refuses to drop a value rows still store),
+  with `migrate` `set_enum`, which refuses to drop a value rows still store), `shape` on a `json`
+  field (`object`, `array`, `array<string>`, `array<number>`, `array<boolean>` or `array<object>`;
+  writes of any other shape are rejected naming the field, the expected shape and what arrived — a
+  tags field is `{"name":"tags","type":"json","shape":"array<string>"}`; a declared `default` must
+  fit; evolve it with `migrate` `set_shape`, which refuses a shape stored rows do not fit),
   `default: <value>` (stored by later inserts that omit the field, instead of NULL; must match
   the field's type; not allowed on `required` or `vectorize` fields), or — on `timestamp` fields
   only — `default: "now()"`: the server stamps its current write time on each insert that omits
@@ -670,6 +674,15 @@ itself is shared — so copy the exact shape per op:
   {"op": "set_enum", "name": "severity", "enum": ["SEV0", "SEV1", "SEV2", "SEV3"]}
   ```
 
+- `set_shape` — `name` + an explicit `shape`: the `json` field's required shape (`object`, `array`,
+  `array<string>`, `array<number>`, `array<boolean>` or `array<object>`). Every value rows currently
+  store must fit, or the change is rejected naming how many rows do not and their ids — rewrite those
+  rows first. An empty string removes the constraint. A declared `default` must fit the new shape.
+
+  ```json
+  {"op": "set_shape", "name": "tags", "shape": "array<string>"}
+  ```
+
 Three top-level keys complete the request:
 
 - `expected_version` — the schema version from `describe_table` that the changes were planned
@@ -772,7 +785,7 @@ describe_table(namespace="research", table="findings")
     insert(namespace="research", table="findings", records=[{...}])
   → exists but wrong shape:
     use migrate for the supported changes (add_field/rename_field/drop_field/set_fulltext/
-    set_vectorize/set_enum) — do not create a v2 table. add_field with a `default` can add a required
+    set_vectorize/set_enum/set_shape) — do not create a v2 table. add_field with a `default` can add a required
     field to a populated table (backfilled as NOT NULL DEFAULT). If the mismatch is outside those
     operations (e.g., changing a field type, or adding a required field with no suitable default),
     stop and ask the user before rebuilding or backfilling.

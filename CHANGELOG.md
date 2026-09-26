@@ -19,6 +19,11 @@
 
 ### Added
 
+- **`shape` on `json` fields** (#128). A `json` field may declare `object`, `array`, `array<string>`,
+  `array<number>`, `array<boolean>` or `array<object>`; every write path refuses a value of any other
+  shape, naming the field, the expected shape and what arrived. `migrate` gains `set_shape`, which
+  refuses a shape stored rows do not fit and needs `read` as well as `schema`.
+
 - **OpenTelemetry metrics over OTLP.** Operation duration and outcome, operations in flight, active
   subscriptions, `http.server.request.duration`, and the `gen_ai.client.*` embedding metrics, pushed
   to the same collector as traces (`WithMeterProvider` in Go). `GET /metrics` still serves

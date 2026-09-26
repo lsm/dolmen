@@ -1031,7 +1031,7 @@ atomically with your side effects rather than deduplicating on frame content.
 | `describe_table` | Schema, version, row count |
 | `read_rows` | Fetch rows by id — each found row once, ascending id order; missing ids are simply absent (never an error); `truncated` is true only when the response budget dropped rows for existing ids (retry with fewer); at most 1,000 ids per request |
 | `capabilities` | The engine's static capability surface — `vector_execution` (`exact` / `ann`), `ann_recall_bound` (explicit `null` when exact), `notifications`, `subscribe`, `query_dialect`, `filter_dialect`; reported verbatim |
-| `create_table` | Typed fields with `fulltext` / `vector` / `vectorize` / `enum` / `default` annotations (`enum` restricts a string field to a closed vocabulary; `default` is stored by inserts that omit the field — a timestamp field may declare `"now()"`, stamped server-side at write time so idempotent retries can omit the field and replay) |
+| `create_table` | Typed fields with `fulltext` / `vector` / `vectorize` / `enum` / `shape` / `default` annotations (`enum` restricts a string field to a closed vocabulary; `shape` restricts a json field to one JSON shape such as `array<string>`; `default` is stored by inserts that omit the field — a timestamp field may declare `"now()"`, stamped server-side at write time so idempotent retries can omit the field and replay) |
 | `infer_schema` | Propose fields from sample records (creates nothing). Names are always valid for `create_table`; `warnings` explains every rename or merge, `provenance` maps fields to source keys, and `evidence` counts presence, nulls and observed types per field |
 | `insert` | Validated records; indexes and embeddings update automatically; `idempotency_key` makes retries replay the original ids |
 | `upsert_by_key` | Insert-or-update keyed by natural field(s) (`on`); converges instead of duplicating on retry |
@@ -1045,7 +1045,7 @@ atomically with your side effects rather than deduplicating on frame content.
 | `drop_table` | Drop a table — rows, search index, schema, history, idempotency keys; `confirm` must repeat the name |
 | `update` | WHERE-filtered field update; reindexes full-text rows and re-embeds changed vectorized fields |
 | `upsert` | Update matching rows, or insert one record when the filter matches nothing |
-| `migrate` | `add_field` (optional `default` backfills existing rows — required fields land on populated tables as `NOT NULL DEFAULT`; optional fields get a one-time backfill, later omitted inserts store NULL), `rename_field`, `drop_field`, `set_fulltext`, `set_vectorize`, `set_enum` (replaces a string field's vocabulary; rejects when a stored value falls outside the new list, naming it and its row count; an empty list removes the constraint); `expected_version` asserts the schema being migrated (required for rename/drop, conflicts surface as 409), `expected_incarnation` — the opaque token a dry run returns — asserts the table itself and is what a precondition must use when auth is on, `dry_run` previews the plan without side effects; versioned + logged |
+| `migrate` | `add_field` (optional `default` backfills existing rows — required fields land on populated tables as `NOT NULL DEFAULT`; optional fields get a one-time backfill, later omitted inserts store NULL), `rename_field`, `drop_field`, `set_fulltext`, `set_vectorize`, `set_enum` (replaces a string field's vocabulary; rejects when a stored value falls outside the new list, naming it and its row count; an empty list removes the constraint), `set_shape` (sets or clears a json field's required shape; rejects when stored values do not fit, naming how many rows and their ids); `expected_version` asserts the schema being migrated (required for rename/drop, conflicts surface as 409), `expected_incarnation` — the opaque token a dry run returns — asserts the table itself and is what a precondition must use when auth is on, `dry_run` previews the plan without side effects; versioned + logged |
 | `list_migrations` | A table's migration history, newest first, with the exact recorded changes |
 
 ## Model
@@ -1071,6 +1071,13 @@ atomically with your side effects rather than deduplicating on frame content.
   `set_enum`, which refuses to drop a value rows still store (naming it and its count). The annotation
   is declared and reported in the MCP `tools/list` schemas and `/v1/openapi.json`, so schema-validating
   clients see the vocabulary before the first write.
+- **Shape-validated JSON**: a `json` field declared `shape` (`object`, `array`, `array<string>`,
+  `array<number>`, `array<boolean>` or `array<object>`) accepts only values of that shape on every
+  write path, on both engines and in the Go library alike, so a tags field declared `array<string>`
+  refuses `"db,sqlite"` where `["db","sqlite"]` was meant. The refusal names the field, the expected
+  shape and what arrived, down to the first misfit element's index. `null` stays allowed unless the
+  field is `required`. Evolve it with `migrate` `set_shape`, which refuses a shape stored rows do not
+  fit, naming how many and their ids.
 - **Idempotent writes** for agent retries: `insert` accepts an `idempotency_key` (client-chosen,
   durably recorded with its ids in a side table, so a retry — even after a restart — returns the
   original ids; reusing a key for different records is an error), and `upsert_by_key` writes

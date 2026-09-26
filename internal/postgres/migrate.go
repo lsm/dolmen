@@ -178,6 +178,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 		if ch.Op != schema.OpSetEnum && ch.Enum != nil {
 			return nil, invalidf("changes[%d]: enum is only allowed on set_enum (op %q has no enum to set)", i, ch.Op)
 		}
+		if err := store.ShapeChangeArgs(i, ch); err != nil {
+			return nil, err
+		}
 		switch ch.Op {
 		case schema.OpAddField:
 			if ch.Field == nil {
@@ -466,6 +469,53 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 				f.Enum = nil
 			}
 			plan.Operations = append(plan.Operations, "set_enum "+ch.Name+" = "+describeValue(vals))
+		case schema.OpSetShape:
+			f, err := findField(ch.Name)
+			if err != nil {
+				return nil, err
+			}
+			shape := *ch.Shape
+			if err := store.ShapeTarget(f, shape); err != nil {
+				return nil, err
+			}
+			if shape != "" {
+				if onDisk[f.Name] {
+					phys := source[f.Name]
+					rows, err := tx.Query(ctx, "SELECT id, "+ident(phys)+"::text FROM "+table+" WHERE "+ident(phys)+" IS NOT NULL ORDER BY id")
+					if err != nil {
+						return nil, err
+					}
+					var violating int64
+					var sample []int64
+					for rows.Next() {
+						var id int64
+						var stored string
+						if err := rows.Scan(&id, &stored); err != nil {
+							rows.Close()
+							return nil, err
+						}
+						if !store.ShapeFits(shape, stored) {
+							violating++
+							if len(sample) < 5 {
+								sample = append(sample, id)
+							}
+						}
+					}
+					if err := rows.Err(); err != nil {
+						rows.Close()
+						return nil, err
+					}
+					rows.Close()
+					if violating > 0 {
+						return nil, store.ShapeRowsRefusal(f.Name, shape, violating, sample, scope != nil)
+					}
+				}
+				if err := store.ShapeDefaults(f, shape, defaults[f.Name]); err != nil {
+					return nil, err
+				}
+			}
+			f.Shape = shape
+			plan.Operations = append(plan.Operations, store.ShapeOperation(ch.Name, shape))
 		case schema.OpSetRowAccess:
 			if ch.Value == nil {
 				return nil, invalidf("set_row_access requires value: true restricts rows to the principal who wrote them, false stops the filtering")
@@ -505,7 +555,7 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			plan.Operations = append(plan.Operations, "set_row_access false (the owner column and its values are kept)")
 
 		default:
-			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_row_access)", ch.Op)
+			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_shape, set_row_access)", ch.Op)
 		}
 	}
 	if len(plan.Destructive) > 0 && expectedVersion == 0 {
