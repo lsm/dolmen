@@ -17,7 +17,9 @@ import (
 
 const cancelGrace = 30 * time.Second
 
-const longRecursiveQuery = `WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 20000) SELECT count(*) FROM c`
+const longRecursiveQuery = `WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 1000000) SELECT count(*) FROM c`
+
+const shortRecursiveQuery = `WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 20000) SELECT count(*) FROM c`
 
 func mustCancelInTime(t *testing.T, what string, err error) {
 	t.Helper()
@@ -208,7 +210,7 @@ func TestCancellingAQueryThatHasToBeRetriedIsStillCanceled(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer n.unpin()
-	rows, err := st.Query(context.Background(), "cancel", longRecursiveQuery+` ORDER BY 1 LIMIT 5 OFFSET 0`, nil, [16]byte{}, Page{Limit: 10})
+	rows, err := st.Query(context.Background(), "cancel", shortRecursiveQuery+` ORDER BY 1 LIMIT 5 OFFSET 0`, nil, [16]byte{}, Page{Limit: 10})
 	if err != nil || len(rows.Rows) != 1 {
 		t.Fatalf("a query carrying its own paging must still answer through the retry path: %v %v", rows, err)
 	}
@@ -216,11 +218,10 @@ func TestCancellingAQueryThatHasToBeRetriedIsStillCanceled(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() {
-			_, err := st.Query(ctx, "cancel", longRecursiveQuery+` ORDER BY 1 LIMIT 5 OFFSET 0`, nil, [16]byte{}, Page{Limit: 10})
+			_, err := st.Query(ctx, "cancel", shortRecursiveQuery+` ORDER BY 1 LIMIT 5 OFFSET 0`, nil, [16]byte{}, Page{Limit: 10})
 			done <- err
 		}()
-		for n.ro.Stats().InUse == 0 {
-		}
+		awaitBusy(t, n)
 		cancel()
 		err := awaitDone(t, "the cancelled retried query", done)
 		if err == nil {
@@ -232,6 +233,17 @@ func TestCancellingAQueryThatHasToBeRetriedIsStillCanceled(t *testing.T) {
 		if got := SpanErrorType(err); got != string(derr.Canceled) {
 			t.Fatalf("a cancelled retried query classified as %q, want canceled", got)
 		}
+	}
+}
+
+func awaitBusy(t *testing.T, n *nsDB) {
+	t.Helper()
+	deadline := time.Now().Add(cancelGrace)
+	for n.ro.Stats().InUse == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the query never took a read connection")
+		}
+		time.Sleep(200 * time.Microsecond)
 	}
 }
 
