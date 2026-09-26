@@ -112,7 +112,7 @@ func withRowAccessChange(def OpDef) OpDef {
 		nextOp[k] = v
 	}
 	nextOp["enum"] = append(append([]string(nil), names...), schema.OpSetRowAccess)
-	nextOp["description"] = "add_field | rename_field | drop_field | set_fulltext | set_vectorize | set_enum | set_row_access"
+	nextOp["description"] = "add_field | rename_field | drop_field | set_fulltext | set_vectorize | set_enum | set_shape | set_row_access"
 
 	nextItemProps := make(map[string]any, len(itemProps))
 	for k, v := range itemProps {
