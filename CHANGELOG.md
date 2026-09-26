@@ -25,6 +25,12 @@
   every reveal writes an audit log line without the value. Both engines support it (PostgreSQL
   stores the ciphertext in a `bytea` column). See `docs/design/secret-fields.md`.
 
+- **Secret key rotation.** `DOLMEN_SECRET_KEYS_OLD` / `DOLMEN_SECRET_KEYS_OLD_FILE` (or retired
+  keys passed to `WithSecretKey`) keep old keys for decryption, and the new `rotate_secret_key`
+  operation (`admin` on `*`; `RotateSecretKey` in Go) re-encrypts stored values under the active
+  key in bounded, resumable batches, reporting values per key id so you know when a retired key can
+  go. Idempotent inserts replay across a rotation. See the README runbook.
+
 - **Idempotency keys are namespaced by owner.** A key is unique per table *and* writer principal,
   so two principals using the same string are using two different keys — neither conflicts, neither
   reveals the other, and the first to use a key cannot squat it. A retry consults only its own

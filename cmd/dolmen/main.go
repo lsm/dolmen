@@ -614,9 +614,16 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	if err != nil {
 		return nil, err
 	}
+	oldKeys, err := secret.LoadOldKeys(getenv)
+	if err != nil {
+		return nil, err
+	}
+	if secretKey == nil && len(oldKeys) > 0 {
+		return nil, fmt.Errorf("%s is set but %s is not: retired keys only decrypt, so set the active key in %s (or %s) as well", secret.EnvOldKeys, secret.EnvKey, secret.EnvKey, secret.EnvKeyFile)
+	}
 	var keyring *secret.Keyring
 	if secretKey != nil {
-		if keyring, err = secret.New(secretKey); err != nil {
+		if keyring, err = secret.New(secretKey, oldKeys...); err != nil {
 			return nil, err
 		}
 	}
@@ -755,6 +762,8 @@ func printEnvHelp(out io.Writer) {
 		{"DOLMEN_ADMIN_KEY", "bootstrap admin credential, needed with auth on until a root administrator is granted (env-only, never a flag)"},
 		{"DOLMEN_SECRET_KEY", "base64-encoded 32-byte key that encrypts secret fields; without one, secret fields are refused (env-only, never a flag)"},
 		{"DOLMEN_SECRET_KEY_FILE", "path to a file holding that key instead (env-only, never a flag)"},
+		{"DOLMEN_SECRET_KEYS_OLD", "comma-separated base64 retired keys, used only to decrypt values written before a rotation; run rotate_secret_key, then remove them (env-only, never a flag)"},
+		{"DOLMEN_SECRET_KEYS_OLD_FILE", "path to a file holding those retired keys, one per line, instead (env-only, never a flag)"},
 		{"DOLMEN_TRUSTED_PROXIES", "comma-separated CIDRs whose peers may assert identity and forwarding headers"},
 		{"DOLMEN_MAX_GROUPS", "maximum group entries accepted per request, 1 to 1024 (default 128)"},
 		{"DOLMEN_AUTH_OIDC_ISSUER", "identity provider issuer URL, enabling native sign-in"},

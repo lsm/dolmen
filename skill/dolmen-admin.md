@@ -205,6 +205,7 @@ What the schema and administration operations need:
 | `create_namespace` | `admin` on the parent namespace, or on `*` for a top-level one |
 | `drop_namespace` | `admin` on the namespace |
 | `vacuum` | `admin` on the namespace |
+| `rotate_secret_key` | `admin` on `*` |
 | `grant`, `revoke`, `list_grants` | `admin` on the object or something covering it |
 | `create_key`, `list_keys`, `revoke_key`, `rotate_signing_key` | `admin` on `*` |
 
@@ -370,7 +371,7 @@ locked-out server.
   filter against one shared allowlist and `filter_dialect` is informational.
 - `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's
   columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
-- `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything A `delete` matching more than 1,000 rows is refused unless you raise `limit` and pass `confirm: true`; `dry_run: true` reports `matched` without deleting.
+- `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything. A `delete` matching more than 1,000 rows is refused unless you raise `limit` above the match count or pass `confirm: true`; `dry_run: true` reports `matched` without deleting.
 {{ if eq .Dialect "postgresql" }}- **This server is PostgreSQL-backed.** `query`, and `filter` when authentication is off, are
   PostgreSQL SQL (`capabilities` reports `query_dialect`/`filter_dialect` as `postgresql`). SQLite
   functions such as `date()`, `strftime()`, `julianday()`, `iif()`, `instr()` and `ifnull()` do
@@ -593,6 +594,15 @@ match, before ranking.
   backups carry only ciphertext. An aliased or computed secret column in `query` (`SELECT token AS t`)
   comes back as base64 of that blob, so any caller with `read` can read ciphertext without `reveal`;
   the ciphertext is not padded, so its length tracks the plaintext's. Losing the key loses the values; a different key cannot decrypt them.
+- Key rotation: the operator sets the new key in `DOLMEN_SECRET_KEY`, moves the old one to
+  `DOLMEN_SECRET_KEYS_OLD` (comma-separated, or `DOLMEN_SECRET_KEYS_OLD_FILE`, one per line) and
+  restarts; writes use the new key at once and old values still decrypt. `rotate_secret_key`
+  (`admin` on `*`; optional `namespace`, `limit` default 10000) re-encrypts old values in short
+  batches and returns `rotated`, `remaining`, `done`, per-table progress and `keys` (values per key
+  id). Each call is bounded, so call it again until `done` is true; it is idempotent, and an
+  interrupted call is just called again. Drop a retired key only once `keys` shows 0 values under it
+  for a server-wide call. A value under a key that is not configured makes it answer `conflict`
+  naming the key id to add back.
 
 ### Id, `created_at`, and stability
 

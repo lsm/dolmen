@@ -32,6 +32,10 @@ type Engine interface {
 
 	Vacuum(ctx context.Context, ns string) (VacuumResult, error)
 
+	SecretKeyID() string
+
+	RotateSecrets(ctx context.Context, ns string, opts RotateOpts) (SecretRotation, error)
+
 	TableState(ctx context.Context, ns, table string, auth []AuthBinding) (*schema.TableSchema, Incarnation, error)
 
 	ListTables(ctx context.Context, ns string, bindings []AuthBinding) ([]string, error)
