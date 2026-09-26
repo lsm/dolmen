@@ -16,6 +16,7 @@ import (
 	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
 	pgfacade "github.com/lsm/dolmen/postgres"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func openEngineStore(t *testing.T, dir string, retention *time.Duration) store.Engine {
@@ -29,10 +30,15 @@ func openEngineStoreShared(t *testing.T, dir string, retention *time.Duration, s
 
 func openEngineStoreKeyed(t *testing.T, dir string, retention *time.Duration, sharedFilter bool, keyring *secret.Keyring) store.Engine {
 	t.Helper()
+	return openEngineStoreTraced(t, dir, retention, sharedFilter, keyring, nil)
+}
+
+func openEngineStoreTraced(t *testing.T, dir string, retention *time.Duration, sharedFilter bool, keyring *secret.Keyring, tp trace.TracerProvider) store.Engine {
+	t.Helper()
 	if testEngine(t) == store.EnginePostgres {
-		return openPostgresEngineKeyed(t, dir, retention, sharedFilter, keyring)
+		return openPostgresEngineTraced(t, dir, retention, sharedFilter, keyring, tp)
 	}
-	opts := []store.OpenOption{store.WithSecretKey(keyring)}
+	opts := []store.OpenOption{store.WithSecretKey(keyring), store.WithTracerProvider(tp)}
 	if retention != nil {
 		opts = append(opts, store.WithChangeRetention(*retention))
 	}
@@ -97,9 +103,14 @@ func openPostgresEngine(t *testing.T, dir string, retention *time.Duration, shar
 
 func openPostgresEngineKeyed(t *testing.T, dir string, retention *time.Duration, sharedFilter bool, keyring *secret.Keyring) *postgres.Store {
 	t.Helper()
+	return openPostgresEngineTraced(t, dir, retention, sharedFilter, keyring, nil)
+}
+
+func openPostgresEngineTraced(t *testing.T, dir string, retention *time.Duration, sharedFilter bool, keyring *secret.Keyring, tp trace.TracerProvider) *postgres.Store {
+	t.Helper()
 	dsn := postgresDSN(t)
 	catalog := postgresCatalog(dir)
-	cfg := postgres.Config{DSN: dsn, Catalog: catalog, QueryRole: os.Getenv("DOLMEN_TEST_PG_QUERY_ROLE"), ChangeRetention: retention, SharedFilter: sharedFilter, Secrets: keyring}
+	cfg := postgres.Config{DSN: dsn, Catalog: catalog, QueryRole: os.Getenv("DOLMEN_TEST_PG_QUERY_ROLE"), ChangeRetention: retention, SharedFilter: sharedFilter, Secrets: keyring, TracerProvider: tp}
 	s, err := postgres.Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
