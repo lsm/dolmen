@@ -105,10 +105,31 @@ before the shared dispatch table sees the arguments.
 | Blank but non-empty search `Filter` | `invalid_request` | treated as no filter | treated as no filter |
 | Empty `IdempotencyKey` | treated as no key | `invalid_request` | `invalid_request` |
 | Empty query vector | `vector must have at least one element` | `pass either text or vector` | same as `/v1` |
-| Body that is not a JSON object | — | `400 invalid_request`, naming the object requirement | JSON-RPC `-32602`, `tools/call arguments must be an object` |
-| `null` body | — | treated as `{}`, as v0.2.0 did | JSON-RPC `-32602` |
+| Body that is not a JSON object | — | `400 invalid_request`, naming the object requirement | **intended difference:** JSON-RPC `-32602`, `tools/call arguments must be an object` |
+| `null` body | — | `400 invalid_request`, naming the object requirement, as any other non-object body | JSON-RPC `-32602` |
 | Empty or whitespace-only body | — | treated as `{}` | absent `arguments` are treated as `{}` |
+| Body key that differs from the schema only in case | not applicable: the façade takes typed arguments | `400 invalid_request`, `unknown field "Namespace" on operation …` (the same framing as any other unknown key) | same as `/v1` |
 | Secret `reveal` (#467) | always allowed: the façade has no auth | allowed with `-auth off`; with `-auth on` needs the `reveal` verb (`forbidden` otherwise, and always for the bootstrap admin key), within the op's row scope | same as `/v1` |
+
+The two decode rows are the ones the transports cannot agree on, and the asymmetry is
+intentional (#485). MCP pre-screens the JSON-RPC envelope before the shared dispatch table sees the
+arguments (`internal/mcp/server.go`), and the MCP specification reports invalid tool arguments as a
+JSON-RPC protocol error rather than as a tool result, so `arguments` that is not an object — `null`
+included — is `-32602`, not a dolmen error envelope. `/v1` has no envelope to speak of before the
+body parses, so it answers `400 invalid_request` and says what it wanted. Both now agree on *which*
+bodies are refused (`null` no longer slips through as `{}` on `/v1`, and only a body with nothing in
+it is `{}`) and on the class of the answer; they cannot agree on the *encoding* of it.
+
+Field names are matched exactly on both wire transports, at every level of the body, and a key that
+differs only in case is an unknown field rather than a type mismatch on a field the advertised
+`InputSchema` does not contain (#485). This is a behavior change: Go's `encoding/json` matched keys
+case-insensitively, so `{"Namespace":"x","SQL":"SELECT 1"}` used to work, and `{"sql":1,"bogus":2}`
+and `{"bogus":2,"sql":1}` got different error classes purely from key order. The unknown-key check
+runs against the request struct's json tags before the typed decode, so an unknown field always wins
+over a type mismatch, whatever the order. Row keys inside `records`, `args` and `changes` are not
+touched here: a record is checked against the table's own schema, which has always been
+case-sensitive. Pinned on both transports by `TestTheTransportsAgreeOnMalformedBodies`
+(`internal/conformance/decode_classes_test.go`).
 
 ## Namespace creation on reads (#39)
 

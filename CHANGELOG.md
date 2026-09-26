@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- **Request field names are matched exactly, and a `null` body is no longer an empty one.** A key
+  that differs only in case is an unknown field, not a type mismatch on a field the advertised schema
+  does not contain: `{"Namespace":"x"}` used to work, and `{"sql":1,"bogus":2}` and
+  `{"bogus":2,"sql":1}` got different error classes purely from key order — an unknown field now
+  wins, in either order, at every level of the body. `null` is refused like any other non-object
+  body (`400 invalid_request`), as MCP already refused it; only a body with nothing in it is `{}`.
+  MCP still answers a non-object `arguments` member with JSON-RPC `-32602`, since the MCP
+  specification calls invalid tool arguments a protocol error; that intended difference is recorded
+  in the facade input matrix. **Behaviour change:** a miscased key that used to be accepted is now an
+  error. Row keys are unaffected: a record is still checked against the table's own schema.
+
 - **`query` can no longer hand out a secret's ciphertext.** Masking used to key off the result-column
   label, so `SELECT token AS t` returned base64 of the stored bytes and `length(token)` its unpadded
   length — any caller holding `read` could exfiltrate every secret's ciphertext without the `reveal`
