@@ -595,10 +595,11 @@ match, before ranking.
 - Never write a masked value back. `"••••"` is refused as a secret value, naming the field, because
   storing it would replace the real secret with the mask and destroy it: pass the real value, read
   the row with `reveal` first, or omit the field to leave it as it is.
-- SQL (`query`, search and write `filter`s) sees only the ciphertext blob, and the change feed and
-  backups carry only ciphertext. An aliased or computed secret column in `query` (`SELECT token AS t`)
-  comes back as base64 of that blob, so any caller with `read` can read ciphertext without `reveal`;
-  the ciphertext is not padded, so its length tracks the plaintext's. Losing the key loses the values; a different key cannot decrypt them.
+- `query` sees the mask, never the stored bytes: every reference to a table holding a secret is
+  rewritten so an alias, an expression, a subquery, `SELECT *` or `length()` all read `"••••"`.
+  Search and write `filter`s still evaluate against the ciphertext, where they select rows but
+  return no values, so comparing a secret with a plaintext matches nothing. The change feed and
+  backups carry only ciphertext. Losing the key loses the values; a different key cannot decrypt them.
 - Key rotation: the operator sets the new key in `DOLMEN_SECRET_KEY`, moves the old one to
   `DOLMEN_SECRET_KEYS_OLD` (comma-separated, or `DOLMEN_SECRET_KEYS_OLD_FILE`, one per line) and
   restarts; writes use the new key at once and old values still decrypt. `rotate_secret_key`

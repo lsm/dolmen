@@ -2,8 +2,10 @@ package postgres
 
 import (
 	"context"
+	"strings"
 
 	"github.com/lsm/dolmen/internal/schema"
+	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -43,3 +45,5 @@ func addedFields(changes []schema.Change) []schema.Field {
 	}
 	return out
 }
+
+var maskLiteral = "'" + strings.ReplaceAll(secret.Mask, "'", "''") + "'::text"

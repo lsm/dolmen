@@ -200,9 +200,19 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsG
 	if err != nil {
 		return QueryResult{}, err
 	}
-	if err := validateQueryTables(trimmed, registered); err != nil {
+	scan, err := scanQueryTables(trimmed, registered)
+	if err != nil {
 		return QueryResult{}, err
 	}
+	masked, err := maskedProjections(ctx, tx, nsName, scan.rewrites)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	if err := scan.refuseMaskedShapes(masked); err != nil {
+		return QueryResult{}, err
+	}
+	userSQL := trimmed
+	trimmed = maskSecretTables(trimmed, scan.rewrites, masked)
 	paginated := trimmed + "\nLIMIT ? OFFSET ?"
 	args = append(args, limit+1, offset)
 
@@ -240,12 +250,15 @@ func (s *Store) Query(ctx context.Context, nsName, query string, args []any, nsG
 			}
 		}
 		if err != nil {
-			return QueryResult{}, NewQueryError(trimmed, err)
+			if refusal := maskedRowidRefusal(masked, err); refusal != nil {
+				return QueryResult{}, refusal
+			}
+			return QueryResult{}, NewQueryError(userSQL, err)
 		}
 	}
 	defer rows.Close()
 
-	proj, err := s.nsProjection(ctx, tx, paginated)
+	proj, err := s.nsProjection(ctx, tx, userSQL)
 	if err != nil {
 		return QueryResult{}, err
 	}

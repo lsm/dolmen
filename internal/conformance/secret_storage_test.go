@@ -139,6 +139,62 @@ func tamperSecret(t *testing.T, h *harness, ns, table, field string, id int64) {
 	}
 }
 
+func storedSecretBlobs(t *testing.T, h *harness, ns, table, field string) [][]byte {
+	t.Helper()
+	var out [][]byte
+	if testEngine(t) == store.EnginePostgres {
+		conn, ctx := pgConn(t)
+		catalog := pgx.Identifier{postgresCatalog(h.dir)}.Sanitize()
+		var nsPhysical, physical, columnsJSON string
+		err := conn.QueryRow(ctx, "SELECT n.physical, t.physical, t.columns_json FROM "+catalog+".tables t JOIN "+catalog+".namespaces n ON n.name=t.namespace WHERE t.namespace=$1 AND t.name=$2 AND t.active", ns, table).Scan(&nsPhysical, &physical, &columnsJSON)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var columns map[string]string
+		if err := json.Unmarshal([]byte(columnsJSON), &columns); err != nil {
+			t.Fatal(err)
+		}
+		col := pgx.Identifier{columns[field]}.Sanitize()
+		rows, err := conn.Query(ctx, "SELECT "+col+" FROM "+pgx.Identifier{nsPhysical, physical}.Sanitize()+" WHERE "+col+" IS NOT NULL")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var blob []byte
+			if err := rows.Scan(&blob); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, blob)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	db, err := sql.Open("sqlite", filepath.Join(h.dir, ns+".db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.QueryContext(context.Background(), "SELECT "+field+" FROM "+table+" WHERE "+field+" IS NOT NULL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var blob []byte
+		if err := rows.Scan(&blob); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, blob)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 func wantNoPlaintextInStorage(t *testing.T, h *harness) {
 	t.Helper()
 	if hits := storageHoldsPlaintext(t, h); len(hits) > 0 {
