@@ -48,6 +48,12 @@ facade equivalents. `read_rows`, `search_fulltext` and `search_vector` take `rev
 secret field names to return in plaintext. Naming a field that is not a secret, or not in the table,
 is `invalid_request`. With `-auth off` reveal is allowed; the facade has no auth and always allows it.
 
+**Writing the mask back.** A write whose secret value equals the mask is refused, naming the field
+and saying to pass the real value, read it with `reveal` first, or omit the field. An agent that
+reads a row without `reveal` and writes it back edited would otherwise store `"••••"` as the
+plaintext and destroy the secret, silently and unrecoverably, which is the likeliest way to lose one.
+The mask therefore cannot be a secret's value, the one plaintext the type refuses.
+
 **Raw SQL.** `query`, search filters and write filters see only the ciphertext blob. Aliasing the
 column (`SELECT token AS t`) returns base64 of the blob. Comparing a secret column with a plaintext
 never matches.

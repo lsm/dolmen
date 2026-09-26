@@ -372,7 +372,7 @@ locked-out server.
 - Both searches score every hit as `_score`, higher being more relevant, and return results in that order. The two scales are different and engine-specific — full-text relevance is the engine's own ({{ if eq .Dialect "postgresql" }}PostgreSQL `ts_rank_cd`{{ else }}FTS5 BM25, negated so higher wins{{ end }}), vector `_score` is cosine similarity — so compare scores only within one query's results, never across queries, tables or servers, and never threshold full-text `_score` against a fixed number.
 - `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's
   columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
-- `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything.
+- `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything. A `delete` matching more than 1,000 rows is refused unless you raise `limit` above the match count or pass `confirm: true`; `dry_run: true` reports `matched` without deleting.
 {{ if eq .Dialect "postgresql" }}- **This server is PostgreSQL-backed.** `query`, and `filter` when authentication is off, are
   PostgreSQL SQL (`capabilities` reports `query_dialect`/`filter_dialect` as `postgresql`). SQLite
   functions such as `date()`, `strftime()`, `julianday()`, `iif()`, `instr()` and `ifnull()` do
@@ -588,8 +588,13 @@ match, before ranking.
 - A reveal that cannot decrypt (no key configured, a different key than the value was written
   under, or a tampered value) is `internal_error`; the server log names the cause and, for a wrong
   key, the key id the value was written under.
+- Never write a masked value back. `"••••"` is refused as a secret value, naming the field, because
+  storing it would replace the real secret with the mask and destroy it: pass the real value, read
+  the row with `reveal` first, or omit the field to leave it as it is.
 - SQL (`query`, search and write `filter`s) sees only the ciphertext blob, and the change feed and
-  backups carry only ciphertext. Losing the key loses the values; a different key cannot decrypt them.
+  backups carry only ciphertext. An aliased or computed secret column in `query` (`SELECT token AS t`)
+  comes back as base64 of that blob, so any caller with `read` can read ciphertext without `reveal`;
+  the ciphertext is not padded, so its length tracks the plaintext's. Losing the key loses the values; a different key cannot decrypt them.
 - Key rotation: the operator sets the new key in `DOLMEN_SECRET_KEY`, moves the old one to
   `DOLMEN_SECRET_KEYS_OLD` (comma-separated, or `DOLMEN_SECRET_KEYS_OLD_FILE`, one per line) and
   restarts; writes use the new key at once and old values still decrypt. `rotate_secret_key`
