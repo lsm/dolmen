@@ -828,7 +828,7 @@ var Ops = map[string]OpDef{
 		}, "fields", "warnings", "provenance", "evidence"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req inferReq
-			if err := decodeData(body, &req); err != nil {
+			if err := decodeExactBody(body, &req); err != nil {
 				return nil, err
 			}
 			if len(req.Samples) == 0 {
@@ -900,7 +900,7 @@ var Ops = map[string]OpDef{
 		OutputSchema: writeOutSchema(false, true),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req insertReq
-			if err := decodeData(body, &req); err != nil {
+			if err := decodeExactBody(body, &req); err != nil {
 				return nil, err
 			}
 			for i, r := range req.Records {
@@ -985,7 +985,7 @@ var Ops = map[string]OpDef{
 		OutputSchema: writeOutSchema(true, false),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req upsertReq
-			if err := decodeData(body, &req); err != nil {
+			if err := decodeExactBody(body, &req); err != nil {
 				return nil, err
 			}
 			for i, r := range req.Records {
@@ -1129,7 +1129,7 @@ var Ops = map[string]OpDef{
 		}, "rows", "row_count", "truncated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req queryReq
-			if err := decodeData(body, &req); err != nil {
+			if err := decodeExactBody(body, &req); err != nil {
 				return nil, err
 			}
 			if utf8.RuneCountInString(req.SQL) > store.MaxQueryRunes {
@@ -1641,7 +1641,7 @@ var Ops = map[string]OpDef{
 		}, "matched", "deleted"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req deleteReq
-			if err := decodeData(body, &req); err != nil {
+			if err := decodeExactBody(body, &req); err != nil {
 				return nil, err
 			}
 			dryRun, err := parseOptBool(req.DryRun, "dry_run")
@@ -1721,7 +1721,7 @@ var Ops = map[string]OpDef{
 		}, "updated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req updateReq
-			if err := decodeData(body, &req); err != nil {
+			if err := decodeExactBody(body, &req); err != nil {
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
@@ -1784,7 +1784,7 @@ var Ops = map[string]OpDef{
 		OutputSchema: writeOutSchema(true, false),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req updateReq
-			if err := decodeData(body, &req); err != nil {
+			if err := decodeExactBody(body, &req); err != nil {
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
@@ -1970,7 +1970,7 @@ var Ops = map[string]OpDef{
 				DryRun              bool             `json:"dry_run"`
 			}
 
-			if err := decodeData(body, &shadow); err != nil {
+			if err := decodeExactBody(body, &shadow); err != nil {
 				return nil, err
 			}
 			if err := validateMigrateChanges(shadow.Changes, s.authn.On()); err != nil {

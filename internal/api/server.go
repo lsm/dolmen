@@ -378,19 +378,71 @@ type inferReq struct {
 }
 
 func decode(body []byte, v any) error {
-	if len(bytes.TrimSpace(body)) == 0 {
-		body = []byte("{}")
-	}
-	var probe any
-	probeDec := json.NewDecoder(bytes.NewReader(body))
-	probeDec.UseNumber()
-	if err := probeDec.Decode(&probe); err != nil {
-		return badRequest("invalid JSON: %v", err)
+	probe, err := probeObject(body)
+	if err != nil {
+		return err
 	}
 	if err := rejectNulls("", probe); err != nil {
 		return err
 	}
+	return checkedData(body, probe, v)
+}
+
+func decodeExactBody(body []byte, v any) error {
+	probe, err := probeObject(body)
+	if err != nil {
+		return err
+	}
+	return checkedData(body, probe, v)
+}
+
+func checkedData(body []byte, probe map[string]any, v any) error {
+	if err := rejectUnknownKeys(probe, v); err != nil {
+		return unknownFieldError400(err)
+	}
 	return decodeData(body, v)
+}
+
+func probeObject(body []byte) (map[string]any, error) {
+	if len(bytes.TrimSpace(body)) == 0 {
+		body = []byte("{}")
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var probe any
+	if err := dec.Decode(&probe); err != nil {
+		return nil, badRequest("invalid JSON: %v", err)
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return nil, badRequest("unexpected trailing content after JSON body")
+	}
+	obj, ok := probe.(map[string]any)
+	if !ok {
+		tm := &typeMismatchError{Got: jsonWordOf(probe)}
+		return nil, &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: tm.Error(), Cause: tm}
+	}
+	return obj, nil
+}
+
+func jsonWordOf(v any) string {
+	switch v.(type) {
+	case nil:
+		return "null"
+	case bool:
+		return "a boolean"
+	case json.Number:
+		return "a number"
+	case string:
+		return "a string"
+	case []any:
+		return "an array"
+	}
+	return "a different type"
+}
+
+func unknownFieldError400(err error) error {
+	uf, _ := err.(*unknownFieldError)
+	return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: uf.Error(), Cause: uf}
 }
 
 func decodeData(body []byte, v any) error {
@@ -423,20 +475,9 @@ func decodeData(body []byte, v any) error {
 }
 
 func decodeAllowNullArgs(body []byte, v any) error {
-	if len(bytes.TrimSpace(body)) == 0 {
-		body = []byte("{}")
-	}
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	var probe map[string]any
-	if err := dec.Decode(&probe); err != nil {
-		if tm, ok := asTypeMismatch(err); ok {
-			return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: tm.Error(), Cause: tm}
-		}
-		return badRequest("invalid JSON: %v", err)
-	}
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		return badRequest("unexpected trailing content after JSON body")
+	probe, err := probeObject(body)
+	if err != nil {
+		return err
 	}
 	for k, val := range probe {
 		if k == "args" {
@@ -446,7 +487,7 @@ func decodeAllowNullArgs(body []byte, v any) error {
 			return err
 		}
 	}
-	return decodeData(body, v)
+	return checkedData(body, probe, v)
 }
 
 var jsonDefaultPathRe = regexp.MustCompile(`^(?:changes|fields)\[\d+\]\.default(?:\.|\[)`)
