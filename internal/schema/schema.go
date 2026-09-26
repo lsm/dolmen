@@ -39,6 +39,8 @@ type Field struct {
 
 	Enum []string `json:"enum,omitempty"`
 
+	Shape string `json:"shape,omitempty"`
+
 	Default any `json:"default,omitempty"`
 }
 
@@ -80,6 +82,8 @@ type Change struct {
 
 	Enum *[]string `json:"enum,omitempty"`
 
+	Shape *string `json:"shape,omitempty"`
+
 	Default any `json:"default,omitempty"`
 }
 
@@ -90,6 +94,7 @@ const (
 	OpSetFulltext  = "set_fulltext"
 	OpSetVectorize = "set_vectorize"
 	OpSetEnum      = "set_enum"
+	OpSetShape     = "set_shape"
 	OpSetRowAccess = "set_row_access"
 )
 
@@ -105,7 +110,7 @@ func (c Change) ReadsRows() bool {
 	switch c.Op {
 	case OpAddField:
 		return c.Field == nil || c.Field.Required || c.Field.Fulltext || c.Field.Vectorize || c.Default != nil
-	case OpSetEnum, OpSetVectorize, OpSetFulltext, OpSetRowAccess, OpDropField:
+	case OpSetEnum, OpSetShape, OpSetVectorize, OpSetFulltext, OpSetRowAccess, OpDropField:
 		return true
 	}
 	return false
@@ -346,6 +351,14 @@ func validate(fields []Field, legacy map[string]Field) error {
 		}
 		if f.Fulltext && f.Name == "rank" {
 			return fmt.Errorf("field %q: rank cannot be a fulltext field (reserved by the FTS5 index)", f.Name)
+		}
+		if f.Shape != "" {
+			if f.Type != JSON {
+				return fmt.Errorf("field %q: shape is only allowed on json fields (this field has type %s)", f.Name, f.Type)
+			}
+			if err := ValidateShape(f.Name, f.Shape); err != nil {
+				return err
+			}
 		}
 		if f.Enum != nil {
 			if f.Type != String {

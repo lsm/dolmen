@@ -144,6 +144,9 @@ func Coerce(f schema.Field, v any) (any, error) {
 		if err != nil {
 			return nil, fmt.Errorf("field %q: cannot marshal JSON: %w", f.Name, err)
 		}
+		if err := schema.ShapeViolation(f.Name, f.Shape, b); err != nil {
+			return nil, err
+		}
 		return string(b), nil
 	case schema.Timestamp:
 		s, ok := StoredString(v)

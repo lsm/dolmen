@@ -4,6 +4,11 @@
 
 ### Added
 
+- **`shape` on `json` fields** (#128). A `json` field may declare `object`, `array`, `array<string>`,
+  `array<number>`, `array<boolean>` or `array<object>`; every write path refuses a value of any other
+  shape, naming the field, the expected shape and what arrived. `migrate` gains `set_shape`, which
+  refuses a shape stored rows do not fit and needs `read` as well as `schema`.
+
 - **`describe_table` reads a kept row count instead of scanning the table.** Every write keeps
   a per-table count current (per owner on `row_access` tables), so `row_count` costs the same on a
   table of any size. Existing namespaces are counted once on first open. On SQLite this raises the

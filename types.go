@@ -25,6 +25,7 @@ type Field struct {
 	Dim       int
 	Required  bool
 	Enum      []string
+	Shape     string
 	Default   any
 }
 
@@ -51,6 +52,7 @@ func fieldsToSchema(fields []Field) []schema.Field {
 			Dim:       f.Dim,
 			Required:  f.Required,
 			Enum:      f.Enum,
+			Shape:     f.Shape,
 			Default:   f.Default,
 		}
 	}
@@ -71,6 +73,7 @@ func schemaToFields(fields []schema.Field) []Field {
 			Dim:       f.Dim,
 			Required:  f.Required,
 			Enum:      f.Enum,
+			Shape:     f.Shape,
 			Default:   f.Default,
 		}
 	}
