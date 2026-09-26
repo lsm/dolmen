@@ -105,16 +105,15 @@ func TestOneRequestProducesTheWholeSpanTree(t *testing.T) {
 			t.Error("the embedding span must end before the write transaction starts, so a provider call never holds the writer")
 		}
 	}
-	for _, s := range byParent[op.SpanContext().SpanID()] {
-		if s.Name() != "CREATE" || attrOf(s, "db.collection.name") != "" {
-			continue
-		}
-		if got := attrOf(s, "db.namespace"); got != "tree" {
-			t.Errorf("the namespace-ensure span names %q, want tree", got)
-		}
-		if extra := unexpectedChildren(t, byParent[s.SpanContext().SpanID()]); len(extra) > 0 {
-			t.Errorf("the namespace-ensure span has children %v, want none", extra)
-		}
+	ensure := onlyChild(t, byParent[op.SpanContext().SpanID()], "CREATE")
+	if got := attrOf(ensure, "db.namespace"); got != "tree" {
+		t.Errorf("the namespace-ensure span names %q, want tree", got)
+	}
+	if got := attrOf(ensure, "db.collection.name"); got != "" {
+		t.Errorf("the namespace-ensure span names the table %q, want none", got)
+	}
+	if extra := unexpectedChildren(t, byParent[ensure.SpanContext().SpanID()]); len(extra) > 0 {
+		t.Errorf("the namespace-ensure span has children %v, want none", extra)
 	}
 	for _, s := range spans {
 		if s.SpanContext().TraceID().String() != upstreamTraceID {

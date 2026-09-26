@@ -54,7 +54,7 @@ OTEL_LOGS_EXPORTER=otlp \
 | `OTEL_SERVICE_NAME` | Names the resource, so the stack can tell one dolmen from another. Defaults to `dolmen`. |
 | `OTEL_LOGS_EXPORTER=otlp` | Log lines stay on stderr either way; this additionally ships them, with the request's trace context attached, which is what makes a log line clickable back to its trace. An endpoint alone does not turn this on. |
 | `OTEL_METRICS_EXPORTER` | `otlp` (default with an endpoint) or `none`. `prometheus` is refused: scrape `GET /metrics` instead. |
-| `OTEL_TRACES_SAMPLER_ARG` | `0.1` samples a tenth of traces while you work on a busy server; `parentbased_traceidratio` is the default sampler. |
+| `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG` | `parentbased_always_on` and unused by default. To sample a tenth of traces on a busy server set **both**: `OTEL_TRACES_SAMPLER=parentbased_traceidratio` with `OTEL_TRACES_SAMPLER_ARG=0.1`. The argument alone changes nothing while the sampler is the `always_on` default. |
 | `OTEL_METRIC_EXPORT_INTERVAL` | How often metrics are pushed, in milliseconds. Default `60000`; lower it to `10000` while you are watching a dashboard fill. |
 
 Then make one request:
@@ -160,15 +160,17 @@ clamp_min(sum(rate(gen_ai_client_operation_duration_seconds_count[5m])), 0.001)
 ```
 
 More than 2% of embedding calls failing over five minutes. The series is split by
-`gen_ai_provider_name` (`local`, `openai`), so an `openai` alert can point at credentials or a quota,
-and a `local` alert at the model cache under `<data>/models`. Keep the threshold low: an embedding
-failure fails every write that needs a vector, so a low-rate version of this matters more than a
-high-rate version of alert 1.
+`gen_ai_provider_name`, which dolmen reports as `openai` for an OpenAI-compatible endpoint and
+`dolmen.local` for the built-in in-process provider, so filter on those values: an `openai` alert can
+point at credentials or a quota, and a `dolmen.local` alert at the model cache under
+`<data>/models`. Keep the threshold low: an embedding failure fails every write that needs a vector,
+so a low-rate version of this matters more than a high-rate version of alert 1.
 
-Two more worth adding once these are quiet: `db_client_connection_max` on PostgreSQL against
-`db_client_connection_count` (a pool at its ceiling is what alert 2 looks like before it fires), and
-`dolmen_vector_cache_usage` against `dolmen_vector_cache_limit` (a cache permanently at its limit is
-not caching anything new).
+Two more worth adding once these are quiet, both from the capacity gauges, both engine-specific:
+`db_client_connection_max` against `db_client_connection_count` on PostgreSQL (a pool sitting at its
+ceiling is what alert 2 looks like before it fires; SQLite has no pool and reports neither series),
+and `dolmen_vector_cache_usage` against `dolmen_vector_cache_limit` (a cache permanently at its limit
+is not caching anything new). All five gauges are in the README's metric table.
 
 ## What never leaves the process
 
