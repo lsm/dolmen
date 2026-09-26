@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Writing a masked secret back no longer destroys it.** `"••••"` is refused as a `secret`
+  value, naming the field and saying to pass the real value, `reveal` it first, or omit the field.
+  An agent that read a row without `reveal` and wrote it back edited previously stored the mask as
+  the plaintext, losing the secret silently and unrecoverably.
+
 ### Added
 
 - **`describe_table` reads a kept row count instead of scanning the table.** Every write keeps
