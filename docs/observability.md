@@ -21,11 +21,9 @@ services:
       - "3000:3000"     # Grafana
       - "4317:4317"     # OTLP gRPC
       - "4318:4318"     # OTLP HTTP
-    environment:
-      ENABLE_TEMPO: "true"
-      ENABLE_LOGS: "true"
+      - "3200:3200"     # Tempo's own API, if you want it
     volumes:
-      - lgtm-data:/var/lib/lgtm
+      - lgtm-data:/data
 
 volumes:
   lgtm-data:
@@ -35,9 +33,12 @@ volumes:
 docker compose -f otel-lgtm.compose.yaml up -d
 ```
 
-Open <http://localhost:3000> (anonymous admin, no password) and wait a minute for Grafana to be
-provisioned. Nothing in dolmen needs changing beyond the endpoint: it exports OTLP `http/protobuf`
-only, and this image accepts it on 4318.
+Traces, metrics and logs are all on by default in that image — it bundles the collector, Tempo,
+Prometheus, Loki and Grafana, and needs no feature toggles. The named volume is the path its
+components write to, so traces survive `docker compose down`. Open <http://localhost:3000> and log
+in as `admin` / `admin` (Grafana's built-in user; change it if the port is reachable by anyone else),
+then wait a minute for the dashboards to be provisioned. Nothing in dolmen needs changing beyond
+the endpoint: it exports OTLP `http/protobuf` only, and this image accepts it on 4318.
 
 Point dolmen at the stack and turn on all three signals:
 
