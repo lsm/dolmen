@@ -124,16 +124,31 @@ func loadStagedVectors(ctx context.Context, db querier, table string, gen int64,
 	return out, nil
 }
 
-func countStagedVectors(ctx context.Context, db rowQuerier, table string, gen int64, provider string) (int64, error) {
+func countStagedVectors(ctx context.Context, db querier, table, column string, gen int64, provider string, vis string, visArgs []any) (int64, error) {
 	present, err := embedStagePresent(ctx, db)
 	if err != nil || !present {
 		return 0, err
 	}
-	var n int64
-	err = db.QueryRowContext(ctx, fmt.Sprintf(
-		`SELECT count(*) FROM %s WHERE table_name = ? AND drop_gen = ? AND provider = ?`,
-		embedStageTable), table, gen, provider).Scan(&n)
-	return n, err
+	var after, n int64
+	for {
+		page, err := stagedSourcePage(ctx, db, table, column, after, vis, visArgs)
+		if err != nil {
+			return 0, err
+		}
+		if len(page.ids) == 0 {
+			return n, nil
+		}
+		held, err := loadStagedVectors(ctx, db, table, gen, provider, page.ids)
+		if err != nil {
+			return 0, err
+		}
+		for i, id := range page.ids {
+			if v, ok := held[id]; ok && v.digest == textDigest(page.texts[i]) {
+				n++
+			}
+		}
+		after = page.ids[len(page.ids)-1]
+	}
 }
 
 func deleteStagedVectors(ctx context.Context, tx *sql.Tx, table string) error {

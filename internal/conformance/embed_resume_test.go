@@ -8,10 +8,6 @@ import (
 
 const resumeRows = 300
 
-// resumeFailAt names a row the fake provider refuses to embed, so a backfill is interrupted part
-// way through: the pages before it are embedded and kept, the page holding it fails whole. The
-// server batches texts on their way to the provider, so this lands on a page boundary whatever
-// the batch size is, and both engines stage the same pages before it.
 const resumeFailAt = "row 260 of the backfill fixture"
 
 func backfillText(i int) string { return fmt.Sprintf("row %d of the backfill fixture", i) }
@@ -40,8 +36,6 @@ func seedUnvectorizedBackfill(t *testing.T, h *harness, ns string) {
 	seedBackfillRows(t, h, ns, "docs", resumeRows)
 }
 
-// interruptBackfill fails the migration part way through, and reports how many rows the provider
-// was asked for before it gave up: those are the rows whose vectors are kept.
 func interruptBackfill(t *testing.T, h *harness, ns string) int {
 	t.Helper()
 	h.emb.failOnText(resumeFailAt, errors.New("provider is down"))

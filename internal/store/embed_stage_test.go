@@ -663,3 +663,43 @@ func embedStageCount(t *testing.T, st *Store, ns, table string) int64 {
 	}
 	return count
 }
+
+func TestTheStagedPlanCountExcludesRowsWhoseTextChangedOrVanished(t *testing.T) {
+	const rows = 300
+	st := openBackfillStore(t)
+	seedBackfillTable(t, st, "stale", "docs", rows)
+	rec := &backfillRecorder{}
+	rec.inside = func(context.Context) error {
+		if rec.calls >= 2 {
+			return errors.New("provider is down")
+		}
+		return nil
+	}
+	if _, err := st.Migrate(context.Background(), "stale", "docs", vectorizeBody(), rec.embedder("test"), Incarnation{Version: 1}); err == nil {
+		t.Fatal("a provider failure mid-backfill must fail the migration")
+	}
+	staged := embedStageCount(t, st, "stale", "docs")
+	if staged < 2 {
+		t.Fatalf("the failed attempt staged %d rows, so this test cannot spoil two of them", staged)
+	}
+	ctx := context.Background()
+	if _, err := st.Update(ctx, "stale", "docs", "id = 1", nil, map[string]any{"body": "row 1 was rewritten after it was staged"}, Embedder{}, nil, Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Delete(ctx, "stale", "docs", "id = 2", nil, DeleteOpts{}, nil, Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := st.PlanMigration(ctx, "stale", "docs", vectorizeBody(), (&backfillRecorder{}).embedder("test"), Incarnation{Version: 1}, nil, Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.StagedRows != staged-2 {
+		t.Fatalf("the plan reports staged_rows %d, want the %d staged rows whose text still matches, not counting the rewritten row or the deleted one", plan.StagedRows, staged-2)
+	}
+	if plan.EmbedRows != (rows-1)-(staged-2) {
+		t.Fatalf("the plan reports embed_rows %d, want %d: a staged row whose text changed is embedded again, and a deleted row is not vectorized at all", plan.EmbedRows, (rows-1)-(staged-2))
+	}
+	if plan.StagedRows+plan.EmbedRows != rows-1 {
+		t.Fatalf("staged_rows %d plus embed_rows %d is %d, want the %d rows that still have text", plan.StagedRows, plan.EmbedRows, plan.StagedRows+plan.EmbedRows, rows-1)
+	}
+}

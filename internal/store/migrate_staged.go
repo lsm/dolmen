@@ -463,7 +463,7 @@ func (s *Store) stampStagedVectors(ctx context.Context, tx *sql.Tx, table string
 	var after int64
 	stampOne := fmt.Sprintf(`UPDATE %s SET "_embedding" = ? WHERE id = ?`, q(table))
 	for {
-		page, err := stagedSourcePage(ctx, tx, table, e.source, after)
+		page, err := stagedSourcePage(ctx, tx, table, e.source, after, "", nil)
 		if err != nil {
 			return err
 		}
@@ -498,10 +498,11 @@ type sourcePage struct {
 	texts []string
 }
 
-func stagedSourcePage(ctx context.Context, db querier, table, column string, after int64) (sourcePage, error) {
+func stagedSourcePage(ctx context.Context, db querier, table, column string, after int64, vis string, visArgs []any) (sourcePage, error) {
+	args := append([]any{after}, visArgs...)
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(
-		`SELECT id, %s FROM %s WHERE %s IS NOT NULL AND %s != '' AND id > ? ORDER BY id LIMIT %d`,
-		q(column), q(table), q(column), q(column), embedBackfillPage), after)
+		`SELECT id, %s FROM %s WHERE %s IS NOT NULL AND %s != '' AND id > ?%s ORDER BY id LIMIT %d`,
+		q(column), q(table), q(column), q(column), vis, embedBackfillPage), args...)
 	if err != nil {
 		return sourcePage{}, err
 	}

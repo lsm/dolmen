@@ -1,7 +1,9 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 
@@ -162,23 +164,37 @@ func (s *Store) requireUTF8ForStaging() error {
 	return fmt.Errorf("%w: this database's encoding is %s, and a staged vector is keyed by the SHA-256 of the row's text, which only matches when the database stores it as UTF-8 bytes; recreate the database with a UTF-8 encoding (CREATE DATABASE dolmen TEMPLATE template0 ENCODING 'UTF8') to use vectorize or search on it", store.ErrInvalid, enc)
 }
 
-func (s *Store) countStagedVectors(ctx context.Context, tx pgx.Tx, table string, gen int64, provider string) (int64, error) {
-	var n int64
-	err := tx.QueryRow(ctx, "SELECT count(*) FROM "+s.relation("embed_stage")+
-		" WHERE table_name = $1 AND drop_generation = $2 AND provider = $3", table, gen, provider).Scan(&n)
-	return n, err
-}
-
-func (s *Store) applyStagedPlan(ctx context.Context, tx pgx.Tx, table string, gen int64, provider string, w *store.MigrationPlan, embedding bool) {
-	if !embedding || provider == "" {
-		return
+func (s *Store) applyStagedPlan(ctx context.Context, tx pgx.Tx, n namespace, state tableState, source, provider string, scope *store.RowScope, w *store.MigrationPlan, hasSource bool) error {
+	if provider == "" || !hasSource {
+		return nil
 	}
-	n, err := s.countStagedVectors(ctx, tx, table, gen, provider)
-	if err != nil || n <= 0 {
-		return
+	var after, reusable int64
+	for {
+		ids, texts, err := s.embedPageTx(ctx, tx, n, state, source, after, scope)
+		if err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			break
+		}
+		held, err := s.loadStagedVectors(ctx, tx, n.name, state.schema.Name, state.incarnation.DropGen, provider, ids)
+		if err != nil {
+			return err
+		}
+		for i, id := range ids {
+			digest := sha256.Sum256([]byte(texts[i]))
+			if v, ok := held[id]; ok && bytes.Equal(v.digest, digest[:]) {
+				reusable++
+			}
+		}
+		after = ids[len(ids)-1]
 	}
-	w.StagedRows = n
-	if n < w.EmbedRows {
-		w.EmbedRows -= n
+	if reusable <= 0 {
+		return nil
 	}
+	w.StagedRows = reusable
+	if reusable < w.EmbedRows {
+		w.EmbedRows -= reusable
+	}
+	return nil
 }

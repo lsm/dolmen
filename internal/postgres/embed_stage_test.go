@@ -690,3 +690,78 @@ func TestPostgresAMixedLengthStageIsRecoverableByTurningVectorizeOff(t *testing.
 		t.Fatalf("%d rows carry a vector after the re-embed, want %d", live, rows)
 	}
 }
+
+func TestAPlanInOneNamespaceDoesNotCountAnotherNamespacesStagedRows(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	seedPGStageTable(t, s, "alpha", "docs", 200)
+	ctx := t.Context()
+	first := &pgStageRecorder{}
+	first.inside = func(context.Context) error {
+		if first.calls >= 2 {
+			return errors.New("provider is down")
+		}
+		return nil
+	}
+	if _, err := s.Migrate(ctx, "alpha", "docs", vectorizeBody(), first.embedder("test"), store.Incarnation{Version: 1}); err == nil {
+		t.Fatal("a provider failure mid-backfill must fail the migration")
+	}
+	staged := pgStageCount(t, s, "alpha", "docs")
+	if staged == 0 {
+		t.Fatal("nothing was staged in alpha, so this proves nothing about the other namespace")
+	}
+	seedPGStageTable(t, s, "beta", "docs", 40)
+	plan, err := s.PlanMigration(ctx, "beta", "docs", vectorizeBody(), (&pgStageRecorder{}).embedder("test"), store.Incarnation{Version: 1}, nil, store.Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.StagedRows != 0 {
+		t.Fatalf("beta's plan reports staged_rows %d, but the %d staged rows belong to alpha", plan.StagedRows, staged)
+	}
+	if plan.EmbedRows != 40 {
+		t.Fatalf("beta's plan reports embed_rows %d, want its own 40", plan.EmbedRows)
+	}
+	alpha, err := s.PlanMigration(ctx, "alpha", "docs", vectorizeBody(), (&pgStageRecorder{}).embedder("test"), store.Incarnation{Version: 1}, nil, store.Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alpha.StagedRows != staged {
+		t.Fatalf("alpha's plan reports staged_rows %d, want its own %d", alpha.StagedRows, staged)
+	}
+	if alpha.EmbedRows != 200-staged {
+		t.Fatalf("alpha's plan reports embed_rows %d, want the %d rows it still needs", alpha.EmbedRows, 200-staged)
+	}
+}
+
+func TestAPlanCountsOnlyTheStagedRowsWhoseTextStillMatches(t *testing.T) {
+	const rows = 200
+	s := openTest(t, testConfig(t))
+	seedPGStageTable(t, s, "stale", "docs", rows)
+	ctx := t.Context()
+	first := &pgStageRecorder{}
+	first.inside = func(context.Context) error {
+		if first.calls >= 2 {
+			return errors.New("provider is down")
+		}
+		return nil
+	}
+	if _, err := s.Migrate(ctx, "stale", "docs", vectorizeBody(), first.embedder("test"), store.Incarnation{Version: 1}); err == nil {
+		t.Fatal("a provider failure mid-backfill must fail the migration")
+	}
+	staged := pgStageCount(t, s, "stale", "docs")
+	if _, err := s.Update(ctx, "stale", "docs", "id = 1", nil, map[string]any{"body": "row 1 was rewritten after it was staged"}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Delete(ctx, "stale", "docs", "id = 2", nil, store.DeleteOpts{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.PlanMigration(ctx, "stale", "docs", vectorizeBody(), (&pgStageRecorder{}).embedder("test"), store.Incarnation{Version: 1}, nil, store.Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.StagedRows != staged-2 {
+		t.Fatalf("the plan reports staged_rows %d, want %d: the rewritten row and the deleted one are not reusable", plan.StagedRows, staged-2)
+	}
+	if plan.EmbedRows != (rows-1)-(staged-2) {
+		t.Fatalf("the plan reports embed_rows %d, want %d", plan.EmbedRows, (rows-1)-(staged-2))
+	}
+}
