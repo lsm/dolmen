@@ -73,30 +73,41 @@ when it counts `EmbedRows`.
 
 ## 4. Activation is one short write transaction
 
-Inside the single write transaction, in this order:
+Inside the single write transaction:
 
 1. re-plan against the current schema, so a concurrent migration that landed first is seen;
 2. re-check only the rows the change log shows as written since the read-side coverage check, and
    retry if any of them moved;
 3. add the `_embedding` column if the table did not have one, and clear it if the change re-embeds;
-4. walk the table in the same keyset pages, and for each page confirm every row with non-empty text
-   has a staged vector whose digest matches that row's *current* text, stamping it as it goes;
+4. count the rows with non-empty source text, fill `_embedding` from the stage, and require the
+   number filled to equal the number counted — a row short of the count is missing or stale, so roll
+   back and retry;
 5. apply the steps and rebuild full-text if needed;
 6. set the embedding space and dimension, bump the version, record the migration;
 7. delete the table's stage.
 
-Step 4 is where this design pays for the digest, and it is worth being straight about the cost. The
-writer is held while the table is walked, and the walk is paged so the server's memory stays bounded
-by a page rather than by the table. It is not free. The alternative is to trust step 2 alone and fill
-with one set-based `UPDATE` against the stage, but a staged vector is only usable when the row's text
-still hashes to its digest, and SHA-256 cannot be computed in SQL — so a set-based fill would have to
-trust that nothing moved, which is exactly what the change-log walk checks. Step 4 is belt and
-braces, and it is the only step that grows with the table. A design that wants the writer held for
-O(rows written) rather than O(rows) needs a digest the engine can compute in SQL, or a stage keyed on
-the text itself; that is future work, not this design.
+Step 4 is where the engines differ, and the difference is worth stating rather than hiding.
 
-The read-side coverage check in step 2 of the *previous* phase is the cheap path: it runs before the
-writer is taken, and when the change log has not moved, step 2 above finds nothing to re-check.
+**PostgreSQL computes the digest in SQL.** `sha256(convert_to(col, 'UTF8'))` has been built in since
+PostgreSQL 11 and we require 16, so the fill is one statement: `UPDATE … FROM` the stage, joined on
+row id, drop generation and provider identity, with `s.digest = sha256(convert_to(<source>, 'UTF8'))`
+as the match. The count comparison is what makes activation exact, and the vectors that landed must
+all have the same length. `sha256` is deliberately *not* added to the function allowlist `query`
+enforces — these are internal statements, and a function callers may invoke is a different thing from
+a function the engine uses on its own statements.
+
+**SQLite walks the table, because it cannot hash in SQL.** It has no `sha256`, and registering a Go
+SQL function would be worse: `modernc` installs a registered function on *every* connection the
+driver opens, so `query` could call it on SQLite but not on PostgreSQL and the two engines would
+disagree about what a caller's SQL may do. So the activation walks the table in the same keyset pages
+and, for each page, confirms every row with non-empty text has a staged vector whose digest matches
+that row's current text, stamping as it goes. The writer is held while it does — O(N) in-process
+statements, and that is the honest cost of the digest on this engine. The per-row statements run
+inside the process, so they are cheap once prepared, and memory stays bounded by a page.
+
+Either way the fill reads the row's *current* text, so a row emptied after its page was staged ends
+with no vector, and a row whose text changed after staging is caught rather than silently stamped
+with the old vector.
 
 Past the limit it returns a conflict that says re-issuing the same `migrate` continues from where
 it stopped. It does not return a timeout and it does not lose the stage.

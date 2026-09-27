@@ -13,7 +13,7 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-const catalogVersion = 7
+const catalogVersion = 8
 
 const minimumServerVersion = 160000
 
@@ -150,6 +150,13 @@ func (s *Store) bootstrap(ctx context.Context) error {
  chain_start timestamptz NOT NULL, issued_at timestamptz NOT NULL,
  table_name text NOT NULL, drop_generation bigint NOT NULL,
  PRIMARY KEY(namespace,token))`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, "CREATE TABLE IF NOT EXISTS "+s.relation("embed_stage")+` (
+  namespace text NOT NULL REFERENCES `+s.relation("namespaces")+`(name) ON DELETE CASCADE,
+  table_name text NOT NULL, drop_generation bigint NOT NULL, provider text NOT NULL,
+  row_id bigint NOT NULL, digest bytea NOT NULL, vector bytea NOT NULL,
+  PRIMARY KEY(namespace,table_name,drop_generation,provider,row_id))`); err != nil {
 		return err
 	}
 	for _, stmt := range []string{
