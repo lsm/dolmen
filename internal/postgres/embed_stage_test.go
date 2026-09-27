@@ -534,3 +534,63 @@ func TestPostgresANonUTF8DatabaseOnlyRefusesVectorizingMigrations(t *testing.T) 
 		t.Fatal("a vectorizing migrate must be refused on a non-UTF-8 database")
 	}
 }
+
+func TestPostgresAStageIsNotStampedWhenTheProviderChangesDimension(t *testing.T) {
+	const rows = 200
+	s := openTest(t, testConfig(t))
+	seedPGStageTable(t, s, "dims", "docs", rows)
+	ctx := t.Context()
+
+	first := &pgStageRecorder{}
+	first.inside = func(context.Context) error {
+		if first.calls >= 2 {
+			return errors.New("provider is down")
+		}
+		return nil
+	}
+	if _, err := s.Migrate(ctx, "dims", "docs", vectorizeBody(), first.embedder("test"), store.Incarnation{Version: 1}); err == nil {
+		t.Fatal("a provider failure mid-backfill must fail the migration")
+	}
+	if stage := pgStageCount(t, s, "dims", "docs"); stage != embedBackfillPage {
+		t.Fatalf("the first attempt staged %d rows, want the one page it finished", stage)
+	}
+	embedded := 0
+	narrow := store.Embedder{Identity: "test", Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+		embedded += len(texts)
+		out := make([][]float32, len(texts))
+		for i := range texts {
+			out[i] = []float32{1, 2, 3, 4}
+		}
+		return out, nil
+	}}
+	_, err := s.Migrate(ctx, "dims", "docs", vectorizeBody(), narrow, store.Incarnation{Version: 1})
+	if err == nil {
+		t.Fatal("a provider that reports one identity and two dimensions must not activate")
+	}
+	if !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("the refusal must be classified like SQLite's, not as a server fault, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "different lengths") {
+		t.Fatalf("the refusal must name the mixed lengths, got %v", err)
+	}
+	if embedded == 0 {
+		t.Fatal("the second attempt embedded nothing, so the mismatch was never reached")
+	}
+	if live := pgLiveEmbeddings(t, s, "dims", "docs"); live != 0 {
+		t.Fatalf("%d rows were stamped with a vector of the wrong length", live)
+	}
+	sc, _, err := s.DescribeTable(ctx, "dims", "docs", nil, store.Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Version != 1 {
+		t.Fatalf("a refused stamp left the table at version %d, want 1", sc.Version)
+	}
+	log, err := s.ListMigrations(ctx, "dims", "docs", store.Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(log) != 0 {
+		t.Fatalf("a refused stamp recorded %d migrations, want none", len(log))
+	}
+}

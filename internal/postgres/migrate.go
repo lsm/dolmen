@@ -888,9 +888,6 @@ func (s *Store) backfillEmbeddings(ctx context.Context, ns, table string, state 
 			if err != nil {
 				return err
 			}
-			if err := checkPGVectorShapes(table, vecs); err != nil {
-				return err
-			}
 			for i := range batch {
 				batch[i].vec = encodePGVector(vecs[i])
 			}
@@ -945,23 +942,6 @@ func reportPGBackfill(ns, table string, staged, total, reported int64) int64 {
 	return staged / tenth
 }
 
-func checkPGVectorShapes(table string, vecs [][]float32) error {
-	dim := 0
-	for _, v := range vecs {
-		if len(v) == 0 {
-			return fmt.Errorf("backfill: embedding provider returned a zero-dimensional vector for table %s", table)
-		}
-		if dim == 0 {
-			dim = len(v)
-			continue
-		}
-		if len(v) != dim {
-			return fmt.Errorf("embedding provider returned %d-dimensional vectors mid-backfill (expected %d)", len(v), dim)
-		}
-	}
-	return nil
-}
-
 func (s *Store) applyEmbeddings(ctx context.Context, tx pgx.Tx, physical, ns, table string, dropGen int64, work *migrationWork, constant []float32) (bool, error) {
 	col := ident(work.embed.target)
 	if work.embed.constant != "" {
@@ -1009,7 +989,7 @@ func (s *Store) applyEmbeddings(ctx context.Context, tx pgx.Tx, physical, ns, ta
 		return false, err
 	}
 	if lengths > 1 {
-		return false, fmt.Errorf("embedding provider returned vectors of %d different lengths mid-backfill", lengths)
+		return false, invalidf("embedding provider returned vectors of %d different lengths mid-backfill; the rows already staged were embedded by a model of another size, so re-embed via migrate (set_vectorize off, then on) under one provider", lengths)
 	}
 	return false, nil
 }
