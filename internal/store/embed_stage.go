@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/lsm/dolmen/internal/schema"
 )
@@ -50,34 +51,52 @@ func writeStagedVectors(ctx context.Context, tx *sql.Tx, table string, gen int64
 	if err := ensureEmbedStage(ctx, tx); err != nil {
 		return err
 	}
-	stmt, err := tx.PrepareContext(ctx, fmt.Sprintf(
-		`INSERT INTO %s(table_name, drop_gen, row_id, provider, digest, vector) VALUES(?,?,?,?,?,?)
-		 ON CONFLICT(table_name, drop_gen, row_id, provider, digest) DO UPDATE SET vector = excluded.vector`, embedStageTable))
+	drop, err := tx.PrepareContext(ctx, fmt.Sprintf(
+		`DELETE FROM %s WHERE table_name = ? AND drop_gen = ? AND row_id = ? AND provider = ?`, embedStageTable))
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer drop.Close()
+	put, err := tx.PrepareContext(ctx, fmt.Sprintf(
+		`INSERT INTO %s(table_name, drop_gen, row_id, provider, digest, vector) VALUES(?,?,?,?,?,?)`, embedStageTable))
+	if err != nil {
+		return err
+	}
+	defer put.Close()
 	for _, s := range batch {
-		if _, err := stmt.ExecContext(ctx, table, gen, s.id, provider, s.digest[:], encodeStageVector(s.vec)); err != nil {
+		if _, err := drop.ExecContext(ctx, table, gen, s.id, provider); err != nil {
+			return err
+		}
+		if _, err := put.ExecContext(ctx, table, gen, s.id, provider, s.digest[:], encodeStageVector(s.vec)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func loadStagedVectors(ctx context.Context, db querier, table string, gen int64, provider string) (map[int64]stagedVector, error) {
+func loadStagedVectors(ctx context.Context, db querier, table string, gen int64, provider string, ids []int64) (map[int64]stagedVector, error) {
+	out := map[int64]stagedVector{}
+	if len(ids) == 0 {
+		return out, nil
+	}
 	present, err := embedStagePresent(ctx, db)
 	if err != nil || !present {
-		return map[int64]stagedVector{}, err
+		return out, err
+	}
+	args := make([]any, 0, len(ids)+3)
+	args = append(args, table, gen, provider)
+	marks := make([]string, len(ids))
+	for i, id := range ids {
+		marks[i] = "?"
+		args = append(args, id)
 	}
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(
-		`SELECT row_id, digest, vector FROM %s WHERE table_name = ? AND drop_gen = ? AND provider = ?`, embedStageTable),
-		table, gen, provider)
+		`SELECT row_id, digest, vector FROM %s WHERE table_name = ? AND drop_gen = ? AND provider = ? AND row_id IN (%s) ORDER BY row_id, digest`,
+		embedStageTable, strings.Join(marks, ",")), args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := map[int64]stagedVector{}
 	for rows.Next() {
 		var id int64
 		var digest, blob []byte
@@ -92,6 +111,9 @@ func loadStagedVectors(ctx context.Context, db querier, table string, gen int64,
 		copy(s.digest[:], digest)
 		s.vec = decodeStageVector(blob)
 		if len(s.vec) == 0 {
+			continue
+		}
+		if _, held := out[id]; held {
 			continue
 		}
 		out[id] = s

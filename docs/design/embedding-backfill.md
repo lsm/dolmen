@@ -73,20 +73,30 @@ when it counts `EmbedRows`.
 
 ## 4. Activation is one short write transaction
 
-Inside the single write transaction, and only after a full coverage check has already passed on
-the read side:
+Inside the single write transaction, in this order:
 
 1. re-plan against the current schema, so a concurrent migration that landed first is seen;
-2. confirm every row with non-empty text has a staged vector whose digest matches that row's
-   current text;
-3. apply the steps and fill `_embedding` from the stage;
-4. set the embedding space and dimension, bump the version, record the migration;
-5. delete the table's stage.
+2. re-check only the rows the change log shows as written since the read-side coverage check, and
+   retry if any of them moved;
+3. add the `_embedding` column if the table did not have one, and clear it if the change re-embeds;
+4. walk the table in the same keyset pages, and for each page confirm every row with non-empty text
+   has a staged vector whose digest matches that row's *current* text, stamping it as it goes;
+5. apply the steps and rebuild full-text if needed;
+6. set the embedding space and dimension, bump the version, record the migration;
+7. delete the table's stage.
 
-The coverage check runs on the read side first because it can be expensive and must not hold the
-writer. Inside the transaction, only the rows the change log shows as written since that check
-are re-checked — the same walk `vecCache.catchUp` performs. If rows were written in the
-meantime, the migrate embeds them outside the writer and tries activation again, up to a limit.
+Step 4 is where this design pays for the digest, and it is worth being straight about the cost. The
+writer is held while the table is walked, and the walk is paged so the server's memory stays bounded
+by a page rather than by the table. It is not free. The alternative is to trust step 2 alone and fill
+with one set-based `UPDATE` against the stage, but a staged vector is only usable when the row's text
+still hashes to its digest, and SHA-256 cannot be computed in SQL — so a set-based fill would have to
+trust that nothing moved, which is exactly what the change-log walk checks. Step 4 is belt and
+braces, and it is the only step that grows with the table. A design that wants the writer held for
+O(rows written) rather than O(rows) needs a digest the engine can compute in SQL, or a stage keyed on
+the text itself; that is future work, not this design.
+
+The read-side coverage check in step 2 of the *previous* phase is the cheap path: it runs before the
+writer is taken, and when the change log has not moved, step 2 above finds nothing to re-check.
 
 Past the limit it returns a conflict that says re-issuing the same `migrate` continues from where
 it stopped. It does not return a timeout and it does not lose the stage.
@@ -104,6 +114,9 @@ already pins.
   and recreated. Both are excluded by the key in item 1, and are asserted by
   `TestAStagedVectorIsNotUsedAfterTheProviderChanges` and
   `TestAStagedVectorIsNotUsedAfterTheTableIsRecreated`.
+- A row holds at most one staged digest per provider. Staging a vector for a row replaces whatever
+  that row had staged, so a text that goes A → B → A cannot accumulate entries and cannot wedge
+  activation on a stale digest.
 - A table's stage is deleted on activation and on `drop_table`. `vacuum` deletes it too, when no
   `migrate` of that table is running in this process.
 - Two migrates of one table may overlap, and on PostgreSQL they may be in different processes.
