@@ -20,6 +20,9 @@ func (s *Store) Vacuum(ctx context.Context, nsName string) (_ VacuumResult, err 
 		return VacuumResult{}, err
 	}
 	defer n.unpin()
+	if err := s.dropAbandonedStages(ctx, n, nsName); err != nil {
+		return VacuumResult{}, err
+	}
 	path := s.nsPath(nsName)
 	conn, err := s.writerConn(ctx, n)
 	if err != nil {

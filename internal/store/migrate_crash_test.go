@@ -17,7 +17,7 @@ import (
 
 const migrateChildEnv = "DOLMEN_MIGRATE_CHILD_DIR"
 
-const migrateChildReady = "dolmen-migrate-child-backfilling"
+const migrateChildEmbedded = "dolmen-migrate-child-embedded"
 
 const migrateRows = 4000
 
@@ -25,7 +25,7 @@ var migrateChildBackfill = Embedder{Embed: migrateChildBatch, Identity: "fake-sp
 
 func migrateChildBatch(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) > 0 {
-		fmt.Fprintln(os.Stdout, migrateChildReady)
+		fmt.Fprintln(os.Stdout, migrateChildEmbedded, len(texts))
 	}
 	select {
 	case <-ctx.Done():
@@ -101,12 +101,28 @@ func TestAKilledMigrateLeavesTheTableConsistent(t *testing.T) {
 	}
 	ready := make(chan struct{})
 	gone := make(chan struct{})
+	childEmbedded := make(chan int, 4096)
 	go func() {
 		scanner := bufio.NewScanner(stdout)
+		batches := 0
 		for scanner.Scan() {
-			if strings.Contains(scanner.Text(), migrateChildReady) {
+			text := scanner.Text()
+			if !strings.Contains(text, migrateChildEmbedded) {
+				continue
+			}
+			var n int
+			if _, err := fmt.Sscanf(text, migrateChildEmbedded+" %d", &n); err != nil {
+				continue
+			}
+			childEmbedded <- n
+			batches++
+			if batches < 2 {
+				continue
+			}
+			select {
+			case <-ready:
+			default:
 				close(ready)
-				return
 			}
 		}
 		close(gone)
@@ -115,21 +131,38 @@ func TestAKilledMigrateLeavesTheTableConsistent(t *testing.T) {
 	case <-ready:
 	case <-gone:
 		cmd.Wait()
-		t.Fatal("the child exited without backfilling anything: the fixture must still be migrating when the parent kills it")
+		t.Fatal("the child exited without backfilling two batches: the fixture must still be migrating when the parent kills it")
 	case <-time.After(60 * time.Second):
 		cmd.Wait()
-		t.Fatal("the child never reported that it was backfilling")
+		t.Fatal("the child never reported a second embedding batch, so it never staged a page")
 	}
 	if err := cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill the migrating child: %v", err)
 	}
 	cmd.Wait()
+	select {
+	case <-gone:
+	case <-time.After(10 * time.Second):
+	}
+	childRows := 0
+	for drained := false; !drained; {
+		select {
+		case n := <-childEmbedded:
+			childRows += n
+		default:
+			drained = true
+		}
+	}
+	if childRows == 0 {
+		t.Fatal("the child embedded nothing before it was killed, so the retry has nothing staged to continue from")
+	}
 
 	st, err := Open(dir)
 	if err != nil {
 		t.Fatalf("the namespace must reopen after its migration was killed: %v", err)
 	}
 	defer st.Close()
+	survived := embedStageCount(t, st, "kmig", "t")
 	ctx := context.Background()
 	sc, _, err := st.DescribeTable(ctx, "kmig", "t", nil, Incarnation{})
 	if err != nil {
@@ -164,12 +197,26 @@ func TestAKilledMigrateLeavesTheTableConsistent(t *testing.T) {
 		}
 		return
 	}
-	after, err := st.Migrate(ctx, "kmig", "t", migrateVectorizeChange(), testEmbed, Incarnation{Version: 1})
+	retried := 0
+	counting := Embedder{Identity: "fake-space", Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+		retried += len(texts)
+		return fakeEmbed(ctx, texts)
+	}}
+	after, err := st.Migrate(ctx, "kmig", "t", migrateVectorizeChange(), counting, Incarnation{Version: 1})
 	if err != nil {
 		t.Fatalf("running the same migration again must succeed: %v", err)
 	}
 	if after.Version != 2 {
 		t.Fatalf("the retried migration ended at version %d, want 2", after.Version)
+	}
+	if retried >= migrateRows {
+		t.Fatalf("the retry embedded %d rows, want fewer than the %d the table holds: the rows the killed child staged must have survived the crash", retried, migrateRows)
+	}
+	if survived == 0 {
+		t.Fatal("no staged rows survived the kill, so the retry had nothing to continue from")
+	}
+	if survived+int64(retried) != migrateRows {
+		t.Fatalf("the kill left %d rows staged and the retry embedded %d, want %d between them: every row is embedded exactly once across the crash", survived, retried, migrateRows)
 	}
 	back, err := st.Query(ctx, "kmig", "SELECT count(*) AS c, min(id) AS lo, max(id) AS hi FROM t", nil, [16]byte{}, Page{Limit: 10})
 	if err != nil {

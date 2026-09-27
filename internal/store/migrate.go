@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -55,12 +56,12 @@ type migrationWork struct {
 	plan             *MigrationPlan
 	rebuildFTSNeeded bool
 	vectorizeChanged bool
+	embed            embedWork
 }
 
 func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expected Incarnation) (_ *schema.TableSchema, err error) {
 	ctx, span := s.tr.Op(ctx, "MIGRATE", nsName, table)
 	defer func() { s.tr.End(span, err) }()
-	expectedVersion := int(expected.Version)
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
 	}
@@ -72,156 +73,44 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 		return nil, err
 	}
 	defer n.unpin()
-	ctx, tx, txSpan, err := s.beginWrite(ctx, n)
-	if err != nil {
-		return nil, err
-	}
-	defer s.endWrite(tx, txSpan)
+	endMigrate := s.beginMigrate(nsName, table)
+	defer endMigrate()
 
-	if err := checkBoundLifetime(ctx, tx, nsName, table, expected); err != nil {
-		return nil, err
-	}
-	old, err := loadSchema(ctx, tx, nsName, table)
-	if err != nil {
-		return nil, err
-	}
-	if err := checkExpectedVersion(nsName, table, expectedVersion, old); err != nil {
-		return nil, err
-	}
-	w, err := planMigration(ctx, tx, nsName, table, old, changes, emb, expectedVersion, nil)
-	if err != nil {
-		return nil, err
-	}
-	cur := w.cur
-
-	for i, st := range w.steps {
-		if err := s.migrateStep(ctx, "change", i, func(ctx context.Context) error { return st(ctx, tx) }); err != nil {
-			return nil, fmt.Errorf("migration step failed: %w", err)
+	for attempt := 0; ; attempt++ {
+		if attempt > maxMigrateAttempts {
+			return nil, migrationConflict(nsName, table)
 		}
-	}
-
-	if w.rebuildFTSNeeded {
-		if err := s.migrateStep(ctx, "fts_rebuild", len(w.steps), func(ctx context.Context) error {
-			if err := dropFTS(ctx, tx, table); err != nil {
-				return err
-			}
-			if fts := ftsFields(cur.Fields); len(fts) > 0 {
-				return createFTS(ctx, tx, table, fts)
-			}
-			return nil
-		}); err != nil {
+		plan, err := s.readMigratePlan(ctx, n, nsName, table, changes, emb, expected)
+		if err != nil {
 			return nil, err
 		}
-	}
-
-	endBackfill := func(error) {}
-	defer func() { endBackfill(err) }()
-	if w.vectorizeChanged {
-		var bctx context.Context
-		bctx, endBackfill = s.migrateStepSpan(ctx, "embedding_backfill", len(w.steps)+1)
-		ctx := bctx
-		newVec := vectorizeField(cur.Fields)
-		if newVec != nil {
-
-			modelChanged := old.EmbedSpace != "" && emb.Identity != "" && old.EmbedSpace != emb.Identity
-			if old.VectorizeField() != nil || modelChanged {
-				if _, err := tx.ExecContext(ctx,
-					fmt.Sprintf(`UPDATE %s SET "_embedding" = NULL`, q(table))); err != nil {
-					return nil, err
+		var constant []float32
+		if plan.work.embed.embedding {
+			bctx, endBackfill := s.migrateStepSpan(ctx, "embedding_backfill", attempt)
+			constant, err = s.stageBackfill(bctx, n, nsName, table, plan, emb)
+			endBackfill(err)
+			if err != nil {
+				if errors.Is(err, errMigrateRetry) {
+					continue
 				}
-			}
-			cur.EmbedDim = 0
-			if _, err := tx.ExecContext(ctx,
-				fmt.Sprintf(`ALTER TABLE %s ADD COLUMN "_embedding" BLOB`, q(table))); err != nil {
-				if !strings.Contains(err.Error(), "duplicate column") {
-					return nil, fmt.Errorf("add _embedding column: %w", err)
-				}
-			}
-			for {
-				rows, err := tx.QueryContext(ctx,
-					fmt.Sprintf(`SELECT id, %s FROM %s WHERE "_embedding" IS NULL AND %s IS NOT NULL AND %s != '' ORDER BY id LIMIT 128`,
-						q(newVec.Name), q(table), q(newVec.Name), q(newVec.Name)))
-				if err != nil {
-					return nil, err
-				}
-				type pending struct {
-					id   int64
-					text string
-				}
-				var batch []pending
-				for rows.Next() {
-					var p pending
-					if err := rows.Scan(&p.id, &p.text); err != nil {
-						rows.Close()
-						return nil, err
-					}
-					batch = append(batch, p)
-				}
-				rows.Close()
-				if err := rows.Err(); err != nil {
-					return nil, err
-				}
-				if len(batch) == 0 {
-					break
-				}
-				texts := make([]string, len(batch))
-				for i, p := range batch {
-					texts[i] = p.text
-				}
-				vecs, err := emb.Embed(ctx, texts)
-				if err != nil {
-					return nil, fmt.Errorf("backfill embedding failed: %w", err)
-				}
-				if len(vecs) != len(texts) {
-					return nil, fmt.Errorf("backfill: embedding provider returned %d vectors for %d texts", len(vecs), len(texts))
-				}
-				for _, v := range vecs {
-					if len(v) == 0 {
-						return nil, invalidf("backfill: embedding provider returned a zero-dimensional vector for table %s", table)
-					}
-					for _, x := range v {
-						if math.IsNaN(float64(x)) || math.IsInf(float64(x), 0) {
-							return nil, invalidf("backfill: embedding provider returned a non-finite vector component for table %s", table)
-						}
-					}
-					if cur.EmbedDim == 0 {
-						cur.EmbedDim = len(v)
-					} else if len(v) != cur.EmbedDim {
-						return nil, invalidf("embedding provider returned %d-dimensional vectors mid-backfill (expected %d)", len(v), cur.EmbedDim)
-					}
-				}
-				for i, p := range batch {
-					if _, err := tx.ExecContext(ctx,
-						fmt.Sprintf(`UPDATE %s SET "_embedding" = ? WHERE id = ?`, q(table)),
-						schema.EncodeVector(vecs[i]), p.id); err != nil {
-						return nil, err
-					}
-				}
-			}
-			cur.EmbedSpace = emb.Identity
-			if cur.EmbedDim == 0 {
-				var dim int
-				if err := tx.QueryRowContext(ctx,
-					fmt.Sprintf(`SELECT length("_embedding") / 4 FROM %s WHERE "_embedding" IS NOT NULL LIMIT 1`, q(table))).Scan(&dim); err == nil && dim > 0 {
-					cur.EmbedDim = dim
-				}
-			}
-		} else if old.VectorizeField() != nil {
-			if _, err := tx.ExecContext(ctx,
-				fmt.Sprintf(`UPDATE %s SET "_embedding" = NULL`, q(table))); err != nil {
 				return nil, err
 			}
 		}
+		head, err := s.coverageCheck(ctx, n, nsName, table, plan, emb.Identity)
+		if err != nil {
+			if errors.Is(err, errMigrateRetry) {
+				continue
+			}
+			return nil, err
+		}
+		result, retry, err := s.activateMigration(ctx, n, nsName, table, changes, emb, expected, plan, constant, head)
+		if err != nil {
+			return nil, err
+		}
+		if !retry {
+			return result, nil
+		}
 	}
-
-	endBackfill(nil)
-	if err := saveSchemaTx(ctx, tx, nsName, cur, old.Version, changes); err != nil {
-		return nil, err
-	}
-	if err := commitWrite(tx, txSpan); err != nil {
-		return nil, err
-	}
-	return cur, nil
 }
 
 func (s *Store) PlanMigration(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expected Incarnation, scope *RowScope, scopeIncarnation Incarnation) (*MigrationPlan, error) {
@@ -818,16 +707,23 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			}
 			modelChanged := cur.EmbedSpace != "" && emb.Identity != "" && cur.EmbedSpace != emb.Identity
 			plan.ClearsEmbeddings = old.VectorizeField() != nil || modelChanged
+			w.embed.embedding = true
+			w.embed.clear = plan.ClearsEmbeddings
+			w.embed.addColumn = old.VectorizeField() == nil
+			w.embed.target = newVec.Name
 
 			if phys := physicalName[newVec.Name]; phys == "" {
-				if s, ok := defaults[newVec.Name].(string); ok && s != "" {
+				if text, ok := defaults[newVec.Name].(string); ok && text != "" {
 					n, err := visibleCount(ctx, db, table, scope)
 					if err != nil {
 						return nil, err
 					}
 					plan.EmbedRows = n
+					w.embed.constant = text
 				}
 			} else {
+				w.embed.hasSource = true
+				w.embed.source = phys
 				var n int64
 				vis, visArgs := visiblePredicate(scope)
 				if err := db.QueryRowContext(ctx,
@@ -841,6 +737,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			cur.EmbedDim = 0
 		} else if old.VectorizeField() != nil {
 			plan.ClearsEmbeddings = true
+			w.embed.clear = true
 		}
 	}
 
