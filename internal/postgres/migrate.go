@@ -690,6 +690,11 @@ func (s *Store) PlanMigration(ctx context.Context, ns, table string, changes []s
 		if err != nil {
 			return err
 		}
+		if w.embedding {
+			if err := s.requireUTF8ForStaging(); err != nil {
+				return err
+			}
+		}
 		plan = w.plan
 		plan.DryRun = true
 		plan.Expected = state.incarnation
@@ -719,9 +724,6 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 	if expected.Version < 0 {
 		return nil, invalidf("expected_version must be a positive schema version, got %d", expected.Version)
 	}
-	if err := s.requireUTF8ForStaging(); err != nil {
-		return nil, err
-	}
 	endMigrate := s.beginMigrate(ns, table)
 	defer endMigrate()
 	for attempt := 0; attempt < 3; attempt++ {
@@ -744,6 +746,9 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 		}
 		var constant []float32
 		if planned.embedding {
+			if err := s.requireUTF8ForStaging(); err != nil {
+				return nil, err
+			}
 			if planned.embed.constant != "" {
 				vecs, err := store.EmbedTexts(ctx, planned.cur, table, []string{planned.embed.constant}, emb)
 				if err != nil {

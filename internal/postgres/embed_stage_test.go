@@ -516,3 +516,21 @@ func TestPostgresTheEncodingIsReadForTheStagingGuard(t *testing.T) {
 		t.Fatalf("the refusal must be a classified invalid request, got %v", err)
 	}
 }
+
+func TestPostgresANonUTF8DatabaseOnlyRefusesVectorizingMigrations(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	seedPGStageTable(t, s, "enc", "docs", 2)
+	ctx := t.Context()
+	s.serverEncoding = "LATIN1"
+	if _, err := s.Migrate(ctx, "enc", "docs", []schema.Change{
+		{Op: schema.OpAddField, Field: &schema.Field{Name: "extra", Type: schema.Number}},
+	}, store.Embedder{}, store.Incarnation{Version: 1}); err != nil {
+		t.Fatalf("a migration that embeds nothing must still run on a non-UTF-8 database: %v", err)
+	}
+	if _, err := s.PlanMigration(ctx, "enc", "docs", vectorizeBody(), store.Embedder{}, store.Incarnation{Version: 2}, nil, store.Incarnation{}); err == nil {
+		t.Fatal("a dry run that would vectorize must be refused on a non-UTF-8 database, or the plan would promise something the migrate cannot do")
+	}
+	if _, err := s.Migrate(ctx, "enc", "docs", vectorizeBody(), store.Embedder{}, store.Incarnation{Version: 2}); err == nil {
+		t.Fatal("a vectorizing migrate must be refused on a non-UTF-8 database")
+	}
+}
