@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -28,11 +30,12 @@ import (
 )
 
 type fakeProvider struct {
-	mu    sync.Mutex
-	calls int
-	texts []string
-	fail  error
-	delay time.Duration
+	mu                   sync.Mutex
+	calls                int
+	texts                []string
+	fail                 error
+	failOnTextContaining string
+	delay                time.Duration
 }
 
 func (p *fakeProvider) Name() string      { return "conformance" }
@@ -42,12 +45,21 @@ func (p *fakeProvider) ModelName() string { return "fake-model" }
 func (p *fakeProvider) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	p.mu.Lock()
 	p.calls++
-	p.texts = append(p.texts, texts...)
-	fail, delay := p.fail, p.delay
+	fail, delay, marker := p.fail, p.delay, p.failOnTextContaining
+	scoped := marker != "" && slices.ContainsFunc(texts, func(text string) bool { return strings.Contains(text, marker) })
+	if scoped {
+		p.failOnTextContaining, p.fail = "", nil
+	}
 	p.mu.Unlock()
-	if fail != nil {
+	switch {
+	case scoped:
+		return nil, fmt.Errorf("%w: the provider was asked for %d texts and one of them is the one this call refuses", fail, len(texts))
+	case fail != nil && marker == "":
 		return nil, fail
 	}
+	p.mu.Lock()
+	p.texts = append(p.texts, texts...)
+	p.mu.Unlock()
 	if delay > 0 {
 		select {
 		case <-ctx.Done():
@@ -808,4 +820,17 @@ func (h *harness) restart() {
 	mux.Handle("/mcp", mcpSrv)
 	mux.Handle("/", apiSrv.Handler())
 	h.serve(api.OriginGuard(mux, nil))
+}
+
+func (p *fakeProvider) failOnText(substr string, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.fail = err
+	p.failOnTextContaining = substr
+}
+
+func (p *fakeProvider) forgetTexts() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.texts = nil
 }

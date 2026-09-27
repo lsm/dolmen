@@ -694,6 +694,9 @@ func (s *Store) PlanMigration(ctx context.Context, ns, table string, changes []s
 			if err := s.requireUTF8ForStaging(); err != nil {
 				return err
 			}
+			if err := s.applyStagedPlan(ctx, tx, n, state, w.embed.source, emb.Identity, scope, w.plan, w.embed.hasSource); err != nil {
+				return err
+			}
 		}
 		plan = w.plan
 		plan.DryRun = true
@@ -739,7 +742,10 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 				return err
 			}
 			planned, err = s.planMigration(ctx, tx, n, state, changes, emb, int(expected.Version), nil)
-			return err
+			if err != nil {
+				return err
+			}
+			return nil
 		})
 		if err != nil {
 			return nil, err
@@ -835,7 +841,7 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 		}
 		return result, nil
 	}
-	return nil, derr.New(derr.Conflict, "migration of %s.%s kept losing a race with concurrent writes while backfilling embeddings; retry the migration", ns, table)
+	return nil, derr.New(derr.Conflict, "migration of %s.%s kept losing a race with concurrent writes while backfilling embeddings; re-issue the same migrate to continue from the rows already embedded", ns, table)
 }
 
 const embedBackfillPage = 128
@@ -853,7 +859,7 @@ func (s *Store) backfillEmbeddings(ctx context.Context, ns, table string, state 
 		return err
 	}
 	for {
-		ids, texts, err := s.embedPage(ctx, ns, state, column, after)
+		ids, texts, err := s.embedPage(ctx, ns, state, column, after, nil)
 		if err != nil {
 			return err
 		}
@@ -898,30 +904,40 @@ func (s *Store) backfillEmbeddings(ctx context.Context, ns, table string, state 
 	}
 }
 
-func (s *Store) embedPage(ctx context.Context, ns string, state tableState, column string, after int64) ([]int64, []string, error) {
+func (s *Store) embedPage(ctx context.Context, ns string, state tableState, column string, after int64, scope *store.RowScope) ([]int64, []string, error) {
 	var ids []int64
 	var texts []string
 	err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
-		physical := ident(n.physical, state.physical)
-		col := ident(column)
-		rows, err := tx.Query(ctx, "SELECT id,"+col+" FROM "+physical+
-			" WHERE "+col+" IS NOT NULL AND "+col+" != '' AND id > $1 ORDER BY id LIMIT $2", after, embedBackfillPage)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var id int64
-			var text string
-			if err := rows.Scan(&id, &text); err != nil {
-				return err
-			}
-			ids = append(ids, id)
-			texts = append(texts, text)
-		}
-		return rows.Err()
+		var err error
+		ids, texts, err = s.embedPageTx(ctx, tx, n, state, column, after, scope)
+		return err
 	})
 	return ids, texts, err
+}
+
+func (s *Store) embedPageTx(ctx context.Context, tx pgx.Tx, n namespace, state tableState, column string, after int64, scope *store.RowScope) ([]int64, []string, error) {
+	physical := ident(n.physical, state.physical)
+	col := ident(column)
+	vis, visArgs := visibleMigrationPredicate(scope, 2)
+	args := append([]any{after}, visArgs...)
+	rows, err := tx.Query(ctx, "SELECT id,"+col+" FROM "+physical+
+		" WHERE "+col+" IS NOT NULL AND "+col+" != '' AND id > $1"+vis+" ORDER BY id LIMIT $"+fmt.Sprint(len(args)+1), append(args, embedBackfillPage)...)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	var texts []string
+	for rows.Next() {
+		var id int64
+		var text string
+		if err := rows.Scan(&id, &text); err != nil {
+			return nil, nil, err
+		}
+		ids = append(ids, id)
+		texts = append(texts, text)
+	}
+	return ids, texts, rows.Err()
 }
 
 func reportPGBackfill(ns, table string, staged, total, reported int64) int64 {

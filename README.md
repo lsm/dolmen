@@ -321,6 +321,19 @@ different model, or a model whose prefix contract changed — rejects inserts an
 those tables until each is re-embedded: `migrate` with `set_vectorize` off, then on (the backfill
 re-embeds every row).
 
+**A vectorizing migration is resumable.** The embedding backfill runs outside the write transaction
+and each batch of vectors is kept as it is produced, so a provider that dies, a `migrate` that runs
+out of time, or a process that is killed part way through does not throw the work away: re-issue the
+same `migrate` and it embeds only the rows it does not already hold. A `dry_run` says so before you
+commit — `embed_rows` is what the call still needs from the provider and `staged_rows` is what an
+earlier attempt already finished, and the two add up to the rows the change will vectorize. A
+migration that keeps losing to concurrent writes answers `409` and says the same thing. The staged
+vectors are invisible to every other operation, are dropped when the migration lands (or when the
+table is dropped or vacuumed), and are never reused by a different provider identity, a different
+model of the same identity, or a table that was dropped and recreated. See
+[docs/design/embedding-backfill.md](docs/design/embedding-backfill.md) for why it is shaped this
+way.
+
 ### Offline install
 
 In networks that block `huggingface.co` (or on air-gapped machines), download a packaged model
@@ -448,7 +461,7 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 | `-idle-timeout` | `DOLMEN_IDLE_TIMEOUT` | `2m` | Time a keep-alive connection may wait for its next request. `0` disables the bound; otherwise `1s` to `24h` |
 | `-max-header-bytes` | `DOLMEN_MAX_HEADER_BYTES` | `1048576` | Largest request header block accepted; larger ones are answered `431`. `4096` to `16777216` |
 | `-op-timeout` | `DOLMEN_OP_TIMEOUT` | `2m` | Time for one operation's work over HTTP, MCP or stdio; `wait_for` gets its `timeout_ms` on top, and `migrate` answers to `-migrate-timeout` instead. An operation past it is stopped and answered `504` with code `timeout`. `0` disables the bound; otherwise `1s` to `24h` |
-| `-migrate-timeout` | `DOLMEN_MIGRATE_TIMEOUT` | `0` | Time for one `migrate` call, which may backfill every row inside one transaction. `0` leaves it unbounded; otherwise `1s` to `24h` |
+| `-migrate-timeout` | `DOLMEN_MIGRATE_TIMEOUT` | `0` | Time for one `migrate` call. A vectorizing migration embeds its rows *outside* the write transaction and keeps each batch, so a call that runs out of time can be re-issued to finish the rest rather than start over. `0` leaves it unbounded; otherwise `1s` to `24h` |
 | `-max-open-namespaces` | `DOLMEN_MAX_OPEN_NAMESPACES` | `128` | Namespaces held open at once. Past it, the least recently used idle namespace closes and reopens on its next request; one in use is never closed. At least `1`; SQLite engine only (see [Open namespaces and file descriptors](docs/deployment.md#open-namespaces-and-file-descriptors)) |
 | — | `DOLMEN_SKILL_NAMESPACE_HINT` | built-in default | Hint text rendered into the served skill markdown |
 | — | `DOLMEN_ALLOWED_ORIGINS` | — | Comma-separated allowed HTTP origins for CORS; `localhost`, `127.0.0.1`, and `::1` are always allowed |
@@ -1045,7 +1058,7 @@ atomically with your side effects rather than deduplicating on frame content.
 | `drop_table` | Drop a table — rows, search index, schema, history, idempotency keys; `confirm` must repeat the name |
 | `update` | WHERE-filtered field update; reindexes full-text rows and re-embeds changed vectorized fields |
 | `upsert` | Update matching rows, or insert one record when the filter matches nothing |
-| `migrate` | `add_field` (optional `default` backfills existing rows — required fields land on populated tables as `NOT NULL DEFAULT`; optional fields get a one-time backfill, later omitted inserts store NULL), `rename_field`, `drop_field`, `set_fulltext`, `set_vectorize`, `set_enum` (replaces a string field's vocabulary; rejects when a stored value falls outside the new list, naming it and its row count; an empty list removes the constraint), `set_shape` (sets or clears a json field's required shape; rejects when stored values do not fit, naming how many rows and their ids); `expected_version` asserts the schema being migrated (required for rename/drop, conflicts surface as 409), `expected_incarnation` — the opaque token a dry run returns — asserts the table itself and is what a precondition must use when auth is on, `dry_run` previews the plan without side effects; versioned + logged |
+| `migrate` | `add_field` (optional `default` backfills existing rows — required fields land on populated tables as `NOT NULL DEFAULT`; optional fields get a one-time backfill, later omitted inserts store NULL), `rename_field`, `drop_field`, `set_fulltext`, `set_vectorize`, `set_enum` (replaces a string field's vocabulary; rejects when a stored value falls outside the new list, naming it and its row count; an empty list removes the constraint), `set_shape` (sets or clears a json field's required shape; rejects when stored values do not fit, naming how many rows and their ids); `expected_version` asserts the schema being migrated (required for rename/drop, conflicts surface as 409), `expected_incarnation` — the opaque token a dry run returns — asserts the table itself and is what a precondition must use when auth is on, `dry_run` previews the plan without side effects (its plan reports `embed_rows`, the rows still needing a provider call, and `staged_rows`, the ones an interrupted earlier attempt already embedded, so a vectorizing migration is resumable); versioned + logged |
 | `list_migrations` | A table's migration history, newest first, with the exact recorded changes |
 
 ## Model

@@ -697,7 +697,14 @@ Three top-level keys complete the request:
 - `dry_run` — `true` validates and previews without applying anything (no writes, no embedding
   calls): the response carries the prospective table schema plus a `plan` with the version
   transition, ordered operations, destructive changes, `backfill_rows`, the FTS-rebuild and
-  embedding workload, and the `expected_incarnation` token to pass back on apply.
+  embedding workload, and the `expected_incarnation` token to pass back on apply. The embedding
+  workload is `embed_rows` — the rows this call still needs from the provider — and `staged_rows` —
+  the ones an interrupted earlier attempt already embedded, which the two add up to. A vectorizing
+  `migrate` keeps every batch it embeds, so a provider failure, a `504` timeout or a killed process
+  costs a re-issue, not the whole backfill: **re-issue the same `migrate` and it embeds only what is
+  left**, and `dry_run` before it says how much that is. Staged vectors are never reused across a
+  provider identity or a model change, and they are dropped when the migration lands, when the table
+  is dropped, and on `vacuum`.
 
 A complete call, previewed first:
 

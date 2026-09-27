@@ -110,7 +110,7 @@ func callerGone(ctx context.Context, err error) error {
 func opTimedOut(op, limit string, cause error) *Error {
 	msg := fmt.Sprintf("%s did not finish within the server's %s and was stopped; a read can be retried or narrowed (a filter, a smaller limit), and a write may or may not have committed, so check with a query before retrying it", op, limit)
 	if op == "migrate" {
-		msg = fmt.Sprintf("migrate did not finish within the server's %s and was stopped; check the table's version with describe_table to see whether it applied before retrying, and ask the operator to raise the limit for a migration this large", limit)
+		msg = fmt.Sprintf("migrate did not finish within the server's %s and was stopped; check the table's version with describe_table to see whether it applied, and if it did not, re-issue the same migrate - a vectorizing one keeps the embeddings it did manage, so the second attempt asks the provider only for the rows still missing - and ask the operator to raise the limit for a migration this large", limit)
 	}
 	return &Error{Status: http.StatusGatewayTimeout, Code: ErrCodeTimeout, Message: msg, Cause: cause}
 }
