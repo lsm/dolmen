@@ -457,6 +457,29 @@ func TestWritesDuringTheBackfillEndWithTheVectorOfTheirFinalText(t *testing.T) {
 			t.Fatalf("the row deleted during the backfill came back: %+v", gone.Rows)
 		}
 	})
+
+	t.Run("emptied behind the cursor", func(t *testing.T) {
+		const rows = 300
+		st := openBackfillStore(t)
+		seedBackfillTable(t, st, "wr", "docs", rows)
+		rec := &backfillRecorder{}
+		rec.inside = func(ctx context.Context) error {
+			if rec.calls == 2 {
+				inner, cancel := writeBound(ctx)
+				defer cancel()
+				if _, err := st.Update(inner, "wr", "docs", "id = 5", nil, map[string]any{"body": ""}, Embedder{}, nil, Incarnation{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if _, err := st.Migrate(context.Background(), "wr", "docs", vectorizeBody(), rec.embedder("fake-space"), Incarnation{Version: 1}); err != nil {
+			t.Fatalf("emptying a row during the backfill must not stop the migration: %v", err)
+		}
+		if live, ok := liveEmbeddings(t, st, "wr", "docs")[5]; ok && len(live) > 0 {
+			t.Fatalf("row 5 was emptied after its page was staged but kept the vector of its old text: a row with no text must carry no vector")
+		}
+	})
 }
 
 func TestAMigrationThatKeepsLosingToWritersReturnsAConflict(t *testing.T) {

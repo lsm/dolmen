@@ -269,7 +269,7 @@ func (s *Store) coverageCheck(ctx context.Context, n *nsDB, nsName, table string
 	return head, nil
 }
 
-func (s *Store) rowsStaleSince(ctx context.Context, tx *sql.Tx, table string, gen int64, provider string, from, to int64) (bool, error) {
+func (s *Store) rowsStaleSince(ctx context.Context, tx *sql.Tx, table string, gen int64, provider, source string, from, to int64) (bool, error) {
 	if to <= from {
 		return false, nil
 	}
@@ -299,12 +299,12 @@ func (s *Store) rowsStaleSince(ctx context.Context, tx *sql.Tx, table string, ge
 	if err != nil {
 		return false, err
 	}
-	return s.anyRowMissing(ctx, tx, table, staged, touched)
+	return s.anyRowMissing(ctx, tx, table, source, staged, touched)
 }
 
-func (s *Store) anyRowMissing(ctx context.Context, tx *sql.Tx, table string, staged map[int64]stagedVector, ids []int64) (bool, error) {
+func (s *Store) anyRowMissing(ctx context.Context, tx *sql.Tx, table, column string, staged map[int64]stagedVector, ids []int64) (bool, error) {
 	for _, id := range ids {
-		rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT id, %s FROM %s WHERE id = ?`, q(table), q(table)), id)
+		rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT id, %s FROM %s WHERE id = ?`, q(column), q(table)), id)
 		if err != nil {
 			return false, err
 		}
@@ -359,12 +359,13 @@ func (s *Store) activateMigration(ctx context.Context, n *nsDB, nsName, table st
 	}
 	e := &w.embed
 	staged := map[int64]stagedVector{}
+	var covered []int64
 	if e.embedding {
 		cur, err := changeHead(ctx, tx)
 		if err != nil {
 			return nil, false, err
 		}
-		stale, err := s.rowsStaleSince(ctx, tx, table, gen, emb.Identity, head, cur)
+		stale, err := s.rowsStaleSince(ctx, tx, table, gen, emb.Identity, e.source, head, cur)
 		if err != nil {
 			return nil, false, err
 		}
@@ -376,7 +377,8 @@ func (s *Store) activateMigration(ctx context.Context, n *nsDB, nsName, table st
 			if err != nil {
 				return nil, false, err
 			}
-			if err := s.verifyStagedCoverage(ctx, tx, table, w, staged); err != nil {
+			covered, err = verifyStagedCoverage(ctx, tx, table, w, staged)
+			if err != nil {
 				if errors.Is(err, errMigrateRetry) {
 					return nil, true, nil
 				}
@@ -415,7 +417,7 @@ func (s *Store) activateMigration(ctx context.Context, n *nsDB, nsName, table st
 		}
 	}
 	if e.embedding {
-		if err := s.applyStagedVectors(ctx, tx, table, w, staged, constant); err != nil {
+		if err := s.applyStagedVectors(ctx, tx, table, w, staged, covered, constant); err != nil {
 			if errors.Is(err, errMigrateRetry) {
 				return nil, true, nil
 			}
@@ -434,30 +436,35 @@ func (s *Store) activateMigration(ctx context.Context, n *nsDB, nsName, table st
 	return w.cur, false, nil
 }
 
-func (s *Store) verifyStagedCoverage(ctx context.Context, tx *sql.Tx, table string, w *migrationWork, staged map[int64]stagedVector) error {
+func verifyStagedCoverage(ctx context.Context, tx *sql.Tx, table string, w *migrationWork, staged map[int64]stagedVector) ([]int64, error) {
 	e := &w.embed
 	rows, err := tx.QueryContext(ctx, fmt.Sprintf(
 		`SELECT id, %s FROM %s WHERE %s IS NOT NULL AND %s != '' ORDER BY id`,
 		q(e.source), q(table), q(e.source), q(e.source)))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer rows.Close()
+	var covered []int64
 	for rows.Next() {
 		var id int64
 		var text string
 		if err := rows.Scan(&id, &text); err != nil {
-			return err
+			return nil, err
 		}
 		held, ok := staged[id]
 		if !ok || held.digest != textDigest(text) {
-			return errMigrateRetry
+			return nil, errMigrateRetry
 		}
+		covered = append(covered, id)
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return covered, nil
 }
 
-func (s *Store) applyStagedVectors(ctx context.Context, tx *sql.Tx, table string, w *migrationWork, staged map[int64]stagedVector, constant []float32) error {
+func (s *Store) applyStagedVectors(ctx context.Context, tx *sql.Tx, table string, w *migrationWork, staged map[int64]stagedVector, covered []int64, constant []float32) error {
 	e := &w.embed
 	if e.constant != "" {
 		if constant == nil {
@@ -474,14 +481,10 @@ func (s *Store) applyStagedVectors(ctx context.Context, tx *sql.Tx, table string
 		}
 		return nil
 	}
-	ids, err := tableRowIDs(ctx, tx, table)
-	if err != nil {
-		return err
-	}
-	for _, id := range ids {
+	for _, id := range covered {
 		held, ok := staged[id]
 		if !ok {
-			continue
+			return errMigrateRetry
 		}
 		if w.cur.EmbedDim == 0 {
 			w.cur.EmbedDim = len(held.vec)
@@ -492,23 +495,6 @@ func (s *Store) applyStagedVectors(ctx context.Context, tx *sql.Tx, table string
 		}
 	}
 	return nil
-}
-
-func tableRowIDs(ctx context.Context, tx *sql.Tx, table string) ([]int64, error) {
-	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT id FROM %s ORDER BY id`, q(table)))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
 }
 
 func migrationConflict(nsName, table string) error {

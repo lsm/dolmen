@@ -17,7 +17,7 @@ import (
 	"github.com/lsm/dolmen/internal/mcp"
 )
 
-const cancelGrace = 30 * time.Second
+const cancelGrace = 2 * time.Minute
 
 type startHook struct {
 	sdktrace.SpanProcessor
