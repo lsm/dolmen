@@ -202,15 +202,3 @@ func (s *Store) stageTables(ctx context.Context, n *nsDB, nsName string) ([]stri
 	}
 	return out, rows.Err()
 }
-
-func stagedCount(ctx context.Context, db querier, table string, gen int64, provider string) (int64, error) {
-	present, err := embedStagePresent(ctx, db)
-	if err != nil || !present {
-		return 0, err
-	}
-	var n int64
-	err = db.QueryRowContext(ctx, fmt.Sprintf(
-		`SELECT count(*) FROM %s WHERE table_name = ? AND drop_gen = ? AND provider = ?`, embedStageTable),
-		table, gen, provider).Scan(&n)
-	return n, err
-}

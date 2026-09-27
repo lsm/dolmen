@@ -132,11 +132,17 @@ and a `subscribe` client sees the migration as the single change it already sees
 
 ## 8. Progress
 
+The first two bullets are **not implemented yet**; they land with the wire contract in the final
+slice, and nothing in the engine or on the wire promises them until then. A dry run today reports the
+total number of rows to embed, as it always has.
+
 - The dry run's `embed_rows` becomes the number of rows still to embed, so it shrinks as a
   backfill proceeds and a caller can poll with `dry_run: true`.
 - A new `staged_rows` counts rows already staged for this table's current text, so the two numbers
   add up to the work.
 - A migration logs one info line per 10% of rows, with namespace, table, staged and total.
+  Implemented: the walk counts rows already staged, so a resumed migration reports against the whole
+  table rather than against what is left.
 - MCP progress notifications are out of scope: nothing emits notifications today, and adding an
   emitter for one operation would make the transports disagree.
 

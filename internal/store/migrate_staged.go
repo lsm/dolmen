@@ -378,8 +378,8 @@ func (s *Store) activateMigration(ctx context.Context, n *nsDB, nsName, table st
 			return nil, false, err
 		}
 	}
-	if e.embedding {
-		if err := s.stampStagedVectors(ctx, tx, table, w, gen, emb.Identity, constant); err != nil {
+	if e.embedding && e.hasSource {
+		if err := s.stampStagedVectors(ctx, tx, table, w, gen, emb.Identity, nil); err != nil {
 			if errors.Is(err, errMigrateRetry) {
 				return nil, true, nil
 			}
@@ -401,6 +401,14 @@ func (s *Store) activateMigration(ctx context.Context, n *nsDB, nsName, table st
 			}
 			return nil
 		}); err != nil {
+			return nil, false, err
+		}
+	}
+	if e.embedding && e.constant != "" {
+		if err := s.stampStagedVectors(ctx, tx, table, w, gen, emb.Identity, constant); err != nil {
+			if errors.Is(err, errMigrateRetry) {
+				return nil, true, nil
+			}
 			return nil, false, err
 		}
 	}
