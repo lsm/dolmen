@@ -825,10 +825,7 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 			if err := s.saveMigration(ctx, tx, n, current, work, changes); err != nil {
 				return err
 			}
-			if work.embedding {
-				return s.deleteStagedVectors(ctx, tx, ns, table)
-			}
-			return nil
+			return s.deleteStagedVectors(ctx, tx, ns, table)
 		})
 		if errors.Is(err, errMigrationRetry) {
 			continue

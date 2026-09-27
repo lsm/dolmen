@@ -594,3 +594,99 @@ func TestPostgresAStageIsNotStampedWhenTheProviderChangesDimension(t *testing.T)
 		t.Fatalf("a refused stamp recorded %d migrations, want none", len(log))
 	}
 }
+
+func TestPostgresAProviderThatChangesDimensionMidAttemptIsCaughtBeforeStaging(t *testing.T) {
+	const rows = 300
+	s := openTest(t, testConfig(t))
+	seedPGStageTable(t, s, "mid", "docs", rows)
+	ctx := t.Context()
+	calls := 0
+	shifting := store.Embedder{Identity: "test", Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+		calls++
+		dim := 8
+		if calls > 1 {
+			dim = 4
+		}
+		out := make([][]float32, len(texts))
+		for i, text := range texts {
+			v := make([]float32, dim)
+			for _, b := range []byte(text) {
+				v[int(b)%dim]++
+			}
+			out[i] = v
+		}
+		return out, nil
+	}}
+	_, err := s.Migrate(ctx, "mid", "docs", vectorizeBody(), shifting, store.Incarnation{Version: 1})
+	if err == nil {
+		t.Fatal("a provider that changes dimension between two pages of one attempt must not be allowed to stage a mixed-length stage")
+	}
+	if !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("the refusal must be classified as an invalid request, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "4-dimensional") {
+		t.Fatalf("the refusal must name the dimension the provider switched to, got %v", err)
+	}
+	if stage := pgStageCount(t, s, "mid", "docs"); stage != embedBackfillPage {
+		t.Fatalf("%d rows are staged, want only the first page's %d: the second page must be refused before it is written", stage, embedBackfillPage)
+	}
+	if live := pgLiveEmbeddings(t, s, "mid", "docs"); live != 0 {
+		t.Fatalf("%d rows were stamped from a mixed-length stage", live)
+	}
+}
+
+func TestPostgresAMixedLengthStageIsRecoverableByTurningVectorizeOff(t *testing.T) {
+	const rows = 200
+	s := openTest(t, testConfig(t))
+	seedPGStageTable(t, s, "wedge", "docs", rows)
+	ctx := t.Context()
+
+	first := &pgStageRecorder{}
+	first.inside = func(context.Context) error {
+		if first.calls >= 2 {
+			return errors.New("provider is down")
+		}
+		return nil
+	}
+	if _, err := s.Migrate(ctx, "wedge", "docs", vectorizeBody(), first.embedder("test"), store.Incarnation{Version: 1}); err == nil {
+		t.Fatal("a provider failure mid-backfill must fail the migration")
+	}
+	narrow := store.Embedder{Identity: "test", Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+		out := make([][]float32, len(texts))
+		for i, text := range texts {
+			v := make([]float32, 4)
+			for _, b := range []byte(text) {
+				v[int(b)%4]++
+			}
+			out[i] = v
+		}
+		return out, nil
+	}}
+	if _, err := s.Migrate(ctx, "wedge", "docs", vectorizeBody(), narrow, store.Incarnation{Version: 1}); err == nil {
+		t.Fatal("a stage holding two lengths must refuse to activate")
+	} else if !strings.Contains(err.Error(), "re-embed via migrate") {
+		t.Fatalf("the refusal must name its own remedy, so a caller can follow it: %v", err)
+	}
+	if stage := pgStageCount(t, s, "wedge", "docs"); stage == 0 {
+		t.Fatal("nothing is staged, so this proves nothing about recovering from a mixed-length stage")
+	}
+	off := false
+	if _, err := s.Migrate(ctx, "wedge", "docs", []schema.Change{
+		{Op: schema.OpSetVectorize, Name: "body", Value: &off},
+	}, store.Embedder{}, store.Incarnation{Version: 1}); err != nil {
+		t.Fatalf("turning vectorize off must succeed, it is the remedy the refusal names: %v", err)
+	}
+	if stage := pgStageCount(t, s, "wedge", "docs"); stage != 0 {
+		t.Fatalf("the remedy the refusal names left %d staged rows behind, so a caller following it stays wedged", stage)
+	}
+	after, err := s.Migrate(ctx, "wedge", "docs", vectorizeBody(), (&pgStageRecorder{}).embedder("test"), store.Incarnation{Version: 2})
+	if err != nil {
+		t.Fatalf("re-embedding after the remedy must succeed: %v", err)
+	}
+	if after.EmbedDim != 8 || after.Version != 3 {
+		t.Fatalf("the re-embedded table ended at version %d dim %d, want 3 and 8", after.Version, after.EmbedDim)
+	}
+	if live := pgLiveEmbeddings(t, s, "wedge", "docs"); live != rows {
+		t.Fatalf("%d rows carry a vector after the re-embed, want %d", live, rows)
+	}
+}
