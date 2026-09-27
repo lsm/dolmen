@@ -102,8 +102,9 @@ driver opens, so `query` could call it on SQLite but not on PostgreSQL and the t
 disagree about what a caller's SQL may do. So the activation walks the table in the same keyset pages
 and, for each page, confirms every row with non-empty text has a staged vector whose digest matches
 that row's current text, stamping as it goes. The writer is held while it does — O(N) in-process
-statements, and that is the honest cost of the digest on this engine. The per-row statements run
-inside the process, so they are cheap once prepared, and memory stays bounded by a page.
+statements, and that is the honest cost of the digest on this engine. The one statement the walk uses
+is prepared once per activation rather than once per row, so the per-row cost is a bind and a step,
+and memory stays bounded by a page.
 
 Either way the fill reads the row's *current* text, so a row emptied after its page was staged ends
 with no vector, and a row whose text changed after staging is caught rather than silently stamped

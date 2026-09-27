@@ -439,11 +439,13 @@ func (s *Store) activateMigration(ctx context.Context, n *nsDB, nsName, table st
 
 func (s *Store) stampStagedVectors(ctx context.Context, tx *sql.Tx, table string, w *migrationWork, gen int64, provider string, constant []float32) error {
 	e := &w.embed
+	stmts := newStmtCache(tx)
+	defer stmts.close()
 	if e.constant != "" {
 		if constant == nil {
 			return errMigrateRetry
 		}
-		res, err := tx.ExecContext(ctx, fmt.Sprintf(
+		res, err := stmts.ExecContext(ctx, fmt.Sprintf(
 			`UPDATE %s SET "_embedding" = ? WHERE %s IS NOT NULL AND %s != ''`, q(table), q(e.target), q(e.target)),
 			encodeStageVector(constant))
 		if err != nil {
@@ -458,6 +460,7 @@ func (s *Store) stampStagedVectors(ctx context.Context, tx *sql.Tx, table string
 		return nil
 	}
 	var after int64
+	stampOne := fmt.Sprintf(`UPDATE %s SET "_embedding" = ? WHERE id = ?`, q(table))
 	for {
 		page, err := stagedSourcePage(ctx, tx, table, e.source, after)
 		if err != nil {
@@ -480,7 +483,7 @@ func (s *Store) stampStagedVectors(ctx context.Context, tx *sql.Tx, table string
 			} else if len(held.vec) != w.cur.EmbedDim {
 				return invalidf("embedding provider returned %d-dimensional vectors mid-backfill (expected %d)", len(held.vec), w.cur.EmbedDim)
 			}
-			if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET "_embedding" = ? WHERE id = ?`, q(table)),
+			if _, err := stmts.ExecContext(ctx, stampOne,
 				encodeStageVector(held.vec), id); err != nil {
 				return err
 			}
