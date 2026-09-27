@@ -719,6 +719,9 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 	if expected.Version < 0 {
 		return nil, invalidf("expected_version must be a positive schema version, got %d", expected.Version)
 	}
+	if err := s.requireUTF8ForStaging(); err != nil {
+		return nil, err
+	}
 	endMigrate := s.beginMigrate(ns, table)
 	defer endMigrate()
 	for attempt := 0; attempt < 3; attempt++ {
@@ -748,7 +751,7 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 				}
 				constant = vecs[0]
 			} else if planned.embed.hasSource {
-				if err := s.backfillEmbeddings(ctx, ns, table, state, planned.embed.source, emb); err != nil {
+				if err := s.backfillEmbeddings(ctx, ns, table, state, planned.cur, planned.embed.source, emb); err != nil {
 					return nil, err
 				}
 			}
@@ -835,7 +838,7 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 
 const embedBackfillPage = 128
 
-func (s *Store) backfillEmbeddings(ctx context.Context, ns, table string, state tableState, column string, emb store.Embedder) error {
+func (s *Store) backfillEmbeddings(ctx context.Context, ns, table string, state tableState, planned *schema.TableSchema, column string, emb store.Embedder) error {
 	provider := emb.Identity
 	var after int64
 	var staged, reported int64
@@ -876,7 +879,7 @@ func (s *Store) backfillEmbeddings(ctx context.Context, ns, table string, state 
 			return err
 		}
 		if len(batch) > 0 {
-			vecs, err := store.EmbedTexts(ctx, state.schema, table, fresh, emb)
+			vecs, err := store.EmbedTexts(ctx, planned, table, fresh, emb)
 			if err != nil {
 				return err
 			}
@@ -1052,7 +1055,7 @@ func (s *Store) ListMigrations(ctx context.Context, ns, table string, inc store.
 			return err
 		}
 		rows, err := tx.Query(ctx, "SELECT id,from_version,to_version,changes_json,at FROM "+s.relation("migrations")+
-			" WHERE namespace=$1 AND table_name=$2 AND drop_generation=$3 ORDER BY id DESC", n.name, table, inc.DropGen)
+			" WHERE namespace=$1 AND table_name=$2 AND drop_generation=$3 ORDER BY id DESC", n.name, table, state.incarnation.DropGen)
 		if err != nil {
 			return err
 		}

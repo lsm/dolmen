@@ -73,6 +73,9 @@ func (s *Store) bootstrap(ctx context.Context) error {
 	if err := s.requireServerVersion(ctx, tx); err != nil {
 		return err
 	}
+	if err := s.readServerEncoding(ctx, tx); err != nil {
+		return err
+	}
 	if err := s.catalogLock(ctx, tx); err != nil {
 		return err
 	}
@@ -314,4 +317,13 @@ func (s *Store) reserveChanges(ctx context.Context, tx pgx.Tx, n namespace, coun
 		return store.ChangeRange{}, err
 	}
 	return store.ChangeRange{First: last - count + 1, Last: last, Count: count}, nil
+}
+
+func (s *Store) readServerEncoding(ctx context.Context, tx pgx.Tx) error {
+	var name string
+	if err := tx.QueryRow(ctx, "SHOW server_encoding").Scan(&name); err != nil {
+		return err
+	}
+	s.serverEncoding = strings.TrimSpace(name)
+	return nil
 }

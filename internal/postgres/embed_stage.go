@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lsm/dolmen/internal/schema"
+	"github.com/lsm/dolmen/internal/store"
 )
 
 const stageLookupChunk = 500
@@ -151,4 +152,12 @@ func (s *Store) migrateRunning(ns string) func(string) bool {
 		defer s.migrateMu.Unlock()
 		return s.migrating[ns+"."+table] > 0
 	}
+}
+
+func (s *Store) requireUTF8ForStaging() error {
+	enc := strings.ToUpper(s.serverEncoding)
+	if enc == "" || enc == "UTF8" || enc == "UTF-8" {
+		return nil
+	}
+	return fmt.Errorf("%w: this database's encoding is %s, and a staged vector is keyed by the SHA-256 of the row's text, which only matches when the database stores it as UTF-8 bytes; recreate the database with a UTF-8 encoding (CREATE DATABASE dolmen TEMPLATE template0 ENCODING 'UTF8') to use vectorize or search on it", store.ErrInvalid, enc)
 }

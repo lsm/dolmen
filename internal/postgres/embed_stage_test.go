@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -492,5 +493,26 @@ func TestPostgresTheCatalogGainsItsStageRelationOnUpgrade(t *testing.T) {
 	}
 	if _, err := s.Migrate(ctx, "app", "notes", vectorizeBody(), (&pgStageRecorder{}).embedder("test"), store.Incarnation{Version: 1}); err != nil {
 		t.Fatalf("migrate over an upgraded catalog: %v", err)
+	}
+}
+
+func TestPostgresTheEncodingIsReadForTheStagingGuard(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	if enc := strings.ToUpper(s.serverEncoding); enc != "UTF8" && enc != "UTF-8" {
+		t.Fatalf("the test database reports server_encoding %q, so the non-UTF8 guard is what this run is exercising", s.serverEncoding)
+	}
+	if err := s.requireUTF8ForStaging(); err != nil {
+		t.Fatalf("a UTF-8 database must be allowed to vectorize: %v", err)
+	}
+	s.serverEncoding = "LATIN1"
+	err := s.requireUTF8ForStaging()
+	if err == nil {
+		t.Fatal("a non-UTF-8 database must be refused, because convert_to would re-encode the text and no digest would ever match")
+	}
+	if !strings.Contains(err.Error(), "LATIN1") || !strings.Contains(err.Error(), "UTF8") {
+		t.Fatalf("the refusal must name the encoding it found and the one it needs, got %v", err)
+	}
+	if !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("the refusal must be a classified invalid request, got %v", err)
 	}
 }

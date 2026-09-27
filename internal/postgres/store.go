@@ -50,6 +50,8 @@ type Store struct {
 
 	migrateMu sync.Mutex
 	migrating map[string]int
+
+	serverEncoding string
 }
 
 type connectionError struct {

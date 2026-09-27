@@ -129,7 +129,11 @@ already pins.
   that row had staged, so a text that goes A → B → A cannot accumulate entries and cannot wedge
   activation on a stale digest.
 - A table's stage is deleted on activation and on `drop_table`. `vacuum` deletes it too, when no
-  `migrate` of that table is running in this process.
+  `migrate` of that table is running **in this process** — a per-process check, because that is all
+  either engine can see cheaply. Stages are cross-process, which is the point of them, so a `vacuum`
+  from a second process can clear a running migrate's stage. The outcome stays correct, because
+  activation counts what it filled and retries; what it costs is a re-embed of the work that was
+  staged. A catalog-level marker with an age bound is the fix if that ever matters more.
 - Two migrates of one table may overlap, and on PostgreSQL they may be in different processes.
   They stay correct because the stage is keyed by content and activation re-checks coverage inside
   its own transaction; duplicate provider calls are the accepted cost. A conflicted activation
