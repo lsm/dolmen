@@ -17,6 +17,8 @@ const embedBackfillPage = 128
 
 const maxMigrateAttempts = 3
 
+const stageLookupChunk = 500
+
 var errMigrateRetry = errors.New("migration must retry activation")
 
 type embedWork struct {
@@ -290,11 +292,22 @@ func (s *Store) rowsStaleSince(ctx context.Context, tx *sql.Tx, table string, ge
 	if len(touched) == 0 {
 		return false, nil
 	}
-	staged, err := loadStagedVectors(ctx, tx, table, gen, provider, touched)
-	if err != nil {
-		return false, err
+	for start := 0; start < len(touched); start += stageLookupChunk {
+		end := min(start+stageLookupChunk, len(touched))
+		chunk := touched[start:end]
+		staged, err := loadStagedVectors(ctx, tx, table, gen, provider, chunk)
+		if err != nil {
+			return false, err
+		}
+		missing, err := s.anyRowMissing(ctx, tx, table, source, staged, chunk)
+		if err != nil {
+			return false, err
+		}
+		if missing {
+			return true, nil
+		}
 	}
-	return s.anyRowMissing(ctx, tx, table, source, staged, touched)
+	return false, nil
 }
 
 func (s *Store) anyRowMissing(ctx context.Context, tx *sql.Tx, table, column string, staged map[int64]stagedVector, ids []int64) (bool, error) {

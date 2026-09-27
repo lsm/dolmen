@@ -429,6 +429,28 @@ func TestWritesDuringTheBackfillEndWithTheVectorOfTheirFinalText(t *testing.T) {
 		})
 	}
 
+	t.Run("a bulk write behind the cursor", func(t *testing.T) {
+		const rows = 300
+		st := openBackfillStore(t)
+		seedBackfillTable(t, st, "wr", "docs", rows)
+		rec := &backfillRecorder{}
+		rec.inside = func(ctx context.Context) error {
+			if rec.calls != 2 {
+				return nil
+			}
+			inner, cancel := writeBound(ctx)
+			defer cancel()
+			_, err := st.Update(inner, "wr", "docs", "id <= 600", nil, map[string]any{"body": "rewritten in bulk"}, Embedder{}, nil, Incarnation{})
+			return err
+		}
+		if _, err := st.Migrate(context.Background(), "wr", "docs", vectorizeBody(), rec.embedder("fake-space"), Incarnation{Version: 1}); err != nil {
+			t.Fatalf("a bulk write during the backfill must not stop the migration: %v", err)
+		}
+		for id := int64(1); id <= rows; id++ {
+			expectVectorOf(t, st, "wr", "docs", id, "rewritten in bulk")
+		}
+	})
+
 	t.Run("deleted", func(t *testing.T) {
 		const rows = 300
 		st := openBackfillStore(t)
