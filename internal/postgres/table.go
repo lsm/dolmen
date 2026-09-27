@@ -301,6 +301,9 @@ func (s *Store) DropTable(ctx context.Context, ns, table string, expected store.
 		if _, err := tx.Exec(ctx, "DROP TABLE "+ident(n.physical, current.physical)); err != nil {
 			return err
 		}
+		if err := s.deleteStagedVectors(ctx, tx, ns, table); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, "DELETE FROM "+s.relation("row_counts")+" WHERE namespace=$1 AND table_name=$2", ns, table); err != nil {
 			return err
 		}

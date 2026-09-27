@@ -1,12 +1,14 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
@@ -36,6 +38,7 @@ type embedWork struct {
 	target    string
 	constant  string
 	hasSource bool
+	provider  string
 }
 
 type migrationWork struct {
@@ -605,6 +608,7 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			w.embed.clear = plan.ClearsEmbeddings
 			w.embed.addColumn = old.VectorizeField() == nil
 			w.embed.target = namer.columns[newVec.Name]
+			w.embed.provider = emb.Identity
 			if !onDisk[newVec.Name] {
 				if text, ok := defaults[newVec.Name].(string); ok && text != "" {
 					count, err := s.visibleTableRows(ctx, tx, table, scope)
@@ -686,6 +690,11 @@ func (s *Store) PlanMigration(ctx context.Context, ns, table string, changes []s
 		if err != nil {
 			return err
 		}
+		if w.embedding {
+			if err := s.requireUTF8ForStaging(); err != nil {
+				return err
+			}
+		}
 		plan = w.plan
 		plan.DryRun = true
 		plan.Expected = state.incarnation
@@ -715,6 +724,8 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 	if expected.Version < 0 {
 		return nil, invalidf("expected_version must be a positive schema version, got %d", expected.Version)
 	}
+	endMigrate := s.beginMigrate(ns, table)
+	defer endMigrate()
 	for attempt := 0; attempt < 3; attempt++ {
 		var state tableState
 		var planned *migrationWork
@@ -733,10 +744,11 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 		if err != nil {
 			return nil, err
 		}
-		digests := map[int64][32]byte{}
-		vectors := map[int64][]float32{}
 		var constant []float32
 		if planned.embedding {
+			if err := s.requireUTF8ForStaging(); err != nil {
+				return nil, err
+			}
 			if planned.embed.constant != "" {
 				vecs, err := store.EmbedTexts(ctx, planned.cur, table, []string{planned.embed.constant}, emb)
 				if err != nil {
@@ -744,7 +756,7 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 				}
 				constant = vecs[0]
 			} else if planned.embed.hasSource {
-				if err := s.backfillEmbeddings(ctx, ns, table, state, planned.embed.source, planned.cur, emb, digests, vectors); err != nil {
+				if err := s.backfillEmbeddings(ctx, ns, table, state, planned.cur, planned.embed.source, emb); err != nil {
 					return nil, err
 				}
 			}
@@ -799,7 +811,7 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 				}
 			}
 			if work.embedding {
-				left, err := s.applyEmbeddings(ctx, tx, physical, work, digests, vectors, constant)
+				left, err := s.applyEmbeddings(ctx, tx, physical, ns, table, current.incarnation.DropGen, work, constant)
 				if err != nil {
 					return err
 				}
@@ -810,7 +822,10 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 			if err := s.regrantQueryTable(ctx, tx, n, current.physical, work.cur.Fields, work.columns, work.cur.HasOwner); err != nil {
 				return err
 			}
-			return s.saveMigration(ctx, tx, n, current, work, changes)
+			if err := s.saveMigration(ctx, tx, n, current, work, changes); err != nil {
+				return err
+			}
+			return s.deleteStagedVectors(ctx, tx, ns, table)
 		})
 		if errors.Is(err, errMigrationRetry) {
 			continue
@@ -825,49 +840,106 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 
 const embedBackfillPage = 128
 
-func (s *Store) backfillEmbeddings(ctx context.Context, ns, table string, state tableState, column string, sc *schema.TableSchema, emb store.Embedder, digests map[int64][32]byte, vectors map[int64][]float32) error {
+func (s *Store) backfillEmbeddings(ctx context.Context, ns, table string, state tableState, planned *schema.TableSchema, column string, emb store.Embedder) error {
+	provider := emb.Identity
 	var after int64
+	var staged, reported int64
+	var total int64
+	if err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
+		physical := ident(n.physical, state.physical)
+		col := ident(column)
+		return tx.QueryRow(ctx, "SELECT count(*) FROM "+physical+" WHERE "+col+" IS NOT NULL AND "+col+" != ''").Scan(&total)
+	}); err != nil {
+		return err
+	}
 	for {
-		ids := []int64{}
-		texts := []string{}
-		err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
-			physical := ident(n.physical, state.physical)
-			col := ident(column)
-			rows, err := tx.Query(ctx, "SELECT id,"+col+" FROM "+physical+" WHERE "+col+" IS NOT NULL AND "+col+" != '' AND id > $1 ORDER BY id LIMIT $2", after, embedBackfillPage)
-			if err != nil {
-				return err
-			}
-			defer rows.Close()
-			for rows.Next() {
-				var id int64
-				var text string
-				if err := rows.Scan(&id, &text); err != nil {
-					return err
-				}
-				ids = append(ids, id)
-				texts = append(texts, text)
-			}
-			return rows.Err()
-		})
+		ids, texts, err := s.embedPage(ctx, ns, state, column, after)
 		if err != nil {
 			return err
 		}
 		if len(ids) == 0 {
 			return nil
 		}
-		vecs, err := store.EmbedTexts(ctx, sc, table, texts, emb)
-		if err != nil {
+		var batch []pgStaged
+		var fresh []string
+		if err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
+			held, err := s.loadStagedVectors(ctx, tx, ns, table, state.incarnation.DropGen, provider, ids)
+			if err != nil {
+				return err
+			}
+			for i, id := range ids {
+				digest := sha256.Sum256([]byte(texts[i]))
+				if v, ok := held[id]; ok && bytes.Equal(v.digest, digest[:]) {
+					staged++
+					continue
+				}
+				batch = append(batch, pgStaged{id: id, digest: digest[:]})
+				fresh = append(fresh, texts[i])
+			}
+			return nil
+		}); err != nil {
 			return err
 		}
-		for i, id := range ids {
-			digests[id] = sha256.Sum256([]byte(texts[i]))
-			vectors[id] = vecs[i]
+		if len(batch) > 0 {
+			vecs, err := store.EmbedTexts(ctx, planned, table, fresh, emb)
+			if err != nil {
+				return err
+			}
+			for i := range batch {
+				batch[i].vec = encodePGVector(vecs[i])
+			}
+			if err := s.writeStagedVectors(ctx, ns, table, state.incarnation.DropGen, provider, batch); err != nil {
+				return err
+			}
+			staged += int64(len(batch))
 		}
 		after = ids[len(ids)-1]
+		reported = reportPGBackfill(ns, table, staged, total, reported)
 	}
 }
 
-func (s *Store) applyEmbeddings(ctx context.Context, tx pgx.Tx, physical string, work *migrationWork, digests map[int64][32]byte, vectors map[int64][]float32, constant []float32) (bool, error) {
+func (s *Store) embedPage(ctx context.Context, ns string, state tableState, column string, after int64) ([]int64, []string, error) {
+	var ids []int64
+	var texts []string
+	err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
+		physical := ident(n.physical, state.physical)
+		col := ident(column)
+		rows, err := tx.Query(ctx, "SELECT id,"+col+" FROM "+physical+
+			" WHERE "+col+" IS NOT NULL AND "+col+" != '' AND id > $1 ORDER BY id LIMIT $2", after, embedBackfillPage)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			var text string
+			if err := rows.Scan(&id, &text); err != nil {
+				return err
+			}
+			ids = append(ids, id)
+			texts = append(texts, text)
+		}
+		return rows.Err()
+	})
+	return ids, texts, err
+}
+
+func reportPGBackfill(ns, table string, staged, total, reported int64) int64 {
+	if total <= 0 {
+		return reported
+	}
+	tenth := total / 10
+	if tenth < 1 {
+		tenth = 1
+	}
+	if staged/tenth <= reported {
+		return reported
+	}
+	slog.Info("migration: embedding backfill", "namespace", ns, "table", table, "staged", staged, "total", total)
+	return staged / tenth
+}
+
+func (s *Store) applyEmbeddings(ctx context.Context, tx pgx.Tx, physical, ns, table string, dropGen int64, work *migrationWork, constant []float32) (bool, error) {
 	col := ident(work.embed.target)
 	if work.embed.constant != "" {
 		if constant == nil {
@@ -882,49 +954,39 @@ func (s *Store) applyEmbeddings(ctx context.Context, tx pgx.Tx, physical string,
 		}
 		return false, nil
 	}
-	rows, err := tx.Query(ctx, "SELECT id,"+col+" FROM "+physical+" WHERE "+col+" IS NOT NULL AND "+col+` != '' AND "_embedding" IS NULL ORDER BY id`)
+	var want int64
+	if err := tx.QueryRow(ctx, "SELECT count(*) FROM "+physical+" WHERE "+col+" IS NOT NULL AND "+col+" != ''").Scan(&want); err != nil {
+		return false, err
+	}
+	tag, err := tx.Exec(ctx, "UPDATE "+physical+` AS t SET "_embedding" = s.vector FROM `+s.relation("embed_stage")+` AS s
+		WHERE s.namespace = $1 AND s.table_name = $2 AND s.drop_generation = $3 AND s.provider = $4
+		  AND s.row_id = t.id
+		  AND s.digest = sha256(convert_to(t.`+col+`, 'UTF8'))
+		  AND t.`+col+` IS NOT NULL AND t.`+col+` != ''`,
+		ns, table, dropGen, work.embed.provider)
 	if err != nil {
 		return false, err
 	}
-	type pending struct {
-		id  int64
-		vec []float32
-	}
-	var apply []pending
-	stale := false
-	for rows.Next() {
-		var id int64
-		var text string
-		if err := rows.Scan(&id, &text); err != nil {
-			rows.Close()
-			return false, err
-		}
-		if digests[id] != sha256.Sum256([]byte(text)) {
-			stale = true
-			continue
-		}
-		vec, ok := vectors[id]
-		if !ok {
-			stale = true
-			continue
-		}
-		apply = append(apply, pending{id: id, vec: vec})
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return false, err
-	}
-	rows.Close()
-	if stale {
+	if tag.RowsAffected() != want {
 		return true, nil
 	}
-	for _, p := range apply {
-		if work.cur.EmbedDim == 0 {
-			work.cur.EmbedDim = len(p.vec)
+	if work.cur.EmbedDim == 0 && want > 0 {
+		var dim int
+		if err := tx.QueryRow(ctx, `SELECT length(s.vector) / 4 FROM `+s.relation("embed_stage")+` AS s
+			WHERE s.namespace = $1 AND s.table_name = $2 AND s.drop_generation = $3 AND s.provider = $4
+			  AND s.row_id IN (SELECT id FROM `+physical+` WHERE `+col+` IS NOT NULL AND `+col+` != '')
+			GROUP BY length(s.vector)`, ns, table, dropGen, work.embed.provider).Scan(&dim); err == nil && dim > 0 {
+			work.cur.EmbedDim = dim
 		}
-		if _, err := tx.Exec(ctx, "UPDATE "+physical+` SET "_embedding" = $1 WHERE id = $2`, schema.EncodeVector(p.vec), p.id); err != nil {
-			return false, err
-		}
+	}
+	var lengths int
+	if err := tx.QueryRow(ctx, `SELECT count(DISTINCT length(s.vector)) FROM `+s.relation("embed_stage")+` AS s
+		WHERE s.namespace = $1 AND s.table_name = $2 AND s.drop_generation = $3 AND s.provider = $4`,
+		ns, table, dropGen, work.embed.provider).Scan(&lengths); err != nil {
+		return false, err
+	}
+	if lengths > 1 {
+		return false, invalidf("embedding provider returned vectors of %d different lengths mid-backfill; the rows already staged were embedded by a model of another size, so re-embed via migrate (set_vectorize off, then on) under one provider", lengths)
 	}
 	return false, nil
 }

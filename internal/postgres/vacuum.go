@@ -14,11 +14,13 @@ const namespaceRelationsSQL = "SELECT c.relname FROM pg_class c JOIN pg_namespac
 
 const namespaceSizeSQL = "SELECT COALESCE(sum(pg_total_relation_size(c.oid)),0)::bigint FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relkind IN ('r','m')"
 
-func (s *Store) Vacuum(ctx context.Context, ns string) (store.VacuumResult, error) {
+func (s *Store) Vacuum(ctx context.Context, ns string) (res store.VacuumResult, err error) {
 	ctx, end := s.span(ctx, "VACUUM", ns, "")
-	res, err := s.vacuumNamespace(ctx, ns)
-	end(err)
-	return res, err
+	defer func() { end(err) }()
+	if err := s.dropAbandonedStages(ctx, ns, s.migrateRunning(ns)); err != nil {
+		return res, err
+	}
+	return s.vacuumNamespace(ctx, ns)
 }
 
 func (s *Store) vacuumNamespace(ctx context.Context, ns string) (store.VacuumResult, error) {

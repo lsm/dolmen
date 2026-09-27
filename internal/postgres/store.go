@@ -47,6 +47,11 @@ type Store struct {
 	secrets         *secret.Keyring
 	gaugesOnce      sync.Once
 	stopGauges      func(context.Context) error
+
+	migrateMu sync.Mutex
+	migrating map[string]int
+
+	serverEncoding string
 }
 
 type connectionError struct {
