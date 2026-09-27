@@ -179,9 +179,7 @@ func applyStagedPlan(ctx context.Context, db querier, table string, gen int64, p
 		return nil
 	}
 	w.plan.StagedRows = n
-	if n < w.plan.EmbedRows {
-		w.plan.EmbedRows -= n
-	}
+	w.plan.EmbedRows = max(0, w.plan.EmbedRows-n)
 	return nil
 }
 
@@ -756,7 +754,6 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				plan.EmbedRows = n
 			}
 
-			w.embed.total = plan.EmbedRows
 			cur.EmbedSpace = emb.Identity
 			cur.EmbedDim = 0
 		} else if old.VectorizeField() != nil {

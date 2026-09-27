@@ -745,9 +745,6 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 			if err != nil {
 				return err
 			}
-			if err := s.applyStagedPlan(ctx, tx, n, state, planned.embed.source, emb.Identity, nil, planned.plan, planned.embed.hasSource); err != nil {
-				return err
-			}
 			return nil
 		})
 		if err != nil {

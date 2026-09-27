@@ -193,8 +193,6 @@ func (s *Store) applyStagedPlan(ctx context.Context, tx pgx.Tx, n namespace, sta
 		return nil
 	}
 	w.StagedRows = reusable
-	if reusable < w.EmbedRows {
-		w.EmbedRows -= reusable
-	}
+	w.EmbedRows = max(0, w.EmbedRows-reusable)
 	return nil
 }
