@@ -161,3 +161,24 @@ func (s *Store) requireUTF8ForStaging() error {
 	}
 	return fmt.Errorf("%w: this database's encoding is %s, and a staged vector is keyed by the SHA-256 of the row's text, which only matches when the database stores it as UTF-8 bytes; recreate the database with a UTF-8 encoding (CREATE DATABASE dolmen TEMPLATE template0 ENCODING 'UTF8') to use vectorize or search on it", store.ErrInvalid, enc)
 }
+
+func (s *Store) countStagedVectors(ctx context.Context, tx pgx.Tx, table string, gen int64, provider string) (int64, error) {
+	var n int64
+	err := tx.QueryRow(ctx, "SELECT count(*) FROM "+s.relation("embed_stage")+
+		" WHERE table_name = $1 AND drop_generation = $2 AND provider = $3", table, gen, provider).Scan(&n)
+	return n, err
+}
+
+func (s *Store) applyStagedPlan(ctx context.Context, tx pgx.Tx, table string, gen int64, provider string, w *store.MigrationPlan, embedding bool) {
+	if !embedding || provider == "" {
+		return
+	}
+	n, err := s.countStagedVectors(ctx, tx, table, gen, provider)
+	if err != nil || n <= 0 {
+		return
+	}
+	w.StagedRows = n
+	if n < w.EmbedRows {
+		w.EmbedRows -= n
+	}
+}

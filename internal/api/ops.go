@@ -147,9 +147,10 @@ func planOutSchema(desc string, table map[string]any) map[string]any {
 			"rebuild_fulltext":      prop("boolean", "Whether the FTS index is rebuilt"),
 			"fulltext_reindex_rows": prop("integer", "Rows the rebuilt full-text index would hold"),
 			"clears_embeddings":     prop("boolean", "Whether existing embeddings are cleared"),
-			"embed_rows":            prop("integer", "Rows applying would embed (provider calls)"),
+			"embed_rows":            prop("integer", "Rows that still need a provider call: the rows to vectorize, less the ones an interrupted earlier attempt already staged. A staged row whose text has since changed is counted here again, so read it as the upper bound on the calls this run makes"),
+			"staged_rows":           prop("integer", "Vectors already staged for this table under the active provider that this run will reuse where the row's text still matches (0 on a first run; a re-issued migration after a failure reports what it did not have to redo)"),
 		},
-		"required":             []string{"dry_run", "from_version", "to_version", "table", "operations", "backfill_rows", "rebuild_fulltext", "fulltext_reindex_rows", "clears_embeddings", "embed_rows"},
+		"required":             []string{"dry_run", "from_version", "to_version", "table", "operations", "backfill_rows", "rebuild_fulltext", "fulltext_reindex_rows", "clears_embeddings", "embed_rows", "staged_rows"},
 		"additionalProperties": false,
 	}
 }

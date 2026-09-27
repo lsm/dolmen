@@ -694,6 +694,7 @@ func (s *Store) PlanMigration(ctx context.Context, ns, table string, changes []s
 			if err := s.requireUTF8ForStaging(); err != nil {
 				return err
 			}
+			s.applyStagedPlan(ctx, tx, table, state.incarnation.DropGen, emb.Identity, w.plan, w.embedding)
 		}
 		plan = w.plan
 		plan.DryRun = true
@@ -739,7 +740,11 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 				return err
 			}
 			planned, err = s.planMigration(ctx, tx, n, state, changes, emb, int(expected.Version), nil)
-			return err
+			if err != nil {
+				return err
+			}
+			s.applyStagedPlan(ctx, tx, table, state.incarnation.DropGen, emb.Identity, planned.plan, planned.embedding)
+			return nil
 		})
 		if err != nil {
 			return nil, err
@@ -835,7 +840,7 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 		}
 		return result, nil
 	}
-	return nil, derr.New(derr.Conflict, "migration of %s.%s kept losing a race with concurrent writes while backfilling embeddings; retry the migration", ns, table)
+	return nil, derr.New(derr.Conflict, "migration of %s.%s kept losing a race with concurrent writes while backfilling embeddings; re-issue the same migrate to continue from the rows already embedded", ns, table)
 }
 
 const embedBackfillPage = 128

@@ -234,6 +234,25 @@
 
 ### Changed
 
+- **A vectorizing `migrate` is resumable, on both engines.** The embedding backfill used to run
+  inside the write transaction, so a provider that died, a `504` timeout, or a killed process threw
+  away every vector it had produced and the next attempt started from the first row; the embeddings
+  were also written where a reader could see them before the migration landed. Each batch is now
+  embedded outside the write transaction and kept on disk, keyed by table, drop generation, provider
+  identity and the SHA-256 of the row's text, and activation fills the column from it in one short
+  transaction. Re-issuing the same `migrate` embeds only the rows it does not already hold. A staged
+  vector is never reused across a provider identity or a model change, a row whose text changed after
+  it was staged is embedded again rather than stamped with a stale vector, and staged rows are dropped
+  when the migration lands, when the table is dropped, and on `vacuum`. The plan a `dry_run` returns
+  now carries `staged_rows` beside `embed_rows` — the rows still needing a provider call and the ones
+  an interrupted attempt already finished, which add up — and the `504` and `409` messages for a
+  stopped or out-repeated migration say the progress is kept. A data directory written by v0.3.0 or
+  earlier is adopted as before: the SQLite catalog format moves to 4 and the PostgreSQL catalog to 8,
+  and a format-3 reader still sees a table as it was before activation. **Behaviour change:** on
+  PostgreSQL, a `migrate` that would vectorize now refuses on a database whose `server_encoding` is
+  not UTF-8, naming the encoding it found and the `CREATE DATABASE … ENCODING 'UTF8'` that fixes it,
+  because the staged digest compares bytes and nothing would match; other migrations still run there.
+
 - **Embedding model tarballs are no longer attached to each release.** They are published once
   under their own tag (`models-v1`) and shared by every dolmen version, which keeps ~370 MB of
   identical bytes off every release. Existing download URLs for v0.3.0 and earlier keep working;

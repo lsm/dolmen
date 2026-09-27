@@ -124,6 +124,18 @@ func loadStagedVectors(ctx context.Context, db querier, table string, gen int64,
 	return out, nil
 }
 
+func countStagedVectors(ctx context.Context, db rowQuerier, table string, gen int64, provider string) (int64, error) {
+	present, err := embedStagePresent(ctx, db)
+	if err != nil || !present {
+		return 0, err
+	}
+	var n int64
+	err = db.QueryRowContext(ctx, fmt.Sprintf(
+		`SELECT count(*) FROM %s WHERE table_name = ? AND drop_gen = ? AND provider = ?`,
+		embedStageTable), table, gen, provider).Scan(&n)
+	return n, err
+}
+
 func deleteStagedVectors(ctx context.Context, tx *sql.Tx, table string) error {
 	present, err := embedStagePresent(ctx, tx)
 	if err != nil || !present {

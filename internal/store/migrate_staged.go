@@ -29,6 +29,7 @@ type embedWork struct {
 	source    string
 	hasSource bool
 	constant  string
+	total     int64
 }
 
 type stagedPlan struct {
@@ -146,7 +147,7 @@ func (s *Store) stageBackfill(ctx context.Context, n *nsDB, nsName, table string
 			staged += int64(len(batch))
 		}
 		after = ids[len(ids)-1]
-		reported = reportBackfill(nsName, table, staged, plan.work.plan.EmbedRows, reported)
+		reported = reportBackfill(nsName, table, staged, plan.work.embed.total, reported)
 	}
 }
 

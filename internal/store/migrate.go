@@ -37,6 +37,7 @@ type MigrationPlan struct {
 	FulltextReindexRows int64               `json:"fulltext_reindex_rows"`
 	ClearsEmbeddings    bool                `json:"clears_embeddings"`
 	EmbedRows           int64               `json:"embed_rows"`
+	StagedRows          int64               `json:"staged_rows"`
 
 	ExpectedIncarnation string `json:"expected_incarnation,omitempty"`
 
@@ -159,7 +160,22 @@ func (s *Store) PlanMigration(ctx context.Context, nsName, table string, changes
 	}
 	w.plan.Expected = Incarnation{NsGen: gen, Table: table, Version: int64(old.Version), DropGen: dropGen}
 	w.plan.ExpectedIncarnation = EncodeIncarnation(w.plan.Expected)
+	applyStagedPlan(ctx, tx, table, dropGen, emb.Identity, w)
 	return w.plan, nil
+}
+
+func applyStagedPlan(ctx context.Context, db querier, table string, gen int64, provider string, w *migrationWork) {
+	if !w.embed.embedding || provider == "" {
+		return
+	}
+	n, err := countStagedVectors(ctx, db, table, gen, provider)
+	if err != nil || n <= 0 {
+		return
+	}
+	w.plan.StagedRows = n
+	if n < w.plan.EmbedRows {
+		w.plan.EmbedRows -= n
+	}
 }
 
 func checkBoundLifetime(ctx context.Context, tx rowQuerier, nsName, table string, want Incarnation) error {
@@ -733,6 +749,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 				plan.EmbedRows = n
 			}
 
+			w.embed.total = plan.EmbedRows
 			cur.EmbedSpace = emb.Identity
 			cur.EmbedDim = 0
 		} else if old.VectorizeField() != nil {
