@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	CatalogFormat = 3
+	CatalogFormat = 4
 
 	CatalogMinReader = 3
 

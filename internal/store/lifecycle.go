@@ -285,6 +285,7 @@ func (s *Store) DropTable(ctx context.Context, nsName, table string, inc Incarna
 		`DELETE FROM _dolmen_migrations WHERE table_name = ?`,
 		`DELETE FROM ` + idempotencyTable + ` WHERE table_name = ?`,
 		`DELETE FROM ` + rowCountsTable + ` WHERE table_name = ?`,
+		`DELETE FROM ` + embedStageTable + ` WHERE table_name = ?`,
 	} {
 		if _, err := tx.ExecContext(ctx, stmt, table); err != nil {
 			return err

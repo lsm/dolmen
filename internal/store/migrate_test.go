@@ -1574,7 +1574,7 @@ func TestEmbedEstimateUsesCoercedDefault(t *testing.T) {
 	}
 }
 
-func TestAnInsertDuringALongMigrationWaitsAndSucceeds(t *testing.T) {
+func TestAnInsertDuringALongMigrationLandsBeforeItCommits(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
 	mustNS(t, st, "test")
@@ -1607,18 +1607,18 @@ func TestAnInsertDuringALongMigrationWaitsAndSucceeds(t *testing.T) {
 	}()
 	select {
 	case err := <-inserted:
-		t.Fatalf("the insert finished while the migration still held the writer: %v", err)
-	case <-time.After(200 * time.Millisecond):
+		if err != nil {
+			t.Fatalf("an insert made while a migration embeds must land rather than wait on the writer: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the insert never landed: the backfill must not hold the namespace writer")
 	}
 	close(release)
 	if err := <-migrated; err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	if err := <-inserted; err != nil {
-		t.Fatalf("an insert that waited out a migration must succeed against the new schema, got %v", err)
-	}
 	rows, _, err := st.Query(ctx, "test", "SELECT count(*) AS n FROM plain WHERE _embedding IS NOT NULL", nil, 0, 1)
 	if err != nil || rows[0]["n"] != int64(2) {
-		t.Fatalf("both rows must be embedded: %v %v", rows, err)
+		t.Fatalf("both rows must be embedded, including the one written during the backfill: %v %v", rows, err)
 	}
 }

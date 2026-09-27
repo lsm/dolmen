@@ -120,6 +120,9 @@ type Store struct {
 
 	openDB func(dsn string) (*sql.DB, error)
 
+	migrateMu sync.Mutex
+	migrating map[string]int
+
 	secrets *secret.Keyring
 
 	tp trace.TracerProvider
@@ -493,6 +496,7 @@ var registryDDL = []string{
 		table_name TEXT PRIMARY KEY,
 		gen INTEGER NOT NULL
 	)`,
+	embedStageDDL,
 
 	`CREATE TABLE IF NOT EXISTS _dolmen_meta(
 		key TEXT PRIMARY KEY,
