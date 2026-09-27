@@ -477,6 +477,8 @@ func (s *Store) stampStagedVectors(ctx context.Context, tx *sql.Tx, table string
 			}
 			if w.cur.EmbedDim == 0 {
 				w.cur.EmbedDim = len(held.vec)
+			} else if len(held.vec) != w.cur.EmbedDim {
+				return invalidf("embedding provider returned %d-dimensional vectors mid-backfill (expected %d)", len(held.vec), w.cur.EmbedDim)
 			}
 			if _, err := tx.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET "_embedding" = ? WHERE id = ?`, q(table)),
 				encodeStageVector(held.vec), id); err != nil {

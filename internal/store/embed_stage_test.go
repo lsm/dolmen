@@ -5,6 +5,7 @@ import (
 
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -502,6 +503,52 @@ func TestWritesDuringTheBackfillEndWithTheVectorOfTheirFinalText(t *testing.T) {
 			t.Fatalf("row 5 was emptied after its page was staged but kept the vector of its old text: a row with no text must carry no vector")
 		}
 	})
+}
+
+func TestAStageIsNotStampedWhenTheProviderChangesDimension(t *testing.T) {
+	const rows = 200
+	st := openBackfillStore(t)
+	seedBackfillTable(t, st, "dims", "docs", rows)
+	ctx := context.Background()
+
+	first := &backfillRecorder{}
+	first.inside = func(context.Context) error {
+		if first.calls >= 2 {
+			return errors.New("provider is down")
+		}
+		return nil
+	}
+	if _, err := st.Migrate(ctx, "dims", "docs", vectorizeBody(), first.embedder("fake-space"), Incarnation{Version: 1}); err == nil {
+		t.Fatal("a provider failure mid-backfill must fail the migration")
+	}
+	if stage := embedStageCount(t, st, "dims", "docs"); stage != backfillPage {
+		t.Fatalf("the first attempt staged %d rows, want the one page it finished", stage)
+	}
+	embedded := 0
+	narrow := Embedder{Identity: "fake-space", Embed: func(ctx context.Context, texts []string) ([][]float32, error) {
+		embedded += len(texts)
+		out := make([][]float32, len(texts))
+		for i := range texts {
+			out[i] = []float32{1, 2, 3, 4}
+		}
+		return out, nil
+	}}
+	_, err := st.Migrate(ctx, "dims", "docs", vectorizeBody(), narrow, Incarnation{Version: 1})
+	if err == nil {
+		t.Fatal("a provider that reports one identity and two dimensions must not activate")
+	}
+	if !strings.Contains(err.Error(), "dimensional") {
+		t.Fatalf("the refusal must name the dimension mismatch, got %v", err)
+	}
+	if embedded == 0 {
+		t.Fatal("the second attempt embedded nothing, so the mismatch was never reached")
+	}
+	if live := liveEmbeddings(t, st, "dims", "docs"); len(live) != 0 {
+		t.Fatalf("%d rows were stamped with a vector of the wrong length", len(live))
+	}
+	if version, _, log := migratedState(t, st, "dims", "docs"); version != 1 || log != 0 {
+		t.Fatalf("a refused stamp left the table at version %d with %d migration records, want 1 and 0", version, log)
+	}
 }
 
 func TestAMigrationThatKeepsLosingToWritersReturnsAConflict(t *testing.T) {
