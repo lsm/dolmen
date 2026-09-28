@@ -213,19 +213,20 @@ idempotency key.
 **Computed before the transaction, as `insert` and `update` do**, then re-checked inside it.
 
 Phase 1, outside the writer: read each table's schema, embed space and dimension; count what each
-`update`, `delete` and `upsert` matches; embed every vectorized write's text through the provider. This is
-where a slow or failing provider is absorbed — the writer is not held across a provider round trip, which
-is the same property #501 and #509 established for the single operations.
+`update` and `upsert` matches; embed every vectorized write's text through the provider. This is where a
+slow or failing provider is absorbed — the writer is not held across a provider round trip, which is the
+same property #501 and #509 established for the single operations. `delete` is deliberately absent from
+that list, for the reason in the paragraph below.
 
 **One write kind cannot be counted outside the writer, and the note has to say so rather than pretend
 otherwise.** `update` and `upsert` do pre-count: `updateOrUpsert` has its `preMatched` in hand before it
 calls `beginWrite` (`internal/store/update.go:169-194`), and embeds on the same side of that line. A
 committing `delete` does not — it takes the writer at `internal/store/search.go:413` and counts inside
-it; the pre-writer count in that function belongs to the `dry_run` path, which runs on a read-only
-caller transaction. So for a `delete` write the row budget can only be charged *after* the writer is
-held, and the enforcement point is inside the transaction: a delete that would push the batch past
-1,000 rows is rolled back whole, reported as `invalid_request` naming its index and the cap, like any
-other write failure. The delete match cap with `confirm` is checked in the same place, for the same
+it; the only pre-writer count in that function is the `dry_run` path at `search.go:386-411`, on a
+read-only caller transaction. So for a `delete` write the row budget can only be charged *after* the
+writer is held, and the enforcement point is inside the transaction: a delete that would push the batch
+past 1,000 rows is rolled back whole, reported as `invalid_request` naming its index and the cap, like
+any other write failure. The delete match cap with `confirm` is checked in the same place, for the same
 reason.
 
 That is a real asymmetry between the kinds, and the honest way to present it is as a cost rather than to
