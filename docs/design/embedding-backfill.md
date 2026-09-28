@@ -184,5 +184,12 @@ mistaken for a live one, because nothing outside activation writes `_embedding`.
 
 ## Out of scope
 
-`update` still embeds inside the write transaction (`internal/store/update.go`), and MCP progress
-notifications are deferred. Both are filed separately.
+- `update` and `upsert` still embed inside the write transaction on SQLite
+  (`internal/store/update.go`), so a provider round trip is held under the namespace writer.
+  PostgreSQL already embeds before its write transaction. [#501](https://github.com/lsm/dolmen/issues/501)
+- MCP progress notifications, and a progress channel on `/v1/migrate` at all, so a caller can
+  watch a long backfill instead of inferring it from a re-issue.
+  [#502](https://github.com/lsm/dolmen/issues/502)
+- The two engines disagree about a vectorize that is overtaken mid-backfill: SQLite re-plans and
+  lands, PostgreSQL conflicts. Item 4 describes the SQLite behaviour, so that is the one to
+  converge on. [#503](https://github.com/lsm/dolmen/issues/503)
