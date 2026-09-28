@@ -327,6 +327,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 - `describe_server` reports the embedding provider status without attempting a write: `provider` (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, `usable`, and — for the `local` provider — `model_cached`, whether the model weights are complete on the server so no first-use download is needed (`false` means the first vectorized write or `text` search downloads a Hugging Face model, so it can take ten seconds or more and can fail transiently — retry, or pre-seed; with `DOLMEN_EMBED_MODEL` naming a directory, `false` means the directory is incomplete and no download repairs it). `vectorize` fields and `search_vector` `text` queries fail while `usable` is false; a table whose `embed_space` (see `describe_table`) differs from `identity` was embedded by a different provider/model and rejects inserts and text searches until it is re-embedded.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
 - `truncated: true` means the response left results out. On `query`, `search_fulltext` and `search_vector`, more exist beyond the page, cut either by `limit` (1,000 rows by default and at most on `query`; 10 by default and 200 at most on the searches) or by the 32 MiB response budget, so fetch the next page with `offset`. On `read_rows` only the budget cuts, so retry with fewer ids.
+- Paging a result set you are reading uses `offset`, as above. Walking a **whole table** to export or copy it uses a keyset on `id` instead — see "Export a table by keyset paging" for the loop and for the two things such an export cannot carry.
 - Both searches score every hit as `_score`, higher being more relevant, and return results in that order. The two scales are different and engine-specific — full-text relevance is the engine's own ({{ if eq .Dialect "postgresql" }}PostgreSQL `ts_rank_cd`{{ else }}FTS5 BM25, negated so higher wins{{ end }}), vector `_score` is cosine similarity — so compare scores only within one query's results, never across queries, tables or servers, and never threshold full-text `_score` against a fixed number.
 - `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything. A `delete` matching more than 1,000 rows is refused unless you raise `limit` above the match count or pass `confirm: true`; `dry_run: true` reports `matched` without deleting.
@@ -528,3 +529,54 @@ while working:
         read the row: query(namespace="research", sql=f"SELECT * FROM {change.table} WHERE id = ?", args=[change.row_id])
     # an empty page means nothing happened: just re-wait
 ```
+
+### Export a table by keyset paging
+
+There is no `dump` or `export_table` op. A whole namespace is backed up out of band, on the server:
+{{ if eq .Dialect "postgresql" }}`pg_dump`, since `dolmen backup` refuses on this engine{{ else }}`dolmen backup`{{ end }}.
+To get a table's rows somewhere else, page `query` on `id`:
+
+```
+last = 0
+while True:
+    page = query(namespace="research",
+                 sql="SELECT * FROM findings WHERE id > ? ORDER BY id",
+                 args=[last])
+    if not page.rows:
+        break
+    for row in page.rows:
+        write(row)                  # append to JSONL, a CSV, whatever you are building
+        last = row["id"]            # the last id you received, which is not the last id in the table
+```
+
+`id` is assigned in increasing order and never reused after deletes, so a keyset walk never returns a
+row twice and never loses one to a delete. **Do not page a whole table with `offset`**: an offset is a
+position in a list that is moving under you, so a row inserted above your offset shifts everything down
+and one row is exported twice, and a deleted row shifts everything up and one is never exported at all.
+{{ if eq .Dialect "postgresql" }}This engine has one hole an `offset` walk does not: `id` is allocated when a row is
+inserted rather than when it commits, and inserts from different connections commit in whatever order
+they finish. A writer that took a lower `id` than the one you have already walked past, and commits
+after you have passed it, is not in your export. When the walk has to be complete while others are
+writing, either reconcile afterwards with `changes_since`, which is ordered by commit, or export a
+table nobody is writing.{{ else }}Writes here go through a single writer connection, so `id` is handed out and committed in
+the same order: anything that commits after you pass an `id` has a higher one, and the walk cannot
+skip it.{{ end }}
+
+A `truncated: true` page needs nothing special here. Take the last `id` you actually received, and the
+next call resumes after it — a page cut short by the row limit or the 32 MiB budget is just a shorter
+page. Stop when a page comes back empty. The page size is the `limit` parameter, whose default of
+1,000 rows is also the most `query` will return, so expect one call per thousand rows. Do not put
+`LIMIT` in the SQL: it is not rejected, it is nested inside the server's own paging, so it can only
+make a page smaller than you asked for{{ if eq .Dialect "postgresql" }} — this server wraps your statement in a
+subquery before it pages it{{ else }} — here the server reaches that point by trying your statement,
+getting a syntax error, and retrying it wrapped{{ end }}.
+
+Two things this export cannot carry, which is why restoring from one is a re-import rather than a copy:
+
+- **Vectors.** `SELECT *` leaves the hidden vector column out, and whether `query` can name it at all
+  depends on the backend, so export the declared fields. A vectorized table re-imported this way comes
+  back with the right text and no vectors until you run the `vectorize` change on it again — which is
+  usually what you want anyway when the target is a different server, model or dimension.
+- **Secret fields.** `query` never reveals them: it returns the `"••••"` mask, which is also the one
+  value the server refuses to store. An export of a table with secrets therefore cannot be re-imported
+  faithfully. Back that namespace up on the server instead, and keep the bytes out of the conversation.
