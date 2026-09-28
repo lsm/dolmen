@@ -154,8 +154,8 @@ All four shipped with the wire contract, except the last, which is closed as not
   proceeds and a caller can poll with `dry_run: true`.
 - `staged_rows` counts the rows an interrupted attempt already embedded whose text still matches, so
   the two numbers add up to the rows the change will vectorize. The count is exact rather than
-  approximate: it is the same digest comparison the activation makes, page by page, scoped the way
-  the plan is, and only over the namespaces the caller can see.
+  approximate: it is the same digest comparison the activation makes, page by page, over the same
+  rows the plan counts, so a row-scoped caller sees their own rows and nothing else.
 - A migration logs one info line per 10% of rows, with namespace, table, staged and total. The walk
   counts rows already staged, so a resumed migration reports against the whole table rather than
   against what is left.
