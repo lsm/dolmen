@@ -10,7 +10,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func processUserSID(t *testing.T) string {
+func ownerOnlySIDs(t *testing.T) []*windows.SID {
 	t.Helper()
 	tok, err := windows.OpenCurrentProcessToken()
 	if err != nil {
@@ -21,7 +21,15 @@ func processUserSID(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("read the process user: %v", err)
 	}
-	return tu.User.Sid.String()
+	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	if err != nil {
+		t.Fatalf("resolve the local system sid: %v", err)
+	}
+	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		t.Fatalf("resolve the administrators sid: %v", err)
+	}
+	return []*windows.SID{tu.User.Sid, system, admins}
 }
 
 func setDACL(t *testing.T, path, dacl string) {
@@ -45,7 +53,12 @@ type daclEntry struct {
 	kind   string
 	flags  string
 	rights string
-	sid    string
+	sid    *windows.SID
+	alias  string
+}
+
+func (e daclEntry) String() string {
+	return e.kind + "/" + e.flags + "/" + e.rights + "/" + e.alias
 }
 
 func readDACL(t *testing.T, path string) (protected bool, entries []daclEntry) {
@@ -76,44 +89,55 @@ func readDACL(t *testing.T, path string) (protected bool, entries []daclEntry) {
 		body := rest[open+1 : open+closing]
 		rest = rest[open+closing+1:]
 		fields := strings.Split(body, ";")
-		if len(fields) != 7 {
-			t.Fatalf("the ace %q in %s does not have seven sddl fields: %q", body, path, sddl)
+		if len(fields) != 6 {
+			t.Fatalf("the ace %q in %s does not have the six sddl fields an ace has (type, flags, rights, object, inherited object, sid): %q", body, path, sddl)
 		}
-		entries = append(entries, daclEntry{kind: fields[0], flags: fields[1], rights: fields[2], sid: fields[6]})
+		sid, err := windows.StringToSid(fields[5])
+		if err != nil {
+			t.Fatalf("the ace %q in %s names a sid this test cannot resolve: %v", body, path, err)
+		}
+		entries = append(entries, daclEntry{kind: fields[0], flags: fields[1], rights: fields[2], sid: sid, alias: fields[5]})
 	}
 }
 
 func describeDACL(entries []daclEntry) string {
 	parts := make([]string, 0, len(entries))
 	for _, e := range entries {
-		parts = append(parts, e.kind+"/"+e.flags+"/"+e.rights+"/"+e.sid)
+		parts = append(parts, e.String())
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, " ")
 }
 
-func ownerOnlyAccounts(user string) map[string]bool {
-	return map[string]bool{user: true, "SY": true, "BA": true}
-}
-
 func expectOwnerOnly(t *testing.T, path string, entries []daclEntry) {
 	t.Helper()
-	user := processUserSID(t)
-	want := ownerOnlyAccounts(user)
+	want := ownerOnlySIDs(t)
 	if len(entries) != len(want) {
-		t.Fatalf("%s carries %d acl entries, want exactly the three accounts that own a dolmen data directory (the user, LocalSystem and the administrators): %s",
+		t.Fatalf("%s carries %d acl entries, want exactly the three accounts that own a dolmen data directory (the running user, LocalSystem and the administrators): %s",
 			path, len(entries), describeDACL(entries))
 	}
+	matched := make([]bool, len(want))
 	for _, e := range entries {
 		if e.kind != "A" {
 			t.Fatalf("%s carries a %q entry, and the data directory is owner-only by allow-list: %s", path, e.kind, describeDACL(entries))
 		}
-		if !want[e.sid] {
-			t.Fatalf("%s grants %s access, which is neither the process user nor LocalSystem nor the administrators: %s",
-				path, e.sid, describeDACL(entries))
+		found := -1
+		for i, sid := range want {
+			if windows.EqualSid(e.sid, sid) {
+				found = i
+				break
+			}
 		}
+		if found < 0 {
+			t.Fatalf("%s grants %s access, which is neither the running user nor LocalSystem nor the administrators: %s",
+				path, e.alias, describeDACL(entries))
+		}
+		if matched[found] {
+			t.Fatalf("%s grants %s access twice, so one of the three accounts is missing: %s", path, e.alias, describeDACL(entries))
+		}
+		matched[found] = true
 		if e.rights != "FA" && e.rights != "GA" && !strings.EqualFold(e.rights, "0x1f01ff") {
-			t.Fatalf("%s grants %s the rights %q, want full control: %s", path, e.sid, e.rights, describeDACL(entries))
+			t.Fatalf("%s grants %s the rights %q, want full control: %s", path, e.alias, e.rights, describeDACL(entries))
 		}
 	}
 }
@@ -133,10 +157,10 @@ func TestOpenLeavesTheDataDirectoryOwnerOnly(t *testing.T) {
 	}
 	for _, e := range entries {
 		if !strings.Contains(e.flags, "OI") || !strings.Contains(e.flags, "CI") {
-			t.Fatalf("the entry for %s does not carry the inheritance flags, so a namespace file or a nested namespace directory created afterwards would fall back to the parent's acl: %s", e.sid, describeDACL(entries))
+			t.Fatalf("the entry for %s does not carry the inheritance flags, so a namespace file or a nested namespace directory created afterwards would fall back to the parent's acl: %s", e.alias, describeDACL(entries))
 		}
 		if strings.Contains(e.flags, "ID") {
-			t.Fatalf("the entry for %s is an inherited entry, and the data directory's dacl is supposed to carry nothing from its parent: %s", e.sid, describeDACL(entries))
+			t.Fatalf("the entry for %s is an inherited entry, and the data directory's dacl is supposed to carry nothing from its parent: %s", e.alias, describeDACL(entries))
 		}
 	}
 }
@@ -152,16 +176,17 @@ func TestANamespaceFileInheritsTheDataDirectoryACL(t *testing.T) {
 	if err := st.CreateNamespace(ctx, "acls", [16]byte{}); err != nil {
 		t.Fatalf("create a namespace: %v", err)
 	}
-	_, entries := readDACL(t, filepath.Join(dir, "acls.db"))
-	expectOwnerOnly(t, filepath.Join(dir, "acls.db"), entries)
+	file := filepath.Join(dir, "acls.db")
+	_, entries := readDACL(t, file)
+	expectOwnerOnly(t, file, entries)
 }
 
 func TestOpenTightensADataDirectoryWhoseACLIsLoose(t *testing.T) {
-	user := processUserSID(t)
+	user := ownerOnlySIDs(t)[0].String()
 	dir := t.TempDir()
 	setDACL(t, dir, "D:P(A;OICI;FA;;;"+user+")(A;OICI;FA;;;BU)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
 	if _, entries := readDACL(t, dir); len(entries) != 4 {
-		t.Fatalf("could not widen the fixture's acl, so the test would prove nothing: %s", describeDACL(entries))
+		t.Fatalf("could not widen the fixture's acl to four entries, so the test would prove nothing: %s", describeDACL(entries))
 	}
 	st, err := Open(dir)
 	if err != nil {
@@ -173,19 +198,20 @@ func TestOpenTightensADataDirectoryWhoseACLIsLoose(t *testing.T) {
 }
 
 func TestBackupOutputDirectoryIsOwnerOnly(t *testing.T) {
+	ctx := context.Background()
 	dir := t.TempDir()
 	data := filepath.Join(dir, "data")
 	st, err := Open(data)
 	if err != nil {
 		t.Fatalf("open a fresh data directory: %v", err)
 	}
-	if err := st.CreateNamespace(context.Background(), "acls", [16]byte{}); err != nil {
+	if err := st.CreateNamespace(ctx, "acls", [16]byte{}); err != nil {
 		t.Fatalf("create a namespace: %v", err)
 	}
 	st.Close()
 
 	out := filepath.Join(dir, "backup")
-	if _, err := Backup(context.Background(), data, out, nil); err != nil {
+	if _, err := Backup(ctx, data, out, nil); err != nil {
 		t.Fatalf("back up into a fresh directory: %v", err)
 	}
 	_, entries := readDACL(t, out)
