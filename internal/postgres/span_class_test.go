@@ -81,9 +81,6 @@ func TestPostgresTheStorageSpanTakesItsClassFromTheCallersContext(t *testing.T) 
 			seedPGStageTable(t, s, "spans", "docs", 1)
 			ctx := c.ctx(t)
 			rec.Reset()
-			// An empty change list is refused before the engine touches the database, which is what
-			// makes the case deterministic: the error is a classified invalid_request and it never
-			// wraps the context's error, so only the context can decide this span's class.
 			if _, err := s.Migrate(ctx, "spans", "docs", nil, store.Embedder{}, store.Incarnation{Version: 1}); err == nil {
 				t.Fatal("a migrate with no changes must be refused")
 			}
@@ -97,8 +94,3 @@ func TestPostgresTheStorageSpanTakesItsClassFromTheCallersContext(t *testing.T) 
 		})
 	}
 }
-
-// TestPostgresACancelledQueryLeavesCanceledOnTheSpan is a guard rather than a failing-first test:
-// queryError already maps a done context to the context's own error, so this path is right today.
-// It is here so the two engines answer the same question the same way, since the rule this PR adds
-// is that the context decides and the error only fills in the rest.

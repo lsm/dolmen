@@ -123,11 +123,14 @@ Every span that ends in an error carries `error.type`. For a storage span (`INSE
 - **With a live context, the error decides**, and the class is the one the caller would have got:
   `invalid_request`, `not_found`, `conflict`, `query_error`, `internal_error`, and so on.
 
-The consequence for reading traces: a storage span and the `dolmen.op` span above it never disagree
-about whether the caller went away, so a tree that says `canceled` at the top says `canceled` all
-the way down. If you are looking for the *cause* of a cancellation — a slow query, a lock, a provider
-— the answer is in the span's duration and its children, not in its `error.type`, which by
-construction can only say that the caller stopped waiting.
+The consequence for reading traces: over HTTP and MCP, a storage span and the `dolmen.op` span above it
+never disagree about whether the caller went away, so a tree that says `canceled` at the top says
+`canceled` all the way down. The Go library facade is the one exception: `facadeErr` already answers
+its *errors* from the caller's context, but the `dolmen.op` span it records is still classified from
+the error alone, so a cancelled call through the library can show `query_error` on the operation span
+above a `canceled` storage span. If you are looking for the *cause* of a cancellation — a slow query,
+a lock, a provider — the answer is in the span's duration and its children, not in its `error.type`,
+which by construction can only say that the caller stopped waiting.
 
 ## Three alerts to start with
 
