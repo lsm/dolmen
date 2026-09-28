@@ -38,15 +38,37 @@ func (s *Store) Upsert(ctx context.Context, nsName, table, where string, args []
 }
 
 func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, allowInsert bool, owner string, scope *RowScope, scopeIncarnation Incarnation) (UpsertResult, error) {
+	for attempt := 0; ; attempt++ {
+		if attempt >= 3 {
+			return UpsertResult{}, invalidf("table schema changed concurrently; retry the %s", verbFor(allowInsert))
+		}
+		res, done, err := s.updateAttempt(ctx, nsName, table, where, args, set, emb, allowInsert, owner, scope, scopeIncarnation)
+		if done {
+			return res, err
+		}
+		if err != nil {
+			return UpsertResult{}, err
+		}
+	}
+}
+
+func verbFor(allowInsert bool) string {
+	if allowInsert {
+		return "upsert"
+	}
+	return "update"
+}
+
+func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, allowInsert bool, owner string, scope *RowScope, scopeIncarnation Incarnation) (UpsertResult, bool, error) {
 	where = strings.TrimSpace(where)
 	if where == "" {
-		return UpsertResult{}, invalidf("filter is required (pass \"1=1\" to update every row)")
+		return UpsertResult{}, true, invalidf("filter is required (pass \"1=1\" to update every row)")
 	}
 	if strings.Contains(where, ";") {
-		return UpsertResult{}, invalidf("multiple statements are not allowed in filter")
+		return UpsertResult{}, true, invalidf("multiple statements are not allowed in filter")
 	}
 	if len(set) == 0 {
-		return UpsertResult{}, invalidf("set is required (at least one field to update)")
+		return UpsertResult{}, true, invalidf("set is required (at least one field to update)")
 	}
 	for i, a := range args {
 		args[i] = normalizeArg(a)
@@ -55,7 +77,7 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 	for k, v := range set {
 		lk := strings.ToLower(k)
 		if _, exists := normalized[lk]; exists {
-			return UpsertResult{}, invalidf("fields %q and its case variant collapse to %q; use one spelling", k, lk)
+			return UpsertResult{}, true, invalidf("fields %q and its case variant collapse to %q; use one spelling", k, lk)
 		}
 		normalized[lk] = v
 	}
@@ -63,28 +85,46 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 
 	n, err := s.ns(nsName)
 	if err != nil {
-		return UpsertResult{}, err
+		return UpsertResult{}, true, err
 	}
 	defer n.unpin()
-	ctx, tx, txSpan, err := s.beginWrite(ctx, n)
-	if err != nil {
-		return UpsertResult{}, err
-	}
-	defer s.endWrite(tx, txSpan)
 
-	if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
-		return UpsertResult{}, err
-	}
-	sc, err := loadSchema(ctx, tx, nsName, table)
+	var sc *schema.TableSchema
+	var gen int64
+	var preMatched int64
+	readTx, err := n.ro.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return UpsertResult{}, err
+		return UpsertResult{}, true, err
 	}
+	if err := checkScopeIncarnation(ctx, readTx, nsName, table, scopeIncarnation); err != nil {
+		readTx.Rollback()
+		return UpsertResult{}, true, err
+	}
+	sc, err = loadSchema(ctx, readTx, nsName, table)
+	if err != nil {
+		readTx.Rollback()
+		return UpsertResult{}, true, err
+	}
+	if gen, err = tableGen(ctx, readTx, table); err != nil {
+		readTx.Rollback()
+		return UpsertResult{}, true, err
+	}
+	readVis, readVisArgs := visiblePredicate(scope)
+	readSQL := fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s%s`, q(table), where, readVis)
+	readArgs := append(append(make([]any, 0, len(args)+len(readVisArgs)), args...), readVisArgs...)
+	if err := readTx.QueryRowContext(ctx,
+		readSQL, readArgs...).Scan(&preMatched); err != nil {
+		readTx.Rollback()
+		return UpsertResult{}, true, NewFilterError(where, err)
+	}
+	readTx.Rollback()
+
 	if err := scopeUsable(scope, sc); err != nil {
-		return UpsertResult{}, err
+		return UpsertResult{}, true, err
 	}
 	for k := range set {
 		if sc.Field(k) == nil {
-			return UpsertResult{}, invalidf("unknown field %q on table %s (see describe_table)", k, table)
+			return UpsertResult{}, true, invalidf("unknown field %q on table %s (see describe_table)", k, table)
 		}
 	}
 
@@ -97,11 +137,11 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 			continue
 		}
 		if f.Required && v == nil {
-			return UpsertResult{}, invalidf("field %q is required and cannot be set to null", f.Name)
+			return UpsertResult{}, true, invalidf("field %q is required and cannot be set to null", f.Name)
 		}
 		cv, err := s.coerceWrite(f, v)
 		if err != nil {
-			return UpsertResult{}, err
+			return UpsertResult{}, true, err
 		}
 		cols = append(cols, q(f.Name))
 		vals = append(vals, cv)
@@ -125,19 +165,63 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 		}
 	}
 
+	if allowInsert && preMatched == 0 {
+		for _, f := range sc.Fields {
+			v, present := set[f.Name]
+			if present && v != nil {
+				continue
+			}
+			if f.Required {
+				return UpsertResult{}, true, invalidf("field %q is required (no row matched the filter, so upsert would insert a new record)", f.Name)
+			}
+		}
+	}
+
+	persistMeta := false
+	var vec []float32
+	if vf != nil && (preMatched > 0 || allowInsert) {
+		if text, _ := coerced[vf.Name].(string); text != "" {
+			persistMeta = sc.EmbedSpace == "" || sc.EmbedDim == 0
+			vec, err = embedForUpdate(ctx, sc, table, text, emb)
+			if err != nil {
+				return UpsertResult{}, true, err
+			}
+		}
+	}
+
+	embedSpace, embedDim := sc.EmbedSpace, sc.EmbedDim
+	version := sc.Version
+	ctx, tx, txSpan, err := s.beginWrite(ctx, n)
+	if err != nil {
+		return UpsertResult{}, true, err
+	}
+	defer s.endWrite(tx, txSpan)
+
+	scTx, err := loadSchema(ctx, tx, nsName, table)
+	if err != nil {
+		return UpsertResult{}, true, err
+	}
+	txGen, err := tableGen(ctx, tx, table)
+	if err != nil {
+		return UpsertResult{}, true, err
+	}
+	if scTx.Version != version || scTx.EmbedSpace != embedSpace || scTx.EmbedDim != embedDim || txGen != gen {
+		return UpsertResult{}, false, nil
+	}
+
 	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS temp._dolmen_update_ids`); err != nil {
-		return UpsertResult{}, err
+		return UpsertResult{}, true, err
 	}
 	prefix, source, scopeArgs := scopedSource(table, scope)
 	matchArgs := append(append(make([]any, 0, len(scopeArgs)+len(args)), scopeArgs...), args...)
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`CREATE TEMP TABLE _dolmen_update_ids AS %sSELECT id, %s AS owner FROM %s WHERE %s`, prefix, changeOwnerColumn(sc), source, where),
 		matchArgs...); err != nil {
-		return UpsertResult{}, NewFilterError(where, err)
+		return UpsertResult{}, true, NewFilterError(where, err)
 	}
 	var matched int64
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM _dolmen_update_ids`).Scan(&matched); err != nil {
-		return UpsertResult{}, err
+		return UpsertResult{}, true, err
 	}
 
 	if allowInsert && matched == 0 {
@@ -147,19 +231,7 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 				continue
 			}
 			if f.Required {
-				return UpsertResult{}, invalidf("field %q is required (no row matched the filter, so upsert would insert a new record)", f.Name)
-			}
-		}
-	}
-
-	persistMeta := false
-	var vec []float32
-	if vf != nil && (matched > 0 || allowInsert) {
-		if text, _ := coerced[vf.Name].(string); text != "" {
-			persistMeta = sc.EmbedSpace == "" || sc.EmbedDim == 0
-			vec, err = embedForUpdate(ctx, sc, table, text, emb)
-			if err != nil {
-				return UpsertResult{}, err
+				return UpsertResult{}, true, invalidf("field %q is required (no row matched the filter, so upsert would insert a new record)", f.Name)
 			}
 		}
 	}
@@ -184,19 +256,19 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 			fmt.Sprintf(`UPDATE %s SET %s WHERE id IN (SELECT id FROM _dolmen_update_ids)`,
 				q(table), strings.Join(assignments, ", ")), avals...)
 		if err != nil {
-			return UpsertResult{}, fmt.Errorf("update %s: %w", table, err)
+			return UpsertResult{}, true, fmt.Errorf("update %s: %w", table, err)
 		}
 		updated, err := res.RowsAffected()
 		if err != nil {
-			return UpsertResult{}, err
+			return UpsertResult{}, true, err
 		}
 		if updated > 0 && ftsTouched {
 			if _, err := tx.ExecContext(ctx,
 				fmt.Sprintf(`DELETE FROM %s WHERE rowid IN (SELECT id FROM _dolmen_update_ids)`, q(ftsTable(table)))); err != nil {
-				return UpsertResult{}, err
+				return UpsertResult{}, true, err
 			}
 			if err := reindexFTSRows(ctx, tx, table, sc.FTSFields()); err != nil {
-				return UpsertResult{}, fmt.Errorf("update search index for %s: %w", table, err)
+				return UpsertResult{}, true, fmt.Errorf("update search index for %s: %w", table, err)
 			}
 		}
 		result.Updated = updated
@@ -204,14 +276,14 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 		if allowInsert {
 			ids, err := selectUpdateIDs(ctx, tx)
 			if err != nil {
-				return UpsertResult{}, err
+				return UpsertResult{}, true, err
 			}
 			result.Ids = ids
 		}
 
 		changes, err := mintChangesFromTemp(ctx, tx, table, ChangeUpdate, `_dolmen_update_ids`)
 		if err != nil {
-			return UpsertResult{}, err
+			return UpsertResult{}, true, err
 		}
 		result.Changes = changes
 	case allowInsert:
@@ -228,7 +300,7 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 			dv := defaultForWrite(f)
 			cv, err := coerceValue(f, dv)
 			if err != nil {
-				return UpsertResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+				return UpsertResult{}, true, fmt.Errorf("%w: %w", ErrInvalid, err)
 			}
 			coerced[f.Name] = cv
 			icols = append(icols, q(f.Name))
@@ -246,22 +318,22 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 		res, err := tx.ExecContext(ctx,
 			fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s)`, q(table), strings.Join(icols, ", "), ph), ivals...)
 		if err != nil {
-			return UpsertResult{}, fmt.Errorf("insert into %s: %w", table, err)
+			return UpsertResult{}, true, fmt.Errorf("insert into %s: %w", table, err)
 		}
 		id, err := res.LastInsertId()
 		if err != nil {
-			return UpsertResult{}, err
+			return UpsertResult{}, true, err
 		}
 		if fts := sc.FTSFields(); len(fts) > 0 {
 			if err := insertFTSRow(ctx, tx, table, fts, id, coerced); err != nil {
-				return UpsertResult{}, fmt.Errorf("update search index for %s: %w", table, err)
+				return UpsertResult{}, true, fmt.Errorf("update search index for %s: %w", table, err)
 			}
 		}
 		result.Inserted = 1
 		result.Ids = []int64{id}
 
 		if result.Changes, err = mintChanges(ctx, tx, table, ChangeInsert, []int64{id}, sameOwner(stampOwner(sc, owner), 1)); err != nil {
-			return UpsertResult{}, err
+			return UpsertResult{}, true, err
 		}
 	}
 
@@ -271,23 +343,23 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 		}
 		raw, err := encodeSchemaOver(ctx, tx, table, sc, nil)
 		if err != nil {
-			return UpsertResult{}, err
+			return UpsertResult{}, true, err
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE _dolmen_tables SET schema_json = ? WHERE name = ?`, raw, table); err != nil {
-			return UpsertResult{}, err
+			return UpsertResult{}, true, err
 		}
 	}
 
 	if _, err := tx.ExecContext(ctx, `DROP TABLE _dolmen_update_ids`); err != nil {
-		return UpsertResult{}, err
+		return UpsertResult{}, true, err
 	}
 	if err := commitWrite(tx, txSpan); err != nil {
-		return UpsertResult{}, err
+		return UpsertResult{}, true, err
 	}
 
 	s.notifyCommitted(nsName, table, result.Changes)
-	return result, nil
+	return result, true, nil
 }
 
 func selectUpdateIDs(ctx context.Context, tx *sql.Tx) ([]int64, error) {
