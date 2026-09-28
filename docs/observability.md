@@ -113,8 +113,10 @@ shortest path from "insert got slow" to "here is what it was waiting on":
 
 ### A failed span's `error.type` comes from the caller's context first
 
-Every span that ends in an error carries `error.type`. For a storage span (`INSERT docs`, `SELECT`,
-`dolmen.transaction`, `dolmen.writer.wait`) that value follows one rule, on both engines:
+Every span that ends in an error carries `error.type`. For the operation spans — `INSERT docs`,
+`SELECT`, `UPDATE`, `MIGRATE`, `SEARCH`, `VACUUM`, `DELETE` — that value follows one rule, on both
+engines, and so do the SQLite-only `dolmen.writer.wait`, `dolmen.migrate.step`,
+`dolmen.vector.cache` and `dolmen.vector.score` spans:
 
 - **If the caller's context was done when the call ended, the span says `canceled` or `timeout`** —
   whatever error came back. A request whose caller has gone is not a `query_error` and not an
@@ -122,6 +124,10 @@ Every span that ends in an error carries `error.type`. For a storage span (`INSE
   `canceled` (or `504` on a server-side deadline) whatever the operation was doing when it noticed.
 - **With a live context, the error decides**, and the class is the one the caller would have got:
   `invalid_request`, `not_found`, `conflict`, `query_error`, `internal_error`, and so on.
+
+One span is deliberately outside it: the SQLite-only `dolmen.transaction` span carries
+`dolmen.tx.outcome` (`commit` or `rollback`) and never an `error.type`, so read that attribute for
+whether the transaction landed and the span above it for why the operation failed.
 
 The consequence for reading traces: over HTTP and MCP, a storage span and the `dolmen.op` span above it
 never disagree about whether the caller went away, so a tree that says `canceled` at the top says
