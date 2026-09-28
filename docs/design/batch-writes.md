@@ -75,7 +75,18 @@ Two mechanical consequences, both of which are the point:
 - **The schemas are derived, not copied.** `api.Ops` stays the single source of truth: the `batch`
   input schema for kind *k* is `Ops[k].InputSchema`'s properties minus those three fields. A change to
   `insert`'s schema propagates to `batch` rather than needing to be made twice, and a divergence is
-  not possible. This is the same discipline `outputSchemas` already relies on in `openapi.go`.
+  not possible. The precedent already in the codebase is `writeOutSchema(withUpdated, withReplayed bool)`
+  at `internal/api/ops.go:158`, which builds one output schema and parameterises it per kind — `insert`
+  asks for `(false, true)`, `upsert` and `upsert_by_key` for `(true, false)` — so three operations share
+  a builder instead of three literals. That is the discipline to copy.
+
+  **The thing to avoid is the opposite pattern, and this repo already contains it:**
+  `outputSchemas` in `internal/api/openapi.go` is a hand-maintained map whose `init()`
+  (`openapi.go:82-88`) *replaces* the `OpDef.OutputSchema` of 17 operations at startup. For those,
+  editing the literal in `ops.go` has no effect on what OpenAPI or MCP advertise — CLAUDE.md names it
+  as the one override trap. A `batch` output schema added there would be a hand-written second copy of
+  something the per-kind derivation already produces, and editing the derivation would silently not
+  change what is advertised. So: derive it, and do not add `batch` to `outputSchemas`.
 
 ### Limits
 
