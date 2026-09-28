@@ -20,7 +20,7 @@ type VectorSearchResult struct {
 
 func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq VectorQuery, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (_ SearchResult, err error) {
 	ctx, span := s.tr.Op(ctx, "SELECT", nsName, table, dbspan.SearchKindKey.String("vector"))
-	defer func() { s.tr.End(span, err) }()
+	defer func() { s.tr.End(ctx, span, err) }()
 	n, err := s.ns(nsName)
 	if err != nil {
 		return SearchResult{}, err
@@ -95,7 +95,7 @@ func (s *Store) SearchVector(ctx context.Context, nsName, table string, vq Vecto
 		_, sspan := s.tr.Child(ctx, dbspan.VectorScore)
 		var scanned int
 		hits, skipped, scanned, err = scanVectors(ctx, tx, table, column, filter, args, scope, vec, threshold)
-		s.vcache.endScore(sspan, scanned, -1, err)
+		s.vcache.endScore(ctx, sspan, scanned, -1, err)
 		if err != nil {
 			return SearchResult{}, err
 		}

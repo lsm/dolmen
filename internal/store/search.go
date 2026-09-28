@@ -120,7 +120,7 @@ func bareHyphenTerm(match string) bool {
 
 func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string, filter string, args []any, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (_ SearchResult, err error) {
 	ctx, span := s.tr.Op(ctx, "SELECT", nsName, table, dbspan.SearchKindKey.String("fulltext"))
-	defer func() { s.tr.End(span, err) }()
+	defer func() { s.tr.End(ctx, span, err) }()
 	n, err := s.ns(nsName)
 	if err != nil {
 		return SearchResult{}, err
@@ -367,7 +367,7 @@ type DeleteResult struct {
 
 func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation) (_ DeleteResult, err error) {
 	ctx, span := s.tr.Op(ctx, "DELETE", nsName, table)
-	defer func() { s.tr.End(span, err) }()
+	defer func() { s.tr.End(ctx, span, err) }()
 	where = strings.TrimSpace(where)
 	if where == "" {
 		return DeleteResult{}, invalidf("filter is required (pass \"1=1\" to delete everything)")

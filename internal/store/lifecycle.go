@@ -146,7 +146,7 @@ func walkNamespaces(dir, prefix string, out *[]string) error {
 
 func (s *Store) CreateNamespace(ctx context.Context, nsName string, parentNsGen [16]byte) (err error) {
 	ctx, span := s.tr.Op(ctx, "CREATE", nsName, "")
-	defer func() { s.tr.End(span, err) }()
+	defer func() { s.tr.End(ctx, span, err) }()
 	if err := validateNSPath(nsName); err != nil {
 		return err
 	}
@@ -191,7 +191,7 @@ func (s *Store) CreateNamespace(ctx context.Context, nsName string, parentNsGen 
 
 func (s *Store) DropNamespace(ctx context.Context, nsName string, nsGen [16]byte) (err error) {
 	ctx, span := s.tr.Op(ctx, "DROP", nsName, "")
-	defer func() { s.tr.End(span, err) }()
+	defer func() { s.tr.End(ctx, span, err) }()
 	if err := validateNSPath(nsName); err != nil {
 		return err
 	}
@@ -257,7 +257,7 @@ func (s *Store) descendants(ctx context.Context, nsName string) (int, error) {
 
 func (s *Store) DropTable(ctx context.Context, nsName, table string, inc Incarnation) (err error) {
 	ctx, span := s.tr.Op(ctx, "DROP", nsName, table)
-	defer func() { s.tr.End(span, err) }()
+	defer func() { s.tr.End(ctx, span, err) }()
 	n, err := s.ns(nsName)
 	if err != nil {
 		return err

@@ -111,6 +111,24 @@ shortest path from "insert got slow" to "here is what it was waiting on":
    `childCount > 0` is an operation, not a leaf, so the one you want is never a bare `embeddings` or
    `INSERT` span.
 
+### A failed span's `error.type` comes from the caller's context first
+
+Every span that ends in an error carries `error.type`. For a storage span (`INSERT docs`, `SELECT`,
+`dolmen.transaction`, `dolmen.writer.wait`) that value follows one rule, on both engines:
+
+- **If the caller's context was done when the call ended, the span says `canceled` or `timeout`** —
+  whatever error came back. A request whose caller has gone is not a `query_error` and not an
+  `internal_error`, and this is the same rule the wire already uses: the api answers such a request
+  `canceled` (or `504` on a server-side deadline) whatever the operation was doing when it noticed.
+- **With a live context, the error decides**, and the class is the one the caller would have got:
+  `invalid_request`, `not_found`, `conflict`, `query_error`, `internal_error`, and so on.
+
+The consequence for reading traces: a storage span and the `dolmen.op` span above it never disagree
+about whether the caller went away, so a tree that says `canceled` at the top says `canceled` all
+the way down. If you are looking for the *cause* of a cancellation — a slow query, a lock, a provider
+— the answer is in the span's duration and its children, not in its `error.type`, which by
+construction can only say that the caller stopped waiting.
+
 ## Three alerts to start with
 
 These are the three dolmen-specific conditions that are worth waking someone for. Each is written
