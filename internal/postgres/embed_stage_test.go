@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -763,5 +764,72 @@ func TestAPlanCountsOnlyTheStagedRowsWhoseTextStillMatches(t *testing.T) {
 	}
 	if plan.EmbedRows != (rows-1)-(staged-2) {
 		t.Fatalf("the plan reports embed_rows %d, want %d", plan.EmbedRows, (rows-1)-(staged-2))
+	}
+}
+
+func TestPostgresAFullyStagedPlanAsksTheProviderForNothing(t *testing.T) {
+	const rows = 300
+	s := openTest(t, testConfig(t))
+	seedPGStageTable(t, s, "full", "docs", rows)
+	ctx := t.Context()
+	rec := &pgStageRecorder{}
+	rec.inside = func(ctx context.Context) error {
+		if rec.calls != 1 {
+			return nil
+		}
+		inner, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		_, err := s.Migrate(inner, "full", "docs", []schema.Change{
+			{Op: schema.OpAddField, Field: &schema.Field{Name: "note", Type: schema.String}},
+		}, store.Embedder{}, store.Incarnation{Version: 1})
+		return err
+	}
+	_, err := s.Migrate(ctx, "full", "docs", vectorizeBody(), rec.embedder("test"), store.Incarnation{Version: 1})
+	if err == nil {
+		t.Fatal("the migration must not land: a second migration of the same table lands during its backfill")
+	}
+	var versioned *store.VersionConflictError
+	if !errors.As(err, &versioned) {
+		t.Fatalf("a migration whose expected_version was overtaken by another migration of the same table returned %v, want a version conflict", err)
+	}
+	if versioned.ExpectedVersion != 1 || versioned.CurrentVersion != 2 {
+		t.Fatalf("the conflict is about versions %d and %d, want 1 and 2", versioned.ExpectedVersion, versioned.CurrentVersion)
+	}
+	sc, _, err := s.DescribeTable(ctx, "full", "docs", nil, store.Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Version != 2 {
+		t.Fatalf("the table is at version %d, want 2: only the add_field landed", sc.Version)
+	}
+	if log, err := s.ListMigrations(ctx, "full", "docs", store.Incarnation{}); err != nil || len(log) != 1 {
+		t.Fatalf("the migration log has %d entries, want 1: only the add_field landed (%v)", len(log), err)
+	}
+	staged := pgStageCount(t, s, "full", "docs")
+	if staged != rows {
+		t.Fatalf("%d rows are staged, want all %d: the backfill finished before the activation refused the overtaken version", staged, rows)
+	}
+	plan, err := s.PlanMigration(ctx, "full", "docs", vectorizeBody(), (&pgStageRecorder{}).embedder("test"), store.Incarnation{Version: 2}, nil, store.Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.StagedRows != rows {
+		t.Fatalf("the plan reports staged_rows %d, want all %d", plan.StagedRows, rows)
+	}
+	if plan.EmbedRows != 0 {
+		t.Fatalf("the plan reports embed_rows %d, want 0: every row's vector is already staged and its text still matches, so the re-issue asks the provider for nothing", plan.EmbedRows)
+	}
+	if plan.StagedRows+plan.EmbedRows != rows {
+		t.Fatalf("staged_rows %d plus embed_rows %d is %d, want the %d rows the change will vectorize", plan.StagedRows, plan.EmbedRows, plan.StagedRows+plan.EmbedRows, rows)
+	}
+	again := &pgStageRecorder{}
+	if _, err := s.Migrate(ctx, "full", "docs", vectorizeBody(), again.embedder("test"), store.Incarnation{Version: 2}); err != nil {
+		t.Fatalf("re-issuing the migration at the version the add_field left must land: %v", err)
+	}
+	if again.calls != 0 {
+		t.Fatalf("the re-issued migration called the provider %d times, want none: every row was already staged", again.calls)
+	}
+	if live := pgLiveEmbeddings(t, s, "full", "docs"); live != rows {
+		t.Fatalf("%d rows carry a vector, want %d", live, rows)
 	}
 }
