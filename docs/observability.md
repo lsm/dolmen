@@ -208,6 +208,31 @@ Prometheus translation adds to the `By` unit, the same way `dolmen_operation_dur
 from `s`; in a backend that keeps the OTel names, query `dolmen.vector_cache.usage` instead. All
 five gauges are in the README's metric table.
 
+### Alert: a SQLite write-ahead log past its limit
+
+`dolmen_db_wal_largest_bytes` over `64 * 1024 * 1024` for 15 minutes, SQLite only.
+
+The writer sets `journal_size_limit` to 64 MiB, which is SQLite's promise to checkpoint a WAL back
+into the database file once it passes that size. A log that sits above the limit means checkpoints
+are not keeping up — usually a reader holding a read transaction open, or a checkpoint failing on a
+full disk — and the WAL grows from there, taking disk and slowing every subsequent write.
+
+Alert on the **largest single log**, not on `dolmen_db_wal_size_bytes`. The sum is across every
+namespace this process holds open, so a few busy namespaces can push it over a threshold while no
+individual log is anywhere near its limit, and that alert would be noise. The largest one is the one
+that is actually stuck.
+
+Two things about the SQLite gauges to keep in mind:
+
+- They cover the namespaces **this process currently holds open**, not the data directory. A
+  namespace that has never been touched, or whose connection has been evicted and closed, is not
+  counted — its file is still on disk. `dolmen_namespaces_open` is the companion: a sum that
+  disagrees with `du` is usually a namespace that is not open, not a missing file.
+- PostgreSQL reports none of them, exactly as SQLite reports no pool metrics. The server's storage
+  and WAL belong to PostgreSQL, and [`postgres_exporter`](https://github.com/prometheus-community/postgres_exporter)
+  already covers them with far more fidelity than a file size would. If you are on PostgreSQL, alert
+  on `pg_wal_size` from there instead.
+
 ## What never leaves the process
 
 Worth knowing before you point this at a shared backend, and the rules the code holds to:
