@@ -46,8 +46,10 @@ go build -o dolmen.exe ./cmd/dolmen
 
 The first run creates the data directory (`./data` by default) and, with the default `local`
 embedding provider, the model cache (`./data/models`). On Unix these are opened with owner-only
-permissions (`0700` for the directory, `0600` for files); on Windows the permission bits only toggle
-the read-only attribute, so use NTFS ACLs for owner-only isolation. By default the server binds to
+permissions (`0700` for the directory, `0600` for files). On Windows the data directory gets a
+protected, inheritable ACL granting full control to the running user, `SYSTEM` and
+`BUILTIN\Administrators` and nothing inherited from its parent, reapplied on every open; namespace
+files, nested namespace directories, the grant registry and the model cache inherit it. By default the server binds to
 `127.0.0.1:8790` and does **not** authenticate, so keep it on a private interface.
 
 > **Embeddings are on by default.** The built-in `local` provider downloads
@@ -1468,7 +1470,7 @@ no CGO is required.
 | Operating systems | Linux, macOS, and Windows are supported. |
 | Filesystem | Local filesystems (ext4, APFS, NTFS, etc.) are required. SQLite WAL uses shared-memory coordination that does not work reliably over network or shared filesystems (NFS, SMB); these are unsupported. The server detects NFS, SMB/CIFS, AFP, WebDAV, FUSE, 9p and cluster filesystems (and Windows network drives) at startup and logs a warning naming the filesystem. |
 | WAL | Enabled per namespace (`journal_mode=WAL`, with `synchronous` set by `-sync`: `FULL` by default, `NORMAL` when opted out). Expect `<ns>.db`, `<ns>.db-wal`, and `<ns>.db-shm` files. |
-| Permissions | On Unix the data directory is created `0700` and namespace `.db`/`-wal`/`-shm` files are set `0600` (owner only); on Windows `os.Chmod` only toggles the read-only attribute, so use NTFS ACLs for owner-only isolation. Startup refuses a data directory it cannot secure or write to (for example a read-only mount), naming the directory and the fix. |
+| Permissions | On Unix the data directory is created `0700` and namespace `.db`/`-wal`/`-shm` files are set `0600` (owner only). On Windows the data directory is given a protected, inheritable ACL on every open — full control for the running user, `SYSTEM` and `BUILTIN\Administrators`, and nothing inherited from the parent — so namespace files, nested namespace directories, the grant registry and the model cache are owner-only too; namespace files that already existed keep the ACL they were created with. A backup output directory gets the same treatment. Startup refuses a data directory it cannot secure or write to (for example a read-only mount), naming the directory and the fix. |
 | Locking | Each namespace has one writer connection (`MaxOpenConns=1`) with `BEGIN IMMEDIATE` locking, plus a separate read-only connection pool. WAL mode allows multiple concurrent readers, but only one writer per file at a time. |
 | Multi-process | SQLite's file locking makes concurrent processes safe in principle, but running two dolmen servers against the same data directory can cause `database is locked` errors and is not recommended. |
 | Deleting a namespace | Prefer `drop_namespace` (confirm-guarded, closes the server's own connections first). Manually: stop the dolmen process, then delete the three `<ns>.db*` files. |
