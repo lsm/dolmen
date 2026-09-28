@@ -567,8 +567,9 @@ next call resumes after it — a page cut short by the row limit or the 32 MiB b
 page. Stop when a page comes back empty. The page size is the `limit` parameter, whose default of
 1,000 rows is also the most `query` will return, so expect one call per thousand rows. Do not put
 `LIMIT` in the SQL: it is not rejected, it is nested inside the server's own paging, so it can only
-make a page smaller than you asked for — and the server reaches that point by trying your statement,
-getting a syntax error, and retrying it wrapped.
+make a page smaller than you asked for{{ if eq .Dialect "postgresql" }} — this server wraps your statement in a
+subquery before it pages it{{ else }} — here the server reaches that point by trying your statement,
+getting a syntax error, and retrying it wrapped{{ end }}.
 
 Two things this export cannot carry, which is why restoring from one is a re-import rather than a copy:
 
