@@ -41,6 +41,19 @@ A new `batch` operation. Input:
 }
 ```
 
+And the result, positionally aligned with `writes` (§8):
+
+```json
+{
+  "replayed": false,
+  "results": [
+    { "ids": [41], "inserted": 1 },
+    { "updated": 7 },
+    { "inserted": 0, "updated": 1, "ids": [12] }
+  ]
+}
+```
+
 **Each write names its `kind` and otherwise carries exactly the input of the matching single operation.**
 Five kinds: `insert`, `update`, `delete`, `upsert` (filter-matched), `upsert_by_key` (natural key).
 
@@ -126,6 +139,11 @@ ASCII bytes, omitted for a non-idempotent batch).
 The stored result is the batch's, so a replay is exact: the caller learns which ids each insert
 returned, not merely that something committed.
 
+The caller is also told it was a replay, by a **top-level `replayed` boolean** on the batch result
+(§8) — the batch's counterpart to the single ops' `replayed` field, moved up one level because the key
+belongs to the batch. `insert` reports `replayed` today for exactly this reason, so a batch that
+dropped the signal would leave a caller unable to distinguish a fresh commit from a recovered one.
+
 ---
 
 ## 5. Errors
@@ -207,22 +225,30 @@ should issue two batches.
 
 ## 8. Results
 
-One result per write, in order, positionally aligned with `writes` so a caller can zip the two without
+The batch result is an object with a top-level `replayed` boolean (§4) and a `results` array carrying one
+entry per write, in order, positionally aligned with `writes` so a caller can zip the two without
 matching on anything:
 
-- `insert` → `ids`, plus `inserted`
+- `insert` → `ids`, `inserted`
 - `update` → `updated`
-- `delete` → `deleted`
+- `delete` → `matched`, `deleted`
 - `upsert`, `upsert_by_key` → `inserted`, `updated`, `ids`
 
 This is the union of what the single operations already return, so nothing here is a new result shape —
 only a place to put them. The output schema is derived the same way the input is, per kind.
 
-`delete` returns `deleted` alone. `delete` also reports `matched`, but only on a dry run, and §2
-refuses `dry_run` inside a batch and §11 takes it out of scope, so that field has no case here. An
-earlier draft of this list carried "plus `matched` when a `dry_run` is in play", which described a
-combination the design does not allow: a batch that committed its other writes while simulating one of
-its own.
+Two details that are deliberate rather than incidental:
+
+- **`delete` returns `matched` as well as `deleted`, on every batch, not only a dry run.** The single op
+  requires both fields on every call (`internal/api/ops.go:1642`) and the facade's `DeleteResult.Matched`
+  is an unconditional field, so `matched` is not a dry-run-only number that a committing batch could
+  drop. In a batch it is also load-bearing rather than decorative: it is the count the §2 row budget was
+  charged against, so a caller can see what a write matched as well as what it changed.
+- **A per-write `replayed` is omitted; the batch's is the one that exists.** `insert` reports `replayed`
+  per call, but inside a batch every write is either part of a fresh commit or part of a replayed one, so
+  a per-write flag could only ever be the batch's flag repeated. One top-level `replayed` says it once.
+  This is the one place the per-write result is not a pure union, and it is a consequence of §4's single
+  key rather than a new result concept.
 
 ---
 
