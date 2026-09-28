@@ -77,6 +77,8 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 	endMigrate := s.beginMigrate(nsName, table)
 	defer endMigrate()
 
+	var firstGen int64
+	haveFirst := false
 	for attempt := 0; ; attempt++ {
 		if attempt > maxMigrateAttempts {
 			return nil, migrationConflict(nsName, table)
@@ -84,6 +86,11 @@ func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []sch
 		plan, err := s.readMigratePlan(ctx, n, nsName, table, changes, emb, expected)
 		if err != nil {
 			return nil, err
+		}
+		if !haveFirst {
+			firstGen, haveFirst = plan.gen, true
+		} else if plan.gen != firstGen {
+			return nil, tableReplaced(nsName, table)
 		}
 		var constant []float32
 		if plan.work.embed.embedding {
@@ -183,12 +190,16 @@ func applyStagedPlan(ctx context.Context, db querier, table string, gen int64, p
 	return nil
 }
 
+func tableReplaced(nsName, table string) error {
+	return fmt.Errorf("%w: table %s.%s was replaced; describe the current table", ErrNotFound, nsName, table)
+}
+
 func checkBoundLifetime(ctx context.Context, tx rowQuerier, nsName, table string, want Incarnation) error {
 	bound := want.NsGen != [16]byte{} || want.Table != "" || want.DropGen != 0
 	if !bound {
 		return nil
 	}
-	replaced := fmt.Errorf("%w: table %s.%s was replaced; describe the current table", ErrNotFound, nsName, table)
+	replaced := tableReplaced(nsName, table)
 	if want.Table != "" && want.Table != table {
 		return replaced
 	}

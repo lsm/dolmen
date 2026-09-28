@@ -242,6 +242,17 @@ func (s *Store) ListTables(ctx context.Context, ns string, auth []store.AuthBind
 	return out, err
 }
 
+func tableReplaced(ns string, table string) error {
+	return fmt.Errorf("%w: table %s.%s was replaced; describe the current table", store.ErrNotFound, ns, table)
+}
+
+func checkSameTable(ns string, current, first store.Incarnation) error {
+	if first.NsGen != [16]byte{} && first.NsGen != current.NsGen || first.Table != "" && first.Table != current.Table || first.DropGen != current.DropGen {
+		return tableReplaced(ns, current.Table)
+	}
+	return nil
+}
+
 func checkIncarnation(ns string, current, expected store.Incarnation) error {
 	boundLifetime := expected.NsGen != [16]byte{} || expected.Table != "" || expected.DropGen != 0
 	if expected.NsGen != [16]byte{} && expected.NsGen != current.NsGen || expected.Table != "" && expected.Table != current.Table || boundLifetime && expected.DropGen != current.DropGen {

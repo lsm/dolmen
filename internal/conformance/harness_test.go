@@ -35,6 +35,7 @@ type fakeProvider struct {
 	texts                []string
 	fail                 error
 	failOnTextContaining string
+	onFirstCall          func()
 	delay                time.Duration
 }
 
@@ -50,7 +51,12 @@ func (p *fakeProvider) Embed(ctx context.Context, texts []string) ([][]float32, 
 	if scoped {
 		p.failOnTextContaining, p.fail = "", nil
 	}
+	hook := p.onFirstCall
+	p.onFirstCall = nil
 	p.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	switch {
 	case scoped:
 		return nil, fmt.Errorf("%w: the provider was asked for %d texts and one of them is the one this call refuses", fail, len(texts))
