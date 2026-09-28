@@ -150,6 +150,26 @@ that it is gap-free and in commit order.
 **One key for the whole batch**, at the top level, reusing `insert`'s existing mechanism (256 printable
 ASCII bytes, omitted for a non-idempotent batch).
 
+The record lives in a **namespace-level table, `_dolmen_batches`**, created with the namespace and
+lazily ensured for namespaces that predate it. This is storage the contract above does not settle, so
+it is worth being explicit about why a new table rather than a reuse of `_dolmen_idempotency_owned`.
+That table is already namespace-level and keyed `(table_name, owner, key)`, so a batch key could be
+stored under a reserved `table_name`; its value column is `ids_json`, however, which holds a list of row
+ids, and a batch's stored value is a whole per-write result array. Overloading it would trade a DDL
+entry for a column that misdescribes what it holds, in a table `insert` also writes — a wrong read
+corrupting a replay rather than merely confusing a reader. So `_dolmen_batches` sits beside it in
+`registryDDL`, and the two never share a row.
+
+**Batch records are internal, exactly as `insert`'s are.** They are absent from `list_tables`,
+`describe` and `query`, and nothing about a key ever becomes readable through a surface. `insert`'s keys
+already work this way in `_dolmen_idempotency_owned`; a batch key is caller-supplied data and exposing it
+would be a second way to read a request's contents out of band.
+
+**No expiry ships.** A record is written when the batch commits and stays. Retention is deliberately
+kept to one place — one DDL entry, one lookup pair, one insert — so that when a policy is chosen it is
+one function's body rather than a new code path. Note that namespace teardown needs no cleanup for
+them: `DropNamespace` removes the namespace's file, so `_dolmen_batches` leaves with it.
+
 - A replay with the same key and the same body returns the **stored result** — the whole per-write
   result array — and writes nothing, exactly as `insert` replays ids.
 - The same key with a different body is a `conflict`, as with `insert`.
@@ -228,6 +248,39 @@ Phase 1, outside the writer: read each table's schema, embed space and dimension
 slow or failing provider is absorbed — the writer is not held across a provider round trip, which is the
 same property #501 and #509 established for the single operations. `delete` is deliberately absent from
 that list, for the reason in the paragraph below.
+
+**A batch does not get phase 1, and the note has to say so rather than let §9 imply it does.** Phase 1
+exists to keep the writer free while a provider is called, and it works for a single write because
+`insertAttempt` and `updateAttempt` embed *before* they call `beginWrite`. A batch holds one transaction
+around every write, so by the time the first write runs, that transaction is already open — and each
+write's embedding happens inside its own attempt, inside it. Every provider round trip in a batch
+therefore happens with the single writer held.
+
+The alternative would be a pre-pass that loads each table's schema and calls the provider for every
+vectorized write's text before the transaction opens. It is not in this slice, and the reason is
+specific rather than incidental: the text each write embeds is chosen *inside* its attempt, from that
+table's schema and the write's own fields. A pre-pass would have to reproduce that choice for five write
+kinds, and a pre-pass that selects different text than the attempt silently embeds the wrong vector —
+a correctness bug that no test in this slice would catch, because each is individually correct. Doing it
+properly means moving text selection out of the attempts into something both paths call, which is a
+refactor of the single operations and therefore its own change.
+
+What this costs is bounded and worth stating: a batch's writer hold includes its provider time, so a
+batch of 100 vectorized writes holds the single SQLite writer for the sum of 100 provider round trips
+rather than the sum of the writes alone. §9's row budget bounds the *rows*, not the provider time, and
+`-op-timeout` is the only thing bounding the latter. A caller who needs the writer back promptly should
+send fewer, smaller batches. Making the provider round trips fall outside the writer is the first thing
+to revisit if that proves to matter in practice, and the shape to reach for is a shared
+select-then-embed helper that both the attempts and a batch pre-pass call — not a second copy of the
+selection logic.
+
+**A batch carries a namespace incarnation, not a table one.** `Incarnation` is table-scoped
+(`internal/store/scope.go:67` rejects any `want.Table` that is not the table being written), and a
+batch has no single table. So `batch` takes the namespace generation and refuses a table incarnation
+with a message that says why. That is not a weaker check than the single operations get, because every
+write still re-reads its own table's version, embed space, dimension and drop generation inside the
+transaction — which is phase 2 below, and which is where the per-write safety actually lives. A
+namespace generation that moved is reported as a `conflict` naming the namespace.
 
 **One write kind cannot be counted outside the writer, and the note has to say so rather than pretend
 otherwise.** `update` and `upsert` do pre-count: `updateOrUpsert` has its `preMatched` in hand before it

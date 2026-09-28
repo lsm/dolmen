@@ -365,18 +365,26 @@ type DeleteResult struct {
 	Changes ChangeRange
 }
 
-func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation) (_ DeleteResult, err error) {
-	ctx, span := s.tr.Op(ctx, "DELETE", nsName, table)
-	defer func() { s.tr.End(ctx, span, err) }()
+func normalizeDeleteFilter(where string, args []any) (string, error) {
 	where = strings.TrimSpace(where)
 	if where == "" {
-		return DeleteResult{}, invalidf("filter is required (pass \"1=1\" to delete everything)")
+		return "", invalidf("filter is required (pass \"1=1\" to delete everything)")
 	}
 	if hasStatementSeparator(where) {
-		return DeleteResult{}, invalidf("multiple statements are not allowed in filter")
+		return "", invalidf("multiple statements are not allowed in filter")
 	}
 	for i, a := range args {
 		args[i] = normalizeArg(a)
+	}
+	return where, nil
+}
+
+func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation) (_ DeleteResult, err error) {
+	ctx, span := s.tr.Op(ctx, "DELETE", nsName, table)
+	defer func() { s.tr.End(ctx, span, err) }()
+	where, err = normalizeDeleteFilter(where, args)
+	if err != nil {
+		return DeleteResult{}, err
 	}
 	n, err := s.ns(nsName)
 	if err != nil {
@@ -410,36 +418,42 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 		return DeleteResult{Matched: matched, Deleted: 0}, nil
 	}
 
-	ctx, tx, txSpan, err := s.beginWrite(ctx, n)
+	res, _, err := s.deleteWith(ctx, n, nsName, table, where, args, opts, scope, scopeIncarnation, nil)
+	return res, err
+}
+
+func (s *Store) deleteWith(ctx context.Context, n *nsDB, nsName, table, where string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation, shared *sharedWriteTx) (DeleteResult, bool, error) {
+	ctx, wt, err := s.writeTxFor(ctx, n, shared)
 	if err != nil {
-		return DeleteResult{}, err
+		return DeleteResult{}, true, err
 	}
-	defer s.endWrite(tx, txSpan)
+	defer s.releaseWrite(wt)
+	tx := wt.tx
 
 	if err := checkScopeIncarnation(ctx, tx, nsName, table, scopeIncarnation); err != nil {
-		return DeleteResult{}, err
+		return DeleteResult{}, true, err
 	}
 	sc, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
-		return DeleteResult{}, err
+		return DeleteResult{}, true, err
 	}
 	if err := scopeUsable(scope, sc); err != nil {
-		return DeleteResult{}, err
+		return DeleteResult{}, true, err
 	}
 
 	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS temp._dolmen_delete_ids`); err != nil {
-		return DeleteResult{}, err
+		return DeleteResult{}, true, err
 	}
 	prefix, source, scopeArgs := scopedSource(table, scope)
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`CREATE TEMP TABLE _dolmen_delete_ids AS %sSELECT id, %s AS owner FROM %s WHERE %s`, prefix, changeOwnerColumn(sc), source, where),
 		append(append(make([]any, 0, len(scopeArgs)+len(args)), scopeArgs...), args...)...); err != nil {
-		return DeleteResult{}, NewFilterError(where, err)
+		return DeleteResult{}, true, NewFilterError(where, err)
 	}
 
 	var matched int64
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM _dolmen_delete_ids`).Scan(&matched); err != nil {
-		return DeleteResult{}, err
+		return DeleteResult{}, true, err
 	}
 
 	limit := int64(DefaultDeleteLimit)
@@ -447,38 +461,40 @@ func (s *Store) Delete(ctx context.Context, nsName, table, where string, args []
 		limit = int64(opts.Limit)
 	}
 	if matched > limit && !opts.Confirm {
-		return DeleteResult{}, invalidf("filter matched %d rows, exceeding the delete limit of %d; pass confirm: true to proceed or dry_run: true to preview", matched, limit)
+		return DeleteResult{}, true, invalidf("filter matched %d rows, exceeding the delete limit of %d; pass confirm: true to proceed or dry_run: true to preview", matched, limit)
 	}
 
 	if len(sc.FTSFields()) > 0 {
 		if _, err := tx.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE rowid IN (SELECT id FROM _dolmen_delete_ids)`, q(ftsTable(table)))); err != nil {
-			return DeleteResult{}, err
+			return DeleteResult{}, true, err
 		}
 	}
 	res, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`DELETE FROM %s WHERE id IN (SELECT id FROM _dolmen_delete_ids)`, q(table)))
 	if err != nil {
-		return DeleteResult{}, err
+		return DeleteResult{}, true, err
 	}
 	deleted, err := res.RowsAffected()
 	if err != nil {
-		return DeleteResult{}, err
+		return DeleteResult{}, true, err
 	}
 
 	changes, err := mintChangesFromTemp(ctx, tx, table, ChangeDelete, `_dolmen_delete_ids`)
 	if err != nil {
-		return DeleteResult{}, err
+		return DeleteResult{}, true, err
 	}
 	if _, err := tx.ExecContext(ctx, `DROP TABLE _dolmen_delete_ids`); err != nil {
-		return DeleteResult{}, err
+		return DeleteResult{}, true, err
 	}
-	if err := commitWrite(tx, txSpan); err != nil {
-		return DeleteResult{}, err
+	if err := s.commitOwned(wt); err != nil {
+		return DeleteResult{}, true, err
 	}
 
-	s.notifyCommitted(nsName, table, changes)
-	return DeleteResult{Matched: matched, Deleted: deleted, Changes: changes}, nil
+	if wt.own {
+		s.notifyCommitted(nsName, table, changes)
+	}
+	return DeleteResult{Matched: matched, Deleted: deleted, Changes: changes}, true, nil
 }
 
 func storedTooBig(err error) error {

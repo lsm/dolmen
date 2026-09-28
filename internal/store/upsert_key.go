@@ -14,18 +14,23 @@ const MaxKeyFields = 8
 func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (_ InsertResult, err error) {
 	ctx, span := s.tr.Op(ctx, "UPSERT", nsName, table)
 	defer func() { s.tr.End(ctx, span, err) }()
+	res, _, err := s.upsertByKey(ctx, nsName, table, keyFields, records, opts, emb, scope, scopeIncarnation, nil)
+	return res, err
+}
+
+func (s *Store) upsertByKey(ctx context.Context, nsName, table string, keyFields []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation, shared *sharedWriteTx) (_ InsertResult, done bool, err error) {
 	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
-		return InsertResult{}, err
+		return InsertResult{}, true, err
 	}
 	if len(records) == 0 {
-		return InsertResult{}, invalidf("no records given")
+		return InsertResult{}, true, invalidf("no records given")
 	}
 	if len(records) > MaxRecordsPerInsert {
-		return InsertResult{}, invalidf("too many records: %d > %d per call", len(records), MaxRecordsPerInsert)
+		return InsertResult{}, true, invalidf("too many records: %d > %d per call", len(records), MaxRecordsPerInsert)
 	}
 	keyFields, err = normalizeKeyFields(keyFields)
 	if err != nil {
-		return InsertResult{}, err
+		return InsertResult{}, true, err
 	}
 	normalized := make([]map[string]any, len(records))
 	for i, rec := range records {
@@ -33,7 +38,7 @@ func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields
 		for k, v := range rec {
 			lk := strings.ToLower(k)
 			if _, exists := nr[lk]; exists {
-				return InsertResult{}, invalidf("record %d: fields %q and its case variant collapse to %q; use one spelling", i, k, lk)
+				return InsertResult{}, true, invalidf("record %d: fields %q and its case variant collapse to %q; use one spelling", i, k, lk)
 			}
 			nr[lk] = v
 		}
@@ -43,19 +48,22 @@ func (s *Store) UpsertByKey(ctx context.Context, nsName, table string, keyFields
 
 	n, err := s.ns(nsName)
 	if err != nil {
-		return InsertResult{}, err
+		return InsertResult{}, true, err
 	}
 	defer n.unpin()
 	for attempt := 0; ; attempt++ {
-		if attempt >= 3 {
-			return InsertResult{}, invalidf("table schema changed concurrently; retry the upsert")
-		}
-		ids, inserted, updated, changes, done, err := s.upsertKeyAttempt(ctx, n, nsName, table, keyFields, records, emb, opts.Owner, scope, scopeIncarnation)
+		ids, inserted, updated, changes, done, err := s.upsertKeyAttempt(ctx, n, nsName, table, keyFields, records, emb, opts.Owner, scope, scopeIncarnation, shared)
 		if done {
 			if err != nil {
-				return InsertResult{}, err
+				return InsertResult{}, true, err
 			}
-			return InsertResult{Ids: ids, Inserted: int64(inserted), Updated: int64(updated), Changes: changes}, nil
+			return InsertResult{Ids: ids, Inserted: int64(inserted), Updated: int64(updated), Changes: changes}, true, nil
+		}
+		if shared != nil {
+			return InsertResult{}, false, nil
+		}
+		if attempt >= 2 {
+			return InsertResult{}, true, invalidf("table schema changed concurrently; retry the upsert")
 		}
 	}
 }
@@ -132,7 +140,7 @@ func matchByKey(ctx context.Context, tx *sql.Tx, table string, keyFields []strin
 	return 0, "", nil
 }
 
-func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table string, keyFields []string, records []map[string]any, emb Embedder, owner string, scope *RowScope, scopeIncarnation Incarnation) (ids []int64, inserted, updated int, changes ChangeRange, done bool, err error) {
+func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table string, keyFields []string, records []map[string]any, emb Embedder, owner string, scope *RowScope, scopeIncarnation Incarnation, shared *sharedWriteTx) (ids []int64, inserted, updated int, changes ChangeRange, done bool, err error) {
 
 	gen, err := s.writerTableGen(ctx, n, table)
 	if err != nil {
@@ -230,11 +238,12 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 	}
 
 	fts := sc.FTSFields()
-	ctx, tx, txSpan, err := s.beginWrite(ctx, n)
+	ctx, wt, err := s.writeTxFor(ctx, n, shared)
 	if err != nil {
 		return nil, 0, 0, ChangeRange{}, true, err
 	}
-	defer s.endWrite(tx, txSpan)
+	defer s.releaseWrite(wt)
+	tx := wt.tx
 
 	scTx, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
@@ -386,11 +395,13 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 			changes.Count += rng.Count
 		}
 	}
-	if err := commitWrite(tx, txSpan); err != nil {
+	if err := s.commitOwned(wt); err != nil {
 		return nil, 0, 0, ChangeRange{}, true, err
 	}
 
-	s.notifyCommitted(nsName, table, changes)
+	if wt.own {
+		s.notifyCommitted(nsName, table, changes)
+	}
 	return ids, inserted, updated, changes, true, nil
 }
 

@@ -82,6 +82,36 @@ func (s *Store) endWrite(tx *sql.Tx, w *writeSpan) {
 	w.span.End()
 }
 
+type sharedWriteTx struct {
+	tx   *sql.Tx
+	span *writeSpan
+	own  bool
+}
+
+func (s *Store) writeTxFor(ctx context.Context, n *nsDB, shared *sharedWriteTx) (context.Context, *sharedWriteTx, error) {
+	if shared != nil {
+		return ctx, shared, nil
+	}
+	ctx, tx, span, err := s.beginWrite(ctx, n)
+	if err != nil {
+		return ctx, nil, err
+	}
+	return ctx, &sharedWriteTx{tx: tx, span: span, own: true}, nil
+}
+
+func (s *Store) releaseWrite(w *sharedWriteTx) {
+	if w.own {
+		s.endWrite(w.tx, w.span)
+	}
+}
+
+func (s *Store) commitOwned(w *sharedWriteTx) error {
+	if !w.own {
+		return nil
+	}
+	return commitWrite(w.tx, w.span)
+}
+
 func (s *Store) writerConn(ctx context.Context, n *nsDB) (*sql.Conn, error) {
 	if !s.tr.On() {
 		return n.rw.Conn(ctx)

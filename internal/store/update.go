@@ -20,7 +20,7 @@ type UpsertResult struct {
 func (s *Store) Update(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (_ UpdateResult, err error) {
 	ctx, span := s.tr.Op(ctx, "UPDATE", nsName, table)
 	defer func() { s.tr.End(ctx, span, err) }()
-	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, false, "", scope, scopeIncarnation)
+	res, _, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, false, "", scope, scopeIncarnation, nil)
 	if err != nil {
 		return UpdateResult{}, err
 	}
@@ -30,24 +30,27 @@ func (s *Store) Update(ctx context.Context, nsName, table, where string, args []
 func (s *Store) Upsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (_ InsertResult, err error) {
 	ctx, span := s.tr.Op(ctx, "UPSERT", nsName, table)
 	defer func() { s.tr.End(ctx, span, err) }()
-	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, true, opts.Owner, scope, scopeIncarnation)
+	res, _, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, true, opts.Owner, scope, scopeIncarnation, nil)
 	if err != nil {
 		return InsertResult{}, err
 	}
 	return InsertResult{Ids: res.Ids, Inserted: res.Inserted, Updated: res.Updated, Changes: res.Changes}, nil
 }
 
-func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, allowInsert bool, owner string, scope *RowScope, scopeIncarnation Incarnation) (UpsertResult, error) {
+func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, allowInsert bool, owner string, scope *RowScope, scopeIncarnation Incarnation, shared *sharedWriteTx) (UpsertResult, bool, error) {
 	for attempt := 0; ; attempt++ {
-		if attempt >= 3 {
-			return UpsertResult{}, invalidf("table schema changed concurrently; retry the %s", verbFor(allowInsert))
-		}
-		res, done, err := s.updateAttempt(ctx, nsName, table, where, args, set, emb, allowInsert, owner, scope, scopeIncarnation)
+		res, done, err := s.updateAttempt(ctx, nsName, table, where, args, set, emb, allowInsert, owner, scope, scopeIncarnation, shared)
 		if done {
-			return res, err
+			return res, true, err
 		}
 		if err != nil {
-			return UpsertResult{}, err
+			return UpsertResult{}, true, err
+		}
+		if shared != nil {
+			return UpsertResult{}, false, nil
+		}
+		if attempt >= 2 {
+			return UpsertResult{}, true, invalidf("table schema changed concurrently; retry the %s", verbFor(allowInsert))
 		}
 	}
 }
@@ -59,7 +62,7 @@ func verbFor(allowInsert bool) string {
 	return "update"
 }
 
-func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, allowInsert bool, owner string, scope *RowScope, scopeIncarnation Incarnation) (UpsertResult, bool, error) {
+func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, allowInsert bool, owner string, scope *RowScope, scopeIncarnation Incarnation, shared *sharedWriteTx) (UpsertResult, bool, error) {
 	where = strings.TrimSpace(where)
 	if where == "" {
 		return UpsertResult{}, true, invalidf("filter is required (pass \"1=1\" to update every row)")
@@ -191,11 +194,12 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 		}
 	}
 
-	ctx, tx, txSpan, err := s.beginWrite(ctx, n)
+	ctx, wt, err := s.writeTxFor(ctx, n, shared)
 	if err != nil {
 		return UpsertResult{}, true, err
 	}
-	defer s.endWrite(tx, txSpan)
+	defer s.releaseWrite(wt)
+	tx := wt.tx
 
 	scTx, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
@@ -365,11 +369,13 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 	if _, err := tx.ExecContext(ctx, `DROP TABLE _dolmen_update_ids`); err != nil {
 		return UpsertResult{}, true, err
 	}
-	if err := commitWrite(tx, txSpan); err != nil {
+	if err := s.commitOwned(wt); err != nil {
 		return UpsertResult{}, true, err
 	}
 
-	s.notifyCommitted(nsName, table, result.Changes)
+	if wt.own {
+		s.notifyCommitted(nsName, table, result.Changes)
+	}
 	return result, true, nil
 }
 
