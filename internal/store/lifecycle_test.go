@@ -929,35 +929,34 @@ func TestNamespaceFileRemovedOutOfBand(t *testing.T) {
 	}
 }
 
-func TestDropNamespaceWaitsForInFlightTransaction(t *testing.T) {
+func TestDropNamespaceWaitsForAnOpenWriteTransaction(t *testing.T) {
 	st := openStore(t)
 	ctx := context.Background()
 	mustCreateNotes(t, st)
-
 	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{{"title": "seed"}}, testEmbed); err != nil {
 		t.Fatalf("seed insert: %v", err)
 	}
-
-	emb, waitPaused, release := pausingEmbedder()
-	updated := make(chan error, 1)
-	go func() {
-		_, err := st.Update(ctx, "test", "notes", "id > 0", nil, map[string]any{"body": "held open"}, emb)
-		updated <- err
-	}()
-	waitPaused()
-
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.unpin()
+	held, err := n.rw.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	dropped := make(chan error, 1)
 	go func() { dropped <- st.DropNamespace("test") }()
 	select {
 	case err := <-dropped:
-		t.Fatalf("drop must wait for the in-flight transaction, returned early with %v", err)
+		t.Fatalf("drop must wait for the open write transaction, returned early with %v", err)
 	case <-time.After(150 * time.Millisecond):
-
 	}
-
-	release()
-	if err := <-updated; err != nil {
-		t.Fatalf("in-flight update must complete before the drop: %v", err)
+	if _, err := held.ExecContext(ctx, `UPDATE notes SET title = 'held'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := held.Commit(); err != nil {
+		t.Fatal(err)
 	}
 	if err := <-dropped; err != nil {
 		t.Fatalf("drop: %v", err)
@@ -966,5 +965,38 @@ func TestDropNamespaceWaitsForInFlightTransaction(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(st.dir, "test.db"+suffix)); !os.IsNotExist(err) {
 			t.Fatalf("test.db%s must be gone after the waited drop", suffix)
 		}
+	}
+}
+
+func TestAnUpdateOvertakenByADropFailsWithoutWriting(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	mustCreateNotes(t, st)
+	if _, err := st.Insert(ctx, "test", "notes", []map[string]any{{"title": "seed", "body": "before"}}, testEmbed); err != nil {
+		t.Fatalf("seed insert: %v", err)
+	}
+	emb, waitPaused, release := pausingEmbedder()
+	updated := make(chan error, 1)
+	go func() {
+		_, err := st.Update(ctx, "test", "notes", "id > 0", nil, map[string]any{"body": "held open"}, emb)
+		updated <- err
+	}()
+	waitPaused()
+	if err := st.DropNamespace("test"); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	release()
+	if err := <-updated; err == nil {
+		t.Fatal("an update whose embedding was overtaken by a namespace drop must fail rather than succeed against a namespace that is gone")
+	}
+	if err := st.CreateNamespace("test"); err != nil {
+		t.Fatalf("recreate: %v", err)
+	}
+	tables, err := st.ListTables(ctx, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tables) != 0 {
+		t.Fatalf("the recreated namespace has %v, want empty: the overtaken update must not have written to it", tables)
 	}
 }

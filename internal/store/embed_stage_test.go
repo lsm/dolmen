@@ -763,3 +763,197 @@ func TestAFullyStagedPlanAsksTheProviderForNothing(t *testing.T) {
 		t.Fatalf("%d rows carry a vector, want %d", len(live), rows)
 	}
 }
+
+func seedVectorizedDocs(t *testing.T, st *Store, ns string, rows int) {
+	t.Helper()
+	ctx := context.Background()
+	if err := st.CreateNamespace(ctx, ns, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateTable(ctx, ns, "docs", []schema.Field{
+		{Name: "body", Type: schema.Text, Vectorize: true},
+		{Name: "tag", Type: schema.String},
+	}, TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	records := make([]map[string]any, 0, rows)
+	for i := 0; i < rows; i++ {
+		records = append(records, map[string]any{"body": fmt.Sprintf("row %d of the update fixture", i)})
+	}
+	if _, err := st.Insert(ctx, ns, "docs", records, WriteOpts{}, (&backfillRecorder{}).embedder("test"), nil, Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAnUpdateDoesNotHoldTheWriterWhileTheProviderAnswers(t *testing.T) {
+	st := openBackfillStore(t)
+	seedVectorizedDocs(t, st, "wr", 1)
+	ctx := context.Background()
+	n, err := st.ns("wr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.unpin()
+	rec := &backfillRecorder{}
+	rec.inside = func(ctx context.Context) error {
+		inner, cancel := writeBound(ctx)
+		defer cancel()
+		_, err := st.Update(inner, "wr", "docs", "id = 1", nil, map[string]any{"tag": "written while the provider answered"}, Embedder{}, nil, Incarnation{})
+		return err
+	}
+	if _, err := st.Update(ctx, "wr", "docs", "id = 1", nil, map[string]any{"body": "the row being embedded"}, rec.embedder("test"), nil, Incarnation{}); err != nil {
+		t.Fatalf("the provider held the namespace writer, so a concurrent write to the same table could not land: %v", err)
+	}
+	if rec.calls == 0 {
+		t.Fatal("the embedding provider was never called")
+	}
+	rows, err := st.GetRows(ctx, "wr", "docs", []int64{1}, nil, Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.Rows) != 1 || rows.Rows[0]["body"] != "the row being embedded" || rows.Rows[0]["tag"] != "written while the provider answered" {
+		t.Fatalf("the row is %+v, want the outer update's text and the concurrent write's tag: a write made while the provider answered must land, and must not disturb the vectorized column", rows.Rows)
+	}
+	if vec := liveEmbeddings(t, st, "wr", "docs")[1]; len(vec) == 0 {
+		t.Fatal("the row carries no vector after an update that embedded outside the writer")
+	}
+}
+
+func TestAnUpdateWhoseTableMovesWhileItEmbedsRetries(t *testing.T) {
+	st := openBackfillStore(t)
+	seedVectorizedDocs(t, st, "mv", 1)
+	ctx := context.Background()
+	rec := &backfillRecorder{}
+	rec.inside = func(ctx context.Context) error {
+		if rec.calls != 1 {
+			return nil
+		}
+		inner, cancel := writeBound(ctx)
+		defer cancel()
+		_, err := st.Migrate(inner, "mv", "docs", []schema.Change{
+			{Op: schema.OpAddField, Field: &schema.Field{Name: "note", Type: schema.String}},
+		}, Embedder{}, Incarnation{Version: 1})
+		return err
+	}
+	if _, err := st.Update(ctx, "mv", "docs", "id = 1", nil, map[string]any{"body": "embedded against the old schema"}, rec.embedder("test"), nil, Incarnation{}); err != nil {
+		t.Fatalf("an update whose table moved while it was embedding must re-embed and land, not fail: %v", err)
+	}
+	if rec.calls < 2 {
+		t.Fatalf("the provider was called %d times, want more than once: the version moved under the first embedding, so the vector it produced was for a schema that no longer exists", rec.calls)
+	}
+	sc, _, err := st.DescribeTable(ctx, "mv", "docs", nil, Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Field("note") == nil {
+		t.Fatalf("the add_field that landed mid-embedding is gone: %+v", sc.Fields)
+	}
+	rows, err := st.GetRows(ctx, "mv", "docs", []int64{1}, nil, Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.Rows) != 1 || rows.Rows[0]["body"] != "embedded against the old schema" {
+		t.Fatalf("the row is %+v, want the text the retry wrote", rows.Rows)
+	}
+}
+
+func TestAnUpdateOnATableWithNoStampedDimensionStillLands(t *testing.T) {
+	st := openBackfillStore(t)
+	seedVectorizedDocs(t, st, "nodim", 1)
+	ctx := context.Background()
+	n, err := st.ns("nodim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, wtx, span, err := st.beginWrite(ctx, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc, err := loadSchema(ctx, wtx, "nodim", "docs")
+	if err != nil {
+		st.endWrite(wtx, span)
+		t.Fatal(err)
+	}
+	if sc.EmbedDim == 0 {
+		st.endWrite(wtx, span)
+		t.Fatal("the fixture did not stamp a dimension, so it proves nothing")
+	}
+	sc.EmbedDim = 0
+	if err := saveSchemaTx(ctx, wtx, "nodim", sc, int(sc.Version)-1, nil); err != nil {
+		st.endWrite(wtx, span)
+		t.Fatal(err)
+	}
+	if err := commitWrite(wtx, span); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Update(ctx, "nodim", "docs", "id = 1", nil, map[string]any{"body": "embedded against a table with no stamped dimension"}, Embedder{Identity: "test", Embed: fakeEmbed}, nil, Incarnation{}); err != nil {
+		t.Fatalf("an update on a table whose dimension is not stamped must land, not retry forever against its own re-check: %v", err)
+	}
+	rows, err := st.GetRows(ctx, "nodim", "docs", []int64{1}, nil, Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.Rows) != 1 || rows.Rows[0]["body"] != "embedded against a table with no stamped dimension" {
+		t.Fatalf("the row is %+v, want the text the update set", rows.Rows)
+	}
+	if vec := liveEmbeddings(t, st, "nodim", "docs")[1]; len(vec) == 0 {
+		t.Fatal("the row carries no vector: the update landed without embedding")
+	}
+}
+
+func TestTheWriterComputesTheVectorItsOwnCountAsksFor(t *testing.T) {
+	vec := []float32{1, 0, 0}
+	field := &schema.Field{Name: "body", Type: schema.Text, Vectorize: true}
+	for _, c := range []struct {
+		name    string
+		vf      *schema.Field
+		vec     []float32
+		matched int64
+		text    string
+		want    bool
+		why     string
+	}{
+		{name: "nothing vectorized", vf: nil, vec: nil, matched: 1, text: "text", want: false, why: "a table with no vectorize field has no vector to compute"},
+		{name: "no row matched", vf: field, vec: nil, matched: 0, text: "text", want: false, why: "an update that matches nothing writes nothing, so it must not call the provider"},
+		{name: "text emptied", vf: field, vec: nil, matched: 3, text: "", want: false, why: "an emptied vectorized field must leave the vector NULL, not embed the empty string"},
+		{name: "vector already computed", vf: field, vec: vec, matched: 1, text: "text", want: false, why: "the pre-writer embed already produced it, and it was computed from this same text"},
+		{name: "the count moved under it", vf: field, vec: nil, matched: 1, text: "text", want: true, why: "the writer matched a row the pre-writer count did not see, and writing the text without a vector would leave a row vector search silently cannot see"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := vectorMissingInsideWriter(c.vf, c.vec, c.matched, c.text); got != c.want {
+				t.Fatalf("vectorMissingInsideWriter = %v, want %v: %s", got, c.want, c.why)
+			}
+		})
+	}
+}
+
+func TestAnUpdateNeverLeavesARowWithTextAndNoVector(t *testing.T) {
+	st := openBackfillStore(t)
+	seedVectorizedDocs(t, st, "inv", 3)
+	ctx := context.Background()
+	emb := &backfillRecorder{}
+	emb.inside = func(ctx context.Context) error {
+		inner, cancel := writeBound(ctx)
+		defer cancel()
+		_, err := st.Insert(inner, "inv", "docs", []map[string]any{{"body": "a row that appeared during the update"}}, WriteOpts{}, (&backfillRecorder{}).embedder("test"), nil, Incarnation{})
+		return err
+	}
+	if _, err := st.Update(ctx, "inv", "docs", "id = 1", nil, map[string]any{"body": "rewritten by the update"}, emb.embedder("test"), nil, Incarnation{}); err != nil {
+		t.Fatalf("an update whose embedding window saw a concurrent insert must still land: %v", err)
+	}
+	rows, err := st.GetRows(ctx, "inv", "docs", []int64{1, 2, 3}, nil, Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.Rows) != 3 {
+		t.Fatalf("read %d rows, want 3", len(rows.Rows))
+	}
+	live := liveEmbeddings(t, st, "inv", "docs")
+	for _, row := range rows.Rows {
+		id := int64(numberOf(t, row, "id"))
+		text, _ := row["body"].(string)
+		if text != "" && len(live[id]) == 0 {
+			t.Fatalf("row %d holds text %q and no vector: an update must never leave a searchable row unembedded", id, text)
+		}
+	}
+}
