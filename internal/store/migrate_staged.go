@@ -361,6 +361,9 @@ func (s *Store) activateMigration(ctx context.Context, n *nsDB, nsName, table st
 	if err != nil {
 		return nil, false, err
 	}
+	if gen != plan.gen {
+		return nil, false, tableReplaced(nsName, table)
+	}
 	w, err := planMigration(ctx, tx, nsName, table, old, changes, emb, int(expected.Version), nil)
 	if err != nil {
 		return nil, false, err

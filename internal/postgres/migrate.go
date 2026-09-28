@@ -123,6 +123,9 @@ func (s *Store) visibleTableRows(ctx context.Context, tx pgx.Tx, table string, s
 
 func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state tableState, changes []schema.Change, emb store.Embedder, expectedVersion int, scope *store.RowScope) (*migrationWork, error) {
 	old := state.schema
+	if err := checkPlannedVersion(n.name, old.Name, expectedVersion, old); err != nil {
+		return nil, err
+	}
 	table := ident(n.physical, state.physical)
 
 	fields := make([]schema.Field, len(old.Fields))
@@ -729,6 +732,8 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 	}
 	endMigrate := s.beginMigrate(ns, table)
 	defer endMigrate()
+	var first store.Incarnation
+	haveFirst := false
 	for attempt := 0; attempt < 3; attempt++ {
 		var state tableState
 		var planned *migrationWork
@@ -741,9 +746,17 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 			if err := checkIncarnation(ns, state.incarnation, expected); err != nil {
 				return err
 			}
+			if haveFirst {
+				if err := checkSameTable(ns, state.incarnation, first); err != nil {
+					return err
+				}
+			}
 			planned, err = s.planMigration(ctx, tx, n, state, changes, emb, int(expected.Version), nil)
 			if err != nil {
 				return err
+			}
+			if !haveFirst {
+				first, haveFirst = state.incarnation, true
 			}
 			return nil
 		})
@@ -773,7 +786,7 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 			if err != nil {
 				return err
 			}
-			if err := checkIncarnation(ns, current.incarnation, state.incarnation); err != nil {
+			if err := checkSameTable(ns, current.incarnation, first); err != nil {
 				return err
 			}
 			work, err := s.planMigration(ctx, tx, n, current, changes, emb, int(expected.Version), nil)
@@ -938,6 +951,13 @@ func (s *Store) embedPageTx(ctx context.Context, tx pgx.Tx, n namespace, state t
 		texts = append(texts, text)
 	}
 	return ids, texts, rows.Err()
+}
+
+func checkPlannedVersion(ns, table string, expected int, old *schema.TableSchema) error {
+	if expected > 0 && expected != old.Version {
+		return &store.VersionConflictError{Namespace: ns, Table: table, ExpectedVersion: expected, CurrentVersion: old.Version}
+	}
+	return nil
 }
 
 func reportPGBackfill(ns, table string, staged, total, reported int64) int64 {
