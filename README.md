@@ -1376,6 +1376,9 @@ attaches exemplars linking a slow request's histogram bucket to its trace):
 | `dolmen.subscriptions.active` | up-down counter, `{subscription}` | |
 | `dolmen.namespaces.open` | observable up-down counter, `{namespace}` | none (SQLite) |
 | `dolmen.vector_cache.usage` / `dolmen.vector_cache.limit` | observable up-down counter, `By` | none (SQLite) |
+| `dolmen.db.size` | observable up-down counter, `By` | none (SQLite; database files of the open namespaces, summed) |
+| `dolmen.db.wal.size` | observable up-down counter, `By` | none (SQLite; `-wal` files of the open namespaces, summed) |
+| `dolmen.db.wal.largest` | observable up-down counter, `By` | none (SQLite; largest single `-wal`, against the 64 MiB `journal_size_limit` the writer sets) |
 | `db.client.connection.count` | observable up-down counter, `{connection}` | `db.client.connection.state` (`idle`, `used`), `db.client.connection.pool.name` (PostgreSQL) |
 | `db.client.connection.max` | observable up-down counter, `{connection}` | `db.client.connection.pool.name` (PostgreSQL) |
 | `gen_ai.client.operation.duration` | histogram, `s` | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `server.address`, `error.type` on failure |

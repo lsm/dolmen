@@ -18,6 +18,9 @@ const (
 	VectorCacheLimit = "dolmen.vector_cache.limit"
 	PoolConnections  = "db.client.connection.count"
 	PoolMax          = "db.client.connection.max"
+	DBSize           = "dolmen.db.size"
+	WALSize          = "dolmen.db.wal.size"
+	WALLargest       = "dolmen.db.wal.largest"
 )
 
 type Gauge int
@@ -29,6 +32,9 @@ const (
 	PoolIdle
 	PoolUsed
 	PoolLimit
+	DBBytes
+	WALBytes
+	WALLargestBytes
 	gaugeCount
 )
 
@@ -49,6 +55,9 @@ type instruments struct {
 	vectorCacheLimit metric.Int64ObservableUpDownCounter
 	poolConnections  metric.Int64ObservableUpDownCounter
 	poolMax          metric.Int64ObservableUpDownCounter
+	dbSize           metric.Int64ObservableUpDownCounter
+	walSize          metric.Int64ObservableUpDownCounter
+	walLargest       metric.Int64ObservableUpDownCounter
 }
 
 func newInstruments(m metric.Meter) (*instruments, error) {
@@ -79,6 +88,21 @@ func newInstruments(m metric.Meter) (*instruments, error) {
 		metric.WithDescription("Connections the pool may open.")); err != nil {
 		return nil, err
 	}
+	if in.dbSize, err = m.Int64ObservableUpDownCounter(DBSize,
+		metric.WithUnit("By"),
+		metric.WithDescription("Bytes of database file for the namespaces this process holds open.")); err != nil {
+		return nil, err
+	}
+	if in.walSize, err = m.Int64ObservableUpDownCounter(WALSize,
+		metric.WithUnit("By"),
+		metric.WithDescription("Bytes of write-ahead log for the namespaces this process holds open.")); err != nil {
+		return nil, err
+	}
+	if in.walLargest, err = m.Int64ObservableUpDownCounter(WALLargest,
+		metric.WithUnit("By"),
+		metric.WithDescription("Bytes of the largest single write-ahead log, against the 64 MiB journal_size_limit the writer sets: a log above that means checkpoints are falling behind.")); err != nil {
+		return nil, err
+	}
 	return &in, nil
 }
 
@@ -103,17 +127,20 @@ func Observe(mp metric.MeterProvider, engine any) (func(context.Context) error, 
 		o.ObserveInt64(in.namespacesOpen, snap.Value(OpenNamespaces))
 		o.ObserveInt64(in.vectorCacheUsage, snap.Value(VectorCacheUsed))
 		o.ObserveInt64(in.vectorCacheLimit, snap.Value(VectorCacheMax))
-		if snap.Pool == "" {
+		if snap.Pool != "" {
+			pool := semconv.DBClientConnectionPoolName(dbspan.Clean(snap.Pool, dbspan.MaxNameAttr))
+			o.ObserveInt64(in.poolConnections, snap.Value(PoolIdle),
+				metric.WithAttributes(pool, semconv.DBClientConnectionStateIdle))
+			o.ObserveInt64(in.poolConnections, snap.Value(PoolUsed),
+				metric.WithAttributes(pool, semconv.DBClientConnectionStateUsed))
+			o.ObserveInt64(in.poolMax, snap.Value(PoolLimit), metric.WithAttributes(pool))
 			return nil
 		}
-		pool := semconv.DBClientConnectionPoolName(dbspan.Clean(snap.Pool, dbspan.MaxNameAttr))
-		o.ObserveInt64(in.poolConnections, snap.Value(PoolIdle),
-			metric.WithAttributes(pool, semconv.DBClientConnectionStateIdle))
-		o.ObserveInt64(in.poolConnections, snap.Value(PoolUsed),
-			metric.WithAttributes(pool, semconv.DBClientConnectionStateUsed))
-		o.ObserveInt64(in.poolMax, snap.Value(PoolLimit), metric.WithAttributes(pool))
+		o.ObserveInt64(in.dbSize, snap.Value(DBBytes))
+		o.ObserveInt64(in.walSize, snap.Value(WALBytes))
+		o.ObserveInt64(in.walLargest, snap.Value(WALLargestBytes))
 		return nil
-	}, in.namespacesOpen, in.vectorCacheUsage, in.vectorCacheLimit, in.poolConnections, in.poolMax)
+	}, in.namespacesOpen, in.vectorCacheUsage, in.vectorCacheLimit, in.dbSize, in.walSize, in.walLargest, in.poolConnections, in.poolMax)
 	if err != nil {
 		return nil, err
 	}

@@ -111,6 +111,11 @@ func TestEngineGaugesAreObservedWithBoundedAttributes(t *testing.T) {
 		"useddolmen_catalog": 1,
 	})
 	wantGauge(t, metrics, dbstat.PoolMax, map[string]int64{"dolmen_catalog": 8})
+	for _, name := range []string{dbstat.DBSize, dbstat.WALSize, dbstat.WALLargest} {
+		if m, ok := metrics[name]; ok && len(pointsOf(t, m)) > 0 {
+			t.Errorf("%s is recorded for a snapshot with a pool name, want absent: that is the PostgreSQL shape and the file sizes are not its to report", name)
+		}
+	}
 	for name, want := range map[string]map[string]int{
 		dbstat.NamespacesOpen:   {},
 		dbstat.VectorCacheUsage: {},
@@ -182,5 +187,49 @@ func TestTheMeterProviderTravelsInTheContext(t *testing.T) {
 	}
 	if got := dbstat.MeterFrom(dbstat.ContextWithMeter(context.Background(), mp)); got != mp {
 		t.Fatalf("the meter provider must survive the context, got %v", got)
+	}
+}
+
+func TestTheFileSizeGaugesAreSQLiteOnlyAndThePoolGaugesAreNot(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		pool      string
+		wantSizes bool
+		wantPools bool
+		why       string
+	}{
+		{name: "sqlite", pool: "", wantSizes: true, wantPools: false, why: "a file-backed engine has WALs to report and no pool"},
+		{name: "postgres", pool: "dolmen_catalog", wantSizes: false, wantPools: true, why: "the server's storage and WAL belong to PostgreSQL, and its pool is dolmen's to report"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := sdkmetric.NewManualReader()
+			mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(r))
+			var snap dbstat.Snapshot
+			snap.Pool = c.pool
+			snap.Values[dbstat.DBBytes] = 4096
+			snap.Values[dbstat.WALBytes] = 2048
+			snap.Values[dbstat.WALLargestBytes] = 1024
+			snap.Values[dbstat.PoolIdle] = 2
+			stop, err := dbstat.Observe(mp, fakeEngine{snap: snap})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stop(context.Background())
+			metrics := collect(t, r)
+			for name, want := range map[string]bool{
+				dbstat.DBSize:     c.wantSizes,
+				dbstat.WALSize:    c.wantSizes,
+				dbstat.WALLargest: c.wantSizes,
+				dbstat.PoolMax:    c.wantPools,
+			} {
+				recorded := false
+				if m, ok := metrics[name]; ok {
+					recorded = len(pointsOf(t, m)) > 0
+				}
+				if recorded != want {
+					t.Errorf("%s recorded=%v, want %v: %s. An always-zero series is worse than an absent one - it reads as an empty disk rather than as an engine that does not report it", name, recorded, want, c.why)
+				}
+			}
+		})
 	}
 }
