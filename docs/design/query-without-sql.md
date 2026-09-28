@@ -1,7 +1,7 @@
 # `query` on an engine with no SQL inside it — decision note
 
 **One decision for Marc. Nothing is planned or built on it.** This is de-risking step 1 of the two the
-lakehouse lane needs before anyone plans a lane; step 2 is the iceberg-go/parquet-go spike.
+lakehouse lane needs before anyone plans a lane; step 2, the pure-Go trial, is at the end and is done.
 
 Builds on [storage-adapters-and-auth-research.md](storage-adapters-and-auth-research.md) §2 (which
 leaves this open as its own question 2), [storage-adapter-mechanics.md](storage-adapter-mechanics.md)
@@ -106,11 +106,75 @@ Option B is the fallback, not a co-equal.** And if it is taken it must land spec
 availability class for `query` beside `subscribe`, a reworded §0.5.3 that binds only engines with SQL,
 and a conformance corpus that skips `query` by declared capability rather than by engine name.
 
+## The trial: the pure-Go lakehouse tier, tested rather than assumed
+
+De-risking step 2, run since the note above was written. A throwaway program wrote, committed and read
+back one table shaped like the conformance tables, and tried a row-level delete both ways.
+`CGO_ENABLED=0`, go1.27.0, darwin/arm64, `github.com/apache/iceberg-go v0.6.0` and
+`github.com/parquet-go/parquet-go v0.32.0`.
+
+| step | result |
+| --- | --- |
+| Parquet write then read of a conformance-shaped table — typed columns, a list column, a float32 vector — with `parquet-go` | works |
+| Iceberg table creation at format v2 and v3, append 200 rows from Arrow, commit, scan back | works |
+| Row-level delete by **position deletes**: a Parquet pos-delete file committed through `RowDelta` | works, 200 → 198 |
+| Row-level delete by **deletion vectors**: `dv.DVWriter` then `RowDelta` | commits, and the library's own scanner then fails: `not implemented: deletion vector read is not yet implemented` |
+| Catalog: `catalog/sql` over SQLite with the modernc driver | works, no cgo |
+
+**The append path is viable in pure Go today, and the catalog has a local answer.** `catalog/sql`
+accepts a `*sql.DB`, and bun's dialects are descriptors rather than drivers — the cgo `sqliteshim` is
+not imported — so the modernc driver works and nothing pulls in cgo. For dolmen that means the
+namespace's own SQLite file could hold the Iceberg catalog, so commits need no catalog service at all.
+That retires the research note's standing worry that a pure-Go Iceberg writer would force a sidecar
+process; on this evidence it does not.
+
+**Deletion vectors are write-only in v0.6.0, and that changes the lane's plan.** D25 §0.5.1 and
+research §2.2 both answer the small-write problem with "deletion vectors (Iceberg V3/Delta)". In
+v0.6.0 a DV write commits successfully and then leaves the table unreadable through the library's own
+reader, so a DV-based adapter would be building on a feature that cannot read its own output. The
+upstream cause is visible in the source: `table/arrow_scanner.go` notes that its per-file delete maps
+change "when readAllDeletionVectors lands", so this is a known gap, not a misconfiguration. The
+working answer today is **position deletes**, proven above, or D25's other sanctioned strategy, a WAL
+in front of Parquet. A plan that budgets for DVs is budgeting for the wrong one of the two.
+
+**Version pinning is a live hazard, and it lands in this module.** iceberg-go v0.6.0 does not compile
+against the current Arrow: `arrow-go/v18 v18.8.0` requires `twmb/avro v1.8.0`, whose `SchemaNode.Root()`
+signature change breaks iceberg-go's `internal` package in three places. A clean resolve in a new module
+picks the broken combination, so a consumer must hold `arrow-go` at v18.6.0. One pin today; a standing
+maintenance cost tomorrow, because a routine dependency bump anywhere in dolmen's graph that wants a
+newer Arrow would break the build. That is a cost to weigh against the lane, not a blocker.
+
+**Binary size is real but is not the objection the research note feared.** dolmen's static binary is
+49.1 MB. Adding `iceberg-go/table`, `catalog/sql`, Arrow and `parquet-go` takes it to 68.0 MB — **+19 MB,
++39%** — and it stays a `CGO_ENABLED=0` pure-Go static binary with no `runtime/cgo` in the dependency
+graph. For scale, Parquet alone is 18.7 MB standalone and the whole Iceberg stack is 70.9 MB. The single
+static binary survives; it just gets bigger.
+
+**Three API traps, recorded because each cost the trial more time than the work it guards.**
+
+- **`RowDelta.Commit` does not commit.** It stages the delta onto the transaction; `tx.Commit(ctx)` is
+  still required. A `RowDelta.Commit` not followed by `tx.Commit` returns `nil` and leaves the table
+  untouched — no snapshot, no error, nothing to notice.
+- **A nil `CatalogIO` segfaults.** Building a table with `table.New(..., nil)` and then committing
+  panics on a nil dereference inside `doCommit` rather than returning an error.
+- **The snapshot summary's `added-data-files` is a count, not a path.** Deletion vectors are keyed by
+  data-file path, and the only exported way to enumerate a snapshot's data files is
+  `Scan().PlanFiles(ctx)`. Getting it wrong fails the commit with `referenced data files missing`,
+  which is at least a clear error, but only once the path is right.
+
+**What this does to the recommendation.** It stands. `query` remains a contract question, and the trial
+does not touch it. What the trial does change is the shape of Option A: the *rest* of the lakehouse tier
+is now known to be pure Go, so the only cgo component in the whole lane is the SQL engine. That is a
+cleaner split than embedding ever was — one sidecar that does only SQL, over a tier that needs none —
+and it is the strongest form the argument above can now take.
+
 ## What this note does not decide
 
 Which external engine (DuckDB process, Trino, Spark), what a statement that does not translate becomes,
-the error class for a sidecar that is down, whether `query` on a lakehouse tier is worth having at all
-given research-note open question 1 — the analytics property or dolmen-side durability — and anything
-about the Iceberg writer itself, which is step 2's problem. If open question 1 resolves toward
-"the analytics property, for Spark/Trino/DuckDB to read the same Parquet", then a sidecar is what the
-consumer has anyway and Option A's main objection dissolves.
+the error class for a sidecar that is down, and whether `query` on a lakehouse tier is worth having at
+all given research-note open question 1 — the analytics property or dolmen-side durability. If open
+question 1 resolves toward "the analytics property, for Spark/Trino/DuckDB to read the same Parquet",
+then a sidecar is what the consumer has anyway and Option A's main objection dissolves.
+
+The lane's schedule is not decided either, and the demand-gate in D25 still stands: nothing above is a
+reason to plan adapter #3, only a reason that planning it would no longer be flying blind.
