@@ -55,9 +55,6 @@ func Backup(ctx context.Context, dataDir, outDir string, extraFiles []string) (B
 	if err := os.MkdirAll(outDir, 0o700); err != nil {
 		return BackupManifest{}, err
 	}
-	if err := secureDir(outDir); err != nil {
-		return BackupManifest{}, err
-	}
 	m := BackupManifest{Format: backupManifestFormat, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	for _, name := range names {
 		rel, err := filepath.Rel(dataDir, nsFile(dataDir, name))
@@ -109,9 +106,6 @@ func emptyOrAbsent(dir string) error {
 func snapshotFile(ctx context.Context, src, outDir, rel string) (BackupFile, error) {
 	dst := filepath.Join(outDir, rel)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-		return BackupFile{}, err
-	}
-	if err := secureDir(filepath.Dir(dst)); err != nil {
 		return BackupFile{}, err
 	}
 	db, err := sql.Open("sqlite", dsn(src, true))
