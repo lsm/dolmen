@@ -15,6 +15,8 @@ import (
 
 var errEngineInterrupt = errors.New("interrupted (9)")
 
+var errDeadlineEngine = errors.New("connection is busy")
+
 type interruptEngine struct {
 	store.Engine
 	cancel context.CancelFunc
@@ -133,10 +135,14 @@ func TestAPastDeadlineIsTimeoutOnTheOperationSpan(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	rec.Reset()
 
-	past, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	past, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
 	defer cancel()
-	if _, err := st.GetRows(past, "iv", "docs", []int64{1}); !errors.Is(err, ErrTimeout) {
-		t.Fatalf("a call whose deadline passed while the engine was answering came back as %v, want ErrTimeout: the stub waited for the deadline and then returned its own error, so only the context can have produced the timeout", err)
+	_, err = st.GetRows(past, "iv", "docs", []int64{1})
+	if !errors.Is(err, errDeadlineEngine) {
+		t.Fatalf("a call past its deadline came back as %v, and the engine's own error must stay reachable: without that this test cannot tell a deadline passing during an engine call from the library answering before the engine was reached at all", err)
+	}
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("a call whose deadline passed while the engine was answering came back as %v, want ErrTimeout: the engine answered with its own error, so only the context can have produced the timeout", err)
 	}
 	wantOpOutcome(t, rec, "read_rows", "timeout")
 }
@@ -147,7 +153,7 @@ type deadlineEngine struct {
 
 func (e *deadlineEngine) GetRows(ctx context.Context, ns, table string, ids []int64, scope *store.RowScope, inc store.Incarnation) (store.QueryResult, error) {
 	<-ctx.Done()
-	return store.QueryResult{}, errors.New("connection is busy")
+	return store.QueryResult{}, errDeadlineEngine
 }
 
 func wantOpOutcome(t *testing.T, rec *tracetest.SpanRecorder, op, want string) {

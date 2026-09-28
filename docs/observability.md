@@ -125,12 +125,12 @@ engines, and so do the SQLite-only `dolmen.writer.wait`, `dolmen.migrate.step`,
 - **With a live context, the error decides**, and the class is the one the caller would have got:
   `invalid_request`, `not_found`, `conflict`, `query_error`, `internal_error`, and so on.
 
-"Whatever error came back" means once the call reached the engine. A call on a **closed store** never
-does, and answers the closed-store error on every surface — `begin()` refuses before the context is
-consulted and the library's `facadeErr` checks the closed store ahead of its context branch — so a
-cancelled call against a store that is shutting down records the closed-store class rather than
-`canceled`. That is deliberate: a store that is going away is the more useful thing to say, and it is
-said consistently.
+"Whatever error came back" means once the call reached the engine. The Go library has one path that
+does not: a call on a **closed store** never reaches the engine, and `facadeErr` checks the closed
+store ahead of its context branch, so a cancelled call against a store that is shutting down records
+the closed-store class rather than `canceled`. Over HTTP and MCP there is no such precedence —
+`callerGone` rewrites whatever the operation returned, so the same call records `canceled` there. Say
+which surface you are reading before drawing a conclusion from that one case.
 
 One span is deliberately outside it: the SQLite-only `dolmen.transaction` span carries
 `dolmen.tx.outcome` (`commit` or `rollback`) and never an `error.type`, so read that attribute for
