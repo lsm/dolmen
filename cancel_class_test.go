@@ -133,13 +133,10 @@ func TestAPastDeadlineIsTimeoutOnTheOperationSpan(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	rec.Reset()
 
-	// A deadline in the future, and a stub that waits for it, so the engine's own error is what
-	// comes back. A deadline already in the past would be caught by the library's own ctx check
-	// before the engine was called at all, which tests a different path.
 	past, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
 	if _, err := st.GetRows(past, "iv", "docs", []int64{1}); !errors.Is(err, ErrTimeout) {
-		t.Fatalf("a call past its deadline came back as %v, want ErrTimeout", err)
+		t.Fatalf("a call whose deadline passed while the engine was answering came back as %v, want ErrTimeout: the stub waited for the deadline and then returned its own error, so only the context can have produced the timeout", err)
 	}
 	wantOpOutcome(t, rec, "read_rows", "timeout")
 }
