@@ -21,10 +21,13 @@ dependency permitted.
 
 ## What is already settled, and it narrows the choice more than it looks
 
-**The syntax half is done.** `capabilities` already reports `query_dialect` as an **open enum** —
-"named by family (e.g. sqlite, postgresql); an open enum, so branch on it rather than assuming a closed
-set". The PostgreSQL adapter landed on that field and declared `postgresql`. A lakehouse engine can
-therefore declare whatever dialect it accepts without a new field and without a spec change.
+**The syntax half is done, and D28 pins the only shape an answer can take.** `capabilities` already
+reports `query_dialect` as an **open enum** — "named by family (e.g. sqlite, postgresql); an open enum,
+so branch on it rather than assuming a closed set" — and the PostgreSQL adapter landed on that field and
+declared `postgresql`. D28 then makes `query` **transparent**: caller SQL reaches the engine as written,
+with no translation layer and no portable subset, and the obligation is disclosure rather than
+portability. A lakehouse engine can therefore declare whatever dialect it accepts without a new field
+and without a spec change, and Option A's only admissible shape is a pass-through that discloses it.
 
 So the amendment in Option B is not about *syntax*. It is only about **availability**, which is
 precisely the axis §9.3 currently forecloses. That makes Option B smaller than it first looks — and
@@ -41,8 +44,16 @@ statement" is explicitly not the mechanism the spec accepts.
 
 ## Option A — an external SQL engine below the seam
 
-The adapter sits in front of DuckDB as a separate process, Trino, or Spark, and translates dolmen's
-validated statement into what that engine accepts.
+The adapter sits in front of DuckDB as a separate process, Trino, or Spark, and **passes the caller's
+SQL through unchanged**, disclosing the sidecar's dialect in `query_dialect`.
+
+The pass-through is not a simplification, it is the only shape D28 permits. D28 makes `query`
+**transparent** — "caller SQL reaches the engine as written — no translation layer, no portable subset
+(a partial SQL translator fails silently on what it does not cover)" — and puts the obligation on
+**disclosure, not portability**, paid through the pinned `query_dialect` field. A translating adapter
+would weaken D28 and would need the same spec-first amendment this note reserves for Option B, which
+would leave the two options differing only in cost. So Option A is: validate the statement exactly as
+today, hand it to the sidecar verbatim, and report which SQL family that sidecar speaks.
 
 **The decisive argument is §0.5.3.** An external engine can be handed *exactly* one namespace and
 nothing else: DuckDB attached to precisely that namespace's Parquet files, or a catalog scoped to one
@@ -57,13 +68,19 @@ already pre-paid by the Postgres work.
   *deployment* no longer is one thing. This is research-note open question 3 — whether a non-Go
   sidecar is acceptable operationally given the local-first ethos — and that is a product judgement,
   not a contract one.
-- **Every `query` becomes an RPC.** Latency and a failure mode that did not exist: the sidecar being
-  down is a new way for `query` to fail, and it needs an error class (a lakehouse tier would want
+- **Every `query` becomes an RPC.** Latency and a new failure mode that did not exist: the sidecar
+  being down is a new way for `query` to fail, and it needs an error class (a lakehouse tier would want
   `embedder_unavailable`'s shape, which does not exist yet).
-- **The dialect translation is real work**, not a passthrough, and it is unbounded work in principle: a
-  caller may write any read-only SELECT/WITH the allowlist accepts, and the mapping from that to
-  Trino's or DuckDB's SQL is not total. What happens to a statement that translates to nothing is a
-  decision, not an implementation detail.
+- **A disclosed dialect is a portability tax, deliberately.** A caller writing SQLite SQL against a
+  lakehouse engine gets an error rather than a translation, which is D28's disclosure obligation doing
+  its job and the reason D28 chose disclosure over a portable subset. Callers branch on `query_dialect`
+  exactly as they already must between SQLite and PostgreSQL — so this is a third value in a set that
+  already exists, not a new kind of breakage.
+
+What the pass-through *removes* is worth stating too, because it was the note's largest cost before
+D28 was read: there is no translation to keep total, no question of what a statement that translates
+to nothing should become, and no partial-translator failure mode to guard against. The unbounded work
+disappears with the layer.
 
 ## Option B — amend the spec to permit engines without `query`
 
@@ -92,14 +109,15 @@ conformance corpus learns that `query` may be absent.
 
 ## Recommendation
 
-**Option A — an external engine below the seam, with DuckDB as a separate process as the first
-candidate.**
+**Option A — an external engine below the seam, DuckDB as a separate process as the first candidate,
+passing SQL through unchanged and disclosing its dialect in `query_dialect`.**
 
 It is the only option that makes §0.5.3's "impossible by mechanism" true *structurally* rather than by
-audit, and it does not weaken a single spec invariant or tax any existing caller. The cost is
-operational and visible; Option B's cost is contractual and invisible until a caller is broken by it.
-The Postgres adapter is the precedent that "implement it below the seam" is a thing this repo has
-actually done rather than merely asserted.
+audit, and it weakens no spec invariant: the pass-through is exactly what D28 requires of `query`, and
+confinement comes from the sidecar having one namespace to see. The cost is operational and visible;
+Option B's cost is contractual and invisible until a caller is broken by it. The Postgres adapter is the
+precedent that "implement it below the seam" is a thing this repo has actually done rather than merely
+asserted.
 
 **If the operational cost proves unacceptable — a sidecar on the local tier is a real objection — then
 Option B is the fallback, not a co-equal.** And if it is taken it must land spec-first with a *named*
@@ -162,17 +180,17 @@ static binary survives; it just gets bigger.
   `Scan().PlanFiles(ctx)`. Getting it wrong fails the commit with `referenced data files missing`,
   which is at least a clear error, but only once the path is right.
 
-**What this does to the recommendation.** It stands. `query` remains a contract question, and the trial
-does not touch it. What the trial does change is the shape of Option A: the *rest* of the lakehouse tier
-is now known to be pure Go, so the only cgo component in the whole lane is the SQL engine. That is a
-cleaner split than embedding ever was — one sidecar that does only SQL, over a tier that needs none —
-and it is the strongest form the argument above can now take.
+**What this does to the recommendation.** It stands, and it got simpler. `query` remains a contract
+question and none of the trial touches it. What the trial does change is the shape of Option A: the
+*rest* of the lakehouse tier is now known to be pure Go, so the only cgo component in the whole lane is
+the SQL engine. That is a cleaner split than embedding ever was — one sidecar that does only SQL, over a
+tier that needs none — and it is the strongest form the argument above can now take.
 
 ## What this note does not decide
 
-Which external engine (DuckDB process, Trino, Spark), what a statement that does not translate becomes,
-the error class for a sidecar that is down, and whether `query` on a lakehouse tier is worth having at
-all given research-note open question 1 — the analytics property or dolmen-side durability. If open
+Which external engine (DuckDB process, Trino, Spark), the error class for a sidecar that is down, how a
+statement the sidecar itself rejects is reported, and whether `query` on a lakehouse tier is worth having
+at all given research-note open question 1 — the analytics property or dolmen-side durability. If open
 question 1 resolves toward "the analytics property, for Spark/Trino/DuckDB to read the same Parquet",
 then a sidecar is what the consumer has anyway and Option A's main objection dissolves.
 
