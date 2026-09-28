@@ -224,6 +224,17 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 		return UpsertResult{}, true, err
 	}
 
+	if vf != nil {
+		text, _ := coerced[vf.Name].(string)
+		if vectorMissingInsideWriter(vf, vec, matched, text) {
+			persistMeta = persistMeta || sc.EmbedSpace == "" || sc.EmbedDim == 0
+			vec, err = embedForUpdate(ctx, sc, table, text, emb)
+			if err != nil {
+				return UpsertResult{}, true, err
+			}
+		}
+	}
+
 	if allowInsert && matched == 0 {
 		for _, f := range sc.Fields {
 			v, present := set[f.Name]
@@ -360,6 +371,10 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 
 	s.notifyCommitted(nsName, table, result.Changes)
 	return result, true, nil
+}
+
+func vectorMissingInsideWriter(vf *schema.Field, vec []float32, matched int64, text string) bool {
+	return vf != nil && vec == nil && matched > 0 && text != ""
 }
 
 func selectUpdateIDs(ctx context.Context, tx *sql.Tx) ([]int64, error) {
