@@ -196,7 +196,7 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 	if err := os.MkdirAll(abs, 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(abs, 0o700); err != nil {
+	if err := secureDir(abs); err != nil {
 		return nil, fmt.Errorf("cannot secure data directory %s (owner-only permissions): %w", abs, err)
 	}
 	if err := probeWritable(abs); err != nil {
