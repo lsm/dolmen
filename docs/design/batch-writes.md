@@ -82,7 +82,7 @@ Two mechanical consequences, both of which are the point:
 
   **The thing to avoid is the opposite pattern, and this repo already contains it:**
   `outputSchemas` in `internal/api/openapi.go` is a hand-maintained map whose `init()`
-  (`openapi.go:82-88`) *replaces* the `OpDef.OutputSchema` of 17 operations at startup. For those,
+  (`openapi.go:82-89`) *replaces* the `OpDef.OutputSchema` of 18 operations at startup. For those,
   editing the literal in `ops.go` has no effect on what OpenAPI or MCP advertise — CLAUDE.md names it
   as the one override trap. A `batch` output schema added there would be a hand-written second copy of
   something the per-kind derivation already produces, and editing the derivation would silently not
