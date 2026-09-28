@@ -165,10 +165,25 @@ corrupting a replay rather than merely confusing a reader. So `_dolmen_batches` 
 already work this way in `_dolmen_idempotency_owned`; a batch key is caller-supplied data and exposing it
 would be a second way to read a request's contents out of band.
 
-**No expiry ships.** A record is written when the batch commits and stays. Retention is deliberately
-kept to one place — one DDL entry, one lookup pair, one insert — so that when a policy is chosen it is
-one function's body rather than a new code path. Note that namespace teardown needs no cleanup for
-them: `DropNamespace` removes the namespace's file, so `_dolmen_batches` leaves with it.
+**A batch record lists the tables its batch wrote to, and dropping any of them retires the key.** The
+tables are kept beside the record in `_dolmen_batch_tables(owner, key, table_name)`, one row per
+distinct table, written in the same transaction as the record and the rows. `drop_table` then deletes
+the record in the same cleanup pass that already drops `_dolmen_idempotency_owned`,
+`internal/store/lifecycle.go:284-290` — so the rule is the one `insert`'s keys already follow, and a
+stored result never outlives a table it describes. A batch over two tables where one is dropped stops
+replaying, because half of what the stored result reports no longer exists.
+
+**There is no time-based expiry and no new setting.** A record is kept until one of its tables is
+dropped, and namespace teardown needs no help either: `DropNamespace` removes the namespace's file, so
+both tables leave with it. Choosing a policy later means adding one condition to
+`purgeBatchRecordsForTable` in `internal/store/batch.go`, which is the only place that deletes a batch
+record.
+
+One correction to a detail recorded earlier in this section, so the next reader does not hunt in the
+wrong file: this cleanup is **not** in `internal/store/idempotency.go`. The per-table
+`DELETE FROM _dolmen_idempotency_owned` that it sits beside is in `drop_table`'s loop in
+`internal/store/lifecycle.go`; the delete in `idempotency.go` is part of `purgeSecretIdempotencyTx`, a
+one-time migration that does not run on a table drop.
 
 - A replay with the same key and the same body returns the **stored result** — the whole per-write
   result array — and writes nothing, exactly as `insert` replays ids.

@@ -159,6 +159,77 @@ func TestBatchReplayReturnsTheStoredResultAndWritesNothing(t *testing.T) {
 	}
 }
 
+func twoTableBatch(t *testing.T, st *Store, key string) []BatchWrite {
+	t.Helper()
+	if _, err := st.CreateTable(context.Background(), "b", "sources", noteFields(), TableOpts{}, [16]byte{}); err != nil {
+		t.Fatalf("create second table: %v", err)
+	}
+	writes := []BatchWrite{
+		{Kind: BatchWriteInsert, Table: "notes", Records: []map[string]any{
+			{"title": "note", "body": "a note body", "score": 1, "emb": []any{1.0, 0, 0, 0}},
+		}},
+		{Kind: BatchWriteInsert, Table: "sources", Records: []map[string]any{
+			{"title": "source", "body": "a source body", "score": 2, "emb": []any{0, 1.0, 0, 0}},
+		}},
+	}
+	if _, err := st.Batch(context.Background(), "b", writes, BatchOpts{IdempotencyKey: key}, testEmbed, nil, Incarnation{}); err != nil {
+		t.Fatalf("first two-table batch: %v", err)
+	}
+	return writes
+}
+
+func TestBatchStopsReplayingOnceOneOfItsTablesIsDropped(t *testing.T) {
+	st := openBatchStore(t)
+	ctx := context.Background()
+	writes := twoTableBatch(t, st, "two-tables")
+
+	again, err := st.Batch(ctx, "b", writes, BatchOpts{IdempotencyKey: "two-tables"}, testEmbed, nil, Incarnation{})
+	if err != nil {
+		t.Fatalf("replay before any drop: %v", err)
+	}
+	if !again.Replayed {
+		t.Fatalf("the key did not replay while both of its tables still existed")
+	}
+
+	if err := st.DropTable(ctx, "b", "notes", Incarnation{}); err != nil {
+		t.Fatalf("drop notes: %v", err)
+	}
+
+	after, err := st.Batch(ctx, "b", writes, BatchOpts{IdempotencyKey: "two-tables"}, testEmbed, nil, Incarnation{})
+	if err == nil {
+		t.Fatalf("the key still replayed after one of its tables was dropped: %+v", after)
+	}
+	if after.Replayed {
+		t.Fatalf("the key reported a replay for a batch whose record should have been dropped")
+	}
+	if !strings.Contains(err.Error(), "notes") {
+		t.Fatalf("error %q does not name the dropped table", err)
+	}
+}
+
+func TestBatchKeepsReplayingWhenAnUnrelatedTableIsDropped(t *testing.T) {
+	st := openBatchStore(t)
+	ctx := context.Background()
+	writes := twoTableBatch(t, st, "unrelated-drop")
+	if _, err := st.CreateTable(ctx, "b", "scratch", noteFields(), TableOpts{}, [16]byte{}); err != nil {
+		t.Fatalf("create unrelated table: %v", err)
+	}
+	if err := st.DropTable(ctx, "b", "scratch", Incarnation{}); err != nil {
+		t.Fatalf("drop unrelated table: %v", err)
+	}
+
+	after, err := st.Batch(ctx, "b", writes, BatchOpts{IdempotencyKey: "unrelated-drop"}, testEmbed, nil, Incarnation{})
+	if err != nil {
+		t.Fatalf("replay after dropping an unrelated table: %v", err)
+	}
+	if !after.Replayed {
+		t.Fatalf("dropping a table the batch never wrote to retired its key")
+	}
+	if len(after.Results) != 2 {
+		t.Fatalf("replay returned %d results, want the stored 2", len(after.Results))
+	}
+}
+
 func TestBatchRejectsAWriteOverTheRowBudget(t *testing.T) {
 	st := openBatchStore(t)
 	ctx := context.Background()

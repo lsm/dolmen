@@ -72,6 +72,15 @@ const batchIdemDDL = `CREATE TABLE IF NOT EXISTS _dolmen_batches(
 	PRIMARY KEY(owner, key)
 )`
 
+const batchTablesTable = "_dolmen_batch_tables"
+
+const batchTablesDDL = `CREATE TABLE IF NOT EXISTS _dolmen_batch_tables(
+	owner TEXT NOT NULL DEFAULT '',
+	key TEXT NOT NULL,
+	table_name TEXT NOT NULL,
+	PRIMARY KEY(owner, key, table_name)
+)`
+
 func (r BatchWriteResult) touched() int64 {
 	switch r.Kind {
 	case BatchWriteInsert, BatchWriteUpsertByKey:
@@ -91,7 +100,33 @@ func batchPayloadHash(writes []BatchWrite) string {
 }
 
 func ensureBatchIdem(ctx context.Context, db *sql.DB) error {
-	_, err := db.ExecContext(ctx, batchIdemDDL)
+	if _, err := db.ExecContext(ctx, batchIdemDDL); err != nil {
+		return err
+	}
+	_, err := db.ExecContext(ctx, batchTablesDDL)
+	return err
+}
+
+func batchTablesOf(writes []BatchWrite) []string {
+	seen := make(map[string]bool, len(writes))
+	out := make([]string, 0, len(writes))
+	for _, w := range writes {
+		if seen[w.Table] {
+			continue
+		}
+		seen[w.Table] = true
+		out = append(out, w.Table)
+	}
+	return out
+}
+
+func purgeBatchRecordsForTable(ctx context.Context, tx *sql.Tx, table string) error {
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM `+batchIdemTable+`
+		 WHERE (owner, key) IN (SELECT owner, key FROM `+batchTablesTable+` WHERE table_name = ?)`, table); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM `+batchTablesTable+` WHERE table_name = ?`, table)
 	return err
 }
 
@@ -117,7 +152,7 @@ func lookupBatchIdem(ctx context.Context, db rowQuerier, owner, key, wantHash st
 	return res, true, nil
 }
 
-func storeBatchIdem(ctx context.Context, tx *sql.Tx, owner, key, hash string, res BatchResult) error {
+func storeBatchIdem(ctx context.Context, tx *sql.Tx, owner, key, hash string, tables []string, res BatchResult) error {
 	raw, err := json.Marshal(res)
 	if err != nil {
 		return err
@@ -128,7 +163,17 @@ func storeBatchIdem(ctx context.Context, tx *sql.Tx, owner, key, hash string, re
 	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: "+batchIdemTable) {
 		return conflictf("idempotency key %q was committed concurrently by another batch; re-send the identical body with the same key", key)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	for _, table := range tables {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR REPLACE INTO `+batchTablesTable+` (owner, key, table_name) VALUES (?, ?, ?)`,
+			owner, key, table); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) guardBatchIncarnation(ctx context.Context, nsName string, want Incarnation) error {
@@ -338,7 +383,7 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 
 	res := BatchResult{Results: results, Changes: changes}
 	if opts.IdempotencyKey != "" {
-		if err := storeBatchIdem(ctx, wt.tx, opts.Owner, opts.IdempotencyKey, hash, res); err != nil {
+		if err := storeBatchIdem(ctx, wt.tx, opts.Owner, opts.IdempotencyKey, hash, batchTablesOf(writes), res); err != nil {
 			return BatchResult{}, true, err
 		}
 	}

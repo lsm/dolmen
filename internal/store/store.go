@@ -498,6 +498,7 @@ var registryDDL = []string{
 	)`,
 	embedStageDDL,
 	batchIdemDDL,
+	batchTablesDDL,
 
 	`CREATE TABLE IF NOT EXISTS _dolmen_meta(
 		key TEXT PRIMARY KEY,
