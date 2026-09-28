@@ -174,13 +174,30 @@ idempotency key.
 **Computed before the transaction, as `insert` and `update` do**, then re-checked inside it.
 
 Phase 1, outside the writer: read each table's schema, embed space and dimension; count what each
-update and delete matches; embed every vectorized write's text through the provider. This is where a
-slow or failing provider is absorbed — the writer is not held across a provider round trip, which is the
-same property #501 and #509 established for the single operations.
+`update`, `delete` and `upsert` matches; embed every vectorized write's text through the provider. This is
+where a slow or failing provider is absorbed — the writer is not held across a provider round trip, which
+is the same property #501 and #509 established for the single operations.
+
+**One write kind cannot be counted outside the writer, and the note has to say so rather than pretend
+otherwise.** `update` and `upsert` do pre-count: `updateOrUpsert` has its `preMatched` in hand before it
+calls `beginWrite` (`internal/store/update.go:169-194`), and embeds on the same side of that line. A
+committing `delete` does not — it takes the writer at `internal/store/search.go:413` and counts inside
+it; the pre-writer count in that function belongs to the `dry_run` path, which runs on a read-only
+caller transaction. So for a `delete` write the row budget can only be charged *after* the writer is
+held, and the enforcement point is inside the transaction: a delete that would push the batch past
+1,000 rows is rolled back whole, reported as `invalid_request` naming its index and the cap, like any
+other write failure. The delete match cap with `confirm` is checked in the same place, for the same
+reason.
+
+That is a real asymmetry between the kinds, and the honest way to present it is as a cost rather than to
+paper over it: **the row budget is pre-charged for four kinds and post-charged for `delete`.** A batch
+whose only large write is a `delete` therefore holds the writer for the duration of the count, which is
+the one case where §9's "1,000 rows touched" is enforced after the fact instead of before it.
 
 Phase 2, inside the transaction: **re-check each table's version, embedding space, dimension and drop
 generation**, and re-check the counts the plan was built on. If any moved, roll back and retry the whole
-batch, bounded at three attempts (matching `updateOrUpsert`'s bound).
+batch, bounded at three attempts (matching the bound `insert` and `updateOrUpsert` already use —
+`internal/store/insert.go:70-78` gives up after three).
 
 Retrying the whole batch rather than retrying the write is deliberate: a retry that re-planned one write
 against a newer schema and committed it alongside writes planned against the older one would produce
@@ -242,8 +259,9 @@ Two details that are deliberate rather than incidental:
 - **`delete` returns `matched` as well as `deleted`, on every batch, not only a dry run.** The single op
   requires both fields on every call (`internal/api/ops.go:1642`) and the facade's `DeleteResult.Matched`
   is an unconditional field, so `matched` is not a dry-run-only number that a committing batch could
-  drop. In a batch it is also load-bearing rather than decorative: it is the count the §2 row budget was
-  charged against, so a caller can see what a write matched as well as what it changed.
+  drop. In a batch it is also load-bearing rather than decorative: it is the count the §2 row budget is
+  charged against (§6 — post-hoc for `delete`, which cannot be counted before the writer), so a caller
+  can see what a write matched as well as what it changed.
 - **A per-write `replayed` is omitted; the batch's is the one that exists.** `insert` reports `replayed`
   per call, but inside a batch every write is either part of a fresh commit or part of a replayed one, so
   a per-write flag could only ever be the batch's flag repeated. One top-level `replayed` says it once.
@@ -260,12 +278,16 @@ are row-based rather than statement-based.
 What bounds it:
 
 - **1,000 rows touched**, which is the work an `insert` is already allowed to do in one transaction.
+  Bounded *before* the write for four kinds; for `delete` it is bounded only once the count has been
+  taken under the writer (§6), so a large `delete` is discovered late and undone rather than refused
+  early. Late and undone is the weaker guarantee and the note should not pretend otherwise.
 - **100 writes**, which bounds the per-statement overhead — schema lookups, temp tables for the
   filter-matched writes, change-log records — that a write costs even when it touches no rows.
-- **The operation timeout** (`-op-timeout`, 2 minutes by default), after which the transaction is
-  rolled back and the batch is reported as `timeout` like any other operation. Note this is a *server*
-  limit: a batch that trips it is rolled back whole, so a caller cannot make it not-trip by trying
-  again, only by sending less.
+- **The operation timeout** (`-op-timeout`, 2 minutes by default, `api.DefaultOpTimeout`), after which
+  the transaction is rolled back and the batch is reported as `timeout` like any other operation. `batch`
+  gets the plain operation limit, not the `wait_for` extension, since `opLimit` special-cases only
+  `migrate` and `wait_for`. Note this is a *server* limit: a batch that trips it is rolled back whole, so
+  a caller cannot make it not-trip by trying again, only by sending less.
 
 What it does not bound, and this is the honest part: the provider. Embeddings are computed before the
 writer is taken (§6), so a slow model costs the caller latency but never blocks a concurrent writer.
@@ -290,6 +312,12 @@ to it" is not a design position, and a matrix entry is the wrong place to park i
 
 Parity tests cover the same cases the wire gets: atomicity, the single feed commit, idempotent replay,
 the embedding re-check, and a failing write leaving nothing behind.
+
+One asymmetry worth naming, because it is a fact about the facade as it stands rather than a choice:
+`write.go` has `Insert`, `Update`, `Delete` and `UpsertByKey`, and **no filter-matched `Upsert`**. So
+`Store.Batch` would be an embedder's only route to that fifth write kind — a capability the batch
+reaches that no single facade method does. That is an argument *for* shipping the batch in the library
+rather than an argument against it, and it is a second, independent one from the parity argument above.
 
 ---
 
