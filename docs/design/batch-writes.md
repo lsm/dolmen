@@ -176,7 +176,10 @@ writes[3]: the caller holds no grant permitting this operation on this object;
 ```
 
 From `internal/store/insert.go:117`, `internal/store/search.go:450`,
-`internal/store/update.go:176` and `internal/api/authz.go:111`.
+`internal/store/update.go:176`, and `internal/api/authz.go:113` (the `forbiddenMessage` constant,
+built into the error by `forbidden403` at `authz.go:109`). The upsert message has two sites,
+`update.go:176` before the writer and `update.go:245` inside it, with the same text; both must keep
+it, since a batch reaches one or the other depending on whether the pre-count found anything.
 
 Two of those four are worth reading closely, because a plausible-looking example would have got both
 wrong:
