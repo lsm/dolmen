@@ -133,7 +133,10 @@ func TestAPastDeadlineIsTimeoutOnTheOperationSpan(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	rec.Reset()
 
-	past, cancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
+	// A deadline in the future, and a stub that waits for it, so the engine's own error is what
+	// comes back. A deadline already in the past would be caught by the library's own ctx check
+	// before the engine was called at all, which tests a different path.
+	past, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
 	if _, err := st.GetRows(past, "iv", "docs", []int64{1}); !errors.Is(err, ErrTimeout) {
 		t.Fatalf("a call past its deadline came back as %v, want ErrTimeout", err)
@@ -146,6 +149,7 @@ type deadlineEngine struct {
 }
 
 func (e *deadlineEngine) GetRows(ctx context.Context, ns, table string, ids []int64, scope *store.RowScope, inc store.Incarnation) (store.QueryResult, error) {
+	<-ctx.Done()
 	return store.QueryResult{}, errors.New("connection is busy")
 }
 
