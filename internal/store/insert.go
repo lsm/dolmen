@@ -92,18 +92,18 @@ func (s *Store) payloadHash(sc *schema.TableSchema, records []map[string]any) Id
 
 func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, owner string, domain IdemDomain, shared *sharedWriteTx) (ids []int64, changes ChangeRange, replayed bool, done bool, err error) {
 
-	gen, err := s.writerTableGen(ctx, n, table)
+	gen, err := s.genFor(ctx, n, shared, table)
 	if err != nil {
 		return nil, ChangeRange{}, false, true, err
 	}
-	sc, err := loadSchema(ctx, n.rw, nsName, table)
+	sc, err := loadSchema(ctx, preRead(n, shared), nsName, table)
 	if err != nil {
 		return nil, ChangeRange{}, false, true, err
 	}
 	var idemHash IdemHash
 	if idemKey != "" {
 		idemHash = s.payloadHash(sc, records)
-		if ids, found, err := lookupIdem(ctx, n.rw, table, idemKey, idemHash, domain); err != nil {
+		if ids, found, err := lookupIdem(ctx, preRead(n, shared), table, idemKey, idemHash, domain); err != nil {
 			return nil, ChangeRange{}, false, true, err
 		} else if found {
 			return ids, ChangeRange{}, true, true, nil
@@ -258,7 +258,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 				if rerr := tx.Rollback(); rerr != nil {
 					return nil, ChangeRange{}, false, true, rerr
 				}
-				ids, found, lerr := lookupIdem(ctx, n.rw, table, idemKey, idemHash, domain)
+				ids, found, lerr := lookupIdem(ctx, preRead(n, shared), table, idemKey, idemHash, domain)
 				if lerr != nil {
 					return nil, ChangeRange{}, false, true, lerr
 				}

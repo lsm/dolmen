@@ -142,11 +142,11 @@ func matchByKey(ctx context.Context, tx *sql.Tx, table string, keyFields []strin
 
 func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table string, keyFields []string, records []map[string]any, emb Embedder, owner string, scope *RowScope, scopeIncarnation Incarnation, shared *sharedWriteTx) (ids []int64, inserted, updated int, changes ChangeRange, done bool, err error) {
 
-	gen, err := s.writerTableGen(ctx, n, table)
+	gen, err := s.genFor(ctx, n, shared, table)
 	if err != nil {
 		return nil, 0, 0, ChangeRange{}, true, err
 	}
-	sc, err := loadSchema(ctx, n.rw, nsName, table)
+	sc, err := loadSchema(ctx, preRead(n, shared), nsName, table)
 	if err != nil {
 		return nil, 0, 0, ChangeRange{}, true, err
 	}

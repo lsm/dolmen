@@ -95,25 +95,25 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 	var sc *schema.TableSchema
 	var gen int64
 	var preMatched int64
-	readTx, err := n.ro.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	readTx, doneRead, err := preCountOn(ctx, n, shared)
 	if err != nil {
 		return UpsertResult{}, true, err
 	}
 	if err := checkScopeIncarnation(ctx, readTx, nsName, table, scopeIncarnation); err != nil {
-		readTx.Rollback()
+		doneRead()
 		return UpsertResult{}, true, err
 	}
 	sc, err = loadSchema(ctx, readTx, nsName, table)
 	if err != nil {
-		readTx.Rollback()
+		doneRead()
 		return UpsertResult{}, true, err
 	}
 	if err := scopeUsable(scope, sc); err != nil {
-		readTx.Rollback()
+		doneRead()
 		return UpsertResult{}, true, err
 	}
 	if gen, err = tableGen(ctx, readTx, table); err != nil {
-		readTx.Rollback()
+		doneRead()
 		return UpsertResult{}, true, err
 	}
 	readVis, readVisArgs := visiblePredicate(scope)
@@ -121,10 +121,10 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 	readArgs := append(append(make([]any, 0, len(args)+len(readVisArgs)), args...), readVisArgs...)
 	if err := readTx.QueryRowContext(ctx,
 		readSQL, readArgs...).Scan(&preMatched); err != nil {
-		readTx.Rollback()
+		doneRead()
 		return UpsertResult{}, true, NewFilterError(where, err)
 	}
-	readTx.Rollback()
+	doneRead()
 
 	for k := range set {
 		if sc.Field(k) == nil {

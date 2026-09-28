@@ -112,6 +112,31 @@ func (s *Store) commitOwned(w *sharedWriteTx) error {
 	return commitWrite(w.tx, w.span)
 }
 
+func preRead(n *nsDB, shared *sharedWriteTx) rowQuerier {
+	if shared != nil {
+		return shared.tx
+	}
+	return n.rw
+}
+
+func preCountOn(ctx context.Context, n *nsDB, shared *sharedWriteTx) (rowQuerier, func(), error) {
+	if shared != nil {
+		return shared.tx, func() {}, nil
+	}
+	tx, err := n.ro.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, nil, err
+	}
+	return tx, func() { tx.Rollback() }, nil
+}
+
+func (s *Store) genFor(ctx context.Context, n *nsDB, shared *sharedWriteTx, table string) (int64, error) {
+	if shared != nil {
+		return tableGen(ctx, shared.tx, table)
+	}
+	return s.writerTableGen(ctx, n, table)
+}
+
 func (s *Store) writerConn(ctx context.Context, n *nsDB) (*sql.Conn, error) {
 	if !s.tr.On() {
 		return n.rw.Conn(ctx)
