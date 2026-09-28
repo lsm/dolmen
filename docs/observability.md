@@ -116,7 +116,7 @@ shortest path from "insert got slow" to "here is what it was waiting on":
 Every span that ends in an error carries `error.type`. For the operation spans — `INSERT docs`,
 `SELECT`, `UPDATE`, `MIGRATE`, `SEARCH`, `VACUUM`, `DELETE` — that value follows one rule, on both
 engines, and so do the SQLite-only `dolmen.writer.wait`, `dolmen.migrate.step`,
-`dolmen.vector.cache` and `dolmen.vector.score` spans:
+`dolmen.vector.cache` and `dolmen.vector.score` spans, and the library's own `dolmen.op` spans:
 
 - **If the caller's context was done when the call ended, the span says `canceled` or `timeout`** —
   whatever error came back. A request whose caller has gone is not a `query_error` and not an
@@ -125,18 +125,26 @@ engines, and so do the SQLite-only `dolmen.writer.wait`, `dolmen.migrate.step`,
 - **With a live context, the error decides**, and the class is the one the caller would have got:
   `invalid_request`, `not_found`, `conflict`, `query_error`, `internal_error`, and so on.
 
+"Whatever error came back" means once the call reached the engine. The Go library has one path that
+does not: a call on a **closed store** never reaches the engine, and `facadeErr` checks the closed
+store ahead of its context branch, so a cancelled call against a store that is shutting down records
+the closed-store class rather than `canceled`. Over HTTP and MCP there is no such precedence —
+`callerGone` rewrites whatever the operation returned, so the same call records `canceled` there. Say
+which surface you are reading before drawing a conclusion from that one case.
+
 One span is deliberately outside it: the SQLite-only `dolmen.transaction` span carries
 `dolmen.tx.outcome` (`commit` or `rollback`) and never an `error.type`, so read that attribute for
 whether the transaction landed and the span above it for why the operation failed.
 
-The consequence for reading traces: over HTTP and MCP, a storage span and the `dolmen.op` span above it
-never disagree about whether the caller went away, so a tree that says `canceled` at the top says
-`canceled` all the way down. The Go library facade is the one exception: `facadeErr` already answers
-its *errors* from the caller's context, but the `dolmen.op` span it records is still classified from
-the error alone, so a cancelled call through the library can show `query_error` on the operation span
-above a `canceled` storage span. If you are looking for the *cause* of a cancellation — a slow query,
-a lock, a provider — the answer is in the span's duration and its children, not in its `error.type`,
-which by construction can only say that the caller stopped waiting.
+The consequence for reading traces: a storage span and the `dolmen.op` span above it never disagree
+about whether the caller went away, on any surface. Over HTTP and MCP the api classifies the
+response from the caller's context (`callerGone`), and the Go library maps the engine's error into
+its return before the deferred `endOp` reads it (`facadeErr`), so a tree that says `canceled` at
+the top says `canceled` all the way down — including when the engine's own error does not wrap
+`context.Canceled`, which is the case that used to split them. If you are looking for the *cause* of
+a cancellation — a slow query, a lock, a provider — the answer is in the span's duration and its
+children, not in its `error.type`, which by construction can only say that the caller stopped
+waiting.
 
 ## Three alerts to start with
 
