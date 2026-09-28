@@ -27,7 +27,7 @@ const MaxIdempotencyKeyLen = 256
 
 func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (_ InsertResult, err error) {
 	ctx, span := s.tr.Op(ctx, "INSERT", nsName, table)
-	defer func() { s.tr.End(span, err) }()
+	defer func() { s.tr.End(ctx, span, err) }()
 	if err := s.guardIncarnation(ctx, nsName, table, scopeIncarnation); err != nil {
 		return InsertResult{}, err
 	}

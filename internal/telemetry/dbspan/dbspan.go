@@ -82,14 +82,25 @@ func (t *Tracer) Child(ctx context.Context, name string, extra ...attribute.KeyV
 	return t.t.Start(ctx, name, trace.WithSpanKind(trace.SpanKindInternal), trace.WithAttributes(extra...))
 }
 
-func (t *Tracer) End(span trace.Span, err error) {
+func (t *Tracer) End(ctx context.Context, span trace.Span, err error) {
 	if t == nil {
 		return
 	}
 	if err != nil {
-		code := "internal_error"
-		if t.classify != nil {
-			code = t.classify(err)
+		code := ""
+		if ctx != nil {
+			switch ctx.Err() {
+			case context.Canceled:
+				code = "canceled"
+			case context.DeadlineExceeded:
+				code = "timeout"
+			}
+		}
+		if code == "" {
+			code = "internal_error"
+			if t.classify != nil {
+				code = t.classify(err)
+			}
 		}
 		span.SetAttributes(semconv.ErrorTypeKey.String(code))
 		span.SetStatus(codes.Error, code)

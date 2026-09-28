@@ -19,7 +19,7 @@ type UpsertResult struct {
 
 func (s *Store) Update(ctx context.Context, nsName, table, where string, args []any, set map[string]any, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (_ UpdateResult, err error) {
 	ctx, span := s.tr.Op(ctx, "UPDATE", nsName, table)
-	defer func() { s.tr.End(span, err) }()
+	defer func() { s.tr.End(ctx, span, err) }()
 	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, false, "", scope, scopeIncarnation)
 	if err != nil {
 		return UpdateResult{}, err
@@ -29,7 +29,7 @@ func (s *Store) Update(ctx context.Context, nsName, table, where string, args []
 
 func (s *Store) Upsert(ctx context.Context, nsName, table, where string, args []any, set map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (_ InsertResult, err error) {
 	ctx, span := s.tr.Op(ctx, "UPSERT", nsName, table)
-	defer func() { s.tr.End(span, err) }()
+	defer func() { s.tr.End(ctx, span, err) }()
 	res, err := s.updateOrUpsert(ctx, nsName, table, where, args, set, emb, true, opts.Owner, scope, scopeIncarnation)
 	if err != nil {
 		return InsertResult{}, err

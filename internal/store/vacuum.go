@@ -14,7 +14,7 @@ type VacuumResult struct {
 
 func (s *Store) Vacuum(ctx context.Context, nsName string) (_ VacuumResult, err error) {
 	ctx, span := s.tr.Op(ctx, "VACUUM", nsName, "")
-	defer func() { s.tr.End(span, err) }()
+	defer func() { s.tr.End(ctx, span, err) }()
 	n, err := s.nsCtx(ctx, nsName)
 	if err != nil {
 		return VacuumResult{}, err

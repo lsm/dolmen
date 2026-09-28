@@ -146,12 +146,12 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 	ctx, cspan := c.tr.Child(ctx, dbspan.VectorCache)
 	head, err := changeCounter(ctx, db)
 	if err != nil {
-		c.endCache(cspan, "error", err)
+		c.endCache(ctx, cspan, "error", err)
 		return nil, 0, false, err
 	}
 	fp, err := vectorFingerprint(ctx, db, table)
 	if err != nil {
-		c.endCache(cspan, "error", err)
+		c.endCache(ctx, cspan, "error", err)
 		return nil, 0, false, err
 	}
 	k := vecKey{ns: ns, table: table, column: column}
@@ -159,7 +159,7 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 	e.mu.Lock()
 	if e.tooBig && e.fp == fp && head-e.seq < tooBigRetryChanges {
 		e.mu.Unlock()
-		c.endCache(cspan, "too_big", nil)
+		c.endCache(ctx, cspan, "too_big", nil)
 		return nil, 0, false, nil
 	}
 	wasTooBig := e.tooBig
@@ -169,14 +169,14 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 	if wasTooBig || e.seq < 0 || e.fp != fp || e.seq > head {
 		if e.fp == fp && e.seq > head {
 			e.mu.Unlock()
-			c.endCache(cspan, "stale", nil)
+			c.endCache(ctx, cspan, "stale", nil)
 			return nil, 0, false, nil
 		}
 		outcome = "build"
 		if fits, err = e.rebuild(ctx, db, table, column, owned, c.max); err != nil {
 			e.mu.Unlock()
 			c.drop(k, e)
-			c.endCache(cspan, outcome, err)
+			c.endCache(ctx, cspan, outcome, err)
 			return nil, 0, false, err
 		}
 		e.fp, e.seq = fp, head
@@ -186,7 +186,7 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 		if err != nil {
 			e.mu.Unlock()
 			c.drop(k, e)
-			c.endCache(cspan, outcome, err)
+			c.endCache(ctx, cspan, outcome, err)
 			return nil, 0, false, err
 		}
 		if !ok {
@@ -194,7 +194,7 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 			if fits, err = e.rebuild(ctx, db, table, column, owned, c.max); err != nil {
 				e.mu.Unlock()
 				c.drop(k, e)
-				c.endCache(cspan, outcome, err)
+				c.endCache(ctx, cspan, outcome, err)
 				return nil, 0, false, err
 			}
 		}
@@ -211,15 +211,15 @@ func (c *vecCache) score(ctx context.Context, tx rowsQuerier, ns, table, column 
 		e.pos, e.ids, e.vecs, e.sq, e.owners = nil, nil, nil, nil, nil
 		c.remember(k, e)
 		e.mu.Unlock()
-		c.endCache(cspan, "too_big", nil)
+		c.endCache(ctx, cspan, "too_big", nil)
 		return nil, 0, false, nil
 	}
 	e.mu.Unlock()
-	c.endCache(cspan, outcome, nil)
+	c.endCache(ctx, cspan, outcome, nil)
 
 	_, sspan := c.tr.Child(parent, dbspan.VectorScore)
 	scored, candidateCount := 0, -1
-	defer func() { c.endScore(sspan, scored, candidateCount, err) }()
+	defer func() { c.endScore(ctx, sspan, scored, candidateCount, err) }()
 	var only []int64
 	if candidates != nil {
 		if only, err = candidates(); err != nil {

@@ -61,7 +61,7 @@ func (s *Store) beginWrite(ctx context.Context, n *nsDB) (context.Context, *sql.
 	}
 	wctx, wait := s.tr.Child(ctx, dbspan.WriterWait)
 	tx, err := n.rw.BeginTx(wctx, nil)
-	s.tr.End(wait, err)
+	s.tr.End(wctx, wait, err)
 	if err != nil {
 		return ctx, nil, nil, err
 	}
@@ -88,7 +88,7 @@ func (s *Store) writerConn(ctx context.Context, n *nsDB) (*sql.Conn, error) {
 	}
 	wctx, wait := s.tr.Child(ctx, dbspan.WriterWait)
 	conn, err := n.rw.Conn(wctx)
-	s.tr.End(wait, err)
+	s.tr.End(wctx, wait, err)
 	return conn, err
 }
 
@@ -101,7 +101,7 @@ func (s *Store) migrateStepSpan(ctx context.Context, kind string, index int) (co
 	return ctx, func(err error) {
 		if !ended {
 			ended = true
-			s.tr.End(span, err)
+			s.tr.End(ctx, span, err)
 		}
 	}
 }
@@ -113,15 +113,15 @@ func (s *Store) migrateStep(ctx context.Context, kind string, index int, step fu
 	return err
 }
 
-func (c *vecCache) endCache(span trace.Span, outcome string, err error) {
+func (c *vecCache) endCache(ctx context.Context, span trace.Span, outcome string, err error) {
 	if !c.tr.On() {
 		return
 	}
 	span.SetAttributes(dbspan.VectorCacheKey.String(outcome))
-	c.tr.End(span, err)
+	c.tr.End(ctx, span, err)
 }
 
-func (c *vecCache) endScore(span trace.Span, scored, candidates int, err error) {
+func (c *vecCache) endScore(ctx context.Context, span trace.Span, scored, candidates int, err error) {
 	if !c.tr.On() {
 		return
 	}
@@ -129,7 +129,7 @@ func (c *vecCache) endScore(span trace.Span, scored, candidates int, err error) 
 	if candidates >= 0 {
 		span.SetAttributes(dbspan.VectorCandidatesKey.Int(candidates))
 	}
-	c.tr.End(span, err)
+	c.tr.End(ctx, span, err)
 }
 
 func (s *Store) writerTableGen(ctx context.Context, n *nsDB, table string) (int64, error) {

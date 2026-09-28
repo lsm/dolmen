@@ -29,5 +29,5 @@ func newTracer(tp trace.TracerProvider, pool *pgxpool.Pool) *dbspan.Tracer {
 
 func (s *Store) span(ctx context.Context, op, ns, table string, extra ...attribute.KeyValue) (context.Context, func(error)) {
 	ctx, sp := s.tr.Op(ctx, op, ns, table, extra...)
-	return ctx, func(err error) { s.tr.End(sp, err) }
+	return ctx, func(err error) { s.tr.End(ctx, sp, err) }
 }

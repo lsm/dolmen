@@ -62,7 +62,7 @@ type migrationWork struct {
 
 func (s *Store) Migrate(ctx context.Context, nsName, table string, changes []schema.Change, emb Embedder, expected Incarnation) (_ *schema.TableSchema, err error) {
 	ctx, span := s.tr.Op(ctx, "MIGRATE", nsName, table)
-	defer func() { s.tr.End(span, err) }()
+	defer func() { s.tr.End(ctx, span, err) }()
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
 	}
