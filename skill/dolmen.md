@@ -549,17 +549,26 @@ while True:
         last = row["id"]            # the last id you received, which is not the last id in the table
 ```
 
-`id` is assigned in increasing order and never reused after deletes, so `id > last` can neither skip a
-row nor return one twice while other writers commit during the walk. **Do not page a whole table with
-`offset`**: an offset is a position in a list that is moving under you, so a row inserted above your
-offset shifts everything down and one row is exported twice, and a deleted row shifts everything up and
-one is never exported at all.
+`id` is assigned in increasing order and never reused after deletes, so a keyset walk never returns a
+row twice and never loses one to a delete. **Do not page a whole table with `offset`**: an offset is a
+position in a list that is moving under you, so a row inserted above your offset shifts everything down
+and one row is exported twice, and a deleted row shifts everything up and one is never exported at all.
+{{ if eq .Dialect "postgresql" }}This engine has one hole an `offset` walk does not: `id` is allocated when a row is
+inserted rather than when it commits, and inserts from different connections commit in whatever order
+they finish. A writer that took a lower `id` than the one you have already walked past, and commits
+after you have passed it, is not in your export. When the walk has to be complete while others are
+writing, either reconcile afterwards with `changes_since`, which is ordered by commit, or export a
+table nobody is writing.{{ else }}Writes here go through a single writer connection, so `id` is handed out and committed in
+the same order: anything that commits after you pass an `id` has a higher one, and the walk cannot
+skip it.{{ end }}
 
 A `truncated: true` page needs nothing special here. Take the last `id` you actually received, and the
 next call resumes after it — a page cut short by the row limit or the 32 MiB budget is just a shorter
-page. Stop when a page comes back empty. Do not add `LIMIT` to the SQL — `query` takes the page size as its `limit`
-parameter and rejects the clause — and the default of 1,000 rows is also the most it will return, so
-expect one call per thousand rows.
+page. Stop when a page comes back empty. The page size is the `limit` parameter, whose default of
+1,000 rows is also the most `query` will return, so expect one call per thousand rows. Do not put
+`LIMIT` in the SQL: it is not rejected, it is nested inside the server's own paging, so it can only
+make a page smaller than you asked for — and the server reaches that point by trying your statement,
+getting a syntax error, and retrying it wrapped.
 
 Two things this export cannot carry, which is why restoring from one is a re-import rather than a copy:
 
