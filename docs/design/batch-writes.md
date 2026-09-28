@@ -150,13 +150,38 @@ dropped the signal would leave a caller unable to distinguish a fresh commit fro
 
 **All or nothing. Nothing is written.**
 
-The error names the failing write by index and keeps that write's own class:
+The error names the failing write by index and keeps that write's own class. Every message below is
+quoted from the code that produces it, because a batch that wrapped a plausible paraphrase would break
+the one property callers rely on — that these strings are stable enough to test against:
 
 ```
-writes[2]: unknown field "titel" on table findings (see describe_table)      invalid_request
-writes[0]: no row matched the filter "url = '…'" (see describe_table)       invalid_request
-writes[1]: table findings is not visible to this principal                    forbidden
+writes[2]: unknown field "titel" on table findings (see describe_table)          invalid_request
+writes[1]: filter matched 1200 rows, exceeding the delete limit of 1000; …        invalid_request
+writes[0]: field "title" is required (no row matched the filter, so upsert
+           would insert a new record)                                            invalid_request
+writes[3]: the caller holds no grant permitting this operation on this object;
+           an administrator grants access with the grant op, and whoami reports
+           the principal and groups this request authenticated as             forbidden
 ```
+
+From `internal/store/insert.go:117`, `internal/store/search.go:450`,
+`internal/store/update.go:176` and `internal/api/authz.go:111`.
+
+Two of those four are worth reading closely, because a plausible-looking example would have got both
+wrong:
+
+- **A zero-match `update` and a zero-match `delete` are not errors.** The first returns
+  `updated: 0` and the second `matched: 0, deleted: 0`; only `upsert`, which inserts on no match by
+  design, can fail for want of a row. So the batch cannot treat "matched nothing" as a failure, or it
+  would contradict §8 and the single operations. The no-match message that does exist is `upsert`'s
+  required-field one, and it is quoted above because that is the only way a write in this batch can
+  fail for matching no rows.
+- **The delete-limit message names a remedy a batch does not allow.** The single op's text ends "pass
+  `confirm: true` to proceed or `dry_run: true` to preview", and §2 refuses `dry_run` inside a batch. So
+  a batch must not forward that message unchanged: it would point a caller at a field the batch rejects.
+  The rule this fixes: **where a single op's message names a remedy the batch does not offer, the
+  batch's message names the remedy it does.** `confirm: true` is carried through unchanged and
+  `dry_run: true` is dropped from the text.
 
 So a `forbidden` inside a batch is a `forbidden` for the batch — the caller does not have to parse a
 message to learn it was an authorization problem — and the prefix is the write's, not the batch's. The
