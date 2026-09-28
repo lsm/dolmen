@@ -224,17 +224,6 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 		return UpsertResult{}, true, err
 	}
 
-	if vf != nil {
-		text, _ := coerced[vf.Name].(string)
-		if vectorMissingInsideWriter(vf, vec, matched, text) {
-			persistMeta = persistMeta || sc.EmbedSpace == "" || sc.EmbedDim == 0
-			vec, err = embedForUpdate(ctx, sc, table, text, emb)
-			if err != nil {
-				return UpsertResult{}, true, err
-			}
-		}
-	}
-
 	if allowInsert && matched == 0 {
 		for _, f := range sc.Fields {
 			v, present := set[f.Name]
