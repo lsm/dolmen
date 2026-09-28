@@ -47,10 +47,20 @@ Five kinds: `insert`, `update`, `delete`, `upsert` (filter-matched), `upsert_by_
 Two mechanical consequences, both of which are the point:
 
 - **`namespace` is hoisted.** The batch has one namespace; a per-write `namespace` would be either
-  redundant or a way to contradict it. The per-write object is the single op's input schema **minus
-  `namespace`**, with `kind` added.
+  redundant or a way to contradict it.
+- **Three fields are removed from every derived schema, and the reason for each differs.** The per-write
+  object is the single op's input schema with `namespace` removed, `kind` added, and the other two
+  removals below applied. `namespace` because it is hoisted. `idempotency_key` because §4 refuses it —
+  a batch has one key, and an inner one could not be replayed coherently. `dry_run` because §11 takes
+  dry runs out of scope, and because a simulated write inside a committing batch has no defined meaning:
+  under all-or-nothing, either every write commits or none does, and a write that reports what it *would*
+  have done is neither. A caller sending `dry_run` on a `delete` write is refused as `invalid_request`
+  naming the index, not silently ignored — which is what a per-write schema keeping
+  `additionalProperties: false` gives for free, the same as any unknown field. `delete` is the only kind
+  whose input has it today; the removal is stated as a rule so a future op that grows the field does not
+  inherit it by accident.
 - **The schemas are derived, not copied.** `api.Ops` stays the single source of truth: the `batch`
-  input schema for kind *k* is `Ops[k].InputSchema`'s properties with `namespace` removed. A change to
+  input schema for kind *k* is `Ops[k].InputSchema`'s properties minus those three fields. A change to
   `insert`'s schema propagates to `batch` rather than needing to be made twice, and a divergence is
   not possible. This is the same discipline `outputSchemas` already relies on in `openapi.go`.
 
@@ -65,11 +75,18 @@ Two are new, because a batch can otherwise be a way around limits that exist for
 | limit | value | why that number |
 | --- | --- | --- |
 | writes per batch | 100 | Each write is at least one statement. 100 is enough that a real import is one call and small enough that a rejected batch is cheap to reason about and to print in an error. |
-| rows touched per batch | 1,000 | **Summed over all writes**, and counted in *rows touched*: `insert` records, filter-matched update rows, matched delete rows, `upsert` inserts. This is the limit that does the real work — see §9. |
+| rows touched per batch | 1,000 | **Summed over all writes**, and counted in *rows touched*, which is every row every write creates or matches: `insert` records, `upsert` inserts, `upsert_by_key` records, and the rows matched by `update`, `delete`, and the update branch of `upsert`. This is the limit that does the real work — see §9. |
 
 Reusing `MaxRecordsPerInsert` as the batch-wide total is the important part. A batch must not be a way
 to write 50,000 rows where one `insert` is allowed 1,000; the total is the same 1,000, spent across
 whichever writes need it.
+
+The counted set is deliberately every write kind and both branches of every kind that can match rows.
+An earlier draft of this table listed `insert` records, matched `update` and `delete` rows and `upsert`
+inserts, which would have let a batch of a hundred `upsert_by_key` writes touch 100,000 rows and a
+matched `upsert` update touch an uncounted number — the cap defeated at the two kinds most likely to be
+used in a loop. Counting what a write *touches* rather than what it *carries* is the property that makes
+the number mean what §9 needs it to mean.
 
 A write that would push the batch past either cap is rejected before the transaction, naming the write
 by index and the cap by name.
@@ -195,11 +212,17 @@ matching on anything:
 
 - `insert` → `ids`, plus `inserted`
 - `update` → `updated`
-- `delete` → `deleted`, plus `matched` when a `dry_run` is in play (§11)
+- `delete` → `deleted`
 - `upsert`, `upsert_by_key` → `inserted`, `updated`, `ids`
 
 This is the union of what the single operations already return, so nothing here is a new result shape —
 only a place to put them. The output schema is derived the same way the input is, per kind.
+
+`delete` returns `deleted` alone. `delete` also reports `matched`, but only on a dry run, and §2
+refuses `dry_run` inside a batch and §11 takes it out of scope, so that field has no case here. An
+earlier draft of this list carried "plus `matched` when a `dry_run` is in play", which described a
+combination the design does not allow: a batch that committed its other writes while simulating one of
+its own.
 
 ---
 
@@ -250,9 +273,11 @@ the embedding re-check, and a failing write leaving nothing behind.
   cheap for `upsert`: deciding insert-versus-update without writing requires the plan to be taken
   inside the transaction, which is a different code path from the one that would ship. Getting that
   subtly wrong is worse than not having the operation, so it is the first candidate for a follow-up
-  rather than a detail of this one.
+  rather than a detail of this one. §2 strips it from every derived write schema, so the single op's
+  `dry_run` does not ride along on `delete` by accident; a batch-level dry run is the shape to revisit,
+  because it can report every write's plan without any of them committing.
 - **Cross-namespace batches** (§1) and **schema changes inside a batch** (§1).
-- **Per-write idempotency keys** (§4).
+- **Per-write idempotency keys** (§4), and `dry_run` on a write (§2), both refused by index.
 - **Partial success.** All-or-nothing is the contract; a caller who wants a best effort sends what
   must succeed and handles the rest itself.
 
