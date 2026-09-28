@@ -532,9 +532,9 @@ while working:
 
 ### Export a table by keyset paging
 
-There is no `dump` or `export_table` op. A whole namespace is backed up out of band, on the server,
-with `dolmen backup` — `pg_dump` when the server is PostgreSQL-backed. To get a table's rows
-somewhere else, page `query` on `id`:
+There is no `dump` or `export_table` op. A whole namespace is backed up out of band, on the server:
+{{ if eq .Dialect "postgresql" }}`pg_dump`, since `dolmen backup` refuses on this engine{{ else }}`dolmen backup`{{ end }}.
+To get a table's rows somewhere else, page `query` on `id`:
 
 ```
 last = 0
@@ -546,7 +546,7 @@ while True:
         break
     for row in page.rows:
         write(row)                  # append to JSONL, a CSV, whatever you are building
-        last = row["id"]            # the last id you received, which is not the last id the server sent
+        last = row["id"]            # the last id you received, which is not the last id in the table
 ```
 
 `id` is assigned in increasing order and never reused after deletes, so `id > last` can neither skip a
