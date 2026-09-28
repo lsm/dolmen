@@ -127,18 +127,18 @@ func Observe(mp metric.MeterProvider, engine any) (func(context.Context) error, 
 		o.ObserveInt64(in.namespacesOpen, snap.Value(OpenNamespaces))
 		o.ObserveInt64(in.vectorCacheUsage, snap.Value(VectorCacheUsed))
 		o.ObserveInt64(in.vectorCacheLimit, snap.Value(VectorCacheMax))
+		if snap.Pool != "" {
+			pool := semconv.DBClientConnectionPoolName(dbspan.Clean(snap.Pool, dbspan.MaxNameAttr))
+			o.ObserveInt64(in.poolConnections, snap.Value(PoolIdle),
+				metric.WithAttributes(pool, semconv.DBClientConnectionStateIdle))
+			o.ObserveInt64(in.poolConnections, snap.Value(PoolUsed),
+				metric.WithAttributes(pool, semconv.DBClientConnectionStateUsed))
+			o.ObserveInt64(in.poolMax, snap.Value(PoolLimit), metric.WithAttributes(pool))
+			return nil
+		}
 		o.ObserveInt64(in.dbSize, snap.Value(DBBytes))
 		o.ObserveInt64(in.walSize, snap.Value(WALBytes))
 		o.ObserveInt64(in.walLargest, snap.Value(WALLargestBytes))
-		if snap.Pool == "" {
-			return nil
-		}
-		pool := semconv.DBClientConnectionPoolName(dbspan.Clean(snap.Pool, dbspan.MaxNameAttr))
-		o.ObserveInt64(in.poolConnections, snap.Value(PoolIdle),
-			metric.WithAttributes(pool, semconv.DBClientConnectionStateIdle))
-		o.ObserveInt64(in.poolConnections, snap.Value(PoolUsed),
-			metric.WithAttributes(pool, semconv.DBClientConnectionStateUsed))
-		o.ObserveInt64(in.poolMax, snap.Value(PoolLimit), metric.WithAttributes(pool))
 		return nil
 	}, in.namespacesOpen, in.vectorCacheUsage, in.vectorCacheLimit, in.dbSize, in.walSize, in.walLargest, in.poolConnections, in.poolMax)
 	if err != nil {

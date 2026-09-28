@@ -228,8 +228,10 @@ Two things about the SQLite gauges to keep in mind:
   namespace that has never been touched, or whose connection has been evicted and closed, is not
   counted — its file is still on disk. `dolmen_namespaces_open` is the companion: a sum that
   disagrees with `du` is usually a namespace that is not open, not a missing file.
-- PostgreSQL reports none of them, exactly as SQLite reports no pool metrics. The server's storage
-  and WAL belong to PostgreSQL, and [`postgres_exporter`](https://github.com/prometheus-community/postgres_exporter)
+- PostgreSQL does not report them at all — the series are absent rather than reporting zero, the
+  same way SQLite reports no pool metrics. An always-zero series would read as an empty disk rather
+  than as an engine that does not have the number. The server's storage and WAL belong to
+  PostgreSQL, and [`postgres_exporter`](https://github.com/prometheus-community/postgres_exporter)
   already covers them with far more fidelity than a file size would. If you are on PostgreSQL, alert
   on `pg_wal_size` from there instead.
 
