@@ -205,8 +205,8 @@ settling changed this section rather than only closing the issues.
   [#508](https://github.com/lsm/dolmen/pull/508)
 - No live progress channel for a long backfill, on MCP or `/v1`. This one is closed as **not
   planned** rather than shipped: a `dry_run` already reports `staged_rows` and `embed_rows` over both
-  transports, and those two add up to the whole table, so a caller that abandons a run can re-issue
-  and read the split rather than guess. Progress notifications on MCP alone would make the transports
+  transports, and those two add up to the rows the change will vectorize, so a caller that abandons a
+  run can re-issue and read the split rather than guess. Progress notifications on MCP alone would make the transports
   disagree about the same operation, which item 8 rules out — a staged vector is deliberately
   invisible to everything else, and a progress stream is a surface where a caller could watch a
   half-finished backfill. If a live channel is ever wanted it has to be one contract over both
