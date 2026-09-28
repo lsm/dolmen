@@ -90,11 +90,22 @@ Two mechanical consequences, both of which are the point:
 
 ### Limits
 
-Existing limits apply unchanged to each write: 1,000 records per `insert`, 1,000 ids per `read_rows`,
-8 key fields per `upsert_by_key`, 100 `args` per filter or query, the delete match cap with `confirm`,
-the 32 MiB request body, 100 user-defined fields per table.
+Existing limits apply unchanged to each write: 1,000 records per `insert`, 8 key fields per
+`upsert_by_key`, the delete match cap with `confirm`, the 32 MiB request body
+(`internal/api/server.go`), 100 user-defined fields per table.
 
-Two are new, because a batch can otherwise be a way around limits that exist for a reason:
+**Write filters carry no `args` cap, and the batch must not add one.** The 100-`args` limit belongs to
+`query` (`internal/store/query.go:179`), search filters (`internal/store/search.go:154`) and
+`search_vector` (`internal/store/vector.go:59`) — none of which is a write. `updateAttempt`
+(`internal/store/update.go:70`) and `Delete` (`internal/store/search.go:368`) never test `len(args)`,
+their op schemas declare no `maxItems` on `args`, and `skill/dolmen.md` already scopes the cap to
+"`query` / search filter `args`". So a batch's `update`, `delete` and `upsert` writes have uncapped
+`args`, bounded in aggregate only by the 32 MiB request body — exactly as the single operations are. A
+cap invented for `batch` alone would be a wire-only divergence from the operations it wraps, which is
+the opposite of the derivation discipline in §2, and this note has already refused one such temptation
+in §11. If a cap on write args is wanted, it belongs in a change to the single operations first.
+
+Two limits are new, because a batch can otherwise be a way around limits that exist for a reason:
 
 | limit | value | why that number |
 | --- | --- | --- |
