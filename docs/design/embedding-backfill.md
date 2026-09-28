@@ -148,19 +148,21 @@ and a `subscribe` client sees the migration as the single change it already sees
 
 ## 8. Progress
 
-The first two bullets are **not implemented yet**; they land with the wire contract in the final
-slice, and nothing in the engine or on the wire promises them until then. A dry run today reports the
-total number of rows to embed, as it always has.
+All four shipped with the wire contract, except the last, which is closed as not planned.
 
-- The dry run's `embed_rows` becomes the number of rows still to embed, so it shrinks as a
-  backfill proceeds and a caller can poll with `dry_run: true`.
-- A new `staged_rows` counts rows already staged for this table's current text, so the two numbers
-  add up to the work.
-- A migration logs one info line per 10% of rows, with namespace, table, staged and total.
-  Implemented: the walk counts rows already staged, so a resumed migration reports against the whole
-  table rather than against what is left.
-- MCP progress notifications are out of scope: nothing emits notifications today, and adding an
-  emitter for one operation would make the transports disagree.
+- The dry run's `embed_rows` is the number of rows still to embed, so it shrinks as a backfill
+  proceeds and a caller can poll with `dry_run: true`.
+- `staged_rows` counts the rows an interrupted attempt already embedded whose text still matches, so
+  the two numbers add up to the rows the change will vectorize. The count is exact rather than
+  approximate: it is the same digest comparison the activation makes, page by page, scoped the way
+  the plan is, and only over the namespaces the caller can see.
+- A migration logs one info line per 10% of rows, with namespace, table, staged and total. The walk
+  counts rows already staged, so a resumed migration reports against the whole table rather than
+  against what is left.
+- MCP progress notifications are **not planned**. A `dry_run` already answers the question a
+  progress stream would, over both transports, and an emitter for one operation would make the
+  transports disagree — which this section is the reason for. See *Out of scope*.
+  [#502](https://github.com/lsm/dolmen/issues/502)
 
 ## 9. Unchanged paths
 
@@ -184,12 +186,29 @@ mistaken for a live one, because nothing outside activation writes `_embedding`.
 
 ## Out of scope
 
-- `update` and `upsert` still embed inside the write transaction on SQLite
-  (`internal/store/update.go`), so a provider round trip is held under the namespace writer.
-  PostgreSQL already embeds before its write transaction. [#501](https://github.com/lsm/dolmen/issues/501)
-- MCP progress notifications, and a progress channel on `/v1/migrate` at all, so a caller can
-  watch a long backfill instead of inferring it from a re-issue.
+Three things this design deliberately left to other work. All three have since been settled, and the
+settling changed this section rather than only closing the issues.
+
+- `update` and `upsert` embedded inside the write transaction on SQLite, so a provider round trip was
+  held under the namespace writer. They now embed before the writer is taken, the shape `insert`
+  already used in the same package, and re-check the version, embedding space, dimension and drop
+  generation inside the transaction, retrying if any of them moved. The count that decides whether to
+  embed is read before the writer, so the writer keeps the old behaviour for the case where its own
+  count disagrees with that one: it computes the vector rather than writing new text with
+  `_embedding` NULL. [#501](https://github.com/lsm/dolmen/issues/501),
+  [#509](https://github.com/lsm/dolmen/pull/509)
+- The two engines disagreed about a vectorize overtaken mid-backfill: SQLite re-planned and landed,
+  PostgreSQL conflicted. They now agree, and in the direction item 4 describes. A migration another
+  migration overtakes re-plans and lands; a table that was dropped and recreated under it is refused
+  with `not_found` and the replaced-table message, which is a different failure and stays one.
+  [#503](https://github.com/lsm/dolmen/issues/503),
+  [#508](https://github.com/lsm/dolmen/pull/508)
+- No live progress channel for a long backfill, on MCP or `/v1`. This one is closed as **not
+  planned** rather than shipped: a `dry_run` already reports `staged_rows` and `embed_rows` over both
+  transports, and those two add up to the whole table, so a caller that abandons a run can re-issue
+  and read the split rather than guess. Progress notifications on MCP alone would make the transports
+  disagree about the same operation, which item 8 rules out — a staged vector is deliberately
+  invisible to everything else, and a progress stream is a surface where a caller could watch a
+  half-finished backfill. If a live channel is ever wanted it has to be one contract over both
+  transports.
   [#502](https://github.com/lsm/dolmen/issues/502)
-- The two engines disagree about a vectorize that is overtaken mid-backfill: SQLite re-plans and
-  lands, PostgreSQL conflicts. Item 4 describes the SQLite behaviour, so that is the one to
-  converge on. [#503](https://github.com/lsm/dolmen/issues/503)
