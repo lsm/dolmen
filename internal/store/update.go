@@ -105,6 +105,10 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 		readTx.Rollback()
 		return UpsertResult{}, true, err
 	}
+	if err := scopeUsable(scope, sc); err != nil {
+		readTx.Rollback()
+		return UpsertResult{}, true, err
+	}
 	if gen, err = tableGen(ctx, readTx, table); err != nil {
 		readTx.Rollback()
 		return UpsertResult{}, true, err
@@ -119,9 +123,6 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 	}
 	readTx.Rollback()
 
-	if err := scopeUsable(scope, sc); err != nil {
-		return UpsertResult{}, true, err
-	}
 	for k := range set {
 		if sc.Field(k) == nil {
 			return UpsertResult{}, true, invalidf("unknown field %q on table %s (see describe_table)", k, table)
@@ -177,6 +178,7 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 		}
 	}
 
+	embedSpace, embedDim, version := sc.EmbedSpace, sc.EmbedDim, sc.Version
 	persistMeta := false
 	var vec []float32
 	if vf != nil && (preMatched > 0 || allowInsert) {
@@ -189,8 +191,6 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 		}
 	}
 
-	embedSpace, embedDim := sc.EmbedSpace, sc.EmbedDim
-	version := sc.Version
 	ctx, tx, txSpan, err := s.beginWrite(ctx, n)
 	if err != nil {
 		return UpsertResult{}, true, err

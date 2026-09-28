@@ -856,3 +856,47 @@ func TestAnUpdateWhoseTableMovesWhileItEmbedsRetries(t *testing.T) {
 		t.Fatalf("the row is %+v, want the text the retry wrote", rows.Rows)
 	}
 }
+
+func TestAnUpdateOnATableWithNoStampedDimensionStillLands(t *testing.T) {
+	st := openBackfillStore(t)
+	seedVectorizedDocs(t, st, "nodim", 1)
+	ctx := context.Background()
+	n, err := st.ns("nodim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, wtx, span, err := st.beginWrite(ctx, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc, err := loadSchema(ctx, wtx, "nodim", "docs")
+	if err != nil {
+		st.endWrite(wtx, span)
+		t.Fatal(err)
+	}
+	if sc.EmbedDim == 0 {
+		st.endWrite(wtx, span)
+		t.Fatal("the fixture did not stamp a dimension, so it proves nothing")
+	}
+	sc.EmbedDim = 0
+	if err := saveSchemaTx(ctx, wtx, "nodim", sc, int(sc.Version)-1, nil); err != nil {
+		st.endWrite(wtx, span)
+		t.Fatal(err)
+	}
+	if err := commitWrite(wtx, span); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Update(ctx, "nodim", "docs", "id = 1", nil, map[string]any{"body": "embedded against a table with no stamped dimension"}, Embedder{Identity: "test", Embed: fakeEmbed}, nil, Incarnation{}); err != nil {
+		t.Fatalf("an update on a table whose dimension is not stamped must land, not retry forever against its own re-check: %v", err)
+	}
+	rows, err := st.GetRows(ctx, "nodim", "docs", []int64{1}, nil, Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows.Rows) != 1 || rows.Rows[0]["body"] != "embedded against a table with no stamped dimension" {
+		t.Fatalf("the row is %+v, want the text the update set", rows.Rows)
+	}
+	if vec := liveEmbeddings(t, st, "nodim", "docs")[1]; len(vec) == 0 {
+		t.Fatal("the row carries no vector: the update landed without embedding")
+	}
+}
