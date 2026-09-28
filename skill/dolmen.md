@@ -540,7 +540,7 @@ To get a table's rows somewhere else, page `query` on `id`:
 last = 0
 while True:
     page = query(namespace="research",
-                 sql="SELECT * FROM findings WHERE id > ? ORDER BY id LIMIT 1000",
+                 sql="SELECT * FROM findings WHERE id > ? ORDER BY id",
                  args=[last])
     if not page.rows:
         break
@@ -557,8 +557,9 @@ one is never exported at all.
 
 A `truncated: true` page needs nothing special here. Take the last `id` you actually received, and the
 next call resumes after it — a page cut short by the row limit or the 32 MiB budget is just a shorter
-page. Stop when a page comes back empty. `LIMIT 1000` is the most `query` will return, so expect one
-call per thousand rows.
+page. Stop when a page comes back empty. Do not add `LIMIT` to the SQL — `query` takes the page size as its `limit`
+parameter and rejects the clause — and the default of 1,000 rows is also the most it will return, so
+expect one call per thousand rows.
 
 Two things this export cannot carry, which is why restoring from one is a re-import rather than a copy:
 
