@@ -3,10 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-
-	"net/http"
 
 	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/store"
@@ -295,16 +292,13 @@ func indexed(i int, err error) error {
 	if err == nil {
 		return nil
 	}
-	var apiErr *Error
-	if errors.As(err, &apiErr) {
-		return &Error{
-			Status:  apiErr.Status,
-			Code:    apiErr.Code,
-			Message: fmt.Sprintf("writes[%d]: %s", i, apiErr.Message),
-			Cause:   apiErr.Cause,
-		}
+	apiErr := wrapStoreErr(err)
+	return &Error{
+		Status:  apiErr.Status,
+		Code:    apiErr.Code,
+		Message: fmt.Sprintf("writes[%d]: %s", i, apiErr.Message),
+		Cause:   apiErr.Cause,
 	}
-	return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: fmt.Sprintf("writes[%d]: %s", i, err.Error()), Cause: err}
 }
 
 func (s *Server) authorizeBatch(ctx context.Context, ns string, writes []store.BatchWrite) error {

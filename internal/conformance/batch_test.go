@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -13,7 +14,7 @@ func batchDocs(t *testing.T, h *harness) {
 
 func batchData(t *testing.T, h *harness, body string) map[string]any {
 	t.Helper()
-	status, out := h.httpCall("batch", mustJSON(t, body))
+	status, out := h.httpCall("batch", json.RawMessage(mustJSON(t, body)))
 	if status != http.StatusOK {
 		t.Fatalf("/v1/batch failed: status %d %v", status, out)
 	}
@@ -93,7 +94,7 @@ func TestBatchOverHTTPNamesTheFailingWriteAndCommitsNothing(t *testing.T) {
 		t.Fatalf("error code %q, want the failing write's own class invalid_request", code)
 	}
 
-	rows := h.mustHTTP("query", mustJSON(t, `{"namespace":"acme","sql":"SELECT count(*) AS n FROM docs"}`))
+	rows := h.mustHTTP("query", json.RawMessage(mustJSON(t, `{"namespace":"acme","sql":"SELECT count(*) AS n FROM docs"}`)))
 	list, _ := rows["rows"].([]any)
 	if len(list) != 1 {
 		t.Fatalf("count query returned %v", list)
@@ -107,14 +108,14 @@ func TestBatchOverHTTPNamesTheFailingWriteAndCommitsNothing(t *testing.T) {
 func TestBatchOverHTTPPublishesTheWholeFeedOnce(t *testing.T) {
 	h := newHarness(t)
 	batchDocs(t, h)
-	head := nextCursorOf(t, h.mustHTTP("changes_since", mustJSON(t, `{"namespace":"acme"}`)))
+	head := nextCursorOf(t, h.mustHTTP("changes_since", json.RawMessage(mustJSON(t, `{"namespace":"acme"}`))))
 
 	batchResults(t, h, `{"namespace":"acme","writes":[
 		{"kind":"insert","table":"docs","records":[{"title":"one","body":"a"},{"title":"two","body":"b"}]},
 		{"kind":"update","table":"docs","filter":"title = 'one'","set":{"body":"edited"}}
 	]}`)
 
-	records := changesOf(t, h.mustHTTP("changes_since", mustJSON(t, `{"namespace":"acme","cursor":"`+head+`"}`)))
+	records := changesOf(t, h.mustHTTP("changes_since", json.RawMessage(mustJSON(t, `{"namespace":"acme","cursor":"`+head+`"}`))))
 	if len(records) != 3 {
 		t.Fatalf("the batch published %d change records, want 3 in one commit", len(records))
 	}

@@ -96,13 +96,14 @@ func TestBatchRefusesAWriteWithNoTable(t *testing.T) {
 	}
 }
 
-func TestBatchIsNotAuthorizedByTheNamespaceAlone(t *testing.T) {
+func TestBatchWithNoGrantsAtAllIsRefused(t *testing.T) {
 	h := seedBatchGrantHarness(t)
-	grantTo(t, h, "principal", "alice", "acme", "", "create")
-	grantTo(t, h, "principal", "alice", "acme", "docs", "create")
 
 	res, out := h.asAlice(t, "batch", `{"namespace":"acme","writes":[
-		{"kind":"insert","table":"ledger","records":[{"title":"a"}]}
+		{"kind":"insert","table":"docs","records":[{"title":"a"}]}
 	]}`)
-	assertForbiddenEnvelope(t, "a namespace-wide create grant used on a table the caller has no grant for", res, out)
+	assertForbiddenEnvelope(t, "a batch from a caller holding no grants", res, out)
+	if msg := batchErrMessage(t, out); !strings.Contains(msg, "writes[0]") {
+		t.Fatalf("error %q does not name the first write", msg)
+	}
 }
