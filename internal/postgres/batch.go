@@ -225,7 +225,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 	err := batchReplaced(s.write(ctx, ns, expected.NsGen, func(tx pgx.Tx, n namespace) error {
 		inner := withCarriedTx(ctx, tx, n)
 		wopts := store.WriteOpts{Owner: opts.Owner, TableWideRead: opts.TableWideRead}
-		dopts := store.DeleteOpts{Limit: opts.Limit, Confirm: opts.Confirm}
+		dopts := store.DeleteOpts{Limit: opts.Limit, Confirm: opts.Confirm, NoDryRunAdvice: true}
 		results := make([]store.BatchWriteResult, 0, len(writes))
 		var changes store.ChangeRange
 		var touched int64

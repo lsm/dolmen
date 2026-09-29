@@ -283,7 +283,7 @@ func (s *Store) writeUnlocked(ctx context.Context, name string, expected [16]byt
 		return err
 	}
 	if expected != [16]byte{} && expected != n.generation {
-		return fmt.Errorf("%w: %w", errNamespaceReplaced, fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, name))
+		return &replacedError{msg: fmt.Sprintf("%v: namespace %s was replaced; resolve its current state", store.ErrNotFound, name)}
 	}
 	if err := fn(tx, n); err != nil {
 		return err
@@ -292,6 +292,14 @@ func (s *Store) writeUnlocked(ctx context.Context, name string, expected [16]byt
 }
 
 var errNamespaceReplaced = errors.New("namespace was replaced")
+
+type replacedError struct{ msg string }
+
+func (e *replacedError) Error() string { return e.msg }
+
+func (e *replacedError) Is(target error) bool {
+	return target == errNamespaceReplaced || target == store.ErrNotFound
+}
 
 func (s *Store) write(ctx context.Context, name string, expected [16]byte, fn func(pgx.Tx, namespace) error) error {
 	if tx, n, ok := carriedFrom(ctx); ok {

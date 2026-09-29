@@ -383,7 +383,7 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 	}
 
 	wopts := WriteOpts{Owner: opts.Owner, TableWideRead: opts.TableWideRead}
-	dopts := DeleteOpts{Limit: opts.Limit, Confirm: opts.Confirm}
+	dopts := DeleteOpts{Limit: opts.Limit, Confirm: opts.Confirm, NoDryRunAdvice: true}
 	results := make([]BatchWriteResult, 0, len(writes))
 	var changes ChangeRange
 	touched := int64(0)

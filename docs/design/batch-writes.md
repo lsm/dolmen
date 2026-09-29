@@ -434,8 +434,14 @@ What bounds it:
   `migrate` and `wait_for`. Note this is a *server* limit: a batch that trips it is rolled back whole, so
   a caller cannot make it not-trip by trying again, only by sending less.
 
-What it does not bound, and this is the honest part: the provider. Embeddings are computed before the
-writer is taken (§6), so a slow model costs the caller latency but never blocks a concurrent writer.
+What it does not bound, and this is the honest part: the provider. A single write computes its embeddings
+before it takes the writer, so a slow model costs that write latency but never blocks a concurrent
+writer. A batch does not get that: it holds the writer for its whole duration, provider round trips
+included, and §6 explains why. A batch of 100 vectorized writes therefore holds the single SQLite
+writer for the sum of 100 provider calls as well as the writes themselves. The row budget bounds the
+rows and not the provider time, so `-op-timeout` is the only thing bounding the latter — which makes a
+provider-side stall a batch-wide stall, and means a caller who needs the writer back promptly should
+send fewer, smaller batches rather than one large one.
 
 Readers are unaffected throughout. WAL mode gives readers a snapshot that does not wait for the writer,
 which is why `changes_since` and `wait_for` stay responsive while a large batch commits.

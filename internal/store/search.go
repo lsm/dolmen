@@ -357,6 +357,8 @@ type DeleteOptions struct {
 	DryRun  bool
 	Limit   int
 	Confirm bool
+
+	NoDryRunAdvice bool
 }
 
 type DeleteResult struct {
@@ -461,7 +463,11 @@ func (s *Store) deleteWith(ctx context.Context, n *nsDB, nsName, table, where st
 		limit = int64(opts.Limit)
 	}
 	if matched > limit && !opts.Confirm {
-		return DeleteResult{}, true, invalidf("filter matched %d rows, exceeding the delete limit of %d; pass confirm: true to proceed or dry_run: true to preview", matched, limit)
+		advice := "pass confirm: true to proceed or dry_run: true to preview"
+		if opts.NoDryRunAdvice {
+			advice = "pass confirm: true to proceed"
+		}
+		return DeleteResult{}, true, invalidf("filter matched %d rows, exceeding the delete limit of %d; %s", matched, limit, advice)
 	}
 
 	if len(sc.FTSFields()) > 0 {
