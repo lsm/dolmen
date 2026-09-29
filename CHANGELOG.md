@@ -60,7 +60,7 @@
   `CGO_ENABLED=0` binary and what that does to `release.yml`, the append/position-delete/compaction
   write path and the namespace commit log the change feed needs, native engine-side full text and
   exact vector search, which parts of the shared conformance suite run against the engine and from
-  which slice, the `arrow-go` v18.6.0 pin and what keeps it from breaking, and the ten questions
+  which slice, the `arrow-go` v18.6.0 pin and what keeps it from breaking, and the twelve questions
   that are Marc's. No code, no behaviour change.
 
 - **An observability guide** (`docs/observability.md`): a runnable `docker compose` stack that

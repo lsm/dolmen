@@ -105,19 +105,39 @@ structural fact. That is exactly the mechanism the spec rejects, and it is stric
 what adapter #1 gets from the file.
 
 It is also cheaper than it sounds, because it inherits adapter #1's existing handle discipline:
-`store.Store` already opens at most `-max-open-namespaces` namespaces at once (default 128) and
-closes the least recently used unpinned one past that, and `TestEveryOperationReleasesItsNamespace`
-catches a missing unpin. The lakehouse engine reuses that shape: a namespace handle owns a DuckDB
-process, and the same LRU closes it. The costs are the ones that follow, stated plainly: process
-startup is milliseconds-to-tens-of-milliseconds, so a cold namespace's first `query` pays it; and
-each process holds its own memory. Both are bounded by the same knob and documented with it.
+`store.Store` already opens at most `-max-open-namespaces` namespaces at once
+(`DefaultMaxOpenNamespaces = 128`) and closes the least recently used unpinned one past that, and
+`TestEveryOperationReleasesItsNamespace` catches a missing unpin. The lakehouse engine reuses that
+shape: a namespace handle owns a DuckDB process, and the same LRU closes it.
 
-**Topology.** §0.6 requires the engine to declare its deployment topology through
-`EngineCapabilities`. The lakehouse declares **one dolmen process per data directory**, the same
-declaration SQLite makes. Two dolmen processes over one namespace directory would be two catalogs
-over one Parquet tree with no coordination between them, and Iceberg's optimistic concurrency
-would surface the conflict as `409` rather than as corruption — correct, but a poor answer to a
-deployment question that a capability field already exists to answer.
+One honest caveat on that reuse. `-max-open-namespaces` is currently a **SQLite-engine** knob —
+its help text says so, and it is absent from adapter #2's surface because Postgres holds
+connections in a pool rather than in per-namespace handles. Reusing it for a *process* count is a
+reuse in name only: the unit changes from an open file handle to a running process with its own
+memory, so the same default means something quite different. The plan keeps the knob and the LRU
+shape but expects the default to be **much lower** for this engine, and says so in the flag's help
+text, because a default of 128 processes is a different proposition from 128 file handles. The
+costs are the ones that follow: process startup is milliseconds-to-tens-of-milliseconds, so a cold
+namespace's first `query` pays it; and each process holds its own memory.
+
+**Topology.** §0.6 makes deployment topology an **engine-declared** property, and for this engine
+the declaration is **one dolmen process per data directory**, the same topology SQLite has. Two
+dolmen processes over one namespace directory would be two catalogs over one Parquet tree with no
+coordination between them, and Iceberg's optimistic concurrency would surface the conflict as
+`409` rather than as corruption — correct, but a poor answer to a question a declaration would
+have answered up front.
+
+There is a gap here the plan has to own rather than assume away. §0.6 says *engine-declared*
+without naming a channel, and `EngineCapabilities`
+([internal/store/engine.go](internal/store/engine.go)) has six fields — `vector_execution`,
+`ann_recall_bound`, `notifications`, `subscribe`, `query_dialect`, `filter_dialect` — **none of
+them topology**, and adapter #1 declares nothing there. So the lakehouse's topology is currently
+expressible only in prose, and making it machine-readable means adding a capability field, which is
+a contract-surface change: the `capabilities` op schema, the OpenAPI output, the MCP tool surface,
+and the conformance suite. None of that exists for adapter #1 or #2, so this is **new work with no
+precedent in the tree**, and it is not budgeted by any slice below. §10 Q11 asks Marc whether to
+add the field as part of this lane or to leave topology in the operator documentation the way both
+existing engines do.
 
 ### 2.2 How it starts, and how it is supervised
 
@@ -178,8 +198,9 @@ static binary gives up. Three limits, all set at spawn, all documented:
 - **Concurrency** — a per-namespace cap on concurrent statements, defaulting to something small
   (one DuckDB process is single-writer by nature; the cap bounds concurrent readers and the memory
   each costs). Pinned as a flag rather than hardcoded, like the other limits.
-- **Process count** — bounded by the existing `-max-open-namespaces`, which is already the thing
-  that decides how many namespaces are open at once. One knob, two effects, and the README says so.
+- **Process count** — bounded by `-max-open-namespaces`, the knob that already decides how many
+  namespaces are held at once, with a **much lower default on this engine** for the reason in §2.1:
+  the unit is a running process, not a file handle. One knob, two effects, and the README says so.
 
 None of these is a new concept in this codebase; all three follow the existing flag conventions.
 What is new is that they are ceilings on a **child process**, so the failure mode is a killed
@@ -291,10 +312,24 @@ allocator; Iceberg has no native equivalent. It is assigned inside the namespace
 serialization point (below), never as `max(id)+1` from a snapshot — that collides under concurrent
 writers and corrupts `read_rows`, change records, and idempotent replay. Adapter #1 gets this from
 `INTEGER PRIMARY KEY AUTOINCREMENT` and `LastInsertId`
-([internal/store/insert.go](internal/store/insert.go)); adapter #2 got it from a transactional
-counter on a namespace row rather than a sequence, because a sequence allocates at reserve time
-(§1.3 item 8). The lakehouse answer is the adapter #2 answer: a counter, allocated transactionally
-in the namespace's own SQLite catalog file, never at reserve time. Slice 6.
+([internal/store/insert.go](internal/store/insert.go)); adapter #2 declares
+`id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY`
+([internal/postgres/table.go](internal/postgres/table.go)) and reads the id back with `RETURNING`.
+
+The lakehouse has **neither mechanism**, which is the whole reason this is a problem. A Parquet
+file has no id column that the format generates, and the id has to be a *dolmen* value written
+into the row before it is committed. So the allocator is dolmen's own counter, allocated
+transactionally in the namespace's SQLite file. Note this is a different answer from adapter #2's,
+and deliberately so: adapter #2 could lean on an identity sequence because the database assigned
+the id inside the same transaction that inserted the row. The lakehouse has no such assignment
+point, so the allocator has to be one dolmen controls, and it is transactionally in the commit-log
+write (§4.3) so an id and its change record cannot come apart.
+
+The reserve-time hazard in §1.3 item 8 — a sequence allocating at reserve time, so two concurrent
+writers can reserve change positions 1 and 2 and commit in the opposite order — is a hazard for
+**change positions**, not row ids, and adapter #2 is explicit about the distinction
+([postgresql.md](postgresql.md): "PostgreSQL identity sequences assign row IDs only"). It applies
+unchanged to the change-sequence counter this lane also needs. Slice 6.
 
 **Idempotency atomicity.** The idempotency record — key, payload hash, assigned ids — commits in
 the **same** atomic serialization point as its rows, never as a separately committed metadata
@@ -517,11 +552,17 @@ error message that names none of dolmen's code. Five mechanisms, in order of how
    gate). A pin held back for compile-compatibility is exactly the kind of thing a vulnerability
    scanner will eventually flag, and when it does, the failure text should name the pin. Worth
    writing down now.
-3. **A `CGO_ENABLED=0` build assertion.** CI's `make build` is the invariant; the assertion that
-   matters specifically here is that nothing in the lakehouse import graph pulls cgo. The trial
-   verified this by size and by the absence of `runtime/cgo`, and the natural gate is a test that
-   walks the dependency graph — cheap, and it catches the day someone adds a cgo driver to reach
-   DuckDB "just for the query path", which is precisely the temptation this plan exists to close.
+3. **A `CGO_ENABLED=0` build assertion.** Worth being precise about what CI does today, because it
+   is not what one might assume: the `test` job runs `CGO_ENABLED=1 go test -race ./...`, and
+   `platform-smoke` runs `go test`. The `CGO_ENABLED=0` builds are in `make build`, `make release`
+   and the `Dockerfile` — i.e. they are exercised at **release** time, not on every pull request.
+   So the pure-Go invariant is currently asserted by the release job, and nothing in a pull request
+   would catch a cgo dependency until a release is cut. That is a pre-existing gap the lakehouse
+   makes more urgent, because the temptation it exists to close is exactly "add a cgo driver to
+   reach DuckDB for the query path". The assertion that matters is that nothing in the lakehouse
+   import graph pulls cgo, and the cheap form is a test walking the dependency graph for
+   `runtime/cgo` — cheap, and it fails on the pull request rather than at the tag. Whether to add
+   it, and whether to close the broader release-time-only gap, is §10 Q12.
 4. **Keep the dependency off everyone's build.** Adapter #2 learned this the hard way: importing
    `internal/postgres` from the root package put pgx and the embedded WASM PostgreSQL parser into
    every consumer's import graph, and the external-module example grew from 13.1 MB to 35.3 MB
@@ -648,3 +689,15 @@ is decided here.**
     meant to be recovered from Parquet alone is a real limitation. Whether that limitation is
     acceptable, or whether ids must be re-derivable from the table's data, is Marc's call and it
     shapes what `restore` would mean for this engine.
+11. **Should deployment topology become a capability field?** §0.6 calls it engine-declared and no
+    engine has anywhere to declare it: `EngineCapabilities` has six fields and none is topology,
+    and both adapter #1 and #2 declare it in prose only. Giving the lakehouse a machine-readable
+    topology means adding a field, which is a contract change (op schema, OpenAPI, MCP, conformance)
+    with no precedent in the tree. The plan states the topology in prose and asks rather than
+    quietly building a contract field inside a docs-first lane.
+12. **Should a `CGO_ENABLED=0` build gate land in CI?** Today the `test` job is `CGO_ENABLED=1 go
+    test -race` and the pure-Go builds happen at release time, so a cgo dependency introduced in a
+    pull request is caught by the release job rather than by the PR. The lakehouse raises the
+    stakes (the temptation being a cgo DuckDB driver for the query path) without causing the gap.
+    The plan proposes the dependency-graph test rather than a full build job, and asks whether
+    closing the gap belongs to this lane or its own.
