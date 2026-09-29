@@ -34,32 +34,32 @@ func (s *Store) Insert(ctx context.Context, nsName, table string, records []map[
 	if len(opts.IdempotencyKey) > MaxIdempotencyKeyLen {
 		return InsertResult{}, invalidf("idempotency key is %d bytes (max %d)", len(opts.IdempotencyKey), MaxIdempotencyKeyLen)
 	}
-	ids, changes, replayed, err := s.insert(ctx, nsName, table, records, emb, opts.IdempotencyKey, opts.Owner, DomainFor(opts, scope))
+	ids, changes, replayed, _, err := s.insert(ctx, nsName, table, records, emb, opts.IdempotencyKey, opts.Owner, DomainFor(opts, scope), nil)
 	if err != nil {
 		return InsertResult{}, err
 	}
 	return InsertResult{Ids: ids, Replayed: replayed, Changes: changes}, nil
 }
 
-func (s *Store) insert(ctx context.Context, nsName, table string, records []map[string]any, emb Embedder, idemKey, owner string, domain IdemDomain) (ids []int64, changes ChangeRange, replayed bool, err error) {
+func (s *Store) insert(ctx context.Context, nsName, table string, records []map[string]any, emb Embedder, idemKey, owner string, domain IdemDomain, shared *sharedWriteTx) (ids []int64, changes ChangeRange, replayed bool, done bool, err error) {
 	if len(records) == 0 {
-		return nil, ChangeRange{}, false, invalidf("no records given")
+		return nil, ChangeRange{}, false, true, invalidf("no records given")
 	}
 	if len(records) > MaxRecordsPerInsert {
-		return nil, ChangeRange{}, false, invalidf("too many records: %d > %d per call", len(records), MaxRecordsPerInsert)
+		return nil, ChangeRange{}, false, true, invalidf("too many records: %d > %d per call", len(records), MaxRecordsPerInsert)
 	}
-	n, err := s.ns(nsName)
+	n, release, err := s.nsFor(nsName, shared)
 	if err != nil {
-		return nil, ChangeRange{}, false, err
+		return nil, ChangeRange{}, false, true, err
 	}
-	defer n.unpin()
+	defer release()
 	normalized := make([]map[string]any, len(records))
 	for i, rec := range records {
 		nr := make(map[string]any, len(rec))
 		for k, v := range rec {
 			lk := strings.ToLower(k)
 			if _, exists := nr[lk]; exists {
-				return nil, ChangeRange{}, false, invalidf("record %d: fields %q and its case variant collapse to %q; use one spelling", i, k, lk)
+				return nil, ChangeRange{}, false, true, invalidf("record %d: fields %q and its case variant collapse to %q; use one spelling", i, k, lk)
 			}
 			nr[lk] = v
 		}
@@ -68,12 +68,15 @@ func (s *Store) insert(ctx context.Context, nsName, table string, records []map[
 	records = normalized
 
 	for attempt := 0; ; attempt++ {
-		if attempt >= 3 {
-			return nil, ChangeRange{}, false, invalidf("table schema changed concurrently; retry the insert")
-		}
-		ids, changes, replayed, done, err := s.insertAttempt(ctx, n, nsName, table, records, emb, idemKey, owner, domain)
+		ids, changes, replayed, done, err := s.insertAttempt(ctx, n, nsName, table, records, emb, idemKey, owner, domain, shared)
 		if done {
-			return ids, changes, replayed, err
+			return ids, changes, replayed, true, err
+		}
+		if shared != nil {
+			return nil, ChangeRange{}, false, false, nil
+		}
+		if attempt >= 2 {
+			return nil, ChangeRange{}, false, true, invalidf("table schema changed concurrently; retry the insert")
 		}
 	}
 }
@@ -87,20 +90,20 @@ func (s *Store) payloadHash(sc *schema.TableSchema, records []map[string]any) Id
 	return h
 }
 
-func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, owner string, domain IdemDomain) (ids []int64, changes ChangeRange, replayed bool, done bool, err error) {
+func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, owner string, domain IdemDomain, shared *sharedWriteTx) (ids []int64, changes ChangeRange, replayed bool, done bool, err error) {
 
-	gen, err := s.writerTableGen(ctx, n, table)
+	gen, err := s.genFor(ctx, n, shared, table)
 	if err != nil {
 		return nil, ChangeRange{}, false, true, err
 	}
-	sc, err := loadSchema(ctx, n.rw, nsName, table)
+	sc, err := loadSchema(ctx, preRead(n, shared), nsName, table)
 	if err != nil {
 		return nil, ChangeRange{}, false, true, err
 	}
 	var idemHash IdemHash
 	if idemKey != "" {
 		idemHash = s.payloadHash(sc, records)
-		if ids, found, err := lookupIdem(ctx, n.rw, table, idemKey, idemHash, domain); err != nil {
+		if ids, found, err := lookupIdem(ctx, preRead(n, shared), table, idemKey, idemHash, domain); err != nil {
 			return nil, ChangeRange{}, false, true, err
 		} else if found {
 			return ids, ChangeRange{}, true, true, nil
@@ -174,11 +177,12 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	}
 
 	fts := sc.FTSFields()
-	ctx, tx, txSpan, err := s.beginWrite(ctx, n)
+	ctx, wt, err := s.writeTxFor(ctx, n, shared)
 	if err != nil {
 		return nil, ChangeRange{}, false, true, err
 	}
-	defer s.endWrite(tx, txSpan)
+	defer s.releaseWrite(wt)
+	tx := wt.tx
 
 	scTx, err := loadSchema(ctx, tx, nsName, table)
 	if err != nil {
@@ -254,7 +258,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 				if rerr := tx.Rollback(); rerr != nil {
 					return nil, ChangeRange{}, false, true, rerr
 				}
-				ids, found, lerr := lookupIdem(ctx, n.rw, table, idemKey, idemHash, domain)
+				ids, found, lerr := lookupIdem(ctx, preRead(n, shared), table, idemKey, idemHash, domain)
 				if lerr != nil {
 					return nil, ChangeRange{}, false, true, lerr
 				}
@@ -266,11 +270,13 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			return nil, ChangeRange{}, false, true, err
 		}
 	}
-	if err := commitWrite(tx, txSpan); err != nil {
+	if err := s.commitOwned(wt); err != nil {
 		return nil, ChangeRange{}, false, true, err
 	}
 
-	s.notifyCommitted(nsName, table, changes)
+	if wt.own {
+		s.notifyCommitted(nsName, table, changes)
+	}
 	return ids, changes, false, true, nil
 }
 

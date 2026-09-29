@@ -150,6 +150,41 @@ that it is gap-free and in commit order.
 **One key for the whole batch**, at the top level, reusing `insert`'s existing mechanism (256 printable
 ASCII bytes, omitted for a non-idempotent batch).
 
+The record lives in a **namespace-level table, `_dolmen_batches`**, created with the namespace and
+lazily ensured for namespaces that predate it. This is storage the contract above does not settle, so
+it is worth being explicit about why a new table rather than a reuse of `_dolmen_idempotency_owned`.
+That table is already namespace-level and keyed `(table_name, owner, key)`, so a batch key could be
+stored under a reserved `table_name`; its value column is `ids_json`, however, which holds a list of row
+ids, and a batch's stored value is a whole per-write result array. Overloading it would trade a DDL
+entry for a column that misdescribes what it holds, in a table `insert` also writes — a wrong read
+corrupting a replay rather than merely confusing a reader. So `_dolmen_batches` sits beside it in
+`registryDDL`, and the two never share a row.
+
+**Batch records are internal, exactly as `insert`'s are.** They are absent from `list_tables`,
+`describe` and `query`, and nothing about a key ever becomes readable through a surface. `insert`'s keys
+already work this way in `_dolmen_idempotency_owned`; a batch key is caller-supplied data and exposing it
+would be a second way to read a request's contents out of band.
+
+**A batch record lists the tables its batch wrote to, and dropping any of them retires the key.** The
+tables are kept beside the record in `_dolmen_batch_tables(owner, key, table_name)`, one row per
+distinct table, written in the same transaction as the record and the rows. `drop_table` then deletes
+the record in the same cleanup pass that already drops `_dolmen_idempotency_owned`,
+`internal/store/lifecycle.go:284-290` — so the rule is the one `insert`'s keys already follow, and a
+stored result never outlives a table it describes. A batch over two tables where one is dropped stops
+replaying, because half of what the stored result reports no longer exists.
+
+**There is no time-based expiry and no new setting.** A record is kept until one of its tables is
+dropped, and namespace teardown needs no help either: `DropNamespace` removes the namespace's file, so
+both tables leave with it. Choosing a policy later means adding one condition to
+`purgeBatchRecordsForTable` in `internal/store/batch.go`, which is the only place that deletes a batch
+record.
+
+One correction to a detail recorded earlier in this section, so the next reader does not hunt in the
+wrong file: this cleanup is **not** in `internal/store/idempotency.go`. The per-table
+`DELETE FROM _dolmen_idempotency_owned` that it sits beside is in `drop_table`'s loop in
+`internal/store/lifecycle.go`; the delete in `idempotency.go` is part of `purgeSecretIdempotencyTx`, a
+one-time migration that does not run on a table drop.
+
 - A replay with the same key and the same body returns the **stored result** — the whole per-write
   result array — and writes nothing, exactly as `insert` replays ids.
 - The same key with a different body is a `conflict`, as with `insert`.
@@ -228,6 +263,73 @@ Phase 1, outside the writer: read each table's schema, embed space and dimension
 slow or failing provider is absorbed — the writer is not held across a provider round trip, which is the
 same property #501 and #509 established for the single operations. `delete` is deliberately absent from
 that list, for the reason in the paragraph below.
+
+**A batch does not get phase 1, and the note has to say so rather than let §9 imply it does.** Phase 1
+exists to keep the writer free while a provider is called, and it works for a single write because
+`insertAttempt` and `updateAttempt` embed *before* they call `beginWrite`. A batch holds one transaction
+around every write, so by the time the first write runs, that transaction is already open — and each
+write's embedding happens inside its own attempt, inside it. Every provider round trip in a batch
+therefore happens with the single writer held.
+
+The alternative would be a pre-pass that loads each table's schema and calls the provider for every
+vectorized write's text before the transaction opens. It is not in this slice, and the reason is
+specific rather than incidental: the text each write embeds is chosen *inside* its attempt, from that
+table's schema and the write's own fields. A pre-pass would have to reproduce that choice for five write
+kinds, and a pre-pass that selects different text than the attempt silently embeds the wrong vector —
+a correctness bug that no test in this slice would catch, because each is individually correct. Doing it
+properly means moving text selection out of the attempts into something both paths call, which is a
+refactor of the single operations and therefore its own change.
+
+What this costs is bounded and worth stating: a batch's writer hold includes its provider time, so a
+batch of 100 vectorized writes holds the single SQLite writer for the sum of 100 provider round trips
+rather than the sum of the writes alone. §9's row budget bounds the *rows*, not the provider time, and
+`-op-timeout` is the only thing bounding the latter. A caller who needs the writer back promptly should
+send fewer, smaller batches. Making the provider round trips fall outside the writer is the first thing
+to revisit if that proves to matter in practice, and the shape to reach for is a shared
+select-then-embed helper that both the attempts and a batch pre-pass call — not a second copy of the
+selection logic.
+
+**A batch's phase 2 re-check cannot fire on either engine, for a different reason on each.** §6 asks
+for an in-transaction re-check of each table's version, embedding space, dimension and drop generation,
+because a single write reads its plan before it takes the writer and re-reads inside. A batch does the
+re-read too, and on both engines it has nothing to compare against — but for different reasons, and
+neither of them is the one an earlier draft of this paragraph gave.
+
+On **SQLite** the re-read runs against the *same transaction the plan was read in*, so it compares the
+snapshot with itself. The batch also holds the single writer from before it reads anything, so no
+migration or drop can interleave.
+
+On **PostgreSQL** the re-read is a separate statement under READ COMMITTED, so a concurrent change
+*would* be visible if one could commit. It cannot: every write, `migrate` included, takes
+`SELECT ... FOR NO KEY UPDATE` on the namespace row (`internal/postgres/catalog.go:242`), and the batch
+holds that row lock from its first statement until it commits. `FOR NO KEY UPDATE` self-conflicts, so a
+second writer cannot commit while the batch holds it. The lock, not the snapshot, is what makes the
+re-check unfireable here.
+
+Two consequences worth being explicit about. First, `errBatchRetry` is defensive on both engines today:
+it is the correct thing for a write to return rather than retry itself inside a batch, but nothing
+reaches it, and that is a property of the locking rather than an accident. Second, if a second engine
+ever arrives whose isolation does not let a batch pin its namespace, the re-check becomes live and the
+batch's whole-batch retry is what will handle it — which is why the retry exists even though it is
+currently unreachable.
+
+The property the re-check exists to protect is therefore established some other way on both engines,
+and the thing worth pinning is the one they share: every write in a batch runs on one transaction, so a
+later write matches the rows an earlier write in the same batch just inserted. That cannot happen if
+planning used a second connection, and a stale read would silently break it.
+
+So there is no separate test for the re-check, on either engine, and a test written to try would pass
+vacuously. What would be worth having is a test that the *lock* holds — that a concurrent migrate or
+drop cannot complete while a batch is open — because that is the property actually doing the work, and
+nothing currently pins it.
+
+**A batch carries a namespace incarnation, not a table one.** `Incarnation` is table-scoped
+(`internal/store/scope.go:67` rejects any `want.Table` that is not the table being written), and a
+batch has no single table. So `batch` takes the namespace generation and refuses a table incarnation
+with a message that says why. That is not a weaker check than the single operations get, because every
+write still re-reads its own table's version, embed space, dimension and drop generation inside the
+transaction — which is phase 2 below, and which is where the per-write safety actually lives. A
+namespace generation that moved is reported as a `conflict` naming the namespace.
 
 **One write kind cannot be counted outside the writer, and the note has to say so rather than pretend
 otherwise.** `update` and `upsert` do pre-count: `updateOrUpsert` has its `preMatched` in hand before it
@@ -340,8 +442,14 @@ What bounds it:
   `migrate` and `wait_for`. Note this is a *server* limit: a batch that trips it is rolled back whole, so
   a caller cannot make it not-trip by trying again, only by sending less.
 
-What it does not bound, and this is the honest part: the provider. Embeddings are computed before the
-writer is taken (§6), so a slow model costs the caller latency but never blocks a concurrent writer.
+What it does not bound, and this is the honest part: the provider. A single write computes its embeddings
+before it takes the writer, so a slow model costs that write latency but never blocks a concurrent
+writer. A batch does not get that: it holds the writer for its whole duration, provider round trips
+included, and §6 explains why. A batch of 100 vectorized writes therefore holds the single SQLite
+writer for the sum of 100 provider calls as well as the writes themselves. The row budget bounds the
+rows and not the provider time, so `-op-timeout` is the only thing bounding the latter — which makes a
+provider-side stall a batch-wide stall, and means a caller who needs the writer back promptly should
+send fewer, smaller batches rather than one large one.
 
 Readers are unaffected throughout. WAL mode gives readers a snapshot that does not wait for the writer,
 which is why `changes_since` and `wait_for` stay responsive while a large batch commits.
@@ -395,7 +503,11 @@ that has code.
 
 1. **This note.** No code.
 2. **The engines.** `Batch` on SQLite and PostgreSQL, with engine tests for atomicity, the single feed
-   commit, idempotent replay, the embedding re-check and a failing write leaving nothing behind.
+   commit, idempotent replay, a failing write leaving nothing behind, the two new caps at the cases that
+   distinguish them from the per-call limits, and a later write matching the rows an earlier write in the
+   same batch inserted. **Not** a separate test for the embedding re-check: §6 explains why it cannot
+   fail on SQLite and why it is a follow-up on PostgreSQL, so naming it here would promise a vacuous
+   one.
 3. **The wire.** The `batch` entry in `api.Ops` with derived schemas, its `toolAnnotations`, the
    per-write `authRules` dispatcher, the OpenAPI output, conformance over `/v1` and MCP on both
    engines, and `skill/dolmen.md` and the README.

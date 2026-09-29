@@ -82,6 +82,73 @@ func (s *Store) endWrite(tx *sql.Tx, w *writeSpan) {
 	w.span.End()
 }
 
+type sharedWriteTx struct {
+	tx   *sql.Tx
+	span *writeSpan
+	own  bool
+	ns   *nsDB
+}
+
+func (s *Store) nsFor(nsName string, shared *sharedWriteTx) (*nsDB, func(), error) {
+	if shared != nil && shared.ns != nil {
+		return shared.ns, func() {}, nil
+	}
+	n, err := s.ns(nsName)
+	if err != nil {
+		return nil, nil, err
+	}
+	return n, n.unpin, nil
+}
+
+func (s *Store) writeTxFor(ctx context.Context, n *nsDB, shared *sharedWriteTx) (context.Context, *sharedWriteTx, error) {
+	if shared != nil {
+		return ctx, shared, nil
+	}
+	ctx, tx, span, err := s.beginWrite(ctx, n)
+	if err != nil {
+		return ctx, nil, err
+	}
+	return ctx, &sharedWriteTx{tx: tx, span: span, own: true}, nil
+}
+
+func (s *Store) releaseWrite(w *sharedWriteTx) {
+	if w.own {
+		s.endWrite(w.tx, w.span)
+	}
+}
+
+func (s *Store) commitOwned(w *sharedWriteTx) error {
+	if !w.own {
+		return nil
+	}
+	return commitWrite(w.tx, w.span)
+}
+
+func preRead(n *nsDB, shared *sharedWriteTx) rowQuerier {
+	if shared != nil {
+		return shared.tx
+	}
+	return n.rw
+}
+
+func preCountOn(ctx context.Context, n *nsDB, shared *sharedWriteTx) (rowQuerier, func(), error) {
+	if shared != nil {
+		return shared.tx, func() {}, nil
+	}
+	tx, err := n.ro.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, nil, err
+	}
+	return tx, func() { tx.Rollback() }, nil
+}
+
+func (s *Store) genFor(ctx context.Context, n *nsDB, shared *sharedWriteTx, table string) (int64, error) {
+	if shared != nil {
+		return tableGen(ctx, shared.tx, table)
+	}
+	return s.writerTableGen(ctx, n, table)
+}
+
 func (s *Store) writerConn(ctx context.Context, n *nsDB) (*sql.Conn, error) {
 	if !s.tr.On() {
 		return n.rw.Conn(ctx)

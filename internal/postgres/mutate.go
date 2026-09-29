@@ -273,6 +273,9 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 		if !retry {
 			return result, nil
 		}
+		if inBatch(ctx) {
+			return store.InsertResult{}, errBatchRetry
+		}
 	}
 	return store.InsertResult{}, fmt.Errorf("%w: table schema changed concurrently; retry the mutation", store.ErrInvalid)
 }
@@ -352,7 +355,11 @@ func (s *Store) deleteRows(ctx context.Context, ns, table, filter string, args [
 			limit = int64(opts.Limit)
 		}
 		if result.Matched > limit && !opts.Confirm {
-			return fmt.Errorf("%w: filter matched %d rows, exceeding the delete limit of %d; pass confirm: true to proceed or dry_run: true to preview", store.ErrInvalid, result.Matched, limit)
+			advice := "pass confirm: true to proceed or dry_run: true to preview"
+			if opts.NoDryRunAdvice {
+				advice = "pass confirm: true to proceed"
+			}
+			return fmt.Errorf("%w: filter matched %d rows, exceeding the delete limit of %d; %s", store.ErrInvalid, result.Matched, limit, advice)
 		}
 		if len(ids) == 0 {
 			return nil

@@ -65,6 +65,8 @@ type Engine interface {
 
 	Delete(ctx context.Context, ns, table string, filter string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation) (DeleteResult, error)
 
+	Batch(ctx context.Context, ns string, writes []BatchWrite, opts BatchOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (BatchResult, error)
+
 	ChangesSince(ctx context.Context, ns, table string, from Cursor, nsGen [16]byte, scope *RowScope, scopeIncarnation Incarnation, page Page) ([]ChangeRecord, Cursor, error)
 
 	Listen(ctx context.Context, ns, table string, from Cursor, nsGen [16]byte, liveAuthz func(table string) (scope *RowScope, inc Incarnation, ok bool), notify func(ChangeRecord), closed func(cause error)) (*ChangeReplay, func(), error)

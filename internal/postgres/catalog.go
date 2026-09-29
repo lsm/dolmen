@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -139,6 +140,16 @@ func (s *Store) bootstrap(ctx context.Context) error {
  from_version integer NOT NULL, to_version integer NOT NULL, changes_json text NOT NULL,
  at text NOT NULL DEFAULT to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
  PRIMARY KEY(namespace,table_name,drop_generation,id))`,
+		"CREATE TABLE IF NOT EXISTS " + s.relation("batches") + ` (
+ namespace text NOT NULL REFERENCES ` + s.relation("namespaces") + `(name) ON DELETE CASCADE,
+ owner text NOT NULL, key text NOT NULL,
+ payload_hash text NOT NULL, result_json text NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ PRIMARY KEY(namespace,owner,key))`,
+		"CREATE TABLE IF NOT EXISTS " + s.relation("batch_tables") + ` (
+ namespace text NOT NULL REFERENCES ` + s.relation("namespaces") + `(name) ON DELETE CASCADE,
+ owner text NOT NULL, key text NOT NULL, table_name text NOT NULL,
+ PRIMARY KEY(namespace,owner,key,table_name))`,
 	} {
 		if _, err := tx.Exec(ctx, stmt); err != nil {
 			return err
@@ -272,7 +283,7 @@ func (s *Store) writeUnlocked(ctx context.Context, name string, expected [16]byt
 		return err
 	}
 	if expected != [16]byte{} && expected != n.generation {
-		return fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, name)
+		return &replacedError{msg: fmt.Sprintf("%v: namespace %s was replaced; resolve its current state", store.ErrNotFound, name)}
 	}
 	if err := fn(tx, n); err != nil {
 		return err
@@ -280,7 +291,20 @@ func (s *Store) writeUnlocked(ctx context.Context, name string, expected [16]byt
 	return tx.Commit(ctx)
 }
 
+var errNamespaceReplaced = errors.New("namespace was replaced")
+
+type replacedError struct{ msg string }
+
+func (e *replacedError) Error() string { return e.msg }
+
+func (e *replacedError) Is(target error) bool {
+	return target == errNamespaceReplaced || target == store.ErrNotFound
+}
+
 func (s *Store) write(ctx context.Context, name string, expected [16]byte, fn func(pgx.Tx, namespace) error) error {
+	if tx, n, ok := carriedFrom(ctx); ok {
+		return fn(tx, n)
+	}
 	done, err := s.begin(ctx)
 	if err != nil {
 		return err
@@ -299,7 +323,7 @@ func (s *Store) write(ctx context.Context, name string, expected [16]byte, fn fu
 		return err
 	}
 	if expected != [16]byte{} && expected != n.generation {
-		return fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, name)
+		return &replacedError{msg: fmt.Sprintf("%v: namespace %s was replaced; resolve its current state", store.ErrNotFound, name)}
 	}
 	if err := fn(tx, n); err != nil {
 		return err

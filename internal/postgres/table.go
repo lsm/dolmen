@@ -57,11 +57,38 @@ func (s *Store) read(ctx context.Context, name string, fn func(pgx.Tx, namespace
 	return s.readMode(ctx, name, false, fn)
 }
 
+type carriedTx struct {
+	tx pgx.Tx
+	n  namespace
+}
+
+type carriedKey struct{}
+
+func withCarriedTx(ctx context.Context, tx pgx.Tx, n namespace) context.Context {
+	return context.WithValue(ctx, carriedKey{}, carriedTx{tx: tx, n: n})
+}
+
+func carriedFrom(ctx context.Context) (pgx.Tx, namespace, bool) {
+	c, ok := ctx.Value(carriedKey{}).(carriedTx)
+	if !ok {
+		return nil, namespace{}, false
+	}
+	return c.tx, c.n, true
+}
+
+func inBatch(ctx context.Context) bool {
+	_, _, ok := carriedFrom(ctx)
+	return ok
+}
+
 func (s *Store) readOnly(ctx context.Context, name string, fn func(pgx.Tx, namespace) error) error {
 	return s.readMode(ctx, name, true, fn)
 }
 
 func (s *Store) readMode(ctx context.Context, name string, readOnly bool, fn func(pgx.Tx, namespace) error) error {
+	if tx, n, ok := carriedFrom(ctx); ok {
+		return fn(tx, n)
+	}
 	done, err := s.begin(ctx)
 	if err != nil {
 		return err
@@ -319,6 +346,9 @@ func (s *Store) DropTable(ctx context.Context, ns, table string, expected store.
 			return err
 		}
 		if _, err := tx.Exec(ctx, "DELETE FROM "+s.relation("migrations")+" WHERE namespace=$1 AND table_name=$2", ns, table); err != nil {
+			return err
+		}
+		if err := s.purgeBatchRecordsForTable(ctx, tx, ns, table); err != nil {
 			return err
 		}
 		_, err = tx.Exec(ctx, "UPDATE "+s.relation("tables")+" SET active=false, physical=NULL, drop_generation=drop_generation+1 WHERE namespace=$1 AND name=$2", ns, table)

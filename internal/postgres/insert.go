@@ -356,6 +356,9 @@ func (s *Store) insertRows(ctx context.Context, ns, table string, records []map[
 		if !retry {
 			return result, nil
 		}
+		if inBatch(ctx) {
+			return store.InsertResult{}, errBatchRetry
+		}
 	}
 	return store.InsertResult{}, fmt.Errorf("%w: table schema changed concurrently; retry the insert", store.ErrInvalid)
 }
