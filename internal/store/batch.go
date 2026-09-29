@@ -113,6 +113,18 @@ func fingerprintAny(k *secret.Keyring, v any) any {
 	}
 }
 
+func lowerRecordKeys(records []map[string]any) []map[string]any {
+	out := make([]map[string]any, len(records))
+	for i, rec := range records {
+		nr := make(map[string]any, len(rec))
+		for k, v := range rec {
+			nr[strings.ToLower(k)] = v
+		}
+		out[i] = nr
+	}
+	return out
+}
+
 func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName string, writes []BatchWrite) (IdemHash, error) {
 	schemas := make(map[string]*schema.TableSchema, len(writes))
 	secrets := false
@@ -135,7 +147,7 @@ func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName strin
 			c := BatchWrite{Kind: w.Kind, Table: w.Table, On: w.On, Filter: w.Filter, Records: w.Records, Args: w.Args, Set: w.Set}
 			if secrets {
 				sc := schemas[w.Table]
-				c.Records = FingerprintSecrets(k, sc, w.Records)
+				c.Records = FingerprintSecrets(k, sc, lowerRecordKeys(w.Records))
 				c.Args, _ = fingerprintAny(k, w.Args).([]any)
 				if m, ok := fingerprintAny(k, w.Set).(map[string]any); ok {
 					c.Set = m

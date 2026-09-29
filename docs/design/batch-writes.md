@@ -289,31 +289,39 @@ to revisit if that proves to matter in practice, and the shape to reach for is a
 select-then-embed helper that both the attempts and a batch pre-pass call — not a second copy of the
 selection logic.
 
-**A batch's phase 2 re-check is engine-dependent, and only one engine can fail it.** §6 asks for an
-in-transaction re-check of each table's version, embedding space, dimension and drop generation,
-because a single write reads its plan before it takes the writer and re-reads inside. What a batch does
-with that re-read depends on what the engine's isolation gives it.
+**A batch's phase 2 re-check cannot fire on either engine, for a different reason on each.** §6 asks
+for an in-transaction re-check of each table's version, embedding space, dimension and drop generation,
+because a single write reads its plan before it takes the writer and re-reads inside. A batch does the
+re-read too, and on both engines it has nothing to compare against — but for different reasons, and
+neither of them is the one an earlier draft of this paragraph gave.
 
 On **SQLite** the re-read runs against the *same transaction the plan was read in*, so it compares the
-snapshot with itself and is satisfied by construction. The batch also takes the single writer before it
-reads anything, so no migration or drop can interleave between its plan and its commit. No test can
-make that re-check fail, because there is nothing to fail, and a test written to try would be vacuous.
+snapshot with itself. The batch also holds the single writer from before it reads anything, so no
+migration or drop can interleave.
 
-On **PostgreSQL** the re-read is a separate statement and the transaction is READ COMMITTED, so a
-concurrent `migrate` landing between the read phase and the write phase *is* visible to it. The
-re-check fires, the write reports that it must be retried rather than retrying itself, and the whole
-batch rolls back and re-runs — which is the behaviour §6 specifies, and the reason the retry belongs to
-the batch rather than the write.
+On **PostgreSQL** the re-read is a separate statement under READ COMMITTED, so a concurrent change
+*would* be visible if one could commit. It cannot: every write, `migrate` included, takes
+`SELECT ... FOR NO KEY UPDATE` on the namespace row (`internal/postgres/catalog.go:242`), and the batch
+holds that row lock from its first statement until it commits. `FOR NO KEY UPDATE` self-conflicts, so a
+second writer cannot commit while the batch holds it. The lock, not the snapshot, is what makes the
+re-check unfireable here.
 
-The property the re-check exists to protect is therefore established differently on each engine, and
-the thing worth pinning is the one both share: every write in a batch runs on one transaction, so a
+Two consequences worth being explicit about. First, `errBatchRetry` is defensive on both engines today:
+it is the correct thing for a write to return rather than retry itself inside a batch, but nothing
+reaches it, and that is a property of the locking rather than an accident. Second, if a second engine
+ever arrives whose isolation does not let a batch pin its namespace, the re-check becomes live and the
+batch's whole-batch retry is what will handle it — which is why the retry exists even though it is
+currently unreachable.
+
+The property the re-check exists to protect is therefore established some other way on both engines,
+and the thing worth pinning is the one they share: every write in a batch runs on one transaction, so a
 later write matches the rows an earlier write in the same batch just inserted. That cannot happen if
 planning used a second connection, and a stale read would silently break it.
 
-So: no separate test for the re-check on SQLite, because it cannot fail; and on PostgreSQL a
-deterministic test needs a hook in the migration path to land a schema change at a chosen statement
-boundary. The existing `openStoreBehindAfterQuery` lever provides that for SQLite's driver, and there
-is no PostgreSQL equivalent yet. That is a follow-up, and worth having before a second engine joins.
+So there is no separate test for the re-check, on either engine, and a test written to try would pass
+vacuously. What would be worth having is a test that the *lock* holds — that a concurrent migrate or
+drop cannot complete while a batch is open — because that is the property actually doing the work, and
+nothing currently pins it.
 
 **A batch carries a namespace incarnation, not a table one.** `Incarnation` is table-scoped
 (`internal/store/scope.go:67` rejects any `want.Table` that is not the table being written), and a
