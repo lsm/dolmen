@@ -229,6 +229,7 @@ func decodeBatchWrites(raw []json.RawMessage) ([]store.BatchWrite, error) {
 			return nil, badRequest("writes[%d]: %s", i, err.Error())
 		}
 		w.Kind = kind
+		w.Table = normTable(w.Table)
 		out = append(out, w)
 	}
 	return out, nil
@@ -370,6 +371,9 @@ func batchFunc(ctx context.Context, s *Server, body []byte) (any, error) {
 	}
 	opts := store.BatchOpts{Owner: s.writeOwner(ctx)}
 	if top.IdempotencyKey != nil {
+		if *top.IdempotencyKey == "" {
+			return nil, badRequest("idempotency_key is empty; omit the field for a batch that should not be replayable, because an empty key would silently make a retry apply every write a second time")
+		}
 		opts.IdempotencyKey = *top.IdempotencyKey
 	}
 	if top.Limit != nil {
