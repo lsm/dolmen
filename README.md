@@ -285,8 +285,8 @@ $env:DOLMEN_EMBED_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-
 
 Whichever provider is configured, `describe_server` reports its status read-only over both `/v1`
 and MCP — provider, model, the identity that pins vectorized tables, whether server-side embedding
-is usable, and (local only) whether the model is cached (`model_cached`) — so the active provider
-is visible without attempting a write. `usable` is
+is usable, and (local only) what the next vectorized write will meet (`model_state`) — so the
+active provider is visible without attempting a write. `usable` is
 configuration status only: the provider is not called, so an endpoint that is down or rejects its
 credentials still fails at first use, not here.
 
@@ -392,10 +392,12 @@ curl -s localhost:8790/v1/search_vector -H 'Content-Type: application/json' -d '
 ```
 
 Note that `describe_server`'s `usable` is configuration-only — it is true whether or not the cache
-actually holds the model — while `model_cached` (local provider) does check the cache on disk:
-`true` means the weights are complete and the first vectorized write needs no download; `false`
-means that first operation downloads the model from the Hugging Face Hub (or, with
-`DOLMEN_EMBED_MODEL` naming a directory, fails until the directory is fixed). The round-trip above
+actually holds the model — while `model_state` (local provider) does check the cache on disk, and
+says which of three things the next vectorized write will meet: `cached` means the weights are
+complete and nothing is downloaded; `download_on_first_use` is an ordinary first run, where that
+operation downloads the model from the Hugging Face Hub and can take ten seconds or more; and
+`incomplete` means `DOLMEN_EMBED_MODEL` names a model directory that is not complete, which no
+download repairs and an operator has to fix. The round-trip above
 remains the end-to-end verification: with `huggingface.co` unreachable and the cache correctly
 pre-seeded, the insert and the `search_vector(text=...)` load the model from disk; a missing or
 incomplete cache fails at that first operation with the offline remediations in the error message.

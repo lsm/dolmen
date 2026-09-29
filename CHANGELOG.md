@@ -4,6 +4,28 @@
 
 ### Fixed
 
+- **`describe_server` says what the next vectorized write will meet, instead of a boolean that reads
+  as a fault.** `model_cached: false` on a server that has never served a vectorized write is an
+  ordinary first run — the model is a Hugging Face model that first use downloads — but in
+  isolation it reads as "the embedding model is broken or missing". A cold-start trial with no
+  network took it as the service's largest risk and planned around a failure that did not happen,
+  and the very next call downloaded the model and succeeded. The boolean also conflated two states
+  that need opposite responses: a model that will download itself on first use, and a
+  `DOLMEN_EMBED_MODEL` directory that is incomplete and that no download repairs. The field is now
+  `model_state`, with three values a caller can branch on without reading prose: `cached` (the
+  weights are complete, nothing is downloaded), `download_on_first_use` (a normal cold start, which
+  can take ten seconds or more and can fail transiently — retry, or pre-seed the cache), and
+  `incomplete` (an operator has to fix or replace the directory). The value is declared as an enum
+  in the published output schema, so a caller reading the schema sees the three states without
+  reading the skill, and the README and both skill documents describe the same three. The field is
+  present for the `local` provider exactly where `model_cached` was, and absent for `none` and
+  `openai`. `usable` is untouched: it still answers "will a vectorized write work", the question it
+  was added for, and it is still true in the `download_on_first_use` state. A caller that read
+  `model_cached` should read `model_state` instead: `model_cached: true` is `model_state:
+  "cached"`, and its `false` is now one of the two other states rather than one undifferentiated
+  one. The startup warning picks its message from the same value, so the log and the operation
+  cannot disagree about which case applies.
+
 - **`wait_for` answers a page when a read runs out of its budget, even on the first attempt.** A read
   that overran the loop's own budget was supposed to answer the documented empty page, but that only
   happened once one read had already succeeded: the first attempt's failure was returned as an

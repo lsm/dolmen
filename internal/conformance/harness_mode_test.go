@@ -3,9 +3,11 @@ package conformance
 import (
 	"net/http"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/embed"
 )
 
-const wantDescribeServerOff = `{"data":{"embedding":{"identity":"conformance|fake|v1","model":"fake-model","provider":"conformance","usable":true}},"ok":true}
+const wantDescribeServerOff = `{"data":{"embedding":{"identity":"conformance|fake|v1","model":"fake-model","model_state":"download_on_first_use","provider":"conformance","usable":true}},"ok":true}
 `
 
 func assertDescribeServerShape(t *testing.T, h *harness) {
@@ -65,10 +67,11 @@ func TestHarnessModeOffIgnoresIdentity(t *testing.T) {
 	}
 	assertJSONEqual(t, "describe_server as "+id.principal+" over MCP", res.structured(), map[string]any{
 		"embedding": map[string]any{
-			"provider": "conformance",
-			"usable":   true,
-			"model":    "fake-model",
-			"identity": "conformance|fake|v1",
+			"provider":    "conformance",
+			"usable":      true,
+			"model":       "fake-model",
+			"identity":    "conformance|fake|v1",
+			"model_state": embed.ModelStateDownloadOnFirstUse,
 		},
 	})
 

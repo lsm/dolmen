@@ -43,6 +43,8 @@ func (p *fakeProvider) Name() string      { return "conformance" }
 func (p *fakeProvider) Identity() string  { return "conformance|fake|v1" }
 func (p *fakeProvider) ModelName() string { return "fake-model" }
 
+func (p *fakeProvider) ModelState() string { return embed.ModelStateDownloadOnFirstUse }
+
 func (p *fakeProvider) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	p.mu.Lock()
 	p.calls++

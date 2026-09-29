@@ -65,18 +65,26 @@ func (l *Local) Identity() string {
 
 func (l *Local) HubModel() bool { return localModelIDRe.MatchString(l.Model) }
 
-func (l *Local) Cached() bool {
+const (
+	ModelStateCached             = "cached"
+	ModelStateDownloadOnFirstUse = "download_on_first_use"
+	ModelStateIncomplete         = "incomplete"
+)
+
+func (l *Local) ModelState() string {
 	if l.Open != nil {
-		return true
+		return ModelStateCached
 	}
 	if l.HubModel() {
-		return seededCacheDir(l.CacheRoot, l.Model) != ""
+		if seededCacheDir(l.CacheRoot, l.Model) != "" {
+			return ModelStateCached
+		}
+		return ModelStateDownloadOnFirstUse
 	}
-
-	if filepath.IsAbs(l.Model) {
-		return completeModelDir(l.Model)
+	if filepath.IsAbs(l.Model) && completeModelDir(l.Model) {
+		return ModelStateCached
 	}
-	return false
+	return ModelStateIncomplete
 }
 
 func modelCacheDirName(model string) string { return strings.ReplaceAll(model, "/", "--") }
