@@ -88,6 +88,19 @@
 
 ### Added
 
+- **A DuckDB lockdown spike** (`internal/duckdblockdown`), deciding whether a lakehouse `query` over
+  a DuckDB process can be confined. A minimal helper starts a CLI locked to one namespace's data
+  directory and the tests attack it: `ATTACH` to a sibling namespace, the namespace's own SQLite
+  catalog, a symlink planted inside the allowed directory, `..` traversal, `COPY` in and out,
+  `COPY ... TO PROGRAM`, the file readers, extension install and load, http(s) URLs, and every
+  attempt to re-open the settings. **All are refused.** Two findings are recorded in
+  `docs/design/lakehouse-plan.md` §2.4–§2.5: `enable_external_access=false` is the guard and
+  `allowed_directories` *widens* what stays reachable rather than narrowing it, and the CLI runs
+  `.shell`/`.system`/`.output` dot-commands from caller SQL under that full lockdown, in every
+  mode — so a stdio transport would hand a caller code execution, and the transport is a unix
+  socket instead. DuckDB is pinned to v1.5.6 and downloaded checksummed in a CI job; the tests skip
+  without `DOLMEN_TEST_DUCKDB`. No engine code: nothing is wired into `store.Engine`.
+
 - **`lakehouse` is a recognised engine name that is refused rather than unknown.** `DOLMEN_ENGINE`
   and `-engine` accept it, and the unknown-engine message now lists all three engines, so a
   configuration naming the lakehouse tier fails with a message that says what is and is not

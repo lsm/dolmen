@@ -73,6 +73,26 @@ jobs:
       - name: Check no comments
         run: go run github.com/lsm/nocomment-for-agents/go@016ad219e84b9b78ca66ff1b66a7729218030c12 --check
 
+  duckdb-lockdown:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Download the pinned DuckDB CLI and verify its checksum
+        run: |
+          set -eu
+          dest="$RUNNER_TEMP/duckdb"
+          ASSET=duckdb_cli-linux-amd64.zip internal/duckdblockdown/fetch-duckdb.sh "$dest"
+          unzip -q -o "$dest/duckdb_cli-linux-amd64.zip" -d "$dest"
+          chmod +x "$dest/duckdb"
+          "$dest/duckdb" --version
+      - name: Attack the locked engine
+        env:
+          DOLMEN_TEST_DUCKDB: ${{ runner.temp }}/duckdb/duckdb
+        run: go test -count=1 -v ./internal/duckdblockdown
+
   postgres-foundation:
     runs-on: ubuntu-latest
     services:
