@@ -323,7 +323,7 @@ func (s *Store) write(ctx context.Context, name string, expected [16]byte, fn fu
 		return err
 	}
 	if expected != [16]byte{} && expected != n.generation {
-		return fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, name)
+		return &replacedError{msg: fmt.Sprintf("%v: namespace %s was replaced; resolve its current state", store.ErrNotFound, name)}
 	}
 	if err := fn(tx, n); err != nil {
 		return err

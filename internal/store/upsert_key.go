@@ -46,11 +46,11 @@ func (s *Store) upsertByKey(ctx context.Context, nsName, table string, keyFields
 	}
 	records = normalized
 
-	n, err := s.ns(nsName)
+	n, release, err := s.nsFor(nsName, shared)
 	if err != nil {
 		return InsertResult{}, true, err
 	}
-	defer n.unpin()
+	defer release()
 	for attempt := 0; ; attempt++ {
 		ids, inserted, updated, changes, done, err := s.upsertKeyAttempt(ctx, n, nsName, table, keyFields, records, emb, opts.Owner, scope, scopeIncarnation, shared)
 		if done {

@@ -116,12 +116,12 @@ func fingerprintAny(k *secret.Keyring, v any) any {
 func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName string, writes []BatchWrite) (IdemHash, error) {
 	schemas := make(map[string]*schema.TableSchema, len(writes))
 	secrets := false
-	for _, w := range writes {
+	for i, w := range writes {
 		sc, ok := schemas[w.Table]
 		if !ok {
 			var err error
 			if sc, err = loadSchema(ctx, q, nsName, w.Table); err != nil {
-				return IdemHash{}, err
+				return IdemHash{}, fmt.Errorf("writes[%d]: %w", i, err)
 			}
 			schemas[w.Table] = sc
 		}
@@ -362,7 +362,7 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 		return BatchResult{}, true, err
 	}
 	defer s.releaseWrite(wt)
-	inner := &sharedWriteTx{tx: wt.tx, span: wt.span}
+	inner := &sharedWriteTx{tx: wt.tx, span: wt.span, ns: n}
 
 	var hash IdemHash
 	if opts.IdempotencyKey != "" {

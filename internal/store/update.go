@@ -86,11 +86,11 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 	}
 	set = normalized
 
-	n, err := s.ns(nsName)
+	n, release, err := s.nsFor(nsName, shared)
 	if err != nil {
 		return UpsertResult{}, true, err
 	}
-	defer n.unpin()
+	defer release()
 
 	var sc *schema.TableSchema
 	var gen int64

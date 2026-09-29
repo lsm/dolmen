@@ -43,12 +43,12 @@ func fingerprintAny(k *secret.Keyring, v any) any {
 func (s *Store) batchPayloadHash(ctx context.Context, tx pgx.Tx, n namespace, writes []store.BatchWrite) (store.IdemHash, error) {
 	states := make(map[string]tableState, len(writes))
 	secrets := false
-	for _, w := range writes {
+	for i, w := range writes {
 		state, ok := states[w.Table]
 		if !ok {
 			var err error
 			if state, err = s.loadTable(ctx, tx, n, w.Table); err != nil {
-				return store.IdemHash{}, err
+				return store.IdemHash{}, fmt.Errorf("writes[%d]: %w", i, err)
 			}
 			states[w.Table] = state
 		}

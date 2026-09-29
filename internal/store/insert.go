@@ -48,11 +48,11 @@ func (s *Store) insert(ctx context.Context, nsName, table string, records []map[
 	if len(records) > MaxRecordsPerInsert {
 		return nil, ChangeRange{}, false, true, invalidf("too many records: %d > %d per call", len(records), MaxRecordsPerInsert)
 	}
-	n, err := s.ns(nsName)
+	n, release, err := s.nsFor(nsName, shared)
 	if err != nil {
 		return nil, ChangeRange{}, false, true, err
 	}
-	defer n.unpin()
+	defer release()
 	normalized := make([]map[string]any, len(records))
 	for i, rec := range records {
 		nr := make(map[string]any, len(rec))

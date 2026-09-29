@@ -86,6 +86,18 @@ type sharedWriteTx struct {
 	tx   *sql.Tx
 	span *writeSpan
 	own  bool
+	ns   *nsDB
+}
+
+func (s *Store) nsFor(nsName string, shared *sharedWriteTx) (*nsDB, func(), error) {
+	if shared != nil && shared.ns != nil {
+		return shared.ns, func() {}, nil
+	}
+	n, err := s.ns(nsName)
+	if err != nil {
+		return nil, nil, err
+	}
+	return n, n.unpin, nil
 }
 
 func (s *Store) writeTxFor(ctx context.Context, n *nsDB, shared *sharedWriteTx) (context.Context, *sharedWriteTx, error) {
