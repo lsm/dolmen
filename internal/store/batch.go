@@ -83,7 +83,7 @@ const batchTablesDDL = `CREATE TABLE IF NOT EXISTS _dolmen_batch_tables(
 
 func (r BatchWriteResult) touched() int64 {
 	switch r.Kind {
-	case BatchWriteInsert, BatchWriteUpsertByKey:
+	case BatchWriteInsert, BatchWriteUpsert, BatchWriteUpsertByKey:
 		return r.Inserted + r.Updated
 	default:
 		return r.Updated + r.Matched
@@ -290,7 +290,9 @@ func (s *Store) Batch(ctx context.Context, nsName string, writes []BatchWrite, o
 			if err != nil {
 				return BatchResult{}, err
 			}
-			s.notifyCommitted(nsName, "", res.Changes)
+			if !res.Replayed {
+				s.notifyCommitted(nsName, "", res.Changes)
+			}
 			return res, nil
 		}
 		if attempt >= 2 {

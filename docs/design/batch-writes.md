@@ -289,6 +289,23 @@ to revisit if that proves to matter in practice, and the shape to reach for is a
 select-then-embed helper that both the attempts and a batch pre-pass call — not a second copy of the
 selection logic.
 
+**A batch's phase 2 re-check cannot fail, and that is the point, not a gap.** §6 asks for an
+in-transaction re-check of each table's version, embedding space, dimension and drop generation,
+because a single write reads its plan before it takes the writer and re-reads inside. In a batch that
+re-read is against the *same transaction the plan was read in*, so it compares the snapshot with
+itself and is satisfied by construction. No test can make it fail, because there is nothing to fail:
+the batch takes SQLite's single writer before it reads anything, so no migration or drop can interleave
+between a batch's plan and its commit.
+
+The property the re-check exists to protect is therefore established a different way, and that way is
+pinned instead: every write in a batch runs on one transaction, so a later write matches the rows an
+earlier write in the same batch just inserted — which it could not do if planning used a second
+connection, and which is exactly what a stale read would silently break. That is the behaviour a batch
+must have whether or not it re-checks a generation number.
+
+The three-attempt retry stays in the code because the wrappers still report `done` when they are handed
+a caller's transaction, and because a future engine with more than one writer would need it.
+
 **A batch carries a namespace incarnation, not a table one.** `Incarnation` is table-scoped
 (`internal/store/scope.go:67` rejects any `want.Table` that is not the table being written), and a
 batch has no single table. So `batch` takes the namespace generation and refuses a table incarnation

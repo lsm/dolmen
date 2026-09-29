@@ -234,6 +234,67 @@ func TestBatchKeepsReplayingWhenAnUnrelatedTableIsDropped(t *testing.T) {
 	}
 }
 
+func TestBatchCountsRowsAcrossWritesAgainstOneSharedBudget(t *testing.T) {
+	st := openBatchStore(t)
+	ctx := context.Background()
+	half := func(n int) []map[string]any {
+		out := make([]map[string]any, 0, n)
+		for i := 0; i < n; i++ {
+			out = append(out, map[string]any{"title": "bulk", "body": "over the shared budget", "score": 1, "emb": []any{1.0, 0, 0, 0}})
+		}
+		return out
+	}
+	if len(half(600)) > MaxRecordsPerInsert {
+		t.Fatalf("the test needs each write to be under the per-call limit, or it proves nothing about the batch")
+	}
+	_, err := st.Batch(ctx, "b", []BatchWrite{
+		{Kind: BatchWriteInsert, Table: "notes", Records: half(600)},
+		{Kind: BatchWriteInsert, Table: "notes", Records: half(600)},
+	}, BatchOpts{}, testEmbed, nil, Incarnation{})
+	if err == nil {
+		t.Fatalf("two writes of 600 records each were accepted, want a refusal: 1,200 rows is past the %d budget one insert gets", MaxRowsTouchedPerBatch)
+	}
+	if !strings.Contains(err.Error(), "writes[1]") {
+		t.Fatalf("error %q does not name the second write, the one that carried the batch past the budget", err)
+	}
+}
+
+func TestBatchRejectsMoreWritesThanTheCap(t *testing.T) {
+	st := openBatchStore(t)
+	ctx := context.Background()
+	writes := make([]BatchWrite, 0, MaxWritesPerBatch+1)
+	for i := 0; i <= MaxWritesPerBatch; i++ {
+		writes = append(writes, BatchWrite{Kind: BatchWriteInsert, Table: "notes", Records: []map[string]any{
+			{"title": "one", "body": "a body", "score": 1, "emb": []any{1.0, 0, 0, 0}},
+		}})
+	}
+	_, err := st.Batch(ctx, "b", writes, BatchOpts{}, testEmbed, nil, Incarnation{})
+	if err == nil {
+		t.Fatalf("a batch of %d writes was accepted, want a refusal past %d", len(writes), MaxWritesPerBatch)
+	}
+	if !strings.Contains(err.Error(), "100") {
+		t.Fatalf("error %q does not name the cap", err)
+	}
+}
+
+func TestBatchLaterWritesMatchTheRowsEarlierWritesInserted(t *testing.T) {
+	st := openBatchStore(t)
+	ctx := context.Background()
+	res, err := st.Batch(ctx, "b", []BatchWrite{
+		{Kind: BatchWriteInsert, Table: "notes", Records: []map[string]any{
+			{"title": "first", "body": "a body", "score": 1, "done": true, "emb": []any{1.0, 0, 0, 0}},
+			{"title": "second", "body": "a body", "score": 1, "done": true, "emb": []any{0, 1.0, 0, 0}},
+		}},
+		{Kind: BatchWriteUpdate, Table: "notes", Filter: "done = ?", Args: []any{true}, Set: map[string]any{"score": 9}},
+	}, BatchOpts{}, testEmbed, nil, Incarnation{})
+	if err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+	if res.Results[1].Updated != 2 {
+		t.Fatalf("the second write updated %d rows, want 2: a write must match the rows an earlier write in the same batch inserted, which it can only do if both run on one transaction", res.Results[1].Updated)
+	}
+}
+
 func TestBatchRejectsAWriteOverTheRowBudget(t *testing.T) {
 	st := openBatchStore(t)
 	ctx := context.Background()
