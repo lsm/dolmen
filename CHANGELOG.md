@@ -60,8 +60,16 @@
   `CGO_ENABLED=0` binary and what that does to `release.yml`, the append/position-delete/compaction
   write path and the namespace commit log the change feed needs, native engine-side full text and
   exact vector search, which parts of the shared conformance suite run against the engine and from
-  which slice, the `arrow-go` v18.6.0 pin and what keeps it from breaking, and the twelve questions
-  that are Marc's. No code, no behaviour change.
+  which slice, the `arrow-go` v18.6.0 pin and what keeps it from breaking, and the questions that
+  are Marc's. No code, no behaviour change.
+
+- **Marc's answers to the lakehouse plan**, recorded in the same document: slice 3 ships next, the
+  `query` lockdown is pulled forward into a spike that decides whether the sidecar path exists at
+  all, and the `go.mod` pins land with the first code that imports them rather than as an inert
+  module. On confinement, DuckDB's own settings are the only guard — no statement filter in dolmen,
+  not even as a second layer — and if that is not enough the fallback is an in-process pure-Go SQL
+  engine, then a declared `query` unavailability through the reserved spec amendment. Full text is
+  native, settled by D27, with no spec amendment. Docs only.
 
 - **An observability guide** (`docs/observability.md`): a runnable `docker compose` stack that
   receives dolmen's traces, metrics and logs, how to get from a slow `dolmen.operation.duration`

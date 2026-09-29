@@ -1,10 +1,11 @@
 # Lakehouse engine (adapter #3) — lane plan
 
-**Status: plan, not code.** The `query` question is settled: [query-without-sql.md](query-without-sql.md)
-recommends an external SQL engine below the seam, DuckDB as a separate process first, SQL passed
-through unchanged with its dialect disclosed, and one engine process per namespace. This document
-turns that into slices. Every decision listed in §10 is Marc's; nothing here is approved, and no
-slice starts before the ones above the line in §1 do.
+**Status: the order and the `query` fallback are decided; the rest is not.** The `query` question
+is settled: [query-without-sql.md](query-without-sql.md) recommends an external SQL engine below
+the seam, DuckDB as a separate process first, SQL passed through unchanged with its dialect
+disclosed, and one engine process per namespace. **Marc answered the plan on 2026-09-29**: slice 3
+is next, the `query` lockdown is pulled forward as a spike that decides slice 11, and the rest of
+the lane is re-decided once that result is in. §10 records each answer with its date.
 
 Builds on [storage-adapters-and-auth-research.md](storage-adapters-and-auth-research.md) §2 (the
 per-op mapping and the three open questions), [storage-adapter-mechanics.md](storage-adapter-mechanics.md)
@@ -14,46 +15,65 @@ per-op mapping and the three open questions), [storage-adapter-mechanics.md](sto
 conformance harness are the template for every engine-shaped slice here; see
 [postgresql.md](postgresql.md).
 
-**One correction to the brief that the plan follows, and it changes slice 9.** The brief asks for
-full text "through the shared-Go BM25 decided in #315/#323". That decision was superseded on
-2026-09-19: D27 in the spec's decision index now says each engine runs its **own** native
-indexing and database-side ranking, there is no shared Go scorer, and no cross-engine ranking
-parity. [postgresql.md](postgresql.md) "Native search decision" records the same for adapter #2,
-which is why there is no `bm25` identifier anywhere in the tree. Slice 9 below therefore plans
-native, and §10 Q6 asks Marc to confirm, because re-deriving the earlier decision would need a
-spec amendment first.
+**Full text is native, and that one is settled rather than asked.** The brief for the plan asked
+for full text "through the shared-Go BM25 decided in #315/#323". That decision was superseded on
+2026-09-19: D27 in the spec's decision index says each engine runs its **own** native indexing and
+database-side ranking, there is no shared Go scorer, and no cross-engine ranking parity.
+[postgresql.md](postgresql.md) "Native search decision" records the same for adapter #2, which is
+why there is no `bm25` identifier anywhere in the tree. Slice 9 plans native; Marc confirmed on
+2026-09-29 that D27 settles it and no spec amendment is wanted.
 
 ---
 
 ## 1. Slices in order
 
-Each is its own PR off `main`, opened after the previous merges, each a mergeable increment. A
-behaviour change updates `internal/conformance`, the README and `skill/`, and adds an entry under
-Unreleased in `CHANGELOG.md`. Slices with code write the failing test first and push it so CI shows
-it red. Nothing below the line runs before a demander exists and Marc approves the plan.
+**Re-decided 2026-09-29.** The original order below put the `query` slice eleventh, behind eight
+slices of engine work, and the plan asked for a decision rule on what to do if DuckDB could not be
+confined by mechanism. Marc's answer is to find out **first**: slice 3 ships, then the lockdown
+spike runs, and the rest of the lane is re-decided against its result. Two consequences are folded
+into the order itself:
 
-**Slices 1–3 need no demander.** They are enablers whose cost is paid by the wait, not by the
-work, and they are the pieces this plan cannot get right later without a spec amendment.
+- **The pins move.** `go.mod` is not touched until the first code that imports those modules
+  (slice 4). A pin with no importer is a pin nothing exercises, and an inert module in `go.mod` is
+  one a `go mod tidy` and a dependency bump can disagree about.
+- **The confinement tests move ahead of the engine.** They were going to be part of slice 11. They
+  are now the deliverable of a spike that runs before any engine code, because whether they pass
+  decides whether slice 11 exists at all.
 
-| # | slice | what it proves |
+Each slice is its own PR off `main`, opened after the previous merges. A behaviour change updates
+`internal/conformance`, the README and `skill/`, and adds an entry under Unreleased in
+`CHANGELOG.md`. Slices with code write the failing test first and push it so CI shows it red.
+
+| # | slice | status |
 |---|---|---|
-| 1 | **The lane plan** (this document) | The order, the packaging answer, and the open questions are on record before any code exists. Docs only. |
-| 2 | **The go.mod pins, landed as an inert module** | `iceberg-go` v0.6.0 and `arrow-go` v18.6.0 build together, `CGO_ENABLED=0`, with a test that fails the moment the graph drifts. No engine code references either. |
-| 3 | **The harness learns a third engine** | `DOLMEN_ENGINE=lakehouse` resolves and refuses cleanly; the suite still runs identically on SQLite and Postgres. The lakehouse itself is refused until slice 12. |
-| 4 | **Namespace lifecycle + catalog-in-SQLite** | Namespaces are Iceberg catalogs in the namespace's own `.db`; `create_namespace`/`drop_namespace`/listing and the `nsGen` guard work against a real Iceberg commit. |
-| 5 | **Table DDL + schema registry** | `create_table`/`list_tables`/`describe_table`/`drop_table`; Iceberg schema evolution for add/drop/rename field. |
-| 6 | **Append + row-id allocation + idempotency** | The id allocator is monotonic, never-reused and assigned inside the serialization point; an idempotency record commits atomically with its rows. |
-| 7 | **Typed reads + number normalization** | `get_rows` returns the contract's types through `internal/value`; negative zero, int64 endpoints and exponent bands behave as on adapter #1. |
-| 8 | **Point deletes by position** | `update`/`delete`/`upsert`/`upsert_by_key` land as position deletes — the DVs the trial proved unreadable are not used. |
-| 9 | **Search: full text + vectors** | Full text runs engine-side over the core grammar; `search_vector` is exact brute force with the contract's canonical cosine. |
-| 10 | **Change feed** | `changes_since`/`wait_for` are gap-free per namespace from the namespace commit log, cursors are durable and opaque. |
-| 11 | **`query` over the DuckDB sidecar** | Pass-through SQL, `query_dialect: "duckdb"`, and confinement that is structural because the process only ever sees one namespace. |
-| 12 | **Public selector + operator docs** | `-engine lakehouse` and `lakehouse.With` work; the README and `docs/lakehouse-operations.md` document it, as `postgresql-operations.md` does for adapter #2. |
-| 13 | **`subscribe`/SSE** | Only if the engine can support it. It may honestly declare `subscribe` unavailable, which §9.3 permits; `wait_for` never may. |
-| 14 | **Compaction + maintenance** | Small files get rewritten on a schedule; the maintenance op is documented. |
+| 1 | **The lane plan** | merged ([#521](https://github.com/lsm/dolmen/pull/521)) |
+| 2 | ~~The pins as an inert module~~ | **withdrawn**, folded into slice 4 |
+| 3 | **The harness learns a third engine** | **next** |
+| S | **The lockdown spike** (§2.4) | **after slice 3, before any engine code** |
+| 4 | **Namespace lifecycle + catalog-in-SQLite** (pins land here) | pending the spike |
+| 5 | **Table DDL + schema registry** | pending the spike |
+| 6 | **Append + row-id allocation + idempotency** | pending the spike |
+| 7 | **Typed reads + number normalization** | pending the spike |
+| 8 | **Point deletes by position** | pending the spike |
+| 9 | **Search: full text + vectors** (native, per D27) | pending the spike |
+| 10 | **Change feed** | pending the spike |
+| 11 | **`query` over the sidecar** | **decided by the spike** — see §2.4 and §10 Q2 |
+| 12 | **Public selector + operator docs** | pending the spike |
+| 13 | **`subscribe`/SSE** | pending the spike |
+| 14 | **Compaction + maintenance** | pending the spike |
 
-### Slice 2 in more detail, because it is the one most likely to be skipped and least
-likely to be forgiven
+**What each slice still proves is unchanged** and stays in the sections below: slice 4 that a
+namespace is an Iceberg catalog in its own SQLite file; slice 5 that schema evolution works; slice
+6 that the id allocator and idempotency record commit atomically with their rows; slice 7 that
+typed reads match the contract; slice 8 that point deletes are position deletes; slice 9 that
+search is native and exact; slice 10 that the change feed is gap-free per namespace; slice 12 that
+the engine is publicly selectable; slice 13 that `subscribe` works or is honestly declared
+unavailable, which §9.3 permits and which `wait_for` never may be.
+
+### The pins, which now land with slice 4
+
+**Withdrawn as a slice of its own on 2026-09-29**; the work moves into slice 4, the first code that
+imports these modules. What follows is what slice 4 has to do when it gets there.
 
 The trial in [query-without-sql.md](query-without-sql.md) established that iceberg-go v0.6.0 does
 not compile against the current Arrow: `arrow-go/v18 v18.8.0` pulls `twmb/avro v1.8.0`, whose
@@ -61,20 +81,17 @@ not compile against the current Arrow: `arrow-go/v18 v18.8.0` pulls `twmb/avro v
 working combination is `arrow-go` held at **v18.6.0**.
 
 That is a pin, and a pin with no test is a comment. The pin is not expressible as `go.mod` alone
-because a routine `go get -u` anywhere in dolmen's graph wants a newer Arrow. So slice 2:
+because a routine `go get -u` anywhere in dolmen's graph wants a newer Arrow. So slice 4:
 
 - adds `github.com/apache/iceberg-go`, `github.com/apache/arrow/go/v18` and
   `github.com/parquet-go/parquet-go` to `go.mod`, with `arrow-go/v18` held at v18.6.0 by an
   explicit `require` plus a `replace` if the resolver insists on raising it;
-- a test in the new package that fails if the resolved `arrow-go` version is not exactly the pinned
-  one, naming the pin and the reason in the failure text;
-- a `// indirect`-free reference so `go mod tidy` cannot silently drop them while the test is
-  skipped;
-- **no engine code.** The test builds and runs against the modules, which is what proves the
-  combination compiles and stays pure Go.
+- carries a test that fails if the resolved `arrow-go` version is not exactly the pinned one, naming
+  the pin and the reason in the failure text.
 
-A CI job for it, or a `go build` of the spike in a test, is what keeps it honest. See §9 for the
-full pin-keeping list.
+Landing them together changes what the pin has to survive, for the better: because the modules are
+now imported by real code, `go mod tidy` cannot drop them, and the version-pin test has something to
+check. See §9 for the full pin-keeping list.
 
 ### Slice 3 in more detail
 
@@ -142,9 +159,9 @@ them topology**, and adapter #1 declares nothing there. So the lakehouse's topol
 expressible only in prose, and making it machine-readable means adding a capability field, which is
 a contract-surface change: the `capabilities` op schema, the OpenAPI output, the MCP tool surface,
 and the conformance suite. None of that exists for adapter #1 or #2, so this is **new work with no
-precedent in the tree**, and it is not budgeted by any slice below. §10 Q11 asks Marc whether to
-add the field as part of this lane or to leave topology in the operator documentation the way both
-existing engines do.
+precedent in the tree**, and it is not budgeted by any slice below. §10 Q11 carries it, and the
+plan's working assumption is the one both existing engines already take: prose, in the operator
+documentation.
 
 ### 2.2 How it starts, and how it is supervised
 
@@ -157,12 +174,18 @@ preference:
    stdin/stdout is a private pipe to one dolmen process, which is part of why confinement holds.
 2. **A child `duckdb` server on a unix socket or an ephemeral loopback port**, chosen with an
    ephemeral port so two namespaces never collide. Adds a listener and therefore a thing to
-   restrict; preferred only if the stdio protocol cannot carry the statements this engine issues.
+   restrict.
 3. **A `go-duckdb` driver over the C API** — **rejected**. It is cgo, and the binary is
    `CGO_ENABLED=0` with no cgo dependency permitted. Named here so the option is visibly closed
    rather than merely unmentioned.
 
-The recommended choice is 1, with 3 ruled out by the cgo rule and 2 as the fallback.
+Mechanism 1 was the recommendation; **the spike in §2.5 may overturn it.** The reason is specific
+and it is not a preference: the CLI is line-oriented, so a line beginning with `.` is a command
+rather than SQL, and `.shell`/`.system` run an arbitrary program. A stdio transport without a
+framing the CLI cannot be made to ignore therefore hands a caller arbitrary code execution through
+a newline, which is a worse outcome than the confinement failure it would be avoiding. If the
+spike finds the stdio protocol cannot make that impossible, mechanism 2 wins — it speaks a real
+protocol with a real message boundary, so the ambiguity does not exist.
 
 **Supervision** is the same shape `cmd/dolmen` already has for its own lifecycle: a start, a
 readiness wait bounded by a context, a liveness check, and a shutdown path that closes admitted
@@ -216,26 +239,63 @@ which, which is why the limit is named in it.
 
 ### 2.4 What the child is given, and what it is not
 
-The process is handed **exactly one namespace**: its Parquet/Iceberg data directory, and nothing
-else. Concretely, it is *not* given:
+**Decided 2026-09-29 (Q4): DuckDB's own settings are the only guard.** There is no statement filter
+in dolmen — not as a second layer, not as a first one. The plan originally left room for one and
+asked; the answer is no, which keeps §0.5.3's "impossible by mechanism" honest, because a filter
+dolmen applies is precisely the mechanism the spec does not accept. Confinement is either the
+process's own configuration or it is nothing.
+
+The process is handed **exactly one namespace**: its Parquet/Iceberg **data directory**, and
+nothing else. The distinction between the data directory and the namespace directory is the load-
+bearing one, and it is easy to get wrong: a namespace also has a SQLite file holding the catalog,
+the commit log, cursors and idempotency records, and the child is **not** given that. Concretely,
+it is *not* given:
 
 - the data directory root, so it cannot see another namespace's directory;
-- any path outside that namespace, so a `query` cannot reach the grants registry or the model cache;
-- the file-writing capability beyond its own namespace, so a caller's `COPY ... TO` cannot write
-  outside it.
+- the namespace directory itself, so it cannot read the catalog, the commit log, the cursor table
+  or the idempotency table;
+- any path outside its own data directory, so a `query` cannot reach the grants registry or the
+  model cache;
+- the file-writing capability beyond its own data directory, so a caller's `COPY ... TO` cannot
+  write outside it.
 
-Whether the DuckDB side enforces the last one or it is simply a path the child is given, is a
-question §10 Q4 asks: DuckDB can be started with a restricted configuration, and whether a
-read-only or directory-scoped mode is sufficient confinement — or whether dolmen must additionally
-reject path-shaped statements — is exactly the kind of thing the trial should test rather than the
-plan should assume. The note's position stands either way: confinement here is **structural**
-(the process has nothing else to reach), which is the strongest form §0.5.3 accepts, and any
-additional check is defence in depth rather than the mechanism.
+The settings the spike is expected to lock, and the attacks each is expected to defeat:
 
-Note one consequence of pass-through SQL worth stating before it surprises someone: a caller can
-`ATTACH` another database from inside a statement. §2.4 above is the answer — the child's
-configuration is what makes that a no-op — and slice 11 is where it is tested, because a confinement
-mechanism that is not tested is not a mechanism.
+| attack | the setting that has to stop it |
+|---|---|
+| `ATTACH` a sibling namespace's database, or an arbitrary path | allowed directories limited to the one data directory, with external access off |
+| `COPY ... TO` outside the directory | the same allowed-directories limit, plus the write scope |
+| `read_csv` / `read_parquet` / `read_text` / `glob` on outside paths, `..` traversal, a symlink pointing out | the same limit, and symlink resolution that does not widen it |
+| `INSTALL` / `LOAD` of an extension, and http(s) URLs | extension install and autoload both off, with no network reach |
+| `SET` / `RESET` / `PRAGMA` on the locked settings | the configuration locked, so a session cannot re-open what the process closed |
+| **CLI dot-commands** — a statement containing a newline then `.shell`, `.system`, `.output` or `.read` | the transport itself (§2.2) |
+
+**The dot-command case decides the transport and is the sharpest of them.** The DuckDB CLI is a
+line-oriented client: a line beginning with `.` is a command, not SQL, and `.shell` and `.system`
+run an arbitrary program. If dolmen hands caller SQL to the CLI over a stdio pipe with no framing
+the CLI cannot be made to ignore, a caller can escape the sandbox with a newline — not a file read
+but arbitrary code execution, which is worse than the confinement failure it replaces. So whether
+the stdio protocol can make that **impossible** is a real question, and the spike answers it rather
+than assuming: if it cannot, §2.2's mechanism 2 (a child server on an ephemeral socket, which
+speaks a real protocol with a real message boundary) is the answer instead of a fallback.
+
+### 2.5 The lockdown spike
+
+**This is the deliverable that decides the rest of the lane** (Marc, 2026-09-29). It runs after
+slice 3 and before any engine code. It is not a slice of the lane; it is a mergeable PR containing
+a minimal helper that starts the DuckDB CLI on one namespace's data directory with the settings
+above, plus **the tests that attack it** — the tests are the deliverable, and the helper exists only
+so there is something to attack.
+
+Its job is to answer two questions with evidence rather than argument:
+
+1. **Can DuckDB confine itself to one directory by its own configuration?** If yes, slice 11
+   proceeds as pass-through SQL. If no, §10 Q2's fallback chain applies.
+2. **Can the stdio protocol make CLI dot-commands impossible?** If no, mechanism 2 in §2.2 wins.
+
+The DuckDB version is pinned and the binary downloaded with a checksum, Linux first, in its own CI
+job. What that leaves untested on other platforms is named in the result rather than assumed away
+— Windows drive letters and UNC paths, and macOS — and recorded in this section and in §10.
 
 ---
 
@@ -265,10 +325,17 @@ switching the runtime stage to something that has a shell and a package manager,
 statically linked DuckDB from a builder stage. The distroless pin is deliberate ("Pinned to the
 OCI index digest for reproducibility"), so this is a real change to a deliberate choice.
 
-**The plan recommends A, with B as a supported override, and C as a consequence of A.** The
-reasoning: the `query` story is a **contract** decision (D28 disclosure, §0.5.3 confinement) and
-the plan is a **slices** decision, and the two must not be coupled. Shipping the helper separately
-keeps the deployment story honest — an operator who wants `query` installs a second binary, and one
+**The plan recommends A, with B as a supported override, and C as a consequence of A** — subject to
+the spike, which can dissolve this whole section. If §10 Q2's in-process pure-Go engine turns out to
+confine `query` adequately, there is no helper binary, no second release artifact, no SBOM gap and
+no distroless change, and the question answers itself. That is worth keeping in view while reading
+the rest of this section: **everything below is the answer conditional on DuckDB working**, and the
+cheapest possible outcome of the spike is that none of it is needed.
+
+Given DuckDB does work, the reasoning for A: the `query` story is a **contract** decision (D28
+disclosure, §0.5.3 confinement) and the plan is a **slices** decision, and the two must not be
+coupled. Shipping the helper separately keeps the deployment story honest — an operator who wants
+`query` installs a second binary, and one
 who does not runs exactly the binary they run today — while letting the version be pinned and tested
 in CI. It also keeps option B open, so the *deployment* choice is the operator's while the
 *supported* configuration is ours.
@@ -443,8 +510,9 @@ is engine-documented and may be refused with a teaching error.
 documented analysis (stemming, stop words, CJK) and ranking, computed in the engine, with `id`
 ascending as the deterministic tiebreak. Result shape, filters/authorization, bounded pagination
 and `truncated` are the contract and are shared. The conformance assertions are per-engine:
-relevance is tested *within* this engine, never byte-compared to SQLite's FTS5 order. §10 Q6 asks
-Marc to confirm this reading of D27 before slice 9.
+relevance is tested *within* this engine, never byte-compared to SQLite's FTS5 order. Marc
+confirmed on 2026-09-29 that D27 settles this, so the "confirm D27" question the plan originally
+carried is withdrawn.
 
 **One interface note.** `store.Engine` has a `Tokenize` method
 ([internal/store/tokenize.go](../../internal/store/tokenize.go)), and the `tokenize` operation serves it:
@@ -569,17 +637,14 @@ error message that names none of dolmen's code. Five mechanisms, in order of how
    gate). A pin held back for compile-compatibility is exactly the kind of thing a vulnerability
    scanner will eventually flag, and when it does, the failure text should name the pin. Worth
    writing down now.
-3. **A `CGO_ENABLED=0` build assertion.** Worth being precise about what CI does today, because it
-   is not what one might assume: the `test` job runs `CGO_ENABLED=1 go test -race ./...`, and
-   `platform-smoke` runs `go test`. The `CGO_ENABLED=0` builds are in `make build`, `make release`
-   and the `Dockerfile` — i.e. they are exercised at **release** time, not on every pull request.
-   So the pure-Go invariant is currently asserted by the release job, and nothing in a pull request
-   would catch a cgo dependency until a release is cut. That is a pre-existing gap the lakehouse
-   makes more urgent, because the temptation it exists to close is exactly "add a cgo driver to
-   reach DuckDB for the query path". The assertion that matters is that nothing in the lakehouse
-   import graph pulls cgo, and the cheap form is a test walking the dependency graph for
-   `runtime/cgo` — cheap, and it fails on the pull request rather than at the tag. Whether to add
-   it, and whether to close the broader release-time-only gap, is §10 Q12.
+3. **A `CGO_ENABLED=0` build in CI.** **Done, 2026-09-29**, as a `cgo-free-build` job outside the
+   lane, because the gap was pre-existing and not the lakehouse's to leave: the `test` job runs
+   `CGO_ENABLED=1 go test -race ./...`, so the only cgo-free builds were `make build`, `make
+   release` and the `Dockerfile`, all at release time. The job runs `CGO_ENABLED=0 go build ./...`
+   and `CGO_ENABLED=0 go vet ./...`, and both halves are load-bearing — checked rather than
+   assumed: the build fails only when a cgo package is in the import graph and passes when it sits
+   unimported, while `vet` fails in both cases. The temptation this closes is exactly "add a cgo
+   driver to reach DuckDB for the query path", which the lane's own decision note rules out.
 4. **Keep the dependency off everyone's build.** Adapter #2 learned this the hard way: importing
    `internal/postgres` from the root package put pgx and the embedded WASM PostgreSQL parser into
    every consumer's import graph, and the external-module example grew from 13.1 MB to 35.3 MB
@@ -616,9 +681,13 @@ Recorded so a reader does not have to infer it, matching the spec's own "deliber
 - **Data portability.** No `export`/`import` (D20, deliberately skipped). Open-format storage means
   Spark/Trino/DuckDB can read the Parquet — a property of the storage, not a dolmen op.
 - **`export`-shaped migration tooling, change streaming, webhooks.** Out of lane.
-- **A spec amendment.** Every slice here is written to fit the spec as it stands. Slice 11 is the
-  load-bearing one: it is a slice that **cannot** start unless D28 and §0.5.3 are satisfied by
-  construction, and it proves it with the confinement tests rather than asserting it.
+- **A spec amendment, unless the spike says one is needed.** Every slice here is written to fit the
+  spec as it stands. Slice 11 is the load-bearing one: it **cannot** start unless D28 and §0.5.3
+  are satisfied by construction, and it proves it with the confinement tests rather than asserting
+  it. If the spike finds DuckDB cannot confine itself, the reserved amendment becomes the path and
+  it lands spec-first per the repo's own deviation rule — with a named availability class beside
+  `subscribe`, a reworded §0.5.3 binding only to engines that have SQL, and a conformance corpus
+  that skips `query` by declared capability rather than by engine name.
 
 ---
 
@@ -635,11 +704,14 @@ So the order is not read as false precision:
   the Postgres adapter took several slices for the same surface.
 - **Slice 11** is the one with genuine design risk, and it is the risk the trial did **not** retire.
   The trial proved the pure-Go tier; it said nothing about whether a DuckDB process can be confined
-  strongly enough that §0.5.3 holds by mechanism (§2.4). If it cannot, the fallback is not Option B
-  from the decision note — which is a breaking spec revision, and expensive. A cheaper fallback is
-  a **narrower** `query`: statements validated against a known-safe surface, with the refusal being
-  a teaching error. That is weaker than pass-through and would be a deliberate narrowing of D28's
-  disclosure-only obligation, so it needs Marc, and it is §10 Q2.
+  strongly enough that §0.5.3 holds by mechanism (§2.4). **This is now answered by running the
+  question rather than planning around it** (Marc, 2026-09-29): the lockdown spike in §2.5 moves
+  ahead of every engine slice and decides it. If DuckDB cannot confine itself, §10 Q2's chain
+  applies — an in-process pure-Go engine first (`go-mysql-server`), and if that cannot confine
+  either, `query` ships declared unavailable through the reserved spec amendment. The plan's own
+  original middle option, a narrower validated `query`, is **withdrawn**: Marc ruled that a
+  statement filter is never the answer, and D28's disclosure-only obligation is not something a
+  lane narrows on its own.
 - **Slices 4–7** are individually unremarkable and collectively the bulk of the line count, and
   they are the slices with the **weakest** budgeting evidence. Research §2.3 gives effort classes for
   the append write path (M), update/delete (M), change-feed mapping (M), the FTS sidecar (M) and
@@ -654,72 +726,89 @@ So the order is not read as false precision:
 
 ## 10. Questions for Marc
 
-Listed plainly, each with what the plan assumes so an answer can be "no" cheaply. **None of these
-is decided here.**
+**Answered 2026-09-29.** Marc's decisions are below, each with its date and the section it changes.
+The ones still open are marked, and each carries the assumption the plan is running on so the
+question can be answered later without unwinding work.
 
-1. **Is the intended consumer the analytics property, or dolmen-side durability and scale?**
-   (research §2 open question 1, unanswered since 2026-09-14.) It decides whether the serving/cache
-   tier is a v1 component or a v3 one, and therefore whether slice 6 is "append to Parquet" or
-   "append to Parquet **through** a serving tier". The plan assumes **durability first**: the
-   serving view is the log-backed union view of §4.3, and a real serving tier is later.
-2. **How far does `query` go if the DuckDB side cannot be confined by mechanism?** The plan assumes
-   pass-through (§2.4), and slice 11 tests it. If the test fails, is the fallback (a) a narrowed
-   `query` surface with teaching refusals — which weakens D28 and needs a spec amendment — or (b)
-   the breaking amendment the decision note reserved, or (c) drop `query` from this lane and keep
-   the engine for everything else? **This is the most consequential question in the plan** and it
-   is only answerable after slice 11's test exists; the plan asks for the decision rule now, not
-   the answer.
-3. **What is the error code for a sidecar that is down?** `internal/derr`'s ten codes have no
-   fit; `embedder_unavailable` is the right *shape* but the wrong *subsystem*, and reusing it would
-   tell a caller to configure an embedder. The plan recommends a new code (`sql_engine_unavailable`
-   is the name it would take) beside `embedder_unavailable`, keeping `query_error` for SQL the
-   engine itself rejected.
-4. **Is `ATTACH` reachable from caller SQL, and if so what stops it?** The plan assumes the child's
-   configuration makes it a no-op and that slice 11's confinement tests prove it. Marc may want
-   dolmen to reject path-shaped statements as defence in depth — which is a validation layer, and
-   the decision note is explicit that "we validated the statement" is not the mechanism. If Marc
-   wants both, the plan says so explicitly rather than letting it slide in as a check.
+### Answered
+
+2. **How far does `query` go if DuckDB cannot be confined by its own settings?** The fallback is
+   tried **in order**:
+   1. **An in-process pure-Go SQL engine** — DoltHub's `go-mysql-server` is the first candidate.
+      The decision note never evaluated an in-process engine, because at the time the only shapes
+      on the table were embedded cgo DuckDB (ruled out) and an external process. This is a third
+      shape, and it is pure Go, so it does not fight the packaging answer in §3.
+   2. **If that cannot keep `query` confined either, the lakehouse ships with `query` declared
+      unavailable**, through the spec amendment
+      [query-without-sql.md](query-without-sql.md) reserved: a named availability class beside
+      `subscribe`, a reworded §0.5.3 binding only to engines with SQL, and a conformance corpus
+      that skips `query` by declared capability rather than by engine name.
+   3. **Never a statement filter.** A filter dolmen applies is not §0.5.3's mechanism, and Q4 below
+      rules it out independently.
+
+   This supersedes the plan's original preference for a narrowed `query` surface, which was the
+   middle option here and is now gone: the choice is a confined pure-Go engine, or the amendment,
+   or nothing.
+
+4. **Is `ATTACH` reachable from caller SQL, and if so what stops it?** **DuckDB's own settings are
+   the only guard.** No statement filter in dolmen, not even as a second layer. §2.4 carries the
+   settings and the attacks they are expected to defeat; §2.5's spike is what tests them.
+
+6. **Shared-Go BM25, or native?** **D27 settles it** — native, per-engine ranking, as
+   [postgresql.md](postgresql.md) already does for adapter #2. No spec amendment. Slice 9 is
+   planned this way and the plan's original "Q6 asks for confirmation" is withdrawn.
+
+12. **Should a `CGO_ENABLED=0` build gate land in CI?** **Yes, now, in its own PR outside the
+    lane** — a `cgo-free-build` job running `CGO_ENABLED=0 go build ./...` and
+    `CGO_ENABLED=0 go vet ./...`. Landed as a separate change so it is not entangled with engine
+    work; the cgo-free invariant is a property of the repo, not of this lane.
+
+### Decided, and recorded as facts of the order rather than questions
+
+- **The order.** Slice 3 now. Then the §2.5 lockdown spike. The `go.mod` pins (was slice 2) land
+  **with slice 4**, the first code that imports them, not as an inert module. The rest of the lane
+  is re-decided once the spike's result is in. §1 carries the new table.
+- **The pins as a slice are withdrawn** rather than reordered, because a pin with no importer is a
+  pin nothing exercises.
+
+### Still open, pending the spike
+
+Each carries the assumption the plan runs on meanwhile.
+
+1. **Analytics property, or dolmen-side durability and scale?** (research §2 open question 1,
+   unanswered since 2026-09-14.) Decides whether the serving/cache tier is a v1 component or a v3
+   one, and so whether slice 6 appends to Parquet or through a serving tier. **Assumption:
+   durability first** — the serving view is the log-backed union view of §4.3, and a real serving
+   tier is later.
+
+3. **The error code for a sidecar that is down?** `internal/derr`'s ten codes have no fit;
+   `embedder_unavailable` is the right *shape* but the wrong *subsystem*, and reusing it would
+   tell a caller to configure an embedder. **Assumption:** a new code beside
+   `embedder_unavailable` (`sql_engine_unavailable` is the name it would take), with `query_error`
+   reserved for SQL the engine itself rejected. Note this becomes moot if Q2's amendment path is
+   taken, since there is no sidecar to be down.
+
 5. **Is a second released binary acceptable?** (research §2 open question 3, unanswered since
-   2026-09-14.) The plan recommends option A — a helper binary dolmen ships and releases, with
-   `-duckdb-path` for a system DuckDB — and states the cost: a deployment is two files, `make
-   release` handles a downloaded non-Go artifact for six platforms, the SBOM gains a component it
-   currently cannot describe, and the container image's distroless runtime stage changes. If the
-   answer is no, the alternatives are B (system DuckDB, unpinned version) or C (image-only, which
-   leaves the local tier without `query` at all).
-6. **Confirm D27 for this lane: native engine-side full text, not the shared-Go BM25 of #315/#323.**
-   The brief asked for shared-Go; the spec's D27 superseded it on 2026-09-19, `postgresql.md`
-   applied it to adapter #2, and the tree has no BM25 code. The plan follows D27. If shared-Go is
-   wanted after all, that is a spec amendment first, and it would make this lane's search
-   *different* from adapter #2's — which is worth knowing before slice 9.
-7. **Where does full-text ranking run?** Engine-side in the Iceberg tier with a Go scorer, or
-   through the DuckDB sidecar's FTS. D27 settles that it is not shared, not *where*. The
-   sidecar's FTS is genuinely present and would be free; the Go path keeps search working when the
-   sidecar is down, which matters if `query` is optional. The plan assumes **Go-side, engine tier**,
-   so full text does not depend on the sidecar's availability.
-8. **Does the lane proceed at all, and in this order?** Slices 1–3 need no demander and cost only
-   time. Slices 4–13 are quarters. The demand gate in D25 was lifted by this issue, but the
-   plan's own §9 says slice 11 carries design risk no trial has retired. Marc may reasonably want
-   1–3 landed and then a re-decision, rather than the whole lane committed.
+   2026-09-14.) **Assumption:** option A, a helper binary dolmen ships and releases, with
+   `-duckdb-path` for a system DuckDB. If Q2's in-process candidate wins instead, this question
+   largely dissolves — a pure-Go in-process engine needs no helper, no second release artifact, and
+   no SBOM gap, which is worth weighing when the spike's result is in.
+
+7. **Where does full-text ranking run?** D27 settles that it is not shared, not *where*.
+   **Assumption:** Go-side in the Iceberg tier, so full text does not depend on a sidecar being
+   available. That assumption becomes load-bearing if Q2 goes the in-process route.
+
 9. **Should `subscribe` be attempted?** §9.3 permits only `subscribe` to be declared unavailable,
-   and never `wait_for`. A lakehouse tier with a durable log can support `wait_for` easily and
-   `subscribe` via the same poll fallback adapter #1 uses. The plan puts `subscribe` in slice 13 and
-   leaves declaring it unavailable as an honest, permitted option. Marc may want that settled now
-   rather than in a slice.
-10. **What is the row-id and change-sequence high-water mark after a catalog rebuild?** A rebuild
-    from Parquet re-derives the data but not the allocator. The plan assumes the namespace's SQLite
-    file is the authority for both and that losing it loses the counters — which for a namespace
-    meant to be recovered from Parquet alone is a real limitation. Whether that limitation is
-    acceptable, or whether ids must be re-derivable from the table's data, is Marc's call and it
-    shapes what `restore` would mean for this engine.
+   and never `wait_for`. **Assumption:** attempted in slice 13, with declaring it unavailable an
+   honest, permitted option if it cannot be.
+
+10. **The row-id and change-sequence high-water mark after a catalog rebuild.** A rebuild from
+    Parquet re-derives the data but not the allocator. **Assumption:** the namespace's SQLite file
+    is the authority for both, and losing it loses the counters — a real limitation for a namespace
+    meant to be recovered from Parquet alone, and it shapes what `restore` would mean here.
+
 11. **Should deployment topology become a capability field?** §0.6 calls it engine-declared and no
-    engine has anywhere to declare it: `EngineCapabilities` has six fields and none is topology,
-    and both adapter #1 and #2 declare it in prose only. Giving the lakehouse a machine-readable
-    topology means adding a field, which is a contract change (op schema, OpenAPI, MCP, conformance)
-    with no precedent in the tree. The plan states the topology in prose and asks rather than
-    quietly building a contract field inside a docs-first lane.
-12. **Should a `CGO_ENABLED=0` build gate land in CI?** Today the `test` job is `CGO_ENABLED=1 go
-    test -race` and the pure-Go builds happen at release time, so a cgo dependency introduced in a
-    pull request is caught by the release job rather than by the PR. The lakehouse raises the
-    stakes (the temptation being a cgo DuckDB driver for the query path) without causing the gap.
-    The plan proposes the dependency-graph test rather than a full build job, and asks whether
-    closing the gap belongs to this lane or its own.
+    engine has anywhere to declare it: `EngineCapabilities` has six fields, none of them topology,
+    and both adapter #1 and #2 declare it in prose only. **Assumption:** prose, as the two existing
+    engines do. Adding the field is contract-surface work (op schema, OpenAPI, MCP, conformance)
+    with no precedent in the tree.
