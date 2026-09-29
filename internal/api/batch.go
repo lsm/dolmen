@@ -65,10 +65,9 @@ func batchProperties(def map[string]any, drop func(string) bool) (map[string]any
 		}
 		out[name] = sub
 	}
-	raw, _ := def["required"].([]any)
+	raw, _ := def["required"].([]string)
 	required := make([]string, 0, len(raw))
-	for _, r := range raw {
-		name, _ := r.(string)
+	for _, name := range raw {
 		if drop(name) {
 			continue
 		}

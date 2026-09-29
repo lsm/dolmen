@@ -8,6 +8,69 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
+func batchWriteEntry(t *testing.T, k store.BatchWriteKind) map[string]any {
+	t.Helper()
+	for _, alt := range batchAlternatives(t) {
+		if alt.kind == string(k) {
+			return alt.entry
+		}
+	}
+	t.Fatalf("batch advertises no write schema for kind %q", k)
+	return nil
+}
+
+func batchResultEntry(t *testing.T, k store.BatchWriteKind) map[string]any {
+	t.Helper()
+	for _, alt := range batchResultAlternatives(t) {
+		if alt.kind == string(k) {
+			return alt.entry
+		}
+	}
+	t.Fatalf("batch advertises no result schema for kind %q", k)
+	return nil
+}
+
+type batchAlt struct {
+	kind  string
+	entry map[string]any
+}
+
+func batchAlternatives(t *testing.T) []batchAlt {
+	t.Helper()
+	writes, _ := Ops["batch"].InputSchema["properties"].(map[string]any)
+	items, _ := writes["writes"].(map[string]any)
+	oneOf, _ := items["items"].(map[string]any)
+	var out []batchAlt
+	for _, alt := range oneOf["anyOf"].([]any) {
+		entry := alt.(map[string]any)
+		props := entry["properties"].(map[string]any)
+		kind, _ := props["kind"].(map[string]any)
+		enum, _ := kind["enum"].([]any)
+		if len(enum) == 1 {
+			out = append(out, batchAlt{entry: entry, kind: enum[0].(string)})
+		}
+	}
+	return out
+}
+
+func batchResultAlternatives(t *testing.T) []batchAlt {
+	t.Helper()
+	outSchemaTop, _ := Ops["batch"].OutputSchema["properties"].(map[string]any)
+	results, _ := outSchemaTop["results"].(map[string]any)
+	oneOf, _ := results["items"].(map[string]any)
+	var out []batchAlt
+	for _, alt := range oneOf["anyOf"].([]any) {
+		entry := alt.(map[string]any)
+		props := entry["properties"].(map[string]any)
+		kind, _ := props["kind"].(map[string]any)
+		enum, _ := kind["enum"].([]any)
+		if len(enum) == 1 {
+			out = append(out, batchAlt{entry: entry, kind: enum[0].(string)})
+		}
+	}
+	return out
+}
+
 func batchWriteInput(t *testing.T, k store.BatchWriteKind) map[string]any {
 	writes, _ := Ops["batch"].InputSchema["properties"].(map[string]any)
 	items, _ := writes["writes"].(map[string]any)
@@ -42,6 +105,17 @@ func batchWriteResult(t *testing.T, k store.BatchWriteKind) map[string]any {
 	return nil
 }
 
+func requiredOf(t *testing.T, s map[string]any) []string {
+	t.Helper()
+	raw, ok := s["required"].([]string)
+	if !ok {
+		t.Fatalf("schema carries no []string required list: %#v", s["required"])
+	}
+	out := append([]string(nil), raw...)
+	sort.Strings(out)
+	return out
+}
+
 func names(m map[string]any) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -73,6 +147,13 @@ func TestBatchWriteSchemasAreDerivedFromTheAdvertisedOnes(t *testing.T) {
 		got := names(batchWriteInput(t, kind))
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("batch's %s write advertises %v, want the %s input minus the fields a batch sets itself, plus kind: %v", kind, got, kind, want)
+		}
+		entry := batchWriteEntry(t, kind)
+		gotRequired := requiredOf(t, entry)
+		wantRequired := append([]string(nil), want...)
+		sort.Strings(wantRequired)
+		if !reflect.DeepEqual(gotRequired, wantRequired) {
+			t.Fatalf("batch's %s write requires %v, want every advertised field to be required: %v", kind, gotRequired, wantRequired)
 		}
 		for name, def := range batchWriteInput(t, kind) {
 			if name == "kind" {
@@ -107,6 +188,12 @@ func TestBatchResultSchemasAreDerivedFromTheAdvertisedOnes(t *testing.T) {
 		got := names(batchWriteResult(t, kind))
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("batch's %s result advertises %v, want the advertised %s output minus replayed, plus kind: %v", kind, got, kind, want)
+		}
+		gotRequired := requiredOf(t, batchResultEntry(t, kind))
+		wantRequired := append([]string(nil), want...)
+		sort.Strings(wantRequired)
+		if !reflect.DeepEqual(gotRequired, wantRequired) {
+			t.Fatalf("batch's %s result requires %v, want every advertised field: %v", kind, gotRequired, wantRequired)
 		}
 	}
 }
