@@ -152,17 +152,20 @@ func TestBatchOptionsChangeWhatItDoesAndAreHashed(t *testing.T) {
 	}
 
 	writes := []BatchWrite{{Kind: BatchDelete, Table: "notes", Filter: "1=1"}}
-	if _, err := st.Batch(ctx, "app", writes, BatchOptions{IdempotencyKey: "cap"}); err == nil {
-		t.Fatal("a delete over the cap must be refused rather than run")
+	if _, err := st.Batch(ctx, "app", writes, BatchOptions{IdempotencyKey: "cap", Limit: 2}); err == nil {
+		t.Fatal("a delete matching more rows than the explicit cap, without confirm, must be refused")
 	}
-	if _, err := st.Batch(ctx, "app", writes, BatchOptions{IdempotencyKey: "cap", Limit: 10, Confirm: true}); err != nil {
-		t.Fatalf("the same delete with limit and confirm: %v", err)
+	if n := batchRowCount(t, st); n != 3 {
+		t.Fatalf("a refused batch changed the table: %d rows, want 3", n)
+	}
+	if _, err := st.Batch(ctx, "app", writes, BatchOptions{IdempotencyKey: "cap", Limit: 2, Confirm: true}); err != nil {
+		t.Fatalf("the same delete with confirm: %v", err)
 	}
 	if n := batchRowCount(t, st); n != 0 {
 		t.Fatalf("got %d rows, want the delete to have removed all 3", n)
 	}
 
-	if _, err := st.Batch(ctx, "app", writes, BatchOptions{IdempotencyKey: "cap"}); err == nil {
+	if _, err := st.Batch(ctx, "app", writes, BatchOptions{IdempotencyKey: "cap", Limit: 3}); err == nil {
 		t.Fatal("the same key with a body that differs only in limit and confirm must conflict, not replay")
 	}
 }
