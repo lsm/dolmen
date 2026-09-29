@@ -317,6 +317,13 @@ func (h *harness) reopen() {
 	h.start()
 }
 
+func (h *harness) retime(to api.Timeouts) {
+	h.t.Helper()
+	h.timeouts = &to
+	h.apiOpts = []api.Option{api.WithTimeouts(to)}
+	h.reopen()
+}
+
 func (h *harness) close() {
 	h.srv.Close()
 	_ = h.st.Close()

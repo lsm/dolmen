@@ -19,6 +19,8 @@ import (
 
 const endlessQuery = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT count(*) FROM c"
 
+var defaultOp = api.Timeouts{Op: api.DefaultOpTimeout}
+
 func postWithin(t *testing.T, url string, body any, limit time.Duration) (int, map[string]any, time.Duration) {
 	t.Helper()
 	raw, err := json.Marshal(body)
@@ -51,8 +53,9 @@ func errorOf(t *testing.T, env map[string]any) (string, string) {
 }
 
 func TestAnOperationPastItsLimitAnswersTimeoutOnEveryTransport(t *testing.T) {
-	h := newHarnessTimeouts(t, api.Timeouts{Op: 300 * time.Millisecond})
+	h := newHarnessTimeouts(t, defaultOp)
 	h.ensureNS("slow")
+	h.retime(api.Timeouts{Op: 300 * time.Millisecond})
 	want := "query did not finish within the server's 300ms operation time limit (-op-timeout, DOLMEN_OP_TIMEOUT)"
 
 	status, out, took := postWithin(t, h.httpURL+"/query", map[string]any{"namespace": "slow", "sql": endlessQuery}, 20*time.Second)
@@ -71,6 +74,7 @@ func TestAnOperationPastItsLimitAnswersTimeoutOnEveryTransport(t *testing.T) {
 		t.Fatalf("MCP must carry the same timeout envelope as /v1, got %v", env)
 	}
 
+	h.retime(defaultOp)
 	data := h.mustHTTP("query", map[string]any{"namespace": "slow", "sql": "SELECT 1 AS one"})
 	if rows, _ := data["rows"].([]any); len(rows) != 1 {
 		t.Fatalf("the namespace must still answer after an interrupted statement, got %v", data)
@@ -78,11 +82,12 @@ func TestAnOperationPastItsLimitAnswersTimeoutOnEveryTransport(t *testing.T) {
 }
 
 func TestAWriteThatOverrunsItsLimitCommitsNothing(t *testing.T) {
-	h := newHarnessTimeouts(t, api.Timeouts{Op: 200 * time.Millisecond})
+	h := newHarnessTimeouts(t, defaultOp)
 	h.seedTable("slowemb", "notes", []map[string]any{{"name": "body", "type": "text", "vectorize": true}})
 	h.emb.mu.Lock()
 	h.emb.delay = 5 * time.Second
 	h.emb.mu.Unlock()
+	h.retime(api.Timeouts{Op: 200 * time.Millisecond})
 
 	status, out, took := postWithin(t, h.httpURL+"/insert", map[string]any{
 		"namespace": "slowemb", "table": "notes", "records": []map[string]any{{"body": "hello"}},
@@ -100,6 +105,7 @@ func TestAWriteThatOverrunsItsLimitCommitsNothing(t *testing.T) {
 	h.emb.mu.Lock()
 	h.emb.delay = 0
 	h.emb.mu.Unlock()
+	h.retime(defaultOp)
 	data := h.mustHTTP("query", map[string]any{"namespace": "slowemb", "sql": "SELECT count(*) AS n FROM notes"})
 	if rows, _ := data["rows"].([]any); len(rows) != 1 || fmt.Sprint(rows[0].(map[string]any)["n"]) != "0" {
 		t.Fatalf("the timed-out insert must have committed nothing, got %v", data)
@@ -107,8 +113,9 @@ func TestAWriteThatOverrunsItsLimitCommitsNothing(t *testing.T) {
 }
 
 func TestWaitForKeepsItsOwnTimeoutOnTopOfTheOperationLimit(t *testing.T) {
-	h := newHarnessTimeouts(t, api.Timeouts{Op: 200 * time.Millisecond, Write: 200 * time.Millisecond})
+	h := newHarnessTimeouts(t, defaultOp)
 	h.seedTable("waits", "t", []map[string]any{{"name": "body", "type": "text"}})
+	h.retime(api.Timeouts{Op: 200 * time.Millisecond, Write: 200 * time.Millisecond})
 
 	status, out, took := postWithin(t, h.httpURL+"/wait_for", map[string]any{"namespace": "waits", "table": "t", "timeout_ms": 700}, 20*time.Second)
 	if status != http.StatusOK || out["ok"] != true {
@@ -133,8 +140,9 @@ func TestMigrateAnswersToItsOwnLimitNotTheOperationLimit(t *testing.T) {
 	}
 	vectorize := map[string]any{"namespace": "mig", "table": "notes", "changes": []map[string]any{{"op": "set_vectorize", "name": "body", "value": true}}}
 
-	bounded := newHarnessTimeouts(t, api.Timeouts{Op: 100 * time.Millisecond, Migrate: 200 * time.Millisecond})
+	bounded := newHarnessTimeouts(t, defaultOp)
 	seed(bounded)
+	bounded.retime(api.Timeouts{Op: 100 * time.Millisecond, Migrate: 200 * time.Millisecond})
 	status, out, _ := postWithin(t, bounded.httpURL+"/migrate", vectorize, 20*time.Second)
 	if status != http.StatusGatewayTimeout {
 		t.Fatalf("a backfill past -migrate-timeout: status %d, want 504: %v", status, out)
@@ -142,12 +150,14 @@ func TestMigrateAnswersToItsOwnLimitNotTheOperationLimit(t *testing.T) {
 	if code, msg := errorOf(t, out); code != "timeout" || !strings.Contains(msg, "migrate did not finish within the server's 200ms migration time limit (-migrate-timeout, DOLMEN_MIGRATE_TIMEOUT)") {
 		t.Fatalf("got %s %q", code, msg)
 	}
+	bounded.retime(defaultOp)
 	if v := tableVersion(bounded, "mig", "notes"); fmt.Sprint(v) != "1" {
 		t.Fatalf("the stopped migration must leave the table at version 1, got %v", v)
 	}
 
-	unbounded := newHarnessTimeouts(t, api.Timeouts{Op: 100 * time.Millisecond})
+	unbounded := newHarnessTimeouts(t, defaultOp)
 	seed(unbounded)
+	unbounded.retime(api.Timeouts{Op: 100 * time.Millisecond})
 	status, out, took := postWithin(t, unbounded.httpURL+"/migrate", vectorize, 20*time.Second)
 	if status != http.StatusOK || out["ok"] != true {
 		t.Fatalf("with no migration limit the same backfill must finish, whatever -op-timeout says: status %d %v", status, out)
@@ -155,6 +165,7 @@ func TestMigrateAnswersToItsOwnLimitNotTheOperationLimit(t *testing.T) {
 	if took < 500*time.Millisecond {
 		t.Fatalf("the migration finished in %s, before the provider's delay, so it proves nothing about the operation limit", took)
 	}
+	unbounded.retime(defaultOp)
 	if v := tableVersion(unbounded, "mig", "notes"); fmt.Sprint(v) != "2" {
 		t.Fatalf("the finished migration must bump the version to 2, got %v", v)
 	}
