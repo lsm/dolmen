@@ -68,7 +68,15 @@ namespace is an Iceberg catalog in its own SQLite file; slice 5 that schema evol
 typed reads match the contract; slice 8 that point deletes are position deletes; slice 9 that
 search is native and exact; slice 10 that the change feed is gap-free per namespace; slice 12 that
 the engine is publicly selectable; slice 13 that `subscribe` works or is honestly declared
-unavailable, which §9.3 permits and which `wait_for` never may be.
+unavailable, which §9.3 permits and which `wait_for` never may be; and slice 14 that small files
+get rewritten on a schedule and the maintenance op is documented — the one that bounds the
+position-delete accumulation §4.2 accepts deliberately.
+
+**Slice 8 and slice 14 are the same problem seen from two ends.** Position deletes are chosen
+because iceberg-go v0.6.0 cannot read deletion vectors (§4.2), and that choice is only sound if
+nothing is left to accumulate forever. So slice 8 is not shippable as a stable tier without slice
+14's compaction behind it; they are sequenced apart in the table because they are separate PRs, not
+because either is optional.
 
 ### The pins, which now land with slice 4
 
