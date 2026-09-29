@@ -3,6 +3,7 @@ package duckdblockdown
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -57,12 +58,26 @@ func newFixture(t *testing.T) *fixture {
 	if err := os.Symlink(LockdownDir(sibling), inside); err != nil {
 		t.Skipf("this platform does not allow the symlink fixture: %v", err)
 	}
+	seedParquetCanary(t, bin, filepath.Join(LockdownDir(sibling), "canary.parquet"))
 	locked, err := Lock(Options{Bin: bin, Namespace: ns, MemoryLimit: "512MiB", Threads: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { locked.Close() })
 	return &fixture{locked: locked, nsDir: ns, sibling: sibling, canary: canary}
+}
+
+func seedParquetCanary(t *testing.T, bin, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	dir := t.TempDir()
+	cmd := exec.Command(bin, "-c", "COPY (SELECT 9::BIGINT AS id, 'secret-sibling-namespace' AS v) TO '"+path+"' (FORMAT PARQUET);")
+	cmd.Env = append(os.Environ(), "HOME="+dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("this duckdb build could not write a parquet canary, so the read_parquet case cannot be measured: %v: %s", err, out)
+	}
 }
 
 func (f *fixture) ctx(t *testing.T) context.Context {
@@ -126,6 +141,7 @@ func TestConfinementBlocksEveryFilesystemEscape(t *testing.T) {
 	siblingData := LockdownDir(f.sibling)
 	ownEscape := filepath.Join(f.locked.DataDir, "escape")
 	catalog := filepath.Join(f.nsDir, "catalog.db")
+	parquet := filepath.Join(siblingData, "canary.parquet")
 	cases := []struct {
 		name string
 		sql  string
@@ -136,12 +152,12 @@ func TestConfinementBlocksEveryFilesystemEscape(t *testing.T) {
 		{"read through a symlink planted inside the allowed directory", "SELECT * FROM read_csv_auto('" + filepath.Join(ownEscape, "canary.csv") + "');"},
 		{"traverse out with ..", "SELECT * FROM read_csv_auto('" + f.locked.DataDir + "/../../sibling/data/canary.csv');"},
 		{"copy to outside the directory", "COPY (SELECT 1 AS a) TO '" + filepath.Join(siblingData, "pwned.csv") + "';"},
-		{"copy from outside the directory", "CREATE TABLE t(a INT); COPY t FROM '" + f.canary + "';"},
+		{"copy from outside the directory", "CREATE TABLE t(a BIGINT, v VARCHAR); COPY t FROM '" + f.canary + "';"},
 		{"copy to a shell program", "COPY (SELECT 1) TO PROGRAM 'id > " + filepath.Join(siblingData, "pwned.txt") + "';"},
-		{"read parquet outside", "SELECT * FROM read_parquet('" + filepath.Join(siblingData, "*.parquet") + "');"},
+		{"read parquet outside", "SELECT * FROM read_parquet('" + parquet + "');"},
 		{"read text outside", "SELECT * FROM read_text('" + f.canary + "');"},
 		{"glob outside", "SELECT * FROM glob('" + filepath.Join(siblingData, "*") + "');"},
-		{"read an http url", "SELECT * FROM read_csv_auto('https://example.com/x.csv');"},
+		{"read an http url", "SELECT * FROM read_csv_auto('https://duckdb.org/data/tpch/0_01/parquet/orders.parquet');"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -151,6 +167,9 @@ func TestConfinementBlocksEveryFilesystemEscape(t *testing.T) {
 			}
 			if res.ExitCode == 0 {
 				t.Fatalf("confinement did not block %q: exit 0, output %q", c.name, res.Combined())
+			}
+			if !res.ContainsAny("file system operations are disabled", "disabled by configuration", "disabled through configuration") {
+				t.Fatalf("%q failed for a reason that is not confinement, so it proves nothing about the sandbox: %q", c.name, res.Combined())
 			}
 			if res.ContainsAny("secret-sibling-namespace", "sqlite-catalog") {
 				t.Fatalf("%q returned data it must not reach: %q", c.name, res.Combined())
@@ -162,12 +181,49 @@ func TestConfinementBlocksEveryFilesystemEscape(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		seeded := map[string]bool{"canary.csv": true, "canary.parquet": true}
 		for _, e := range entries {
-			if e.Name() != "canary.csv" {
+			if !seeded[e.Name()] {
 				t.Fatalf("a confined write landed in the sibling namespace: %s", e.Name())
 			}
 		}
 	})
+}
+
+func TestTheEscapeBatteryDetectsAMissingSandbox(t *testing.T) {
+	bin := duckdbBinary(t)
+	root := t.TempDir()
+	ns := filepath.Join(root, "ns")
+	sibling := filepath.Join(root, "sibling")
+	if err := os.MkdirAll(LockdownDir(ns), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(LockdownDir(sibling), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	canary := filepath.Join(LockdownDir(sibling), "canary.csv")
+	if err := os.WriteFile(canary, []byte("id,v\n9,secret-sibling-namespace\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unlocked := Locked{Bin: bin, Home: t.TempDir(), DataDir: LockdownDir(ns)}
+	ctx := fctx(t)
+	res, err := unlocked.Run(ctx, "SELECT * FROM read_csv_auto('"+canary+"');")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ExitCode != 0 || !strings.Contains(res.Stdout, "secret-sibling-namespace") {
+		t.Skipf("this duckdb build is already confined without the settings, so the battery cannot be shown to detect a missing sandbox: %q", res.Combined())
+	}
+	if res.ContainsAny("file system operations are disabled", "disabled by configuration", "disabled through configuration") {
+		t.Fatalf("an unconfigured engine already refuses, so the battery's assertion cannot distinguish locked from unlocked: %q", res.Combined())
+	}
+}
+
+func fctx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	t.Cleanup(cancel)
+	return ctx
 }
 
 func TestConfinementBlocksExtensionInstallAndLoad(t *testing.T) {
