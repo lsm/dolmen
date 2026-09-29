@@ -366,6 +366,67 @@ not by a predicate that guesses. Reintroducing filtering needs the Q4 decision r
   change confinement silently. The CI job asserts the settings actually took effect, which is what
   catches that.
 
+### 2.6 Q5 compared: in-process pure Go against the DuckDB sidecar
+
+**Measured 2026-09-29, both against the same attacks.** The in-process engine is
+`spike/inprocess` (a nested module, so a "no" leaves dolmen's `go.mod` and its binary
+byte-identical); the sidecar is §2.5's `internal/duckdblockdown`. This is the evidence Q5 asked
+for, and it changes Q5's shape: the in-process option is no longer a live alternative, so the
+question is not "which engine" but "is a second released binary acceptable".
+
+| | **go-mysql-server, in process** | **DuckDB, child process** |
+|---|---|---|
+| **pure Go** | **yes** — `CGO_ENABLED=0` builds, no `runtime/cgo`, no `CgoFiles` in the graph | no — needs a separate binary, which is the point |
+| **file read/write escapes** | **open.** `LOAD_FILE()` returned a file's bytes and `INTO OUTFILE` wrote the table's rows to disk, both under `IsReadOnly` + `IsServerLocked`, and **no `SET` closes either** — `secure_file_priv` is a read-only variable and there is no equivalent knob | **closed.** every path refused, with the failure proven to be the sandbox's |
+| **cross-namespace reads** | **open in-process.** a registered database is reachable by name; `SHOW DATABASES` and `information_schema.schemata` enumerate every namespace, violating §0.5.2's existence hiding | **impossible.** the process only ever sees one data directory |
+| **one engine per namespace** | possible, but not with a shared analyzer — reusing one panics (`get_lock` is already registered), so it means an analyzer each. The in-process reachability below is unaffected either way | one process per namespace, as §2.1 requires |
+| **binary cost** | **+61 MiB, +131%** — two minimal mains, one empty (1,815,330 bytes) and one importing go-mysql-server (66,288,882), so dolmen's 46.8 MiB binary would reach ~108 MiB. CI recomputes it | +19 MB, and external |
+| **packaging** | nothing to ship | helper binary, second release artifact, an SBOM that cannot describe it, a distroless change (§3) |
+| **dialect** | `mysql` — legal under D28 by disclosure, but a third branch in `skill/dolmen.md` and a new portability story for callers | `duckdb` — also a third value, same shape |
+| **type mapping** | lossy where MySQL is: a dolmen `boolean` reads back as `int8`, so `internal/value` needs a mapping layer | DuckDB's `BOOLEAN` is a real bool |
+| **Parquet-backed table** | works — scanned and filtered through the engine | not applicable; DuckDB reads Parquet natively |
+| **transport** | n/a | **needs a wrapper we would build and ship** — see below |
+
+**The in-process engine loses on the one axis the lane exists for.** §0.5.3 makes confinement an
+engine obligation and Q4 rules out a statement filter, so an engine that cannot confine by
+construction cannot be made to conform at all — and this one cannot: the file escapes are open and
+unclosable, which is not a gap to be closed later but the library's shipped behaviour. Its
+per-namespace reachability is the deeper version of the same problem: the plan's premise for the
+sidecar is "the engine has nothing else to reach", which is true of a process and false of an
+in-process engine sharing one catalog.
+
+**What the in-process option does buy, recorded so the trade is not overstated**: it is the only
+candidate that is pure Go, and a subpackage boundary would keep the +61 MiB off programs that do
+not use the engine. If confinement were closable it would still be a large cost for a large gain —
+which is why the measurement mattered rather than the assumption.
+
+### 2.7 The DuckDB socket does not exist in the stock release
+
+Mechanism 2 (§2.2) was never run in §2.5, and the answer is that **it cannot be, without a
+wrapper dolmen builds and ships**:
+
+- **The stock `duckdb` CLI has no listener.** No `-listen`, `-socket` or `-port` flag; it speaks
+  line-oriented stdio, which is exactly what §2.5 proved unsafe.
+- **One extension claims a server protocol — `quack`, "The DuckDB 'Quack' Client/Server
+  Protocol" — and it is not obtainable.** `INSTALL quack FROM community` returns HTTP 404 on
+  `linux_amd64`, `linux_arm64`, `osx_arm64` and `windows_amd64`, while published extensions on the
+  same host return 200. It is registered in the extension list but unpublished.
+- **And loading it would not fit the lockdown anyway.** Under §2.4's settings, `LOAD` of an
+  extension that is not installed **silently succeeds and does nothing** — the statement passes,
+  the next statement runs, and no server appears. `INSTALL` is refused outright, because the
+  extension directory is outside the allowed data directory.
+
+So the choice for slice 11 is narrow and worth stating plainly: **a custom wrapper, shipped and
+released per platform** (six platforms, a second artifact, the SBOM gap of §3, and a component dolmen
+must then keep in step with DuckDB's own release cadence), **or a stdio transport with a
+newline-escape hole in it**, which Q4's "DuckDB's own settings are the only guard" makes
+unacceptable because no setting reaches a dot-command. The middle option does not exist in v1.5.6.
+
+**What stays untested here:** a future DuckDB may publish a server-protocol extension, or the CLI
+may grow a listener flag. The `duckdb-lockdown` CI job does not currently assert either, and a
+change there would not fail a build — so re-check this before slice 11 rather than trusting it to
+stay true.
+
 ---
 
 ## 3. Packaging: the DuckDB side when dolmen is one `CGO_ENABLED=0` binary
@@ -835,6 +896,12 @@ question can be answered later without unwinding work.
    is the guard, and `allowed_directories` *widens* what stays reachable rather than narrowing it.
    Set the list alone and there is no sandbox at all.
 
+5. **Is a second released binary acceptable?** (research §2 open question 3, unanswered since
+   2026-09-14.) **Answered by the two spikes on 2026-09-29: the in-process option is off the table,
+   so the cost is §3's and Marc's to accept.** See §2.6 for the side-by-side and what it settles.
+   The short form: the in-process engine is pure Go but does not confine, DuckDB confines but needs
+   a second artifact, and the trade is no longer "which engine" — it is "a helper binary, yes or no".
+
 6. **Shared-Go BM25, or native?** **D27 settles it** — native, per-engine ranking, as
    [postgresql.md](postgresql.md) already does for adapter #2. No spec amendment. Slice 9 is
    planned this way and the plan's original "Q6 asks for confirmation" is withdrawn.
@@ -871,14 +938,6 @@ Each carries the assumption the plan runs on meanwhile.
    `embedder_unavailable` (`sql_engine_unavailable` is the name it would take), with `query_error`
    reserved for SQL the engine itself rejected. Note this becomes moot if Q2's amendment path is
    taken, since there is no sidecar to be down.
-
-5. **Is a second released binary acceptable?** (research §2 open question 3, unanswered since
-   2026-09-14.) **Still open, and now the whole of §3's cost applies** — the spike confirmed the
-   DuckDB path works, so a helper binary is what shipping it costs: option A, a helper dolmen ships
-   and releases, with `-duckdb-path` for a system DuckDB; `make release` handling a downloaded
-   non-Go artifact across six platforms; an SBOM that cannot describe it; and a distroless runtime
-   stage that has to change. The in-process candidate in Q2 would dissolve all of that, and the
-   spike is what makes that trade worth putting to Marc explicitly rather than assuming A.
 
 7. **Where does full-text ranking run?** D27 settles that it is not shared, not *where*.
    **Assumption:** Go-side in the Iceberg tier, so full text does not depend on a sidecar being

@@ -73,6 +73,42 @@ jobs:
       - name: Check no comments
         run: go run github.com/lsm/nocomment-for-agents/go@016ad219e84b9b78ca66ff1b66a7729218030c12 --check
 
+  inprocess-sql:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: spike/inprocess
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Build with cgo disabled
+        run: CGO_ENABLED=0 go build ./...
+      - name: Vet with cgo disabled
+        run: CGO_ENABLED=0 go vet ./...
+      - name: Vulnerability gate
+        run: |
+          set -eu
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          CGO_ENABLED=0 "$(go env GOPATH)/bin/govulncheck" ./...
+      - name: Confinement, type mapping and scan tests
+        run: go test -count=1 -shuffle=on -v ./...
+      - name: Check no comments
+        working-directory: .
+        run: go run github.com/lsm/nocomment-for-agents/go@016ad219e84b9b78ca66ff1b66a7729218030c12 --check
+      - name: Binary size cost
+        run: |
+          set -eu
+          CGO_ENABLED=0 go build -trimpath -o size-empty ./cmd/empty
+          CGO_ENABLED=0 go build -trimpath -o size-gms ./cmd/size
+          e=$(stat -c %s size-empty); g=$(stat -c %s size-gms)
+          echo "empty binary:        $e"
+          echo "with go-mysql-server: $g"
+          echo "delta:               $((g - e)) bytes ($(( (g - e) / 1048576 )) MiB)"
+      - name: Query timings
+        run: go test -count=1 -run XXX -bench . -benchtime 20x .
+
   duckdb-lockdown:
     runs-on: ubuntu-latest
     steps:
