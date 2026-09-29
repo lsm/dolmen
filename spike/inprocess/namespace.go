@@ -2,6 +2,7 @@ package inprocess
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -27,11 +28,11 @@ type Namespace struct {
 }
 
 var (
-	sharedEngine  *gms.Engine
-	sharedProv    *memory.DbProvider
-	sharedNames   = map[string]bool{}
-	sharedMu      sync.Mutex
-	sharedOptsSet bool
+	sharedEngine *gms.Engine
+	sharedProv   *memory.DbProvider
+	sharedNames  = map[string]bool{}
+	sharedMu     sync.Mutex
+	engineOpts   Options
 )
 
 func engineFor(opts Options) *gms.Engine {
@@ -44,6 +45,11 @@ func engineFor(opts Options) *gms.Engine {
 			IsReadOnly:     opts.ReadOnly,
 			IsServerLocked: opts.Locked,
 		})
+		engineOpts = opts
+		return sharedEngine
+	}
+	if engineOpts != opts {
+		panic(fmt.Sprintf("inprocess: the engine already exists with confinement %+v and cannot be rebuilt with %+v; go-mysql-server registers global functions and panics on a second engine", engineOpts, opts))
 	}
 	return sharedEngine
 }
@@ -58,6 +64,10 @@ type TableSpec struct {
 	Name    string
 	Columns []Column
 	Rows    [][]any
+}
+
+func useUnconfinedEngine(t interface{ Cleanup(func()) }) {
+	t.Cleanup(resetEngine)
 }
 
 func NewNamespace(name string, opts Options) *Namespace {
@@ -87,7 +97,7 @@ func NewNamespace(name string, opts Options) *Namespace {
 }
 
 func (n *Namespace) WithOther(name string, seedFn func(*Namespace) error) (*Namespace, error) {
-	other := NewNamespace(name, Options{})
+	other := NewNamespace(name, engineOpts)
 	n.other = other
 	if seedFn != nil {
 		if err := seedFn(other); err != nil {
@@ -179,4 +189,5 @@ func resetEngine() {
 	sharedEngine = nil
 	sharedProv = nil
 	sharedNames = map[string]bool{}
+	engineOpts = Options{}
 }

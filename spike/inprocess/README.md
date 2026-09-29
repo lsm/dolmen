@@ -56,11 +56,13 @@ true of a process and **not** true of an in-process engine sharing one catalog.
   the engine, exactly as `postgres.With` does — but the cost lands on every
   program that *does*, and there is no way to avoid it, since "in-process" is the
   whole proposition.
-- **One engine per process.** go-mysql-server registers global functions and
-  panics (`function 'get_lock' is already registered`) on a second engine, so an
-  engine per namespace is not available; the engine is a process-wide singleton
-  and namespaces are databases inside it. That is the same in-process
-  reachability the confinement table above shows, from the other direction.
+- **Sharing an analyzer across engines panics; separate engines are fine.**
+  Constructing two engines with their own analyzers works. Reusing one analyzer
+  for a second engine panics with `function 'get_lock' is already registered`.
+  So one engine per namespace is *mechanically possible* — it just means an
+  analyzer each, which is heavier than the plan's per-namespace process anyway and
+  changes nothing about the confinement findings below, which are about what a
+  caller can reach once the engine is in-process.
 - **The dialect is `mysql`, not a neutral SQL.** §D28's obligation is
   disclosure, so this is a legal choice and it is a new value in a set that
   already has `sqlite` and `postgresql`. For callers: backtick quoting, `LIMIT`

@@ -379,7 +379,7 @@ question is not "which engine" but "is a second released binary acceptable".
 | **pure Go** | **yes** — `CGO_ENABLED=0` builds, no `runtime/cgo`, no `CgoFiles` in the graph | no — needs a separate binary, which is the point |
 | **file read/write escapes** | **open.** `LOAD_FILE()` returned a file's bytes and `INTO OUTFILE` wrote the table's rows to disk, both under `IsReadOnly` + `IsServerLocked`, and **no `SET` closes either** — `secure_file_priv` is a read-only variable and there is no equivalent knob | **closed.** every path refused, with the failure proven to be the sandbox's |
 | **cross-namespace reads** | **open in-process.** a registered database is reachable by name; `SHOW DATABASES` and `information_schema.schemata` enumerate every namespace, violating §0.5.2's existence hiding | **impossible.** the process only ever sees one data directory |
-| **one engine per namespace** | **not available** — global function registration panics on a second engine, so it is a process-wide singleton | one process per namespace, as §2.1 requires |
+| **one engine per namespace** | possible, but not with a shared analyzer — reusing one panics (`get_lock` is already registered), so it means an analyzer each. The in-process reachability below is unaffected either way | one process per namespace, as §2.1 requires |
 | **binary cost** | **+60.7 MiB, +130%** (46.8 → ~107.5 MiB) | +19 MB, and external |
 | **packaging** | nothing to ship | helper binary, second release artifact, an SBOM that cannot describe it, a distroless change (§3) |
 | **dialect** | `mysql` — legal under D28 by disclosure, but a third branch in `skill/dolmen.md` and a new portability story for callers | `duckdb` — also a third value, same shape |

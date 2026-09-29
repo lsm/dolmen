@@ -5,6 +5,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	gms "github.com/dolthub/go-mysql-server"
+	"github.com/dolthub/go-mysql-server/memory"
+	"github.com/dolthub/go-mysql-server/sql/analyzer"
 )
 
 func seed(t *testing.T, opts Options) *Namespace {
@@ -31,6 +35,7 @@ func seed(t *testing.T, opts Options) *Namespace {
 }
 
 func TestTheEngineBuildsPureGo(t *testing.T) {
+	useUnconfinedEngine(t)
 	ns := seed(t, Options{})
 	if ns.Engine == nil {
 		t.Fatal("no engine")
@@ -38,6 +43,7 @@ func TestTheEngineBuildsPureGo(t *testing.T) {
 }
 
 func TestAScanAndAFilterReturnTheRows(t *testing.T) {
+	useUnconfinedEngine(t)
 	ns := seed(t, Options{})
 	rows, err := ns.Query("SELECT id, body FROM notes WHERE id = 2")
 	if err != nil {
@@ -59,6 +65,7 @@ func TestAScanAndAFilterReturnTheRows(t *testing.T) {
 }
 
 func TestDolmenFieldTypesMapOntoTheEngine(t *testing.T) {
+	useUnconfinedEngine(t)
 	ns := seed(t, Options{})
 	rows, err := ns.Query("SELECT id, score, flag FROM notes ORDER BY id")
 	if err != nil {
@@ -79,6 +86,7 @@ func TestDolmenFieldTypesMapOntoTheEngine(t *testing.T) {
 }
 
 func TestOneEnginePerProcess(t *testing.T) {
+	useUnconfinedEngine(t)
 	a := NewNamespace("ns_a", Options{})
 	b := NewNamespace("ns_b", Options{})
 	if a.Engine != b.Engine {
@@ -87,6 +95,29 @@ func TestOneEnginePerProcess(t *testing.T) {
 	if a.DB == b.DB {
 		t.Fatal("two namespaces share a database")
 	}
+}
+
+func TestTheLibraryItselfRefusesASecondEngine(t *testing.T) {
+	useUnconfinedEngine(t)
+	first := memory.NewDBProvider()
+	_ = gms.New(analyzer.NewDefault(first), &gms.Config{})
+	second := memory.NewDBProvider()
+	_ = gms.New(analyzer.NewDefault(second), &gms.Config{})
+	t.Log("two independently constructed engines coexist, so the constraint is not that only one engine may exist")
+}
+
+func TestASharedAnalyzerRefusesASecondEngine(t *testing.T) {
+	useUnconfinedEngine(t)
+	a := analyzer.NewDefault(memory.NewDBProvider())
+	_ = gms.New(a, &gms.Config{})
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("reusing one analyzer for a second engine succeeded; if it keeps working an engine per namespace is available and the constraint is not real")
+		}
+		t.Logf("reusing one analyzer for a second engine panics: %v", r)
+	}()
+	_ = gms.New(a, &gms.Config{})
 }
 
 func TestCrossNamespaceReadsAreNotConfined(t *testing.T) {
