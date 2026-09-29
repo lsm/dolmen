@@ -84,11 +84,18 @@ full pin-keeping list.
 `ValidateEngine`, the `"lakehouse"` case to both resolvers, and — the point of the slice — the
 suite's refusal to open it: `openEngineStoreTraced` gains a branch that returns a teaching error
 naming the slice that lands the engine. Every existing test stays green, which is the proof that
-the third engine cost nothing yet. It also widens the skip helpers: `sqliteOnly` is currently
-sqlite-or-postgres in disguise (it skips anything that is not SQLite), and with a third engine a
-"skip unless sqlite" reading silently becomes "skip unless sqlite" for a different reason. Slice 3
-replaces it with two named helpers — `sqliteInternalsOnly` and a per-engine extended-grammar skip
-— and does not touch any test's meaning.
+the third engine cost nothing yet. It also splits the skip helper, and the reason is a name that has
+come to mean two things. `sqliteOnly` ([internal/conformance/engine_test.go](../../internal/conformance/engine_test.go))
+skips whenever the active engine is not SQLite, and its call sites are not all the same kind of
+skip: some probe SQLite **storage internals** and could never run on a different engine, while
+others encode a fact about SQLite's **grammar** — the extended-FTS syntax adapter #2 also refuses —
+which is a per-engine decision rather than a storage fact. Two engines is why that has gone
+unnoticed. A third engine turns it into a live hazard in the direction the name hides: a
+Postgres-specific skip written as "not this engine" silently widens to skip on the lakehouse too,
+and a lakehouse gap behind a test that was always meant to be about Postgres reads as coverage
+that passed. Slice 3 splits it into helpers named for the **reason** — one for storage-internal
+probes, one per engine's extended-grammar support — so a call site has to say which it is, and no
+test's meaning changes.
 
 ---
 
@@ -505,9 +512,14 @@ paths escape.
 | 12 | **The full suite**, plus `./internal/blackbox` driven against the real binary with `-engine lakehouse`. |
 | 13 | `subscribe` only if it is implemented. |
 
-**What skips, and why.** The same categories adapter #2 skips: probes of storage internals
-(`outofband_test.go`'s FTS5 surgery, storage-class surgery, `CAST(... AS BLOB)` alias semantics),
-and the extended-FTS syntax this engine refuses. The **contract-facing fidelity assertions keep
+**What skips, and why.** The same categories adapter #2 skips: probes of storage internals, and the
+extended-FTS syntax this engine refuses. Those probes are the out-of-band writes that reach past the
+API and operate on the storage file directly — the FTS5 stemming surgery in `search_test.go`, the
+blob and storage-class surgery in `limits_test.go` and `waitfor_test.go`, all of which go through
+`h.outOfBand`; and separately the `CAST(... AS BLOB)` alias semantics in `coercion_test.go`, which
+needs no out-of-band write and skips for being a SQLite type-affinity behaviour. (The helper those
+writes go through, `outofband_test.go`, contains only the `openSQL` wrapper and no tests of its
+own; it is the *callers* that are SQLite-only.) The **contract-facing fidelity assertions keep
 running** — negative-zero normalization, int64 endpoints, exponent-format bands — because they are
 the validation of the normalization layer, and skipping them would leave the contract unpinned on
 this engine. Error-message pins fork **by input, not by assertion**: subtests whose SQL is valid on
