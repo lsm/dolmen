@@ -134,7 +134,7 @@ func lowerRecordKeys(records []map[string]any) []map[string]any {
 	return out
 }
 
-func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName string, writes []BatchWrite) (IdemHash, error) {
+func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName string, writes []BatchWrite, opts BatchOpts) (IdemHash, error) {
 	schemas := make(map[string]*schema.TableSchema, len(writes))
 	secrets := false
 	for i, w := range writes {
@@ -164,7 +164,11 @@ func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName strin
 			}
 			sealed = append(sealed, c)
 		}
-		raw, err := json.Marshal(sealed)
+		raw, err := json.Marshal(struct {
+			Limit   int          `json:"limit"`
+			Confirm bool         `json:"confirm"`
+			Writes  []BatchWrite `json:"writes"`
+		}{Limit: opts.Limit, Confirm: opts.Confirm, Writes: sealed})
 		if err != nil {
 			return "", err
 		}
@@ -390,7 +394,7 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 		if err := ensureBatchIdem(ctx, wt.tx); err != nil {
 			return BatchResult{}, true, err
 		}
-		hash, err = s.batchPayloadHash(ctx, wt.tx, nsName, writes)
+		hash, err = s.batchPayloadHash(ctx, wt.tx, nsName, writes, opts)
 		if err != nil {
 			return BatchResult{}, true, err
 		}

@@ -53,7 +53,7 @@ func lowerRecordKeys(records []map[string]any) []map[string]any {
 	return out
 }
 
-func (s *Store) batchPayloadHash(ctx context.Context, tx pgx.Tx, n namespace, writes []store.BatchWrite) (store.IdemHash, error) {
+func (s *Store) batchPayloadHash(ctx context.Context, tx pgx.Tx, n namespace, writes []store.BatchWrite, opts store.BatchOpts) (store.IdemHash, error) {
 	states := make(map[string]tableState, len(writes))
 	secrets := false
 	for i, w := range writes {
@@ -83,7 +83,11 @@ func (s *Store) batchPayloadHash(ctx context.Context, tx pgx.Tx, n namespace, wr
 			}
 			sealed = append(sealed, c)
 		}
-		raw, err := json.Marshal(sealed)
+		raw, err := json.Marshal(struct {
+			Limit   int                `json:"limit"`
+			Confirm bool               `json:"confirm"`
+			Writes  []store.BatchWrite `json:"writes"`
+		}{Limit: opts.Limit, Confirm: opts.Confirm, Writes: sealed})
 		if err != nil {
 			return "", err
 		}
@@ -253,7 +257,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 		var hash store.IdemHash
 		var err error
 		if opts.IdempotencyKey != "" {
-			hash, err = s.batchPayloadHash(ctx, tx, n, writes)
+			hash, err = s.batchPayloadHash(ctx, tx, n, writes, opts)
 			if err != nil {
 				return err
 			}
