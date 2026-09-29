@@ -190,6 +190,36 @@ func TestConfinementBlocksEveryFilesystemEscape(t *testing.T) {
 	})
 }
 
+func TestAQuoteInThePathCannotAlterTheLock(t *testing.T) {
+	bin := duckdbBinary(t)
+	root := t.TempDir()
+	ns := filepath.Join(root, "it's a namespace")
+	if err := os.MkdirAll(LockdownDir(ns), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	locked, err := Lock(Options{Bin: bin, Namespace: ns})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locked.Close()
+	rc, err := os.ReadFile(locked.RCD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rc), "it''s a namespace") {
+		t.Fatalf("the single quote in the data path was not doubled, so path content can terminate the string literal: %s", rc)
+	}
+	if strings.Contains(string(rc), "it's a namespace") {
+		t.Fatalf("an unescaped quote reached the lock file: %s", rc)
+	}
+	if err := locked.VerifySettings(fctx(t)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(locked.DataDir, "it's a namespace") {
+		t.Fatalf("the fixture did not use a path with a quote in it: %q", locked.DataDir)
+	}
+}
+
 func TestTheEscapeBatteryDetectsAMissingSandbox(t *testing.T) {
 	bin := duckdbBinary(t)
 	root := t.TempDir()

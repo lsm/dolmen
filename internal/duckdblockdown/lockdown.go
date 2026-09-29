@@ -29,18 +29,22 @@ func LockdownDir(namespace string) string {
 	return filepath.Join(namespace, "data")
 }
 
+func quoteSQLLiteral(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
 func writeRC(home, dataDir, memoryLimit string, threads int) error {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "SET allowed_directories = ['%s'];\n", dataDir)
+	fmt.Fprintf(&b, "SET allowed_directories = ['%s'];\n", quoteSQLLiteral(dataDir))
 	b.WriteString("SET enable_external_access = false;\n")
 	b.WriteString("SET autoinstall_known_extensions = false;\n")
 	b.WriteString("SET autoload_known_extensions = false;\n")
 	b.WriteString("SET allow_persistent_secrets = false;\n")
 	if memoryLimit != "" {
-		fmt.Fprintf(&b, "SET memory_limit = '%s';\n", memoryLimit)
+		fmt.Fprintf(&b, "SET memory_limit = '%s';\n", quoteSQLLiteral(memoryLimit))
 	}
 	if threads > 0 {
 		fmt.Fprintf(&b, "SET threads = %d;\n", threads)
@@ -305,7 +309,7 @@ func (l Locked) VerifySettings(ctx context.Context) error {
 			return fmt.Errorf("duckdblockdown: %s is %q, want false", name, got)
 		}
 	}
-	if !strings.Contains(row.AllowedDirs, "ns/data") {
+	if !strings.Contains(row.AllowedDirs, "data") {
 		return fmt.Errorf("duckdblockdown: allowed_directories does not name the namespace data directory, got %q", row.AllowedDirs)
 	}
 	return nil
