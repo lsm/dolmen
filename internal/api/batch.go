@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -326,9 +327,28 @@ func parseBatch(body []byte) (string, []store.BatchWrite, batchBody, error) {
 	return normNS(top.Namespace), writes, top, nil
 }
 
+func (s *Server) checkBatchFilters(ns string, writes []store.BatchWrite) error {
+	for i, w := range writes {
+		if strings.TrimSpace(w.Filter) == "" {
+			continue
+		}
+		_, _, sc, err := s.resolveScopeState(context.Background(), ns, normTable(w.Table))
+		if err != nil {
+			return badRequest("writes[%d]: %s", i, err.Error())
+		}
+		if err := s.checkFilter(sc, w.Filter, w.Args); err != nil {
+			return badRequest("writes[%d]: %s", i, err.Error())
+		}
+	}
+	return nil
+}
+
 func batchFunc(ctx context.Context, s *Server, body []byte) (any, error) {
 	ns, writes, top, err := parseBatch(body)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.checkBatchFilters(ns, writes); err != nil {
 		return nil, err
 	}
 	opts := store.BatchOpts{Owner: s.writeOwner(ctx)}
