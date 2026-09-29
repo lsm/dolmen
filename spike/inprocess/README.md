@@ -83,16 +83,16 @@ Measured in CI (ubuntu-latest, `go test -bench`, 20 iterations):
 
 | | |
 |---|---|
-| 1,000-row scan | 277 µs/op |
-| 1,000-row scan, filtered | 290 µs/op |
-| 10,000-row scan | 2.19 ms/op |
-| first query on a cold engine | ~500 µs |
+| 1,000-row scan | ~240 µs/op |
+| 1,000-row scan, filtered | ~210 µs/op |
+| 10,000-row scan | ~1.24 ms/op |
+| first query on a cold engine | ~1.0 ms |
 
 The cold figure rebuilds the engine for every iteration, because the benchmark
 harness's own `b.N=1` warmup pass would otherwise make every timed iteration
-follow a warm execution. An earlier version of this table read 114 µs, which was
-a warm engine wearing a cold label; `TestTheColdBenchmarkReallyStartsCold` now
-asserts the reset actually happened.
+follow a warm execution. Two earlier versions of this table read 114 µs (a warm
+engine) and then 500 µs (a local run, not CI); `TestTheColdBenchmarkReallyStartsCold`
+asserts the reset actually happened, so the number is now measuring what it says.
 
 These are memory-backend numbers, not Parquet numbers, and they are not a
 comparison against DuckDB — nothing here ran the same data through both engines,
