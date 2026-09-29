@@ -49,7 +49,7 @@ Each slice is its own PR off `main`, opened after the previous merges. A behavio
 | 1 | **The lane plan** | merged ([#521](https://github.com/lsm/dolmen/pull/521)) |
 | 2 | ~~The pins as an inert module~~ | **withdrawn**, folded into slice 4 |
 | 3 | **The harness learns a third engine** | **next** |
-| S | **The lockdown spike** (§2.4) | **after slice 3, before any engine code** |
+| S | **The lockdown spike** (§2.5) | **after slice 3, before any engine code** |
 | 4 | **Namespace lifecycle + catalog-in-SQLite** (pins land here) | pending the spike |
 | 5 | **Table DDL + schema registry** | pending the spike |
 | 6 | **Append + row-id allocation + idempotency** | pending the spike |
@@ -57,7 +57,7 @@ Each slice is its own PR off `main`, opened after the previous merges. A behavio
 | 8 | **Point deletes by position** | pending the spike |
 | 9 | **Search: full text + vectors** (native, per D27) | pending the spike |
 | 10 | **Change feed** | pending the spike |
-| 11 | **`query` over the sidecar** | **decided by the spike** — see §2.4 and §10 Q2 |
+| 11 | **`query` over the sidecar** | **decided by the spike** — see §2.5 and §10 Q2 |
 | 12 | **Public selector + operator docs** | pending the spike |
 | 13 | **`subscribe`/SSE** | pending the spike |
 | 14 | **Compaction + maintenance** | pending the spike |
@@ -576,7 +576,7 @@ paths escape.
 | 6–8 | **Write and read** conformance: insert, idempotency, mutation, typed reads. Slice 8 adds the update/delete/upsert subset. |
 | 9 | **Search**, with per-engine relevance expectations. |
 | 10 | **Change feed** — `changes_since` and `wait_for` — including the gap-free, cursor-durability, and lifetime-mismatch properties, which are the ones a snapshot-diff design would fail. |
-| 11 | **`query`**, with `query_dialect` compared rather than assumed, and the confinement tests (§2.4). |
+| 11 | **`query`**, with `query_dialect` compared rather than assumed, and the confinement tests the §2.5 spike already wrote. |
 | 12 | **The full suite**, plus `./internal/blackbox` driven against the real binary with `-engine lakehouse`. |
 | 13 | `subscribe` only if it is implemented. |
 
@@ -630,18 +630,20 @@ A pin with no enforcement is a comment, and the failure mode is the worst kind: 
 `go get -u` resolves a newer Arrow and the build breaks three files inside a dependency, with an
 error message that names none of dolmen's code. Five mechanisms, in order of how much they cost:
 
-1. **A version-pin test** (slice 2). A test that fails when the resolved `arrow-go` version is not
-   exactly the pinned one, with the reason in the failure text. This is the one that matters: it
-   turns a cryptic compile error into a named pin, at the moment of the change that broke it.
+1. **A version-pin test** (lands with slice 4, the first code that imports the modules). A test that
+   fails when the resolved `arrow-go` version is not exactly the pinned one, with the reason in the
+   failure text. This is the one that matters: it turns a cryptic compile error into a named pin,
+   at the moment of the change that broke it.
 2. **`govulncheck` in CI** already runs (`make vulncheck`, and the release job's vulnerability
    gate). A pin held back for compile-compatibility is exactly the kind of thing a vulnerability
    scanner will eventually flag, and when it does, the failure text should name the pin. Worth
    writing down now.
-3. **A `CGO_ENABLED=0` build in CI.** **Done, 2026-09-29**, as a `cgo-free-build` job outside the
-   lane, because the gap was pre-existing and not the lakehouse's to leave: the `test` job runs
-   `CGO_ENABLED=1 go test -race ./...`, so the only cgo-free builds were `make build`, `make
-   release` and the `Dockerfile`, all at release time. The job runs `CGO_ENABLED=0 go build ./...`
-   and `CGO_ENABLED=0 go vet ./...`, and both halves are load-bearing — checked rather than
+3. **A `CGO_ENABLED=0` build in CI.** **Landed 2026-09-29** as the `cgo-free-build` job in
+   [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml), outside the lane, because the gap
+   was pre-existing and not the lakehouse's to leave: the `test` job runs `CGO_ENABLED=1 go test
+   -race ./...`, so the only cgo-free builds were `make build`, `make release` and the
+   `Dockerfile`, all at release time. The job runs `CGO_ENABLED=0 go build ./...` and
+   `CGO_ENABLED=0 go vet ./...`, and both halves are load-bearing — checked rather than
    assumed: the build fails only when a cgo package is in the import graph and passes when it sits
    unimported, while `vet` fails in both cases. The temptation this closes is exactly "add a cgo
    driver to reach DuckDB for the query path", which the lane's own decision note rules out.
@@ -759,9 +761,12 @@ question can be answered later without unwinding work.
    planned this way and the plan's original "Q6 asks for confirmation" is withdrawn.
 
 12. **Should a `CGO_ENABLED=0` build gate land in CI?** **Yes, now, in its own PR outside the
-    lane** — a `cgo-free-build` job running `CGO_ENABLED=0 go build ./...` and
-    `CGO_ENABLED=0 go vet ./...`. Landed as a separate change so it is not entangled with engine
-    work; the cgo-free invariant is a property of the repo, not of this lane.
+    lane** — landed 2026-09-29 as the `cgo-free-build` job in `.github/workflows/ci.yml`, running
+    `CGO_ENABLED=0 go build ./...` and `CGO_ENABLED=0 go vet ./...`. Separate so it is not
+    entangled with engine work: the cgo-free invariant is a property of the repo, not of this lane.
+    Both halves are load-bearing, which was checked rather than assumed — the build fails only when
+    a cgo package is in the import graph and passes when one sits unimported, while `vet` fails in
+    both cases.
 
 ### Decided, and recorded as facts of the order rather than questions
 
