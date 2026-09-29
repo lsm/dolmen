@@ -1569,7 +1569,7 @@ var Ops = map[string]OpDef{
 				records, next, err := runChangesSince(readCtx, s, "wait_for", ns, table, cursor, limit, scope, inc)
 				cancel()
 				if err != nil {
-					if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+					if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil && cursor != "" {
 						return renderChanges(nil, store.Cursor(cursor)), nil
 					}
 					return nil, err

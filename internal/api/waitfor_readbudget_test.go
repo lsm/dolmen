@@ -48,3 +48,17 @@ func TestAWaitThatOutrunsItsReadBudgetIsAnEmptyPageNotAnError(t *testing.T) {
 		}
 	}
 }
+
+func TestABareWaitThatOutrunsItsReadBudgetStillFails(t *testing.T) {
+	st := seedWaitForTable(t)
+	slow := slowFeedEngine{Engine: st, delay: waitForPollTick + 250*time.Millisecond}
+	srv := New(slow, fakeEmb{})
+
+	res, err := srv.Dispatch(context.Background(), "wait_for", []byte(`{"namespace":"cancelns","table":"t","timeout_ms":0}`))
+	if err == nil {
+		t.Fatalf("a bare wait that never established a boundary must fail rather than answer a page whose next_cursor is empty: %v", res)
+	}
+	if wrapped := WrapError(err); wrapped.Code != ErrCodeTimeout {
+		t.Fatalf("a bare wait that outran its read budget = %s, want timeout: %s", wrapped.Code, wrapped.Message)
+	}
+}
