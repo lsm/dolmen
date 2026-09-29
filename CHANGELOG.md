@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+
+- **`batch`: several writes in one transaction.** Send an ordered `writes` list against one namespace
+  and they commit together or not at all, with one result per write in the order you sent them, one
+  change-feed commit, and one `idempotency_key` covering the whole batch (a replay returns the stored
+  results and says `replayed: true`). Each entry is one of `insert`, `update`, `delete`, `upsert` or
+  `upsert_by_key` with that operation's own fields plus a `kind`; `namespace`, `idempotency_key` and
+  `dry_run` are set once per batch and refused inside a write, so a batch cannot mix a preview with
+  writes that commit. At most 100 writes and 1,000 rows touched across the whole batch, so a batch is
+  not a way around the per-call limits. An error names the failing write as `writes[i]` and keeps that
+  write's own error class, and nothing is written when any write fails. Prefer one batch when the
+  writes belong together and several smaller ones when they do not: a batch holds the server's single
+  writer for its whole duration, `vectorize` provider round trips included.
+
 ### Fixed
 
 - **Request field names are matched exactly, and a `null` body is no longer an empty one.** A key
