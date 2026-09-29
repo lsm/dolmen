@@ -15,6 +15,11 @@
   write's own error class, and nothing is written when any write fails. Prefer one batch when the
   writes belong together and several smaller ones when they do not: a batch holds the server's single
   writer for its whole duration, `vectorize` provider round trips included.
+- **`Store.Batch` on the Go facade.** The same operation, reachable from an embedder: an ordered
+  `[]dolmen.BatchWrite` applied in one transaction, with `BatchOptions{IdempotencyKey, Limit, Confirm}`
+  and one `BatchWriteResult` per write. It is also the only route to the filter-matched upsert, which
+  has no single method on the facade, and `Limit` and `Confirm` are part of the hashed body as on the
+  wire.
 
 ### Fixed
 
