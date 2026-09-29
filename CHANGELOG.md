@@ -116,6 +116,18 @@
 
 ### Added
 
+- **A measured comparison of the two `query` options for the lakehouse tier**
+  (`docs/design/lakehouse-plan.md` §2.6–§2.7), which changes what Q5 asks. The in-process
+  pure-Go engine, DoltHub's `go-mysql-server`, **is not confinable**: `LOAD_FILE()` and
+  `SELECT ... INTO OUTFILE` read and write arbitrary files under `IsReadOnly` and
+  `IsServerLocked`, no setting closes either, and a registered database is reachable across
+  namespaces with `SHOW DATABASES` enumerating them all. It is genuinely pure Go and it costs
+  **+60.7 MiB, +130%**. It lives in `spike/inprocess`, a nested module, so the main binary and
+  `go.mod` are untouched. The DuckDB socket in the same section: the stock CLI has no listener, and
+  the one extension claiming a server protocol is unpublished (HTTP 404 on every platform) and
+  would be a silent no-op under the lockdown anyway — so slice 11 needs a wrapper dolmen builds and
+  ships, or nothing. No engine code beyond what the spikes need.
+
 - **A DuckDB lockdown spike** (`internal/duckdblockdown`), deciding whether a lakehouse `query` over
   a DuckDB process can be confined. A minimal helper starts a CLI locked to one namespace's data
   directory and the tests attack it: `ATTACH` to a sibling namespace, the namespace's own SQLite
