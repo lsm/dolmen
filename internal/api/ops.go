@@ -1610,6 +1610,8 @@ var Ops = map[string]OpDef{
 			}
 		},
 	},
+	"batch": {},
+
 	"delete": {
 		Description: "Delete rows matching a SQL WHERE expression (e.g. \"status = 'done'\" or \"id IN (3, 7)\"). " +
 			"Rows are also removed from search indexes. Use dry_run to preview the matched count, limit to set a safe threshold, " +

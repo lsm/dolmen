@@ -30,13 +30,15 @@ const (
 )
 
 type BatchWrite struct {
-	Kind    BatchWriteKind
-	Table   string
-	Records []map[string]any
-	On      []string
-	Filter  string
-	Args    []any
-	Set     map[string]any
+	Kind        BatchWriteKind
+	Table       string
+	Records     []map[string]any
+	On          []string
+	Filter      string
+	Args        []any
+	Set         map[string]any
+	Scope       *RowScope
+	Incarnation Incarnation
 }
 
 type BatchOpts struct {
@@ -83,6 +85,13 @@ const batchTablesDDL = `CREATE TABLE IF NOT EXISTS _dolmen_batch_tables(
 	PRIMARY KEY(owner, key, table_name)
 )`
 
+func writeScope(w BatchWrite, fallback *RowScope) *RowScope {
+	if w.Scope != nil {
+		return w.Scope
+	}
+	return fallback
+}
+
 func (r BatchWriteResult) touched() int64 {
 	switch r.Kind {
 	case BatchWriteInsert, BatchWriteUpsert, BatchWriteUpsertByKey:
@@ -125,7 +134,7 @@ func lowerRecordKeys(records []map[string]any) []map[string]any {
 	return out
 }
 
-func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName string, writes []BatchWrite) (IdemHash, error) {
+func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName string, writes []BatchWrite, opts BatchOpts) (IdemHash, error) {
 	schemas := make(map[string]*schema.TableSchema, len(writes))
 	secrets := false
 	for i, w := range writes {
@@ -155,7 +164,11 @@ func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName strin
 			}
 			sealed = append(sealed, c)
 		}
-		raw, err := json.Marshal(sealed)
+		raw, err := json.Marshal(struct {
+			Limit   int          `json:"limit"`
+			Confirm bool         `json:"confirm"`
+			Writes  []BatchWrite `json:"writes"`
+		}{Limit: opts.Limit, Confirm: opts.Confirm, Writes: sealed})
 		if err != nil {
 			return "", err
 		}
@@ -381,7 +394,7 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 		if err := ensureBatchIdem(ctx, wt.tx); err != nil {
 			return BatchResult{}, true, err
 		}
-		hash, err = s.batchPayloadHash(ctx, wt.tx, nsName, writes)
+		hash, err = s.batchPayloadHash(ctx, wt.tx, nsName, writes, opts)
 		if err != nil {
 			return BatchResult{}, true, err
 		}
@@ -404,7 +417,7 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 		out := BatchWriteResult{Kind: w.Kind}
 		switch w.Kind {
 		case BatchWriteInsert:
-			ids, ch, _, done, err := s.insert(ctx, nsName, w.Table, w.Records, emb, "", opts.Owner, DomainFor(wopts, scope), inner)
+			ids, ch, _, done, err := s.insert(ctx, nsName, w.Table, w.Records, emb, "", opts.Owner, DomainFor(wopts, writeScope(w, scope)), inner)
 			if !done {
 				return BatchResult{}, false, nil
 			}
@@ -413,7 +426,7 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 			}
 			out.Ids, out.Inserted, out.Changes = ids, int64(len(ids)), ch
 		case BatchWriteUpsertByKey:
-			r, done, err := s.upsertByKey(ctx, nsName, w.Table, w.On, w.Records, wopts, emb, scope, Incarnation{}, inner)
+			r, done, err := s.upsertByKey(ctx, nsName, w.Table, w.On, w.Records, wopts, emb, writeScope(w, scope), w.Incarnation, inner)
 			if !done {
 				return BatchResult{}, false, nil
 			}
@@ -422,7 +435,7 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 			}
 			out.Ids, out.Inserted, out.Updated, out.Changes = r.Ids, r.Inserted, r.Updated, r.Changes
 		case BatchWriteUpdate:
-			r, done, err := s.updateOrUpsert(ctx, nsName, w.Table, w.Filter, w.Args, w.Set, emb, false, "", scope, Incarnation{}, inner)
+			r, done, err := s.updateOrUpsert(ctx, nsName, w.Table, w.Filter, w.Args, w.Set, emb, false, "", writeScope(w, scope), w.Incarnation, inner)
 			if !done {
 				return BatchResult{}, false, nil
 			}
@@ -431,7 +444,7 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 			}
 			out.Updated, out.Changes = r.Updated, r.Changes
 		case BatchWriteUpsert:
-			r, done, err := s.updateOrUpsert(ctx, nsName, w.Table, w.Filter, w.Args, w.Set, emb, true, opts.Owner, scope, Incarnation{}, inner)
+			r, done, err := s.updateOrUpsert(ctx, nsName, w.Table, w.Filter, w.Args, w.Set, emb, true, opts.Owner, writeScope(w, scope), w.Incarnation, inner)
 			if !done {
 				return BatchResult{}, false, nil
 			}
@@ -444,7 +457,7 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 			if err != nil {
 				return BatchResult{}, true, fmt.Errorf("writes[%d]: %w", i, err)
 			}
-			r, _, err := s.deleteWith(ctx, n, nsName, w.Table, where, w.Args, dopts, scope, Incarnation{}, inner)
+			r, _, err := s.deleteWith(ctx, n, nsName, w.Table, where, w.Args, dopts, writeScope(w, scope), w.Incarnation, inner)
 			if err != nil {
 				return BatchResult{}, true, fmt.Errorf("writes[%d]: %w", i, err)
 			}

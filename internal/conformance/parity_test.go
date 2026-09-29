@@ -57,6 +57,13 @@ func parityScript() []parityStep {
 			"namespace": ns, "table": "docs", "filter": "tag = 'zz'",
 			"set": map[string]any{"score": 1.5},
 		}, false},
+		{"batch", "batch", map[string]any{
+			"namespace": ns,
+			"writes": []any{
+				map[string]any{"kind": "insert", "table": "docs", "records": []map[string]any{{"title": "batched", "tag": "batch", "score": 2}}},
+				map[string]any{"kind": "update", "table": "docs", "filter": "tag = 'batch'", "set": map[string]any{"score": 3.5}},
+			},
+		}, false},
 		{"query", "query", map[string]any{
 			"namespace": ns,
 			"sql":       "SELECT id, title, tag, score, flag, meta, vec FROM docs ORDER BY id",

@@ -53,7 +53,7 @@ func lowerRecordKeys(records []map[string]any) []map[string]any {
 	return out
 }
 
-func (s *Store) batchPayloadHash(ctx context.Context, tx pgx.Tx, n namespace, writes []store.BatchWrite) (store.IdemHash, error) {
+func (s *Store) batchPayloadHash(ctx context.Context, tx pgx.Tx, n namespace, writes []store.BatchWrite, opts store.BatchOpts) (store.IdemHash, error) {
 	states := make(map[string]tableState, len(writes))
 	secrets := false
 	for i, w := range writes {
@@ -83,7 +83,11 @@ func (s *Store) batchPayloadHash(ctx context.Context, tx pgx.Tx, n namespace, wr
 			}
 			sealed = append(sealed, c)
 		}
-		raw, err := json.Marshal(sealed)
+		raw, err := json.Marshal(struct {
+			Limit   int                `json:"limit"`
+			Confirm bool               `json:"confirm"`
+			Writes  []store.BatchWrite `json:"writes"`
+		}{Limit: opts.Limit, Confirm: opts.Confirm, Writes: sealed})
 		if err != nil {
 			return "", err
 		}
@@ -166,6 +170,13 @@ func (s *Store) purgeBatchRecordsForTable(ctx context.Context, tx pgx.Tx, ns, ta
 	return err
 }
 
+func batchWriteScope(w store.BatchWrite, fallback *store.RowScope) *store.RowScope {
+	if w.Scope != nil {
+		return w.Scope
+	}
+	return fallback
+}
+
 func batchTablesOf(writes []store.BatchWrite) []string {
 	seen := make(map[string]bool, len(writes))
 	out := make([]string, 0, len(writes))
@@ -246,7 +257,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 		var hash store.IdemHash
 		var err error
 		if opts.IdempotencyKey != "" {
-			hash, err = s.batchPayloadHash(ctx, tx, n, writes)
+			hash, err = s.batchPayloadHash(ctx, tx, n, writes, opts)
 			if err != nil {
 				return err
 			}
@@ -264,7 +275,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 			out := store.BatchWriteResult{Kind: w.Kind}
 			switch w.Kind {
 			case store.BatchWriteInsert:
-				r, err := s.Insert(inner, ns, w.Table, w.Records, wopts, emb, scope, store.Incarnation{})
+				r, err := s.Insert(inner, ns, w.Table, w.Records, wopts, emb, batchWriteScope(w, scope), w.Incarnation)
 				if errors.Is(err, errBatchRetry) {
 					return err
 				}
@@ -273,7 +284,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 				}
 				out.Ids, out.Inserted, out.Changes = r.Ids, int64(len(r.Ids)), r.Changes
 			case store.BatchWriteUpsertByKey:
-				r, err := s.UpsertByKey(inner, ns, w.Table, w.On, w.Records, wopts, emb, scope, store.Incarnation{})
+				r, err := s.UpsertByKey(inner, ns, w.Table, w.On, w.Records, wopts, emb, batchWriteScope(w, scope), w.Incarnation)
 				if errors.Is(err, errBatchRetry) {
 					return err
 				}
@@ -282,7 +293,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 				}
 				out.Ids, out.Inserted, out.Updated, out.Changes = r.Ids, r.Inserted, r.Updated, r.Changes
 			case store.BatchWriteUpdate:
-				r, err := s.Update(inner, ns, w.Table, w.Filter, w.Args, w.Set, emb, scope, store.Incarnation{})
+				r, err := s.Update(inner, ns, w.Table, w.Filter, w.Args, w.Set, emb, batchWriteScope(w, scope), w.Incarnation)
 				if errors.Is(err, errBatchRetry) {
 					return err
 				}
@@ -291,7 +302,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 				}
 				out.Updated, out.Changes = r.Updated, r.Changes
 			case store.BatchWriteUpsert:
-				r, err := s.Upsert(inner, ns, w.Table, w.Filter, w.Args, w.Set, wopts, emb, scope, store.Incarnation{})
+				r, err := s.Upsert(inner, ns, w.Table, w.Filter, w.Args, w.Set, wopts, emb, batchWriteScope(w, scope), w.Incarnation)
 				if errors.Is(err, errBatchRetry) {
 					return err
 				}
@@ -300,7 +311,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 				}
 				out.Ids, out.Inserted, out.Updated, out.Changes = r.Ids, r.Inserted, r.Updated, r.Changes
 			case store.BatchWriteDelete:
-				r, err := s.Delete(inner, ns, w.Table, w.Filter, w.Args, dopts, scope, store.Incarnation{})
+				r, err := s.Delete(inner, ns, w.Table, w.Filter, w.Args, dopts, batchWriteScope(w, scope), w.Incarnation)
 				if err != nil {
 					return fmt.Errorf("writes[%d]: %w", i, err)
 				}
