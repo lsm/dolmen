@@ -332,7 +332,9 @@ func TestListenChainRotatesBeforeCap(t *testing.T) {
 	replay, cancel := listenOn(t, st, "", CursorBegin, func(ChangeRecord) {}, nil)
 	defer cancel()
 
-	time.Sleep(retention + retention/2)
+	sess := onlySession(t, st)
+	registered := ageChainPast(t, sess, retention)
+
 	replayed := drainReplay(t, replay)
 	if len(replayed) != 2 {
 		t.Fatalf("replay delivered %d records, want the 2-record backlog", len(replayed))
@@ -342,5 +344,40 @@ func TestListenChainRotatesBeforeCap(t *testing.T) {
 			t.Fatalf("the delivered cursor no longer resolves (a capped chain minted a dead token): %v", err)
 		}
 	}
+	if got := chainIDOf(t, st, replayed[0].Cursor); got == registered {
+		t.Fatalf("the first page minted from the chain registered at %s: a chain older than the retention it protects has to rotate, or a long chain outlives the cap", got)
+	}
 	cancel()
+}
+
+func onlySession(t *testing.T, st *Store) *listenSession {
+	t.Helper()
+	sessions := trackedSnapshot(st, "test")
+	if len(sessions) != 1 {
+		t.Fatalf("tracked %d listen sessions on test, want the one just registered", len(sessions))
+	}
+	return sessions[0]
+}
+
+func ageChainPast(t *testing.T, sess *listenSession, retention time.Duration) string {
+	t.Helper()
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	id := sess.chain.ID
+	sess.chain.Start -= retention.Milliseconds()
+	return id
+}
+
+func chainIDOf(t *testing.T, st *Store, tok Cursor) string {
+	t.Helper()
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatalf("open test: %v", err)
+	}
+	defer n.unpin()
+	var id string
+	if err := n.rw.QueryRow(`SELECT chain_id FROM _dolmen_cursor_tokens WHERE token = ?`, string(tok)).Scan(&id); err != nil {
+		t.Fatalf("chain of delivered cursor %q: %v", tok, err)
+	}
+	return id
 }
