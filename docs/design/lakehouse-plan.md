@@ -48,8 +48,8 @@ Each slice is its own PR off `main`, opened after the previous merges. A behavio
 |---|---|---|
 | 1 | **The lane plan** | merged ([#521](https://github.com/lsm/dolmen/pull/521)) |
 | 2 | ~~The pins as an inert module~~ | **withdrawn**, folded into slice 4 |
-| 3 | **The harness learns a third engine** | **next** |
-| S | **The lockdown spike** (§2.5) | **after slice 3, before any engine code** |
+| 3 | **The harness learns a third engine** | merged ([#530](https://github.com/lsm/dolmen/pull/530)) |
+| S | **The lockdown spike** (§2.5) | **done** — DuckDB confines itself; stdio cannot, so the transport is a unix socket |
 | 4 | **Namespace lifecycle + catalog-in-SQLite** (pins land here) | pending the spike |
 | 5 | **Table DDL + schema registry** | pending the spike |
 | 6 | **Append + row-id allocation + idempotency** | pending the spike |
@@ -187,13 +187,21 @@ preference:
    `CGO_ENABLED=0` with no cgo dependency permitted. Named here so the option is visibly closed
    rather than merely unmentioned.
 
-Mechanism 1 was the recommendation; **the spike in §2.5 may overturn it.** The reason is specific
-and it is not a preference: the CLI is line-oriented, so a line beginning with `.` is a command
-rather than SQL, and `.shell`/`.system` run an arbitrary program. A stdio transport without a
-framing the CLI cannot be made to ignore therefore hands a caller arbitrary code execution through
-a newline, which is a worse outcome than the confinement failure it would be avoiding. If the
-spike finds the stdio protocol cannot make that impossible, mechanism 2 wins — it speaks a real
-protocol with a real message boundary, so the ambiguity does not exist.
+Mechanism 1 **is withdrawn** — the spike in §2.5 found that no CLI mode refuses a dot-command, and
+the reasoning that follows is the reason it was ever in doubt. The CLI is line-oriented, so a line
+beginning with `.` is a command rather than SQL, and `.shell`/`.system` run an arbitrary program.
+Measured on v1.5.6: a single statement followed by a newline and `.shell <cmd>` executes the
+command, under a configuration that stops every filesystem escape, and no mode prevents it — not
+plain stdin, not `-json`, not `-c '<string>'` (a single argv string with no framing at all). There
+is no safe mode, no flag, and no separator. A stdio transport would therefore hand a caller
+arbitrary code execution through a newline, which is worse than the confinement failure it was
+meant to avoid.
+
+**Mechanism 2 — a child `duckdb` server on a unix socket — is the plan.** It speaks a real protocol
+with a real message boundary, so the statement is a value in a framed message rather than a line in
+a stream, and there is nothing for a newline to escape into. The confinement settings in §2.4 stand
+unchanged and are now measured rather than assumed: they are what stops the *contents* of a query
+from reaching outside the namespace, once the process itself is reachable only by dolmen.
 
 **Supervision** is the same shape `cmd/dolmen` already has for its own lifecycle: a start, a
 readiness wait bounded by a context, a liveness check, and a shutdown path that closes admitted
@@ -267,43 +275,96 @@ it is *not* given:
 - the file-writing capability beyond its own data directory, so a caller's `COPY ... TO` cannot
   write outside it.
 
-The settings the spike is expected to lock, and the attacks each is expected to defeat:
+**Measured on v1.5.6 (§2.5): DuckDB can confine itself to one data directory, completely.** The
+settings that do it, and one correction that matters more than the list:
 
-| attack | the setting that has to stop it |
+- `enable_external_access = false` — **this is the guard.** `allowed_directories` on its own
+  confines nothing: set it and leave external access on, and `read_csv_auto` reads a sibling
+  namespace's file, the namespace's own SQLite catalog, and a file behind a symlink planted inside
+  the allowed directory. `allowed_directories` is a *widening* knob — it names what stays reachable
+  while external access is off — not a narrowing one. Read it the other way round and the sandbox
+  does not exist.
+- `allowed_directories` — the one namespace **data** directory, and nothing else. This is what
+  re-permits the engine to read its own Parquet once external access is off. Both settings are
+  required; the second alone is not a sandbox.
+- `autoinstall_known_extensions = false`, `autoload_known_extensions = false`,
+  `allow_persistent_secrets = false` — no extension can be fetched or loaded, and no secret is
+  persisted across restarts.
+- `lock_configuration = true` — set **last**. The ordering is forced, and it is the reverse of the
+  obvious one: `allowed_directories` **cannot** be set once `enable_external_access` is false
+  (`Cannot change allowed_directories when enable_external_access is disabled`), so the list goes
+  first and external access is closed second. `enable_external_access` also cannot be set from
+  inside a running session at all, and neither can be set once the configuration is locked, so the
+  only place any of this works is process startup — which for the CLI means a `.duckdbrc` under a
+  per-namespace `HOME`.
+
+Every attack the table below lists is blocked, measured rather than assumed:
+
+| attack | result |
 |---|---|
-| `ATTACH` a sibling namespace's database, or an arbitrary path | allowed directories limited to the one data directory, with external access off |
-| `COPY ... TO` outside the directory | the same allowed-directories limit, plus the write scope |
-| `read_csv` / `read_parquet` / `read_text` / `glob` on outside paths, `..` traversal, a symlink pointing out | the same limit, and symlink resolution that does not widen it |
-| `INSTALL` / `LOAD` of an extension, and http(s) URLs | extension install and autoload both off, with no network reach |
-| `SET` / `RESET` / `PRAGMA` on the locked settings | the configuration locked, so a session cannot re-open what the process closed |
-| **CLI dot-commands** — a statement containing a newline then `.shell`, `.system`, `.output` or `.read` | the transport itself (§2.2) |
+| `ATTACH` a sibling namespace's database | blocked |
+| `read_csv` on a sibling namespace's file | blocked |
+| `read_csv` on the namespace's **own SQLite catalog** | blocked |
+| `read_csv` through a symlink planted inside the allowed directory | blocked |
+| `..` traversal out of the directory | blocked |
+| `COPY ... TO` / `COPY ... FROM` outside | blocked, and nothing is written |
+| `COPY ... TO PROGRAM` (shell out) | blocked |
+| `read_parquet` / `read_text` / `glob` outside | blocked |
+| `INSTALL` / `LOAD` of an extension | blocked |
+| http(s) URL | blocked |
+| `SET enable_external_access=true`, `SET allowed_directories=['/']`, `RESET lock_configuration`, a shadowing `SET VARIABLE` | blocked; the settings read back unchanged |
+| **CLI dot-commands** — `.shell`, `.system`, `.output` from a statement plus a newline | **not blockable by any setting**; see §2.2 |
 
-**The dot-command case decides the transport and is the sharpest of them.** The DuckDB CLI is a
+The dot-command row is the one gap, and it is not a gap in the settings: it is not a filesystem
+operation at all, so no filesystem setting reaches it. It is a property of the transport, and it
+is why §2.2's mechanism 1 is withdrawn.
+
+**The dot-command case decided the transport, and it is now settled (§2.5).** The DuckDB CLI is a
 line-oriented client: a line beginning with `.` is a command, not SQL, and `.shell` and `.system`
-run an arbitrary program. If dolmen hands caller SQL to the CLI over a stdio pipe with no framing
-the CLI cannot be made to ignore, a caller can escape the sandbox with a newline — not a file read
-but arbitrary code execution, which is worse than the confinement failure it replaces. So whether
-the stdio protocol can make that **impossible** is a real question, and the spike answers it rather
-than assuming: if it cannot, §2.2's mechanism 2 (a child server on an ephemeral socket, which
-speaks a real protocol with a real message boundary) is the answer instead of a fallback.
+run an arbitrary program. A caller writing `SELECT 1;` and a newline and `.shell <cmd>` runs that
+command — measured, under the full lockdown, in every CLI mode. So the answer to "can the stdio
+protocol make it impossible" is no, and §2.2's mechanism 2 is the transport.
 
-### 2.5 The lockdown spike
+### 2.5 The lockdown spike — result
 
-**This is the deliverable that decides the rest of the lane** (Marc, 2026-09-29). It runs after
-slice 3 and before any engine code. It is not a slice of the lane; it is a mergeable PR containing
-a minimal helper that starts the DuckDB CLI on one namespace's data directory with the settings
-above, plus **the tests that attack it** — the tests are the deliverable, and the helper exists only
-so there is something to attack.
+**Run 2026-09-29 against DuckDB v1.5.6 (Variegata) 069cc9f9b5.** It lived in
+`internal/duckdblockdown` — a minimal helper that starts a CLI locked to one namespace's data
+directory, plus the tests that attack it. The tests are the deliverable; the helper exists only so
+there is something to attack. It is deliberately **not** engine code: nothing is wired into
+`store.Engine` and no operation reaches it.
 
-Its job is to answer two questions with evidence rather than argument:
+1. **Can DuckDB confine itself to one directory by its own configuration? Yes**, completely. Every
+   escape in §2.4's table is blocked, including the namespace's own SQLite catalog and a symlink
+   planted inside the allowed directory. One correction matters: `enable_external_access=false` is
+   the guard, and `allowed_directories` widens rather than narrows. Slice 11 proceeds as
+   pass-through SQL, and **Q2's fallback chain is not triggered**.
+2. **Can the stdio protocol make CLI dot-commands impossible? No.** `.shell`, `.system` and
+   `.output` all run, under the full lockdown, in every mode tried — plain stdin, `-json`, and
+   `-c '<string>'`. A caller reaches them with a statement, a newline, and a dot-command. So
+   §2.2's mechanism 1 is withdrawn and mechanism 2 is the transport.
 
-1. **Can DuckDB confine itself to one directory by its own configuration?** If yes, slice 11
-   proceeds as pass-through SQL. If no, §10 Q2's fallback chain applies.
-2. **Can the stdio protocol make CLI dot-commands impossible?** If no, mechanism 2 in §2.2 wins.
+The result is pinned as a test, not only as prose: `TestEveryCLIModeRunsADotCommand` **asserts that
+the dot-command does run**, so if a future DuckDB makes a mode refuse it, that test fails — which is
+good news, because it means a stdio transport may be confinable and mechanism 1 worth
+re-evaluating. The confinement tests assert the opposite direction, that every escape is refused,
+and the settings are read back with `current_setting` rather than assumed to have been applied.
 
-The DuckDB version is pinned and the binary downloaded with a checksum, Linux first, in its own CI
-job. What that leaves untested on other platforms is named in the result rather than assumed away
-— Windows drive letters and UNC paths, and macOS — and recorded in this section and in §10.
+**There is deliberately no dot-command detector in this package, and none should be added.** Q4
+rules a statement filter out even as a second layer, and the unix-socket transport makes one
+unnecessary; a helper that sniffed caller SQL for a leading `.` would be precisely the mechanism
+the decision rejects, and an unused one is an invitation to wire it in. The transport's safety is
+shown by the attack tests — they run the payload against the real CLI and observe what happens —
+not by a predicate that guesses. Reintroducing filtering needs the Q4 decision reopened first.
+
+**Untested, named rather than assumed away.** The CI job is Linux-only, so:
+
+- **Windows drive letters and UNC paths** (`C:\`, `\\server\share`) are unproven, and `\\?\` and
+  `\\.\` device paths are a separate surface. A POSIX prefix check says nothing about any of them.
+- **macOS** is verified only by the run above (osx/arm64), not by CI.
+- Whether the `.duckdbrc`-under-`HOME` startup survives a DuckDB upgrade. It is the documented
+  mechanism, but it is a config file rather than a flag, so an upgrade that changed precedence would
+  change confinement silently. The CI job asserts the settings actually took effect, which is what
+  catches that.
 
 ---
 
@@ -742,13 +803,20 @@ question can be answered later without unwinding work.
 
 ### Answered
 
-2. **How far does `query` go if DuckDB cannot be confined by its own settings?** The fallback is
-   tried **in order**:
+2. **How far does `query` go if DuckDB cannot be confined by its own settings?** **Answered by the
+   spike (2026-09-29): it can, so the fallback chain is not triggered.** DuckDB v1.5.6 confines
+   itself to one namespace's data directory completely, including against `ATTACH`, the sibling
+   namespace, the namespace's own SQLite catalog, a symlink planted inside the allowed directory,
+   `..` traversal, `COPY` in and out, `COPY ... TO PROGRAM`, the file readers, extension install and
+   load, http(s) URLs, and every attempt to re-open the settings from a session. Slice 11 proceeds
+   as pass-through SQL. The chain below stands for the record, and for the in-process question it
+   opens rather than closes:
    1. **An in-process pure-Go SQL engine** — DoltHub's `go-mysql-server` is the first candidate.
       The decision note never evaluated an in-process engine, because at the time the only shapes
-      on the table were embedded cgo DuckDB (ruled out) and an external process. This is a third
-      shape, and it is pure Go, so it does not fight the packaging answer in §3.
-   2. **If that cannot keep `query` confined either, the lakehouse ships with `query` declared
+      on the table were embedded cgo DuckDB (ruled out) and an external process. The spike does not
+      need it, but it has one advantage the sidecar does not: no second binary, no second release
+      artifact, no SBOM gap, and no socket.
+   2. **If a confined engine cannot be had at all, the lakehouse ships with `query` declared
       unavailable**, through the spec amendment
       [query-without-sql.md](query-without-sql.md) reserved: a named availability class beside
       `subscribe`, a reworded §0.5.3 binding only to engines with SQL, and a conformance corpus
@@ -757,12 +825,15 @@ question can be answered later without unwinding work.
       rules it out independently.
 
    This supersedes the plan's original preference for a narrowed `query` surface, which was the
-   middle option here and is now gone: the choice is a confined pure-Go engine, or the amendment,
-   or nothing.
+   middle option here and is now gone: the choice is a confined engine, or the amendment, or
+   nothing.
 
 4. **Is `ATTACH` reachable from caller SQL, and if so what stops it?** **DuckDB's own settings are
-   the only guard.** No statement filter in dolmen, not even as a second layer. §2.4 carries the
-   settings and the attacks they are expected to defeat; §2.5's spike is what tests them.
+   the only guard, and the spike proves it works** — no statement filter in dolmen, not even as a
+   second layer. §2.4 carries the settings with the measured result for each, and one correction
+   worth repeating because it inverts the plan's original reading: `enable_external_access=false`
+   is the guard, and `allowed_directories` *widens* what stays reachable rather than narrowing it.
+   Set the list alone and there is no sandbox at all.
 
 6. **Shared-Go BM25, or native?** **D27 settles it** — native, per-engine ranking, as
    [postgresql.md](postgresql.md) already does for adapter #2. No spec amendment. Slice 9 is
@@ -802,10 +873,12 @@ Each carries the assumption the plan runs on meanwhile.
    taken, since there is no sidecar to be down.
 
 5. **Is a second released binary acceptable?** (research §2 open question 3, unanswered since
-   2026-09-14.) **Assumption:** option A, a helper binary dolmen ships and releases, with
-   `-duckdb-path` for a system DuckDB. If Q2's in-process candidate wins instead, this question
-   largely dissolves — a pure-Go in-process engine needs no helper, no second release artifact, and
-   no SBOM gap, which is worth weighing when the spike's result is in.
+   2026-09-14.) **Still open, and now the whole of §3's cost applies** — the spike confirmed the
+   DuckDB path works, so a helper binary is what shipping it costs: option A, a helper dolmen ships
+   and releases, with `-duckdb-path` for a system DuckDB; `make release` handling a downloaded
+   non-Go artifact across six platforms; an SBOM that cannot describe it; and a distroless runtime
+   stage that has to change. The in-process candidate in Q2 would dissolve all of that, and the
+   spike is what makes that trade worth putting to Marc explicitly rather than assuming A.
 
 7. **Where does full-text ranking run?** D27 settles that it is not shared, not *where*.
    **Assumption:** Go-side in the Iceberg tier, so full text does not depend on a sidecar being
