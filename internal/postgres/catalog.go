@@ -139,6 +139,16 @@ func (s *Store) bootstrap(ctx context.Context) error {
  from_version integer NOT NULL, to_version integer NOT NULL, changes_json text NOT NULL,
  at text NOT NULL DEFAULT to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
  PRIMARY KEY(namespace,table_name,drop_generation,id))`,
+		"CREATE TABLE IF NOT EXISTS " + s.relation("batches") + ` (
+ namespace text NOT NULL REFERENCES ` + s.relation("namespaces") + `(name) ON DELETE CASCADE,
+ owner text NOT NULL, key text NOT NULL,
+ payload_hash text NOT NULL, result_json text NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ PRIMARY KEY(namespace,owner,key))`,
+		"CREATE TABLE IF NOT EXISTS " + s.relation("batch_tables") + ` (
+ namespace text NOT NULL REFERENCES ` + s.relation("namespaces") + `(name) ON DELETE CASCADE,
+ owner text NOT NULL, key text NOT NULL, table_name text NOT NULL,
+ PRIMARY KEY(namespace,owner,key,table_name))`,
 	} {
 		if _, err := tx.Exec(ctx, stmt); err != nil {
 			return err

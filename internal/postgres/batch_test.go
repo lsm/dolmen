@@ -97,16 +97,16 @@ func TestPostgresBatchReplaysAndRetiresTheKeyOnDrop(t *testing.T) {
 	writes := batchNotes(ctx, s)
 	opts := store.BatchOpts{IdempotencyKey: "pg-1"}
 
+	_, head, err := s.ChangesSince(ctx, "b", "", store.CursorBegin, [16]byte{}, nil, store.Incarnation{}, store.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	first, err := s.Batch(ctx, "b", writes, opts, batchEmbed, nil, store.Incarnation{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.Replayed {
 		t.Fatal("the first batch reported a replay")
-	}
-	_, head, err := s.ChangesSince(ctx, "b", "", store.CursorBegin, [16]byte{}, nil, store.Incarnation{}, store.Page{})
-	if err != nil {
-		t.Fatal(err)
 	}
 
 	second, err := s.Batch(ctx, "b", writes, opts, batchEmbed, nil, store.Incarnation{})

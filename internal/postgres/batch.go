@@ -17,30 +17,6 @@ var errBatchRetry = errors.New("a table changed while the batch was committing")
 
 const batchAttempts = 3
 
-func (s *Store) batchIdemDDL() []string {
-	return []string{
-		"CREATE TABLE IF NOT EXISTS " + s.relation("batches") + ` (
- namespace text NOT NULL REFERENCES ` + s.relation("namespaces") + `(name) ON DELETE CASCADE,
- owner text NOT NULL, key text NOT NULL,
- payload_hash text NOT NULL, result_json text NOT NULL,
- created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
- PRIMARY KEY(namespace,owner,key))`,
-		"CREATE TABLE IF NOT EXISTS " + s.relation("batch_tables") + ` (
- namespace text NOT NULL REFERENCES ` + s.relation("namespaces") + `(name) ON DELETE CASCADE,
- owner text NOT NULL, key text NOT NULL, table_name text NOT NULL,
- PRIMARY KEY(namespace,owner,key,table_name))`,
-	}
-}
-
-func (s *Store) ensureBatchTables(ctx context.Context, tx pgx.Tx, ns string) error {
-	for _, stmt := range s.batchIdemDDL() {
-		if _, err := tx.Exec(ctx, stmt); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func batchPayloadHash(writes []store.BatchWrite) string {
 	raw, err := json.Marshal(writes)
 	if err != nil {
@@ -154,9 +130,6 @@ func (s *Store) Batch(ctx context.Context, ns string, writes []store.BatchWrite,
 	var replayed store.BatchResult
 	if opts.IdempotencyKey != "" {
 		err := s.write(ctx, ns, [16]byte{}, func(tx pgx.Tx, n namespace) error {
-			if err := s.ensureBatchTables(ctx, tx, ns); err != nil {
-				return err
-			}
 			res, found, err := s.lookupBatchIdem(ctx, tx, ns, opts.Owner, opts.IdempotencyKey, hash)
 			if err != nil || !found {
 				return err
@@ -200,9 +173,6 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 		var touched int64
 
 		if opts.IdempotencyKey != "" {
-			if err := s.ensureBatchTables(ctx, tx, ns); err != nil {
-				return err
-			}
 			prev, found, err := s.lookupBatchIdem(ctx, tx, ns, opts.Owner, opts.IdempotencyKey, hash)
 			if err != nil {
 				return err
