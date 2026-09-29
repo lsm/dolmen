@@ -31,6 +31,13 @@ func batchKindList() string {
 	return out
 }
 
+func batchFieldRemedy(name string) string {
+	if name == "dry_run" {
+		return "not part of batch at all: a batch is all-or-nothing, so it cannot mix a preview with writes that commit, and there is no top-level dry_run to move it to. Use a separate query to see what a delete would match."
+	}
+	return "set once for the whole batch, not per write; move it to the top level"
+}
+
 func isBatchKind(kind store.BatchWriteKind) bool {
 	for _, k := range batchKinds {
 		if k == kind {
@@ -211,7 +218,7 @@ func decodeBatchWrites(raw []json.RawMessage) ([]store.BatchWrite, error) {
 		sortStrings(names)
 		for _, name := range names {
 			if isBatchPerBatchField(name) {
-				return nil, badRequest("writes[%d]: %s is set once for the whole batch, not per write; move it to the top level", i, name)
+				return nil, badRequest("writes[%d]: %s is %s", i, name, batchFieldRemedy(name))
 			}
 		}
 		for _, name := range names {
@@ -313,7 +320,7 @@ func (s *Server) authorizeBatch(ctx context.Context, ns string, writes []store.B
 type batchBody struct {
 	Namespace      string            `json:"namespace"`
 	Writes         []json.RawMessage `json:"writes"`
-	IdempotencyKey *string           `json:"idempotency_key"`
+	IdempotencyKey json.RawMessage   `json:"idempotency_key"`
 	Limit          json.RawMessage   `json:"limit"`
 	Confirm        json.RawMessage   `json:"confirm"`
 }
@@ -377,10 +384,17 @@ func batchFunc(ctx context.Context, s *Server, body []byte) (any, error) {
 	}
 	opts := store.BatchOpts{Owner: s.writeOwner(ctx)}
 	if top.IdempotencyKey != nil {
-		if *top.IdempotencyKey == "" {
+		if bytes.Equal(bytes.TrimSpace(top.IdempotencyKey), []byte("null")) {
+			return nil, badRequest("idempotency_key must be a string; omit the field for a batch that should not be replayable, because null would silently make a retry apply every write a second time")
+		}
+		var key string
+		if err := json.Unmarshal(top.IdempotencyKey, &key); err != nil {
+			return nil, badRequest("idempotency_key must be a string: %s", err.Error())
+		}
+		if key == "" {
 			return nil, badRequest("idempotency_key is empty; omit the field for a batch that should not be replayable, because an empty key would silently make a retry apply every write a second time")
 		}
-		opts.IdempotencyKey = *top.IdempotencyKey
+		opts.IdempotencyKey = key
 	}
 	limit, err := parseOptPosInt(top.Limit, "limit")
 	if err != nil {
