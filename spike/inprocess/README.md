@@ -86,13 +86,17 @@ Measured in CI (ubuntu-latest, `go test -bench`, 20 iterations):
 | 1,000-row scan | 277 µs/op |
 | 1,000-row scan, filtered | 290 µs/op |
 | 10,000-row scan | 2.19 ms/op |
-| first query on a cold engine | 114–136 µs |
+| first query on a cold engine | ~500 µs |
+
+The cold figure rebuilds the engine for every iteration, because the benchmark
+harness's own `b.N=1` warmup pass would otherwise make every timed iteration
+follow a warm execution. An earlier version of this table read 114 µs, which was
+a warm engine wearing a cold label; `TestTheColdBenchmarkReallyStartsCold` now
+asserts the reset actually happened.
 
 These are memory-backend numbers, not Parquet numbers, and they are not a
 comparison against DuckDB — nothing here ran the same data through both engines,
-so performance is **not** a reason to prefer either. The cold-start figure is the
-one worth noting next to §2.1's "one process per namespace": a per-namespace
-process pays a cold start, and 114 µs is the cost of not paying it in-process.
+so performance is **not** a reason to prefer either.
 
 ## What stays untested
 
