@@ -131,6 +131,10 @@ func TestBatchReplayReturnsTheStoredResultAndWritesNothing(t *testing.T) {
 		{Kind: BatchWriteInsert, Table: "notes", Records: []map[string]any{{"title": "once", "body": "only ever written once", "score": 2, "emb": []any{1.0, 0, 0, 0}}}},
 	}
 	opts := BatchOpts{IdempotencyKey: "import-1"}
+	head, _, err := st.ChangesSince(ctx, "b", "", "", [16]byte{}, nil, Incarnation{}, Page{})
+	if err != nil {
+		t.Fatalf("head cursor: %v", err)
+	}
 
 	first, err := st.Batch(ctx, "b", writes, opts, testEmbed, nil, Incarnation{})
 	if err != nil {
@@ -150,12 +154,12 @@ func TestBatchReplayReturnsTheStoredResultAndWritesNothing(t *testing.T) {
 		t.Fatalf("replay returned %+v, want the stored ids %v", second.Results, first.Results[0].Ids)
 	}
 
-	records, _, err := st.ChangesSince(ctx, "b", "", "", [16]byte{}, nil, Incarnation{}, Page{})
+	records, _, err := st.ChangesSince(ctx, "b", "", head, [16]byte{}, nil, Incarnation{}, Page{})
 	if err != nil {
 		t.Fatalf("changes_since: %v", err)
 	}
 	if len(records) != 1 {
-		t.Fatalf("the replay published %d change records, want 1", len(records))
+		t.Fatalf("the batch and its replay published %d change records together, want only the first batch's 1", len(records))
 	}
 }
 
