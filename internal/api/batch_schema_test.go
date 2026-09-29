@@ -105,6 +105,30 @@ func batchWriteResult(t *testing.T, k store.BatchWriteKind) map[string]any {
 	return nil
 }
 
+func advertisedRequired(t *testing.T, kind store.BatchWriteKind, drop func(string) bool, plusKind bool) []string {
+	t.Helper()
+	var raw []string
+	if plusKind {
+		in, _ := Ops[string(kind)].InputSchema["required"].([]string)
+		raw = in
+	} else {
+		out, _ := Ops[string(kind)].OutputSchema["required"].([]string)
+		raw = out
+	}
+	out := make([]string, 0, len(raw)+1)
+	for _, name := range raw {
+		if drop(name) {
+			continue
+		}
+		out = append(out, name)
+	}
+	if plusKind {
+		out = append(out, "kind")
+	}
+	sort.Strings(out)
+	return out
+}
+
 func requiredOf(t *testing.T, s map[string]any) []string {
 	t.Helper()
 	raw, ok := s["required"].([]string)
@@ -150,10 +174,9 @@ func TestBatchWriteSchemasAreDerivedFromTheAdvertisedOnes(t *testing.T) {
 		}
 		entry := batchWriteEntry(t, kind)
 		gotRequired := requiredOf(t, entry)
-		wantRequired := append([]string(nil), want...)
-		sort.Strings(wantRequired)
+		wantRequired := advertisedRequired(t, kind, isBatchPerBatchField, true)
 		if !reflect.DeepEqual(gotRequired, wantRequired) {
-			t.Fatalf("batch's %s write requires %v, want every advertised field to be required: %v", kind, gotRequired, wantRequired)
+			t.Fatalf("batch's %s write requires %v, want the advertised required list minus the per-batch fields, plus kind: %v", kind, gotRequired, wantRequired)
 		}
 		for name, def := range batchWriteInput(t, kind) {
 			if name == "kind" {
@@ -190,10 +213,9 @@ func TestBatchResultSchemasAreDerivedFromTheAdvertisedOnes(t *testing.T) {
 			t.Fatalf("batch's %s result advertises %v, want the advertised %s output minus replayed, plus kind: %v", kind, got, kind, want)
 		}
 		gotRequired := requiredOf(t, batchResultEntry(t, kind))
-		wantRequired := append([]string(nil), want...)
-		sort.Strings(wantRequired)
+		wantRequired := advertisedRequired(t, kind, func(name string) bool { return name == "replayed" }, true)
 		if !reflect.DeepEqual(gotRequired, wantRequired) {
-			t.Fatalf("batch's %s result requires %v, want every advertised field: %v", kind, gotRequired, wantRequired)
+			t.Fatalf("batch's %s result requires %v, want the advertised required list minus replayed, plus kind: %v", kind, gotRequired, wantRequired)
 		}
 	}
 }

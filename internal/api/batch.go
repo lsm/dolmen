@@ -102,7 +102,7 @@ func batchResultSchema(kind store.BatchWriteKind) map[string]any {
 		"enum":        []any{string(kind)},
 		"description": "The kind of the write this result belongs to, so a caller can pair it with its request without counting.",
 	}
-	return outSchema(props, required...)
+	return outSchema(props, append(required, "kind")...)
 }
 
 func batchOneOf(schemas []map[string]any) map[string]any {
