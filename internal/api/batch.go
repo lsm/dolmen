@@ -1,11 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 
-	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -17,7 +17,7 @@ var batchKinds = []store.BatchWriteKind{
 	store.BatchWriteUpsertByKey,
 }
 
-var batchPerBatchFields = []string{"namespace", "idempotency_key", "dry_run"}
+var batchPerBatchFields = []string{"namespace", "idempotency_key", "dry_run", "limit", "confirm"}
 
 func batchKindList() string {
 	out := ""
@@ -164,10 +164,6 @@ func applyBatchSchemas() {
 				"description": "Re-sending the identical body with the same key returns the stored results and writes nothing; the same key with a different body is a conflict. Omit it for a batch that should not be replayable.",
 				"pattern":     fmt.Sprintf(`^[ -~]{1,%d}$`, store.MaxIdempotencyKeyLen),
 			},
-			"owner": map[string]any{
-				"type":        "string",
-				"description": "Owner label recorded against every row and change record this batch writes.",
-			},
 			"limit": map[string]any{
 				"type":        "integer",
 				"description": "Match cap for every delete in the batch; without it a delete matching more rows than the cap is refused rather than deleted.",
@@ -209,19 +205,26 @@ func decodeBatchWrites(raw []json.RawMessage) ([]store.BatchWrite, error) {
 		}
 		names := make([]string, 0, len(fields))
 		for name := range fields {
-			if isBatchPerBatchField(name) {
-				return nil, badRequest("writes[%d]: %s is set once for the whole batch, not per write; move it to the top level", i, name)
-			}
 			names = append(names, name)
 		}
 		sortStrings(names)
+		for _, name := range names {
+			if isBatchPerBatchField(name) {
+				return nil, badRequest("writes[%d]: %s is set once for the whole batch, not per write; move it to the top level", i, name)
+			}
+		}
 		for _, name := range names {
 			if !batchFieldAllowed(kind, name) {
 				return nil, badRequest("writes[%d]: a %s write does not take %q; see the %s operation for the fields it accepts", i, kind, name, kind)
 			}
 		}
+		dec := json.NewDecoder(bytes.NewReader(item))
+		dec.UseNumber()
 		var w store.BatchWrite
-		if err := json.Unmarshal(item, &w); err != nil {
+		if err := dec.Decode(&w); err != nil {
+			return nil, badRequest("writes[%d]: %s", i, err.Error())
+		}
+		if err := scalarArgs(w.Args); err != nil {
 			return nil, badRequest("writes[%d]: %s", i, err.Error())
 		}
 		w.Kind = kind
@@ -271,19 +274,6 @@ func batchResultFor(r store.BatchWriteResult) map[string]any {
 	return out
 }
 
-func batchVerbs(kind store.BatchWriteKind) []auth.Verb {
-	switch kind {
-	case store.BatchWriteInsert:
-		return []auth.Verb{auth.VerbCreate}
-	case store.BatchWriteUpdate:
-		return []auth.Verb{auth.VerbUpdate}
-	case store.BatchWriteDelete:
-		return []auth.Verb{auth.VerbDelete}
-	default:
-		return []auth.Verb{auth.VerbCreate, auth.VerbUpdate}
-	}
-}
-
 func batchTarget(ns, table string) authTarget {
 	return authTarget{Namespace: normNS(ns), Table: normTable(table)}
 }
@@ -317,7 +307,6 @@ type batchBody struct {
 	Namespace      string            `json:"namespace"`
 	Writes         []json.RawMessage `json:"writes"`
 	IdempotencyKey *string           `json:"idempotency_key"`
-	Owner          *string           `json:"owner"`
 	Limit          *int              `json:"limit"`
 	Confirm        *bool             `json:"confirm"`
 }
@@ -342,16 +331,9 @@ func batchFunc(ctx context.Context, s *Server, body []byte) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	scope, inc, _, err := s.resolveScopeState(ctx, ns, normTable(writes[0].Table))
-	if err != nil {
-		return nil, err
-	}
-	opts := store.BatchOpts{}
+	opts := store.BatchOpts{Owner: s.writeOwner(ctx)}
 	if top.IdempotencyKey != nil {
 		opts.IdempotencyKey = *top.IdempotencyKey
-	}
-	if top.Owner != nil {
-		opts.Owner = *top.Owner
 	}
 	if top.Limit != nil {
 		opts.Limit = *top.Limit
@@ -359,9 +341,9 @@ func batchFunc(ctx context.Context, s *Server, body []byte) (any, error) {
 	if top.Confirm != nil {
 		opts.Confirm = *top.Confirm
 	}
-	res, err := s.eng.Batch(ctx, ns, writes, opts, s.embedder(), scope, inc)
+	res, err := s.eng.Batch(ctx, ns, writes, opts, s.embedder(), nil, store.Incarnation{})
 	if err != nil {
-		return nil, err
+		return nil, wrapStoreErr(err)
 	}
 	out := make([]any, 0, len(res.Results))
 	for _, r := range res.Results {
