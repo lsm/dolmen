@@ -108,6 +108,13 @@ so performance is **not** a reason to prefer either.
 - **No durability, no concurrency, no catalog.** The memory backend is not a
   store; this spike says nothing about whether a real engine could be built on
   this library.
+- **`govulncheck` did not run locally.** The copy on this machine predates the
+  installed Go toolchain and errors on the standard library — in this module and
+  in dolmen's own — so the vulnerability gate for the spike's dependencies is
+  only actually exercised in CI, which installs it fresh. The CI job runs it for
+  this module specifically, because `make vulncheck` runs `govulncheck ./...`
+  from the repository root and a nested module's dependencies are not in that
+  pattern.
 - **The confinement findings are for v0.20.0, and they are asserted, not
   observed.** The escape tests hard-fail if `LOAD_FILE` or `INTO OUTFILE` stop
   working, so a version that closed the hole would fail this suite — which is
