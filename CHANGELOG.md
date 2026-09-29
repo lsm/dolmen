@@ -51,6 +51,18 @@
 
 ### Added
 
+- **A lane plan for the lakehouse engine** (`docs/design/lakehouse-plan.md`): the slice order for
+  adapter #3, one mergeable PR at a time, following the `query` decision in
+  `docs/design/query-without-sql.md` (an external DuckDB process below the seam, SQL passed through
+  unchanged with its dialect disclosed, one engine process per namespace, and a pure-Go
+  Parquet/Iceberg tier with the catalog in the namespace's own SQLite file). It covers the sidecar's
+  start, supervision, resource limits and confinement, how the DuckDB side ships beside a
+  `CGO_ENABLED=0` binary and what that does to `release.yml`, the append/position-delete/compaction
+  write path and the namespace commit log the change feed needs, native engine-side full text and
+  exact vector search, which parts of the shared conformance suite run against the engine and from
+  which slice, the `arrow-go` v18.6.0 pin and what keeps it from breaking, and the ten questions
+  that are Marc's. No code, no behaviour change.
+
 - **An observability guide** (`docs/observability.md`): a runnable `docker compose` stack that
   receives dolmen's traces, metrics and logs, how to get from a slow `dolmen.operation.duration`
   bucket to the trace behind its exemplar, and three starter alerts.
