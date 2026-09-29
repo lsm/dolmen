@@ -187,6 +187,37 @@ func TestWaitForIdleLoopMintsNothing(t *testing.T) {
 	}
 }
 
+func TestWaitForZeroTimeoutIdlePageKeepsTheCallersCursor(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
+
+	poll := func(table string) map[string]any {
+		body := map[string]any{"namespace": "rt", "timeout_ms": 0}
+		if table != "" {
+			body["table"] = table
+		}
+		return body
+	}
+
+	for _, table := range []string{"", "notes"} {
+		head := nextCursorOf(t, h.mustHTTP("wait_for", poll(table)))
+		resume := poll(table)
+		resume["cursor"] = head
+
+		status, out := h.httpCall("wait_for", resume)
+		if status != http.StatusOK || out["ok"] != true {
+			t.Fatalf("a quiet conditional poll (table %q) must answer a page, never an error: status %d %v", table, status, out)
+		}
+		data, _ := out["data"].(map[string]any)
+		if got := changesOf(t, data); len(got) != 0 {
+			t.Fatalf("a quiet conditional poll (table %q) returned %d changes, want an empty page", table, len(got))
+		}
+		if next := nextCursorOf(t, data); next != head {
+			t.Fatalf("a quiet conditional poll (table %q) swapped cursors %q to %q; the caller must be able to pass the same token straight back", table, head, next)
+		}
+	}
+}
+
 func TestWaitForNeverCreatesNamespace(t *testing.T) {
 	h := newHarness(t)
 	status, out := h.httpCall("wait_for", map[string]any{"namespace": "ghost", "timeout_ms": 0})

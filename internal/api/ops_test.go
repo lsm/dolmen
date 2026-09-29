@@ -509,8 +509,15 @@ func TestWaitForReadsBoundedByDeadline(t *testing.T) {
 	start = time.Now()
 	res, err = unvalidated.Dispatch(context.Background(), "wait_for",
 		[]byte(fmt.Sprintf(`{"namespace":"rt","cursor":%q,"timeout_ms":0}`, head)))
-	if err == nil {
-		t.Fatalf("starved first read returned a page (%v) — an unvalidated feed must not be answered with a timeout page", res)
+	if err != nil {
+		t.Fatalf("starved first read behind the caller's own cursor must answer the empty page, not %v", err)
+	}
+	page = res.(map[string]any)
+	if changes, _ := page["changes"].([]any); len(changes) != 0 {
+		t.Fatalf("starved first read = %v changes, want an empty page", len(changes))
+	}
+	if got, _ := page["next_cursor"].(string); got != string(head) {
+		t.Fatalf("starved first read handed back %q, want the caller's own cursor %q so the next wait resumes from the same token", got, head)
 	}
 	if held := time.Since(start); held > 1200*time.Millisecond {
 		t.Fatalf("starved first read held %v — the tick floor must bound it, not the stall", held)
@@ -519,7 +526,7 @@ func TestWaitForReadsBoundedByDeadline(t *testing.T) {
 	start = time.Now()
 	res, err = unvalidated.Dispatch(context.Background(), "wait_for", []byte(`{"namespace":"rt","timeout_ms":0}`))
 	if err == nil {
-		t.Fatalf("starved bare start returned a page (%v) — an unestablished boundary must not be answered with a timeout page", res)
+		t.Fatalf("starved bare start returned a page (%v) — a caller that passed no cursor has no boundary to be handed back, and an empty next_cursor cannot be resumed from", res)
 	}
 	if held := time.Since(start); held > 1200*time.Millisecond {
 		t.Fatalf("starved bare start held %v — the budget must bound it, not the stall", held)
