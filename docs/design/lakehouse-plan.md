@@ -380,7 +380,7 @@ question is not "which engine" but "is a second released binary acceptable".
 | **file read/write escapes** | **open.** `LOAD_FILE()` returned a file's bytes and `INTO OUTFILE` wrote the table's rows to disk, both under `IsReadOnly` + `IsServerLocked`, and **no `SET` closes either** — `secure_file_priv` is a read-only variable and there is no equivalent knob | **closed.** every path refused, with the failure proven to be the sandbox's |
 | **cross-namespace reads** | **open in-process.** a registered database is reachable by name; `SHOW DATABASES` and `information_schema.schemata` enumerate every namespace, violating §0.5.2's existence hiding | **impossible.** the process only ever sees one data directory |
 | **one engine per namespace** | possible, but not with a shared analyzer — reusing one panics (`get_lock` is already registered), so it means an analyzer each. The in-process reachability below is unaffected either way | one process per namespace, as §2.1 requires |
-| **binary cost** | **+61 MiB, +130%** (46.8 → ~107 MiB), measured in CI | +19 MB, and external |
+| **binary cost** | **+61 MiB, +131%** — two minimal mains, one empty (1,815,330 bytes) and one importing go-mysql-server (66,288,882), so dolmen's 46.8 MiB binary would reach ~108 MiB. CI recomputes it | +19 MB, and external |
 | **packaging** | nothing to ship | helper binary, second release artifact, an SBOM that cannot describe it, a distroless change (§3) |
 | **dialect** | `mysql` — legal under D28 by disclosure, but a third branch in `skill/dolmen.md` and a new portability story for callers | `duckdb` — also a third value, same shape |
 | **type mapping** | lossy where MySQL is: a dolmen `boolean` reads back as `int8`, so `internal/value` needs a mapping layer | DuckDB's `BOOLEAN` is a real bool |
@@ -896,6 +896,12 @@ question can be answered later without unwinding work.
    is the guard, and `allowed_directories` *widens* what stays reachable rather than narrowing it.
    Set the list alone and there is no sandbox at all.
 
+5. **Is a second released binary acceptable?** (research §2 open question 3, unanswered since
+   2026-09-14.) **Answered by the two spikes on 2026-09-29: the in-process option is off the table,
+   so the cost is §3's and Marc's to accept.** See §2.6 for the side-by-side and what it settles.
+   The short form: the in-process engine is pure Go but does not confine, DuckDB confines but needs
+   a second artifact, and the trade is no longer "which engine" — it is "a helper binary, yes or no".
+
 6. **Shared-Go BM25, or native?** **D27 settles it** — native, per-engine ranking, as
    [postgresql.md](postgresql.md) already does for adapter #2. No spec amendment. Slice 9 is
    planned this way and the plan's original "Q6 asks for confirmation" is withdrawn.
@@ -932,12 +938,6 @@ Each carries the assumption the plan runs on meanwhile.
    `embedder_unavailable` (`sql_engine_unavailable` is the name it would take), with `query_error`
    reserved for SQL the engine itself rejected. Note this becomes moot if Q2's amendment path is
    taken, since there is no sidecar to be down.
-
-5. **Is a second released binary acceptable?** (research §2 open question 3, unanswered since
-   2026-09-14.) **Answered by the two spikes on 2026-09-29: the in-process option is off the table,
-   so the cost is §3's and Marc's to accept.** See §2.6 for the side-by-side and what it settles.
-   The short form: the in-process engine is pure Go but does not confine, DuckDB confines but needs
-   a second artifact, and the trade is no longer "which engine" — it is "a helper binary, yes or no".
 
 7. **Where does full-text ranking run?** D27 settles that it is not shared, not *where*.
    **Assumption:** Go-side in the Iceberg tier, so full text does not depend on a sidecar being

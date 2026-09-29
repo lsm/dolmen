@@ -95,15 +95,12 @@ jobs:
       - name: Binary size cost
         run: |
           set -eu
-          mkdir -p cmd/empty
-          printf 'package main\n\nfunc main() {}\n' > cmd/empty/main.go
           CGO_ENABLED=0 go build -trimpath -o size-empty ./cmd/empty
           CGO_ENABLED=0 go build -trimpath -o size-gms ./cmd/size
           e=$(stat -c %s size-empty); g=$(stat -c %s size-gms)
           echo "empty binary:        $e"
           echo "with go-mysql-server: $g"
           echo "delta:               $((g - e)) bytes ($(( (g - e) / 1048576 )) MiB)"
-          rm -rf cmd/empty
       - name: Query timings
         run: go test -count=1 -run XXX -bench . -benchtime 20x .
 

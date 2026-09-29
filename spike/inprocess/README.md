@@ -49,13 +49,15 @@ true of a process and **not** true of an in-process engine sharing one catalog.
 - **Pure Go, verified.** `CGO_ENABLED=0 go build` succeeds, no `runtime/cgo` in
   the dependency graph, and no package in the graph has any `CgoFiles`. This is
   the one thing it does better than the sidecar, which needs a second binary.
-- **+61 MiB, +130%, measured in CI.** An empty Go main is 1,821,508 bytes; the
-  same main importing go-mysql-server is 66,767,664 — a delta of 64,946,156
-  bytes. dolmen is 49,092,402 today, so linking it in-process would take the
-  binary to roughly 107 MiB. DuckDB is +19 MB and external. A subpackage boundary
-  would keep it off programs that do not use the engine, exactly as
-  `postgres.With` does — but the cost lands on every program that *does*, and
-  there is no way to avoid it, since "in-process" is the whole proposition.
+- **+61 MiB, +131%.** Two minimal `package main` programs, one empty and one
+  with the same four blank imports that pull in go-mysql-server, built with
+  `CGO_ENABLED=0 -trimpath`: 1,815,330 bytes against 66,288,882 — a delta of
+  64,473,552 bytes. dolmen is 49,092,402 today, so linking it in-process would
+  take the binary to about 108 MiB, +131%. DuckDB is +19 MB and external. A
+  subpackage boundary would keep this off programs that do not use the engine,
+  exactly as `postgres.With` does — but the cost lands on every program that
+  *does*, and there is no way to avoid it, since "in-process" is the whole
+  proposition. The CI job recomputes the delta on every run.
 - **Sharing an analyzer across engines panics; separate engines are fine.**
   Constructing two engines with their own analyzers works. Reusing one analyzer
   for a second engine panics with `function 'get_lock' is already registered`.
@@ -106,8 +108,11 @@ so performance is **not** a reason to prefer either.
 - **No durability, no concurrency, no catalog.** The memory backend is not a
   store; this spike says nothing about whether a real engine could be built on
   this library.
-- **The confinement findings are for v0.20.0.** A later version might add a
-  `secure_file_priv`; the tests re-check on every run and log rather than assert,
-  so a fix would show up.
+- **The confinement findings are for v0.20.0, and they are asserted, not
+  observed.** The escape tests hard-fail if `LOAD_FILE` or `INTO OUTFILE` stop
+  working, so a version that closed the hole would fail this suite — which is
+  the outcome to want, since it would mean a confined pure-Go engine is now
+  possible. The two tests that *log* rather than fail are the ones whose result
+  is already the desired one.
 - **Not the MySQL wire protocol.** This is the embedded engine, so the MySQL
   port, its authentication and its framing are out of scope and untested.

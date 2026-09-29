@@ -122,7 +122,7 @@
   `SELECT ... INTO OUTFILE` read and write arbitrary files under `IsReadOnly` and
   `IsServerLocked`, no setting closes either, and a registered database is reachable across
   namespaces with `SHOW DATABASES` enumerating them all. It is genuinely pure Go and it costs
-  **+60.7 MiB, +130%**. It lives in `spike/inprocess`, a nested module, so the main binary and
+  **+61 MiB, +131%**, measured in CI. It lives in `spike/inprocess`, a nested module, so the main binary and
   `go.mod` are untouched. The DuckDB socket in the same section: the stock CLI has no listener, and
   the one extension claiming a server protocol is unpublished (HTTP 404 on every platform) and
   would be a silent no-op under the lockdown anyway — so slice 11 needs a wrapper dolmen builds and
