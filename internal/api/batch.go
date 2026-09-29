@@ -343,7 +343,7 @@ func (s *Server) resolveBatchScopes(ctx context.Context, ns string, writes []sto
 	for i := range writes {
 		scope, inc, _, err := s.resolveScopeState(ctx, ns, normTable(writes[i].Table))
 		if err != nil {
-			return badRequest("writes[%d]: %s", i, err.Error())
+			return indexed(i, err)
 		}
 		writes[i].Scope = scope
 		writes[i].Incarnation = inc
@@ -358,10 +358,10 @@ func (s *Server) checkBatchFilters(ctx context.Context, ns string, writes []stor
 		}
 		_, _, sc, err := s.resolveScopeState(ctx, ns, normTable(w.Table))
 		if err != nil {
-			return badRequest("writes[%d]: %s", i, err.Error())
+			return indexed(i, err)
 		}
 		if err := s.checkFilter(sc, w.Filter, w.Args); err != nil {
-			return badRequest("writes[%d]: %s", i, err.Error())
+			return indexed(i, err)
 		}
 	}
 	return nil
