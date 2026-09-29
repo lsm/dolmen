@@ -233,7 +233,13 @@ func (h *harness) start() {
 		keyring = h.secretKey
 	}
 	h.st = openEngineStoreTraced(h.t, h.dir, h.retention, h.mode.authMode() != auth.ModeOff, keyring, h.tracerProvider)
+	h.serveAPI()
 
+	h.t.Cleanup(h.close)
+}
+
+func (h *harness) serveAPI() {
+	h.t.Helper()
 	trusted, err := auth.ParseTrustedProxies(h.mode.trustedProxies)
 	if err != nil {
 		h.t.Fatalf("parse trusted proxies for mode %q: %v", h.mode.name, err)
@@ -259,14 +265,16 @@ func (h *harness) start() {
 		opts = append(opts, api.WithTracing(tracing))
 	}
 	if authn.On() {
-		grants, err := auth.OpenRegistry(h.dir)
-		if err != nil {
-			h.t.Fatalf("open grant registry: %v", err)
+		if h.grants == nil {
+			grants, err := auth.OpenRegistry(h.dir)
+			if err != nil {
+				h.t.Fatalf("open grant registry: %v", err)
+			}
+			h.grants = grants
+			authn.UseKeys(grants)
 		}
-		h.grants = grants
-		authn.UseKeys(grants)
+		opts = append(opts, api.WithGrants(h.grants))
 		h.authn = authn
-		opts = append(opts, api.WithGrants(grants))
 	}
 	apiSrv := api.New(h.st, embed.Provider(h.emb), opts...)
 	h.api = apiSrv
@@ -279,8 +287,6 @@ func (h *harness) start() {
 		h.t.Fatalf("parse trusted proxies for mode %q: %v", h.mode.name, err)
 	}
 	h.serve(api.ForwardingGuard(api.OriginGuard(mux, nil), forwarders))
-
-	h.t.Cleanup(h.close)
 }
 
 func (h *harness) serve(handler http.Handler) {
@@ -314,14 +320,20 @@ func (h *harness) reopen() {
 		_ = h.grants.Close()
 		h.grants = nil
 	}
-	h.start()
+	keyring := conformanceKeyring(h.t)
+	if h.secretKeySet {
+		keyring = h.secretKey
+	}
+	h.st = openEngineStoreTraced(h.t, h.dir, h.retention, h.mode.authMode() != auth.ModeOff, keyring, h.tracerProvider)
+	h.serveAPI()
 }
 
 func (h *harness) retime(to api.Timeouts) {
 	h.t.Helper()
 	h.timeouts = &to
 	h.apiOpts = []api.Option{api.WithTimeouts(to)}
-	h.reopen()
+	h.srv.Close()
+	h.serveAPI()
 }
 
 func (h *harness) close() {
