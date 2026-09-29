@@ -49,13 +49,13 @@ true of a process and **not** true of an in-process engine sharing one catalog.
 - **Pure Go, verified.** `CGO_ENABLED=0 go build` succeeds, no `runtime/cgo` in
   the dependency graph, and no package in the graph has any `CgoFiles`. This is
   the one thing it does better than the sidecar, which needs a second binary.
-- **+60.7 MiB, +130%.** An empty Go main is 2,413,202 bytes; the same main
-  importing go-mysql-server is 66,074,418. dolmen is 49,092,402 today, so
-  linking it in-process would take the binary to ~107.5 MiB. DuckDB is +19 MB
-  and external. A subpackage boundary would keep it off programs that do not use
-  the engine, exactly as `postgres.With` does — but the cost lands on every
-  program that *does*, and there is no way to avoid it, since "in-process" is the
-  whole proposition.
+- **+61 MiB, +130%, measured in CI.** An empty Go main is 1,821,508 bytes; the
+  same main importing go-mysql-server is 66,767,664 — a delta of 64,946,156
+  bytes. dolmen is 49,092,402 today, so linking it in-process would take the
+  binary to roughly 107 MiB. DuckDB is +19 MB and external. A subpackage boundary
+  would keep it off programs that do not use the engine, exactly as
+  `postgres.With` does — but the cost lands on every program that *does*, and
+  there is no way to avoid it, since "in-process" is the whole proposition.
 - **Sharing an analyzer across engines panics; separate engines are fine.**
   Constructing two engines with their own analyzers works. Reusing one analyzer
   for a second engine panics with `function 'get_lock' is already registered`.
@@ -79,16 +79,26 @@ true of a process and **not** true of an in-process engine sharing one catalog.
 
 ## Rough performance
 
-CI runs the benchmarks; numbers are in the job output. On this laptop, as a
-smoke check only: 1,000-row scan ~195 ms/op, filtered ~110 ms/op, 10,000-row scan
-~444 ms/op, first query on a cold engine ~40 µs. These are memory-backend
-numbers, not Parquet numbers, and a real comparison needs both engines on the
-same data — which is the honest reason not to treat them as a verdict on
-performance.
+Measured in CI (ubuntu-latest, `go test -bench`, 20 iterations):
+
+| | |
+|---|---|
+| 1,000-row scan | 277 µs/op |
+| 1,000-row scan, filtered | 290 µs/op |
+| 10,000-row scan | 2.19 ms/op |
+| first query on a cold engine | 114–136 µs |
+
+These are memory-backend numbers, not Parquet numbers, and they are not a
+comparison against DuckDB — nothing here ran the same data through both engines,
+so performance is **not** a reason to prefer either. The cold-start figure is the
+one worth noting next to §2.1's "one process per namespace": a per-namespace
+process pays a cold start, and 114 µs is the cost of not paying it in-process.
 
 ## What stays untested
 
 - **Nothing was measured against Parquet at scale** — only three rows.
+- **No performance comparison.** Nothing ran the same data through both engines,
+  so the timings above say nothing about which is faster.
 - **No durability, no concurrency, no catalog.** The memory backend is not a
   store; this spike says nothing about whether a real engine could be built on
   this library.

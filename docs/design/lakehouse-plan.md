@@ -380,7 +380,7 @@ question is not "which engine" but "is a second released binary acceptable".
 | **file read/write escapes** | **open.** `LOAD_FILE()` returned a file's bytes and `INTO OUTFILE` wrote the table's rows to disk, both under `IsReadOnly` + `IsServerLocked`, and **no `SET` closes either** — `secure_file_priv` is a read-only variable and there is no equivalent knob | **closed.** every path refused, with the failure proven to be the sandbox's |
 | **cross-namespace reads** | **open in-process.** a registered database is reachable by name; `SHOW DATABASES` and `information_schema.schemata` enumerate every namespace, violating §0.5.2's existence hiding | **impossible.** the process only ever sees one data directory |
 | **one engine per namespace** | possible, but not with a shared analyzer — reusing one panics (`get_lock` is already registered), so it means an analyzer each. The in-process reachability below is unaffected either way | one process per namespace, as §2.1 requires |
-| **binary cost** | **+60.7 MiB, +130%** (46.8 → ~107.5 MiB) | +19 MB, and external |
+| **binary cost** | **+61 MiB, +130%** (46.8 → ~107 MiB), measured in CI | +19 MB, and external |
 | **packaging** | nothing to ship | helper binary, second release artifact, an SBOM that cannot describe it, a distroless change (§3) |
 | **dialect** | `mysql` — legal under D28 by disclosure, but a third branch in `skill/dolmen.md` and a new portability story for callers | `duckdb` — also a third value, same shape |
 | **type mapping** | lossy where MySQL is: a dolmen `boolean` reads back as `int8`, so `internal/value` needs a mapping layer | DuckDB's `BOOLEAN` is a real bool |
@@ -396,7 +396,7 @@ sidecar is "the engine has nothing else to reach", which is true of a process an
 in-process engine sharing one catalog.
 
 **What the in-process option does buy, recorded so the trade is not overstated**: it is the only
-candidate that is pure Go, and a subpackage boundary would keep the +60.7 MiB off programs that do
+candidate that is pure Go, and a subpackage boundary would keep the +61 MiB off programs that do
 not use the engine. If confinement were closable it would still be a large cost for a large gain —
 which is why the measurement mattered rather than the assumption.
 
