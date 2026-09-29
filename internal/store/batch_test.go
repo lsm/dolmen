@@ -131,7 +131,7 @@ func TestBatchReplayReturnsTheStoredResultAndWritesNothing(t *testing.T) {
 		{Kind: BatchWriteInsert, Table: "notes", Records: []map[string]any{{"title": "once", "body": "only ever written once", "score": 2, "emb": []any{1.0, 0, 0, 0}}}},
 	}
 	opts := BatchOpts{IdempotencyKey: "import-1"}
-	head, _, err := st.ChangesSince(ctx, "b", "", "", [16]byte{}, nil, Incarnation{}, Page{})
+	_, head, err := st.ChangesSince(ctx, "b", "", "", [16]byte{}, nil, Incarnation{}, Page{})
 	if err != nil {
 		t.Fatalf("head cursor: %v", err)
 	}
