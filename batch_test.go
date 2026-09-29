@@ -330,6 +330,19 @@ func TestBatchDoesNotMutateTheCallersRecords(t *testing.T) {
 	}
 }
 
+func TestBatchRejectsANilRecord(t *testing.T) {
+	st := batchFixture(t)
+	_, err := st.Batch(context.Background(), "app", []BatchWrite{
+		{Kind: BatchInsert, Table: "notes", Records: []map[string]any{{"title": "a", "body": "b"}, nil}},
+	}, BatchOptions{})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("error %v is not invalid_request, so a nil record was copied into an empty one and reached the engine", err)
+	}
+	if !strings.Contains(err.Error(), "writes[0]") || !strings.Contains(err.Error(), "records[1]") {
+		t.Fatalf("error %q does not name the write and the record", err.Error())
+	}
+}
+
 func TestBatchNamesTheFailingWriteByIndex(t *testing.T) {
 	st := batchFixture(t)
 	_, err := st.Batch(context.Background(), "app", []BatchWrite{

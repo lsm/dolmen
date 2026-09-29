@@ -121,6 +121,11 @@ func batchCopyRecords(in []map[string]any) []map[string]any {
 }
 
 func batchEngineWrite(i int, w BatchWrite) (store.BatchWrite, error) {
+	for j, rec := range w.Records {
+		if rec == nil {
+			return store.BatchWrite{}, derr.New(derr.InvalidRequest, "writes[%d]: records[%d] must be an object, not null", i, j)
+		}
+	}
 	ew := store.BatchWrite{
 		Kind:    store.BatchWriteKind(w.Kind),
 		Records: batchCopyRecords(w.Records),
@@ -137,11 +142,6 @@ func batchEngineWrite(i int, w BatchWrite) (store.BatchWrite, error) {
 	ew.Table = ops.NormalizeTable(w.Table)
 	if ew.Table == "" {
 		return store.BatchWrite{}, derr.New(derr.InvalidRequest, "writes[%d]: table is required", i)
-	}
-	for j, rec := range ew.Records {
-		if rec == nil {
-			return store.BatchWrite{}, derr.New(derr.InvalidRequest, "writes[%d]: records[%d] must be an object, not null", i, j)
-		}
 	}
 	return ew, nil
 }
