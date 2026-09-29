@@ -144,11 +144,11 @@ func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName strin
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func ensureBatchIdem(ctx context.Context, db *sql.DB) error {
-	if _, err := db.ExecContext(ctx, batchIdemDDL); err != nil {
+func ensureBatchIdem(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, batchIdemDDL); err != nil {
 		return err
 	}
-	_, err := db.ExecContext(ctx, batchTablesDDL)
+	_, err := tx.ExecContext(ctx, batchTablesDDL)
 	return err
 }
 
@@ -342,6 +342,9 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 
 	var hash string
 	if opts.IdempotencyKey != "" {
+		if err := ensureBatchIdem(ctx, wt.tx); err != nil {
+			return BatchResult{}, true, err
+		}
 		hash, err = s.batchPayloadHash(ctx, wt.tx, nsName, writes)
 		if err != nil {
 			return BatchResult{}, true, err
