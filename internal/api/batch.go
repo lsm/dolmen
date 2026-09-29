@@ -327,12 +327,12 @@ func parseBatch(body []byte) (string, []store.BatchWrite, batchBody, error) {
 	return normNS(top.Namespace), writes, top, nil
 }
 
-func (s *Server) checkBatchFilters(ns string, writes []store.BatchWrite) error {
+func (s *Server) checkBatchFilters(ctx context.Context, ns string, writes []store.BatchWrite) error {
 	for i, w := range writes {
 		if strings.TrimSpace(w.Filter) == "" {
 			continue
 		}
-		_, _, sc, err := s.resolveScopeState(context.Background(), ns, normTable(w.Table))
+		_, _, sc, err := s.resolveScopeState(ctx, ns, normTable(w.Table))
 		if err != nil {
 			return badRequest("writes[%d]: %s", i, err.Error())
 		}
@@ -348,7 +348,7 @@ func batchFunc(ctx context.Context, s *Server, body []byte) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := s.checkBatchFilters(ns, writes); err != nil {
+	if err := s.checkBatchFilters(ctx, ns, writes); err != nil {
 		return nil, err
 	}
 	opts := store.BatchOpts{Owner: s.writeOwner(ctx)}
