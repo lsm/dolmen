@@ -66,7 +66,7 @@ func TestVacuumOfAMissingNamespaceIsNotFound(t *testing.T) {
 
 func vacuumFixture(t *testing.T) (*harness, *sql.Conn) {
 	t.Helper()
-	sqliteOnly(t)
+	sqliteStorageInternalsOnly(t)
 	h := newHarness(t)
 	h.seedTable("vacheld", "notes", []map[string]any{{"name": "body", "type": "text"}})
 	h.mustHTTP("insert", map[string]any{"namespace": "vacheld", "table": "notes", "records": []map[string]any{{"body": "x"}}})

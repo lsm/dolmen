@@ -158,7 +158,7 @@ func TestLoadConfig(t *testing.T) {
 			name:    "unknown engine teaches the available engines",
 			args:    []string{},
 			env:     map[string]string{"DOLMEN_ENGINE": "banana", "DOLMEN_EMBED_PROVIDER": "none"},
-			wantErr: `unknown engine "banana" (available engines are "postgres" and "sqlite")`,
+			wantErr: `unknown engine "banana" (available engines are "lakehouse", "postgres" and "sqlite")`,
 		},
 		{
 			name: "prefix flag",
@@ -546,6 +546,32 @@ func TestLoadConfig(t *testing.T) {
 			cfg.OIDC.MaxGroups = 0
 			if !reflect.DeepEqual(cfg, tc.want) {
 				t.Fatalf("got %+v, want %+v", cfg, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadConfigRefusesAnUnimplementedEngine(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		env     map[string]string
+		wantErr string
+	}{
+		{name: "postgres without a dsn", args: []string{"-engine", "postgres"}, env: map[string]string{}, wantErr: "needs a connection"},
+		{name: "lakehouse", args: []string{"-engine", "lakehouse"}, env: map[string]string{}, wantErr: "lakehouse"},
+		{name: "lakehouse by env", args: []string{}, env: map[string]string{"DOLMEN_ENGINE": "lakehouse"}, wantErr: "lakehouse"},
+		{name: "lakehouse names itself even beside a stray dsn", args: []string{"-engine", "lakehouse", "-pg-dsn", "postgres://x/y"}, env: map[string]string{}, wantErr: "lakehouse"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			getenv := func(key string) string { return tc.env[key] }
+			lookupEnv := func(key string) (string, bool) { v, ok := tc.env[key]; return v, ok }
+			_, err := loadConfig(tc.args, getenv, lookupEnv, io.Discard, false)
+			if err == nil {
+				t.Fatalf("%s: loadConfig accepted it, want a refusal naming %q", tc.name, tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("%s: error %q does not mention %q", tc.name, err, tc.wantErr)
 			}
 		})
 	}

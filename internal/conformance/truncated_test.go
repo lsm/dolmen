@@ -9,7 +9,7 @@ import (
 )
 
 func TestATruncatedNamespaceIsRefusedOnBothTransports(t *testing.T) {
-	sqliteOnly(t)
+	sqliteStorageInternalsOnly(t)
 	h := newHarness(t)
 	h.seedTable("torn", "docs", []map[string]any{{"name": "body", "type": "string"}})
 	h.seedTable("whole", "docs", []map[string]any{{"name": "body", "type": "string"}})

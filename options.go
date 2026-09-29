@@ -132,6 +132,9 @@ func (c *config) validate() error {
 	if c.engine == store.EnginePostgres && c.opener == nil {
 		return derr.New(derr.InvalidRequest, "WithEngine: the %q engine needs a connection; import github.com/lsm/dolmen/postgres and pass postgres.With to supply its DSN", store.EnginePostgres)
 	}
+	if c.engine == store.EngineLakehouse && c.opener == nil {
+		return derr.New(derr.InvalidRequest, "WithEngine: the %q engine is not implemented yet; the engine is designed in docs/design/lakehouse-plan.md, and until it lands use the %q or %q engine", store.EngineLakehouse, store.EngineSQLite, store.EnginePostgres)
+	}
 	return nil
 }
 

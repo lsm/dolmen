@@ -139,7 +139,7 @@ func TestRevealVerbGatesPlaintext(t *testing.T) {
 }
 
 func TestRevealStaysWithinTheRowScope(t *testing.T) {
-	sqliteOnly(t)
+	skipReasonUnverified(t)
 	h := newHarnessMode(t, authGateway)
 	h.mustHTTP("create_namespace", map[string]any{"namespace": "sec"})
 	h.mustHTTP("create_table", map[string]any{"namespace": "sec", "table": "creds", "fields": secretTableFields(), "row_access": "own"})

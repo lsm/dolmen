@@ -927,7 +927,7 @@ func TestEmbeddedParityWritesStillCreateNamespaces(t *testing.T) {
 		t.Fatalf("create table: %v", err)
 	}
 	t.Run("sqlite namespace file appears on write", func(t *testing.T) {
-		sqliteOnly(t)
+		sqliteStorageInternalsOnly(t)
 		if _, err := os.Stat(filepath.Join(dir, "facadeborn.db")); err != nil {
 			t.Fatalf("a facade write must create its namespace implicitly: %v", err)
 		}

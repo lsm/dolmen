@@ -72,6 +72,12 @@ func TestBackupAndRestoreNameWhatTheyNeed(t *testing.T) {
 		}
 		return ""
 	}
+	lakehouse := func(k string) string {
+		if k == "DOLMEN_ENGINE" {
+			return store.EngineLakehouse
+		}
+		return ""
+	}
 	cases := []struct {
 		name string
 		run  func() error
@@ -82,6 +88,12 @@ func TestBackupAndRestoreNameWhatTheyNeed(t *testing.T) {
 		{"backup on PostgreSQL", func() error {
 			return runBackup([]string{"-out", t.TempDir()}, pg, &bytes.Buffer{}, &bytes.Buffer{})
 		}, "use pg_dump"},
+		{"backup on the lakehouse engine", func() error {
+			return runBackup([]string{"-out", t.TempDir()}, lakehouse, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "not implemented"},
+		{"restore on the lakehouse engine", func() error {
+			return runRestore([]string{"-from", t.TempDir(), "-data", t.TempDir()}, lakehouse, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "not implemented"},
 		{"restore of a directory that is not a backup", func() error {
 			return runRestore([]string{"-from", t.TempDir(), "-data", t.TempDir()}, env, &bytes.Buffer{}, &bytes.Buffer{})
 		}, "not a finished backup"},

@@ -8,16 +8,17 @@ import (
 )
 
 const (
-	EngineSQLite   = "sqlite"
-	EnginePostgres = "postgres"
+	EngineSQLite    = "sqlite"
+	EnginePostgres  = "postgres"
+	EngineLakehouse = "lakehouse"
 )
 
 func ValidateEngine(name string) error {
 	switch name {
-	case "", EngineSQLite, EnginePostgres:
+	case "", EngineSQLite, EnginePostgres, EngineLakehouse:
 		return nil
 	default:
-		return fmt.Errorf("unknown engine %q (available engines are %q and %q)", name, EnginePostgres, EngineSQLite)
+		return fmt.Errorf("unknown engine %q (available engines are %q, %q and %q)", name, EngineLakehouse, EnginePostgres, EngineSQLite)
 	}
 }
 
