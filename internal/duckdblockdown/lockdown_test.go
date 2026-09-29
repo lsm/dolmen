@@ -152,6 +152,7 @@ func TestConfinementBlocksEveryFilesystemEscape(t *testing.T) {
 		{"read through a symlink planted inside the allowed directory", "SELECT * FROM read_csv_auto('" + filepath.Join(ownEscape, "canary.csv") + "');"},
 		{"traverse out with ..", "SELECT * FROM read_csv_auto('" + f.locked.DataDir + "/../../sibling/data/canary.csv');"},
 		{"copy to outside the directory", "COPY (SELECT 1 AS a) TO '" + filepath.Join(siblingData, "pwned.csv") + "';"},
+		{"copy out through a symlink planted inside the allowed directory", "COPY (SELECT 1 AS a) TO '" + filepath.Join(ownEscape, "symlink-write.csv") + "';"},
 		{"copy from outside the directory", "CREATE TABLE t(a BIGINT, v VARCHAR); COPY t FROM '" + f.canary + "';"},
 		{"copy to a shell program", "COPY (SELECT 1) TO PROGRAM 'id > " + filepath.Join(siblingData, "pwned.txt") + "';"},
 		{"read parquet outside", "SELECT * FROM read_parquet('" + parquet + "');"},
