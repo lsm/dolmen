@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lsm/dolmen/internal/derr"
+	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -17,13 +18,55 @@ var errBatchRetry = errors.New("a table changed while the batch was committing")
 
 const batchAttempts = 3
 
-func batchPayloadHash(writes []store.BatchWrite) string {
-	raw, err := json.Marshal(writes)
+func fingerprintAny(k *secret.Keyring, v any) any {
+	switch t := v.(type) {
+	case string:
+		return store.SecretFingerprint(k, t)
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = fingerprintAny(k, e)
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for name, e := range t {
+			out[name] = fingerprintAny(k, e)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func (s *Store) batchPayloadHash(ctx context.Context, tx pgx.Tx, n namespace, writes []store.BatchWrite) (string, error) {
+	states := make(map[string]tableState, len(writes))
+	sealed := make([]store.BatchWrite, 0, len(writes))
+	for _, w := range writes {
+		state, ok := states[w.Table]
+		if !ok {
+			var err error
+			if state, err = s.loadTable(ctx, tx, n, w.Table); err != nil {
+				return "", err
+			}
+			states[w.Table] = state
+		}
+		c := store.BatchWrite{Kind: w.Kind, Table: w.Table, On: w.On, Filter: w.Filter, Records: w.Records, Args: w.Args, Set: w.Set}
+		if len(state.schema.SecretFields()) > 0 {
+			c.Records = store.FingerprintSecrets(s.secrets, state.schema, w.Records)
+			c.Args, _ = fingerprintAny(s.secrets, w.Args).([]any)
+			if m, ok := fingerprintAny(s.secrets, w.Set).(map[string]any); ok {
+				c.Set = m
+			}
+		}
+		sealed = append(sealed, c)
+	}
+	raw, err := json.Marshal(sealed)
 	if err != nil {
-		raw = []byte("marshal error: " + err.Error())
+		return "", err
 	}
 	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func (s *Store) lookupBatchIdem(ctx context.Context, tx pgx.Tx, ns, owner, key, wantHash string) (store.BatchResult, bool, error) {
@@ -112,6 +155,13 @@ func (s *Store) guardBatchIncarnation(ns string, want store.Incarnation) error {
 	return nil
 }
 
+func batchReplaced(err error) error {
+	if !errors.Is(err, errNamespaceReplaced) {
+		return err
+	}
+	return derr.New(derr.Conflict, "namespace %q was dropped and recreated between the moment this request's row visibility was decided and its execution; re-read the namespace and retry", err)
+}
+
 func (s *Store) Batch(ctx context.Context, ns string, writes []store.BatchWrite, opts store.BatchOpts, emb store.Embedder, scope *store.RowScope, expected store.Incarnation) (_ store.BatchResult, err error) {
 	ctx, end := s.span(ctx, "BATCH", ns, "")
 	defer func() { end(err) }()
@@ -126,27 +176,8 @@ func (s *Store) Batch(ctx context.Context, ns string, writes []store.BatchWrite,
 		return store.BatchResult{}, err
 	}
 
-	hash := batchPayloadHash(writes)
-	var replayed store.BatchResult
-	if opts.IdempotencyKey != "" {
-		err := s.write(ctx, ns, [16]byte{}, func(tx pgx.Tx, n namespace) error {
-			res, found, err := s.lookupBatchIdem(ctx, tx, ns, opts.Owner, opts.IdempotencyKey, hash)
-			if err != nil || !found {
-				return err
-			}
-			replayed = res
-			return nil
-		})
-		if err != nil {
-			return store.BatchResult{}, err
-		}
-		if replayed.Results != nil || replayed.Replayed {
-			return replayed, nil
-		}
-	}
-
 	for attempt := 0; ; attempt++ {
-		res, retry, err := s.batchAttempt(ctx, ns, writes, opts, emb, scope, hash)
+		res, retry, err := s.batchAttempt(ctx, ns, writes, opts, emb, scope, expected)
 		if !retry {
 			if err != nil {
 				return store.BatchResult{}, err
@@ -159,9 +190,9 @@ func (s *Store) Batch(ctx context.Context, ns string, writes []store.BatchWrite,
 	}
 }
 
-func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.BatchWrite, opts store.BatchOpts, emb store.Embedder, scope *store.RowScope, hash string) (store.BatchResult, bool, error) {
+func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.BatchWrite, opts store.BatchOpts, emb store.Embedder, scope *store.RowScope, expected store.Incarnation) (store.BatchResult, bool, error) {
 	var res store.BatchResult
-	err := s.write(ctx, ns, [16]byte{}, func(tx pgx.Tx, n namespace) error {
+	err := batchReplaced(s.write(ctx, ns, expected.NsGen, func(tx pgx.Tx, n namespace) error {
 		inner := withCarriedTx(ctx, tx, n)
 		wopts := store.WriteOpts{Owner: opts.Owner, TableWideRead: opts.TableWideRead}
 		dopts := store.DeleteOpts{Limit: opts.Limit, Confirm: opts.Confirm}
@@ -169,7 +200,13 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 		var changes store.ChangeRange
 		var touched int64
 
+		var hash string
+		var err error
 		if opts.IdempotencyKey != "" {
+			hash, err = s.batchPayloadHash(ctx, tx, n, writes)
+			if err != nil {
+				return err
+			}
 			prev, found, err := s.lookupBatchIdem(ctx, tx, ns, opts.Owner, opts.IdempotencyKey, hash)
 			if err != nil {
 				return err
@@ -242,7 +279,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 			}
 		}
 		return nil
-	})
+	}))
 	if errors.Is(err, errBatchRetry) {
 		return store.BatchResult{}, true, nil
 	}

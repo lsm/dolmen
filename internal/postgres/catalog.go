@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -282,13 +283,15 @@ func (s *Store) writeUnlocked(ctx context.Context, name string, expected [16]byt
 		return err
 	}
 	if expected != [16]byte{} && expected != n.generation {
-		return fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, name)
+		return fmt.Errorf("%w: %w", errNamespaceReplaced, fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, name))
 	}
 	if err := fn(tx, n); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
+
+var errNamespaceReplaced = errors.New("namespace was replaced")
 
 func (s *Store) write(ctx context.Context, name string, expected [16]byte, fn func(pgx.Tx, namespace) error) error {
 	if tx, n, ok := carriedFrom(ctx); ok {

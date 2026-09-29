@@ -9,6 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/lsm/dolmen/internal/schema"
+	"github.com/lsm/dolmen/internal/secret"
 )
 
 type BatchWriteKind string
@@ -90,13 +93,55 @@ func (r BatchWriteResult) touched() int64 {
 	}
 }
 
-func batchPayloadHash(writes []BatchWrite) string {
-	raw, err := json.Marshal(writes)
+func fingerprintAny(k *secret.Keyring, v any) any {
+	switch t := v.(type) {
+	case string:
+		return SecretFingerprint(k, t)
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = fingerprintAny(k, e)
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for name, e := range t {
+			out[name] = fingerprintAny(k, e)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName string, writes []BatchWrite) (string, error) {
+	schemas := make(map[string]*schema.TableSchema, len(writes))
+	sealed := make([]BatchWrite, 0, len(writes))
+	for _, w := range writes {
+		sc, ok := schemas[w.Table]
+		if !ok {
+			var err error
+			if sc, err = loadSchema(ctx, q, nsName, w.Table); err != nil {
+				return "", err
+			}
+			schemas[w.Table] = sc
+		}
+		c := BatchWrite{Kind: w.Kind, Table: w.Table, On: w.On, Filter: w.Filter, Records: w.Records, Args: w.Args, Set: w.Set}
+		if len(sc.SecretFields()) > 0 {
+			c.Records = FingerprintSecrets(s.secrets, sc, w.Records)
+			c.Args, _ = fingerprintAny(s.secrets, w.Args).([]any)
+			if m, ok := fingerprintAny(s.secrets, w.Set).(map[string]any); ok {
+				c.Set = m
+			}
+		}
+		sealed = append(sealed, c)
+	}
+	raw, err := json.Marshal(sealed)
 	if err != nil {
-		raw = []byte("marshal error: " + err.Error())
+		return "", err
 	}
 	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func ensureBatchIdem(ctx context.Context, db *sql.DB) error {
@@ -270,22 +315,8 @@ func (s *Store) Batch(ctx context.Context, nsName string, writes []BatchWrite, o
 	}
 	defer n.unpin()
 
-	hash := batchPayloadHash(writes)
-	if opts.IdempotencyKey != "" {
-		if err := ensureBatchIdem(ctx, n.rw); err != nil {
-			return BatchResult{}, err
-		}
-		res, found, err := lookupBatchIdem(ctx, n.ro, opts.Owner, opts.IdempotencyKey, hash)
-		if err != nil {
-			return BatchResult{}, err
-		}
-		if found {
-			return res, nil
-		}
-	}
-
 	for attempt := 0; ; attempt++ {
-		res, done, err := s.batchAttempt(ctx, n, nsName, writes, opts, emb, scope, hash)
+		res, done, err := s.batchAttempt(ctx, n, nsName, writes, opts, emb, scope)
 		if done {
 			if err != nil {
 				return BatchResult{}, err
@@ -301,7 +332,7 @@ func (s *Store) Batch(ctx context.Context, nsName string, writes []BatchWrite, o
 	}
 }
 
-func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes []BatchWrite, opts BatchOpts, emb Embedder, scope *RowScope, hash string) (BatchResult, bool, error) {
+func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes []BatchWrite, opts BatchOpts, emb Embedder, scope *RowScope) (BatchResult, bool, error) {
 	ctx, wt, err := s.writeTxFor(ctx, n, nil)
 	if err != nil {
 		return BatchResult{}, true, err
@@ -309,7 +340,12 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 	defer s.releaseWrite(wt)
 	inner := &sharedWriteTx{tx: wt.tx, span: wt.span}
 
+	var hash string
 	if opts.IdempotencyKey != "" {
+		hash, err = s.batchPayloadHash(ctx, wt.tx, nsName, writes)
+		if err != nil {
+			return BatchResult{}, true, err
+		}
 		res, found, err := lookupBatchIdem(ctx, wt.tx, opts.Owner, opts.IdempotencyKey, hash)
 		if err != nil {
 			return BatchResult{}, true, err
