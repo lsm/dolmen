@@ -12,7 +12,7 @@ func batchWriteInput(t *testing.T, k store.BatchWriteKind) map[string]any {
 	writes, _ := Ops["batch"].InputSchema["properties"].(map[string]any)
 	items, _ := writes["writes"].(map[string]any)
 	oneOf, _ := items["items"].(map[string]any)
-	for _, alt := range oneOf["oneOf"].([]any) {
+	for _, alt := range oneOf["anyOf"].([]any) {
 		entry := alt.(map[string]any)
 		props := entry["properties"].(map[string]any)
 		kind, _ := props["kind"].(map[string]any)
@@ -29,7 +29,7 @@ func batchWriteResult(t *testing.T, k store.BatchWriteKind) map[string]any {
 	out, _ := Ops["batch"].OutputSchema["properties"].(map[string]any)
 	results, _ := out["results"].(map[string]any)
 	oneOf, _ := results["items"].(map[string]any)
-	for _, alt := range oneOf["oneOf"].([]any) {
+	for _, alt := range oneOf["anyOf"].([]any) {
 		entry := alt.(map[string]any)
 		props := entry["properties"].(map[string]any)
 		kind, _ := props["kind"].(map[string]any)

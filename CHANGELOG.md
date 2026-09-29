@@ -8,9 +8,9 @@
   and they commit together or not at all, with one result per write in the order you sent them, one
   change-feed commit, and one `idempotency_key` covering the whole batch (a replay returns the stored
   results and says `replayed: true`). Each entry is one of `insert`, `update`, `delete`, `upsert` or
-  `upsert_by_key` with that operation's own fields plus a `kind`; `namespace`, `idempotency_key` and
-  `dry_run` are set once per batch and refused inside a write, so a batch cannot mix a preview with
-  writes that commit. At most 100 writes and 1,000 rows touched across the whole batch, so a batch is
+  `upsert_by_key` with that operation's own fields plus a `kind`; `namespace` and `idempotency_key` are set once per batch and refused inside a write, and
+  `dry_run` is refused inside a write because a batch cannot mix a preview with writes that commit;
+  `limit` and `confirm` are set once per batch for the same reason a single set would not do. At most 100 writes and 1,000 rows touched across the whole batch, so a batch is
   not a way around the per-call limits. An error names the failing write as `writes[i]` and keeps that
   write's own error class, and nothing is written when any write fails. Prefer one batch when the
   writes belong together and several smaller ones when they do not: a batch holds the server's single

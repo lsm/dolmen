@@ -37,6 +37,7 @@ type BatchWrite struct {
 	Filter  string
 	Args    []any
 	Set     map[string]any
+	Scope   *RowScope
 }
 
 type BatchOpts struct {
@@ -82,6 +83,13 @@ const batchTablesDDL = `CREATE TABLE IF NOT EXISTS _dolmen_batch_tables(
 	table_name TEXT NOT NULL,
 	PRIMARY KEY(owner, key, table_name)
 )`
+
+func writeScope(w BatchWrite, fallback *RowScope) *RowScope {
+	if w.Scope != nil {
+		return w.Scope
+	}
+	return fallback
+}
 
 func (r BatchWriteResult) touched() int64 {
 	switch r.Kind {
@@ -413,7 +421,7 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 			}
 			out.Ids, out.Inserted, out.Changes = ids, int64(len(ids)), ch
 		case BatchWriteUpsertByKey:
-			r, done, err := s.upsertByKey(ctx, nsName, w.Table, w.On, w.Records, wopts, emb, scope, Incarnation{}, inner)
+			r, done, err := s.upsertByKey(ctx, nsName, w.Table, w.On, w.Records, wopts, emb, writeScope(w, scope), Incarnation{}, inner)
 			if !done {
 				return BatchResult{}, false, nil
 			}
@@ -422,7 +430,7 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 			}
 			out.Ids, out.Inserted, out.Updated, out.Changes = r.Ids, r.Inserted, r.Updated, r.Changes
 		case BatchWriteUpdate:
-			r, done, err := s.updateOrUpsert(ctx, nsName, w.Table, w.Filter, w.Args, w.Set, emb, false, "", scope, Incarnation{}, inner)
+			r, done, err := s.updateOrUpsert(ctx, nsName, w.Table, w.Filter, w.Args, w.Set, emb, false, "", writeScope(w, scope), Incarnation{}, inner)
 			if !done {
 				return BatchResult{}, false, nil
 			}
@@ -431,7 +439,7 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 			}
 			out.Updated, out.Changes = r.Updated, r.Changes
 		case BatchWriteUpsert:
-			r, done, err := s.updateOrUpsert(ctx, nsName, w.Table, w.Filter, w.Args, w.Set, emb, true, opts.Owner, scope, Incarnation{}, inner)
+			r, done, err := s.updateOrUpsert(ctx, nsName, w.Table, w.Filter, w.Args, w.Set, emb, true, opts.Owner, writeScope(w, scope), Incarnation{}, inner)
 			if !done {
 				return BatchResult{}, false, nil
 			}
@@ -444,7 +452,7 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 			if err != nil {
 				return BatchResult{}, true, fmt.Errorf("writes[%d]: %w", i, err)
 			}
-			r, _, err := s.deleteWith(ctx, n, nsName, w.Table, where, w.Args, dopts, scope, Incarnation{}, inner)
+			r, _, err := s.deleteWith(ctx, n, nsName, w.Table, where, w.Args, dopts, writeScope(w, scope), Incarnation{}, inner)
 			if err != nil {
 				return BatchResult{}, true, fmt.Errorf("writes[%d]: %w", i, err)
 			}

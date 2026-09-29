@@ -166,6 +166,13 @@ func (s *Store) purgeBatchRecordsForTable(ctx context.Context, tx pgx.Tx, ns, ta
 	return err
 }
 
+func batchWriteScope(w store.BatchWrite, fallback *store.RowScope) *store.RowScope {
+	if w.Scope != nil {
+		return w.Scope
+	}
+	return fallback
+}
+
 func batchTablesOf(writes []store.BatchWrite) []string {
 	seen := make(map[string]bool, len(writes))
 	out := make([]string, 0, len(writes))
@@ -282,7 +289,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 				}
 				out.Ids, out.Inserted, out.Updated, out.Changes = r.Ids, r.Inserted, r.Updated, r.Changes
 			case store.BatchWriteUpdate:
-				r, err := s.Update(inner, ns, w.Table, w.Filter, w.Args, w.Set, emb, scope, store.Incarnation{})
+				r, err := s.Update(inner, ns, w.Table, w.Filter, w.Args, w.Set, emb, batchWriteScope(w, scope), store.Incarnation{})
 				if errors.Is(err, errBatchRetry) {
 					return err
 				}
@@ -300,7 +307,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 				}
 				out.Ids, out.Inserted, out.Updated, out.Changes = r.Ids, r.Inserted, r.Updated, r.Changes
 			case store.BatchWriteDelete:
-				r, err := s.Delete(inner, ns, w.Table, w.Filter, w.Args, dopts, scope, store.Incarnation{})
+				r, err := s.Delete(inner, ns, w.Table, w.Filter, w.Args, dopts, batchWriteScope(w, scope), store.Incarnation{})
 				if err != nil {
 					return fmt.Errorf("writes[%d]: %w", i, err)
 				}

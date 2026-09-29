@@ -109,7 +109,7 @@ func batchOneOf(schemas []map[string]any) map[string]any {
 			"additionalProperties": false,
 		})
 	}
-	return map[string]any{"oneOf": oneOf}
+	return map[string]any{"anyOf": oneOf}
 }
 
 func batchWritesProperty() map[string]any {
