@@ -4,6 +4,20 @@
 
 ### Fixed
 
+- **An operation past `-op-timeout` is now answered at its limit on PostgreSQL.** The limit bounded the
+  engine's statement but not dolmen's own work, so the first query carrying a user-written filter or
+  `query` body in a process was charged the confined-SQL parser's one-time start-up:
+  `wasilibs/go-pgquery` compiles its WASM module on the first `Parse` and parses in microseconds
+  afterwards, and the compile ran on the caller's goroutine without a context. A 300 ms limit could
+  therefore be answered about two seconds late, and far later on a loaded or small runner — the
+  connection stays busy for the whole delay, and a client built around the limit hangs. The parser
+  now starts warming when the store opens, so the cost lands on start-up instead of on a caller's
+  operation, and compiling a query or a filter waits for that start-up under the caller's own
+  context and reports the deadline rather than running through it. A cancelled or expired caller is
+  still reported as cancelled or timed out at the limit. On SQLite, whose driver stops the statement
+  at the deadline, nothing changes. The write semantics are untouched: a write past its limit still
+  says it "may or may not have committed".
+
 - **`describe_server` says what the next vectorized write will meet, instead of a boolean that reads
   as a fault.** `model_cached: false` on a server that has never served a vectorized write is an
   ordinary first run — the model is a Hugging Face model that first use downloads — but in

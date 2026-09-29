@@ -110,6 +110,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	if err != nil {
 		return nil, &connectionError{"open pool", err}
 	}
+	startSQLParser()
 	s := &Store{pool: pool, catalog: cfg.Catalog, queryRole: cfg.QueryRole, done: make(chan struct{}), changeRetention: retention, now: time.Now, sharedFilter: cfg.SharedFilter, secrets: cfg.Secrets, tr: newTracer(cfg.TracerProvider, pool)}
 	if err = pool.Ping(ctx); err == nil {
 		err = s.bootstrap(ctx)

@@ -282,7 +282,7 @@ func (s *Store) runQuery(ctx context.Context, ns, input string, args []any, expe
 		if err != nil {
 			return err
 		}
-		sql, names, err := compileSQL(input, len(args), n.physical, tables)
+		sql, names, err := compileSQL(ctx, input, len(args), n.physical, tables)
 		if err != nil {
 			return err
 		}
@@ -297,7 +297,7 @@ func (s *Store) runQuery(ctx context.Context, ns, input string, args []any, expe
 			limit = store.MaxPageLimit
 		}
 		sql, args, err = typeUntypedArguments(ctx, tx, sql, args, func(casts map[int32]string) (string, error) {
-			recompiled, _, err := compileSQLWithCasts(input, len(args), n.physical, tables, casts)
+			recompiled, _, err := compileSQLWithCasts(ctx, input, len(args), n.physical, tables, casts)
 			return recompiled, err
 		})
 		if err != nil {

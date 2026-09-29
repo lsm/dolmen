@@ -65,8 +65,8 @@ func TestAnOperationPastItsLimitAnswersTimeoutOnEveryTransport(t *testing.T) {
 	if code, msg := errorOf(t, out); code != "timeout" || !strings.Contains(msg, want) {
 		t.Fatalf("got %s %q, want timeout naming %q", code, msg, want)
 	}
-	if took > 10*time.Second {
-		t.Fatalf("the refusal took %s: SQLite must stop at the deadline, not run the statement to completion", took)
+	if took > 2*time.Second {
+		t.Fatalf("the refusal took %s, %v past a 300ms limit: the operation's own work has to stop at its deadline, on either engine, not just the engine's statement", took, took-300*time.Millisecond)
 	}
 
 	env := h.mcpCall("query", map[string]any{"namespace": "slow", "sql": endlessQuery}).toolError()
