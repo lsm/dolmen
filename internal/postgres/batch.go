@@ -160,10 +160,7 @@ func (s *Store) Batch(ctx context.Context, ns string, writes []store.BatchWrite,
 }
 
 func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.BatchWrite, opts store.BatchOpts, emb store.Embedder, scope *store.RowScope, hash string) (store.BatchResult, bool, error) {
-	var (
-		res   store.BatchResult
-		retry bool
-	)
+	var res store.BatchResult
 	err := s.write(ctx, ns, [16]byte{}, func(tx pgx.Tx, n namespace) error {
 		inner := withCarriedTx(ctx, tx, n)
 		wopts := store.WriteOpts{Owner: opts.Owner, TableWideRead: opts.TableWideRead}
@@ -178,7 +175,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 				return err
 			}
 			if found {
-				res, retry = prev, false
+				res = prev
 				return nil
 			}
 		}
@@ -189,8 +186,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 			case store.BatchWriteInsert:
 				r, err := s.Insert(inner, ns, w.Table, w.Records, wopts, emb, scope, store.Incarnation{})
 				if errors.Is(err, errBatchRetry) {
-					retry = true
-					return nil
+					return err
 				}
 				if err != nil {
 					return fmt.Errorf("writes[%d]: %w", i, err)
@@ -199,8 +195,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 			case store.BatchWriteUpsertByKey:
 				r, err := s.UpsertByKey(inner, ns, w.Table, w.On, w.Records, wopts, emb, scope, store.Incarnation{})
 				if errors.Is(err, errBatchRetry) {
-					retry = true
-					return nil
+					return err
 				}
 				if err != nil {
 					return fmt.Errorf("writes[%d]: %w", i, err)
@@ -209,8 +204,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 			case store.BatchWriteUpdate:
 				r, err := s.Update(inner, ns, w.Table, w.Filter, w.Args, w.Set, emb, scope, store.Incarnation{})
 				if errors.Is(err, errBatchRetry) {
-					retry = true
-					return nil
+					return err
 				}
 				if err != nil {
 					return fmt.Errorf("writes[%d]: %w", i, err)
@@ -219,8 +213,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 			case store.BatchWriteUpsert:
 				r, err := s.Upsert(inner, ns, w.Table, w.Filter, w.Args, w.Set, wopts, emb, scope, store.Incarnation{})
 				if errors.Is(err, errBatchRetry) {
-					retry = true
-					return nil
+					return err
 				}
 				if err != nil {
 					return fmt.Errorf("writes[%d]: %w", i, err)
@@ -250,11 +243,11 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 		}
 		return nil
 	})
+	if errors.Is(err, errBatchRetry) {
+		return store.BatchResult{}, true, nil
+	}
 	if err != nil {
 		return store.BatchResult{}, false, err
-	}
-	if retry {
-		return store.BatchResult{}, true, nil
 	}
 	return res, false, nil
 }
