@@ -190,16 +190,23 @@ func TestWaitForIdleLoopMintsNothing(t *testing.T) {
 func TestWaitForZeroTimeoutIdlePageKeepsTheCallersCursor(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("rt", "notes", []map[string]any{{"name": "title", "type": "string"}})
-	head := nextCursorOf(t, h.mustHTTP("wait_for", map[string]any{"namespace": "rt", "timeout_ms": 0}))
 
-	for _, table := range []string{"notes", ""} {
-		body := map[string]any{"namespace": "rt", "cursor": head, "timeout_ms": 0}
+	poll := func(table string) map[string]any {
+		body := map[string]any{"namespace": "rt", "timeout_ms": 0}
 		if table != "" {
 			body["table"] = table
 		}
-		status, out := h.httpCall("wait_for", body)
+		return body
+	}
+
+	for _, table := range []string{"", "notes"} {
+		head := nextCursorOf(t, h.mustHTTP("wait_for", poll(table)))
+		resume := poll(table)
+		resume["cursor"] = head
+
+		status, out := h.httpCall("wait_for", resume)
 		if status != http.StatusOK || out["ok"] != true {
-			t.Fatalf("a quiet conditional poll (table %q) must answer a page, never a timeout: status %d %v", table, status, out)
+			t.Fatalf("a quiet conditional poll (table %q) must answer a page, never an error: status %d %v", table, status, out)
 		}
 		data, _ := out["data"].(map[string]any)
 		if got := changesOf(t, data); len(got) != 0 {
