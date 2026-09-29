@@ -215,15 +215,6 @@ func TestTheSessionVariableDoesNotWidenTheSetting(t *testing.T) {
 	}
 }
 
-// TestEveryCLIModeRunsADotCommand is the spike's negative result, pinned.
-//
-// The expectation is that the dot-command DOES run, in every mode tested. If a
-// future DuckDB release makes one of these refuse, this test fails and that is
-// good news: a mode exists in which the stdio protocol could be made safe, and
-// plan §2.2's mechanism 1 becomes worth re-evaluating. Until then the plan's
-// transport is mechanism 2, a child server on a unix socket, because a caller
-// can reach `.shell` through a newline no matter which of these modes dolmen
-// drives the CLI with.
 func TestEveryCLIModeRunsADotCommand(t *testing.T) {
 	f := newFixture(t)
 	ctx := f.ctx(t)
@@ -244,7 +235,7 @@ func TestEveryCLIModeRunsADotCommand(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, statErr := os.Stat(marker); statErr != nil {
-				t.Fatalf("the %s mode refused the dot-command (exit %d, output %q): if this is real, a stdio transport may be confinable and plan section 2.2 mechanism 1 is worth re-evaluating", m.label, res.ExitCode, res.Combined())
+				t.Fatalf("the %s mode refused the dot-command (exit %d, output %q): this test pins the spike's negative result, so a failure here is good news — a mode exists in which the stdio transport may be confinable, and docs/design/lakehouse-plan.md section 2.2 mechanism 1 is worth re-evaluating", m.label, res.ExitCode, res.Combined())
 			}
 		})
 	}
@@ -261,7 +252,7 @@ func TestCallerSQLCanInjectADotCommandThroughStdin(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, statErr := os.Stat(marker); statErr != nil {
-		t.Fatalf("a dot-command reached the CLI from a single statement followed by a newline (exit %d, output %q): the injection is impossible in this version, which is good news for the stdio transport", res.ExitCode, res.Combined())
+		t.Fatalf("a dot-command did not reach the CLI from a single statement followed by a newline (exit %d, output %q): this pins the injection the spike measured, so a failure here means the stdio transport may be confinable and docs/design/lakehouse-plan.md section 2.2 mechanism 1 is worth re-evaluating", res.ExitCode, res.Combined())
 	}
 }
 
@@ -282,5 +273,35 @@ func TestHasDotCommandLineRecognisesTheInjection(t *testing.T) {
 		if got := HasDotCommandLine(c.sql); got != c.want {
 			t.Errorf("HasDotCommandLine(%q) = %v, want %v", c.sql, got, c.want)
 		}
+	}
+}
+
+func TestParseSettingRowReadsEachSettingByColumn(t *testing.T) {
+	locked := "┌─────────┬─────────┬─────────────┬──────────┬─────────┬──────────────────────┐\n" +
+		"│   ext   │  lock   │ autoinstall │ autoload │ secrets │         dirs         │\n" +
+		"│ boolean │ boolean │   boolean   │ boolean  │ boolean │      varchar[]       │\n" +
+		"├─────────┼─────────┼─────────────┼──────────┼─────────┼──────────────────────┤\n" +
+		"│ false   │ true    │ false       │ false    │ false   │ [/tmp/ns/data/]      │\n" +
+		"└─────────┴─────────┴─────────────┴──────────┴─────────┴──────────────────────┘\n"
+	row, ok := parseSettingRow(locked)
+	if !ok {
+		t.Fatal("a locked settings row did not parse")
+	}
+	if row.ExternalAccess != "false" || row.Lock != "true" {
+		t.Fatalf("ext=%q lock=%q, want false and true", row.ExternalAccess, row.Lock)
+	}
+	if !strings.Contains(row.AllowedDirs, "/tmp/ns/data/") {
+		t.Fatalf("dirs=%q, want the namespace data directory", row.AllowedDirs)
+	}
+	unlocked := strings.Replace(locked, "│ false   │ true    │", "│ true    │ true    │", 1)
+	row, ok = parseSettingRow(unlocked)
+	if !ok {
+		t.Fatal("an unlocked settings row did not parse")
+	}
+	if row.ExternalAccess != "true" {
+		t.Fatalf("ext=%q, want true: the parser must not confuse this column with the four false ones", row.ExternalAccess)
+	}
+	if _, ok := parseSettingRow("no table here\n"); ok {
+		t.Fatal("nonsense parsed as a settings row")
 	}
 }

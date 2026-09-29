@@ -32,7 +32,11 @@ URL="https://github.com/duckdb/duckdb/releases/download/$VERSION/$ASSET"
 echo "fetching $URL"
 curl -sSLf -o "$ZIP" "$URL"
 
-GOT=$(sha256sum "$ZIP" 2>/dev/null | cut -d' ' -f1 || shasum -a 256 "$ZIP" | cut -d' ' -f1)
+if command -v sha256sum >/dev/null 2>&1; then
+  GOT=$(sha256sum "$ZIP" | cut -d' ' -f1)
+else
+  GOT=$(shasum -a 256 "$ZIP" | cut -d' ' -f1)
+fi
 if [ "$GOT" != "$WANT" ]; then
   echo "fetch-duckdb: $ASSET sha256 is $GOT, want $WANT" >&2
   rm -f "$ZIP"

@@ -183,19 +183,115 @@ func (l Locked) RunStdinMode(ctx context.Context, sql string, args ...string) (R
 func (l Locked) RunStdin(ctx context.Context, sql string) (Result, error) {
 	return l.RunStdinMode(ctx, sql)
 }
-func (l Locked) VerifySettings(ctx context.Context) error {
+
+type settingValue struct {
+	ExternalAccess string
+	Lock           string
+	Autoinstall    string
+	Autoload       string
+	Secrets        string
+	AllowedDirs    string
+}
+
+func (l Locked) ReadSettings(ctx context.Context) (settingValue, error) {
 	res, err := l.Run(ctx, l.settingsQuery())
+	if err != nil {
+		return settingValue{}, err
+	}
+	if res.ExitCode != 0 {
+		return settingValue{}, fmt.Errorf("duckdblockdown: reading back the locked settings failed: %s", res.Combined())
+	}
+	row, ok := parseSettingRow(res.Stdout)
+	if !ok {
+		return settingValue{}, fmt.Errorf("duckdblockdown: the settings row did not parse, got %q", res.Stdout)
+	}
+	return row, nil
+}
+
+func parseSettingRow(out string) (settingValue, bool) {
+	var v settingValue
+	lines := strings.Split(out, "\n")
+	header := -1
+	var cols []int
+	for i, line := range lines {
+		fields := splitRow(line)
+		if len(fields) < 6 {
+			continue
+		}
+		if strings.TrimSpace(fields[0]) == "ext" {
+			header = i
+			for _, f := range fields {
+				cols = append(cols, strings.Index(line, f))
+			}
+			break
+		}
+	}
+	if header < 0 {
+		return v, false
+	}
+	for _, line := range lines[header+1:] {
+		fields := splitRow(line)
+		if len(fields) != len(cols) {
+			continue
+		}
+		bools := make([]string, 0, 5)
+		for _, f := range fields[:5] {
+			bools = append(bools, strings.TrimSpace(f))
+		}
+		isData := true
+		for _, b := range bools {
+			if b != "false" && b != "true" {
+				isData = false
+			}
+		}
+		if !isData {
+			continue
+		}
+		v.ExternalAccess = bools[0]
+		v.Lock = bools[1]
+		v.Autoinstall = bools[2]
+		v.Autoload = bools[3]
+		v.Secrets = bools[4]
+		v.AllowedDirs = strings.TrimSpace(fields[5])
+		return v, true
+	}
+	return v, false
+}
+
+func splitRow(line string) []string {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "│") {
+		return nil
+	}
+	parts := strings.Split(trimmed, "│")
+	if len(parts) < 2 {
+		return nil
+	}
+	return parts[1 : len(parts)-1]
+}
+
+func (l Locked) VerifySettings(ctx context.Context) error {
+	row, err := l.ReadSettings(ctx)
 	if err != nil {
 		return err
 	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("duckdblockdown: reading back the locked settings failed: %s", res.Combined())
+	if row.ExternalAccess != "false" {
+		return fmt.Errorf("duckdblockdown: enable_external_access is %q, want false; the sandbox is not in place", row.ExternalAccess)
 	}
-	out := res.Stdout
-	for _, want := range []string{"false", "true"} {
-		if !strings.Contains(out, want) {
-			return fmt.Errorf("duckdblockdown: the locked settings did not take effect, got %q", out)
+	if row.Lock != "true" {
+		return fmt.Errorf("duckdblockdown: lock_configuration is %q, want true; a session could re-open what the process closed", row.Lock)
+	}
+	for name, got := range map[string]string{
+		"autoinstall_known_extensions": row.Autoinstall,
+		"autoload_known_extensions":    row.Autoload,
+		"allow_persistent_secrets":     row.Secrets,
+	} {
+		if got != "false" {
+			return fmt.Errorf("duckdblockdown: %s is %q, want false", name, got)
 		}
+	}
+	if !strings.Contains(row.AllowedDirs, "ns/data") {
+		return fmt.Errorf("duckdblockdown: allowed_directories does not name the namespace data directory, got %q", row.AllowedDirs)
 	}
 	return nil
 }

@@ -290,10 +290,13 @@ settings that do it, and one correction that matters more than the list:
 - `autoinstall_known_extensions = false`, `autoload_known_extensions = false`,
   `allow_persistent_secrets = false` — no extension can be fetched or loaded, and no secret is
   persisted across restarts.
-- `lock_configuration = true` — set **last**. The ordering is forced: `enable_external_access`
-  cannot be set from inside a session, cannot be set after `allowed_directories`, and cannot be set
-  at all once the configuration is locked. The only place it works is process startup, which for the
-  CLI means a `.duckdbrc` under a per-namespace `HOME`.
+- `lock_configuration = true` — set **last**. The ordering is forced, and it is the reverse of the
+  obvious one: `allowed_directories` **cannot** be set once `enable_external_access` is false
+  (`Cannot change allowed_directories when enable_external_access is disabled`), so the list goes
+  first and external access is closed second. `enable_external_access` also cannot be set from
+  inside a running session at all, and neither can be set once the configuration is locked, so the
+  only place any of this works is process startup — which for the CLI means a `.duckdbrc` under a
+  per-namespace `HOME`.
 
 Every attack the table below lists is blocked, measured rather than assumed:
 
