@@ -42,7 +42,6 @@ type BatchWrite struct {
 type BatchOpts struct {
 	IdempotencyKey string
 	Owner          string
-	RowAccess      string
 	Limit          int
 	Confirm        bool
 	TableWideRead  bool
@@ -114,34 +113,59 @@ func fingerprintAny(k *secret.Keyring, v any) any {
 	}
 }
 
-func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName string, writes []BatchWrite) (string, error) {
+func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName string, writes []BatchWrite) (IdemHash, error) {
 	schemas := make(map[string]*schema.TableSchema, len(writes))
-	sealed := make([]BatchWrite, 0, len(writes))
+	secrets := false
 	for _, w := range writes {
 		sc, ok := schemas[w.Table]
 		if !ok {
 			var err error
 			if sc, err = loadSchema(ctx, q, nsName, w.Table); err != nil {
-				return "", err
+				return IdemHash{}, err
 			}
 			schemas[w.Table] = sc
 		}
-		c := BatchWrite{Kind: w.Kind, Table: w.Table, On: w.On, Filter: w.Filter, Records: w.Records, Args: w.Args, Set: w.Set}
 		if len(sc.SecretFields()) > 0 {
-			c.Records = FingerprintSecrets(s.secrets, sc, w.Records)
-			c.Args, _ = fingerprintAny(s.secrets, w.Args).([]any)
-			if m, ok := fingerprintAny(s.secrets, w.Set).(map[string]any); ok {
-				c.Set = m
-			}
+			secrets = true
 		}
-		sealed = append(sealed, c)
 	}
-	raw, err := json.Marshal(sealed)
+	sum := func(k *secret.Keyring) (string, error) {
+		sealed := make([]BatchWrite, 0, len(writes))
+		for _, w := range writes {
+			c := BatchWrite{Kind: w.Kind, Table: w.Table, On: w.On, Filter: w.Filter, Records: w.Records, Args: w.Args, Set: w.Set}
+			if secrets {
+				sc := schemas[w.Table]
+				c.Records = FingerprintSecrets(k, sc, w.Records)
+				c.Args, _ = fingerprintAny(k, w.Args).([]any)
+				if m, ok := fingerprintAny(k, w.Set).(map[string]any); ok {
+					c.Set = m
+				}
+			}
+			sealed = append(sealed, c)
+		}
+		raw, err := json.Marshal(sealed)
+		if err != nil {
+			return "", err
+		}
+		h := sha256.Sum256(raw)
+		return hex.EncodeToString(h[:]), nil
+	}
+	primary, err := sum(s.secrets)
 	if err != nil {
-		return "", err
+		return IdemHash{}, err
 	}
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:]), nil
+	out := IdemHash{Primary: primary}
+	if !secrets || s.secrets == nil {
+		return out, nil
+	}
+	for _, old := range s.secrets.Retired() {
+		alt, err := sum(old)
+		if err != nil {
+			return IdemHash{}, err
+		}
+		out.Alternates = append(out.Alternates, alt)
+	}
+	return out, nil
 }
 
 func ensureBatchIdem(ctx context.Context, tx *sql.Tx) error {
@@ -175,7 +199,7 @@ func purgeBatchRecordsForTable(ctx context.Context, tx *sql.Tx, table string) er
 	return err
 }
 
-func lookupBatchIdem(ctx context.Context, db rowQuerier, owner, key, wantHash string) (BatchResult, bool, error) {
+func lookupBatchIdem(ctx context.Context, db rowQuerier, owner, key string, wantHash IdemHash) (BatchResult, bool, error) {
 	var gotHash, resultJSON string
 	err := db.QueryRowContext(ctx,
 		`SELECT payload_hash, result_json FROM `+batchIdemTable+` WHERE owner = ? AND key = ?`,
@@ -186,7 +210,7 @@ func lookupBatchIdem(ctx context.Context, db rowQuerier, owner, key, wantHash st
 	if err != nil {
 		return BatchResult{}, false, err
 	}
-	if gotHash != wantHash {
+	if !wantHash.Matches(gotHash) {
 		return BatchResult{}, false, conflictf("idempotency key %q was already recorded for a different batch; for a retry, re-send the identical body with the same key (a client-regenerated timestamp or nonce is the classic cause; a fresh key would apply the writes twice); for a genuinely new batch, use a fresh key", key)
 	}
 	var res BatchResult
@@ -197,14 +221,14 @@ func lookupBatchIdem(ctx context.Context, db rowQuerier, owner, key, wantHash st
 	return res, true, nil
 }
 
-func storeBatchIdem(ctx context.Context, tx *sql.Tx, owner, key, hash string, tables []string, res BatchResult) error {
+func storeBatchIdem(ctx context.Context, tx *sql.Tx, owner, key string, hash IdemHash, tables []string, res BatchResult) error {
 	raw, err := json.Marshal(res)
 	if err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO `+batchIdemTable+` (owner, key, payload_hash, result_json) VALUES (?, ?, ?, ?)`,
-		owner, key, hash, string(raw))
+		owner, key, hash.Primary, string(raw))
 	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed: "+batchIdemTable) {
 		return conflictf("idempotency key %q was committed concurrently by another batch; re-send the identical body with the same key", key)
 	}
@@ -340,7 +364,7 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 	defer s.releaseWrite(wt)
 	inner := &sharedWriteTx{tx: wt.tx, span: wt.span}
 
-	var hash string
+	var hash IdemHash
 	if opts.IdempotencyKey != "" {
 		if err := ensureBatchIdem(ctx, wt.tx); err != nil {
 			return BatchResult{}, true, err

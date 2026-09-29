@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
@@ -39,37 +40,62 @@ func fingerprintAny(k *secret.Keyring, v any) any {
 	}
 }
 
-func (s *Store) batchPayloadHash(ctx context.Context, tx pgx.Tx, n namespace, writes []store.BatchWrite) (string, error) {
+func (s *Store) batchPayloadHash(ctx context.Context, tx pgx.Tx, n namespace, writes []store.BatchWrite) (store.IdemHash, error) {
 	states := make(map[string]tableState, len(writes))
-	sealed := make([]store.BatchWrite, 0, len(writes))
+	secrets := false
 	for _, w := range writes {
 		state, ok := states[w.Table]
 		if !ok {
 			var err error
 			if state, err = s.loadTable(ctx, tx, n, w.Table); err != nil {
-				return "", err
+				return store.IdemHash{}, err
 			}
 			states[w.Table] = state
 		}
-		c := store.BatchWrite{Kind: w.Kind, Table: w.Table, On: w.On, Filter: w.Filter, Records: w.Records, Args: w.Args, Set: w.Set}
 		if len(state.schema.SecretFields()) > 0 {
-			c.Records = store.FingerprintSecrets(s.secrets, state.schema, w.Records)
-			c.Args, _ = fingerprintAny(s.secrets, w.Args).([]any)
-			if m, ok := fingerprintAny(s.secrets, w.Set).(map[string]any); ok {
-				c.Set = m
-			}
+			secrets = true
 		}
-		sealed = append(sealed, c)
 	}
-	raw, err := json.Marshal(sealed)
+	sum := func(k *secret.Keyring) (string, error) {
+		sealed := make([]store.BatchWrite, 0, len(writes))
+		for _, w := range writes {
+			c := store.BatchWrite{Kind: w.Kind, Table: w.Table, On: w.On, Filter: w.Filter, Records: w.Records, Args: w.Args, Set: w.Set}
+			if secrets {
+				sc := states[w.Table].schema
+				c.Records = store.FingerprintSecrets(k, sc, w.Records)
+				c.Args, _ = fingerprintAny(k, w.Args).([]any)
+				if m, ok := fingerprintAny(k, w.Set).(map[string]any); ok {
+					c.Set = m
+				}
+			}
+			sealed = append(sealed, c)
+		}
+		raw, err := json.Marshal(sealed)
+		if err != nil {
+			return "", err
+		}
+		h := sha256.Sum256(raw)
+		return hex.EncodeToString(h[:]), nil
+	}
+	primary, err := sum(s.secrets)
 	if err != nil {
-		return "", err
+		return store.IdemHash{}, err
 	}
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:]), nil
+	out := store.IdemHash{Primary: primary}
+	if !secrets || s.secrets == nil {
+		return out, nil
+	}
+	for _, old := range s.secrets.Retired() {
+		alt, err := sum(old)
+		if err != nil {
+			return store.IdemHash{}, err
+		}
+		out.Alternates = append(out.Alternates, alt)
+	}
+	return out, nil
 }
 
-func (s *Store) lookupBatchIdem(ctx context.Context, tx pgx.Tx, ns, owner, key, wantHash string) (store.BatchResult, bool, error) {
+func (s *Store) lookupBatchIdem(ctx context.Context, tx pgx.Tx, ns, owner, key string, wantHash store.IdemHash) (store.BatchResult, bool, error) {
 	var gotHash, resultJSON string
 	err := tx.QueryRow(ctx,
 		"SELECT payload_hash, result_json FROM "+s.relation("batches")+" WHERE namespace=$1 AND owner=$2 AND key=$3",
@@ -80,7 +106,7 @@ func (s *Store) lookupBatchIdem(ctx context.Context, tx pgx.Tx, ns, owner, key, 
 	if err != nil {
 		return store.BatchResult{}, false, err
 	}
-	if gotHash != wantHash {
+	if !wantHash.Matches(gotHash) {
 		return store.BatchResult{}, false, derr.New(derr.Conflict, "idempotency key %q was already recorded for a different batch; for a retry, re-send the identical body with the same key (a client-regenerated timestamp or nonce is the classic cause; a fresh key would apply the writes twice); for a genuinely new batch, use a fresh key", key)
 	}
 	var res store.BatchResult
@@ -91,15 +117,19 @@ func (s *Store) lookupBatchIdem(ctx context.Context, tx pgx.Tx, ns, owner, key, 
 	return res, true, nil
 }
 
-func (s *Store) storeBatchIdem(ctx context.Context, tx pgx.Tx, ns, owner, key, hash string, tables []string, res store.BatchResult) error {
+func (s *Store) storeBatchIdem(ctx context.Context, tx pgx.Tx, ns, owner, key string, hash store.IdemHash, tables []string, res store.BatchResult) error {
 	raw, err := json.Marshal(res)
 	if err != nil {
 		return err
 	}
 	_, err = tx.Exec(ctx,
 		"INSERT INTO "+s.relation("batches")+" (namespace,owner,key,payload_hash,result_json) VALUES($1,$2,$3,$4,$5)",
-		ns, owner, key, hash, string(raw))
+		ns, owner, key, hash.Primary, string(raw))
 	if err != nil {
+		var pgerr *pgconn.PgError
+		if errors.As(err, &pgerr) && pgerr.Code == "23505" {
+			return derr.New(derr.Conflict, "idempotency key %q was committed concurrently by another batch; re-send the identical body with the same key", key)
+		}
 		return err
 	}
 	for _, table := range tables {
@@ -200,7 +230,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 		var changes store.ChangeRange
 		var touched int64
 
-		var hash string
+		var hash store.IdemHash
 		var err error
 		if opts.IdempotencyKey != "" {
 			hash, err = s.batchPayloadHash(ctx, tx, n, writes)
