@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/ops"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
@@ -594,11 +595,12 @@ var Ops = map[string]OpDef{
 		Description: "Report the server's embedding provider status read-only: provider (none, local, openai), " +
 			"model, the identity string that pins vectorized tables to this provider and model, and whether " +
 			"server-side embedding is usable (creating vectorize fields, embedding search_vector text queries). " +
-			"For the local provider, model_cached reports whether the model weights are complete on the " +
-			"server: for a Hugging Face model, false means the first vectorized write or text search downloads " +
-			"it from the Hugging Face Hub, which can fail transiently — retry the request, or pre-seed the " +
-			"cache; for a configured model directory, false means the directory is incomplete and no download " +
-			"repairs it. " +
+			"For the local provider, model_state says what the next vectorized write or text search will meet: " +
+			"cached (the weights are complete on the server, so nothing is downloaded), download_on_first_use " +
+			"(an ordinary first run — the model is a Hugging Face model that first use downloads from the Hub, " +
+			"which can take ten seconds or more and can fail transiently, so retry the request or pre-seed the " +
+			"cache), or incomplete (DOLMEN_EMBED_MODEL names a model directory that is not complete; no " +
+			"download repairs that, an operator has to fix or replace it). " +
 			"Call it to answer those questions without attempting a write or a text search. Status only — " +
 			"no secrets are exposed, no embedding is run, and no network request is made: usable reflects " +
 			"configuration, so an endpoint that is down or rejects the request still fails at first use, " +
@@ -613,11 +615,23 @@ var Ops = map[string]OpDef{
 				"type":        "object",
 				"description": "Server-side embedding provider status",
 				"properties": map[string]any{
-					"provider":     prop("string", "Active embedding provider: none, local (in-process, no external service), or openai (external OpenAI-compatible endpoint)"),
-					"model":        prop("string", "Configured model name (present when the provider reports one)"),
-					"identity":     prop("string", "Identity string that pins vectorized tables to this provider and model — the value a table's embed_space must match for inserts and text searches (present when the provider reports one; absent means vectorize and text queries are rejected until an operator configures the server)"),
-					"usable":       prop("boolean", "Whether server-side embedding is currently usable (creating vectorize fields, embedding text queries): true when the provider is configured and reports its identity; configuration status only — the provider is not called, so a local Hugging Face model that is not yet cached (model_cached false) still downloads on first use rather than failing here"),
-					"model_cached": prop("boolean", "Whether the model weights are complete on the server, so the first vectorized write or text search needs no download (local provider only; absent for none and openai): for a Hugging Face model, false means that first use downloads it from the Hugging Face Hub, which can fail transiently — retry the request (a failed write rolls back and consumes no idempotency key) or pre-seed the cache; when DOLMEN_EMBED_MODEL names a model directory, false means the directory is incomplete and no download repairs it — an operator must fix or replace it. An embedder_unavailable error names which case applies"),
+					"provider": prop("string", "Active embedding provider: none, local (in-process, no external service), or openai (external OpenAI-compatible endpoint)"),
+					"model":    prop("string", "Configured model name (present when the provider reports one)"),
+					"identity": prop("string", "Identity string that pins vectorized tables to this provider and model — the value a table's embed_space must match for inserts and text searches (present when the provider reports one; absent means vectorize and text queries are rejected until an operator configures the server)"),
+					"usable":   prop("boolean", "Whether server-side embedding is currently usable (creating vectorize fields, embedding text queries): true when the provider is configured and reports its identity; configuration status only — the provider is not called, so a local model in the download_on_first_use state still downloads on first use rather than failing here"),
+					"model_state": map[string]any{
+						"type": "string",
+						"description": "What the next vectorized write or text search will meet (local provider only; " +
+							"absent for none and openai). \"cached\": the weights are complete on the server, so no " +
+							"download is needed. \"download_on_first_use\": an ordinary first run — the model is a " +
+							"Hugging Face model that first use downloads from the Hub, which can take ten seconds or " +
+							"more and can fail transiently, so retry the request (a failed write rolls back and consumes " +
+							"no idempotency key) or pre-seed the cache. \"incomplete\": DOLMEN_EMBED_MODEL names a " +
+							"model directory that is not complete, which no download repairs — an operator must fix or " +
+							"replace it. This is not a fault in the download_on_first_use case, and an " +
+							"embedder_unavailable error names which case applies.",
+						"enum": []string{embed.ModelStateCached, embed.ModelStateDownloadOnFirstUse, embed.ModelStateIncomplete},
+					},
 				},
 				"required":             []string{"provider", "usable"},
 				"additionalProperties": false,
@@ -638,8 +652,8 @@ var Ops = map[string]OpDef{
 			if id := s.emb.Identity(); id != "" {
 				emb["identity"] = id
 			}
-			if c, ok := s.emb.(interface{ Cached() bool }); ok {
-				emb["model_cached"] = c.Cached()
+			if c, ok := s.emb.(interface{ ModelState() string }); ok {
+				emb["model_state"] = c.ModelState()
 			}
 			return map[string]any{"embedding": emb}, nil
 		},

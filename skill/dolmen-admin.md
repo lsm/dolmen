@@ -333,12 +333,14 @@ locked-out server.
   and replays the original row instead of diverging on a client-regenerated timestamp.
 - `describe_server` reports the embedding provider status without attempting a write: `provider`
   (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, `usable`, and —
-  for the `local` provider — `model_cached`, whether the model weights are complete on the server so
-  no first-use download is needed (`false` means the first vectorized write or `text` search
-  downloads a Hugging Face model, so it can take ten seconds or more and can fail transiently —
-  retry, or pre-seed; with
-  `DOLMEN_EMBED_MODEL` naming a directory, `false` means the directory is incomplete and no
-  download repairs it). `vectorize` in `create_table`/`migrate` and `search_vector` `text` queries
+  for the `local` provider — `model_state`, which says what the next vectorized write or `text`
+  search will meet: `cached` (the weights are complete on the server, so no download is needed),
+  `download_on_first_use` (an ordinary first run — that first operation downloads a Hugging Face
+  model from the Hub, so it can take ten seconds or more and can fail transiently — retry, or
+  pre-seed), or
+  `incomplete` (with
+  `DOLMEN_EMBED_MODEL` naming a directory, that directory is not complete and no download repairs
+  it — an operator has to fix or replace it). `vectorize` in `create_table`/`migrate` and `search_vector` `text` queries
   fail while `usable` is false; a table whose `embed_space` (see `describe_table`) differs from
   `identity` was embedded by a different provider/model and rejects inserts and text searches until
   it is re-embedded (`migrate` with `set_vectorize` off, then on).
@@ -348,8 +350,8 @@ locked-out server.
   `DOLMEN_EMBED_MODEL` at an absolute model-directory path — both forms skip the Hugging Face Hub
   entirely. Both the English default and the multilingual model (`intfloat/multilingual-e5-small`)
   ship as release tarballs. `describe_server`'s `usable` is
-  configuration-only — it does not load the model — but `model_cached` checks the model cache on
-  disk, so a pre-seed is confirmed by `model_cached` reporting true; an actual embedding round-trip
+  configuration-only — it does not load the model — but `model_state` checks the model cache on
+  disk, so a pre-seed is confirmed by `model_state` reporting `cached`; an actual embedding round-trip
   (insert + `search_vector` with `text`) remains the end-to-end check.
 - `create_namespace` is only for reserving a name up front (or failing loudly if it is taken) —
   namespaces are otherwise created implicitly on first use by the **write** ops (`create_table`,
