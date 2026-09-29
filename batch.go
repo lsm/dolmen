@@ -105,10 +105,25 @@ func (s *Store) Batch(ctx context.Context, namespace string, writes []BatchWrite
 	return out, nil
 }
 
+func batchCopyRecords(in []map[string]any) []map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(in))
+	for _, rec := range in {
+		copied := make(map[string]any, len(rec))
+		for k, v := range rec {
+			copied[k] = v
+		}
+		out = append(out, copied)
+	}
+	return out
+}
+
 func batchEngineWrite(i int, w BatchWrite) (store.BatchWrite, error) {
 	ew := store.BatchWrite{
 		Kind:    store.BatchWriteKind(w.Kind),
-		Records: w.Records,
+		Records: batchCopyRecords(w.Records),
 		On:      w.On,
 		Filter:  w.Filter,
 		Args:    append([]any(nil), w.Args...),

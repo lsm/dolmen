@@ -273,6 +273,63 @@ func TestBatchDoesNotMutateTheCallersArgs(t *testing.T) {
 	}
 }
 
+func TestBatchCommitsTheFeedOnce(t *testing.T) {
+	st := batchFixture(t)
+	res, err := st.Batch(context.Background(), "app", []BatchWrite{
+		{Kind: BatchInsert, Table: "notes", Records: []map[string]any{
+			{"title": "a", "body": "1"}, {"title": "b", "body": "2"},
+		}},
+		{Kind: BatchUpdate, Table: "notes", Filter: "title = $1", Args: []any{"a"}, Set: map[string]any{"body": "edited"}},
+	}, BatchOptions{})
+	if err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+	if res.Changes.Count != 3 {
+		t.Fatalf("the batch reports %d changed rows, want 3 - a batch commits the feed once", res.Changes.Count)
+	}
+	if res.Changes.First == 0 || res.Changes.Last != res.Changes.First+res.Changes.Count-1 {
+		t.Fatalf("change range %+v is not a contiguous run of %d", res.Changes, res.Changes.Count)
+	}
+	if got := res.Results[0].Changes.Count; got != 2 {
+		t.Fatalf("the insert reports %d changed rows, want 2", got)
+	}
+	if got := res.Results[1].Changes.Count; got != 1 {
+		t.Fatalf("the update reports %d changed rows, want 1", got)
+	}
+}
+
+func TestBatchDoesNotMutateTheCallersRecords(t *testing.T) {
+	st := batchFixture(t)
+	ctx := context.Background()
+	if _, err := st.CreateTable(ctx, "app", "keyed", []Field{
+		{Name: "k", Type: String},
+		{Name: "body", Type: Text, Default: "filled-in"},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	rec := map[string]any{"k": "one"}
+	writes := []BatchWrite{{
+		Kind:    BatchUpsertByKey,
+		Table:   "keyed",
+		On:      []string{"k"},
+		Records: []map[string]any{rec},
+	}}
+	if _, err := st.Batch(ctx, "app", writes, BatchOptions{IdempotencyKey: "k1"}); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if len(rec) != 1 {
+		t.Fatalf("the caller's record grew to %d fields, want 1: %v", len(rec), rec)
+	}
+	again, err := st.Batch(ctx, "app", writes, BatchOptions{IdempotencyKey: "k1"})
+	if err != nil {
+		t.Fatalf("replay with the caller's own records must replay, not conflict: %v", err)
+	}
+	if !again.Replayed {
+		t.Fatal("the second call did not replay, so the records were rewritten and the body no longer matches")
+	}
+}
+
 func TestBatchNamesTheFailingWriteByIndex(t *testing.T) {
 	st := batchFixture(t)
 	_, err := st.Batch(context.Background(), "app", []BatchWrite{
