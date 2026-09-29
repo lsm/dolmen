@@ -225,6 +225,11 @@ func decodeBatchWrites(raw []json.RawMessage) ([]store.BatchWrite, error) {
 		if err := dec.Decode(&w); err != nil {
 			return nil, badRequest("writes[%d]: %s", i, err.Error())
 		}
+		for j, r := range w.Records {
+			if r == nil {
+				return nil, badRequest("writes[%d]: records[%d] must be an object, not null", i, j)
+			}
+		}
 		if err := scalarArgs(w.Args); err != nil {
 			return nil, badRequest("writes[%d]: %s", i, err.Error())
 		}
@@ -309,8 +314,8 @@ type batchBody struct {
 	Namespace      string            `json:"namespace"`
 	Writes         []json.RawMessage `json:"writes"`
 	IdempotencyKey *string           `json:"idempotency_key"`
-	Limit          *int              `json:"limit"`
-	Confirm        *bool             `json:"confirm"`
+	Limit          json.RawMessage   `json:"limit"`
+	Confirm        json.RawMessage   `json:"confirm"`
 }
 
 func parseBatch(body []byte) (string, []store.BatchWrite, batchBody, error) {
@@ -330,11 +335,12 @@ func parseBatch(body []byte) (string, []store.BatchWrite, batchBody, error) {
 
 func (s *Server) resolveBatchScopes(ctx context.Context, ns string, writes []store.BatchWrite) error {
 	for i := range writes {
-		scope, _, _, err := s.resolveScopeState(ctx, ns, normTable(writes[i].Table))
+		scope, inc, _, err := s.resolveScopeState(ctx, ns, normTable(writes[i].Table))
 		if err != nil {
 			return badRequest("writes[%d]: %s", i, err.Error())
 		}
 		writes[i].Scope = scope
+		writes[i].Incarnation = inc
 	}
 	return nil
 }
@@ -376,13 +382,22 @@ func batchFunc(ctx context.Context, s *Server, body []byte) (any, error) {
 		}
 		opts.IdempotencyKey = *top.IdempotencyKey
 	}
-	if top.Limit != nil {
-		opts.Limit = *top.Limit
+	limit, err := parseOptPosInt(top.Limit, "limit")
+	if err != nil {
+		return nil, err
 	}
-	if top.Confirm != nil {
-		opts.Confirm = *top.Confirm
+	opts.Limit = limit
+	confirm, err := parseOptBool(top.Confirm, "confirm")
+	if err != nil {
+		return nil, err
 	}
-	res, err := s.eng.Batch(ctx, ns, writes, opts, s.embedder(), nil, store.Incarnation{})
+	opts.Confirm = confirm
+	nsInc := store.Incarnation{}
+	for _, w := range writes {
+		nsInc.NsGen = w.Incarnation.NsGen
+		break
+	}
+	res, err := s.eng.Batch(ctx, ns, writes, opts, s.embedder(), nil, nsInc)
 	if err != nil {
 		return nil, wrapStoreErr(err)
 	}

@@ -289,7 +289,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 				}
 				out.Ids, out.Inserted, out.Updated, out.Changes = r.Ids, r.Inserted, r.Updated, r.Changes
 			case store.BatchWriteUpdate:
-				r, err := s.Update(inner, ns, w.Table, w.Filter, w.Args, w.Set, emb, batchWriteScope(w, scope), store.Incarnation{})
+				r, err := s.Update(inner, ns, w.Table, w.Filter, w.Args, w.Set, emb, batchWriteScope(w, scope), w.Incarnation)
 				if errors.Is(err, errBatchRetry) {
 					return err
 				}
@@ -307,7 +307,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 				}
 				out.Ids, out.Inserted, out.Updated, out.Changes = r.Ids, r.Inserted, r.Updated, r.Changes
 			case store.BatchWriteDelete:
-				r, err := s.Delete(inner, ns, w.Table, w.Filter, w.Args, dopts, batchWriteScope(w, scope), store.Incarnation{})
+				r, err := s.Delete(inner, ns, w.Table, w.Filter, w.Args, dopts, batchWriteScope(w, scope), w.Incarnation)
 				if err != nil {
 					return fmt.Errorf("writes[%d]: %w", i, err)
 				}
