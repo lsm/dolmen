@@ -78,7 +78,7 @@ full pin-keeping list.
 
 ### Slice 3 in more detail
 
-`store.ValidateEngine` ([internal/store/engine.go](internal/store/engine.go)) is a two-case switch;
+`store.ValidateEngine` ([internal/store/engine.go](../../internal/store/engine.go)) is a two-case switch;
 `internal/conformance/engine_test.go` resolves `DOLMEN_ENGINE` through it and
 `internal/blackbox/harness_test.go` has its own resolver. Slice 3 adds the third name to
 `ValidateEngine`, the `"lakehouse"` case to both resolvers, and — the point of the slice — the
@@ -129,7 +129,7 @@ have answered up front.
 
 There is a gap here the plan has to own rather than assume away. §0.6 says *engine-declared*
 without naming a channel, and `EngineCapabilities`
-([internal/store/engine.go](internal/store/engine.go)) has six fields — `vector_execution`,
+([internal/store/engine.go](../../internal/store/engine.go)) has six fields — `vector_execution`,
 `ann_recall_bound`, `notifications`, `subscribe`, `query_dialect`, `filter_dialect` — **none of
 them topology**, and adapter #1 declares nothing there. So the lakehouse's topology is currently
 expressible only in prose, and making it machine-readable means adding a capability field, which is
@@ -179,7 +179,7 @@ work before the child is signalled. Four specific behaviours:
   laptop.
 
 **The error class.** A sidecar that is down is a new failure mode and it needs a class. The
-taxonomy ([internal/derr](internal/derr)) has ten codes and none fits: `embedder_unavailable` is
+taxonomy ([internal/derr](../../internal/derr)) has ten codes and none fits: `embedder_unavailable` is
 about a *different* subsystem, and reusing it would tell a caller to configure an embedder.
 [query-without-sql.md](query-without-sql.md) flagged this as not yet existing. §10 Q3 asks Marc to
 name it; the plan's recommendation is a new `sql_engine_unavailable` code alongside
@@ -312,9 +312,9 @@ allocator; Iceberg has no native equivalent. It is assigned inside the namespace
 serialization point (below), never as `max(id)+1` from a snapshot — that collides under concurrent
 writers and corrupts `read_rows`, change records, and idempotent replay. Adapter #1 gets this from
 `INTEGER PRIMARY KEY AUTOINCREMENT` and `LastInsertId`
-([internal/store/insert.go](internal/store/insert.go)); adapter #2 declares
+([internal/store/insert.go](../../internal/store/insert.go)); adapter #2 declares
 `id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY`
-([internal/postgres/table.go](internal/postgres/table.go)) and reads the id back with `RETURNING`.
+([internal/postgres/table.go](../../internal/postgres/table.go)) and reads the id back with `RETURNING`.
 
 The lakehouse has **neither mechanism**, which is the whole reason this is a problem. A Parquet
 file has no id column that the format generates, and the id has to be a *dolmen* value written
@@ -440,7 +440,7 @@ relevance is tested *within* this engine, never byte-compared to SQLite's FTS5 o
 Marc to confirm this reading of D27 before slice 9.
 
 **One interface note.** `store.Engine` has a `Tokenize` method
-([internal/store/tokenize.go](internal/store/tokenize.go)), and the `tokenize` operation serves it:
+([internal/store/tokenize.go](../../internal/store/tokenize.go)), and the `tokenize` operation serves it:
 it is how a caller asks "how does this server's engine analyse this text?". It is a contract op, so
 the lakehouse must implement it, and its answer will be DuckDB's tokens, not SQLite's. That is the
 same disclosure `query_dialect` makes, in a place the suite already reaches — and it is a good
@@ -458,9 +458,9 @@ brute-force path is the conformance reference. §7's canonical cosine is fully s
 operands normalized to float32, computed in binary64, component-wise in dimension order, every
 multiply and add individually rounded, FMA and reassociation **forbidden**, zero norm scoring
 exactly `0`, final quotient clamped to `[-1, 1]` — and it lives in
-[internal/store/vector.go](internal/store/vector.go): `cosine`, the known-norm variant
+[internal/store/vector.go](../../internal/store/vector.go): `cosine`, the known-norm variant
 `cosineKnown`, and the exported `store.Cosine` that adapter #2's
-[internal/postgres/search.go](internal/postgres/search.go) already calls, which is how the two
+[internal/postgres/search.go](../../internal/postgres/search.go) already calls, which is how the two
 engines get bit-identical exact results without sharing anything. (`internal/value` is **not** the
 home of the scorer — it holds vector *input* coercion and typed decoding, extracted for adapter #2
 alongside the rest of the value layer.) `q(s) = floor(s / fl64(1e-9))` then gives the
