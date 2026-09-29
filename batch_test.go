@@ -187,6 +187,46 @@ func TestBatchNormalisesTheNamespaceAndTheTable(t *testing.T) {
 	}
 }
 
+func TestBatchRechecksTheEmbeddingSpace(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	emb, err := Open(dir, WithEmbedding(&staticProvider{identity: "fake|v1"}))
+	if err != nil {
+		t.Fatalf("open with provider: %v", err)
+	}
+	if _, err := emb.CreateTable(ctx, "app", "notes", []Field{
+		{Name: "body", Type: Text, Vectorize: true},
+	}); err != nil {
+		emb.Close()
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := emb.Batch(ctx, "app", []BatchWrite{
+		{Kind: BatchInsert, Table: "notes", Records: []map[string]any{{"body": "pinned"}}},
+	}, BatchOptions{}); err != nil {
+		emb.Close()
+		t.Fatalf("first batch pins the space: %v", err)
+	}
+	if err := emb.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	other, err := Open(dir, WithEmbedding(&staticProvider{identity: "other|v1"}))
+	if err != nil {
+		t.Fatalf("reopen with a different identity: %v", err)
+	}
+	defer other.Close()
+	_, err = other.Batch(ctx, "app", []BatchWrite{
+		{Kind: BatchInsert, Table: "notes", Records: []map[string]any{{"body": "foreign"}}},
+	}, BatchOptions{})
+	if err == nil {
+		t.Fatal("a batch whose identity differs from the table's embed_space must be refused")
+	}
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("error %v is not invalid_request", err)
+	}
+}
+
 func TestBatchNamesTheFailingWriteByIndex(t *testing.T) {
 	st := batchFixture(t)
 	_, err := st.Batch(context.Background(), "app", []BatchWrite{
