@@ -1,8 +1,10 @@
 package postgres
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	pg "github.com/pganalyze/pg_query_go/v6"
 	parser "github.com/wasilibs/go-pgquery"
@@ -66,19 +68,55 @@ type sqlCompiler struct {
 	maskSecrets bool
 }
 
-func compileSQL(input string, argc int, namespace string, tables map[string]tableState) (string, *sqlNames, error) {
-	return compileSQLWithCasts(input, argc, namespace, tables, nil)
+func compileSQL(ctx context.Context, input string, argc int, namespace string, tables map[string]tableState) (string, *sqlNames, error) {
+	return compileSQLWithCasts(ctx, input, argc, namespace, tables, nil)
 }
 
-func compileSQLWithCasts(input string, argc int, namespace string, tables map[string]tableState, casts map[int32]string) (string, *sqlNames, error) {
-	return compileSQLMode(input, argc, namespace, tables, casts, true)
+func compileSQLWithCasts(ctx context.Context, input string, argc int, namespace string, tables map[string]tableState, casts map[int32]string) (string, *sqlNames, error) {
+	return compileSQLMode(ctx, input, argc, namespace, tables, casts, true)
 }
 
-func compileFilterSQL(input string, argc int, namespace string, tables map[string]tableState) (string, *sqlNames, error) {
-	return compileSQLMode(input, argc, namespace, tables, nil, false)
+func compileFilterSQL(ctx context.Context, input string, argc int, namespace string, tables map[string]tableState) (string, *sqlNames, error) {
+	return compileSQLMode(ctx, input, argc, namespace, tables, nil, false)
 }
 
-func compileSQLMode(input string, argc int, namespace string, tables map[string]tableState, casts map[int32]string, maskSecrets bool) (string, *sqlNames, error) {
+var (
+	parserStart sync.Once
+	parserReady chan struct{}
+)
+
+func startSQLParser() {
+	parserStart.Do(func() {
+		parserReady = make(chan struct{})
+		go func() {
+			defer close(parserReady)
+			tree, err := parser.Parse("SELECT 1")
+			if err != nil {
+				return
+			}
+			_, _ = parser.Deparse(tree)
+		}()
+	})
+}
+
+func awaitSQLParser(ctx context.Context) error {
+	startSQLParser()
+	if ctx == nil {
+		<-parserReady
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case <-parserReady:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func compileSQLMode(ctx context.Context, input string, argc int, namespace string, tables map[string]tableState, casts map[int32]string, maskSecrets bool) (string, *sqlNames, error) {
 	names := newSQLNames(tables)
 	rewritten, count, err := rewriteSQL(input, names)
 	if err != nil {
@@ -87,9 +125,15 @@ func compileSQLMode(input string, argc int, namespace string, tables map[string]
 	if count != argc {
 		return "", nil, sqlRejected("SQL has %d placeholders but received %d arguments", count, argc)
 	}
+	if err := awaitSQLParser(ctx); err != nil {
+		return "", nil, err
+	}
 	tree, err := parser.Parse(rewritten)
 	if err != nil {
 		return "", nil, sqlParseRejection{sqlQueryRejected("invalid PostgreSQL SQL: %v", err)}
+	}
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
 	}
 	if len(tree.Stmts) != 1 || tree.Stmts[0].Stmt.GetSelectStmt() == nil {
 		return "", nil, sqlRejected("query accepts a single SELECT or read-only WITH statement")
@@ -102,7 +146,13 @@ func compileSQLMode(input string, argc int, namespace string, tables map[string]
 		castParameters(tree.Stmts[0].Stmt.ProtoReflect(), casts)
 	}
 	output, err := parser.Deparse(tree)
-	return output, names, err
+	if err != nil {
+		return "", nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
+	}
+	return output, names, nil
 }
 
 func (c *sqlCompiler) walk(message protoreflect.Message, ctes map[string]bool) error {
