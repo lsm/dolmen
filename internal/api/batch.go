@@ -164,6 +164,7 @@ func applyBatchSchemas() {
 			"namespace": map[string]any{
 				"type":        "string",
 				"description": "The namespace every write applies to; a batch cannot span namespaces.",
+				"pattern":     store.NSPathPattern(),
 			},
 			"writes": batchWritesProperty(),
 			"idempotency_key": map[string]any{

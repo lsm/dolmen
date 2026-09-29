@@ -105,10 +105,10 @@ func batchWriteResult(t *testing.T, k store.BatchWriteKind) map[string]any {
 	return nil
 }
 
-func advertisedRequired(t *testing.T, kind store.BatchWriteKind, drop func(string) bool, plusKind bool) []string {
+func advertisedRequired(t *testing.T, kind store.BatchWriteKind, fromInput bool, drop func(string) bool) []string {
 	t.Helper()
 	var raw []string
-	if plusKind {
+	if fromInput {
 		in, _ := Ops[string(kind)].InputSchema["required"].([]string)
 		raw = in
 	} else {
@@ -122,9 +122,7 @@ func advertisedRequired(t *testing.T, kind store.BatchWriteKind, drop func(strin
 		}
 		out = append(out, name)
 	}
-	if plusKind {
-		out = append(out, "kind")
-	}
+	out = append(out, "kind")
 	sort.Strings(out)
 	return out
 }
@@ -174,7 +172,7 @@ func TestBatchWriteSchemasAreDerivedFromTheAdvertisedOnes(t *testing.T) {
 		}
 		entry := batchWriteEntry(t, kind)
 		gotRequired := requiredOf(t, entry)
-		wantRequired := advertisedRequired(t, kind, isBatchPerBatchField, true)
+		wantRequired := advertisedRequired(t, kind, true, isBatchPerBatchField)
 		if !reflect.DeepEqual(gotRequired, wantRequired) {
 			t.Fatalf("batch's %s write requires %v, want the advertised required list minus the per-batch fields, plus kind: %v", kind, gotRequired, wantRequired)
 		}
@@ -213,7 +211,7 @@ func TestBatchResultSchemasAreDerivedFromTheAdvertisedOnes(t *testing.T) {
 			t.Fatalf("batch's %s result advertises %v, want the advertised %s output minus replayed, plus kind: %v", kind, got, kind, want)
 		}
 		gotRequired := requiredOf(t, batchResultEntry(t, kind))
-		wantRequired := advertisedRequired(t, kind, func(name string) bool { return name == "replayed" }, true)
+		wantRequired := advertisedRequired(t, kind, false, func(name string) bool { return name == "replayed" })
 		if !reflect.DeepEqual(gotRequired, wantRequired) {
 			t.Fatalf("batch's %s result requires %v, want the advertised required list minus replayed, plus kind: %v", kind, gotRequired, wantRequired)
 		}

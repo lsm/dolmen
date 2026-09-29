@@ -8,20 +8,18 @@ import (
 func TestBatchOptionalFieldsDecideNull(t *testing.T) {
 	h := newHarness(t)
 	batchDocs(t, h)
-	one := `{"namespace":"acme","writes":[{"kind":"insert","table":"docs","records":[{"title":"a","body":"b"}]}`
-
 	cases := []struct {
 		name string
 		body string
 		want string
 	}{
-		{"idempotency_key null", one + `,"idempotency_key":null}`, "idempotency_key"},
-		{"idempotency_key empty", one + `,"idempotency_key":""}`, "idempotency_key"},
-		{"limit null", one + `,"limit":null}`, "limit"},
-		{"limit zero", one + `,"limit":0}`, "limit"},
-		{"limit negative", one + `,"limit":-3}`, "limit"},
-		{"confirm null", one + `,"confirm":null}`, "confirm"},
-		{"limit not a number", one + `,"limit":"five"}`, "limit"},
+		{"idempotency_key null", `{"namespace":"acme","writes":[{"kind":"insert","table":"docs","records":[{"title":"a","body":"b"}]}],"idempotency_key":null}`, "idempotency_key"},
+		{"idempotency_key empty", `{"namespace":"acme","writes":[{"kind":"insert","table":"docs","records":[{"title":"a","body":"b"}]}],"idempotency_key":""}`, "idempotency_key"},
+		{"limit null", `{"namespace":"acme","writes":[{"kind":"insert","table":"docs","records":[{"title":"a","body":"b"}]}],"limit":null}`, "limit"},
+		{"limit zero", `{"namespace":"acme","writes":[{"kind":"insert","table":"docs","records":[{"title":"a","body":"b"}]}],"limit":0}`, "limit"},
+		{"limit negative", `{"namespace":"acme","writes":[{"kind":"insert","table":"docs","records":[{"title":"a","body":"b"}]}],"limit":-3}`, "limit"},
+		{"confirm null", `{"namespace":"acme","writes":[{"kind":"insert","table":"docs","records":[{"title":"a","body":"b"}]}],"confirm":null}`, "confirm"},
+		{"limit not a number", `{"namespace":"acme","writes":[{"kind":"insert","table":"docs","records":[{"title":"a","body":"b"}]}],"limit":"five"}`, "limit"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
