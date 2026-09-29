@@ -189,7 +189,8 @@ func TestEngineKnobResolution(t *testing.T) {
 		{env: map[string]string{"DOLMEN_ENGINE": ""}, want: store.EngineSQLite},
 		{env: map[string]string{"DOLMEN_ENGINE": "sqlite"}, want: store.EngineSQLite},
 		{env: map[string]string{"DOLMEN_ENGINE": "postgres"}, want: store.EnginePostgres},
-		{env: map[string]string{"DOLMEN_ENGINE": "banana"}, wantErr: `unknown engine "banana" (available engines are "postgres" and "sqlite")`},
+		{env: map[string]string{"DOLMEN_ENGINE": "lakehouse"}, want: store.EngineLakehouse},
+		{env: map[string]string{"DOLMEN_ENGINE": "banana"}, wantErr: `unknown engine "banana" (available engines are "lakehouse", "postgres" and "sqlite")`},
 	}
 	for _, c := range cases {
 		lookup := c.env
@@ -223,5 +224,24 @@ func TestTheServedSkillNamesTheEnginesDialect(t *testing.T) {
 	postgres := strings.Contains(body, "This server is PostgreSQL-backed")
 	if want := testEngine(t) == store.EnginePostgres; postgres != want {
 		t.Fatalf("engine %q: the served skill says PostgreSQL-backed = %v, want %v", testEngine(t), postgres, want)
+	}
+}
+
+func TestLakehouseResolvesButRefusesToOpen(t *testing.T) {
+	if testEngine(t) != store.EngineLakehouse {
+		t.Skipf("engine %q: this is the lakehouse selector's own refusal", testEngine(t))
+	}
+	st, err := openEngineStore(t, t.TempDir(), nil)
+	if st != nil {
+		st.Close()
+		t.Fatal("the lakehouse engine opened; the selector is supposed to refuse until it is implemented")
+	}
+	if err == nil {
+		t.Fatal("opening the lakehouse engine = nil error, want a teaching refusal")
+	}
+	for _, want := range []string{"lakehouse", "not"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("lakehouse refusal %q does not mention %q", err, want)
+		}
 	}
 }

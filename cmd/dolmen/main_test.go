@@ -551,6 +551,31 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRefusesAnUnimplementedEngine(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		env     map[string]string
+		wantErr string
+	}{
+		{name: "postgres without a dsn", args: []string{"-engine", "postgres"}, env: map[string]string{}, wantErr: "needs a connection"},
+		{name: "lakehouse", args: []string{"-engine", "lakehouse"}, env: map[string]string{}, wantErr: "lakehouse"},
+		{name: "lakehouse by env", args: []string{}, env: map[string]string{"DOLMEN_ENGINE": "lakehouse"}, wantErr: "lakehouse"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			getenv := func(key string) string { return tc.env[key] }
+			lookupEnv := func(key string) (string, bool) { v, ok := tc.env[key]; return v, ok }
+			_, err := loadConfig(tc.args, getenv, lookupEnv, io.Discard, false)
+			if err == nil {
+				t.Fatalf("%s: loadConfig accepted it, want a refusal naming %q", tc.name, tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("%s: error %q does not mention %q", tc.name, err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoadConfigVersion(t *testing.T) {
 	cfg, err := loadConfig([]string{"-version"}, func(string) string { return "" }, func(string) (string, bool) { return "", false }, io.Discard, false)
 	if err != nil {
