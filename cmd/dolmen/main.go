@@ -458,14 +458,14 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		fs.Usage()
 		return nil, &printedError{err}
 	}
-	if *engine != store.EnginePostgres && *pgDSN != "" {
-		err := fmt.Errorf("-pg-dsn applies only to -engine postgres")
+	if *engine == store.EngineLakehouse {
+		err := fmt.Errorf("engine %q is not implemented yet; it is designed in docs/design/lakehouse-plan.md, and until it lands use -engine sqlite (the default) or -engine postgres", store.EngineLakehouse)
 		fmt.Fprintf(out, "config: %v\n", err)
 		fs.Usage()
 		return nil, &printedError{err}
 	}
-	if *engine == store.EngineLakehouse {
-		err := fmt.Errorf("engine %q is not implemented yet; it is designed in docs/design/lakehouse-plan.md, and until it lands use -engine sqlite (the default) or -engine postgres", store.EngineLakehouse)
+	if *engine != store.EnginePostgres && *pgDSN != "" {
+		err := fmt.Errorf("-pg-dsn applies only to -engine postgres")
 		fmt.Fprintf(out, "config: %v\n", err)
 		fs.Usage()
 		return nil, &printedError{err}

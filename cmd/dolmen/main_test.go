@@ -158,7 +158,7 @@ func TestLoadConfig(t *testing.T) {
 			name:    "unknown engine teaches the available engines",
 			args:    []string{},
 			env:     map[string]string{"DOLMEN_ENGINE": "banana", "DOLMEN_EMBED_PROVIDER": "none"},
-			wantErr: `unknown engine "banana" (available engines are "postgres" and "sqlite")`,
+			wantErr: `unknown engine "banana" (available engines are "lakehouse", "postgres" and "sqlite")`,
 		},
 		{
 			name: "prefix flag",
@@ -561,6 +561,7 @@ func TestLoadConfigRefusesAnUnimplementedEngine(t *testing.T) {
 		{name: "postgres without a dsn", args: []string{"-engine", "postgres"}, env: map[string]string{}, wantErr: "needs a connection"},
 		{name: "lakehouse", args: []string{"-engine", "lakehouse"}, env: map[string]string{}, wantErr: "lakehouse"},
 		{name: "lakehouse by env", args: []string{}, env: map[string]string{"DOLMEN_ENGINE": "lakehouse"}, wantErr: "lakehouse"},
+		{name: "lakehouse names itself even beside a stray dsn", args: []string{"-engine", "lakehouse", "-pg-dsn", "postgres://x/y"}, env: map[string]string{}, wantErr: "lakehouse"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			getenv := func(key string) string { return tc.env[key] }
