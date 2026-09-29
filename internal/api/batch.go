@@ -327,6 +327,17 @@ func parseBatch(body []byte) (string, []store.BatchWrite, batchBody, error) {
 	return normNS(top.Namespace), writes, top, nil
 }
 
+func (s *Server) resolveBatchScopes(ctx context.Context, ns string, writes []store.BatchWrite) error {
+	for i := range writes {
+		scope, _, _, err := s.resolveScopeState(ctx, ns, normTable(writes[i].Table))
+		if err != nil {
+			return badRequest("writes[%d]: %s", i, err.Error())
+		}
+		writes[i].Scope = scope
+	}
+	return nil
+}
+
 func (s *Server) checkBatchFilters(ctx context.Context, ns string, writes []store.BatchWrite) error {
 	for i, w := range writes {
 		if strings.TrimSpace(w.Filter) == "" {
@@ -346,6 +357,12 @@ func (s *Server) checkBatchFilters(ctx context.Context, ns string, writes []stor
 func batchFunc(ctx context.Context, s *Server, body []byte) (any, error) {
 	ns, writes, top, err := parseBatch(body)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.ensureNamespace(ctx, ns); err != nil {
+		return nil, err
+	}
+	if err := s.resolveBatchScopes(ctx, ns, writes); err != nil {
 		return nil, err
 	}
 	if err := s.checkBatchFilters(ctx, ns, writes); err != nil {

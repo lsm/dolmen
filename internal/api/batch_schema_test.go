@@ -62,7 +62,7 @@ func TestBatchWriteSchemasAreDerivedFromTheAdvertisedOnes(t *testing.T) {
 		}
 		want := make([]string, 0, len(advertised)+1)
 		for name := range advertised {
-			if name == "namespace" || name == "idempotency_key" || name == "dry_run" {
+			if isBatchPerBatchField(name) {
 				continue
 			}
 			want = append(want, name)
@@ -72,7 +72,7 @@ func TestBatchWriteSchemasAreDerivedFromTheAdvertisedOnes(t *testing.T) {
 
 		got := names(batchWriteInput(t, kind))
 		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("batch's %s write advertises %v, want the %s input minus namespace, idempotency_key and dry_run, plus kind: %v", kind, got, kind, want)
+			t.Fatalf("batch's %s write advertises %v, want the %s input minus the fields a batch sets itself, plus kind: %v", kind, got, kind, want)
 		}
 		for name, def := range batchWriteInput(t, kind) {
 			if name == "kind" {
