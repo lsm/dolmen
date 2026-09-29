@@ -367,8 +367,36 @@ func (s *Server) checkBatchFilters(ctx context.Context, ns string, writes []stor
 	return nil
 }
 
+func batchOptions(ctx context.Context, s *Server, top batchBody) (store.BatchOpts, error) {
+	key := ""
+	if top.IdempotencyKey != nil {
+		if bytes.Equal(bytes.TrimSpace(top.IdempotencyKey), []byte("null")) {
+			return store.BatchOpts{}, badRequest("idempotency_key must be a string; omit the field for a batch that should not be replayable, because null would silently make a retry apply every write a second time")
+		}
+		if err := json.Unmarshal(top.IdempotencyKey, &key); err != nil {
+			return store.BatchOpts{}, badRequest("idempotency_key must be a string: %s", err.Error())
+		}
+		if key == "" {
+			return store.BatchOpts{}, badRequest("idempotency_key is empty; omit the field for a batch that should not be replayable, because an empty key would silently make a retry apply every write a second time")
+		}
+	}
+	limit, err := parseOptPosInt(top.Limit, "limit")
+	if err != nil {
+		return store.BatchOpts{}, err
+	}
+	confirm, err := parseOptBool(top.Confirm, "confirm")
+	if err != nil {
+		return store.BatchOpts{}, err
+	}
+	return store.BatchOpts{Owner: s.writeOwner(ctx), IdempotencyKey: key, Limit: limit, Confirm: confirm}, nil
+}
+
 func batchFunc(ctx context.Context, s *Server, body []byte) (any, error) {
 	ns, writes, top, err := parseBatch(body)
+	if err != nil {
+		return nil, err
+	}
+	opts, err := batchOptions(ctx, s, top)
 	if err != nil {
 		return nil, err
 	}
@@ -381,30 +409,6 @@ func batchFunc(ctx context.Context, s *Server, body []byte) (any, error) {
 	if err := s.checkBatchFilters(ctx, ns, writes); err != nil {
 		return nil, err
 	}
-	opts := store.BatchOpts{Owner: s.writeOwner(ctx)}
-	if top.IdempotencyKey != nil {
-		if bytes.Equal(bytes.TrimSpace(top.IdempotencyKey), []byte("null")) {
-			return nil, badRequest("idempotency_key must be a string; omit the field for a batch that should not be replayable, because null would silently make a retry apply every write a second time")
-		}
-		var key string
-		if err := json.Unmarshal(top.IdempotencyKey, &key); err != nil {
-			return nil, badRequest("idempotency_key must be a string: %s", err.Error())
-		}
-		if key == "" {
-			return nil, badRequest("idempotency_key is empty; omit the field for a batch that should not be replayable, because an empty key would silently make a retry apply every write a second time")
-		}
-		opts.IdempotencyKey = key
-	}
-	limit, err := parseOptPosInt(top.Limit, "limit")
-	if err != nil {
-		return nil, err
-	}
-	opts.Limit = limit
-	confirm, err := parseOptBool(top.Confirm, "confirm")
-	if err != nil {
-		return nil, err
-	}
-	opts.Confirm = confirm
 	nsInc := store.Incarnation{}
 	for _, w := range writes {
 		nsInc.NsGen = w.Incarnation.NsGen
