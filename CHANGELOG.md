@@ -66,6 +66,16 @@
 
 ### Added
 
+- **`lakehouse` is a recognised engine name that is refused rather than unknown.** `DOLMEN_ENGINE`
+  and `-engine` accept it, and the unknown-engine message now lists all three engines, so a
+  configuration naming the lakehouse tier fails with a message that says what is and is not
+  available instead of claiming the name does not exist. Every surface refuses it clearly until the
+  engine is implemented: the Go facade (`WithEngine`) names the design document, and the binary
+  refuses at startup. **Behaviour change:** `-engine lakehouse` and `WithEngine("lakehouse")` were
+  previously unknown-engine errors and are now teaching refusals; nothing that worked before
+  changes. The lakehouse engine itself lands in later slices, per
+  `docs/design/lakehouse-plan.md`.
+
 - **A lane plan for the lakehouse engine** (`docs/design/lakehouse-plan.md`): the slice order for
   adapter #3, one mergeable PR at a time, following the `query` decision in
   `docs/design/query-without-sql.md` (an external DuckDB process below the seam, SQL passed through

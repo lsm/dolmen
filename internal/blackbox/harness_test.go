@@ -34,6 +34,7 @@ const (
 	waitBudget        = 20 * time.Second
 	enginePostgres    = "postgres"
 	engineSQLite      = "sqlite"
+	engineLakehouse   = "lakehouse"
 )
 
 type serverProc struct {
@@ -132,6 +133,9 @@ func resolveEngine() error {
 	app.engine = os.Getenv("DOLMEN_ENGINE")
 	if app.engine == "" {
 		app.engine = engineSQLite
+	}
+	if app.engine == engineLakehouse {
+		return fmt.Errorf("DOLMEN_ENGINE=%q is not an engine this suite can drive yet; the lakehouse engine is not implemented (docs/design/lakehouse-plan.md slice 12 onwards), so use %q or %q", app.engine, engineSQLite, enginePostgres)
 	}
 	if app.engine != engineSQLite && app.engine != enginePostgres {
 		return fmt.Errorf("DOLMEN_ENGINE=%q is not an engine this suite can drive; use %q or %q", app.engine, engineSQLite, enginePostgres)
