@@ -86,7 +86,7 @@ func batchWriteSchema(kind store.BatchWriteKind) map[string]any {
 	props["kind"] = map[string]any{
 		"type":        "string",
 		"enum":        []any{string(kind)},
-		"description": "The write kind, which also fixes the fields accepted here: these are the fields of the " + string(kind) + " operation minus the ones a batch sets itself.",
+		"description": "The write kind, which also fixes the fields accepted here: these are the " + string(kind) + " operation's own fields, minus namespace, idempotency_key, limit and confirm, which are set once for the whole batch, and minus dry_run, which batch does not have.",
 	}
 	required = append(required, "kind")
 	return objectSchema(false, props, required)
@@ -126,7 +126,7 @@ func batchWritesProperty() map[string]any {
 	}
 	return map[string]any{
 		"type":        "array",
-		"description": "The writes to apply, in order, inside one transaction. Every write is one of the write operations with the same fields, except that namespace, idempotency_key and dry_run are set per batch and are refused here.",
+		"description": "The writes to apply, in order, inside one transaction. Every write is one of the five write operations with that operation's own fields, except that namespace, idempotency_key, limit and confirm are set once for the whole batch and are refused here. dry_run is refused here and is not part of batch at all - a batch is all-or-nothing, so it cannot mix a preview with writes that commit, and there is no top-level dry_run to move it to.",
 		"minItems":    1,
 		"maxItems":    store.MaxWritesPerBatch,
 		"items":       batchOneOf(schemas),
@@ -169,16 +169,16 @@ func applyBatchSchemas() {
 			"writes": batchWritesProperty(),
 			"idempotency_key": map[string]any{
 				"type":        "string",
-				"description": "Re-sending the identical body with the same key returns the stored results and writes nothing; the same key with a different body is a conflict. Omit it for a batch that should not be replayable.",
+				"description": "Re-sending the identical body with the same key returns the stored results and writes nothing; the same key with a different body is a conflict. An empty string and an explicit null are both refused, because either would silently make a retry apply every write a second time - omit the field for a batch that should not be replayable.",
 				"pattern":     fmt.Sprintf(`^[ -~]{1,%d}$`, store.MaxIdempotencyKeyLen),
 			},
 			"limit": map[string]any{
 				"type":        "integer",
-				"description": "Match cap for every delete in the batch; without it a delete matching more rows than the cap is refused rather than deleted.",
+				"description": "Match cap for every delete in the batch; 0, a negative and null are refused, and without it a delete matching more rows than the cap is refused rather than deleted. Set once for the batch, not per write.",
 			},
 			"confirm": map[string]any{
 				"type":        "boolean",
-				"description": "Allow a delete in the batch to delete more rows than limit allows.",
+				"description": "Allow a delete in the batch to delete more rows than limit allows; null is refused. Set once for the batch, not per write.",
 			},
 		},
 		"required": []string{"namespace", "writes"},
@@ -189,7 +189,7 @@ func applyBatchSchemas() {
 			"description": "True when an idempotency_key replayed a previous batch, so the results below are the ones that batch returned and nothing was written.",
 		},
 		"results": batchResultsProperty(),
-	}, "results")
+	}, "replayed", "results")
 	Ops["batch"] = def
 }
 
