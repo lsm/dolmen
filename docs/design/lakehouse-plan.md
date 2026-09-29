@@ -243,7 +243,7 @@ under every option below — the question is only what else a deployment needs.
 
 **Option A — a separate helper binary dolmen ships and releases.** dolmen spawns `duckdb` (or a
 thin `dolmen-duckdb` wrapper dolmen builds) as a child. Cost: a second release artifact, six more
-platforms in `make release` (`PLATEFORMS` already lists six), and the user has two binaries to
+platforms in `make release` (`PLATFORMS` already lists six), and the user has two binaries to
 install and must put the helper somewhere dolmen can find. Benefit: a pinned DuckDB version, one
 artifact, no system dependency, and the container image gains a second file.
 
@@ -457,8 +457,13 @@ and the choice has real cost differences, so it is Marc's.
 brute-force path is the conformance reference. §7's canonical cosine is fully specified — both
 operands normalized to float32, computed in binary64, component-wise in dimension order, every
 multiply and add individually rounded, FMA and reassociation **forbidden**, zero norm scoring
-exactly `0`, final quotient clamped to `[-1, 1]` — and `internal/value` (plus `internal/store`) is
-where it lives, extracted for adapter #2 and shared. `q(s) = floor(s / fl64(1e-9))` then gives the
+exactly `0`, final quotient clamped to `[-1, 1]` — and it lives in
+[internal/store/vector.go](internal/store/vector.go): `cosine`, the known-norm variant
+`cosineKnown`, and the exported `store.Cosine` that adapter #2's
+[internal/postgres/search.go](internal/postgres/search.go) already calls, which is how the two
+engines get bit-identical exact results without sharing anything. (`internal/value` is **not** the
+home of the scorer — it holds vector *input* coercion and typed decoding, extracted for adapter #2
+alongside the rest of the value layer.) `q(s) = floor(s / fl64(1e-9))` then gives the
 order, with `id` ascending as tiebreak, and `skipped_vectors` counts corrupt,
 dimension-mismatched, and non-finite stored vectors rather than dropping them silently.
 
@@ -623,10 +628,15 @@ So the order is not read as false precision:
   a **narrower** `query`: statements validated against a known-safe surface, with the refusal being
   a teaching error. That is weaker than pass-through and would be a deliberate narrowing of D28's
   disclosure-only obligation, so it needs Marc, and it is §10 Q2.
-- **Slices 4–7** are individually unremarkable and collectively the bulk of the line count.
-  Research §2.3 classes the append write path M, table DDL M, and the read path L. §2.3's aggregate
-  for the whole lane is "quarters, not weeks", and that estimate is for a lane **without** a SQL
-  sidecar; this plan adds one.
+- **Slices 4–7** are individually unremarkable and collectively the bulk of the line count, and
+  they are the slices with the **weakest** budgeting evidence. Research §2.3 gives effort classes for
+  the append write path (M), update/delete (M), change-feed mapping (M), the FTS sidecar (M) and
+  the read/serving tier (L) — it does **not** class the table-DDL work, which §2.2 lists only as a
+  "natural fit" where "Iceberg schema evolution is a strength". So slices 4 and 5 carry no M/L
+  estimate from the note at all, and slices 6–8 inherit one written before the position-delete
+  decision and before this plan's commit-log design. §2.3's aggregate for the whole lane is
+  "quarters, not weeks", and that estimate is for a lane **without** a SQL sidecar; this plan adds
+  one. Treat the order as sound and the per-slice sizing as not yet known.
 
 ---
 
