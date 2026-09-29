@@ -349,6 +349,13 @@ good news, because it means a stdio transport may be confinable and mechanism 1 
 re-evaluating. The confinement tests assert the opposite direction, that every escape is refused,
 and the settings are read back with `current_setting` rather than assumed to have been applied.
 
+**There is deliberately no dot-command detector in this package, and none should be added.** Q4
+rules a statement filter out even as a second layer, and the unix-socket transport makes one
+unnecessary; a helper that sniffed caller SQL for a leading `.` would be precisely the mechanism
+the decision rejects, and an unused one is an invitation to wire it in. The transport's safety is
+shown by the attack tests — they run the payload against the real CLI and observe what happens —
+not by a predicate that guesses. Reintroducing filtering needs the Q4 decision reopened first.
+
 **Untested, named rather than assumed away.** The CI job is Linux-only, so:
 
 - **Windows drive letters and UNC paths** (`C:\`, `\\server\share`) are unproven, and `\\?\` and

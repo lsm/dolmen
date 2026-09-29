@@ -1,7 +1,6 @@
 package duckdblockdown
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -313,15 +312,4 @@ func (l Locked) VerifySettings(ctx context.Context) error {
 		return fmt.Errorf("duckdblockdown: allowed_directories does not name the namespace data directory, got %q", row.AllowedDirs)
 	}
 	return nil
-}
-
-func HasDotCommandLine(sql string) bool {
-	sc := bufio.NewScanner(strings.NewReader(sql))
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if strings.HasPrefix(line, ".") {
-			return true
-		}
-	}
-	return sc.Err() != nil
 }

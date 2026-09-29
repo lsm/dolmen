@@ -364,26 +364,6 @@ func TestCallerSQLCanInjectADotCommandThroughStdin(t *testing.T) {
 	}
 }
 
-func TestHasDotCommandLineRecognisesTheInjection(t *testing.T) {
-	cases := []struct {
-		sql  string
-		want bool
-	}{
-		{"SELECT 1;", false},
-		{"SELECT 1;\n.shell id", true},
-		{"SELECT 1;\n  .system id", true},
-		{"SELECT 1;\n.output /tmp/x", true},
-		{"SELECT 1;\n.read /tmp/x", true},
-		{"SELECT 1;\n", false},
-		{"", false},
-	}
-	for _, c := range cases {
-		if got := HasDotCommandLine(c.sql); got != c.want {
-			t.Errorf("HasDotCommandLine(%q) = %v, want %v", c.sql, got, c.want)
-		}
-	}
-}
-
 func TestParseSettingRowReadsEachSettingByColumn(t *testing.T) {
 	locked := "┌─────────┬─────────┬─────────────┬──────────┬─────────┬──────────────────────┐\n" +
 		"│   ext   │  lock   │ autoinstall │ autoload │ secrets │         dirs         │\n" +
