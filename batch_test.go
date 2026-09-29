@@ -2,6 +2,7 @@ package dolmen
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -227,6 +228,48 @@ func TestBatchRechecksTheEmbeddingSpace(t *testing.T) {
 	}
 	if !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("error %v is not invalid_request", err)
+	}
+}
+
+func TestBatchRejectsANegativeLimit(t *testing.T) {
+	st := batchFixture(t)
+	_, err := st.Batch(context.Background(), "app", []BatchWrite{
+		{Kind: BatchDelete, Table: "notes", Filter: "1=1"},
+	}, BatchOptions{Limit: -3})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("error %v is not invalid_request, so a negative limit runs as the default cap", err)
+	}
+}
+
+func TestBatchDoesNotMutateTheCallersArgs(t *testing.T) {
+	st := batchFixture(t)
+	ctx := context.Background()
+	if _, err := st.Batch(ctx, "app", []BatchWrite{
+		{Kind: BatchInsert, Table: "notes", Records: []map[string]any{{"title": "a", "body": "one"}}},
+	}, BatchOptions{}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	args := []any{json.Number("5.0")}
+	writes := []BatchWrite{
+		{Kind: BatchUpdate, Table: "notes", Filter: "title = $1", Args: args, Set: map[string]any{"body": "first"}},
+	}
+	if _, err := st.Batch(ctx, "app", writes, BatchOptions{IdempotencyKey: "k1"}); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if len(args) != 1 {
+		t.Fatalf("the caller's args slice was resized to %d, want 1", len(args))
+	}
+	if _, ok := args[0].(json.Number); !ok {
+		t.Fatalf("the caller's arg 0 is %T, want the json.Number it was given", args[0])
+	}
+
+	again, err := st.Batch(ctx, "app", writes, BatchOptions{IdempotencyKey: "k1"})
+	if err != nil {
+		t.Fatalf("replay with the caller's own slice must replay, not conflict: %v", err)
+	}
+	if !again.Replayed {
+		t.Fatal("the second call did not replay, so the args were rewritten and the body no longer matches")
 	}
 }
 

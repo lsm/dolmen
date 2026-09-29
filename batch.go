@@ -63,6 +63,9 @@ func (s *Store) Batch(ctx context.Context, namespace string, writes []BatchWrite
 	if len(writes) == 0 {
 		return BatchResult{}, derr.New(derr.InvalidRequest, "a batch needs at least one write")
 	}
+	if opts.Limit < 0 {
+		return BatchResult{}, derr.New(derr.InvalidRequest, "BatchOptions.Limit must not be negative (0 keeps the default confirm threshold)")
+	}
 	eng := make([]store.BatchWrite, 0, len(writes))
 	for i, w := range writes {
 		ew, err := batchEngineWrite(i, w)
@@ -108,7 +111,7 @@ func batchEngineWrite(i int, w BatchWrite) (store.BatchWrite, error) {
 		Records: w.Records,
 		On:      w.On,
 		Filter:  w.Filter,
-		Args:    w.Args,
+		Args:    append([]any(nil), w.Args...),
 		Set:     w.Set,
 	}
 	switch w.Kind {
