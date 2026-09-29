@@ -336,10 +336,8 @@ func TestEveryCLIModeRunsADotCommand(t *testing.T) {
 		{"command-argument", func(sql string) (Result, error) { return f.locked.Run(ctx, sql) }},
 	}
 	commands := []struct {
-		name string
-		sql  func(marker string) string
-		// oneline is the same command as a single argument, for -c which takes
-		// one statement and so cannot carry a follow-up line.
+		name    string
+		sql     func(marker string) string
 		oneline func(marker string) string
 	}{
 		{
