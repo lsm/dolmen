@@ -72,6 +72,21 @@ func (f *fixture) ctx(t *testing.T) context.Context {
 	return ctx
 }
 
+func TestTheTraversalCaseSendsAnUnresolvedTraversalToDuckDB(t *testing.T) {
+	f := newFixture(t)
+	literal := f.locked.DataDir + "/../../sibling/data/canary.csv"
+	if !strings.Contains(literal, "/../") {
+		t.Fatalf("the traversal fixture resolved itself away: %q", literal)
+	}
+	cleaned := filepath.Clean(literal)
+	if cleaned == literal {
+		t.Fatalf("the traversal fixture is already clean, so it is not a traversal: %q", literal)
+	}
+	if !strings.HasPrefix(cleaned, filepath.Dir(filepath.Dir(LockdownDir(f.sibling)))+string(filepath.Separator)) {
+		t.Fatalf("the traversal fixture should resolve into the sibling namespace, got %q from %q", cleaned, literal)
+	}
+}
+
 func TestTheLockedSettingsActuallyTakeEffect(t *testing.T) {
 	f := newFixture(t)
 	res, err := f.locked.Run(f.ctx(t), f.locked.settingsQuery())
@@ -119,7 +134,7 @@ func TestConfinementBlocksEveryFilesystemEscape(t *testing.T) {
 		{"read a sibling namespace file", "SELECT * FROM read_csv_auto('" + f.canary + "');"},
 		{"read the namespace's own sqlite catalog", "SELECT * FROM read_csv_auto('" + catalog + "');"},
 		{"read through a symlink planted inside the allowed directory", "SELECT * FROM read_csv_auto('" + filepath.Join(ownEscape, "canary.csv") + "');"},
-		{"traverse out with ..", "SELECT * FROM read_csv_auto('" + filepath.Join(f.locked.DataDir, "..", "..", "sibling", "data", "canary.csv") + "');"},
+		{"traverse out with ..", "SELECT * FROM read_csv_auto('" + f.locked.DataDir + "/../../sibling/data/canary.csv');"},
 		{"copy to outside the directory", "COPY (SELECT 1 AS a) TO '" + filepath.Join(siblingData, "pwned.csv") + "';"},
 		{"copy from outside the directory", "CREATE TABLE t(a INT); COPY t FROM '" + f.canary + "';"},
 		{"copy to a shell program", "COPY (SELECT 1) TO PROGRAM 'id > " + filepath.Join(siblingData, "pwned.txt") + "';"},
@@ -210,8 +225,15 @@ func TestTheSessionVariableDoesNotWidenTheSetting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(res.Stdout, "\"/\"") {
-		t.Fatalf("a session variable widened the setting: %q", res.Stdout)
+	dirs := firstDataCell(res.Stdout)
+	if dirs == "" {
+		t.Fatalf("the setting did not read back in the same session: %q", res.Stdout)
+	}
+	if !strings.Contains(dirs, "ns/data") {
+		t.Fatalf("the session variable changed the setting's own value to %q, want it still naming the namespace data directory", dirs)
+	}
+	if strings.TrimSpace(dirs) == "[/]" || strings.Contains(dirs, "/],") {
+		t.Fatalf("the session variable widened the setting to the filesystem root: %q", dirs)
 	}
 }
 

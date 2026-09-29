@@ -270,6 +270,21 @@ func splitRow(line string) []string {
 	return parts[1 : len(parts)-1]
 }
 
+func firstDataCell(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		fields := splitRow(line)
+		if len(fields) != 1 {
+			continue
+		}
+		cell := strings.TrimSpace(fields[0])
+		if cell == "" || cell == "varchar[]" || cell == "dirs" {
+			continue
+		}
+		return cell
+	}
+	return ""
+}
+
 func (l Locked) VerifySettings(ctx context.Context) error {
 	row, err := l.ReadSettings(ctx)
 	if err != nil {
