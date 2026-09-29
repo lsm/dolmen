@@ -413,7 +413,7 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 		out := BatchWriteResult{Kind: w.Kind}
 		switch w.Kind {
 		case BatchWriteInsert:
-			ids, ch, _, done, err := s.insert(ctx, nsName, w.Table, w.Records, emb, "", opts.Owner, DomainFor(wopts, scope), inner)
+			ids, ch, _, done, err := s.insert(ctx, nsName, w.Table, w.Records, emb, "", opts.Owner, DomainFor(wopts, writeScope(w, scope)), inner)
 			if !done {
 				return BatchResult{}, false, nil
 			}

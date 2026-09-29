@@ -271,7 +271,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 			out := store.BatchWriteResult{Kind: w.Kind}
 			switch w.Kind {
 			case store.BatchWriteInsert:
-				r, err := s.Insert(inner, ns, w.Table, w.Records, wopts, emb, scope, store.Incarnation{})
+				r, err := s.Insert(inner, ns, w.Table, w.Records, wopts, emb, batchWriteScope(w, scope), w.Incarnation)
 				if errors.Is(err, errBatchRetry) {
 					return err
 				}
@@ -280,7 +280,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 				}
 				out.Ids, out.Inserted, out.Changes = r.Ids, int64(len(r.Ids)), r.Changes
 			case store.BatchWriteUpsertByKey:
-				r, err := s.UpsertByKey(inner, ns, w.Table, w.On, w.Records, wopts, emb, scope, store.Incarnation{})
+				r, err := s.UpsertByKey(inner, ns, w.Table, w.On, w.Records, wopts, emb, batchWriteScope(w, scope), w.Incarnation)
 				if errors.Is(err, errBatchRetry) {
 					return err
 				}
@@ -298,7 +298,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 				}
 				out.Updated, out.Changes = r.Updated, r.Changes
 			case store.BatchWriteUpsert:
-				r, err := s.Upsert(inner, ns, w.Table, w.Filter, w.Args, w.Set, wopts, emb, scope, store.Incarnation{})
+				r, err := s.Upsert(inner, ns, w.Table, w.Filter, w.Args, w.Set, wopts, emb, batchWriteScope(w, scope), w.Incarnation)
 				if errors.Is(err, errBatchRetry) {
 					return err
 				}
