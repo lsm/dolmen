@@ -99,7 +99,7 @@ because a routine `go get -u` anywhere in dolmen's graph wants a newer Arrow. So
 
 Landing them together changes what the pin has to survive, for the better: because the modules are
 now imported by real code, `go mod tidy` cannot drop them, and the version-pin test has something to
-check. See §9 for the full pin-keeping list.
+check. See §7 for the full pin-keeping list.
 
 ### Slice 3 in more detail
 
