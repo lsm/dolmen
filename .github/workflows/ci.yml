@@ -1,5 +1,6 @@
 # Minimal CI: vet, the race-enabled test suite (which includes the
-# contract-conformance suite), and the zero-comments gate (#231).
+# contract-conformance suite), the zero-comments gate (#231), and the
+# CGO_ENABLED=0 build that keeps the shipped binary cgo-free.
 # Releases, container builds, SBOM, and the vulnerability gate are
 # deliberately out of scope here — see #68.
 name: CI
@@ -30,6 +31,18 @@ jobs:
           go build ./...
           go vet ./...
           go run .
+
+  cgo-free-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Build with cgo disabled
+        run: CGO_ENABLED=0 go build ./...
+      - name: Vet with cgo disabled
+        run: CGO_ENABLED=0 go vet ./...
 
   platform-smoke:
     strategy:
