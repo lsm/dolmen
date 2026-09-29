@@ -253,6 +253,9 @@ func (s *Store) upsertByKeyRows(ctx context.Context, ns, table string, keys []st
 		if !retry {
 			return result, nil
 		}
+		if inBatch(ctx) {
+			return store.InsertResult{}, errBatchRetry
+		}
 	}
 	return store.InsertResult{}, fmt.Errorf("%w: table schema changed concurrently; retry the upsert", store.ErrInvalid)
 }

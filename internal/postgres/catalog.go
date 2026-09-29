@@ -281,6 +281,9 @@ func (s *Store) writeUnlocked(ctx context.Context, name string, expected [16]byt
 }
 
 func (s *Store) write(ctx context.Context, name string, expected [16]byte, fn func(pgx.Tx, namespace) error) error {
+	if tx, n, ok := carriedFrom(ctx); ok {
+		return fn(tx, n)
+	}
 	done, err := s.begin(ctx)
 	if err != nil {
 		return err

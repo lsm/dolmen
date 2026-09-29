@@ -273,6 +273,9 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 		if !retry {
 			return result, nil
 		}
+		if inBatch(ctx) {
+			return store.InsertResult{}, errBatchRetry
+		}
 	}
 	return store.InsertResult{}, fmt.Errorf("%w: table schema changed concurrently; retry the mutation", store.ErrInvalid)
 }

@@ -198,7 +198,7 @@ func (s *Store) guardBatchIncarnation(ctx context.Context, nsName string, want I
 	return nil
 }
 
-func validateBatchWrites(writes []BatchWrite) error {
+func ValidateBatchWrites(writes []BatchWrite) error {
 	if len(writes) == 0 {
 		return invalidf("no writes given")
 	}
@@ -233,7 +233,7 @@ func validateBatchWrites(writes []BatchWrite) error {
 	return nil
 }
 
-func mergeChangeRanges(into, add ChangeRange) ChangeRange {
+func MergeChangeRanges(into, add ChangeRange) ChangeRange {
 	if add.Count == 0 {
 		return into
 	}
@@ -260,7 +260,7 @@ func (s *Store) Batch(ctx context.Context, nsName string, writes []BatchWrite, o
 	if len(opts.IdempotencyKey) > MaxIdempotencyKeyLen {
 		return BatchResult{}, invalidf("idempotency key is %d bytes (max %d)", len(opts.IdempotencyKey), MaxIdempotencyKeyLen)
 	}
-	if err := validateBatchWrites(writes); err != nil {
+	if err := ValidateBatchWrites(writes); err != nil {
 		return BatchResult{}, err
 	}
 
@@ -381,7 +381,7 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 				invalidf("the batch would touch more than %d rows, which is the budget one insert is allowed", MaxRowsTouchedPerBatch))
 		}
 		results = append(results, out)
-		changes = mergeChangeRanges(changes, out.Changes)
+		changes = MergeChangeRanges(changes, out.Changes)
 	}
 
 	res := BatchResult{Results: results, Changes: changes}
