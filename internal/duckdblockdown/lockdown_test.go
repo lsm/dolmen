@@ -335,18 +335,47 @@ func TestEveryCLIModeRunsADotCommand(t *testing.T) {
 		{"stdin-json", func(sql string) (Result, error) { return f.locked.RunStdinMode(ctx, sql, "-json") }},
 		{"command-argument", func(sql string) (Result, error) { return f.locked.Run(ctx, sql) }},
 	}
-	for _, m := range modes {
-		t.Run(m.label, func(t *testing.T) {
-			marker := filepath.Join(LockdownDir(f.sibling), "dot-"+m.label+".txt")
-			defer os.Remove(marker)
-			res, err := m.run(".shell touch " + marker)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, statErr := os.Stat(marker); statErr != nil {
-				t.Fatalf("the %s mode refused the dot-command (exit %d, output %q): this test pins the spike's negative result, so a failure here is good news — a mode exists in which the stdio transport may be confinable, and docs/design/lakehouse-plan.md section 2.2 mechanism 1 is worth re-evaluating", m.label, res.ExitCode, res.Combined())
-			}
-		})
+	commands := []struct {
+		name string
+		sql  func(marker string) string
+		// oneline is the same command as a single argument, for -c which takes
+		// one statement and so cannot carry a follow-up line.
+		oneline func(marker string) string
+	}{
+		{
+			name:    "shell",
+			sql:     func(marker string) string { return ".shell touch " + marker },
+			oneline: func(marker string) string { return ".shell touch " + marker },
+		},
+		{
+			name:    "system",
+			sql:     func(marker string) string { return ".system touch " + marker },
+			oneline: func(marker string) string { return ".system touch " + marker },
+		},
+		{
+			name:    "output",
+			sql:     func(marker string) string { return ".output " + marker + "\nSELECT 42 AS a;" },
+			oneline: func(marker string) string { return ".output " + marker },
+		},
+	}
+	for _, c := range commands {
+		for _, m := range modes {
+			t.Run(c.name+"/"+m.label, func(t *testing.T) {
+				marker := filepath.Join(LockdownDir(f.sibling), "dot-"+c.name+"-"+m.label+".txt")
+				defer os.Remove(marker)
+				payload := c.sql(marker)
+				if m.label == "command-argument" {
+					payload = c.oneline(marker)
+				}
+				res, err := m.run(payload)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, statErr := os.Stat(marker); statErr != nil {
+					t.Fatalf("the CLI refused .%s in %s mode under full lockdown (exit %d, output %q): this test pins the spike's negative result, so a failure here is good news — a mode exists in which the stdio transport may be confinable, and docs/design/lakehouse-plan.md section 2.2 mechanism 1 is worth re-evaluating. Re-evaluate only when every .command here is refused, not just this one", c.name, m.label, res.ExitCode, res.Combined())
+				}
+			})
+		}
 	}
 }
 
