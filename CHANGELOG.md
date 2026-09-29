@@ -4,6 +4,21 @@
 
 ### Fixed
 
+- **`wait_for` answers a page when a read runs out of its budget, even on the first attempt.** A read
+  that overran the loop's own budget was supposed to answer the documented empty page, but that only
+  happened once one read had already succeeded: the first attempt's failure was returned as an
+  error, so a `timeout_ms: 0` conditional poll resuming from a cursor — a read slow enough to outrun
+  the budget, which PostgreSQL does under load — came back `504 timeout` with the generic "the
+  server ran out of time" message instead of a page. An agent polling a cursor could not tell
+  "nothing has changed yet" from "the server gave up", and the advice in that message — check with a
+  query before retrying — is a workaround for a wait that was meant to be free. A wait that was given
+  a cursor now answers the empty page carrying that same cursor whenever the caller's own context is
+  still live, which is what the operation description, the README and the skill have always
+  promised. A wait that passed no cursor still fails when its first read outruns the budget, because
+  there is no boundary to hand back and an empty `next_cursor` cannot be resumed from; a cursor the
+  feed rejects is still an error, and so is a call whose own context ended. SQLite hid this because
+  its driver does not notice the budget, so the same call answered a page on that engine.
+
 - **Request field names are matched exactly, and a `null` body is no longer an empty one.** A key
   that differs only in case is an unknown field, not a type mismatch on a field the advertised schema
   does not contain: `{"Namespace":"x"}` used to work, and `{"sql":1,"bogus":2}` and
