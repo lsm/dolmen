@@ -815,7 +815,7 @@ Validation notes:
   provider is enabled by default; `describe_server` reports the active provider, its identity, and
   whether server-side embedding is usable.
 - `insert` with an `idempotency_key`: the same key + same records replays the original ids; the same
-  key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes; the server counts bytes and refuses only an empty key, one over 256 bytes, or one holding a NUL, so other characters are accepted but not recommended. Never
+  key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes; the server counts bytes and refuses only an empty key or one over 256 bytes, so other characters are accepted but not recommended. Never
   regenerate a timestamp in a retried record — the body must be byte-identical to replay; a timestamp
   column a retry would stamp (e.g. `updated_at`) should be declared `default: "now()"` at
   `create_table` and omitted from records.
