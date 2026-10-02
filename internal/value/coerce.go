@@ -144,6 +144,9 @@ func Coerce(f schema.Field, v any) (any, error) {
 		if err != nil {
 			return nil, fmt.Errorf("field %q: cannot marshal JSON: %w", f.Name, err)
 		}
+		if _, _, found := FindJSONNUL(b); found {
+			return nil, fmt.Errorf("field %q: the json value contains a NUL character (\\u0000), which PostgreSQL json cannot store; remove it", f.Name)
+		}
 		if err := schema.ShapeViolation(f.Name, f.Shape, b); err != nil {
 			return nil, err
 		}

@@ -95,7 +95,7 @@ The family audit (#309) dispositioned every unaudited cousin line from the parit
 ## Divergences recorded from the pre-v0.3.0 audit (#328)
 
 Each row was code-verified when recorded. The façade is the stricter surface in every row but the
-last. The two transports differ only in the decode rows, where MCP screens the JSON-RPC envelope
+NUL row (#561), where the wire screens the whole request, and the last. The two transports differ only in the decode rows, where MCP screens the JSON-RPC envelope
 before the shared dispatch table sees the arguments.
 
 | Input | Façade | `/v1` | MCP |
@@ -109,6 +109,7 @@ before the shared dispatch table sees the arguments.
 | `null` body | — | `400 invalid_request`, naming the object requirement, as any other non-object body | JSON-RPC `-32602` |
 | Empty or whitespace-only body | — | treated as `{}` | absent `arguments` are treated as `{}` |
 | Body key that differs from the schema only in case | not applicable: the façade takes typed arguments | `400 invalid_request`, `unknown field "Namespace" on operation …` (the same framing as any other unknown key) | same as `/v1` |
+| NUL (`\u0000`) in a name, key, cursor or SQL argument (#561) | not screened: a string or json **value** is refused by coercion (`invalid_request`, as on the wire), but a NUL in a table name or SQL argument reaches the engine and is classified there | `400 invalid_request` before dispatch, naming the innermost field (also `/v1/subscribe` parameters and `Last-Event-ID`) | same as `/v1` |
 | Secret `reveal` (#467) | always allowed: the façade has no auth | allowed with `-auth off`; with `-auth on` needs the `reveal` verb (`forbidden` otherwise, and always for the bootstrap admin key), within the op's row scope | same as `/v1` |
 
 The two decode rows are the ones the transports cannot agree on, and the asymmetry is
