@@ -29,6 +29,18 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
+	for name, vals := range q {
+		for _, v := range vals {
+			if strings.IndexByte(v, 0) >= 0 {
+				writeError(w, r, badRequest("parameter %q contains a NUL character (%%00); %s", name, nulRemedy))
+				return
+			}
+		}
+	}
+	if strings.IndexByte(r.Header.Get("Last-Event-ID"), 0) >= 0 {
+		writeError(w, r, badRequest("the Last-Event-ID header contains a NUL character; %s", nulRemedy))
+		return
+	}
 	if q.Get("namespace") == "" {
 		writeError(w, r, badRequest("namespace query parameter is required"))
 		return

@@ -487,6 +487,7 @@ The optional `filter` parameter is separate from the MATCH `query`: it is regula
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
 | Records per `insert` / `upsert_by_key` | 1,000 | rejected |
 | Full-text `query` | 2,048 bytes | rejected before any work, naming the limit; search for the few words that matter and narrow with `filter` |
+| NUL character (`\u0000`) | not allowed anywhere in a request: a name, value, json value, key, cursor or argument | rejected with `invalid_request` naming the field |
 | Writes per `batch` | 100 | rejected |
 | Rows touched per `batch` | 1,000, summed over every write (records, plus rows matched by `update`, `delete` and the update branch of `upsert`) | rejected, naming the write that carried the batch past it |
 | Ids per `read_rows` | 1,000 | rejected |

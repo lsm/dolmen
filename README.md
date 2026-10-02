@@ -1263,6 +1263,7 @@ Every row has two implicit columns:
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
 | Records per `insert` / `upsert_by_key` | 1,000 | rejected |
 | Full-text `query` | 2,048 bytes | rejected before any work, naming the limit; search for the few words that matter and narrow with `filter` |
+| NUL character (`\u0000`) | not allowed anywhere in a request: a name, value, json value, key, cursor or argument | rejected with `invalid_request` naming the field |
 | Ids per `read_rows` | 1,000 | rejected |
 | Natural key fields per `upsert_by_key` | 8 | rejected |
 | Idempotency key length | 1–256 bytes; use printable ASCII (`[ -~]`); omit the field for a non-idempotent insert | empty and over-256-byte keys are rejected; the JSON Schema enforces non-empty printable ASCII for schema-validating clients |
