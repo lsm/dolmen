@@ -114,7 +114,6 @@ func TestTheMemoryLimitIsEnforcedAndAQueryTooBigForItSpillsOrIsRefused(t *testin
 
 	env := []string{
 		"SIDECAR_DATA_DIR=" + root,
-		"SIDECAR_HOME=" + t.TempDir(),
 		"SIDECAR_MEMORY_MAX=" + os.Getenv("SIDECAR_TIGHT_MEMORY"),
 	}
 	if e.Ext != "" {

@@ -244,8 +244,7 @@ jobs:
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/bin"
-          cp spike/sidecar-datafusion/target/release/sidecar-datafusion "$RUNNER_TEMP/bin/sidecar-datafusion"
-          cd spike/driver
+          cp "$GITHUB_WORKSPACE/spike/sidecar-datafusion/target/release/sidecar-datafusion" "$RUNNER_TEMP/bin/sidecar-datafusion"
           SIDECAR_BIN="$RUNNER_TEMP/bin/sidecar-datafusion" go test -count=1 -v -timeout 40m ./...
       - name: Check no comments
         working-directory: .
@@ -294,6 +293,8 @@ jobs:
         with:
           go-version-file: spike/driver/go.mod
       - uses: dtolnay/rust-toolchain@stable
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
       - name: Fetch the DuckDB library and the extensions that must be pre-placed
         shell: bash
         run: |
@@ -385,17 +386,6 @@ jobs:
           cargo build --release
           echo "PACKAGING platform=${{ matrix.platform }} engine=datafusion build_seconds=$(( $(date +%s) - start ))"
           echo "PACKAGING platform=${{ matrix.platform }} engine=datafusion binary_bytes=$(stat -c %s target/release/sidecar-datafusion 2>/dev/null || stat -f %z target/release/sidecar-datafusion)"
-      - name: Confirm the DataFusion sidecar starts and refuses to run unconfined
-        working-directory: spike/sidecar-datafusion
-        shell: bash
-        run: |
-          set -eu
-          bin=target/release/sidecar-datafusion
-          if "$bin" 2>&1 | grep -q SIDECAR_DATA_DIR; then
-            echo "PACKAGING platform=${{ matrix.platform }} engine=datafusion needs_data_dir=yes"
-          else
-            echo "PACKAGING platform=${{ matrix.platform }} engine=datafusion needs_data_dir=no"
-          fi
 
   postgres-foundation:
     runs-on: ubuntu-latest

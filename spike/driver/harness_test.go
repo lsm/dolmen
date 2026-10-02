@@ -44,10 +44,7 @@ func newFixture(t *testing.T, rows int) *fixture.Table {
 
 func (e engine) start(t *testing.T, dir string, snapshot int64, table string, locked bool) *sidecar.Sidecar {
 	t.Helper()
-	env := []string{
-		"SIDECAR_DATA_DIR=" + dir,
-		"SIDECAR_HOME=" + t.TempDir(),
-	}
+	env := []string{"SIDECAR_DATA_DIR=" + dir}
 	if e.Ext != "" {
 		env = append(env, "SIDECAR_EXT_DIR="+e.Ext)
 	}
@@ -139,7 +136,7 @@ func errorClass(err error) string {
 
 func tryInit(t *testing.T, e engine, root string, snapshot int64, table string) (*sidecar.Sidecar, error) {
 	t.Helper()
-	env := []string{"SIDECAR_DATA_DIR=" + root, "SIDECAR_HOME=" + t.TempDir()}
+	env := []string{"SIDECAR_DATA_DIR=" + root}
 	if e.Ext != "" {
 		env = append(env, "SIDECAR_EXT_DIR="+e.Ext)
 	}
@@ -154,4 +151,18 @@ func tryInit(t *testing.T, e engine, root string, snapshot int64, table string) 
 		return started, err
 	}
 	return started, nil
+}
+
+func TestTheResponseChannelCarriesNothingButResponses(t *testing.T) {
+	tbl := newFixture(t, 20)
+	_, sc, _ := locked(t, tbl)
+
+	for i := 0; i < 5; i++ {
+		if _, err := query(t, sc, "SELECT count(*) FROM events"); err != nil {
+			t.Fatalf("query %d failed: %v", i, err)
+		}
+	}
+	if n := sc.StrayLines(); n != 0 {
+		t.Fatalf("%d lines on the response channel were not responses; the last was %q, and an engine writing its own logging to stdout desynchronises the framing", n, sc.LastStrayLine())
+	}
 }

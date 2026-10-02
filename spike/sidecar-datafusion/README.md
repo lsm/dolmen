@@ -56,4 +56,9 @@ over, because `cancel` behaving differently between the two engines is a differe
 supervisor would have to absorb.
 
 Memory is a `FairSpillPool`, not a bounded greedy pool, because the property under test is that a
-query too large for the ceiling **spills** rather than failing.
+query too large for the ceiling **spills** rather than failing. **A tight ceiling is an error, not a
+spill, when the table is small:** at `maximum_memory` = 180 MB the first CI run failed `init` with
+`Out of Memory Error: failed to allocate data of size 32.0 KiB (4.0 KiB/180 bytes used)` before a
+single query ran — the ceiling landed below what merely *opening* the table needed. The lifecycle
+test records which of "spilled and was right" / "refused with a memory error" happened rather than
+assuming a spill, because on this engine the honest answer at a low ceiling is the second one.

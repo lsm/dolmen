@@ -121,16 +121,53 @@ func Write(ctx context.Context, dataDir string, rows int) (*Table, error) {
 	}, nil
 }
 
-func firstDataFile(location string) (string, error) {
+func dataFileHolding(location string, wantID int64) (string, error) {
 	matches, err := filepath.Glob(filepath.Join(location, "data", "*.parquet"))
 	if err != nil {
 		return "", err
 	}
-	if len(matches) == 0 {
-		return "", fmt.Errorf("no data file under %s, so the position delete would target nothing", location)
-	}
 	sort.Strings(matches)
-	return matches[0], nil
+	for _, m := range matches {
+		ids, err := idsInParquet(m)
+		if err != nil {
+			return "", fmt.Errorf("read %s: %w", m, err)
+		}
+		for _, id := range ids {
+			if id == wantID {
+				return m, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no data file under %s holds id %d, so the position delete would target nothing", location, wantID)
+}
+
+type idRow struct {
+	ID int64 `parquet:"id"`
+}
+
+func idsInParquet(path string) ([]int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	r := parquet.NewGenericReader[idRow](f)
+	rows := make([]idRow, 0, 64)
+	for {
+		batch := make([]idRow, 64)
+		n, err := r.Read(batch)
+		for i := 0; i < n; i++ {
+			rows = append(rows, batch[i])
+		}
+		if err != nil || n == 0 {
+			break
+		}
+	}
+	ids := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	return ids, nil
 }
 
 type posDelete struct {
@@ -139,7 +176,11 @@ type posDelete struct {
 }
 
 func ApplyPositionDeletes(ctx context.Context, tbl *table.Table, positions []int64) error {
-	dataFile, err := firstDataFile(tbl.Location())
+	target := int64(0)
+	if len(positions) > 0 {
+		target = positions[0]
+	}
+	dataFile, err := dataFileHolding(tbl.Location(), target)
 	if err != nil {
 		return err
 	}
@@ -242,6 +283,21 @@ func ExpectedLiveRows(rows int, deleted []int64) int {
 }
 
 func DeletedPositions() []int64 { return []int64{2, 5} }
+
+func LiveRowsBeforeDelete(rows int) int {
+	notLive := (rows + 2) / 3
+	return rows - notLive
+}
+
+func DeletedLiveRows() int {
+	n := 0
+	for _, p := range DeletedPositions() {
+		if p%3 != 0 {
+			n++
+		}
+	}
+	return n
+}
 
 func WriteSecret(dir, name, body string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {

@@ -1,6 +1,7 @@
 package driver
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/lsm/dolmen/spike/driver/fixture"
@@ -25,16 +26,7 @@ func TestTheSidecarAppliesThePositionDeleteFilesRatherThanCountingEveryRow(t *te
 	_, sc, _ := locked(t, tbl)
 
 	res := mustQuery(t, sc, "SELECT count(*) FROM events WHERE live")
-	if res.Rows[0] == "" {
-		t.Fatal("no count row came back for the predicate read")
-	}
-	deleted := 0
-	for _, p := range fixture.DeletedPositions() {
-		if p%3 == 0 {
-			deleted++
-		}
-	}
-	want := seeded + 1 - deleted
+	want := fixture.LiveRowsBeforeDelete(seeded) - fixture.DeletedLiveRows()
 	if got := countOf(t, res); got != want {
 		t.Fatalf("count of live rows is %d, want %d; the delete files were not applied", got, want)
 	}
@@ -46,8 +38,12 @@ func TestTheDeletedRowsAreGoneFromTheResultSetNotJustTheCount(t *testing.T) {
 	_, sc, _ := locked(t, tbl)
 
 	res := mustQuery(t, sc, "SELECT id FROM events WHERE id <= 6")
+	deleted := map[string]bool{}
+	for _, p := range fixture.DeletedPositions() {
+		deleted[strconv.FormatInt(p, 10)] = true
+	}
 	for _, row := range rowsOf(res) {
-		if row == "2" || row == "5" {
+		if deleted[row] {
 			t.Fatalf("row %s was returned although it is position-deleted; the result was %q", row, res.Rows)
 		}
 	}

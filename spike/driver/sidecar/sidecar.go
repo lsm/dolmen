@@ -38,9 +38,11 @@ type Sidecar struct {
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
 
-	mu     sync.Mutex
-	nextID int64
-	closed bool
+	mu        sync.Mutex
+	nextID    int64
+	closed    bool
+	stray     int
+	lastStray string
 }
 
 type Result struct {
@@ -108,11 +110,7 @@ func (s *Sidecar) call(ctx context.Context, op Op, args ...string) (string, erro
 	if _, err := fmt.Fprintln(s.stdin, strings.Join(fields, "\t")); err != nil {
 		return "", err
 	}
-	line, err := s.readLine(ctx)
-	if err != nil {
-		return "", err
-	}
-	return parseAck(line, strconv.FormatInt(id, 10))
+	return s.readResponse(ctx, strconv.FormatInt(id, 10))
 }
 
 func (s *Sidecar) readLine(ctx context.Context) (string, error) {
@@ -135,6 +133,31 @@ func (s *Sidecar) readLine(ctx context.Context) (string, error) {
 		return r.line, nil
 	}
 }
+
+const maxStrayLines = 64
+
+func (s *Sidecar) readResponse(ctx context.Context, wantID string) (string, error) {
+	for i := 0; i < maxStrayLines; i++ {
+		line, err := s.readLine(ctx)
+		if err != nil {
+			return "", err
+		}
+		fields := strings.Split(strings.TrimRight(line, "\r\n"), "\t")
+		if len(fields) == 0 {
+			continue
+		}
+		if fields[0] == wantID || wantID == "0" {
+			return line, nil
+		}
+		s.stray++
+		s.lastStray = line
+	}
+	return "", fmt.Errorf("sidecar: no response for request %s in %d lines (last stray %q)", wantID, maxStrayLines, s.lastStray)
+}
+
+func (s *Sidecar) StrayLines() int { return s.stray }
+
+func (s *Sidecar) LastStrayLine() string { return s.lastStray }
 
 func parseAck(line, wantID string) (string, error) {
 	fields := strings.Split(strings.TrimRight(line, "\r\n"), "\t")
@@ -185,24 +208,11 @@ func (s *Sidecar) Query(ctx context.Context, sql string) (*Result, error) {
 	if _, err := fmt.Fprintln(s.stdin, strings.Join([]string{strconv.FormatInt(id, 10), string(OpQuery), sql}, "\t")); err != nil {
 		return nil, err
 	}
-	type res struct {
-		line string
-		err  error
+	line, err := s.readResponse(ctx, strconv.FormatInt(id, 10))
+	if err != nil {
+		return nil, err
 	}
-	ch := make(chan res, 1)
-	go func() {
-		line, err := s.stdout.ReadString('\n')
-		ch <- res{line, err}
-	}()
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case r := <-ch:
-		if r.err != nil {
-			return nil, r.err
-		}
-		return parseResult(r.line, strconv.FormatInt(id, 10))
-	}
+	return parseResult(line, strconv.FormatInt(id, 10))
 }
 
 func parseResult(line, wantID string) (*Result, error) {

@@ -295,8 +295,13 @@ settings that do it, and one correction that matters more than the list:
   (`Cannot change allowed_directories when enable_external_access is disabled`), so the list goes
   first and external access is closed second. `enable_external_access` also cannot be set from
   inside a running session at all, and neither can be set once the configuration is locked, so the
-  only place any of this works is process startup — which for the CLI means a `.duckdbrc` under a
-  per-namespace `HOME`.
+  only place any of this works is process startup. **How that is spelled depends on the process, and
+  getting it wrong fails open silently: `.duckdbrc` is read by the `duckdb` shell and *not* by an
+  embedded library.** §2.5 measured this against the CLI, where a `.duckdbrc` under a per-namespace
+  `HOME` is the mechanism; §2.8.3 measured the same lock inside a sidecar, where it is `DBConfig` at
+  open time — `allowed_directories` as a struct field, the rest in `unrecognized_options`, and
+  `lock_configuration` by a final `SET`. A sidecar that writes a `.duckdbrc` looks configured and is
+  not.
 
 Every attack the table below lists is blocked, measured rather than assumed:
 
@@ -496,7 +501,21 @@ spike mislabelled it as one. The correct pin is the integration crate's own:
   `cargo tree -i arrow-array` shows a single version, and the `sidecar-datafusion` CI job *asserts*
   it and fails the build if a future bump splits them.
 
-#### 2.8.2 Two traps worth writing down, because both look like success
+#### 2.8.2 Three traps worth writing down, because all three look like success
+
+**The engine writes to your response channel.** The brief specifies framed rows on stdout, and
+DuckDB writes its own logging to stdout — `Loading extension iceberg from ...` — which desynchronises
+the framing. It does not fail loudly: it **misattributes one request's answer to another**, so a
+refusal test reads as a success and a success test reads as a refusal. The first CI run of this spike
+produced exactly that, and the symptom was a battery where *everything* looked refused. Two fixes,
+both kept: the DuckDB sidecar sets `log_config.enabled = false`, and the driver skips any line that
+does not carry the request id rather than failing on it, bounded so a silent sidecar still fails.
+There is now a test asserting the response channel carries nothing else.
+
+**A sidecar that logs to stdout cannot share stdout with its host.** This is not a spike artefact. A
+real wire should either put responses on a separate descriptor or length-prefix the frames, and
+either way the sidecar must own its output. Recorded because it is cheap to get wrong and expensive
+to debug: the failure mode is wrong answers, not an error.
 
 **DuckDB's `iceberg_scan` ignores `version` when given a numeric snapshot id.** `version` is a
 *tag* parameter; pass it a snapshot id and the scan silently reads the **current** snapshot. A
@@ -513,7 +532,48 @@ handle is left as it is. The `lifecycle` tests measure both engines the same way
 mid-flight, then kill-on-timeout, then a fresh sidecar — so the difference is on the record rather
 than assumed.
 
+**A position delete that names the wrong file deletes nothing, and every other check still passes.**
+Not an engine finding — a fixture bug — and worth recording anyway because it is the shape of bug
+this fixture exists to catch. Iceberg names data files after a uuid, so the lexicographically first
+`data/*.parquet` has nothing to do with write order. The first CI run aimed the delete file at the
+*late-arrival* file, whose single row made positions 2 and 5 out of range, so the deletes silently
+did nothing; the counts stayed plausible and only one assertion caught it, and only by accident of
+uuid ordering. The fixture now picks the data file **by reading the candidates and finding the one
+that holds the deleted id**, with a fixture test pinning it. The lesson for slice 4 is that a
+position delete is `(data file, row position)`: a writer that cannot name the data file cannot
+delete the row, and nothing downstream will tell it.
+
 #### 2.8.3 Confinement: mechanism against default
+
+**`.duckdbrc` is a CLI feature, and an embedded DuckDB silently ignores it.** This is the most
+important correction in the spike, because §2.4's plan writes the confinement into a rc file. The
+first CI run did exactly that and **all 24 escape attempts succeeded**: `read_csv`, `read_text`,
+`glob`, URL and S3 tables, `ATTACH`, `COPY ... TO` a file and to stdout, `INSTALL`, `LOAD`,
+`getenv`, another namespace's directory, `CREATE EXTERNAL TABLE`, `SET`, `RESET`, `PRAGMA`,
+`CREATE`/`DROP`/`INSERT`/`UPDATE`/`DELETE`, and two statements in one request.
+
+The reason is not a version skew and not a typo. **The `duckdb` shell reads `.duckdbrc`; the
+embedded library does not.** A sidecar opens `DuckDB(nullptr, &config)` and never consults
+`$HOME/.duckdbrc`, so nothing warns, the process looks configured, and it is not. A confinement
+mechanism that fails open and silently is the worst kind.
+
+The settings therefore go through `DBConfig`, split across two mechanisms because the ordering is
+load-bearing:
+
+1. **`DBConfigOptions::allowed_directories`** — a struct field, not a `SET`, because
+   `allowed_directories` cannot be set once `enable_external_access` is false (§2.5 measured that).
+2. **`DBConfigOptions::unrecognized_options`** — `extension_directory`,
+   `enable_external_access = false`, `autoinstall_known_extensions = false`,
+   `autoload_known_extensions = false`, `allow_persistent_secrets = false`. DuckDB applies these at
+   startup, before the database is usable. `enable_external_access = false` is the guard, and it has
+   no struct field, which is why it goes here.
+3. **`SET lock_configuration = true`** — last, by `SET` on a live connection, so nothing above can be
+   reopened. The sidecar exits non-zero if the lock is refused, rather than running unlocked.
+
+**So §2.4's mechanism changes from "a rc file" to "`DBConfig` at open time plus one `SET`", and the
+spike has the better of both worlds: §2.5's lock is now applied where it is actually read.** This is
+also a warning about §2.4 as written — a plan that says "write these settings into `.duckdbrc`" reads
+as confinement and is not, for any process that is not the shell.
 
 The interesting question is not *whether* an escape is refused but **what refused it**. A refusal
 that also happens with the lock off is an engine *default* — it holds today and nobody owns it; a
@@ -528,8 +588,9 @@ So each sidecar is started twice, once with `SIDECAR_UNLOCKED=1`, and the driver
 | refused locked **and** unlocked | an engine **default**. Holds, but nobody owns it. |
 | **allowed locked** | a hole. Fails the build. |
 
-For DuckDB the mechanism is §2.4's `.duckdbrc` lock (the order there is measured: `allowed_directories`
-first, then `enable_external_access = false`, then `lock_configuration = true` last). For DataFusion
+For DuckDB the mechanism is §2.4's lock, applied through `DBConfig` rather than a rc file
+(§2.8.3): `allowed_directories` first, then `enable_external_access = false`, then
+`lock_configuration = true` last. For DataFusion
 the mechanism is `SQLOptions::with_allow_ddl(false).with_allow_dml(false).with_allow_statements(false)`.
 
 **One asymmetry is already visible in the API and is worth stating before the numbers arrive:** the
@@ -547,14 +608,32 @@ document's author. **All four are pending the first CI run of this branch.**
 
 | | DuckDB | DataFusion |
 |---|---|---|
-| read-back at the pinned snapshot, deletes applied | `sidecar-duckdb` | `sidecar-datafusion` |
-| read-back at the older snapshot | `sidecar-duckdb` | `sidecar-datafusion` |
-| confinement: mechanism vs default, per statement | `sidecar-duckdb` | `sidecar-datafusion` |
-| lifecycle: cancel, kill-on-timeout, memory ceiling + spill, restart | `sidecar-duckdb` | `sidecar-datafusion` |
-| binary size, per platform | `sidecar-packaging` | `sidecar-packaging` |
-| Linux fully static? | `sidecar-packaging` | `sidecar-packaging` |
-| build time and toolchain needs | `sidecar-packaging` | `sidecar-packaging` |
-| perf: scan, filter, group by, join on 10M rows | `sidecar-duckdb` | `sidecar-datafusion` |
+| read-back at the pinned snapshot, deletes applied | **yes** — 51 rows, 2 position-deletes applied | CI |
+| read-back at the older snapshot | **yes** — 50 rows at the older id, 51 at the newer | CI |
+| confinement: mechanism vs default, per statement | CI (framing bug fixed) | CI |
+| lifecycle: cancel, kill-on-timeout, restart | **partial** — see below | CI |
+| lifecycle: memory ceiling and spill | **refused, not spilled** at 180 MB | CI |
+| binary size, linux amd64 | **64,632 B** sidecar | **162,760,784 B** |
+| binary size, linux arm64 | **83,032 B** sidecar | **149,740,296 B** |
+| shipped footprint, linux amd64 | **≈136 MiB in 4 files** | **≈155 MiB in 1 file** |
+| Linux fully static? | **no** — link fails, see §2.8.1 | no (dynamic musl/glibc) |
+| build time, linux amd64 | **4 s** | **669 s** |
+| build time, linux arm64 | **8 s** | **466 s** |
+| toolchain needs | a C++ compiler | a Rust toolchain |
+| extensions linked in | `iceberg` 50,827,374 B + `httpfs` 21,580,734 B, pre-placed | none; Iceberg is in-crate |
+
+**The DuckDB numbers are the striking ones.** A 64 KB sidecar that builds in **four seconds** and
+needs no more than a C++ compiler is a very different release-pipeline proposition from a 155 MiB
+binary that takes **eleven minutes** to compile. But DuckDB's 64 KB is not the whole artifact: the
+process needs `libduckdb.so` (70,546,800 B) and the two extension files beside it, so what ships is
+**four files totalling ≈136 MiB**, against DataFusion's single ≈155 MiB file. Comparable bytes,
+different shape — and the shape is what §3's distroless runtime stage and the SBOM have to absorb.
+
+**Two honesty notes on those numbers.** The DataFusion build uses `opt-level = 2, lto = false,
+codegen-units = 16`, chosen to keep CI under a quarter of an hour; a production profile with LTO
+would be larger and slower, so 155 MiB is a floor rather than a ceiling. And the DuckDB binary size
+excludes its shared library **on purpose**, because a number that hides four files behind one is the
+kind of number that makes a packaging decision look free.
 
 **Timings come from CI only.** No timing run happens on a laptop, and ai0 is not used for this
 spike.
@@ -1122,3 +1201,22 @@ Each carries the assumption the plan runs on meanwhile.
     and both adapter #1 and #2 declare it in prose only. **Assumption:** prose, as the two existing
     engines do. Adding the field is contract-surface work (op schema, OpenAPI, MCP, conformance)
     with no precedent in the tree.
+
+**Where DuckDB's lifecycle results are partial, and why that is the more interesting half.** Two of
+the four lifecycle properties did not hold on the first CI run:
+
+- **`cancel` did not interrupt a running query.** A `SELECT count(*) FROM range(20000000000)` returned
+  a result instead of being cancelled, so `duckdb_interrupt` through the connection did not stop it.
+  The likely cause is that the query runs on DuckDB's own threads while the sidecar's main loop is
+  blocked reading a response, and the interrupt needs the client context rather than the
+  `Connection` handle. Worth one more iteration before it is called a defect: **a query that cannot be
+  cancelled mid-flight is exactly what the kill-on-timeout fallback exists for**, so the practical
+  answer may be "cancel is best-effort, kill is the guarantee" — but that is a decision, not an
+  accident, and it belongs to slice 11 rather than to a spike.
+- **A 180 MB ceiling refused to open the table at all** — `Out of Memory Error: failed to allocate
+  data of size 32.0 KiB (4.0 KiB/180 bytes used)` — before a query ran. So on DuckDB the memory knob
+  is an *error*, not a spill, at a ceiling that low. The lifecycle test records which of "spilled and
+  was right" / "refused with a memory error" happened rather than assuming a spill.
+
+`kill`-on-timeout and restart-after-kill did work: the process died, a second sidecar came up on a
+new pid, and it answered correctly.

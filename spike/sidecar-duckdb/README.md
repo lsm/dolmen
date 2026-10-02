@@ -4,6 +4,10 @@ A minimal sidecar: it registers one namespace's Iceberg table at a pinned snapsh
 SQL, reading the protocol in [../driver/PROTOCOL.md](../driver/PROTOCOL.md). It exists to be measured
 and attacked, not to be the final shape — see that document for what the protocol does not decide.
 
+Confinement is applied through `DBConfig`, not a rc file, and the reason is worth knowing before
+reading further: **`.duckdbrc` is read by the `duckdb` shell and not by an embedded library**, so a
+sidecar that writes one looks configured and is not.
+
 ## Building: no DuckDB source build
 
 The CI job downloads the prebuilt `libduckdb` for the target and the prebuilt `iceberg` and `httpfs`
@@ -43,25 +47,31 @@ that fixes the archive shows up as a changed line.
 A source build remains the fallback if a platform ever lacks a prebuilt extension, and that fallback
 is a toolchain-plus-long-build cost the release pipeline would then carry.
 
-## Confinement
+## Confinement: `DBConfig`, not `.duckdbrc`
 
-The settings are written into a `.duckdbrc` before the database starts, because
-`enable_external_access` cannot be set once the process is up. The order is measured, not guessed:
+**`.duckdbrc` is a CLI feature.** The `duckdb` shell reads it; an embedded `DuckDB(nullptr, &config)`
+never looks at it. The first CI run of this spike wrote the settings to `$HOME/.duckdbrc` and **all 24
+escape attempts succeeded** — `read_csv`, `glob`, URL tables, `ATTACH`, `COPY ... TO`, `INSTALL`,
+`LOAD`, `getenv`, `CREATE EXTERNAL TABLE`, `SET`, DDL and DML alike. Nothing warns. The process looks
+configured and is not, which is the worst failure mode a confinement mechanism has.
 
-1. `allowed_directories` — the one namespace data directory.
-2. `extension_directory` — where the pre-placed extensions live.
-3. `enable_external_access = false` — the guard; it cannot be set after (1).
-4. `autoinstall_known_extensions` / `autoload_known_extensions` = false.
-5. `allow_persistent_secrets` = false.
-6. `lock_configuration = true` — last, so nothing above can be reopened.
+The settings go through `DBConfig`, split across two mechanisms because the ordering is load-bearing:
 
-This is the lock #533 measured. `memory_limit` is *not* set here: once `lock_configuration` is on a
-`SET` is refused, so the ceiling is passed through `DBConfig::options.maximum_memory` at open time
-instead.
+1. **`cfg.options.allowed_directories`** — a struct field, not a `SET`, because
+   `allowed_directories` cannot be set once `enable_external_access` is false (#533 measured that).
+2. **`cfg.options.unrecognized_options`** — `extension_directory`, `enable_external_access = false`,
+   `autoinstall_known_extensions = false`, `autoload_known_extensions = false`,
+   `allow_persistent_secrets = false`. DuckDB applies these at startup, before the database is
+   usable. `enable_external_access` is the guard and has no struct field, so it goes here.
+3. **`SET lock_configuration = true`** — last, by `SET` on a live connection, so nothing above can be
+   reopened. The sidecar **exits non-zero if the lock is refused** rather than running unlocked.
 
-`SIDECAR_UNLOCKED=1` starts the sidecar with no `.duckdbrc` at all. That is what lets the driver
-tell a refusal that is *our mechanism* from one that is merely an engine default: the same statement
-is run against both starts and compared.
+`memory_limit` is a `DBConfig` struct field too (`cfg.options.maximum_memory`), for the same reason:
+once `lock_configuration` is on, a `SET` cannot reach it.
+
+`SIDECAR_UNLOCKED=1` starts the sidecar with none of this applied. That is what lets the driver tell a
+refusal that is *our mechanism* from one that is merely an engine default: the same statement runs
+against both starts and the outcomes are compared.
 
 ## Pinning a snapshot: `snapshot_from_id`, not `version`
 

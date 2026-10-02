@@ -84,3 +84,45 @@ func TestTwoNamespacesGetSeparateDirectories(t *testing.T) {
 		t.Fatal("the second namespace's file is visible under the first")
 	}
 }
+
+func TestThePositionDeleteTargetsTheDataFileThatHoldsTheDeletedRow(t *testing.T) {
+	dir := t.TempDir()
+	tbl, err := Write(context.Background(), dir, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted := DeletedPositions()
+	path, err := dataFileHolding(tbl.DataDir, deleted[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := idsInParquet(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range deleted {
+		found := false
+		for _, id := range ids {
+			if id == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("the delete file targets %s, which does not hold id %d; it holds %v", path, want, ids)
+		}
+	}
+}
+
+func TestTheLiveRowCountIsDerivedRatherThanGuessed(t *testing.T) {
+	const seeded = 50
+	if got, want := LiveRowsBeforeDelete(seeded), 33; got != want {
+		t.Fatalf("live rows before the delete is %d, want %d", got, want)
+	}
+	if got, want := DeletedLiveRows(), 2; got != want {
+		t.Fatalf("deleted rows that were live is %d, want %d", got, want)
+	}
+	if got, want := LiveRowsBeforeDelete(seeded)-DeletedLiveRows(), 31; got != want {
+		t.Fatalf("live rows after the delete is %d, want %d", got, want)
+	}
+}

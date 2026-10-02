@@ -3,9 +3,9 @@
 //
 // Built against prebuilt libduckdb with the iceberg and httpfs extensions
 // pre-placed in the extension directory, so nothing downloads at runtime. The
-// confinement settings are written into a per-process .duckdbrc before the
-// database starts, because enable_external_access cannot be set once the
-// process is up. See ../driver/PROTOCOL.md for the wire.
+// confinement settings are applied through DBConfig before the database starts,
+// because enable_external_access cannot be set once the process is up. See
+// ../driver/PROTOCOL.md for the wire.
 #include "duckdb.hpp"
 
 #include <algorithm>
@@ -14,7 +14,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -25,6 +24,7 @@ namespace {
 std::string g_table_name;
 std::string g_table_location;
 long long g_snapshot = -1;
+bool g_registered = false;
 duckdb::DuckDB *g_db = nullptr;
 
 std::vector<std::string> Split(const std::string &line, char sep) {
@@ -134,23 +134,37 @@ void ResultReply(const std::string &id, duckdb::MaterializedQueryResult &res, lo
             << std::endl;
 }
 
-// The order is measured, not guessed: allowed_directories cannot be set once
-// enable_external_access is false, and nothing here can be changed once
-// lock_configuration is on. This is the lock #533 measured.
-void WriteDuckDBRC(const std::string &home, const std::string &data_dir, const std::string &ext_dir) {
-  const std::string path = home + "/.duckdbrc";
-  std::ofstream f(path);
-  f << "SET allowed_directories = ['" << data_dir << "'];\n";
-  f << "SET extension_directory = '" << ext_dir << "';\n";
-  f << "SET enable_external_access = false;\n";
-  f << "SET autoinstall_known_extensions = false;\n";
-  f << "SET autoload_known_extensions = false;\n";
-  f << "SET allow_persistent_secrets = false;\n";
-  f << "SET lock_configuration = true;\n";
-  f.close();
+// Confinement is applied through DBConfig, not through a .duckdbrc.
+//
+// The first CI run wrote the settings to $HOME/.duckdbrc and every escape in
+// the battery succeeded. The reason is that .duckdbrc is a *CLI* feature: the
+// duckdb shell reads it, and an embedded DuckDB opened as DuckDB(nullptr)
+// never looks at it. Nothing warns, so the process looks configured and is not.
+//
+// The ordering is measured, not guessed, and it is the reason the settings are
+// split across two mechanisms:
+//
+//   1. allowed_directories goes in DBConfigOptions::allowed_directories, a
+//      struct field, because it cannot be set once enable_external_access is
+//      false (#533 measured that).
+//   2. The rest go in unrecognized_options, which DuckDB applies at startup
+//      before the database is usable. enable_external_access = false is the
+//      guard and goes here rather than in a struct field.
+//   3. lock_configuration = true goes last, by SET on a live connection, so
+//      nothing above can be reopened afterwards.
+void Configure(duckdb::DBConfig &cfg, const std::string &data_dir, const std::string &ext_dir) {
+  cfg.options.allowed_directories.insert(data_dir);
+  if (!ext_dir.empty()) {
+    cfg.options.unrecognized_options["extension_directory"] = duckdb::Value(ext_dir);
+  }
+  cfg.options.unrecognized_options["enable_external_access"] = duckdb::Value::BOOLEAN(false);
+  cfg.options.unrecognized_options["autoinstall_known_extensions"] = duckdb::Value::BOOLEAN(false);
+  cfg.options.unrecognized_options["autoload_known_extensions"] = duckdb::Value::BOOLEAN(false);
+  cfg.options.unrecognized_options["allow_persistent_secrets"] = duckdb::Value::BOOLEAN(false);
 }
 
 bool RegisterTable(duckdb::Connection &con, std::string &err) {
+  if (g_registered) return true;
   if (g_table_name.empty() || g_snapshot < 0) return true;
   const std::string dir = g_table_location + "/metadata";
   const std::string meta = LatestMetadata(dir);
@@ -169,13 +183,13 @@ bool RegisterTable(duckdb::Connection &con, std::string &err) {
     err = res->GetError();
     return false;
   }
+  g_registered = true;
   return true;
 }
 
 int Run() {
   const char *data_dir_env = std::getenv("SIDECAR_DATA_DIR");
   const char *ext_env = std::getenv("SIDECAR_EXT_DIR");
-  const char *home_env = std::getenv("SIDECAR_HOME");
   const char *mem_env = std::getenv("SIDECAR_MEMORY_MAX");
 
   if (data_dir_env == nullptr || *data_dir_env == '\0') {
@@ -184,24 +198,47 @@ int Run() {
   }
   const std::string data_dir = data_dir_env;
   const std::string ext_dir = ext_env == nullptr ? "" : ext_env;
-  const std::string home = home_env == nullptr ? "/tmp" : home_env;
 
   const char *unlocked_env = std::getenv("SIDECAR_UNLOCKED");
   const bool unlocked = unlocked_env != nullptr && *unlocked_env == '1';
-  std::filesystem::create_directories(home);
-  if (!unlocked) {
-    WriteDuckDBRC(home, data_dir, ext_dir);
-  }
-  setenv("HOME", home.c_str(), 1);
 
+  duckdb::DBConfig cfg;
+  // stdout is the response channel of the spike protocol, and DuckDB writes its
+  // own logging there ("Loading extension iceberg from ..."), which desynchronises
+  // the framing and misattributes one request's answer to another. Engine logging
+  // is therefore off, and the driver additionally skips any line that does not
+  // carry the request id rather than failing on it.
+  cfg.options.log_config.enabled = false;
+  if (!unlocked) {
+    Configure(cfg, data_dir, ext_dir);
+  }
   if (mem_env != nullptr && *mem_env != '\0') {
-    duckdb::DBConfig cfg;
-    // maximum_memory is DuckDB's byte-valued knob; the .duckdbrc cannot set it
-    // because lock_configuration is already on by the time a SET would run.
-    cfg.options.maximum_memory = duckdb::idx_t(atoll(mem_env));
-    g_db = new duckdb::DuckDB(nullptr, &cfg);
-  } else {
-    g_db = new duckdb::DuckDB(nullptr);
+    // maximum_memory is DuckDB's byte-valued knob. It has to be a struct field
+    // too, because lock_configuration is on before a SET could reach it.
+    const char *digits = mem_env;
+    idx_t bytes = 0;
+    for (const char *p = mem_env; *p != '\0'; p++) {
+      if (*p >= '0' && *p <= '9') {
+        bytes = bytes * 10 + static_cast<idx_t>(*p - '0');
+      } else if (*p == 'K' || *p == 'k') {
+        bytes *= 1024ULL;
+      } else if (*p == 'M' || *p == 'm') {
+        bytes *= 1024ULL * 1024ULL;
+      } else if (*p == 'G' || *p == 'g') {
+        bytes *= 1024ULL * 1024ULL * 1024ULL;
+      }
+    }
+    (void)digits;
+    cfg.options.maximum_memory = bytes;
+  }
+  g_db = new duckdb::DuckDB(nullptr, &cfg);
+  if (!unlocked) {
+    duckdb::Connection lock_con(*g_db);
+    auto locked_res = lock_con.Query("SET lock_configuration = true");
+    if (locked_res->HasError()) {
+      std::cerr << "sidecar: lock_configuration was refused: " << locked_res->GetError() << std::endl;
+      return 3;
+    }
   }
 
   std::string line;
