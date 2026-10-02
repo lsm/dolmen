@@ -320,7 +320,7 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 			touched += batchTouched(out)
 			if touched > store.MaxRowsTouchedPerBatch {
 				return fmt.Errorf("writes[%d]: %w", i,
-					fmt.Errorf("%w: the batch would touch more than %d rows, which is the budget one insert is allowed", store.ErrInvalid, store.MaxRowsTouchedPerBatch))
+					fmt.Errorf("%w: this batch would touch more than %d rows, the per-batch budget (records inserted plus rows matched by update, upsert and delete); split it into smaller batches, or run a large delete as its own delete call, which the batch budget does not bound", store.ErrInvalid, store.MaxRowsTouchedPerBatch))
 			}
 			results = append(results, out)
 			changes = store.MergeChangeRanges(changes, out.Changes)
