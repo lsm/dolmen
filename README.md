@@ -970,13 +970,17 @@ call): `namespace` (required — a namespace that does not exist is an in-stream
 error; the stream never creates one, as no read does), `table` (optional
 filter to one table's feed; an explicitly empty value is rejected), and `cursor` (an opaque
 resume token or the literal `begin`; omitted = start at the current head and receive future
-commits only; an explicitly empty value is rejected). Wrong method, an omitted `namespace`
+commits only; an explicitly empty value is rejected). A `Last-Event-ID` request header, which a
+browser `EventSource` sends on reconnect, is a resume token too and takes precedence over
+`cursor`. Wrong method, an omitted `namespace`
 parameter, and empty `table` / `cursor` values are ordinary HTTP errors (the standard envelope)
 before the stream opens; every
 other failure arrives inside the stream, because an open `text/event-stream` response can no
 longer carry an HTTP status.
 
-The frame protocol — named events whose `data` is one compact JSON line:
+The frame protocol — named events whose `data` is one compact JSON line; `change`, `ready` and
+`close` frames also carry their cursor as the SSE `id:`, so an `EventSource` reconnect resumes
+where the stream left off:
 
 - `event: ready`, `data: {"cursor":"..."}` — the replay→live boundary. Replayed `change` frames
   (when resuming behind the head) arrive first, then `ready`, then live frames. Its cursor is the

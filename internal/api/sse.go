@@ -56,6 +56,9 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		}
 		cursor = store.Cursor(c)
 	}
+	if last := strings.TrimSpace(r.Header.Get("Last-Event-ID")); last != "" {
+		cursor = store.Cursor(last)
+	}
 
 	ns := normNS(q.Get("namespace"))
 	ctx, stopCause := context.WithCancelCause(r.Context())
@@ -111,7 +114,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	resume := replay.Resume()
 	write := func(rec store.ChangeRecord) bool {
 		resume = rec.Cursor
-		return sseEvent(w, "change", sseChange{
+		return sseEventID(w, "change", string(rec.Cursor), sseChange{
 			Cursor: string(rec.Cursor),
 			Table:  rec.Table,
 			RowID:  rec.RowID,
@@ -126,7 +129,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			default:
-				sseEvent(w, "close", sseCursor{Cursor: string(resume)})
+				sseEventID(w, "close", string(resume), sseCursor{Cursor: string(resume)})
 				sseErrorEvent(r.Context(), w, apiErr, reqID)
 				return
 			}
@@ -164,7 +167,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		s.holdReplay()
 	}
 
-	if !sseEvent(w, "ready", sseCursor{Cursor: string(resume)}) {
+	if !sseEventID(w, "ready", string(resume), sseCursor{Cursor: string(resume)}) {
 		return
 	}
 
@@ -256,13 +259,21 @@ type sseCursor struct {
 }
 
 func sseEvent(w http.ResponseWriter, event string, data any) bool {
+	return sseEventID(w, event, "", data)
+}
+
+func sseEventID(w http.ResponseWriter, event, id string, data any) bool {
 	payload, err := sseJSON(data)
 	if err != nil {
 		return false
 	}
+	idLine := ""
+	if id != "" && !strings.ContainsAny(id, "\r\n\x00") {
+		idLine = "id: " + id + "\n"
+	}
 	rc := http.NewResponseController(w)
 	rc.SetWriteDeadline(time.Now().Add(sseWriteDeadline))
-	_, werr := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload)
+	_, werr := fmt.Fprintf(w, "event: %s\n%sdata: %s\n\n", event, idLine, payload)
 	ferr := rc.Flush()
 	rc.SetWriteDeadline(time.Time{})
 	return werr == nil && ferr == nil
