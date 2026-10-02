@@ -37,12 +37,12 @@ func FindJSONNUL(doc []byte) (field string, inName bool, found bool) {
 					j++
 				}
 			}
-			raw := string(doc[start:min(j, len(doc))])
+			end := min(j, len(doc))
 			i = j
 			n := len(stack)
 			if n > 0 && stack[n-1].object && stack[n-1].expectKey {
 				stack[n-1].expectKey = false
-				stack[n-1].key = raw
+				stack[n-1].key = string(doc[start:end])
 				if hasNUL {
 					return "", true, true
 				}
