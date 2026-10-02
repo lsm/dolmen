@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.5.0
 
 ### Added
 
@@ -20,6 +20,142 @@
   and one `BatchWriteResult` per write. It is also the only route to the filter-matched upsert, which
   has no single method on the facade, and `Limit` and `Confirm` are part of the hashed body as on the
   wire.
+- **A measured comparison of the two `query` options for the lakehouse tier**
+  (`docs/design/lakehouse-plan.md` §2.6–§2.7), which changes what Q5 asks. The in-process
+  pure-Go engine, DoltHub's `go-mysql-server`, **is not confinable**: `LOAD_FILE()` and
+  `SELECT ... INTO OUTFILE` read and write arbitrary files under `IsReadOnly` and
+  `IsServerLocked`, no setting closes either, and a registered database is reachable across
+  namespaces with `SHOW DATABASES` enumerating them all. It is genuinely pure Go and it costs
+  **+61 MiB, +131%**, measured in CI. It lives in `spike/inprocess`, a nested module, so the main binary and
+  `go.mod` are untouched. The DuckDB socket in the same section: the stock CLI has no listener, and
+  the one extension claiming a server protocol is unpublished (HTTP 404 on every platform) and
+  would be a silent no-op under the lockdown anyway — so slice 11 needs a wrapper dolmen builds and
+  ships, or nothing. No engine code beyond what the spikes need.
+- **A DuckDB lockdown spike** (`internal/duckdblockdown`), deciding whether a lakehouse `query` over
+  a DuckDB process can be confined. A minimal helper starts a CLI locked to one namespace's data
+  directory and the tests attack it: `ATTACH` to a sibling namespace, the namespace's own SQLite
+  catalog, a symlink planted inside the allowed directory, `..` traversal, `COPY` in and out,
+  `COPY ... TO PROGRAM`, the file readers, extension install and load, http(s) URLs, and every
+  attempt to re-open the settings. **All are refused.** Two findings are recorded in
+  `docs/design/lakehouse-plan.md` §2.4–§2.5: `enable_external_access=false` is the guard and
+  `allowed_directories` *widens* what stays reachable rather than narrowing it, and the CLI runs
+  `.shell`/`.system`/`.output` dot-commands from caller SQL under that full lockdown, in every
+  mode — so a stdio transport would hand a caller code execution, and the transport is a unix
+  socket instead. DuckDB is pinned to v1.5.6 and downloaded checksummed in a CI job; the tests skip
+  without `DOLMEN_TEST_DUCKDB`. No engine code: nothing is wired into `store.Engine`.
+- **`lakehouse` is a recognised engine name that is refused rather than unknown.** `DOLMEN_ENGINE`
+  and `-engine` accept it, and the unknown-engine message now lists all three engines, so a
+  configuration naming the lakehouse tier fails with a message that says what is and is not
+  available instead of claiming the name does not exist. Every surface refuses it clearly until the
+  engine is implemented: the Go facade (`WithEngine`) names the design document, the binary refuses
+  at startup, and `dolmen backup` and `dolmen restore` refuse rather than quietly treating a
+  lakehouse configuration as a SQLite data directory. **Behaviour change:** `-engine lakehouse`,
+  `WithEngine("lakehouse")` and `DOLMEN_ENGINE=lakehouse` with `backup`/`restore` were previously
+  unknown-engine errors or a silent SQLite fallback and are now teaching refusals; nothing that
+  worked before changes. The lakehouse engine itself lands in later slices, per
+  `docs/design/lakehouse-plan.md`.
+- **A lane plan for the lakehouse engine** (`docs/design/lakehouse-plan.md`): the slice order for
+  adapter #3, one mergeable PR at a time, following the `query` decision in
+  `docs/design/query-without-sql.md` (an external DuckDB process below the seam, SQL passed through
+  unchanged with its dialect disclosed, one engine process per namespace, and a pure-Go
+  Parquet/Iceberg tier with the catalog in the namespace's own SQLite file). It covers the sidecar's
+  start, supervision, resource limits and confinement, how the DuckDB side ships beside a
+  `CGO_ENABLED=0` binary and what that does to `release.yml`, the append/position-delete/compaction
+  write path and the namespace commit log the change feed needs, native engine-side full text and
+  exact vector search, which parts of the shared conformance suite run against the engine and from
+  which slice, the `arrow-go` v18.6.0 pin and what keeps it from breaking, and the questions that
+  are Marc's. No code, no behaviour change.
+- **Marc's answers to the lakehouse plan**, recorded in the same document: slice 3 ships next, the
+  `query` lockdown is pulled forward into a spike that decides whether the sidecar path exists at
+  all, and the `go.mod` pins land with the first code that imports them rather than as an inert
+  module. On confinement, DuckDB's own settings are the only guard — no statement filter in dolmen,
+  not even as a second layer — and if that is not enough the fallback is an in-process pure-Go SQL
+  engine, then a declared `query` unavailability through the reserved spec amendment. Full text is
+  native, settled by D27, with no spec amendment. Docs only.
+- **An observability guide** (`docs/observability.md`): a runnable `docker compose` stack that
+  receives dolmen's traces, metrics and logs, how to get from a slow `dolmen.operation.duration`
+  bucket to the trace behind its exemplar, and three starter alerts.
+- **Storage spans for plain reads and schema lifecycle calls.** `read_rows` records `SELECT <table>`
+  and `query` a bare `SELECT` (arbitrary SQL may span tables, so it names none), while
+  `create_table`/`drop_table` record `CREATE`/`DROP <table>` and `create_namespace`/`drop_namespace`
+  `CREATE`/`DROP` with `db.namespace` only, on both engines. Read latency now shows its storage time
+  in a trace; nothing new is recorded when tracing is off.
+- **Engine capacity as OpenTelemetry gauges.** `dolmen.namespaces.open`, `dolmen.vector_cache.usage`
+  and `dolmen.vector_cache.limit` on SQLite, and `db.client.connection.count` (split by
+  `db.client.connection.state`, `idle` or `used`) with `db.client.connection.max` on PostgreSQL, are
+  recorded as observable up-down counters whenever a meter provider is configured, so a pool or a
+  vector cache heading for its limit is visible before requests start failing. The attributes stay
+  bounded: no namespace, table or principal is ever named. `telemetry.Provider` now exposes its
+  `MeterProvider`, the way it exposed its `TracerProvider`.
+- **`shape` on `json` fields** (#128). A `json` field may declare `object`, `array`, `array<string>`,
+  `array<number>`, `array<boolean>` or `array<object>`; every write path refuses a value of any other
+  shape, naming the field, the expected shape and what arrived. `migrate` gains `set_shape`, which
+  refuses a shape stored rows do not fit and needs `read` as well as `schema`.
+- **OpenTelemetry metrics over OTLP.** Operation duration and outcome, operations in flight, active
+  subscriptions, `http.server.request.duration`, and the `gen_ai.client.*` embedding metrics, pushed
+  to the same collector as traces (`WithMeterProvider` in Go). `GET /metrics` still serves
+  Prometheus. **Behaviour change:** `OTEL_EXPORTER_OTLP_ENDPOINT` now turns metrics on as well as
+  traces; set `OTEL_METRICS_EXPORTER=none` to keep traces only.
+- **`search_fulltext` scores every hit as `_score`**, higher being more relevant, like `search_vector`.
+  The scale is the engine's own (FTS5 BM25 negated on SQLite, `ts_rank_cd` on PostgreSQL), so compare
+  scores only within one query's results.
+- **Log export over OTLP.** `OTEL_LOGS_EXPORTER=otlp` also sends every log line to the collector,
+  honouring `-log-level` and carrying the request's trace context; stderr is unchanged. It is off
+  unless set, even with an endpoint configured.
+- **`describe_table` reads a kept row count instead of scanning the table.** Every write keeps
+  a per-table count current (per owner on `row_access` tables), so `row_count` costs the same on a
+  table of any size. Existing namespaces are counted once on first open. On SQLite this raises the
+  namespace's catalog minimum-reader stamp to 3, so an older dolmen refuses the directory afterwards;
+  on PostgreSQL the catalog moves to version 7. Back up before the first open if you may need to
+  downgrade.
+- **`secret` field type.** Values are encrypted at rest with AES-256-GCM under
+  `DOLMEN_SECRET_KEY` / `DOLMEN_SECRET_KEY_FILE` (or `WithSecretKey` in Go), read back as `"••••"`
+  on every path, and are returned in plaintext only when named in `reveal` on `read_rows` or a
+  search. Under `-auth on` reveal needs the new `reveal` verb, which `admin` does not imply, and
+  every reveal writes an audit log line without the value. Both engines support it (PostgreSQL
+  stores the ciphertext in a `bytea` column). See `docs/design/secret-fields.md`.
+- **Secret key rotation.** `DOLMEN_SECRET_KEYS_OLD` / `DOLMEN_SECRET_KEYS_OLD_FILE` (or retired
+  keys passed to `WithSecretKey`) keep old keys for decryption, and the new `rotate_secret_key`
+  operation (`admin` on `*`; `RotateSecretKey` in Go) re-encrypts stored values under the active
+  key in bounded, resumable batches, reporting values per key id so you know when a retired key can
+  go. Idempotent inserts replay across a rotation. See the README runbook.
+- **SSE frames carry their cursor as `id:`, and `Last-Event-ID` resumes a stream.** `change`, `ready`
+  and `close` frames on `/v1/subscribe` now carry the SSE `id:` field, and a `Last-Event-ID` request
+  header is the resume cursor, taking precedence over `cursor` — so a browser `EventSource` that
+  reconnects resumes where it left off instead of at its original cursor. `Last-Event-ID` is allowed
+  in CORS preflights (#552).
+
+### Changed
+
+- **A vectorizing `migrate` is resumable, on both engines.** The embedding backfill used to run
+  inside the write transaction, so a provider that died, a `504` timeout, or a killed process threw
+  away every vector it had produced and the next attempt started from the first row; the embeddings
+  were also written where a reader could see them before the migration landed. Each batch is now
+  embedded outside the write transaction and kept on disk, keyed by table, drop generation, provider
+  identity and the SHA-256 of the row's text, and activation fills the column from it in one short
+  transaction. Re-issuing the same `migrate` embeds only the rows it does not already hold. A staged
+  vector is never reused across a provider identity or a model change, a row whose text changed after
+  it was staged is embedded again rather than stamped with a stale vector, and staged rows are dropped
+  when the migration lands, when the table is dropped, and on `vacuum`. The plan a `dry_run` returns
+  now carries `staged_rows` beside `embed_rows` — the rows still needing a provider call and the ones
+  an interrupted attempt already finished, which add up — and the `504` and `409` messages for a
+  stopped or out-repeated migration say the progress is kept. A data directory written by v0.3.0 or
+  earlier is adopted as before: the SQLite catalog format moves to 4 and the PostgreSQL catalog to 8,
+  and a format-3 reader still sees a table as it was before activation. **Behaviour change:** on
+  PostgreSQL, a `migrate` that would vectorize now refuses on a database whose `server_encoding` is
+  not UTF-8, naming the encoding it found and the `CREATE DATABASE … ENCODING 'UTF8'` that fixes it,
+  because the staged digest compares bytes and nothing would match; other migrations still run there.
+- **The PostgreSQL connection pool defaults to at most 20 connections.** pgx sized an unconfigured
+  pool at one connection per CPU, which on a large host exceeds PostgreSQL's default
+  `max_connections`, so one busy server could hold every slot and starve another sharing the
+  database. Set `pool_max_conns=N` in the DSN to raise it (#559).
+- **A full-text `query` is limited to 2,048 bytes** on both engines and the Go library, and refused
+  with `invalid_request` before any work (#557).
+- **Skill corrections.** Both skills document querying `json` fields with `::jsonb` (and why the `?`
+  operator cannot be used), list `batch` with a worked example, state that PostgreSQL full-text does
+  not fold accents or segment CJK and emoji, say what `row_access` does not hide (shared row ids, and
+  the total `row_count` without `row_access`), and correct several smaller points the pre-release
+  black-box rounds tripped on (#548, #555, #563).
 
 ### Fixed
 
@@ -36,7 +172,6 @@
   still reported as cancelled or timed out at the limit. On SQLite, whose driver stops the statement
   at the deadline, nothing changes. The write semantics are untouched: a write past its limit still
   says it "may or may not have committed".
-
 - **`describe_server` says what the next vectorized write will meet, instead of a boolean that reads
   as a fault.** `model_cached: false` on a server that has never served a vectorized write is an
   ordinary first run — the model is a Hugging Face model that first use downloads — but in
@@ -58,7 +193,6 @@
   "cached"`, and its `false` is now one of the two other states rather than one undifferentiated
   one. The startup warning picks its message from the same value, so the log and the operation
   cannot disagree about which case applies.
-
 - **`wait_for` answers a page when a read runs out of its budget, even on the first attempt.** A read
   that overran the loop's own budget was supposed to answer the documented empty page, but that only
   happened once one read had already succeeded: the first attempt's failure was returned as an
@@ -73,7 +207,6 @@
   there is no boundary to hand back and an empty `next_cursor` cannot be resumed from; a cursor the
   feed rejects is still an error, and so is a call whose own context ended. SQLite hid this because
   its driver does not notice the budget, so the same call answered a page on that engine.
-
 - **Request field names are matched exactly, and a `null` body is no longer an empty one.** A key
   that differs only in case is an unknown field, not a type mismatch on a field the advertised schema
   does not contain: `{"Namespace":"x"}` used to work, and `{"sql":1,"bogus":2}` and
@@ -84,7 +217,6 @@
   specification calls invalid tool arguments a protocol error; that intended difference is recorded
   in the facade input matrix. **Behaviour change:** a miscased key that used to be accepted is now an
   error. Row keys are unaffected: a record is still checked against the table's own schema.
-
 - **A namespace whose file cannot be read is refused, not silently re-initialized.** Reopening a
   data directory whose namespace file was truncated to nothing used to let the next write through:
   SQLite reads a zero-length file as an empty database, so `create_table` succeeded and the rows
@@ -95,7 +227,6 @@
   message naming the bad value, and a namespace written before the catalog gate is still adopted
   rather than refused. Other namespaces, discovery and the health probe are unaffected, and a
   namespace serves again as soon as its file is restored, with no restart.
-
 - **A cancelled request is answered as `canceled`, not as a server fault.** A request whose context
   was done used to be answered with whatever the failure classified as, so a failure the caller
   could not have acted on — an engine reporting an interrupted statement in its own words
@@ -105,7 +236,6 @@
   and in the Go library, for every operation and every read path: cancelled is `canceled`, an expired
   deadline keeps its own `timeout`, and a live caller's fault is still reported as the fault it is.
   The engine's own error is kept as the cause, so it still reaches the log.
-
 - **`query` can no longer hand out a secret's ciphertext.** Masking used to key off the result-column
   label, so `SELECT token AS t` returned base64 of the stored bytes and `length(token)` its unpadded
   length — any caller holding `read` could exfiltrate every secret's ciphertext without the `reveal`
@@ -113,127 +243,37 @@
   column's place, so aliases, expressions, subqueries, CTEs, `SELECT *` and `ORDER BY` all read
   `"••••"`. Search and write filters still evaluate against the ciphertext, where they select rows
   but return no values.
-
 - **Writing a masked secret back no longer destroys it.** `"••••"` is refused as a `secret`
   value, naming the field and saying to pass the real value, `reveal` it first, or omit the field.
   An agent that read a row without `reveal` and wrote it back edited previously stored the mask as
   the plaintext, losing the secret silently and unrecoverably.
+- **A huge full-text query no longer wedges its namespace.** On PostgreSQL a multi-megabyte
+  `search_fulltext` query kept every write to its namespace waiting for minutes: the query compiler
+  was quadratic in the number of terms and ran inside the read transaction holding the namespace
+  lock, ignoring cancellation and `-op-timeout`. The compiler is now linear and oversized queries are
+  refused up front (#557).
+- **A NUL character (`\u0000`) anywhere in a request is refused with `invalid_request` naming the
+  field.** It used to answer `500` in a table name, cursor, idempotency key or `tokenize` text, an
+  opaque `query_error` in a SQL argument, and inside a `json` value it was stored, after which every
+  `::jsonb` query on that table failed until the row was deleted. String, text and secret values are
+  refused at coercion too, so the Go library agrees (#536, #561).
+- **A PostgreSQL write that races a `migrate` retries instead of failing with a version conflict**
+  the caller never asked for (#544).
+- **PostgreSQL connection exhaustion answers a retryable `timeout`** saying the database is at its
+  connection limit (or, for SQLSTATE 57P03, restarting), instead of a bare `internal_error`; nothing
+  was started, so a retry is safe (#550).
+- **A too-complex PostgreSQL statement (SQLSTATE class 54) is `invalid_request`** telling you to
+  simplify it, not an opaque `query_error` (#546).
+- **`batch` errors.** A missing, empty or malformed `namespace` is `invalid_request`, not a `500`; a
+  SQL or filter error inside a write keeps its `writes[N]:` prefix on both engines; a write that is not
+  an object says so instead of leaking a Go type name; and the rows-touched budget message describes
+  the per-batch budget and the way through for a large delete (#536, #540, #542, #563).
+- **`search_vector` refuses an all-zero query vector and whitespace-only `text`**, both of which used
+  to return arbitrary rows (#538).
+
+## v0.4.0
 
 ### Added
-
-- **A measured comparison of the two `query` options for the lakehouse tier**
-  (`docs/design/lakehouse-plan.md` §2.6–§2.7), which changes what Q5 asks. The in-process
-  pure-Go engine, DoltHub's `go-mysql-server`, **is not confinable**: `LOAD_FILE()` and
-  `SELECT ... INTO OUTFILE` read and write arbitrary files under `IsReadOnly` and
-  `IsServerLocked`, no setting closes either, and a registered database is reachable across
-  namespaces with `SHOW DATABASES` enumerating them all. It is genuinely pure Go and it costs
-  **+61 MiB, +131%**, measured in CI. It lives in `spike/inprocess`, a nested module, so the main binary and
-  `go.mod` are untouched. The DuckDB socket in the same section: the stock CLI has no listener, and
-  the one extension claiming a server protocol is unpublished (HTTP 404 on every platform) and
-  would be a silent no-op under the lockdown anyway — so slice 11 needs a wrapper dolmen builds and
-  ships, or nothing. No engine code beyond what the spikes need.
-
-- **A DuckDB lockdown spike** (`internal/duckdblockdown`), deciding whether a lakehouse `query` over
-  a DuckDB process can be confined. A minimal helper starts a CLI locked to one namespace's data
-  directory and the tests attack it: `ATTACH` to a sibling namespace, the namespace's own SQLite
-  catalog, a symlink planted inside the allowed directory, `..` traversal, `COPY` in and out,
-  `COPY ... TO PROGRAM`, the file readers, extension install and load, http(s) URLs, and every
-  attempt to re-open the settings. **All are refused.** Two findings are recorded in
-  `docs/design/lakehouse-plan.md` §2.4–§2.5: `enable_external_access=false` is the guard and
-  `allowed_directories` *widens* what stays reachable rather than narrowing it, and the CLI runs
-  `.shell`/`.system`/`.output` dot-commands from caller SQL under that full lockdown, in every
-  mode — so a stdio transport would hand a caller code execution, and the transport is a unix
-  socket instead. DuckDB is pinned to v1.5.6 and downloaded checksummed in a CI job; the tests skip
-  without `DOLMEN_TEST_DUCKDB`. No engine code: nothing is wired into `store.Engine`.
-
-- **`lakehouse` is a recognised engine name that is refused rather than unknown.** `DOLMEN_ENGINE`
-  and `-engine` accept it, and the unknown-engine message now lists all three engines, so a
-  configuration naming the lakehouse tier fails with a message that says what is and is not
-  available instead of claiming the name does not exist. Every surface refuses it clearly until the
-  engine is implemented: the Go facade (`WithEngine`) names the design document, the binary refuses
-  at startup, and `dolmen backup` and `dolmen restore` refuse rather than quietly treating a
-  lakehouse configuration as a SQLite data directory. **Behaviour change:** `-engine lakehouse`,
-  `WithEngine("lakehouse")` and `DOLMEN_ENGINE=lakehouse` with `backup`/`restore` were previously
-  unknown-engine errors or a silent SQLite fallback and are now teaching refusals; nothing that
-  worked before changes. The lakehouse engine itself lands in later slices, per
-  `docs/design/lakehouse-plan.md`.
-
-- **A lane plan for the lakehouse engine** (`docs/design/lakehouse-plan.md`): the slice order for
-  adapter #3, one mergeable PR at a time, following the `query` decision in
-  `docs/design/query-without-sql.md` (an external DuckDB process below the seam, SQL passed through
-  unchanged with its dialect disclosed, one engine process per namespace, and a pure-Go
-  Parquet/Iceberg tier with the catalog in the namespace's own SQLite file). It covers the sidecar's
-  start, supervision, resource limits and confinement, how the DuckDB side ships beside a
-  `CGO_ENABLED=0` binary and what that does to `release.yml`, the append/position-delete/compaction
-  write path and the namespace commit log the change feed needs, native engine-side full text and
-  exact vector search, which parts of the shared conformance suite run against the engine and from
-  which slice, the `arrow-go` v18.6.0 pin and what keeps it from breaking, and the questions that
-  are Marc's. No code, no behaviour change.
-
-- **Marc's answers to the lakehouse plan**, recorded in the same document: slice 3 ships next, the
-  `query` lockdown is pulled forward into a spike that decides whether the sidecar path exists at
-  all, and the `go.mod` pins land with the first code that imports them rather than as an inert
-  module. On confinement, DuckDB's own settings are the only guard — no statement filter in dolmen,
-  not even as a second layer — and if that is not enough the fallback is an in-process pure-Go SQL
-  engine, then a declared `query` unavailability through the reserved spec amendment. Full text is
-  native, settled by D27, with no spec amendment. Docs only.
-
-- **An observability guide** (`docs/observability.md`): a runnable `docker compose` stack that
-  receives dolmen's traces, metrics and logs, how to get from a slow `dolmen.operation.duration`
-  bucket to the trace behind its exemplar, and three starter alerts.
-
-- **Storage spans for plain reads and schema lifecycle calls.** `read_rows` records `SELECT <table>`
-  and `query` a bare `SELECT` (arbitrary SQL may span tables, so it names none), while
-  `create_table`/`drop_table` record `CREATE`/`DROP <table>` and `create_namespace`/`drop_namespace`
-  `CREATE`/`DROP` with `db.namespace` only, on both engines. Read latency now shows its storage time
-  in a trace; nothing new is recorded when tracing is off.
-
-- **Engine capacity as OpenTelemetry gauges.** `dolmen.namespaces.open`, `dolmen.vector_cache.usage`
-  and `dolmen.vector_cache.limit` on SQLite, and `db.client.connection.count` (split by
-  `db.client.connection.state`, `idle` or `used`) with `db.client.connection.max` on PostgreSQL, are
-  recorded as observable up-down counters whenever a meter provider is configured, so a pool or a
-  vector cache heading for its limit is visible before requests start failing. The attributes stay
-  bounded: no namespace, table or principal is ever named. `telemetry.Provider` now exposes its
-  `MeterProvider`, the way it exposed its `TracerProvider`.
-
-- **`shape` on `json` fields** (#128). A `json` field may declare `object`, `array`, `array<string>`,
-  `array<number>`, `array<boolean>` or `array<object>`; every write path refuses a value of any other
-  shape, naming the field, the expected shape and what arrived. `migrate` gains `set_shape`, which
-  refuses a shape stored rows do not fit and needs `read` as well as `schema`.
-
-- **OpenTelemetry metrics over OTLP.** Operation duration and outcome, operations in flight, active
-  subscriptions, `http.server.request.duration`, and the `gen_ai.client.*` embedding metrics, pushed
-  to the same collector as traces (`WithMeterProvider` in Go). `GET /metrics` still serves
-  Prometheus. **Behaviour change:** `OTEL_EXPORTER_OTLP_ENDPOINT` now turns metrics on as well as
-  traces; set `OTEL_METRICS_EXPORTER=none` to keep traces only.
-
-- **`search_fulltext` scores every hit as `_score`**, higher being more relevant, like `search_vector`.
-  The scale is the engine's own (FTS5 BM25 negated on SQLite, `ts_rank_cd` on PostgreSQL), so compare
-  scores only within one query's results.
-
-- **Log export over OTLP.** `OTEL_LOGS_EXPORTER=otlp` also sends every log line to the collector,
-  honouring `-log-level` and carrying the request's trace context; stderr is unchanged. It is off
-  unless set, even with an endpoint configured.
-
-- **`describe_table` reads a kept row count instead of scanning the table.** Every write keeps
-  a per-table count current (per owner on `row_access` tables), so `row_count` costs the same on a
-  table of any size. Existing namespaces are counted once on first open. On SQLite this raises the
-  namespace's catalog minimum-reader stamp to 3, so an older dolmen refuses the directory afterwards;
-  on PostgreSQL the catalog moves to version 7. Back up before the first open if you may need to
-  downgrade.
-
-- **`secret` field type.** Values are encrypted at rest with AES-256-GCM under
-  `DOLMEN_SECRET_KEY` / `DOLMEN_SECRET_KEY_FILE` (or `WithSecretKey` in Go), read back as `"••••"`
-  on every path, and are returned in plaintext only when named in `reveal` on `read_rows` or a
-  search. Under `-auth on` reveal needs the new `reveal` verb, which `admin` does not imply, and
-  every reveal writes an audit log line without the value. Both engines support it (PostgreSQL
-  stores the ciphertext in a `bytea` column). See `docs/design/secret-fields.md`.
-
-- **Secret key rotation.** `DOLMEN_SECRET_KEYS_OLD` / `DOLMEN_SECRET_KEYS_OLD_FILE` (or retired
-  keys passed to `WithSecretKey`) keep old keys for decryption, and the new `rotate_secret_key`
-  operation (`admin` on `*`; `RotateSecretKey` in Go) re-encrypts stored values under the active
-  key in bounded, resumable batches, reporting values per key id so you know when a retired key can
-  go. Idempotent inserts replay across a rotation. See the README runbook.
 
 - **Idempotency keys are namespaced by owner.** A key is unique per table *and* writer principal,
   so two principals using the same string are using two different keys — neither conflicts, neither
@@ -360,25 +400,6 @@
   default is still `auth: off` — nothing changes for existing deployments.
 
 ### Changed
-
-- **A vectorizing `migrate` is resumable, on both engines.** The embedding backfill used to run
-  inside the write transaction, so a provider that died, a `504` timeout, or a killed process threw
-  away every vector it had produced and the next attempt started from the first row; the embeddings
-  were also written where a reader could see them before the migration landed. Each batch is now
-  embedded outside the write transaction and kept on disk, keyed by table, drop generation, provider
-  identity and the SHA-256 of the row's text, and activation fills the column from it in one short
-  transaction. Re-issuing the same `migrate` embeds only the rows it does not already hold. A staged
-  vector is never reused across a provider identity or a model change, a row whose text changed after
-  it was staged is embedded again rather than stamped with a stale vector, and staged rows are dropped
-  when the migration lands, when the table is dropped, and on `vacuum`. The plan a `dry_run` returns
-  now carries `staged_rows` beside `embed_rows` — the rows still needing a provider call and the ones
-  an interrupted attempt already finished, which add up — and the `504` and `409` messages for a
-  stopped or out-repeated migration say the progress is kept. A data directory written by v0.3.0 or
-  earlier is adopted as before: the SQLite catalog format moves to 4 and the PostgreSQL catalog to 8,
-  and a format-3 reader still sees a table as it was before activation. **Behaviour change:** on
-  PostgreSQL, a `migrate` that would vectorize now refuses on a database whose `server_encoding` is
-  not UTF-8, naming the encoding it found and the `CREATE DATABASE … ENCODING 'UTF8'` that fixes it,
-  because the staged digest compares bytes and nothing would match; other migrations still run there.
 
 - **Embedding model tarballs are no longer attached to each release.** They are published once
   under their own tag (`models-v1`) and shared by every dolmen version, which keeps ~370 MB of
