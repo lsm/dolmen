@@ -1246,6 +1246,10 @@ var Ops = map[string]OpDef{
 			if req.Query == "" {
 				return nil, badRequest("query must not be empty")
 			}
+			lim, err := parseOptPosInt(req.Limit, "limit")
+			if err != nil {
+				return nil, err
+			}
 			ns := normNS(req.Namespace)
 			scope, inc, tsc, err := s.resolveScopeState(ctx, ns, normTable(req.Table))
 			if err != nil {
@@ -1256,12 +1260,12 @@ var Ops = map[string]OpDef{
 			}
 			ctx = store.WithReveal(ctx, req.Reveal)
 			res, err := s.eng.SearchFulltext(ctx, ns, normTable(req.Table), req.Query, req.Filter, req.Args,
-				req.IncludeHidden, scope, inc, store.Page{Offset: req.Offset, Limit: limit(req.Limit)})
+				req.IncludeHidden, scope, inc, store.Page{Offset: req.Offset, Limit: limit(lim)})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			s.auditReveal(ctx, ns, normTable(req.Table), req.Reveal, res.Rows)
-			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "limit": limit(req.Limit)}, nil
+			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "limit": limit(lim)}, nil
 		},
 	},
 	"tokenize": {
@@ -1416,6 +1420,10 @@ var Ops = map[string]OpDef{
 			if err := decodeAllowNullArgs(body, &req); err != nil {
 				return nil, err
 			}
+			lim, err := parseOptPosInt(req.Limit, "limit")
+			if err != nil {
+				return nil, err
+			}
 			vq, err := ops.PrepareVectorQuery(ctx, s.eng, normNS(req.Namespace), normTable(req.Table), ops.VectorQuery{
 				Column:   req.Column,
 				Text:     req.Text,
@@ -1436,12 +1444,12 @@ var Ops = map[string]OpDef{
 			}
 			ctx = store.WithReveal(ctx, req.Reveal)
 			res, err := s.eng.SearchVector(ctx, normNS(req.Namespace), normTable(req.Table), vq,
-				req.IncludeHidden, scope, inc, store.Page{Offset: req.Offset, Limit: limit(req.Limit)})
+				req.IncludeHidden, scope, inc, store.Page{Offset: req.Offset, Limit: limit(lim)})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			s.auditReveal(ctx, normNS(req.Namespace), normTable(req.Table), req.Reveal, res.Rows)
-			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "skipped_vectors": res.SkippedVectors, "limit": limit(req.Limit)}, nil
+			return map[string]any{"results": res.Rows, "truncated": res.Truncated, "skipped_vectors": res.SkippedVectors, "limit": limit(lim)}, nil
 		},
 	},
 
@@ -2151,15 +2159,15 @@ type waitForReq struct {
 }
 
 type ftsReq struct {
-	Namespace     string   `json:"namespace"`
-	Table         string   `json:"table"`
-	Query         string   `json:"query"`
-	Offset        int      `json:"offset"`
-	Limit         int      `json:"limit"`
-	IncludeHidden bool     `json:"include_hidden"`
-	Filter        string   `json:"filter"`
-	Args          []any    `json:"args"`
-	Reveal        []string `json:"reveal"`
+	Namespace     string          `json:"namespace"`
+	Table         string          `json:"table"`
+	Query         string          `json:"query"`
+	Offset        int             `json:"offset"`
+	Limit         json.RawMessage `json:"limit"`
+	IncludeHidden bool            `json:"include_hidden"`
+	Filter        string          `json:"filter"`
+	Args          []any           `json:"args"`
+	Reveal        []string        `json:"reveal"`
 }
 
 func longestVector(body []byte, limit int) int {
@@ -2202,18 +2210,18 @@ func longestVector(body []byte, limit int) int {
 }
 
 type vecReq struct {
-	Namespace     string    `json:"namespace"`
-	Table         string    `json:"table"`
-	Column        string    `json:"column"`
-	Text          string    `json:"text"`
-	Vector        []float64 `json:"vector"`
-	Offset        int       `json:"offset"`
-	Limit         int       `json:"limit"`
-	IncludeHidden bool      `json:"include_hidden"`
-	Filter        string    `json:"filter"`
-	Args          []any     `json:"args"`
-	MinScore      *float64  `json:"min_score"`
-	Reveal        []string  `json:"reveal"`
+	Namespace     string          `json:"namespace"`
+	Table         string          `json:"table"`
+	Column        string          `json:"column"`
+	Text          string          `json:"text"`
+	Vector        []float64       `json:"vector"`
+	Offset        int             `json:"offset"`
+	Limit         json.RawMessage `json:"limit"`
+	IncludeHidden bool            `json:"include_hidden"`
+	Filter        string          `json:"filter"`
+	Args          []any           `json:"args"`
+	MinScore      *float64        `json:"min_score"`
+	Reveal        []string        `json:"reveal"`
 }
 
 type deleteReq struct {
