@@ -1019,7 +1019,7 @@ a missing table — send only the `error` event, since nothing was delivered. Th
 - Target ended: "the subscription's target ended (a dropped table, or a dropped or replaced
   namespace); reconnect against the current target — a same-named successor is a different feed"
 - Authorization revoked (code `forbidden`): "subscription authorization was revoked; reconnect once authorization
-  is restored". The server rechecks access on every change it delivers and on every keepalive (every 20 seconds),
+  is restored, or with another credential if this one was revoked". The server rechecks access on every change it delivers and on every keepalive (every 20 seconds),
   so a revoked caller's stream ends within about 20 seconds even when nothing is being written.
 - Subscription age bound (`-max-subscription-age`, default 30m): "subscription reached the
   maximum subscription age (-max-subscription-age, default 30m); reconnect from the cursor in

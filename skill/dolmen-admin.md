@@ -399,7 +399,11 @@ locked-out server.
   `query` or a `filter`: `prefs::jsonb->>'lang'`, `ingredients::jsonb->0->>'item'`,
   `jsonb_array_length(tags::jsonb)`, and containment as `tags::jsonb @> ?::jsonb` (bind the operand as
   a JSON string, e.g. `["vegan"]`). The jsonb key-exists operator `?` cannot be used — it collides
-  with the `?` parameter placeholder — so test membership with `@>` instead.
+  with the `?` parameter placeholder, and shows up as `SQL has 1 placeholders but received 0
+  arguments` — so test membership with `@>` instead. Without the cast, `->>` on a json field fails
+  with a bare SQLSTATE 42883. An error that carries only a SQLSTATE in class 42 (42703 unknown
+  column, 42883 no such operator or function) means a name or type in your SQL is wrong: check it
+  against `describe_table`.
 {{ end }}
 - `changes_since` replays a namespace's durable change log instead of polling tables: each call returns the changes committed after the cursor plus `next_cursor`. Omit `cursor` to start at the current head (nothing replays; keep the returned `next_cursor` and later calls deliver only new commits), or pass `"begin"` to replay retained history. An optional `table` filters to that table. Changes carry `cursor`/`table`/`row_id`/`kind` only — re-read row content by id with `query` (`SELECT * FROM <table> WHERE id = ?`). A cursor older than the change-log retention window (default 7d) is rejected with an error telling you to restart from the head (omit `cursor`) or `"begin"`; cursors are per-feed, so a cursor from a `table`-filtered call only works on that same feed. Cursor tokens are minted per emission: a change re-read later carries a fresh token for the same commit, so the same commit yields different tokens on different reads — while a read that emits nothing returns the cursor you passed unchanged (the `wait_for` idle contract). Treat a token as a resume handle, never as an event id — and no frame field is one either: the same row updated twice yields two changes with identical `table`/`row_id`/`kind`. No stable per-event identifier is exposed; make processing idempotent and persist the cursor atomically with your side effects instead of deduplicating on frame content.
 - `wait_for` REPLACES polling: one call blocks server-side until a change commits after the cursor (or `timeout_ms` elapses, default 30000, max 60000), then returns exactly a `changes_since` page. A timeout is an **empty page plus the unchanged `next_cursor` — never an error**: pass `next_cursor` straight back into the next `wait_for` and loop. `timeout_ms: 0` is a cheap conditional poll (returns immediately). Same feed semantics as `changes_since` (`cursor` resume, `"begin"`, optional `table` filter); never re-derive the head between waits — always resume from the returned cursor. Like every read, a wait never creates its namespace — a missing one is `not_found` (create it first, then wait).
@@ -440,7 +444,9 @@ locked-out server.
   `writes[i]` and keeps that write's own error class; nothing is written when any write fails. One
   `idempotency_key` covers the whole batch (a replay returns the stored results and says
   `replayed: true`). At most 100 writes and 1,000 rows touched per batch (records inserted plus rows
-  matched by `update`/`upsert`/`delete`); run a larger delete as its own `delete`. Example:
+  matched by `update`/`upsert`/`delete`); run a larger delete as its own `delete`. With authentication
+  off, a batch into a namespace that does not exist creates it before its writes run, so it remains
+  even when the batch fails. Example:
   `{"namespace":"crm","writes":[{"kind":"insert","table":"contacts","records":[{"email":"a@x.com"}]},{"kind":"update","table":"contacts","filter":"email = ?","args":["a@x.com"],"set":{"name":"Ada"}}]}`.
 - Retried writes must not duplicate rows: pass `idempotency_key` (any unique string) to `insert`, or use `upsert_by_key` with `"on": [field, ...]` naming the record's natural key (e.g. email, url) when the data identifies itself. Its body takes
   `records` as a list, like `insert`: `{"namespace":"crm","table":"contacts","on":["email"],"records":[{"email":"ada@example.com","name":"Ada"}]}`.
@@ -499,7 +505,8 @@ missing.
 Supported in `query`:
 
 - `payment refund` — both terms (implicit AND); `AND`, `OR` and binary `NOT` (`payment NOT refund`)
-  work as written, uppercase only.
+  work as written, uppercase only. `NOT` needs a term on its left, so a query cannot start with it,
+  and `AND`/`OR` need a term on each side.
 - `"refund processed"` — an exact phrase; also double-quote terms containing punctuation.
 - `pay*` — a prefix term.
 - Parentheses group expressions.
@@ -682,7 +689,9 @@ itself is shared — so copy the exact shape per op:
 
 - `set_fulltext` / `set_vectorize` — `name` + an explicit `value`, `true` to enable or `false` to
   disable (an omitted `value` is rejected, so a feature is never disabled by accident). Enabling is
-  only allowed on `string`/`text` fields, and `vectorize` on a second field is rejected. Re-asserting
+  only allowed on `string`/`text` fields, and `vectorize` on a second field is rejected. Under heavy
+  concurrent writes, enabling `vectorize` can answer `409 conflict` after losing to those writes;
+  the embeddings it finished are kept, so re-issue the same change. Re-asserting
   `set_fulltext` with `value: true` on an already-indexed field rebuilds the FTS index under the
   current tokenizer — the one-time reindex for tables created before stemming became the default
   (exact-token indexes keep working until reindexed; BM25 rank ordering shifts after):
@@ -757,7 +766,7 @@ A complete call, previewed first:
 | Idempotency key length | 1–256 bytes; use printable ASCII; omit the field for a non-idempotent insert | empty and over-256-byte keys are rejected; the JSON Schema enforces non-empty printable ASCII for schema-validating clients |
 | Vector dimension (declared `vector` fields) | 1–4096 | rejected |
 | `search_vector` query vector | at most 4096 numbers | rejected before the request is decoded |
-| Search `limit` | default 10, max 200 | omit `limit` for the default of 10; the tool schema enforces 1–200 for schema-validating clients, and the server clamps values above 200 to 200 (0 or negative selects the default on direct `/v1` calls); every search response reports the `limit` it applied |
+| Search `limit` | default 10, max 200 | omit `limit` for the default of 10; the tool schema enforces 1–200 for schema-validating clients, and the server clamps values above 200 to 200 (0 or negative selects the default, on `/v1` and MCP alike); every search response reports the `limit` it applied |
 | `query` result rows | 1,000 | truncated with `truncated: true` |
 | `query` / search result size | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
 | A single value built by SQL (in `query` or a search `filter`), SQLite engine | 64 MiB | `query_error` before the value is built |
@@ -807,7 +816,7 @@ Validation notes:
   provider is enabled by default; `describe_server` reports the active provider, its identity, and
   whether server-side embedding is usable.
 - `insert` with an `idempotency_key`: the same key + same records replays the original ids; the same
-  key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes. Never
+  key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes; the server counts bytes and refuses only an empty key or one over 256 bytes, so other characters are accepted but not recommended. Never
   regenerate a timestamp in a retried record — the body must be byte-identical to replay; a timestamp
   column a retry would stamp (e.g. `updated_at`) should be declared `default: "now()"` at
   `create_table` and omitted from records.
