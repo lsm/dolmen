@@ -389,6 +389,11 @@ locked-out server.
   standard functions is accepted; the error names anything refused. Per-day counts over the last two
   weeks: `SELECT date_trunc('day', started_at::timestamptz AT TIME ZONE 'UTC') AS day, count(*) FROM
   meetings WHERE started_at::timestamptz > now() - interval '14 days' GROUP BY 1 ORDER BY 1`.
+- **`json` fields are stored as text, so cast with `::jsonb` to use JSON operators and functions** in
+  `query` or a `filter`: `prefs::jsonb->>'lang'`, `ingredients::jsonb->0->>'item'`,
+  `jsonb_array_length(tags::jsonb)`, and containment as `tags::jsonb @> ?::jsonb` (bind the operand as
+  a JSON string, e.g. `["vegan"]`). The jsonb key-exists operator `?` cannot be used — it collides
+  with the `?` parameter placeholder — so test membership with `@>` instead.
 {{ end }}
 - `changes_since` replays a namespace's durable change log instead of polling tables: each call returns the changes committed after the cursor plus `next_cursor`. Omit `cursor` to start at the current head (nothing replays; keep the returned `next_cursor` and later calls deliver only new commits), or pass `"begin"` to replay retained history. An optional `table` filters to that table. Changes carry `cursor`/`table`/`row_id`/`kind` only — re-read row content by id with `query` (`SELECT * FROM <table> WHERE id = ?`). A cursor older than the change-log retention window (default 7d) is rejected with an error telling you to restart from the head (omit `cursor`) or `"begin"`; cursors are per-feed, so a cursor from a `table`-filtered call only works on that same feed. Cursor tokens are minted per emission: a change re-read later carries a fresh token for the same commit, so the same commit yields different tokens on different reads — while a read that emits nothing returns the cursor you passed unchanged (the `wait_for` idle contract). Treat a token as a resume handle, never as an event id — and no frame field is one either: the same row updated twice yields two changes with identical `table`/`row_id`/`kind`. No stable per-event identifier is exposed; make processing idempotent and persist the cursor atomically with your side effects instead of deduplicating on frame content.
 - `wait_for` REPLACES polling: one call blocks server-side until a change commits after the cursor (or `timeout_ms` elapses, default 30000, max 60000), then returns exactly a `changes_since` page. A timeout is an **empty page plus the unchanged `next_cursor` — never an error**: pass `next_cursor` straight back into the next `wait_for` and loop. `timeout_ms: 0` is a cheap conditional poll (returns immediately). Same feed semantics as `changes_since` (`cursor` resume, `"begin"`, optional `table` filter); never re-derive the head between waits — always resume from the returned cursor. Like every read, a wait never creates its namespace — a missing one is `not_found` (create it first, then wait).
@@ -420,6 +425,17 @@ locked-out server.
   `idempotency_key` also returns `replayed` (`true` when the original ids were returned instead of
   inserting again).
 - Every table has implicit `id` and `created_at` columns; `SELECT *` includes them.
+- `batch` applies several writes to one namespace in **one transaction**: either every write commits
+  or none does, and the results come back in the order the writes were given. Each entry in `writes`
+  is one of `insert`, `update`, `delete`, `upsert` or `upsert_by_key` with that operation's own
+  fields, plus a `kind` naming which (it is `kind`, not `op`). `namespace`, `idempotency_key`, `limit`
+  and `confirm` are set once at the top level and are **refused inside a write**, and so is `dry_run`
+  — a batch cannot mix a preview with writes that commit. An error names the failing write as
+  `writes[i]` and keeps that write's own error class; nothing is written when any write fails. One
+  `idempotency_key` covers the whole batch (a replay returns the stored results and says
+  `replayed: true`). At most 100 writes and 1,000 rows touched per batch (records inserted plus rows
+  matched by `update`/`upsert`/`delete`); run a larger delete as its own `delete`. Example:
+  `{"namespace":"crm","writes":[{"kind":"insert","table":"contacts","records":[{"email":"a@x.com"}]},{"kind":"update","table":"contacts","filter":"email = ?","args":["a@x.com"],"set":{"name":"Ada"}}]}`.
 - Retried writes must not duplicate rows: pass `idempotency_key` (any unique string) to `insert`, or use `upsert_by_key` with `"on": [field, ...]` naming the record's natural key (e.g. email, url) when the data identifies itself. Its body takes
   `records` as a list, like `insert`: `{"namespace":"crm","table":"contacts","on":["email"],"records":[{"email":"ada@example.com","name":"Ada"}]}`.
 - Results honor declared field types in every read (`query`, `read_rows`, `search_fulltext`, `search_vector`):
@@ -465,8 +481,14 @@ locked-out server.
 {{ if eq .Dialect "postgresql" }}### Full-text search syntax (PostgreSQL)
 
 This server indexes `fulltext` fields with PostgreSQL's `english` text-search configuration
-(stemming, stop words and accent handling are PostgreSQL's) and ranks with `ts_rank_cd`, highest
+(stemming and stop words are PostgreSQL's) and ranks with `ts_rank_cd`, highest
 first, ties by id. Ranking is PostgreSQL's own and differs from a SQLite-backed server's BM25.
+
+Two tokenizer limits to know: **accents are not folded** (`cafe` does not match `café`; search and
+store the same form, or normalize before writing), and **CJK and emoji are not word-segmented** — a
+run of CJK with no spaces indexes as one token, so `豆腐` will not match inside `麻婆豆腐`, and emoji
+do not match at all. `tokenize` shows exactly how a given string is indexed; use it when a match is
+missing.
 
 Supported in `query`:
 
