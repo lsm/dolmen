@@ -458,8 +458,6 @@ tests.
 
 - Prebuilt `libduckdb` is published for `linux-amd64`, `linux-arm64`, `osx-universal` and
   `windows-amd64` — every platform in §3's `PLATFORMS` list that DuckDB targets.
-- **The `-musl` zips ship `libduckdb_static.a`** (83.9 MB at v1.5.6) for both linux amd64 and
-  arm64, so a *fully static* Linux sidecar is available rather than merely hoped for.
 - `iceberg` and `httpfs` are published prebuilt for **all five** platform tokens
   (`linux_amd64`, `linux_arm64`, `osx_amd64`, `osx_arm64`, `windows_amd64`) — verified HTTP 200 on
   each, against a host that returns 404 for `quack` (§2.7).
@@ -468,8 +466,25 @@ tests.
 
 So the DuckDB packaging cost is: download two artifacts, compile ~270 lines of C++, ship the
 extension files alongside. No C++ toolchain beyond a compiler, no 40-minute DuckDB build, no
-`ccache`, no C++ in the release pipeline beyond one small `g++` invocation. **The `sidecar-packaging`
-CI job measures the actual sizes, the build time, and the static-ness on all four platforms.**
+`ccache`, no C++ in the release pipeline beyond one small `g++` invocation. **Measured:
+5 seconds and 64,632 bytes** for the shared-library build on `linux-amd64`.
+
+**A fully static Linux sidecar is *not* available, and this corrects an assumption rather than
+confirming one.** The `-musl` zips do ship `libduckdb_static.a` (83,882,636 bytes at v1.5.6) for both
+linux architectures, but linking it fails, for two independent reasons:
+
+- **`libduckdb_static.a` is missing `duckdb::ExtensionHelper::LoadAllExtensions(duckdb::DuckDB&)`** —
+  an undefined reference from the library itself, so the archive is incomplete for embedding.
+- **It needs a musl toolchain, not glibc's.** Linking it with `g++ -static` on ubuntu-latest fails on
+  `res_init`, glibc's NSS resolver entry point, and warns that `getaddrinfo` in a statically linked
+  application "requires at runtime the shared libraries from the glibc version used for linking" —
+  which is the static link failing in the way static glibc links fail.
+
+**So the DuckDB sidecar ships as a binary plus `libduckdb.so` plus the two extension files — four
+artifacts, one of them 72 MB — and it is not fully static on any platform.** That is a real cost
+against §3's distroless runtime stage and against a single-file release, and it is the sharpest
+packaging difference between the two candidates. `sidecar-packaging` records the exact failure
+rather than hiding it, so a future DuckDB that fixes the archive would show up as a changed line.
 
 **The DataFusion dependency set closes, and the way it closes is worth recording.** Taking
 `datafusion` and `iceberg` independently produces two incompatible Arrow versions and a wall of

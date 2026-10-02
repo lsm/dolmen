@@ -152,6 +152,7 @@ jobs:
             curl -sSLf -o "$dest/ext/$ext.duckdb_extension.gz" \
               "http://extensions.duckdb.org/${DOLMEN_DUCKDB_VERSION}/${DOLMEN_DUCKDB_PLATFORM}/$ext.duckdb_extension.gz"
             gunzip -f "$dest/ext/$ext.duckdb_extension.gz"
+            test -f "$dest/ext/$ext.duckdb_extension"
           done
           ls -la "$dest/ext"
           start=$(date +%s)
@@ -303,9 +304,14 @@ jobs:
             "https://github.com/duckdb/duckdb/releases/download/${DOLMEN_DUCKDB_VERSION}/${{ matrix.asset }}"
           unzip -q -o "$dest/lib.zip" -d "$dest"
           for ext in iceberg httpfs; do
-            curl -sSLf -o "$dest/ext/$ext.gz" \
+            curl -sSLf -o "$dest/ext/$ext.duckdb_extension.gz" \
               "http://extensions.duckdb.org/${DOLMEN_DUCKDB_VERSION}/${{ matrix.ext }}/$ext.duckdb_extension.gz"
-            gunzip -f "$dest/ext/$ext.gz"
+            gunzip -f "$dest/ext/$ext.duckdb_extension.gz"
+            test -f "$dest/ext/$ext.duckdb_extension" || {
+              echo "the $ext extension did not land as $ext.duckdb_extension" >&2
+              ls -la "$dest/ext" >&2
+              exit 1
+            }
           done
           ls "$dest" "$dest/ext"
       - name: Record the extension sizes and that they are pre-placed rather than downloaded
@@ -314,7 +320,12 @@ jobs:
           set -eu
           dest="$RUNNER_TEMP/ddb"
           for ext in iceberg httpfs; do
-            echo "PACKAGING platform=${{ matrix.platform }} ext=$ext bytes=$(stat -c %s "$dest/ext/$ext.duckdb_extension" 2>/dev/null || stat -f %z "$dest/ext/$ext.duckdb_extension")"
+            f="$dest/ext/$ext.duckdb_extension"
+            if [ "$(uname -s)" = Darwin ]; then
+              echo "PACKAGING platform=${{ matrix.platform }} ext=$ext bytes=$(stat -f %z "$f")"
+            else
+              echo "PACKAGING platform=${{ matrix.platform }} ext=$ext bytes=$(stat -c %s "$f")"
+            fi
           done
       - name: Build and measure the DuckDB sidecar
         shell: bash
@@ -330,22 +341,29 @@ jobs:
             g++ -std=c++17 -O2 -I"$dest" spike/sidecar-duckdb/sidecar.cpp -L"$dest" -lduckdb -Wl,-rpath,"$dest" -o "$dest/sidecar"
           fi
           echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb build_seconds=$(( $(date +%s) - start ))"
-          echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb binary_bytes=$(stat -c %s "$dest/sidecar" 2>/dev/null || stat -f %z "$dest/sidecar")"
+          if [ "$(uname -s)" = Darwin ]; then
+            echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb binary_bytes=$(stat -f %z "$dest/sidecar")"
+          else
+            echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb binary_bytes=$(stat -c %s "$dest/sidecar")"
+          fi
       - name: Record whether the Linux DuckDB sidecar is fully static
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          set -eu
           dest="$RUNNER_TEMP/ddb"
-          if [ -n "${{ matrix.static_asset }}" ]; then
-            curl -sSLf -o "$dest/static.zip" \
-              "https://github.com/duckdb/duckdb/releases/download/${DOLMEN_DUCKDB_VERSION}/${{ matrix.static_asset }}"
-            mkdir -p "$dest/static"
-            unzip -q -o "$dest/static.zip" -d "$dest/static"
-            echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb static_lib_bytes=$(stat -c %s "$dest/static/libduckdb_static.a")"
-            start=$(date +%s)
-            g++ -std=c++17 -O2 -static -I"$dest/static" spike/sidecar-duckdb/sidecar.cpp \
-              "$dest/static/libduckdb_static.a" -ldl -lpthread -lm -o "$dest/sidecar-static"
+          if [ -z "${{ matrix.static_asset }}" ]; then
+            echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb static_lib=absent linux_static=unknown"
+            exit 0
+          fi
+          curl -sSLf -o "$dest/static.zip" \
+            "https://github.com/duckdb/duckdb/releases/download/${DOLMEN_DUCKDB_VERSION}/${{ matrix.static_asset }}"
+          mkdir -p "$dest/static"
+          unzip -q -o "$dest/static.zip" -d "$dest/static"
+          echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb static_lib_bytes=$(stat -c %s "$dest/static/libduckdb_static.a")"
+          start=$(date +%s)
+          if g++ -std=c++17 -O2 -static -I"$dest/static" spike/sidecar-duckdb/sidecar.cpp \
+            "$dest/static/libduckdb_static.a" -ldl -lpthread -lm -o "$dest/sidecar-static" \
+            2>"$dest/static-link.log"; then
             echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb static_build_seconds=$(( $(date +%s) - start ))"
             echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb static_binary_bytes=$(stat -c %s "$dest/sidecar-static")"
             if ldd "$dest/sidecar-static" 2>&1 | grep -q 'not a dynamic executable\|statically linked'; then
@@ -354,7 +372,9 @@ jobs:
               echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb linux_static=no dynamic=$(ldd "$dest/sidecar-static" | tr '\n' ' ')"
             fi
           else
-            echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb static_lib=absent linux_static=unknown"
+            echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb static_build_seconds=$(( $(date +%s) - start ))"
+            echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb linux_static=no static_link=failed"
+            grep -oE "undefined reference to \`[^']+'" "$dest/static-link.log" | sort -u | sed 's/^/PACKAGING platform='"${{ matrix.platform }}"' engine=duckdb static_undefined=/' || true
           fi
       - name: Build and measure the DataFusion sidecar
         working-directory: spike/sidecar-datafusion

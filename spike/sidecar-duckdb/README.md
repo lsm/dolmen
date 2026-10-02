@@ -20,13 +20,25 @@ path, so nothing downloads at runtime.** Both are published for every platform d
 which is why this spike needs no C++ toolchain beyond a compiler: the sidecar is ~270 lines of C++
 against a prebuilt library.
 
-Two things this replaces, both recorded in the plan as assumptions that turned out to be wrong:
+One assumption this replaces, recorded in the plan as wrong:
 
-- **No `make GEN=ninja EXTENSIONS='iceberg;httpfs'`.** A prebuilt library plus prebuilt extensions
-  is enough, so there is no 40-minute DuckDB build per platform and no `ccache` to carry.
-- **A fully static Linux build is available, not merely hoped for.** The `-musl` release zips ship
-  `libduckdb_static.a` (83.9 MB at v1.5.6) for both `linux_amd64` and `linux_arm64`. The
-  `sidecar-packaging` job links it and reports whether the result is genuinely static.
+- **No `make GEN=ninja EXTENSIONS='iceberg;httpfs'`.** A prebuilt library plus prebuilt extensions is
+  enough, so there is no 40-minute DuckDB build per platform and no `ccache` to carry. Measured:
+  **5 seconds and 64,632 bytes** for the shared-library build on `linux-amd64`.
+
+**A fully static build is not available, though the artifacts look like they should provide one.**
+The `-musl` zips ship `libduckdb_static.a` (83,882,636 bytes at v1.5.6) for both `linux_amd64` and
+`linux_arm64`, and linking it fails twice over:
+
+- the archive does not contain `duckdb::ExtensionHelper::LoadAllExtensions(duckdb::DuckDB&)`, so it
+  is incomplete for embedding;
+- it wants a **musl** toolchain — linking it with glibc's `g++ -static` fails on `res_init` and warns
+  that `getaddrinfo` "requires at runtime the shared libraries from the glibc version used for
+  linking".
+
+So the sidecar ships as a binary, `libduckdb.so` (72 MB), and the two extension files, and it is not
+static on any platform. `sidecar-packaging` records the failure rather than hiding it, so a DuckDB
+that fixes the archive shows up as a changed line.
 
 A source build remains the fallback if a platform ever lacks a prebuilt extension, and that fallback
 is a toolchain-plus-long-build cost the release pipeline would then carry.
