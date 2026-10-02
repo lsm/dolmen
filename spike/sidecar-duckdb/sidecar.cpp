@@ -15,15 +15,12 @@
 //      keeps reading stdin and a cancel reaches Connection::Interrupt mid-flight.
 #include "duckdb.hpp"
 
-#include <unistd.h>
-
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
-#include <regex>
+#include <random>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -138,12 +135,27 @@ std::string LatestMetadata(const std::string &dir) {
   return best;
 }
 
-bool HasSnapshot(const std::string &metadata, long long snapshot) {
-  std::ifstream in(metadata);
-  std::stringstream buf;
-  buf << in.rdbuf();
-  const std::regex re("\"snapshot-id\"\\s*:\\s*" + std::to_string(snapshot) + "(?![0-9])");
-  return std::regex_search(buf.str(), re);
+bool Exec(duckdb::Connection &con, const std::string &sql, std::string &err);
+
+bool HasSnapshot(const std::string &ext_dir, const std::string &metadata, long long snapshot,
+                 std::string &err) {
+  duckdb::DBConfig cfg;
+  cfg.options.log_config.enabled = false;
+  duckdb::DuckDB probe(nullptr, &cfg);
+  duckdb::Connection con(probe);
+  if (!ext_dir.empty() && !Exec(con, "SET extension_directory = " + Quote(ext_dir), err)) return false;
+  if (!Exec(con, "LOAD iceberg", err)) return false;
+  auto res = con.Query("SELECT count(*) FROM iceberg_snapshots(" + Quote(metadata) +
+                       ") WHERE snapshot_id = " + std::to_string(snapshot));
+  if (res->HasError()) {
+    err = res->GetError();
+    return false;
+  }
+  if (res->GetValue(0, 0).GetValue<int64_t>() == 0) {
+    err = "snapshot " + std::to_string(snapshot) + " is not in " + metadata;
+    return false;
+  }
+  return true;
 }
 
 std::string Classify(const std::string &msg) {
@@ -218,7 +230,9 @@ bool Exec(duckdb::Connection &con, const std::string &sql, std::string &err) {
 bool Seal(const std::string &data_dir, const std::string &ext_dir, bool unlocked, std::string &err) {
   namespace fs = std::filesystem;
   g_catalog_path = (fs::temp_directory_path() /
-                    ("dolmen-sidecar-" + std::to_string(getpid()) + ".duckdb"))
+                    ("dolmen-sidecar-" + std::to_string(std::random_device{}()) + "-" +
+                     std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+                     ".duckdb"))
                        .string();
   std::error_code ec;
   fs::remove(g_catalog_path, ec);
@@ -348,8 +362,9 @@ int Run() {
         continue;
       }
       const long long snapshot = atoll(f[3].c_str());
-      if (!HasSnapshot(meta, snapshot)) {
-        ErrorReply(id, "not_found", "snapshot " + f[3] + " is not in " + meta);
+      std::string snap_err;
+      if (!HasSnapshot(ext_dir, meta, snapshot, snap_err)) {
+        ErrorReply(id, "not_found", snap_err);
         continue;
       }
       g_tables.push_back(TableSpec{f[4], meta, snapshot});

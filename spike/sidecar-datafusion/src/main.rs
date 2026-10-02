@@ -257,10 +257,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let dir = format!("{}/{}/metadata", data_dir, f[5]);
                 match latest_metadata(&dir).await {
                     Ok(path) => match register(&mut state, &path, snapshot, &table).await {
-                        Ok(()) => reply(&id, &format!("registered {} at {}", table, snapshot)),
-                        Err(e) => error_reply(&id, "query_error", &e),
+                        Ok(()) => {
+                            eprintln!("sidecar: registered {table} at {snapshot} from {path}, registered={}", state.registered);
+                            reply(&id, &format!("registered {} at {}", table, snapshot))
+                        }
+                        Err(e) => {
+                            eprintln!("sidecar: init refused: {e}");
+                            error_reply(&id, "not_found", &e)
+                        }
                     },
-                    Err(e) => error_reply(&id, "not_found", &e),
+                    Err(e) => {
+                        eprintln!("sidecar: init found no metadata: {e}");
+                        error_reply(&id, "not_found", &e)
+                    }
                 }
             }
             "query" => {
@@ -269,6 +278,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
                 if !state.registered {
+                    eprintln!("sidecar: query {id} arrived with nothing registered");
                     error_reply(&id, "internal_error", "no table registered; send init first");
                     continue;
                 }

@@ -200,7 +200,14 @@ func (s *Sidecar) SendFireAndForget(op Op, args ...string) error {
 }
 
 func (s *Sidecar) Init(ctx context.Context, dataDir string, snapshot int64, table, location string) error {
-	ack, err := s.call(ctx, OpInit, dataDir, strconv.FormatInt(snapshot, 10), table, location)
+	s.mu.Lock()
+	wantID := strconv.FormatInt(s.nextID+1, 10)
+	s.mu.Unlock()
+	line, err := s.call(ctx, OpInit, dataDir, strconv.FormatInt(snapshot, 10), table, location)
+	if err != nil {
+		return err
+	}
+	ack, err := parseAck(line, wantID)
 	if err != nil {
 		return err
 	}

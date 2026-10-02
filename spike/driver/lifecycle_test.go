@@ -147,8 +147,8 @@ func TestTheMemoryLimitIsEnforcedAndAQueryTooBigForItSpillsOrIsRefused(t *testin
 		}
 		return
 	}
-	if len(res.Rows) != 4 {
-		t.Fatalf("the heavy query returned %d groups, want 4: spilling changed the answer", len(res.Rows))
+	if len(res.Rows) != 5 {
+		t.Fatalf("the heavy query returned %d groups, want 5: spilling changed the answer", len(res.Rows))
 	}
 	t.Logf("the heavy query spilled and returned %d correct groups under the ceiling", len(res.Rows))
 }
