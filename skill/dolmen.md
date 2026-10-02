@@ -242,6 +242,9 @@ every `/v1` call):
   the parameter for the namespace-wide feed. A table-filtered feed has its own cursors.
 - `cursor` (optional) — an opaque resume token or the literal `begin`. Omitted = start at the
   current head (future commits only). An explicitly empty value is rejected.
+- `Last-Event-ID` request header (optional) — a resume token, as a browser `EventSource` sends on
+  reconnect. When present it takes precedence over `cursor`, so a reconnecting `EventSource` resumes
+  where it left off instead of starting over.
 
 Request-shape failures (wrong method, an omitted `namespace` parameter, an empty `table` or
 `cursor` value) are ordinary HTTP errors — the standard envelope — before any stream bytes go
@@ -251,7 +254,9 @@ the stream discovers afterwards arrives as an in-stream `error` event, because a
 
 ### Frames
 
-Each frame is a named event (`event: <name>`) whose `data` is one compact JSON line:
+Each frame is a named event (`event: <name>`) whose `data` is one compact JSON line. `change`,
+`ready` and `close` frames also carry their cursor as the SSE `id:`, so an `EventSource` tracks the
+resume point for you:
 
 | Event | `data` | Meaning |
 |---|---|---|
