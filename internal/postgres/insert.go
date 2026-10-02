@@ -285,7 +285,7 @@ func (s *Store) insertRows(ctx context.Context, ns, table string, records []map[
 			if err := s.guardScope(ctx, tx, n, table, current, expected); err != nil {
 				return err
 			}
-			if err := checkIncarnation(ns, current.incarnation, state.incarnation); err != nil {
+			if err := checkSameTable(ns, current.incarnation, state.incarnation); err != nil {
 				return err
 			}
 			if err := hashFor(current.schema); err != nil {
