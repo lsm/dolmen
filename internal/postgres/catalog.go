@@ -66,7 +66,7 @@ func (s *Store) requireServerVersion(ctx context.Context, tx pgx.Tx) error {
 }
 
 func (s *Store) bootstrap(ctx context.Context) error {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.beginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return err
 	}
@@ -273,7 +273,7 @@ func (s *Store) writeUnlocked(ctx context.Context, name string, expected [16]byt
 	if err := store.ValidateNamespace(name); err != nil {
 		return err
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.beginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return err
 	}
@@ -313,7 +313,7 @@ func (s *Store) write(ctx context.Context, name string, expected [16]byte, fn fu
 	if err := store.ValidateNamespace(name); err != nil {
 		return err
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.beginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return err
 	}
