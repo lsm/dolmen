@@ -197,8 +197,8 @@ func decodeBatchWrites(raw []json.RawMessage) ([]store.BatchWrite, error) {
 	out := make([]store.BatchWrite, 0, len(raw))
 	for i, item := range raw {
 		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(item, &fields); err != nil {
-			return nil, badRequest("writes[%d]: %s", i, err.Error())
+		if err := json.Unmarshal(item, &fields); err != nil || fields == nil {
+			return nil, badRequest("writes[%d] must be an object naming its kind and that write's fields", i)
 		}
 		rawKind, ok := fields["kind"]
 		if !ok {
