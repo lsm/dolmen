@@ -43,6 +43,9 @@ func queryError(ctx context.Context, err error) error {
 	case pgerr.Code == "23505":
 		code = derr.Conflict
 		message = "PostgreSQL uniqueness conflict"
+	case len(pgerr.Code) >= 2 && pgerr.Code[:2] == "54":
+		code = derr.InvalidRequest
+		message = "the query or search is too large or complex for PostgreSQL (too many terms, arguments, or columns); simplify it"
 	case len(pgerr.Code) >= 2 && (pgerr.Code[:2] == "42" || pgerr.Code[:2] == "22" || pgerr.Code[:2] == "23"):
 		code = derr.Query
 		message = "invalid PostgreSQL SQL or value; use describe_table for column names and types and ? for parameters"
