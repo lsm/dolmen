@@ -227,12 +227,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let snapshot: i64 = f[3].parse().unwrap_or(-1);
                 let table = f[4].to_string();
                 let dir = format!("{}/{}/metadata", data_dir, f[5]);
+                eprintln!(
+                    "sidecar: init fields={} snapshot={} table={} dir={}",
+                    f.len(),
+                    snapshot,
+                    table,
+                    dir
+                );
                 match latest_metadata(&dir).await {
-                    Ok(path) => match register(&mut state, &path, snapshot, &table).await {
-                        Ok(()) => reply(&id, ""),
-                        Err(e) => error_reply(&id, "query_error", &e),
-                    },
-                    Err(e) => error_reply(&id, "not_found", &e),
+                    Ok(path) => {
+                        eprintln!("sidecar: init metadata={}", path);
+                        match register(&mut state, &path, snapshot, &table).await {
+                            Ok(()) => reply(&id, &format!("registered {} at {}", table, snapshot)),
+                            Err(e) => {
+                                eprintln!("sidecar: init refused: {}", e);
+                                error_reply(&id, "query_error", &e)
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("sidecar: init found no metadata: {}", e);
+                        error_reply(&id, "not_found", &e)
+                    }
                 }
             }
             "query" => {

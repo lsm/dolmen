@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <stdexcept>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -134,33 +135,42 @@ void ResultReply(const std::string &id, duckdb::MaterializedQueryResult &res, lo
             << std::endl;
 }
 
-// Confinement is applied through DBConfig, not through a .duckdbrc.
+// Confinement is applied by SET on a live connection, plus one struct field.
 //
-// The first CI run wrote the settings to $HOME/.duckdbrc and every escape in
-// the battery succeeded. The reason is that .duckdbrc is a *CLI* feature: the
-// duckdb shell reads it, and an embedded DuckDB opened as DuckDB(nullptr)
-// never looks at it. Nothing warns, so the process looks configured and is not.
+// Two CI runs got this wrong in two different ways, and both failed open, so
+// both are recorded here rather than in a changelog:
 //
-// The ordering is measured, not guessed, and it is the reason the settings are
-// split across two mechanisms:
+//   1. Writing the settings to $HOME/.duckdbrc confined nothing. .duckdbrc is
+//      a *CLI* feature: the duckdb shell reads it and an embedded DuckDB opened
+//      as DuckDB(nullptr) never looks at it. All 24 escapes succeeded.
+//   2. Passing them through DBConfigOptions::unrecognized_options is not a way
+//      to set a startup option either. DuckDB throws
+//      "The following options were not recognized: allow_persistent_secrets,
+//      autoload_known_extensions, autoinstall_known_extensions,
+//      enable_external_access, extension_directory" and the process aborts.
 //
-//   1. allowed_directories goes in DBConfigOptions::allowed_directories, a
-//      struct field, because it cannot be set once enable_external_access is
-//      false (#533 measured that).
-//   2. The rest go in unrecognized_options, which DuckDB applies at startup
-//      before the database is usable. enable_external_access = false is the
-//      guard and goes here rather than in a struct field.
-//   3. lock_configuration = true goes last, by SET on a live connection, so
-//      nothing above can be reopened afterwards.
-void Configure(duckdb::DBConfig &cfg, const std::string &data_dir, const std::string &ext_dir) {
-  cfg.options.allowed_directories.insert(data_dir);
+// So the settings are plain SET statements, in the order #533 measured, and
+// allowed_directories is the one that has to be a struct field because it
+// cannot be set once enable_external_access is false.
+bool Configure(duckdb::DuckDB &db, const std::string &ext_dir, std::string &err) {
+  duckdb::Connection con(db);
+  std::vector<std::string> stmts;
   if (!ext_dir.empty()) {
-    cfg.options.unrecognized_options["extension_directory"] = duckdb::Value(ext_dir);
+    stmts.push_back("SET extension_directory = '" + ext_dir + "'");
   }
-  cfg.options.unrecognized_options["enable_external_access"] = duckdb::Value::BOOLEAN(false);
-  cfg.options.unrecognized_options["autoinstall_known_extensions"] = duckdb::Value::BOOLEAN(false);
-  cfg.options.unrecognized_options["autoload_known_extensions"] = duckdb::Value::BOOLEAN(false);
-  cfg.options.unrecognized_options["allow_persistent_secrets"] = duckdb::Value::BOOLEAN(false);
+  stmts.push_back("SET enable_external_access = false");
+  stmts.push_back("SET autoinstall_known_extensions = false");
+  stmts.push_back("SET autoload_known_extensions = false");
+  stmts.push_back("SET allow_persistent_secrets = false");
+  stmts.push_back("SET lock_configuration = true");
+  for (const auto &stmt : stmts) {
+    auto res = con.Query(stmt);
+    if (res->HasError()) {
+      err = stmt + " -> " + res->GetError();
+      return false;
+    }
+  }
+  return true;
 }
 
 bool RegisterTable(duckdb::Connection &con, std::string &err) {
@@ -209,9 +219,7 @@ int Run() {
   // is therefore off, and the driver additionally skips any line that does not
   // carry the request id rather than failing on it.
   cfg.options.log_config.enabled = false;
-  if (!unlocked) {
-    Configure(cfg, data_dir, ext_dir);
-  }
+
   if (mem_env != nullptr && *mem_env != '\0') {
     // maximum_memory is DuckDB's byte-valued knob. It has to be a struct field
     // too, because lock_configuration is on before a SET could reach it.
@@ -231,12 +239,14 @@ int Run() {
     (void)digits;
     cfg.options.maximum_memory = bytes;
   }
+  if (!unlocked) {
+    cfg.options.allowed_directories.insert(data_dir);
+  }
   g_db = new duckdb::DuckDB(nullptr, &cfg);
   if (!unlocked) {
-    duckdb::Connection lock_con(*g_db);
-    auto locked_res = lock_con.Query("SET lock_configuration = true");
-    if (locked_res->HasError()) {
-      std::cerr << "sidecar: lock_configuration was refused: " << locked_res->GetError() << std::endl;
+    std::string cfg_err;
+    if (!Configure(*g_db, ext_dir, cfg_err)) {
+      std::cerr << "sidecar: confinement was refused, refusing to run unlocked: " << cfg_err << std::endl;
       return 3;
     }
   }
@@ -277,7 +287,9 @@ int Run() {
         ErrorReply(id, Classify(err), err);
         continue;
       }
-      Reply(id, "");
+      // A non-empty acknowledgement, because an empty one cannot be told apart
+      // from a sidecar that registered nothing. The driver requires it.
+      Reply(id, "registered " + g_table_name + " at " + std::to_string(g_snapshot));
       continue;
     }
     if (op == "query") {
@@ -306,4 +318,11 @@ int Run() {
 
 }  // namespace
 
-int main() { return Run(); }
+int main() {
+  try {
+    return Run();
+  } catch (const std::exception &e) {
+    std::cerr << "sidecar: uncaught exception: " << e.what() << std::endl;
+    return 4;
+  }
+}

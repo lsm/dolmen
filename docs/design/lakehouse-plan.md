@@ -616,18 +616,25 @@ document's author. **All four are pending the first CI run of this branch.**
 | binary size, linux amd64 | **64,632 B** sidecar | **162,760,784 B** |
 | binary size, linux arm64 | **83,032 B** sidecar | **149,740,296 B** |
 | shipped footprint, linux amd64 | **≈136 MiB in 4 files** | **≈155 MiB in 1 file** |
-| Linux fully static? | **no** — link fails, see §2.8.1 | no (dynamic musl/glibc) |
-| build time, linux amd64 | **4 s** | **669 s** |
+| Linux fully static? | **no** — link fails, see §2.8.1 | **yes** — `ldd` reports a static binary |
+| build time, linux amd64 | **4 s** | **669 s** (701 s on a rerun) |
 | build time, linux arm64 | **8 s** | **466 s** |
 | toolchain needs | a C++ compiler | a Rust toolchain |
 | extensions linked in | `iceberg` 50,827,374 B + `httpfs` 21,580,734 B, pre-placed | none; Iceberg is in-crate |
+| Arrow versions in the graph | n/a | **1** (`arrow-array` 58.4.0), asserted in CI |
 
-**The DuckDB numbers are the striking ones.** A 64 KB sidecar that builds in **four seconds** and
-needs no more than a C++ compiler is a very different release-pipeline proposition from a 155 MiB
-binary that takes **eleven minutes** to compile. But DuckDB's 64 KB is not the whole artifact: the
-process needs `libduckdb.so` (70,546,800 B) and the two extension files beside it, so what ships is
-**four files totalling ≈136 MiB**, against DataFusion's single ≈155 MiB file. Comparable bytes,
-different shape — and the shape is what §3's distroless runtime stage and the SBOM have to absorb.
+**DataFusion is genuinely fully static on Linux; DuckDB cannot be.** That is the sharpest packaging
+difference between the two, and it is the opposite of what the artifact names suggest. A Rust binary
+links its whole world in and `ldd` reports no dynamic dependencies at all, so it drops into a
+distroless image as one file with nothing beside it. DuckDB's sidecar needs `libduckdb.so`
+(70,546,800 B) and the two extension files beside it, so what ships is **four files totalling ≈136 MiB**
+against DataFusion's single ≈155 MiB file. Comparable bytes, opposite shapes — and against §3's
+distroless runtime stage the shape is what counts.
+
+**The DuckDB build numbers are the other striking ones.** A 64 KB sidecar that builds in **four
+seconds** and needs no more than a C++ compiler is a very different release-pipeline proposition from
+a binary that takes **eleven minutes** to compile. So the trade is real and it cuts both ways: DuckDB
+is far cheaper to build and much more expensive to ship.
 
 **Two honesty notes on those numbers.** The DataFusion build uses `opt-level = 2, lto = false,
 codegen-units = 16`, chosen to keep CI under a quarter of an hour; a production profile with LTO

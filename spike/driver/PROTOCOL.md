@@ -33,6 +33,12 @@ that registers a second namespace: confinement is a property of how the sidecar
 is started, and the tests check that the started sidecar cannot reach anything
 else rather than that the protocol declines politely.
 
+**`init` must acknowledge with a non-empty payload**, and the driver rejects an
+empty one. An empty acknowledgement cannot be told apart from a sidecar that
+accepted the op and registered nothing, and that ambiguity is not theoretical:
+it ran through an entire CI run of the DataFusion side, where every query
+answered "no table registered" while every `init` reported success.
+
 ## Query response
 
 ```

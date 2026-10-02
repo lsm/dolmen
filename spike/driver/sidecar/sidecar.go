@@ -196,8 +196,15 @@ func (s *Sidecar) SendFireAndForget(op Op, args ...string) error {
 }
 
 func (s *Sidecar) Init(ctx context.Context, dataDir string, snapshot int64, table, location string) error {
-	_, err := s.call(ctx, OpInit, dataDir, strconv.FormatInt(snapshot, 10), table, location)
-	return err
+	ack, err := s.call(ctx, OpInit, dataDir, strconv.FormatInt(snapshot, 10), table, location)
+	if err != nil {
+		return err
+	}
+	fields := strings.Split(strings.TrimRight(ack, "\r\n"), "\t")
+	if len(fields) < 3 || strings.TrimSpace(fields[2]) == "" {
+		return fmt.Errorf("sidecar: init for %s at %d was acknowledged with no payload (%q), so nothing can be assumed to be registered", table, snapshot, ack)
+	}
+	return nil
 }
 
 func (s *Sidecar) Query(ctx context.Context, sql string) (*Result, error) {
