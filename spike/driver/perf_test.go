@@ -21,7 +21,7 @@ func perfShapes() []queryShape {
 		{"full_scan_sum", "SELECT sum(score) FROM events"},
 		{"selective_filter", "SELECT count(*) FROM events WHERE grp = 'beta' AND id < 1000000"},
 		{"group_by", "SELECT grp, count(*) AS n, avg(score) AS avg_score FROM events GROUP BY grp ORDER BY grp"},
-		{"join", "SELECT count(*) FROM events a JOIN events b ON a.grp = b.grp WHERE a.id < 100000"},
+		{"join", "SELECT count(*) FROM events a JOIN events b ON a.id = b.id WHERE a.grp = 'alpha'"},
 	}
 }
 

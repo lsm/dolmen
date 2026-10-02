@@ -97,6 +97,7 @@ async fn register(state: &mut State, metadata_path: &str, snapshot: i64, name: &
     let ident = TableIdent::from_strs(["dolmen", name]).map_err(|e| format!("table ident {name}: {e}"))?;
     let table = Table::builder()
         .identifier(ident)
+        .runtime(iceberg::Runtime::current())
         .metadata(meta_ref)
         .metadata_location(metadata_path.to_string())
         .file_io(io)
