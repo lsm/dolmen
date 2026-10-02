@@ -25,7 +25,7 @@ func (s *Store) CreateNamespace(ctx context.Context, name string, parentGen [16]
 	if err := store.ValidateNamespace(name); err != nil {
 		return err
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.beginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,7 @@ func (s *Store) NamespaceState(ctx context.Context, name string, auth []store.Au
 	if err := store.ValidateNamespace(name); err != nil {
 		return [16]byte{}, err
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	tx, err := s.beginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return [16]byte{}, err
 	}
@@ -111,7 +111,7 @@ func (s *Store) ListNamespaces(ctx context.Context, prefix string, auth []store.
 	}
 	rows, err := s.pool.Query(ctx, "SELECT name FROM "+s.relation("namespaces")+" WHERE $1 = '' OR name = $1 OR starts_with(name, $1 || '/')", prefix)
 	if err != nil {
-		return nil, err
+		return nil, connCapacity(err)
 	}
 	defer rows.Close()
 	out := []string{}
@@ -137,7 +137,7 @@ func (s *Store) DropNamespace(ctx context.Context, name string, expected [16]byt
 	if err := store.ValidateNamespace(name); err != nil {
 		return err
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.beginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return err
 	}

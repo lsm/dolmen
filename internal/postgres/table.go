@@ -101,7 +101,7 @@ func (s *Store) readMode(ctx context.Context, name string, readOnly bool, fn fun
 	if readOnly {
 		options.AccessMode = pgx.ReadOnly
 	}
-	tx, err := s.pool.BeginTx(ctx, options)
+	tx, err := s.beginTx(ctx, options)
 	if err != nil {
 		return err
 	}

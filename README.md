@@ -93,6 +93,8 @@ finished server-side — check with a query before retrying a write.
 ran past `-op-timeout` (or `-migrate-timeout`), `408` when the request body arrived too slowly. A
 timed-out read can be narrowed and retried; a timed-out write may or may not have committed, so
 check before retrying it.
+On PostgreSQL, `timeout` (504) also answers a request that found the database at its connection
+limit (SQLSTATE 53300); nothing was started, so it is safe to retry shortly, and its message says so.
 `embedder_unavailable` (503) means the server's embedding provider could not load its model — with
 the `local` provider, typically the first-use Hugging Face download failing — and its message names
 the offline remediations (pre-seed the model cache, or point `DOLMEN_EMBED_MODEL` at a local model
