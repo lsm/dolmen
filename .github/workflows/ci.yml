@@ -129,6 +129,254 @@ jobs:
           DOLMEN_TEST_DUCKDB: ${{ runner.temp }}/duckdb/duckdb
         run: go test -count=1 -v ./internal/duckdblockdown
 
+  sidecar-duckdb:
+    runs-on: ubuntu-latest
+    env:
+      DOLMEN_DUCKDB_VERSION: v1.5.6
+      DOLMEN_DUCKDB_PLATFORM: linux_amd64
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: spike/driver/go.mod
+      - name: Build the DuckDB sidecar against the prebuilt library
+        working-directory: spike/sidecar-duckdb
+        run: |
+          set -eu
+          dest="$RUNNER_TEMP/ddb"
+          mkdir -p "$dest/ext"
+          curl -sSLf -o "$dest/lib.zip" \
+            "https://github.com/duckdb/duckdb/releases/download/${DOLMEN_DUCKDB_VERSION}/libduckdb-linux-amd64.zip"
+          unzip -q -o "$dest/lib.zip" -d "$dest"
+          for ext in iceberg httpfs; do
+            curl -sSLf -o "$dest/ext/$ext.duckdb_extension.gz" \
+              "http://extensions.duckdb.org/${DOLMEN_DUCKDB_VERSION}/${DOLMEN_DUCKDB_PLATFORM}/$ext.duckdb_extension.gz"
+            gunzip -f "$dest/ext/$ext.duckdb_extension.gz"
+          done
+          ls -la "$dest/ext"
+          start=$(date +%s)
+          g++ -std=c++17 -O2 -I"$dest" sidecar.cpp -L"$dest" -lduckdb -Wl,-rpath,"$dest" -o "$dest/sidecar"
+          echo "build seconds: $(( $(date +%s) - start ))"
+      - name: Record the DuckDB sidecar packaging facts
+        working-directory: spike/sidecar-duckdb
+        run: |
+          set -eu
+          dest="$RUNNER_TEMP/ddb"
+          echo "PACKAGING engine=duckdb binary_bytes=$(stat -c %s "$dest/sidecar")"
+          echo "PACKAGING engine=duckdb libduckdb_bytes=$(stat -c %s "$dest/libduckdb.so")"
+          echo "PACKAGING engine=duckdb iceberg_bytes=$(stat -c %s "$dest/ext/iceberg.duckdb_extension")"
+          echo "PACKAGING engine=duckdb httpfs_bytes=$(stat -c %s "$dest/ext/httpfs.duckdb_extension")"
+          if ldd "$dest/sidecar" | grep -qv 'linux-vdso\|ld-linux\|libstdc++\|libm.so\|libgcc_s\|libc.so'; then
+            echo "PACKAGING engine=duckdb linux_static=no unexpected=$(ldd "$dest/sidecar" | tr '\n' ' ')"
+          else
+            echo "PACKAGING engine=duckdb linux_static=yes"
+          fi
+          "$dest/sidecar" 2>&1 | head -1 || true
+      - name: Read-back, confinement, lifecycle and packaging tests
+        working-directory: spike/driver
+        env:
+          SIDECAR_BIN: ${{ runner.temp }}/ddb/sidecar
+          SIDECAR_ENGINE: duckdb
+          SIDECAR_EXT_DIR: ${{ runner.temp }}/ddb/ext
+          SIDECAR_TIGHT_MEMORY: 180MB
+        run: go test -count=1 -v -timeout 40m ./...
+      - name: Check no comments
+        working-directory: .
+        run: go run github.com/lsm/nocomment-for-agents/go@016ad219e84b9b78ca66ff1b66a7729218030c12 --check
+      - name: Perf set on a 10M row table
+        working-directory: spike/driver
+        env:
+          SIDECAR_BIN: ${{ runner.temp }}/ddb/sidecar
+          SIDECAR_ENGINE: duckdb
+          SIDECAR_EXT_DIR: ${{ runner.temp }}/ddb/ext
+          SIDECAR_TIGHT_MEMORY: 2GB
+          DOLMEN_SPIKE_PERF: "1"
+        run: go test -count=1 -v -timeout 60m -run 'Perf|ColdStart' ./...
+
+  sidecar-datafusion:
+    runs-on: ubuntu-latest
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: spike/driver/go.mod
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Confirm the Arrow crates in the graph are one version
+        working-directory: spike/sidecar-datafusion
+        run: |
+          set -eu
+          cargo fetch
+          n=$(cargo tree -i arrow-array 2>/dev/null | grep -c '^arrow-array v')
+          echo "PACKAGING engine=datafusion arrow_array_versions=$n"
+          if [ "$n" != "1" ]; then
+            echo "iceberg-rust and datafusion disagree on the Arrow version" >&2
+            cargo tree -i arrow-array >&2
+            exit 1
+          fi
+      - name: Build the DataFusion sidecar
+        working-directory: spike/sidecar-datafusion
+        run: |
+          set -eu
+          start=$(date +%s)
+          cargo build --release
+          echo "PACKAGING engine=datafusion build_seconds=$(( $(date +%s) - start ))"
+      - name: Record the DataFusion sidecar packaging facts
+        working-directory: spike/sidecar-datafusion
+        run: |
+          set -eu
+          bin=target/release/sidecar-datafusion
+          echo "PACKAGING engine=datafusion binary_bytes=$(stat -c %s "$bin")"
+          if command -v ldd >/dev/null && ldd "$bin" 2>&1 | grep -qv 'linux-vdso\|ld-linux\|libm.so\|libgcc_s\|libdl\|libpthread\|librt\|libc.so\|statically linked'; then
+            echo "PACKAGING engine=datafusion linux_static=no unexpected=$(ldd "$bin" | tr '\n' ' ')"
+          else
+            echo "PACKAGING engine=datafusion linux_static=yes"
+          fi
+          "$bin" 2>&1 | head -1 || true
+      - name: Read-back, confinement and lifecycle tests
+        working-directory: spike/driver
+        env:
+          SIDECAR_BIN: ${{ runner.temp }}/sidecar-datafusion
+          SIDECAR_ENGINE: datafusion
+          SIDECAR_TIGHT_MEMORY: 180MB
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/bin"
+          cp spike/sidecar-datafusion/target/release/sidecar-datafusion "$RUNNER_TEMP/bin/sidecar-datafusion"
+          cd spike/driver
+          SIDECAR_BIN="$RUNNER_TEMP/bin/sidecar-datafusion" go test -count=1 -v -timeout 40m ./...
+      - name: Check no comments
+        working-directory: .
+        run: go run github.com/lsm/nocomment-for-agents/go@016ad219e84b9b78ca66ff1b66a7729218030c12 --check
+      - name: Perf set on a 10M row table
+        working-directory: spike/driver
+        env:
+          SIDECAR_BIN: ${{ runner.temp }}/bin/sidecar-datafusion
+          SIDECAR_ENGINE: datafusion
+          SIDECAR_TIGHT_MEMORY: 2GB
+          DOLMEN_SPIKE_PERF: "1"
+        run: go test -count=1 -v -timeout 60m -run 'Perf|ColdStart' ./...
+
+  sidecar-packaging:
+    name: sidecar packaging ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-amd64
+            runner: ubuntu-latest
+            ext: linux_amd64
+            asset: libduckdb-linux-amd64.zip
+            static_asset: libduckdb-linux-amd64-musl.zip
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            ext: linux_arm64
+            asset: libduckdb-linux-arm64.zip
+            static_asset: libduckdb-linux-arm64-musl.zip
+          - platform: darwin-arm64
+            runner: macos-14
+            ext: osx_arm64
+            asset: libduckdb-osx-universal.zip
+            static_asset: ""
+          - platform: windows-amd64
+            runner: windows-latest
+            ext: windows_amd64
+            asset: libduckdb-windows-amd64.zip
+            static_asset: ""
+    env:
+      DOLMEN_DUCKDB_VERSION: v1.5.6
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: spike/driver/go.mod
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Fetch the DuckDB library and the extensions that must be pre-placed
+        shell: bash
+        run: |
+          set -eu
+          dest="$RUNNER_TEMP/ddb"
+          mkdir -p "$dest/ext"
+          curl -sSLf -o "$dest/lib.zip" \
+            "https://github.com/duckdb/duckdb/releases/download/${DOLMEN_DUCKDB_VERSION}/${{ matrix.asset }}"
+          unzip -q -o "$dest/lib.zip" -d "$dest"
+          for ext in iceberg httpfs; do
+            curl -sSLf -o "$dest/ext/$ext.gz" \
+              "http://extensions.duckdb.org/${DOLMEN_DUCKDB_VERSION}/${{ matrix.ext }}/$ext.duckdb_extension.gz"
+            gunzip -f "$dest/ext/$ext.gz"
+          done
+          ls "$dest" "$dest/ext"
+      - name: Record the extension sizes and that they are pre-placed rather than downloaded
+        shell: bash
+        run: |
+          set -eu
+          dest="$RUNNER_TEMP/ddb"
+          for ext in iceberg httpfs; do
+            echo "PACKAGING platform=${{ matrix.platform }} ext=$ext bytes=$(stat -c %s "$dest/ext/$ext.duckdb_extension" 2>/dev/null || stat -f %z "$dest/ext/$ext.duckdb_extension")"
+          done
+      - name: Build and measure the DuckDB sidecar
+        shell: bash
+        run: |
+          set -eu
+          dest="$RUNNER_TEMP/ddb"
+          start=$(date +%s)
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cl /nologo /std:c++17 /EHsc /O2 /I"$dest" /Fe:"$dest\\sidecar.exe" spike/sidecar-duckdb/sidecar.cpp "$dest\\duckdb.lib" /link /LIBPATH:"$dest" >nul
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            c++ -std=c++17 -O2 -I"$dest" spike/sidecar-duckdb/sidecar.cpp -L"$dest" -lduckdb -Wl,-rpath,"$dest" -o "$dest/sidecar"
+          else
+            g++ -std=c++17 -O2 -I"$dest" spike/sidecar-duckdb/sidecar.cpp -L"$dest" -lduckdb -Wl,-rpath,"$dest" -o "$dest/sidecar"
+          fi
+          echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb build_seconds=$(( $(date +%s) - start ))"
+          echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb binary_bytes=$(stat -c %s "$dest/sidecar" 2>/dev/null || stat -f %z "$dest/sidecar")"
+      - name: Record whether the Linux DuckDB sidecar is fully static
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -eu
+          dest="$RUNNER_TEMP/ddb"
+          if [ -n "${{ matrix.static_asset }}" ]; then
+            curl -sSLf -o "$dest/static.zip" \
+              "https://github.com/duckdb/duckdb/releases/download/${DOLMEN_DUCKDB_VERSION}/${{ matrix.static_asset }}"
+            mkdir -p "$dest/static"
+            unzip -q -o "$dest/static.zip" -d "$dest/static"
+            echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb static_lib_bytes=$(stat -c %s "$dest/static/libduckdb_static.a")"
+            start=$(date +%s)
+            g++ -std=c++17 -O2 -static -I"$dest/static" spike/sidecar-duckdb/sidecar.cpp \
+              "$dest/static/libduckdb_static.a" -ldl -lpthread -lm -o "$dest/sidecar-static"
+            echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb static_build_seconds=$(( $(date +%s) - start ))"
+            echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb static_binary_bytes=$(stat -c %s "$dest/sidecar-static")"
+            if ldd "$dest/sidecar-static" 2>&1 | grep -q 'not a dynamic executable\|statically linked'; then
+              echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb linux_static=yes"
+            else
+              echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb linux_static=no dynamic=$(ldd "$dest/sidecar-static" | tr '\n' ' ')"
+            fi
+          else
+            echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb static_lib=absent linux_static=unknown"
+          fi
+      - name: Build and measure the DataFusion sidecar
+        working-directory: spike/sidecar-datafusion
+        shell: bash
+        run: |
+          set -eu
+          start=$(date +%s)
+          cargo build --release
+          echo "PACKAGING platform=${{ matrix.platform }} engine=datafusion build_seconds=$(( $(date +%s) - start ))"
+          echo "PACKAGING platform=${{ matrix.platform }} engine=datafusion binary_bytes=$(stat -c %s target/release/sidecar-datafusion 2>/dev/null || stat -f %z target/release/sidecar-datafusion)"
+      - name: Confirm the DataFusion sidecar starts and refuses to run unconfined
+        working-directory: spike/sidecar-datafusion
+        shell: bash
+        run: |
+          set -eu
+          bin=target/release/sidecar-datafusion
+          if "$bin" 2>&1 | grep -q SIDECAR_DATA_DIR; then
+            echo "PACKAGING platform=${{ matrix.platform }} engine=datafusion needs_data_dir=yes"
+          else
+            echo "PACKAGING platform=${{ matrix.platform }} engine=datafusion needs_data_dir=no"
+          fi
+
   postgres-foundation:
     runs-on: ubuntu-latest
     services:

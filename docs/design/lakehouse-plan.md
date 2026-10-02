@@ -427,6 +427,139 @@ may grow a listener flag. The `duckdb-lockdown` CI job does not currently assert
 change there would not fail a build — so re-check this before slice 11 rather than trusting it to
 stay true.
 
+### 2.8 Spike 3 — DuckDB against DataFusion as the sidecar's engine
+
+Marc's direction (2026-10-02) settles the shape and leaves the engine open: the lakehouse ships
+`query`, it runs in a **sidecar process** that dolmen talks to over a pipe, and dolmen itself stays
+`CGO_ENABLED=0`. Linking an engine in with cgo is rejected — an engine crash or a memory-safety bug
+would take down or expose the whole server. The open question is which engine the sidecar runs.
+
+Two minimal sidecars, both outside dolmen's `go.mod` so the loser can be deleted without touching
+the main graph, each with its own CI job:
+
+| | path | language | lines | module boundary |
+|---|---|---|---|---|
+| DuckDB | `spike/sidecar-duckdb/` | C++ | 272 | links prebuilt `libduckdb` |
+| DataFusion | `spike/sidecar-datafusion/` | Rust | 271 | `spike/sidecar-datafusion/Cargo.toml` |
+
+Both speak one deliberately trivial protocol (`spike/driver/PROTOCOL.md`): tab-separated framed
+requests on stdin, framed rows and errors on stdout. Not the final wire — no streaming, no
+pagination, no cursor, no parameters. It exists so the two engines are measured *through the same
+driver and the same attacks* rather than two different protocols.
+
+One Go driver (`spike/driver/`, nested module) writes the fixture, starts either sidecar, and runs
+the battery. `SIDECAR_BIN` and `SIDECAR_ENGINE` select the engine, so both CI jobs run byte-identical
+tests.
+
+#### 2.8.1 What is already settled, and it is not what the plan assumed
+
+**DuckDB needs no source build, and never did.** §2.7 recorded a source build with
+`EXTENSIONS='iceberg;httpfs'` as the fallback. That fallback is not needed:
+
+- Prebuilt `libduckdb` is published for `linux-amd64`, `linux-arm64`, `osx-universal` and
+  `windows-amd64` — every platform in §3's `PLATFORMS` list that DuckDB targets.
+- **The `-musl` zips ship `libduckdb_static.a`** (83.9 MB at v1.5.6) for both linux amd64 and
+  arm64, so a *fully static* Linux sidecar is available rather than merely hoped for.
+- `iceberg` and `httpfs` are published prebuilt for **all five** platform tokens
+  (`linux_amd64`, `linux_arm64`, `osx_amd64`, `osx_arm64`, `windows_amd64`) — verified HTTP 200 on
+  each, against a host that returns 404 for `quack` (§2.7).
+- **A pre-placed extension file loads with no network at all**, which is the property that matters:
+  the extension directory is populated before the process starts and `LOAD iceberg` reads from disk.
+
+So the DuckDB packaging cost is: download two artifacts, compile ~270 lines of C++, ship the
+extension files alongside. No C++ toolchain beyond a compiler, no 40-minute DuckDB build, no
+`ccache`, no C++ in the release pipeline beyond one small `g++` invocation. **The `sidecar-packaging`
+CI job measures the actual sizes, the build time, and the static-ness on all four platforms.**
+
+**The DataFusion dependency set closes, and the way it closes is worth recording.** Taking
+`datafusion` and `iceberg` independently produces two incompatible Arrow versions and a wall of
+type errors — that is a pinning mistake, not an upstream blocker, and an earlier draft of this
+spike mislabelled it as one. The correct pin is the integration crate's own:
+
+- `iceberg-datafusion` 0.10.1 depends on `datafusion` **53.1.0** and `iceberg` 0.10.x.
+- At that pin the graph holds **exactly one Arrow (`arrow-array` 58.4.0) and one parquet (58.4.0)**.
+  `cargo tree -i arrow-array` shows a single version, and the `sidecar-datafusion` CI job *asserts*
+  it and fails the build if a future bump splits them.
+
+#### 2.8.2 Two traps worth writing down, because both look like success
+
+**DuckDB's `iceberg_scan` ignores `version` when given a numeric snapshot id.** `version` is a
+*tag* parameter; pass it a snapshot id and the scan silently reads the **current** snapshot. A
+reader's time-travel test then passes at the current snapshot and fails only if it happens to
+compare counts. The correct option is `snapshot_from_id => <id>`, which was verified against a
+three-snapshot fixture (50 / 51 / 51 rows across the three ids, with the unpinned read matching the
+current one). **This is the kind of hole the confinement battery exists to catch, in the pinning
+direction instead of the escape direction.**
+
+**DataFusion has no cooperative per-query cancel.** There is no `duckdb_interrupt` equivalent, so
+the sidecar holds the `tokio::task::JoinHandle` and calls `abort()`. That is strictly coarser than a
+cooperative interrupt: it cancels the task, not the scan, and anything already committed to a file
+handle is left as it is. The `lifecycle` tests measure both engines the same way — cancel
+mid-flight, then kill-on-timeout, then a fresh sidecar — so the difference is on the record rather
+than assumed.
+
+#### 2.8.3 Confinement: mechanism against default
+
+The interesting question is not *whether* an escape is refused but **what refused it**. A refusal
+that also happens with the lock off is an engine *default* — it holds today and nobody owns it; a
+refusal that appears only with the lock on is the *mechanism*, and it is ours.
+
+So each sidecar is started twice, once with `SIDECAR_UNLOCKED=1`, and the driver runs the same
+24-statement battery against both. Three outcomes, and each is a different finding:
+
+| outcome | meaning |
+|---|---|
+| refused locked, **allowed unlocked** | the **mechanism**. Ours, and it is load-bearing. |
+| refused locked **and** unlocked | an engine **default**. Holds, but nobody owns it. |
+| **allowed locked** | a hole. Fails the build. |
+
+For DuckDB the mechanism is §2.4's `.duckdbrc` lock (the order there is measured: `allowed_directories`
+first, then `enable_external_access = false`, then `lock_configuration = true` last). For DataFusion
+the mechanism is `SQLOptions::with_allow_ddl(false).with_allow_dml(false).with_allow_statements(false)`.
+
+**One asymmetry is already visible in the API and is worth stating before the numbers arrive:** the
+DataFusion `SQLOptions` struct has no URL-table or external-file knob at all. DDL/DML/statements are
+*ours*; URL tables and `CREATE EXTERNAL TABLE` are refused by DataFusion's own defaults. So on
+DataFusion the DDL/DML half of the battery is mechanism and the URL/external-table half is default —
+whereas on DuckDB all of it is mechanism, because `enable_external_access = false` covers the lot.
+**A "mechanism" that only covers half the battery is worth less than one that covers all of it, and
+that difference is the finding, not a footnote to it.**
+
+#### 2.8.4 Measured by CI, not by assertion
+
+These are the cells the brief asks for, and they come from the job logs rather than from this
+document's author. **All four are pending the first CI run of this branch.**
+
+| | DuckDB | DataFusion |
+|---|---|---|
+| read-back at the pinned snapshot, deletes applied | `sidecar-duckdb` | `sidecar-datafusion` |
+| read-back at the older snapshot | `sidecar-duckdb` | `sidecar-datafusion` |
+| confinement: mechanism vs default, per statement | `sidecar-duckdb` | `sidecar-datafusion` |
+| lifecycle: cancel, kill-on-timeout, memory ceiling + spill, restart | `sidecar-duckdb` | `sidecar-datafusion` |
+| binary size, per platform | `sidecar-packaging` | `sidecar-packaging` |
+| Linux fully static? | `sidecar-packaging` | `sidecar-packaging` |
+| build time and toolchain needs | `sidecar-packaging` | `sidecar-packaging` |
+| perf: scan, filter, group by, join on 10M rows | `sidecar-duckdb` | `sidecar-datafusion` |
+
+**Timings come from CI only.** No timing run happens on a laptop, and ai0 is not used for this
+spike.
+
+#### 2.8.5 Dialect and what it costs callers
+
+`query_dialect` would report **`duckdb`** or something naming DataFusion. This is not a cosmetic
+choice:
+
+- **DuckDB has a documented dialect with a name.** Callers get a name they can look up, with
+  DuckDB's own documentation behind it, and dolmen's README and `skill/` can point at it.
+- **DataFusion's SQL is its own thing, modelled on ANSI SQL, with no registered family name.** A
+  `query_dialect` value for it has to be either invented or borrowed, and either way it is a name
+  dolmen owns and must keep meaning. The existing MySQL-ecosystem callers get no help from it.
+
+**Object storage (S3) stays out of this spike** and is listed as untested, per the brief: DuckDB
+needs `httpfs` (published and pre-placed, so the *mechanism* is available and unexercised) and
+DataFusion would need `object_store` with an S3 store registered. Neither has been run against a
+MinIO container here.
+
 ---
 
 ## 3. Packaging: the DuckDB side when dolmen is one `CGO_ENABLED=0` binary
@@ -921,6 +1054,23 @@ question can be answered later without unwinding work.
   is re-decided once the spike's result is in. §1 carries the new table.
 - **The pins as a slice are withdrawn** rather than reordered, because a pin with no importer is a
   pin nothing exercises.
+
+### Answered since the last revision
+
+- **Q5's shape, settled by Marc on 2026-10-02.** The lakehouse **ships `query`** — SQL over the
+  object store is the point of a lakehouse, so "ship without query" is off the table. It runs in a
+  **sidecar process**: a second released binary that dolmen talks to over a pipe, with dolmen itself
+  staying `CGO_ENABLED=0`. **Linking an engine in with cgo is rejected**, because an engine crash or
+  a memory-safety bug would take down or expose the whole server. This closes the earlier framing of
+  Q5, which asked whether to accept a second released binary at all; that is now settled, and the
+  remaining question is narrowed to **which engine the sidecar runs**. §2.8 is the comparison, and
+  its recommendation lands with the CI numbers.
+- **The DuckDB fallback is not a source build.** §2.7 recorded one; §2.8.1 removes it. Prebuilt
+  `libduckdb` covers every target platform, the `-musl` zips ship a static `libduckdb_static.a` for
+  both linux architectures, and `iceberg`/`httpfs` are published prebuilt for all five platform
+  tokens and load from disk with no network. **What this changes:** §3's cost for the DuckDB side is
+  one small `g++` invocation and two downloaded artifacts, not a C++ toolchain in the release
+  pipeline and a 40-minute DuckDB build per platform.
 
 ### Still open, pending the spike
 

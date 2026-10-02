@@ -1,0 +1,280 @@
+package sidecar
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+type Op string
+
+const (
+	OpInit        Op = "init"
+	OpQuery       Op = "query"
+	OpCancel      Op = "cancel"
+	OpMemoryLimit Op = "memory_limit"
+	OpShutdown    Op = "shutdown"
+)
+
+type Options struct {
+	Bin       string
+	Args      []string
+	DataDir   string
+	Env       []string
+	MemoryMax int64
+	StartWait time.Duration
+}
+
+type Sidecar struct {
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout *bufio.Reader
+
+	mu     sync.Mutex
+	nextID int64
+	closed bool
+}
+
+type Result struct {
+	Columns   []Column
+	Rows      []string
+	ElapsedMS int64
+	Truncated bool
+}
+
+type Column struct {
+	Name string
+	Type string
+}
+
+type QueryError struct {
+	Class   string
+	Message string
+}
+
+func (e *QueryError) Error() string {
+	return e.Class + ": " + e.Message
+}
+
+func (e *QueryError) IsConfinement() bool {
+	return e.Class == "not_supported"
+}
+
+func Start(ctx context.Context, opts Options) (*Sidecar, error) {
+	if opts.Bin == "" {
+		return nil, errors.New("sidecar: a binary path is required")
+	}
+	cmd := exec.Command(opts.Bin, opts.Args...)
+	cmd.Env = append(os.Environ(), opts.Env...)
+	if opts.DataDir != "" {
+		cmd.Dir = opts.DataDir
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	s := &Sidecar{cmd: cmd, stdin: stdin, stdout: bufio.NewReaderSize(stdout, 1<<20), nextID: 1000}
+	if opts.MemoryMax > 0 {
+		if _, err := s.call(ctx, OpMemoryLimit, strconv.FormatInt(opts.MemoryMax, 10)); err != nil {
+			s.Kill()
+			return nil, err
+		}
+	}
+	return s, nil
+}
+
+func (s *Sidecar) call(ctx context.Context, op Op, args ...string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextID++
+	id := s.nextID
+	fields := append([]string{strconv.FormatInt(id, 10), string(op)}, args...)
+	if _, err := fmt.Fprintln(s.stdin, strings.Join(fields, "\t")); err != nil {
+		return "", err
+	}
+	line, err := s.readLine(ctx)
+	if err != nil {
+		return "", err
+	}
+	return parseAck(line, strconv.FormatInt(id, 10))
+}
+
+func (s *Sidecar) readLine(ctx context.Context) (string, error) {
+	type res struct {
+		line string
+		err  error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		line, err := s.stdout.ReadString('\n')
+		ch <- res{line, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case r := <-ch:
+		if r.err != nil {
+			return "", r.err
+		}
+		return r.line, nil
+	}
+}
+
+func parseAck(line, wantID string) (string, error) {
+	fields := strings.Split(strings.TrimRight(line, "\r\n"), "\t")
+	if len(fields) < 2 {
+		return "", fmt.Errorf("sidecar: short response %q", line)
+	}
+	if fields[0] != wantID {
+		return "", fmt.Errorf("sidecar: response id %q does not match request %q", fields[0], wantID)
+	}
+	if fields[1] == "error" {
+		return "", errorFrom(fields, line)
+	}
+	return line, nil
+}
+
+func errorFrom(fields []string, line string) error {
+	class, msg := "", ""
+	if len(fields) > 2 {
+		class = fields[2]
+	}
+	if len(fields) > 3 {
+		msg = strings.Join(fields[3:], "\t")
+	}
+	if class == "" {
+		class = "internal_error"
+	}
+	return &QueryError{Class: class, Message: msg}
+}
+
+func (s *Sidecar) SendFireAndForget(op Op, args ...string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fields := append([]string{"0", string(op)}, args...)
+	_, err := fmt.Fprintln(s.stdin, strings.Join(fields, "\t"))
+	return err
+}
+
+func (s *Sidecar) Init(ctx context.Context, dataDir string, snapshot int64, table, location string) error {
+	_, err := s.call(ctx, OpInit, dataDir, strconv.FormatInt(snapshot, 10), table, location)
+	return err
+}
+
+func (s *Sidecar) Query(ctx context.Context, sql string) (*Result, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextID++
+	id := s.nextID
+	if _, err := fmt.Fprintln(s.stdin, strings.Join([]string{strconv.FormatInt(id, 10), string(OpQuery), sql}, "\t")); err != nil {
+		return nil, err
+	}
+	type res struct {
+		line string
+		err  error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		line, err := s.stdout.ReadString('\n')
+		ch <- res{line, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case r := <-ch:
+		if r.err != nil {
+			return nil, r.err
+		}
+		return parseResult(r.line, strconv.FormatInt(id, 10))
+	}
+}
+
+func parseResult(line, wantID string) (*Result, error) {
+	fields := strings.Split(strings.TrimRight(line, "\r\n"), "\t")
+	if len(fields) < 3 {
+		return nil, fmt.Errorf("sidecar: short result %q", line)
+	}
+	if fields[0] != wantID {
+		return nil, fmt.Errorf("sidecar: result id %q does not match %q", fields[0], wantID)
+	}
+	if fields[1] == "error" {
+		return nil, errorFrom(fields, line)
+	}
+	out := &Result{}
+	for _, c := range strings.Split(fields[2], ";") {
+		if c == "" {
+			continue
+		}
+		name, typ, _ := strings.Cut(c, ":")
+		out.Columns = append(out.Columns, Column{Name: name, Type: typ})
+	}
+	if len(fields) > 3 && fields[3] != "" {
+		out.Rows = strings.Split(fields[3], "|")
+	}
+	if len(fields) > 4 {
+		if v, err := strconv.ParseInt(fields[4], 10, 64); err == nil {
+			out.ElapsedMS = v
+		}
+	}
+	if len(fields) > 5 {
+		out.Truncated = fields[5] == "1"
+	}
+	return out, nil
+}
+
+func (s *Sidecar) Cancel() error { return s.SendFireAndForget(OpCancel) }
+
+func (s *Sidecar) Close() error {
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = s.call(ctx, OpShutdown)
+	_ = s.stdin.Close()
+	done := make(chan error, 1)
+	go func() { done <- s.cmd.Wait() }()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(5 * time.Second):
+		return s.Kill()
+	}
+}
+
+func (s *Sidecar) Kill() error {
+	if s.cmd.Process != nil {
+		_ = s.cmd.Process.Kill()
+	}
+	return s.cmd.Wait()
+}
+
+func (s *Sidecar) Pid() int {
+	if s.cmd.Process == nil {
+		return 0
+	}
+	return s.cmd.Process.Pid
+}
+
+func Escape(v string) string {
+	v = strings.ReplaceAll(v, `\`, `\\`)
+	v = strings.ReplaceAll(v, "|", `\|`)
+	return strings.ReplaceAll(v, "\n", `\n`)
+}

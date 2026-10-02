@@ -4,6 +4,10 @@
 
 ### Added
 
+- Spike 3 for the lakehouse query sidecar: a DuckDB sidecar and a DataFusion sidecar, each outside
+  dolmen's `go.mod` with its own CI job, plus one Go driver that writes an Iceberg fixture and
+  attacks both through the same protocol. Recorded in `docs/design/lakehouse-plan.md` §2.8.
+
 - **`batch`: several writes in one transaction.** Send an ordered `writes` list against one namespace
   and they commit together or not at all, with one result per write in the order you sent them, one
   change-feed commit, and one `idempotency_key` covering the whole batch (a replay returns the stored
