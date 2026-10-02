@@ -89,6 +89,9 @@ func PrepareVectorQuery(ctx context.Context, eng store.Engine, ns, table string,
 	if in.Text != "" && len(in.Vec) > 0 {
 		return store.VectorQuery{}, derr.New(derr.InvalidRequest, "pass either text or vector, not both")
 	}
+	if in.Text != "" && strings.TrimSpace(in.Text) == "" {
+		return store.VectorQuery{}, derr.New(derr.InvalidRequest, "query text is blank (only whitespace); pass non-whitespace text, or a vector")
+	}
 	column := strings.ToLower(strings.TrimSpace(in.Column))
 	var vec []float32
 	switch {
@@ -131,6 +134,16 @@ func PrepareVectorQuery(ctx context.Context, eng store.Engine, ns, table string,
 		}
 	default:
 		return store.VectorQuery{}, derr.New(derr.InvalidRequest, "pass either text or vector")
+	}
+	zero := true
+	for _, x := range vec {
+		if x != 0 {
+			zero = false
+			break
+		}
+	}
+	if zero {
+		return store.VectorQuery{}, derr.New(derr.InvalidRequest, "query vector is all zeros; cosine similarity is undefined for a zero-norm vector, so it cannot be ranked")
 	}
 	queryIdentity := ""
 	if in.Text != "" {

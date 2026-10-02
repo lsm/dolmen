@@ -1332,6 +1332,7 @@ var Ops = map[string]OpDef{
 					"type":        "string",
 					"description": "Query text; the server embeds it (requires an embedding provider)",
 					"minLength":   1,
+					"pattern":     `\S`,
 				},
 				"vector": map[string]any{
 					"type":        "array",
