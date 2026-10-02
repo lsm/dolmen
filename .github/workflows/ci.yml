@@ -385,10 +385,17 @@ jobs:
         shell: bash
         run: |
           set -eu
+          bin=target/release/sidecar-datafusion
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            msvc_link="$(dirname "$(command -v cl)")/link.exe"
+            test -f "$msvc_link"
+            export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$msvc_link"
+            bin=target/release/sidecar-datafusion.exe
+          fi
           start=$(date +%s)
           cargo build --release
           echo "PACKAGING platform=${{ matrix.platform }} engine=datafusion build_seconds=$(( $(date +%s) - start ))"
-          echo "PACKAGING platform=${{ matrix.platform }} engine=datafusion binary_bytes=$(stat -c %s target/release/sidecar-datafusion 2>/dev/null || stat -f %z target/release/sidecar-datafusion)"
+          echo "PACKAGING platform=${{ matrix.platform }} engine=datafusion binary_bytes=$(stat -c %s "$bin" 2>/dev/null || stat -f %z "$bin")"
 
   postgres-foundation:
     runs-on: ubuntu-latest

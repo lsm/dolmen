@@ -18,6 +18,7 @@ use datafusion::execution::context::{SessionConfig, SessionContext, SQLOptions};
 use iceberg::io::FileIO;
 use iceberg::spec::{TableMetadata, TableMetadataRef};
 use iceberg::table::Table;
+use iceberg::TableIdent;
 use iceberg_datafusion::IcebergStaticTableProvider;
 
 struct State {
@@ -93,7 +94,9 @@ async fn register(state: &mut State, metadata_path: &str, snapshot: i64, name: &
         ));
     }
     let io = FileIO::new_with_fs();
+    let ident = TableIdent::from_strs(["dolmen", name]).map_err(|e| format!("table ident {name}: {e}"))?;
     let table = Table::builder()
+        .identifier(ident)
         .metadata(meta_ref)
         .metadata_location(metadata_path.to_string())
         .file_io(io)

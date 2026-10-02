@@ -87,7 +87,7 @@ func TestAFreshSidecarServesCleanlyAfterThePreviousOneWasKilled(t *testing.T) {
 	e := requireEngine(t)
 	root := rootOf(tbl)
 
-	first := e.start(t, root, 9999, "events", true)
+	first := e.start(t, root, fixture.CurrentSnapshotID(tbl), "events", true)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	_, _ = first.Query(ctx, foreverQuery)
