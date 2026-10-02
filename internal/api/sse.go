@@ -237,7 +237,7 @@ func subscribeErr(err error) *Error {
 	case errors.Is(err, store.ErrListenLifetimeEnded):
 		return badRequest("the subscription's target ended (a dropped table, or a dropped or replaced namespace); reconnect against the current target — a same-named successor is a different feed")
 	case errors.Is(err, store.ErrListenRevoked):
-		return forbidden("subscription authorization was revoked; reconnect once authorization is restored")
+		return forbidden("subscription authorization was revoked; reconnect once authorization is restored, or with another credential if this one was revoked")
 	case errors.Is(err, errDraining):
 		return badRequest("the server is shutting down; reconnect from the cursor in the preceding close frame to resume exactly where this stream ended, on a server that is still serving")
 	case errors.Is(err, store.ErrListenAged):

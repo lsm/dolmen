@@ -143,7 +143,7 @@ func PrepareVectorQuery(ctx context.Context, eng store.Engine, ns, table string,
 		}
 	}
 	if zero {
-		return store.VectorQuery{}, derr.New(derr.InvalidRequest, "query vector is all zeros; cosine similarity is undefined for a zero-norm vector, so it cannot be ranked")
+		return store.VectorQuery{}, derr.New(derr.InvalidRequest, "query vector is all zeros once stored as float32 (values below about 1e-45 underflow to zero); cosine similarity is undefined for a zero-norm vector, so it cannot be ranked")
 	}
 	queryIdentity := ""
 	if in.Text != "" {
