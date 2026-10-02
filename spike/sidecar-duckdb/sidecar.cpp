@@ -1,32 +1,59 @@
 // Sidecar for DuckDB: reads the spike protocol on stdin, registers one
-// namespace's Iceberg table at a pinned snapshot, and runs caller SQL.
+// namespace's Iceberg tables at a pinned snapshot, and runs caller SQL.
 //
 // Built against prebuilt libduckdb with the iceberg and httpfs extensions
-// pre-placed in the extension directory, so nothing downloads at runtime. The
-// confinement settings are applied through DBConfig before the database starts,
-// because enable_external_access cannot be set once the process is up. See
+// pre-placed in the extension directory, so nothing downloads at runtime. See
 // ../driver/PROTOCOL.md for the wire.
+//
+// Lifecycle, in three phases:
+//
+//   1. init ops only record tables; no caller SQL can run yet.
+//   2. The first query seals the sidecar. A private catalog file is written
+//      read-write with one view per table, closed, and reopened READ_ONLY with
+//      the confinement applied. No caller SQL has run against the writable copy.
+//   3. Queries run on a worker thread against one connection, so the main thread
+//      keeps reading stdin and a cancel reaches Connection::Interrupt mid-flight.
 #include "duckdb.hpp"
 
-#include <algorithm>
+#include <unistd.h>
+
+#include <atomic>
 #include <chrono>
-#include <cstdio>
+#include <condition_variable>
 #include <cstdlib>
-#include <cstring>
 #include <filesystem>
-#include <stdexcept>
+#include <fstream>
+#include <regex>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
 
-std::string g_table_name;
-std::string g_table_location;
-long long g_snapshot = -1;
-bool g_registered = false;
-duckdb::DuckDB *g_db = nullptr;
+struct TableSpec {
+  std::string name;
+  std::string metadata;
+  long long snapshot;
+};
+
+std::mutex g_out_mu;
+std::vector<TableSpec> g_tables;
+std::unique_ptr<duckdb::DuckDB> g_db;
+std::unique_ptr<duckdb::Connection> g_con;
+std::string g_catalog_path;
+bool g_sealed = false;
+
+std::mutex g_work_mu;
+std::condition_variable g_work_cv;
+std::string g_work_id;
+std::string g_work_sql;
+bool g_work_ready = false;
+std::atomic<bool> g_busy{false};
+bool g_stop = false;
 
 std::vector<std::string> Split(const std::string &line, char sep) {
   std::vector<std::string> out;
@@ -41,14 +68,6 @@ std::vector<std::string> Split(const std::string &line, char sep) {
   }
   out.push_back(cur);
   return out;
-}
-
-void Reply(const std::string &id, const std::string &payload) {
-  std::cout << id << "\tok\t" << payload << std::endl;
-}
-
-void ErrorReply(const std::string &id, const std::string &cls, const std::string &msg) {
-  std::cout << id << "\terror\t" << cls << "\t" << msg << std::endl;
 }
 
 std::string Escape(const std::string &v) {
@@ -69,14 +88,42 @@ std::string Escape(const std::string &v) {
   return out;
 }
 
-// The newest .metadata.json under dir. Iceberg writes one per commit and names
-// them by version, so newest-by-write-time is the current table state; the
-// snapshot id from init is what actually decides which data is read.
+void Emit(const std::string &line) {
+  std::lock_guard<std::mutex> lock(g_out_mu);
+  std::cout << line << std::endl;
+}
+
+void Reply(const std::string &id, const std::string &payload) { Emit(id + "\tok\t" + payload); }
+
+void ErrorReply(const std::string &id, const std::string &cls, const std::string &msg) {
+  Emit(id + "\terror\t" + cls + "\t" + Escape(msg));
+}
+
+std::string Quote(const std::string &v) {
+  std::string out = "'";
+  for (char c : v) {
+    if (c == '\'') out += "''";
+    else out.push_back(c);
+  }
+  return out + "'";
+}
+
+std::string Ident(const std::string &v) {
+  std::string out = "\"";
+  for (char c : v) {
+    if (c == '"') out += "\"\"";
+    else out.push_back(c);
+  }
+  return out + "\"";
+}
+
+// The newest .metadata.json under dir. Iceberg writes one per commit, so the
+// newest is the current table state; the snapshot id decides which data is read.
 std::string LatestMetadata(const std::string &dir) {
   namespace fs = std::filesystem;
   std::error_code ec;
   std::string best;
-  std::filesystem::file_time_type best_time{};
+  fs::file_time_type best_time{};
   for (const auto &entry : fs::directory_iterator(dir, ec)) {
     if (ec) return "";
     const std::string name = entry.path().filename().string();
@@ -91,9 +138,18 @@ std::string LatestMetadata(const std::string &dir) {
   return best;
 }
 
+bool HasSnapshot(const std::string &metadata, long long snapshot) {
+  std::ifstream in(metadata);
+  std::stringstream buf;
+  buf << in.rdbuf();
+  const std::regex re("\"snapshot-id\"\\s*:\\s*" + std::to_string(snapshot) + "(?![0-9])");
+  return std::regex_search(buf.str(), re);
+}
+
 std::string Classify(const std::string &msg) {
   std::string lower = msg;
   for (auto &c : lower) c = static_cast<char>(tolower(c));
+  if (lower.find("interrupted") != std::string::npos) return "canceled";
   if (lower.find("does not exist") != std::string::npos ||
       lower.find("no files found") != std::string::npos ||
       lower.find("catalog error") != std::string::npos) {
@@ -102,6 +158,9 @@ std::string Classify(const std::string &msg) {
   if (lower.find("not implemented") != std::string::npos ||
       lower.find("disabled") != std::string::npos ||
       lower.find("not supported") != std::string::npos ||
+      lower.find("read-only") != std::string::npos ||
+      lower.find("read only") != std::string::npos ||
+      lower.find("permission error") != std::string::npos ||
       lower.find("parser error") != std::string::npos ||
       lower.find("no function matches") != std::string::npos ||
       lower.find("binder error") != std::string::npos ||
@@ -112,192 +171,146 @@ std::string Classify(const std::string &msg) {
   return "query_error";
 }
 
-// Render a result as columns;rows;elapsed;truncated, the shape PROTOCOL.md
-// specifies. Values are escaped so a value can never split the framing.
 void ResultReply(const std::string &id, duckdb::MaterializedQueryResult &res, long long elapsed) {
   std::ostringstream cols;
-  const auto &types = res.Collection().Types();
   for (duckdb::idx_t i = 0; i < res.ColumnCount(); i++) {
     if (i) cols << ";";
-    cols << res.ColumnName(i) << ":" << types[i].ToString();
+    cols << res.ColumnName(i) << ":" << res.types[i].ToString();
   }
   std::ostringstream rows;
-  bool first = true;
   for (duckdb::idx_t i = 0; i < res.RowCount(); i++) {
-    if (!first) rows << "|";
-    first = false;
+    if (i) rows << "|";
     for (duckdb::idx_t c = 0; c < res.ColumnCount(); c++) {
       if (c) rows << "\x1f";
       rows << Escape(res.GetValue(c, i).ToString());
     }
   }
-  std::cout << id << "\tok\t" << cols.str() << "\t" << rows.str() << "\t" << elapsed << "\t0"
-            << std::endl;
+  Emit(id + "\tok\t" + cols.str() + "\t" + rows.str() + "\t" + std::to_string(elapsed) + "\t0");
 }
 
-// Confinement is applied by SET on a live connection, plus one struct field.
-//
-// Two CI runs got this wrong in two different ways, and both failed open, so
-// both are recorded here rather than in a changelog:
-//
-//   1. Writing the settings to $HOME/.duckdbrc confined nothing. .duckdbrc is
-//      a *CLI* feature: the duckdb shell reads it and an embedded DuckDB opened
-//      as DuckDB(nullptr) never looks at it. All 24 escapes succeeded.
-//   2. Passing them through DBConfigOptions::unrecognized_options is not a way
-//      to set a startup option either. DuckDB throws
-//      "The following options were not recognized: allow_persistent_secrets,
-//      autoload_known_extensions, autoinstall_known_extensions,
-//      enable_external_access, extension_directory" and the process aborts.
-//
-// So the settings are plain SET statements, in the order #533 measured, and
-// allowed_directories is the one that has to be a struct field because it
-// cannot be set once enable_external_access is false.
-bool Configure(duckdb::DuckDB &db, const std::string &ext_dir, std::string &err) {
-  duckdb::Connection con(db);
-  std::vector<std::string> stmts;
-  if (!ext_dir.empty()) {
-    stmts.push_back("SET extension_directory = '" + ext_dir + "'");
-  }
-  stmts.push_back("SET enable_external_access = false");
-  stmts.push_back("SET autoinstall_known_extensions = false");
-  stmts.push_back("SET autoload_known_extensions = false");
-  stmts.push_back("SET allow_persistent_secrets = false");
-  stmts.push_back("SET lock_configuration = true");
-  for (const auto &stmt : stmts) {
-    auto res = con.Query(stmt);
-    if (res->HasError()) {
-      err = stmt + " -> " + res->GetError();
-      return false;
+duckdb::idx_t ParseBytes(const char *v) {
+  duckdb::idx_t bytes = 0;
+  for (const char *p = v; *p != '\0'; p++) {
+    if (*p >= '0' && *p <= '9') {
+      bytes = bytes * 10 + static_cast<duckdb::idx_t>(*p - '0');
+    } else if (*p == 'K' || *p == 'k') {
+      bytes *= 1024ULL;
+    } else if (*p == 'M' || *p == 'm') {
+      bytes *= 1024ULL * 1024ULL;
+    } else if (*p == 'G' || *p == 'g') {
+      bytes *= 1024ULL * 1024ULL * 1024ULL;
     }
   }
+  return bytes;
+}
+
+bool Exec(duckdb::Connection &con, const std::string &sql, std::string &err) {
+  auto res = con.Query(sql);
+  if (res->HasError()) {
+    err = sql + " -> " + res->GetError();
+    return false;
+  }
   return true;
 }
 
-bool RegisterTable(duckdb::Connection &con, std::string &err) {
-  if (g_registered) return true;
-  if (g_table_name.empty() || g_snapshot < 0) return true;
-  const std::string dir = g_table_location + "/metadata";
-  const std::string meta = LatestMetadata(dir);
-  if (meta.empty()) {
-    err = "no .metadata.json under " + dir;
-    return false;
+// Phase 2. The writable copy only ever runs statements this function builds;
+// caller SQL first runs after the READ_ONLY reopen and the lock.
+bool Seal(const std::string &data_dir, const std::string &ext_dir, bool unlocked, std::string &err) {
+  namespace fs = std::filesystem;
+  g_catalog_path = (fs::temp_directory_path() /
+                    ("dolmen-sidecar-" + std::to_string(getpid()) + ".duckdb"))
+                       .string();
+  std::error_code ec;
+  fs::remove(g_catalog_path, ec);
+  fs::remove(g_catalog_path + ".wal", ec);
+  {
+    duckdb::DBConfig seed_cfg;
+    seed_cfg.options.log_config.enabled = false;
+    duckdb::DuckDB seed(g_catalog_path.c_str(), &seed_cfg);
+    duckdb::Connection con(seed);
+    if (!ext_dir.empty() && !Exec(con, "SET extension_directory = " + Quote(ext_dir), err)) return false;
+    if (!Exec(con, "LOAD iceberg", err)) return false;
+    for (const auto &t : g_tables) {
+      const std::string sql = "CREATE VIEW " + Ident(t.name) + " AS SELECT * FROM iceberg_scan(" +
+                              Quote(t.metadata) + ", snapshot_from_id => " +
+                              std::to_string(t.snapshot) + ")";
+      if (!Exec(con, sql, err)) return false;
+    }
+    if (!Exec(con, "CHECKPOINT", err)) return false;
   }
-  // snapshot_from_id is the numeric option; `version` names a tag and is
-  // silently ignored when given an id, which looks like a pinned read that is
-  // not pinned.
-  std::string sql = "LOAD iceberg; CREATE OR REPLACE VIEW " + g_table_name +
-                    " AS SELECT * FROM iceberg_scan('" + meta + "', snapshot_from_id => " +
-                    std::to_string(g_snapshot) + ");";
-  auto res = con.Query(sql);
-  if (res->HasError()) {
-    err = res->GetError();
-    return false;
+
+  duckdb::DBConfig cfg;
+  cfg.options.log_config.enabled = false;
+  const char *mem_env = std::getenv("SIDECAR_MEMORY_MAX");
+  if (mem_env != nullptr && *mem_env != '\0') cfg.options.maximum_memory = ParseBytes(mem_env);
+  if (!unlocked) {
+    cfg.options.access_mode = duckdb::AccessMode::READ_ONLY;
+    cfg.options.allowed_directories.insert(data_dir);
   }
-  g_registered = true;
+  g_db = std::make_unique<duckdb::DuckDB>(g_catalog_path.c_str(), &cfg);
+  g_con = std::make_unique<duckdb::Connection>(*g_db);
+
+  if (!ext_dir.empty() && !Exec(*g_con, "SET extension_directory = " + Quote(ext_dir), err)) return false;
+  if (!Exec(*g_con, "LOAD iceberg", err)) return false;
+  if (!unlocked) {
+    for (const char *stmt : {"SET enable_external_access = false",
+                             "SET autoinstall_known_extensions = false",
+                             "SET autoload_known_extensions = false",
+                             "SET allow_persistent_secrets = false",
+                             "SET lock_configuration = true"}) {
+      if (!Exec(*g_con, stmt, err)) return false;
+    }
+  }
+  g_sealed = true;
+  std::cerr << "sidecar: sealed " << g_tables.size() << " table(s), "
+            << (unlocked ? "unlocked" : "read-only and locked") << std::endl;
   return true;
+}
+
+void Worker() {
+  for (;;) {
+    std::string id, sql;
+    {
+      std::unique_lock<std::mutex> lock(g_work_mu);
+      g_work_cv.wait(lock, [] { return g_work_ready || g_stop; });
+      if (g_stop) return;
+      id = g_work_id;
+      sql = g_work_sql;
+      g_work_ready = false;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    try {
+      auto res = g_con->Query(sql);
+      const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - start)
+                          .count();
+      if (res->HasError()) {
+        ErrorReply(id, Classify(res->GetError()), res->GetError());
+      } else {
+        ResultReply(id, *res, ms);
+      }
+    } catch (const std::exception &e) {
+      ErrorReply(id, "internal_error", e.what());
+    }
+    g_busy = false;
+  }
 }
 
 int Run() {
   const char *data_dir_env = std::getenv("SIDECAR_DATA_DIR");
-  const char *ext_env = std::getenv("SIDECAR_EXT_DIR");
-  const char *mem_env = std::getenv("SIDECAR_MEMORY_MAX");
-
   if (data_dir_env == nullptr || *data_dir_env == '\0') {
     std::cerr << "sidecar: SIDECAR_DATA_DIR is required" << std::endl;
     return 2;
   }
   const std::string data_dir = data_dir_env;
+  const char *ext_env = std::getenv("SIDECAR_EXT_DIR");
   const std::string ext_dir = ext_env == nullptr ? "" : ext_env;
-
   const char *unlocked_env = std::getenv("SIDECAR_UNLOCKED");
   const bool unlocked = unlocked_env != nullptr && *unlocked_env == '1';
-
   std::cerr << "sidecar: starting, data_dir=" << data_dir << " unlocked=" << unlocked << std::endl;
 
-  duckdb::DBConfig cfg;
-  // stdout is the response channel of the spike protocol, and DuckDB writes its
-  // own logging there ("Loading extension iceberg from ..."), which desynchronises
-  // the framing and misattributes one request's answer to another. Engine logging
-  // is therefore off, and the driver additionally skips any line that does not
-  // carry the request id rather than failing on it.
-  cfg.options.log_config.enabled = false;
-
-  if (mem_env != nullptr && *mem_env != '\0') {
-    // maximum_memory is DuckDB's byte-valued knob. It has to be a struct field
-    // too, because lock_configuration is on before a SET could reach it.
-    const char *digits = mem_env;
-    idx_t bytes = 0;
-    for (const char *p = mem_env; *p != '\0'; p++) {
-      if (*p >= '0' && *p <= '9') {
-        bytes = bytes * 10 + static_cast<idx_t>(*p - '0');
-      } else if (*p == 'K' || *p == 'k') {
-        bytes *= 1024ULL;
-      } else if (*p == 'M' || *p == 'm') {
-        bytes *= 1024ULL * 1024ULL;
-      } else if (*p == 'G' || *p == 'g') {
-        bytes *= 1024ULL * 1024ULL * 1024ULL;
-      }
-    }
-    (void)digits;
-    cfg.options.maximum_memory = bytes;
-  }
-  if (!unlocked) {
-    cfg.options.allowed_directories.insert(data_dir);
-    // enable_external_access = false is about *files*, not about writing. With
-    // only the external-access guard, the CI battery found CREATE TABLE, INSERT,
-    // UPDATE and DELETE all still accepted on an in-memory database, because an
-    // in-memory catalog has nothing external to guard. A query sidecar that must
-    // not change anything needs the access mode as well, and read-only is the
-    // mechanism that refuses DDL and DML.
-  }
-  // An in-memory database is read-write by nature, and a READ_ONLY open of one
-  // is refused by DuckDB rather than honoured. A query sidecar still has to be
-  // able to open something, so the main database is a file inside the namespace's
-  // own allowed directory: created read-write once if absent, then reopened
-  // READ_ONLY so DDL and DML are refused. If the read-only open still fails the
-  // sidecar falls back to in-memory and says so on stderr, because a limitation
-  // that is reported can be designed around and one that is silent cannot.
-  const std::string db_path = data_dir + "/.dolmen-sidecar.duckdb";
-  if (!unlocked) {
-    std::error_code fs_ec;
-    if (!std::filesystem::exists(db_path, fs_ec)) {
-      // A READ_ONLY open of a file that does not exist is refused, so the empty
-      // catalog is created once, read-write, and never opened that way again.
-      duckdb::DuckDB seed(db_path.c_str());
-      std::cerr << "sidecar: created " << db_path << std::endl;
-    }
-    cfg.options.access_mode = duckdb::AccessMode::READ_ONLY;
-    try {
-      g_db = new duckdb::DuckDB(db_path.c_str(), &cfg);
-    } catch (const std::exception &e) {
-      std::cerr << "sidecar: read-only open of " << db_path << " failed (" << e.what()
-                << "), falling back to an in-memory database, which cannot refuse DDL" << std::endl;
-      g_db = nullptr;
-    }
-  }
-  if (g_db == nullptr) {
-    duckdb::DBConfig plain;
-    plain.options.log_config.enabled = false;
-    plain.options.maximum_memory = cfg.options.maximum_memory;
-    if (!unlocked) {
-      // Without this the fallback would have no allowed directory at all and would
-      // refuse everything, which looks like a working lock and is not one.
-      plain.options.allowed_directories.insert(data_dir);
-    }
-    g_db = new duckdb::DuckDB(nullptr, &plain);
-    std::cerr << "sidecar: running in-memory" << std::endl;
-  } else {
-    std::cerr << "sidecar: opened " << db_path << " read-only" << std::endl;
-  }
-  if (!unlocked) {
-    std::string cfg_err;
-    if (!Configure(*g_db, ext_dir, cfg_err)) {
-      std::cerr << "sidecar: confinement was refused, refusing to run unlocked: " << cfg_err << std::endl;
-      return 3;
-    }
-    std::cerr << "sidecar: confinement applied" << std::endl;
-  }
-
+  std::thread worker(Worker);
+  std::string busy_id;
   std::string line;
   while (std::getline(std::cin, line)) {
     const auto f = Split(line, '\t');
@@ -306,13 +319,13 @@ int Run() {
     const std::string op = f[1];
 
     if (op == "shutdown") {
+      if (g_busy && g_con) g_con->Interrupt();
       Reply(id, "");
       break;
     }
     if (op == "cancel") {
-      duckdb::Connection con(*g_db);
-      con.Interrupt();
-      Reply(id, "");
+      if (g_busy && g_con) g_con->Interrupt();
+      if (id != "0") Reply(id, "");
       continue;
     }
     if (op == "memory_limit") {
@@ -320,23 +333,27 @@ int Run() {
       continue;
     }
     if (op == "init") {
-      // init <dataDir> <snapshot> <table> <location>
       if (f.size() < 6) {
         ErrorReply(id, "internal_error", "init needs dataDir, snapshot, table and location");
         continue;
       }
-      g_snapshot = atoll(f[3].c_str());
-      g_table_name = f[4];
-      g_table_location = std::string(f[2]) + "/" + f[5];
-      duckdb::Connection con(*g_db);
-      std::string err;
-      if (!RegisterTable(con, err)) {
-        ErrorReply(id, Classify(err), err);
+      if (g_sealed) {
+        ErrorReply(id, "internal_error", "init after the first query; the sidecar is sealed");
         continue;
       }
-      // A non-empty acknowledgement, because an empty one cannot be told apart
-      // from a sidecar that registered nothing. The driver requires it.
-      Reply(id, "registered " + g_table_name + " at " + std::to_string(g_snapshot));
+      const std::string dir = f[2] + "/" + f[5] + "/metadata";
+      const std::string meta = LatestMetadata(dir);
+      if (meta.empty()) {
+        ErrorReply(id, "not_found", "no .metadata.json under " + dir);
+        continue;
+      }
+      const long long snapshot = atoll(f[3].c_str());
+      if (!HasSnapshot(meta, snapshot)) {
+        ErrorReply(id, "not_found", "snapshot " + f[3] + " is not in " + meta);
+        continue;
+      }
+      g_tables.push_back(TableSpec{f[4], meta, snapshot});
+      Reply(id, "registered " + f[4] + " at " + f[3]);
       continue;
     }
     if (op == "query") {
@@ -344,22 +361,55 @@ int Run() {
         ErrorReply(id, "internal_error", "query needs sql");
         continue;
       }
-      duckdb::Connection con(*g_db);
-      const auto start = std::chrono::steady_clock::now();
-      auto res = con.Query(f[2]);
-      const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                          std::chrono::steady_clock::now() - start)
-                          .count();
-      if (res->HasError()) {
-        ErrorReply(id, Classify(res->GetError()), res->GetError());
+      if (g_tables.empty()) {
+        ErrorReply(id, "internal_error", "no table registered; send init first");
         continue;
       }
-      ResultReply(id, *res, ms);
+      if (!g_sealed) {
+        std::string err;
+        bool ok = false;
+        try {
+          ok = Seal(data_dir, ext_dir, unlocked, err);
+        } catch (const std::exception &e) {
+          err = e.what();
+        }
+        if (!ok) {
+          std::cerr << "sidecar: sealing failed, refusing to run: " << err << std::endl;
+          ErrorReply(id, Classify(err), err);
+          g_stop = true;
+          g_work_cv.notify_all();
+          worker.join();
+          return 3;
+        }
+      }
+      if (g_busy.exchange(true)) {
+        ErrorReply(id, "internal_error", "a query is already running");
+        continue;
+      }
+      {
+        std::lock_guard<std::mutex> lock(g_work_mu);
+        g_work_id = id;
+        g_work_sql = f[2];
+        g_work_ready = true;
+      }
+      g_work_cv.notify_one();
       continue;
     }
     ErrorReply(id, "internal_error", "unknown op " + op);
   }
-  delete g_db;
+  {
+    std::lock_guard<std::mutex> lock(g_work_mu);
+    g_stop = true;
+  }
+  g_work_cv.notify_all();
+  worker.join();
+  g_con.reset();
+  g_db.reset();
+  if (!g_catalog_path.empty()) {
+    std::error_code ec;
+    std::filesystem::remove(g_catalog_path, ec);
+    std::filesystem::remove(g_catalog_path + ".wal", ec);
+  }
   return 0;
 }
 

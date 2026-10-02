@@ -39,7 +39,7 @@ func attacksFor(tbl *fixture.Table) []attack {
 		{"create_an_external_table", "CREATE EXTERNAL TABLE stolen (a INT) LOCATION '" + outside + "'"},
 		{"set_a_setting_after_the_lock", "SET memory_limit='1GB'"},
 		{"reset_a_setting_after_the_lock", "RESET memory_limit"},
-		{"a_pragma", "PRAGMA version"},
+		{"a_pragma", "PRAGMA memory_limit='64GB'"},
 		{"create_a_table", "CREATE TABLE t (a INT)"},
 		{"drop_a_table", "DROP TABLE events"},
 		{"insert_rows", "INSERT INTO events VALUES (1,'x',1.0,'y',true)"},

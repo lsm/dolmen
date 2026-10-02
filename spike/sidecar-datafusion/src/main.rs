@@ -26,7 +26,7 @@ struct State {
     snapshot: i64,
     table: String,
     unlocked: bool,
-    running: Option<tokio::task::JoinHandle<Result<(String, String), String>>>,
+    running: Option<(String, tokio::task::AbortHandle)>,
 }
 
 fn escape(v: &str) -> String {
@@ -173,17 +173,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let memory_max = env::var("SIDECAR_MEMORY_MAX")
         .ok()
-        .and_then(|v| v.parse::<usize>().ok())
+        .map(|v| parse_bytes(&v))
         .unwrap_or(0);
 
     let config = SessionConfig::new().with_coalesce_batches(true);
-    // A spill pool rather than a bounded grep pool, because spilling is what has
-    // to be proven: a query too big for the ceiling must spill, not fail.
-    let runtime = datafusion::execution::runtime_env::RuntimeEnvBuilder::new()
-        .with_memory_pool(Arc::new(datafusion::execution::memory_pool::FairSpillPool::new(
-            memory_max,
-        )))
-        .build_arc()?;
+    let mut builder = datafusion::execution::runtime_env::RuntimeEnvBuilder::new();
+    if memory_max > 0 {
+        builder = builder.with_memory_pool(Arc::new(
+            datafusion::execution::memory_pool::FairSpillPool::new(memory_max),
+        ));
+    }
+    let runtime = builder.build_arc()?;
     let ctx = SessionContext::new_with_config_rt(config, runtime);
 
     let mut state = State {
@@ -195,10 +195,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         running: None,
     };
 
-    let stdin = io::stdin();
-    let mut lines = stdin.lock().lines();
-    while let Some(res) = lines.next() {
-        let line = res?;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    std::thread::spawn(move || {
+        let stdin = io::stdin();
+        for line in stdin.lock().lines() {
+            match line {
+                Ok(l) => {
+                    if tx.send(l).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+    loop {
+        let line = tokio::select! {
+            Some(id) = done_rx.recv() => {
+                if state.running.as_ref().map(|(r, _)| r == &id).unwrap_or(false) {
+                    state.running = None;
+                }
+                continue;
+            }
+            line = rx.recv() => match line {
+                Some(l) => l,
+                None => break,
+            },
+        };
         let f: Vec<&str> = line.split('\t').collect();
         if f.len() < 2 {
             continue;
@@ -206,17 +231,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let id = f[0].to_string();
         match f[1] {
             "shutdown" => {
+                if let Some((_, handle)) = state.running.take() {
+                    handle.abort();
+                }
                 reply(&id, "");
                 break;
             }
             "cancel" => {
-                // DataFusion has no cooperative per-query interrupt, so the
-                // running task is aborted. That is coarser than duckdb_interrupt
-                // and is recorded rather than papered over.
-                if let Some(handle) = state.running.take() {
+                if let Some((qid, handle)) = state.running.take() {
                     handle.abort();
+                    error_reply(&qid, "canceled", "query was cancelled");
                 }
-                reply(&id, "");
+                if id != "0" {
+                    reply(&id, "");
+                }
             }
             "memory_limit" => reply(&id, ""),
             "init" => {
@@ -227,28 +255,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let snapshot: i64 = f[3].parse().unwrap_or(-1);
                 let table = f[4].to_string();
                 let dir = format!("{}/{}/metadata", data_dir, f[5]);
-                eprintln!(
-                    "sidecar: init fields={} snapshot={} table={} dir={}",
-                    f.len(),
-                    snapshot,
-                    table,
-                    dir
-                );
                 match latest_metadata(&dir).await {
-                    Ok(path) => {
-                        eprintln!("sidecar: init metadata={}", path);
-                        match register(&mut state, &path, snapshot, &table).await {
-                            Ok(()) => reply(&id, &format!("registered {} at {}", table, snapshot)),
-                            Err(e) => {
-                                eprintln!("sidecar: init refused: {}", e);
-                                error_reply(&id, "query_error", &e)
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("sidecar: init found no metadata: {}", e);
-                        error_reply(&id, "not_found", &e)
-                    }
+                    Ok(path) => match register(&mut state, &path, snapshot, &table).await {
+                        Ok(()) => reply(&id, &format!("registered {} at {}", table, snapshot)),
+                        Err(e) => error_reply(&id, "query_error", &e),
+                    },
+                    Err(e) => error_reply(&id, "not_found", &e),
                 }
             }
             "query" => {
@@ -260,32 +272,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     error_reply(&id, "internal_error", "no table registered; send init first");
                     continue;
                 }
+                if state.running.is_some() {
+                    error_reply(&id, "internal_error", "a query is already running");
+                    continue;
+                }
                 let sql = f[2].to_string();
-                let start = std::time::Instant::now();
                 let ctx = state.ctx.clone();
                 let unlocked = state.unlocked;
-                let task = tokio::spawn(async move { run_query(ctx, unlocked, sql).await });
-                state.running = Some(task);
-                let Some(handle) = state.running.take() else {
-                    error_reply(&id, "internal_error", "no running query");
-                    continue;
-                };
-                match handle.await {
-                    Ok(Ok((cols, rows))) => {
-                        let elapsed = start.elapsed().as_millis() as i64;
-                        reply(&id, &format!("{cols}\t{rows}\t{elapsed}\t0"));
+                let qid = id.clone();
+                let done = done_tx.clone();
+                let task = tokio::spawn(async move {
+                    let start = std::time::Instant::now();
+                    match run_query(ctx, unlocked, sql).await {
+                        Ok((cols, rows)) => {
+                            let elapsed = start.elapsed().as_millis() as i64;
+                            reply(&qid, &format!("{cols}\t{rows}\t{elapsed}\t0"));
+                        }
+                        Err(e) => error_reply(&qid, classify(&e), &e),
                     }
-                    Ok(Err(e)) => error_reply(&id, classify(&e), &e),
-                    Err(join) if join.is_cancelled() => {
-                        error_reply(&id, "query_error", "query was cancelled")
-                    }
-                    Err(join) => error_reply(&id, "internal_error", &join.to_string()),
-                }
+                    let _ = done.send(qid);
+                });
+                state.running = Some((id, task.abort_handle()));
             }
             other => error_reply(&id, "internal_error", &format!("unknown op {other}")),
         }
     }
     Ok(())
+}
+
+fn parse_bytes(v: &str) -> usize {
+    let mut bytes: usize = 0;
+    for c in v.chars() {
+        match c {
+            '0'..='9' => bytes = bytes * 10 + (c as usize - '0' as usize),
+            'K' | 'k' => bytes *= 1024,
+            'M' | 'm' => bytes *= 1024 * 1024,
+            'G' | 'g' => bytes *= 1024 * 1024 * 1024,
+            _ => {}
+        }
+    }
+    bytes
 }
 
 /// The newest metadata JSON in a directory. Iceberg writes one per commit and

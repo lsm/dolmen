@@ -39,6 +39,7 @@ type Sidecar struct {
 	stdout *bufio.Reader
 
 	mu        sync.Mutex
+	writeMu   sync.Mutex
 	nextID    int64
 	closed    bool
 	stray     int
@@ -107,7 +108,7 @@ func (s *Sidecar) call(ctx context.Context, op Op, args ...string) (string, erro
 	s.nextID++
 	id := s.nextID
 	fields := append([]string{strconv.FormatInt(id, 10), string(op)}, args...)
-	if _, err := fmt.Fprintln(s.stdin, strings.Join(fields, "\t")); err != nil {
+	if err := s.write(fields); err != nil {
 		return "", err
 	}
 	return s.readResponse(ctx, strconv.FormatInt(id, 10))
@@ -187,12 +188,15 @@ func errorFrom(fields []string, line string) error {
 	return &QueryError{Class: class, Message: msg}
 }
 
-func (s *Sidecar) SendFireAndForget(op Op, args ...string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	fields := append([]string{"0", string(op)}, args...)
+func (s *Sidecar) write(fields []string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	_, err := fmt.Fprintln(s.stdin, strings.Join(fields, "\t"))
 	return err
+}
+
+func (s *Sidecar) SendFireAndForget(op Op, args ...string) error {
+	return s.write(append([]string{"0", string(op)}, args...))
 }
 
 func (s *Sidecar) Init(ctx context.Context, dataDir string, snapshot int64, table, location string) error {
@@ -212,7 +216,7 @@ func (s *Sidecar) Query(ctx context.Context, sql string) (*Result, error) {
 	defer s.mu.Unlock()
 	s.nextID++
 	id := s.nextID
-	if _, err := fmt.Fprintln(s.stdin, strings.Join([]string{strconv.FormatInt(id, 10), string(OpQuery), sql}, "\t")); err != nil {
+	if err := s.write([]string{strconv.FormatInt(id, 10), string(OpQuery), sql}); err != nil {
 		return nil, err
 	}
 	line, err := s.readResponse(ctx, strconv.FormatInt(id, 10))
