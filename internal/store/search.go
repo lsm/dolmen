@@ -14,6 +14,8 @@ import (
 const (
 	DefaultSearchLimit = 10
 	MaxSearchLimit     = 200
+
+	MaxFulltextQueryBytes = 2048
 )
 
 func searchLimit(n int) int {
@@ -121,6 +123,9 @@ func bareHyphenTerm(match string) bool {
 func (s *Store) SearchFulltext(ctx context.Context, nsName, table, match string, filter string, args []any, includeHidden bool, scope *RowScope, scopeIncarnation Incarnation, page Page) (_ SearchResult, err error) {
 	ctx, span := s.tr.Op(ctx, "SELECT", nsName, table, dbspan.SearchKindKey.String("fulltext"))
 	defer func() { s.tr.End(ctx, span, err) }()
+	if err := ValidateFulltextQuery(match); err != nil {
+		return SearchResult{}, err
+	}
 	n, err := s.ns(nsName)
 	if err != nil {
 		return SearchResult{}, err
@@ -515,4 +520,11 @@ func fulltextScore(rank float64) float64 {
 		return 0
 	}
 	return -rank
+}
+
+func ValidateFulltextQuery(match string) error {
+	if len(match) > MaxFulltextQueryBytes {
+		return invalidf("full-text query is %d bytes, over the %d-byte limit; search for the few words that matter, and narrow with filter instead of listing many terms", len(match), MaxFulltextQueryBytes)
+	}
+	return nil
 }

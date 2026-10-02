@@ -1262,6 +1262,7 @@ Every row has two implicit columns:
 | Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, SQL keywords (`key`, `order`, `group`, `from`, `values` and the rest of SQLite's list) are rejected with a suggested replacement, and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
 | Records per `insert` / `upsert_by_key` | 1,000 | rejected |
+| Full-text `query` | 2,048 bytes | rejected before any work, naming the limit; search for the few words that matter and narrow with `filter` |
 | Ids per `read_rows` | 1,000 | rejected |
 | Natural key fields per `upsert_by_key` | 8 | rejected |
 | Idempotency key length | 1–256 bytes; use printable ASCII (`[ -~]`); omit the field for a non-idempotent insert | empty and over-256-byte keys are rejected; the JSON Schema enforces non-empty printable ASCII for schema-validating clients |
