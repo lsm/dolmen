@@ -14,11 +14,6 @@ type attack struct {
 	SQL  string
 }
 
-// attacksFor builds the battery against paths that are genuinely *outside* the
-// one directory a confined sidecar is allowed, and against files each reader can
-// actually succeed on. An attack that fails because the file is the wrong format
-// proves nothing: "No magic bytes found" is not a refusal, and counting it as one
-// is how a whole battery once reported green while every escape worked.
 func attacksFor(tbl *fixture.Table) []attack {
 	root := rootOf(tbl)
 	outside := tbl.Outside
