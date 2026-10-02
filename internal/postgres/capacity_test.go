@@ -20,7 +20,7 @@ func TestConnCapacityClassifiesExhaustionAsRetryable(t *testing.T) {
 		if de.Code != derr.Timeout {
 			t.Fatalf("%s: classified as %q, want timeout", code, de.Code)
 		}
-		if !strings.Contains(de.Message, "retry") {
+		if !strings.Contains(de.Message, "retry") || (code == "57P03") == strings.Contains(de.Message, "connection limit") {
 			t.Fatalf("%s: message must tell the caller to retry: %q", code, de.Message)
 		}
 	}

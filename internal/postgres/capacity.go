@@ -11,8 +11,14 @@ import (
 
 func connCapacity(err error) error {
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && (pgErr.Code == "53300" || pgErr.Code == "57P03") {
+	if !errors.As(err, &pgErr) {
+		return err
+	}
+	switch pgErr.Code {
+	case "53300":
 		return &derr.Error{Code: derr.Timeout, Message: "the database has no free connection right now (PostgreSQL is at its connection limit); retry shortly, or reduce concurrent subscriptions and requests", Cause: err}
+	case "57P03":
+		return &derr.Error{Code: derr.Timeout, Message: "the database is not accepting connections right now (PostgreSQL is starting up or shutting down); retry shortly", Cause: err}
 	}
 	return err
 }
