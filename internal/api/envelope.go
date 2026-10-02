@@ -289,7 +289,7 @@ func wrapStoreErr(err error) *Error {
 		if code == ErrCodeNotFound {
 			status = http.StatusNotFound
 		}
-		return &Error{Status: status, Code: code, Message: qe.Error(), Cause: qe.Cause()}
+		return &Error{Status: status, Code: code, Message: err.Error(), Cause: qe.Cause()}
 	}
 	if errors.Is(err, store.ErrNotFound) {
 		msg := redactStoreMsg(err.Error())
