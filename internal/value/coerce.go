@@ -163,6 +163,9 @@ func Coerce(f schema.Field, v any) (any, error) {
 		if !ok {
 			return nil, fmt.Errorf("field %q: expected a string", f.Name)
 		}
+		if strings.IndexByte(s, 0) >= 0 {
+			return nil, fmt.Errorf("field %q: value contains a NUL byte (U+0000), which text storage cannot hold; remove it before writing", f.Name)
+		}
 		if !schema.EnumAllows(f.Enum, s) {
 			return nil, fmt.Errorf("field %q: value %q is not one of the allowed enum values (%s)", f.Name, s, strings.Join(f.Enum, ", "))
 		}
