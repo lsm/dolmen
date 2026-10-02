@@ -247,6 +247,12 @@ The server adds an `owner` column and stamps it on every insert; callers never s
 caller sees depends on their verbs: `read` sees every row, any of `create`, `update` or `delete`
 without `read` sees only the rows that caller wrote, and `schema` or `admin` alone sees none.
 
+Two things it does not hide, by design: row ids come from one sequence shared by every owner, so an
+owner can tell from gaps in its ids that others wrote rows in between; and on a table **without**
+`row_access`, a principal holding only `create`, `update` or `delete` still sees the table's total
+`row_count` in `describe_table`, though not the rows. If that count must stay private, use
+`row_access: "own"`, where `row_count` counts only the caller's own rows.
+
 A table can adopt `row_access` later with the `migrate` change `{"op":"set_row_access","value":true}`,
 but only while it is empty, because no operation can assign existing rows to their owners. Turning
 it off keeps the `owner` values and needs `admin` as well as `schema` and `read`, because it widens
