@@ -402,7 +402,7 @@ func batchFunc(ctx context.Context, s *Server, body []byte) (any, error) {
 		return nil, err
 	}
 	if err := s.ensureNamespace(ctx, ns); err != nil {
-		return nil, err
+		return nil, wrapStoreErr(err)
 	}
 	if err := s.resolveBatchScopes(ctx, ns, writes); err != nil {
 		return nil, err
