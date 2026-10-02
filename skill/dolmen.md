@@ -320,7 +320,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 
 ## Quick reference
 
-- Core tools: `describe_server`, `list_namespaces`, `list_tables`, `describe_table`, `insert`, `query`, `search_fulltext`, `tokenize` (takes `namespace`, `table` and `text`), `search_vector`, `changes_since`, `wait_for`, `delete`.
+- Core tools: `describe_server`, `list_namespaces`, `list_tables`, `describe_table`, `insert`, `query`, `search_fulltext`, `tokenize` (takes `namespace`, `table` and `text`), `search_vector`, `changes_since`, `wait_for`, `delete`, `batch` (several writes in one transaction — see below).
 - Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`, `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field), and `secret` (a string encrypted at rest; see below).
 - `secret` fields read back as the fixed mask `"••••"` (or `null` when unset) in every read: `read_rows`, both searches, and `query`. To get the plaintext, name the field in `reveal` on `read_rows`, `search_fulltext` or `search_vector` (`"reveal": ["api_token"]`); `query` never reveals. `query` reads the mask in place of the stored bytes, whatever alias or expression you wrap it in, and search `filter`s evaluate against the ciphertext, so never filter or join on a secret field. Under `-auth on` reveal needs the `reveal` verb (a `forbidden` error names it; `admin` does not imply it), and every reveal is audit-logged without the value. Writing a secret needs the server's secret key; without it the write is refused. Never write a masked value back: `"••••"` is refused as a secret value, because storing it would destroy the real one — pass the real value, `reveal` it first, or omit the field to leave it alone.
 - Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field — enables `search_vector` with `text`; the built-in `local` provider is enabled by default; set `DOLMEN_EMBED_PROVIDER=openai` for an external endpoint, or `none` to disable server-side embeddings), `required: true`, `enum: [values]` (closed vocabulary for a string field — writes with any other value are rejected naming the field, the value, and the allowed list; exact match, no case folding; a declared `default` must be a member), `shape` on a `json` field (`object`, `array`, `array<string>`, `array<number>`, `array<boolean>` or `array<object>` — writes of any other shape are rejected naming the field, the expected shape and what arrived, so send tags as `["db","sqlite"]`, never `"db,sqlite"`; omit it for free-form JSON).
@@ -341,6 +341,11 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
   standard functions is accepted; the error names anything refused. Per-day counts over the last two
   weeks: `SELECT date_trunc('day', started_at::timestamptz AT TIME ZONE 'UTC') AS day, count(*) FROM
   meetings WHERE started_at::timestamptz > now() - interval '14 days' GROUP BY 1 ORDER BY 1`.
+- **`json` fields are stored as text, so cast with `::jsonb` to use JSON operators and functions** in
+  `query` or a `filter`: `prefs::jsonb->>'lang'`, `ingredients::jsonb->0->>'item'`,
+  `jsonb_array_length(tags::jsonb)`, and containment as `tags::jsonb @> ?::jsonb` (bind the operand as
+  a JSON string, e.g. `["vegan"]`). The jsonb key-exists operator `?` cannot be used — it collides
+  with the `?` parameter placeholder — so test membership with `@>` instead.
 {{ end }}- `drop_table` / `drop_namespace` are irreversible deletions and are **not** part of this skill; do not use them. Ask the user to use `dolmen-admin` if a table or namespace must go.
 - `insert` with an `idempotency_key` (any unique string) makes retries replay the original ids; the same key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes.
 - Every table has implicit `id` and `created_at` columns; `SELECT *` includes them.
@@ -366,8 +371,14 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 {{ if eq .Dialect "postgresql" }}### Full-text search syntax (PostgreSQL)
 
 This server indexes `fulltext` fields with PostgreSQL's `english` text-search configuration
-(stemming, stop words and accent handling are PostgreSQL's) and ranks with `ts_rank_cd`, highest
+(stemming and stop words are PostgreSQL's) and ranks with `ts_rank_cd`, highest
 first, ties by id. Ranking is PostgreSQL's own and differs from a SQLite-backed server's BM25.
+
+Two tokenizer limits to know: **accents are not folded** (`cafe` does not match `café`; search and
+store the same form, or normalize before writing), and **CJK and emoji are not word-segmented** — a
+run of CJK with no spaces indexes as one token, so `豆腐` will not match inside `麻婆豆腐`, and emoji
+do not match at all. `tokenize` shows exactly how a given string is indexed; use it when a match is
+missing.
 
 Supported in `query`:
 
