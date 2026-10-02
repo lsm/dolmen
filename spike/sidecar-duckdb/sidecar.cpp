@@ -212,6 +212,8 @@ int Run() {
   const char *unlocked_env = std::getenv("SIDECAR_UNLOCKED");
   const bool unlocked = unlocked_env != nullptr && *unlocked_env == '1';
 
+  std::cerr << "sidecar: starting, data_dir=" << data_dir << " unlocked=" << unlocked << std::endl;
+
   duckdb::DBConfig cfg;
   // stdout is the response channel of the spike protocol, and DuckDB writes its
   // own logging there ("Loading extension iceberg from ..."), which desynchronises
@@ -243,19 +245,57 @@ int Run() {
     cfg.options.allowed_directories.insert(data_dir);
     // enable_external_access = false is about *files*, not about writing. With
     // only the external-access guard, the CI battery found CREATE TABLE, INSERT,
-    // UPDATE and DELETE all still accepted on the in-memory database, because an
+    // UPDATE and DELETE all still accepted on an in-memory database, because an
     // in-memory catalog has nothing external to guard. A query sidecar that must
     // not change anything needs the access mode as well, and read-only is the
     // mechanism that refuses DDL and DML.
-    cfg.options.access_mode = duckdb::AccessMode::READ_ONLY;
   }
-  g_db = new duckdb::DuckDB(nullptr, &cfg);
+  // An in-memory database is read-write by nature, and a READ_ONLY open of one
+  // is refused by DuckDB rather than honoured. A query sidecar still has to be
+  // able to open something, so the main database is a file inside the namespace's
+  // own allowed directory: created read-write once if absent, then reopened
+  // READ_ONLY so DDL and DML are refused. If the read-only open still fails the
+  // sidecar falls back to in-memory and says so on stderr, because a limitation
+  // that is reported can be designed around and one that is silent cannot.
+  const std::string db_path = data_dir + "/.dolmen-sidecar.duckdb";
+  if (!unlocked) {
+    std::error_code fs_ec;
+    if (!std::filesystem::exists(db_path, fs_ec)) {
+      // A READ_ONLY open of a file that does not exist is refused, so the empty
+      // catalog is created once, read-write, and never opened that way again.
+      duckdb::DuckDB seed(db_path.c_str());
+      std::cerr << "sidecar: created " << db_path << std::endl;
+    }
+    cfg.options.access_mode = duckdb::AccessMode::READ_ONLY;
+    try {
+      g_db = new duckdb::DuckDB(db_path.c_str(), &cfg);
+    } catch (const std::exception &e) {
+      std::cerr << "sidecar: read-only open of " << db_path << " failed (" << e.what()
+                << "), falling back to an in-memory database, which cannot refuse DDL" << std::endl;
+      g_db = nullptr;
+    }
+  }
+  if (g_db == nullptr) {
+    duckdb::DBConfig plain;
+    plain.options.log_config.enabled = false;
+    plain.options.maximum_memory = cfg.options.maximum_memory;
+    if (!unlocked) {
+      // Without this the fallback would have no allowed directory at all and would
+      // refuse everything, which looks like a working lock and is not one.
+      plain.options.allowed_directories.insert(data_dir);
+    }
+    g_db = new duckdb::DuckDB(nullptr, &plain);
+    std::cerr << "sidecar: running in-memory" << std::endl;
+  } else {
+    std::cerr << "sidecar: opened " << db_path << " read-only" << std::endl;
+  }
   if (!unlocked) {
     std::string cfg_err;
     if (!Configure(*g_db, ext_dir, cfg_err)) {
       std::cerr << "sidecar: confinement was refused, refusing to run unlocked: " << cfg_err << std::endl;
       return 3;
     }
+    std::cerr << "sidecar: confinement applied" << std::endl;
   }
 
   std::string line;

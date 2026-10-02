@@ -338,7 +338,7 @@ jobs:
           dest="$RUNNER_TEMP/ddb"
           start=$(date +%s)
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cl /nologo /std:c++17 /EHsc /O2 "/I$dest" "/Fe:$dest\sidecar.exe" spike/sidecar-duckdb/sidecar.cpp "$dest\duckdb.lib" /link "/LIBPATH:$dest" >nul
+            cl /nologo /std:c++17 /EHsc /O2 "/I$dest" "/Fe:$dest/sidecar.exe" spike/sidecar-duckdb/sidecar.cpp "$dest/duckdb.lib" /link "/LIBPATH:$dest"
           elif [ "$RUNNER_OS" = "macOS" ]; then
             c++ -std=c++17 -O2 -I"$dest" spike/sidecar-duckdb/sidecar.cpp -L"$dest" -lduckdb -Wl,-rpath,"$dest" -o "$dest/sidecar"
           else
