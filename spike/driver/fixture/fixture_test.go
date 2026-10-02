@@ -126,3 +126,48 @@ func TestTheLiveRowCountIsDerivedRatherThanGuessed(t *testing.T) {
 		t.Fatalf("live rows after the delete is %d, want %d", got, want)
 	}
 }
+
+func TestThePlantedSecretIsOutsideTheNamespaceAndReadableInEveryFormat(t *testing.T) {
+	dir := t.TempDir()
+	ns := filepath.Join(dir, "ns")
+	if err := os.MkdirAll(ns, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Write(context.Background(), ns, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := PlantSecretOutside(ns); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"secret.txt", "secret.csv", "secret.parquet"} {
+		p := filepath.Join(OutsideDir(ns), name)
+		body, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(body) == 0 {
+			t.Fatalf("%s is empty, so a reader would fail on it for the wrong reason", name)
+		}
+		if strings.HasPrefix(p, TableDataDir(ns)+string(os.PathSeparator)) {
+			t.Fatalf("%s is inside the namespace directory, so reading it is not an escape", name)
+		}
+	}
+}
+
+func TestTheSecondNamespaceIsASiblingAndNotInsideTheFirst(t *testing.T) {
+	dir := t.TempDir()
+	ns := filepath.Join(dir, "ns")
+	if err := os.MkdirAll(ns, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Write(context.Background(), ns, 10); err != nil {
+		t.Fatal(err)
+	}
+	other, err := PlantOtherNamespace(ns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(other, ns+string(os.PathSeparator)) {
+		t.Fatalf("the second namespace %s is inside the first %s", other, ns)
+	}
+}

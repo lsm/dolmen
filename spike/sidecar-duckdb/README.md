@@ -69,6 +69,11 @@ The settings go through `DBConfig`, split across two mechanisms because the orde
 `memory_limit` is a `DBConfig` struct field too (`cfg.options.maximum_memory`), for the same reason:
 once `lock_configuration` is on, a `SET` cannot reach it.
 
+**And `DBConfigOptions::access_mode = READ_ONLY`, which is not a substitute for any of the above.**
+With only the external-access guard the CI battery found `CREATE TABLE`, `INSERT`, `UPDATE` and
+`DELETE` all still accepted: `enable_external_access` is about *files*, and an in-memory catalog has
+nothing external to guard. A query sidecar that must not change anything needs both.
+
 `SIDECAR_UNLOCKED=1` starts the sidecar with none of this applied. That is what lets the driver tell a
 refusal that is *our mechanism* from one that is merely an engine default: the same statement runs
 against both starts and the outcomes are compared.

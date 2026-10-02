@@ -241,6 +241,13 @@ int Run() {
   }
   if (!unlocked) {
     cfg.options.allowed_directories.insert(data_dir);
+    // enable_external_access = false is about *files*, not about writing. With
+    // only the external-access guard, the CI battery found CREATE TABLE, INSERT,
+    // UPDATE and DELETE all still accepted on the in-memory database, because an
+    // in-memory catalog has nothing external to guard. A query sidecar that must
+    // not change anything needs the access mode as well, and read-only is the
+    // mechanism that refuses DDL and DML.
+    cfg.options.access_mode = duckdb::AccessMode::READ_ONLY;
   }
   g_db = new duckdb::DuckDB(nullptr, &cfg);
   if (!unlocked) {

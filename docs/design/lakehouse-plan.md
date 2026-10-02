@@ -575,6 +575,45 @@ spike has the better of both worlds: §2.5's lock is now applied where it is act
 also a warning about §2.4 as written — a plan that says "write these settings into `.duckdbrc`" reads
 as confinement and is not, for any process that is not the shell.
 
+`DBConfigOptions::unrecognized_options` is **not** a third way in. The second CI run put
+`extension_directory`, `enable_external_access` and the autoload/autoinstall/secret flags there and
+the process aborted with `The following options were not recognized: allow_persistent_secrets,
+autoload_known_extensions, autoinstall_known_extensions, enable_external_access,
+extension_directory`. It is a bucket for options DuckDB does not know, not a way to set ones it does.
+
+#### 2.8.3a `enable_external_access = false` is about files, not about writing
+
+With the lock finally applied, the battery found a gap that matters more than any single escape in
+it: **`CREATE TABLE`, `INSERT`, `UPDATE` and `DELETE` were all accepted.** `enable_external_access`
+guards *files*, and an in-memory catalog has nothing external to guard, so the whole DDL and DML
+surface was open behind a lock that looked closed. A query sidecar that must not change anything
+needs a second, different mechanism — `DBConfigOptions::access_mode = READ_ONLY`, which is what
+refuses DDL and DML. **`enable_external_access` and `access_mode` are not substitutes**, and a
+confinement story that mentions only the first is half a story.
+
+#### 2.8.3b A test that proves nothing looks exactly like a test that passes
+
+The first battery run reported `read_csv`, `read_text` and `glob` as escapes. They were not: **the
+fixture had planted the secret *inside* the namespace's own data directory**, which is the one
+directory a confined sidecar is supposed to be able to read. The battery was aiming at the one path
+that was always allowed.
+
+The fix generalises to a rule worth keeping:
+
+- **Every attack must target something genuinely outside the allowed set.** The fixture now plants
+  `secret.txt`, `secret.csv` and `secret.parquet` in a *sibling* directory, and a fixture test pins
+  that they are outside.
+- **Every attack must be one that would succeed if unconfined.** `read_parquet` on a text file fails
+  with `No magic bytes found at end of file`, which is not a refusal — it is a reader complaining
+  about a file, and scoring it as a block is how a battery once reported green while every escape
+  worked. The `.parquet` decoy is now a real Parquet file carrying the marker.
+- **A test must also assert that nothing was written outside.** The battery checks that no new file
+  appeared in the outside directory, because `COPY ... TO` and `ATTACH` are escapes that a
+  return-value check alone can miss.
+- **There is a positive control.** `TestTheUnlockedSidecarCanActuallyReadTheSecretSoTheComparisonIsReal`
+  asserts the unlocked sidecar *does* read the secret. Without it, "refused under the lock" could
+  just mean the attack was malformed — which is precisely what happened.
+
 The interesting question is not *whether* an escape is refused but **what refused it**. A refusal
 that also happens with the lock off is an engine *default* — it holds today and nobody owns it; a
 refusal that appears only with the lock on is the *mechanism*, and it is ours.

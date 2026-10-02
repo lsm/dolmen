@@ -25,6 +25,7 @@ type Table struct {
 	Ident    table.Identifier
 	Table    *table.Table
 	DataDir  string
+	Outside  string
 	RowCount int
 	Deleted  int
 }
@@ -116,6 +117,7 @@ func Write(ctx context.Context, dataDir string, rows int) (*Table, error) {
 		Ident:    ident,
 		Table:    tbl,
 		DataDir:  TableDataDir(dataDir),
+		Outside:  OutsideDir(dataDir),
 		RowCount: rows + 1,
 		Deleted:  len(deleted),
 	}, nil
@@ -259,6 +261,55 @@ func recordReader(recs []Record) array.RecordReader {
 
 func TableDataDir(dataDir string) string {
 	return filepath.Join(dataDir, NSName, TableName)
+}
+
+func OutsideDir(dataDir string) string {
+	return filepath.Join(filepath.Dir(dataDir), "outside")
+}
+
+func PlantOutside(dataDir, name, body string) (string, error) {
+	dir := OutsideDir(dataDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	p := filepath.Join(dir, name)
+	return p, os.WriteFile(p, []byte(body), 0o644)
+}
+
+func PlantSecretOutside(dataDir string) error {
+	const marker = "TOP-SECRET-VALUE"
+	if _, err := PlantOutside(dataDir, "secret.txt", marker+"\n"); err != nil {
+		return err
+	}
+	if _, err := PlantOutside(dataDir, "secret.csv", "col\n"+marker+"\n"); err != nil {
+		return err
+	}
+	dir := OutsideDir(dataDir)
+	f, err := os.Create(filepath.Join(dir, "secret.parquet"))
+	if err != nil {
+		return err
+	}
+	type secret struct {
+		Col string `parquet:"col"`
+	}
+	w := parquet.NewGenericWriter[secret](f)
+	if _, err := w.Write([]secret{{Col: marker}}); err != nil {
+		f.Close()
+		return err
+	}
+	if err := w.Close(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func PlantOtherNamespace(dataDir string) (string, error) {
+	dir := filepath.Join(filepath.Dir(dataDir), "other", TableName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, os.WriteFile(filepath.Join(dir, "x.parquet"), []byte("not-a-parquet-file"), 0o644)
 }
 
 func SnapshotIDs(t *Table) []int64 {

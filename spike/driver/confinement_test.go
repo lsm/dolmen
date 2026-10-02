@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/lsm/dolmen/spike/driver/fixture"
 )
 
 type attack struct {
@@ -12,25 +14,34 @@ type attack struct {
 	SQL  string
 }
 
-func attacksFor(root string) []attack {
-	secret := filepath.Join(root, "secret.txt")
-	other := filepath.Join(root, "other", "events")
+// attacksFor builds the battery against paths that are genuinely *outside* the
+// one directory a confined sidecar is allowed, and against files each reader can
+// actually succeed on. An attack that fails because the file is the wrong format
+// proves nothing: "No magic bytes found" is not a refusal, and counting it as one
+// is how a whole battery once reported green while every escape worked.
+func attacksFor(tbl *fixture.Table) []attack {
+	root := rootOf(tbl)
+	outside := tbl.Outside
+	other := filepath.Join(filepath.Dir(root), "other", fixture.TableName)
+	text := filepath.Join(outside, "secret.txt")
+	csv := filepath.Join(outside, "secret.csv")
+	parquet := filepath.Join(outside, "secret.parquet")
 	return []attack{
-		{"read_parquet_outside_the_namespace", "SELECT * FROM read_parquet('" + secret + "')"},
-		{"read_csv_outside_the_namespace", "SELECT * FROM read_csv('" + secret + "')"},
-		{"read_text_outside_the_namespace", "SELECT * FROM read_text('" + secret + "')"},
-		{"glob_outside_the_namespace", "SELECT * FROM glob('" + filepath.Join(root, "*") + "')"},
-		{"glob_the_whole_data_dir", "SELECT * FROM glob('" + root + "/**/*')"},
+		{"read_parquet_outside_the_namespace", "SELECT * FROM read_parquet('" + parquet + "')"},
+		{"read_csv_outside_the_namespace", "SELECT * FROM read_csv('" + csv + "')"},
+		{"read_text_outside_the_namespace", "SELECT * FROM read_text('" + text + "')"},
+		{"glob_outside_the_namespace", "SELECT * FROM glob('" + filepath.Join(outside, "*") + "')"},
+		{"glob_the_whole_data_dir", "SELECT * FROM glob('" + outside + "/**/*')"},
 		{"a_url_table", "SELECT * FROM read_parquet('https://example.invalid/x.parquet')"},
 		{"an_s3_url_table", "SELECT * FROM read_parquet('s3://bucket/x.parquet')"},
-		{"attach_another_database", "ATTACH '" + root + "/other.db' AS other"},
-		{"copy_rows_out_to_a_file", "COPY (SELECT * FROM events) TO '" + filepath.Join(root, "leak.csv") + "'"},
+		{"attach_another_database", "ATTACH '" + filepath.Join(outside, "fresh.db") + "' AS other"},
+		{"copy_rows_out_to_a_file", "COPY (SELECT * FROM events) TO '" + filepath.Join(outside, "leak.csv") + "'"},
 		{"copy_rows_out_to_stdout", "COPY (SELECT * FROM events) TO STDOUT"},
 		{"install_an_extension", "INSTALL httpfs"},
 		{"load_an_extension", "LOAD httpfs"},
 		{"read_the_environment", "SELECT getenv('HOME')"},
 		{"read_another_namespaces_directory", "SELECT * FROM read_parquet('" + filepath.Join(other, "x.parquet") + "')"},
-		{"create_an_external_table", "CREATE EXTERNAL TABLE stolen (a INT) LOCATION '" + root + "'"},
+		{"create_an_external_table", "CREATE EXTERNAL TABLE stolen (a INT) LOCATION '" + outside + "'"},
 		{"set_a_setting_after_the_lock", "SET memory_limit='1GB'"},
 		{"reset_a_setting_after_the_lock", "RESET memory_limit"},
 		{"a_pragma", "PRAGMA version"},
@@ -43,123 +54,140 @@ func attacksFor(root string) []attack {
 	}
 }
 
-func plantSecrets(t *testing.T, root string) {
+func plantEverything(t *testing.T, tbl *fixture.Table) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(root, "secret.txt"), []byte("TOP-SECRET-VALUE\n"), 0o644); err != nil {
-		t.Fatal(err)
+	if err := fixture.PlantSecretOutside(rootOf(tbl)); err != nil {
+		t.Fatalf("plant the secret outside the namespace: %v", err)
 	}
-	other := filepath.Join(root, "other", "events")
-	if err := os.MkdirAll(other, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(other, "x.parquet"), []byte("not-a-parquet-file"), 0o644); err != nil {
-		t.Fatal(err)
+	if _, err := fixture.PlantOtherNamespace(rootOf(tbl)); err != nil {
+		t.Fatalf("plant a second namespace: %v", err)
 	}
 }
 
-func TestEveryEscapeIsRefusedUnderTheLockAndSaysWhichMechanismRefusedIt(t *testing.T) {
+func TestEveryEscapeIsRefusedUnderTheLock(t *testing.T) {
 	tbl := newFixture(t, 20)
-	_, lockedSidecar, root := locked(t, tbl)
-	plantSecrets(t, root)
+	_, sc, _ := locked(t, tbl)
+	plantEverything(t, tbl)
 
-	for _, a := range attacksFor(root) {
+	for _, a := range attacksFor(tbl) {
 		t.Run(a.Name, func(t *testing.T) {
-			res, err := queryWithin(t, lockedSidecar, a.SQL, attackBudget)
+			res, err := queryWithin(t, sc, a.SQL, attackBudget)
 			if err == nil {
-				t.Fatalf("%s was accepted under the lock: %+v", a.SQL, res.Rows)
-			}
-			msg := err.Error()
-			for _, leak := range []string{"TOP-SECRET-VALUE", "leak.csv"} {
-				if strings.Contains(msg, leak) {
-					t.Fatalf("the refusal message carried %q out of the namespace: %s", leak, msg)
-				}
+				t.Fatalf("%s was accepted under the lock, returning %q", a.SQL, res.Rows)
 			}
 			if got := errorClass(err); got == "transport" {
 				t.Fatalf("the sidecar broke instead of refusing %q: %v", a.SQL, err)
 			}
-			t.Logf("%s refused with class=%s: %s", a.Name, errorClass(err), msg)
+			t.Logf("%s refused with class=%s: %s", a.Name, errorClass(err), err.Error())
 		})
+	}
+}
+
+func TestTheSecretOutsideTheNamespaceNeverComesBackInAnyResult(t *testing.T) {
+	tbl := newFixture(t, 20)
+	_, sc, _ := locked(t, tbl)
+	plantEverything(t, tbl)
+
+	for _, a := range attacksFor(tbl) {
+		res, err := queryWithin(t, sc, a.SQL, attackBudget)
+		if err != nil {
+			continue
+		}
+		for _, row := range res.Rows {
+			if strings.Contains(row, "TOP-SECRET-VALUE") {
+				t.Fatalf("%q returned the secret from outside the namespace: %s", a.SQL, row)
+			}
+		}
 	}
 }
 
 func TestTheSidecarStillServesLegitimateQueriesAfterEveryEscapeWasRefused(t *testing.T) {
 	tbl := newFixture(t, 20)
-	_, lockedSidecar, root := locked(t, tbl)
-	plantSecrets(t, root)
+	_, sc, _ := locked(t, tbl)
+	plantEverything(t, tbl)
 
-	for _, a := range attacksFor(root) {
-		_, _ = queryWithin(t, lockedSidecar, a.SQL, attackBudget)
+	for _, a := range attacksFor(tbl) {
+		_, _ = queryWithin(t, sc, a.SQL, attackBudget)
 	}
-	res := mustQuery(t, lockedSidecar, "SELECT count(*) FROM events")
+	res := mustQuery(t, sc, "SELECT count(*) FROM events")
 	if res.Rows == nil || res.Rows[0] == "" {
 		t.Fatal("the sidecar stopped answering legitimate queries after the escape attempts")
 	}
-	if _, err := query(t, lockedSidecar, "SELECT * FROM read_parquet('"+filepath.Join(root, "secret.txt")+"')"); err == nil {
+	if _, err := queryWithin(t, sc, "SELECT * FROM read_text('"+filepath.Join(tbl.Outside, "secret.txt")+"')", attackBudget); err == nil {
 		t.Fatal("the lock was lost after the escape attempts")
 	}
 }
 
 func TestWhichRefusalsAreTheMechanismAndWhichAreOnlyDefaultsThatCouldBeFlipped(t *testing.T) {
 	tbl := newFixture(t, 20)
-	_, lockedSidecar, root := locked(t, tbl)
-	plantSecrets(t, root)
-
+	_, lockedSidecar, _ := locked(t, tbl)
+	plantEverything(t, tbl)
 	_, unlockedSidecar, _ := unlocked(t, tbl)
 
 	var mechanism, defaults []string
-	for _, a := range attacksFor(root) {
-		_, lockedErr := queryWithin(t, lockedSidecar, a.SQL, attackBudget)
+	for _, a := range attacksFor(tbl) {
+		lockedRes, lockedErr := queryWithin(t, lockedSidecar, a.SQL, attackBudget)
 		_, unlockedErr := queryWithin(t, unlockedSidecar, a.SQL, attackBudget)
-		switch {
-		case lockedErr == nil:
+		if lockedErr == nil {
+			for _, row := range lockedRes.Rows {
+				if strings.Contains(row, "TOP-SECRET-VALUE") {
+					t.Errorf("%s LEAKED the secret: %s", a.Name, row)
+				}
+			}
 			t.Errorf("%s SUCCEEDED under the lock, so the confinement does not hold", a.Name)
-		case unlockedErr == nil:
-			mechanism = append(mechanism, a.Name)
-			t.Logf("mechanism: %s is refused only because of the lock", a.Name)
-		default:
-			defaults = append(defaults, a.Name)
-			t.Logf("default: %s is refused with the lock off too, so it rests on an engine default", a.Name)
-		}
-	}
-	t.Logf("mechanism (%d): %v", len(mechanism), mechanism)
-	t.Logf("defaults (%d): %v", len(defaults), defaults)
-}
-
-func TestAnotherNamespacesRowsAreNotReachableThroughTheRegisteredTable(t *testing.T) {
-	tbl := newFixture(t, 20)
-	_, sc, root := locked(t, tbl)
-	plantSecrets(t, root)
-
-	other := filepath.Join(root, "other", "events")
-	for _, sql := range []string{
-		"SELECT * FROM read_parquet('" + filepath.Join(other, "*.parquet") + "')",
-		"SELECT * FROM '" + filepath.Join(other, "x.parquet") + "'",
-		"ATTACH '" + other + "' (TYPE ICEBERG)",
-	} {
-		if _, err := queryWithin(t, sc, sql, attackBudget); err == nil {
-			t.Errorf("%q reached into another namespace's directory", sql)
-		}
-	}
-}
-
-func TestTheSecretFileOutsideTheNamespaceNeverAppearsInAnyResult(t *testing.T) {
-	tbl := newFixture(t, 20)
-	_, sc, root := locked(t, tbl)
-	plantSecrets(t, root)
-
-	for _, sql := range []string{
-		"SELECT * FROM events",
-		"SELECT * FROM read_parquet('" + filepath.Join(root, "**", "*.parquet") + "')",
-		"SELECT * FROM information_schema.tables",
-	} {
-		res, err := queryWithin(t, sc, sql, attackBudget)
-		if err != nil {
 			continue
 		}
-		for _, row := range res.Rows {
-			if strings.Contains(row, "TOP-SECRET-VALUE") {
-				t.Fatalf("%q returned the secret: %s", sql, row)
-			}
+		if unlockedErr == nil {
+			mechanism = append(mechanism, a.Name)
+			t.Logf("mechanism: %s is refused only because of the lock", a.Name)
+			continue
+		}
+		defaults = append(defaults, a.Name)
+		t.Logf("default: %s is refused with the lock off too, so it rests on an engine default", a.Name)
+	}
+	t.Logf("SUMMARY mechanism=%d default=%d", len(mechanism), len(defaults))
+	t.Logf("SUMMARY mechanism_list=%v", mechanism)
+	t.Logf("SUMMARY default_list=%v", defaults)
+}
+
+func TestTheUnlockedSidecarCanActuallyReadTheSecretSoTheComparisonIsReal(t *testing.T) {
+	tbl := newFixture(t, 20)
+	_, unlockedSidecar, _ := unlocked(t, tbl)
+	plantEverything(t, tbl)
+
+	sql := "SELECT * FROM read_text('" + filepath.Join(tbl.Outside, "secret.txt") + "')"
+	res, err := queryWithin(t, unlockedSidecar, sql, attackBudget)
+	if err != nil {
+		t.Skipf("the unlocked sidecar could not read the secret either, so this run cannot separate mechanism from default: %v", err)
+	}
+	found := false
+	for _, row := range res.Rows {
+		if strings.Contains(row, "TOP-SECRET-VALUE") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the unlocked sidecar read the file but returned %q, so the control does not prove the secret was reachable", res.Rows)
+	}
+}
+
+func TestNothingTheSidecarWroteEscapedIntoTheDirectoryOutsideTheNamespace(t *testing.T) {
+	tbl := newFixture(t, 20)
+	_, sc, _ := locked(t, tbl)
+	plantEverything(t, tbl)
+
+	for _, a := range attacksFor(tbl) {
+		_, _ = queryWithin(t, sc, a.SQL, attackBudget)
+	}
+	entries, err := os.ReadDir(tbl.Outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		switch e.Name() {
+		case "secret.txt", "secret.csv", "secret.parquet":
+		default:
+			t.Errorf("the sidecar created %s outside the namespace", e.Name())
 		}
 	}
 }
