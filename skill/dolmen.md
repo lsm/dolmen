@@ -122,6 +122,12 @@ up in a result, a count, or an error. Never send an `owner` field; the server st
 supplying it is refused like any unknown field. Idempotency keys are yours alone, so the same
 string used by someone else is a different key.
 
+Two things `row_access` does not hide: row ids are shared by every owner, so gaps in the ids you
+see mean other owners wrote rows in between; and on a table **without** `row_access`, a caller
+holding only `create`, `update` or `delete` still sees the table's total `row_count` in
+`describe_table`, though not the rows. Use `row_access: "own"` when even that count must stay
+private — there, `row_count` counts only your own rows.
+
 With authentication off, a `filter` is a plain SQL WHERE expression in the server's dialect
 (`filter_dialect` in `capabilities`). **Filters under authentication** are checked against a fixed allowlist, in SQLite's semantics on every engine: comparison, arithmetic,
 `||` and boolean operators, `LIKE`, `IN`, `BETWEEN`, `IS`, `CASE`, and the functions `abs`,
