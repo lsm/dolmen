@@ -112,11 +112,14 @@ func TestAQueryWhoseWorkingSetExceedsTheCeilingSpillsOrIsRefused(t *testing.T) {
 	if ceiling == "" {
 		t.Skip("SIDECAR_TIGHT_MEMORY is unset")
 	}
-	const rows = 3000000
-	tbl := newFixture(t, rows)
+	const rows = 10000000
 	e := requireEngine(t)
+	tbl, err := fixture.WriteBatched(context.Background(), t.TempDir(), rows, 250000)
+	if err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
 	root := rootOf(tbl)
-	want := fixture.ExpectedLiveRows(rows, fixture.DeletedPositions())
+	want := rows
 	const heavy = "SELECT count(*) FROM (SELECT id, body FROM events GROUP BY id, body) AS g"
 
 	for _, lock := range []bool{true, false} {

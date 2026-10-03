@@ -170,7 +170,7 @@ jobs:
           SIDECAR_BIN: ${{ runner.temp }}/ddb/sidecar
           SIDECAR_ENGINE: duckdb
           SIDECAR_EXT_DIR: ${{ runner.temp }}/ddb/ext
-          SIDECAR_TIGHT_MEMORY: 64MB
+          SIDECAR_TIGHT_MEMORY: 512MB
         run: go test -count=1 -v -timeout 40m ./...
       - name: Check no comments
         working-directory: .
