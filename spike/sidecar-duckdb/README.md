@@ -85,7 +85,8 @@ against both starts and the outcomes are compared.
 `iceberg_scan`'s `version` parameter takes a **tag**, not a snapshot id. Pass it a numeric id and it
 is **silently ignored** — the scan reads the current snapshot and returns plausible, wrong answers.
 The correct parameter is `snapshot_from_id => <id>`, verified against a three-snapshot fixture
-(50 / 51 / 51 rows across the three ids, matching the unpinned read).
+(50 rows seeded, 51 after the late arrival, 49 after the two position deletes; the unpinned read
+matches the last). `readback_test.go` pins the first and the last.
 
 This is the mirror image of the escape holes the confinement battery hunts: it does not let a reader
 out of its namespace, it lets a *time-travel* reader quietly stop travelling, and it does so without

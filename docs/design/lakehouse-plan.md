@@ -522,8 +522,10 @@ to debug: the failure mode is wrong answers, not an error.
 *tag* parameter; pass it a snapshot id and the scan silently reads the **current** snapshot. A
 reader's time-travel test then passes at the current snapshot and fails only if it happens to
 compare counts. The correct option is `snapshot_from_id => <id>`, which was verified against a
-three-snapshot fixture (50 / 51 / 51 rows across the three ids, with the unpinned read matching the
-current one). **This is the kind of hole the confinement battery exists to catch, in the pinning
+three-snapshot fixture: 50 rows seeded, 51 after the late arrival, and 49 once the two position
+deletes commit, with the unpinned read matching the current one. An earlier draft recorded 50 / 51 /
+51, which was the fixture bug of §2.8.2 (the deletes aimed at the wrong data file) and not the
+engine. **This is the kind of hole the confinement battery exists to catch, in the pinning
 direction instead of the escape direction.**
 
 **DataFusion has no cooperative per-query cancel.** There is no `duckdb_interrupt` equivalent, so
