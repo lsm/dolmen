@@ -55,7 +55,7 @@ answered "no table registered" while every `init` reported success.
 <id>\terror\t<class>\t<message>
 ```
 
-where `class` is one of `not_found`, `query_error`, `not_supported`,
+where `class` is one of `not_found`, `query_error`, `not_supported`, `canceled`,
 `engine_unavailable`, `internal_error` — the subset of `internal/derr` the two
 engines can distinguish, so a driver-side error can be compared across them.
 

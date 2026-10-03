@@ -444,8 +444,8 @@ the main graph, each with its own CI job:
 
 | | path | language | lines | module boundary |
 |---|---|---|---|---|
-| DuckDB | `spike/sidecar-duckdb/` | C++ | 452 | links prebuilt `libduckdb` |
-| DataFusion | `spike/sidecar-datafusion/` | Rust | 358 | `spike/sidecar-datafusion/Cargo.toml` |
+| DuckDB | `spike/sidecar-duckdb/` | C++ | 469 | links prebuilt `libduckdb` |
+| DataFusion | `spike/sidecar-datafusion/` | Rust | 382 | `spike/sidecar-datafusion/Cargo.toml` |
 
 Both speak one deliberately trivial protocol (`spike/driver/PROTOCOL.md`): tab-separated framed
 requests on stdin, framed rows and errors on stdout. Not the final wire — no streaming, no
@@ -465,11 +465,12 @@ tests.
   `windows-amd64` — every platform in §3's `PLATFORMS` list that DuckDB targets.
 - `iceberg` and `httpfs` are published prebuilt for **all five** platform tokens
   (`linux_amd64`, `linux_arm64`, `osx_amd64`, `osx_arm64`, `windows_amd64`) — verified HTTP 200 on
-  each, against a host that returns 404 for `quack` (§2.7).
+  each, against a host that returns 404 for `quack` (§2.7). `spike/fetch-sidecar-deps.sh` pins all ten
+  digests. CI builds and runs four of the five; `darwin-amd64` is pinned but has no packaging leg.
 - **A pre-placed extension file loads with no network at all**, which is the property that matters:
   the extension directory is populated before the process starts and `LOAD iceberg` reads from disk.
 
-So the DuckDB packaging cost is: download two artifacts, compile ~270 lines of C++, ship the
+So the DuckDB packaging cost is: download two artifacts, compile about 470 lines of C++, ship the
 extension files alongside. No C++ toolchain beyond a compiler, no 40-minute DuckDB build, no
 `ccache`, no C++ in the release pipeline beyond one small `g++` invocation. **Measured:
 seconds and about 100 KB** for the shared-library build on `linux-amd64`.

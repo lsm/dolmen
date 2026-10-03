@@ -44,6 +44,8 @@ ext_digest() {
   linux_amd64/httpfs)    echo 19e6906934a845487c96f9c94beee250c71e32bb9be260eb27ad96939a1df5f0 ;;
   linux_arm64/iceberg)   echo 62dfc3a9a82c6da8cf9a727bd641f0eb83f7a227885419ecd7ebcc74ac3dac64 ;;
   linux_arm64/httpfs)    echo b18472a0e85cbf15ca4ebbe335173f87b62a074cd0f26072d4c756205c6239d0 ;;
+  osx_amd64/iceberg)     echo 42480926f04a683ddba7d0af6bef9d2467abc4de4fe497f8878200a1f8209400 ;;
+  osx_amd64/httpfs)      echo 788e9be58359aef4cf9ecc58ea053ba4cdb8d802729f1adbd5101c85ad36247f ;;
   osx_arm64/iceberg)     echo 48766dd86177c1e4b163618b9d8f81639e9907ec0d5513fc309fdf6f4445a3cb ;;
   osx_arm64/httpfs)      echo b9f9ca8e64d913a80d6666a370e0e518ee4cc8ecb9990a2b9d2273204d8caad4 ;;
   windows_amd64/iceberg) echo e4efc0d244258761cbb8671d88c98864379157a7bb690735e85217f0b7708188 ;;

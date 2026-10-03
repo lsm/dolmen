@@ -21,14 +21,14 @@ extensions.duckdb.org/<version>/<platform>/httpfs.duckdb_extension.gz
 
 **The extension files are placed in the extension directory before the process starts and loaded by
 path, so nothing downloads at runtime.** Both are published for every platform dolmen releases for,
-which is why this spike needs no C++ toolchain beyond a compiler: the sidecar is ~270 lines of C++
+which is why this spike needs no C++ toolchain beyond a compiler: the sidecar is about 470 lines of C++
 against a prebuilt library.
 
 One assumption this replaces, recorded in the plan as wrong:
 
 - **No `make GEN=ninja EXTENSIONS='iceberg;httpfs'`.** A prebuilt library plus prebuilt extensions is
   enough, so there is no 40-minute DuckDB build per platform and no `ccache` to carry. Measured:
-  **5 seconds and 64,632 bytes** for the shared-library build on `linux-amd64`.
+  **a few seconds and 106,656 bytes** for the shared-library build on `linux-amd64`, per the CI table in the plan's §2.8.4.
 
 **A fully static build is not available, though the artifacts look like they should provide one.**
 The `-musl` zips ship `libduckdb_static.a` (83,882,636 bytes at v1.5.6) for both `linux_amd64` and
