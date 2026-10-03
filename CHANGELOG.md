@@ -4,6 +4,10 @@
 
 ### Added
 
+- Spike 3 for the lakehouse query sidecar compared DuckDB with DataFusion, and DuckDB was chosen. The
+  DuckDB sidecar and the Go driver that attacks it stay under `spike/`, outside dolmen's `go.mod`;
+  the comparison is recorded in `docs/design/lakehouse-plan.md` §2.8.
+
 - **`batch`: several writes in one transaction.** Send an ordered `writes` list against one namespace
   and they commit together or not at all, with one result per write in the order you sent them, one
   change-feed commit, and one `idempotency_key` covering the whole batch (a replay returns the stored

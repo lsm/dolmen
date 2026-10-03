@@ -129,6 +129,165 @@ jobs:
           DOLMEN_TEST_DUCKDB: ${{ runner.temp }}/duckdb/duckdb
         run: go test -count=1 -v ./internal/duckdblockdown
 
+  sidecar-duckdb:
+    runs-on: ubuntu-latest
+    env:
+      DOLMEN_DUCKDB_PLATFORM: linux_amd64
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: spike/driver/go.mod
+      - name: Build the DuckDB sidecar against the prebuilt library
+        working-directory: spike/sidecar-duckdb
+        run: |
+          set -eu
+          dest="$RUNNER_TEMP/ddb"
+          ../fetch-sidecar-deps.sh lib libduckdb-linux-amd64.zip "$dest"
+          ../fetch-sidecar-deps.sh ext "$DOLMEN_DUCKDB_PLATFORM" "$dest/ext"
+          ls -la "$dest/ext"
+          start=$(date +%s)
+          g++ -std=c++17 -O2 -I"$dest" sidecar.cpp -L"$dest" -lduckdb -Wl,-rpath,"$dest" -o "$dest/sidecar"
+          echo "build seconds: $(( $(date +%s) - start ))"
+      - name: Record the DuckDB sidecar packaging facts
+        working-directory: spike/sidecar-duckdb
+        run: |
+          set -eu
+          dest="$RUNNER_TEMP/ddb"
+          echo "PACKAGING engine=duckdb binary_bytes=$(stat -c %s "$dest/sidecar")"
+          echo "PACKAGING engine=duckdb libduckdb_bytes=$(stat -c %s "$dest/libduckdb.so")"
+          echo "PACKAGING engine=duckdb iceberg_bytes=$(stat -c %s "$dest/ext/iceberg.duckdb_extension")"
+          echo "PACKAGING engine=duckdb httpfs_bytes=$(stat -c %s "$dest/ext/httpfs.duckdb_extension")"
+          if ldd "$dest/sidecar" | grep -qv 'linux-vdso\|ld-linux\|libstdc++\|libm.so\|libgcc_s\|libc.so'; then
+            echo "PACKAGING engine=duckdb linux_static=no unexpected=$(ldd "$dest/sidecar" | tr '\n' ' ')"
+          else
+            echo "PACKAGING engine=duckdb linux_static=yes"
+          fi
+          "$dest/sidecar" 2>&1 | head -1 || true
+      - name: Read-back, confinement, lifecycle and packaging tests
+        working-directory: spike/driver
+        env:
+          SIDECAR_BIN: ${{ runner.temp }}/ddb/sidecar
+          SIDECAR_ENGINE: duckdb
+          SIDECAR_EXT_DIR: ${{ runner.temp }}/ddb/ext
+        run: go test -count=1 -v -timeout 40m ./...
+      - name: Check no comments
+        working-directory: .
+        run: go run github.com/lsm/nocomment-for-agents/go@016ad219e84b9b78ca66ff1b66a7729218030c12 --check
+      - name: Perf set on a 10M row table
+        working-directory: spike/driver
+        env:
+          SIDECAR_BIN: ${{ runner.temp }}/ddb/sidecar
+          SIDECAR_ENGINE: duckdb
+          SIDECAR_EXT_DIR: ${{ runner.temp }}/ddb/ext
+          DOLMEN_SPIKE_PERF: "1"
+        run: go test -count=1 -v -timeout 60m -run 'Perf|FirstQueryQuickly' ./...
+
+  sidecar-packaging:
+    name: sidecar packaging ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-amd64
+            runner: ubuntu-latest
+            ext: linux_amd64
+            asset: libduckdb-linux-amd64.zip
+            static_asset: libduckdb-linux-amd64-musl.zip
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            ext: linux_arm64
+            asset: libduckdb-linux-arm64.zip
+            static_asset: libduckdb-linux-arm64-musl.zip
+          - platform: darwin-arm64
+            runner: macos-14
+            ext: osx_arm64
+            asset: libduckdb-osx-universal.zip
+            static_asset: ""
+          - platform: windows-amd64
+            runner: windows-latest
+            ext: windows_amd64
+            asset: libduckdb-windows-amd64.zip
+            static_asset: ""
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: spike/driver/go.mod
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Fetch the DuckDB library and the extensions that must be pre-placed
+        shell: bash
+        run: |
+          set -eu
+          dest="$RUNNER_TEMP/ddb"
+          spike/fetch-sidecar-deps.sh lib "${{ matrix.asset }}" "$dest"
+          spike/fetch-sidecar-deps.sh ext "${{ matrix.ext }}" "$dest/ext"
+          ls "$dest" "$dest/ext"
+      - name: Record the extension sizes and that they are pre-placed rather than downloaded
+        shell: bash
+        run: |
+          set -eu
+          dest="$RUNNER_TEMP/ddb"
+          for ext in iceberg httpfs; do
+            f="$dest/ext/$ext.duckdb_extension"
+            if [ "$(uname -s)" = Darwin ]; then
+              echo "PACKAGING platform=${{ matrix.platform }} ext=$ext bytes=$(stat -f %z "$f")"
+            else
+              echo "PACKAGING platform=${{ matrix.platform }} ext=$ext bytes=$(stat -c %s "$f")"
+            fi
+          done
+      - name: Build and measure the DuckDB sidecar
+        shell: bash
+        env:
+          MSYS2_ARG_CONV_EXCL: "*"
+          MSYS_NO_PATHCONV: "1"
+        run: |
+          set -eu
+          dest="$RUNNER_TEMP/ddb"
+          start=$(date +%s)
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cl /nologo /std:c++17 /EHsc /O2 "/I$dest" "/Fe:$dest/sidecar.exe" spike/sidecar-duckdb/sidecar.cpp "$dest/duckdb.lib" /link "/LIBPATH:$dest"
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            c++ -std=c++17 -O2 -I"$dest" spike/sidecar-duckdb/sidecar.cpp -L"$dest" -lduckdb -Wl,-rpath,"$dest" -o "$dest/sidecar"
+          else
+            g++ -std=c++17 -O2 -I"$dest" spike/sidecar-duckdb/sidecar.cpp -L"$dest" -lduckdb -Wl,-rpath,"$dest" -o "$dest/sidecar"
+          fi
+          echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb build_seconds=$(( $(date +%s) - start ))"
+          if [ "$(uname -s)" = Darwin ]; then
+            echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb binary_bytes=$(stat -f %z "$dest/sidecar")"
+          else
+            echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb binary_bytes=$(stat -c %s "$dest/sidecar")"
+          fi
+      - name: Record whether the Linux DuckDB sidecar is fully static
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          dest="$RUNNER_TEMP/ddb"
+          if [ -z "${{ matrix.static_asset }}" ]; then
+            echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb static_lib=absent linux_static=unknown"
+            exit 0
+          fi
+          spike/fetch-sidecar-deps.sh lib "${{ matrix.static_asset }}" "$dest/static"
+          echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb static_lib_bytes=$(stat -c %s "$dest/static/libduckdb_static.a")"
+          start=$(date +%s)
+          if g++ -std=c++17 -O2 -static -I"$dest/static" spike/sidecar-duckdb/sidecar.cpp \
+            "$dest/static/libduckdb_static.a" -ldl -lpthread -lm -o "$dest/sidecar-static" \
+            2>"$dest/static-link.log"; then
+            echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb static_build_seconds=$(( $(date +%s) - start ))"
+            echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb static_binary_bytes=$(stat -c %s "$dest/sidecar-static")"
+            if ldd "$dest/sidecar-static" 2>&1 | grep -q 'not a dynamic executable\|statically linked'; then
+              echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb linux_static=yes"
+            else
+              echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb linux_static=no dynamic=$(ldd "$dest/sidecar-static" | tr '\n' ' ')"
+            fi
+          else
+            echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb static_build_seconds=$(( $(date +%s) - start ))"
+            echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb linux_static=no static_link=failed"
+            grep -oE "undefined reference to \`[^']+'" "$dest/static-link.log" | sort -u | sed 's/^/PACKAGING platform='"${{ matrix.platform }}"' engine=duckdb static_undefined=/' || true
+          fi
+
   postgres-foundation:
     runs-on: ubuntu-latest
     services:

@@ -293,10 +293,15 @@ settings that do it, and one correction that matters more than the list:
 - `lock_configuration = true` — set **last**. The ordering is forced, and it is the reverse of the
   obvious one: `allowed_directories` **cannot** be set once `enable_external_access` is false
   (`Cannot change allowed_directories when enable_external_access is disabled`), so the list goes
-  first and external access is closed second. `enable_external_access` also cannot be set from
-  inside a running session at all, and neither can be set once the configuration is locked, so the
-  only place any of this works is process startup — which for the CLI means a `.duckdbrc` under a
-  per-namespace `HOME`.
+  first and external access is closed second. External access can be turned off by a `SET` on an open
+  connection but never turned back on, and nothing can be changed once the configuration is locked,
+  so the whole sequence has to run before any caller SQL does. **How that is spelled depends on the
+  process, and getting it wrong fails open silently: `.duckdbrc` is read by the `duckdb` shell and
+  *not* by an embedded library.** §2.5 measured this against the CLI, where a `.duckdbrc` under a
+  per-namespace `HOME` is the mechanism. §2.8.3 measured the same lock inside a sidecar, where
+  `allowed_directories` and `access_mode` are `DBConfig` fields at open time and the rest are `SET`
+  on the connection, ending with `lock_configuration`. A sidecar that writes a `.duckdbrc` looks
+  configured and is not.
 
 Every attack the table below lists is blocked, measured rather than assumed:
 
@@ -426,6 +431,306 @@ unacceptable because no setting reaches a dot-command. The middle option does no
 may grow a listener flag. The `duckdb-lockdown` CI job does not currently assert either, and a
 change there would not fail a build — so re-check this before slice 11 rather than trusting it to
 stay true.
+
+### 2.8 Spike 3 — DuckDB against DataFusion as the sidecar's engine
+
+Marc's direction (2026-10-02) settles the shape and leaves the engine open: the lakehouse ships
+`query`, it runs in a **sidecar process** that dolmen talks to over a pipe, and dolmen itself stays
+`CGO_ENABLED=0`. Linking an engine in with cgo is rejected — an engine crash or a memory-safety bug
+would take down or expose the whole server. The open question is which engine the sidecar runs.
+
+Two minimal sidecars, both outside dolmen's `go.mod` so the loser can be deleted without touching
+the main graph, each with its own CI job:
+
+| | path | language | lines | module boundary |
+|---|---|---|---|---|
+| DuckDB | `spike/sidecar-duckdb/` | C++ | 469 | links prebuilt `libduckdb` |
+| DataFusion | `spike/sidecar-datafusion/` | Rust | 382 | `spike/sidecar-datafusion/Cargo.toml` |
+
+Both speak one deliberately trivial protocol (`spike/driver/PROTOCOL.md`): tab-separated framed
+requests on stdin, framed rows and errors on stdout. Not the final wire — no streaming, no
+pagination, no cursor, no parameters. It exists so the two engines are measured *through the same
+driver and the same attacks* rather than two different protocols.
+
+One Go driver (`spike/driver/`, nested module) writes the fixture, starts either sidecar, and runs
+the battery. `SIDECAR_BIN` and `SIDECAR_ENGINE` select the engine, so both CI jobs run byte-identical
+tests.
+
+#### 2.8.1 What is already settled, and it is not what the plan assumed
+
+**DuckDB needs no source build, and never did.** §2.7 recorded a source build with
+`EXTENSIONS='iceberg;httpfs'` as the fallback. That fallback is not needed:
+
+- Prebuilt `libduckdb` is published for `linux-amd64`, `linux-arm64`, `osx-universal` and
+  `windows-amd64` — every platform in §3's `PLATFORMS` list that DuckDB targets.
+- `iceberg` and `httpfs` are published prebuilt for **all five** platform tokens
+  (`linux_amd64`, `linux_arm64`, `osx_amd64`, `osx_arm64`, `windows_amd64`) — verified HTTP 200 on
+  each, against a host that returns 404 for `quack` (§2.7). `spike/fetch-sidecar-deps.sh` pins all ten
+  digests. CI builds and runs four of the five; `darwin-amd64` is pinned but has no packaging leg.
+- **A pre-placed extension file loads with no network at all**, which is the property that matters:
+  the extension directory is populated before the process starts and `LOAD iceberg` reads from disk.
+
+So the DuckDB packaging cost is: download two artifacts, compile about 470 lines of C++, ship the
+extension files alongside. No C++ toolchain beyond a compiler, no 40-minute DuckDB build, no
+`ccache`, no C++ in the release pipeline beyond one small `g++` invocation. **Measured:
+seconds and about 100 KB** for the shared-library build on `linux-amd64`.
+
+**A fully static Linux sidecar is *not* available, and this corrects an assumption rather than
+confirming one.** The `-musl` zips do ship `libduckdb_static.a` (83,882,636 bytes at v1.5.6) for both
+linux architectures, but linking it fails, for two independent reasons:
+
+- **`libduckdb_static.a` is missing `duckdb::ExtensionHelper::LoadAllExtensions(duckdb::DuckDB&)`** —
+  an undefined reference from the library itself, so the archive is incomplete for embedding.
+- **It needs a musl toolchain, not glibc's.** Linking it with `g++ -static` on ubuntu-latest fails on
+  `res_init`, glibc's NSS resolver entry point, and warns that `getaddrinfo` in a statically linked
+  application "requires at runtime the shared libraries from the glibc version used for linking" —
+  which is the static link failing in the way static glibc links fail.
+
+**So the DuckDB sidecar ships as a binary plus `libduckdb.so` plus the two extension files — four
+artifacts, one of them 72 MB — and it is not fully static on any platform.** That is a real cost
+against §3's distroless runtime stage and against a single-file release, and it is the sharpest
+packaging difference between the two candidates. `sidecar-packaging` records the exact failure
+rather than hiding it, so a future DuckDB that fixes the archive would show up as a changed line.
+
+**The DataFusion dependency set closes, and the way it closes is worth recording.** Taking
+`datafusion` and `iceberg` independently produces two incompatible Arrow versions and a wall of
+type errors — that is a pinning mistake, not an upstream blocker, and an earlier draft of this
+spike mislabelled it as one. The correct pin is the integration crate's own:
+
+- `iceberg-datafusion` 0.10.1 depends on `datafusion` **53.1.0** and `iceberg` 0.10.x.
+- At that pin the graph holds **exactly one Arrow (`arrow-array` 58.4.0) and one parquet (58.4.0)**.
+  `cargo tree -i arrow-array` shows a single version, and the `sidecar-datafusion` CI job *asserts*
+  it and fails the build if a future bump splits them.
+
+#### 2.8.2 Three traps worth writing down, because all three look like success
+
+**The engine writes to your response channel.** The brief specifies framed rows on stdout, and
+DuckDB writes its own logging to stdout — `Loading extension iceberg from ...` — which desynchronises
+the framing. It does not fail loudly: it **misattributes one request's answer to another**, so a
+refusal test reads as a success and a success test reads as a refusal. The first CI run of this spike
+produced exactly that, and the symptom was a battery where *everything* looked refused. Two fixes,
+both kept: the DuckDB sidecar sets `log_config.enabled = false`, and the driver skips any line that
+does not carry the request id rather than failing on it, bounded so a silent sidecar still fails.
+There is now a test asserting the response channel carries nothing else.
+
+**A sidecar that logs to stdout cannot share stdout with its host.** This is not a spike artefact. A
+real wire should either put responses on a separate descriptor or length-prefix the frames, and
+either way the sidecar must own its output. Recorded because it is cheap to get wrong and expensive
+to debug: the failure mode is wrong answers, not an error.
+
+**DuckDB's `iceberg_scan` ignores `version` when given a numeric snapshot id.** `version` is a
+*tag* parameter; pass it a snapshot id and the scan silently reads the **current** snapshot. A
+reader's time-travel test then passes at the current snapshot and fails only if it happens to
+compare counts. The correct option is `snapshot_from_id => <id>`, which was verified against a
+three-snapshot fixture: 50 rows seeded, 51 after the late arrival, and 49 once the two position
+deletes commit, with the unpinned read matching the current one. An earlier draft recorded 50 / 51 /
+51, which was the fixture bug of §2.8.2 (the deletes aimed at the wrong data file) and not the
+engine. **This is the kind of hole the confinement battery exists to catch, in the pinning
+direction instead of the escape direction.**
+
+**DataFusion has no cooperative per-query cancel.** There is no `duckdb_interrupt` equivalent, so
+the sidecar holds the `tokio::task::JoinHandle` and calls `abort()`. That is strictly coarser than a
+cooperative interrupt: it cancels the task, not the scan, and anything already committed to a file
+handle is left as it is. The `lifecycle` tests measure both engines the same way — cancel
+mid-flight, then kill-on-timeout, then a fresh sidecar — so the difference is on the record rather
+than assumed.
+
+**A position delete that names the wrong file deletes nothing, and every other check still passes.**
+Not an engine finding — a fixture bug — and worth recording anyway because it is the shape of bug
+this fixture exists to catch. Iceberg names data files after a uuid, so the lexicographically first
+`data/*.parquet` has nothing to do with write order. The first CI run aimed the delete file at the
+*late-arrival* file, whose single row made positions 2 and 5 out of range, so the deletes silently
+did nothing; the counts stayed plausible and only one assertion caught it, and only by accident of
+uuid ordering. The fixture now picks the data file **by reading the candidates and finding the one
+that holds the deleted id**, with a fixture test pinning it. The lesson for slice 4 is that a
+position delete is `(data file, row position)`: a writer that cannot name the data file cannot
+delete the row, and nothing downstream will tell it.
+
+#### 2.8.3 Confinement: how each sidecar is locked
+
+**`.duckdbrc` is a CLI feature, and an embedded DuckDB silently ignores it.** This is the most
+important correction in the spike, because §2.4's plan writes the confinement into a rc file. The
+first CI run did exactly that and **all 24 escape attempts succeeded**. The `duckdb` shell reads
+`.duckdbrc`; a library opened with `DuckDB(path, &config)` never does, so nothing warns and the
+process looks configured when it is not. `DBConfigOptions::unrecognized_options` is not a way in
+either: the process aborts with `The following options were not recognized: ...`.
+
+**`enable_external_access = false` is about files, not about writing.** With only that guard, an
+in-memory catalog accepted `CREATE TABLE`, `INSERT`, `UPDATE`, `DELETE` and `DROP VIEW`. That last
+one matters beyond tidiness: a sidecar serves every caller of a namespace, so a caller who can
+replace the `events` view can change what the next caller reads. Refusing writes needs a second,
+different mechanism, `access_mode = READ_ONLY`, and **a read-only database cannot hold the views
+`init` creates**. The first attempt opened read-only and then created the views, which DuckDB
+refused; every query then answered "table does not exist", and half the battery's refusals were
+really that.
+
+So the DuckDB sidecar runs in three phases, and caller SQL only ever reaches the last:
+
+1. `init` records tables and checks the pinned snapshot with `iceberg_snapshots()`. No SQL from the
+   caller runs.
+2. The first query **seals** the sidecar: it writes a private catalog file, read-write, holding one
+   view per table, closes it, and reopens it with `access_mode = READ_ONLY` and
+   `allowed_directories = {namespace dir}` as `DBConfig` fields. It then runs `LOAD iceberg` and
+   finally `SET enable_external_access = false`, the autoload, autoinstall and secret flags, and
+   `lock_configuration = true`. The sidecar exits non-zero if any of these is refused.
+3. Queries run on a worker thread against one connection, so `cancel` reaches
+   `Connection::Interrupt` while a query is in flight.
+
+**DataFusion's lock is `SQLOptions` plus what the sidecar does not register.**
+`with_allow_ddl(false).with_allow_dml(false).with_allow_statements(false)` refuses DDL, DML and
+`SET`. Nothing reads a path or URL because the sidecar never registers a function or table that
+does, and `enable_url_table` stays off.
+
+#### 2.8.3b A test that proves nothing looks exactly like a test that passes
+
+The first battery run reported `read_csv`, `read_text` and `glob` as escapes. They were not: **the
+fixture had planted the secret *inside* the namespace's own data directory**, which is the one
+directory a confined sidecar is supposed to be able to read. The battery was aiming at the one path
+that was always allowed.
+
+The fix generalises to a rule worth keeping:
+
+- **Every attack must target something genuinely outside the allowed set.** The fixture now plants
+  `secret.txt`, `secret.csv` and `secret.parquet` in a *sibling* directory, and a fixture test pins
+  that they are outside.
+- **Every attack must be one that would succeed if unconfined.** `read_parquet` on a text file fails
+  with `No magic bytes found at end of file`, which is not a refusal — it is a reader complaining
+  about a file, and scoring it as a block is how a battery once reported green while every escape
+  worked. The `.parquet` decoy is now a real Parquet file carrying the marker.
+- **A test must also assert that nothing was written outside.** The battery checks that no new file
+  appeared in the outside directory, because `COPY ... TO` and `ATTACH` are escapes that a
+  return-value check alone can miss.
+- **There is a positive control.** `TestTheUnlockedSidecarCanActuallyReadTheSecretSoTheComparisonIsReal`
+  asserts the unlocked sidecar *does* read the secret. Without it, "refused under the lock" could
+  just mean the attack was malformed — which is precisely what happened.
+
+The interesting question is not *whether* an escape is refused but **what refused it**. A refusal
+that also happens with the lock off is an engine *default* — it holds today and nobody owns it; a
+refusal that appears only with the lock on is the *mechanism*, and it is ours.
+
+So each sidecar is started twice, once with `SIDECAR_UNLOCKED=1`, and the driver runs the same
+24-statement battery against both. Three outcomes, and each is a different finding:
+
+| outcome | meaning |
+|---|---|
+| refused locked, **allowed unlocked** | the **mechanism**. Ours, and it is load-bearing. |
+| refused locked **and** unlocked | an engine **default**. Holds, but nobody owns it. |
+| **allowed locked** | a hole. Fails the build. |
+
+For DuckDB the mechanism is §2.4's lock, applied through `DBConfig` rather than a rc file
+(§2.8.3): `allowed_directories` first, then `enable_external_access = false`, then
+`lock_configuration = true` last. For DataFusion
+the mechanism is `SQLOptions::with_allow_ddl(false).with_allow_dml(false).with_allow_statements(false)`.
+
+**Measured, the two split the battery very differently, and the split means different things.**
+
+| | refused by the lock | refused with the lock off too | allowed under the lock |
+|---|---|---|---|
+| DuckDB | **14** | 10 | **0** |
+| DataFusion | **3** | 21 | **0** |
+
+- **DuckDB's 14** are the file, URL, `ATTACH`, `COPY`, `INSTALL`, `LOAD` and `SET`/`PRAGMA`
+  attacks: everything `enable_external_access` and `lock_configuration` exist for. Its 10
+  "defaults" are `getenv` (absent), `CREATE EXTERNAL TABLE` (not DuckDB syntax), the two URL tables
+  (no `httpfs` loaded in the unlocked run either), the other namespace's directory (not readable
+  unlocked in that run), and DML against `events`, which is a view and so refuses writes even
+  unlocked. The read-only catalog refuses them too; this battery can't separate the two.
+- **DataFusion's 21 are not defaults in DuckDB's sense.** They are refused with the lock off
+  because the capability is not in the session at all: the sidecar registers no file-reading table
+  function, no `ATTACH`, no extension loader, no environment access. No SQL can turn them on; only
+  a change to the sidecar's Rust code could. The positive control is skipped on DataFusion for the
+  same reason, since even the unlocked sidecar has no way to read the secret. **So DuckDB's
+  confinement is a set of switches locked off, and DataFusion's is a smaller surface with nothing
+  to switch.** Both held all 24 under the lock.
+
+#### 2.8.4 Measured by CI, not by assertion
+
+Every number below comes from the CI job logs of #568 (linux amd64 unless stated). Neither the
+laptop nor ai0 was used for timing.
+
+| | DuckDB | DataFusion |
+|---|---|---|
+| read-back at the pinned snapshot, position deletes applied | **yes** | **yes** |
+| read-back at the older snapshot | **yes** | **yes** |
+| refuses a snapshot the table does not hold | **yes** | **yes** |
+| escape battery, 24 statements, allowed under the lock | **0** | **0** |
+| cancel mid-flight | **yes**, ~150 ms (`Connection::Interrupt`) | **yes**, ~150 ms (task abort) |
+| kill on timeout, then a fresh sidecar | **yes** | **yes** |
+| a query that needs to spill under a memory ceiling | **not shown** (see below) | completed a 3M-group `GROUP BY` under 64 MB |
+| 10M rows: `count(*)` | **11 ms** | 752 ms |
+| 10M rows: `sum` | **65 ms** | 213 ms |
+| 10M rows: selective filter | **27 ms** | 50 ms |
+| 10M rows: `GROUP BY` | **230 ms** | 396 ms |
+| 10M rows: join on `id` | **334 ms** | 834 ms |
+| start to first answer, 1,000 rows | 453 ms | **11 ms** |
+| sidecar binary, linux amd64 | 106,656 B | 114,403,912 B |
+| what ships beside it | `libduckdb.so` 70,546,800 B, `iceberg` 50,827,374 B, `httpfs` 21,580,734 B | nothing |
+| shipped total, linux amd64 | **≈136 MiB in 4 files** | **≈109 MiB in 1 file** (stripped) |
+| Linux fully static | **no**: `libduckdb_static.a` is incomplete (§2.8.1) | **yes** |
+| build, linux amd64 | **seconds** | 683 s |
+| build, windows amd64 | **10 s**, 355 KB | 1002 s, 122 MB |
+| toolchain | a C++ compiler | a Rust toolchain; MSVC's `link.exe` on Windows |
+| Arrow versions in the graph | n/a | **1** (`arrow-array` 58.4.0), asserted in CI |
+| memory safety of the engine | C++ | Rust |
+
+Notes on reading it:
+
+- **DuckDB is 1.7–3.3× faster on every shape except `count(*)`, where it is about 70×**: it
+  answers a count from Parquet metadata, while iceberg-rust's scan reads the column. The DataFusion
+  build is `opt-level = 2`, no LTO, default `target_partitions`, and nobody tuned the iceberg-rust
+  scan, so the gap is an upper bound. An earlier run reported 3–6×; its fixture had zeroed 80 rows
+  and runner timings vary between runs, so treat the ratios as rough.
+- **DuckDB spilling under the lock is not shown.** At 64 MB DuckDB refused a 3M-group `GROUP BY`
+  with *Out of Memory*, locked and unlocked alike, so that ceiling is below what it needs to work at
+  all. From 96 MB to 384 MB, a 10M-group `GROUP BY` and a `row_number()` over all 10M rows both
+  completed, but they also completed with `use_temporary_directory = false`, so that control did
+  not take effect and nothing here shows whether a spill happened. The sidecar gives DuckDB a
+  private temp directory inside `allowed_directories`, because the default one sits outside it and
+  the lock would otherwise block spilling. Slice 11 has to show a spill with a control that works,
+  before the memory ceiling is advertised.
+- **DataFusion starts 40× faster**: 11 ms to a first answer against DuckDB's 453 ms, most of which is
+  sealing the catalog and loading the `iceberg` extension. One sidecar per namespace pays that once
+  per start, not per query.
+- **DuckDB is cheap to build and costly to ship; DataFusion is the opposite.** DuckDB's four files
+  come to about 1.25× DataFusion's one, and the extension files are per platform and per DuckDB
+  version. They fit a glibc-based distroless image (`distroless/cc`) but not `static`.
+#### 2.8.5 Dialect and what it costs callers
+
+`query_dialect` would report **`duckdb`** or something naming DataFusion. This is not a cosmetic
+choice:
+
+- **DuckDB has a documented dialect with a name.** Callers get a name they can look up, with
+  DuckDB's own documentation behind it, and dolmen's README and `skill/` can point at it.
+- **DataFusion's SQL is its own thing, modelled on ANSI SQL, with no registered family name.** A
+  `query_dialect` value for it has to be either invented or borrowed, and either way it is a name
+  dolmen owns and must keep meaning. The existing MySQL-ecosystem callers get no help from it.
+
+**Object storage (S3) stays out of this spike** and is listed as untested, per the brief: DuckDB
+needs `httpfs` (published and pre-placed, so the *mechanism* is available and unexercised) and
+DataFusion would need `object_store` with an S3 store registered. Neither has been run against a
+MinIO container here.
+
+
+#### 2.8.6 Decision: DuckDB
+
+Both engines confine, cancel and recover correctly through the same driver. Spilling under the lock
+is not shown (§2.8.4). The choice comes down to three trades:
+
+- **Speed: DuckDB.** 1.7–3.3× on scans, filters, `GROUP BY` and joins, and about 70× on a bare
+  count; SQL over the object store is what a lakehouse is for. DataFusion starts faster.
+- **Packaging: DataFusion.** One static file against four files and a per-platform extension set,
+  but DuckDB builds in seconds while DataFusion takes 11–17 minutes per platform.
+- **Hardening: DataFusion.** Rust, and a surface with nothing to switch on. DuckDB's lock held all
+  24 attacks, but it is a set of settings whose order matters and which fail open silently when
+  applied the wrong way (§2.8.3).
+
+**The recommendation is DuckDB**, because speed is the property callers will notice and the other
+two are costs dolmen pays once: in CI, and in a confinement test that `duckdb-lockdown` and this
+battery already run on every change.
+
+**Marc chose DuckDB on 2026-10-03.** The DataFusion sidecar and its CI jobs were removed from the
+branch after the decision; the figures above are the record of what it measured.
+
 
 ---
 
@@ -921,6 +1226,23 @@ question can be answered later without unwinding work.
   is re-decided once the spike's result is in. §1 carries the new table.
 - **The pins as a slice are withdrawn** rather than reordered, because a pin with no importer is a
   pin nothing exercises.
+
+### Answered since the last revision
+
+- **Q5's shape, settled by Marc on 2026-10-02.** The lakehouse **ships `query`** — SQL over the
+  object store is the point of a lakehouse, so "ship without query" is off the table. It runs in a
+  **sidecar process**: a second released binary that dolmen talks to over a pipe, with dolmen itself
+  staying `CGO_ENABLED=0`. **Linking an engine in with cgo is rejected**, because an engine crash or
+  a memory-safety bug would take down or expose the whole server. This closes the earlier framing of
+  Q5, which asked whether to accept a second released binary at all; that is now settled, and the
+  remaining question is narrowed to **which engine the sidecar runs**. §2.8 is the comparison, and
+  **Marc chose DuckDB on 2026-10-03** (§2.8.6).
+- **The DuckDB fallback is not a source build.** §2.7 recorded one; §2.8.1 removes it. Prebuilt
+  `libduckdb` covers every target platform, the `-musl` zips ship a static `libduckdb_static.a` for
+  both linux architectures, and `iceberg`/`httpfs` are published prebuilt for all five platform
+  tokens and load from disk with no network. **What this changes:** §3's cost for the DuckDB side is
+  one small `g++` invocation and two downloaded artifacts, not a C++ toolchain in the release
+  pipeline and a 40-minute DuckDB build per platform.
 
 ### Still open, pending the spike
 
