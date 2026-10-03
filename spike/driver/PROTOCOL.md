@@ -1,8 +1,7 @@
 # The sidecar protocol (spike version)
 
-Not the final wire — a minimal shape both engines can implement and the driver
-can attack. It exists so the spike measures the same things for DuckDB and
-DataFusion rather than measuring two different protocols.
+Not the final wire — a minimal shape the driver can attack. Spike 3 used it to
+measure DuckDB and DataFusion the same way; only the DuckDB sidecar remains.
 
 ## Framing
 

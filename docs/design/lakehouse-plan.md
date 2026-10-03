@@ -720,7 +720,8 @@ comes down to three trades:
 two are costs dolmen pays once: in CI, and in a confinement test that `duckdb-lockdown` and this
 battery already run on every change.
 
-**Marc chose DuckDB on 2026-10-03.**
+**Marc chose DuckDB on 2026-10-03.** The DataFusion sidecar and its CI jobs were removed from the
+branch after the decision; the figures above are the record of what it measured.
 
 
 ---

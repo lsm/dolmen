@@ -185,70 +185,6 @@ jobs:
           DOLMEN_SPIKE_PERF: "1"
         run: go test -count=1 -v -timeout 60m -run 'Perf|FirstQueryQuickly' ./...
 
-  sidecar-datafusion:
-    runs-on: ubuntu-latest
-    env:
-      RUST_BACKTRACE: "1"
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: spike/driver/go.mod
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Confirm the Arrow crates in the graph are one version
-        working-directory: spike/sidecar-datafusion
-        run: |
-          set -eu
-          cargo fetch
-          n=$(cargo tree -i arrow-array 2>/dev/null | grep -c '^arrow-array v')
-          echo "PACKAGING engine=datafusion arrow_array_versions=$n"
-          if [ "$n" != "1" ]; then
-            echo "iceberg-rust and datafusion disagree on the Arrow version" >&2
-            cargo tree -i arrow-array >&2
-            exit 1
-          fi
-      - name: Build the DataFusion sidecar
-        working-directory: spike/sidecar-datafusion
-        run: |
-          set -eu
-          start=$(date +%s)
-          cargo build --release
-          echo "PACKAGING engine=datafusion build_seconds=$(( $(date +%s) - start ))"
-      - name: Record the DataFusion sidecar packaging facts
-        working-directory: spike/sidecar-datafusion
-        run: |
-          set -eu
-          bin=target/release/sidecar-datafusion
-          echo "PACKAGING engine=datafusion binary_bytes=$(stat -c %s "$bin")"
-          if command -v ldd >/dev/null && ldd "$bin" 2>&1 | grep -qv 'linux-vdso\|ld-linux\|libm.so\|libgcc_s\|libdl\|libpthread\|librt\|libc.so\|statically linked'; then
-            echo "PACKAGING engine=datafusion linux_static=no unexpected=$(ldd "$bin" | tr '\n' ' ')"
-          else
-            echo "PACKAGING engine=datafusion linux_static=yes"
-          fi
-          "$bin" 2>&1 | head -1 || true
-      - name: Read-back, confinement and lifecycle tests
-        working-directory: spike/driver
-        env:
-          SIDECAR_BIN: ${{ runner.temp }}/sidecar-datafusion
-          SIDECAR_ENGINE: datafusion
-          SIDECAR_TIGHT_MEMORY: 64MB
-        run: |
-          set -eu
-          mkdir -p "$RUNNER_TEMP/bin"
-          cp "$GITHUB_WORKSPACE/spike/sidecar-datafusion/target/release/sidecar-datafusion" "$RUNNER_TEMP/bin/sidecar-datafusion"
-          SIDECAR_BIN="$RUNNER_TEMP/bin/sidecar-datafusion" go test -count=1 -v -timeout 40m ./...
-      - name: Check no comments
-        working-directory: .
-        run: go run github.com/lsm/nocomment-for-agents/go@016ad219e84b9b78ca66ff1b66a7729218030c12 --check
-      - name: Perf set on a 10M row table
-        working-directory: spike/driver
-        env:
-          SIDECAR_BIN: ${{ runner.temp }}/bin/sidecar-datafusion
-          SIDECAR_ENGINE: datafusion
-          SIDECAR_TIGHT_MEMORY: 2GB
-          DOLMEN_SPIKE_PERF: "1"
-        run: go test -count=1 -v -timeout 60m -run 'Perf|FirstQueryQuickly' ./...
-
   sidecar-packaging:
     name: sidecar packaging ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
@@ -281,7 +217,6 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: spike/driver/go.mod
-      - uses: dtolnay/rust-toolchain@stable
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
       - name: Fetch the DuckDB library and the extensions that must be pre-placed
@@ -354,22 +289,6 @@ jobs:
             echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb linux_static=no static_link=failed"
             grep -oE "undefined reference to \`[^']+'" "$dest/static-link.log" | sort -u | sed 's/^/PACKAGING platform='"${{ matrix.platform }}"' engine=duckdb static_undefined=/' || true
           fi
-      - name: Build and measure the DataFusion sidecar
-        working-directory: spike/sidecar-datafusion
-        shell: bash
-        run: |
-          set -eu
-          bin=target/release/sidecar-datafusion
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            msvc_link="$(dirname "$(command -v cl)")/link.exe"
-            test -f "$msvc_link"
-            export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$msvc_link"
-            bin=target/release/sidecar-datafusion.exe
-          fi
-          start=$(date +%s)
-          cargo build --release
-          echo "PACKAGING platform=${{ matrix.platform }} engine=datafusion build_seconds=$(( $(date +%s) - start ))"
-          echo "PACKAGING platform=${{ matrix.platform }} engine=datafusion binary_bytes=$(stat -c %s "$bin" 2>/dev/null || stat -f %z "$bin")"
 
   postgres-foundation:
     runs-on: ubuntu-latest

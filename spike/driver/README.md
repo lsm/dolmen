@@ -1,8 +1,8 @@
 # The sidecar driver (spike)
 
-One Go driver, one protocol, two engines. The point is that DuckDB and DataFusion are measured
-*through the same code and the same attacks*, so the comparison is between the engines rather than
-between two test suites that happen to look similar.
+One Go driver and one protocol. Spike 3 used it to measure DuckDB and DataFusion *through the same
+code and the same attacks*. DuckDB was chosen and the DataFusion sidecar was removed; its results are
+in `docs/design/lakehouse-plan.md` §2.8.
 
 Nested module on purpose: it stays out of dolmen's `go.mod`, so a losing engine can be deleted
 without touching the main dependency graph.
@@ -31,7 +31,7 @@ In CI, `SIDECAR_BIN` selects the engine and these knobs shape the run:
 | variable | effect |
 |---|---|
 | `SIDECAR_BIN` | path to the sidecar; unset means the suite skips |
-| `SIDECAR_ENGINE` | label used in log lines (`duckdb`, `datafusion`) |
+| `SIDECAR_ENGINE` | label used in log lines (`duckdb`) |
 | `SIDECAR_EXT_DIR` | DuckDB only: the pre-placed `iceberg`/`httpfs` extensions |
 | `SIDECAR_TIGHT_MEMORY` | the ceiling for the spill test |
 | `DOLMEN_SPIKE_PERF=1` | run the 10M-row perf set; `DOLMEN_SPIKE_ROWS` overrides the row count |
