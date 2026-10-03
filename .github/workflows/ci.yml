@@ -132,7 +132,6 @@ jobs:
   sidecar-duckdb:
     runs-on: ubuntu-latest
     env:
-      DOLMEN_DUCKDB_VERSION: v1.5.6
       DOLMEN_DUCKDB_PLATFORM: linux_amd64
     steps:
       - uses: actions/checkout@v5
@@ -277,8 +276,6 @@ jobs:
             ext: windows_amd64
             asset: libduckdb-windows-amd64.zip
             static_asset: ""
-    env:
-      DOLMEN_DUCKDB_VERSION: v1.5.6
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
