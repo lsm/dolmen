@@ -281,9 +281,13 @@ bool Seal(const std::string &data_dir, const std::string &ext_dir, bool unlocked
   cfg.options.log_config.enabled = false;
   const char *mem_env = std::getenv("SIDECAR_MEMORY_MAX");
   if (mem_env != nullptr && *mem_env != '\0') cfg.options.maximum_memory = ParseBytes(mem_env);
+  const std::string spill_dir = g_catalog_path + ".tmp";
+  fs::create_directories(spill_dir, ec);
+  cfg.options.temporary_directory = spill_dir;
   if (!unlocked) {
     cfg.options.access_mode = duckdb::AccessMode::READ_ONLY;
     cfg.options.allowed_directories.insert(data_dir);
+    cfg.options.allowed_directories.insert(spill_dir);
   }
   g_db = std::make_unique<duckdb::DuckDB>(g_catalog_path.c_str(), &cfg);
   g_con = std::make_unique<duckdb::Connection>(*g_db);
@@ -453,6 +457,7 @@ int Run() {
     std::error_code ec;
     std::filesystem::remove(g_catalog_path, ec);
     std::filesystem::remove(g_catalog_path + ".wal", ec);
+    std::filesystem::remove_all(g_catalog_path + ".tmp", ec);
   }
   return 0;
 }
