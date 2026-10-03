@@ -713,8 +713,8 @@ MinIO container here.
 
 #### 2.8.6 Decision: DuckDB
 
-Both engines confine, cancel, recover and spill correctly through the same driver, so the choice
-comes down to three trades:
+Both engines confine, cancel and recover correctly through the same driver. Spilling under the lock
+is not shown (§2.8.4). The choice comes down to three trades:
 
 - **Speed: DuckDB.** 1.7–3.3× on scans, filters, `GROUP BY` and joins, and about 70× on a bare
   count; SQL over the object store is what a lakehouse is for. DataFusion starts faster.
