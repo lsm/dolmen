@@ -122,8 +122,17 @@ func TestAQueryWhoseWorkingSetExceedsTheCeilingSpillsOrIsRefused(t *testing.T) {
 	want := rows
 	const heavy = "SELECT count(*) FROM (SELECT id, body FROM events GROUP BY id, body) AS g"
 
-	for _, lock := range []bool{true, false} {
+	outcome := map[string]string{}
+	for _, run := range []struct {
+		name    string
+		lock    bool
+		noSpill bool
+	}{{"locked", true, false}, {"unlocked", false, false}, {"locked_no_spill", true, true}} {
+		lock := run.lock
 		env := []string{"SIDECAR_DATA_DIR=" + root, "SIDECAR_MEMORY_MAX=" + ceiling}
+		if run.noSpill {
+			env = append(env, "SIDECAR_NO_SPILL=1")
+		}
 		if e.Ext != "" {
 			env = append(env, "SIDECAR_EXT_DIR="+e.Ext)
 		}
@@ -153,7 +162,8 @@ func TestAQueryWhoseWorkingSetExceedsTheCeilingSpillsOrIsRefused(t *testing.T) {
 				strings.Contains(lower, "resources exhausted"),
 				strings.Contains(lower, "exceeds limit"),
 				strings.Contains(lower, "insufficient"):
-				t.Logf("MEMORY engine=%s locked=%v ceiling=%s groups=%d outcome=refused: %.200s", e.Name, lock, ceiling, want, err)
+				t.Logf("MEMORY engine=%s run=%s ceiling=%s groups=%d outcome=refused: %.200s", e.Name, run.name, ceiling, want, err)
+				outcome[run.name] = "refused"
 			default:
 				t.Fatalf("locked=%v: the query failed for a reason that is not the memory ceiling: %v", lock, err)
 			}
@@ -162,7 +172,14 @@ func TestAQueryWhoseWorkingSetExceedsTheCeilingSpillsOrIsRefused(t *testing.T) {
 		if got := countOf(t, res); got != want {
 			t.Fatalf("locked=%v: the query returned %d groups under the ceiling, want %d", lock, got, want)
 		}
-		t.Logf("MEMORY engine=%s locked=%v ceiling=%s groups=%d outcome=completed", e.Name, lock, ceiling, want)
+		t.Logf("MEMORY engine=%s run=%s ceiling=%s groups=%d outcome=completed", e.Name, run.name, ceiling, want)
+		outcome[run.name] = "completed"
+	}
+	if outcome["locked_no_spill"] == "completed" {
+		t.Fatalf("the query completed under %s with spilling disabled, so the ceiling never bound and this test proves nothing about spilling", ceiling)
+	}
+	if outcome["locked"] == "completed" {
+		t.Logf("MEMORY engine=%s spilled=yes: it completed under the lock and failed with spilling disabled", e.Name)
 	}
 }
 
