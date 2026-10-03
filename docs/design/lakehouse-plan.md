@@ -654,11 +654,12 @@ laptop nor ai0 was used for timing.
 | cancel mid-flight | **yes**, ~150 ms (`Connection::Interrupt`) | **yes**, ~150 ms (task abort) |
 | kill on timeout, then a fresh sidecar | **yes** | **yes** |
 | a `GROUP BY` under a tight memory ceiling | spilled, **correct** | spilled, **correct** |
-| 10M rows: `count(*)` | **7 ms** | 775 ms |
-| 10M rows: `sum` | **38 ms** | 222 ms |
-| 10M rows: selective filter | **55 ms** | 295 ms |
-| 10M rows: `GROUP BY` | **149 ms** | 408 ms |
-| 10M rows: join on `id` | **234 ms** | 827 ms |
+| 10M rows: `count(*)` | **11 ms** | 752 ms |
+| 10M rows: `sum` | **65 ms** | 213 ms |
+| 10M rows: selective filter | **27 ms** | 50 ms |
+| 10M rows: `GROUP BY` | **230 ms** | 396 ms |
+| 10M rows: join on `id` | **334 ms** | 834 ms |
+| start to first answer, 1,000 rows | 453 ms | **11 ms** |
 | sidecar binary, linux amd64 | 106,656 B | 114,403,912 B |
 | what ships beside it | `libduckdb.so` 70,546,800 B, `iceberg` 50,827,374 B, `httpfs` 21,580,734 B | nothing |
 | shipped total, linux amd64 | **≈136 MiB in 4 files** | **≈109 MiB in 1 file** (stripped) |
@@ -671,16 +672,17 @@ laptop nor ai0 was used for timing.
 
 Notes on reading it:
 
-- **DuckDB is 3–6× faster on every shape except `count(*)`, where it is 100×**: it answers a
-  count from Parquet metadata, while iceberg-rust's scan reads the column. The DataFusion build is
-  `opt-level = 2`, no LTO, default `target_partitions`, and nobody tuned the iceberg-rust scan, so
-  the gap is an upper bound. It is still the same order of magnitude as the engines' reputations.
+- **DuckDB is 1.7–3.3× faster on every shape except `count(*)`, where it is about 70×**: it
+  answers a count from Parquet metadata, while iceberg-rust's scan reads the column. The DataFusion
+  build is `opt-level = 2`, no LTO, default `target_partitions`, and nobody tuned the iceberg-rust
+  scan, so the gap is an upper bound. An earlier run reported 3–6×; its fixture had zeroed 80 rows
+  and runner timings vary between runs, so treat the ratios as rough.
+- **DataFusion starts 40× faster**: 11 ms to a first answer against DuckDB's 453 ms, most of which is
+  sealing the catalog and loading the `iceberg` extension. One sidecar per namespace pays that once
+  per start, not per query.
 - **DuckDB is cheap to build and costly to ship; DataFusion is the opposite.** DuckDB's four files
   come to about 1.25× DataFusion's one, and the extension files are per platform and per DuckDB
   version. They fit a glibc-based distroless image (`distroless/cc`) but not `static`.
-- **The cold-start time to a first answer was not measured.** The CI step's `-run` filter did not
-  match the test's name; it is fixed on the branch for the next run.
-
 #### 2.8.5 Dialect and what it costs callers
 
 `query_dialect` would report **`duckdb`** or something naming DataFusion. This is not a cosmetic
@@ -698,13 +700,13 @@ DataFusion would need `object_store` with an S3 store registered. Neither has be
 MinIO container here.
 
 
-#### 2.8.6 Recommendation: DuckDB
+#### 2.8.6 Decision: DuckDB
 
 Both engines confine, cancel, recover and spill correctly through the same driver, so the choice
 comes down to three trades:
 
-- **Speed: DuckDB.** 3–6× on scans, filters, `GROUP BY` and joins, and SQL over the object store is
-  what a lakehouse is for.
+- **Speed: DuckDB.** 1.7–3.3× on scans, filters, `GROUP BY` and joins, and about 70× on a bare
+  count; SQL over the object store is what a lakehouse is for. DataFusion starts faster.
 - **Packaging: DataFusion.** One static file against four files and a per-platform extension set,
   but DuckDB builds in seconds while DataFusion takes 11–17 minutes per platform.
 - **Hardening: DataFusion.** Rust, and a surface with nothing to switch on. DuckDB's lock held all
@@ -713,8 +715,9 @@ comes down to three trades:
 
 **The recommendation is DuckDB**, because speed is the property callers will notice and the other
 two are costs dolmen pays once: in CI, and in a confinement test that `duckdb-lockdown` and this
-battery already run on every change. Choose DataFusion instead if a single static file or a
-memory-safe engine outweighs a 3–6× slower `query`. That is Marc's call (Q5).
+battery already run on every change.
+
+**Marc chose DuckDB on 2026-10-03.**
 
 
 ---
@@ -1221,7 +1224,7 @@ question can be answered later without unwinding work.
   a memory-safety bug would take down or expose the whole server. This closes the earlier framing of
   Q5, which asked whether to accept a second released binary at all; that is now settled, and the
   remaining question is narrowed to **which engine the sidecar runs**. §2.8 is the comparison, and
-  §2.8.6 recommends DuckDB; the choice is Marc's.
+  **Marc chose DuckDB on 2026-10-03** (§2.8.6).
 - **The DuckDB fallback is not a source build.** §2.7 recorded one; §2.8.1 removes it. Prebuilt
   `libduckdb` covers every target platform, the `-musl` zips ship a static `libduckdb_static.a` for
   both linux architectures, and `iceberg`/`httpfs` are published prebuilt for all five platform
