@@ -17,11 +17,10 @@ import (
 type Op string
 
 const (
-	OpInit        Op = "init"
-	OpQuery       Op = "query"
-	OpCancel      Op = "cancel"
-	OpMemoryLimit Op = "memory_limit"
-	OpShutdown    Op = "shutdown"
+	OpInit     Op = "init"
+	OpQuery    Op = "query"
+	OpCancel   Op = "cancel"
+	OpShutdown Op = "shutdown"
 )
 
 type Options struct {
@@ -77,6 +76,9 @@ func Start(ctx context.Context, opts Options) (*Sidecar, error) {
 	}
 	cmd := exec.Command(opts.Bin, opts.Args...)
 	cmd.Env = append(os.Environ(), opts.Env...)
+	if opts.MemoryMax > 0 {
+		cmd.Env = append(cmd.Env, "SIDECAR_MEMORY_MAX="+strconv.FormatInt(opts.MemoryMax, 10))
+	}
 	if opts.DataDir != "" {
 		cmd.Dir = opts.DataDir
 	}
@@ -93,12 +95,6 @@ func Start(ctx context.Context, opts Options) (*Sidecar, error) {
 		return nil, err
 	}
 	s := &Sidecar{cmd: cmd, stdin: stdin, stdout: bufio.NewReaderSize(stdout, 1<<20), nextID: 1000}
-	if opts.MemoryMax > 0 {
-		if _, err := s.call(ctx, OpMemoryLimit, strconv.FormatInt(opts.MemoryMax, 10)); err != nil {
-			s.Kill()
-			return nil, err
-		}
-	}
 	return s, nil
 }
 

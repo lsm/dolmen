@@ -380,10 +380,7 @@ func WriteBatched(ctx context.Context, dataDir string, rows, batch int) (*Table,
 		if end > len(recs) {
 			end = len(recs)
 		}
-		chunk := recs[start:end]
-		recs[start] = Record{}
-		recs[end-1] = Record{}
-		tbl, err = tbl.Append(ctx, recordReader(chunk), nil)
+		tbl, err = tbl.Append(ctx, recordReader(recs[start:end]), nil)
 		if err != nil {
 			return nil, fmt.Errorf("append at %d: %w", start, err)
 		}

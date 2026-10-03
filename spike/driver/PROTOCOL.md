@@ -25,7 +25,7 @@ for it, so the protocol cannot be the reason one engine looks harder than it is.
 | `init` | `dataDir`, `snapshot`, `table`, `location` | register one namespace's table at a pinned Iceberg snapshot |
 | `query` | `sql` | run caller SQL; the result is the response payload |
 | `cancel` | — | interrupt the in-flight query |
-| `memory_limit` | `bytes` | set the engine's memory ceiling |
+| `memory_limit` | `bytes` | refused with `not_supported`: the ceiling is fixed at startup by `SIDECAR_MEMORY_MAX`, before the configuration is locked |
 | `shutdown` | — | exit cleanly |
 
 `init` is repeated once per table in a namespace. There is deliberately no op

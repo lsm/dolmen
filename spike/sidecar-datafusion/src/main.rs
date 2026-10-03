@@ -251,7 +251,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     reply(&id, "");
                 }
             }
-            "memory_limit" => reply(&id, ""),
+            "memory_limit" => error_reply(
+                &id,
+                "not_supported",
+                "the memory ceiling is set at startup through SIDECAR_MEMORY_MAX",
+            ),
             "init" => {
                 if f.len() < 6 {
                     error_reply(&id, "internal_error", "init needs dataDir, snapshot, table and location");

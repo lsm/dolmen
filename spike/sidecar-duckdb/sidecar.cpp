@@ -355,7 +355,7 @@ int Run() {
       continue;
     }
     if (op == "memory_limit") {
-      Reply(id, "");
+      ErrorReply(id, "not_supported", "the memory ceiling is set at startup through SIDECAR_MEMORY_MAX");
       continue;
     }
     if (op == "init") {
