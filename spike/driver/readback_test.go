@@ -114,3 +114,14 @@ func TestTheSidecarSurvivesAQueryThatDoesNotExist(t *testing.T) {
 		t.Fatal("the sidecar did not return to serving queries after two errors")
 	}
 }
+
+func TestSQLContainingATabOrANewlineArrivesIntact(t *testing.T) {
+	tbl := newFixture(t, 10)
+	_, sc, _ := locked(t, tbl)
+
+	plain := countOf(t, mustQuery(t, sc, "SELECT count(*) FROM events WHERE body <> 'a\\b'"))
+	framed := countOf(t, mustQuery(t, sc, "SELECT\tcount(*)\nFROM events\r\nWHERE body <> 'a\\b'"))
+	if framed != plain {
+		t.Fatalf("SQL with a tab, newlines and a backslash counted %d, the same query on one line counted %d", framed, plain)
+	}
+}

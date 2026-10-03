@@ -144,16 +144,8 @@ jobs:
         run: |
           set -eu
           dest="$RUNNER_TEMP/ddb"
-          mkdir -p "$dest/ext"
-          curl -sSLf -o "$dest/lib.zip" \
-            "https://github.com/duckdb/duckdb/releases/download/${DOLMEN_DUCKDB_VERSION}/libduckdb-linux-amd64.zip"
-          unzip -q -o "$dest/lib.zip" -d "$dest"
-          for ext in iceberg httpfs; do
-            curl -sSLf -o "$dest/ext/$ext.duckdb_extension.gz" \
-              "http://extensions.duckdb.org/${DOLMEN_DUCKDB_VERSION}/${DOLMEN_DUCKDB_PLATFORM}/$ext.duckdb_extension.gz"
-            gunzip -f "$dest/ext/$ext.duckdb_extension.gz"
-            test -f "$dest/ext/$ext.duckdb_extension"
-          done
+          ../fetch-sidecar-deps.sh lib libduckdb-linux-amd64.zip "$dest"
+          ../fetch-sidecar-deps.sh ext "$DOLMEN_DUCKDB_PLATFORM" "$dest/ext"
           ls -la "$dest/ext"
           start=$(date +%s)
           g++ -std=c++17 -O2 -I"$dest" sidecar.cpp -L"$dest" -lduckdb -Wl,-rpath,"$dest" -o "$dest/sidecar"
@@ -300,20 +292,8 @@ jobs:
         run: |
           set -eu
           dest="$RUNNER_TEMP/ddb"
-          mkdir -p "$dest/ext"
-          curl -sSLf -o "$dest/lib.zip" \
-            "https://github.com/duckdb/duckdb/releases/download/${DOLMEN_DUCKDB_VERSION}/${{ matrix.asset }}"
-          unzip -q -o "$dest/lib.zip" -d "$dest"
-          for ext in iceberg httpfs; do
-            curl -sSLf -o "$dest/ext/$ext.duckdb_extension.gz" \
-              "http://extensions.duckdb.org/${DOLMEN_DUCKDB_VERSION}/${{ matrix.ext }}/$ext.duckdb_extension.gz"
-            gunzip -f "$dest/ext/$ext.duckdb_extension.gz"
-            test -f "$dest/ext/$ext.duckdb_extension" || {
-              echo "the $ext extension did not land as $ext.duckdb_extension" >&2
-              ls -la "$dest/ext" >&2
-              exit 1
-            }
-          done
+          spike/fetch-sidecar-deps.sh lib "${{ matrix.asset }}" "$dest"
+          spike/fetch-sidecar-deps.sh ext "${{ matrix.ext }}" "$dest/ext"
           ls "$dest" "$dest/ext"
       - name: Record the extension sizes and that they are pre-placed rather than downloaded
         shell: bash
@@ -359,10 +339,7 @@ jobs:
             echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb static_lib=absent linux_static=unknown"
             exit 0
           fi
-          curl -sSLf -o "$dest/static.zip" \
-            "https://github.com/duckdb/duckdb/releases/download/${DOLMEN_DUCKDB_VERSION}/${{ matrix.static_asset }}"
-          mkdir -p "$dest/static"
-          unzip -q -o "$dest/static.zip" -d "$dest/static"
+          spike/fetch-sidecar-deps.sh lib "${{ matrix.static_asset }}" "$dest/static"
           echo "PACKAGING platform=${{ matrix.platform }} engine=duckdb static_lib_bytes=$(stat -c %s "$dest/static/libduckdb_static.a")"
           start=$(date +%s)
           if g++ -std=c++17 -O2 -static -I"$dest/static" spike/sidecar-duckdb/sidecar.cpp \

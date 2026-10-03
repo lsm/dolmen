@@ -7,8 +7,11 @@ DataFusion rather than measuring two different protocols.
 ## Framing
 
 One request per line on the sidecar's stdin, one response per line on stdout.
-Both are tab-separated so a value can never contain the separator, and both carry
-a request id so a response can be matched when a query is cancelled.
+Both are tab-separated and carry a request id, so a response can be matched when
+a query is cancelled. Every request argument is escaped before it is framed —
+`\` as `\\`, tab as `\t`, newline as `\n`, carriage return as `\r` — and the
+sidecar unescapes each field after splitting, so SQL containing a tab or a
+newline arrives intact rather than splitting the frame.
 
 ```
 request:  <id>\t<op>\t<arg>\t<arg>...

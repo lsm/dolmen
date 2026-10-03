@@ -44,6 +44,25 @@ fn escape(v: &str) -> String {
     out
 }
 
+fn unescape(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    let mut chars = v.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('t') => out.push('\t'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
 fn reply(id: &str, payload: &str) {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{}\tok\t{}", id, payload);
@@ -229,7 +248,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None => break,
             },
         };
-        let f: Vec<&str> = line.split('\t').collect();
+        let owned: Vec<String> = line.split('\t').map(unescape).collect();
+        let f: Vec<&str> = owned.iter().map(String::as_str).collect();
         if f.len() < 2 {
             continue;
         }

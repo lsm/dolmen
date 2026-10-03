@@ -33,9 +33,9 @@ type Options struct {
 }
 
 type Sidecar struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Reader
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
+	lines chan lineResult
 
 	mu        sync.Mutex
 	writeMu   sync.Mutex
@@ -94,36 +94,52 @@ func Start(ctx context.Context, opts Options) (*Sidecar, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	s := &Sidecar{cmd: cmd, stdin: stdin, stdout: bufio.NewReaderSize(stdout, 1<<20), nextID: 1000}
+	s := &Sidecar{cmd: cmd, stdin: stdin, lines: make(chan lineResult, 64), nextID: 1000}
+	go s.readAll(bufio.NewReaderSize(stdout, 1<<20))
 	return s, nil
 }
 
-func (s *Sidecar) call(ctx context.Context, op Op, args ...string) (string, error) {
+func (s *Sidecar) call(ctx context.Context, op Op, args ...string) (string, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextID++
-	id := s.nextID
-	fields := append([]string{strconv.FormatInt(id, 10), string(op)}, args...)
-	if err := s.write(fields); err != nil {
-		return "", err
+	id := strconv.FormatInt(s.nextID, 10)
+	fields := []string{id, string(op)}
+	for _, a := range args {
+		fields = append(fields, EscapeArg(a))
 	}
-	return s.readResponse(ctx, strconv.FormatInt(id, 10))
+	if err := s.write(fields); err != nil {
+		return id, "", err
+	}
+	line, err := s.readResponse(ctx, id)
+	return id, line, err
+}
+
+type lineResult struct {
+	line string
+	err  error
+}
+
+func (s *Sidecar) readAll(r *bufio.Reader) {
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			s.lines <- lineResult{err: err}
+			close(s.lines)
+			return
+		}
+		s.lines <- lineResult{line: line}
+	}
 }
 
 func (s *Sidecar) readLine(ctx context.Context) (string, error) {
-	type res struct {
-		line string
-		err  error
-	}
-	ch := make(chan res, 1)
-	go func() {
-		line, err := s.stdout.ReadString('\n')
-		ch <- res{line, err}
-	}()
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()
-	case r := <-ch:
+	case r, ok := <-s.lines:
+		if !ok {
+			return "", io.EOF
+		}
 		if r.err != nil {
 			return "", r.err
 		}
@@ -196,10 +212,7 @@ func (s *Sidecar) SendFireAndForget(op Op, args ...string) error {
 }
 
 func (s *Sidecar) Init(ctx context.Context, dataDir string, snapshot int64, table, location string) error {
-	s.mu.Lock()
-	wantID := strconv.FormatInt(s.nextID+1, 10)
-	s.mu.Unlock()
-	line, err := s.call(ctx, OpInit, dataDir, strconv.FormatInt(snapshot, 10), table, location)
+	wantID, line, err := s.call(ctx, OpInit, dataDir, strconv.FormatInt(snapshot, 10), table, location)
 	if err != nil {
 		return err
 	}
@@ -219,7 +232,7 @@ func (s *Sidecar) Query(ctx context.Context, sql string) (*Result, error) {
 	defer s.mu.Unlock()
 	s.nextID++
 	id := s.nextID
-	if err := s.write([]string{strconv.FormatInt(id, 10), string(OpQuery), sql}); err != nil {
+	if err := s.write([]string{strconv.FormatInt(id, 10), string(OpQuery), EscapeArg(sql)}); err != nil {
 		return nil, err
 	}
 	line, err := s.readResponse(ctx, strconv.FormatInt(id, 10))
@@ -271,7 +284,7 @@ func (s *Sidecar) Close() error {
 	s.closed = true
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _ = s.call(ctx, OpShutdown)
+	_, _, _ = s.call(ctx, OpShutdown)
 	_ = s.stdin.Close()
 	done := make(chan error, 1)
 	go func() { done <- s.cmd.Wait() }()
@@ -295,6 +308,13 @@ func (s *Sidecar) Pid() int {
 		return 0
 	}
 	return s.cmd.Process.Pid
+}
+
+func EscapeArg(v string) string {
+	v = strings.ReplaceAll(v, `\`, `\\`)
+	v = strings.ReplaceAll(v, "\t", `\t`)
+	v = strings.ReplaceAll(v, "\r", `\r`)
+	return strings.ReplaceAll(v, "\n", `\n`)
 }
 
 func Escape(v string) string {

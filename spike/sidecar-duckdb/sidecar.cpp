@@ -67,6 +67,22 @@ std::vector<std::string> Split(const std::string &line, char sep) {
   return out;
 }
 
+std::string Unescape(const std::string &v) {
+  std::string out;
+  for (size_t i = 0; i < v.size(); i++) {
+    if (v[i] != '\\' || i + 1 == v.size()) {
+      out.push_back(v[i]);
+      continue;
+    }
+    const char n = v[++i];
+    if (n == 't') out.push_back('\t');
+    else if (n == 'n') out.push_back('\n');
+    else if (n == 'r') out.push_back('\r');
+    else out.push_back(n);
+  }
+  return out;
+}
+
 std::string Escape(const std::string &v) {
   std::string out;
   for (char c : v) {
@@ -339,7 +355,8 @@ int Run() {
   std::string busy_id;
   std::string line;
   while (std::getline(std::cin, line)) {
-    const auto f = Split(line, '\t');
+    auto f = Split(line, '\t');
+    for (auto &field : f) field = Unescape(field);
     if (f.size() < 2) continue;
     const std::string id = f[0];
     const std::string op = f[1];
