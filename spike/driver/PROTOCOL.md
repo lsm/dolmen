@@ -47,8 +47,12 @@ answered "no table registered" while every `init` reported success.
 <id>\tok\t<columns semicolon-separated>\t<rows>\t<elapsed_ms>\t<truncated 0|1>
 ```
 
-`columns` is `name:sqlType` per column. `rows` is `|`-separated values with
-`\n` and `|` backslash-escaped. Errors are
+`columns` is `name:sqlType` per column, columns separated by `;`. `rows` are
+separated by `|`, and the values inside a row by the byte 0x1F. Every name, type,
+value and error message is escaped before it is framed — `\` as `\\`, `|` as
+`\|`, newline as `\n`, tab as `\t`, 0x1F as `\u`, `;` as `\;`, `:` as `\:` — so a
+reader splits on the unescaped separators first and unescapes each piece after.
+Errors are
 
 ```
 <id>\terror\t<class>\t<message>

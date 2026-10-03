@@ -94,6 +94,12 @@ std::string Escape(const std::string &v) {
       out += "\\n";
     } else if (c == '\t') {
       out += "\\t";
+    } else if (c == '\x1f') {
+      out += "\\u";
+    } else if (c == ';') {
+      out += "\\;";
+    } else if (c == ':') {
+      out += "\\:";
     } else {
       out.push_back(c);
     }
@@ -211,7 +217,7 @@ void ResultReply(const std::string &id, duckdb::MaterializedQueryResult &res, lo
   std::ostringstream cols;
   for (duckdb::idx_t i = 0; i < res.ColumnCount(); i++) {
     if (i) cols << ";";
-    cols << res.ColumnName(i) << ":" << res.types[i].ToString();
+    cols << Escape(res.ColumnName(i)) << ":" << Escape(res.types[i].ToString());
   }
   std::ostringstream rows;
   for (duckdb::idx_t i = 0; i < res.RowCount(); i++) {

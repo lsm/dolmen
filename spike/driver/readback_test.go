@@ -135,3 +135,16 @@ func TestAValueContainingTheRowSeparatorOrABackslashComesBackAsOneRow(t *testing
 		t.Fatalf("a value with a pipe and a backslash came back as %q, want one row a|b\\c", res.Rows)
 	}
 }
+
+func TestASeparatorInsideAValueOrAColumnNameDoesNotSplitIt(t *testing.T) {
+	tbl := newFixture(t, 10)
+	_, sc, _ := locked(t, tbl)
+
+	res := mustQuery(t, sc, `SELECT 'a' || chr(31) || 'b;c:d' AS "x;y:z", 2 AS n`)
+	if len(res.Columns) != 2 || res.Columns[0].Name != "x;y:z" || res.Columns[1].Name != "n" {
+		t.Fatalf("columns came back as %+v, want x;y:z and n", res.Columns)
+	}
+	if len(res.Cells) != 1 || len(res.Cells[0]) != 2 || res.Cells[0][0] != "a\x1fb;c:d" || res.Cells[0][1] != "2" {
+		t.Fatalf("cells came back as %q, want one row of a<US>b;c:d and 2", res.Cells)
+	}
+}

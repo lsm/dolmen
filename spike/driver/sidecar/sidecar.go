@@ -48,6 +48,7 @@ type Sidecar struct {
 type Result struct {
 	Columns   []Column
 	Rows      []string
+	Cells     [][]string
 	ElapsedMS int64
 	Truncated bool
 }
@@ -192,7 +193,7 @@ func errorFrom(fields []string, line string) error {
 		class = fields[2]
 	}
 	if len(fields) > 3 {
-		msg = strings.Join(fields[3:], "\t")
+		msg = unescape(strings.Join(fields[3:], "\t"))
 	}
 	if class == "" {
 		class = "internal_error"
@@ -254,15 +255,25 @@ func parseResult(line, wantID string) (*Result, error) {
 		return nil, errorFrom(fields, line)
 	}
 	out := &Result{}
-	for _, c := range strings.Split(fields[2], ";") {
-		if c == "" {
-			continue
+	if fields[2] != "" {
+		for _, c := range splitEscaped(fields[2], ';') {
+			parts := splitEscaped(c, ':')
+			col := Column{Name: unescape(parts[0])}
+			if len(parts) > 1 {
+				col.Type = unescape(strings.Join(parts[1:], ":"))
+			}
+			out.Columns = append(out.Columns, col)
 		}
-		name, typ, _ := strings.Cut(c, ":")
-		out.Columns = append(out.Columns, Column{Name: name, Type: typ})
 	}
 	if len(fields) > 3 && fields[3] != "" {
-		out.Rows = splitRows(fields[3])
+		for _, row := range splitEscaped(fields[3], '|') {
+			var cells []string
+			for _, cell := range strings.Split(row, "\x1f") {
+				cells = append(cells, unescape(cell))
+			}
+			out.Cells = append(out.Cells, cells)
+			out.Rows = append(out.Rows, strings.Join(cells, "\x1f"))
+		}
 	}
 	if len(fields) > 4 {
 		if v, err := strconv.ParseInt(fields[4], 10, 64); err == nil {
@@ -310,31 +321,42 @@ func (s *Sidecar) Pid() int {
 	return s.cmd.Process.Pid
 }
 
-func splitRows(v string) []string {
-	var rows []string
-	var cur strings.Builder
+func splitEscaped(v string, sep byte) []string {
+	var parts []string
+	start := 0
 	for i := 0; i < len(v); i++ {
-		c := v[i]
-		if c == '|' {
-			rows = append(rows, cur.String())
-			cur.Reset()
+		if v[i] == '\\' {
+			i++
 			continue
 		}
-		if c != '\\' || i+1 == len(v) {
-			cur.WriteByte(c)
+		if v[i] == sep {
+			parts = append(parts, v[start:i])
+			start = i + 1
+		}
+	}
+	return append(parts, v[start:])
+}
+
+func unescape(v string) string {
+	var out strings.Builder
+	for i := 0; i < len(v); i++ {
+		if v[i] != '\\' || i+1 == len(v) {
+			out.WriteByte(v[i])
 			continue
 		}
 		i++
 		switch v[i] {
 		case 'n':
-			cur.WriteByte('\n')
+			out.WriteByte('\n')
 		case 't':
-			cur.WriteByte('\t')
+			out.WriteByte('\t')
+		case 'u':
+			out.WriteByte(0x1f)
 		default:
-			cur.WriteByte(v[i])
+			out.WriteByte(v[i])
 		}
 	}
-	return append(rows, cur.String())
+	return out.String()
 }
 
 func EscapeArg(v string) string {
