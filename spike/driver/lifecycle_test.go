@@ -104,12 +104,12 @@ func TestAFreshSidecarServesCleanlyAfterThePreviousOneWasKilled(t *testing.T) {
 	}
 }
 
-func TestAQueryWhoseWorkingSetExceedsTheCeilingSpillsOrIsRefused(t *testing.T) {
+func TestTheSidecarSpillsAQueryThatOnlyFitsWithSpilling(t *testing.T) {
 	if testing.Short() {
 		t.Skip("the memory ceiling test allocates")
 	}
-	ceiling := os.Getenv("SIDECAR_TIGHT_MEMORY")
-	if ceiling == "" {
+	ceilings := os.Getenv("SIDECAR_TIGHT_MEMORY")
+	if ceilings == "" {
 		t.Skip("SIDECAR_TIGHT_MEMORY is unset")
 	}
 	const rows = 10000000
@@ -119,68 +119,53 @@ func TestAQueryWhoseWorkingSetExceedsTheCeilingSpillsOrIsRefused(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 	root := rootOf(tbl)
-	want := rows
 	const heavy = "SELECT count(*) FROM (SELECT id, body FROM events GROUP BY id, body) AS g"
 
-	outcome := map[string]string{}
-	for _, run := range []struct {
-		name    string
-		lock    bool
-		noSpill bool
-	}{{"locked", true, false}, {"unlocked", false, false}, {"locked_no_spill", true, true}} {
-		lock := run.lock
-		env := []string{"SIDECAR_DATA_DIR=" + root, "SIDECAR_MEMORY_MAX=" + ceiling}
-		if run.noSpill {
+	run := func(ceiling string, noSpill bool) string {
+		env := []string{"SIDECAR_DATA_DIR=" + root, "SIDECAR_MEMORY_MAX=" + ceiling, "SIDECAR_THREADS=2"}
+		if noSpill {
 			env = append(env, "SIDECAR_NO_SPILL=1")
 		}
 		if e.Ext != "" {
 			env = append(env, "SIDECAR_EXT_DIR="+e.Ext)
 		}
-		if !lock {
-			env = append(env, "SIDECAR_UNLOCKED=1")
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+		defer cancel()
 		sc, err := sidecar.Start(ctx, sidecar.Options{Bin: e.Bin, Env: env})
 		if err != nil {
-			cancel()
 			t.Fatalf("start sidecar: %v", err)
 		}
+		defer func() { _ = sc.Close() }()
 		if err := sc.Init(ctx, root, fixture.CurrentSnapshotID(tbl), "events", "app/events"); err != nil {
-			cancel()
-			_ = sc.Close()
 			t.Fatalf("init: %v", err)
 		}
 		res, err := sc.Query(ctx, heavy)
-		_ = sc.Close()
-		cancel()
 		if err != nil {
 			lower := strings.ToLower(err.Error())
-			switch {
-			case strings.Contains(lower, "out of memory"),
-				strings.Contains(lower, "memory limit"),
-				strings.Contains(lower, "memory pool"),
-				strings.Contains(lower, "resources exhausted"),
-				strings.Contains(lower, "exceeds limit"),
-				strings.Contains(lower, "insufficient"):
-				t.Logf("MEMORY engine=%s run=%s ceiling=%s groups=%d outcome=refused: %.200s", e.Name, run.name, ceiling, want, err)
-				outcome[run.name] = "refused"
-			default:
-				t.Fatalf("locked=%v: the query failed for a reason that is not the memory ceiling: %v", lock, err)
+			if strings.Contains(lower, "out of memory") || strings.Contains(lower, "memory limit") {
+				return "refused"
 			}
-			continue
+			t.Fatalf("ceiling=%s noSpill=%v: the query failed for a reason that is not the memory ceiling: %v", ceiling, noSpill, err)
 		}
-		if got := countOf(t, res); got != want {
-			t.Fatalf("locked=%v: the query returned %d groups under the ceiling, want %d", lock, got, want)
+		if got := countOf(t, res); got != rows {
+			t.Fatalf("ceiling=%s noSpill=%v: the query returned %d groups, want %d", ceiling, noSpill, got, rows)
 		}
-		t.Logf("MEMORY engine=%s run=%s ceiling=%s groups=%d outcome=completed", e.Name, run.name, ceiling, want)
-		outcome[run.name] = "completed"
+		return "completed"
 	}
-	if outcome["locked_no_spill"] == "completed" {
-		t.Fatalf("the query completed under %s with spilling disabled, so the ceiling never bound and this test proves nothing about spilling", ceiling)
+
+	proved := ""
+	for _, ceiling := range strings.Split(ceilings, ",") {
+		withSpill := run(ceiling, false)
+		without := run(ceiling, true)
+		t.Logf("MEMORY engine=%s ceiling=%s groups=%d with_spill=%s without_spill=%s", e.Name, ceiling, rows, withSpill, without)
+		if withSpill == "completed" && without == "refused" && proved == "" {
+			proved = ceiling
+		}
 	}
-	if outcome["locked"] == "completed" {
-		t.Logf("MEMORY engine=%s spilled=yes: it completed under the lock and failed with spilling disabled", e.Name)
+	if proved == "" {
+		t.Fatalf("no ceiling in %s made the query need spilling and then completed it, so nothing here shows a spill", ceilings)
 	}
+	t.Logf("MEMORY engine=%s spilled=yes at %s: correct with spilling, refused without", e.Name, proved)
 }
 
 func processAlive(pid int) bool {
