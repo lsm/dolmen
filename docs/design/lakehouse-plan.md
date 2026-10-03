@@ -293,15 +293,15 @@ settings that do it, and one correction that matters more than the list:
 - `lock_configuration = true` — set **last**. The ordering is forced, and it is the reverse of the
   obvious one: `allowed_directories` **cannot** be set once `enable_external_access` is false
   (`Cannot change allowed_directories when enable_external_access is disabled`), so the list goes
-  first and external access is closed second. `enable_external_access` also cannot be set from
-  inside a running session at all, and neither can be set once the configuration is locked, so the
-  only place any of this works is process startup. **How that is spelled depends on the process, and
-  getting it wrong fails open silently: `.duckdbrc` is read by the `duckdb` shell and *not* by an
-  embedded library.** §2.5 measured this against the CLI, where a `.duckdbrc` under a per-namespace
-  `HOME` is the mechanism; §2.8.3 measured the same lock inside a sidecar, where it is `DBConfig` at
-  open time — `allowed_directories` as a struct field, the rest in `unrecognized_options`, and
-  `lock_configuration` by a final `SET`. A sidecar that writes a `.duckdbrc` looks configured and is
-  not.
+  first and external access is closed second. External access can be turned off by a `SET` on an open
+  connection but never turned back on, and nothing can be changed once the configuration is locked,
+  so the whole sequence has to run before any caller SQL does. **How that is spelled depends on the
+  process, and getting it wrong fails open silently: `.duckdbrc` is read by the `duckdb` shell and
+  *not* by an embedded library.** §2.5 measured this against the CLI, where a `.duckdbrc` under a
+  per-namespace `HOME` is the mechanism. §2.8.3 measured the same lock inside a sidecar, where
+  `allowed_directories` and `access_mode` are `DBConfig` fields at open time and the rest are `SET`
+  on the connection, ending with `lock_configuration`. A sidecar that writes a `.duckdbrc` looks
+  configured and is not.
 
 Every attack the table below lists is blocked, measured rather than assumed:
 

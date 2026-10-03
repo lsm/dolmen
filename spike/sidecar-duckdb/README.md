@@ -55,24 +55,26 @@ escape attempts succeeded** — `read_csv`, `glob`, URL tables, `ATTACH`, `COPY 
 `LOAD`, `getenv`, `CREATE EXTERNAL TABLE`, `SET`, DDL and DML alike. Nothing warns. The process looks
 configured and is not, which is the worst failure mode a confinement mechanism has.
 
-The settings go through `DBConfig`, split across two mechanisms because the ordering is load-bearing:
+The lock is applied in `Seal()` (`sidecar.cpp`) when the first query arrives, before any caller
+SQL runs, in this order:
 
-1. **`cfg.options.allowed_directories`** — a struct field, not a `SET`, because
-   `allowed_directories` cannot be set once `enable_external_access` is false (#533 measured that).
-2. **`cfg.options.unrecognized_options`** — `extension_directory`, `enable_external_access = false`,
+1. **Write a private catalog file** read-write, holding one view per table, and close it. A
+   read-only database cannot have views created in it.
+2. **Reopen it with `DBConfig` struct fields**: `access_mode = READ_ONLY`, so DDL and DML are
+   refused; `allowed_directories = {namespace dir}`, which has to be set before external access is
+   closed; and `maximum_memory`, which a `SET` could not reach once the configuration is locked.
+3. **`LOAD iceberg`** while loading is still allowed.
+4. **`SET` on the open connection**, in order: `enable_external_access = false`,
    `autoinstall_known_extensions = false`, `autoload_known_extensions = false`,
-   `allow_persistent_secrets = false`. DuckDB applies these at startup, before the database is
-   usable. `enable_external_access` is the guard and has no struct field, so it goes here.
-3. **`SET lock_configuration = true`** — last, by `SET` on a live connection, so nothing above can be
-   reopened. The sidecar **exits non-zero if the lock is refused** rather than running unlocked.
+   `allow_persistent_secrets = false`, then `lock_configuration = true` last. The sidecar **exits
+   non-zero if any of these is refused** rather than running unlocked.
 
-`memory_limit` is a `DBConfig` struct field too (`cfg.options.maximum_memory`), for the same reason:
-once `lock_configuration` is on, a `SET` cannot reach it.
+`DBConfigOptions::unrecognized_options` is **not** a way to set these: an earlier run put them there
+and the process aborted with `The following options were not recognized: ...`.
 
-**And `DBConfigOptions::access_mode = READ_ONLY`, which is not a substitute for any of the above.**
-With only the external-access guard the CI battery found `CREATE TABLE`, `INSERT`, `UPDATE` and
-`DELETE` all still accepted: `enable_external_access` is about *files*, and an in-memory catalog has
-nothing external to guard. A query sidecar that must not change anything needs both.
+`enable_external_access = false` and `access_mode = READ_ONLY` are not substitutes. The first is
+about *files*; with only it, the battery found `CREATE TABLE`, `INSERT`, `UPDATE`, `DELETE` and
+`DROP VIEW` all accepted.
 
 `SIDECAR_UNLOCKED=1` starts the sidecar with none of this applied. That is what lets the driver tell a
 refusal that is *our mechanism* from one that is merely an engine default: the same statement runs
@@ -91,6 +93,6 @@ an error.
 
 ## Lifecycle
 
-`cancel` calls `duckdb_interrupt` through the connection, which is cooperative and asynchronous: it
-signals the running query and returns. A query that cannot be cancelled in time is handled by the
+Queries run on a worker thread against one connection, and `cancel` calls `Connection::Interrupt` on
+it from the main thread, which keeps reading stdin. CI measured a cancel at about 150 ms. A query that cannot be cancelled in time is handled by the
 driver killing the process, which is the fallback the plan names.

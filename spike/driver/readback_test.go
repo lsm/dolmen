@@ -125,3 +125,13 @@ func TestSQLContainingATabOrANewlineArrivesIntact(t *testing.T) {
 		t.Fatalf("SQL with a tab, newlines and a backslash counted %d, the same query on one line counted %d", framed, plain)
 	}
 }
+
+func TestAValueContainingTheRowSeparatorOrABackslashComesBackAsOneRow(t *testing.T) {
+	tbl := newFixture(t, 10)
+	_, sc, _ := locked(t, tbl)
+
+	res := mustQuery(t, sc, "SELECT 'a|b\\c' AS v")
+	if len(res.Rows) != 1 || res.Rows[0] != `a|b\c` {
+		t.Fatalf("a value with a pipe and a backslash came back as %q, want one row a|b\\c", res.Rows)
+	}
+}

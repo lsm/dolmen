@@ -262,7 +262,7 @@ func parseResult(line, wantID string) (*Result, error) {
 		out.Columns = append(out.Columns, Column{Name: name, Type: typ})
 	}
 	if len(fields) > 3 && fields[3] != "" {
-		out.Rows = strings.Split(fields[3], "|")
+		out.Rows = splitRows(fields[3])
 	}
 	if len(fields) > 4 {
 		if v, err := strconv.ParseInt(fields[4], 10, 64); err == nil {
@@ -308,6 +308,33 @@ func (s *Sidecar) Pid() int {
 		return 0
 	}
 	return s.cmd.Process.Pid
+}
+
+func splitRows(v string) []string {
+	var rows []string
+	var cur strings.Builder
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if c == '|' {
+			rows = append(rows, cur.String())
+			cur.Reset()
+			continue
+		}
+		if c != '\\' || i+1 == len(v) {
+			cur.WriteByte(c)
+			continue
+		}
+		i++
+		switch v[i] {
+		case 'n':
+			cur.WriteByte('\n')
+		case 't':
+			cur.WriteByte('\t')
+		default:
+			cur.WriteByte(v[i])
+		}
+	}
+	return append(rows, cur.String())
 }
 
 func EscapeArg(v string) string {
