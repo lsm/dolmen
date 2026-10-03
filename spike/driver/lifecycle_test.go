@@ -116,44 +116,51 @@ func TestAQueryWhoseWorkingSetExceedsTheCeilingSpillsOrIsRefused(t *testing.T) {
 	tbl := newFixture(t, rows)
 	e := requireEngine(t)
 	root := rootOf(tbl)
-
-	env := []string{"SIDECAR_DATA_DIR=" + root, "SIDECAR_MEMORY_MAX=" + ceiling}
-	if e.Ext != "" {
-		env = append(env, "SIDECAR_EXT_DIR="+e.Ext)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
-	defer cancel()
-	sc, err := sidecar.Start(ctx, sidecar.Options{Bin: e.Bin, Env: env})
-	if err != nil {
-		t.Fatalf("start sidecar: %v", err)
-	}
-	t.Cleanup(func() { _ = sc.Close() })
-	if err := sc.Init(ctx, root, fixture.CurrentSnapshotID(tbl), "events", "app/events"); err != nil {
-		t.Fatalf("init: %v", err)
-	}
-
-	const heavy = "SELECT count(*) FROM (SELECT id, body FROM events GROUP BY id, body) AS g"
 	want := fixture.ExpectedLiveRows(rows, fixture.DeletedPositions())
-	res, err := sc.Query(ctx, heavy)
-	if err != nil {
-		lower := strings.ToLower(err.Error())
-		switch {
-		case strings.Contains(lower, "out of memory"),
-			strings.Contains(lower, "memory limit"),
-			strings.Contains(lower, "memory pool"),
-			strings.Contains(lower, "resources exhausted"),
-			strings.Contains(lower, "exceeds limit"),
-			strings.Contains(lower, "insufficient"):
-			t.Logf("MEMORY engine=%s ceiling=%s groups=%d outcome=refused: %s", e.Name, ceiling, want, err)
-		default:
-			t.Fatalf("the query failed for a reason that is not the memory ceiling: %v", err)
+	const heavy = "SELECT count(*) FROM (SELECT id, body FROM events GROUP BY id, body) AS g"
+
+	for _, lock := range []bool{true, false} {
+		env := []string{"SIDECAR_DATA_DIR=" + root, "SIDECAR_MEMORY_MAX=" + ceiling}
+		if e.Ext != "" {
+			env = append(env, "SIDECAR_EXT_DIR="+e.Ext)
 		}
-		return
+		if !lock {
+			env = append(env, "SIDECAR_UNLOCKED=1")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+		sc, err := sidecar.Start(ctx, sidecar.Options{Bin: e.Bin, Env: env})
+		if err != nil {
+			cancel()
+			t.Fatalf("start sidecar: %v", err)
+		}
+		if err := sc.Init(ctx, root, fixture.CurrentSnapshotID(tbl), "events", "app/events"); err != nil {
+			cancel()
+			_ = sc.Close()
+			t.Fatalf("init: %v", err)
+		}
+		res, err := sc.Query(ctx, heavy)
+		_ = sc.Close()
+		cancel()
+		if err != nil {
+			lower := strings.ToLower(err.Error())
+			switch {
+			case strings.Contains(lower, "out of memory"),
+				strings.Contains(lower, "memory limit"),
+				strings.Contains(lower, "memory pool"),
+				strings.Contains(lower, "resources exhausted"),
+				strings.Contains(lower, "exceeds limit"),
+				strings.Contains(lower, "insufficient"):
+				t.Logf("MEMORY engine=%s locked=%v ceiling=%s groups=%d outcome=refused: %.200s", e.Name, lock, ceiling, want, err)
+			default:
+				t.Fatalf("locked=%v: the query failed for a reason that is not the memory ceiling: %v", lock, err)
+			}
+			continue
+		}
+		if got := countOf(t, res); got != want {
+			t.Fatalf("locked=%v: the query returned %d groups under the ceiling, want %d", lock, got, want)
+		}
+		t.Logf("MEMORY engine=%s locked=%v ceiling=%s groups=%d outcome=completed", e.Name, lock, ceiling, want)
 	}
-	if got := countOf(t, res); got != want {
-		t.Fatalf("the query returned %d groups under the ceiling, want %d", got, want)
-	}
-	t.Logf("MEMORY engine=%s ceiling=%s groups=%d outcome=completed", e.Name, ceiling, want)
 }
 
 func processAlive(pid int) bool {
