@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/lsm/dolmen/spike/driver/fixture"
-	"github.com/lsm/dolmen/spike/driver/sidecar"
 )
 
 const foreverQuery = "SELECT count(*) FROM range(20000000000)"
