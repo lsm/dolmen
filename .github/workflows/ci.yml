@@ -170,7 +170,7 @@ jobs:
           SIDECAR_BIN: ${{ runner.temp }}/ddb/sidecar
           SIDECAR_ENGINE: duckdb
           SIDECAR_EXT_DIR: ${{ runner.temp }}/ddb/ext
-          SIDECAR_TIGHT_MEMORY: 180MB
+          SIDECAR_TIGHT_MEMORY: 64MB
         run: go test -count=1 -v -timeout 40m ./...
       - name: Check no comments
         working-directory: .
@@ -231,7 +231,7 @@ jobs:
         env:
           SIDECAR_BIN: ${{ runner.temp }}/sidecar-datafusion
           SIDECAR_ENGINE: datafusion
-          SIDECAR_TIGHT_MEMORY: 180MB
+          SIDECAR_TIGHT_MEMORY: 64MB
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/bin"

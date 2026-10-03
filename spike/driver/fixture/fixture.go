@@ -288,8 +288,11 @@ func PlantSecretOutside(dataDir string) error {
 	if _, err := PlantOutside(dataDir, "secret.csv", "col\n"+marker+"\n"); err != nil {
 		return err
 	}
-	dir := OutsideDir(dataDir)
-	f, err := os.Create(filepath.Join(dir, "secret.parquet"))
+	return writeMarkerParquet(filepath.Join(OutsideDir(dataDir), "secret.parquet"), marker)
+}
+
+func writeMarkerParquet(path, marker string) error {
+	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
@@ -313,7 +316,7 @@ func PlantOtherNamespace(dataDir string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	return dir, os.WriteFile(filepath.Join(dir, "x.parquet"), []byte("not-a-parquet-file"), 0o644)
+	return dir, writeMarkerParquet(filepath.Join(dir, "x.parquet"), "OTHER-NAMESPACE-ROW")
 }
 
 func SnapshotIDs(t *Table) []int64 {

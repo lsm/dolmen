@@ -104,22 +104,24 @@ func TestAFreshSidecarServesCleanlyAfterThePreviousOneWasKilled(t *testing.T) {
 	}
 }
 
-func TestTheMemoryLimitIsEnforcedAndAQueryTooBigForItSpillsOrIsRefused(t *testing.T) {
+func TestAQueryWhoseWorkingSetExceedsTheCeilingSpillsOrIsRefused(t *testing.T) {
 	if testing.Short() {
-		t.Skip("the memory limit test allocates")
+		t.Skip("the memory ceiling test allocates")
 	}
-	tbl := newFixture(t, 200000)
+	ceiling := os.Getenv("SIDECAR_TIGHT_MEMORY")
+	if ceiling == "" {
+		t.Skip("SIDECAR_TIGHT_MEMORY is unset")
+	}
+	const rows = 3000000
+	tbl := newFixture(t, rows)
 	e := requireEngine(t)
 	root := rootOf(tbl)
 
-	env := []string{
-		"SIDECAR_DATA_DIR=" + root,
-		"SIDECAR_MEMORY_MAX=" + os.Getenv("SIDECAR_TIGHT_MEMORY"),
-	}
+	env := []string{"SIDECAR_DATA_DIR=" + root, "SIDECAR_MEMORY_MAX=" + ceiling}
 	if e.Ext != "" {
 		env = append(env, "SIDECAR_EXT_DIR="+e.Ext)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 	sc, err := sidecar.Start(ctx, sidecar.Options{Bin: e.Bin, Env: env})
 	if err != nil {
@@ -130,27 +132,28 @@ func TestTheMemoryLimitIsEnforcedAndAQueryTooBigForItSpillsOrIsRefused(t *testin
 		t.Fatalf("init: %v", err)
 	}
 
-	const heavy = "SELECT grp, count(*) AS n, sum(score) AS total FROM events GROUP BY grp ORDER BY grp"
+	const heavy = "SELECT count(*) FROM (SELECT id, body FROM events GROUP BY id, body) AS g"
+	want := fixture.ExpectedLiveRows(rows, fixture.DeletedPositions())
 	res, err := sc.Query(ctx, heavy)
 	if err != nil {
-		msg := err.Error()
-		lower := strings.ToLower(msg)
+		lower := strings.ToLower(err.Error())
 		switch {
 		case strings.Contains(lower, "out of memory"),
 			strings.Contains(lower, "memory limit"),
 			strings.Contains(lower, "memory pool"),
+			strings.Contains(lower, "resources exhausted"),
 			strings.Contains(lower, "exceeds limit"),
 			strings.Contains(lower, "insufficient"):
-			t.Logf("the memory ceiling refused the query, which is DuckDB's behaviour: %s", msg)
+			t.Logf("MEMORY engine=%s ceiling=%s groups=%d outcome=refused: %s", e.Name, ceiling, want, err)
 		default:
-			t.Fatalf("the heavy query failed for a reason that is not the memory ceiling: %s", msg)
+			t.Fatalf("the query failed for a reason that is not the memory ceiling: %v", err)
 		}
 		return
 	}
-	if len(res.Rows) != 5 {
-		t.Fatalf("the heavy query returned %d groups, want 5: spilling changed the answer", len(res.Rows))
+	if got := countOf(t, res); got != want {
+		t.Fatalf("the query returned %d groups under the ceiling, want %d", got, want)
 	}
-	t.Logf("the heavy query spilled and returned %d correct groups under the ceiling", len(res.Rows))
+	t.Logf("MEMORY engine=%s ceiling=%s groups=%d outcome=completed", e.Name, ceiling, want)
 }
 
 func processAlive(pid int) bool {
