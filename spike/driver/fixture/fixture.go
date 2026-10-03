@@ -173,8 +173,8 @@ func idsInParquet(path string) ([]int64, error) {
 }
 
 type posDelete struct {
-	FilePath string `parquet:"file_path"`
-	Pos      int64  `parquet:"pos"`
+	FilePath string `parquet:"file_path,id(2147483546)"`
+	Pos      int64  `parquet:"pos,id(2147483545)"`
 }
 
 func ApplyPositionDeletes(ctx context.Context, tbl *table.Table, positions []int64) error {
@@ -211,9 +211,13 @@ func ApplyPositionDeletes(ctx context.Context, tbl *table.Table, positions []int
 		return err
 	}
 
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
 	df, err := iceberg.NewDataFileBuilder(
 		*iceberg.UnpartitionedSpec, iceberg.EntryContentPosDeletes,
-		path, iceberg.ParquetFile, nil, nil, nil, int64(len(positions)), 512)
+		path, iceberg.ParquetFile, nil, nil, nil, int64(len(positions)), info.Size())
 	if err != nil {
 		return err
 	}

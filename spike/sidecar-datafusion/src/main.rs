@@ -217,6 +217,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         let line = tokio::select! {
+            biased;
             Some(id) = done_rx.recv() => {
                 if state.running.as_ref().map(|(r, _)| r == &id).unwrap_or(false) {
                     state.running = None;
@@ -297,14 +298,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let done = done_tx.clone();
                 let task = tokio::spawn(async move {
                     let start = std::time::Instant::now();
-                    match run_query(ctx, unlocked, sql).await {
+                    let outcome = run_query(ctx, unlocked, sql).await;
+                    let _ = done.send(qid.clone());
+                    match outcome {
                         Ok((cols, rows)) => {
                             let elapsed = start.elapsed().as_millis() as i64;
                             reply(&qid, &format!("{cols}\t{rows}\t{elapsed}\t0"));
                         }
                         Err(e) => error_reply(&qid, classify(&e), &e),
                     }
-                    let _ = done.send(qid);
                 });
                 state.running = Some((id, task.abort_handle()));
             }

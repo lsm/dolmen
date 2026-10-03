@@ -85,7 +85,15 @@ std::string Escape(const std::string &v) {
   return out;
 }
 
+void Emit(const std::string &line);
+
+thread_local std::string *g_capture = nullptr;
+
 void Emit(const std::string &line) {
+  if (g_capture != nullptr) {
+    *g_capture = line;
+    return;
+  }
   std::lock_guard<std::mutex> lock(g_out_mu);
   std::cout << line << std::endl;
 }
@@ -293,6 +301,8 @@ void Worker() {
       g_work_ready = false;
     }
     const auto start = std::chrono::steady_clock::now();
+    std::string out;
+    g_capture = &out;
     try {
       auto res = g_con->Query(sql);
       const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -306,7 +316,9 @@ void Worker() {
     } catch (const std::exception &e) {
       ErrorReply(id, "internal_error", e.what());
     }
+    g_capture = nullptr;
     g_busy = false;
+    Emit(out);
   }
 }
 
