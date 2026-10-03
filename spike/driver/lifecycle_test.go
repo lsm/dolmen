@@ -119,7 +119,7 @@ func TestTheSidecarSpillsAQueryThatOnlyFitsWithSpilling(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 	root := rootOf(tbl)
-	const heavy = "SELECT count(*) FROM (SELECT id, body FROM events GROUP BY id, body) AS g"
+	const heavy = "SELECT count(*) FROM (SELECT row_number() OVER (ORDER BY body DESC, id) AS r, body FROM events) AS w WHERE r > 0"
 
 	run := func(ceiling string, noSpill bool) string {
 		env := []string{"SIDECAR_DATA_DIR=" + root, "SIDECAR_MEMORY_MAX=" + ceiling, "SIDECAR_THREADS=2"}
