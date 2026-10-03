@@ -170,7 +170,6 @@ jobs:
           SIDECAR_BIN: ${{ runner.temp }}/ddb/sidecar
           SIDECAR_ENGINE: duckdb
           SIDECAR_EXT_DIR: ${{ runner.temp }}/ddb/ext
-          SIDECAR_TIGHT_MEMORY: 96MB,128MB,256MB,384MB
         run: go test -count=1 -v -timeout 40m ./...
       - name: Check no comments
         working-directory: .
@@ -181,7 +180,6 @@ jobs:
           SIDECAR_BIN: ${{ runner.temp }}/ddb/sidecar
           SIDECAR_ENGINE: duckdb
           SIDECAR_EXT_DIR: ${{ runner.temp }}/ddb/ext
-          SIDECAR_TIGHT_MEMORY: 2GB
           DOLMEN_SPIKE_PERF: "1"
         run: go test -count=1 -v -timeout 60m -run 'Perf|FirstQueryQuickly' ./...
 

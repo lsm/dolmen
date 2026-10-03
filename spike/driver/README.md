@@ -33,7 +33,6 @@ In CI, `SIDECAR_BIN` selects the engine and these knobs shape the run:
 | `SIDECAR_BIN` | path to the sidecar; unset means the suite skips |
 | `SIDECAR_ENGINE` | label used in log lines (`duckdb`) |
 | `SIDECAR_EXT_DIR` | DuckDB only: the pre-placed `iceberg`/`httpfs` extensions |
-| `SIDECAR_TIGHT_MEMORY` | the ceiling for the spill test |
 | `DOLMEN_SPIKE_PERF=1` | run the 10M-row perf set; `DOLMEN_SPIKE_ROWS` overrides the row count |
 
 ## The confinement A/B

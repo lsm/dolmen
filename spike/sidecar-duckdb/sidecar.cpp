@@ -284,10 +284,6 @@ bool Seal(const std::string &data_dir, const std::string &ext_dir, bool unlocked
   const std::string spill_dir = g_catalog_path + ".tmp";
   fs::create_directories(spill_dir, ec);
   cfg.options.temporary_directory = spill_dir;
-  const char *no_spill_env = std::getenv("SIDECAR_NO_SPILL");
-  if (no_spill_env != nullptr && *no_spill_env == '1') cfg.options.use_temporary_directory = false;
-  const char *threads_env = std::getenv("SIDECAR_THREADS");
-  if (threads_env != nullptr && *threads_env != '\0') cfg.options.maximum_threads = ParseBytes(threads_env);
   if (!unlocked) {
     cfg.options.access_mode = duckdb::AccessMode::READ_ONLY;
     cfg.options.allowed_directories.insert(data_dir);

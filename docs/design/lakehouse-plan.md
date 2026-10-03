@@ -656,7 +656,7 @@ laptop nor ai0 was used for timing.
 | escape battery, 24 statements, allowed under the lock | **0** | **0** |
 | cancel mid-flight | **yes**, ~150 ms (`Connection::Interrupt`) | **yes**, ~150 ms (task abort) |
 | kill on timeout, then a fresh sidecar | **yes** | **yes** |
-| a `GROUP BY` under a tight memory ceiling | spilled, **correct** | spilled, **correct** |
+| a query that needs to spill under a memory ceiling | **not shown** (see below) | completed a 3M-group `GROUP BY` under 64 MB |
 | 10M rows: `count(*)` | **11 ms** | 752 ms |
 | 10M rows: `sum` | **65 ms** | 213 ms |
 | 10M rows: selective filter | **27 ms** | 50 ms |
@@ -680,6 +680,14 @@ Notes on reading it:
   build is `opt-level = 2`, no LTO, default `target_partitions`, and nobody tuned the iceberg-rust
   scan, so the gap is an upper bound. An earlier run reported 3–6×; its fixture had zeroed 80 rows
   and runner timings vary between runs, so treat the ratios as rough.
+- **DuckDB spilling under the lock is not shown.** At 64 MB DuckDB refused a 3M-group `GROUP BY`
+  with *Out of Memory*, locked and unlocked alike, so that ceiling is below what it needs to work at
+  all. From 96 MB to 384 MB, a 10M-group `GROUP BY` and a `row_number()` over all 10M rows both
+  completed, but they also completed with `use_temporary_directory = false`, so that control did
+  not take effect and nothing here shows whether a spill happened. The sidecar gives DuckDB a
+  private temp directory inside `allowed_directories`, because the default one sits outside it and
+  the lock would otherwise block spilling. Slice 11 has to show a spill with a control that works,
+  before the memory ceiling is advertised.
 - **DataFusion starts 40× faster**: 11 ms to a first answer against DuckDB's 453 ms, most of which is
   sealing the catalog and loading the `iceberg` extension. One sidecar per namespace pays that once
   per start, not per query.

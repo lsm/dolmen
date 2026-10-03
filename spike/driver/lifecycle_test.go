@@ -3,7 +3,6 @@ package driver
 import (
 	"context"
 	"os"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -102,70 +101,6 @@ func TestAFreshSidecarServesCleanlyAfterThePreviousOneWasKilled(t *testing.T) {
 	if got := countOf(t, res); got == 0 {
 		t.Fatal("the fresh sidecar answered a count of zero for a table with rows")
 	}
-}
-
-func TestTheSidecarSpillsAQueryThatOnlyFitsWithSpilling(t *testing.T) {
-	if testing.Short() {
-		t.Skip("the memory ceiling test allocates")
-	}
-	ceilings := os.Getenv("SIDECAR_TIGHT_MEMORY")
-	if ceilings == "" {
-		t.Skip("SIDECAR_TIGHT_MEMORY is unset")
-	}
-	const rows = 10000000
-	e := requireEngine(t)
-	tbl, err := fixture.WriteBatched(context.Background(), t.TempDir(), rows, 250000)
-	if err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-	root := rootOf(tbl)
-	const heavy = "SELECT count(*) FROM (SELECT row_number() OVER (ORDER BY body DESC, id) AS r, body FROM events) AS w WHERE r > 0"
-
-	run := func(ceiling string, noSpill bool) string {
-		env := []string{"SIDECAR_DATA_DIR=" + root, "SIDECAR_MEMORY_MAX=" + ceiling, "SIDECAR_THREADS=2"}
-		if noSpill {
-			env = append(env, "SIDECAR_NO_SPILL=1")
-		}
-		if e.Ext != "" {
-			env = append(env, "SIDECAR_EXT_DIR="+e.Ext)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
-		defer cancel()
-		sc, err := sidecar.Start(ctx, sidecar.Options{Bin: e.Bin, Env: env})
-		if err != nil {
-			t.Fatalf("start sidecar: %v", err)
-		}
-		defer func() { _ = sc.Close() }()
-		if err := sc.Init(ctx, root, fixture.CurrentSnapshotID(tbl), "events", "app/events"); err != nil {
-			t.Fatalf("init: %v", err)
-		}
-		res, err := sc.Query(ctx, heavy)
-		if err != nil {
-			lower := strings.ToLower(err.Error())
-			if strings.Contains(lower, "out of memory") || strings.Contains(lower, "memory limit") {
-				return "refused"
-			}
-			t.Fatalf("ceiling=%s noSpill=%v: the query failed for a reason that is not the memory ceiling: %v", ceiling, noSpill, err)
-		}
-		if got := countOf(t, res); got != rows {
-			t.Fatalf("ceiling=%s noSpill=%v: the query returned %d groups, want %d", ceiling, noSpill, got, rows)
-		}
-		return "completed"
-	}
-
-	proved := ""
-	for _, ceiling := range strings.Split(ceilings, ",") {
-		withSpill := run(ceiling, false)
-		without := run(ceiling, true)
-		t.Logf("MEMORY engine=%s ceiling=%s groups=%d with_spill=%s without_spill=%s", e.Name, ceiling, rows, withSpill, without)
-		if withSpill == "completed" && without == "refused" && proved == "" {
-			proved = ceiling
-		}
-	}
-	if proved == "" {
-		t.Fatalf("no ceiling in %s made the query need spilling and then completed it, so nothing here shows a spill", ceilings)
-	}
-	t.Logf("MEMORY engine=%s spilled=yes at %s: correct with spilling, refused without", e.Name, proved)
 }
 
 func processAlive(pid int) bool {
