@@ -27,20 +27,17 @@ why there is no `bm25` identifier anywhere in the tree. Slice 9 plans native; Ma
 
 ## 1. Slices in order
 
-**Re-decided 2026-09-29.** The original order below put the `query` slice eleventh, behind eight
-slices of engine work, and the plan asked for a decision rule on what to do if DuckDB could not be
-confined by mechanism. Marc's answer is to find out **first**: slice 3 ships, then the lockdown
-spike runs, and the rest of the lane is re-decided against its result. Two consequences are folded
-into the order itself:
+**Order approved by Marc on 2026-10-03:** **4 → 5 → 6 → 11, then 7–10, 12–14**.
+Spike 3 merged in [#568](https://github.com/lsm/dolmen/pull/568), and Marc chose DuckDB
+(§2.8.6). Slice 11 needs real tables and committed data to query, so namespace lifecycle,
+table DDL and appends precede it. The pins land with slice 4, alongside their first imports
+and the version-pin test; the earlier inert-module slice stays withdrawn.
 
-- **The pins move.** `go.mod` is not touched until the first code that imports those modules
-  (slice 4). A pin with no importer is a pin nothing exercises, and an inert module in `go.mod` is
-  one a `go mod tidy` and a dependency bump can disagree about.
-- **The confinement tests move ahead of the engine.** They were going to be part of slice 11. They
-  are now the deliverable of a spike that runs before any engine code, because whether they pass
-  decides whether slice 11 exists at all.
+The 2026-09-29 decision pulled the confinement spike ahead of engine implementation. Its
+results are recorded in §2.5–§2.8; the revised order above proceeds against those results.
 
-Each slice is its own PR off `main`, opened after the previous merges. A behaviour change updates
+Each slice is its own PR off `origin/main`, opened after the previous merges. PRs are never
+stacked; merge `main` into an active branch when needed, never rebase or force-push. A behaviour change updates
 `internal/conformance`, the README and `skill/`, and adds an entry under Unreleased in
 `CHANGELOG.md`. Slices with code write the failing test first and push it so CI shows it red.
 
@@ -50,17 +47,17 @@ Each slice is its own PR off `main`, opened after the previous merges. A behavio
 | 2 | ~~The pins as an inert module~~ | **withdrawn**, folded into slice 4 |
 | 3 | **The harness learns a third engine** | merged ([#530](https://github.com/lsm/dolmen/pull/530)) |
 | S | **The lockdown spike** (§2.5) | **done** — DuckDB confines itself; stdio cannot, so the transport is a unix socket |
-| 4 | **Namespace lifecycle + catalog-in-SQLite** (pins land here) | pending the spike |
-| 5 | **Table DDL + schema registry** | pending the spike |
-| 6 | **Append + row-id allocation + idempotency** | pending the spike |
-| 7 | **Typed reads + number normalization** | pending the spike |
-| 8 | **Point deletes by position** | pending the spike |
-| 9 | **Search: full text + vectors** (native, per D27) | pending the spike |
-| 10 | **Change feed** | pending the spike |
-| 11 | **`query` over the sidecar** | **decided by the spike** — see §2.5 and §10 Q2 |
-| 12 | **Public selector + operator docs** | pending the spike |
-| 13 | **`subscribe`/SSE** | pending the spike |
-| 14 | **Compaction + maintenance** | pending the spike |
+| 4 | **Namespace lifecycle + catalog-in-SQLite** (pins land here) | implemented in this slice; namespace/lifecycle conformance only |
+| 5 | **Table DDL + schema registry** | next after slice 4 |
+| 6 | **Append + row-id allocation + idempotency** | after slice 5 |
+| 11 | **`query` over the DuckDB sidecar** | after slice 6; real tables and data are prerequisites |
+| 7 | **Typed reads + number normalization** | after slice 11, in the approved order |
+| 8 | **Point deletes by position** | after slice 11, in the approved order |
+| 9 | **Search: full text + vectors** (native, per D27) | after slice 11, in the approved order |
+| 10 | **Change feed** | after slice 11, in the approved order |
+| 12 | **Public selector + operator docs** | after slice 11, in the approved order |
+| 13 | **`subscribe`/SSE** | after slice 11, in the approved order |
+| 14 | **Compaction + maintenance** | after slice 11, in the approved order |
 
 **What each slice still proves is unchanged** and stays in the sections below: slice 4 that a
 namespace is an Iceberg catalog in its own SQLite file; slice 5 that schema evolution works; slice
@@ -91,15 +88,40 @@ working combination is `arrow-go` held at **v18.6.0**.
 That is a pin, and a pin with no test is a comment. The pin is not expressible as `go.mod` alone
 because a routine `go get -u` anywhere in dolmen's graph wants a newer Arrow. So slice 4:
 
-- adds `github.com/apache/iceberg-go`, `github.com/apache/arrow/go/v18` and
+- adds `github.com/apache/iceberg-go`, `github.com/apache/arrow-go/v18` and
   `github.com/parquet-go/parquet-go` to `go.mod`, with `arrow-go/v18` held at v18.6.0 by an
-  explicit `require` plus a `replace` if the resolver insists on raising it;
+  explicit `require` and a versioned `replace` so dependency updates cannot raise the effective pin;
 - carries a test that fails if the resolved `arrow-go` version is not exactly the pinned one, naming
   the pin and the reason in the failure text.
 
 Landing them together changes what the pin has to survive, for the better: because the modules are
 now imported by real code, `go mod tidy` cannot drop them, and the version-pin test has something to
 check. See §7 for the full pin-keeping list.
+
+### Slice 4's namespace foundation
+
+`internal/lakehouse` implements namespace lifecycle without claiming the complete `store.Engine`
+interface or enabling public engine selection. Each namespace has its own
+`<data>/<namespace>.lakehouse/catalog.db` and `<data>/<namespace>.lakehouse/data/` directory.
+Hierarchical children live under the ordinary hierarchy (`project/team.lakehouse`), beside
+`project.lakehouse`, so logical names such as `data` and `catalog` never collide with storage files.
+The catalog is Iceberg's SQL catalog on `modernc.org/sqlite`, in WAL mode with full synchronous
+commits. It holds the namespace lifetime and its own format stamp; it is separate from the data
+that the future DuckDB process may read. Table DDL and mutations remain slices 5 and 6.
+
+Creation initializes and closes the catalog in a private staging directory before renaming it
+into the visible namespace. Leaf-only drop closes its handle and removes that namespace's catalog
+and data together. Reopen preserves the lifetime; drop/recreate gives a fresh one. Namespace
+paths, catalog files and SQLite auxiliary files reject symlinks. Operations serialize lifecycle
+and catalog access, and idle handles are evicted past the configured bound (default 16).
+One store owns a canonical directory in a process; deployment remains one dolmen process per local
+data directory, as §2.1 declares. The foundation does not launch or link DuckDB.
+
+`TestLakehouseNamespaceBackendConformance` runs the same namespace/lifecycle contract on SQLite
+and lakehouse. The catalog smoke fixture separately verifies Iceberg catalog persistence and
+isolation, Arrow append and Parquet read-back, and the manifest's real data-file size. It is a
+fixture proving the pinned stack, not a lakehouse table/write API. Future writers must record every
+data **and delete** file's real size and retain each row's `(data file, position)` mapping (§2.8.2).
 
 ### Slice 3 in more detail
 
@@ -1029,13 +1051,16 @@ this engine. Error-message pins fork **by input, not by assertion**: subtests wh
 both engines keep running, which is the coverage proving the dialect's errors normalize to the same
 teaching strings.
 
-**CI.** A `lakehouse-foundation` job mirroring `postgres-foundation`: the DuckDB child provided as
+**CI.** Slice 4 adds a `lakehouse-foundation` job on Linux, macOS and Windows, running the
+namespace/lifecycle subset and catalog tests with the race detector. Filesystem fixtures always
+run in private temporary directories; no DSN, sidecar or optional skip is needed for this slice.
+The full lakehouse suite remains refused. From slice 11, the DuckDB child is provided as
 a service or a downloaded pinned binary, `DOLMEN_TEST_PG_DSN`-shaped knobs
 (`DOLMEN_TEST_LAKEHOUSE_*`), and — following the Postgres precedent — the job **fails rather than
 silently skipping** when its DSN is missing. A suite that quietly skips on a new engine is a suite
 that reports green without having run.
 
-**Fixtures at test/subtest granularity** means the CI job grows a
+**Fixtures at test/subtest granularity** means the sidecar CI job grows a
 `DOLMEN_TEST_LAKEHOUSE_REQUIRED=1` and the skip helpers gain a name per engine. Slice 3 is where
 the helpers are fixed; slices 4–12 add the tags.
 
@@ -1048,7 +1073,7 @@ the helpers are fixed; slices 4–12 add the tags.
 | module | pin | why |
 |---|---|---|
 | `github.com/apache/iceberg-go` | v0.6.0 | The version the trial proved: Parquet write/read, table creation at v2 and v3, append from Arrow, position deletes through `RowDelta`, `catalog/sql` over SQLite. |
-| `github.com/apache/arrow/go/v18` | **v18.6.0** | iceberg-go v0.6.0 does not compile against v18.8.0: that requires `twmb/avro v1.8.0`, whose `SchemaNode.Root()` signature change breaks iceberg-go's `internal` package in three places. A clean resolve picks the broken combination, so the consumer must hold Arrow back. |
+| `github.com/apache/arrow-go/v18` | **v18.6.0** | iceberg-go v0.6.0 does not compile against v18.8.0: that requires `twmb/avro v1.8.0`, whose `SchemaNode.Root()` signature change breaks iceberg-go's `internal` package in three places. A clean resolve picks the broken combination, so the consumer must hold Arrow back. |
 | `github.com/parquet-go/parquet-go` | v0.32.0 (or whatever the resolve lands on) | The Parquet reader/writer the trial used. |
 | `modernc.org/sqlite` | already v1.57.0 | The catalog and commit log. `catalog/sql` takes a `*sql.DB`; bun's dialects are descriptors, not drivers, so the cgo `sqliteshim` is never imported and nothing pulls in cgo. |
 
@@ -1221,9 +1246,10 @@ question can be answered later without unwinding work.
 
 ### Decided, and recorded as facts of the order rather than questions
 
-- **The order.** Slice 3 now. Then the §2.5 lockdown spike. The `go.mod` pins (was slice 2) land
-  **with slice 4**, the first code that imports them, not as an inert module. The rest of the lane
-  is re-decided once the spike's result is in. §1 carries the new table.
+- **The order.** Marc approved **4 → 5 → 6 → 11, then 7–10, 12–14 on 2026-10-03**, after
+  spike 3 merged and DuckDB was chosen. Slice 11 needs the real tables and data from slices 5
+  and 6. The `go.mod` pins (was slice 2) land **with slice 4** and their first imports. §1 carries
+  the revised table.
 - **The pins as a slice are withdrawn** rather than reordered, because a pin with no importer is a
   pin nothing exercises.
 
