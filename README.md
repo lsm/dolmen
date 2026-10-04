@@ -1156,7 +1156,9 @@ atomically with your side effects rather than deduplicating on frame content.
 The lakehouse namespace foundation is available internally for development: each namespace has its
 own SQLite Iceberg catalog at `<data>/<namespace>.lakehouse/catalog.db` and a separate `data/`
 directory for Parquet and Iceberg metadata. Lifecycle conformance runs alongside SQLite, including
-reopen, leaf-only drop and drop/recreate lifetimes. Deploy one process per local data directory.
+reopen, leaf-only drop and drop/recreate lifetimes. An unpinned drop can remove an unreadable
+catalog; generation-pinned drops still require a readable, matching lifetime. Deploy one process
+per local data directory.
 Table and write operations, the DuckDB query sidecar and public engine selection follow in later
 slices; `-engine lakehouse` is still refused. See [the lane plan](docs/design/lakehouse-plan.md).
 

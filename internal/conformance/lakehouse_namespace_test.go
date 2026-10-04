@@ -2,6 +2,8 @@ package conformance
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -88,6 +90,29 @@ func TestLakehouseNamespaceBackendConformance(t *testing.T) {
 			next, err := eng.NamespaceState(ctx, "project/team/app", nil)
 			if err != nil || next == gen || next == [16]byte{} {
 				t.Fatalf("recreate reused generation: %x %v", next, err)
+			}
+			if err := eng.CreateNamespace(ctx, "damaged", [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			if err := eng.Close(); err != nil {
+				t.Fatal(err)
+			}
+			catalogPath := filepath.Join(dir, "damaged.db")
+			if backend == "lakehouse" {
+				catalogPath = filepath.Join(dir, "damaged.lakehouse", "catalog.db")
+			}
+			if err := os.WriteFile(catalogPath, []byte("not a SQLite catalog"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			eng = open()
+			if _, err := eng.NamespaceState(ctx, "damaged", nil); err == nil {
+				t.Fatal("damaged catalog opened successfully")
+			}
+			if err := eng.DropNamespace(ctx, "damaged", [16]byte{}); err != nil {
+				t.Fatalf("unreadable namespace recovery drop: %v", err)
+			}
+			if _, err := os.Stat(catalogPath); !os.IsNotExist(err) {
+				t.Fatalf("recovery drop retained catalog: %v", err)
 			}
 		})
 	}

@@ -261,6 +261,10 @@ func TestCatalogVersionGuardDoesNotInitializeOrRewrite(t *testing.T) {
 			if err := s.CreateNamespace(t.Context(), "probe", [16]byte{}); err != nil {
 				t.Fatal(err)
 			}
+			gen, err := s.NamespaceState(t.Context(), "probe", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if err := s.withNamespace(t.Context(), "probe", func(n *namespace) error { _, err := n.db.ExecContext(t.Context(), tc.update); return err }); err != nil {
 				t.Fatal(err)
 			}
@@ -270,6 +274,12 @@ func TestCatalogVersionGuardDoesNotInitializeOrRewrite(t *testing.T) {
 			s = openStore(t, dir)
 			if _, err := s.NamespaceState(t.Context(), "probe", nil); !errors.Is(err, tc.want) {
 				t.Fatalf("catalog guard: %v", err)
+			}
+			if err := s.DropNamespace(t.Context(), "probe", gen); !errors.Is(err, tc.want) {
+				t.Fatalf("pinned drop bypassed unreadable generation: %v", err)
+			}
+			if err := s.DropNamespace(t.Context(), "probe", [16]byte{}); err != nil {
+				t.Fatalf("unreadable namespace recovery drop: %v", err)
 			}
 		})
 	}
