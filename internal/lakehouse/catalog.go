@@ -21,6 +21,8 @@ const catalogFormat = 1
 
 func namespacePath(name string) string { return filepath.FromSlash(name) + ".lakehouse" }
 
+func fileLocation(path string) string { return "file://" + filepath.ToSlash(path) }
+
 func (s *Store) checkHierarchy(name string, create bool) error {
 	parts := strings.Split(name, "/")
 	path := ""
@@ -135,7 +137,7 @@ func (s *Store) openCatalog(ctx context.Context, name, relative string, create b
 		return nil, err
 	}
 	dataDir := filepath.Join(s.dir, namespacePath(name), "data")
-	cat, err := sqlcatalog.NewCatalog("dolmen", db, sqlcatalog.SQLite, iceberg.Properties{"init_catalog_tables": "false", "warehouse": dataDir, "format-version": "2"})
+	cat, err := sqlcatalog.NewCatalog("dolmen", db, sqlcatalog.SQLite, iceberg.Properties{"init_catalog_tables": "false", "warehouse": fileLocation(dataDir), "format-version": "2"})
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +146,7 @@ func (s *Store) openCatalog(ctx context.Context, name, relative string, create b
 		if err := cat.CreateSQLTables(ctx); err != nil {
 			return nil, err
 		}
-		if err := cat.CreateNamespace(ctx, ident, iceberg.Properties{"location": dataDir}); err != nil {
+		if err := cat.CreateNamespace(ctx, ident, iceberg.Properties{"location": fileLocation(dataDir)}); err != nil {
 			return nil, err
 		}
 	} else {

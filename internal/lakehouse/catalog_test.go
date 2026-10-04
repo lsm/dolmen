@@ -51,7 +51,7 @@ func TestNativeCatalogIsSeparateDurableAndReadable(t *testing.T) {
 			t.Fatal("namespace is not an Iceberg SQL catalog")
 		}
 		schema := iceberg.NewSchema(0, iceberg.NestedField{ID: 1, Name: "id", Type: iceberg.PrimitiveTypes.Int64, Required: true})
-		tbl, err := n.catalog.CreateTable(ctx, ident, schema, catalog.WithLocation(filepath.Join(n.dataDir, "probe")), catalog.WithProperties(iceberg.Properties{"format-version": "2"}))
+		tbl, err := n.catalog.CreateTable(ctx, ident, schema, catalog.WithLocation(fileLocation(filepath.Join(n.dataDir, "probe"))), catalog.WithProperties(iceberg.Properties{"format-version": "2"}))
 		if err != nil {
 			return err
 		}
@@ -77,7 +77,7 @@ func TestNativeCatalogIsSeparateDurableAndReadable(t *testing.T) {
 		if len(files) != 1 {
 			t.Fatalf("catalog fixture has %d data files", len(files))
 		}
-		dataPath = files[0].File.FilePath()
+		dataPath = filepath.FromSlash(strings.TrimPrefix(files[0].File.FilePath(), "file://"))
 		info, err := os.Stat(dataPath)
 		if err != nil {
 			return err
@@ -114,7 +114,7 @@ func TestNativeCatalogIsSeparateDurableAndReadable(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if len(files) != 1 || files[0].File.FilePath() != dataPath {
+		if len(files) != 1 || files[0].File.FilePath() != fileLocation(dataPath) {
 			t.Fatal("catalog lost the committed data file on reopen")
 		}
 		return nil
