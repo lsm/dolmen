@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Lakehouse slice 4 adds internal namespace lifecycle with one SQLite-backed Iceberg catalog and
+  separate Parquet data directory per namespace, durable namespace lifetimes, leaf-only drop,
+  bounded handles, unpinned drop of unreadable catalogs or incomplete directories, listings that
+  skip incomplete namespaces, and a SQLite/lakehouse lifecycle
+  conformance test. Public lakehouse selection
+  remains unavailable until its planned slice. Iceberg v0.6.0, Arrow v18.6.0 and Parquet v0.32.0
+  are pinned with a version-pin test. Marc's 2026-10-03 order is recorded: 4 → 5 → 6 → 11,
+  then 7–10 and 12–14.
+
 ## v0.5.0
 
 ### Added

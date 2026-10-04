@@ -288,6 +288,22 @@ jobs:
             grep -oE "undefined reference to \`[^']+'" "$dest/static-link.log" | sort -u | sed 's/^/PACKAGING platform='"${{ matrix.platform }}"' engine=duckdb static_undefined=/' || true
           fi
 
+  lakehouse-foundation:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Catalog persistence, isolation, pins and concurrent lifecycle
+        run: go test -race -count=1 ./internal/lakehouse
+      - name: Shared SQLite and lakehouse namespace lifecycle
+        run: go test -race -count=1 ./internal/conformance -run '^TestLakehouseNamespaceBackendConformance$'
+
   postgres-foundation:
     runs-on: ubuntu-latest
     services:

@@ -374,6 +374,15 @@ locked-out server.
   an error; `truncated: true` means the response budget dropped rows that DO exist — retry with
   fewer ids (it never fires for missing ids); at most 1,000 ids per request. Prefer it over
   `query` whenever the ids are already in hand — no SQL to write, no filter to get wrong.
+- **Lakehouse is still a development-only engine name.** Its internal namespace foundation now
+  stores each namespace in its own SQLite Iceberg catalog and separate Parquet data directory;
+  reopen preserves the namespace lifetime and drop/recreate changes it. An unpinned leaf-only
+  drop can remove an unreadable catalog or incomplete directory; listing skips incomplete
+  namespaces and valid children still block a parent drop. Generation-pinned drops require its current
+  readable lifetime. Public selection is
+  still refused while table/write/query slices are incomplete. Do not configure `-engine lakehouse`
+  for this server yet; `docs/design/lakehouse-plan.md` records the remaining slices and the
+  one-process-per-local-data-directory topology.
 - `capabilities` reports the engine's static surface: `vector_execution` (`exact` or `ann`),
   `ann_recall_bound` (`null` when exact — a number in (0,1] iff `ann`), `notifications`,
   `subscribe`, `query_dialect` and `filter_dialect`. Field names and types are pinned across
