@@ -139,6 +139,12 @@ func TestNativeCatalogIsSeparateDurableAndReadable(t *testing.T) {
 	if n != 1 || rows[0].ID != 42 {
 		t.Fatalf("Parquet read-back: %d %v", n, rows)
 	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.DropNamespace(ctx, "project/team", [16]byte{}); err != nil {
 		t.Fatal(err)
 	}
