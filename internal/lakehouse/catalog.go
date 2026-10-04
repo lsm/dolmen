@@ -83,7 +83,11 @@ func (s *Store) checkNamespaceFiles(name string) error {
 
 func (s *Store) openCatalog(ctx context.Context, name, relative string, create bool) (_ *namespace, err error) {
 	path := filepath.Join(s.dir, relative, "catalog.db")
-	u := &url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
+	uriPath := filepath.ToSlash(path)
+	if len(uriPath) > 1 && uriPath[1] == ':' {
+		uriPath = "/" + uriPath
+	}
+	u := &url.URL{Scheme: "file", Path: uriPath}
 	q := url.Values{"mode": {"rw"}, "_pragma": {"busy_timeout(5000)", "foreign_keys(1)"}}
 	u.RawQuery = q.Encode()
 	db, err := sql.Open("sqlite", u.String())
