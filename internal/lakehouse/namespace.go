@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -140,6 +141,9 @@ func (s *Store) listNamespaces(ctx context.Context, prefix string) ([]string, er
 			if stem != entry.Name() {
 				if prefix == "" || name == prefix || strings.HasPrefix(name, prefix+"/") {
 					if err := s.checkNamespaceFiles(name); err != nil {
+						if os.IsNotExist(err) || errors.Is(err, store.ErrCatalogCorrupt) || errors.Is(err, store.ErrInvalid) {
+							continue
+						}
 						return err
 					}
 					out = append(out, name)
@@ -175,7 +179,7 @@ func (s *Store) DropNamespace(ctx context.Context, name string, expected [16]byt
 		if expected != n.generation {
 			return fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, name)
 		}
-	} else if err := s.checkNamespaceFiles(name); err != nil {
+	} else if err := s.checkNamespaceDir(name); err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("%w: namespace %s does not exist, so nothing was dropped; list_namespaces shows what is there", store.ErrNotFound, name)
 		}
@@ -185,8 +189,14 @@ func (s *Store) DropNamespace(ctx context.Context, name string, expected [16]byt
 	if err != nil {
 		return err
 	}
-	if len(names) > 1 {
-		return fmt.Errorf("%w: namespace %s has %d descendant namespaces — drop the children first", store.ErrInvalid, name, len(names)-1)
+	children := 0
+	for _, child := range names {
+		if child != name {
+			children++
+		}
+	}
+	if children > 0 {
+		return fmt.Errorf("%w: namespace %s has %d descendant namespaces — drop the children first", store.ErrInvalid, name, children)
 	}
 	if err := s.evict(name); err != nil {
 		return err

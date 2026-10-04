@@ -48,17 +48,34 @@ func (s *Store) checkHierarchy(name string, create bool) error {
 	return nil
 }
 
-func (s *Store) checkNamespaceFiles(name string) error {
+func (s *Store) checkNamespaceDir(name string) error {
 	if err := s.checkHierarchy(name, false); err != nil {
+		return err
+	}
+	info, err := s.root.Lstat(namespacePath(name))
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%w: lakehouse namespace %s is not a directory or is a symlink", store.ErrInvalid, name)
+	}
+	return nil
+}
+
+func (s *Store) checkNamespaceFiles(name string) error {
+	if err := s.checkNamespaceDir(name); err != nil {
 		return err
 	}
 	dir := namespacePath(name)
 	for _, item := range []struct {
 		path  string
 		isDir bool
-	}{{dir, true}, {filepath.Join(dir, "data"), true}, {filepath.Join(dir, "catalog.db"), false}} {
+	}{{filepath.Join(dir, "data"), true}, {filepath.Join(dir, "catalog.db"), false}} {
 		path, isDir := item.path, item.isDir
 		info, err := s.root.Lstat(path)
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%w: lakehouse namespace %s is incomplete; use an unpinned drop_namespace to remove it before recreating it", store.ErrCatalogCorrupt, name)
+		}
 		if err != nil {
 			return err
 		}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -307,5 +308,61 @@ func TestSymlinkNamespacePathsAreRefused(t *testing.T) {
 	entries, err := os.ReadDir(outside)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("symlink escape wrote outside: %v %v", entries, err)
+	}
+}
+
+func TestIncompleteNamespacesCanBeListedAroundAndRemoved(t *testing.T) {
+	for _, missing := range []string{"catalog.db", "data"} {
+		t.Run(missing, func(t *testing.T) {
+			dir := t.TempDir()
+			s := openStore(t, dir)
+			for _, name := range []string{"healthy", "partial", "partial/child"} {
+				if err := s.CreateNamespace(t.Context(), name, [16]byte{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			gen, err := s.NamespaceState(t.Context(), "partial", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(filepath.Join(dir, "partial.lakehouse", missing)); err != nil {
+				t.Fatal(err)
+			}
+			s = openStore(t, dir)
+			if _, err := s.NamespaceState(t.Context(), "partial", nil); !errors.Is(err, store.ErrCatalogCorrupt) {
+				t.Fatalf("incomplete namespace: %v", err)
+			}
+			for prefix, want := range map[string][]string{"": {"healthy", "partial/child"}, "partial": {"partial/child"}} {
+				names, err := s.ListNamespaces(t.Context(), prefix, nil)
+				if err != nil || !reflect.DeepEqual(names, want) {
+					t.Fatalf("list around incomplete namespace: %v want %v: %v", names, want, err)
+				}
+			}
+			if err := s.DropNamespace(t.Context(), "partial", gen); !errors.Is(err, store.ErrCatalogCorrupt) {
+				t.Fatalf("pinned drop of incomplete namespace: %v", err)
+			}
+			if err := s.DropNamespace(t.Context(), "partial", [16]byte{}); !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("incomplete parent with live child: %v", err)
+			}
+			if err := s.DropNamespace(t.Context(), "partial/child", [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.DropNamespace(t.Context(), "partial", [16]byte{}); err != nil {
+				t.Fatalf("incomplete namespace recovery drop: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "partial.lakehouse")); !os.IsNotExist(err) {
+				t.Fatalf("incomplete directory retained: %v", err)
+			}
+			if err := s.CreateNamespace(t.Context(), "partial", [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			next, err := s.NamespaceState(t.Context(), "partial", nil)
+			if err != nil || next == gen {
+				t.Fatalf("recovery recreate lifetime: %x %v", next, err)
+			}
+		})
 	}
 }

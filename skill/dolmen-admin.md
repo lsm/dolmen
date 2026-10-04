@@ -377,7 +377,8 @@ locked-out server.
 - **Lakehouse is still a development-only engine name.** Its internal namespace foundation now
   stores each namespace in its own SQLite Iceberg catalog and separate Parquet data directory;
   reopen preserves the namespace lifetime and drop/recreate changes it. An unpinned leaf-only
-  drop can remove an unreadable catalog; generation-pinned drops still require its current
+  drop can remove an unreadable catalog or incomplete directory; listing skips incomplete
+  namespaces and valid children still block a parent drop. Generation-pinned drops require its current
   readable lifetime. Public selection is
   still refused while table/write/query slices are incomplete. Do not configure `-engine lakehouse`
   for this server yet; `docs/design/lakehouse-plan.md` records the remaining slices and the

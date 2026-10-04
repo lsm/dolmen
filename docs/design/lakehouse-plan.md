@@ -112,7 +112,9 @@ that the future DuckDB process may read. Table DDL and mutations remain slices 5
 Creation initializes and closes the catalog in a private staging directory before renaming it
 into the visible namespace. Leaf-only drop closes its handle and removes that namespace's catalog
 and data together. An unpinned drop can remove a corrupt or newer catalog without opening it;
-a generation-pinned drop still requires a readable, matching lifetime. Reopen preserves the lifetime; drop/recreate gives a fresh one. Namespace
+a generation-pinned drop still requires a readable, matching lifetime. Missing catalog or data files
+make a namespace incomplete: listing skips it, an unpinned drop can clean up its directory, and
+valid descendants still block its drop. Reopen preserves the lifetime; drop/recreate gives a fresh one. Namespace
 paths, catalog files and SQLite auxiliary files reject symlinks. Operations serialize lifecycle
 and catalog access, and idle handles are evicted past the configured bound (default 16).
 One store owns a canonical directory in a process; deployment remains one dolmen process per local
