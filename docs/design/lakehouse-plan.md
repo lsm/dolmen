@@ -196,7 +196,10 @@ migrated, or its first rows. A view projects the logical types over slice 5's ph
 Supervision follows §2.2. A sidecar that fails to start is not retried on every query: the failure
 is held and returned for a backoff that starts at one second and doubles up to thirty seconds, then
 a start is tried again. A sidecar retired by a restart or an eviction is stopped only after its
-running query finishes, and that wait happens outside the store-wide lock.
+running query finishes, and that wait happens outside the store-wide lock. `drop_table` and
+`drop_namespace` wait, also outside that lock, for every sidecar of the namespace, retired ones
+included, before they remove files; while a namespace drop waits, a query on it is refused as
+`not_found`.
 
 Arguments are bound through DuckDB's prepared statements. Results stream back up to the page
 limit and the 32 MiB response budget, `truncated` says when either cut, and a deadline sends an

@@ -167,7 +167,51 @@ func (s *Store) DropNamespace(ctx context.Context, name string, expected [16]byt
 	if err := s.lock(ctx); err != nil {
 		return err
 	}
+	if err := s.checkDroppable(ctx, name, expected); err != nil {
+		s.unlock()
+		return err
+	}
+	if s.dropping == nil {
+		s.dropping = map[string]bool{}
+	}
+	s.dropping[name] = true
+	if n := s.namespaces[name]; n != nil {
+		n.sql = nil
+	}
+	draining := s.tracked(name)
+	s.unlock()
+	s.drainAll(name, draining)
+	<-s.gate
 	defer s.unlock()
+	delete(s.dropping, name)
+	if s.closed {
+		return store.ErrClosed
+	}
+	if err := s.checkDroppable(ctx, name, expected); err != nil {
+		return err
+	}
+	if err := s.evict(name); err != nil {
+		return err
+	}
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return err
+	}
+	path := namespacePath(name)
+	trash := filepath.Join(filepath.Dir(path), ".lakehouse-drop-"+hex.EncodeToString(token[:]))
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := s.renameNamespace(path, trash); err != nil {
+		return err
+	}
+	if err := s.syncDirectory(filepath.Dir(path)); err != nil {
+		return err
+	}
+	return s.root.RemoveAll(trash)
+}
+
+func (s *Store) checkDroppable(ctx context.Context, name string, expected [16]byte) error {
 	if err := store.ValidateNamespace(name); err != nil {
 		return err
 	}
@@ -198,29 +242,5 @@ func (s *Store) DropNamespace(ctx context.Context, name string, expected [16]byt
 	if children > 0 {
 		return fmt.Errorf("%w: namespace %s has %d descendant namespaces — drop the children first", store.ErrInvalid, name, children)
 	}
-	if n := s.namespaces[name]; n != nil && n.sql != nil {
-		n.sql.run.Lock()
-		n.sql.stop()
-		n.sql.run.Unlock()
-		n.sql = nil
-	}
-	if err := s.evict(name); err != nil {
-		return err
-	}
-	var token [16]byte
-	if _, err := rand.Read(token[:]); err != nil {
-		return err
-	}
-	path := namespacePath(name)
-	trash := filepath.Join(filepath.Dir(path), ".lakehouse-drop-"+hex.EncodeToString(token[:]))
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := s.renameNamespace(path, trash); err != nil {
-		return err
-	}
-	if err := s.syncDirectory(filepath.Dir(path)); err != nil {
-		return err
-	}
-	return s.root.RemoveAll(trash)
+	return nil
 }

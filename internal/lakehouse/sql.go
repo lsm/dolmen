@@ -510,12 +510,48 @@ func parseQueryReply(fields []string) (store.QueryResult, error) {
 	return result, nil
 }
 
-func retire(sc *sidecar) {
-	go func() {
-		sc.run.Lock()
-		defer sc.run.Unlock()
-		sc.stop()
-	}()
+func (s *Store) track(ns string, sc *sidecar) {
+	s.sidecarMu.Lock()
+	defer s.sidecarMu.Unlock()
+	if s.sidecars == nil {
+		s.sidecars = map[string]map[*sidecar]bool{}
+	}
+	if s.sidecars[ns] == nil {
+		s.sidecars[ns] = map[*sidecar]bool{}
+	}
+	s.sidecars[ns][sc] = true
+}
+
+func (s *Store) tracked(ns string) []*sidecar {
+	s.sidecarMu.Lock()
+	defer s.sidecarMu.Unlock()
+	out := make([]*sidecar, 0, len(s.sidecars[ns]))
+	for sc := range s.sidecars[ns] {
+		out = append(out, sc)
+	}
+	return out
+}
+
+func (s *Store) drain(ns string, sc *sidecar) {
+	sc.run.Lock()
+	sc.stop()
+	sc.run.Unlock()
+	s.sidecarMu.Lock()
+	defer s.sidecarMu.Unlock()
+	delete(s.sidecars[ns], sc)
+	if len(s.sidecars[ns]) == 0 {
+		delete(s.sidecars, ns)
+	}
+}
+
+func (s *Store) drainAll(ns string, scs []*sidecar) {
+	for _, sc := range scs {
+		s.drain(ns, sc)
+	}
+}
+
+func (s *Store) retire(ns string, sc *sidecar) {
+	go s.drain(ns, sc)
 }
 
 func (s *Store) ensureQuerySidecar(ctx context.Context, ns string, nsGen [16]byte) (*sidecar, error) {
@@ -524,12 +560,15 @@ func (s *Store) ensureQuerySidecar(ctx context.Context, ns string, nsGen [16]byt
 		if nsGen != [16]byte{} && nsGen != n.generation {
 			return fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, ns)
 		}
+		if s.dropping[ns] {
+			return fmt.Errorf("%w: namespace %s is being dropped", store.ErrNotFound, ns)
+		}
 		views, fp, err := s.namespaceViews(ctx, n, ns)
 		if err != nil {
 			return err
 		}
 		if n.sql != nil && (n.sql.fingerprint != fp || !n.sql.alive()) {
-			retire(n.sql)
+			s.retire(ns, n.sql)
 			n.sql = nil
 		}
 		if n.sql == nil {
@@ -546,6 +585,7 @@ func (s *Store) ensureQuerySidecar(ctx context.Context, ns string, nsGen [16]byt
 				return err
 			}
 			n.sqlFails, n.sqlErr = 0, nil
+			s.track(ns, n.sql)
 		}
 		sc = n.sql
 		return nil

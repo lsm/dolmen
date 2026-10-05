@@ -220,7 +220,7 @@ func (s *Store) ListTables(ctx context.Context, ns string, auth []store.AuthBind
 
 func (s *Store) DropTable(ctx context.Context, ns, name string, expected store.Incarnation) error {
 	var location string
-	var draining *sidecar
+	var draining []*sidecar
 	err := s.withNamespace(ctx, ns, func(n *namespace) error {
 		state, err := loadTable(ctx, n, ns, name)
 		if err != nil {
@@ -262,14 +262,11 @@ func (s *Store) DropTable(ctx context.Context, ns, name string, expected store.I
 			return fmt.Errorf("%w: Iceberg table location escaped its namespace", store.ErrCatalogCorrupt)
 		}
 		delete(n.published, name)
-		draining, n.sql = n.sql, nil
+		n.sql = nil
+		draining = s.tracked(ns)
 		return nil
 	})
-	if draining != nil {
-		draining.run.Lock()
-		draining.stop()
-		draining.run.Unlock()
-	}
+	s.drainAll(ns, draining)
 	if err != nil || location == "" {
 		return err
 	}

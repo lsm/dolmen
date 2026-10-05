@@ -33,6 +33,9 @@ type Store struct {
 	tick       uint64
 	closed     bool
 	closeErr   error
+	dropping   map[string]bool
+	sidecarMu  sync.Mutex
+	sidecars   map[string]map[*sidecar]bool
 }
 
 type namespace struct {
@@ -160,7 +163,7 @@ func (s *Store) evict(name string) error {
 		return nil
 	}
 	if n.sql != nil {
-		retire(n.sql)
+		s.retire(name, n.sql)
 		n.sql = nil
 	}
 	if err := n.db.Close(); err != nil {

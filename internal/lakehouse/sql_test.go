@@ -318,13 +318,30 @@ func TestDropNamespaceWaitsForAnInFlightQuery(t *testing.T) {
 	mustQuery(t, s, "ns", "SELECT count(*) AS n FROM t")
 	sc := s.namespaces["ns"].sql
 	sc.run.Lock()
+	if _, err := s.CreateTable(ctx, "ns", "u", []schema.Field{{Name: "v", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+		sc.run.Unlock()
+		t.Fatal(err)
+	}
+	mustQuery(t, s, "ns", "SELECT count(*) AS n FROM u")
 	dropped := make(chan error, 1)
 	go func() { dropped <- s.DropNamespace(ctx, "ns", [16]byte{}) }()
+	for {
+		qctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, err := s.Query(qctx, "ns", "SELECT 1 AS x", nil, [16]byte{}, store.Page{})
+		cancel()
+		if err != nil && strings.Contains(err.Error(), "being dropped") {
+			break
+		}
+		if err != nil {
+			sc.run.Unlock()
+			t.Fatalf("drop_namespace must release the store lock while it drains: %v", err)
+		}
+	}
 	select {
 	case err := <-dropped:
 		sc.run.Unlock()
-		t.Fatalf("drop_namespace finished under a running query: %v", err)
-	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("drop_namespace finished under a running query on a retired sidecar: %v", err)
+	default:
 	}
 	_, statErr := os.Stat(filepath.Join(dir, "ns.lakehouse"))
 	sc.run.Unlock()
@@ -336,5 +353,28 @@ func TestDropNamespaceWaitsForAnInFlightQuery(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "ns.lakehouse")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("drop_namespace left the namespace once the query finished: %v", err)
+	}
+}
+
+func TestQueryAnExactLimitIsNotTruncated(t *testing.T) {
+	cfg := sidecarConfig(t)
+	s := openSQLStore(t, t.TempDir(), cfg)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "t", []schema.Field{{Name: "v", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "ns", "t", []map[string]any{{"v": "a"}, {"v": "b"}, {"v": "c"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	exact, err := s.Query(ctx, "ns", "SELECT v FROM t", nil, [16]byte{}, store.Page{Limit: 3})
+	if err != nil || len(exact.Rows) != 3 || exact.Truncated {
+		t.Fatalf("an exact-limit page must not be truncated: %v %v", exact, err)
+	}
+	short, err := s.Query(ctx, "ns", "SELECT v FROM t", nil, [16]byte{}, store.Page{Limit: 2})
+	if err != nil || len(short.Rows) != 2 || !short.Truncated {
+		t.Fatalf("a page with a row past the limit must be truncated: %v %v", short, err)
 	}
 }
