@@ -184,7 +184,9 @@ func (s *Store) prepareRows(ctx context.Context, state tableState, records []map
 	return out, nil
 }
 
-func lookupIdempotency(ctx context.Context, tx *sql.Tx, state tableState, key string, hash store.IdemHash, owner string) (store.InsertResult, bool, error) {
+func lookupIdempotency(ctx context.Context, tx interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, state tableState, key string, hash store.IdemHash, owner string) (store.InsertResult, bool, error) {
 	var result store.InsertResult
 	var stored, raw string
 	err := tx.QueryRowContext(ctx, `SELECT payload_hash, result FROM _dolmen_lakehouse_idempotency WHERE table_name=? AND generation=? AND owner=? AND key=?`, state.incarnation.Table, state.incarnation.DropGen, owner, key).Scan(&stored, &raw)
@@ -234,6 +236,24 @@ func (s *Store) Insert(ctx context.Context, ns, name string, records []map[strin
 				return err
 			}
 		}
+		replayed := func(q interface {
+			QueryRowContext(context.Context, string, ...any) *sql.Row
+		}) (bool, error) {
+			if opts.IdempotencyKey == "" {
+				return false, nil
+			}
+			replay, found, err := lookupIdempotency(ctx, q, state, opts.IdempotencyKey, hash, domain.Owner)
+			if err == nil && !found && domain.FallsBackToLegacy() {
+				replay, found, err = lookupIdempotency(ctx, q, state, opts.IdempotencyKey, hash, store.LegacyIdempotencyOwner)
+			}
+			if found {
+				result = replay
+			}
+			return found, err
+		}
+		if found, err := replayed(n.db); err != nil || found {
+			return err
+		}
 		stamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 		space, dim := state.schema.EmbedSpace, state.schema.EmbedDim
 		rows, err := s.prepareRows(ctx, state, records, emb, stamp, opts.Owner)
@@ -251,18 +271,8 @@ func (s *Store) Insert(ctx context.Context, ns, name string, records []map[strin
 			return err
 		}
 		defer tx.Rollback()
-		if opts.IdempotencyKey != "" {
-			replay, found, err := lookupIdempotency(ctx, tx, state, opts.IdempotencyKey, hash, domain.Owner)
-			if err == nil && !found && domain.FallsBackToLegacy() {
-				replay, found, err = lookupIdempotency(ctx, tx, state, opts.IdempotencyKey, hash, store.LegacyIdempotencyOwner)
-			}
-			if err != nil {
-				return err
-			}
-			if found {
-				result = replay
-				return nil
-			}
+		if found, err := replayed(tx); err != nil || found {
+			return err
 		}
 		committed, err := s.commitAppend(ctx, tx, state, rows, opts, domain, hash, stamp)
 		if err != nil {
