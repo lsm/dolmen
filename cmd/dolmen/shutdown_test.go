@@ -117,3 +117,56 @@ func TestShutdownBoundsAStuckStoreClose(t *testing.T) {
 		t.Fatal("shutdown waited forever for store cleanup after its grace")
 	}
 }
+
+func TestZeroShutdownGraceCancelsImmediately(t *testing.T) {
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	srv, apiSrv, url := servingWith(t, func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+			close(canceled)
+		case <-release:
+		}
+	})
+	go func() {
+		res, err := http.Get(url)
+		if err == nil {
+			res.Body.Close()
+		}
+	}()
+	<-started
+	result := make(chan error, 1)
+	go func() { result <- shutdown(srv, apiSrv, 0) }()
+	select {
+	case <-canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("zero grace drained forever instead of canceling the request")
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("zero-grace cleanup: %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("zero-grace shutdown did not finish")
+	}
+}
+
+func TestZeroShutdownGraceStillBoundsCleanup(t *testing.T) {
+	srv, apiSrv, _ := servingWith(t, func(w http.ResponseWriter, r *http.Request) {})
+	release := make(chan struct{})
+	defer close(release)
+	completed := make(chan error, 1)
+	go func() { completed <- shutdown(srv, apiSrv, 0, func() error { <-release; return nil }) }()
+	select {
+	case err := <-completed:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("unbounded cleanup: %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("zero grace disabled the hard cleanup cap")
+	}
+}
