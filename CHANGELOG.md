@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Lakehouse slice 9 adds `search_fulltext`, `search_vector` and `tokenize`. Full text runs in Go
+  below the seam: the shared query grammar, a Porter stemmer and stop words, ranked with BM25.
+  Vector search is exact cosine. Filters resolve in the SQL sidecar. A both-engine conformance
+  test checks hits, phrases, `OR`, `NOT`, prefixes, filters, paging and the refusals; it does not
+  compare rankings across engines.
+
 - Lakehouse slice 8 adds `update`, `delete`, `upsert` and `upsert_by_key`. Filters run in the SQL
   sidecar; each mutation commits through the namespace log and lands in Iceberg as a position-delete
   file plus the new row versions, with no data-file rewrite. A both-engine conformance test pins the
