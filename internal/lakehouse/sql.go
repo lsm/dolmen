@@ -610,6 +610,8 @@ func presentQueryValue(t schema.FieldType, v any) any {
 func (s *Store) Capabilities() store.EngineCapabilities {
 	return store.EngineCapabilities{
 		VectorExecution: store.VectorExact,
+		Notifications:   true,
+		Subscribe:       true,
 		QueryDialect:    DialectDuckDB,
 		FilterDialect:   DialectDuckDB,
 	}

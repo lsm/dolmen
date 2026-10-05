@@ -136,16 +136,22 @@ func lowerRecordKeys(records []map[string]any) []map[string]any {
 
 func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName string, writes []BatchWrite, opts BatchOpts) (IdemHash, error) {
 	schemas := make(map[string]*schema.TableSchema, len(writes))
-	secrets := false
 	for i, w := range writes {
-		sc, ok := schemas[w.Table]
-		if !ok {
-			var err error
-			if sc, err = loadSchema(ctx, q, nsName, w.Table); err != nil {
-				return IdemHash{}, fmt.Errorf("writes[%d]: %w", i, err)
-			}
-			schemas[w.Table] = sc
+		if _, ok := schemas[w.Table]; ok {
+			continue
 		}
+		sc, err := loadSchema(ctx, q, nsName, w.Table)
+		if err != nil {
+			return IdemHash{}, fmt.Errorf("writes[%d]: %w", i, err)
+		}
+		schemas[w.Table] = sc
+	}
+	return BatchPayloadHash(s.secrets, schemas, writes, opts)
+}
+
+func BatchPayloadHash(keys *secret.Keyring, schemas map[string]*schema.TableSchema, writes []BatchWrite, opts BatchOpts) (IdemHash, error) {
+	secrets := false
+	for _, sc := range schemas {
 		if len(sc.SecretFields()) > 0 {
 			secrets = true
 		}
@@ -175,15 +181,15 @@ func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName strin
 		h := sha256.Sum256(raw)
 		return hex.EncodeToString(h[:]), nil
 	}
-	primary, err := sum(s.secrets)
+	primary, err := sum(keys)
 	if err != nil {
 		return IdemHash{}, err
 	}
 	out := IdemHash{Primary: primary}
-	if !secrets || s.secrets == nil {
+	if !secrets || keys == nil {
 		return out, nil
 	}
-	for _, old := range s.secrets.Retired() {
+	for _, old := range keys.Retired() {
 		alt, err := sum(old)
 		if err != nil {
 			return IdemHash{}, err
@@ -192,6 +198,12 @@ func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName strin
 	}
 	return out, nil
 }
+
+func BatchTouched(r BatchWriteResult) int64 { return r.touched() }
+
+const BatchBudgetMessage = "this batch would touch more than %d rows, the per-batch budget (records inserted plus rows matched by update, upsert and delete); split it into smaller batches, or run a large delete as its own delete call, which the batch budget does not bound"
+
+func WriteScope(w BatchWrite, fallback *RowScope) *RowScope { return writeScope(w, fallback) }
 
 func ensureBatchIdem(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, batchIdemDDL); err != nil {

@@ -72,6 +72,10 @@ func (s *Store) ChangesSince(ctx context.Context, ns, table string, from store.C
 	if scope != nil && table == "" {
 		return nil, "", store.ErrScopedNamespaceFeed
 	}
+	return s.changesSinceMode(ctx, ns, table, from, expected, scope, inc, page, nil)
+}
+
+func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from store.Cursor, expected [16]byte, scope *store.RowScope, inc store.Incarnation, page store.Page, boundary *int64) ([]store.ChangeRecord, store.Cursor, error) {
 	records := []store.ChangeRecord{}
 	var next store.Cursor
 	err := s.withNamespace(ctx, ns, func(n *namespace) error {
@@ -164,6 +168,10 @@ func (s *Store) ChangesSince(ctx context.Context, ns, table string, from store.C
 				stmt += ` AND owner = ?`
 				args = append(args, scope.Owner)
 			}
+		}
+		if boundary != nil {
+			stmt += ` AND seq <= ?`
+			args = append(args, *boundary)
 		}
 		stmt += ` ORDER BY seq LIMIT ?`
 		args = append(args, limit)

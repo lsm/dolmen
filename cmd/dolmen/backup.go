@@ -94,7 +94,7 @@ func sqliteDataOnly(getenv func(string) string, what string) error {
 	case store.EnginePostgres:
 		return fmt.Errorf("%s works on a SQLite data directory; for a PostgreSQL deployment use pg_dump and pg_restore (see docs/postgresql-operations.md)", what)
 	case store.EngineLakehouse:
-		return fmt.Errorf("%s works on a SQLite data directory, and the %q engine is not implemented yet (docs/design/lakehouse-plan.md), so there is nothing here for it to back up", what, store.EngineLakehouse)
+		return fmt.Errorf("%s works on a SQLite data directory; for a %q deployment stop the server and copy the whole data directory, which holds every namespace's catalog and Parquet files (see docs/lakehouse-operations.md)", what, store.EngineLakehouse)
 	}
 	return nil
 }

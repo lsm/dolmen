@@ -26,6 +26,8 @@ type Store struct {
 	secrets    *secret.Keyring
 	sqlEngine  SQLEngine
 	retention  time.Duration
+	wake       wakeSet
+	stopping   chan struct{}
 	dir        string
 	root       *os.Root
 	gate       chan struct{}
@@ -68,7 +70,7 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{dir: abs, gate: make(chan struct{}, 1), namespaces: map[string]*namespace{}, maxOpen: DefaultMaxOpenNamespaces, retention: store.DefaultChangeRetention}
+	s := &Store{dir: abs, gate: make(chan struct{}, 1), namespaces: map[string]*namespace{}, maxOpen: DefaultMaxOpenNamespaces, retention: store.DefaultChangeRetention, stopping: make(chan struct{})}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -121,6 +123,7 @@ func (s *Store) Close() error {
 		return s.closeErr
 	}
 	s.closed = true
+	close(s.stopping)
 	for name, n := range s.namespaces {
 		if n.sql != nil {
 			n.sql.stop()
@@ -136,6 +139,12 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) withNamespace(ctx context.Context, name string, fn func(*namespace) error) error {
+	if held, ok := ctx.Value(batchKey{}).(string); ok {
+		if held != name {
+			return invalidf("a batch writes one namespace")
+		}
+		return s.inNamespace(ctx, name, fn)
+	}
 	if err := s.lock(ctx); err != nil {
 		return err
 	}
@@ -143,6 +152,10 @@ func (s *Store) withNamespace(ctx context.Context, name string, fn func(*namespa
 	if err := store.ValidateNamespace(name); err != nil {
 		return err
 	}
+	return s.inNamespace(ctx, name, fn)
+}
+
+func (s *Store) inNamespace(ctx context.Context, name string, fn func(*namespace) error) error {
 	n, err := s.openNamespace(ctx, name)
 	if err != nil {
 		return err

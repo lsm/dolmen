@@ -432,7 +432,9 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 |---|---|---|---|
 | `-addr` | `DOLMEN_ADDR` | `127.0.0.1:8790` | HTTP listen address (`dolmen mcp` does not listen) |
 | `-data` | `DOLMEN_DATA` | `data` | Data directory (one SQLite file per namespace) |
-| `-engine` | `DOLMEN_ENGINE` | `sqlite` | Storage engine: `sqlite` (default) or `postgres`. `postgres` needs `-pg-dsn`; unknown values are rejected with an error. `lakehouse` is recognised but not implemented yet and is refused with a message pointing at its design (`docs/design/lakehouse-plan.md`) |
+| `-engine` | `DOLMEN_ENGINE` | `sqlite` | Storage engine: `sqlite` (default), `postgres` or `lakehouse`. `postgres` needs `-pg-dsn`; unknown values are rejected with an error. `lakehouse` stores tables as Apache Iceberg (Parquet) under the data directory and runs `query` and filters in the `dolmen-duckdb` sidecar (see [docs/lakehouse-operations.md](docs/lakehouse-operations.md)) |
+| `-duckdb-sidecar` | `DOLMEN_DUCKDB_SIDECAR` | `dolmen-duckdb` beside the binary | Path to the `dolmen-duckdb` sidecar, with `-engine lakehouse` only. Without a runnable sidecar the server still starts, and `query` and filtered operations are refused |
+| `-duckdb-extensions` | `DOLMEN_DUCKDB_EXTENSIONS` | `duckdb-extensions` beside the binary | Directory holding the DuckDB `iceberg` extension the sidecar loads, with `-engine lakehouse` only |
 | `-pg-dsn` | `DOLMEN_PG_DSN` | — | PostgreSQL connection string; required with `-engine postgres` and rejected without it. The connection pool holds at most 20 connections unless the string sets `pool_max_conns=N`; keep the total across every server sharing the database below its `max_connections` |
 | `-pg-catalog` | `DOLMEN_PG_CATALOG` | `dolmen_catalog` | PostgreSQL catalog schema |
 | `-pg-query-role` | `DOLMEN_PG_QUERY_ROLE` | — | Pre-provisioned restricted role that caller SQL runs as; required for the `query` op |

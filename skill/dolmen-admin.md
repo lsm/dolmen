@@ -391,7 +391,7 @@ locked-out server.
   provoking a syntax error: `query_dialect` is the dialect `query` accepts, `filter_dialect` the one
   a `filter` is read in with authentication off. With authentication on, every engine reads a
   filter against one shared allowlist and `filter_dialect` is informational.
-- Both searches score every hit as `_score`, higher being more relevant, and return results in that order. The two scales are different and engine-specific — full-text relevance is the engine's own ({{ if eq .Dialect "postgresql" }}PostgreSQL `ts_rank_cd`{{ else }}FTS5 BM25, negated so higher wins{{ end }}), vector `_score` is cosine similarity — so compare scores only within one query's results, never across queries, tables or servers, and never threshold full-text `_score` against a fixed number.
+- Both searches score every hit as `_score`, higher being more relevant, and return results in that order. The two scales are different and engine-specific — full-text relevance is the engine's own ({{ if eq .Dialect "postgresql" }}PostgreSQL `ts_rank_cd`{{ else if eq .Dialect "duckdb" }}BM25 computed by the lakehouse engine{{ else }}FTS5 BM25, negated so higher wins{{ end }}), vector `_score` is cosine similarity — so compare scores only within one query's results, never across queries, tables or servers, and never threshold full-text `_score` against a fixed number.
 - `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's
   columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything. A `delete` matching more than 1,000 rows is refused unless you raise `limit` above the match count or pass `confirm: true`; `dry_run: true` reports `matched` without deleting.
@@ -413,6 +413,16 @@ locked-out server.
   with a bare SQLSTATE 42883. An error that carries only a SQLSTATE in class 42 (42703 unknown
   column, 42883 no such operator or function) means a name or type in your SQL is wrong: check it
   against `describe_table`.
+{{ else if eq .Dialect "duckdb" }}- **This server is lakehouse-backed.** Tables are Apache Iceberg (Parquet) files, and `query`,
+  and `filter`, are DuckDB SQL (`capabilities` reports `query_dialect`/`filter_dialect` as `duckdb`)
+  run read-only over one view per table. SQLite functions such as `julianday()` and `iif()` do not
+  exist here; use `CASE`, `coalesce`, `strpos`, `date_trunc` and `strftime(ts, format)`. `number`
+  fields read as `DOUBLE` inside SQL (an integral value still comes back as an integer).
+  `timestamp` fields and `created_at` are ISO-8601 text, so cast before date arithmetic:
+  `CAST(started_at AS TIMESTAMPTZ) > now() - INTERVAL 14 DAY`. `json` fields are text: use
+  `json_extract_string(prefs, '$.lang')` or `prefs->>'$.lang'`. A `secret` field reads as the mask,
+  and comparing it with any value matches nothing. The hidden `_embedding` column is not visible
+  to `query`; use `include_hidden: true` on a search instead.
 {{ end }}
 - `changes_since` replays a namespace's durable change log instead of polling tables: each call returns the changes committed after the cursor plus `next_cursor`. Omit `cursor` to start at the current head (nothing replays; keep the returned `next_cursor` and later calls deliver only new commits), or pass `"begin"` to replay retained history. An optional `table` filters to that table. Changes carry `cursor`/`table`/`row_id`/`kind` plus optional `commit` — re-read row content by id with `query` (`SELECT * FROM <table> WHERE id = ?`). A cursor older than the change-log retention window (default 7d) is rejected with an error telling you to restart from the head (omit `cursor`) or `"begin"`; cursors are per-feed, so a cursor from a `table`-filtered call only works on that same feed. Cursor tokens are minted per emission: a change re-read later carries a fresh token for the same commit, so the same commit yields different tokens on different reads — while a read that emits nothing returns the cursor you passed unchanged (the `wait_for` idle contract). Treat a token as a resume handle, never as a stable event id: the same row updated twice yields two changes with identical `table`/`row_id`/`kind`. `commit` is a stable positive integer within the namespace incarnation: all records from one transaction share it, including across tables, page boundaries, polling and SSE. It is absent on records written before the upgrade. It groups a transaction rather than uniquely identifying a row event; several events (even repeated updates of one row in a batch) can share it. Pages and scoped feeds can contain only part of a commit, so it does not signal transaction completeness. Make processing idempotent and persist the cursor atomically with your side effects instead of deduplicating on frame content.
 - `wait_for` REPLACES polling: one call blocks server-side until a change commits after the cursor (or `timeout_ms` elapses, default 30000, max 60000), then returns exactly a `changes_since` page. A timeout is an **empty page plus the unchanged `next_cursor` — never an error**: pass `next_cursor` straight back into the next `wait_for` and loop. `timeout_ms: 0` skips the polling wait and performs one change-feed read under the caller/server operation deadline; a busy catalog does not lose committed changes to an artificial 250 ms read budget. Same feed semantics as `changes_since` (`cursor` resume, `"begin"`, optional `table` filter); never re-derive the head between waits — always resume from the returned cursor. Like every read, a wait never creates its namespace — a missing one is `not_found` (create it first, then wait).
@@ -496,7 +506,7 @@ locked-out server.
   the statement is read-only, not that the identifiers are safe.
 - SQL string literals use single quotes (`'value'`), escaped by doubling (`'can''t'`). Prefer `?`.
 - Double quotes are for SQL identifiers, not string values.
-- `search_fulltext` takes a raw {{ if eq .Dialect "postgresql" }}full-text search{{ else }}FTS5 `MATCH`{{ end }} expression in `query`; it is **not** SQL, so do not wrap
+- `search_fulltext` takes a raw {{ if or (eq .Dialect "postgresql") (eq .Dialect "duckdb") }}full-text search{{ else }}FTS5 `MATCH`{{ end }} expression in `query`; it is **not** SQL, so do not wrap
   the whole expression in single quotes.
 
 {{ if eq .Dialect "postgresql" }}### Full-text search syntax (PostgreSQL)
@@ -524,6 +534,33 @@ Refused, each with an error naming the alternative: the `field:term` column filt
 `filter` parameter instead), `NEAR()` (use a quoted phrase for adjacent words), the `^`
 first-token operator and `+` adjacency. A query made only of stop words (`the`, `and`) matches
 nothing.
+
+The optional `filter` parameter is separate from the search `query`: it is SQL over the table's
+columns (a WHERE expression with `?`-bound `args`) and selects which rows may match, before ranking.
+
+{{ else if eq .Dialect "duckdb" }}### Full-text search syntax (lakehouse)
+
+This server tokenizes `fulltext` fields on letters, digits and underscores, lowercases them, drops
+common English stop words, and reduces English words to stems (Porter), so `payments` matches
+`payment`. Hits are ranked with BM25, highest first, ties by id; the scale is this engine's own.
+
+Two tokenizer limits to know: **accents are not folded** (`cafe` does not match `café`), and
+**CJK is not word-segmented** — a run of CJK with no spaces is one token. `tokenize` shows exactly
+how a given string is indexed; use it when a match is missing.
+
+Supported in `query`:
+
+- `payment refund` — both terms (implicit AND); `AND`, `OR` and binary `NOT` (`payment NOT refund`)
+  work as written, uppercase only. `NOT` needs a term on its left, so a query cannot start with it,
+  and `AND`/`OR` need a term on each side.
+- `"refund processed"` — an exact phrase, matched on stems; also double-quote terms containing
+  punctuation.
+- `pay*` — a prefix term, matched against the word or its stem.
+- Parentheses group expressions.
+
+Refused, each with an error naming the alternative: the `field:term` column filter (use the
+`filter` parameter instead), `NEAR()` (use a quoted phrase for adjacent words), the `^`
+first-token operator and `+` adjacency. A query made only of stop words matches nothing.
 
 The optional `filter` parameter is separate from the search `query`: it is SQL over the table's
 columns (a WHERE expression with `?`-bound `args`) and selects which rows may match, before ranking.
@@ -664,7 +701,7 @@ match, before ranking.
 - `id` is `AUTOINCREMENT` — monotonically increasing and never reused after deletes — so it is safe
   to key off across sessions.
 - `created_at` is a UTC millisecond ISO string, e.g. `2026-09-03T12:34:56.123Z`. Use string
-  comparisons or {{ if eq .Dialect "postgresql" }}cast it with `::timestamptz` as described above{{ else }}SQLite date/time functions{{ end }}.
+  comparisons or {{ if eq .Dialect "postgresql" }}cast it with `::timestamptz` as described above{{ else if eq .Dialect "duckdb" }}cast it with `CAST(created_at AS TIMESTAMPTZ)` as described above{{ else }}SQLite date/time functions{{ end }}.
 
 ### The `migrate` payload
 

@@ -344,7 +344,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
 - `truncated: true` means the response left results out. On `query`, `search_fulltext` and `search_vector`, more exist beyond the page, cut either by `limit` (1,000 rows by default and at most on `query`; 10 by default and 200 at most on the searches) or by the 32 MiB response budget, so fetch the next page with `offset`. On `read_rows` only the budget cuts, so retry with fewer ids.
 - Paging a result set you are reading uses `offset`, as above. Walking a **whole table** to export or copy it uses a keyset on `id` instead — see "Export a table by keyset paging" for the loop and for the two things such an export cannot carry.
-- Both searches score every hit as `_score`, higher being more relevant, and return results in that order. The two scales are different and engine-specific — full-text relevance is the engine's own ({{ if eq .Dialect "postgresql" }}PostgreSQL `ts_rank_cd`{{ else }}FTS5 BM25, negated so higher wins{{ end }}), vector `_score` is cosine similarity — so compare scores only within one query's results, never across queries, tables or servers, and never threshold full-text `_score` against a fixed number.
+- Both searches score every hit as `_score`, higher being more relevant, and return results in that order. The two scales are different and engine-specific — full-text relevance is the engine's own ({{ if eq .Dialect "postgresql" }}PostgreSQL `ts_rank_cd`{{ else if eq .Dialect "duckdb" }}BM25 computed by the lakehouse engine{{ else }}FTS5 BM25, negated so higher wins{{ end }}), vector `_score` is cosine similarity — so compare scores only within one query's results, never across queries, tables or servers, and never threshold full-text `_score` against a fixed number.
 - `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything. A `delete` matching more than 1,000 rows is refused unless you raise `limit` above the match count or pass `confirm: true`; `dry_run: true` reports `matched` without deleting.
 - `batch` applies several writes to one namespace in **one transaction**: either every write commits or none does, and the results come back in the order you sent the writes. Each entry in `writes` is one of `insert`, `update`, `delete`, `upsert` or `upsert_by_key` with that operation's own fields, plus a `kind` naming which. `namespace` and `idempotency_key` are set once at the top level and are **refused inside a write**, and so is `dry_run` — a batch cannot mix a preview with writes that commit. An error names the failing write as `writes[i]` and keeps that write's own error class, and nothing is written when any write fails. One `idempotency_key` covers the whole batch: re-sending the identical body returns the stored results and writes nothing, and the response says `replayed: true`. Use one batch when the writes belong together, and several smaller batches rather than one large one when they do not — a batch holds the server's single writer for its whole duration, provider round trips for `vectorize` fields included. With authentication off, a batch into a namespace that does not exist creates the namespace before its writes run, so the namespace remains even when the batch fails.
@@ -366,6 +366,16 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
   with a bare SQLSTATE 42883. An error that carries only a SQLSTATE in class 42 (42703 unknown
   column, 42883 no such operator or function) means a name or type in your SQL is wrong: check it
   against `describe_table`.
+{{ else if eq .Dialect "duckdb" }}- **This server is lakehouse-backed.** Tables are Apache Iceberg (Parquet) files, and `query`,
+  and `filter`, are DuckDB SQL (`capabilities` reports `query_dialect`/`filter_dialect` as `duckdb`)
+  run read-only over one view per table. SQLite functions such as `julianday()` and `iif()` do not
+  exist here; use `CASE`, `coalesce`, `strpos`, `date_trunc` and `strftime(ts, format)`. `number`
+  fields read as `DOUBLE` inside SQL (an integral value still comes back as an integer).
+  `timestamp` fields and `created_at` are ISO-8601 text, so cast before date arithmetic:
+  `CAST(started_at AS TIMESTAMPTZ) > now() - INTERVAL 14 DAY`. `json` fields are text: use
+  `json_extract_string(prefs, '$.lang')` or `prefs->>'$.lang'`. A `secret` field reads as the mask,
+  and comparing it with any value matches nothing. The hidden `_embedding` column is not visible
+  to `query`; use `include_hidden: true` on a search instead.
 {{ end }}- `drop_table` / `drop_namespace` are irreversible deletions and are **not** part of this skill; do not use them. Ask the user to use `dolmen-admin` if a table or namespace must go.
 - `insert` with an `idempotency_key` (any unique string) makes retries replay the original ids; the same key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes; the server counts bytes and refuses only an empty key or one over 256 bytes, so other characters are accepted but not recommended.
 - Every table has implicit `id` and `created_at` columns; `SELECT *` includes them.
@@ -386,7 +396,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 - `query` only accepts read-only `SELECT`/`WITH` statements. Bind all values with `?` and pass them in `args`. Identifiers and table names cannot be bound with `?`; write them directly from `list_tables`/`describe_table` and never let untrusted input choose them. `query` only checks that the statement is read-only, not that the identifiers are safe.
 - SQL string literals use single quotes (`'value'`), escaped by doubling (`'can''t'`). Prefer `?`.
 - Double quotes are for SQL identifiers, not string values.
-- `search_fulltext` takes a raw {{ if eq .Dialect "postgresql" }}full-text search{{ else }}FTS5 `MATCH`{{ end }} expression in `query`; it is **not** SQL, so do not wrap the whole expression in single quotes. Punctuation inside a term is not searchable text: a hyphenated slug, SKU or compound word (`gpt-4`, `e-mail`) must go in double quotes (`"gpt-4"`), or the bare `-` is rejected.
+- `search_fulltext` takes a raw {{ if or (eq .Dialect "postgresql") (eq .Dialect "duckdb") }}full-text search{{ else }}FTS5 `MATCH`{{ end }} expression in `query`; it is **not** SQL, so do not wrap the whole expression in single quotes. Punctuation inside a term is not searchable text: a hyphenated slug, SKU or compound word (`gpt-4`, `e-mail`) must go in double quotes (`"gpt-4"`), or the bare `-` is rejected.
 
 {{ if eq .Dialect "postgresql" }}### Full-text search syntax (PostgreSQL)
 
@@ -413,6 +423,33 @@ Refused, each with an error naming the alternative: the `field:term` column filt
 `filter` parameter instead), `NEAR()` (use a quoted phrase for adjacent words), the `^`
 first-token operator and `+` adjacency. A query made only of stop words (`the`, `and`) matches
 nothing.
+
+The optional `filter` parameter is separate from the search `query`: it is SQL over the table's
+columns (a WHERE expression with `?`-bound `args`) and selects which rows may match, before ranking.
+
+{{ else if eq .Dialect "duckdb" }}### Full-text search syntax (lakehouse)
+
+This server tokenizes `fulltext` fields on letters, digits and underscores, lowercases them, drops
+common English stop words, and reduces English words to stems (Porter), so `payments` matches
+`payment`. Hits are ranked with BM25, highest first, ties by id; the scale is this engine's own.
+
+Two tokenizer limits to know: **accents are not folded** (`cafe` does not match `café`), and
+**CJK is not word-segmented** — a run of CJK with no spaces is one token. `tokenize` shows exactly
+how a given string is indexed; use it when a match is missing.
+
+Supported in `query`:
+
+- `payment refund` — both terms (implicit AND); `AND`, `OR` and binary `NOT` (`payment NOT refund`)
+  work as written, uppercase only. `NOT` needs a term on its left, so a query cannot start with it,
+  and `AND`/`OR` need a term on each side.
+- `"refund processed"` — an exact phrase, matched on stems; also double-quote terms containing
+  punctuation.
+- `pay*` — a prefix term, matched against the word or its stem.
+- Parentheses group expressions.
+
+Refused, each with an error naming the alternative: the `field:term` column filter (use the
+`filter` parameter instead), `NEAR()` (use a quoted phrase for adjacent words), the `^`
+first-token operator and `+` adjacency. A query made only of stop words matches nothing.
 
 The optional `filter` parameter is separate from the search `query`: it is SQL over the table's
 columns (a WHERE expression with `?`-bound `args`) and selects which rows may match, before ranking.
@@ -476,7 +513,7 @@ The optional `filter` parameter is separate from the MATCH `query`: it is regula
 
 - Every row has `id` and `created_at`. You cannot supply them; they are assigned on insert and returned in reads.
 - `id` is `AUTOINCREMENT` — monotonically increasing and never reused after deletes — so it is safe to key off across sessions.
-- `created_at` is a UTC millisecond ISO string, e.g. `2026-09-03T12:34:56.123Z`. Use string comparisons or {{ if eq .Dialect "postgresql" }}cast it with `::timestamptz` as described above{{ else }}SQLite date/time functions{{ end }}.
+- `created_at` is a UTC millisecond ISO string, e.g. `2026-09-03T12:34:56.123Z`. Use string comparisons or {{ if eq .Dialect "postgresql" }}cast it with `::timestamptz` as described above{{ else if eq .Dialect "duckdb" }}cast it with `CAST(created_at AS TIMESTAMPTZ)` as described above{{ else }}SQLite date/time functions{{ end }}.
 
 ### Limits and guardrails
 
@@ -571,7 +608,7 @@ while working:
 ### Export a table by keyset paging
 
 There is no `dump` or `export_table` op. A whole namespace is backed up out of band, on the server:
-{{ if eq .Dialect "postgresql" }}`pg_dump`, since `dolmen backup` refuses on this engine{{ else }}`dolmen backup`{{ end }}.
+{{ if eq .Dialect "postgresql" }}`pg_dump`, since `dolmen backup` refuses on this engine{{ else if eq .Dialect "duckdb" }}a copy of the stopped server's data directory, since `dolmen backup` refuses on this engine{{ else }}`dolmen backup`{{ end }}.
 To get a table's rows somewhere else, page `query` on `id`:
 
 ```
@@ -606,7 +643,8 @@ page. Stop when a page comes back empty. The page size is the `limit` parameter,
 1,000 rows is also the most `query` will return, so expect one call per thousand rows. Do not put
 `LIMIT` in the SQL: it is not rejected, it is nested inside the server's own paging, so it can only
 make a page smaller than you asked for{{ if eq .Dialect "postgresql" }} — this server wraps your statement in a
-subquery before it pages it{{ else }} — here the server reaches that point by trying your statement,
+subquery before it pages it{{ else if eq .Dialect "duckdb" }} — this server runs your statement as written and
+pages the rows it returns{{ else }} — here the server reaches that point by trying your statement,
 getting a syntax error, and retrying it wrapped{{ end }}.
 
 Two things this export cannot carry, which is why restoring from one is a re-import rather than a copy:

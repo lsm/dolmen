@@ -274,6 +274,9 @@ func openStore(cfg *config, tp trace.TracerProvider, mp metric.MeterProvider) (s
 		}
 		return st, nil
 	}
+	if cfg.Engine == store.EngineLakehouse {
+		return openLakehouse(cfg)
+	}
 	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention), store.WithMaxOpenNamespaces(cfg.MaxOpenNamespaces), store.WithSync(cfg.Sync), store.WithMaxNamespaceSize(cfg.MaxNamespaceSize), store.WithVectorCacheBytes(cfg.VectorCacheSize), store.WithSecretKey(cfg.Secrets), store.WithTracerProvider(tp), store.WithMeterProvider(mp))
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
@@ -370,6 +373,8 @@ type config struct {
 	PostgresDSN        string
 	PostgresCatalog    string
 	PostgresQueryRole  string
+	DuckDBSidecar      string
+	DuckDBExtensions   string
 	Auth               *auth.Authenticator
 	TrustedProxies     []*net.IPNet
 	OIDC               auth.OIDCConfig
@@ -405,9 +410,11 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 
 	addr := fs.String("addr", envOr("DOLMEN_ADDR", "127.0.0.1:8790", getenv), "listen address")
 	dataDir := fs.String("data", envOr("DOLMEN_DATA", "data", getenv), "data directory (one SQLite file per namespace)")
-	engine := fs.String("engine", getenv("DOLMEN_ENGINE"), "storage engine: sqlite (default) or postgres; lakehouse is designed but not implemented and is refused")
+	engine := fs.String("engine", getenv("DOLMEN_ENGINE"), "storage engine: sqlite (default), postgres, or lakehouse (Iceberg tables with a DuckDB sidecar for SQL)")
 	pgDSN := fs.String("pg-dsn", getenv("DOLMEN_PG_DSN"), "PostgreSQL connection string; required when -engine postgres")
 	pgCatalog := fs.String("pg-catalog", getenv("DOLMEN_PG_CATALOG"), "PostgreSQL catalog schema (default dolmen_catalog)")
+	duckdbSidecar := fs.String("duckdb-sidecar", getenv("DOLMEN_DUCKDB_SIDECAR"), "path to the dolmen-duckdb sidecar that runs query and filters for -engine lakehouse (default: dolmen-duckdb next to this binary)")
+	duckdbExtensions := fs.String("duckdb-extensions", getenv("DOLMEN_DUCKDB_EXTENSIONS"), "directory holding the DuckDB iceberg extension for -engine lakehouse (default: duckdb-extensions next to this binary)")
 	pgQueryRole := fs.String("pg-query-role", getenv("DOLMEN_PG_QUERY_ROLE"), "pre-provisioned restricted role that caller SQL runs as; required for the query op")
 	authMode := fs.String("auth", envOr("DOLMEN_AUTH", "off", getenv), "authentication: off (default, no identity required) or on (deny-by-default; set DOLMEN_ADMIN_KEY on first start)")
 	trustedProxies := fs.String("trusted-proxies", envOr("DOLMEN_TRUSTED_PROXIES", "", getenv), "comma-separated CIDRs (bare IPs allowed) whose peers may assert X-Dolmen-Principal / X-Dolmen-Groups and the forwarding headers public links are built from (X-Forwarded-*, Forwarded)")
@@ -487,8 +494,8 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		fs.Usage()
 		return nil, &printedError{err}
 	}
-	if *engine == store.EngineLakehouse {
-		err := fmt.Errorf("engine %q is not implemented yet; it is designed in docs/design/lakehouse-plan.md, and until it lands use -engine sqlite (the default) or -engine postgres", store.EngineLakehouse)
+	if *engine != store.EngineLakehouse && (*duckdbSidecar != "" || *duckdbExtensions != "") {
+		err := fmt.Errorf("-duckdb-sidecar and -duckdb-extensions apply only to -engine lakehouse")
 		fmt.Fprintf(out, "config: %v\n", err)
 		fs.Usage()
 		return nil, &printedError{err}
@@ -673,6 +680,8 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		Addr:               *addr,
 		DataDir:            *dataDir,
 		Engine:             *engine,
+		DuckDBSidecar:      *duckdbSidecar,
+		DuckDBExtensions:   *duckdbExtensions,
 		PostgresDSN:        *pgDSN,
 		PostgresCatalog:    *pgCatalog,
 		PostgresQueryRole:  *pgQueryRole,
@@ -798,7 +807,9 @@ func printEnvHelp(out io.Writer) {
 	help := []envHelp{
 		{"DOLMEN_ADDR", "listen address (default 127.0.0.1:8790)"},
 		{"DOLMEN_DATA", "data directory (default data)"},
-		{"DOLMEN_ENGINE", "storage engine: sqlite (default) or postgres; lakehouse is refused until it is implemented"},
+		{"DOLMEN_ENGINE", "storage engine: sqlite (default), postgres, or lakehouse"},
+		{"DOLMEN_DUCKDB_SIDECAR", "path to the dolmen-duckdb sidecar, with the lakehouse engine"},
+		{"DOLMEN_DUCKDB_EXTENSIONS", "directory holding the DuckDB iceberg extension, with the lakehouse engine"},
 		{"DOLMEN_PG_DSN", "PostgreSQL connection string, required with the postgres engine"},
 		{"DOLMEN_PG_CATALOG", "PostgreSQL catalog schema (default dolmen_catalog)"},
 		{"DOLMEN_PG_QUERY_ROLE", "pre-provisioned NOLOGIN role that caller SQL runs as"},

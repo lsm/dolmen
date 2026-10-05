@@ -638,6 +638,25 @@ func TestAPostgreSQLServerServesPostgreSQLGuidance(t *testing.T) {
 	}
 }
 
+func TestALakehouseServerServesDuckDBGuidance(t *testing.T) {
+	for _, name := range []string{"dolmen", "dolmen-admin"} {
+		out, err := Render(name, Context{BaseURL: "http://h", MCPURL: "http://h/mcp", Version: "v", NamespaceHint: DefaultNamespaceHint, Dialect: "duckdb"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"This server is lakehouse-backed", "Full-text search syntax (lakehouse)", "CAST(created_at AS TIMESTAMPTZ)", "json_extract_string", "`field:term` column filter"} {
+			if !strings.Contains(string(out), want) {
+				t.Fatalf("%s on a lakehouse server must say %q", name, want)
+			}
+		}
+		for _, refuse := range []string{"PostgreSQL-backed", "SQLite date/time functions", "### Full-text (FTS5) search syntax", "| Database connections |"} {
+			if strings.Contains(string(out), refuse) {
+				t.Fatalf("%s on a lakehouse server must not say %q", name, refuse)
+			}
+		}
+	}
+}
+
 func TestTheAdminSkillTeachesHowToResumeTheChangeFeed(t *testing.T) {
 	for _, dialect := range []string{"sqlite", "postgresql"} {
 		out, err := Render("dolmen-admin", Context{BaseURL: "http://h", MCPURL: "http://h/mcp", Version: "v", NamespaceHint: DefaultNamespaceHint, Dialect: dialect})
