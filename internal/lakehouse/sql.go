@@ -510,6 +510,14 @@ func parseQueryReply(fields []string) (store.QueryResult, error) {
 	return result, nil
 }
 
+func retire(sc *sidecar) {
+	go func() {
+		sc.run.Lock()
+		defer sc.run.Unlock()
+		sc.stop()
+	}()
+}
+
 func (s *Store) ensureQuerySidecar(ctx context.Context, ns string, nsGen [16]byte) (*sidecar, error) {
 	var sc *sidecar
 	err := s.withNamespace(ctx, ns, func(n *namespace) error {
@@ -521,16 +529,20 @@ func (s *Store) ensureQuerySidecar(ctx context.Context, ns string, nsGen [16]byt
 			return err
 		}
 		if n.sql != nil && (n.sql.fingerprint != fp || !n.sql.alive()) {
-			old := n.sql
-			old.run.Lock()
-			old.stop()
-			old.run.Unlock()
+			retire(n.sql)
 			n.sql = nil
 		}
 		if n.sql == nil {
+			if n.sqlErr != nil && time.Now().Before(n.sqlRetry) {
+				return n.sqlErr
+			}
 			if n.sql, err = startSidecar(ctx, s.sqlEngine, n.dataDir, views, fp); err != nil {
+				n.sqlFails++
+				n.sqlErr = err
+				n.sqlRetry = time.Now().Add(min(time.Second<<min(n.sqlFails-1, 5), 30*time.Second))
 				return err
 			}
+			n.sqlFails, n.sqlErr = 0, nil
 		}
 		sc = n.sql
 		return nil

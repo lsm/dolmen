@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	sqlcatalog "github.com/apache/iceberg-go/catalog/sql"
 	"github.com/lsm/dolmen/internal/secret"
@@ -42,6 +43,9 @@ type namespace struct {
 	lastUse    uint64
 	pending    int
 	sql        *sidecar
+	sqlErr     error
+	sqlRetry   time.Time
+	sqlFails   int
 }
 
 type OpenOption func(*Store)
@@ -155,9 +159,7 @@ func (s *Store) evict(name string) error {
 		return nil
 	}
 	if n.sql != nil {
-		n.sql.run.Lock()
-		n.sql.stop()
-		n.sql.run.Unlock()
+		retire(n.sql)
 		n.sql = nil
 	}
 	if err := n.db.Close(); err != nil {

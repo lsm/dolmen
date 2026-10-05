@@ -189,7 +189,10 @@ bool Seal(const std::string &data_dir, const std::string &ext_dir, std::string &
   // Iceberg metadata names files by URI, and DuckDB matches the allowed list by
   // prefix, so the same directory is allowed in its file:// spellings too.
   cfg.options.allowed_directories.insert("file://" + data_dir);
-  if (data_dir.size() > 1 && data_dir[1] == ':') cfg.options.allowed_directories.insert("file:///" + data_dir);
+  if (data_dir.size() > 1 && data_dir[1] == ':') {
+    cfg.options.allowed_directories.insert("file:///" + data_dir);
+    cfg.options.allowed_directories.insert("/" + data_dir);
+  }
   cfg.options.allowed_directories.insert(spill_dir);
   g_db = std::make_unique<duckdb::DuckDB>(g_catalog_path.c_str(), &cfg);
   g_con = std::make_unique<duckdb::Connection>(*g_db);
