@@ -305,17 +305,16 @@ func (s *Store) syncMetadata(native *table.Table, n *namespace) error {
 	if err := publishCurrentMetadata(path); err != nil {
 		return err
 	}
-	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
-		relative, err := filepath.Rel(s.dir, dir)
+	for r := filepath.Dir(rel); ; r = filepath.Dir(r) {
+		relative, err := filepath.Rel(s.dir, filepath.Join(n.dataDir, r))
 		if err != nil {
 			return err
 		}
 		if err := s.syncDirectory(relative); err != nil {
 			return err
 		}
-		if dir == n.dataDir {
-			break
+		if r == "." {
+			return nil
 		}
 	}
-	return nil
 }
