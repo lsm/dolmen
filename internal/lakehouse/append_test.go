@@ -225,3 +225,42 @@ func TestSecretsAreKeptOutOfTheDataFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDroppingATablePurgesItsSecretsAndBookkeeping(t *testing.T) {
+	key, err := secret.New(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(t.TempDir(), WithSecretKeyring(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "t", []schema.Field{{Name: "token", Type: schema.Secret}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "ns", "t", []map[string]any{{"token": "PLAINTEXT"}}, store.WriteOpts{IdempotencyKey: "k"}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DropTable(ctx, "ns", "t", store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.withNamespace(ctx, "ns", func(n *namespace) error {
+		for _, table := range []string{"_dolmen_lakehouse_secrets", "_dolmen_lakehouse_idempotency", "_dolmen_lakehouse_counts", "_dolmen_lakehouse_ids"} {
+			var left int
+			if err := n.db.QueryRowContext(ctx, `SELECT count(*) FROM `+table+` WHERE table_name = 't'`).Scan(&left); err != nil {
+				return err
+			}
+			if left != 0 {
+				t.Errorf("%s keeps %d rows of the dropped table", table, left)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
