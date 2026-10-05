@@ -34,6 +34,9 @@ type Store struct {
 	tick       uint64
 	closed     bool
 	closeErr   error
+	dropping   map[string]bool
+	sidecarMu  sync.Mutex
+	sidecars   map[string]map[*sidecar]bool
 }
 
 type namespace struct {
@@ -44,6 +47,10 @@ type namespace struct {
 	lastUse    uint64
 	pending    int
 	sql        *sidecar
+	sqlErr     error
+	sqlRetry   time.Time
+	sqlFails   int
+	published  map[string]string
 }
 
 type OpenOption func(*Store)
@@ -121,10 +128,19 @@ func (s *Store) Close() error {
 		return s.closeErr
 	}
 	s.closed = true
-	for name, n := range s.namespaces {
-		if n.sql != nil {
-			n.sql.stop()
+	s.sidecarMu.Lock()
+	running := map[string][]*sidecar{}
+	for ns, set := range s.sidecars {
+		for sc := range set {
+			running[ns] = append(running[ns], sc)
 		}
+	}
+	s.sidecarMu.Unlock()
+	for ns, scs := range running {
+		s.drainAll(ns, scs, true)
+	}
+	for name, n := range s.namespaces {
+		n.sql = nil
 		s.closeErr = errors.Join(s.closeErr, n.db.Close())
 		delete(s.namespaces, name)
 	}
@@ -159,7 +175,7 @@ func (s *Store) evict(name string) error {
 		return nil
 	}
 	if n.sql != nil {
-		n.sql.stop()
+		s.retire(name, n.sql)
 		n.sql = nil
 	}
 	if err := n.db.Close(); err != nil {

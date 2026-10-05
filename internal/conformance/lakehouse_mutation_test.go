@@ -3,7 +3,6 @@ package conformance
 import (
 	"context"
 	"errors"
-	"os"
 	"reflect"
 	"testing"
 
@@ -19,18 +18,6 @@ type lakehouseMutationEngine interface {
 	Upsert(context.Context, string, string, string, []any, map[string]any, store.WriteOpts, store.Embedder, *store.RowScope, store.Incarnation) (store.InsertResult, error)
 	UpsertByKey(context.Context, string, string, []string, []map[string]any, store.WriteOpts, store.Embedder, *store.RowScope, store.Incarnation) (store.InsertResult, error)
 	Delete(context.Context, string, string, string, []any, store.DeleteOpts, *store.RowScope, store.Incarnation) (store.DeleteResult, error)
-}
-
-func lakehouseSQLEngine(t *testing.T) lakehouse.SQLEngine {
-	t.Helper()
-	bin := os.Getenv("DOLMEN_TEST_DUCKDB_SIDECAR")
-	if bin == "" {
-		if os.Getenv("DOLMEN_TEST_DUCKDB_REQUIRED") == "1" {
-			t.Fatal("DOLMEN_TEST_DUCKDB_SIDECAR is required in this job")
-		}
-		t.Skip("DOLMEN_TEST_DUCKDB_SIDECAR not set; lakehouse filters run in the dolmen-duckdb sidecar")
-	}
-	return lakehouse.SQLEngine{Binary: bin, ExtensionDir: os.Getenv("DOLMEN_TEST_DUCKDB_EXTENSIONS")}
 }
 
 func TestLakehouseMutationBackendConformance(t *testing.T) {
