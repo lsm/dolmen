@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Lakehouse slice 12 makes the engine selectable with `-engine lakehouse`. `-duckdb-sidecar` and
+  `-duckdb-extensions` locate the SQL sidecar. The engine now implements every operation: `batch`
+  (atomic, by snapshotting the namespace catalog and restoring it on failure or after a crash),
+  secret rotation, `vacuum` and `subscribe`. The served skills describe DuckDB SQL and the
+  lakehouse full-text grammar. `docs/lakehouse-operations.md` covers running it. CI runs the full
+  conformance suite and the black-box tests on it.
+
 - Lakehouse slice 10 adds `changes_since`, and with it `wait_for`. Both read the namespace commit
   log written with each commit. Cursors are random tokens stored in the catalog. Each is bound to
   its feed, refreshed on use and pruned by `-change-retention`. A both-engine conformance test

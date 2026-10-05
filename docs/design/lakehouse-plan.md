@@ -55,9 +55,9 @@ stacked; merge `main` into an active branch when needed, never rebase or force-p
 | 8 | **Point deletes by position** | implemented in slice 8; mutation conformance |
 | 9 | **Search: full text + vectors** (native, per D27) | implemented in slice 9; search conformance |
 | 10 | **Change feed** | implemented in slice 10; change-feed conformance |
-| 12 | **Public selector + operator docs** | after slice 11, in the approved order |
-| 13 | **`subscribe`/SSE** | after slice 11, in the approved order |
-| 14 | **Compaction + maintenance** | after slice 11, in the approved order |
+| 12 | **Public selector + operator docs** | implemented in slice 12; the full suite and black-box tests |
+| 13 | **`subscribe`/SSE** | implemented with slice 12; listen conformance |
+| 14 | **Compaction + maintenance** | after slice 12, in the approved order |
 
 **What each slice still proves is unchanged** and stays in the sections below: slice 4 that a
 namespace is an Iceberg catalog in its own SQLite file; slice 5 that schema evolution works; slice
@@ -262,6 +262,34 @@ whole namespace, and for a table it shows only the owner's changes, refusing wit
 `ErrScopedFeedPredatesLabels` when unlabeled changes lie in range. `wait_for` needs nothing more,
 because the API layer polls `changes_since`. `TestLakehouseChangeFeedBackendConformance` pins the
 results on both engines.
+
+### Slice 12's selector, and the rest of the Engine
+
+`-engine lakehouse` opens the engine, with `-duckdb-sidecar` and `-duckdb-extensions` (defaulting
+to `dolmen-duckdb` and `duckdb-extensions` beside the binary) locating the sidecar. Opening the
+engine needed the four `Engine` methods no earlier slice covered:
+
+- **`batch`** runs under the namespace's writer for its whole length. It first copies `catalog.db`
+  with `VACUUM INTO` to `catalog.db.batch`, fsyncs it, and records an intent row. Each write then
+  runs as it would alone, committing to the log and materializing, so a later write sees an earlier
+  one. One final transaction rewrites the batch's change records to share the first write's commit
+  id, stores the idempotency record, and deletes the intent row. On any failure the namespace is
+  closed, the copy is renamed over `catalog.db`, and every table's current metadata is
+  republished. On open, an intent row with a copy present means a batch was cut short, so the same
+  restore runs. Data files written by a rolled-back batch are left unreferenced. The copy costs one
+  pass over `catalog.db` per batch, which is the price of atomicity across Iceberg commits.
+- **Secret rotation** re-seals rows of `_dolmen_lakehouse_secrets` and never touches Parquet,
+  because the data files hold only presence markers.
+- **`vacuum`** runs `VACUUM` on `catalog.db`; slice 14 adds compaction.
+- **`subscribe`** ports the PostgreSQL adapter's polling listener. A replay boundary is fixed when
+  the session starts, a live cursor follows the head, and every committed write wakes waiting
+  sessions in-process. Dropping the table or namespace ends the session with its lifetime.
+
+The served skills gain a `duckdb` dialect: DuckDB SQL guidance for `query` and `filter`, and the
+lakehouse full-text grammar.
+
+**Open:** §10 Q3 is still undecided. A sidecar that is down surfaces as `ErrSQLEngineUnavailable`,
+which the public error taxonomy does not name, so it reaches callers as `internal_error`.
 
 ### Slice 3 in more detail
 
