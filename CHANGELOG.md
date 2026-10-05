@@ -4,6 +4,10 @@
 
 - Change-feed records now carry optional `commit` transaction grouping across polling, pagination and SSE. Legacy records remain unlabelled. SQLite catalog format 5 keeps minimum reader 3; PostgreSQL catalog 9 adds the column and namespace counter in place.
 
+- Change `-shutdown-grace 0` to immediate cancellation and cap shutdown cleanup at five seconds, including stuck store close and stdio cleanup.
+
+- Bound PostgreSQL SQL-compiler admission and caller waiting, check cancellation in SQL/filter compilation, and keep rollback cleanup within the caller deadline.
+
 - Fix immediate `wait_for` polls on PostgreSQL: `timeout_ms: 0` skips polling while reading committed changes under the operation deadline.
 
 ### Added

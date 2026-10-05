@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"net"
 	"net/http"
 	"strings"
@@ -91,5 +92,103 @@ func TestShutdownReportsACloseFailure(t *testing.T) {
 	err := shutdown(srv, apiSrv, time.Second, func() error { return errors.New("checkpoint failed") }, func() error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "checkpoint failed") {
 		t.Fatalf("a close error must reach the exit status, got %v", err)
+	}
+}
+
+func TestShutdownBoundsAStuckStoreClose(t *testing.T) {
+	srv, apiSrv, _ := servingWith(t, func(w http.ResponseWriter, r *http.Request) {})
+	release := make(chan struct{})
+	defer close(release)
+	started := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		result <- shutdown(srv, apiSrv, 100*time.Millisecond, func() error {
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	<-started
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("stuck cleanup: %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("shutdown waited forever for store cleanup after its grace")
+	}
+}
+
+func TestZeroShutdownGraceCancelsImmediately(t *testing.T) {
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	srv, apiSrv, url := servingWith(t, func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+			close(canceled)
+		case <-release:
+		}
+	})
+	go func() {
+		res, err := http.Get(url)
+		if err == nil {
+			res.Body.Close()
+		}
+	}()
+	<-started
+	result := make(chan error, 1)
+	go func() { result <- shutdown(srv, apiSrv, 0) }()
+	select {
+	case <-canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("zero grace drained forever instead of canceling the request")
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("zero-grace cleanup: %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("zero-grace shutdown did not finish")
+	}
+}
+
+func TestZeroShutdownGraceStillBoundsCleanup(t *testing.T) {
+	srv, apiSrv, _ := servingWith(t, func(w http.ResponseWriter, r *http.Request) {})
+	release := make(chan struct{})
+	defer close(release)
+	completed := make(chan error, 1)
+	go func() { completed <- shutdown(srv, apiSrv, 0, func() error { <-release; return nil }) }()
+	select {
+	case err := <-completed:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("unbounded cleanup: %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("zero grace disabled the hard cleanup cap")
+	}
+}
+
+func TestShutdownGraceConfigurationAndHelp(t *testing.T) {
+	getenv := func(string) string { return "" }
+	lookup := func(string) (string, bool) { return "", false }
+	for _, raw := range []string{"0", "1s", "24h"} {
+		var output strings.Builder
+		cfg, err := loadConfig([]string{"-shutdown-grace", raw}, getenv, lookup, &output, false)
+		expected, _ := time.ParseDuration(raw)
+		if err != nil || cfg.ShutdownGrace != expected {
+			t.Fatalf("grace %s: %v %v", raw, cfg, err)
+		}
+	}
+	var output strings.Builder
+	_, err := loadConfig([]string{"-help"}, getenv, lookup, &output, false)
+	if !errors.Is(err, flag.ErrHelp) || !strings.Contains(output.String(), "0 cancels immediately") || !strings.Contains(output.String(), "cleanup has a separate 5s hard cap") {
+		t.Fatalf("shutdown help: %v %s", err, output.String())
+	}
+	if _, err := parseBound("shutdown grace", "500ms"); err == nil || !strings.Contains(err.Error(), "0 (immediate cancellation)") {
+		t.Fatalf("invalid grace remedy: %v", err)
 	}
 }

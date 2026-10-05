@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -50,6 +51,7 @@ func (t token) describe() string {
 }
 
 type lexer struct {
+	ctx context.Context
 	src string
 	pos int
 }
@@ -72,6 +74,11 @@ func (l *lexer) skipSpace() error {
 }
 
 func (l *lexer) next() (token, error) {
+	if l.ctx != nil {
+		if err := l.ctx.Err(); err != nil {
+			return token{}, err
+		}
+	}
 	if err := l.skipSpace(); err != nil {
 		return token{}, err
 	}
