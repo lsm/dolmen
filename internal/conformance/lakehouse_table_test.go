@@ -52,6 +52,69 @@ func TestLakehouseTableBackendConformance(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			t.Run("enum_keeps_default", func(t *testing.T) {
+				fields := []schema.Field{{Name: "tag", Type: schema.String, Enum: []string{"one", "two"}, Default: "one"}}
+				if _, err := eng.CreateTable(ctx, ns, "enum_defaults", fields, store.TableOpts{}, [16]byte{}); err != nil {
+					t.Fatal(err)
+				}
+				defer eng.DropTable(ctx, ns, "enum_defaults", store.Incarnation{})
+				_, inc, err := eng.TableState(ctx, ns, "enum_defaults", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				values := []string{"two"}
+				changes := []schema.Change{{Op: schema.OpSetEnum, Name: "tag", Enum: &values}}
+				if _, err := eng.PlanMigration(ctx, ns, "enum_defaults", changes, store.Embedder{}, inc, nil, store.Incarnation{}); !errors.Is(err, store.ErrInvalid) {
+					t.Fatalf("plan allowed an enum excluding the default: %v", err)
+				}
+				if _, err := eng.Migrate(ctx, ns, "enum_defaults", changes, store.Embedder{}, inc); !errors.Is(err, store.ErrInvalid) {
+					t.Fatalf("migration allowed an enum excluding the default: %v", err)
+				}
+				unchanged, after, err := eng.TableState(ctx, ns, "enum_defaults", nil)
+				if err != nil || after != inc || !reflect.DeepEqual(unchanged.Fields, fields) {
+					t.Fatalf("invalid enum changed table state: %v %v %v", unchanged, after, err)
+				}
+			})
+			t.Run("same_name_rename", func(t *testing.T) {
+				fields := []schema.Field{{Name: "body", Type: schema.Text}}
+				if _, err := eng.CreateTable(ctx, ns, "same_name", fields, store.TableOpts{}, [16]byte{}); err != nil {
+					t.Fatal(err)
+				}
+				defer eng.DropTable(ctx, ns, "same_name", store.Incarnation{})
+				_, inc, err := eng.TableState(ctx, ns, "same_name", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				changes := []schema.Change{{Op: schema.OpRenameField, From: "body", To: "body"}}
+				plan, err := eng.PlanMigration(ctx, ns, "same_name", changes, store.Embedder{}, inc, nil, store.Incarnation{})
+				if err != nil || !reflect.DeepEqual(plan.Table.Fields, fields) {
+					t.Fatalf("same-name rename plan: %v %v", plan, err)
+				}
+				next, err := eng.Migrate(ctx, ns, "same_name", changes, store.Embedder{}, inc)
+				if err != nil || next.Version != inc.Version+1 || !reflect.DeepEqual(next.Fields, fields) {
+					t.Fatalf("same-name rename: %v %v", next, err)
+				}
+			})
+			t.Run("plan_incarnation_token", func(t *testing.T) {
+				if _, err := eng.CreateTable(ctx, ns, "plan_token", []schema.Field{{Name: "body", Type: schema.Text}}, store.TableOpts{}, [16]byte{}); err != nil {
+					t.Fatal(err)
+				}
+				defer eng.DropTable(ctx, ns, "plan_token", store.Incarnation{})
+				_, inc, err := eng.TableState(ctx, ns, "plan_token", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				changes := []schema.Change{{Op: schema.OpAddField, Field: &schema.Field{Name: "title", Type: schema.String}}}
+				plan, err := eng.PlanMigration(ctx, ns, "plan_token", changes, store.Embedder{}, inc, nil, store.Incarnation{})
+				if err != nil || plan.ExpectedIncarnation != store.EncodeIncarnation(inc) {
+					t.Fatalf("plan incarnation token: %v %v", plan, err)
+				}
+				_, after, err := eng.TableState(ctx, ns, "plan_token", nil)
+				if err != nil || after != inc {
+					t.Fatalf("plan changed incarnation: %v %v", after, err)
+				}
+			})
+
 			enumValues := []string{"one"}
 			indexFields := []schema.Field{{Name: "tag", Type: schema.String, Enum: enumValues}, {Name: "body", Type: schema.Text, Fulltext: true, Vectorize: true}}
 			if _, err := eng.CreateTable(ctx, ns, "indexed_notes", indexFields, store.TableOpts{}, [16]byte{}); err != nil {
