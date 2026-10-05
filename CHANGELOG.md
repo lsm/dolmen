@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Lakehouse slice 6 adds internal appends. Row ids, change records, the idempotency record and
+  exact per-owner row counts commit together in the namespace's SQLite commit log; each commit then
+  lands in Iceberg as one fsynced Parquet file, replayed after a crash without duplicating rows.
+  Lakehouse catalog format 3. The engine is still not selectable.
+
 - Lakehouse slice 5 adds internal table lifecycle, versioned schema evolution, dry-run plans,
   migration history, and durable drop/recreate guards. Schema properties and native Iceberg
   evolution publish atomically; table lifecycle conformance runs on SQLite and lakehouse.

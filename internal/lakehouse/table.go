@@ -173,6 +173,7 @@ func (s *Store) TableState(ctx context.Context, ns, name string, auth []store.Au
 
 func (s *Store) DescribeTable(ctx context.Context, ns, name string, scope *store.RowScope, expected store.Incarnation) (*schema.TableSchema, int64, error) {
 	var state tableState
+	var count int64
 	err := s.withNamespace(ctx, ns, func(n *namespace) error {
 		var err error
 		state, err = loadTable(ctx, n, ns, name)
@@ -185,12 +186,10 @@ func (s *Store) DescribeTable(ctx context.Context, ns, name string, scope *store
 		if scope != nil && !scope.Empty && !state.schema.HasOwner {
 			return invalidf("table %s carries no owner column, so a row scope cannot be applied to it", name)
 		}
-		if state.native.Metadata().CurrentSnapshot() != nil {
-			return fmt.Errorf("lakehouse table row counts land with append support")
-		}
-		return nil
+		count, err = rowCount(ctx, n.db, state.incarnation, scope)
+		return err
 	})
-	return state.schema, 0, err
+	return state.schema, count, err
 }
 
 func (s *Store) ListTables(ctx context.Context, ns string, auth []store.AuthBinding) ([]string, error) {
@@ -243,7 +242,19 @@ func (s *Store) DropTable(ctx context.Context, ns, name string, expected store.I
 		if _, err := tx.ExecContext(ctx, `INSERT INTO _dolmen_lakehouse_tables(name,generation) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET generation=excluded.generation`, name, state.incarnation.DropGen+1); err != nil {
 			return err
 		}
-		return tx.Commit()
+		for _, owned := range []string{"_dolmen_lakehouse_secrets", "_dolmen_lakehouse_idempotency", "_dolmen_lakehouse_counts", "_dolmen_lakehouse_ids"} {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM `+owned+` WHERE table_name = ? AND generation = ?`, name, state.incarnation.DropGen); err != nil {
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		location := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(state.native.Location(), "file://")))
+		if rel, err := filepath.Rel(n.dataDir, location); err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+			return fmt.Errorf("%w: Iceberg table location escaped its namespace", store.ErrCatalogCorrupt)
+		}
+		return os.RemoveAll(location)
 	})
 }
 

@@ -17,7 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const catalogFormat = 2
+const catalogFormat = 3
 
 func namespacePath(name string) string { return filepath.FromSlash(name) + ".lakehouse" }
 
@@ -160,6 +160,13 @@ func (s *Store) openCatalog(ctx context.Context, name, relative string, create b
 	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_tables(name TEXT PRIMARY KEY, generation INTEGER NOT NULL CHECK(generation>=0))`); err != nil {
 		return nil, err
 	}
+	if err := ensureAppendTables(ctx, db); err != nil {
+		return nil, err
+	}
+	pending, err := pendingCommits(ctx, db)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := db.ExecContext(ctx, `UPDATE _dolmen_lakehouse_meta SET format=? WHERE singleton=1`, catalogFormat); err != nil {
 		return nil, err
 	}
@@ -185,7 +192,7 @@ func (s *Store) openCatalog(ctx context.Context, name, relative string, create b
 			return nil, fmt.Errorf("%w: lakehouse namespace %s is absent from its Iceberg catalog", store.ErrCatalogCorrupt, name)
 		}
 	}
-	return &namespace{db: db, catalog: cat, generation: gen, dataDir: dataDir}, nil
+	return &namespace{db: db, catalog: cat, generation: gen, dataDir: dataDir, pending: pending}, nil
 }
 
 func (s *Store) openNamespace(ctx context.Context, name string) (*namespace, error) {

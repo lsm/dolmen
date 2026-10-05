@@ -92,8 +92,10 @@ func TestLakehouseCatalogUpgradesNamespaceFoundation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := s.withNamespace(ctx, "app", func(n *namespace) error {
-		if _, err := n.db.ExecContext(ctx, `DROP TABLE _dolmen_lakehouse_tables`); err != nil {
-			return err
+		for _, table := range []string{"_dolmen_lakehouse_tables", "_dolmen_lakehouse_ids", "_dolmen_lakehouse_commits", "_dolmen_lakehouse_changes", "_dolmen_lakehouse_idempotency", "_dolmen_lakehouse_secrets", "_dolmen_lakehouse_counts"} {
+			if _, err := n.db.ExecContext(ctx, `DROP TABLE `+table); err != nil {
+				return err
+			}
 		}
 		_, err := n.db.ExecContext(ctx, `UPDATE _dolmen_lakehouse_meta SET format=1`)
 		return err
@@ -110,11 +112,14 @@ func TestLakehouseCatalogUpgradesNamespaceFoundation(t *testing.T) {
 	if err := s.withNamespace(ctx, "app", func(n *namespace) error {
 		var format int
 		err := n.db.QueryRowContext(ctx, `SELECT format FROM _dolmen_lakehouse_meta`).Scan(&format)
-		if format != 2 {
-			t.Fatalf("format %d", format)
+		if format != catalogFormat {
+			t.Fatalf("format %d, want %d", format, catalogFormat)
 		}
 		return err
 	}); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"body": "after upgrade"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatalf("an upgraded catalog must accept appends: %v", err)
 	}
 }
