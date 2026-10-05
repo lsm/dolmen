@@ -1515,7 +1515,7 @@ var Ops = map[string]OpDef{
 			"commits wake the call), pass the literal \"begin\" to wait atop retained history, or resume from a " +
 			"previous next_cursor; an optional table filters the wait to that table's current lifetime. " +
 			"timeout_ms bounds the wait (default 30000, max 60000; 0 returns immediately — a cheap conditional " +
-			"poll). On timeout the response is an EMPTY page carrying the unchanged cursor — never an error: " +
+			"poll; its storage read still uses the operation deadline). On timeout the response is an EMPTY page carrying the unchanged cursor — never an error: " +
 			"pass next_cursor back in and keep waiting. Prefer this over polling changes_since in a loop — the " +
 			"server holds the wait, not your token budget. The teaching errors are changes_since's: a cursor that " +
 			"is unknown, past the change-log retention window, or minted on a different feed is rejected naming " +
@@ -1584,7 +1584,11 @@ var Ops = map[string]OpDef{
 					}
 				}
 
-				readCtx, cancel := context.WithTimeout(ctx, waitBudget(deadline))
+				readCtx := ctx
+				cancel := func() {}
+				if timeoutMS > 0 {
+					readCtx, cancel = context.WithTimeout(ctx, waitBudget(deadline))
+				}
 				records, next, err := runChangesSince(readCtx, s, "wait_for", ns, table, cursor, limit, scope, inc)
 				cancel()
 				if err != nil {

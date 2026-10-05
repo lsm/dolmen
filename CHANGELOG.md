@@ -4,6 +4,8 @@
 
 - Change-feed records now carry optional `commit` transaction grouping across polling, pagination and SSE. Legacy records remain unlabelled. SQLite catalog format 5 keeps minimum reader 3; PostgreSQL catalog 9 adds the column and namespace counter in place.
 
+- Fix immediate `wait_for` polls on PostgreSQL: `timeout_ms: 0` skips polling while reading committed changes under the operation deadline.
+
 ### Added
 
 - Lakehouse slice 4 adds internal namespace lifecycle with one SQLite-backed Iceberg catalog and

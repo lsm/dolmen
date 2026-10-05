@@ -1712,7 +1712,9 @@ the sleeping agent holds nothing, burns nothing, and is told.
    a matching change commits; returns immediately when one lands; **empty result — never an
    error — on timeout**. The bound is a per-call request field, `timeout_ms` — **default
    `30000`** (30 s), valid range `0`–`60000`, values outside it `invalid_request`; `0` returns
-   immediately (a cheap conditional poll). The 60 s ceiling is the contract's, not a deployment
+   without a polling wait (one storage read under the caller/operation deadline,
+   without an artificial 250 ms read deadline). Positive waits retain bounded reads
+   and unchanged-cursor empty-page timeout behavior. The 60 s ceiling is the contract's, not a deployment
    setting — an agent host holding connections longer uses `subscribe` (§9.3). The response
    is a **bounded page with `changes_since`'s exact semantics**: every matching visible record
    committed since the supplied cursor, in cursor order, up to `limit` (same default 100 /
