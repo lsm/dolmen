@@ -332,3 +332,41 @@ func TestDroppingATableRemovesItsFiles(t *testing.T) {
 		t.Fatalf("a dropped table left %d data files", got)
 	}
 }
+
+func TestAPinSurvivesACrashBeforeMaterialization(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "docs", []schema.Field{{Name: "body", Type: schema.Text, Vectorize: true}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	emb := store.Embedder{Identity: "fake-a", Embed: func(_ context.Context, texts []string) ([][]float32, error) {
+		out := make([][]float32, len(texts))
+		for i := range out {
+			out[i] = []float32{1, 0, 0}
+		}
+		return out, nil
+	}}
+	materializeHook = func() error { return errors.New("simulated crash before the Iceberg commit") }
+	_, err = s.Insert(ctx, "ns", "docs", []map[string]any{{"body": "hello"}}, store.WriteOpts{}, emb, nil, store.Incarnation{})
+	materializeHook = nil
+	_ = err
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	sc, _, err := s.TableState(ctx, "ns", "docs", nil)
+	if err != nil || sc.EmbedSpace != "fake-a" || sc.EmbedDim != 3 {
+		t.Fatalf("a committed embedded append must pin its space even across a crash: %+v %v", sc, err)
+	}
+}
