@@ -22,11 +22,10 @@ const catalogFormat = 3
 func namespacePath(name string) string { return filepath.FromSlash(name) + ".lakehouse" }
 
 func fileLocation(path string) string {
-	uri := filepath.ToSlash(path)
 	if filepath.VolumeName(path) != "" {
-		uri = "/" + uri
+		return filepath.ToSlash(path)
 	}
-	return "file://" + uri
+	return "file://" + filepath.ToSlash(path)
 }
 
 func localPath(uri string) string {

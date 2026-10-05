@@ -371,6 +371,7 @@ func TestIncompleteNamespacesCanBeListedAroundAndRemoved(t *testing.T) {
 func TestFileLocationsRoundTripOnEveryPlatform(t *testing.T) {
 	for _, c := range []struct{ uri, path string }{
 		{"file:///C:/data/ns.lakehouse", "C:/data/ns.lakehouse"},
+		{"C:/data/ns.lakehouse", "C:/data/ns.lakehouse"},
 		{"file:///tmp/data", "/tmp/data"},
 		{`\C:\data\x.parquet`, "C:/data/x.parquet"},
 	} {

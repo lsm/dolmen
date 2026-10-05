@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"net/url"
+	"runtime"
 
 	icebergio "github.com/apache/iceberg-go/io"
 )
@@ -28,7 +29,13 @@ func (f localFS) WalkDir(root string, fn fs.WalkDirFunc) error {
 
 func init() {
 	factory := func(context.Context, *url.URL, map[string]string) (icebergio.IO, error) { return localFS{}, nil }
-	for _, scheme := range []string{"file", ""} {
+	schemes := []string{"file", ""}
+	if runtime.GOOS == "windows" {
+		for drive := 'a'; drive <= 'z'; drive++ {
+			schemes = append(schemes, string(drive))
+		}
+	}
+	for _, scheme := range schemes {
 		icebergio.Unregister(scheme)
 		icebergio.Register(scheme, factory)
 	}

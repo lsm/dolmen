@@ -537,6 +537,9 @@ func (s *Store) ensureQuerySidecar(ctx context.Context, ns string, nsGen [16]byt
 				return n.sqlErr
 			}
 			if n.sql, err = startSidecar(ctx, s.sqlEngine, n.dataDir, views, fp); err != nil {
+				if ctx.Err() != nil {
+					return err
+				}
 				n.sqlFails++
 				n.sqlErr = err
 				n.sqlRetry = time.Now().Add(min(time.Second<<min(n.sqlFails-1, 5), 30*time.Second))
