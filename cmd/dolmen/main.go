@@ -275,7 +275,7 @@ func openStore(cfg *config, tp trace.TracerProvider, mp metric.MeterProvider) (s
 		return st, nil
 	}
 	if cfg.Engine == store.EngineLakehouse {
-		return openLakehouse(cfg)
+		return openLakehouse(cfg, tp)
 	}
 	st, err := store.Open(cfg.DataDir, store.WithChangeRetention(cfg.ChangeRetention), store.WithMaxOpenNamespaces(cfg.MaxOpenNamespaces), store.WithSync(cfg.Sync), store.WithMaxNamespaceSize(cfg.MaxNamespaceSize), store.WithVectorCacheBytes(cfg.VectorCacheSize), store.WithSecretKey(cfg.Secrets), store.WithTracerProvider(tp), store.WithMeterProvider(mp))
 	if err != nil {

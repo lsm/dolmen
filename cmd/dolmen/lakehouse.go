@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"go.opentelemetry.io/otel/trace"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -37,12 +38,14 @@ func lakehouseSQLEngine(cfg *config) lakehouse.SQLEngine {
 	return lakehouse.SQLEngine{Binary: bin, ExtensionDir: ext}
 }
 
-func openLakehouse(cfg *config) (store.Engine, error) {
+func openLakehouse(cfg *config, tp trace.TracerProvider) (store.Engine, error) {
 	st, err := lakehouse.Open(cfg.DataDir,
 		lakehouse.WithSecretKeyring(cfg.Secrets),
 		lakehouse.WithChangeRetention(cfg.ChangeRetention),
 		lakehouse.WithMaxOpenNamespaces(cfg.MaxOpenNamespaces),
-		lakehouse.WithSQLEngine(lakehouseSQLEngine(cfg)))
+		lakehouse.WithSQLEngine(lakehouseSQLEngine(cfg)),
+		lakehouse.WithSharedFilter(cfg.Auth.On()),
+		lakehouse.WithTracerProvider(tp))
 	if err != nil {
 		return nil, fmt.Errorf("open lakehouse store: %w", err)
 	}

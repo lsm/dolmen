@@ -24,6 +24,15 @@ var postgresErrorPins = map[string]string{
 	"multiple statements rejected": `multiple statements are not allowed`,
 }
 
+var lakehouseErrorPins = map[string]string{
+	"fts syntax error":             `bare single quotes are not a term`,
+	"fts syntax error with filter": `bare single quotes are not a term`,
+	"fts unknown column filter":    `does not support the field:term column filter`,
+	"fts gate substring in query":  `query "SQLITE_-x": a bare - is not a query operator`,
+	"fts misuse framing in query":  `query "misuse at line 1 -x": a bare - is not a query operator`,
+	"sql missing column":           `use describe_table for column names`,
+}
+
 func TestGoldenErrorContract(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("errc", "t", []map[string]any{
@@ -178,6 +187,11 @@ func TestGoldenErrorContract(t *testing.T) {
 			if testEngine(t) == store.EnginePostgres {
 				if pg, ok := postgresErrorPins[c.name]; ok {
 					want = pg
+				}
+			}
+			if testEngine(t) == store.EngineLakehouse {
+				if pin, ok := lakehouseErrorPins[c.name]; ok {
+					want = pin
 				}
 			}
 			if want != "" {

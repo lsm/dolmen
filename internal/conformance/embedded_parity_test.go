@@ -99,8 +99,11 @@ func rowsEqual(t *testing.T, label string, httpRows, embeddedRows []map[string]a
 
 func embeddedEngineOption(t *testing.T, dir string) dolmen.Option {
 	t.Helper()
-	if testEngine(t) == store.EnginePostgres {
+	switch testEngine(t) {
+	case store.EnginePostgres:
 		return postgresFacadeOption(t, dir)
+	case store.EngineLakehouse:
+		t.Skip("the Go library does not open the lakehouse engine; it is served by dolmen -engine lakehouse only")
 	}
 	return dolmen.WithEngine(testEngine(t))
 }
