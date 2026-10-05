@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
+	"github.com/lsm/dolmen/internal/value"
 )
 
 const DialectDuckDB = "duckdb"
@@ -358,29 +360,40 @@ func viewSQL(state tableState) string {
 	return "CREATE VIEW " + quoteIdent(sc.Name) + " AS SELECT " + strings.Join(cols, ", ") + " FROM iceberg_scan(" + quoteLiteral(filepath.ToSlash(path)) + ")"
 }
 
-func (s *Store) namespaceViews(ctx context.Context, n *namespace, ns string) ([]string, string, error) {
+func (s *Store) namespaceViews(ctx context.Context, n *namespace, ns string) ([]string, string, map[string]schema.FieldType, error) {
 	var states []tableState
 	for ident, err := range n.catalog.ListTables(ctx, tableIdentifierNamespace(ns)) {
 		if err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
 		state, err := loadTable(ctx, n, ns, ident[len(ident)-1])
 		if err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
 		states = append(states, state)
 	}
 	slices.SortFunc(states, func(a, b tableState) int { return strings.Compare(a.schema.Name, b.schema.Name) })
 	views := make([]string, 0, len(states))
+	labels := map[string]schema.FieldType{"id": schema.Number, "created_at": schema.Timestamp}
+	ambiguous := map[string]bool{}
 	var fp strings.Builder
 	for _, state := range states {
 		if err := n.freshenCurrentMetadata(state); err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
 		views = append(views, viewSQL(state))
 		fmt.Fprintf(&fp, "%s|%d|%d|%t;", state.schema.Name, state.schema.Version, state.incarnation.DropGen, state.native.Metadata().CurrentSnapshot() != nil)
+		for _, f := range state.schema.Fields {
+			if t, seen := labels[f.Name]; seen && t != f.Type {
+				ambiguous[f.Name] = true
+			}
+			labels[f.Name] = f.Type
+		}
 	}
-	return views, fp.String(), nil
+	for name := range ambiguous {
+		delete(labels, name)
+	}
+	return views, fp.String(), labels, nil
 }
 
 func queryArg(v any) (string, error) {
@@ -564,8 +577,9 @@ func (s *Store) retire(ns string, sc *sidecar) {
 	go s.drain(ns, sc, false)
 }
 
-func (s *Store) ensureQuerySidecar(ctx context.Context, ns string, nsGen [16]byte) (*sidecar, error) {
+func (s *Store) ensureQuerySidecar(ctx context.Context, ns string, nsGen [16]byte) (*sidecar, map[string]schema.FieldType, error) {
 	var sc *sidecar
+	var labels map[string]schema.FieldType
 	err := s.withNamespace(ctx, ns, func(n *namespace) error {
 		if nsGen != [16]byte{} && nsGen != n.generation {
 			return fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, ns)
@@ -573,7 +587,8 @@ func (s *Store) ensureQuerySidecar(ctx context.Context, ns string, nsGen [16]byt
 		if s.dropping[ns] {
 			return fmt.Errorf("%w: namespace %s is being dropped", store.ErrNotFound, ns)
 		}
-		views, fp, err := s.namespaceViews(ctx, n, ns)
+		views, fp, types, err := s.namespaceViews(ctx, n, ns)
+		labels = types
 		if err != nil {
 			return err
 		}
@@ -601,9 +616,9 @@ func (s *Store) ensureQuerySidecar(ctx context.Context, ns string, nsGen [16]byt
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return sc, nil
+	return sc, labels, nil
 }
 
 func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16]byte, page store.Page) (store.QueryResult, error) {
@@ -627,14 +642,14 @@ func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16
 			return store.QueryResult{}, err
 		}
 	}
-	sc, err := s.ensureQuerySidecar(ctx, ns, nsGen)
+	sc, labels, err := s.ensureQuerySidecar(ctx, ns, nsGen)
 	if err != nil {
 		return store.QueryResult{}, err
 	}
 	sc.run.Lock()
 	if !sc.alive() || sc.closing.Load() {
 		sc.run.Unlock()
-		if sc, err = s.ensureQuerySidecar(ctx, ns, nsGen); err != nil {
+		if sc, labels, err = s.ensureQuerySidecar(ctx, ns, nsGen); err != nil {
 			return store.QueryResult{}, err
 		}
 		sc.run.Lock()
@@ -644,7 +659,31 @@ func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16
 	if err != nil {
 		return store.QueryResult{}, err
 	}
-	return parseQueryReply(fields)
+	result, err := parseQueryReply(fields)
+	if err != nil {
+		return result, err
+	}
+	for _, row := range result.Rows {
+		for label, v := range row {
+			if t, ok := labels[label]; ok {
+				row[label] = presentQueryValue(t, v)
+			}
+		}
+	}
+	return result, nil
+}
+
+func presentQueryValue(t schema.FieldType, v any) any {
+	if t == schema.Number {
+		if f, ok := v.(float64); ok && f == math.Trunc(f) && f >= -(1<<63) && f < 1<<63 {
+			return int64(f)
+		}
+		return v
+	}
+	if t == schema.Secret {
+		return v
+	}
+	return value.Decode(t, v)
 }
 
 func (s *Store) Capabilities() store.EngineCapabilities {

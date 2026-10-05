@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Lakehouse slice 7 adds `read_rows` and typed reads: numbers, booleans, `json`, vectors, secrets
+  (masked or revealed), timestamps and owner scopes read back exactly as on SQLite, which a
+  both-engine conformance test pins; `query` results are typed by column label the same way.
+
 ## v0.6.0
 
 ### Added

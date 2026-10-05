@@ -70,6 +70,13 @@ func TestLakehouseQueryBackendConformance(t *testing.T) {
 			if err != nil || len(page.Rows) != 1 || !page.Truncated {
 				t.Fatalf("a page short of the rows is truncated: %+v %v", page, err)
 			}
+			if _, err := eng.Insert(ctx, "ns", "notes", []map[string]any{{"title": "huge", "score": 5e18}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+				t.Fatal(err)
+			}
+			huge, err := eng.Query(ctx, "ns", "SELECT score FROM notes WHERE title = ?", []any{"huge"}, [16]byte{}, store.Page{})
+			if err != nil || len(huge.Rows) != 1 || huge.Rows[0]["score"] != int64(5e18) {
+				t.Fatalf("an integral double in int64 range reads back as that integer: %#v %v", huge.Rows, err)
+			}
 			if _, err := eng.Query(ctx, "ns", "DELETE FROM notes", nil, [16]byte{}, store.Page{}); !errors.Is(err, store.ErrInvalid) {
 				t.Fatalf("a write must be refused as invalid: %v", err)
 			}

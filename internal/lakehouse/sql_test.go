@@ -77,7 +77,7 @@ func TestQueryReadsCommittedRowsThroughTheSidecar(t *testing.T) {
 	if first["id"] != int64(1) || first["title"] != "a" || first["score"] != 1.5 || first["ok"] != true || first["token"] != secret.Mask {
 		t.Fatalf("first row %v", first)
 	}
-	if res.Rows[1]["score"] != 7.0 || res.Rows[1]["token"] != nil {
+	if res.Rows[1]["score"] != int64(7) || res.Rows[1]["token"] != nil {
 		t.Fatalf("second row %v", res.Rows[1])
 	}
 	if _, err := s.Insert(ctx, "ns", "notes", []map[string]any{{"title": "c"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
