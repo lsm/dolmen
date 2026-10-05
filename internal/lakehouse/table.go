@@ -246,6 +246,12 @@ func (s *Store) DropTable(ctx context.Context, ns, name string, expected store.I
 		if _, err := tx.ExecContext(ctx, `INSERT INTO _dolmen_lakehouse_tables(name,generation) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET generation=excluded.generation`, name, state.incarnation.DropGen+1); err != nil {
 			return err
 		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM _dolmen_lakehouse_batches WHERE (owner, key) IN (SELECT owner, key FROM _dolmen_lakehouse_batch_tables WHERE table_name = ?)`, name); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM _dolmen_lakehouse_batch_tables WHERE table_name = ?`, name); err != nil {
+			return err
+		}
 		for _, owned := range []string{"_dolmen_lakehouse_secrets", "_dolmen_lakehouse_idempotency", "_dolmen_lakehouse_counts", "_dolmen_lakehouse_ids"} {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM `+owned+` WHERE table_name = ? AND generation = ?`, name, state.incarnation.DropGen); err != nil {
 				return err

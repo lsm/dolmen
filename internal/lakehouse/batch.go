@@ -68,7 +68,7 @@ func (s *Store) Batch(ctx context.Context, ns string, writes []store.BatchWrite,
 		res, err := s.runBatch(context.WithValue(ctx, batchKey{}, ns), ns, writes, opts, emb, scope)
 		if err == nil {
 			n = s.namespaces[ns]
-			err = s.commitBatch(ctx, n, opts, hash, res)
+			err = s.commitBatch(ctx, n, opts, hash, res, batchTables(writes))
 		}
 		if err != nil {
 			if rerr := s.rollbackBatch(context.WithoutCancel(ctx), ns); rerr != nil {
@@ -170,7 +170,7 @@ func (s *Store) runBatch(ctx context.Context, ns string, writes []store.BatchWri
 	return store.BatchResult{Results: results, Changes: changes}, nil
 }
 
-func (s *Store) commitBatch(ctx context.Context, n *namespace, opts store.BatchOpts, hash store.IdemHash, res store.BatchResult) error {
+func (s *Store) commitBatch(ctx context.Context, n *namespace, opts store.BatchOpts, hash store.IdemHash, res store.BatchResult, tables []string) error {
 	tx, err := n.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -188,6 +188,11 @@ func (s *Store) commitBatch(ctx context.Context, n *namespace, opts store.BatchO
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO _dolmen_lakehouse_batches(owner, key, payload_hash, result) VALUES(?,?,?,?)`, opts.Owner, opts.IdempotencyKey, hash.Primary, string(raw)); err != nil {
 			return err
+		}
+		for _, table := range tables {
+			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO _dolmen_lakehouse_batch_tables(owner, key, table_name) VALUES(?,?,?)`, opts.Owner, opts.IdempotencyKey, table); err != nil {
+				return err
+			}
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM _dolmen_lakehouse_batch_intent`); err != nil {
@@ -277,4 +282,16 @@ func (s *Store) recoverBatch(ctx context.Context, ns string, n *namespace) (*nam
 		return nil, err
 	}
 	return n, nil
+}
+
+func batchTables(writes []store.BatchWrite) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, w := range writes {
+		if !seen[w.Table] {
+			seen[w.Table] = true
+			out = append(out, w.Table)
+		}
+	}
+	return out
 }

@@ -15,6 +15,7 @@ import (
 
 type lakehouseBatchEngine interface {
 	lakehouseChangesEngine
+	DropTable(context.Context, string, string, store.Incarnation) error
 	Batch(context.Context, string, []store.BatchWrite, store.BatchOpts, store.Embedder, *store.RowScope, store.Incarnation) (store.BatchResult, error)
 }
 
@@ -113,6 +114,16 @@ func TestLakehouseBatchBackendConformance(t *testing.T) {
 			ok2, err := eng.Insert(ctx, ns, "b", []map[string]any{{"x": "6"}}, store.WriteOpts{}, emb, nil, none)
 			if err != nil || !reflect.DeepEqual(ok2.Ids, []int64{2}) {
 				t.Fatalf("ids a failed batch allocated are not consumed: %+v %v", ok2, err)
+			}
+			if err := eng.DropTable(ctx, ns, "a", none); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := eng.CreateTable(ctx, ns, "a", []schema.Field{{Name: "x", Type: schema.String, Required: true}}, store.TableOpts{}, [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			fresh, err := eng.Batch(ctx, ns, writes, store.BatchOpts{IdempotencyKey: "k"}, emb, nil, none)
+			if err != nil || fresh.Replayed {
+				t.Fatalf("dropping a table a batch wrote forgets the batch's key: %+v %v", fresh, err)
 			}
 		})
 	}
