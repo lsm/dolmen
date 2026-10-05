@@ -1,11 +1,16 @@
 package lakehouse
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
+	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -147,5 +152,53 @@ func TestTheFirstVectorizedAppendPinsTheEmbeddingSpace(t *testing.T) {
 	}
 	if rows, _ := scannedRows(t, s, "ns", "docs"); rows != 2 {
 		t.Fatalf("%d rows materialized, want 2", rows)
+	}
+}
+
+func TestSecretsAreKeptOutOfTheDataFiles(t *testing.T) {
+	key, err := secret.New(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	s, err := Open(dir, WithSecretKeyring(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "creds", []schema.Field{{Name: "label", Type: schema.String}, {Name: "token", Type: schema.Secret}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "ns", "creds", []map[string]any{{"label": "a", "token": "PLAINTEXT-token"}, {"label": "b"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	var stored []byte
+	if err := s.withNamespace(ctx, "ns", func(n *namespace) error {
+		return n.db.QueryRowContext(ctx, `SELECT value FROM _dolmen_lakehouse_secrets WHERE row_id = 1 AND field = 'token'`).Scan(&stored)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) < 16 || bytes.Contains(stored, []byte("PLAINTEXT")) {
+		t.Fatalf("the catalog must hold the sealed secret: %q", stored)
+	}
+	err = filepath.WalkDir(filepath.Join(dir, "ns.lakehouse", "data"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if bytes.Contains(raw, stored) || bytes.Contains(raw, []byte("PLAINTEXT")) {
+			t.Fatalf("%s holds the secret; data files are readable by the SQL sidecar", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
