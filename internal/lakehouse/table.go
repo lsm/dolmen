@@ -247,7 +247,14 @@ func (s *Store) DropTable(ctx context.Context, ns, name string, expected store.I
 				return err
 			}
 		}
-		return tx.Commit()
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		location := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(state.native.Location(), "file://")))
+		if rel, err := filepath.Rel(n.dataDir, location); err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+			return fmt.Errorf("%w: Iceberg table location escaped its namespace", store.ErrCatalogCorrupt)
+		}
+		return os.RemoveAll(location)
 	})
 }
 

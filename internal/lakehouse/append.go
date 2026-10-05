@@ -44,6 +44,8 @@ var appendDDL = []string{
 
 var materializeHook func() error
 
+var materializeWrittenHook func() error
+
 var secretPresent = []byte{0}
 
 type commitRows struct {
@@ -430,13 +432,21 @@ func (s *Store) materializeCommit(ctx context.Context, n *namespace, ns string, 
 	if err != nil {
 		return err
 	}
+	unregistered := func(err error) error {
+		return errors.Join(err, os.Remove(path))
+	}
+	if materializeWrittenHook != nil {
+		if err := materializeWrittenHook(); err != nil {
+			return unregistered(err)
+		}
+	}
 	tx := state.native.NewTransaction()
 	if err := tx.AddFiles(ctx, []string{fileLocation(path)}, iceberg.Properties{commitProperty: marker}, false); err != nil {
-		return err
+		return unregistered(err)
 	}
 	native, err := tx.Commit(ctx)
 	if err != nil {
-		return err
+		return unregistered(err)
 	}
 	return s.syncMetadata(native, n)
 }
