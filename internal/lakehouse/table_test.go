@@ -92,7 +92,7 @@ func TestLakehouseCatalogUpgradesNamespaceFoundation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := s.withNamespace(ctx, "app", func(n *namespace) error {
-		for _, table := range []string{"_dolmen_lakehouse_tables", "_dolmen_lakehouse_ids", "_dolmen_lakehouse_commits", "_dolmen_lakehouse_changes", "_dolmen_lakehouse_idempotency", "_dolmen_lakehouse_counts"} {
+		for _, table := range []string{"_dolmen_lakehouse_tables", "_dolmen_lakehouse_ids", "_dolmen_lakehouse_commits", "_dolmen_lakehouse_changes", "_dolmen_lakehouse_idempotency", "_dolmen_lakehouse_secrets", "_dolmen_lakehouse_counts"} {
 			if _, err := n.db.ExecContext(ctx, `DROP TABLE `+table); err != nil {
 				return err
 			}
