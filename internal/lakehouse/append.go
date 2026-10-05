@@ -414,7 +414,7 @@ func (s *Store) materializeCommit(ctx context.Context, n *namespace, ns string, 
 	marker := strconv.FormatInt(id, 10)
 	for _, snap := range state.native.Metadata().Snapshots() {
 		if snap.Summary != nil && snap.Summary.Properties[commitProperty] == marker {
-			return nil
+			return s.syncMetadata(state.native, n)
 		}
 	}
 	if materializeHook != nil {
