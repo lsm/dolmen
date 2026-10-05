@@ -372,8 +372,9 @@ func TestFileLocationsRoundTripOnEveryPlatform(t *testing.T) {
 	for _, c := range []struct{ uri, path string }{
 		{"file:///C:/data/ns.lakehouse", "C:/data/ns.lakehouse"},
 		{"file:///tmp/data", "/tmp/data"},
+		{`\C:\data\x.parquet`, "C:/data/x.parquet"},
 	} {
-		if got := filepath.ToSlash(localPath(c.uri)); got != c.path {
+		if got := strings.ReplaceAll(filepath.ToSlash(localPath(c.uri)), `\`, "/"); got != c.path {
 			t.Fatalf("localPath(%q) = %q, want %q", c.uri, got, c.path)
 		}
 	}

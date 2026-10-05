@@ -117,7 +117,9 @@ func (s *Store) Close() error {
 	s.closed = true
 	for name, n := range s.namespaces {
 		if n.sql != nil {
+			n.sql.run.Lock()
 			n.sql.stop()
+			n.sql.run.Unlock()
 		}
 		s.closeErr = errors.Join(s.closeErr, n.db.Close())
 		delete(s.namespaces, name)
@@ -153,7 +155,9 @@ func (s *Store) evict(name string) error {
 		return nil
 	}
 	if n.sql != nil {
+		n.sql.run.Lock()
 		n.sql.stop()
+		n.sql.run.Unlock()
 		n.sql = nil
 	}
 	if err := n.db.Close(); err != nil {

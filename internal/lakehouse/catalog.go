@@ -31,7 +31,7 @@ func fileLocation(path string) string {
 
 func localPath(uri string) string {
 	p := strings.TrimPrefix(uri, "file://")
-	if len(p) >= 3 && p[0] == '/' && p[2] == ':' {
+	if len(p) >= 3 && (p[0] == '/' || p[0] == '\\') && p[2] == ':' {
 		p = p[1:]
 	}
 	return filepath.FromSlash(p)

@@ -128,7 +128,7 @@ func startSidecar(ctx context.Context, cfg SQLEngine, dataDir string, views []st
 	cmd.Env = []string{
 		"HOME=" + home,
 		"USERPROFILE=" + home,
-		"DOLMEN_DUCKDB_DATA_DIR=" + dataDir,
+		"DOLMEN_DUCKDB_DATA_DIR=" + filepath.ToSlash(dataDir),
 		"DOLMEN_DUCKDB_EXTENSION_DIR=" + cfg.ExtensionDir,
 		"DOLMEN_DUCKDB_MEMORY=" + strconv.FormatInt(cfg.Memory, 10),
 		"DOLMEN_DUCKDB_THREADS=" + strconv.Itoa(cfg.Threads),

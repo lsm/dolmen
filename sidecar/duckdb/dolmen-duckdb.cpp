@@ -141,6 +141,13 @@ std::string Getenv(const char *name) {
   return v == nullptr ? "" : v;
 }
 
+// Turned off before any LOAD, so a missing pinned extension fails instead of
+// being downloaded.
+bool NoAutoinstall(duckdb::Connection &con, std::string &err) {
+  return Exec(con, "SET autoinstall_known_extensions = false", err) &&
+         Exec(con, "SET autoload_known_extensions = false", err);
+}
+
 bool OpenSeed(const std::string &ext_dir, std::string &err) {
   namespace fs = std::filesystem;
   std::mt19937_64 rng(std::random_device{}());
@@ -152,6 +159,7 @@ bool OpenSeed(const std::string &ext_dir, std::string &err) {
   g_seed_db = std::make_unique<duckdb::DuckDB>(g_catalog_path.c_str(), &cfg);
   g_seed_con = std::make_unique<duckdb::Connection>(*g_seed_db);
   if (!ext_dir.empty() && !Exec(*g_seed_con, "SET extension_directory = " + Quote(ext_dir), err)) return false;
+  if (!NoAutoinstall(*g_seed_con, err)) return false;
   return Exec(*g_seed_con, "LOAD iceberg", err);
 }
 
@@ -182,6 +190,7 @@ bool Seal(const std::string &data_dir, const std::string &ext_dir, std::string &
   g_db = std::make_unique<duckdb::DuckDB>(g_catalog_path.c_str(), &cfg);
   g_con = std::make_unique<duckdb::Connection>(*g_db);
   if (!ext_dir.empty() && !Exec(*g_con, "SET extension_directory = " + Quote(ext_dir), err)) return false;
+  if (!NoAutoinstall(*g_con, err)) return false;
   if (!Exec(*g_con, "LOAD iceberg", err)) return false;
   for (const char *stmt : {"SET enable_external_access = false", "SET autoinstall_known_extensions = false",
                            "SET autoload_known_extensions = false", "SET allow_persistent_secrets = false",

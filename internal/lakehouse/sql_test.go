@@ -205,7 +205,7 @@ func TestRawDataFilesHoldNoSecretForCallerSQL(t *testing.T) {
 	if _, err := s.Insert(ctx, "ns", "creds", []map[string]any{{"token": "PLAINTEXT-x"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
 		t.Fatal(err)
 	}
-	data := filepath.ToSlash(filepath.Join(dir, "ns.lakehouse", "data"))
+	data := filepath.ToSlash(filepath.Join(s.dir, "ns.lakehouse", "data"))
 	res := mustQuery(t, s, "ns", "SELECT token FROM read_parquet('"+data+"/**/*.parquet')")
 	if len(res.Rows) != 1 {
 		t.Fatalf("rows %v", res.Rows)
