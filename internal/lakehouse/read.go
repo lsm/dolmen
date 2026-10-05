@@ -166,7 +166,7 @@ func (s *Store) GetRows(ctx context.Context, ns, name string, ids []int64, scope
 		if len(ids) == 0 {
 			return nil
 		}
-		raws, err := scanRows(ctx, state, iceberg.IsIn(iceberg.Reference("id"), ids...))
+		raws, err := scanRows(ctx, state, idFilter(ids))
 		if err != nil {
 			return err
 		}

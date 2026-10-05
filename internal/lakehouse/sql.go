@@ -322,7 +322,7 @@ func emptyType(f schema.Field) string {
 	return "VARCHAR"
 }
 
-func viewSQL(state tableState) string {
+func viewSQL(state tableState, raw bool) string {
 	sc := state.schema
 	cols := []string{}
 	if snap := state.native.Metadata().CurrentSnapshot(); snap == nil {
@@ -333,7 +333,7 @@ func viewSQL(state tableState) string {
 		if sc.HasOwner {
 			cols = append(cols, "CAST(NULL AS VARCHAR) AS "+quoteIdent(schema.OwnerColumn))
 		}
-		return "CREATE VIEW " + quoteIdent(sc.Name) + " AS SELECT " + strings.Join(cols, ", ") + " WHERE false"
+		return "CREATE VIEW " + viewName(sc.Name, raw) + " AS SELECT " + strings.Join(cols, ", ") + " WHERE false"
 	}
 	cols = append(cols, `"id"`, `"created_at"`)
 	for _, f := range sc.Fields {
@@ -342,7 +342,11 @@ func viewSQL(state tableState) string {
 		case schema.Number:
 			col = "TRY_CAST(" + col + " AS DOUBLE) AS " + col
 		case schema.Secret:
-			col = "CASE WHEN " + col + " IS NULL THEN NULL ELSE " + quoteLiteral(secret.Mask) + " END AS " + col
+			stand := quoteLiteral(secret.Mask)
+			if raw {
+				stand = "chr(0)"
+			}
+			col = "CASE WHEN " + col + " IS NULL THEN NULL ELSE " + stand + " END AS " + col
 		}
 		cols = append(cols, col)
 	}
@@ -350,7 +354,16 @@ func viewSQL(state tableState) string {
 		cols = append(cols, quoteIdent(schema.OwnerColumn))
 	}
 	path := filepath.Join(filepath.FromSlash(strings.TrimPrefix(state.native.Location(), "file://")), "metadata", currentMetadataName)
-	return "CREATE VIEW " + quoteIdent(sc.Name) + " AS SELECT " + strings.Join(cols, ", ") + " FROM iceberg_scan(" + quoteLiteral(filepath.ToSlash(path)) + ")"
+	return "CREATE VIEW " + viewName(sc.Name, raw) + " AS SELECT " + strings.Join(cols, ", ") + " FROM iceberg_scan(" + quoteLiteral(filepath.ToSlash(path)) + ")"
+}
+
+const filterSchema = "_dolmen_filter"
+
+func viewName(table string, raw bool) string {
+	if raw {
+		return quoteIdent(filterSchema) + "." + quoteIdent(table)
+	}
+	return quoteIdent(table)
 }
 
 func (s *Store) namespaceViews(ctx context.Context, n *namespace, ns string) ([]string, string, map[string]schema.FieldType, error) {
@@ -366,12 +379,12 @@ func (s *Store) namespaceViews(ctx context.Context, n *namespace, ns string) ([]
 		states = append(states, state)
 	}
 	slices.SortFunc(states, func(a, b tableState) int { return strings.Compare(a.schema.Name, b.schema.Name) })
-	views := make([]string, 0, len(states))
+	views := []string{"CREATE SCHEMA " + quoteIdent(filterSchema)}
 	labels := map[string]schema.FieldType{"id": schema.Number, "created_at": schema.Timestamp}
 	ambiguous := map[string]bool{}
 	var fp strings.Builder
 	for _, state := range states {
-		views = append(views, viewSQL(state))
+		views = append(views, viewSQL(state, false), viewSQL(state, true))
 		fmt.Fprintf(&fp, "%s|%d|%d|%t;", state.schema.Name, state.schema.Version, state.incarnation.DropGen, state.native.Metadata().CurrentSnapshot() != nil)
 		for _, f := range state.schema.Fields {
 			if t, seen := labels[f.Name]; seen && t != f.Type {
@@ -510,6 +523,23 @@ func parseQueryReply(fields []string) (store.QueryResult, error) {
 	return result, nil
 }
 
+func (s *Store) ensureSidecar(ctx context.Context, n *namespace, ns string) (*sidecar, map[string]schema.FieldType, error) {
+	views, fp, labels, err := s.namespaceViews(ctx, n, ns)
+	if err != nil {
+		return nil, nil, err
+	}
+	if n.sql != nil && (n.sql.fingerprint != fp || !n.sql.alive()) {
+		n.sql.stop()
+		n.sql = nil
+	}
+	if n.sql == nil {
+		if n.sql, err = startSidecar(ctx, s.sqlEngine, n.dataDir, views, fp); err != nil {
+			return nil, nil, err
+		}
+	}
+	return n.sql, labels, nil
+}
+
 func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16]byte, page store.Page) (store.QueryResult, error) {
 	if err := store.ValidateQueryShape(sql); err != nil {
 		return store.QueryResult{}, err
@@ -537,22 +567,9 @@ func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16
 		if nsGen != [16]byte{} && nsGen != n.generation {
 			return fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, ns)
 		}
-		views, fp, types, err := s.namespaceViews(ctx, n, ns)
-		labels = types
-		if err != nil {
-			return err
-		}
-		if n.sql != nil && (n.sql.fingerprint != fp || !n.sql.alive()) {
-			n.sql.stop()
-			n.sql = nil
-		}
-		if n.sql == nil {
-			if n.sql, err = startSidecar(ctx, s.sqlEngine, n.dataDir, views, fp); err != nil {
-				return err
-			}
-		}
-		sc = n.sql
-		return nil
+		var err error
+		sc, labels, err = s.ensureSidecar(ctx, n, ns)
+		return err
 	})
 	if err != nil {
 		return store.QueryResult{}, err

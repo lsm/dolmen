@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Lakehouse slice 8 adds `update`, `delete`, `upsert` and `upsert_by_key`. Filters run in the SQL
+  sidecar; each mutation commits through the namespace log and lands in Iceberg as a position-delete
+  file plus the new row versions, with no data-file rewrite. A both-engine conformance test pins the
+  results against SQLite.
+
 - Lakehouse slice 7 adds `read_rows` and typed reads: numbers, booleans, `json`, vectors, secrets
   (masked or revealed), timestamps and owner scopes read back exactly as on SQLite, which a
   both-engine conformance test pins; `query` results are typed by column label the same way.

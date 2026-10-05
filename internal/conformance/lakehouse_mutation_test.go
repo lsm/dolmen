@@ -1,0 +1,169 @@
+package conformance
+
+import (
+	"context"
+	"errors"
+	"os"
+	"reflect"
+	"testing"
+
+	"github.com/lsm/dolmen/internal/lakehouse"
+	"github.com/lsm/dolmen/internal/schema"
+	"github.com/lsm/dolmen/internal/secret"
+	"github.com/lsm/dolmen/internal/store"
+)
+
+type lakehouseMutationEngine interface {
+	lakehouseReadEngine
+	Update(context.Context, string, string, string, []any, map[string]any, store.Embedder, *store.RowScope, store.Incarnation) (store.UpdateResult, error)
+	Upsert(context.Context, string, string, string, []any, map[string]any, store.WriteOpts, store.Embedder, *store.RowScope, store.Incarnation) (store.InsertResult, error)
+	UpsertByKey(context.Context, string, string, []string, []map[string]any, store.WriteOpts, store.Embedder, *store.RowScope, store.Incarnation) (store.InsertResult, error)
+	Delete(context.Context, string, string, string, []any, store.DeleteOpts, *store.RowScope, store.Incarnation) (store.DeleteResult, error)
+}
+
+func lakehouseSQLEngine(t *testing.T) lakehouse.SQLEngine {
+	t.Helper()
+	bin := os.Getenv("DOLMEN_TEST_DUCKDB_SIDECAR")
+	if bin == "" {
+		if os.Getenv("DOLMEN_TEST_DUCKDB_REQUIRED") == "1" {
+			t.Fatal("DOLMEN_TEST_DUCKDB_SIDECAR is required in this job")
+		}
+		t.Skip("DOLMEN_TEST_DUCKDB_SIDECAR not set; lakehouse filters run in the dolmen-duckdb sidecar")
+	}
+	return lakehouse.SQLEngine{Binary: bin, ExtensionDir: os.Getenv("DOLMEN_TEST_DUCKDB_EXTENSIONS")}
+}
+
+func TestLakehouseMutationBackendConformance(t *testing.T) {
+	for _, backend := range []string{"sqlite", "lakehouse"} {
+		t.Run(backend, func(t *testing.T) {
+			key, err := secret.New(make([]byte, 32))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var raw namespaceEngine
+			if backend == "lakehouse" {
+				raw, err = lakehouse.Open(t.TempDir(), lakehouse.WithSecretKeyring(key), lakehouse.WithSQLEngine(lakehouseSQLEngine(t)))
+			} else {
+				raw, err = store.Open(t.TempDir(), store.WithSecretKey(key))
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { raw.Close() })
+			eng, ok := raw.(lakehouseMutationEngine)
+			if !ok {
+				t.Fatal("engine has no mutation path")
+			}
+			ctx := t.Context()
+			ns := "project"
+			if err := eng.CreateNamespace(ctx, ns, [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			fields := []schema.Field{
+				{Name: "email", Type: schema.String, Required: true},
+				{Name: "name", Type: schema.String},
+				{Name: "score", Type: schema.Number},
+				{Name: "token", Type: schema.Secret},
+			}
+			if _, err := eng.CreateTable(ctx, ns, "people", fields, store.TableOpts{}, [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			none := store.Incarnation{}
+			emb := store.Embedder{}
+			if _, err := eng.Insert(ctx, ns, "people", []map[string]any{
+				{"email": "a@x", "name": "Ada", "score": 1, "token": "PLAINTEXT-a"},
+				{"email": "b@x", "name": "Bob", "score": 2},
+				{"email": "c@x", "name": "Cy", "score": 3},
+			}, store.WriteOpts{}, emb, nil, none); err != nil {
+				t.Fatal(err)
+			}
+			read := func(ids ...int64) []map[string]any {
+				t.Helper()
+				res, err := eng.GetRows(store.WithReveal(ctx, []string{"token"}), ns, "people", ids, nil, none)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return res.Rows
+			}
+			count := func() int64 {
+				t.Helper()
+				_, n, err := eng.DescribeTable(ctx, ns, "people", nil, none)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return n
+			}
+
+			up, err := eng.Update(ctx, ns, "people", "score >= ?", []any{2}, map[string]any{"name": "Two+"}, emb, nil, none)
+			if err != nil || up.Updated != 2 || up.Changes.Count != 2 {
+				t.Fatalf("update of two rows = %+v %v", up, err)
+			}
+			rows := read(1, 2, 3)
+			if rows[0]["name"] != "Ada" || rows[1]["name"] != "Two+" || rows[2]["name"] != "Two+" || rows[1]["email"] != "b@x" {
+				t.Fatalf("update must change the matched rows only and keep their other fields: %v", rows)
+			}
+			if rows[0]["token"] != "PLAINTEXT-a" {
+				t.Fatalf("an update that does not name a secret must keep it: %v", rows[0])
+			}
+			if _, err := eng.Update(ctx, ns, "people", "id = 1", nil, map[string]any{"email": nil}, emb, nil, none); !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("setting a required field to null must be refused: %v", err)
+			}
+			if _, err := eng.Update(ctx, ns, "people", "id = 1", nil, map[string]any{"token": nil, "score": 1.5}, emb, nil, none); err != nil {
+				t.Fatal(err)
+			}
+			if row := read(1)[0]; row["token"] != nil || row["score"] != 1.5 {
+				t.Fatalf("set to null clears a secret and numbers keep their value: %v", row)
+			}
+			miss, err := eng.Update(ctx, ns, "people", "email = ?", []any{"nobody"}, map[string]any{"name": "x"}, emb, nil, none)
+			if err != nil || miss.Updated != 0 {
+				t.Fatalf("an update matching nothing changes nothing: %+v %v", miss, err)
+			}
+
+			inserted, err := eng.Upsert(ctx, ns, "people", "email = ?", []any{"d@x"}, map[string]any{"email": "d@x", "name": "Dee"}, store.WriteOpts{}, emb, nil, none)
+			if err != nil || !reflect.DeepEqual(inserted.Ids, []int64{4}) {
+				t.Fatalf("upsert with no match inserts one row: %+v %v", inserted, err)
+			}
+			updated, err := eng.Upsert(ctx, ns, "people", "email = ?", []any{"d@x"}, map[string]any{"name": "Dee2"}, store.WriteOpts{}, emb, nil, none)
+			if err != nil || !reflect.DeepEqual(updated.Ids, []int64{4}) {
+				t.Fatalf("upsert with a match updates it: %+v %v", updated, err)
+			}
+			if read(4)[0]["name"] != "Dee2" || count() != 4 {
+				t.Fatalf("after the upserts: %v, row_count %d", read(4), count())
+			}
+
+			byKey, err := eng.UpsertByKey(ctx, ns, "people", []string{"email"}, []map[string]any{
+				{"email": "a@x", "name": "Ada2"},
+				{"email": "e@x", "name": "Eve"},
+				{"email": "e@x", "name": "Eve2"},
+			}, store.WriteOpts{}, emb, nil, none)
+			if err != nil || !reflect.DeepEqual(byKey.Ids, []int64{1, 5, 5}) {
+				t.Fatalf("upsert_by_key = %+v %v; want ids [1 5 5]", byKey, err)
+			}
+			if read(1)[0]["name"] != "Ada2" || read(5)[0]["name"] != "Eve2" || count() != 5 {
+				t.Fatalf("after upsert_by_key: %v %v, row_count %d", read(1), read(5), count())
+			}
+
+			dry, err := eng.Delete(ctx, ns, "people", "score >= 2", nil, store.DeleteOpts{DryRun: true}, nil, none)
+			if err != nil || dry.Matched != 2 || dry.Deleted != 0 {
+				t.Fatalf("a dry run reports what would match and deletes nothing: %+v %v", dry, err)
+			}
+			if _, err := eng.Delete(ctx, ns, "people", "1=1", nil, store.DeleteOpts{Limit: 2}, nil, none); !errors.Is(err, store.ErrInvalid) {
+				t.Fatalf("a delete over its limit must be refused: %v", err)
+			}
+			del, err := eng.Delete(ctx, ns, "people", "score >= 2", nil, store.DeleteOpts{}, nil, none)
+			if err != nil || del.Deleted != 2 || del.Changes.Count != 2 {
+				t.Fatalf("delete = %+v %v", del, err)
+			}
+			if got := read(1, 2, 3, 4, 5); len(got) != 3 || count() != 3 {
+				t.Fatalf("a deleted row must not read back: %v, row_count %d", got, count())
+			}
+			if _, err := eng.Delete(ctx, ns, "people", "token = ?", []any{secret.Mask}, store.DeleteOpts{DryRun: true}, nil, none); err != nil {
+				t.Fatal(err)
+			}
+			masked, err := eng.Delete(ctx, ns, "people", "token = ?", []any{secret.Mask}, store.DeleteOpts{DryRun: true}, nil, none)
+			if err != nil || masked.Matched != 0 {
+				t.Fatalf("a filter comparing a secret with the mask must match nothing: %+v %v", masked, err)
+			}
+		})
+	}
+}
