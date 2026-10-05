@@ -441,6 +441,35 @@ func TestProxiedDetectsForwardingHeaders(t *testing.T) {
 	}
 }
 
+func TestUnusablePrefixHintFlagsHintsThatYieldNoPrefix(t *testing.T) {
+	cases := []struct {
+		name   string
+		path   string
+		header string
+		value  string
+		want   bool
+	}{
+		{"no hint", "/skills", "", "", false},
+		{"valid forwarded prefix", "/skills", "X-Forwarded-Prefix", "/project-abc", false},
+		{"root forwarded prefix", "/skills", "X-Forwarded-Prefix", "/", false},
+		{"invalid forwarded prefix", "/skills", "X-Forwarded-Prefix", "/project abc", true},
+		{"original path with a usable prefix", "/skills", "X-Original-URI", "/project-abc/skills", false},
+		{"original path equal to the request", "/skills", "X-Original-URI", "/skills?x=1", false},
+		{"original path not ending in the request", "/skills", "X-Envoy-Original-Path", "/project-abc/catalog", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			if tc.header != "" {
+				r.Header.Set(tc.header, tc.value)
+			}
+			if got := UnusablePrefixHint(r); got != tc.want {
+				t.Fatalf("UnusablePrefixHint = %v, want %v (base URL %s)", got, tc.want, BaseURLFor(r, ""))
+			}
+		})
+	}
+}
+
 func TestNormalizePrefixRejectsInjection(t *testing.T) {
 	for _, bad := range []string{
 		`/x";id;echo "`,

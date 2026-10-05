@@ -494,7 +494,7 @@ func (s *Store) writeDataFile(n *namespace, native *table.Table, id int64, rows 
 		return "", err
 	}
 	defer record.Release()
-	location := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(native.Location(), "file://")))
+	location := filepath.Clean(localPath(native.Location()))
 	if rel, err := filepath.Rel(n.dataDir, location); err != nil || rel == "." || strings.HasPrefix(rel, "..") {
 		return "", fmt.Errorf("%w: Iceberg table location escaped its namespace", store.ErrCatalogCorrupt)
 	}

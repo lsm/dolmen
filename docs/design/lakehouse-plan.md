@@ -46,7 +46,7 @@ stacked; merge `main` into an active branch when needed, never rebase or force-p
 | 1 | **The lane plan** | merged ([#521](https://github.com/lsm/dolmen/pull/521)) |
 | 2 | ~~The pins as an inert module~~ | **withdrawn**, folded into slice 4 |
 | 3 | **The harness learns a third engine** | merged ([#530](https://github.com/lsm/dolmen/pull/530)) |
-| S | **The lockdown spike** (§2.5) | **done** — DuckDB confines itself; stdio cannot, so the transport is a unix socket |
+| S | **The lockdown spike** (§2.5) | **done** — DuckDB confines itself; the CLI's stdio cannot, so the transport is a framed protocol (§2.2, amended) |
 | 4 | **Namespace lifecycle + catalog-in-SQLite** (pins land here) | merged ([#569](https://github.com/lsm/dolmen/pull/569)); namespace/lifecycle conformance only |
 | 5 | **Table DDL + schema registry** | merged ([#574](https://github.com/lsm/dolmen/pull/574)); table/lifecycle conformance |
 | 6 | **Append + row-id allocation + idempotency** | implemented in slice 6; append conformance |
@@ -193,6 +193,14 @@ admitted. The process restarts only when the table set changes shape: a table cr
 migrated, or its first rows. A view projects the logical types over slice 5's physical layout:
 `number` columns are read as `DOUBLE`, secrets as the mask, and `_embedding` is not exposed.
 
+Supervision follows §2.2. A sidecar that fails to start is not retried on every query: the failure
+is held and returned for a backoff that starts at one second and doubles up to thirty seconds, then
+a start is tried again. A sidecar retired by a restart or an eviction is stopped only after its
+running query finishes, and that wait happens outside the store-wide lock. `drop_table` and
+`drop_namespace` wait, also outside that lock, for every sidecar of the namespace, retired ones
+included, before they remove files; while a namespace drop waits, a query on it is refused as
+`not_found`.
+
 Arguments are bound through DuckDB's prepared statements. Results stream back up to the page
 limit and the 32 MiB response budget, `truncated` says when either cut, and a deadline sends an
 interrupt and waits a short grace before killing the process. A missing or failed sidecar answers
@@ -326,6 +334,13 @@ plain stdin, not `-json`, not `-c '<string>'` (a single argv string with no fram
 is no safe mode, no flag, and no separator. A stdio transport would therefore hand a caller
 arbitrary code execution through a newline, which is worse than the confinement failure it was
 meant to avoid.
+
+**Amended with slice 11:** §2.7 found that no stock DuckDB build listens on a socket. What shipped is
+a third shape that keeps this paragraph's reason: dolmen's own `dolmen-duckdb` wrapper speaks a
+framed protocol over its stdin and stdout, so a statement is a value in an escaped, tab-separated
+message and never a line a shell could read. A newline has nothing to escape into, the property the
+socket was chosen for, so the socket is not needed. The paragraph below records the original
+choice.
 
 **Mechanism 2 — a child `duckdb` server on a unix socket — is the plan.** It speaks a real protocol
 with a real message boundary, so the statement is a value in a framed message rather than a line in
