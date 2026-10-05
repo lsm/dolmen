@@ -31,6 +31,13 @@
 
 ### Changed
 
+- **Auth edges a client or admin tripped over** (#586). A request with no accepted credential now
+  answers `401` whatever its content type, instead of a content-type error that hid the auth state.
+  `revoke` reports the verbs it actually `removed` and `revoke_key` whether it `changed` anything,
+  so a typo no longer looks like success. `grant` reports whether its subject is `reachable` by any
+  configured identity source, which catches a mistyped principal during hand-over. MCP
+  `tools/list` hides the server-wide admin tools from callers without `admin` on `*`.
+
 - **`-shutdown-grace 0` cancels running requests immediately.** A positive value still bounds the
   drain. Cleanup afterwards (HTTP close, store close, telemetry) has its own fixed 5-second cap,
   and the process exits even if store close stalls; `dolmen mcp` over stdio has the same cap.
