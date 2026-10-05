@@ -160,7 +160,7 @@ bool OpenSeed(const std::string &ext_dir, std::string &err) {
   g_seed_con = std::make_unique<duckdb::Connection>(*g_seed_db);
   if (!ext_dir.empty() && !Exec(*g_seed_con, "SET extension_directory = " + Quote(ext_dir), err)) return false;
   if (!NoAutoinstall(*g_seed_con, err)) return false;
-  return Exec(*g_seed_con, "LOAD iceberg", err);
+  return Exec(*g_seed_con, "LOAD avro", err) && Exec(*g_seed_con, "LOAD iceberg", err);
 }
 
 // The confinement, in the order that makes it hold: the views are written to a
@@ -191,7 +191,7 @@ bool Seal(const std::string &data_dir, const std::string &ext_dir, std::string &
   g_con = std::make_unique<duckdb::Connection>(*g_db);
   if (!ext_dir.empty() && !Exec(*g_con, "SET extension_directory = " + Quote(ext_dir), err)) return false;
   if (!NoAutoinstall(*g_con, err)) return false;
-  if (!Exec(*g_con, "LOAD iceberg", err)) return false;
+  if (!Exec(*g_con, "LOAD avro", err) || !Exec(*g_con, "LOAD iceberg", err)) return false;
   for (const char *stmt : {"SET enable_external_access = false", "SET autoinstall_known_extensions = false",
                            "SET autoload_known_extensions = false", "SET allow_persistent_secrets = false",
                            "SET lock_configuration = true"}) {

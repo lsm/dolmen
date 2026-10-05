@@ -79,7 +79,7 @@ func TestNativeCatalogIsSeparateDurableAndReadable(t *testing.T) {
 		if len(files) != 1 {
 			t.Fatalf("catalog fixture has %d data files", len(files))
 		}
-		dataPath = filepath.FromSlash(strings.TrimPrefix(files[0].File.FilePath(), "file://"))
+		dataPath = localPath(files[0].File.FilePath())
 		info, err := os.Stat(dataPath)
 		if err != nil {
 			return err

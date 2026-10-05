@@ -50,6 +50,11 @@ ext_digest() {
   osx_arm64/httpfs)      echo b9f9ca8e64d913a80d6666a370e0e518ee4cc8ecb9990a2b9d2273204d8caad4 ;;
   windows_amd64/iceberg) echo e4efc0d244258761cbb8671d88c98864379157a7bb690735e85217f0b7708188 ;;
   windows_amd64/httpfs)  echo e23aa882afd8aa24dacb8290920fec03b5188bb60038bdf6b963035a93d989cf ;;
+  linux_amd64/avro)      echo ba5fe5d85de029f9398e9747baa912adfc335740b345f57cdc8d8069a7dfc499 ;;
+  linux_arm64/avro)      echo 57141f6bb0aa55f7af2d92f73a8defab606091175cb204849f602ae922c0fb3d ;;
+  osx_amd64/avro)        echo 00da7167b970d71318ad61294e5e8112737e27abdbe992ee58f28a8bc28a61c8 ;;
+  osx_arm64/avro)        echo 64ae369ce8fffa4006232e4228a88254e16ab0d843fb8022ff22ede347c6b1b2 ;;
+  windows_amd64/avro)    echo e0b6ace653216c6f7bb2360f05bc7359bbab9b36ba2117f52219b62e39e97307 ;;
   *) echo "fetch-deps: no pinned digest for $2 on $1" >&2; exit 1 ;;
   esac
 }
@@ -70,11 +75,15 @@ lib)
   unzip -q -o "$DEST/$NAME" -d "$DEST"
   ;;
 ext)
-  for ext in iceberg httpfs; do
+  # DuckDB looks for an extension under <dir>/<version>/<platform>/, so it is
+  # placed there; nothing is installed or downloaded at run time.
+  dir="$DEST/$VERSION/$NAME"
+  mkdir -p "$dir"
+  for ext in avro iceberg httpfs; do
     fetch "https://extensions.duckdb.org/$VERSION/$NAME/$ext.duckdb_extension.gz" \
-      "$DEST/$ext.duckdb_extension.gz" "$(ext_digest "$NAME" "$ext")"
-    gunzip -f "$DEST/$ext.duckdb_extension.gz"
-    test -f "$DEST/$ext.duckdb_extension"
+      "$dir/$ext.duckdb_extension.gz" "$(ext_digest "$NAME" "$ext")"
+    gunzip -f "$dir/$ext.duckdb_extension.gz"
+    test -f "$dir/$ext.duckdb_extension"
   done
   ;;
 *)
