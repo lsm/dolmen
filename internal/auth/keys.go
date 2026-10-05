@@ -35,6 +35,37 @@ type Key struct {
 	Groups    []string
 	Revoked   bool
 	CreatedAt time.Time
+	ExpiresAt time.Time
+}
+
+func (k Key) Expired(now time.Time) bool {
+	return !k.ExpiresAt.IsZero() && !now.Before(k.ExpiresAt)
+}
+
+const keyColumns = `id, name, principal, groups, revoked, created_at, expires_at`
+
+type rowScanner interface{ Scan(dest ...any) error }
+
+func scanKey(row rowScanner, extra ...any) (Key, error) {
+	var k Key
+	var groups, created string
+	var expires sql.NullString
+	var revoked int
+	if err := row.Scan(append([]any{&k.ID, &k.Name, &k.Principal, &groups, &revoked, &created, &expires}, extra...)...); err != nil {
+		return Key{}, err
+	}
+	k.Groups = decodeGroups(groups)
+	k.Revoked = revoked != 0
+	var err error
+	if k.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
+		return Key{}, fmt.Errorf("stored created_at %q is not a timestamp", created)
+	}
+	if expires.Valid && expires.String != "" {
+		if k.ExpiresAt, err = time.Parse(time.RFC3339Nano, expires.String); err != nil {
+			return Key{}, fmt.Errorf("stored expires_at %q is not a timestamp", expires.String)
+		}
+	}
+	return k, nil
 }
 
 func MintKey() (secret, id string, err error) {
@@ -109,8 +140,19 @@ func (r *Registry) initKeys() error {
 		principal  TEXT NOT NULL,
 		groups     TEXT NOT NULL,
 		revoked    INTEGER NOT NULL DEFAULT 0,
-		created_at TEXT NOT NULL
+		created_at TEXT NOT NULL,
+		expires_at TEXT
 	)`)
+	if err != nil {
+		return err
+	}
+	var has int
+	if err := r.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('api_keys') WHERE name = 'expires_at'`).Scan(&has); err != nil {
+		return err
+	}
+	if has == 0 {
+		_, err = r.db.Exec(`ALTER TABLE api_keys ADD COLUMN expires_at TEXT`)
+	}
 	return err
 }
 
@@ -124,40 +166,42 @@ func decodeGroups(raw string) []string {
 }
 
 func (r *Registry) CreateKey(ctx context.Context, name, principal string, groups []string) (Key, string, error) {
+	return r.CreateKeyExpiring(ctx, name, principal, groups, time.Time{})
+}
+
+func (r *Registry) CreateKeyExpiring(ctx context.Context, name, principal string, groups []string, expiresAt time.Time) (Key, string, error) {
 	secret, id, err := MintKey()
 	if err != nil {
 		return Key{}, "", err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	created := time.Now().UTC()
+	created := r.clock().UTC()
+	var expires any
+	if !expiresAt.IsZero() {
+		expiresAt = expiresAt.UTC()
+		expires = expiresAt.Format(time.RFC3339Nano)
+	}
 	if _, err := r.db.ExecContext(ctx,
-		`INSERT INTO api_keys (id, hash, name, principal, groups, revoked, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)`,
-		id, hashKey(secret), name, principal, encodeGroups(groups), created.Format(time.RFC3339Nano)); err != nil {
+		`INSERT INTO api_keys (id, hash, name, principal, groups, revoked, created_at, expires_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
+		id, hashKey(secret), name, principal, encodeGroups(groups), created.Format(time.RFC3339Nano), expires); err != nil {
 		return Key{}, "", fmt.Errorf("store key: %w", err)
 	}
-	return Key{ID: id, Name: name, Principal: principal, Groups: groups, CreatedAt: created}, secret, nil
+	return Key{ID: id, Name: name, Principal: principal, Groups: groups, CreatedAt: created, ExpiresAt: expiresAt}, secret, nil
 }
 
 func (r *Registry) ListKeys(ctx context.Context) ([]Key, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, name, principal, groups, revoked, created_at FROM api_keys ORDER BY created_at, id`)
+		`SELECT `+keyColumns+` FROM api_keys ORDER BY created_at, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list keys: %w", err)
 	}
 	defer rows.Close()
 	var out []Key
 	for rows.Next() {
-		var k Key
-		var groups, created string
-		var revoked int
-		if err := rows.Scan(&k.ID, &k.Name, &k.Principal, &groups, &revoked, &created); err != nil {
+		k, err := scanKey(rows)
+		if err != nil {
 			return nil, fmt.Errorf("list keys: %w", err)
-		}
-		k.Groups = decodeGroups(groups)
-		k.Revoked = revoked != 0
-		if k.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
-			return nil, fmt.Errorf("list keys: stored created_at %q is not a timestamp", created)
 		}
 		out = append(out, k)
 	}
@@ -195,43 +239,33 @@ func (r *Registry) RevokeKey(ctx context.Context, id string, keepRootAdmin bool,
 }
 
 func (r *Registry) keyByIDLocked(ctx context.Context, id string) (Key, bool, error) {
-	var k Key
-	var groups, created string
-	var revoked int
-	err := r.db.QueryRowContext(ctx,
-		`SELECT id, name, principal, groups, revoked, created_at FROM api_keys WHERE id = ?`, id).
-		Scan(&k.ID, &k.Name, &k.Principal, &groups, &revoked, &created)
+	k, err := scanKey(r.db.QueryRowContext(ctx, `SELECT `+keyColumns+` FROM api_keys WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Key{}, false, nil
 	}
 	if err != nil {
 		return Key{}, false, fmt.Errorf("read key: %w", err)
 	}
-	k.Groups = decodeGroups(groups)
-	k.Revoked = revoked != 0
-	if k.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
-		return Key{}, false, fmt.Errorf("read key: stored created_at %q is not a timestamp", created)
-	}
 	return k, true, nil
 }
 
 func (r *Registry) activeKeysLocked(ctx context.Context) ([]Key, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, name, principal, groups, revoked, created_at FROM api_keys WHERE revoked = 0`)
+		`SELECT `+keyColumns+` FROM api_keys WHERE revoked = 0`)
 	if err != nil {
 		return nil, fmt.Errorf("read active keys: %w", err)
 	}
 	defer rows.Close()
+	now := r.clock()
 	var out []Key
 	for rows.Next() {
-		var k Key
-		var groups, created string
-		var revoked int
-		if err := rows.Scan(&k.ID, &k.Name, &k.Principal, &groups, &revoked, &created); err != nil {
+		k, err := scanKey(rows)
+		if err != nil {
 			return nil, fmt.Errorf("read active keys: %w", err)
 		}
-		k.Groups = decodeGroups(groups)
-		out = append(out, k)
+		if !k.Expired(now) {
+			out = append(out, k)
+		}
 	}
 	return out, rows.Err()
 }
@@ -268,7 +302,7 @@ func (s *keySource) Authenticate(r *http.Request) (Identity, bool) {
 		return Identity{}, false
 	}
 	k, ok, err := s.reg.keyByHash(r.Context(), hashKey(token))
-	if err != nil || !ok || k.Revoked {
+	if err != nil || !ok || k.Revoked || k.Expired(s.reg.clock()) {
 		return Identity{}, false
 	}
 	return Identity{Principal: k.Principal, Groups: k.Groups, Source: s.Name()}, true
@@ -276,25 +310,19 @@ func (s *keySource) Authenticate(r *http.Request) (Identity, bool) {
 
 func (r *Registry) keyByHash(ctx context.Context, hash string) (Key, bool, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, name, principal, groups, revoked, created_at, hash FROM api_keys`)
+		`SELECT `+keyColumns+`, hash FROM api_keys`)
 	if err != nil {
 		return Key{}, false, fmt.Errorf("read keys: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var k Key
-		var groups, created, stored string
-		var revoked int
-		if err := rows.Scan(&k.ID, &k.Name, &k.Principal, &groups, &revoked, &created, &stored); err != nil {
+		var stored string
+		k, err := scanKey(rows, &stored)
+		if err != nil {
 			return Key{}, false, fmt.Errorf("read keys: %w", err)
 		}
 		if subtle.ConstantTimeCompare([]byte(stored), []byte(hash)) != 1 {
 			continue
-		}
-		k.Groups = decodeGroups(groups)
-		k.Revoked = revoked != 0
-		if k.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
-			return Key{}, false, fmt.Errorf("read keys: stored created_at %q is not a timestamp", created)
 		}
 		return k, true, nil
 	}

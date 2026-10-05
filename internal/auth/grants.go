@@ -72,8 +72,16 @@ type Grant struct {
 }
 
 type Registry struct {
-	mu sync.Mutex
-	db *sql.DB
+	mu  sync.Mutex
+	db  *sql.DB
+	now func() time.Time
+}
+
+func (r *Registry) clock() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
 }
 
 func registryDSN(path string) string {
