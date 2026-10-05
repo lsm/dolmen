@@ -17,7 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const catalogFormat = 1
+const catalogFormat = 2
 
 func namespacePath(name string) string { return filepath.FromSlash(name) + ".lakehouse" }
 
@@ -146,7 +146,7 @@ func (s *Store) openCatalog(ctx context.Context, name, relative string, create b
 		if format > catalogFormat {
 			return nil, fmt.Errorf("%w: lakehouse namespace %s requires catalog format %d; upgrade dolmen", store.ErrCatalogTooNew, name, format)
 		}
-		if format != catalogFormat || stored != name || len(raw) != 16 {
+		if format < 1 || stored != name || len(raw) != 16 {
 			return nil, fmt.Errorf("%w: lakehouse namespace %s has invalid catalog metadata", store.ErrCatalogCorrupt, name)
 		}
 		copy(gen[:], raw)
@@ -155,6 +155,12 @@ func (s *Store) openCatalog(ctx context.Context, name, relative string, create b
 		}
 	}
 	if _, err := db.ExecContext(ctx, `PRAGMA synchronous=FULL`); err != nil {
+		return nil, err
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_tables(name TEXT PRIMARY KEY, generation INTEGER NOT NULL CHECK(generation>=0))`); err != nil {
+		return nil, err
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE _dolmen_lakehouse_meta SET format=? WHERE singleton=1`, catalogFormat); err != nil {
 		return nil, err
 	}
 	dataDir := filepath.Join(s.dir, namespacePath(name), "data")

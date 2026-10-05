@@ -301,8 +301,8 @@ jobs:
           go-version-file: go.mod
       - name: Catalog persistence, isolation, pins and concurrent lifecycle
         run: go test -race -count=1 ./internal/lakehouse
-      - name: Shared SQLite and lakehouse namespace lifecycle
-        run: go test -race -count=1 ./internal/conformance -run '^TestLakehouseNamespaceBackendConformance$'
+      - name: Shared SQLite and lakehouse namespace and table lifecycle
+        run: go test -race -count=1 ./internal/conformance -run '^TestLakehouse(Namespace|Table)BackendConformance$'
 
   postgres-foundation:
     runs-on: ubuntu-latest

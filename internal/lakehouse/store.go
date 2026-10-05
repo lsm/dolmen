@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	sqlcatalog "github.com/apache/iceberg-go/catalog/sql"
+	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -21,6 +22,7 @@ var owners = struct {
 }{dirs: map[string]bool{}}
 
 type Store struct {
+	secrets    *secret.Keyring
 	dir        string
 	root       *os.Root
 	gate       chan struct{}
