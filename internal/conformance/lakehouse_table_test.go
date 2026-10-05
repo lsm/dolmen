@@ -54,10 +54,10 @@ func TestLakehouseTableBackendConformance(t *testing.T) {
 
 			enumValues := []string{"one"}
 			indexFields := []schema.Field{{Name: "tag", Type: schema.String, Enum: enumValues}, {Name: "body", Type: schema.Text, Fulltext: true, Vectorize: true}}
-			if _, err := eng.CreateTable(ctx, ns, "indexed", indexFields, store.TableOpts{}, [16]byte{}); err != nil {
+			if _, err := eng.CreateTable(ctx, ns, "indexed_notes", indexFields, store.TableOpts{}, [16]byte{}); err != nil {
 				t.Fatal(err)
 			}
-			_, indexed, err := eng.TableState(ctx, ns, "indexed", nil)
+			_, indexed, err := eng.TableState(ctx, ns, "indexed_notes", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -69,17 +69,17 @@ func TestLakehouseTableBackendConformance(t *testing.T) {
 				{schema.Change{Op: schema.OpRenameField, From: "body", To: "content"}, true, false},
 				{schema.Change{Op: schema.OpDropField, Name: "body"}, true, true},
 			} {
-				plan, err := eng.PlanMigration(ctx, ns, "indexed", []schema.Change{tc.change}, store.Embedder{}, indexed, nil, store.Incarnation{})
+				plan, err := eng.PlanMigration(ctx, ns, "indexed_notes", []schema.Change{tc.change}, store.Embedder{}, indexed, nil, store.Incarnation{})
 				if err != nil || plan.RebuildFulltext != tc.rebuild || plan.ClearsEmbeddings != tc.clear {
 					t.Fatalf("index plan %s: %v %v", tc.change.Op, plan, err)
 				}
 			}
 			emptyEnum := []string{}
-			removed, err := eng.Migrate(ctx, ns, "indexed", []schema.Change{{Op: schema.OpSetEnum, Name: "tag", Enum: &emptyEnum}}, store.Embedder{}, indexed)
+			removed, err := eng.Migrate(ctx, ns, "indexed_notes", []schema.Change{{Op: schema.OpSetEnum, Name: "tag", Enum: &emptyEnum}}, store.Embedder{}, indexed)
 			if err != nil || removed.Fields[0].Enum != nil {
 				t.Fatalf("remove enum: %v %v", removed, err)
 			}
-			if err := eng.DropTable(ctx, ns, "indexed", store.Incarnation{}); err != nil {
+			if err := eng.DropTable(ctx, ns, "indexed_notes", store.Incarnation{}); err != nil {
 				t.Fatal(err)
 			}
 			fields := []schema.Field{{Name: "title", Type: schema.String, Fulltext: true}, {Name: "amount", Type: schema.Number}, {Name: "active", Type: schema.Boolean}, {Name: "stamp", Type: schema.Timestamp}, {Name: "payload", Type: schema.JSON}, {Name: "vector", Type: schema.Vector, Dim: 3}}
