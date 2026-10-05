@@ -18,8 +18,16 @@ close the connection rather than spending a fresh five seconds waiting for rollb
 uses the transaction API even when canceled: a completed transaction may already have returned its
 connection to the pool, and cleanup must never touch a new owner's connection.
 
-The shutdown policy decision remains pending: after the configured HTTP drain grace, allow at
-most five seconds for cancellation and store cleanup before the command exits nonzero. Process
-exit closes any remaining database connections; PostgreSQL rolls back their open transactions.
-Keep `-shutdown-grace 0` as the existing explicit unbounded-drain setting. The cleanup cap must be
-approved before implementation because it changes the documented shutdown contract.
+On shutdown, a positive `-shutdown-grace` allows requests to finish for at most that duration.
+`-shutdown-grace 0` means no grace: cancel in-flight requests immediately. The old unbounded
+zero-grace drain is retired. HTTP listener shutdown is awaited only within the drain deadline.
+
+The subsequent cleanup phase has a separate fixed five-second hard cap, including closing HTTP
+connections, `Store.Close`, grant-registry cleanup, and telemetry flushing. A stuck closer does
+not prevent the command from returning an error and the process from exiting. Exit closes
+remaining database connections; PostgreSQL rolls back their abandoned transactions and releases
+locks. Cleanup inherits no unbounded behavior from any grace setting. Stdio keeps its existing
+bounded request drain and worker join and shares the fixed five-second store-cleanup cap.
+
+The CLI owns this hard-exit policy. The embedded Go facade's `Store.Close` contract is unchanged:
+an embedding application's shutdown and process lifetime belong to that application.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Change `-shutdown-grace 0` to immediate cancellation and cap shutdown cleanup at five seconds, including stuck store close and stdio cleanup.
+
 - Bound PostgreSQL SQL-compiler admission and caller waiting, check cancellation in SQL/filter compilation, and keep rollback cleanup within the caller deadline.
 
 ### Added

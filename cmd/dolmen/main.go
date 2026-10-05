@@ -142,33 +142,39 @@ func run() error {
 		return err
 	case <-ctx.Done():
 		storeOpen, grantsOpen = false, false
-		return shutdown(httpSrv, apiSrv, cfg.ShutdownGrace, st.Close, grants.Close, stopTelemetry(tel, cfg.ShutdownGrace))
+		return shutdown(httpSrv, apiSrv, cfg.ShutdownGrace, st.Close, grants.Close, stopTelemetry(tel, shutdownCleanupTimeout))
 	}
 }
+
+const shutdownCleanupTimeout = 5 * time.Second
 
 func shutdown(httpSrv *http.Server, apiSrv *api.Server, grace time.Duration, closers ...func() error) error {
 	apiSrv.Drain()
 	slog.Info("shutdown: draining; readiness reports not_ready and no new requests are accepted", "active", apiSrv.Inflight(), "grace", grace)
-	drainCtx := context.Background()
-	if grace > 0 {
-		var cancel context.CancelFunc
-		drainCtx, cancel = context.WithTimeout(drainCtx, grace)
-		defer cancel()
-	}
 	var errs []error
-	if err := httpSrv.Shutdown(drainCtx); err != nil {
-		slog.Warn("shutdown: grace period ended with requests still running; cancelling them, and any open transaction rolls back", "active", apiSrv.Inflight())
-		errs = append(errs, fmt.Errorf("drain: %w", err))
-		if cerr := httpSrv.Close(); cerr != nil {
-			errs = append(errs, fmt.Errorf("close listeners: %w", cerr))
+	if grace > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), grace)
+		drained := make(chan error, 1)
+		go func() { drained <- httpSrv.Shutdown(ctx) }()
+		var err error
+		select {
+		case err = <-drained:
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+		cancel()
+		if err != nil {
+			slog.Warn("shutdown: grace period ended; cancelling running requests", "active", apiSrv.Inflight())
+			errs = append(errs, fmt.Errorf("drain: %w", err))
+		} else {
+			slog.Info("shutdown: every request finished")
 		}
 	} else {
-		slog.Info("shutdown: every request finished")
+		slog.Info("shutdown: zero grace; cancelling running requests immediately", "active", apiSrv.Inflight())
 	}
-	for _, c := range closers {
-		if err := c(); err != nil {
-			errs = append(errs, fmt.Errorf("close: %w", err))
-		}
+	cleanup := append([]func() error{httpSrv.Close}, closers...)
+	if err := shutdownCleanup(cleanup...); err != nil {
+		errs = append(errs, err)
 	}
 	err := errors.Join(errs...)
 	if err != nil {
@@ -179,7 +185,32 @@ func shutdown(httpSrv *http.Server, apiSrv *api.Server, grace time.Duration, clo
 	return err
 }
 
-func runStdio(args []string) error {
+func shutdownCleanup(closers ...func() error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownCleanupTimeout)
+	defer cancel()
+	completed := make(chan error, 1)
+	go func() {
+		var errs []error
+		for _, close := range closers {
+			if err := ctx.Err(); err != nil {
+				errs = append(errs, err)
+				break
+			}
+			if err := close(); err != nil {
+				errs = append(errs, fmt.Errorf("close: %w", err))
+			}
+		}
+		completed <- errors.Join(errs...)
+	}()
+	select {
+	case err := <-completed:
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("shutdown cleanup exceeded its %s hard limit; exiting closes remaining database connections and rolls back their transactions: %w", shutdownCleanupTimeout, ctx.Err())
+	}
+}
+
+func runStdio(args []string) (err error) {
 	cfg, err := loadConfig(args, os.Getenv, os.LookupEnv, os.Stderr, true)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -201,7 +232,7 @@ func runStdio(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() { err = errors.Join(err, shutdownCleanup(st.Close, stopTelemetry(tel, shutdownCleanupTimeout))) }()
 
 	emb, err := newEmbedProvider(cfg)
 	if err != nil {
@@ -210,7 +241,6 @@ func runStdio(args []string) error {
 
 	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithAuth(cfg.Auth), api.WithTimeouts(cfg.Timeouts), api.WithTracing(tel.Tracing))
 	mcpSrv := newMCPServer(cfg, apiSrv)
-	defer stopTelemetry(tel, 0)()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -393,7 +423,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	maxNamespaceSize := fs.String("max-namespace-size", envOr("DOLMEN_MAX_NAMESPACE_SIZE", "0", getenv), "largest a namespace file may grow, e.g. 10GiB; a write past it is refused with 507 and nothing is written. 0 (default) is unbounded; sqlite engine")
 	logLevel := fs.String("log-level", envOr("DOLMEN_LOG_LEVEL", "info", getenv), "log verbosity: debug (adds one line per operation: op, outcome, status, duration, request size, request id), info (default), warn, or error")
 	syncMode := fs.String("sync", envOr("DOLMEN_SYNC", string(store.DefaultSync), getenv), "commit durability: full (an acknowledged commit survives power loss) or normal (it survives a process crash; the last commits before a power loss may be lost); sqlite engine")
-	shutdownGrace := fs.String("shutdown-grace", envOr("DOLMEN_SHUTDOWN_GRACE", "60s", getenv), "on SIGTERM, how long running requests may finish before they are cancelled: 0 waits for them without a bound, otherwise 1s to 24h")
+	shutdownGrace := fs.String("shutdown-grace", envOr("DOLMEN_SHUTDOWN_GRACE", "60s", getenv), "on SIGTERM, how long running requests may finish before cancellation: 0 cancels immediately, otherwise 1s to 24h; cleanup has a separate 5s hard cap")
 	changeRetention := fs.String("change-retention", envOr("DOLMEN_CHANGE_RETENTION", "168h", getenv), "change-log retention: 0 disables pruning (records and cursors never expire); otherwise 1h to 2160h")
 	maxSubscriptionAge := fs.String("max-subscription-age", envOr("DOLMEN_MAX_SUBSCRIPTION_AGE", "30m", getenv), "subscribe connection age bound: the stream teaching-closes at the bound and the client reconnects from its cursor; 0 disables the bound (the identity-refresh backstop is lost), otherwise 1s to 24h")
 	readTimeout := fs.String("read-timeout", envOr("DOLMEN_READ_TIMEOUT", api.DefaultReadTimeout.String(), getenv), "time to read one request, headers and body: 0 disables the bound, otherwise 1s to 24h")
@@ -738,7 +768,11 @@ func parseBound(name, raw string) (time.Duration, error) {
 	if d == 0 || (d >= time.Second && d <= 24*time.Hour) {
 		return d, nil
 	}
-	return 0, fmt.Errorf("invalid %s %q: must be 0 (no bound) or between 1s and 24h", name, raw)
+	zero := "no bound"
+	if name == "shutdown grace" {
+		zero = "immediate cancellation"
+	}
+	return 0, fmt.Errorf("invalid %s %q: must be 0 (%s) or between 1s and 24h", name, raw, zero)
 }
 
 func envIntOr(key string, fallback int, getenv func(string) string) (int, error) {

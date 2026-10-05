@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"net"
 	"net/http"
 	"strings"
@@ -168,5 +169,26 @@ func TestZeroShutdownGraceStillBoundsCleanup(t *testing.T) {
 		}
 	case <-time.After(8 * time.Second):
 		t.Fatal("zero grace disabled the hard cleanup cap")
+	}
+}
+
+func TestShutdownGraceConfigurationAndHelp(t *testing.T) {
+	getenv := func(string) string { return "" }
+	lookup := func(string) (string, bool) { return "", false }
+	for _, raw := range []string{"0", "1s", "24h"} {
+		var output strings.Builder
+		cfg, err := loadConfig([]string{"-shutdown-grace", raw}, getenv, lookup, &output, false)
+		expected, _ := time.ParseDuration(raw)
+		if err != nil || cfg.ShutdownGrace != expected {
+			t.Fatalf("grace %s: %v %v", raw, cfg, err)
+		}
+	}
+	var output strings.Builder
+	_, err := loadConfig([]string{"-help"}, getenv, lookup, &output, false)
+	if !errors.Is(err, flag.ErrHelp) || !strings.Contains(output.String(), "0 cancels immediately") || !strings.Contains(output.String(), "cleanup has a separate 5s hard cap") {
+		t.Fatalf("shutdown help: %v %s", err, output.String())
+	}
+	if _, err := parseBound("shutdown grace", "500ms"); err == nil || !strings.Contains(err.Error(), "0 (immediate cancellation)") {
+		t.Fatalf("invalid grace remedy: %v", err)
 	}
 }
