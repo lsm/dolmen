@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
@@ -114,6 +115,28 @@ func TestACommitLoggedButNotMaterializedIsRecoveredOnce(t *testing.T) {
 	replay, err := s.Insert(ctx, "ns", "t", []map[string]any{{"title": "a"}, {"title": "b"}, {"title": "c"}}, store.WriteOpts{IdempotencyKey: "k"}, store.Embedder{}, nil, store.Incarnation{})
 	if err != nil || !replay.Replayed {
 		t.Fatalf("the key committed with the logged rows must replay: %+v %v", replay, err)
+	}
+}
+
+func TestAnIdempotentRetryIsAnsweredBeforeValidation(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "t", []schema.Field{{Name: "title", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "ns", "t", []map[string]any{{"title": "a"}}, store.WriteOpts{IdempotencyKey: "k"}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Insert(ctx, "ns", "t", []map[string]any{{"nope": "a"}}, store.WriteOpts{IdempotencyKey: "k"}, store.Embedder{}, nil, store.Incarnation{})
+	if !errors.Is(err, derr.ErrConflict) {
+		t.Fatalf("a recorded key with a different body is a conflict before the body is validated: %v", err)
 	}
 }
 
