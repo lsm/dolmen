@@ -24,9 +24,7 @@ func changesOf(t *testing.T, data map[string]any) [][3]any {
 				t.Fatalf("change %d is missing %q: %v", i, k, m)
 			}
 		}
-		if len(m) != 4 {
-			t.Fatalf("change %d carries fields beyond cursor/table/row_id/kind: %v", i, m)
-		}
+		validateChangeFields(t, m)
 		out = append(out, [3]any{m["table"], m["row_id"], m["kind"]})
 	}
 	return out
@@ -362,6 +360,19 @@ func TestRetentionErrorNamesTheOperationTheCallerUsed(t *testing.T) {
 		}
 		if strings.Contains(msg, other) {
 			t.Fatalf("%s names %s instead of itself: %q", op, other, msg)
+		}
+	}
+}
+
+func validateChangeFields(t *testing.T, m map[string]any) {
+	t.Helper()
+	for key := range m {
+		switch key {
+		case "cursor", "table", "row_id", "kind":
+		case "commit":
+			changeCommit(t, m)
+		default:
+			t.Fatalf("change carries unknown or private field %q: %v", key, m)
 		}
 	}
 }

@@ -194,9 +194,7 @@ func sseChangeOf(t *testing.T, f sseFrame) [3]any {
 			t.Fatalf("change event is missing %q: %v", k, m)
 		}
 	}
-	if len(m) != 4 {
-		t.Fatalf("change event carries fields beyond cursor/table/row_id/kind: %v", m)
-	}
+	validateChangeFields(t, m)
 	if c, _ := m["cursor"].(string); c == "" {
 		t.Fatalf("change event carries an empty cursor: %v", m)
 	}
