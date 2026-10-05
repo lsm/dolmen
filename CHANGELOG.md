@@ -6,6 +6,8 @@
 
 - Bound PostgreSQL SQL-compiler admission and caller waiting, check cancellation in SQL/filter compilation, and keep rollback cleanup within the caller deadline.
 
+- Fix immediate `wait_for` polls on PostgreSQL: `timeout_ms: 0` skips polling while reading committed changes under the operation deadline.
+
 ### Added
 
 - Lakehouse slice 4 adds internal namespace lifecycle with one SQLite-backed Iceberg catalog and
