@@ -91,7 +91,7 @@ func TestLakehouseTableBackendConformance(t *testing.T) {
 					t.Fatalf("same-name rename plan: %v %v", plan, err)
 				}
 				next, err := eng.Migrate(ctx, ns, "same_name", changes, store.Embedder{}, inc)
-				if err != nil || next.Version != inc.Version+1 || !reflect.DeepEqual(next.Fields, fields) {
+				if err != nil || int64(next.Version) != inc.Version+1 || !reflect.DeepEqual(next.Fields, fields) {
 					t.Fatalf("same-name rename: %v %v", next, err)
 				}
 			})
