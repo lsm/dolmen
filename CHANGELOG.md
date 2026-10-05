@@ -17,9 +17,11 @@
   still needs `DOLMEN_BASE_URL` (#577).
 - **Lakehouse groundwork, not yet selectable.** Namespace lifecycle with a SQLite-backed Iceberg
   catalog per namespace, table lifecycle and schema evolution, and appends with row ids,
-  idempotency and a crash-safe commit log. DuckDB was chosen over DataFusion as the engine behind
-  the lakehouse `query` sidecar; the comparison is in `docs/design/lakehouse-plan.md` §2.8 and the
-  spike code stays under `spike/`, outside dolmen's `go.mod`.
+  idempotency and a crash-safe commit log. `query` runs in `dolmen-duckdb`, a small sidecar
+  process per namespace, sealed read-only and confined to that namespace's data directory before
+  any caller SQL runs; the sidecar is not shipped in release artifacts yet. DuckDB was chosen
+  over DataFusion for it; the comparison is in `docs/design/lakehouse-plan.md` §2.8 and the spike
+  code stays under `spike/`, outside dolmen's `go.mod`.
 
 ### Changed
 

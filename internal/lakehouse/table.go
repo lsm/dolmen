@@ -31,6 +31,10 @@ func WithSecretKeyring(key *secret.Keyring) OpenOption { return func(s *Store) {
 
 func tableIdentifier(ns, name string) table.Identifier { return append(strings.Split(ns, "/"), name) }
 
+func tableIdentifierNamespace(ns string) table.Identifier {
+	return table.Identifier(strings.Split(ns, "/"))
+}
+
 func physicalType(f schema.Field) iceberg.Type {
 	switch f.Type {
 	case schema.Boolean:
@@ -215,7 +219,9 @@ func (s *Store) ListTables(ctx context.Context, ns string, auth []store.AuthBind
 }
 
 func (s *Store) DropTable(ctx context.Context, ns, name string, expected store.Incarnation) error {
-	return s.withNamespace(ctx, ns, func(n *namespace) error {
+	var location string
+	var draining []*sidecar
+	err := s.withNamespace(ctx, ns, func(n *namespace) error {
 		state, err := loadTable(ctx, n, ns, name)
 		if err != nil {
 			return err
@@ -250,12 +256,21 @@ func (s *Store) DropTable(ctx context.Context, ns, name string, expected store.I
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		location := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(state.native.Location(), "file://")))
+		location = filepath.Clean(localPath(state.native.Location()))
 		if rel, err := filepath.Rel(n.dataDir, location); err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+			location = ""
 			return fmt.Errorf("%w: Iceberg table location escaped its namespace", store.ErrCatalogCorrupt)
 		}
-		return os.RemoveAll(location)
+		delete(n.published, name)
+		n.sql = nil
+		draining = s.tracked(ns)
+		return nil
 	})
+	s.drainAll(ns, draining, false)
+	if err != nil || location == "" {
+		return err
+	}
+	return os.RemoveAll(location)
 }
 
 func (s *Store) ListMigrations(ctx context.Context, ns, name string, expected store.Incarnation) ([]store.Migration, error) {
@@ -274,7 +289,7 @@ func (s *Store) ListMigrations(ctx context.Context, ns, name string, expected st
 }
 
 func (s *Store) syncMetadata(native *table.Table, n *namespace) error {
-	path := filepath.FromSlash(strings.TrimPrefix(native.MetadataLocation(), "file://"))
+	path := localPath(native.MetadataLocation())
 	rel, err := filepath.Rel(n.dataDir, path)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("%w: Iceberg metadata escaped its namespace", store.ErrCatalogCorrupt)
@@ -287,17 +302,19 @@ func (s *Store) syncMetadata(native *table.Table, n *namespace) error {
 	if err != nil {
 		return err
 	}
-	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
-		relative, err := filepath.Rel(s.dir, dir)
+	if err := publishCurrentMetadata(path); err != nil {
+		return err
+	}
+	for r := filepath.Dir(rel); ; r = filepath.Dir(r) {
+		relative, err := filepath.Rel(s.dir, filepath.Join(n.dataDir, r))
 		if err != nil {
 			return err
 		}
 		if err := s.syncDirectory(relative); err != nil {
 			return err
 		}
-		if dir == n.dataDir {
-			break
+		if r == "." {
+			return nil
 		}
 	}
-	return nil
 }
