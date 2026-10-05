@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Lakehouse slice 5 adds internal table lifecycle, versioned schema evolution, dry-run plans,
+  migration history, and durable drop/recreate guards. Schema properties and native Iceberg
+  evolution publish atomically; table lifecycle conformance runs on SQLite and lakehouse.
+  SQLite now enforces the supplied DropTable incarnation before removing a successor table.
+
+
 - Fix immediate `wait_for` polls on PostgreSQL: `timeout_ms: 0` skips polling while reading committed changes under the operation deadline.
 
 ### Added

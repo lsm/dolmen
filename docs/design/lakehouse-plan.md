@@ -47,8 +47,8 @@ stacked; merge `main` into an active branch when needed, never rebase or force-p
 | 2 | ~~The pins as an inert module~~ | **withdrawn**, folded into slice 4 |
 | 3 | **The harness learns a third engine** | merged ([#530](https://github.com/lsm/dolmen/pull/530)) |
 | S | **The lockdown spike** (§2.5) | **done** — DuckDB confines itself; stdio cannot, so the transport is a unix socket |
-| 4 | **Namespace lifecycle + catalog-in-SQLite** (pins land here) | implemented in this slice; namespace/lifecycle conformance only |
-| 5 | **Table DDL + schema registry** | next after slice 4 |
+| 4 | **Namespace lifecycle + catalog-in-SQLite** (pins land here) | merged ([#569](https://github.com/lsm/dolmen/pull/569)); namespace/lifecycle conformance only |
+| 5 | **Table DDL + schema registry** | implemented in slice 5; table/lifecycle conformance |
 | 6 | **Append + row-id allocation + idempotency** | after slice 5 |
 | 11 | **`query` over the DuckDB sidecar** | after slice 6; real tables and data are prerequisites |
 | 7 | **Typed reads + number normalization** | after slice 11, in the approved order |
@@ -107,7 +107,7 @@ Hierarchical children live under the ordinary hierarchy (`project/team.lakehouse
 `project.lakehouse`, so logical names such as `data` and `catalog` never collide with storage files.
 The catalog is Iceberg's SQL catalog on `modernc.org/sqlite`, in WAL mode with full synchronous
 commits. It holds the namespace lifetime and its own format stamp; it is separate from the data
-that the future DuckDB process may read. Table DDL and mutations remain slices 5 and 6.
+that the future DuckDB process may read. Table DDL is implemented by slice 5 below; mutations remain slice 6.
 
 Creation initializes and closes the catalog in a private staging directory before renaming it
 into the visible namespace. Leaf-only drop closes its handle and removes that namespace's catalog
@@ -125,6 +125,34 @@ and lakehouse. The catalog smoke fixture separately verifies Iceberg catalog per
 isolation, Arrow append and Parquet read-back, and the manifest's real data-file size. It is a
 fixture proving the pinned stack, not a lakehouse table/write API. Future writers must record every
 data **and delete** file's real size and retain each row's `(data file, position)` mapping (§2.8.2).
+
+### Slice 5's table foundation
+
+`internal/lakehouse` adds create, list, describe, drop and table-state APIs, schema migration
+plans, empty-table schema evolution and migration history. The entire Dolmen schema, version,
+drop generation and history are stored as Iceberg metadata properties, so one native catalog
+pointer publishes schema evolution and registry changes together. A namespace SQLite table
+retains tombstones; drop removes the Iceberg catalog pointer and advances the tombstone in one
+transaction under the store's lifecycle gate. Recreate uses a fresh data location and retains
+its incremented generation. Immutable files from dropped tables remain until namespace drop
+or future maintenance, while the logical schema and history disappear immediately.
+
+Catalog format 2 upgrades slice 4's format 1 on open and installs the tombstone relation. Reads
+retain exact numeric defaults using `json.Number`. Physical `id` is int64, booleans are native,
+vectors and secrets are binary, and numbers are canonical text so their int64/double fidelity
+is not lost to an Iceberg double conversion. Timestamp and JSON are canonical strings. The
+serving tier in later slices must project the declared logical types over this layout; it must
+not expose numeric text as the API's declared `number`. Iceberg field IDs survive renames and
+are never reused on additions. Metadata files and their containing directories are synced
+before successful DDL responses.
+
+Migrations validate the whole plan before publication, preserve native field IDs, publish the
+schema and history together, and enforce destructive-change version requirements. This slice
+has no append API: populated-table row validation, backfills and counts belong with the write
+and mutation slices and are explicitly refused internally until those land. It does not enable
+public engine selection. Both-engine table conformance covers empty tables, validation, failed
+multi-step migrations, versions, persistence, history and stale guards; the existing SQLite
+DropTable guard is now enforced at its transaction boundary as the same test requires.
 
 ### Slice 3 in more detail
 
