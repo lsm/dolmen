@@ -43,6 +43,7 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 	plan := &store.MigrationPlan{FromVersion: next.Version, ToVersion: next.Version + 1, Table: next, Expected: state.incarnation, ExpectedIncarnation: store.EncodeIncarnation(state.incarnation), Operations: []string{}}
 	tx := state.native.NewTransaction()
 	vectorizeChanged := false
+	defaults := map[string]any{}
 	find := func(name string) (int, error) {
 		for i, f := range next.Fields {
 			if f.Name == name {
@@ -102,11 +103,14 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 			if err := store.RequireSecretKey(s.secrets, []schema.Field{field}); err != nil {
 				return nil, nil, err
 			}
+			var backfill any
 			if ch.Default != nil {
 				if field.Type == schema.Secret {
 					return nil, nil, invalidf("%s", schema.SecretRefusal(field.Name, "default"))
 				}
-				if _, err := value.Coerce(field, ch.Default); err != nil {
+				var err error
+				backfill, err = value.Coerce(field, ch.Default)
+				if err != nil {
 					return nil, nil, invalidf("field %s default: %v", field.Name, err)
 				}
 			}
@@ -115,6 +119,7 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 				return nil, nil, err
 			}
 			next.Fields = append(next.Fields, field)
+			defaults[field.Name] = backfill
 			if field.Fulltext {
 				plan.RebuildFulltext = true
 			}
@@ -136,6 +141,10 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 				}
 				if err := tx.UpdateSchema(true, false).RenameColumn([]string{ch.From}, ch.To).Commit(); err != nil {
 					return nil, nil, err
+				}
+				if backfill, ok := defaults[ch.From]; ok {
+					defaults[ch.To] = backfill
+					delete(defaults, ch.From)
 				}
 			}
 			if next.Fields[index].Fulltext {
@@ -159,6 +168,7 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 				vectorizeChanged = true
 			}
 			next.Fields = slices.Delete(next.Fields, index, index+1)
+			delete(defaults, ch.Name)
 			plan.Destructive = append(plan.Destructive, "drop_field "+ch.Name)
 			plan.Operations = append(plan.Operations, "drop_field "+ch.Name)
 		case schema.OpSetFulltext, schema.OpSetVectorize:
@@ -186,8 +196,11 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 			if next.Fields[index].Type != schema.String {
 				return nil, nil, invalidf("enum is only allowed on string fields")
 			}
-			if def, ok := next.Fields[index].Default.(string); ok && !schema.EnumAllows(*ch.Enum, def) {
+			if def, ok := value.StoredString(next.Fields[index].Default); ok && !schema.EnumAllows(*ch.Enum, def) {
 				return nil, nil, invalidf("field %q: the declared default %q is not in the new enum (%s); keep the value, or pick a default among the allowed values", ch.Name, def, strings.Join(*ch.Enum, ", "))
+			}
+			if def, ok := defaults[ch.Name].(string); ok && !schema.EnumAllows(*ch.Enum, def) {
+				return nil, nil, invalidf("field %q: the add_field backfill default %q is not in the new enum (%s); keep the value, or pick a backfill among the allowed values", ch.Name, def, strings.Join(*ch.Enum, ", "))
 			}
 			next.Fields[index].Enum = nil
 			if len(*ch.Enum) > 0 {
@@ -202,7 +215,7 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 			if err := store.ShapeTarget(&next.Fields[index], *ch.Shape); err != nil {
 				return nil, nil, err
 			}
-			if err := store.ShapeDefaults(&next.Fields[index], *ch.Shape, nil); err != nil {
+			if err := store.ShapeDefaults(&next.Fields[index], *ch.Shape, defaults[ch.Name]); err != nil {
 				return nil, nil, err
 			}
 			next.Fields[index].Shape = *ch.Shape
