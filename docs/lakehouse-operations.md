@@ -35,9 +35,20 @@ that namespace's `data/` directory, and has external access disabled.
 | `-duckdb-sidecar` | `DOLMEN_DUCKDB_SIDECAR` | `dolmen-duckdb` beside the `dolmen` binary |
 | `-duckdb-extensions` | `DOLMEN_DUCKDB_EXTENSIONS` | `duckdb-extensions` beside the `dolmen` binary |
 
-The extensions directory must hold DuckDB's `iceberg` extension for the sidecar's DuckDB version and
-platform. `sidecar/duckdb/fetch-deps.sh` fetches the pinned library and extension, and
-`sidecar/duckdb/PROTOCOL.md` describes the process protocol.
+Each release attaches a `dolmen-duckdb-<version>-<platform>.tar.gz` bundle for `linux-amd64`,
+`linux-arm64`, `darwin-arm64` and `windows-amd64`. It holds the sidecar, the pinned DuckDB library
+beside it, and the `iceberg` and `httpfs` extensions in `duckdb-extensions/`. Unpack its contents
+into the directory that holds `dolmen`, and the defaults above find it:
+
+```bash
+tar -xzf dolmen-duckdb-v0.6.0-linux-amd64.tar.gz --strip-components=1 -C /usr/local/bin
+```
+
+To build it yourself, `sidecar/duckdb/package.sh <platform> <version> <out-dir>` fetches the
+pinned library and extensions at pinned SHA-256 digests and produces the same bundle.
+`sidecar/duckdb/PROTOCOL.md` describes the process protocol. The release SBOM covers the Go module
+graph only, not the DuckDB components in the bundle, and the container image does not carry the
+sidecar yet.
 
 Without a runnable sidecar the server still starts and serves inserts, `read_rows`, searches
 without a filter, the change feed and table management. `query` and filtered operations are refused
