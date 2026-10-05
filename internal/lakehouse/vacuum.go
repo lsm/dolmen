@@ -2,11 +2,17 @@ package lakehouse
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"path/filepath"
+	"strings"
 
+	"github.com/apache/iceberg-go"
+	"github.com/apache/iceberg-go/table"
 	"github.com/lsm/dolmen/internal/store"
 )
+
+const compactionProperty = "dolmen.compaction"
 
 func (s *Store) Vacuum(ctx context.Context, ns string) (store.VacuumResult, error) {
 	var res store.VacuumResult
@@ -49,4 +55,53 @@ func treeBytes(dir string) (int64, error) {
 	return total, err
 }
 
-func (s *Store) maintain(context.Context, *namespace, string) error { return nil }
+func (s *Store) maintain(ctx context.Context, n *namespace, ns string) error {
+	for ident, err := range n.catalog.ListTables(ctx, table.Identifier(strings.Split(ns, "/"))) {
+		if err != nil {
+			return err
+		}
+		state, err := loadTable(ctx, n, ns, ident[len(ident)-1])
+		if err != nil {
+			return err
+		}
+		if err := s.compact(ctx, n, state); err != nil {
+			return fmt.Errorf("compact lakehouse table %s: %w", state.schema.Name, err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) compact(ctx context.Context, n *namespace, state tableState) error {
+	if state.native.Metadata().CurrentSnapshot() == nil {
+		return nil
+	}
+	tasks, err := state.native.Scan().PlanFiles(ctx)
+	if err != nil {
+		return err
+	}
+	deletes := 0
+	var size int64
+	for _, task := range tasks {
+		deletes += len(task.DeleteFiles)
+		size += task.File.FileSizeBytes()
+	}
+	tx := state.native.NewTransaction()
+	if len(tasks) > 1 || deletes > 0 {
+		if _, err := tx.RewriteDataFiles(ctx, []table.CompactionTaskGroup{{Tasks: tasks, TotalSizeBytes: size}}, table.RewriteDataFilesOptions{SnapshotProps: iceberg.Properties{compactionProperty: "1"}}); err != nil {
+			return err
+		}
+	}
+	if len(state.native.Metadata().Snapshots()) > 1 || len(tasks) > 1 || deletes > 0 {
+		if err := tx.ExpireSnapshots(table.WithRetainLast(1), table.WithOlderThan(0)); err != nil {
+			return err
+		}
+	}
+	native, err := tx.Commit(ctx)
+	if err != nil {
+		return err
+	}
+	if native.MetadataLocation() != state.native.MetadataLocation() {
+		return s.syncMetadata(native, n)
+	}
+	return nil
+}
