@@ -319,10 +319,6 @@ func (c *sqlCompiler) walk(message protoreflect.Message, ctes map[string]bool) e
 	return failure
 }
 
-func castParameters(message protoreflect.Message, casts map[int32]string) {
-	_ = castParametersContext(context.Background(), message, casts)
-}
-
 func castParametersContext(ctx context.Context, message protoreflect.Message, casts map[int32]string) error {
 	if err := ctx.Err(); err != nil {
 		return err

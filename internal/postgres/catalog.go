@@ -28,10 +28,6 @@ func (s *Store) catalogLock(ctx context.Context, tx pgx.Tx) error {
 	return err
 }
 
-func rollback(tx pgx.Tx) {
-	rollbackContext(context.Background(), tx)
-}
-
 func rollbackContext(parent context.Context, tx pgx.Tx) {
 	if parent.Err() != nil {
 		_ = tx.Rollback(parent)
