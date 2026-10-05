@@ -27,7 +27,6 @@ func TestAWaitThatOutrunsItsReadBudgetIsAnEmptyPageNotAnError(t *testing.T) {
 	slow := slowFeedEngine{Engine: st, delay: waitForPollTick + 250*time.Millisecond}
 
 	for _, body := range []string{
-		`{"namespace":"cancelns","table":"t","cursor":"begin","timeout_ms":0}`,
 		`{"namespace":"cancelns","table":"t","cursor":"begin","timeout_ms":300}`,
 	} {
 		srv := New(slow, fakeEmb{})
@@ -49,16 +48,17 @@ func TestAWaitThatOutrunsItsReadBudgetIsAnEmptyPageNotAnError(t *testing.T) {
 	}
 }
 
-func TestABareWaitThatOutrunsItsReadBudgetStillFails(t *testing.T) {
+func TestABareZeroWaitReadsUnderTheOperationBudget(t *testing.T) {
 	st := seedWaitForTable(t)
 	slow := slowFeedEngine{Engine: st, delay: waitForPollTick + 250*time.Millisecond}
 	srv := New(slow, fakeEmb{})
 
 	res, err := srv.Dispatch(context.Background(), "wait_for", []byte(`{"namespace":"cancelns","table":"t","timeout_ms":0}`))
-	if err == nil {
-		t.Fatalf("a bare wait that never established a boundary must fail rather than answer a page whose next_cursor is empty: %v", res)
+	if err != nil {
+		t.Fatalf("zero wait must establish its head under the operation budget: %v", err)
 	}
-	if wrapped := WrapError(err); wrapped.Code != ErrCodeTimeout {
-		t.Fatalf("a bare wait that outran its read budget = %s, want timeout: %s", wrapped.Code, wrapped.Message)
+	page := res.(map[string]any)
+	if page["next_cursor"] == "" {
+		t.Fatalf("zero wait did not establish a resumable head: %v", page)
 	}
 }
