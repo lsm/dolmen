@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Lakehouse slice 11 adds `query` over `dolmen-duckdb`, a C++ sidecar on the pinned prebuilt
+  DuckDB, one per namespace, over a framed stdin/stdout protocol. It is sealed read-only and
+  confined to the namespace's data directory before caller SQL runs, sees each acknowledged append
+  on the next query, binds arguments, pages and truncates like the other engines, and cancels on
+  the deadline. The engine is still not selectable.
+
 - Lakehouse slice 6 adds internal appends. Row ids, change records, the idempotency record and
   exact per-owner row counts commit together in the namespace's SQLite commit log; each commit then
   lands in Iceberg as one fsynced Parquet file, replayed after a crash without duplicating rows.

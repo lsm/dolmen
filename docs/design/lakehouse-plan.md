@@ -50,7 +50,7 @@ stacked; merge `main` into an active branch when needed, never rebase or force-p
 | 4 | **Namespace lifecycle + catalog-in-SQLite** (pins land here) | merged ([#569](https://github.com/lsm/dolmen/pull/569)); namespace/lifecycle conformance only |
 | 5 | **Table DDL + schema registry** | merged ([#574](https://github.com/lsm/dolmen/pull/574)); table/lifecycle conformance |
 | 6 | **Append + row-id allocation + idempotency** | implemented in slice 6; append conformance |
-| 11 | **`query` over the DuckDB sidecar** | after slice 6; real tables and data are prerequisites |
+| 11 | **`query` over the DuckDB sidecar** | implemented in slice 11; the release artifacts follow in its second PR |
 | 7 | **Typed reads + number normalization** | after slice 11, in the approved order |
 | 8 | **Point deletes by position** | after slice 11, in the approved order |
 | 9 | **Search: full text + vectors** (native, per D27) | after slice 11, in the approved order |
@@ -171,6 +171,31 @@ keys, as SQLite does. The first embedded append pins the table's embedding space
 its schema property before the log commits. `describe_table` reports the exact count, table-wide or
 for one owner. Migrations of populated tables, reads, deletes and the change-feed operations stay
 with the slices that own them.
+
+### Slice 11's SQL path
+
+`query` on a lakehouse namespace runs in `dolmen-duckdb` ([sidecar/duckdb](../../sidecar/duckdb)),
+a small C++ program over the pinned prebuilt `libduckdb`, one process per namespace. It speaks the
+framed protocol in [sidecar/duckdb/PROTOCOL.md](../../sidecar/duckdb/PROTOCOL.md) over its stdin and
+stdout, so a statement is a value in a message and never a line a shell could read as a
+dot-command; that is what made a pipe acceptable where the CLI's was not (§2.2). Before any caller
+SQL runs, dolmen defines one view per table and seals the process with §2.4's settings.
+
+Each view reads `metadata/dolmen-current.metadata.json` in its table's directory, a copy of the
+table's newest Iceberg metadata that dolmen replaces atomically after every commit. Iceberg's own
+file name changes with every commit and a sealed process cannot be given a new one, so the stable
+copy is what lets a sealed sidecar see each acknowledged append on the next query without a
+restart, and read-your-writes holds because pending commits are materialized before the query is
+admitted. The process restarts only when the table set changes shape: a table created, dropped or
+migrated, or its first rows. A view projects the logical types over slice 5's physical layout:
+`number` columns are read as `DOUBLE`, secrets as the mask, and `_embedding` is not exposed.
+
+Arguments are bound through DuckDB's prepared statements. Results stream back up to the page
+limit and the 32 MiB response budget, `truncated` says when either cut, and a deadline sends an
+interrupt and waits a short grace before killing the process. A missing or failed sidecar answers
+`ErrSQLEngineUnavailable` with the reason; the public error class for it is decided with slice 12,
+when the engine first becomes reachable. `capabilities` reports `query_dialect` and
+`filter_dialect` as `duckdb`.
 
 ### Slice 3 in more detail
 

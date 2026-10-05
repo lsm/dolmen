@@ -31,6 +31,10 @@ func WithSecretKeyring(key *secret.Keyring) OpenOption { return func(s *Store) {
 
 func tableIdentifier(ns, name string) table.Identifier { return append(strings.Split(ns, "/"), name) }
 
+func tableIdentifierNamespace(ns string) table.Identifier {
+	return table.Identifier(strings.Split(ns, "/"))
+}
+
 func physicalType(f schema.Field) iceberg.Type {
 	switch f.Type {
 	case schema.Boolean:
@@ -273,6 +277,9 @@ func (s *Store) syncMetadata(native *table.Table, n *namespace) error {
 	}
 	err = errors.Join(f.Sync(), f.Close())
 	if err != nil {
+		return err
+	}
+	if err := publishCurrentMetadata(path); err != nil {
 		return err
 	}
 	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {

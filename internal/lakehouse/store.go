@@ -23,6 +23,7 @@ var owners = struct {
 
 type Store struct {
 	secrets    *secret.Keyring
+	sqlEngine  SQLEngine
 	dir        string
 	root       *os.Root
 	gate       chan struct{}
@@ -40,6 +41,7 @@ type namespace struct {
 	dataDir    string
 	lastUse    uint64
 	pending    int
+	sql        *sidecar
 }
 
 type OpenOption func(*Store)
@@ -114,6 +116,9 @@ func (s *Store) Close() error {
 	}
 	s.closed = true
 	for name, n := range s.namespaces {
+		if n.sql != nil {
+			n.sql.stop()
+		}
 		s.closeErr = errors.Join(s.closeErr, n.db.Close())
 		delete(s.namespaces, name)
 	}
@@ -146,6 +151,10 @@ func (s *Store) evict(name string) error {
 	n := s.namespaces[name]
 	if n == nil {
 		return nil
+	}
+	if n.sql != nil {
+		n.sql.stop()
+		n.sql = nil
 	}
 	if err := n.db.Close(); err != nil {
 		return err
