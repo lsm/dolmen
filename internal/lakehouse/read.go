@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"slices"
+	"strings"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -101,7 +102,7 @@ func inScope(sc *schema.TableSchema, scope *store.RowScope, row map[string]any) 
 	return row[schema.OwnerColumn] == scope.Owner
 }
 
-func (s *Store) presentRow(sc *schema.TableSchema, reveal map[string]bool, raw map[string]any, hidden bool) (map[string]any, int, error) {
+func (s *Store) presentRow(sc *schema.TableSchema, reveal map[string]bool, sealed map[string][]byte, raw map[string]any, hidden bool) (map[string]any, int, error) {
 	fields := append([]schema.Field{{Name: "id", Type: schema.Number}, {Name: "created_at", Type: schema.Timestamp}}, sc.Fields...)
 	if sc.HasOwner {
 		fields = append(fields, schema.Field{Name: schema.OwnerColumn, Type: schema.Text})
@@ -126,7 +127,11 @@ func (s *Store) presentRow(sc *schema.TableSchema, reveal map[string]bool, raw m
 		}
 		decoded := value.Decode(f.Type, v)
 		if f.Type == schema.Secret && v != nil && reveal[f.Name] {
-			plain, err := store.OpenSecret(s.secrets, f.Name, v)
+			stored, ok := sealed[f.Name]
+			if !ok {
+				return nil, 0, fmt.Errorf("%w: secret %q of a row is missing from the catalog", store.ErrCatalogCorrupt, f.Name)
+			}
+			plain, err := store.OpenSecret(s.secrets, f.Name, stored)
 			if err != nil {
 				return nil, 0, err
 			}
@@ -165,12 +170,16 @@ func (s *Store) GetRows(ctx context.Context, ns, name string, ids []int64, scope
 		if err != nil {
 			return err
 		}
+		sealed, err := loadSecrets(ctx, n, state, reveal, raws)
+		if err != nil {
+			return err
+		}
 		total := 0
 		for _, raw := range raws {
 			if !inScope(state.schema, scope, raw) {
 				continue
 			}
-			row, size, err := s.presentRow(state.schema, reveal, raw, false)
+			row, size, err := s.presentRow(state.schema, reveal, sealed[raw["id"].(int64)], raw, false)
 			if err != nil {
 				return err
 			}
@@ -190,4 +199,39 @@ func (s *Store) GetRows(ctx context.Context, ns, name string, ids []int64, scope
 		return store.QueryResult{}, err
 	}
 	return result, nil
+}
+
+func loadSecrets(ctx context.Context, n *namespace, state tableState, reveal map[string]bool, raws []map[string]any) (map[int64]map[string][]byte, error) {
+	out := map[int64]map[string][]byte{}
+	if len(reveal) == 0 || len(raws) == 0 {
+		return out, nil
+	}
+	args := []any{state.incarnation.Table, state.incarnation.DropGen}
+	wanted := make(map[int64]bool, len(raws))
+	for _, raw := range raws {
+		id := raw["id"].(int64)
+		wanted[id] = true
+		args = append(args, id)
+	}
+	rows, err := n.db.QueryContext(ctx, `SELECT row_id, field, value FROM _dolmen_lakehouse_secrets WHERE table_name = ? AND generation = ? AND row_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(raws)), ",")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var field string
+		var value []byte
+		if err := rows.Scan(&id, &field, &value); err != nil {
+			return nil, err
+		}
+		if !wanted[id] || !reveal[field] {
+			continue
+		}
+		if out[id] == nil {
+			out[id] = map[string][]byte{}
+		}
+		out[id][field] = value
+	}
+	return out, rows.Err()
 }
