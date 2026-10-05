@@ -30,6 +30,9 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 	if expected.Version < 0 {
 		return nil, nil, invalidf("expected_version must be positive")
 	}
+	if (expected.Table != "" || expected.NsGen != [16]byte{}) && (expected.NsGen != [16]byte{} && expected.NsGen != state.incarnation.NsGen || expected.Table != "" && expected.Table != state.incarnation.Table || expected.DropGen != state.incarnation.DropGen) {
+		return nil, nil, fmt.Errorf("%w: table %s.%s was replaced; describe the current table", store.ErrNotFound, state.schema.Namespace, state.incarnation.Table)
+	}
 	if err := checkExpected(state, expected, true); err != nil {
 		return nil, nil, err
 	}

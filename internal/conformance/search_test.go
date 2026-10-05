@@ -105,7 +105,7 @@ func TestSearchFulltextSyntaxAcceptReject(t *testing.T) {
 	}
 	msg, _ := envelopeOf(t, body)["message"].(string)
 	want := `query "money-back": FTS5 parses a bare "-" as a column filter, so a hyphenated term must be double-quoted (e.g. "money-back"); to exclude a term, write NOT between words`
-	if testEngine(t) == store.EnginePostgres {
+	if testEngine(t) != store.EngineSQLite {
 		want = `query "money-back": a bare - is not a query operator; double-quote terms that contain punctuation`
 	}
 	if msg != want {
@@ -130,8 +130,8 @@ func TestSearchFulltextSyntaxAcceptReject(t *testing.T) {
 		_, body := h.httpCall("search_fulltext", map[string]any{"namespace": "fts", "table": "t", "query": q})
 		got, _ := envelopeOf(t, body)["message"].(string)
 		want := msgs[0]
-		if testEngine(t) == store.EnginePostgres {
-			want = msgs[1]
+		if testEngine(t) != store.EngineSQLite {
+			want = strings.Replace(msgs[1], "PostgreSQL full-text", engineFullTextName(t)+" full-text", 1)
 		}
 		if got != want {
 			t.Fatalf("%s must teach the fix:\n got %s\nwant %s", q, got, want)
@@ -588,4 +588,11 @@ func TestSearchesReportTheLimitTheyApplied(t *testing.T) {
 			}
 		}
 	}
+}
+
+func engineFullTextName(t *testing.T) string {
+	if testEngine(t) == store.EngineLakehouse {
+		return "lakehouse"
+	}
+	return "PostgreSQL"
 }

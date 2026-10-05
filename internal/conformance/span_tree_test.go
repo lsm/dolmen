@@ -81,9 +81,9 @@ func TestOneRequestProducesTheWholeSpanTree(t *testing.T) {
 	if got := attrOf(embedSpan, "gen_ai.request.model"); got != "fake-model" {
 		t.Errorf("gen_ai.request.model = %q, want fake-model", got)
 	}
-	if testEngine(t) == store.EnginePostgres {
+	if testEngine(t) != store.EngineSQLite {
 		if extra := unexpectedChildren(t, byParent[insert.SpanContext().SpanID()], "embeddings fake-model"); len(extra) > 0 {
-			t.Errorf("PostgreSQL has no per-namespace writer, but INSERT recorded %v", extra)
+			t.Errorf("%s has no per-namespace writer span, but INSERT recorded %v", testEngine(t), extra)
 		}
 	} else {
 		for _, name := range []string{"dolmen.writer.wait", "dolmen.transaction"} {

@@ -99,8 +99,11 @@ func TestCapabilitiesShapePinned(t *testing.T) {
 	h := newHarness(t)
 
 	dialect := "sqlite"
-	if testEngine(t) == store.EnginePostgres {
+	switch testEngine(t) {
+	case store.EnginePostgres:
 		dialect = "postgresql"
+	case store.EngineLakehouse:
+		dialect = "duckdb"
 	}
 	want := map[string]any{
 		"vector_execution": "exact",

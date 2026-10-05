@@ -70,7 +70,7 @@ func (s *Store) matchIDs(ctx context.Context, n *namespace, ns string, state tab
 		if errors.As(err, &missing) {
 			return nil, derr.New(derr.Query, "filter %q is not a valid WHERE expression: it names table %s, and a filter may only reference the columns of %s", filter, missing.name, state.schema.Name)
 		}
-		return nil, derr.New(derr.Query, "filter %q is not a valid WHERE expression: %s", filter, strings.TrimPrefix(err.Error(), "lakehouse SQL (DuckDB dialect) failed: "))
+		return nil, derr.New(derr.Query, "filter %q is not a single SQL WHERE expression: %s", filter, strings.TrimPrefix(err.Error(), "lakehouse SQL (DuckDB dialect) failed: "))
 	}
 	ids := make([]int64, 0, len(res.Rows))
 	for _, row := range res.Rows {
@@ -542,6 +542,9 @@ func (s *Store) pinEmbedding(ctx context.Context, n *namespace, state tableState
 func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, records []map[string]any, opts store.WriteOpts, emb store.Embedder, scope *store.RowScope, scopeIncarnation store.Incarnation) (store.InsertResult, error) {
 	if len(on) == 0 {
 		return store.InsertResult{}, invalidf("on is required: name the field or fields that identify a record")
+	}
+	if len(on) > store.MaxKeyFields {
+		return store.InsertResult{}, invalidf("too many key fields: %d > %d", len(on), store.MaxKeyFields)
 	}
 	records, err := normalizeRecords(records)
 	if err != nil {
