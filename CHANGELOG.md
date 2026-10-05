@@ -11,6 +11,9 @@
   confined to the namespace's data directory before caller SQL runs, sees each acknowledged append
   on the next query, binds arguments, pages and truncates like the other engines, and cancels on
   the deadline. The engine is still not selectable.
+- Warn once when forwarding headers from a peer outside `DOLMEN_TRUSTED_PROXIES` are dropped, and
+  once when a proxy's path-prefix hint cannot be used, instead of silently advertising a
+  `base_url` without the prefix (#577).
 
 - Lakehouse slice 6 adds internal appends. Row ids, change records, the idempotency record and
   exact per-owner row counts commit together in the namespace's SQLite commit log; each commit then

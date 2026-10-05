@@ -2,6 +2,7 @@ package lakehouse
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lsm/dolmen/internal/derr"
@@ -61,6 +63,7 @@ type sidecar struct {
 	exitErr     error
 	stderr      *tailBuffer
 	home        string
+	closing     atomic.Bool
 }
 
 type tailBuffer struct {
@@ -129,13 +132,13 @@ func startSidecar(ctx context.Context, cfg SQLEngine, dataDir string, views []st
 	cmd.Env = []string{
 		"HOME=" + home,
 		"USERPROFILE=" + home,
-		"DOLMEN_DUCKDB_DATA_DIR=" + dataDir,
+		"DOLMEN_DUCKDB_DATA_DIR=" + filepath.ToSlash(dataDir),
 		"DOLMEN_DUCKDB_EXTENSION_DIR=" + cfg.ExtensionDir,
 		"DOLMEN_DUCKDB_MEMORY=" + strconv.FormatInt(cfg.Memory, 10),
 		"DOLMEN_DUCKDB_THREADS=" + strconv.Itoa(cfg.Threads),
-		"TMPDIR=" + os.TempDir(),
-		"TMP=" + os.TempDir(),
-		"TEMP=" + os.TempDir(),
+		"TMPDIR=" + home,
+		"TMP=" + home,
+		"TEMP=" + home,
 	}
 	if root := os.Getenv("SYSTEMROOT"); root != "" {
 		cmd.Env = append(cmd.Env, "SYSTEMROOT="+root)
@@ -179,7 +182,11 @@ func startSidecar(ctx context.Context, cfg SQLEngine, dataDir string, views []st
 		if stmt == "" {
 			op, args = "seal", nil
 		}
-		if _, err := sc.call(ctx, op, args...); err != nil {
+		fields, err := sc.call(ctx, op, args...)
+		if err == nil && (len(fields) < 2 || fields[1] != "ok") {
+			err = sqlUnavailable("the SQL sidecar refused to %s a view: %v", op, sidecarError(fields))
+		}
+		if err != nil {
 			sc.stop()
 			return nil, err
 		}
@@ -349,7 +356,7 @@ func viewSQL(state tableState) string {
 	if sc.HasOwner {
 		cols = append(cols, quoteIdent(schema.OwnerColumn))
 	}
-	path := filepath.Join(filepath.FromSlash(strings.TrimPrefix(state.native.Location(), "file://")), "metadata", currentMetadataName)
+	path := filepath.Join(localPath(state.native.Location()), "metadata", currentMetadataName)
 	return "CREATE VIEW " + quoteIdent(sc.Name) + " AS SELECT " + strings.Join(cols, ", ") + " FROM iceberg_scan(" + quoteLiteral(filepath.ToSlash(path)) + ")"
 }
 
@@ -371,6 +378,9 @@ func (s *Store) namespaceViews(ctx context.Context, n *namespace, ns string) ([]
 	ambiguous := map[string]bool{}
 	var fp strings.Builder
 	for _, state := range states {
+		if err := n.freshenCurrentMetadata(state); err != nil {
+			return nil, "", nil, err
+		}
 		views = append(views, viewSQL(state))
 		fmt.Fprintf(&fp, "%s|%d|%d|%t;", state.schema.Name, state.schema.Version, state.incarnation.DropGen, state.native.Metadata().CurrentSnapshot() != nil)
 		for _, f := range state.schema.Fields {
@@ -485,8 +495,13 @@ func parseQueryReply(fields []string) (store.QueryResult, error) {
 		return bad()
 	}
 	names := make([]string, ncols)
+	seen := make(map[string]bool, ncols)
 	for c := 0; c < ncols; c++ {
 		names[c] = fields[4+2*c]
+		if seen[names[c]] {
+			return store.QueryResult{}, invalidf("duplicate column label %q in query result; use AS aliases", names[c])
+		}
+		seen[names[c]] = true
 	}
 	pos := 4 + 2*ncols
 	nrows, err := strconv.Atoi(fields[pos])
@@ -510,6 +525,102 @@ func parseQueryReply(fields []string) (store.QueryResult, error) {
 	return result, nil
 }
 
+func (s *Store) track(ns string, sc *sidecar) {
+	s.sidecarMu.Lock()
+	defer s.sidecarMu.Unlock()
+	if s.sidecars == nil {
+		s.sidecars = map[string]map[*sidecar]bool{}
+	}
+	if s.sidecars[ns] == nil {
+		s.sidecars[ns] = map[*sidecar]bool{}
+	}
+	s.sidecars[ns][sc] = true
+}
+
+func (s *Store) tracked(ns string) []*sidecar {
+	s.sidecarMu.Lock()
+	defer s.sidecarMu.Unlock()
+	out := make([]*sidecar, 0, len(s.sidecars[ns]))
+	for sc := range s.sidecars[ns] {
+		out = append(out, sc)
+	}
+	return out
+}
+
+func (s *Store) drain(ns string, sc *sidecar, interrupt bool) {
+	if interrupt {
+		sc.closing.Store(true)
+		for !sc.run.TryLock() {
+			_ = sc.send("0", "cancel")
+			time.Sleep(20 * time.Millisecond)
+		}
+	} else {
+		sc.run.Lock()
+	}
+	sc.stop()
+	sc.run.Unlock()
+	s.sidecarMu.Lock()
+	defer s.sidecarMu.Unlock()
+	delete(s.sidecars[ns], sc)
+	if len(s.sidecars[ns]) == 0 {
+		delete(s.sidecars, ns)
+	}
+}
+
+func (s *Store) drainAll(ns string, scs []*sidecar, interrupt bool) {
+	for _, sc := range scs {
+		s.drain(ns, sc, interrupt)
+	}
+}
+
+func (s *Store) retire(ns string, sc *sidecar) {
+	go s.drain(ns, sc, false)
+}
+
+func (s *Store) ensureQuerySidecar(ctx context.Context, ns string, nsGen [16]byte) (*sidecar, map[string]schema.FieldType, error) {
+	var sc *sidecar
+	var labels map[string]schema.FieldType
+	err := s.withNamespace(ctx, ns, func(n *namespace) error {
+		if nsGen != [16]byte{} && nsGen != n.generation {
+			return fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, ns)
+		}
+		if s.dropping[ns] {
+			return fmt.Errorf("%w: namespace %s is being dropped", store.ErrNotFound, ns)
+		}
+		views, fp, types, err := s.namespaceViews(ctx, n, ns)
+		labels = types
+		if err != nil {
+			return err
+		}
+		if n.sql != nil && (n.sql.fingerprint != fp || !n.sql.alive()) {
+			s.retire(ns, n.sql)
+			n.sql = nil
+		}
+		if n.sql == nil {
+			if n.sqlErr != nil && time.Now().Before(n.sqlRetry) {
+				return n.sqlErr
+			}
+			if n.sql, err = startSidecar(ctx, s.sqlEngine, n.dataDir, views, fp); err != nil {
+				if ctx.Err() != nil {
+					return err
+				}
+				n.sqlFails++
+				n.sqlErr = err
+				n.sqlRetry = time.Now().Add(min(time.Second<<min(n.sqlFails-1, 5), 30*time.Second))
+				return err
+			}
+			n.sqlFails, n.sqlErr = 0, nil
+			s.track(ns, n.sql)
+		}
+		sc = n.sql
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return sc, labels, nil
+}
+
 func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16]byte, page store.Page) (store.QueryResult, error) {
 	if err := store.ValidateQueryShape(sql); err != nil {
 		return store.QueryResult{}, err
@@ -531,33 +642,18 @@ func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16
 			return store.QueryResult{}, err
 		}
 	}
-	var sc *sidecar
-	var labels map[string]schema.FieldType
-	err := s.withNamespace(ctx, ns, func(n *namespace) error {
-		if nsGen != [16]byte{} && nsGen != n.generation {
-			return fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, ns)
-		}
-		views, fp, types, err := s.namespaceViews(ctx, n, ns)
-		labels = types
-		if err != nil {
-			return err
-		}
-		if n.sql != nil && (n.sql.fingerprint != fp || !n.sql.alive()) {
-			n.sql.stop()
-			n.sql = nil
-		}
-		if n.sql == nil {
-			if n.sql, err = startSidecar(ctx, s.sqlEngine, n.dataDir, views, fp); err != nil {
-				return err
-			}
-		}
-		sc = n.sql
-		return nil
-	})
+	sc, labels, err := s.ensureQuerySidecar(ctx, ns, nsGen)
 	if err != nil {
 		return store.QueryResult{}, err
 	}
 	sc.run.Lock()
+	if !sc.alive() || sc.closing.Load() {
+		sc.run.Unlock()
+		if sc, labels, err = s.ensureQuerySidecar(ctx, ns, nsGen); err != nil {
+			return store.QueryResult{}, err
+		}
+		sc.run.Lock()
+	}
 	defer sc.run.Unlock()
 	fields, err := sc.call(ctx, "query", append([]string{strconv.Itoa(page.Offset), strconv.Itoa(limit), strconv.Itoa(store.MaxQueryBytes), sql}, encoded...)...)
 	if err != nil {
@@ -596,6 +692,33 @@ func (s *Store) Capabilities() store.EngineCapabilities {
 		QueryDialect:    DialectDuckDB,
 		FilterDialect:   DialectDuckDB,
 	}
+}
+
+func (n *namespace) freshenCurrentMetadata(state tableState) error {
+	if state.native.Metadata().CurrentSnapshot() == nil {
+		return nil
+	}
+	source := localPath(state.native.MetadataLocation())
+	copied := filepath.Join(filepath.Dir(source), currentMetadataName)
+	if n.published[state.schema.Name] == source {
+		if _, err := os.Stat(copied); err == nil {
+			return nil
+		}
+	}
+	want, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+	if have, err := os.ReadFile(copied); err != nil || !bytes.Equal(have, want) {
+		if err := publishCurrentMetadata(source); err != nil {
+			return err
+		}
+	}
+	if n.published == nil {
+		n.published = map[string]string{}
+	}
+	n.published[state.schema.Name] = source
+	return nil
 }
 
 func publishCurrentMetadata(metadataPath string) error {

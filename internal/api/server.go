@@ -38,6 +38,7 @@ type Server struct {
 	keepaliveInterval  time.Duration
 	holdReplay         func()
 	proxyAdviceOnce    sync.Once
+	prefixAdviceOnce   sync.Once
 	authn              *auth.Authenticator
 	grants             *auth.Registry
 	oidcSource         *auth.OIDCSource
@@ -141,6 +142,12 @@ func (s *Server) publicContext(r *http.Request) skill.Context {
 		s.proxyAdviceOnce.Do(func() {
 			slog.Warn("advertising a base URL no proxied client can reach",
 				"base_url", ctx.BaseURL, "advice", skill.ProxyAdvice)
+		})
+	}
+	if s.baseURL == "" && s.prefix == "" && skill.UnusablePrefixHint(r) {
+		s.prefixAdviceOnce.Do(func() {
+			slog.Warn("advertising a base URL without the path prefix the proxy reported",
+				"base_url", ctx.BaseURL, "path", r.URL.EscapedPath(), "advice", skill.PrefixHintAdvice)
 		})
 	}
 	return ctx
