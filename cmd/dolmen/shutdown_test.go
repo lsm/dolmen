@@ -93,3 +93,27 @@ func TestShutdownReportsACloseFailure(t *testing.T) {
 		t.Fatalf("a close error must reach the exit status, got %v", err)
 	}
 }
+
+func TestShutdownBoundsAStuckStoreClose(t *testing.T) {
+	srv, apiSrv, _ := servingWith(t, func(w http.ResponseWriter, r *http.Request) {})
+	release := make(chan struct{})
+	defer close(release)
+	started := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		result <- shutdown(srv, apiSrv, 100*time.Millisecond, func() error {
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	<-started
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("stuck cleanup: %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("shutdown waited forever for store cleanup after its grace")
+	}
+}
