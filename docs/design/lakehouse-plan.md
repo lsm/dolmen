@@ -51,7 +51,7 @@ stacked; merge `main` into an active branch when needed, never rebase or force-p
 | 5 | **Table DDL + schema registry** | merged ([#574](https://github.com/lsm/dolmen/pull/574)); table/lifecycle conformance |
 | 6 | **Append + row-id allocation + idempotency** | implemented in slice 6; append conformance |
 | 11 | **`query` over the DuckDB sidecar** | implemented in slice 11; the release artifacts follow in its second PR |
-| 7 | **Typed reads + number normalization** | after slice 11, in the approved order |
+| 7 | **Typed reads + number normalization** | implemented in slice 7; typed-read conformance |
 | 8 | **Point deletes by position** | after slice 11, in the approved order |
 | 9 | **Search: full text + vectors** (native, per D27) | after slice 11, in the approved order |
 | 10 | **Change feed** | after slice 11, in the approved order |
@@ -196,6 +196,19 @@ interrupt and waits a short grace before killing the process. A missing or faile
 `ErrSQLEngineUnavailable` with the reason; the public error class for it is decided with slice 12,
 when the engine first becomes reachable. `capabilities` reports `query_dialect` and
 `filter_dialect` as `duckdb`.
+
+### Slice 7's typed reads
+
+`read_rows` scans the table's Iceberg snapshot with an `id IN (...)` row filter, after pending
+commits are materialized, and presents each row through the same decoding the other engines use:
+numbers from their canonical text back to an integer when exact and a double otherwise, booleans
+native, `json` decoded with exact numbers, vectors as number arrays, secrets as the mask unless
+revealed (then opened with the keyring), timestamps and `created_at` as text, and `_embedding`
+hidden. Rows come back once each in ascending id order, missing ids are omitted, a row scope hides
+other owners' rows, and the 32 MiB budget truncates. `query` results are typed by result-column
+label in the same way, where a label names one declared field across the namespace, so a
+`number` read through DuckDB's `DOUBLE` comes back an integer when it is one.
+`TestLakehouseTypedReadsBackendConformance` pins the same values on SQLite and the lakehouse.
 
 ### Slice 3 in more detail
 

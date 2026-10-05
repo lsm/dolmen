@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Lakehouse slice 7 adds `read_rows` and typed reads: numbers, booleans, `json`, vectors, secrets
+  (masked or revealed), timestamps and owner scopes read back exactly as on SQLite, which a
+  both-engine conformance test pins; `query` results are typed by column label the same way.
+
 - Lakehouse slice 11 adds `query` over `dolmen-duckdb`, a C++ sidecar on the pinned prebuilt
   DuckDB, one per namespace, over a framed stdin/stdout protocol. It is sealed read-only and
   confined to the namespace's data directory before caller SQL runs, sees each acknowledged append
