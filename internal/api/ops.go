@@ -605,6 +605,9 @@ var Ops = map[string]OpDef{
 			"which can take ten seconds or more and can fail transiently, so retry the request or pre-seed the " +
 			"cache), or incomplete (DOLMEN_EMBED_MODEL names a model directory that is not complete; no " +
 			"download repairs that, an operator has to fix or replace it). " +
+			"Under auth: on it also reports auth: sign_in (people can sign in through an identity provider at " +
+			"/v1/auth/begin, and rotate_signing_key exists) and identity_headers (a trusted gateway may assert " +
+			"the caller's identity in X-Dolmen-Principal and X-Dolmen-Groups); auth is absent under auth: off. " +
 			"Call it to answer those questions without attempting a write or a text search. Status only — " +
 			"no secrets are exposed, no embedding is run, and no network request is made: usable reflects " +
 			"configuration, so an endpoint that is down or rejects the request still fails at first use, " +
@@ -640,6 +643,16 @@ var Ops = map[string]OpDef{
 				"required":             []string{"provider", "usable"},
 				"additionalProperties": false,
 			},
+			"auth": map[string]any{
+				"type":        "object",
+				"description": "How a caller can authenticate; present only when authentication is on",
+				"properties": map[string]any{
+					"sign_in":          prop("boolean", "Whether people can sign in through an identity provider at /v1/auth/begin and receive a bearer token; rotate_signing_key exists only when this is true"),
+					"identity_headers": prop("boolean", "Whether a trusted gateway may assert the caller's identity with X-Dolmen-Principal and X-Dolmen-Groups instead of a bearer credential"),
+				},
+				"required":             []string{"sign_in", "identity_headers"},
+				"additionalProperties": false,
+			},
 		}, "embedding"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req struct{}
@@ -659,7 +672,12 @@ var Ops = map[string]OpDef{
 			if c, ok := s.emb.(interface{ ModelState() string }); ok {
 				emb["model_state"] = c.ModelState()
 			}
-			return map[string]any{"embedding": emb}, nil
+			out := map[string]any{"embedding": emb}
+			if s.authn.On() {
+				_, signIn := s.oidc()
+				out["auth"] = map[string]any{"sign_in": signIn, "identity_headers": s.authn.HeaderSourceEnabled()}
+			}
+			return out, nil
 		},
 	},
 	"capabilities": {
@@ -670,7 +688,7 @@ var Ops = map[string]OpDef{
 			"accepts) and filter_dialect (the dialect a filter is read in under auth: off; under auth: on the " +
 			"shared allowlist binds instead). Field names and types are pinned, so " +
 			"the discovery is portable across conforming engines; unknown future fields are additive. Read-only, " +
-			"engine-reported verbatim — the single discovery surface under auth: off, and what describe_server inlines under auth: on.",
+			"engine-reported verbatim.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
