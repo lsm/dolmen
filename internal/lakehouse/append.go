@@ -38,10 +38,13 @@ var appendDDL = []string{
 	`CREATE INDEX IF NOT EXISTS _dolmen_lakehouse_commits_pending ON _dolmen_lakehouse_commits(commit_id) WHERE materialized = 0`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_changes(seq INTEGER PRIMARY KEY AUTOINCREMENT, table_name TEXT NOT NULL, generation INTEGER NOT NULL, row_id INTEGER NOT NULL, kind TEXT NOT NULL, owner TEXT, commit_id INTEGER NOT NULL, at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_idempotency(table_name TEXT NOT NULL, generation INTEGER NOT NULL, owner TEXT NOT NULL, key TEXT NOT NULL, payload_hash TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(table_name, generation, owner, key))`,
+	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_secrets(table_name TEXT NOT NULL, generation INTEGER NOT NULL, row_id INTEGER NOT NULL, field TEXT NOT NULL, value BLOB NOT NULL, PRIMARY KEY(table_name, generation, row_id, field))`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_counts(table_name TEXT NOT NULL, generation INTEGER NOT NULL, owner TEXT NOT NULL, n INTEGER NOT NULL CHECK(n >= 0), PRIMARY KEY(table_name, generation, owner))`,
 }
 
 var materializeHook func() error
+
+var secretPresent = []byte{0}
 
 type commitRows struct {
 	Rows []map[string]any
@@ -284,6 +287,16 @@ func (s *Store) commitAppend(ctx context.Context, tx *sql.Tx, state tableState, 
 	for i, row := range rows {
 		result.Ids[i] = next + int64(i)
 		row["id"] = result.Ids[i]
+		for _, f := range state.schema.SecretFields() {
+			sealed, ok := row[f.Name].([]byte)
+			if !ok {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO _dolmen_lakehouse_secrets(table_name, generation, row_id, field, value) VALUES(?,?,?,?,?)`, inc.Table, inc.DropGen, result.Ids[i], f.Name, sealed); err != nil {
+				return result, err
+			}
+			row[f.Name] = secretPresent
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO _dolmen_lakehouse_ids(table_name, generation, next_id) VALUES(?,?,?) ON CONFLICT(table_name, generation) DO UPDATE SET next_id=excluded.next_id`, inc.Table, inc.DropGen, next+int64(len(rows))); err != nil {
 		return result, err

@@ -168,7 +168,10 @@ namespace runs, and on reopen. A replay first looks for the commit's snapshot pr
 after the Iceberg commit but before the log was marked never duplicates rows. Ids are never reused
 within a table lifetime; a dropped and recreated table starts again at 1 and keeps no idempotency
 keys, as SQLite does. The first embedded append pins the table's embedding space and dimension in
-its schema property before the log commits. `describe_table` reports the exact count, table-wide or
+its schema property before the log commits. Sealed secret values are written to the catalog, not to the data files: the Parquet column holds
+only a presence marker. The SQL sidecar may read the whole data directory, so a ciphertext stored
+there would be one `read_parquet` away from caller SQL, the exposure `query` was closed against on
+the other engines. `describe_table` reports the exact count, table-wide or
 for one owner. Migrations of populated tables, reads, deletes and the change-feed operations stay
 with the slices that own them.
 
