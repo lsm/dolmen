@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Lakehouse slice 5 adds internal table lifecycle, versioned schema evolution, dry-run plans,
+  migration history, and durable drop/recreate guards. Schema properties and native Iceberg
+  evolution publish atomically; table lifecycle conformance runs on SQLite and lakehouse.
+  SQLite now enforces the supplied DropTable incarnation before removing a successor table.
+
 - Change-feed records now carry optional `commit` transaction grouping across polling, pagination and SSE. Legacy records remain unlabelled. SQLite catalog format 5 keeps minimum reader 3; PostgreSQL catalog 9 adds the column and namespace counter in place.
 
 - Change `-shutdown-grace 0` to immediate cancellation and cap shutdown cleanup at five seconds, including stuck store close and stdio cleanup.

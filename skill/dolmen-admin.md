@@ -380,7 +380,7 @@ locked-out server.
   drop can remove an unreadable catalog or incomplete directory; listing skips incomplete
   namespaces and valid children still block a parent drop. Generation-pinned drops require its current
   readable lifetime. Public selection is
-  still refused while table/write/query slices are incomplete. Do not configure `-engine lakehouse`
+  still refused while write/query/public-selector slices are incomplete. Do not configure `-engine lakehouse`
   for this server yet; `docs/design/lakehouse-plan.md` records the remaining slices and the
   one-process-per-local-data-directory topology.
 - `capabilities` reports the engine's static surface: `vector_execution` (`exact` or `ann`),
@@ -861,6 +861,13 @@ search_fulltext(namespace="research", table="findings", query="auth")   # needs 
                                                                        # vectorize field plus a provider
 query(namespace="research", sql="SELECT * FROM findings WHERE created_at >= ? ORDER BY created_at DESC", args=["2026-09-01"])
 ```
+
+Internal lakehouse development includes table lifecycle and empty-table schema evolution,
+version guards, dry-run plans and migration history, alongside namespace lifecycle. These
+APIs run directly in SQLite/lakehouse conformance; `-engine lakehouse` remains refused until
+the public-selector slice. Writes and populated-table backfills follow in later slices.
+Schema and native Iceberg evolution publish together; stale incarnations cannot drop a
+recreated table on either backend.
 
 Operation deadlines also reach Dolmen's SQL and filter compilation. PostgreSQL uses at most four compiler workers per process; a canceled call releases its transaction while an upstream parser finishes. Narrow a query before retrying a timeout, and check the result of a write before retrying it because it may or may not have committed. See the deadline design document for the cancellation and worker admission rules.
 

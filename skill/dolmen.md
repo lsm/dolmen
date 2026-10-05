@@ -618,3 +618,10 @@ Two things this export cannot carry, which is why restoring from one is a re-imp
 - **Secret fields.** `query` never reveals them: it returns the `"••••"` mask, which is also the one
   value the server refuses to store. An export of a table with secrets therefore cannot be re-imported
   faithfully. Back that namespace up on the server instead, and keep the bytes out of the conversation.
+
+Internal lakehouse development includes table lifecycle and empty-table schema evolution,
+version guards, dry-run plans and migration history, alongside namespace lifecycle. These
+APIs run directly in SQLite/lakehouse conformance; `-engine lakehouse` remains refused until
+the public-selector slice. Writes and populated-table backfills follow in later slices.
+Schema and native Iceberg evolution publish together; stale incarnations cannot drop a
+recreated table on either backend.

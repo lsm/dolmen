@@ -272,6 +272,10 @@ func (s *Store) DropTable(ctx context.Context, nsName, table string, inc Incarna
 		return err
 	}
 
+	if err := checkScopeIncarnation(ctx, tx, nsName, table, inc); err != nil {
+		return err
+	}
+
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`DROP TABLE IF EXISTS %s`, q(ftsTable(table)))); err != nil {
 		return err

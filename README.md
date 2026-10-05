@@ -1162,8 +1162,11 @@ reopen, leaf-only drop and drop/recreate lifetimes. An unpinned drop can remove 
 catalog or incomplete namespace directory; listing skips incomplete namespaces and valid children
 still block a parent drop. Generation-pinned drops require a readable, matching lifetime. Deploy one process
 per local data directory.
-Table and write operations, the DuckDB query sidecar and public engine selection follow in later
-slices; `-engine lakehouse` is still refused. See [the lane plan](docs/design/lakehouse-plan.md).
+Internal table lifecycle and schema evolution are also available: create/list/describe/drop,
+versioned add/rename/drop and metadata migrations, dry-run plans and migration history. Schema
+properties and native Iceberg evolution publish in one catalog update; SQLite tombstones protect
+drop/recreate lifetimes. Populated-table backfills, writes, the DuckDB query sidecar and public
+engine selection follow in later slices; `-engine lakehouse` is still refused. See [the lane plan](docs/design/lakehouse-plan.md).
 
 Storage sits behind the store layer, so engines like DuckDB-over-Parquet or Iceberg-over-S3 can be
 added as adapters without touching the API or MCP surface.
