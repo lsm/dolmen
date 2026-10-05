@@ -433,6 +433,10 @@ int Main() {
     g_stop = true;
   }
   g_work_cv.notify_all();
+  while (g_busy && g_con) {
+    g_con->Interrupt();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
   worker.join();
   g_con.reset();
   g_db.reset();
