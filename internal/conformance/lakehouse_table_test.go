@@ -115,6 +115,58 @@ func TestLakehouseTableBackendConformance(t *testing.T) {
 				}
 			})
 
+			kept, excluded := []string{"one"}, []string{"two"}
+			objectShape := "object"
+			addTag := schema.Change{Op: schema.OpAddField, Field: &schema.Field{Name: "tag", Type: schema.String}, Default: "one"}
+			addPayload := schema.Change{Op: schema.OpAddField, Field: &schema.Field{Name: "payload", Type: schema.JSON}, Default: []any{"one"}}
+			for _, tc := range []struct {
+				name    string
+				changes []schema.Change
+				valid   bool
+			}{
+				{"enum_backfill", []schema.Change{addTag, {Op: schema.OpSetEnum, Name: "tag", Enum: &excluded}}, false},
+				{"enum_renamed_backfill", []schema.Change{addTag, {Op: schema.OpRenameField, From: "tag", To: "label"}, {Op: schema.OpSetEnum, Name: "label", Enum: &excluded}}, false},
+				{"shape_backfill", []schema.Change{addPayload, {Op: schema.OpSetShape, Name: "payload", Shape: &objectShape}}, false},
+				{"shape_renamed_backfill", []schema.Change{addPayload, {Op: schema.OpRenameField, From: "payload", To: "document"}, {Op: schema.OpSetShape, Name: "document", Shape: &objectShape}}, false},
+				{"enum_backfill_allowed", []schema.Change{addTag, {Op: schema.OpSetEnum, Name: "tag", Enum: &kept}}, true},
+				{"shape_backfill_allowed", []schema.Change{{Op: schema.OpAddField, Field: &schema.Field{Name: "payload", Type: schema.JSON}, Default: map[string]any{"one": true}}, {Op: schema.OpSetShape, Name: "payload", Shape: &objectShape}}, true},
+				{"enum_drop_readd", []schema.Change{addTag, {Op: schema.OpDropField, Name: "tag"}, {Op: schema.OpAddField, Field: &schema.Field{Name: "tag", Type: schema.String}}, {Op: schema.OpSetEnum, Name: "tag", Enum: &excluded}}, true},
+				{"shape_drop_readd", []schema.Change{addPayload, {Op: schema.OpDropField, Name: "payload"}, {Op: schema.OpAddField, Field: &schema.Field{Name: "payload", Type: schema.JSON}}, {Op: schema.OpSetShape, Name: "payload", Shape: &objectShape}}, true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					fields := []schema.Field{{Name: "body", Type: schema.Text}}
+					if _, err := eng.CreateTable(ctx, ns, "backfill_checks", fields, store.TableOpts{}, [16]byte{}); err != nil {
+						t.Fatal(err)
+					}
+					defer eng.DropTable(ctx, ns, "backfill_checks", store.Incarnation{})
+					_, inc, err := eng.TableState(ctx, ns, "backfill_checks", nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					plan, planErr := eng.PlanMigration(ctx, ns, "backfill_checks", tc.changes, store.Embedder{}, inc, nil, store.Incarnation{})
+					if !tc.valid {
+						if !errors.Is(planErr, store.ErrInvalid) {
+							t.Fatalf("plan allowed a conflicting backfill: %v %v", plan, planErr)
+						}
+						if _, err := eng.Migrate(ctx, ns, "backfill_checks", tc.changes, store.Embedder{}, inc); !errors.Is(err, store.ErrInvalid) {
+							t.Fatalf("migration allowed a conflicting backfill: %v", err)
+						}
+						unchanged, after, err := eng.TableState(ctx, ns, "backfill_checks", nil)
+						if err != nil || after != inc || !reflect.DeepEqual(unchanged.Fields, fields) {
+							t.Fatalf("invalid backfill changed table state: %v %v %v", unchanged, after, err)
+						}
+						return
+					}
+					if planErr != nil {
+						t.Fatalf("valid backfill plan: %v", planErr)
+					}
+					next, err := eng.Migrate(ctx, ns, "backfill_checks", tc.changes, store.Embedder{}, inc)
+					if err != nil || !reflect.DeepEqual(next, plan.Table) {
+						t.Fatalf("valid backfill migration: %v %v", next, err)
+					}
+				})
+			}
+
 			enumValues := []string{"one"}
 			indexFields := []schema.Field{{Name: "tag", Type: schema.String, Enum: enumValues}, {Name: "body", Type: schema.Text, Fulltext: true, Vectorize: true}}
 			if _, err := eng.CreateTable(ctx, ns, "indexed_notes", indexFields, store.TableOpts{}, [16]byte{}); err != nil {
