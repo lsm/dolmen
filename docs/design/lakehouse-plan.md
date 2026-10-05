@@ -48,8 +48,8 @@ stacked; merge `main` into an active branch when needed, never rebase or force-p
 | 3 | **The harness learns a third engine** | merged ([#530](https://github.com/lsm/dolmen/pull/530)) |
 | S | **The lockdown spike** (§2.5) | **done** — DuckDB confines itself; stdio cannot, so the transport is a unix socket |
 | 4 | **Namespace lifecycle + catalog-in-SQLite** (pins land here) | merged ([#569](https://github.com/lsm/dolmen/pull/569)); namespace/lifecycle conformance only |
-| 5 | **Table DDL + schema registry** | implemented in slice 5; table/lifecycle conformance |
-| 6 | **Append + row-id allocation + idempotency** | after slice 5 |
+| 5 | **Table DDL + schema registry** | merged ([#574](https://github.com/lsm/dolmen/pull/574)); table/lifecycle conformance |
+| 6 | **Append + row-id allocation + idempotency** | implemented in slice 6; append conformance |
 | 11 | **`query` over the DuckDB sidecar** | after slice 6; real tables and data are prerequisites |
 | 7 | **Typed reads + number normalization** | after slice 11, in the approved order |
 | 8 | **Point deletes by position** | after slice 11, in the approved order |
@@ -153,6 +153,24 @@ and mutation slices and are explicitly refused internally until those land. It d
 public engine selection. Both-engine table conformance covers empty tables, validation, failed
 multi-step migrations, versions, persistence, history and stale guards; the existing SQLite
 DropTable guard is now enforced at its transaction boundary as the same test requires.
+
+### Slice 6's write foundation
+
+`Insert` is the first mutation. Each one is a single transaction on the namespace's SQLite
+catalog (catalog format 3) that allocates the row ids from a per-table-lifetime counter, appends one
+entry to the namespace commit log carrying the encoded rows, mints one change record per row with
+its owner and the commit id, records the idempotency key with its payload hash and ids, and adds the
+rows to the exact per-owner row count. Only then is the commit materialized into Iceberg: its rows
+are written to one Parquet file named for the commit, fsynced with its directory, and registered
+with `AddFiles` under a snapshot property naming the commit. The write is acknowledged once the log
+commits; materialization that fails is retried, in commit order, before the next operation on the
+namespace runs, and on reopen. A replay first looks for the commit's snapshot property, so a crash
+after the Iceberg commit but before the log was marked never duplicates rows. Ids are never reused
+within a table lifetime; a dropped and recreated table starts again at 1 and keeps no idempotency
+keys, as SQLite does. The first embedded append pins the table's embedding space and dimension in
+its schema property before the log commits. `describe_table` reports the exact count, table-wide or
+for one owner. Migrations of populated tables, reads, deletes and the change-feed operations stay
+with the slices that own them.
 
 ### Slice 3 in more detail
 

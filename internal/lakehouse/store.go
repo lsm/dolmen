@@ -39,6 +39,7 @@ type namespace struct {
 	generation [16]byte
 	dataDir    string
 	lastUse    uint64
+	pending    int
 }
 
 type OpenOption func(*Store)
@@ -133,6 +134,9 @@ func (s *Store) withNamespace(ctx context.Context, name string, fn func(*namespa
 	}
 	n, err := s.openNamespace(ctx, name)
 	if err != nil {
+		return err
+	}
+	if err := s.materialize(ctx, n, name); err != nil {
 		return err
 	}
 	return fn(n)
