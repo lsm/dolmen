@@ -196,7 +196,7 @@ func (s *Store) GetRows(ctx context.Context, ns, name string, ids []int64, scope
 			}
 			if total+size > store.MaxQueryBytes {
 				if len(result.Rows) == 0 {
-					return invalidf("read_rows result exceeds the %d MiB response budget on its first row", store.MaxQueryBytes>>20)
+					return invalidf("search result exceeds the %d MiB response budget on its first row", store.MaxQueryBytes>>20)
 				}
 				result.Truncated = true
 				return nil

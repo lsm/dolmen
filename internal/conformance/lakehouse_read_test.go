@@ -162,6 +162,13 @@ func TestLakehouseTypedReadsBackendConformance(t *testing.T) {
 			if err != nil || !budget.Truncated || len(budget.Rows) >= 21 {
 				t.Fatalf("json fields count their stored size against the response budget: %d rows, truncated %v, %v", len(budget.Rows), budget.Truncated, err)
 			}
+			if _, err := eng.Insert(ctx, ns, "wide", []map[string]any{{"doc": map[string]any{"s": strings.Repeat("y", store.MaxQueryBytes)}}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+				t.Fatal(err)
+			}
+			_, err = eng.GetRows(ctx, ns, "wide", []int64{22}, nil, store.Incarnation{})
+			if !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), "search result exceeds the 32 MiB response budget on its first row") {
+				t.Fatalf("a first row over the budget is refused with the shared message: %v", err)
+			}
 		})
 	}
 }
