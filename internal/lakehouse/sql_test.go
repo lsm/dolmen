@@ -378,3 +378,50 @@ func TestQueryAnExactLimitIsNotTruncated(t *testing.T) {
 		t.Fatalf("a page with a row past the limit must be truncated: %v %v", short, err)
 	}
 }
+
+func TestSidecarKeepsItsTempFilesUnderItsHome(t *testing.T) {
+	cfg := sidecarConfig(t)
+	s := openSQLStore(t, t.TempDir(), cfg)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	mustQuery(t, s, "ns", "SELECT 1 AS x")
+	catalogs, err := filepath.Glob(filepath.Join(s.namespaces["ns"].sql.home, "dolmen-duckdb-*.duckdb"))
+	if err != nil || len(catalogs) != 1 {
+		t.Fatalf("the sidecar's private catalog must live under the home Go removes: %v %v", catalogs, err)
+	}
+}
+
+func TestCloseInterruptsAQueryWithoutADeadline(t *testing.T) {
+	cfg := sidecarConfig(t)
+	s := openSQLStore(t, t.TempDir(), cfg)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	mustQuery(t, s, "ns", "SELECT 1 AS x")
+	sc := s.namespaces["ns"].sql
+	queried := make(chan error, 1)
+	go func() {
+		_, err := s.Query(context.Background(), "ns", "WITH RECURSIVE r(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM r) SELECT count(*) AS n FROM r", nil, [16]byte{}, store.Page{})
+		queried <- err
+	}()
+	for sc.run.TryLock() {
+		sc.run.Unlock()
+		runtime.Gosched()
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- s.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Close waited on a query that has no deadline")
+	}
+	if err := <-queried; err == nil {
+		t.Fatal("an interrupted query must report an error")
+	}
+}

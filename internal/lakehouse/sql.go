@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lsm/dolmen/internal/derr"
@@ -60,6 +61,7 @@ type sidecar struct {
 	exitErr     error
 	stderr      *tailBuffer
 	home        string
+	closing     atomic.Bool
 }
 
 type tailBuffer struct {
@@ -132,9 +134,9 @@ func startSidecar(ctx context.Context, cfg SQLEngine, dataDir string, views []st
 		"DOLMEN_DUCKDB_EXTENSION_DIR=" + cfg.ExtensionDir,
 		"DOLMEN_DUCKDB_MEMORY=" + strconv.FormatInt(cfg.Memory, 10),
 		"DOLMEN_DUCKDB_THREADS=" + strconv.Itoa(cfg.Threads),
-		"TMPDIR=" + os.TempDir(),
-		"TMP=" + os.TempDir(),
-		"TEMP=" + os.TempDir(),
+		"TMPDIR=" + home,
+		"TMP=" + home,
+		"TEMP=" + home,
 	}
 	if root := os.Getenv("SYSTEMROOT"); root != "" {
 		cmd.Env = append(cmd.Env, "SYSTEMROOT="+root)
@@ -532,8 +534,16 @@ func (s *Store) tracked(ns string) []*sidecar {
 	return out
 }
 
-func (s *Store) drain(ns string, sc *sidecar) {
-	sc.run.Lock()
+func (s *Store) drain(ns string, sc *sidecar, interrupt bool) {
+	if interrupt {
+		sc.closing.Store(true)
+		for !sc.run.TryLock() {
+			_ = sc.send("0", "cancel")
+			time.Sleep(20 * time.Millisecond)
+		}
+	} else {
+		sc.run.Lock()
+	}
 	sc.stop()
 	sc.run.Unlock()
 	s.sidecarMu.Lock()
@@ -544,14 +554,14 @@ func (s *Store) drain(ns string, sc *sidecar) {
 	}
 }
 
-func (s *Store) drainAll(ns string, scs []*sidecar) {
+func (s *Store) drainAll(ns string, scs []*sidecar, interrupt bool) {
 	for _, sc := range scs {
-		s.drain(ns, sc)
+		s.drain(ns, sc, interrupt)
 	}
 }
 
 func (s *Store) retire(ns string, sc *sidecar) {
-	go s.drain(ns, sc)
+	go s.drain(ns, sc, false)
 }
 
 func (s *Store) ensureQuerySidecar(ctx context.Context, ns string, nsGen [16]byte) (*sidecar, error) {
@@ -622,7 +632,7 @@ func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16
 		return store.QueryResult{}, err
 	}
 	sc.run.Lock()
-	if !sc.alive() {
+	if !sc.alive() || sc.closing.Load() {
 		sc.run.Unlock()
 		if sc, err = s.ensureQuerySidecar(ctx, ns, nsGen); err != nil {
 			return store.QueryResult{}, err

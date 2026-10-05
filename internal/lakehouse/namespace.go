@@ -180,7 +180,7 @@ func (s *Store) DropNamespace(ctx context.Context, name string, expected [16]byt
 	}
 	draining := s.tracked(name)
 	s.unlock()
-	s.drainAll(name, draining)
+	s.drainAll(name, draining, true)
 	<-s.gate
 	defer s.unlock()
 	delete(s.dropping, name)

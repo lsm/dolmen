@@ -266,7 +266,7 @@ func (s *Store) DropTable(ctx context.Context, ns, name string, expected store.I
 		draining = s.tracked(ns)
 		return nil
 	})
-	s.drainAll(ns, draining)
+	s.drainAll(ns, draining, false)
 	if err != nil || location == "" {
 		return err
 	}

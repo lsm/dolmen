@@ -123,12 +123,19 @@ func (s *Store) Close() error {
 		return s.closeErr
 	}
 	s.closed = true
-	for name, n := range s.namespaces {
-		if n.sql != nil {
-			n.sql.run.Lock()
-			n.sql.stop()
-			n.sql.run.Unlock()
+	s.sidecarMu.Lock()
+	running := map[string][]*sidecar{}
+	for ns, set := range s.sidecars {
+		for sc := range set {
+			running[ns] = append(running[ns], sc)
 		}
+	}
+	s.sidecarMu.Unlock()
+	for ns, scs := range running {
+		s.drainAll(ns, scs, true)
+	}
+	for name, n := range s.namespaces {
+		n.sql = nil
 		s.closeErr = errors.Join(s.closeErr, n.db.Close())
 		delete(s.namespaces, name)
 	}
