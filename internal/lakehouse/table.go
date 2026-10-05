@@ -78,7 +78,7 @@ type tableState struct {
 func loadTable(ctx context.Context, n *namespace, ns, name string) (tableState, error) {
 	var state tableState
 	if err := schema.ValidateTableName(name); err != nil {
-		return state, fmt.Errorf("%w: %v", store.ErrInvalid, err)
+		return state, store.TableNotFound(ns, name)
 	}
 	native, err := n.catalog.LoadTable(ctx, tableIdentifier(ns, name))
 	if errors.Is(err, catalog.ErrNoSuchTable) {
