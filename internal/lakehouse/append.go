@@ -23,7 +23,6 @@ import (
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 	"github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/table"
-	"github.com/google/uuid"
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
@@ -262,12 +261,7 @@ func (s *Store) Insert(ctx context.Context, ns, name string, records []map[strin
 		if err != nil {
 			return err
 		}
-		if state.schema.EmbedDim != dim || space == "" && state.schema.EmbedDim != 0 {
-			state.schema.EmbedSpace = emb.Identity
-			if err := s.publishSchema(ctx, n, state); err != nil {
-				return err
-			}
-		}
+		pin := state.schema.EmbedDim != dim || space == "" && state.schema.EmbedDim != 0
 		tx, err := n.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
@@ -285,6 +279,12 @@ func (s *Store) Insert(ctx context.Context, ns, name string, records []map[strin
 		}
 		n.pending++
 		result = committed
+		if pin {
+			state.schema.EmbedSpace = emb.Identity
+			if err := s.publishSchema(ctx, n, state); err != nil {
+				return err
+			}
+		}
 		s.materialize(ctx, n, ns)
 		return nil
 	})
@@ -454,7 +454,7 @@ func (s *Store) materializeCommit(ctx context.Context, n *namespace, ns string, 
 	}
 	if len(decoded.Rows) > 0 {
 		var err error
-		if path, err = s.writeDataFile(state.native, id, decoded.Rows); err != nil {
+		if path, err = s.writeDataFile(n, state.native, id, decoded.Rows); err != nil {
 			return err
 		}
 		if materializeWrittenHook != nil {
@@ -475,7 +475,7 @@ func (s *Store) materializeCommit(ctx context.Context, n *namespace, ns string, 
 
 type plainWriter struct{ io.Writer }
 
-func (s *Store) writeDataFile(native *table.Table, id int64, rows []map[string]any) (string, error) {
+func (s *Store) writeDataFile(n *namespace, native *table.Table, id int64, rows []map[string]any) (string, error) {
 	sch, err := table.SchemaToArrowSchema(native.Schema(), nil, true, false)
 	if err != nil {
 		return "", err
@@ -485,12 +485,16 @@ func (s *Store) writeDataFile(native *table.Table, id int64, rows []map[string]a
 		return "", err
 	}
 	defer record.Release()
-	dir := filepath.Join(filepath.FromSlash(strings.TrimPrefix(native.Location(), "file://")), "data")
+	location := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(native.Location(), "file://")))
+	if rel, err := filepath.Rel(n.dataDir, location); err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("%w: Iceberg table location escaped its namespace", store.ErrCatalogCorrupt)
+	}
+	dir := filepath.Join(location, "data")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, fmt.Sprintf("commit-%020d-%s.parquet", id, uuid.NewString()))
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	path := filepath.Join(dir, fmt.Sprintf("commit-%020d.parquet", id))
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return "", err
 	}
