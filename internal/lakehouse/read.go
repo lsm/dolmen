@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/big"
+	"math"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -83,10 +84,17 @@ func scanRows(ctx context.Context, state tableState, filter iceberg.BooleanExpre
 }
 
 func decodeNumber(f schema.Field, raw string) (any, error) {
-	if n, ok := new(big.Rat).SetString(raw); ok && n.IsInt() && n.Num().IsInt64() {
-		return n.Num().Int64(), nil
+	if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		return n, nil
 	}
-	return value.Coerce(f, json.Number(raw))
+	x, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return value.Coerce(f, json.Number(raw))
+	}
+	if x == math.Trunc(x) && x >= -(1<<63) && x < 1<<63 {
+		return int64(x), nil
+	}
+	return x, nil
 }
 
 func inScope(sc *schema.TableSchema, scope *store.RowScope, row map[string]any) bool {
@@ -137,7 +145,7 @@ func (s *Store) presentRow(sc *schema.TableSchema, reveal map[string]bool, seale
 			}
 			decoded = plain
 		}
-		size += value.EncodedSize(f.Name) + 16 + value.ApproxSize(decoded)
+		size += value.EncodedSize(f.Name) + 16 + presentedSize(f, v, decoded)
 		row[f.Name] = decoded
 	}
 	return row, size, nil
@@ -155,6 +163,9 @@ func (s *Store) GetRows(ctx context.Context, ns, name string, ids []int64, scope
 		}
 		if err := checkExpected(state, expected, false); err != nil {
 			return err
+		}
+		if !store.IncarnationIsZero(expected) && expected.Version != state.incarnation.Version {
+			return store.ScopeIncarnationChanged(ns, name)
 		}
 		if scope != nil && !scope.Empty && !state.schema.HasOwner {
 			return invalidf("table %s carries no owner column, so a row scope cannot be applied to it", name)
@@ -234,4 +245,21 @@ func loadSecrets(ctx context.Context, n *namespace, state tableState, reveal map
 		out[id][field] = value
 	}
 	return out, rows.Err()
+}
+
+func presentedSize(f schema.Field, raw, decoded any) int {
+	switch f.Type {
+	case schema.Vector:
+		if floats, ok := decoded.([]float64); ok {
+			if f.Dim > 0 {
+				return f.Dim*27 + 8
+			}
+			return len(floats)*27 + 8
+		}
+	case schema.JSON:
+		if _, ok := decoded.(string); !ok {
+			return value.RawSize(raw)
+		}
+	}
+	return value.ApproxSize(decoded)
 }

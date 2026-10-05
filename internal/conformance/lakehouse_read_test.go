@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/lakehouse"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/secret"
@@ -15,6 +17,7 @@ import (
 
 type lakehouseReadEngine interface {
 	lakehouseAppendEngine
+	TableState(context.Context, string, string, []store.AuthBinding) (*schema.TableSchema, store.Incarnation, error)
 	GetRows(context.Context, string, string, []int64, *store.RowScope, store.Incarnation) (store.QueryResult, error)
 }
 
@@ -121,6 +124,42 @@ func TestLakehouseTypedReadsBackendConformance(t *testing.T) {
 			none, err := eng.GetRows(ctx, ns, "mine", []int64{1, 2}, &store.RowScope{Empty: true}, store.Incarnation{})
 			if err != nil || len(none.Rows) != 0 {
 				t.Fatalf("an empty scope reads nothing: %+v %v", none, err)
+			}
+			_, inc, err := eng.TableState(ctx, ns, "mine", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := eng.GetRows(ctx, ns, "mine", []int64{1}, &store.RowScope{Owner: "alice"}, inc); err != nil {
+				t.Fatalf("a current incarnation must be accepted: %v", err)
+			}
+			stale := inc
+			stale.Version++
+			if _, err := eng.GetRows(ctx, ns, "mine", []int64{1}, &store.RowScope{Owner: "alice"}, stale); !errors.Is(err, derr.ErrConflict) {
+				t.Fatalf("a scope resolved against another schema version must be refused: %v", err)
+			}
+
+			if _, err := eng.CreateTable(ctx, ns, "wide", []schema.Field{{Name: "n", Type: schema.Number}, {Name: "doc", Type: schema.JSON}}, store.TableOpts{}, [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			big := strings.Repeat("x", 2<<20)
+			wide := []map[string]any{{"n": float64(1 << 62)}}
+			for range 20 {
+				wide = append(wide, map[string]any{"doc": map[string]any{"s": big}})
+			}
+			if _, err := eng.Insert(ctx, ns, "wide", wide, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+				t.Fatal(err)
+			}
+			exact, err := eng.GetRows(ctx, ns, "wide", []int64{1}, nil, store.Incarnation{})
+			if err != nil || exact.Rows[0]["n"] != int64(1<<62) {
+				t.Fatalf("an integral double reads back as the integer it equals: %#v %v", exact.Rows, err)
+			}
+			ids := make([]int64, 21)
+			for i := range ids {
+				ids[i] = int64(i + 1)
+			}
+			budget, err := eng.GetRows(ctx, ns, "wide", ids, nil, store.Incarnation{})
+			if err != nil || !budget.Truncated || len(budget.Rows) >= 21 {
+				t.Fatalf("json fields count their stored size against the response budget: %d rows, truncated %v, %v", len(budget.Rows), budget.Truncated, err)
 			}
 		})
 	}
