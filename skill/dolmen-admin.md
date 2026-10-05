@@ -51,6 +51,10 @@ Windows PowerShell:
 claude mcp add --transport http dolmen '{{ .MCPURL }}'
 ```
 
+On a server that requires a credential, keep it in `DOLMEN_TOKEN` and add
+`--header "Authorization: Bearer $DOLMEN_TOKEN"` to that command (see "When the server requires a
+credential" below; other MCP hosts take the same header in their own configuration).
+
 The `dolmen` tools then appear in `tools/list` with full input schemas. The endpoint can also be
 read from the environment: `DOLMEN_URL` (default `{{ .BaseURL }}`).
 
@@ -196,7 +200,14 @@ dolmen -addr 0.0.0.0:8790
   `X-Dolmen-Groups` (comma-separated). Headers from any other peer are ignored, and trust comes from
   the TCP peer, never `X-Forwarded-For`. In Kubernetes the peer is the ingress or gateway pod, so
   list the pod network's range.
+- Gateway identity works only with `DOLMEN_AUTH=on`, and API keys keep working beside it: a bearer
+  credential outranks the headers, and an invalid one is refused rather than falling back to them.
 - `dolmen mcp` (stdio) refuses to start with authentication on; serve HTTP instead.
+
+Every request then carries `Authorization: Bearer <credential>`, and a request body needs
+`Content-Type: application/json`; a body of any other type is refused as `invalid_request` before
+the credential is checked. `whoami` reports `principal`, `groups` and `source`: `admin-key`,
+`api-keys`, `oidc` (a sign-in token) or `trusted-proxy` (a gateway).
 
 Present your credential on every request, `/mcp` and `/v1/subscribe` included, as
 `Authorization: Bearer <credential>`; for MCP, connect with
@@ -230,8 +241,12 @@ on it. The reserved `dolmen-admin` principal can be neither granted to nor liste
 
 Two things are not checked for you. `grant` accepts any principal or group string, whether or not
 anyone authenticates as it, so copy the subject from `whoami` rather than typing it. And `revoke`
-of a grant that does not exist still answers `ok`, with `"grant":null`: read the response to
-confirm what was removed.
+answers `ok` with `"grant":null` both when it removed a grant's last verb and when there was no
+such grant, so confirm a removal with `list_grants`.
+
+`list_grants` with an `object` shows grants on that object and below it, not the grants above it
+that also cover it. To answer "who can reach this table", also list the grants on its namespace,
+each parent namespace, and `*`.
 
 Before granting `read` on a table with `row_access: "own"`, stop: `read` shows every owner's rows,
 so it undoes the privacy for whoever holds it. Give the people it keeps apart `create`, `update`
@@ -289,6 +304,10 @@ The server adds an `owner` column and stamps it on every insert; callers never s
 caller sees depends on their verbs: `read` sees every row, any of `create`, `update` or `delete`
 without `read` sees only the rows that caller wrote, and `schema` or `admin` alone sees none.
 
+Those own-row users cannot `query` (that needs `read` on the namespace), and `read_rows` needs ids,
+so give the table a full-text field when its owners must find their rows again; otherwise they
+can only reach rows whose ids they kept from `insert`.
+
 Two things it does not hide, by design: row ids come from one sequence shared by every owner, so an
 owner can tell from gaps in its ids that others wrote rows in between; and on a table **without**
 `row_access`, a principal holding only `create`, `update` or `delete` still sees the table's total
@@ -314,7 +333,8 @@ curl -s -X POST "${base%/}/v1/create_key" \
 The response is `{"key":{...},"secret":"dlm_..."}`: `key` holds the id, name, principal and groups,
 and `secret` is the credential, shown this once. It is stored hashed, so hand it over now or mint
 another. A key grants nothing by itself: it authenticates as its principal and groups, which need
-grants like anyone else. `list_keys` reports ids, names, principals, groups and revocation state,
+grants like anyone else. Any principal name is accepted, including one shaped like a sign-in
+principal (`oidc:v1:...`); such a key acts as that person, own rows included, so never mint one. `list_keys` reports ids, names, principals, groups and revocation state,
 never credentials, and `revoke_key` takes the id; revoking an already-revoked key also answers
 `ok`. Keys do not expire, and revoked keys stay listed.
 
@@ -351,7 +371,9 @@ The bootstrap key in `DOLMEN_ADMIN_KEY` authenticates as `dolmen-admin`, which h
    granted, and `list_keys`, which needs `admin` on `*`, succeeds.
 4. The operator removes `DOLMEN_ADMIN_KEY` and restarts. Grants persist.
 
-A root administrator counts as usable only while someone can still authenticate as them: an
+While `DOLMEN_ADMIN_KEY` is set, the bootstrap administrator always exists, so nothing below is
+enforced and you can revoke any grant or key. Once it is removed, a root administrator counts as
+usable only while someone can still authenticate as them: an
 unrevoked API key whose principal holds the grant or that carries a group holding it, a sign-in
 principal from the current issuer, or any principal when a gateway supplies identity. A group grant
 counts only through API keys. Revoking a grant or a key

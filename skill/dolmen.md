@@ -49,6 +49,10 @@ Windows PowerShell:
 claude mcp add --transport http dolmen '{{ .MCPURL }}'
 ```
 
+On a server that requires a credential, keep it in `DOLMEN_TOKEN` and add
+`--header "Authorization: Bearer $DOLMEN_TOKEN"` to that command (see "When the server requires a
+credential" below; other MCP hosts take the same header in their own configuration).
+
 The `dolmen` tools then appear in `tools/list` with full input schemas. The endpoint can also be
 read from the environment: `DOLMEN_URL` (default `{{ .BaseURL }}`).
 
@@ -72,8 +76,9 @@ provider, and `identity_headers` says whether a gateway in front of the server s
 identity instead of a bearer credential.
 
 Send the credential with every request, `/mcp`, the JSON-RPC fallback and `/v1/subscribe`
-included, as a bearer token, and always send `Content-Type: application/json`: a request without it
-is refused as `invalid_request` before the credential is even checked.
+included, as a bearer token. Send a body with `Content-Type: application/json`: a body with any
+other type is refused as `invalid_request` before the credential is even checked, so it never shows
+you a `401` (a request with no body at all needs no type).
 
 ```bash
 base='{{ .BaseURL }}'
@@ -369,7 +374,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 
 ## Quick reference
 
-- Core tools: `describe_server`, `list_namespaces`, `list_tables`, `describe_table`, `insert`, `query`, `search_fulltext`, `tokenize` (takes `namespace`, `table` and `text`), `search_vector`, `changes_since`, `wait_for`, `delete`, `batch` (several writes in one transaction — see below).
+- Core tools: `describe_server`, `whoami` (only when authentication is on), `list_namespaces`, `list_tables`, `describe_table`, `insert`, `query`, `read_rows` (takes `namespace`, `table` and `ids`, up to 1,000 per call, and optional `reveal`), `search_fulltext`, `tokenize` (takes `namespace`, `table` and `text`), `search_vector`, `changes_since`, `wait_for`, `delete`, `batch` (several writes in one transaction — see below).
 - Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`, `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field), and `secret` (a string encrypted at rest; see below).
 - `secret` fields read back as the fixed mask `"••••"` (or `null` when unset) in every read: `read_rows`, both searches, and `query`. To get the plaintext, name the field in `reveal` on `read_rows`, `search_fulltext` or `search_vector` (`"reveal": ["api_token"]`); `query` never reveals. `query` reads the mask in place of the stored bytes, whatever alias or expression you wrap it in, and search `filter`s evaluate against the ciphertext, so never filter or join on a secret field. Under `-auth on` reveal needs the `reveal` verb (a `forbidden` error names it; `admin` does not imply it), and every reveal is audit-logged without the value. Writing a secret needs the server's secret key; without it the write is refused. Never write a masked value back: `"••••"` is refused as a secret value, because storing it would destroy the real one — pass the real value, `reveal` it first, or omit the field to leave it alone.
 - Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field — enables `search_vector` with `text`; the built-in `local` provider is enabled by default; set `DOLMEN_EMBED_PROVIDER=openai` for an external endpoint, or `none` to disable server-side embeddings), `required: true`, `enum: [values]` (closed vocabulary for a string field — writes with any other value are rejected naming the field, the value, and the allowed list; exact match, no case folding; a declared `default` must be a member), `shape` on a `json` field (`object`, `array`, `array<string>`, `array<number>`, `array<boolean>` or `array<object>` — writes of any other shape are rejected naming the field, the expected shape and what arrived, so send tags as `["db","sqlite"]`, never `"db,sqlite"`; omit it for free-form JSON).
