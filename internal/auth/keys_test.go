@@ -163,3 +163,23 @@ func TestGroupOnlyRootAdminIsRefusedWithAnExplanation(t *testing.T) {
 		t.Fatalf("a key whose stored groups prove membership is the one decidable exception: %v", err)
 	}
 }
+
+func TestKeyIdentityRefusesSignInIdentities(t *testing.T) {
+	signedIn, err := QualifyOIDC(IssuerDigest("https://login.example.com"), "00u1a2b3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err := QualifyOIDCGroup(IssuerDigest("https://login.example.com"), "finance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateKeyIdentity(signedIn, nil, 0); err == nil {
+		t.Fatalf("a key minted as %q would act as that signed-in person, own rows included", signedIn)
+	}
+	if err := ValidateKeyIdentity("ci-bot", []string{group}, 0); err == nil {
+		t.Fatalf("a key carrying %q would hold the identity provider's group grants", group)
+	}
+	if err := ValidateKeyIdentity("oidc-sync", []string{"oidc-readers"}, 0); err != nil {
+		t.Fatalf("names that merely start with oidc must stay usable: %v", err)
+	}
+}
