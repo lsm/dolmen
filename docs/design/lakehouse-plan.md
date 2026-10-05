@@ -288,6 +288,32 @@ engine needed the four `Engine` methods no earlier slice covered:
 The served skills gain a `duckdb` dialect: DuckDB SQL guidance for `query` and `filter`, and the
 lakehouse full-text grammar.
 
+Running the full suite on the engine exposed three more gaps, closed in the same slice:
+
+- **Migrations of populated tables.** Slice 5 refused any migration of a table holding rows. Now
+  the data-dependent checks run over the table's rows: a required field with no default, enum
+  values in use, rows that do not fit a shape, and row access on a populated table. Field changes
+  stay Iceberg schema evolution. A backfill default, or a vectorize that needs embeddings, rewrites
+  the live rows into one new file in the same Iceberg commit, with `ReplaceFiles`, and writes no
+  change records, as on SQLite. Embedding runs outside the namespace lock in pages of 128, and each
+  page is staged in `_dolmen_lakehouse_embed_stage` keyed by provider and a digest of the text. A
+  failed attempt keeps the pages it finished, and `dry_run` reports `staged_rows` and `embed_rows`.
+  The apply step re-plans under the lock, so a migration that landed meanwhile is kept. A row with
+  no matching staged vector sends it round again, up to three times, and then `conflict`. A table
+  replaced in between is `not_found`. The apply runs under the batch journal, so the Iceberg commit
+  and the secret renames and drops in `catalog.db` land together.
+- **Shared filters.** Under `-auth on`, filters use the shared grammar with SQLite's semantics, as
+  the PostgreSQL adapter renders them. The lakehouse evaluates them in an in-memory SQLite: the
+  table's rows load into a table with the SQLite engine's column affinities, and arguments are
+  bound the way that engine binds them. That gives SQLite's semantics exactly, at the cost of a
+  scan per filtered operation, the same cost the searches already pay.
+- **Error contract.** DuckDB's missing-table, missing-function and missing-column errors map to the
+  contract's `not_found` and `query_error` messages, a malformed filter says it is not a valid
+  `WHERE` expression, and an impossible table name is taught as on SQLite.
+
+The Go library still refuses `WithEngine("lakehouse")`, and the embedded-parity tests skip it.
+Supporting it would add a public option, the way `dolmen/postgres` does for adapter #2.
+
 **Open:** §10 Q3 is still undecided. A sidecar that is down surfaces as `ErrSQLEngineUnavailable`,
 which the public error taxonomy does not name, so it reaches callers as `internal_error`.
 
