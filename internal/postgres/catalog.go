@@ -29,7 +29,15 @@ func (s *Store) catalogLock(ctx context.Context, tx pgx.Tx) error {
 }
 
 func rollback(tx pgx.Tx) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	rollbackContext(context.Background(), tx)
+}
+
+func rollbackContext(parent context.Context, tx pgx.Tx) {
+	if parent.Err() != nil {
+		_ = tx.Rollback(parent)
+		return
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 	_ = tx.Rollback(ctx)
 }
@@ -70,7 +78,7 @@ func (s *Store) bootstrap(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer rollback(tx)
+	defer rollbackContext(ctx, tx)
 	if err := s.requireServerVersion(ctx, tx); err != nil {
 		return err
 	}
@@ -277,7 +285,7 @@ func (s *Store) writeUnlocked(ctx context.Context, name string, expected [16]byt
 	if err != nil {
 		return err
 	}
-	defer rollback(tx)
+	defer rollbackContext(ctx, tx)
 	n, err := s.namespace(ctx, tx, name, namespaceKeyPinned)
 	if err != nil {
 		return err
@@ -317,7 +325,7 @@ func (s *Store) write(ctx context.Context, name string, expected [16]byte, fn fu
 	if err != nil {
 		return err
 	}
-	defer rollback(tx)
+	defer rollbackContext(ctx, tx)
 	n, err := s.namespace(ctx, tx, name, namespaceWriteSerialized)
 	if err != nil {
 		return err

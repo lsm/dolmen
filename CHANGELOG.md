@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bound PostgreSQL SQL-compiler admission and caller waiting, check cancellation in SQL/filter compilation, and keep rollback cleanup within the caller deadline.
+
 ### Added
 
 - Lakehouse slice 4 adds internal namespace lifecycle with one SQLite-backed Iceberg catalog and

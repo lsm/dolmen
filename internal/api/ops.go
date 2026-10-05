@@ -1251,7 +1251,7 @@ var Ops = map[string]OpDef{
 			if err != nil {
 				return nil, err
 			}
-			if err := s.checkFilter(tsc, req.Filter, req.Args); err != nil {
+			if err := s.checkFilter(ctx, tsc, req.Filter, req.Args); err != nil {
 				return nil, err
 			}
 			ctx = store.WithReveal(ctx, req.Reveal)
@@ -1432,7 +1432,7 @@ var Ops = map[string]OpDef{
 			if err != nil {
 				return nil, err
 			}
-			if err := s.checkFilter(tsc, req.Filter, req.Args); err != nil {
+			if err := s.checkFilter(ctx, tsc, req.Filter, req.Args); err != nil {
 				return nil, err
 			}
 			ctx = store.WithReveal(ctx, req.Reveal)
@@ -1679,7 +1679,7 @@ var Ops = map[string]OpDef{
 			if err != nil {
 				return nil, err
 			}
-			if err := s.checkFilter(tsc, req.Filter, req.Args); err != nil {
+			if err := s.checkFilter(ctx, tsc, req.Filter, req.Args); err != nil {
 				return nil, err
 			}
 			res, err := s.eng.Delete(ctx, ns, normTable(req.Table), req.Filter, req.Args, store.DeleteOptions{
@@ -1747,7 +1747,7 @@ var Ops = map[string]OpDef{
 			if err != nil {
 				return nil, err
 			}
-			if err := s.checkFilter(tsc, req.Filter, req.Args); err != nil {
+			if err := s.checkFilter(ctx, tsc, req.Filter, req.Args); err != nil {
 				return nil, err
 			}
 			res, err := s.eng.Update(ctx, ns, normTable(req.Table), req.Filter, req.Args, req.Set,
@@ -1810,7 +1810,7 @@ var Ops = map[string]OpDef{
 			if err != nil {
 				return nil, err
 			}
-			if err := s.checkFilter(tsc, req.Filter, req.Args); err != nil {
+			if err := s.checkFilter(ctx, tsc, req.Filter, req.Args); err != nil {
 				return nil, err
 			}
 			res, err := s.eng.Upsert(ctx, ns, normTable(req.Table), req.Filter, req.Args, req.Set,

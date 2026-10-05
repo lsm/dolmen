@@ -861,3 +861,5 @@ search_fulltext(namespace="research", table="findings", query="auth")   # needs 
                                                                        # vectorize field plus a provider
 query(namespace="research", sql="SELECT * FROM findings WHERE created_at >= ? ORDER BY created_at DESC", args=["2026-09-01"])
 ```
+
+Operation deadlines also reach Dolmen's SQL and filter compilation. PostgreSQL uses at most four compiler workers per process; a canceled call releases its transaction while an upstream parser finishes. Narrow a query before retrying a timeout, and check the result of a write before retrying it because it may or may not have committed. See the deadline design document for the cancellation and worker admission rules.

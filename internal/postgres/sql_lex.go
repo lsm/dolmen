@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -57,6 +58,13 @@ func sqlIdentifierStart(r rune) bool { return r == '_' || unicode.IsLetter(r) }
 func sqlIdentifierPart(r rune) bool  { return sqlIdentifierStart(r) || unicode.IsDigit(r) || r == '$' }
 
 func rewriteSQL(input string, names *sqlNames) (string, int, error) {
+	return rewriteSQLContext(context.Background(), input, names)
+}
+
+func rewriteSQLContext(ctx context.Context, input string, names *sqlNames) (string, int, error) {
+	if err := ctx.Err(); err != nil {
+		return "", 0, err
+	}
 	type part struct {
 		raw        string
 		identifier string
@@ -67,11 +75,17 @@ func rewriteSQL(input string, names *sqlNames) (string, int, error) {
 		return "", 0, fmt.Errorf("%w: unterminated SQL literal, identifier, or comment", store.ErrInvalid)
 	}
 	for i := 0; i < len(input); {
+		if err := ctx.Err(); err != nil {
+			return "", 0, err
+		}
 		start := i
 		switch {
 		case strings.HasPrefix(input[i:], "--"):
 			i += 2
 			for i < len(input) && input[i] != '\n' {
+				if err := ctx.Err(); err != nil {
+					return "", 0, err
+				}
 				i++
 			}
 			parts = append(parts, part{raw: input[start:i]})
@@ -79,6 +93,9 @@ func rewriteSQL(input string, names *sqlNames) (string, int, error) {
 			i += 2
 			depth := 1
 			for i < len(input) && depth > 0 {
+				if err := ctx.Err(); err != nil {
+					return "", 0, err
+				}
 				if strings.HasPrefix(input[i:], "/*") {
 					depth++
 					i += 2
@@ -98,6 +115,9 @@ func rewriteSQL(input string, names *sqlNames) (string, int, error) {
 			i++
 			closed := false
 			for i < len(input) {
+				if err := ctx.Err(); err != nil {
+					return "", 0, err
+				}
 				if escaped && input[i] == '\\' {
 					i += 2
 					continue
@@ -122,6 +142,9 @@ func rewriteSQL(input string, names *sqlNames) (string, int, error) {
 			var name strings.Builder
 			closed := false
 			for i < len(input) {
+				if err := ctx.Err(); err != nil {
+					return "", 0, err
+				}
 				if input[i] == '"' {
 					i++
 					if i < len(input) && input[i] == '"' {
@@ -174,6 +197,9 @@ func rewriteSQL(input string, names *sqlNames) (string, int, error) {
 			if sqlIdentifierStart(r) {
 				i += size
 				for i < len(input) {
+					if err := ctx.Err(); err != nil {
+						return "", 0, err
+					}
 					next, n := utf8.DecodeRuneInString(input[i:])
 					if !sqlIdentifierPart(next) {
 						break
@@ -191,6 +217,9 @@ func rewriteSQL(input string, names *sqlNames) (string, int, error) {
 	}
 	var out strings.Builder
 	for _, p := range parts {
+		if err := ctx.Err(); err != nil {
+			return "", 0, err
+		}
 		if p.identifier != "" && len(p.identifier) > 63 {
 			out.WriteString(ident(names.name(p.identifier)))
 		} else {

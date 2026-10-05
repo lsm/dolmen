@@ -105,7 +105,7 @@ func (s *Store) readMode(ctx context.Context, name string, readOnly bool, fn fun
 	if err != nil {
 		return err
 	}
-	defer rollback(tx)
+	defer rollbackContext(ctx, tx)
 	var n namespace
 	var gen []byte
 	n.name = name
