@@ -63,6 +63,7 @@ func TestLakehouseTypedReadsBackendConformance(t *testing.T) {
 			records := []map[string]any{
 				{"title": "a", "score": 3, "ratio": 2.5, "ok": true, "meta": map[string]any{"k": []any{1, "x"}}, "at": "2026-10-05T12:00:00Z", "v": []any{1, 0.5}, "token": "PLAINTEXT-a"},
 				{"title": "b"},
+				{"title": "never requested"},
 			}
 			if _, err := eng.Insert(ctx, ns, "notes", records, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
 				t.Fatal(err)

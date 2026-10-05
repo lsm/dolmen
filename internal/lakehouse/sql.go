@@ -675,7 +675,7 @@ func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16
 
 func presentQueryValue(t schema.FieldType, v any) any {
 	if t == schema.Number {
-		if f, ok := v.(float64); ok && f == math.Trunc(f) && math.Abs(f) < 1<<53 {
+		if f, ok := v.(float64); ok && f == math.Trunc(f) && f >= -(1<<63) && f < 1<<63 {
 			return int64(f)
 		}
 		return v
