@@ -36,6 +36,7 @@ type fakeProvider struct {
 	fail                 error
 	failOnTextContaining string
 	onFirstCall          func()
+	onCall               func(context.Context) error
 	delay                time.Duration
 }
 
@@ -54,10 +55,16 @@ func (p *fakeProvider) Embed(ctx context.Context, texts []string) ([][]float32, 
 		p.failOnTextContaining, p.fail = "", nil
 	}
 	hook := p.onFirstCall
+	onCall := p.onCall
 	p.onFirstCall = nil
 	p.mu.Unlock()
 	if hook != nil {
 		hook()
+	}
+	if onCall != nil {
+		if err := onCall(ctx); err != nil {
+			return nil, err
+		}
 	}
 	switch {
 	case scoped:
