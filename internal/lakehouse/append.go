@@ -39,6 +39,7 @@ var appendDDL = []string{
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_changes(seq INTEGER PRIMARY KEY AUTOINCREMENT, table_name TEXT NOT NULL, generation INTEGER NOT NULL, row_id INTEGER NOT NULL, kind TEXT NOT NULL, owner TEXT, commit_id INTEGER NOT NULL, at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_idempotency(table_name TEXT NOT NULL, generation INTEGER NOT NULL, owner TEXT NOT NULL, key TEXT NOT NULL, payload_hash TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(table_name, generation, owner, key))`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_secrets(table_name TEXT NOT NULL, generation INTEGER NOT NULL, row_id INTEGER NOT NULL, field TEXT NOT NULL, value BLOB NOT NULL, PRIMARY KEY(table_name, generation, row_id, field))`,
+	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_cursors(token TEXT PRIMARY KEY, position INTEGER NOT NULL, chain_origin INTEGER NOT NULL, chain_start INTEGER NOT NULL, issued_at INTEGER NOT NULL, table_name TEXT NOT NULL, drop_generation INTEGER NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_counts(table_name TEXT NOT NULL, generation INTEGER NOT NULL, owner TEXT NOT NULL, n INTEGER NOT NULL CHECK(n >= 0), PRIMARY KEY(table_name, generation, owner))`,
 }
 

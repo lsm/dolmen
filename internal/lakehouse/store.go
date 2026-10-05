@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	sqlcatalog "github.com/apache/iceberg-go/catalog/sql"
 	"github.com/lsm/dolmen/internal/secret"
@@ -24,6 +25,7 @@ var owners = struct {
 type Store struct {
 	secrets    *secret.Keyring
 	sqlEngine  SQLEngine
+	retention  time.Duration
 	dir        string
 	root       *os.Root
 	gate       chan struct{}
@@ -50,6 +52,10 @@ func WithMaxOpenNamespaces(n int) OpenOption {
 	return func(s *Store) { s.maxOpen = n }
 }
 
+func WithChangeRetention(d time.Duration) OpenOption {
+	return func(s *Store) { s.retention = d }
+}
+
 func Open(dir string, opts ...OpenOption) (*Store, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -62,7 +68,7 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{dir: abs, gate: make(chan struct{}, 1), namespaces: map[string]*namespace{}, maxOpen: DefaultMaxOpenNamespaces}
+	s := &Store{dir: abs, gate: make(chan struct{}, 1), namespaces: map[string]*namespace{}, maxOpen: DefaultMaxOpenNamespaces, retention: store.DefaultChangeRetention}
 	for _, opt := range opts {
 		opt(s)
 	}
