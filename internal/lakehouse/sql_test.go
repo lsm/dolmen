@@ -425,3 +425,30 @@ func TestCloseInterruptsAQueryWithoutADeadline(t *testing.T) {
 		t.Fatal("an interrupted query must report an error")
 	}
 }
+
+func TestTheSidecarStopsWhenItsParentGoesAway(t *testing.T) {
+	cfg := sidecarConfig(t)
+	s := openSQLStore(t, t.TempDir(), cfg)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	mustQuery(t, s, "ns", "SELECT 1 AS x")
+	sc := s.namespaces["ns"].sql
+	go func() {
+		_, _ = s.Query(context.Background(), "ns", "WITH RECURSIVE r(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM r) SELECT count(*) AS n FROM r", nil, [16]byte{}, store.Page{})
+	}()
+	for sc.run.TryLock() {
+		sc.run.Unlock()
+		runtime.Gosched()
+	}
+	if err := sc.stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-sc.done:
+	case <-time.After(30 * time.Second):
+		_ = sc.cmd.Process.Kill()
+		t.Fatal("with its stdin closed and no shutdown sent, as when dolmen dies, the sidecar kept running its query")
+	}
+}
