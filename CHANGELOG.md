@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Lakehouse slice 11 adds `query` over `dolmen-duckdb`, a C++ sidecar on the pinned prebuilt
+  DuckDB, one per namespace, over a framed stdin/stdout protocol. It is sealed read-only and
+  confined to the namespace's data directory before caller SQL runs, sees each acknowledged append
+  on the next query, binds arguments, pages and truncates like the other engines, and cancels on
+  the deadline. The engine is still not selectable.
 - Warn once when forwarding headers from a peer outside `DOLMEN_TRUSTED_PROXIES` are dropped, and
   once when a proxy's path-prefix hint cannot be used, instead of silently advertising a
   `base_url` without the prefix (#577).

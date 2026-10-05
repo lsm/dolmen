@@ -79,7 +79,7 @@ func TestNativeCatalogIsSeparateDurableAndReadable(t *testing.T) {
 		if len(files) != 1 {
 			t.Fatalf("catalog fixture has %d data files", len(files))
 		}
-		dataPath = filepath.FromSlash(strings.TrimPrefix(files[0].File.FilePath(), "file://"))
+		dataPath = localPath(files[0].File.FilePath())
 		info, err := os.Stat(dataPath)
 		if err != nil {
 			return err
@@ -365,5 +365,22 @@ func TestIncompleteNamespacesCanBeListedAroundAndRemoved(t *testing.T) {
 				t.Fatalf("recovery recreate lifetime: %x %v", next, err)
 			}
 		})
+	}
+}
+
+func TestFileLocationsRoundTripOnEveryPlatform(t *testing.T) {
+	for _, c := range []struct{ uri, path string }{
+		{"file:///C:/data/ns.lakehouse", "C:/data/ns.lakehouse"},
+		{"C:/data/ns.lakehouse", "C:/data/ns.lakehouse"},
+		{"file:///tmp/data", "/tmp/data"},
+		{`\C:\data\x.parquet`, "C:/data/x.parquet"},
+	} {
+		if got := strings.ReplaceAll(filepath.ToSlash(localPath(c.uri)), `\`, "/"); got != c.path {
+			t.Fatalf("localPath(%q) = %q, want %q", c.uri, got, c.path)
+		}
+	}
+	dir := t.TempDir()
+	if got := localPath(fileLocation(dir)); got != dir {
+		t.Fatalf("a location must round-trip: %q -> %q", dir, got)
 	}
 }

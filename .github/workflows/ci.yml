@@ -299,10 +299,39 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Catalog persistence, isolation, pins and concurrent lifecycle
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Build the dolmen-duckdb SQL sidecar against the pinned prebuilt DuckDB
+        shell: bash
+        env:
+          MSYS2_ARG_CONV_EXCL: "*"
+          MSYS_NO_PATHCONV: "1"
+        run: |
+          set -eu
+          dest="$RUNNER_TEMP/ddb"
+          case "$RUNNER_OS" in
+            Linux) asset=libduckdb-linux-amd64.zip ext=linux_amd64 bin="$dest/dolmen-duckdb" ;;
+            macOS) asset=libduckdb-osx-universal.zip ext=osx_arm64 bin="$dest/dolmen-duckdb" ;;
+            Windows) asset=libduckdb-windows-amd64.zip ext=windows_amd64 bin="$dest/dolmen-duckdb.exe" ;;
+          esac
+          sidecar/duckdb/fetch-deps.sh lib "$asset" "$dest"
+          sidecar/duckdb/fetch-deps.sh ext "$ext" "$dest/ext"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cl /nologo /std:c++17 /EHsc /O2 "/I$dest" "/Fe:$bin" sidecar/duckdb/dolmen-duckdb.cpp "$dest/duckdb.lib" /link "/LIBPATH:$dest"
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            c++ -std=c++17 -O2 -I"$dest" sidecar/duckdb/dolmen-duckdb.cpp -L"$dest" -lduckdb -Wl,-rpath,"$dest" -o "$bin"
+          else
+            g++ -std=c++17 -O2 -I"$dest" sidecar/duckdb/dolmen-duckdb.cpp -L"$dest" -lduckdb -Wl,-rpath,"$dest" -o "$bin"
+          fi
+          {
+            echo "DOLMEN_TEST_DUCKDB_SIDECAR=$bin"
+            echo "DOLMEN_TEST_DUCKDB_EXTENSIONS=$dest/ext"
+            echo "DOLMEN_TEST_DUCKDB_REQUIRED=1"
+          } >> "$GITHUB_ENV"
+      - name: Catalog persistence, isolation, pins, appends, SQL and concurrent lifecycle
         run: go test -race -count=1 ./internal/lakehouse
-      - name: Shared SQLite and lakehouse namespace and table lifecycle
-        run: go test -race -count=1 ./internal/conformance -run '^TestLakehouse(Namespace|Table)BackendConformance$'
+      - name: Shared SQLite and lakehouse conformance
+        run: go test -race -count=1 ./internal/conformance -run '^TestLakehouse'
 
   postgres-foundation:
     runs-on: ubuntu-latest
