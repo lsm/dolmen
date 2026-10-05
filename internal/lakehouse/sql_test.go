@@ -190,3 +190,27 @@ func TestQueryWithoutASidecarTeaches(t *testing.T) {
 		t.Fatalf("a missing sidecar must teach: %v", err)
 	}
 }
+
+func TestRawDataFilesHoldNoSecretForCallerSQL(t *testing.T) {
+	cfg := sidecarConfig(t)
+	dir := t.TempDir()
+	s := openSQLStore(t, dir, cfg)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "creds", []schema.Field{{Name: "token", Type: schema.Secret}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "ns", "creds", []map[string]any{{"token": "PLAINTEXT-x"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.ToSlash(filepath.Join(dir, "ns.lakehouse", "data"))
+	res := mustQuery(t, s, "ns", "SELECT token FROM read_parquet('"+data+"/**/*.parquet')")
+	if len(res.Rows) != 1 {
+		t.Fatalf("rows %v", res.Rows)
+	}
+	if raw, _ := res.Rows[0]["token"].([]byte); len(raw) > 1 {
+		t.Fatalf("a raw read of the data files returned %d bytes of secret material", len(raw))
+	}
+}
