@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	CatalogFormat = 4
+	CatalogFormat = 5
 
 	CatalogMinReader = 3
 
@@ -98,6 +98,18 @@ func ensureCatalogVersion(ctx context.Context, rw *sql.DB, nsName string) error 
 		}
 	}
 
+	var columns int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('_dolmen_changes') WHERE name='commit_id'`).Scan(&columns); err != nil {
+		return err
+	}
+	if columns == 0 {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE _dolmen_changes ADD COLUMN commit_id INTEGER`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO _dolmen_meta(key,value) VALUES('next_commit',0) ON CONFLICT(key) DO NOTHING`); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

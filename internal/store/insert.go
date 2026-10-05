@@ -241,7 +241,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 		}
 	}
 
-	changes, err = mintChanges(ctx, tx, table, ChangeInsert, ids, sameOwner(stampOwner(sc, owner), len(ids)))
+	changes, err = mintChanges(ctx, wt, table, ChangeInsert, ids, sameOwner(stampOwner(sc, owner), len(ids)))
 	if err != nil {
 		return nil, ChangeRange{}, false, true, err
 	}

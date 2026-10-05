@@ -83,10 +83,11 @@ func (s *Store) endWrite(tx *sql.Tx, w *writeSpan) {
 }
 
 type sharedWriteTx struct {
-	tx   *sql.Tx
-	span *writeSpan
-	own  bool
-	ns   *nsDB
+	commit int64
+	tx     *sql.Tx
+	span   *writeSpan
+	own    bool
+	ns     *nsDB
 }
 
 func (s *Store) nsFor(nsName string, shared *sharedWriteTx) (*nsDB, func(), error) {

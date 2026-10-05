@@ -38,6 +38,7 @@ var changesOutSchema = objectSchema(false, map[string]any{
 		"cursor": stringProp(""),
 		"table":  stringProp(`^[a-z][a-z0-9_]{0,63}$`),
 		"row_id": integer(1),
+		"commit": integer(1),
 		"kind":   map[string]any{"type": "string", "enum": []string{"insert", "update", "delete"}},
 	}, []string{"cursor", "table", "row_id", "kind"})),
 	"next_cursor": stringProp(""),

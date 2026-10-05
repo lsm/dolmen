@@ -194,7 +194,7 @@ func TestMintChangesRollbackLeavesNoRecords(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback()
-	if _, err := mintChanges(ctx, tx, "notes", ChangeInsert, []int64{101, 102, 103}, nil); err != nil {
+	if _, err := mintChanges(ctx, &sharedWriteTx{tx: tx}, "notes", ChangeInsert, []int64{101, 102, 103}, nil); err != nil {
 		t.Fatalf("mint: %v", err)
 	}
 	if err := tx.Rollback(); err != nil {

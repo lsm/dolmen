@@ -415,8 +415,8 @@ Changes:
   `{"cursor":"begin"}`); omitted/zero cursor
   = current head (wake-up semantics: fresh subscribers get future events only, and the response
   carries the head cursor); `limit` default 100
-  / max 1000; response `{changes:[{cursor, table, row_id, kind}], next_cursor}`. Public records
-  expose cursor/table/row_id/kind only — owner never (internal label until 9d makes rows
+  / max 1000; response `{changes:[{cursor, table, row_id, kind, commit?}], next_cursor}`. Public records
+  expose cursor/table/row_id/kind and optional stable commit grouping — owner never (internal label until 9d makes rows
   visible-set-filtered).
 - Beyond-retention = teaching error naming the catch-up path. Tool annotations + OpenAPI.
 
