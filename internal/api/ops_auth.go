@@ -327,7 +327,8 @@ func (r grantRequest) parse() (auth.Subject, auth.Object, auth.VerbSet, error) {
 
 func init() {
 	authOps["whoami"] = OpDef{
-		Description: "Report the principal and groups this request authenticated as, and which identity source produced them. " +
+		Description: "Report the principal and groups this request authenticated as, which identity source produced them, " +
+			"and the grants held by that principal or any of its groups; a grant on a namespace also covers what is under it. " +
 			"Self-description only: it grants nothing and reveals nothing about other identities. After a 403, this is how an agent " +
 			"finds out who it is before asking an administrator for a grant.",
 		InputSchema: map[string]any{
@@ -343,7 +344,12 @@ func init() {
 				"items":       map[string]any{"type": "string"},
 			},
 			"source": prop("string", "Which identity source authenticated this request"),
-		}, "principal", "groups", "source"),
+			"grants": map[string]any{
+				"type":        "array",
+				"description": "The grants naming this principal or one of its groups; the caller's access on an object is the union of these grants on it and on everything covering it",
+				"items":       grantSchema(),
+			},
+		}, "principal", "groups", "source", "grants"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req struct{}
 			if err := decode(body, &req); err != nil {
@@ -354,7 +360,23 @@ func init() {
 			if groups == nil {
 				groups = []string{}
 			}
-			return map[string]any{"principal": id.Principal, "groups": groups, "source": id.Source}, nil
+			held := []any{}
+			if id.Principal == auth.AdminPrincipal {
+				held = append(held, map[string]any{
+					"subject": map[string]any{"type": auth.SubjectPrincipal, "id": auth.AdminPrincipal},
+					"object":  objectPayload(auth.Object{Namespace: auth.RootObject}),
+					"verbs":   auth.NewVerbSet(auth.VerbCreate, auth.VerbRead, auth.VerbUpdate, auth.VerbDelete, auth.VerbSchema, auth.VerbAdmin).Strings(),
+				})
+			} else if s.grants != nil {
+				grants, err := s.grants.HeldBy(ctx, id)
+				if err != nil {
+					return nil, err
+				}
+				for _, g := range grants {
+					held = append(held, grantPayload(g))
+				}
+			}
+			return map[string]any{"principal": id.Principal, "groups": groups, "source": id.Source, "grants": held}, nil
 		},
 	}
 

@@ -28,7 +28,7 @@ func TestWhoamiListsTheGrantsTheCallerHolds(t *testing.T) {
 		subj, _ := m["subject"].(map[string]any)
 		obj, _ := m["object"].(map[string]any)
 		table, _ := obj["table"].(string)
-		got = append(got, subj["id"].(string)+" "+obj["namespace"].(string)+"/"+table+" "+strings.Join(stringList(m["verbs"]), "+"))
+		got = append(got, subj["id"].(string)+" "+obj["namespace"].(string)+"/"+table+" "+strings.Join(heldVerbs(m["verbs"]), "+"))
 	}
 	sort.Strings(got)
 	want := []string{"sales-bot acme/deals read", "sales-team acme/ create"}
@@ -43,12 +43,12 @@ func TestWhoamiListsTheGrantsTheCallerHolds(t *testing.T) {
 	}
 	root, _ := grants[0].(map[string]any)
 	obj, _ := root["object"].(map[string]any)
-	if obj["namespace"] != "*" || !strings.Contains(strings.Join(stringList(root["verbs"]), ","), "admin") {
+	if obj["namespace"] != "*" || !strings.Contains(strings.Join(heldVerbs(root["verbs"]), ","), "admin") {
 		t.Fatalf("the bootstrap grant must be admin on *: %v", root)
 	}
 }
 
-func stringList(v any) []string {
+func heldVerbs(v any) []string {
 	items, _ := v.([]any)
 	out := make([]string, 0, len(items))
 	for _, it := range items {

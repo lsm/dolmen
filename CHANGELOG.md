@@ -10,6 +10,9 @@
 
 ### Added
 
+- **`whoami` lists the caller's grants** (#583): every grant naming their principal or one of their
+  groups, so a caller can see what they may do without probing. The bootstrap administrator sees
+  its implicit `admin` on `*`.
 - **Change-feed records carry a `commit` number.** Every change from one transaction (a multi-row
   write or a `batch`) shares one positive integer, stable within a namespace's lifetime, on
   `changes_since`, `wait_for` and SSE alike. Records written before the upgrade have no `commit`.
