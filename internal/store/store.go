@@ -511,6 +511,7 @@ var registryDDL = []string{
 		row_id INTEGER NOT NULL,
 		kind TEXT NOT NULL,
 		owner TEXT,
+		commit_id INTEGER,
 		nsgen BLOB NOT NULL,
 		drop_gen INTEGER NOT NULL,
 		at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))

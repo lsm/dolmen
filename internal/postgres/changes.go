@@ -210,7 +210,7 @@ func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from sto
 		if limit > store.MaxChangesPageLimit {
 			limit = store.MaxChangesPageLimit
 		}
-		stmt := "SELECT position,table_name,drop_generation,row_id,kind,owner FROM " + s.relation("changes") + " WHERE namespace=$1 AND position>$2"
+		stmt := "SELECT position,table_name,drop_generation,row_id,kind,owner,commit_id FROM " + s.relation("changes") + " WHERE namespace=$1 AND position>$2"
 		args := []any{ns, state.position}
 		if table != "" {
 			stmt += " AND table_name=$3 AND drop_generation=$4"
@@ -239,9 +239,13 @@ func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from sto
 			var rec store.ChangeRecord
 			var position int64
 			var owner *string
-			if err := rows.Scan(&position, &rec.Table, &rec.Lifetime.DropGen, &rec.RowID, &rec.Kind, &owner); err != nil {
+			var commit *int64
+			if err := rows.Scan(&position, &rec.Table, &rec.Lifetime.DropGen, &rec.RowID, &rec.Kind, &owner, &commit); err != nil {
 				rows.Close()
 				return err
+			}
+			if commit != nil {
+				rec.Commit = *commit
 			}
 			if owner != nil {
 				rec.Owner = *owner

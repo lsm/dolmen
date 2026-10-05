@@ -377,14 +377,14 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 	}
 
 	if len(insertIDs) > 0 {
-		rng, err := mintChanges(ctx, tx, table, ChangeInsert, insertIDs, sameOwner(stampOwner(sc, owner), len(insertIDs)))
+		rng, err := mintChanges(ctx, wt, table, ChangeInsert, insertIDs, sameOwner(stampOwner(sc, owner), len(insertIDs)))
 		if err != nil {
 			return nil, 0, 0, ChangeRange{}, true, err
 		}
 		changes = rng
 	}
 	if len(updateIDs) > 0 {
-		rng, err := mintChanges(ctx, tx, table, ChangeUpdate, updateIDs, updateOwners)
+		rng, err := mintChanges(ctx, wt, table, ChangeUpdate, updateIDs, updateOwners)
 		if err != nil {
 			return nil, 0, 0, ChangeRange{}, true, err
 		}

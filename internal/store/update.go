@@ -296,7 +296,7 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 			result.Ids = ids
 		}
 
-		changes, err := mintChangesFromTemp(ctx, tx, table, ChangeUpdate, `_dolmen_update_ids`)
+		changes, err := mintChangesFromTemp(ctx, wt, table, ChangeUpdate, `_dolmen_update_ids`)
 		if err != nil {
 			return UpsertResult{}, true, err
 		}
@@ -347,7 +347,7 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 		result.Inserted = 1
 		result.Ids = []int64{id}
 
-		if result.Changes, err = mintChanges(ctx, tx, table, ChangeInsert, []int64{id}, sameOwner(stampOwner(sc, owner), 1)); err != nil {
+		if result.Changes, err = mintChanges(ctx, wt, table, ChangeInsert, []int64{id}, sameOwner(stampOwner(sc, owner), 1)); err != nil {
 			return UpsertResult{}, true, err
 		}
 	}

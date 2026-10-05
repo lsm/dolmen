@@ -12,13 +12,18 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-func mintChanges(ctx context.Context, tx *sql.Tx, table string, kind ChangeKind, ids []int64, owners []string) (ChangeRange, error) {
+func mintChanges(ctx context.Context, w *sharedWriteTx, table string, kind ChangeKind, ids []int64, owners []string) (ChangeRange, error) {
 	if len(ids) == 0 {
 		return ChangeRange{}, nil
 	}
 	if owners != nil && len(owners) != len(ids) {
 		return ChangeRange{}, fmt.Errorf("mint change records for %s: %d owner labels for %d ids", table, len(owners), len(ids))
 	}
+	commit, err := w.changeCommit(ctx)
+	if err != nil {
+		return ChangeRange{}, err
+	}
+	tx := w.tx
 	gen, err := tableGen(ctx, tx, table)
 	if err != nil {
 		return ChangeRange{}, err
@@ -37,8 +42,8 @@ func mintChanges(ctx context.Context, tx *sql.Tx, table string, kind ChangeKind,
 			owner = owners[i]
 		}
 		res, err := stmts.ExecContext(ctx,
-			`INSERT INTO _dolmen_changes(table_name, row_id, kind, owner, nsgen, drop_gen) VALUES(?,?,?,?,?,?)`,
-			table, id, string(kind), owner, nsGen[:], gen)
+			`INSERT INTO _dolmen_changes(table_name, row_id, kind, owner, nsgen, drop_gen, commit_id) VALUES(?,?,?,?,?,?,?)`,
+			table, id, string(kind), owner, nsGen[:], gen, commit)
 		if err != nil {
 			return ChangeRange{}, fmt.Errorf("mint change records for %s: %w", table, err)
 		}
@@ -72,7 +77,12 @@ func sameOwner(owner string, n int) []string {
 	return out
 }
 
-func mintChangesFromTemp(ctx context.Context, tx *sql.Tx, table string, kind ChangeKind, temp string) (ChangeRange, error) {
+func mintChangesFromTemp(ctx context.Context, w *sharedWriteTx, table string, kind ChangeKind, temp string) (ChangeRange, error) {
+	commit, err := w.changeCommit(ctx)
+	if err != nil {
+		return ChangeRange{}, err
+	}
+	tx := w.tx
 	gen, err := tableGen(ctx, tx, table)
 	if err != nil {
 		return ChangeRange{}, err
@@ -82,8 +92,8 @@ func mintChangesFromTemp(ctx context.Context, tx *sql.Tx, table string, kind Cha
 		return ChangeRange{}, err
 	}
 	res, err := tx.ExecContext(ctx,
-		fmt.Sprintf(`INSERT INTO _dolmen_changes(table_name, row_id, kind, owner, nsgen, drop_gen) SELECT ?, id, ?, owner, ?, ? FROM %s ORDER BY id`, temp),
-		table, string(kind), nsGen[:], gen)
+		fmt.Sprintf(`INSERT INTO _dolmen_changes(table_name, row_id, kind, owner, nsgen, drop_gen, commit_id) SELECT ?, id, ?, owner, ?, ?, ? FROM %s ORDER BY id`, temp),
+		table, string(kind), nsGen[:], gen, commit)
 	if err != nil {
 		return ChangeRange{}, fmt.Errorf("mint change records for %s: %w", table, err)
 	}
@@ -333,7 +343,7 @@ func changeScopeSQL(scope *RowScope) (string, []any) {
 }
 
 func changePageSQL(from int64, to *int64, limit int, feed *changeFeed, scope *RowScope) (string, []any) {
-	q := `SELECT seq, table_name, row_id, kind, owner, nsgen, drop_gen FROM _dolmen_changes WHERE seq > ?`
+	q := `SELECT seq, table_name, row_id, kind, owner, nsgen, drop_gen, commit_id FROM _dolmen_changes WHERE seq > ?`
 	args := []any{from}
 	if to != nil {
 		q += ` AND seq <= ?`
@@ -352,8 +362,9 @@ func scanChangePage(rows *sql.Rows) ([]loggedChange, error) {
 	for rows.Next() {
 		var lc loggedChange
 		var owner sql.NullString
+		var commit sql.NullInt64
 		var gen []byte
-		if err := rows.Scan(&lc.seq, &lc.rec.Table, &lc.rec.RowID, &lc.rec.Kind, &owner, &gen, &lc.rec.Lifetime.DropGen); err != nil {
+		if err := rows.Scan(&lc.seq, &lc.rec.Table, &lc.rec.RowID, &lc.rec.Kind, &owner, &gen, &lc.rec.Lifetime.DropGen, &commit); err != nil {
 			return nil, err
 		}
 		if len(gen) != 16 {
@@ -362,6 +373,7 @@ func scanChangePage(rows *sql.Rows) ([]loggedChange, error) {
 		copy(lc.rec.Lifetime.NsGen[:], gen)
 		lc.rec.Lifetime.Table = lc.rec.Table
 		lc.rec.Owner = owner.String
+		lc.rec.Commit = commit.Int64
 		scanned = append(scanned, lc)
 	}
 	if err := rows.Err(); err != nil {
@@ -502,4 +514,14 @@ func changeCountSQL(from, to int64, feed *changeFeed) (string, []any) {
 		args = append(args, feed.table, feed.dropGen, feed.nsgen[:])
 	}
 	return q, args
+}
+
+func (w *sharedWriteTx) changeCommit(ctx context.Context) (int64, error) {
+	if w.commit == 0 {
+		err := w.tx.QueryRowContext(ctx, `UPDATE _dolmen_meta SET value = CAST(value AS INTEGER) + 1 WHERE key='next_commit' AND CAST(value AS INTEGER) < 9223372036854775807 RETURNING value`).Scan(&w.commit)
+		if err != nil {
+			return 0, fmt.Errorf("reserve change commit: %w", err)
+		}
+	}
+	return w.commit, nil
 }
