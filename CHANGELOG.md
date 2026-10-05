@@ -39,6 +39,8 @@
 
 ### Fixed
 
+- `create_key` refuses a sign-in principal or group (`oidc:v1:...`): such a key acted as that person,
+  their own rows included, or held the identity provider group's grants (#588).
 - On PostgreSQL, `wait_for` with `timeout_ms: 0` returns changes already committed instead of timing out after a
   synthetic 250 ms.
 - A canceled operation no longer waits behind PostgreSQL SQL compilation: compiler admission and

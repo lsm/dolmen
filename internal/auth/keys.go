@@ -82,6 +82,9 @@ func ValidateKeyIdentity(principal string, groups []string, maxGroups int) error
 	if !principalRe.MatchString(principal) {
 		return fmt.Errorf("principal is not a usable identity: use 1 to 256 printable ASCII characters with no space")
 	}
+	if IsOIDCQualified(principal) {
+		return fmt.Errorf("principal %q is a sign-in identity: a key minted as it would act as that person, their own rows included; mint the key for a principal of its own and grant that", principal)
+	}
 	if maxGroups <= 0 {
 		maxGroups = DefaultMaxGroups
 	}
@@ -92,6 +95,9 @@ func ValidateKeyIdentity(principal string, groups []string, maxGroups int) error
 	for _, g := range groups {
 		if !groupRe.MatchString(g) {
 			return fmt.Errorf("group %q is not a usable group name: use 1 to 128 printable ASCII characters with no space or comma", g)
+		}
+		if IsOIDCQualified(g) {
+			return fmt.Errorf("group %q is an identity provider's group: a key carrying it would hold that group's grants without its members signing in; give the key a group of its own", g)
 		}
 		if _, dup := seen[g]; dup {
 			return fmt.Errorf("group %q is listed twice", g)
