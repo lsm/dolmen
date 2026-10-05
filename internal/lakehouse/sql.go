@@ -407,9 +407,9 @@ func queryArg(v any) (string, error) {
 		return "n", nil
 	case bool:
 		if x {
-			return "b1", nil
+			return "i1", nil
 		}
-		return "b0", nil
+		return "i0", nil
 	case string:
 		return "s" + x, nil
 	case json.Number:
@@ -531,8 +531,16 @@ func parseQueryReply(fields []string) (store.QueryResult, error) {
 		return bad()
 	}
 	names := make([]string, ncols)
+	seen := make(map[string]bool, ncols)
 	for c := 0; c < ncols; c++ {
 		names[c] = fields[4+2*c]
+		if len(names[c]) > 4096 {
+			return store.QueryResult{}, invalidf("column label exceeds 4096 bytes; use a shorter AS alias")
+		}
+		if seen[names[c]] {
+			return store.QueryResult{}, invalidf("duplicate column label %q in query result; use AS aliases", names[c])
+		}
+		seen[names[c]] = true
 	}
 	pos := 4 + 2*ncols
 	nrows, err := strconv.Atoi(fields[pos])

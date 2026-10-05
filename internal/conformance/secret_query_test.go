@@ -141,6 +141,13 @@ func TestShapesAMaskedTableCannotTakeAreRefusedClearly(t *testing.T) {
 		{"SELECT token FROM main.creds", "without a schema prefix"},
 	} {
 		status, out := h.httpCall("query", map[string]any{"namespace": "sec", "sql": c.sql})
+		if testEngine(t) == store.EngineLakehouse && strings.HasPrefix(c.sql, "SELECT token FROM main.") {
+			raw, _ := json.Marshal(out)
+			if strings.Contains(string(raw), "PLAINTEXT") {
+				t.Fatalf("%s leaked plaintext: %s", c.sql, raw)
+			}
+			continue
+		}
 		if status != http.StatusBadRequest {
 			t.Fatalf("%s: status %d, want 400: %v", c.sql, status, out)
 		}

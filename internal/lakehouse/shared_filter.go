@@ -85,6 +85,9 @@ func (s *Store) sharedMatch(ctx context.Context, state tableState, filter string
 	defer stmt.Close()
 	values := make([]any, len(names))
 	for _, row := range rows {
+		if !inScope(sc, scope, row) {
+			continue
+		}
 		for i, name := range names {
 			values[i] = sharedValue(sc.Field(name), row[name])
 		}

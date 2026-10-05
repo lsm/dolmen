@@ -1,6 +1,7 @@
 package lakehouse
 
 import (
+	"golang.org/x/text/unicode/norm"
 	"math"
 	"strings"
 	"unicode"
@@ -29,7 +30,7 @@ func analyze(text string) []ftsToken2 {
 		cur.Reset()
 		out = append(out, ftsToken2{raw: raw, stem: stem(raw)})
 	}
-	for _, r := range strings.ToLower(text) {
+	for _, r := range foldAccents(strings.ToLower(text)) {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
 			cur.WriteRune(r)
 			continue
@@ -38,6 +39,21 @@ func analyze(text string) []ftsToken2 {
 	}
 	flush()
 	return out
+}
+
+func foldAccents(s string) string {
+	for _, r := range s {
+		if r > unicode.MaxASCII {
+			var b strings.Builder
+			for _, r := range norm.NFD.String(s) {
+				if !unicode.Is(unicode.Mn, r) {
+					b.WriteRune(r)
+				}
+			}
+			return b.String()
+		}
+	}
+	return s
 }
 
 func Tokens(text string) []string {
