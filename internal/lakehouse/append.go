@@ -43,6 +43,7 @@ var appendDDL = []string{
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_batches(owner TEXT NOT NULL, key TEXT NOT NULL, payload_hash TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(owner, key))`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_batch_tables(owner TEXT NOT NULL, key TEXT NOT NULL, table_name TEXT NOT NULL, PRIMARY KEY(owner, key, table_name))`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_batch_intent(singleton INTEGER PRIMARY KEY CHECK(singleton = 1))`,
+	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_embed_stage(table_name TEXT NOT NULL, generation INTEGER NOT NULL, provider TEXT NOT NULL, row_id INTEGER NOT NULL, digest BLOB NOT NULL, vector BLOB NOT NULL, PRIMARY KEY(table_name, generation, provider, row_id))`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_counts(table_name TEXT NOT NULL, generation INTEGER NOT NULL, owner TEXT NOT NULL, n INTEGER NOT NULL CHECK(n >= 0), PRIMARY KEY(table_name, generation, owner))`,
 }
 
@@ -424,7 +425,7 @@ func (s *Store) materializeCommit(ctx context.Context, n *namespace, ns string, 
 	marker := strconv.FormatInt(id, 10)
 	for _, snap := range state.native.Metadata().Snapshots() {
 		if snap.Summary != nil && snap.Summary.Properties[commitProperty] == marker {
-			return nil
+			return s.syncMetadata(state.native, n)
 		}
 	}
 	if materializeHook != nil {

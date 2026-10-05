@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"go.opentelemetry.io/otel/trace"
 	"os"
 	"path/filepath"
 	"sync"
@@ -23,19 +24,21 @@ var owners = struct {
 }{dirs: map[string]bool{}}
 
 type Store struct {
-	secrets    *secret.Keyring
-	sqlEngine  SQLEngine
-	retention  time.Duration
-	wake       wakeSet
-	stopping   chan struct{}
-	dir        string
-	root       *os.Root
-	gate       chan struct{}
-	namespaces map[string]*namespace
-	maxOpen    int
-	tick       uint64
-	closed     bool
-	closeErr   error
+	secrets      *secret.Keyring
+	sqlEngine    SQLEngine
+	retention    time.Duration
+	sharedFilter bool
+	tracer       trace.Tracer
+	wake         wakeSet
+	stopping     chan struct{}
+	dir          string
+	root         *os.Root
+	gate         chan struct{}
+	namespaces   map[string]*namespace
+	maxOpen      int
+	tick         uint64
+	closed       bool
+	closeErr     error
 }
 
 type namespace struct {
@@ -52,6 +55,14 @@ type OpenOption func(*Store)
 
 func WithMaxOpenNamespaces(n int) OpenOption {
 	return func(s *Store) { s.maxOpen = n }
+}
+
+func WithTracerProvider(tp trace.TracerProvider) OpenOption {
+	return func(s *Store) {
+		if tp != nil {
+			s.tracer = tp.Tracer("github.com/lsm/dolmen/internal/lakehouse")
+		}
+	}
 }
 
 func WithChangeRetention(d time.Duration) OpenOption {

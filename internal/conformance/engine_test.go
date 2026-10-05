@@ -49,7 +49,7 @@ func openEngineStoreTraced(t *testing.T, dir string, retention *time.Duration, s
 		return openPostgresEngineTraced(t, dir, retention, sharedFilter, keyring, tp)
 	}
 	if testEngine(t) == store.EngineLakehouse {
-		opts := []lakehouse.OpenOption{lakehouse.WithSecretKeyring(keyring), lakehouse.WithSQLEngine(lakehouseConformanceEngine(t))}
+		opts := []lakehouse.OpenOption{lakehouse.WithSecretKeyring(keyring), lakehouse.WithSQLEngine(lakehouseConformanceEngine(t)), lakehouse.WithSharedFilter(sharedFilter), lakehouse.WithTracerProvider(tp)}
 		if retention != nil {
 			opts = append(opts, lakehouse.WithChangeRetention(*retention))
 		}

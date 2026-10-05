@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go.opentelemetry.io/otel/trace"
 	"io"
 	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -465,7 +467,7 @@ func sidecarError(fields []string) error {
 	}
 	switch class {
 	case "query_error":
-		return derr.New(derr.Query, "lakehouse SQL (DuckDB dialect) failed: %s", msg)
+		return duckQueryError(msg)
 	case "invalid":
 		return invalidf("multiple statements are not allowed; send one SELECT per query")
 	case "canceled":
@@ -476,6 +478,37 @@ func sidecarError(fields []string) error {
 		return invalidf("query result exceeds the %d MiB response budget on its first row; select fewer or smaller columns", store.MaxQueryBytes>>20)
 	}
 	return sqlUnavailable("the SQL sidecar failed: %s", msg)
+}
+
+type missingTableError struct{ name string }
+
+func (e *missingTableError) Error() string { return "table " + e.name + " does not exist" }
+
+var (
+	duckMissingTable    = regexp.MustCompile(`Catalog Error: Table with name ([^ !]+) does not exist`)
+	duckMissingFunction = regexp.MustCompile(`Catalog Error: (?:Scalar |Aggregate |Table )?Function with name ([^ !]+) does not exist`)
+	duckMissingColumn   = regexp.MustCompile(`Referenced column "([^"]+)" not found`)
+)
+
+func duckQueryError(msg string) error {
+	if m := duckMissingTable.FindStringSubmatch(msg); m != nil {
+		return &missingTableError{name: m[1]}
+	}
+	if m := duckMissingFunction.FindStringSubmatch(msg); m != nil {
+		return derr.New(derr.Query, "unknown SQL function %q; only DuckDB SQL functions and table/column names from describe_table are supported", m[1])
+	}
+	if m := duckMissingColumn.FindStringSubmatch(msg); m != nil {
+		return derr.New(derr.Query, "column %q not found; use describe_table for column names", m[1])
+	}
+	return derr.New(derr.Query, "lakehouse SQL (DuckDB dialect) failed: %s", msg)
+}
+
+func resolveQueryError(ns string, err error) error {
+	var missing *missingTableError
+	if errors.As(err, &missing) {
+		return store.TableNotFound(ns, missing.name)
+	}
+	return err
 }
 
 func parseQueryReply(fields []string) (store.QueryResult, error) {
@@ -544,6 +577,11 @@ func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16
 	if err := store.ValidateQueryShape(sql); err != nil {
 		return store.QueryResult{}, err
 	}
+	if s.tracer != nil {
+		var span trace.Span
+		ctx, span = s.tracer.Start(ctx, "SELECT")
+		defer span.End()
+	}
 	if len(args) > 100 {
 		return store.QueryResult{}, invalidf("too many query parameters")
 	}
@@ -582,7 +620,7 @@ func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16
 	}
 	result, err := parseQueryReply(fields)
 	if err != nil {
-		return result, err
+		return result, resolveQueryError(ns, err)
 	}
 	for _, row := range result.Rows {
 		for label, v := range row {
