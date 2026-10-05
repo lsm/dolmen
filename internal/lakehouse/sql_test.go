@@ -300,3 +300,41 @@ func TestDropWaitsForAnInFlightQueryOutsideTheStoreLock(t *testing.T) {
 		t.Fatalf("drop left the table's files once the query finished: %v", err)
 	}
 }
+
+func TestDropNamespaceWaitsForAnInFlightQuery(t *testing.T) {
+	cfg := sidecarConfig(t)
+	dir := t.TempDir()
+	s := openSQLStore(t, dir, cfg)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "t", []schema.Field{{Name: "v", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "ns", "t", []map[string]any{{"v": "a"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	mustQuery(t, s, "ns", "SELECT count(*) AS n FROM t")
+	sc := s.namespaces["ns"].sql
+	sc.run.Lock()
+	dropped := make(chan error, 1)
+	go func() { dropped <- s.DropNamespace(ctx, "ns", [16]byte{}) }()
+	select {
+	case err := <-dropped:
+		sc.run.Unlock()
+		t.Fatalf("drop_namespace finished under a running query: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	_, statErr := os.Stat(filepath.Join(dir, "ns.lakehouse"))
+	sc.run.Unlock()
+	if statErr != nil {
+		t.Fatalf("drop_namespace removed files under a running query: %v", statErr)
+	}
+	if err := <-dropped; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ns.lakehouse")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("drop_namespace left the namespace once the query finished: %v", err)
+	}
+}

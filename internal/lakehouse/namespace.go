@@ -198,6 +198,12 @@ func (s *Store) DropNamespace(ctx context.Context, name string, expected [16]byt
 	if children > 0 {
 		return fmt.Errorf("%w: namespace %s has %d descendant namespaces — drop the children first", store.ErrInvalid, name, children)
 	}
+	if n := s.namespaces[name]; n != nil && n.sql != nil {
+		n.sql.run.Lock()
+		n.sql.stop()
+		n.sql.run.Unlock()
+		n.sql = nil
+	}
 	if err := s.evict(name); err != nil {
 		return err
 	}
