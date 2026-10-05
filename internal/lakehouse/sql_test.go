@@ -240,3 +240,15 @@ func TestQueryRepublishesAMissingMetadataCopy(t *testing.T) {
 		t.Fatalf("a missing metadata copy must be republished: %v", res.Rows)
 	}
 }
+
+func TestQueryRefusesDuplicateColumnLabels(t *testing.T) {
+	cfg := sidecarConfig(t)
+	s := openSQLStore(t, t.TempDir(), cfg)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Query(ctx, "ns", "SELECT 1 AS a, 2 AS a", nil, [16]byte{}, store.Page{}); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("a duplicate label must be refused, not silently collapsed: %v", err)
+	}
+}

@@ -480,8 +480,13 @@ func parseQueryReply(fields []string) (store.QueryResult, error) {
 		return bad()
 	}
 	names := make([]string, ncols)
+	seen := make(map[string]bool, ncols)
 	for c := 0; c < ncols; c++ {
 		names[c] = fields[4+2*c]
+		if seen[names[c]] {
+			return store.QueryResult{}, invalidf("duplicate column label %q in query result; use AS aliases", names[c])
+		}
+		seen[names[c]] = true
 	}
 	pos := 4 + 2*ncols
 	nrows, err := strconv.Atoi(fields[pos])
@@ -505,27 +510,7 @@ func parseQueryReply(fields []string) (store.QueryResult, error) {
 	return result, nil
 }
 
-func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16]byte, page store.Page) (store.QueryResult, error) {
-	if err := store.ValidateQueryShape(sql); err != nil {
-		return store.QueryResult{}, err
-	}
-	if len(args) > 100 {
-		return store.QueryResult{}, invalidf("too many query parameters")
-	}
-	if page.Offset < 0 {
-		return store.QueryResult{}, invalidf("offset must be non-negative")
-	}
-	limit := page.Limit
-	if limit <= 0 || limit > store.MaxPageLimit {
-		limit = store.DefaultPageLimit
-	}
-	encoded := make([]string, len(args))
-	for i, a := range args {
-		var err error
-		if encoded[i], err = queryArg(a); err != nil {
-			return store.QueryResult{}, err
-		}
-	}
+func (s *Store) ensureQuerySidecar(ctx context.Context, ns string, nsGen [16]byte) (*sidecar, error) {
 	var sc *sidecar
 	err := s.withNamespace(ctx, ns, func(n *namespace) error {
 		if nsGen != [16]byte{} && nsGen != n.generation {
@@ -551,9 +536,44 @@ func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16
 		return nil
 	})
 	if err != nil {
+		return nil, err
+	}
+	return sc, nil
+}
+
+func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16]byte, page store.Page) (store.QueryResult, error) {
+	if err := store.ValidateQueryShape(sql); err != nil {
+		return store.QueryResult{}, err
+	}
+	if len(args) > 100 {
+		return store.QueryResult{}, invalidf("too many query parameters")
+	}
+	if page.Offset < 0 {
+		return store.QueryResult{}, invalidf("offset must be non-negative")
+	}
+	limit := page.Limit
+	if limit <= 0 || limit > store.MaxPageLimit {
+		limit = store.DefaultPageLimit
+	}
+	encoded := make([]string, len(args))
+	for i, a := range args {
+		var err error
+		if encoded[i], err = queryArg(a); err != nil {
+			return store.QueryResult{}, err
+		}
+	}
+	sc, err := s.ensureQuerySidecar(ctx, ns, nsGen)
+	if err != nil {
 		return store.QueryResult{}, err
 	}
 	sc.run.Lock()
+	if !sc.alive() {
+		sc.run.Unlock()
+		if sc, err = s.ensureQuerySidecar(ctx, ns, nsGen); err != nil {
+			return store.QueryResult{}, err
+		}
+		sc.run.Lock()
+	}
 	defer sc.run.Unlock()
 	fields, err := sc.call(ctx, "query", append([]string{strconv.Itoa(page.Offset), strconv.Itoa(limit), strconv.Itoa(store.MaxQueryBytes), sql}, encoded...)...)
 	if err != nil {
