@@ -214,3 +214,29 @@ func TestRawDataFilesHoldNoSecretForCallerSQL(t *testing.T) {
 		t.Fatalf("a raw read of the data files returned %d bytes of secret material", len(raw))
 	}
 }
+
+func TestQueryRepublishesAMissingMetadataCopy(t *testing.T) {
+	cfg := sidecarConfig(t)
+	dir := t.TempDir()
+	s := openSQLStore(t, dir, cfg)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "t", []schema.Field{{Name: "v", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "ns", "t", []map[string]any{{"v": "a"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	copies, err := filepath.Glob(filepath.Join(dir, "ns.lakehouse", "data", "*", "metadata", currentMetadataName))
+	if err != nil || len(copies) != 1 {
+		t.Fatalf("copies %v %v", copies, err)
+	}
+	if err := os.Remove(copies[0]); err != nil {
+		t.Fatal(err)
+	}
+	if res := mustQuery(t, s, "ns", "SELECT count(*) AS n FROM t"); res.Rows[0]["n"] != int64(1) {
+		t.Fatalf("a missing metadata copy must be republished: %v", res.Rows)
+	}
+}

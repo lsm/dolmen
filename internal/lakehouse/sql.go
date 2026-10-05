@@ -2,6 +2,7 @@ package lakehouse
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -177,7 +178,11 @@ func startSidecar(ctx context.Context, cfg SQLEngine, dataDir string, views []st
 		if stmt == "" {
 			op, args = "seal", nil
 		}
-		if _, err := sc.call(ctx, op, args...); err != nil {
+		fields, err := sc.call(ctx, op, args...)
+		if err == nil && (len(fields) < 2 || fields[1] != "ok") {
+			err = sqlUnavailable("the SQL sidecar refused to %s a view: %v", op, sidecarError(fields))
+		}
+		if err != nil {
 			sc.stop()
 			return nil, err
 		}
@@ -367,6 +372,9 @@ func (s *Store) namespaceViews(ctx context.Context, n *namespace, ns string) ([]
 	views := make([]string, 0, len(states))
 	var fp strings.Builder
 	for _, state := range states {
+		if err := freshenCurrentMetadata(state); err != nil {
+			return nil, "", err
+		}
 		views = append(views, viewSQL(state))
 		fmt.Fprintf(&fp, "%s|%d|%d|%t;", state.schema.Name, state.schema.Version, state.incarnation.DropGen, state.native.Metadata().CurrentSnapshot() != nil)
 	}
@@ -528,7 +536,10 @@ func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16
 			return err
 		}
 		if n.sql != nil && (n.sql.fingerprint != fp || !n.sql.alive()) {
-			n.sql.stop()
+			old := n.sql
+			old.run.Lock()
+			old.stop()
+			old.run.Unlock()
 			n.sql = nil
 		}
 		if n.sql == nil {
@@ -557,6 +568,22 @@ func (s *Store) Capabilities() store.EngineCapabilities {
 		QueryDialect:    DialectDuckDB,
 		FilterDialect:   DialectDuckDB,
 	}
+}
+
+func freshenCurrentMetadata(state tableState) error {
+	if state.native.Metadata().CurrentSnapshot() == nil {
+		return nil
+	}
+	source := filepath.FromSlash(strings.TrimPrefix(state.native.MetadataLocation(), "file://"))
+	copied := filepath.Join(filepath.Dir(source), currentMetadataName)
+	want, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+	if have, err := os.ReadFile(copied); err == nil && bytes.Equal(have, want) {
+		return nil
+	}
+	return publishCurrentMetadata(source)
 }
 
 func publishCurrentMetadata(metadataPath string) error {
