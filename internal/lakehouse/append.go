@@ -55,8 +55,10 @@ var materializeWrittenHook func() error
 var secretPresent = []byte{0}
 
 type commitRows struct {
-	Rows   []map[string]any
-	Delete []int64
+	Rows       []map[string]any
+	Delete     []int64
+	EmbedSpace string
+	EmbedDim   int
 }
 
 func idFilter(ids []int64) iceberg.BooleanExpression {
@@ -281,7 +283,11 @@ func (s *Store) Insert(ctx context.Context, ns, name string, records []map[strin
 		if found, err := replayed(tx); err != nil || found {
 			return err
 		}
-		committed, err := s.commitAppend(ctx, tx, state, rows, opts, domain, hash, stamp)
+		pinned := commitRows{}
+		if pin {
+			pinned = commitRows{EmbedSpace: emb.Identity, EmbedDim: state.schema.EmbedDim}
+		}
+		committed, err := s.commitAppend(ctx, tx, state, rows, opts, domain, hash, stamp, pinned)
 		if err != nil {
 			return err
 		}
@@ -290,19 +296,13 @@ func (s *Store) Insert(ctx context.Context, ns, name string, records []map[strin
 		}
 		n.pending++
 		result = committed
-		if pin {
-			state.schema.EmbedSpace = emb.Identity
-			if err := s.publishSchema(ctx, n, state); err != nil {
-				return err
-			}
-		}
 		s.materialize(ctx, n, ns)
 		return nil
 	})
 	return result, err
 }
 
-func (s *Store) commitAppend(ctx context.Context, tx *sql.Tx, state tableState, rows []map[string]any, opts store.WriteOpts, domain store.IdemDomain, hash store.IdemHash, stamp string) (store.InsertResult, error) {
+func (s *Store) commitAppend(ctx context.Context, tx *sql.Tx, state tableState, rows []map[string]any, opts store.WriteOpts, domain store.IdemDomain, hash store.IdemHash, stamp string, pinned commitRows) (store.InsertResult, error) {
 	var result store.InsertResult
 	inc := state.incarnation
 	var next int64
@@ -331,7 +331,7 @@ func (s *Store) commitAppend(ctx context.Context, tx *sql.Tx, state tableState, 
 		return result, err
 	}
 	var payload bytes.Buffer
-	if err := gob.NewEncoder(&payload).Encode(commitRows{Rows: rows}); err != nil {
+	if err := gob.NewEncoder(&payload).Encode(commitRows{Rows: rows, EmbedSpace: pinned.EmbedSpace, EmbedDim: pinned.EmbedDim}); err != nil {
 		return result, err
 	}
 	res, err := tx.ExecContext(ctx, `INSERT INTO _dolmen_lakehouse_commits(table_name, generation, kind, rows) VALUES(?,?,?,?)`, inc.Table, inc.DropGen, string(store.ChangeInsert), payload.Bytes())
@@ -454,6 +454,16 @@ func (s *Store) materializeCommit(ctx context.Context, n *namespace, ns string, 
 		return errors.Join(err, os.Remove(path))
 	}
 	tx := state.native.NewTransaction()
+	if decoded.EmbedSpace != "" && (state.schema.EmbedSpace != decoded.EmbedSpace || state.schema.EmbedDim != decoded.EmbedDim) {
+		state.schema.EmbedSpace, state.schema.EmbedDim = decoded.EmbedSpace, decoded.EmbedDim
+		raw, err := json.Marshal(state.schema)
+		if err != nil {
+			return err
+		}
+		if err := tx.SetProperties(iceberg.Properties{schemaProperty: string(raw)}); err != nil {
+			return err
+		}
+	}
 	if len(decoded.Delete) > 0 && state.native.Metadata().CurrentSnapshot() != nil {
 		if state.native.Properties()[table.WriteDeleteModeKey] != table.WriteModeMergeOnRead {
 			if err := tx.SetProperties(iceberg.Properties{table.WriteDeleteModeKey: table.WriteModeMergeOnRead}); err != nil {
