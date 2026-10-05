@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -252,7 +253,7 @@ func TestCatalogVersionGuardDoesNotInitializeOrRewrite(t *testing.T) {
 		name, update string
 		want         error
 	}{
-		{"newer", `UPDATE _dolmen_lakehouse_meta SET format = 2`, store.ErrCatalogTooNew},
+		{"newer", `UPDATE _dolmen_lakehouse_meta SET format = ` + strconv.Itoa(catalogFormat+1), store.ErrCatalogTooNew},
 		{"zero", `UPDATE _dolmen_lakehouse_meta SET format = 0`, store.ErrCatalogCorrupt},
 		{"wrong-name", `UPDATE _dolmen_lakehouse_meta SET namespace = 'other'`, store.ErrCatalogCorrupt},
 	} {
