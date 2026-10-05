@@ -40,7 +40,7 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 	if err := decodeProperty(string(raw), &next); err != nil {
 		return nil, nil, err
 	}
-	plan := &store.MigrationPlan{FromVersion: next.Version, ToVersion: next.Version + 1, Table: next, Expected: state.incarnation, Operations: []string{}}
+	plan := &store.MigrationPlan{FromVersion: next.Version, ToVersion: next.Version + 1, Table: next, Expected: state.incarnation, ExpectedIncarnation: store.EncodeIncarnation(state.incarnation), Operations: []string{}}
 	tx := state.native.NewTransaction()
 	vectorizeChanged := false
 	find := func(name string) (int, error) {
@@ -130,11 +130,13 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 			if err := schema.ValidateIdent(ch.To, "field name"); err != nil {
 				return nil, nil, invalidf("%v", err)
 			}
-			if _, err := find(ch.To); err == nil {
-				return nil, nil, invalidf("field %q already exists", ch.To)
-			}
-			if err := tx.UpdateSchema(true, false).RenameColumn([]string{ch.From}, ch.To).Commit(); err != nil {
-				return nil, nil, err
+			if ch.To != ch.From {
+				if _, err := find(ch.To); err == nil {
+					return nil, nil, invalidf("field %q already exists", ch.To)
+				}
+				if err := tx.UpdateSchema(true, false).RenameColumn([]string{ch.From}, ch.To).Commit(); err != nil {
+					return nil, nil, err
+				}
 			}
 			if next.Fields[index].Fulltext {
 				plan.RebuildFulltext = true
@@ -183,6 +185,9 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 			}
 			if next.Fields[index].Type != schema.String {
 				return nil, nil, invalidf("enum is only allowed on string fields")
+			}
+			if def, ok := next.Fields[index].Default.(string); ok && !schema.EnumAllows(*ch.Enum, def) {
+				return nil, nil, invalidf("field %q: the declared default %q is not in the new enum (%s); keep the value, or pick a default among the allowed values", ch.Name, def, strings.Join(*ch.Enum, ", "))
 			}
 			next.Fields[index].Enum = nil
 			if len(*ch.Enum) > 0 {
