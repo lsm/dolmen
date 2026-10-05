@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"io"
 	"math"
 	"os"
@@ -218,6 +220,11 @@ func (s *Store) Insert(ctx context.Context, ns, name string, records []map[strin
 	records, err := normalizeRecords(records)
 	if err != nil {
 		return store.InsertResult{}, err
+	}
+	if s.tracer != nil {
+		var span trace.Span
+		ctx, span = s.tracer.Start(ctx, "INSERT "+name, trace.WithAttributes(attribute.String("db.operation.name", "INSERT")))
+		defer span.End()
 	}
 	var result store.InsertResult
 	err = s.withNamespace(ctx, ns, func(n *namespace) error {
