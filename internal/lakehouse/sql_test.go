@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -250,5 +251,52 @@ func TestQueryRefusesDuplicateColumnLabels(t *testing.T) {
 	}
 	if _, err := s.Query(ctx, "ns", "SELECT 1 AS a, 2 AS a", nil, [16]byte{}, store.Page{}); !errors.Is(err, store.ErrInvalid) {
 		t.Fatalf("a duplicate label must be refused, not silently collapsed: %v", err)
+	}
+}
+
+func TestDropWaitsForAnInFlightQueryOutsideTheStoreLock(t *testing.T) {
+	cfg := sidecarConfig(t)
+	dir := t.TempDir()
+	s := openSQLStore(t, dir, cfg)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "t", []schema.Field{{Name: "v", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "ns", "t", []map[string]any{{"v": "a"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	mustQuery(t, s, "ns", "SELECT count(*) AS n FROM t")
+	tables, err := filepath.Glob(filepath.Join(dir, "ns.lakehouse", "data", "t-*"))
+	if err != nil || len(tables) != 1 {
+		t.Fatalf("table directories %v %v", tables, err)
+	}
+	sc := s.namespaces["ns"].sql
+	sc.run.Lock()
+	dropped := make(chan error, 1)
+	go func() { dropped <- s.DropTable(ctx, "ns", "t", store.Incarnation{}) }()
+	for {
+		names, err := s.ListTables(ctx, "ns", nil)
+		if err != nil {
+			sc.run.Unlock()
+			t.Fatal(err)
+		}
+		if len(names) == 0 {
+			break
+		}
+		runtime.Gosched()
+	}
+	_, statErr := os.Stat(tables[0])
+	sc.run.Unlock()
+	if statErr != nil {
+		t.Fatalf("drop removed the table's files under a running query: %v", statErr)
+	}
+	if err := <-dropped; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(tables[0]); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("drop left the table's files once the query finished: %v", err)
 	}
 }

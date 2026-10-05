@@ -46,6 +46,7 @@ type namespace struct {
 	sqlErr     error
 	sqlRetry   time.Time
 	sqlFails   int
+	published  map[string]string
 }
 
 type OpenOption func(*Store)

@@ -219,7 +219,9 @@ func (s *Store) ListTables(ctx context.Context, ns string, auth []store.AuthBind
 }
 
 func (s *Store) DropTable(ctx context.Context, ns, name string, expected store.Incarnation) error {
-	return s.withNamespace(ctx, ns, func(n *namespace) error {
+	var location string
+	var draining *sidecar
+	err := s.withNamespace(ctx, ns, func(n *namespace) error {
 		state, err := loadTable(ctx, n, ns, name)
 		if err != nil {
 			return err
@@ -254,12 +256,24 @@ func (s *Store) DropTable(ctx context.Context, ns, name string, expected store.I
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		location := filepath.Clean(localPath(state.native.Location()))
+		location = filepath.Clean(localPath(state.native.Location()))
 		if rel, err := filepath.Rel(n.dataDir, location); err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+			location = ""
 			return fmt.Errorf("%w: Iceberg table location escaped its namespace", store.ErrCatalogCorrupt)
 		}
-		return os.RemoveAll(location)
+		delete(n.published, name)
+		draining, n.sql = n.sql, nil
+		return nil
 	})
+	if draining != nil {
+		draining.run.Lock()
+		draining.stop()
+		draining.run.Unlock()
+	}
+	if err != nil || location == "" {
+		return err
+	}
+	return os.RemoveAll(location)
 }
 
 func (s *Store) ListMigrations(ctx context.Context, ns, name string, expected store.Incarnation) ([]store.Migration, error) {

@@ -372,7 +372,7 @@ func (s *Store) namespaceViews(ctx context.Context, n *namespace, ns string) ([]
 	views := make([]string, 0, len(states))
 	var fp strings.Builder
 	for _, state := range states {
-		if err := freshenCurrentMetadata(state); err != nil {
+		if err := n.freshenCurrentMetadata(state); err != nil {
 			return nil, "", err
 		}
 		views = append(views, viewSQL(state))
@@ -605,20 +605,31 @@ func (s *Store) Capabilities() store.EngineCapabilities {
 	}
 }
 
-func freshenCurrentMetadata(state tableState) error {
+func (n *namespace) freshenCurrentMetadata(state tableState) error {
 	if state.native.Metadata().CurrentSnapshot() == nil {
 		return nil
 	}
 	source := localPath(state.native.MetadataLocation())
 	copied := filepath.Join(filepath.Dir(source), currentMetadataName)
+	if n.published[state.schema.Name] == source {
+		if _, err := os.Stat(copied); err == nil {
+			return nil
+		}
+	}
 	want, err := os.ReadFile(source)
 	if err != nil {
 		return err
 	}
-	if have, err := os.ReadFile(copied); err == nil && bytes.Equal(have, want) {
-		return nil
+	if have, err := os.ReadFile(copied); err != nil || !bytes.Equal(have, want) {
+		if err := publishCurrentMetadata(source); err != nil {
+			return err
+		}
 	}
-	return publishCurrentMetadata(source)
+	if n.published == nil {
+		n.published = map[string]string{}
+	}
+	n.published[state.schema.Name] = source
+	return nil
 }
 
 func publishCurrentMetadata(metadataPath string) error {
