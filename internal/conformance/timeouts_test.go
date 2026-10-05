@@ -3,6 +3,7 @@ package conformance
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -138,40 +139,72 @@ func TestMigrateAnswersToItsOwnLimitNotTheOperationLimit(t *testing.T) {
 	seed := func(h *harness) {
 		h.seedTable("mig", "notes", []map[string]any{{"name": "body", "type": "text"}})
 		h.mustHTTP("insert", map[string]any{"namespace": "mig", "table": "notes", "records": []map[string]any{{"body": "a"}, {"body": "b"}}})
-		h.emb.mu.Lock()
-		h.emb.delay = 600 * time.Millisecond
-		h.emb.mu.Unlock()
 	}
 	vectorize := map[string]any{"namespace": "mig", "table": "notes", "changes": []map[string]any{{"op": "set_vectorize", "name": "body", "value": true}}}
-
 	bounded := newHarnessTimeouts(t, defaultOp)
 	seed(bounded)
-	bounded.retime(api.Timeouts{Op: 100 * time.Millisecond, Migrate: 200 * time.Millisecond})
+	bounded.emb.mu.Lock()
+	bounded.emb.onCall = func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
+	bounded.emb.mu.Unlock()
+	bounded.retime(api.Timeouts{Op: time.Minute, Migrate: 200 * time.Millisecond})
 	status, out, _ := postWithin(t, bounded.httpURL+"/migrate", vectorize, 20*time.Second)
 	if status != http.StatusGatewayTimeout {
-		t.Fatalf("a backfill past -migrate-timeout: status %d, want 504: %v", status, out)
+		t.Fatalf("bounded migration: %d %v", status, out)
 	}
 	if code, msg := errorOf(t, out); code != "timeout" || !strings.Contains(msg, "migrate did not finish within the server's 200ms migration time limit (-migrate-timeout, DOLMEN_MIGRATE_TIMEOUT)") {
 		t.Fatalf("got %s %q", code, msg)
 	}
 	bounded.retime(defaultOp)
 	if v := tableVersion(bounded, "mig", "notes"); fmt.Sprint(v) != "1" {
-		t.Fatalf("the stopped migration must leave the table at version 1, got %v", v)
+		t.Fatalf("stopped migration changed version: %v", v)
 	}
 
 	unbounded := newHarnessTimeouts(t, defaultOp)
 	seed(unbounded)
-	unbounded.retime(api.Timeouts{Op: 100 * time.Millisecond})
-	status, out, took := postWithin(t, unbounded.httpURL+"/migrate", vectorize, 20*time.Second)
-	if status != http.StatusOK || out["ok"] != true {
-		t.Fatalf("with no migration limit the same backfill must finish, whatever -op-timeout says: status %d %v", status, out)
+	entered := make(chan context.Context, 1)
+	release := make(chan struct{})
+	unbounded.emb.mu.Lock()
+	unbounded.emb.onCall = func(ctx context.Context) error {
+		entered <- ctx
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
-	if took < 500*time.Millisecond {
-		t.Fatalf("the migration finished in %s, before the provider's delay, so it proves nothing about the operation limit", took)
+	unbounded.emb.mu.Unlock()
+	unbounded.retime(api.Timeouts{Op: 100 * time.Millisecond})
+	type outcome struct {
+		status int
+		body   map[string]any
+	}
+	completed := make(chan outcome, 1)
+	go func() { status, out := unbounded.httpCall("migrate", vectorize); completed <- outcome{status, out} }()
+	select {
+	case ctx := <-entered:
+		if deadline, ok := ctx.Deadline(); ok {
+			t.Errorf("unbounded migrate inherited an operation deadline: %v", deadline)
+		}
+		close(release)
+	case out := <-completed:
+		close(release)
+		t.Fatalf("migration ended before its provider was entered: %d %v", out.status, out.body)
+	case <-time.After(20 * time.Second):
+		close(release)
+		t.Fatal("migration did not enter the provider")
+	}
+	select {
+	case out := <-completed:
+		if out.status != http.StatusOK || out.body["ok"] != true {
+			t.Fatalf("released migration: %d %v", out.status, out.body)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("released migration did not finish")
 	}
 	unbounded.retime(defaultOp)
 	if v := tableVersion(unbounded, "mig", "notes"); fmt.Sprint(v) != "2" {
-		t.Fatalf("the finished migration must bump the version to 2, got %v", v)
+		t.Fatalf("finished migration version: %v", v)
 	}
 }
 

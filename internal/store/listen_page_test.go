@@ -324,7 +324,7 @@ func TestListenReplayMissingTailFailsLoudly(t *testing.T) {
 }
 
 func TestListenChainRotatesBeforeCap(t *testing.T) {
-	const retention = 400 * time.Millisecond
+	const retention = time.Hour
 	st := openStampedStoreFor(t, retention)
 	ctx := context.Background()
 	insertNotes(t, st, 2)
