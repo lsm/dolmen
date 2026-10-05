@@ -1,20 +1,25 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"strings"
 
 	"github.com/lsm/dolmen/internal/filter"
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-func (s *Server) checkFilter(sc *schema.TableSchema, expr string, args []any) error {
+func (s *Server) checkFilter(ctx context.Context, sc *schema.TableSchema, expr string, args []any) error {
 	if err := scalarArgs(args); err != nil {
 		return err
 	}
 	if !s.authn.On() || sc == nil || strings.TrimSpace(expr) == "" {
 		return nil
 	}
-	if err := filter.Validate(expr, filter.Options{Columns: filterColumns(sc), Args: args}); err != nil {
+	if err := filter.Validate(expr, filter.Options{Context: ctx, Columns: filterColumns(sc), Args: args}); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		return badRequest("filter: %s", err.Error())
 	}
 	return nil

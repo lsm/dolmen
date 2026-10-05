@@ -235,11 +235,17 @@ it: a failing provider degrades vector writes and text vector search, not readin
 
 On SIGTERM or an interrupt the server stops accepting connections and `/readyz` turns
 `not_ready`, and each open `subscribe` stream ends with a close frame carrying its resume cursor.
-Running requests get `-shutdown-grace` (default `60s`) to finish. Past it they are cancelled,
-which rolls back any open transaction, including a migration's, so a write either committed
-before the answer or did not happen. The store is then closed, and a close or checkpoint error
-is reported alongside the drain result: the process exits non-zero if either failed. Each phase
-is logged with the number of requests still running.
+Running requests get `-shutdown-grace` (default `60s`) to finish. A positive value bounds
+that drain; `0` means no grace period and cancels in-flight requests immediately. Cancellation
+rolls back an open transaction, including a migration's. A write may already have committed,
+so check its result before retrying it.
+
+Cleanup has a separate fixed five-second hard cap, shared by closing connections, closing the
+store and grant registry, and flushing telemetry. If cleanup overruns, the command returns an
+error and the process exits anyway. Process exit closes remaining database connections;
+PostgreSQL rolls back their abandoned transactions and releases their locks. No grace setting
+can turn cleanup into an unbounded wait. A close or checkpoint failure is also reported and
+causes a nonzero exit. Each phase logs the number of requests still running.
 
 ## Disk use
 

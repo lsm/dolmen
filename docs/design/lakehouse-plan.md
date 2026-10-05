@@ -273,7 +273,8 @@ work before the child is signalled. Four specific behaviours:
   distinguishes "the child died under load" from "the child cannot start".
 - **Shutdown is ordered.** `Close` stops accepting new operations, waits for admitted ones —
   including in-flight statements, which are cancelled by closing the connection — and only then
-  signals the child, in the existing `-shutdown-grace` discipline. The child is a process dolmen
+  signals the child, in the `-shutdown-grace` discipline (zero cancels immediately; a
+  positive value allows a bounded drain, followed by the separate five-second cleanup cap). The child is a process dolmen
   started, so dolmen owns reaping it; a leaked child per namespace would be a real leak on a
   laptop.
 

@@ -868,3 +868,7 @@ APIs run directly in SQLite/lakehouse conformance; `-engine lakehouse` remains r
 the public-selector slice. Writes and populated-table backfills follow in later slices.
 Schema and native Iceberg evolution publish together; stale incarnations cannot drop a
 recreated table on either backend.
+
+Operation deadlines also reach Dolmen's SQL and filter compilation. PostgreSQL uses at most four compiler workers per process; a canceled call releases its transaction while an upstream parser finishes. Narrow a query before retrying a timeout, and check the result of a write before retrying it because it may or may not have committed. See the deadline design document for the cancellation and worker admission rules.
+
+On shutdown, `-shutdown-grace 0` cancels running requests immediately; a positive value gives them that bounded grace before cancellation. Store and connection cleanup has a separate fixed five-second hard cap. The process exits even if cleanup stalls; PostgreSQL rolls back abandoned transactions when the remaining connections close. Check a write before retrying it because it may already have committed.

@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 )
 
 type filterRenderer struct {
+	ctx        context.Context
 	columns    map[string]string
 	types      map[string]schema.FieldType
 	args       []any
@@ -37,7 +39,14 @@ func filterNotRenderable(name string) error {
 }
 
 func renderScopedFilter(node filter.Node, columns map[string]string, types map[string]schema.FieldType, args []any, next int) (string, []any, error) {
-	r := &filterRenderer{columns: columns, types: types, args: args}
+	return renderScopedFilterContext(context.Background(), node, columns, types, args, next)
+}
+
+func renderScopedFilterContext(ctx context.Context, node filter.Node, columns map[string]string, types map[string]schema.FieldType, args []any, next int) (string, []any, error) {
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
+	}
+	r := &filterRenderer{ctx: ctx, columns: columns, types: types, args: args}
 	rendered, err := r.liftedTruth(node, next)
 	if err != nil {
 		return "", nil, err
@@ -99,6 +108,11 @@ func (r *filterRenderer) truth(n filter.Node, next int) (string, error) {
 func (r *filterRenderer) placeholder(next int) int { return next + len(r.bound) }
 
 func (r *filterRenderer) render(n filter.Node, next int) error {
+	if r.ctx != nil {
+		if err := r.ctx.Err(); err != nil {
+			return err
+		}
+	}
 	switch node := n.(type) {
 	case *filter.Column:
 		physical, ok := r.columns[node.Name]
@@ -685,18 +699,21 @@ func filterColumnMap(state tableState) map[string]string {
 	return columns
 }
 
-func (s *Store) renderSharedFilter(n namespace, expr string, args []any, state tableState, scope *store.RowScope) (string, []any, error) {
+func (s *Store) renderSharedFilter(ctx context.Context, n namespace, expr string, args []any, state tableState, scope *store.RowScope) (string, []any, error) {
 	columns := filterColumnMap(state)
 	names := make([]string, 0, len(columns))
 	for name := range columns {
 		names = append(names, name)
 	}
-	node, err := filter.Parse(expr, filter.Options{Columns: names, Args: args})
+	node, err := filter.Parse(expr, filter.Options{Context: ctx, Columns: names, Args: args})
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", nil, ctx.Err()
+		}
 		return "", nil, fmt.Errorf("%w: filter: %s", store.ErrInvalid, err.Error())
 	}
 	prefix, source, lead := scopedSourceAt(ident(n.physical, state.physical), scope, 1)
-	rendered, bound, err := renderScopedFilter(node, columns, filterTypeMap(state), args, len(lead)+1)
+	rendered, bound, err := renderScopedFilterContext(ctx, node, columns, filterTypeMap(state), args, len(lead)+1)
 	if err != nil {
 		return "", nil, err
 	}
@@ -1662,6 +1679,11 @@ type liftedChoice struct {
 }
 
 func (r *filterRenderer) liftedTruth(root filter.Node, next int) (string, error) {
+	if r.ctx != nil {
+		if err := r.ctx.Err(); err != nil {
+			return "", err
+		}
+	}
 	target := r.mixedConditional(root)
 	if target == nil {
 		return r.truth(root, next)

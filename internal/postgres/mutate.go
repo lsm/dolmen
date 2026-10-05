@@ -59,7 +59,7 @@ func (s *Store) compileMutationFilter(ctx context.Context, tx pgx.Tx, n namespac
 		return "", nil, fmt.Errorf("%w: multiple statements are not allowed in filter", store.ErrInvalid)
 	}
 	if s.sharedFilter {
-		return s.renderSharedFilter(n, filter, args, state, scope)
+		return s.renderSharedFilter(ctx, n, filter, args, state, scope)
 	}
 	prefix, source, lead := scopedSource(ident(state.incarnation.Table), scope)
 	query := prefix + "SELECT id FROM " + source + " WHERE " + filter + " ORDER BY id"

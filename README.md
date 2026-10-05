@@ -459,14 +459,14 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 | `-max-namespace-size` | `DOLMEN_MAX_NAMESPACE_SIZE` | `0` | Largest a namespace file may grow, as bytes or with `KiB`/`MiB`/`GiB`/`TiB`. A write that would pass it is refused with `507` and writes nothing; reads keep working. `0` is unbounded. SQLite engine only (see [Disk use](docs/deployment.md#disk-use)) |
 | `-log-level` | `DOLMEN_LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, or `error`. `debug` adds one line per operation over HTTP, MCP or stdio with the operation, outcome code, status, duration, request size, and request id, and never the payload, SQL, arguments, or credentials |
 | `-sync` | `DOLMEN_SYNC` | `full` | Commit durability. `full`: an acknowledged commit survives power loss. `normal`: it survives a process crash, but the last commits before a power or OS failure may be lost, for faster writes. Each namespace's writer is checked at open, and a mismatch is refused. SQLite engine only (see [Durability](docs/deployment.md#durability)) |
-| `-shutdown-grace` | `DOLMEN_SHUTDOWN_GRACE` | `60s` | On SIGTERM, how long running requests may finish before they are cancelled (an open transaction rolls back). `0` waits without a bound; otherwise `1s` to `24h`. See [Shutting down](docs/deployment.md#shutting-down) |
+| `-shutdown-grace` | `DOLMEN_SHUTDOWN_GRACE` | `60s` | On SIGTERM, how long running requests may finish before cancellation. `0` cancels immediately; otherwise `1s` to `24h`. Cleanup then has a separate fixed `5s` hard cap; the process exits even if store close stalls, and remaining database connections close and roll back their transactions. See [Shutting down](docs/deployment.md#shutting-down) |
 | `-change-retention` | `DOLMEN_CHANGE_RETENTION` | `168h` | Change-log retention for `changes_since` / `wait_for` / `subscribe`. `0` disables pruning (records and cursors never expire); otherwise `1h` to `2160h` |
 | `-max-subscription-age` | `DOLMEN_MAX_SUBSCRIPTION_AGE` | `30m` | `subscribe` connection age bound: the stream teaching-closes at the bound and the client reconnects from its cursor. `0` disables the bound; otherwise `1s` to `24h` |
 | `-read-timeout` | `DOLMEN_READ_TIMEOUT` | `2m` | Time to read one request, headers and body; a body that arrives too slowly is answered `408` with code `timeout`. `0` disables the bound; otherwise `1s` to `24h` |
 | `-write-timeout` | `DOLMEN_WRITE_TIMEOUT` | `2m` | Time to write one response once it starts, so a client that stops reading cannot hold the connection. `subscribe` streams bound each frame instead. `0` disables the bound; otherwise `1s` to `24h` |
 | `-idle-timeout` | `DOLMEN_IDLE_TIMEOUT` | `2m` | Time a keep-alive connection may wait for its next request. `0` disables the bound; otherwise `1s` to `24h` |
 | `-max-header-bytes` | `DOLMEN_MAX_HEADER_BYTES` | `1048576` | Largest request header block accepted; larger ones are answered `431`. `4096` to `16777216` |
-| `-op-timeout` | `DOLMEN_OP_TIMEOUT` | `2m` | Time for one operation's work over HTTP, MCP or stdio; `wait_for` gets its `timeout_ms` on top, and `migrate` answers to `-migrate-timeout` instead. An operation past it is stopped and answered `504` with code `timeout`. `0` disables the bound; otherwise `1s` to `24h` |
+| `-op-timeout` | `DOLMEN_OP_TIMEOUT` | `2m` | Time for one operation's work over HTTP, MCP or stdio; `wait_for` gets its `timeout_ms` on top, and `migrate` answers to `-migrate-timeout` instead. Dolmen checks cancellation during compilation; PostgreSQL parser workers have bounded admission and waiting so canceled compilation can release its transaction. An operation past the limit is answered `504` with code `timeout`. `0` disables the bound; otherwise `1s` to `24h` |
 | `-migrate-timeout` | `DOLMEN_MIGRATE_TIMEOUT` | `0` | Time for one `migrate` call. A vectorizing migration embeds its rows *outside* the write transaction and keeps each batch, so a call that runs out of time can be re-issued to finish the rest rather than start over. `0` leaves it unbounded; otherwise `1s` to `24h` |
 | `-max-open-namespaces` | `DOLMEN_MAX_OPEN_NAMESPACES` | `128` | Namespaces held open at once. Past it, the least recently used idle namespace closes and reopens on its next request; one in use is never closed. At least `1`; SQLite engine only (see [Open namespaces and file descriptors](docs/deployment.md#open-namespaces-and-file-descriptors)) |
 | — | `DOLMEN_SKILL_NAMESPACE_HINT` | built-in default | Hint text rendered into the served skill markdown |
@@ -942,7 +942,7 @@ Dolmen speaks MCP over two transports — one dispatcher, two framings: `tools/l
 claude mcp add --transport http dolmen http://127.0.0.1:8790/mcp
 ```
 
-**stdio** (`dolmen mcp`) — for hosts that launch the server as a subprocess (Claude Desktop, Cursor, any non-Go client that can spawn a process). One process serves one data directory: newline-delimited JSON-RPC 2.0 on stdin/stdout, stdout carries protocol only (all logs go to stderr), and the process serves until stdin closes or SIGTERM/SIGINT arrives, then drains in-flight requests (a 5s grace, then cancellation); a second SIGINT/SIGTERM during a stuck drain kills the process immediately:
+**stdio** (`dolmen mcp`) — for hosts that launch the server as a subprocess (Claude Desktop, Cursor, any non-Go client that can spawn a process). One process serves one data directory: newline-delimited JSON-RPC 2.0 on stdin/stdout, stdout carries protocol only (all logs go to stderr), and the process serves until stdin closes or SIGTERM/SIGINT arrives, then drains in-flight requests (a 5s grace, then cancellation, a bounded worker join, and a separate 5s cleanup cap); a second SIGINT/SIGTERM during a stuck drain kills the process immediately:
 
 ```bash
 claude mcp add dolmen -- /path/to/dolmen mcp -data /path/to/data
@@ -1357,7 +1357,7 @@ variables (both `dolmen` and `dolmen mcp`), and each signal can be turned on or 
 An unsupported value (a gRPC protocol, an unknown sampler or propagator) stops startup with an error
 naming the variable. The resource carries `service.name`, `service.version`, `service.instance.id`
 (random per process), host and runtime attributes. Spans are batched and flushed on shutdown, bounded
-by `-shutdown-grace` (at most 10s).
+by the separate shutdown cleanup cap (at most 5s, shared with store cleanup).
 
 What is traced:
 
