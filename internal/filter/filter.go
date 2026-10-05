@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -80,6 +81,7 @@ const (
 type argRange struct{ min, max int }
 
 type Options struct {
+	Context context.Context
 	Columns []string
 	Args    []any
 }
@@ -90,6 +92,12 @@ func Validate(expr string, opts Options) error {
 }
 
 func Parse(expr string, opts Options) (Node, error) {
+	if opts.Context == nil {
+		opts.Context = context.Background()
+	}
+	if err := opts.Context.Err(); err != nil {
+		return nil, err
+	}
 	if len(expr) > MaxFilterLength {
 		return nil, errAt(0, "the filter expression is %d bytes, over the %d-byte limit", len(expr), MaxFilterLength)
 	}
@@ -98,7 +106,7 @@ func Parse(expr string, opts Options) (Node, error) {
 		columns[strings.ToLower(c)] = true
 	}
 	p := &parser{
-		lex:     lexer{src: expr},
+		lex:     lexer{src: expr, ctx: opts.Context},
 		columns: columns,
 		args:    opts.Args,
 	}

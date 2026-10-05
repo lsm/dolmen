@@ -70,11 +70,15 @@ func TestAnOperationPastItsLimitAnswersTimeoutOnEveryTransport(t *testing.T) {
 		t.Fatalf("the refusal took %s, %v past a 300ms limit: the operation's own work has to stop at its deadline, on either engine, not just the engine's statement", took, took-300*time.Millisecond)
 	}
 
+	mcpStart := time.Now()
 	env := h.mcpCall("query", map[string]any{"namespace": "slow", "sql": endlessQuery}).toolError()
 	if env == nil || env["code"] != "timeout" || !strings.Contains(fmt.Sprint(env["message"]), want) {
 		t.Fatalf("MCP must carry the same timeout envelope as /v1, got %v", env)
 	}
 
+	if took := time.Since(mcpStart); took > 2*time.Second {
+		t.Fatalf("MCP timeout took %s past a 300ms operation limit", took)
+	}
 	h.retime(defaultOp)
 	data := h.mustHTTP("query", map[string]any{"namespace": "slow", "sql": "SELECT 1 AS one"})
 	if rows, _ := data["rows"].([]any); len(rows) != 1 {

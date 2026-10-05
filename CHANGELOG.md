@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Change `-shutdown-grace 0` to immediate cancellation and cap shutdown cleanup at five seconds, including stuck store close and stdio cleanup.
+
+- Bound PostgreSQL SQL-compiler admission and caller waiting, check cancellation in SQL/filter compilation, and keep rollback cleanup within the caller deadline.
+
 - Fix immediate `wait_for` polls on PostgreSQL: `timeout_ms: 0` skips polling while reading committed changes under the operation deadline.
 
 ### Added

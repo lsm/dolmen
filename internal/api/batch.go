@@ -361,7 +361,7 @@ func (s *Server) checkBatchFilters(ctx context.Context, ns string, writes []stor
 		if err != nil {
 			return indexed(i, err)
 		}
-		if err := s.checkFilter(sc, w.Filter, w.Args); err != nil {
+		if err := s.checkFilter(ctx, sc, w.Filter, w.Args); err != nil {
 			return indexed(i, err)
 		}
 	}

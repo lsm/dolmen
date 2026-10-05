@@ -61,6 +61,7 @@ func builtinName(nodes []*pg.Node, allowed map[string]bool) bool {
 }
 
 type sqlCompiler struct {
+	ctx         context.Context
 	namespace   string
 	tables      map[string]tableState
 	names       *sqlNames
@@ -117,8 +118,20 @@ func awaitSQLParser(ctx context.Context) error {
 }
 
 func compileSQLMode(ctx context.Context, input string, argc int, namespace string, tables map[string]tableState, casts map[int32]string, maskSecrets bool) (string, *sqlNames, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := awaitSQLParser(ctx); err != nil {
+		return "", nil, err
+	}
+	return compilerWork.run(ctx, func() (string, *sqlNames, error) {
+		return compileSQLWork(ctx, input, argc, namespace, tables, casts, maskSecrets)
+	})
+}
+
+func compileSQLWork(ctx context.Context, input string, argc int, namespace string, tables map[string]tableState, casts map[int32]string, maskSecrets bool) (string, *sqlNames, error) {
 	names := newSQLNames(tables)
-	rewritten, count, err := rewriteSQL(input, names)
+	rewritten, count, err := rewriteSQLContext(ctx, input, names)
 	if err != nil {
 		return "", nil, err
 	}
@@ -138,12 +151,14 @@ func compileSQLMode(ctx context.Context, input string, argc int, namespace strin
 	if len(tree.Stmts) != 1 || tree.Stmts[0].Stmt.GetSelectStmt() == nil {
 		return "", nil, sqlRejected("query accepts a single SELECT or read-only WITH statement")
 	}
-	compiler := sqlCompiler{namespace: namespace, tables: tables, names: names, parameters: argc, maskSecrets: maskSecrets}
+	compiler := sqlCompiler{ctx: ctx, namespace: namespace, tables: tables, names: names, parameters: argc, maskSecrets: maskSecrets}
 	if err := compiler.walk(tree.Stmts[0].Stmt.ProtoReflect(), map[string]bool{}); err != nil {
 		return "", nil, err
 	}
 	if len(casts) > 0 {
-		castParameters(tree.Stmts[0].Stmt.ProtoReflect(), casts)
+		if err := castParametersContext(ctx, tree.Stmts[0].Stmt.ProtoReflect(), casts); err != nil {
+			return "", nil, err
+		}
 	}
 	output, err := parser.Deparse(tree)
 	if err != nil {
@@ -156,6 +171,11 @@ func compileSQLMode(ctx context.Context, input string, argc int, namespace strin
 }
 
 func (c *sqlCompiler) walk(message protoreflect.Message, ctes map[string]bool) error {
+	if c.ctx != nil {
+		if err := c.ctx.Err(); err != nil {
+			return err
+		}
+	}
 	if !queryMessages[string(message.Descriptor().Name())] {
 		return sqlQueryRejected("SQL construct %s is not supported in confined queries", message.Descriptor().Name())
 	}
@@ -299,7 +319,10 @@ func (c *sqlCompiler) walk(message protoreflect.Message, ctes map[string]bool) e
 	return failure
 }
 
-func castParameters(message protoreflect.Message, casts map[int32]string) {
+func castParametersContext(ctx context.Context, message protoreflect.Message, casts map[int32]string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if node, ok := message.Interface().(*pg.Node); ok {
 		if param := node.GetParamRef(); param != nil {
 			if typ, ok := casts[param.Number]; ok {
@@ -307,22 +330,28 @@ func castParameters(message protoreflect.Message, casts map[int32]string) {
 					Arg:      &pg.Node{Node: &pg.Node_ParamRef{ParamRef: param}},
 					TypeName: &pg.TypeName{Names: []*pg.Node{pg.MakeStrNode("pg_catalog"), pg.MakeStrNode(typ)}, Typemod: -1},
 				}}
-				return
+				return nil
 			}
 		}
 	}
+	var failure error
 	message.Range(func(field protoreflect.FieldDescriptor, value protoreflect.Value) bool {
 		switch {
 		case field.IsList():
 			list := value.List()
 			for i := 0; i < list.Len(); i++ {
 				if item, ok := list.Get(i).Interface().(protoreflect.Message); ok {
-					castParameters(item, casts)
+					if failure = castParametersContext(ctx, item, casts); failure != nil {
+						return false
+					}
 				}
 			}
 		case field.Message() != nil && !field.IsMap():
-			castParameters(value.Message(), casts)
+			if failure = castParametersContext(ctx, value.Message(), casts); failure != nil {
+				return false
+			}
 		}
 		return true
 	})
+	return failure
 }

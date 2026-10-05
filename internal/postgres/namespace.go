@@ -29,7 +29,7 @@ func (s *Store) CreateNamespace(ctx context.Context, name string, parentGen [16]
 	if err != nil {
 		return err
 	}
-	defer rollback(tx)
+	defer rollbackContext(ctx, tx)
 	if err := s.catalogLock(ctx, tx); err != nil {
 		return err
 	}
@@ -90,7 +90,7 @@ func (s *Store) NamespaceState(ctx context.Context, name string, auth []store.Au
 	if err != nil {
 		return [16]byte{}, err
 	}
-	defer rollback(tx)
+	defer rollbackContext(ctx, tx)
 	n, err := s.namespace(ctx, tx, name, namespaceUnlocked)
 	return n.generation, err
 }
@@ -141,7 +141,7 @@ func (s *Store) DropNamespace(ctx context.Context, name string, expected [16]byt
 	if err != nil {
 		return err
 	}
-	defer rollback(tx)
+	defer rollbackContext(ctx, tx)
 	if err := s.catalogLock(ctx, tx); err != nil {
 		return err
 	}
