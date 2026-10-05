@@ -44,6 +44,8 @@ var appendDDL = []string{
 
 var materializeHook func() error
 
+var materializeWrittenHook func() error
+
 var secretPresent = []byte{0}
 
 type commitRows struct {
@@ -431,6 +433,13 @@ func (s *Store) materializeCommit(ctx context.Context, n *namespace, ns string, 
 	if err := gob.NewDecoder(bytes.NewReader(payload)).Decode(&decoded); err != nil {
 		return fmt.Errorf("%w: unreadable lakehouse commit payload: %v", store.ErrCatalogCorrupt, err)
 	}
+	var path string
+	unregistered := func(err error) error {
+		if path == "" {
+			return err
+		}
+		return errors.Join(err, os.Remove(path))
+	}
 	tx := state.native.NewTransaction()
 	if len(decoded.Delete) > 0 && state.native.Metadata().CurrentSnapshot() != nil {
 		if state.native.Properties()[table.WriteDeleteModeKey] != table.WriteModeMergeOnRead {
@@ -443,17 +452,22 @@ func (s *Store) materializeCommit(ctx context.Context, n *namespace, ns string, 
 		}
 	}
 	if len(decoded.Rows) > 0 {
-		path, err := s.writeDataFile(state.native, id, decoded.Rows)
-		if err != nil {
+		var err error
+		if path, err = s.writeDataFile(state.native, id, decoded.Rows); err != nil {
 			return err
 		}
+		if materializeWrittenHook != nil {
+			if err := materializeWrittenHook(); err != nil {
+				return unregistered(err)
+			}
+		}
 		if err := tx.AddFiles(ctx, []string{fileLocation(path)}, iceberg.Properties{commitProperty: marker}, false); err != nil {
-			return err
+			return unregistered(err)
 		}
 	}
 	native, err := tx.Commit(ctx)
 	if err != nil {
-		return err
+		return unregistered(err)
 	}
 	return s.syncMetadata(native, n)
 }

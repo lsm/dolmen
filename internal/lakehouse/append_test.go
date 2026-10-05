@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/derr"
@@ -262,5 +263,72 @@ func TestDroppingATablePurgesItsSecretsAndBookkeeping(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func parquetFiles(t *testing.T, dir string) int {
+	t.Helper()
+	n := 0
+	if err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && strings.HasSuffix(path, ".parquet") {
+			n++
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestAFailedMaterializationLeavesNoOrphanDataFile(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "t", []schema.Field{{Name: "x", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	materializeWrittenHook = func() error { return errors.New("simulated failure after the data file was written") }
+	_, err = s.Insert(ctx, "ns", "t", []map[string]any{{"x": "a"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{})
+	materializeWrittenHook = nil
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows, _ := scannedRows(t, s, "ns", "t"); rows != 1 {
+		t.Fatalf("the retried commit must land once: %d rows", rows)
+	}
+	if got := parquetFiles(t, dir); got != 1 {
+		t.Fatalf("the failed attempt left %d data files, want only the registered one", got)
+	}
+}
+
+func TestDroppingATableRemovesItsFiles(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "t", []schema.Field{{Name: "x", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "ns", "t", []map[string]any{{"x": "PLAINTEXT"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DropTable(ctx, "ns", "t", store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := parquetFiles(t, dir); got != 0 {
+		t.Fatalf("a dropped table left %d data files", got)
 	}
 }
