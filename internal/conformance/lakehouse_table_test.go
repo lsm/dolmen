@@ -12,6 +12,7 @@ import (
 )
 
 type lakehouseTableEngine interface {
+	PlanMigration(context.Context, string, string, []schema.Change, store.Embedder, store.Incarnation, *store.RowScope, store.Incarnation) (*store.MigrationPlan, error)
 	namespaceEngine
 	CreateTable(context.Context, string, string, []schema.Field, store.TableOpts, [16]byte) (*schema.TableSchema, error)
 	TableState(context.Context, string, string, []store.AuthBinding) (*schema.TableSchema, store.Incarnation, error)
@@ -46,52 +47,84 @@ func TestLakehouseTableBackendConformance(t *testing.T) {
 			}
 			eng := open()
 			ctx := t.Context()
-			if err := eng.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+			ns := "project/team"
+			if err := eng.CreateNamespace(ctx, ns, [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+
+			enumValues := []string{"one"}
+			indexFields := []schema.Field{{Name: "tag", Type: schema.String, Enum: enumValues}, {Name: "body", Type: schema.Text, Fulltext: true, Vectorize: true}}
+			if _, err := eng.CreateTable(ctx, ns, "indexed", indexFields, store.TableOpts{}, [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			_, indexed, err := eng.TableState(ctx, ns, "indexed", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tc := range []struct {
+				change         schema.Change
+				rebuild, clear bool
+			}{
+				{schema.Change{Op: schema.OpAddField, Field: &schema.Field{Name: "extra", Type: schema.Text, Fulltext: true}}, true, false},
+				{schema.Change{Op: schema.OpRenameField, From: "body", To: "content"}, true, false},
+				{schema.Change{Op: schema.OpDropField, Name: "body"}, true, true},
+			} {
+				plan, err := eng.PlanMigration(ctx, ns, "indexed", []schema.Change{tc.change}, store.Embedder{}, indexed, nil, store.Incarnation{})
+				if err != nil || plan.RebuildFulltext != tc.rebuild || plan.ClearsEmbeddings != tc.clear {
+					t.Fatalf("index plan %s: %v %v", tc.change.Op, plan, err)
+				}
+			}
+			emptyEnum := []string{}
+			removed, err := eng.Migrate(ctx, ns, "indexed", []schema.Change{{Op: schema.OpSetEnum, Name: "tag", Enum: &emptyEnum}}, store.Embedder{}, indexed)
+			if err != nil || removed.Fields[0].Enum != nil {
+				t.Fatalf("remove enum: %v %v", removed, err)
+			}
+			if err := eng.DropTable(ctx, ns, "indexed", store.Incarnation{}); err != nil {
 				t.Fatal(err)
 			}
 			fields := []schema.Field{{Name: "title", Type: schema.String, Fulltext: true}, {Name: "amount", Type: schema.Number}, {Name: "active", Type: schema.Boolean}, {Name: "stamp", Type: schema.Timestamp}, {Name: "payload", Type: schema.JSON}, {Name: "vector", Type: schema.Vector, Dim: 3}}
-			sc, err := eng.CreateTable(ctx, "app", "notes", fields, store.TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{})
+			sc, err := eng.CreateTable(ctx, ns, "notes", fields, store.TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{})
 			if err != nil || sc.Version != 1 || !sc.HasOwner {
 				t.Fatalf("create: %v %v", sc, err)
 			}
-			_, old, err := eng.TableState(ctx, "app", "notes", nil)
+			_, old, err := eng.TableState(ctx, ns, "notes", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			for _, name := range []string{"../escape", "id", "bad-name", "Upper"} {
-				if _, err := eng.CreateTable(ctx, "app", name, fields, store.TableOpts{}, [16]byte{}); !errors.Is(err, store.ErrInvalid) {
+				if _, err := eng.CreateTable(ctx, ns, name, fields, store.TableOpts{}, [16]byte{}); !errors.Is(err, store.ErrInvalid) {
 					t.Fatalf("invalid table %q: %v", name, err)
 				}
 			}
-			if _, err := eng.CreateTable(ctx, "app", "notes", fields, store.TableOpts{}, [16]byte{}); !errors.Is(err, store.ErrInvalid) {
+			if _, err := eng.CreateTable(ctx, ns, "notes", fields, store.TableOpts{}, [16]byte{}); !errors.Is(err, store.ErrInvalid) {
 				t.Fatalf("duplicate: %v", err)
 			}
-			if _, err := eng.CreateTable(ctx, "app", "bad", []schema.Field{{Name: "owner", Type: schema.String}}, store.TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{}); !errors.Is(err, store.ErrInvalid) {
+			if _, err := eng.CreateTable(ctx, ns, "bad", []schema.Field{{Name: "owner", Type: schema.String}}, store.TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{}); !errors.Is(err, store.ErrInvalid) {
 				t.Fatalf("owner collision: %v", err)
 			}
 			changes := []schema.Change{{Op: schema.OpAddField, Field: &schema.Field{Name: "body", Type: schema.Text}}, {Op: schema.OpRenameField, From: "title", To: "heading"}, {Op: schema.OpDropField, Name: "active"}}
-			next, err := eng.Migrate(ctx, "app", "notes", changes, store.Embedder{}, old)
+			next, err := eng.Migrate(ctx, ns, "notes", changes, store.Embedder{}, old)
 			if err != nil || next.Version != 2 || next.Fields[0].Name != "heading" {
 				t.Fatalf("evolve: %v %v", next, err)
 			}
-			if _, err := eng.Migrate(ctx, "app", "notes", changes, store.Embedder{}, old); !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrInvalid) {
+			if _, err := eng.Migrate(ctx, ns, "notes", changes, store.Embedder{}, old); !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrInvalid) {
 				var conflict *store.VersionConflictError
 				if !errors.As(err, &conflict) {
 					t.Fatalf("stale migration: %v", err)
 				}
 			}
-			_, current, err := eng.TableState(ctx, "app", "notes", nil)
+			_, current, err := eng.TableState(ctx, ns, "notes", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := eng.Migrate(ctx, "app", "notes", []schema.Change{{Op: schema.OpAddField, Field: &schema.Field{Name: "temporary", Type: schema.Text}}, {Op: schema.OpRenameField, From: "missing", To: "nope"}}, store.Embedder{}, current); err == nil {
+			if _, err := eng.Migrate(ctx, ns, "notes", []schema.Change{{Op: schema.OpAddField, Field: &schema.Field{Name: "temporary", Type: schema.Text}}, {Op: schema.OpRenameField, From: "missing", To: "nope"}}, store.Embedder{}, current); err == nil {
 				t.Fatal("invalid multi-step migration accepted")
 			}
-			described, count, err := eng.DescribeTable(ctx, "app", "notes", nil, current)
+			described, count, err := eng.DescribeTable(ctx, ns, "notes", nil, current)
 			if err != nil || count != 0 || !reflect.DeepEqual(described, next) {
 				t.Fatalf("describe/failed migration: %v %d %v", described, count, err)
 			}
-			history, err := eng.ListMigrations(ctx, "app", "notes", current)
+			history, err := eng.ListMigrations(ctx, ns, "notes", current)
 			if err != nil || len(history) != 1 || history[0].FromVersion != 1 || history[0].ToVersion != 2 {
 				t.Fatalf("history: %v %v", history, err)
 			}
@@ -99,31 +132,31 @@ func TestLakehouseTableBackendConformance(t *testing.T) {
 				t.Fatal(err)
 			}
 			eng = open()
-			reopened, again, err := eng.TableState(ctx, "app", "notes", nil)
+			reopened, again, err := eng.TableState(ctx, ns, "notes", nil)
 			if err != nil || again != current || !reflect.DeepEqual(reopened, next) {
 				t.Fatalf("reopen: %v %v %v", reopened, again, err)
 			}
-			names, err := eng.ListTables(ctx, "app", nil)
+			names, err := eng.ListTables(ctx, ns, nil)
 			if err != nil || !reflect.DeepEqual(names, []string{"notes"}) {
 				t.Fatalf("list: %v %v", names, err)
 			}
-			if err := eng.DropTable(ctx, "app", "notes", current); err != nil {
+			if err := eng.DropTable(ctx, ns, "notes", current); err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := eng.TableState(ctx, "app", "notes", nil); !errors.Is(err, store.ErrNotFound) {
+			if _, _, err := eng.TableState(ctx, ns, "notes", nil); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("dropped: %v", err)
 			}
-			if _, err := eng.CreateTable(ctx, "app", "notes", fields, store.TableOpts{}, [16]byte{}); err != nil {
+			if _, err := eng.CreateTable(ctx, ns, "notes", fields, store.TableOpts{}, [16]byte{}); err != nil {
 				t.Fatal(err)
 			}
-			_, successor, err := eng.TableState(ctx, "app", "notes", nil)
+			_, successor, err := eng.TableState(ctx, ns, "notes", nil)
 			if err != nil || successor.DropGen <= current.DropGen {
 				t.Fatalf("successor: %v %v", successor, err)
 			}
-			if err := eng.DropTable(ctx, "app", "notes", current); err == nil {
+			if err := eng.DropTable(ctx, ns, "notes", current); err == nil {
 				t.Fatal("predecessor guard dropped successor")
 			}
-			history, err = eng.ListMigrations(ctx, "app", "notes", successor)
+			history, err = eng.ListMigrations(ctx, ns, "notes", successor)
 			if err != nil || len(history) != 0 {
 				t.Fatalf("successor history: %v %v", history, err)
 			}

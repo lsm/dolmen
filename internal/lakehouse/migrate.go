@@ -42,6 +42,7 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 	}
 	plan := &store.MigrationPlan{FromVersion: next.Version, ToVersion: next.Version + 1, Table: next, Expected: state.incarnation, Operations: []string{}}
 	tx := state.native.NewTransaction()
+	vectorizeChanged := false
 	find := func(name string) (int, error) {
 		for i, f := range next.Fields {
 			if f.Name == name {
@@ -114,6 +115,12 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 				return nil, nil, err
 			}
 			next.Fields = append(next.Fields, field)
+			if field.Fulltext {
+				plan.RebuildFulltext = true
+			}
+			if field.Vectorize {
+				vectorizeChanged = true
+			}
 			plan.Operations = append(plan.Operations, "add_field "+field.Name)
 		case schema.OpRenameField:
 			index, err := find(ch.From)
@@ -129,6 +136,9 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 			if err := tx.UpdateSchema(true, false).RenameColumn([]string{ch.From}, ch.To).Commit(); err != nil {
 				return nil, nil, err
 			}
+			if next.Fields[index].Fulltext {
+				plan.RebuildFulltext = true
+			}
 			next.Fields[index].Name = ch.To
 			plan.Destructive = append(plan.Destructive, "rename_field "+ch.From+" to "+ch.To)
 			plan.Operations = append(plan.Operations, "rename_field "+ch.From+" to "+ch.To)
@@ -140,6 +150,12 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 			if err := tx.UpdateSchema(true, false).DeleteColumn([]string{ch.Name}).Commit(); err != nil {
 				return nil, nil, err
 			}
+			if next.Fields[index].Fulltext {
+				plan.RebuildFulltext = true
+			}
+			if next.Fields[index].Vectorize {
+				vectorizeChanged = true
+			}
 			next.Fields = slices.Delete(next.Fields, index, index+1)
 			plan.Destructive = append(plan.Destructive, "drop_field "+ch.Name)
 			plan.Operations = append(plan.Operations, "drop_field "+ch.Name)
@@ -149,11 +165,15 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 				return nil, nil, err
 			}
 			if ch.Op == schema.OpSetFulltext {
+				if next.Fields[index].Fulltext != *ch.Value || *ch.Value {
+					plan.RebuildFulltext = true
+				}
 				next.Fields[index].Fulltext = *ch.Value
-				plan.RebuildFulltext = true
 			} else {
+				if next.Fields[index].Vectorize != *ch.Value {
+					vectorizeChanged = true
+				}
 				next.Fields[index].Vectorize = *ch.Value
-				plan.ClearsEmbeddings = state.schema.VectorizeField() != nil
 			}
 			plan.Operations = append(plan.Operations, fmt.Sprintf("%s %s = %t", ch.Op, ch.Name, *ch.Value))
 		case schema.OpSetEnum:
@@ -164,7 +184,10 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 			if next.Fields[index].Type != schema.String {
 				return nil, nil, invalidf("enum is only allowed on string fields")
 			}
-			next.Fields[index].Enum = slices.Clone(*ch.Enum)
+			next.Fields[index].Enum = nil
+			if len(*ch.Enum) > 0 {
+				next.Fields[index].Enum = slices.Clone(*ch.Enum)
+			}
 			plan.Operations = append(plan.Operations, "set_enum "+ch.Name)
 		case schema.OpSetShape:
 			index, err := find(ch.Name)
@@ -206,7 +229,10 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 		return nil, nil, invalidf("destructive changes require expected_version")
 	}
 	oldVector, nextVector := state.schema.VectorizeField(), next.VectorizeField()
-	if nextVector != nil && (oldVector == nil || oldVector.Name != nextVector.Name || nextVector.Vectorize != oldVector.Vectorize) {
+	if vectorizeChanged && oldVector != nil {
+		plan.ClearsEmbeddings = true
+	}
+	if vectorizeChanged && nextVector != nil {
 		if emb.Embed == nil || emb.Identity == "" {
 			return nil, nil, invalidf("vectorize requires an embedding provider with a reported identity")
 		}
