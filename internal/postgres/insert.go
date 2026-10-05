@@ -204,6 +204,10 @@ func (s *Store) mintChanges(ctx context.Context, tx pgx.Tx, n namespace, state t
 	if len(ids) == 0 {
 		return store.ChangeRange{}, nil
 	}
+	commit, err := s.changeCommit(ctx, tx, n)
+	if err != nil {
+		return store.ChangeRange{}, err
+	}
 	change, err := s.reserveChanges(ctx, tx, n, int64(len(ids)))
 	if err != nil {
 		return change, err
@@ -216,7 +220,7 @@ func (s *Store) mintChanges(ctx context.Context, tx pgx.Tx, n namespace, state t
 		if owners != nil && owners[i] != "" {
 			owner = owners[i]
 		}
-		if _, err := tx.Exec(ctx, "INSERT INTO "+s.relation("changes")+" (namespace,position,table_name,drop_generation,row_id,kind,owner) VALUES($1,$2,$3,$4,$5,$6,$7)", n.name, change.First+int64(i), state.incarnation.Table, state.incarnation.DropGen, id, string(kind), owner); err != nil {
+		if _, err := tx.Exec(ctx, "INSERT INTO "+s.relation("changes")+" (namespace,position,table_name,drop_generation,row_id,kind,owner,commit_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", n.name, change.First+int64(i), state.incarnation.Table, state.incarnation.DropGen, id, string(kind), owner, commit); err != nil {
 			return store.ChangeRange{}, err
 		}
 	}

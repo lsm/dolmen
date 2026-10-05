@@ -14,7 +14,7 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-const catalogVersion = 8
+const catalogVersion = 9
 
 const minimumServerVersion = 160000
 
@@ -102,7 +102,8 @@ func (s *Store) bootstrap(ctx context.Context) error {
   name text COLLATE "C" PRIMARY KEY,
   physical text NOT NULL UNIQUE,
   generation bytea NOT NULL UNIQUE CHECK (octet_length(generation) = 16),
-  next_change bigint NOT NULL DEFAULT 0 CHECK (next_change >= 0)
+  next_change bigint NOT NULL DEFAULT 0 CHECK (next_change >= 0),
+  next_commit bigint NOT NULL DEFAULT 0 CHECK (next_commit >= 0)
  )`)
 	if err != nil {
 		return err
@@ -132,6 +133,7 @@ func (s *Store) bootstrap(ctx context.Context) error {
  position bigint NOT NULL, table_name text NOT NULL, drop_generation bigint NOT NULL,
  row_id bigint NOT NULL, kind text NOT NULL CHECK(kind IN ('insert','update','delete')),
  owner text,
+ commit_id bigint,
  created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
  PRIMARY KEY(namespace,position))`,
 		"CREATE TABLE IF NOT EXISTS " + s.relation("migrations") + ` (
@@ -175,6 +177,8 @@ func (s *Store) bootstrap(ctx context.Context) error {
 	}
 	for _, stmt := range []string{
 		"ALTER TABLE " + s.relation("changes") + " ADD COLUMN IF NOT EXISTS owner text",
+		"ALTER TABLE " + s.relation("changes") + " ADD COLUMN IF NOT EXISTS commit_id bigint",
+		"ALTER TABLE " + s.relation("namespaces") + " ADD COLUMN IF NOT EXISTS next_commit bigint NOT NULL DEFAULT 0 CHECK (next_commit >= 0)",
 		"CREATE INDEX IF NOT EXISTS changes_feed ON " + s.relation("changes") + " (namespace,table_name,drop_generation,position)",
 		"CREATE INDEX IF NOT EXISTS changes_owner_feed ON " + s.relation("changes") + " (namespace,table_name,drop_generation,owner,position)",
 		"CREATE INDEX IF NOT EXISTS cursors_origin ON " + s.relation("cursors") + " (namespace,chain_origin)",
@@ -220,6 +224,7 @@ func (s *Store) retireOwnerlessIdempotency(ctx context.Context, tx pgx.Tx) error
 }
 
 type namespace struct {
+	commit     *int64
 	name       string
 	physical   string
 	generation [16]byte
@@ -325,6 +330,7 @@ func (s *Store) write(ctx context.Context, name string, expected [16]byte, fn fu
 	if expected != [16]byte{} && expected != n.generation {
 		return &replacedError{msg: fmt.Sprintf("%v: namespace %s was replaced; resolve its current state", store.ErrNotFound, name)}
 	}
+	n.commit = new(int64)
 	if err := fn(tx, n); err != nil {
 		return err
 	}
@@ -350,4 +356,16 @@ func (s *Store) readServerEncoding(ctx context.Context, tx pgx.Tx) error {
 	}
 	s.serverEncoding = strings.TrimSpace(name)
 	return nil
+}
+
+func (s *Store) changeCommit(ctx context.Context, tx pgx.Tx, n namespace) (int64, error) {
+	if n.commit == nil {
+		return 0, fmt.Errorf("change record outside a serialized write transaction")
+	}
+	if *n.commit == 0 {
+		if err := tx.QueryRow(ctx, "UPDATE "+s.relation("namespaces")+" SET next_commit=next_commit+1 WHERE name=$1 AND generation=$2 RETURNING next_commit", n.name, n.generation[:]).Scan(n.commit); err != nil {
+			return 0, err
+		}
+	}
+	return *n.commit, nil
 }

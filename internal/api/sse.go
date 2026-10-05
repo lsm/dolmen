@@ -127,6 +127,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	write := func(rec store.ChangeRecord) bool {
 		resume = rec.Cursor
 		return sseEventID(w, "change", string(rec.Cursor), sseChange{
+			Commit: rec.Commit,
 			Cursor: string(rec.Cursor),
 			Table:  rec.Table,
 			RowID:  rec.RowID,
@@ -260,6 +261,7 @@ func subscribeErr(err error) *Error {
 }
 
 type sseChange struct {
+	Commit int64  `json:"commit,omitempty"`
 	Cursor string `json:"cursor"`
 	Table  string `json:"table"`
 	RowID  int64  `json:"row_id"`

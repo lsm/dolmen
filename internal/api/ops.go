@@ -188,6 +188,7 @@ func changesPageOutSchema() map[string]any {
 					"cursor": prop("string", "Opaque token at this change's position; persist it to resume exactly after this change"),
 					"table":  prop("string", "Table the change committed in"),
 					"row_id": prop("integer", "Row the change touched (re-read its current content by id)"),
+					"commit": map[string]any{"type": "integer", "minimum": 1, "description": "Stable commit group within this namespace incarnation; absent for changes recorded before the upgrade"},
 					"kind": map[string]any{
 						"type":        "string",
 						"description": "Kind of change",
@@ -353,6 +354,9 @@ func renderChanges(records []store.ChangeRecord, next store.Cursor) map[string]a
 			"table":  r.Table,
 			"row_id": r.RowID,
 			"kind":   string(r.Kind),
+		}
+		if r.Commit != 0 {
+			changes[i]["commit"] = r.Commit
 		}
 	}
 	return map[string]any{"changes": changes, "next_cursor": string(next)}
@@ -1455,7 +1459,7 @@ var Ops = map[string]OpDef{
 			"pass the next_cursor (or any change's cursor) from a previous call to resume gap-free. " +
 			"An optional table filters the feed to that table's CURRENT lifetime — records from before a " +
 			"drop-and-recreate are never replayed; omit it for the namespace-wide feed. Each change carries only " +
-			"cursor, table, row_id, and kind (insert/update/delete): re-read current row content by id with query " +
+			"cursor, table, row_id, kind (insert/update/delete), and optional commit grouping: re-read current row content by id with query " +
 			"(a change is identity, never a row snapshot). A cursor that is unknown or past the change-log retention " +
 			"window (default 168h) is rejected with a teaching error: catch up by calling again with no cursor " +
 			"(current head) or with \"begin\" (retained history).",

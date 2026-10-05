@@ -76,6 +76,10 @@ func TestSQLiteCommitCatalogUpgradePreservesLegacyChanges(t *testing.T) {
 	if err != nil || legacy.Valid {
 		t.Fatalf("legacy commit %v: %v", legacy, err)
 	}
+	records, _, err := s.ChangesSince(ctx, "app", "", CursorBegin, [16]byte{}, nil, Incarnation{}, Page{})
+	if err != nil || len(records) != 1 || records[0].Commit != 0 {
+		t.Fatalf("legacy feed: %v %v", records, err)
+	}
 	insert("new")
 	if err := s.Close(); err != nil {
 		t.Fatal(err)

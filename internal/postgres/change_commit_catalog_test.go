@@ -45,6 +45,10 @@ func TestPostgresCommitCatalogUpgradePreservesLegacyChanges(t *testing.T) {
 	if err := s.pool.QueryRow(ctx, "SELECT commit_id FROM "+s.relation("changes")+" WHERE namespace='app' AND position=1").Scan(&legacy); err != nil || legacy != nil {
 		t.Fatalf("legacy commit %v: %v", legacy, err)
 	}
+	records, _, err := s.ChangesSince(ctx, "app", "", store.CursorBegin, [16]byte{}, nil, store.Incarnation{}, store.Page{})
+	if err != nil || len(records) != 1 || records[0].Commit != 0 {
+		t.Fatalf("legacy feed: %v %v", records, err)
+	}
 	insert("new")
 	var first int64
 	if err := s.pool.QueryRow(ctx, "SELECT commit_id FROM "+s.relation("changes")+" WHERE namespace='app' AND position=2").Scan(&first); err != nil || first <= 0 {

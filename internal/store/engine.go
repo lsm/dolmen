@@ -141,6 +141,7 @@ type Lifetime struct {
 }
 
 type ChangeRecord struct {
+	Commit   int64
 	Cursor   Cursor
 	Table    string
 	RowID    int64

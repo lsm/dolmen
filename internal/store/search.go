@@ -491,7 +491,7 @@ func (s *Store) deleteWith(ctx context.Context, n *nsDB, nsName, table, where st
 		return DeleteResult{}, true, err
 	}
 
-	changes, err := mintChangesFromTemp(ctx, tx, table, ChangeDelete, `_dolmen_delete_ids`)
+	changes, err := mintChangesFromTemp(ctx, wt, table, ChangeDelete, `_dolmen_delete_ids`)
 	if err != nil {
 		return DeleteResult{}, true, err
 	}
