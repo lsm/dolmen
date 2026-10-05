@@ -254,7 +254,7 @@ func (s *Store) DropTable(ctx context.Context, ns, name string, expected store.I
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		location := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(state.native.Location(), "file://")))
+		location := filepath.Clean(localPath(state.native.Location()))
 		if rel, err := filepath.Rel(n.dataDir, location); err != nil || rel == "." || strings.HasPrefix(rel, "..") {
 			return fmt.Errorf("%w: Iceberg table location escaped its namespace", store.ErrCatalogCorrupt)
 		}
@@ -278,7 +278,7 @@ func (s *Store) ListMigrations(ctx context.Context, ns, name string, expected st
 }
 
 func (s *Store) syncMetadata(native *table.Table, n *namespace) error {
-	path := filepath.FromSlash(strings.TrimPrefix(native.MetadataLocation(), "file://"))
+	path := localPath(native.MetadataLocation())
 	rel, err := filepath.Rel(n.dataDir, path)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("%w: Iceberg metadata escaped its namespace", store.ErrCatalogCorrupt)

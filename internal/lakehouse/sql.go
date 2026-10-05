@@ -352,7 +352,7 @@ func viewSQL(state tableState) string {
 	if sc.HasOwner {
 		cols = append(cols, quoteIdent(schema.OwnerColumn))
 	}
-	path := filepath.Join(filepath.FromSlash(strings.TrimPrefix(state.native.Location(), "file://")), "metadata", currentMetadataName)
+	path := filepath.Join(localPath(state.native.Location()), "metadata", currentMetadataName)
 	return "CREATE VIEW " + quoteIdent(sc.Name) + " AS SELECT " + strings.Join(cols, ", ") + " FROM iceberg_scan(" + quoteLiteral(filepath.ToSlash(path)) + ")"
 }
 
@@ -574,7 +574,7 @@ func freshenCurrentMetadata(state tableState) error {
 	if state.native.Metadata().CurrentSnapshot() == nil {
 		return nil
 	}
-	source := filepath.FromSlash(strings.TrimPrefix(state.native.MetadataLocation(), "file://"))
+	source := localPath(state.native.MetadataLocation())
 	copied := filepath.Join(filepath.Dir(source), currentMetadataName)
 	want, err := os.ReadFile(source)
 	if err != nil {

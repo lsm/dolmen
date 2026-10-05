@@ -367,3 +367,18 @@ func TestIncompleteNamespacesCanBeListedAroundAndRemoved(t *testing.T) {
 		})
 	}
 }
+
+func TestFileLocationsRoundTripOnEveryPlatform(t *testing.T) {
+	for _, c := range []struct{ uri, path string }{
+		{"file:///C:/data/ns.lakehouse", "C:/data/ns.lakehouse"},
+		{"file:///tmp/data", "/tmp/data"},
+	} {
+		if got := filepath.ToSlash(localPath(c.uri)); got != c.path {
+			t.Fatalf("localPath(%q) = %q, want %q", c.uri, got, c.path)
+		}
+	}
+	dir := t.TempDir()
+	if got := localPath(fileLocation(dir)); got != dir {
+		t.Fatalf("a location must round-trip: %q -> %q", dir, got)
+	}
+}
