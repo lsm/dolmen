@@ -127,7 +127,9 @@ with its `object` and `verbs`. A grant on a namespace covers every table under i
 table are the union of the grants on it, its namespace and `*`. Read them before trying an
 operation instead of probing; `list_namespaces` and `list_tables` only show what you can reach.
 `tools/list` hides the server-wide admin tools (`create_key`, `list_keys`, `revoke_key`, the
-rotations) unless you hold `admin` on `*`, and lists every other tool whether or not you may call it.
+rotations) unless you hold `admin` on `*`, and lists every other tool whether or not you may call it:
+`grant`, `revoke` and `list_grants` need `admin` on the object, so only an administrator uses them
+to give you access. To find which namespaces exist for you, call `list_namespaces`.
 
 A grant gives verbs on a namespace (covering its tables and sub-namespaces), on one table, or on
 the whole server. What each operation needs:
@@ -140,16 +142,17 @@ the whole server. What each operation needs:
 | `delete` | `delete` |
 | `upsert`, `upsert_by_key` | `create` and `update` |
 | `query` | `read` on the whole namespace, since SQL can reach any table in it |
-| `describe_table` | any verb on the table |
+| `describe_table`, `tokenize` | any verb on the table |
 | `whoami` (exists only when authentication is on), `list_namespaces`, `list_tables`, `describe_server`, `capabilities`, `infer_schema` | nothing |
 
 A feed without `table` (namespace-wide `changes_since`, `wait_for` or `/v1/subscribe`) needs
 `read` on the namespace itself; a grant on one table covers only that table's filtered feed.
 
 `read` on a single table is narrower than it looks. Without `read` on the namespace you cannot
-`query`, so you cannot list, count or aggregate the table's rows; `read_rows` needs the row ids, and
-the searches need full-text or vectorized fields. When a task needs a whole table, ask for `read`
-on its namespace rather than working around the gap.
+`query`, so you cannot filter, count or aggregate in SQL. You can still read the whole table, or
+your own rows on a `row_access` table: call `read_rows` without `ids` and follow `next_after_id`
+page by page, then count or total the rows yourself. For large tables or real SQL, ask for `read`
+on the namespace.
 
 Absence is not proof: `list_namespaces` lists only what you can reach, and `list_tables` answers
 `not_found` for a namespace you hold nothing under. A write to a namespace that does not exist
@@ -374,7 +377,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 3. **Inspect when the schema is unknown or may have changed.** Call `describe_table` to get its schema, version, and row count. Use that to build correct `query` / `search_fulltext` / `search_vector` calls and to avoid inventing field names. Its `row_count` is kept up to date by every write, so reading it costs the same on a table of any size; still cache the schema for the session instead of calling it before every read or write.
 4. **Record as you go.** After finishing a meaningful unit of work, `insert` a record summarizing it (what/where/outcome). Future sessions recall it via search.
 5. **Read with the cheapest tool that answers the question:** `describe_table` → exact lookups via `query` (SQL, read-only) → `search_fulltext` for keyword recall → `search_vector` for meaning-based recall.
-6. **Never write SQL that mutates.** `query` rejects it by design; use `insert` and `delete` for changes. If you need to update or upsert records, or change a table's schema, ask the user to switch to the `dolmen-admin` skill.
+6. **Never write SQL that mutates.** `query` rejects it by design; use `insert`, `update`, `upsert`, `upsert_by_key` and `delete` for changes, with the verbs the table above lists (`update` takes `filter`, optional `args`, and `set`, the fields to change). To change a table's schema, ask the user to switch to the `dolmen-admin` skill.
 7. **Do not fork tables.** When a table is the wrong shape, do not create a parallel v2 table. Report the mismatch and ask the user whether to use the `dolmen-admin` skill to migrate or create a new table.
 
 ## Quick reference
@@ -385,7 +388,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 - Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field — enables `search_vector` with `text`; the built-in `local` provider is enabled by default; set `DOLMEN_EMBED_PROVIDER=openai` for an external endpoint, or `none` to disable server-side embeddings), `required: true`, `enum: [values]` (closed vocabulary for a string field — writes with any other value are rejected naming the field, the value, and the allowed list; exact match, no case folding; a declared `default` must be a member), `shape` on a `json` field (`object`, `array`, `array<string>`, `array<number>`, `array<boolean>` or `array<object>` — writes of any other shape are rejected naming the field, the expected shape and what arrived, so send tags as `["db","sqlite"]`, never `"db,sqlite"`; omit it for free-form JSON).
 - `describe_server` reports the embedding provider status without attempting a write: `provider` (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, `usable`, and — for the `local` provider — `model_state`, which says what the next vectorized write or `text` search will meet: `cached` (the weights are complete on the server, so nothing is downloaded), `download_on_first_use` (an ordinary first run — that first operation downloads a Hugging Face model from the Hub, which can take ten seconds or more and can fail transiently, so retry or pre-seed the cache), or `incomplete` (`DOLMEN_EMBED_MODEL` names a model directory that is not complete, which no download repairs — an operator has to fix or replace it). Read the state before deciding whether semantic search is safe: `download_on_first_use` is a normal cold start, not a broken feature. `vectorize` fields and `search_vector` `text` queries fail while `usable` is false; a table whose `embed_space` (see `describe_table`) differs from `identity` was embedded by a different provider/model and rejects inserts and text searches until it is re-embedded.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
-- `truncated: true` means the response left results out. On `query`, `search_fulltext` and `search_vector`, more exist beyond the page, cut either by `limit` (1,000 rows by default and at most on `query`; 10 by default and 200 at most on the searches) or by the 32 MiB response budget, so fetch the next page with `offset`. On `read_rows` only the budget cuts, so retry with fewer ids.
+- `truncated: true` means the response left results out. On `query`, `search_fulltext` and `search_vector`, more exist beyond the page, cut either by `limit` (1,000 rows by default and at most on `query`; 10 by default and 200 at most on the searches) or by the 32 MiB response budget, so fetch the next page with `offset`. On `read_rows` with `ids` only the budget cuts, so retry with fewer ids; on `read_rows` without `ids` (paging), more rows follow, so pass `next_after_id` as the next `after_id`.
 - Paging a result set you are reading uses `offset`, as above. Walking a **whole table** to export or copy it uses a keyset on `id` instead — see "Export a table by keyset paging" for the loop and for the two things such an export cannot carry.
 - Both searches score every hit as `_score`, higher being more relevant, and return results in that order. The two scales are different and engine-specific — full-text relevance is the engine's own ({{ if eq .Dialect "postgresql" }}PostgreSQL `ts_rank_cd`{{ else }}FTS5 BM25, negated so higher wins{{ end }}), vector `_score` is cosine similarity — so compare scores only within one query's results, never across queries, tables or servers, and never threshold full-text `_score` against a fixed number.
 - `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.

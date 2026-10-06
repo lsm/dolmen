@@ -400,10 +400,13 @@ func TestReadRowsIDBoundDeclared(t *testing.T) {
 	req, _ := def.InputSchema["required"].([]string)
 	for _, r := range req {
 		if r == "ids" {
-			return
+			t.Fatalf("ids must stay optional, since read_rows without ids pages through the table: %v", req)
 		}
 	}
-	t.Fatalf("ids must be a required request key, got %v", req)
+	limit := def.InputSchema["properties"].(map[string]any)["limit"].(map[string]any)
+	if limit["maximum"] != store.MaxReadRowsIDs || limit["minimum"] != 1 {
+		t.Fatalf("limit must declare the page bounds 1 to %d the engine enforces, got %v", store.MaxReadRowsIDs, limit)
+	}
 }
 
 func TestWaitForTimeoutBoundDeclared(t *testing.T) {
