@@ -2,6 +2,7 @@ package lakehouse
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -16,7 +17,7 @@ const compactionProperty = "dolmen.compaction"
 
 func (s *Store) Vacuum(ctx context.Context, ns string) (store.VacuumResult, error) {
 	var res store.VacuumResult
-	err := s.withNamespace(ctx, ns, func(n *namespace) error {
+	err := s.withNamespaceExclusive(ctx, ns, func(n *namespace) error {
 		dir := filepath.Join(s.dir, namespacePath(ns))
 		var err error
 		if res.BytesBefore, err = treeBytes(dir); err != nil {
@@ -125,11 +126,8 @@ func (s *Store) compact(ctx context.Context, n *namespace, state tableState) err
 		}
 	}
 	native, err := tx.Commit(ctx)
-	if err != nil {
-		return err
+	if native != nil && native.MetadataLocation() != state.native.MetadataLocation() {
+		err = errors.Join(err, s.syncMetadata(native, n))
 	}
-	if native.MetadataLocation() != state.native.MetadataLocation() {
-		return s.syncMetadata(native, n)
-	}
-	return nil
+	return err
 }

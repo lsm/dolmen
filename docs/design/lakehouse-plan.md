@@ -337,8 +337,14 @@ file, it reads the live rows through iceberg-go's `RewriteDataFiles` into one ne
 a rewrite snapshot that also removes the delete files. In the same transaction it expires every
 snapshot but the current one, and iceberg-go deletes the manifests and data files only those
 snapshots referenced. Every pending commit is materialized before maintenance runs, so no replay
-needs an expired snapshot's commit marker. iceberg-go's orphan-file cleanup is not used: on a data
-directory reached through a symlink it treated live manifests as orphans.
+needs an expired snapshot's commit marker. Vacuum takes the namespace's query barrier, like a batch,
+so no query is reading a file it removes. iceberg-go's orphan-file cleanup is not used: on a data
+directory reached through a symlink it treated live manifests as orphans. Two kinds of file are
+therefore left behind: superseded `vN.metadata.json` files, which iceberg-go keeps because
+`write.metadata.delete-after-commit.enabled` is off and a batch rollback restores a catalog that
+names an earlier one, and Parquet files written by a compaction that crashed before its commit or
+during its post-commit deletes. Neither is read again; reclaiming them is left to a later orphan
+sweep that does not depend on iceberg-go's.
 
 ### Slice 3 in more detail
 

@@ -154,7 +154,7 @@ func (s *Store) Close() error {
 	}
 	s.sidecarMu.Unlock()
 	for ns, scs := range running {
-		s.drainAll(ns, scs, true)
+		s.drainAll(ns, scs, store.ErrClosed)
 	}
 	for name, n := range s.namespaces {
 		n.sql = nil

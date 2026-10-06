@@ -1,8 +1,10 @@
 package lakehouse
 
 import (
+	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
@@ -125,5 +127,61 @@ func TestStagedEmbeddingsGoWithTheirTableAndWithAnAbandonedMigration(t *testing.
 	}
 	if n := staged(); n != 0 {
 		t.Fatalf("vacuum must purge embeddings staged by a migration no longer running: %d rows left", n)
+	}
+}
+
+func TestVacuumWaitsForARunningQuery(t *testing.T) {
+	cfg := sidecarConfig(t)
+	s, err := Open(t.TempDir(), WithSQLEngine(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "t", []schema.Field{{Name: "v", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"a", "b", "c"} {
+		if _, err := s.Insert(ctx, "ns", "t", []map[string]any{{"v": v}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Delete(ctx, "ns", "t", "v = 'b'", nil, store.DeleteOpts{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Query(ctx, "ns", "SELECT count(*) AS n FROM t", nil, [16]byte{}, store.Page{}); err != nil {
+		t.Fatal(err)
+	}
+	sc := s.namespaces["ns"].sql
+	sc.run.Lock()
+	counted := make(chan error, 1)
+	go func() {
+		res, err := s.Query(ctx, "ns", "SELECT count(*) AS n FROM t", nil, [16]byte{}, store.Page{})
+		if err == nil && res.Rows[0]["n"] != int64(2) {
+			err = errors.New("wrong count")
+		}
+		counted <- err
+	}()
+	time.Sleep(200 * time.Millisecond)
+	vacuumed := make(chan error, 1)
+	go func() {
+		_, err := s.Vacuum(ctx, "ns")
+		vacuumed <- err
+	}()
+	select {
+	case err := <-vacuumed:
+		sc.run.Unlock()
+		t.Fatalf("vacuum must not rewrite or delete files while a query is running: it finished first (%v)", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	sc.run.Unlock()
+	if err := <-counted; err != nil {
+		t.Fatalf("a query running across a vacuum must still read its files: %v", err)
+	}
+	if err := <-vacuumed; err != nil {
+		t.Fatal(err)
 	}
 }
