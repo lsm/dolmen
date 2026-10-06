@@ -273,3 +273,18 @@ func objectFor(scope authScope, t authTarget) (auth.Object, error) {
 	}
 	return auth.Object{Namespace: auth.RootObject}, nil
 }
+
+func (s *Server) ToolVisible(ctx context.Context, op string) bool {
+	if !s.authn.On() || authRules[op].Scope != scopeRoot {
+		return true
+	}
+	id := auth.IdentityFrom(ctx)
+	if id.Principal == auth.AdminPrincipal {
+		return true
+	}
+	if s.grants == nil {
+		return false
+	}
+	held, err := s.grants.EffectiveVerbs(ctx, id, auth.Object{Namespace: auth.RootObject})
+	return err != nil || held.Has(auth.VerbAdmin)
+}

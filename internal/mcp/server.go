@@ -153,13 +153,6 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
 		w.Header().Set("Vary", "Origin")
 	}
-	if r.Method == http.MethodPost {
-		mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if err != nil || mt != "application/json" {
-			http.Error(w, "content-type must be application/json", http.StatusUnsupportedMediaType)
-			return
-		}
-	}
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -174,6 +167,10 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(apiErr.Status)
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": apiErr.Public(api.RequestIDFrom(r.Context()))})
+		return
+	}
+	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
+		http.Error(w, "content-type must be application/json", http.StatusUnsupportedMediaType)
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20))
@@ -316,6 +313,9 @@ func (s *Server) handle(ctx context.Context, msg rpcMessage, instr string) (any,
 		}
 		tools := make([]map[string]any, 0)
 		for _, name := range s.api.OpNames() {
+			if !s.api.ToolVisible(ctx, name) {
+				continue
+			}
 			def, _ := s.api.Op(name)
 			tool := map[string]any{
 				"name":        name,

@@ -352,6 +352,9 @@ func TestOpenAPIOutputSchemasMarkRequiredGuaranteedFields(t *testing.T) {
 		"migrate.plan":    true,
 
 		"read_rows.next_after_id": true,
+
+		"describe_server.auth":         true,
+		"describe_server.capabilities": true,
 	}
 	for _, name := range OpNames() {
 		def := Ops[name]

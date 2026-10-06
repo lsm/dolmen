@@ -51,6 +51,10 @@ Windows PowerShell:
 claude mcp add --transport http dolmen '{{ .MCPURL }}'
 ```
 
+On a server that requires a credential, keep it in `DOLMEN_TOKEN` and add
+`--header "Authorization: Bearer $DOLMEN_TOKEN"` to that command (see "Authentication and access
+control" below; other MCP hosts take the same header in their own configuration).
+
 The `dolmen` tools then appear in `tools/list` with full input schemas. The endpoint can also be
 read from the environment: `DOLMEN_URL` (default `{{ .BaseURL }}`).
 
@@ -157,11 +161,54 @@ curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0",
 
 A failed call is not an HTTP error: the result carries `"isError":true` and the error object
 (`{"code","message","request_id"}`) as JSON text in `content[0].text`.
+With authentication on, add `-H "Authorization: Bearer $DOLMEN_TOKEN"` to every request above. A
+missing or rejected credential is the exception to that rule: it answers HTTP `401` with the plain
+error envelope (`{"ok":false,"error":{...}}`), not a JSON-RPC result.
 
 ## Authentication and access control
 
 Everything in this section applies only to a server running with authentication on. With it off
-there are no identities, and every call is allowed.
+there are no identities, and every call is allowed. A credential-free call that answers `401`
+means it is on; `describe_server` then reports an `auth` object whose `sources` lists the identity
+sources the server accepts (`admin-key`, `api-keys`, `trusted-proxy`, `oidc`), and inlines the
+engine's capabilities.
+
+### Turning authentication on
+
+The operator sets this in the server's environment when starting it; no operation changes it, so
+when the user asks for authentication, hand them the settings below. Every secret goes in the
+environment, never a flag, because flags show up in process listings.
+
+```bash
+DOLMEN_AUTH=on \
+DOLMEN_ADMIN_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')" \
+dolmen -addr 0.0.0.0:8790
+```
+
+- `DOLMEN_AUTH=on` makes every operation deny-by-default. The server refuses to start without
+  an administrator someone can actually authenticate as, which on a fresh server means
+  `DOLMEN_ADMIN_KEY` (32 to 256 characters of `[A-Za-z0-9_-]`). That key authenticates as the
+  reserved principal `dolmen-admin`, which holds `admin` on `*`.
+- **Sign-in for people** through an identity provider: `DOLMEN_AUTH_OIDC_ISSUER` (the provider's
+  https issuer URL), `DOLMEN_AUTH_OIDC_CLIENT_ID` and `DOLMEN_AUTH_OIDC_CLIENT_SECRET`, registered
+  with the provider with the redirect URL `{{ .BaseURL }}/v1/auth/callback`. Or
+  `DOLMEN_AUTH_OIDC_PRESET=github` with a GitHub OAuth app instead of an issuer. Optional:
+  `DOLMEN_AUTH_OIDC_SCOPES` (extra scopes, comma-separated), `DOLMEN_AUTH_OIDC_GROUPS_CLAIM` (the
+  claim carrying groups, default `groups`) and `DOLMEN_AUTH_OIDC_TOKEN_TTL` (token lifetime,
+  default `168h`, from `1h` to `720h`).
+- **Identity from a gateway**: list the authenticating proxy's addresses in
+  `DOLMEN_TRUSTED_PROXIES` (CIDRs) and have it send `X-Dolmen-Principal` and, optionally,
+  `X-Dolmen-Groups` (comma-separated). Headers from any other peer are ignored, and trust comes from
+  the TCP peer, never `X-Forwarded-For`. In Kubernetes the peer is the ingress or gateway pod, so
+  list the pod network's range.
+- Gateway identity works only with `DOLMEN_AUTH=on`, and API keys keep working beside it: a bearer
+  credential outranks the headers, and an invalid one is refused rather than falling back to them.
+- `dolmen mcp` (stdio) refuses to start with authentication on; serve HTTP instead.
+
+Every request then carries `Authorization: Bearer <credential>`, and a request body needs
+`Content-Type: application/json`; a body of any other type is refused as `invalid_request` before
+the credential is checked. `whoami` reports `principal`, `groups` and `source`: `admin-key`,
+`api-keys`, `oidc` (a sign-in token) or `trusted-proxy` (a gateway).
 
 Present your credential on every request, `/mcp` and `/v1/subscribe` included, as
 `Authorization: Bearer <credential>`; for MCP, connect with
@@ -188,9 +235,19 @@ curl -s -X POST "${base%/}/v1/grant" \
 
 `grant` merges verbs into an existing grant for the same subject and object. `revoke` takes the
 verbs to remove, with no implicit "all", and the grant disappears with its last verb. `list_grants`
-filters by `subject` (exact) or `object` (that object and everything under it). All three need
-`admin` on the object or something covering it; `list_grants` without an `object` needs it on `*`.
-Dropping a table or namespace removes the grants on it.
+filters by `subject` (exact) or `object` (that object and everything under it, so `*` lists every
+grant on the server). All three need `admin` on the object or something covering it;
+`list_grants` without an `object` needs it on `*`. Dropping a table or namespace removes the grants
+on it. The reserved `dolmen-admin` principal can be neither granted to nor listed.
+
+Two things are not checked for you. `grant` accepts any principal or group string, whether or not
+anyone authenticates as it, so copy the subject from `whoami` rather than typing it. And `revoke`
+answers `ok` with `"grant":null` both when it removed a grant's last verb and when there was no
+such grant, so confirm a removal with `list_grants`.
+
+`list_grants` with an `object` shows grants on that object and below it, not the grants above it
+that also cover it. To answer "who can reach this table", also list the grants on its namespace,
+each parent namespace, and `*`.
 
 Before granting `read` on a table with `row_access: "own"`, stop: `read` shows every owner's rows,
 so it undoes the privacy for whoever holds it. Give the people it keeps apart `create`, `update`
@@ -208,7 +265,8 @@ What the schema and administration operations need:
 | `vacuum` | `admin` on the namespace |
 | `rotate_secret_key` | `admin` on `*` |
 | `grant`, `revoke`, `list_grants` | `admin` on the object or something covering it |
-| `create_key`, `list_keys`, `revoke_key`, `rotate_signing_key` | `admin` on `*` |
+| `create_key`, `list_keys`, `revoke_key` | `admin` on `*` |
+| `rotate_signing_key` (exists only when `describe_server`'s sources include `oidc`) | `admin` on `*` |
 
 The data operations need what the core skill lists ({{ .BaseURL }}/skills/dolmen): `read` for
 reads, searches and the change feed, `create`, `update` and `delete` for the matching writes, and
@@ -247,6 +305,10 @@ The server adds an `owner` column and stamps it on every insert; callers never s
 caller sees depends on their verbs: `read` sees every row, any of `create`, `update` or `delete`
 without `read` sees only the rows that caller wrote, and `schema` or `admin` alone sees none.
 
+Those own-row users cannot `query` (that needs `read` on the namespace), and `read_rows` needs ids,
+so give the table a full-text field when its owners must find their rows again; otherwise they
+can only reach rows whose ids they kept from `insert`.
+
 Two things it does not hide, by design: row ids come from one sequence shared by every owner, so an
 owner can tell from gaps in its ids that others wrote rows in between; and on a table **without**
 `row_access`, a principal holding only `create`, `update` or `delete` still sees the table's total
@@ -269,25 +331,56 @@ curl -s -X POST "${base%/}/v1/create_key" \
   -d '{"name":"ci runner","principal":"ci-bot","groups":["builders"]}'
 ```
 
-The response shows the credential once. It is stored hashed, so hand it over now or mint another.
-A key grants nothing by itself: it authenticates as its principal and groups, which need grants
-like anyone else. `list_keys` reports ids, names, principals, groups and revocation state, never
-credentials, and `revoke_key` takes the id.
+The response is `{"key":{...},"secret":"dlm_..."}`: `key` holds the id, name, principal and groups,
+and `secret` is the credential, shown this once. It is stored hashed, so hand it over now or mint
+another. A key grants nothing by itself: it authenticates as its principal and groups, which need
+grants like anyone else. Any principal name is accepted, including a sign-in principal
+(`oidc:v1:...`): such a key acts as that person, own rows included, so mint one only for that
+person, as their personal key for scripts. `list_keys` reports ids, names, principals, groups and revocation state,
+never credentials, and `revoke_key` takes the id; revoking an already-revoked key also answers
+`ok`. Keys do not expire, and revoked keys stay listed.
+
+To rotate a key without downtime, mint a second key for the same principal, switch the client to
+it, confirm the new key works, then revoke the old one by id. Grants belong to the principal, so
+nothing needs re-granting.
 
 ### People who sign in
 
-On a server configured with an identity provider, people sign in at `{{ .BaseURL }}/v1/auth/begin`
-and receive a token. Their principal is qualified by the provider, as
-`oidc:v1:<issuer-digest>:<sub>`, and so are their groups, so grant on exactly what `whoami` reports
-after they sign in, never on an email address. `rotate_signing_key` with `{"retire_previous":true}`
-signs everyone out at once. Without it, tokens already issued live out their lifetime.
+On a server whose `describe_server` sources include `oidc`, people sign in at
+`{{ .BaseURL }}/v1/auth/begin` in a browser and receive a token, valid for the configured lifetime
+(7 days by default); then they sign in again. On a server without sign-in that address answers
+`404` and `rotate_signing_key` is an unknown operation.
+
+Their principal is qualified by the provider, as `oidc:v1:<issuer-digest>:<sub>`, and so are their
+groups, so you cannot know either before the person signs in once. Have them sign in and call
+`whoami`, then grant on exactly what it reports, never on an email address. Some providers (Entra)
+send group ids rather than names. Changing the issuer mints a new set of principals that inherit
+no grants.
+
+There is no per-person sign-out: a token stays valid until it expires. `rotate_signing_key` with
+`{"retire_previous":true}` signs everyone out at once; without it, tokens already issued live out
+their lifetime.
 
 ### Bootstrap and hand-over
 
 The bootstrap key in `DOLMEN_ADMIN_KEY` authenticates as `dolmen-admin`, which holds `admin` on
-`*`. It exists to make the first real administrator: grant `admin` on `*` to a principal, after
-which the operator can remove the key. Revoking a grant or a key that would leave no usable root
-administrator is refused, and setting the admin key again and restarting always recovers a
+`*`. It exists to make the first real administrator, and then to be removed:
+
+1. Get the person's exact principal: they sign in and call `whoami`, or you mint them an API key
+   with `create_key`.
+2. Grant them `admin` on `*` (`{"object":{"namespace":"*"}}`).
+3. Verify with **their** credential, not the bootstrap key: `whoami` shows the principal you
+   granted, and `list_keys`, which needs `admin` on `*`, succeeds.
+4. The operator removes `DOLMEN_ADMIN_KEY` and restarts. Grants persist.
+
+While `DOLMEN_ADMIN_KEY` is set, the bootstrap administrator always exists, so nothing below is
+enforced and you can revoke any grant or key. Once it is removed, a root administrator counts as
+usable only while someone can still authenticate as them: an
+unrevoked API key whose principal holds the grant or that carries a group holding it, a sign-in
+principal from the current issuer, or any principal when a gateway supplies identity. A group grant
+counts only through API keys. Revoking a grant or a key
+that would leave no usable root administrator is refused, and the server refuses to start with
+authentication on and none. Setting the admin key again and restarting always recovers a
 locked-out server.
 
 ## Working rules
