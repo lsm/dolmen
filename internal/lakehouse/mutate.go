@@ -146,7 +146,7 @@ func (s *Store) prepareSet(ctx context.Context, state tableState, set map[string
 }
 
 func (s *Store) coerceField(f schema.Field, v any, stamp string) (any, error) {
-	if f.Type == schema.Timestamp && schema.IsNowDefault(v) {
+	if f.Type == schema.Timestamp && stamp != "" && schema.IsNowDefault(v) {
 		v = stamp
 	}
 	coerced, err := value.Coerce(f, v)
@@ -355,7 +355,7 @@ func (s *Store) Delete(ctx context.Context, ns, name, filter string, args []any,
 		if err != nil {
 			return err
 		}
-		if err := checkExpected(state, scopeIncarnation, false); err != nil {
+		if err := checkScopeExpected(state, scopeIncarnation); err != nil {
 			return err
 		}
 		if scope != nil && !scope.Empty && !state.schema.HasOwner {
@@ -438,7 +438,7 @@ func (s *Store) mutate(ctx context.Context, ns, name, filter string, args []any,
 		if err != nil {
 			return err
 		}
-		if err := checkExpected(state, scopeIncarnation, false); err != nil {
+		if err := checkScopeExpected(state, scopeIncarnation); err != nil {
 			return err
 		}
 		if scope != nil && !scope.Empty && !state.schema.HasOwner {
@@ -541,7 +541,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 		if err != nil {
 			return err
 		}
-		if err := checkExpected(state, scopeIncarnation, false); err != nil {
+		if err := checkScopeExpected(state, scopeIncarnation); err != nil {
 			return err
 		}
 		if scope != nil && !scope.Empty && !state.schema.HasOwner {

@@ -147,6 +147,14 @@ func TestLakehouseMutationBackendConformance(t *testing.T) {
 			if got := read(1, 2, 3, 4, 5); len(got) != 3 || count() != 3 {
 				t.Fatalf("a deleted row must not read back: %v, row_count %d", got, count())
 			}
+			ghosts, err := eng.Update(ctx, ns, "people", "email IN ('b@x', 'c@x')", nil, map[string]any{"name": "ghost"}, emb, nil, none)
+			if err != nil || ghosts.Updated != 0 {
+				t.Fatalf("a filter must not see rows removed by an earlier delete: %+v %v", ghosts, err)
+			}
+			again, err := eng.Delete(ctx, ns, "people", "email IN ('b@x', 'c@x')", nil, store.DeleteOpts{}, nil, none)
+			if err != nil || again.Matched != 0 || again.Deleted != 0 || count() != 3 {
+				t.Fatalf("deleting already-deleted rows must match nothing: %+v %v, row_count %d", again, err, count())
+			}
 			if _, err := eng.Delete(ctx, ns, "people", "token = ?", []any{secret.Mask}, store.DeleteOpts{DryRun: true}, nil, none); err != nil {
 				t.Fatal(err)
 			}
@@ -175,6 +183,33 @@ func TestLakehouseMutationBackendConformance(t *testing.T) {
 			pair, err := eng.UpsertByKey(ctx, ns, "pair", []string{"a", "b"}, []map[string]any{{"a": "a\x1fb", "b": "c"}, {"a": "a", "b": "b\x1fc"}}, store.WriteOpts{}, emb, nil, none)
 			if err != nil || pair.Inserted != 2 || pair.Ids[0] == pair.Ids[1] {
 				t.Fatalf("distinct composite keys must stay distinct whatever their bytes: %+v %v", pair, err)
+			}
+			_, inc, err := eng.TableState(ctx, ns, "people", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stale := inc
+			stale.Version++
+			if _, err := eng.Update(ctx, ns, "people", "id = 1", nil, map[string]any{"name": "x"}, emb, nil, stale); !errors.Is(err, derr.ErrConflict) {
+				t.Fatalf("an update scoped against another schema version must be refused: %v", err)
+			}
+			if _, err := eng.Delete(ctx, ns, "people", "id = 1", nil, store.DeleteOpts{}, nil, stale); !errors.Is(err, derr.ErrConflict) {
+				t.Fatalf("a delete scoped against another schema version must be refused: %v", err)
+			}
+			if _, err := eng.UpsertByKey(ctx, ns, "people", []string{"email"}, []map[string]any{{"email": "a@x"}}, store.WriteOpts{}, emb, nil, stale); !errors.Is(err, derr.ErrConflict) {
+				t.Fatalf("an upsert_by_key scoped against another schema version must be refused: %v", err)
+			}
+			if _, err := eng.Upsert(ctx, ns, "people", "id = 1", nil, map[string]any{"name": "x"}, store.WriteOpts{}, emb, nil, stale); !errors.Is(err, derr.ErrConflict) {
+				t.Fatalf("an upsert scoped against another schema version must be refused: %v", err)
+			}
+			if _, err := eng.CreateTable(ctx, ns, "stamped", []schema.Field{{Name: "at", Type: schema.Timestamp}}, store.TableOpts{}, [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := eng.Insert(ctx, ns, "stamped", []map[string]any{{"at": "2026-01-01T00:00:00Z"}}, store.WriteOpts{}, emb, nil, none); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := eng.Update(ctx, ns, "stamped", "1=1", nil, map[string]any{"at": "now()"}, emb, nil, none); !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), "now()") {
+				t.Fatalf("an update's error must name the value the caller sent: %v", err)
 			}
 			if semi, err := eng.Delete(ctx, ns, "people", "name = 'a;b'", nil, store.DeleteOpts{DryRun: true}, nil, none); err != nil || semi.Matched != 0 {
 				t.Fatalf("a semicolon inside a string literal is not a statement separator: %+v %v", semi, err)
