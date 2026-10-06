@@ -158,8 +158,16 @@ func TestLakehouseMutationBackendConformance(t *testing.T) {
 				{"email": "n@x", "score": json.Number("50")},
 				{"email": "n@x", "name": "Fifty", "score": json.Number("50.0")},
 			}, store.WriteOpts{}, emb, nil, none)
-			if err != nil || len(numeric.Ids) != 2 || numeric.Ids[0] != numeric.Ids[1] || numeric.Inserted != 1 {
-				t.Fatalf("records whose number keys are equal values must land on one row: %+v %v", numeric, err)
+			if err != nil || len(numeric.Ids) != 2 || numeric.Ids[0] != numeric.Ids[1] || numeric.Inserted != 1 || numeric.Changes.Count != 2 {
+				t.Fatalf("records whose number keys are equal values must land on one row, one change each: %+v %v", numeric, err)
+			}
+			big, err := eng.Insert(ctx, ns, "people", []map[string]any{{"email": "big1@x", "score": json.Number("9007199254740992")}, {"email": "big2@x", "score": json.Number("9007199254740993")}}, store.WriteOpts{}, emb, nil, none)
+			if err != nil {
+				t.Fatal(err)
+			}
+			exact, err := eng.UpsertByKey(ctx, ns, "people", []string{"score"}, []map[string]any{{"email": "big2@x", "name": "Exact", "score": json.Number("9007199254740993")}}, store.WriteOpts{}, emb, nil, none)
+			if err != nil || exact.Updated != 1 || !reflect.DeepEqual(exact.Ids, []int64{big.Ids[1]}) {
+				t.Fatalf("a number key above 2^53 must match its exact value only: %+v %v", exact, err)
 			}
 			if _, err := eng.CreateTable(ctx, ns, "pair", []schema.Field{{Name: "a", Type: schema.String}, {Name: "b", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
 				t.Fatal(err)

@@ -171,6 +171,12 @@ type mutation struct {
 	inserts []map[string]any
 	owners  map[int64]string
 	nextID  int64
+	steps   []changeStep
+}
+
+type changeStep struct {
+	id   int64
+	kind store.ChangeKind
 }
 
 func (s *Store) commitMutation(ctx context.Context, n *namespace, state tableState, m mutation, stamp string) (store.ChangeRange, error) {
@@ -258,10 +264,17 @@ func (s *Store) commitMutation(ctx context.Context, n *namespace, state tableSta
 		return nil
 	}
 	countDelta := map[string]int64{}
+	for _, step := range m.steps {
+		if err := mint(step.id, step.kind); err != nil {
+			return store.ChangeRange{}, err
+		}
+	}
 	for _, row := range m.inserts {
 		id := row["id"].(int64)
-		if err := mint(id, store.ChangeInsert); err != nil {
-			return store.ChangeRange{}, err
+		if m.steps == nil {
+			if err := mint(id, store.ChangeInsert); err != nil {
+				return store.ChangeRange{}, err
+			}
 		}
 		owner := ""
 		if state.schema.HasOwner {
@@ -270,6 +283,9 @@ func (s *Store) commitMutation(ctx context.Context, n *namespace, state tableSta
 		countDelta[owner]++
 	}
 	for _, id := range sortedKeys(m.updates) {
+		if m.steps != nil {
+			break
+		}
 		if err := mint(id, store.ChangeUpdate); err != nil {
 			return store.ChangeRange{}, err
 		}
@@ -559,6 +575,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 			return err
 		}
 		owners := map[int64]string{}
+		steps := []changeStep{}
 		for i, rec := range records {
 			args := make([]any, len(keys))
 			conds := make([]string, len(keys))
@@ -601,11 +618,15 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 					row[field] = nil
 				}
 				allIDs = append(allIDs, id)
+				steps = append(steps, changeStep{id, store.ChangeUpdate})
 				result.Updated++
 				continue
 			}
 			ids, err := s.matchIDs(ctx, n, ns, state, strings.Join(conds, " AND "), args, scope)
 			if err != nil {
+				return err
+			}
+			if ids, err = s.exactKeyMatches(ctx, state, keys, args, ids, &current); err != nil {
 				return err
 			}
 			if len(ids) == 0 {
@@ -618,6 +639,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 				inserts = append(inserts, rows[0])
 				pending[signature] = next
 				allIDs = append(allIDs, next)
+				steps = append(steps, changeStep{next, store.ChangeInsert})
 				next++
 				result.Inserted++
 				continue
@@ -654,6 +676,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 			owner, _ := old[schema.OwnerColumn].(string)
 			owners[id] = owner
 			allIDs = append(allIDs, id)
+			steps = append(steps, changeStep{id, store.ChangeUpdate})
 			result.Updated++
 		}
 		if err := s.pinEmbedding(ctx, n, state, space, dim, emb); err != nil {
@@ -669,7 +692,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 				}
 			}
 		}
-		result.Changes, err = s.commitMutation(ctx, n, state, mutation{kind: store.ChangeUpdate, inserts: inserts, updates: updates, owners: owners, nextID: nextID}, stamp)
+		result.Changes, err = s.commitMutation(ctx, n, state, mutation{kind: store.ChangeUpdate, inserts: inserts, updates: updates, owners: owners, nextID: nextID, steps: steps}, stamp)
 		if err != nil {
 			return err
 		}
@@ -690,4 +713,49 @@ func findRow(inserts []map[string]any, updates map[int64]map[string]any, id int6
 		}
 	}
 	return nil
+}
+
+func (s *Store) exactKeyMatches(ctx context.Context, state tableState, keys []string, args []any, ids []int64, current *map[int64]map[string]any) ([]int64, error) {
+	var numbers []int
+	for j, k := range keys {
+		if state.schema.Field(k).Type == schema.Number {
+			numbers = append(numbers, j)
+		}
+	}
+	if len(numbers) == 0 || len(ids) == 0 {
+		return ids, nil
+	}
+	if *current == nil {
+		*current = map[int64]map[string]any{}
+	}
+	var missing []int64
+	for _, id := range ids {
+		if _, ok := (*current)[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		rows, err := s.currentRows(ctx, state, missing)
+		if err != nil {
+			return nil, err
+		}
+		maps.Copy(*current, rows)
+	}
+	out := ids[:0:0]
+	for _, id := range ids {
+		row := (*current)[id]
+		same := row != nil
+		for _, j := range numbers {
+			want, ok1 := new(big.Rat).SetString(fmt.Sprint(args[j]))
+			got, ok2 := new(big.Rat).SetString(fmt.Sprint(row[keys[j]]))
+			if !ok1 || !ok2 || want.Cmp(got) != 0 {
+				same = false
+				break
+			}
+		}
+		if same {
+			out = append(out, id)
+		}
+	}
+	return out, nil
 }
