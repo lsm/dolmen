@@ -232,6 +232,10 @@ doubles, where SQLite compares them exactly; that follows from the DuckDB filter
 `upsert_by_key` does not inherit it: a candidate row matches a number key only when its stored
 value equals the key exactly, and records repeating a key within one call land on the row the
 first created or matched, one change record per record, as on SQLite.
+Every write is its own Iceberg commit, and iceberg-go's fast append adds a manifest per commit
+that each later commit reads, so writes slow down as a table takes many of them. New tables set
+`commit.manifest-merge.enabled` with a merge threshold of 8, which folds small manifests together
+as commits accumulate; `vacuum` still compacts the data and delete files.
 The matched ids then go through the commit log like an append: one transaction records the new row
 versions, the ids they replace or remove, one change record per row, the owner-scoped count delta,
 secret writes and removals in the catalog, and any ids `upsert_by_key` allocates. Materialization
