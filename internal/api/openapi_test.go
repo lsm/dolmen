@@ -350,6 +350,8 @@ func TestOpenAPIOutputSchemasMarkRequiredGuaranteedFields(t *testing.T) {
 		"insert.replayed": true,
 		"migrate.dry_run": true,
 		"migrate.plan":    true,
+
+		"read_rows.next_after_id": true,
 	}
 	for _, name := range OpNames() {
 		def := Ops[name]
