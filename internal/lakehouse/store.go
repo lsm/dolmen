@@ -42,6 +42,9 @@ type Store struct {
 	dropping     map[string]bool
 	sidecarMu    sync.Mutex
 	sidecars     map[string]map[*sidecar]bool
+	barrierMu    sync.Mutex
+	migrating    map[string]int
+	barriers     map[string]*sync.RWMutex
 }
 
 type namespace struct {
@@ -221,4 +224,48 @@ func (s *Store) makeRoom() error {
 		}
 	}
 	return s.evict(oldest)
+}
+
+func (s *Store) barrier(ns string) *sync.RWMutex {
+	s.barrierMu.Lock()
+	defer s.barrierMu.Unlock()
+	if s.barriers == nil {
+		s.barriers = map[string]*sync.RWMutex{}
+	}
+	b := s.barriers[ns]
+	if b == nil {
+		b = &sync.RWMutex{}
+		s.barriers[ns] = b
+	}
+	return b
+}
+
+func (s *Store) withNamespaceExclusive(ctx context.Context, ns string, fn func(*namespace) error) error {
+	b := s.barrier(ns)
+	b.Lock()
+	defer b.Unlock()
+	return s.withNamespace(ctx, ns, fn)
+}
+
+func (s *Store) beginMigrate(ns, table string) func() {
+	key := ns + "\x00" + table
+	s.barrierMu.Lock()
+	if s.migrating == nil {
+		s.migrating = map[string]int{}
+	}
+	s.migrating[key]++
+	s.barrierMu.Unlock()
+	return func() {
+		s.barrierMu.Lock()
+		defer s.barrierMu.Unlock()
+		if s.migrating[key]--; s.migrating[key] == 0 {
+			delete(s.migrating, key)
+		}
+	}
+}
+
+func (s *Store) migrateRunning(ns, table string) bool {
+	s.barrierMu.Lock()
+	defer s.barrierMu.Unlock()
+	return s.migrating[ns+"\x00"+table] > 0
 }

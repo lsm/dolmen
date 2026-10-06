@@ -35,7 +35,7 @@ func (s *Store) Batch(ctx context.Context, ns string, writes []store.BatchWrite,
 		return store.BatchResult{}, err
 	}
 	var result store.BatchResult
-	err := s.withNamespace(ctx, ns, func(n *namespace) error {
+	err := s.withNamespaceExclusive(ctx, ns, func(n *namespace) error {
 		if scopeIncarnation.NsGen != [16]byte{} && scopeIncarnation.NsGen != n.generation {
 			return derr.New(derr.Conflict, "namespace %q was dropped and recreated between the moment this request's row visibility was decided and its execution; re-read the namespace and retry", ns)
 		}
@@ -203,6 +203,7 @@ func (s *Store) commitBatch(ctx context.Context, n *namespace, opts store.BatchO
 
 func (s *Store) rollbackBatch(ctx context.Context, ns string) error {
 	if err := s.evict(ns); err != nil {
+		delete(s.namespaces, ns)
 		return err
 	}
 	if err := s.restoreJournal(ns); err != nil {

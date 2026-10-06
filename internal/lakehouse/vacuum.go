@@ -49,4 +49,30 @@ func treeBytes(dir string) (int64, error) {
 	return total, err
 }
 
-func (s *Store) maintain(context.Context, *namespace, string) error { return nil }
+func (s *Store) maintain(ctx context.Context, n *namespace, ns string) error {
+	rows, err := n.db.QueryContext(ctx, `SELECT DISTINCT table_name FROM _dolmen_lakehouse_embed_stage`)
+	if err != nil {
+		return err
+	}
+	var stale []string
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			rows.Close()
+			return err
+		}
+		if !s.migrateRunning(ns, table) {
+			stale = append(stale, table)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, table := range stale {
+		if _, err := n.db.ExecContext(ctx, `DELETE FROM _dolmen_lakehouse_embed_stage WHERE table_name = ?`, table); err != nil {
+			return err
+		}
+	}
+	return nil
+}
