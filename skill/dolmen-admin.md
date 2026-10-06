@@ -170,8 +170,8 @@ error envelope (`{"ok":false,"error":{...}}`), not a JSON-RPC result.
 Everything in this section applies only to a server running with authentication on. With it off
 there are no identities, and every call is allowed. A credential-free call that answers `401`
 means it is on; `describe_server` then reports an `auth` object whose `sources` lists the identity
-sources the server accepts (`admin-key`, `api-keys`, `trusted-proxy`, `oidc`), and inlines the
-engine's capabilities.
+sources the server accepts (`admin-key`, `api-keys`, `trusted-proxy`, `oidc`), next to a top-level
+`capabilities` object with the engine's capabilities.
 
 ### Turning authentication on
 
@@ -191,7 +191,9 @@ dolmen -addr 0.0.0.0:8790
   reserved principal `dolmen-admin`, which holds `admin` on `*`.
 - **Sign-in for people** through an identity provider: `DOLMEN_AUTH_OIDC_ISSUER` (the provider's
   https issuer URL), `DOLMEN_AUTH_OIDC_CLIENT_ID` and `DOLMEN_AUTH_OIDC_CLIENT_SECRET`, registered
-  with the provider with the redirect URL `{{ .BaseURL }}/v1/auth/callback`. Or
+  with the provider with the redirect URL `<public URL>/v1/auth/callback`; the public URL is
+  `DOLMEN_BASE_URL` when set, otherwise what a trusted proxy's forwarding headers say (here it
+  renders as `{{ .BaseURL }}/v1/auth/callback`). Or
   `DOLMEN_AUTH_OIDC_PRESET=github` with a GitHub OAuth app instead of an issuer. Optional:
   `DOLMEN_AUTH_OIDC_SCOPES` (extra scopes, comma-separated), `DOLMEN_AUTH_OIDC_GROUPS_CLAIM` (the
   claim carrying groups, default `groups`) and `DOLMEN_AUTH_OIDC_TOKEN_TTL` (token lifetime,
@@ -200,7 +202,8 @@ dolmen -addr 0.0.0.0:8790
   `DOLMEN_TRUSTED_PROXIES` (CIDRs) and have it send `X-Dolmen-Principal` and, optionally,
   `X-Dolmen-Groups` (comma-separated). Headers from any other peer are ignored, and trust comes from
   the TCP peer, never `X-Forwarded-For`. In Kubernetes the peer is the ingress or gateway pod, so
-  list the pod network's range.
+  list the pod network's range. The header names are fixed, and the principal and groups are used
+  exactly as the gateway sends them, unqualified, so grants name them as the gateway spells them.
 - Gateway identity works only with `DOLMEN_AUTH=on`, and API keys keep working beside it: a bearer
   credential outranks the headers, and an invalid one is refused rather than falling back to them.
 - `dolmen mcp` (stdio) refuses to start with authentication on; serve HTTP instead.
@@ -266,7 +269,7 @@ What the schema and administration operations need:
 | `create_table` | `schema` on the namespace |
 | `migrate`, `list_migrations` | `schema` on the table. A change whose outcome depends on the existing rows also needs `read`: `set_enum`, `set_shape`, `set_fulltext`, `set_vectorize`, `set_row_access`, `drop_field`, and an `add_field` that is required, full-text, vectorized, or carries a `default` |
 | `drop_table` | `schema` and `admin`, since dropping a table deletes the grants on it |
-| `create_namespace` | `admin` on the parent namespace, or on `*` for a top-level one |
+| `create_namespace` (`{"namespace":"eng"}`, or `"eng/team-a"` for a sub-namespace) | `admin` on the parent namespace, or on `*` for a top-level one |
 | `drop_namespace` | `admin` on the namespace |
 | `vacuum` | `admin` on the namespace |
 | `rotate_secret_key` | `admin` on `*` |
@@ -337,7 +340,7 @@ curl -s -X POST "${base%/}/v1/create_key" \
   -d '{"name":"ci runner","principal":"ci-bot","groups":["builders"]}'
 ```
 
-The response is `{"key":{...},"secret":"dlm_..."}`: `key` holds the id, name, principal and groups,
+The response's `data` is `{"key":{...},"secret":"dlm_..."}`: `key` holds the id, name, principal and groups,
 and `secret` is the credential, shown this once. It is stored hashed, so hand it over now or mint
 another. A key grants nothing by itself: it authenticates as its principal and groups, which need
 grants like anyone else. Any principal name is accepted, including a sign-in principal
@@ -362,8 +365,10 @@ On a server whose `describe_server` sources include `oidc`, people sign in at
 `404` and `rotate_signing_key` is an unknown operation.
 
 Their principal is qualified by the provider, as `oidc:v1:<issuer-digest>:<sub>`, and so are their
-groups, so you cannot know either before the person signs in once. Have them sign in and call
-`whoami`, then grant on exactly what it reports, never on an email address. Some providers (Entra)
+groups: an identity-provider group `finance` arrives as `oidc:v1:<issuer-digest>:finance`, so a
+grant to the plain group `finance` matches only API keys and gateway identities that carry it.
+You cannot know the digest before someone signs in once. Have them sign in and call `whoami`, then
+grant on exactly the principal and groups it reports, never on an email address. Some providers (Entra)
 send group ids rather than names. Changing the issuer mints a new set of principals that inherit
 no grants.
 
@@ -390,7 +395,7 @@ unrevoked API key whose principal holds the grant or that carries a group holdin
 principal from the current issuer, or any principal when a gateway supplies identity. A group grant
 counts only through API keys. Revoking a grant or a key
 that would leave no usable root administrator is refused, and the server refuses to start with
-authentication on and none. Setting the admin key again and restarting always recovers a
+authentication on and none. Setting the admin key again (any new valid value; the old one is not needed) and restarting always recovers a
 locked-out server.
 
 ## Working rules
