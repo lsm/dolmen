@@ -155,7 +155,7 @@ func TestVacuumWaitsForARunningQuery(t *testing.T) {
 	if _, err := s.Query(ctx, "ns", "SELECT count(*) AS n FROM t", nil, [16]byte{}, store.Page{}); err != nil {
 		t.Fatal(err)
 	}
-	sc := s.namespaces["ns"].sql
+	sc := s.namespaces["ns"].query.sc
 	sc.run.Lock()
 	counted := make(chan error, 1)
 	go func() {

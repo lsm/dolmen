@@ -376,7 +376,7 @@ func viewName(table string, raw bool) string {
 	return quoteIdent(table)
 }
 
-func (s *Store) namespaceViews(ctx context.Context, n *namespace, ns string) ([]string, string, map[string]schema.FieldType, error) {
+func (s *Store) namespaceViews(ctx context.Context, n *namespace, ns string, raw bool) ([]string, string, map[string]schema.FieldType, error) {
 	var states []tableState
 	for ident, err := range n.catalog.ListTables(ctx, tableIdentifierNamespace(ns)) {
 		if err != nil {
@@ -389,7 +389,10 @@ func (s *Store) namespaceViews(ctx context.Context, n *namespace, ns string) ([]
 		states = append(states, state)
 	}
 	slices.SortFunc(states, func(a, b tableState) int { return strings.Compare(a.schema.Name, b.schema.Name) })
-	views := []string{"CREATE SCHEMA " + quoteIdent(filterSchema)}
+	views := []string{}
+	if raw {
+		views = append(views, "CREATE SCHEMA "+quoteIdent(filterSchema))
+	}
 	labels := map[string]schema.FieldType{"id": schema.Number, "created_at": schema.Timestamp}
 	ambiguous := map[string]bool{}
 	var fp strings.Builder
@@ -397,7 +400,10 @@ func (s *Store) namespaceViews(ctx context.Context, n *namespace, ns string) ([]
 		if err := n.freshenCurrentMetadata(state); err != nil {
 			return nil, "", nil, err
 		}
-		views = append(views, viewSQL(state, false), viewSQL(state, true))
+		views = append(views, viewSQL(state, false))
+		if raw {
+			views = append(views, viewSQL(state, true))
+		}
 		fmt.Fprintf(&fp, "%s|%d|%d|%t;", state.schema.Name, state.schema.Version, state.incarnation.DropGen, state.native.Metadata().CurrentSnapshot() != nil)
 		for _, f := range state.schema.Fields {
 			if t, seen := labels[f.Name]; seen && t != f.Type {
@@ -628,35 +634,46 @@ func (s *Store) retire(ns string, sc *sidecar) {
 	go s.drain(ns, sc, nil)
 }
 
-func (s *Store) ensureSidecar(ctx context.Context, n *namespace, ns string) (*sidecar, map[string]schema.FieldType, error) {
+type sidecarSlot struct {
+	sc    *sidecar
+	err   error
+	retry time.Time
+	fails int
+}
+
+func (s *Store) ensureSidecar(ctx context.Context, n *namespace, ns string, raw bool) (*sidecar, map[string]schema.FieldType, error) {
 	if s.dropping[ns] {
 		return nil, nil, fmt.Errorf("%w: namespace %s is being dropped", store.ErrNotFound, ns)
 	}
-	views, fp, labels, err := s.namespaceViews(ctx, n, ns)
+	views, fp, labels, err := s.namespaceViews(ctx, n, ns, raw)
 	if err != nil {
 		return nil, nil, err
 	}
-	if n.sql != nil && (n.sql.fingerprint != fp || !n.sql.alive()) {
-		s.retire(ns, n.sql)
-		n.sql = nil
+	slot := &n.query
+	if raw {
+		slot = &n.filter
 	}
-	if n.sql == nil {
-		if n.sqlErr != nil && time.Now().Before(n.sqlRetry) {
-			return nil, nil, n.sqlErr
+	if slot.sc != nil && (slot.sc.fingerprint != fp || !slot.sc.alive()) {
+		s.retire(ns, slot.sc)
+		slot.sc = nil
+	}
+	if slot.sc == nil {
+		if slot.err != nil && time.Now().Before(slot.retry) {
+			return nil, nil, slot.err
 		}
-		if n.sql, err = startSidecar(ctx, s.sqlEngine, n.dataDir, views, fp); err != nil {
+		if slot.sc, err = startSidecar(ctx, s.sqlEngine, n.dataDir, views, fp); err != nil {
 			if ctx.Err() != nil {
 				return nil, nil, err
 			}
-			n.sqlFails++
-			n.sqlErr = err
-			n.sqlRetry = time.Now().Add(min(time.Second<<min(n.sqlFails-1, 5), 30*time.Second))
+			slot.fails++
+			slot.err = err
+			slot.retry = time.Now().Add(min(time.Second<<min(slot.fails-1, 5), 30*time.Second))
 			return nil, nil, err
 		}
-		n.sqlFails, n.sqlErr = 0, nil
-		s.track(ns, n.sql)
+		slot.fails, slot.err = 0, nil
+		s.track(ns, slot.sc)
 	}
-	return n.sql, labels, nil
+	return slot.sc, labels, nil
 }
 
 func (s *Store) ensureQuerySidecar(ctx context.Context, ns string, nsGen [16]byte) (*sidecar, map[string]schema.FieldType, error) {
@@ -667,7 +684,7 @@ func (s *Store) ensureQuerySidecar(ctx context.Context, ns string, nsGen [16]byt
 			return fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, ns)
 		}
 		var err error
-		sc, labels, err = s.ensureSidecar(ctx, n, ns)
+		sc, labels, err = s.ensureSidecar(ctx, n, ns, false)
 		return err
 	})
 	if err != nil {

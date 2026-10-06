@@ -59,10 +59,8 @@ type namespace struct {
 	dataDir    string
 	lastUse    uint64
 	pending    int
-	sql        *sidecar
-	sqlErr     error
-	sqlRetry   time.Time
-	sqlFails   int
+	query      sidecarSlot
+	filter     sidecarSlot
 	published  map[string]string
 }
 
@@ -175,7 +173,7 @@ func (s *Store) Close() error {
 		s.drainAll(ns, scs, store.ErrClosed)
 	}
 	for name, n := range s.namespaces {
-		n.sql = nil
+		n.query.sc, n.filter.sc = nil, nil
 		s.closeErr = errors.Join(s.closeErr, n.db.Close())
 		s.unsetNamespace(name)
 	}
@@ -219,9 +217,11 @@ func (s *Store) evict(name string) error {
 	if n == nil {
 		return nil
 	}
-	if n.sql != nil {
-		s.retire(name, n.sql)
-		n.sql = nil
+	for _, slot := range []*sidecarSlot{&n.query, &n.filter} {
+		if slot.sc != nil {
+			s.retire(name, slot.sc)
+			slot.sc = nil
+		}
 	}
 	if err := n.db.Close(); err != nil {
 		return err

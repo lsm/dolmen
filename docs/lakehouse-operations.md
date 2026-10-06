@@ -26,8 +26,9 @@ the counters, cursors and secrets live only in `catalog.db`.
 ## The SQL sidecar
 
 `query`, and every `filter` (`update`, `delete`, `upsert`, `upsert_by_key`, and the searches), run
-in `dolmen-duckdb`, a separate process built on DuckDB. dolmen starts one per namespace on first use
-and stops it when the namespace is closed. The sidecar opens the namespace read-only, can read only
+in `dolmen-duckdb`, a separate process built on DuckDB. dolmen starts one per namespace for `query`
+and a second for filters, each on first use, and stops them when the namespace is closed, so a namespace taking writes with
+filters runs two DuckDB processes. The sidecar opens the namespace read-only, can read only
 that namespace's `data/` directory, and has external access disabled.
 
 | Flag | Environment variable | Default |

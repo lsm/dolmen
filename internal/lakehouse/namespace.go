@@ -183,7 +183,7 @@ func (s *Store) DropNamespace(ctx context.Context, name string, expected [16]byt
 	}
 	s.dropping[name] = true
 	if n := s.namespaces[name]; n != nil {
-		n.sql = nil
+		n.query.sc, n.filter.sc = nil, nil
 	}
 	draining := s.tracked(name)
 	s.unlock()
