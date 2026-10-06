@@ -8,11 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go.opentelemetry.io/otel/trace"
 	"io"
 	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -35,7 +37,7 @@ const sidecarStartTimeout = 60 * time.Second
 
 const sidecarCancelGrace = 5 * time.Second
 
-var ErrSQLEngineUnavailable = errors.New("lakehouse SQL engine unavailable")
+var ErrSQLEngineUnavailable = derr.ErrSQLEngineUnavailable
 
 type SQLEngine struct {
 	Binary       string
@@ -47,7 +49,7 @@ type SQLEngine struct {
 func WithSQLEngine(cfg SQLEngine) OpenOption { return func(s *Store) { s.sqlEngine = cfg } }
 
 func sqlUnavailable(format string, args ...any) error {
-	return fmt.Errorf("%w: %s", ErrSQLEngineUnavailable, fmt.Sprintf(format, args...))
+	return derr.New(derr.SQLEngineUnavailable, "the lakehouse SQL engine is unavailable: "+format, args...)
 }
 
 type sidecar struct {
@@ -416,9 +418,9 @@ func queryArg(v any) (string, error) {
 		return "n", nil
 	case bool:
 		if x {
-			return "b1", nil
+			return "i1", nil
 		}
-		return "b0", nil
+		return "i0", nil
 	case string:
 		return "s" + x, nil
 	case json.Number:
@@ -476,7 +478,7 @@ func sidecarError(fields []string) error {
 	}
 	switch class {
 	case "query_error":
-		return derr.New(derr.Query, "lakehouse SQL (DuckDB dialect) failed: %s", msg)
+		return duckQueryError(msg)
 	case "invalid":
 		return invalidf("multiple statements are not allowed; send one SELECT per query")
 	case "canceled":
@@ -487,6 +489,37 @@ func sidecarError(fields []string) error {
 		return invalidf("query result exceeds the %d MiB response budget on its first row; select fewer or smaller columns", store.MaxQueryBytes>>20)
 	}
 	return sqlUnavailable("the SQL sidecar failed: %s", msg)
+}
+
+type missingTableError struct{ name string }
+
+func (e *missingTableError) Error() string { return "table " + e.name + " does not exist" }
+
+var (
+	duckMissingTable    = regexp.MustCompile(`Catalog Error: Table with name ([^ !]+) does not exist`)
+	duckMissingFunction = regexp.MustCompile(`Catalog Error: (?:Scalar |Aggregate |Table )?Function with name ([^ !]+) does not exist`)
+	duckMissingColumn   = regexp.MustCompile(`Referenced column "([^"]+)" not found`)
+)
+
+func duckQueryError(msg string) error {
+	if m := duckMissingTable.FindStringSubmatch(msg); m != nil {
+		return &missingTableError{name: m[1]}
+	}
+	if m := duckMissingFunction.FindStringSubmatch(msg); m != nil {
+		return derr.New(derr.Query, "unknown SQL function %q; only DuckDB SQL functions and table/column names from describe_table are supported", m[1])
+	}
+	if m := duckMissingColumn.FindStringSubmatch(msg); m != nil {
+		return derr.New(derr.Query, "column %q not found; use describe_table for column names", m[1])
+	}
+	return derr.New(derr.Query, "lakehouse SQL (DuckDB dialect) failed: %s", msg)
+}
+
+func resolveQueryError(ns string, err error) error {
+	var missing *missingTableError
+	if errors.As(err, &missing) {
+		return store.TableNotFound(ns, missing.name)
+	}
+	return err
 }
 
 func parseQueryReply(fields []string) (store.QueryResult, error) {
@@ -512,6 +545,9 @@ func parseQueryReply(fields []string) (store.QueryResult, error) {
 	seen := make(map[string]bool, ncols)
 	for c := 0; c < ncols; c++ {
 		names[c] = fields[4+2*c]
+		if len(names[c]) > 4096 {
+			return store.QueryResult{}, invalidf("column label exceeds 4096 bytes; use a shorter AS alias")
+		}
 		if seen[names[c]] {
 			return store.QueryResult{}, invalidf("duplicate column label %q in query result; use AS aliases", names[c])
 		}
@@ -644,6 +680,11 @@ func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16
 	if err := store.ValidateQueryShape(sql); err != nil {
 		return store.QueryResult{}, err
 	}
+	if s.tracer != nil {
+		var span trace.Span
+		ctx, span = s.tracer.Start(ctx, "SELECT")
+		defer span.End()
+	}
 	if len(args) > 100 {
 		return store.QueryResult{}, invalidf("too many query parameters")
 	}
@@ -665,6 +706,9 @@ func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16
 	if err != nil {
 		return store.QueryResult{}, err
 	}
+	b := s.barrier(ns)
+	b.RLock()
+	defer b.RUnlock()
 	sc.run.Lock()
 	if !sc.alive() || sc.closing.Load() {
 		sc.run.Unlock()
@@ -686,7 +730,7 @@ func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16
 		if reason := sc.closedBy.Load(); reason != nil && errors.Is(err, context.Canceled) && ctx.Err() == nil {
 			return store.QueryResult{}, *reason
 		}
-		return result, err
+		return result, resolveQueryError(ns, err)
 	}
 	for _, row := range result.Rows {
 		for label, v := range row {
@@ -714,6 +758,8 @@ func presentQueryValue(t schema.FieldType, v any) any {
 func (s *Store) Capabilities() store.EngineCapabilities {
 	return store.EngineCapabilities{
 		VectorExecution: store.VectorExact,
+		Notifications:   true,
+		Subscribe:       true,
 		QueryDialect:    DialectDuckDB,
 		FilterDialect:   DialectDuckDB,
 	}

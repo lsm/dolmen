@@ -23,6 +23,9 @@ func storageHoldsPlaintext(t *testing.T, h *harness) []string {
 	if testEngine(t) == store.EnginePostgres {
 		return postgresStorageHits(t, h)
 	}
+	if testEngine(t) == store.EngineLakehouse {
+		return lakehouseStorageHits(t, h)
+	}
 	var hits []string
 	files, err := filepath.Glob(filepath.Join(h.dir, "*.db*"))
 	if err != nil {
@@ -123,6 +126,10 @@ func tamperSecret(t *testing.T, h *harness, ns, table, field string, id int64) {
 		}
 		return
 	}
+	if testEngine(t) == store.EngineLakehouse {
+		lakehouseTamperSecret(t, h, ns, table, field, id)
+		return
+	}
 	db, err := sql.Open("sqlite", filepath.Join(h.dir, ns+".db"))
 	if err != nil {
 		t.Fatal(err)
@@ -171,6 +178,9 @@ func storedSecretBlobs(t *testing.T, h *harness, ns, table, field string) [][]by
 			t.Fatal(err)
 		}
 		return out
+	}
+	if testEngine(t) == store.EngineLakehouse {
+		return lakehouseSecretBlobs(t, h, ns, table, field)
 	}
 	db, err := sql.Open("sqlite", filepath.Join(h.dir, ns+".db"))
 	if err != nil {

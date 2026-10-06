@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/lsm/dolmen/internal/telemetry/dbstat"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"os"
 	"path/filepath"
 	"sync"
@@ -23,20 +26,30 @@ var owners = struct {
 }{dirs: map[string]bool{}}
 
 type Store struct {
-	secrets    *secret.Keyring
-	sqlEngine  SQLEngine
-	retention  time.Duration
-	dir        string
-	root       *os.Root
-	gate       chan struct{}
-	namespaces map[string]*namespace
-	maxOpen    int
-	tick       uint64
-	closed     bool
-	closeErr   error
-	dropping   map[string]bool
-	sidecarMu  sync.Mutex
-	sidecars   map[string]map[*sidecar]bool
+	secrets      *secret.Keyring
+	sqlEngine    SQLEngine
+	retention    time.Duration
+	sharedFilter bool
+	tracer       trace.Tracer
+	wake         wakeSet
+	stopping     chan struct{}
+	dir          string
+	root         *os.Root
+	gate         chan struct{}
+	namespaces   map[string]*namespace
+	maxOpen      int
+	tick         uint64
+	closed       bool
+	closeErr     error
+	dropping     map[string]bool
+	sidecarMu    sync.Mutex
+	sidecars     map[string]map[*sidecar]bool
+	barrierMu    sync.Mutex
+	openPaths    map[string]string
+	mp           metric.MeterProvider
+	stopGauges   func(context.Context) error
+	migrating    map[string]int
+	barriers     map[string]*sync.RWMutex
 }
 
 type namespace struct {
@@ -59,6 +72,18 @@ func WithMaxOpenNamespaces(n int) OpenOption {
 	return func(s *Store) { s.maxOpen = n }
 }
 
+func WithTracerProvider(tp trace.TracerProvider) OpenOption {
+	return func(s *Store) {
+		if tp != nil {
+			s.tracer = tp.Tracer("github.com/lsm/dolmen/internal/lakehouse")
+		}
+	}
+}
+
+func WithMeterProvider(mp metric.MeterProvider) OpenOption {
+	return func(s *Store) { s.mp = mp }
+}
+
 func WithChangeRetention(d time.Duration) OpenOption {
 	return func(s *Store) { s.retention = d }
 }
@@ -75,7 +100,7 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{dir: abs, gate: make(chan struct{}, 1), namespaces: map[string]*namespace{}, maxOpen: DefaultMaxOpenNamespaces, retention: store.DefaultChangeRetention}
+	s := &Store{dir: abs, gate: make(chan struct{}, 1), namespaces: map[string]*namespace{}, maxOpen: DefaultMaxOpenNamespaces, retention: store.DefaultChangeRetention, stopping: make(chan struct{})}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -93,6 +118,12 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 	s.root, err = os.OpenRoot(abs)
 	if err != nil {
 		return nil, err
+	}
+	if s.mp != nil {
+		if s.stopGauges, err = dbstat.Observe(s.mp, s); err != nil {
+			s.root.Close()
+			return nil, err
+		}
 	}
 	owners.dirs[abs] = true
 	s.gate <- struct{}{}
@@ -128,6 +159,10 @@ func (s *Store) Close() error {
 		return s.closeErr
 	}
 	s.closed = true
+	close(s.stopping)
+	if s.stopGauges != nil {
+		_ = s.stopGauges(context.Background())
+	}
 	s.sidecarMu.Lock()
 	running := map[string][]*sidecar{}
 	for ns, set := range s.sidecars {
@@ -142,7 +177,7 @@ func (s *Store) Close() error {
 	for name, n := range s.namespaces {
 		n.sql = nil
 		s.closeErr = errors.Join(s.closeErr, n.db.Close())
-		delete(s.namespaces, name)
+		s.unsetNamespace(name)
 	}
 	s.closeErr = errors.Join(s.closeErr, s.root.Close())
 	owners.Lock()
@@ -152,6 +187,12 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) withNamespace(ctx context.Context, name string, fn func(*namespace) error) error {
+	if held, ok := ctx.Value(batchKey{}).(string); ok {
+		if held != name {
+			return invalidf("a batch writes one namespace")
+		}
+		return s.inNamespace(ctx, name, fn)
+	}
 	if err := s.lock(ctx); err != nil {
 		return err
 	}
@@ -159,6 +200,10 @@ func (s *Store) withNamespace(ctx context.Context, name string, fn func(*namespa
 	if err := store.ValidateNamespace(name); err != nil {
 		return err
 	}
+	return s.inNamespace(ctx, name, fn)
+}
+
+func (s *Store) inNamespace(ctx context.Context, name string, fn func(*namespace) error) error {
 	n, err := s.openNamespace(ctx, name)
 	if err != nil {
 		return err
@@ -181,7 +226,7 @@ func (s *Store) evict(name string) error {
 	if err := n.db.Close(); err != nil {
 		return err
 	}
-	delete(s.namespaces, name)
+	s.unsetNamespace(name)
 	return nil
 }
 
@@ -197,4 +242,95 @@ func (s *Store) makeRoom() error {
 		}
 	}
 	return s.evict(oldest)
+}
+
+func (s *Store) barrier(ns string) *sync.RWMutex {
+	s.barrierMu.Lock()
+	defer s.barrierMu.Unlock()
+	if s.barriers == nil {
+		s.barriers = map[string]*sync.RWMutex{}
+	}
+	b := s.barriers[ns]
+	if b == nil {
+		b = &sync.RWMutex{}
+		s.barriers[ns] = b
+	}
+	return b
+}
+
+func (s *Store) withNamespaceExclusive(ctx context.Context, ns string, fn func(*namespace) error) error {
+	b := s.barrier(ns)
+	b.Lock()
+	defer b.Unlock()
+	return s.withNamespace(ctx, ns, fn)
+}
+
+func (s *Store) beginMigrate(ns, table string) func() {
+	key := ns + "\x00" + table
+	s.barrierMu.Lock()
+	if s.migrating == nil {
+		s.migrating = map[string]int{}
+	}
+	s.migrating[key]++
+	s.barrierMu.Unlock()
+	return func() {
+		s.barrierMu.Lock()
+		defer s.barrierMu.Unlock()
+		if s.migrating[key]--; s.migrating[key] == 0 {
+			delete(s.migrating, key)
+		}
+	}
+}
+
+func (s *Store) migrateRunning(ns, table string) bool {
+	s.barrierMu.Lock()
+	defer s.barrierMu.Unlock()
+	return s.migrating[ns+"\x00"+table] > 0
+}
+
+func (s *Store) setNamespace(name string, n *namespace) {
+	s.namespaces[name] = n
+	s.barrierMu.Lock()
+	defer s.barrierMu.Unlock()
+	if s.openPaths == nil {
+		s.openPaths = map[string]string{}
+	}
+	s.openPaths[name] = filepath.Join(s.dir, namespacePath(name), "catalog.db")
+}
+
+func (s *Store) unsetNamespace(name string) {
+	delete(s.namespaces, name)
+	s.barrierMu.Lock()
+	defer s.barrierMu.Unlock()
+	delete(s.openPaths, name)
+}
+
+func (s *Store) TelemetryGauges() dbstat.Snapshot {
+	var snap dbstat.Snapshot
+	s.barrierMu.Lock()
+	paths := make([]string, 0, len(s.openPaths))
+	for _, path := range s.openPaths {
+		paths = append(paths, path)
+	}
+	s.barrierMu.Unlock()
+	snap.Values[dbstat.OpenNamespaces] = int64(len(paths))
+	var wal, largest int64
+	for _, path := range paths {
+		snap.Values[dbstat.DBBytes] += fileBytes(path)
+		if size := fileBytes(path + "-wal"); size > 0 {
+			wal += size
+			largest = max(largest, size)
+		}
+	}
+	snap.Values[dbstat.WALBytes] = wal
+	snap.Values[dbstat.WALLargestBytes] = largest
+	return snap
+}
+
+func fileBytes(path string) int64 {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return fi.Size()
 }

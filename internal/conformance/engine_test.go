@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lsm/dolmen"
+	"github.com/lsm/dolmen/internal/lakehouse"
 	"github.com/lsm/dolmen/internal/postgres"
 	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
@@ -34,11 +34,13 @@ func openEngineStoreKeyed(t *testing.T, dir string, retention *time.Duration, sh
 	return openEngineStoreTraced(t, dir, retention, sharedFilter, keyring, nil)
 }
 
-func engineNotImplemented(name string) error {
-	if name != store.EngineLakehouse {
-		return nil
+func lakehouseConformanceEngine(t *testing.T) lakehouse.SQLEngine {
+	t.Helper()
+	bin := os.Getenv("DOLMEN_TEST_DUCKDB_SIDECAR")
+	if bin == "" {
+		t.Fatal("DOLMEN_ENGINE=lakehouse runs filters and query in the dolmen-duckdb sidecar; set DOLMEN_TEST_DUCKDB_SIDECAR (and DOLMEN_TEST_DUCKDB_EXTENSIONS)")
 	}
-	return fmt.Errorf("DOLMEN_ENGINE=%s: the lakehouse engine is not implemented yet (docs/design/lakehouse-plan.md, slice 4 onwards), so this suite cannot open a store for it", store.EngineLakehouse)
+	return lakehouse.SQLEngine{Binary: bin, ExtensionDir: os.Getenv("DOLMEN_TEST_DUCKDB_EXTENSIONS")}
 }
 
 func openEngineStoreTraced(t *testing.T, dir string, retention *time.Duration, sharedFilter bool, keyring *secret.Keyring, tp trace.TracerProvider) store.Engine {
@@ -46,8 +48,16 @@ func openEngineStoreTraced(t *testing.T, dir string, retention *time.Duration, s
 	if testEngine(t) == store.EnginePostgres {
 		return openPostgresEngineTraced(t, dir, retention, sharedFilter, keyring, tp)
 	}
-	if err := engineNotImplemented(testEngine(t)); err != nil {
-		t.Fatal(err)
+	if testEngine(t) == store.EngineLakehouse {
+		opts := []lakehouse.OpenOption{lakehouse.WithSecretKeyring(keyring), lakehouse.WithSQLEngine(lakehouseConformanceEngine(t)), lakehouse.WithSharedFilter(sharedFilter), lakehouse.WithTracerProvider(tp)}
+		if retention != nil {
+			opts = append(opts, lakehouse.WithChangeRetention(*retention))
+		}
+		st, err := lakehouse.Open(dir, opts...)
+		if err != nil {
+			t.Fatalf("open lakehouse store: %v", err)
+		}
+		return st
 	}
 	opts := []store.OpenOption{store.WithSecretKey(keyring), store.WithTracerProvider(tp)}
 	if retention != nil {
@@ -260,22 +270,5 @@ func TestTheServedSkillNamesTheEnginesDialect(t *testing.T) {
 	postgres := strings.Contains(body, "This server is PostgreSQL-backed")
 	if want := testEngine(t) == store.EnginePostgres; postgres != want {
 		t.Fatalf("engine %q: the served skill says PostgreSQL-backed = %v, want %v", testEngine(t), postgres, want)
-	}
-}
-
-func TestLakehouseResolvesButRefusesToOpen(t *testing.T) {
-	if err := engineNotImplemented(store.EngineLakehouse); err == nil {
-		t.Fatal("the lakehouse engine is not refused; the selector is supposed to refuse until it is implemented")
-	} else {
-		for _, want := range []string{store.EngineLakehouse, "not implemented"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Fatalf("lakehouse refusal %q does not mention %q", err, want)
-			}
-		}
-	}
-	for _, name := range []string{store.EngineSQLite, store.EnginePostgres, ""} {
-		if err := engineNotImplemented(name); err != nil {
-			t.Fatalf("engine %q = %v, want nil: only the lakehouse engine is unimplemented", name, err)
-		}
 	}
 }

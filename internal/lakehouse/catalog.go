@@ -227,8 +227,11 @@ func (s *Store) openNamespace(ctx context.Context, name string) (*namespace, err
 	if err != nil {
 		return nil, err
 	}
+	if n, err = s.recoverBatch(ctx, name, n); err != nil {
+		return nil, err
+	}
 	s.tick++
 	n.lastUse = s.tick
-	s.namespaces[name] = n
+	s.setNamespace(name, n)
 	return n, nil
 }

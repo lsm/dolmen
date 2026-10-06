@@ -551,7 +551,7 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
-func TestLoadConfigRefusesAnUnimplementedEngine(t *testing.T) {
+func TestLoadConfigEngineRefusals(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		args    []string
@@ -559,9 +559,9 @@ func TestLoadConfigRefusesAnUnimplementedEngine(t *testing.T) {
 		wantErr string
 	}{
 		{name: "postgres without a dsn", args: []string{"-engine", "postgres"}, env: map[string]string{}, wantErr: "needs a connection"},
-		{name: "lakehouse", args: []string{"-engine", "lakehouse"}, env: map[string]string{}, wantErr: "lakehouse"},
-		{name: "lakehouse by env", args: []string{}, env: map[string]string{"DOLMEN_ENGINE": "lakehouse"}, wantErr: "lakehouse"},
-		{name: "lakehouse names itself even beside a stray dsn", args: []string{"-engine", "lakehouse", "-pg-dsn", "postgres://x/y"}, env: map[string]string{}, wantErr: "lakehouse"},
+		{name: "lakehouse beside a stray dsn", args: []string{"-engine", "lakehouse", "-pg-dsn", "postgres://x/y"}, env: map[string]string{}, wantErr: "-pg-dsn applies only to -engine postgres"},
+		{name: "a sidecar without the lakehouse", args: []string{"-duckdb-sidecar", "/x/dolmen-duckdb"}, env: map[string]string{}, wantErr: "apply only to -engine lakehouse"},
+		{name: "extensions by env without the lakehouse", args: []string{"-engine", "sqlite"}, env: map[string]string{"DOLMEN_DUCKDB_EXTENSIONS": "/x"}, wantErr: "apply only to -engine lakehouse"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			getenv := func(key string) string { return tc.env[key] }
@@ -572,6 +572,33 @@ func TestLoadConfigRefusesAnUnimplementedEngine(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("%s: error %q does not mention %q", tc.name, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadConfigSelectsTheLakehouse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		env  map[string]string
+	}{
+		{name: "by flag", args: []string{"-engine", "lakehouse", "-duckdb-sidecar", "/opt/dolmen-duckdb", "-duckdb-extensions", "/opt/ext"}, env: map[string]string{}},
+		{name: "by env", args: []string{}, env: map[string]string{"DOLMEN_ENGINE": "lakehouse", "DOLMEN_DUCKDB_SIDECAR": "/opt/dolmen-duckdb", "DOLMEN_DUCKDB_EXTENSIONS": "/opt/ext"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			getenv := func(key string) string { return tc.env[key] }
+			lookupEnv := func(key string) (string, bool) { v, ok := tc.env[key]; return v, ok }
+			cfg, err := loadConfig(tc.args, getenv, lookupEnv, io.Discard, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Engine != "lakehouse" || cfg.DuckDBSidecar != "/opt/dolmen-duckdb" || cfg.DuckDBExtensions != "/opt/ext" {
+				t.Fatalf("config = %+v", cfg)
+			}
+			sql := lakehouseSQLEngine(cfg)
+			if sql.Binary != "/opt/dolmen-duckdb" || sql.ExtensionDir != "/opt/ext" {
+				t.Fatalf("sidecar = %+v", sql)
 			}
 		})
 	}

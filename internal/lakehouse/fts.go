@@ -1,6 +1,7 @@
 package lakehouse
 
 import (
+	"golang.org/x/text/unicode/norm"
 	"math"
 	"strings"
 	"unicode"
@@ -29,7 +30,7 @@ func analyze(text string) []ftsToken2 {
 		cur.Reset()
 		out = append(out, ftsToken2{raw: raw, stem: stem(raw)})
 	}
-	for _, r := range strings.ToLower(text) {
+	for _, r := range foldAccents(strings.ToLower(text)) {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
 			cur.WriteRune(r)
 			continue
@@ -38,6 +39,21 @@ func analyze(text string) []ftsToken2 {
 	}
 	flush()
 	return out
+}
+
+func foldAccents(s string) string {
+	for _, r := range s {
+		if r > unicode.MaxASCII {
+			var b strings.Builder
+			for _, r := range norm.NFD.String(s) {
+				if !unicode.Is(unicode.Mn, r) {
+					b.WriteRune(r)
+				}
+			}
+			return b.String()
+		}
+	}
+	return s
 }
 
 func Tokens(text string) []string {
@@ -278,7 +294,7 @@ func (q *ftsQuery) collect(n tsNode, negated bool) {
 			return
 		}
 		if x.prefix {
-			q.terms = append(q.terms, ftsTerm{text: strings.ToLower(x.text), prefix: true})
+			q.terms = append(q.terms, ftsTerm{text: foldAccents(strings.ToLower(x.text)), prefix: true})
 			return
 		}
 		for _, w := range termWords(x.text) {
@@ -303,7 +319,7 @@ func evalNode(n tsNode, d *ftsDoc) bool {
 	switch x := n.(type) {
 	case tsTerm:
 		if x.prefix {
-			return d.has(strings.ToLower(x.text), true) > 0
+			return d.has(foldAccents(strings.ToLower(x.text)), true) > 0
 		}
 		words := termWords(x.text)
 		if len(words) == 0 {

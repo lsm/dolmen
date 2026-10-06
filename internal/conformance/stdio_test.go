@@ -71,6 +71,10 @@ type stdioProc struct {
 
 func stdioEngineArgs(t *testing.T) []string {
 	t.Helper()
+	if testEngine(t) == store.EngineLakehouse {
+		sql := lakehouseConformanceEngine(t)
+		return []string{"-duckdb-sidecar", sql.Binary, "-duckdb-extensions", sql.ExtensionDir}
+	}
 	if testEngine(t) != store.EnginePostgres {
 		return nil
 	}

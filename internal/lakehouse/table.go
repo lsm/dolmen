@@ -78,7 +78,7 @@ type tableState struct {
 func loadTable(ctx context.Context, n *namespace, ns, name string) (tableState, error) {
 	var state tableState
 	if err := schema.ValidateTableName(name); err != nil {
-		return state, fmt.Errorf("%w: %v", store.ErrInvalid, err)
+		return state, store.TableNotFound(ns, name)
 	}
 	native, err := n.catalog.LoadTable(ctx, tableIdentifier(ns, name))
 	if errors.Is(err, catalog.ErrNoSuchTable) {
@@ -164,7 +164,7 @@ func (s *Store) CreateTable(ctx context.Context, ns, name string, fields []schem
 			return err
 		}
 		directory := filepath.Join(n.dataDir, name+"-"+uuid.NewString())
-		native, err := n.catalog.CreateTable(ctx, tableIdentifier(ns, name), nativeSchema(sc), catalog.WithLocation(fileLocation(directory)), catalog.WithProperties(iceberg.Properties{"format-version": "2", schemaProperty: string(raw), generationProperty: strconv.FormatInt(gen, 10), migrationsProperty: "[]"}))
+		native, err := n.catalog.CreateTable(ctx, tableIdentifier(ns, name), nativeSchema(sc), catalog.WithLocation(fileLocation(directory)), catalog.WithProperties(iceberg.Properties{"format-version": "2", table.ManifestMergeEnabledKey: "true", table.ManifestMinMergeCountKey: "8", schemaProperty: string(raw), generationProperty: strconv.FormatInt(gen, 10), migrationsProperty: "[]"}))
 		if err != nil {
 			return err
 		}
@@ -258,7 +258,13 @@ func (s *Store) DropTable(ctx context.Context, ns, name string, expected store.I
 		if _, err := tx.ExecContext(ctx, `INSERT INTO _dolmen_lakehouse_tables(name,generation) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET generation=excluded.generation`, name, state.incarnation.DropGen+1); err != nil {
 			return err
 		}
-		for _, owned := range []string{"_dolmen_lakehouse_secrets", "_dolmen_lakehouse_idempotency", "_dolmen_lakehouse_counts", "_dolmen_lakehouse_ids"} {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM _dolmen_lakehouse_batches WHERE (owner, key) IN (SELECT owner, key FROM _dolmen_lakehouse_batch_tables WHERE table_name = ?)`, name); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM _dolmen_lakehouse_batch_tables WHERE table_name = ?`, name); err != nil {
+			return err
+		}
+		for _, owned := range []string{"_dolmen_lakehouse_secrets", "_dolmen_lakehouse_idempotency", "_dolmen_lakehouse_counts", "_dolmen_lakehouse_ids", "_dolmen_lakehouse_embed_stage"} {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM `+owned+` WHERE table_name = ? AND generation = ?`, name, state.incarnation.DropGen); err != nil {
 				return err
 			}

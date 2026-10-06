@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,6 +26,11 @@ func (s *Store) NamespaceState(ctx context.Context, name string, auth []store.Au
 }
 
 func (s *Store) CreateNamespace(ctx context.Context, name string, parentGen [16]byte) error {
+	if s.tracer != nil {
+		var span trace.Span
+		ctx, span = s.tracer.Start(ctx, "CREATE", trace.WithAttributes(attribute.String("db.operation.name", "CREATE"), attribute.String("db.namespace", name)))
+		defer span.End()
+	}
 	if err := s.lock(ctx); err != nil {
 		return err
 	}

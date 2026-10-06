@@ -17,6 +17,16 @@ func TestStage12TheServedEngineIsTheRequestedOne(t *testing.T) {
 	sqliteFile := filepath.Join(append([]string{app.srv.dataDir}, segments...)...)
 	_, statErr := os.Stat(sqliteFile)
 
+	if app.engine == engineLakehouse {
+		catalog := filepath.Join(append([]string{app.srv.dataDir}, strings.Split(scenarioNamespace+".lakehouse/catalog.db", "/")...)...)
+		if _, err := os.Stat(catalog); err != nil {
+			t.Fatalf("this run asked for the lakehouse but left no catalog at %s: %v", catalog, err)
+		}
+		if statErr == nil {
+			t.Fatalf("this run asked for the lakehouse but the binary wrote %s", sqliteFile)
+		}
+		return
+	}
 	if app.engine != enginePostgres {
 		if statErr != nil {
 			t.Fatalf("the SQLite run left no namespace file at %s: %v", sqliteFile, statErr)

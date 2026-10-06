@@ -56,20 +56,22 @@ type mcpResult struct {
 }
 
 var app struct {
-	binPath    string
-	tmpDir     string
-	engine     string
-	pgDSN      string
-	pgCatalog  string
-	pgRole     string
-	srv        *serverProc
-	openapi    map[string]any
-	schemas    map[string]map[string]any
-	kbIDs      []int64
-	kbCancelID []int64
-	probeID    int64
-	daemon     *sseStream
-	daemonLast string
+	binPath          string
+	tmpDir           string
+	engine           string
+	pgDSN            string
+	pgCatalog        string
+	pgRole           string
+	duckdbSidecar    string
+	duckdbExtensions string
+	srv              *serverProc
+	openapi          map[string]any
+	schemas          map[string]map[string]any
+	kbIDs            []int64
+	kbCancelID       []int64
+	probeID          int64
+	daemon           *sseStream
+	daemonLast       string
 }
 
 var mcpSeq atomic.Int64
@@ -134,11 +136,16 @@ func resolveEngine() error {
 	if app.engine == "" {
 		app.engine = engineSQLite
 	}
-	if app.engine == engineLakehouse {
-		return fmt.Errorf("DOLMEN_ENGINE=%q is not an engine this suite can drive yet; the lakehouse engine is not implemented (docs/design/lakehouse-plan.md slice 12 onwards), so use %q or %q", app.engine, engineSQLite, enginePostgres)
+	if app.engine != engineSQLite && app.engine != enginePostgres && app.engine != engineLakehouse {
+		return fmt.Errorf("DOLMEN_ENGINE=%q is not an engine this suite can drive; use %q, %q or %q", app.engine, engineSQLite, enginePostgres, engineLakehouse)
 	}
-	if app.engine != engineSQLite && app.engine != enginePostgres {
-		return fmt.Errorf("DOLMEN_ENGINE=%q is not an engine this suite can drive; use %q or %q", app.engine, engineSQLite, enginePostgres)
+	if app.engine == engineLakehouse {
+		app.duckdbSidecar = os.Getenv("DOLMEN_TEST_DUCKDB_SIDECAR")
+		app.duckdbExtensions = os.Getenv("DOLMEN_TEST_DUCKDB_EXTENSIONS")
+		if app.duckdbSidecar == "" {
+			return errors.New("DOLMEN_ENGINE=lakehouse drives the packaged binary with its SQL sidecar; set DOLMEN_TEST_DUCKDB_SIDECAR (and DOLMEN_TEST_DUCKDB_EXTENSIONS) to a built dolmen-duckdb")
+		}
+		return nil
 	}
 	if app.engine != enginePostgres {
 		return nil
@@ -157,6 +164,13 @@ func resolveEngine() error {
 }
 
 func engineArgs() []string {
+	if app.engine == engineLakehouse {
+		args := []string{"-engine", engineLakehouse, "-duckdb-sidecar", app.duckdbSidecar}
+		if app.duckdbExtensions != "" {
+			args = append(args, "-duckdb-extensions", app.duckdbExtensions)
+		}
+		return args
+	}
 	if app.engine != enginePostgres {
 		return nil
 	}

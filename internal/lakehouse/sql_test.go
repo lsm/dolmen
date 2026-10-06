@@ -430,6 +430,65 @@ func TestCloseInterruptsAQueryWithoutADeadline(t *testing.T) {
 	}
 }
 
+func TestAQueryNeverSeesABatchThatRollsBack(t *testing.T) {
+	cfg := sidecarConfig(t)
+	s := openSQLStore(t, t.TempDir(), cfg)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "t", []schema.Field{{Name: "v", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "docs", []schema.Field{{Name: "body", Type: schema.Text, Vectorize: true}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "ns", "t", []map[string]any{{"v": "before"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	mustQuery(t, s, "ns", "SELECT count(*) AS n FROM t")
+	sc := s.namespaces["ns"].sql
+	sc.run.Lock()
+	counted := make(chan any, 1)
+	go func() {
+		res, err := s.Query(ctx, "ns", "SELECT count(*) AS n FROM t", nil, [16]byte{}, store.Page{})
+		if err != nil {
+			counted <- err
+			return
+		}
+		counted <- res.Rows[0]["n"]
+	}()
+	time.Sleep(200 * time.Millisecond)
+	embedding := make(chan struct{})
+	release := make(chan struct{})
+	emb := store.Embedder{Identity: "fake", Embed: func(context.Context, []string) ([][]float32, error) {
+		close(embedding)
+		<-release
+		return nil, errors.New("the provider failed mid-batch")
+	}}
+	batched := make(chan error, 1)
+	go func() {
+		_, err := s.Batch(ctx, "ns", []store.BatchWrite{
+			{Kind: store.BatchWriteInsert, Table: "t", Records: []map[string]any{{"v": "partial"}}},
+			{Kind: store.BatchWriteInsert, Table: "docs", Records: []map[string]any{{"body": "x"}}},
+		}, store.BatchOpts{}, emb, nil, store.Incarnation{})
+		batched <- err
+	}()
+	select {
+	case <-embedding:
+	case <-time.After(500 * time.Millisecond):
+	}
+	sc.run.Unlock()
+	got := <-counted
+	close(release)
+	if err := <-batched; err == nil {
+		t.Fatal("the batch must fail")
+	}
+	if got != int64(1) {
+		t.Fatalf("a query must see the table before or after a batch, never a write the batch rolls back: %v", got)
+	}
+}
+
 func TestTheSidecarStopsWhenItsParentGoesAway(t *testing.T) {
 	cfg := sidecarConfig(t)
 	s := openSQLStore(t, t.TempDir(), cfg)

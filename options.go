@@ -133,7 +133,7 @@ func (c *config) validate() error {
 		return derr.New(derr.InvalidRequest, "WithEngine: the %q engine needs a connection; import github.com/lsm/dolmen/postgres and pass postgres.With to supply its DSN", store.EnginePostgres)
 	}
 	if c.engine == store.EngineLakehouse && c.opener == nil {
-		return derr.New(derr.InvalidRequest, "WithEngine: the %q engine is not implemented yet; the engine is designed in docs/design/lakehouse-plan.md, and until it lands use the %q or %q engine", store.EngineLakehouse, store.EngineSQLite, store.EnginePostgres)
+		return derr.New(derr.InvalidRequest, "WithEngine: the Go library does not open the %q engine yet; run it as a server with dolmen -engine lakehouse, or use the %q or %q engine here", store.EngineLakehouse, store.EngineSQLite, store.EnginePostgres)
 	}
 	return nil
 }

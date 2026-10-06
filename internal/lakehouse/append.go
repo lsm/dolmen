@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"io"
 	"math"
 	"os"
@@ -39,6 +41,10 @@ var appendDDL = []string{
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_idempotency(table_name TEXT NOT NULL, generation INTEGER NOT NULL, owner TEXT NOT NULL, key TEXT NOT NULL, payload_hash TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(table_name, generation, owner, key))`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_secrets(table_name TEXT NOT NULL, generation INTEGER NOT NULL, row_id INTEGER NOT NULL, field TEXT NOT NULL, value BLOB NOT NULL, PRIMARY KEY(table_name, generation, row_id, field))`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_cursors(token TEXT PRIMARY KEY, position INTEGER NOT NULL, chain_origin INTEGER NOT NULL, chain_start INTEGER NOT NULL, issued_at INTEGER NOT NULL, table_name TEXT NOT NULL, drop_generation INTEGER NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_batches(owner TEXT NOT NULL, key TEXT NOT NULL, payload_hash TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(owner, key))`,
+	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_batch_tables(owner TEXT NOT NULL, key TEXT NOT NULL, table_name TEXT NOT NULL, PRIMARY KEY(owner, key, table_name))`,
+	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_batch_intent(singleton INTEGER PRIMARY KEY CHECK(singleton = 1))`,
+	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_embed_stage(table_name TEXT NOT NULL, generation INTEGER NOT NULL, provider TEXT NOT NULL, row_id INTEGER NOT NULL, digest BLOB NOT NULL, vector BLOB NOT NULL, PRIMARY KEY(table_name, generation, provider, row_id))`,
 	`CREATE INDEX IF NOT EXISTS _dolmen_lakehouse_changes_table_feed ON _dolmen_lakehouse_changes(table_name, generation, seq)`,
 	`CREATE INDEX IF NOT EXISTS _dolmen_lakehouse_changes_owner_feed ON _dolmen_lakehouse_changes(table_name, generation, owner, seq)`,
 	`CREATE INDEX IF NOT EXISTS _dolmen_lakehouse_changes_at ON _dolmen_lakehouse_changes(at)`,
@@ -223,6 +229,11 @@ func (s *Store) Insert(ctx context.Context, ns, name string, records []map[strin
 	if err != nil {
 		return store.InsertResult{}, err
 	}
+	if s.tracer != nil {
+		var span trace.Span
+		ctx, span = s.tracer.Start(ctx, "INSERT "+name, trace.WithAttributes(attribute.String("db.operation.name", "INSERT")))
+		defer span.End()
+	}
 	var result store.InsertResult
 	err = s.withNamespace(ctx, ns, func(n *namespace) error {
 		state, err := loadTable(ctx, n, ns, name)
@@ -379,6 +390,7 @@ func (s *Store) materialize(ctx context.Context, n *namespace, ns string) error 
 	if n.pending == 0 {
 		return nil
 	}
+	defer s.wake.signal(ns)
 	rows, err := n.db.QueryContext(ctx, `SELECT commit_id, table_name, generation, rows FROM _dolmen_lakehouse_commits WHERE materialized = 0 ORDER BY commit_id`)
 	if err != nil {
 		return err
@@ -478,7 +490,7 @@ func (s *Store) materializeCommit(ctx context.Context, n *namespace, ns string, 
 				return unregistered(err)
 			}
 		}
-		if err := tx.AddFiles(ctx, []string{fileLocation(path)}, iceberg.Properties{commitProperty: marker}, false); err != nil {
+		if err := tx.AddFiles(ctx, []string{fileLocation(path)}, iceberg.Properties{commitProperty: marker}, true); err != nil {
 			return unregistered(err)
 		}
 	}

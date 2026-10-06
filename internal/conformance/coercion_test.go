@@ -147,7 +147,7 @@ func TestTypedReadAliasesAndFallbacks(t *testing.T) {
 		"namespace": "alias", "sql": "SELECT flag AS indicator FROM a",
 	})["rows"].([]any)[0].(map[string]any)
 	rawBoolean := any(float64(1))
-	if testEngine(t) == store.EnginePostgres {
+	if testEngine(t) != store.EngineSQLite {
 		rawBoolean = true
 	}
 	assertJSONEqual(t, "alias to undeclared label stays raw", row["indicator"], rawBoolean)
@@ -228,10 +228,10 @@ func TestTypedReadEmbeddingHidden(t *testing.T) {
 		}
 	}
 
-	if testEngine(t) == store.EnginePostgres {
+	if testEngine(t) != store.EngineSQLite {
 		status, body := h.httpCall("query", map[string]any{"namespace": "hidden", "sql": "SELECT _embedding FROM t"})
 		if status == 200 {
-			t.Fatalf("PostgreSQL caller SQL runs as the restricted query role, which must not reach _embedding: %v", body)
+			t.Fatalf("caller SQL on %s must not reach _embedding: PostgreSQL runs it as the restricted query role, and the lakehouse's SQL views omit the column: %v", testEngine(t), body)
 		}
 		return
 	}

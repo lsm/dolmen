@@ -255,7 +255,7 @@ func TestAResponseIsCutOffWhenItsReaderStalls(t *testing.T) {
 	h.ensureNS("big")
 	const payload = 24 << 20
 	sql := fmt.Sprintf("SELECT hex(zeroblob(%d)) AS b", payload/2)
-	if testEngine(t) == store.EnginePostgres {
+	if testEngine(t) != store.EngineSQLite {
 		sql = fmt.Sprintf("SELECT repeat('0', %d) AS b", payload)
 	}
 	conn := dialServer(t, h)

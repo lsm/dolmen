@@ -55,9 +55,9 @@ stacked; merge `main` into an active branch when needed, never rebase or force-p
 | 8 | **Point deletes by position** | implemented in slice 8; mutation conformance |
 | 9 | **Search: full text + vectors** (native, per D27) | implemented in slice 9; search conformance |
 | 10 | **Change feed** | implemented in slice 10; change-feed conformance |
-| 12 | **Public selector + operator docs** | after slice 11, in the approved order |
-| 13 | **`subscribe`/SSE** | after slice 11, in the approved order |
-| 14 | **Compaction + maintenance** | after slice 11, in the approved order |
+| 12 | **Public selector + operator docs** | implemented in slice 12; the full suite and black-box tests |
+| 13 | **`subscribe`/SSE** | implemented with slice 12; listen conformance |
+| 14 | **Compaction + maintenance** | after slice 12, in the approved order |
 
 **What each slice still proves is unchanged** and stays in the sections below: slice 4 that a
 namespace is an Iceberg catalog in its own SQLite file; slice 5 that schema evolution works; slice
@@ -232,6 +232,10 @@ doubles, where SQLite compares them exactly; that follows from the DuckDB filter
 `upsert_by_key` does not inherit it: a candidate row matches a number key only when its stored
 value equals the key exactly, and records repeating a key within one call land on the row the
 first created or matched, one change record per record, as on SQLite.
+Every write is its own Iceberg commit, and iceberg-go's fast append adds a manifest per commit
+that each later commit reads, so writes slow down as a table takes many of them. New tables set
+`commit.manifest-merge.enabled` with a merge threshold of 8, which folds small manifests together
+as commits accumulate; `vacuum` still compacts the data and delete files.
 The matched ids then go through the commit log like an append: one transaction records the new row
 versions, the ids they replace or remove, one change record per row, the owner-scoped count delta,
 secret writes and removals in the catalog, and any ids `upsert_by_key` allocates. Materialization
@@ -275,6 +279,62 @@ whole namespace, and for a table it shows only the owner's changes, refusing wit
 `ErrScopedFeedPredatesLabels` when unlabeled changes lie in range. `wait_for` needs nothing more,
 because the API layer polls `changes_since`. `TestLakehouseChangeFeedBackendConformance` pins the
 results on both engines.
+
+### Slice 12's selector, and the rest of the Engine
+
+`-engine lakehouse` opens the engine, with `-duckdb-sidecar` and `-duckdb-extensions` (defaulting
+to `dolmen-duckdb` and `duckdb-extensions` beside the binary) locating the sidecar. Opening the
+engine needed the four `Engine` methods no earlier slice covered:
+
+- **`batch`** runs under the namespace's writer for its whole length. It first copies `catalog.db`
+  with `VACUUM INTO` to `catalog.db.batch`, fsyncs it, and records an intent row. Each write then
+  runs as it would alone, committing to the log and materializing, so a later write sees an earlier
+  one. One final transaction rewrites the batch's change records to share the first write's commit
+  id, stores the idempotency record, and deletes the intent row. On any failure the namespace is
+  closed, the copy is renamed over `catalog.db`, and every table's current metadata is
+  republished. On open, an intent row with a copy present means a batch was cut short, so the same
+  restore runs. Data files written by a rolled-back batch are left unreferenced. The copy costs one
+  pass over `catalog.db` per batch, which is the price of atomicity across Iceberg commits.
+- **Secret rotation** re-seals rows of `_dolmen_lakehouse_secrets` and never touches Parquet,
+  because the data files hold only presence markers.
+- **`vacuum`** runs `VACUUM` on `catalog.db`; slice 14 adds compaction.
+- **`subscribe`** ports the PostgreSQL adapter's polling listener. A replay boundary is fixed when
+  the session starts, a live cursor follows the head, and every committed write wakes waiting
+  sessions in-process. Dropping the table or namespace ends the session with its lifetime.
+
+The served skills gain a `duckdb` dialect: DuckDB SQL guidance for `query` and `filter`, and the
+lakehouse full-text grammar.
+
+Running the full suite on the engine exposed three more gaps, closed in the same slice:
+
+- **Migrations of populated tables.** Slice 5 refused any migration of a table holding rows. Now
+  the data-dependent checks run over the table's rows: a required field with no default, enum
+  values in use, rows that do not fit a shape, and row access on a populated table. Field changes
+  stay Iceberg schema evolution. A backfill default, or a vectorize that needs embeddings, rewrites
+  the live rows into one new file in the same Iceberg commit, with `ReplaceFiles`, and writes no
+  change records, as on SQLite. Embedding runs outside the namespace lock in pages of 128, and each
+  page is staged in `_dolmen_lakehouse_embed_stage` keyed by provider and a digest of the text. A
+  failed attempt keeps the pages it finished, and `dry_run` reports `staged_rows` and `embed_rows`.
+  The apply step re-plans under the lock, so a migration that landed meanwhile is kept. A row with
+  no matching staged vector sends it round again, up to three times, and then `conflict`. A table
+  replaced in between is `not_found`. The apply runs under the batch journal, so the Iceberg commit
+  and the secret renames and drops in `catalog.db` land together.
+- **Shared filters.** Under `-auth on`, filters use the shared grammar with SQLite's semantics, as
+  the PostgreSQL adapter renders them. The lakehouse evaluates them in an in-memory SQLite: the
+  table's rows load into a table with the SQLite engine's column affinities, and arguments are
+  bound the way that engine binds them. That gives SQLite's semantics exactly, at the cost of a
+  scan per filtered operation, the same cost the searches already pay.
+- **Error contract.** DuckDB's missing-table, missing-function and missing-column errors map to the
+  contract's `not_found` and `query_error` messages, a malformed filter says it is not a valid
+  `WHERE` expression, and an impossible table name is taught as on SQLite.
+
+The Go library still refuses `WithEngine("lakehouse")`, and the embedded-parity tests skip it.
+Supporting it would add a public option, the way `dolmen/postgres` does for adapter #2.
+
+**Decided:** §10 Q3 takes the recommended answer. A sidecar that is down or cannot start answers
+the new `sql_engine_unavailable` code (HTTP 503), beside `embedder_unavailable`, with
+`query_error` kept for SQL the engine rejected. The Go library exports it as
+`dolmen.ErrSQLEngineUnavailable`.
 
 ### Slice 3 in more detail
 

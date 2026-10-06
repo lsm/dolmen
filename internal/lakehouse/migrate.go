@@ -2,8 +2,12 @@ package lakehouse
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/lsm/dolmen/internal/derr"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -24,13 +28,13 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 		return nil, nil, invalidf("no changes given")
 	}
 	if expected.Version < 0 {
-		return nil, nil, invalidf("expected_version must be positive")
+		return nil, nil, invalidf("expected_version must be a positive schema version, got %d", expected.Version)
+	}
+	if (expected.Table != "" || expected.NsGen != [16]byte{}) && (expected.NsGen != [16]byte{} && expected.NsGen != state.incarnation.NsGen || expected.Table != "" && expected.Table != state.incarnation.Table || expected.DropGen != state.incarnation.DropGen) {
+		return nil, nil, fmt.Errorf("%w: table %s.%s was replaced; describe the current table", store.ErrNotFound, state.schema.Namespace, state.incarnation.Table)
 	}
 	if err := checkExpected(state, expected, true); err != nil {
 		return nil, nil, err
-	}
-	if state.native.Metadata().CurrentSnapshot() != nil {
-		return nil, nil, fmt.Errorf("lakehouse migrations of populated tables land with mutation support")
 	}
 	raw, err := json.Marshal(state.schema)
 	if err != nil {
@@ -273,58 +277,231 @@ func (s *Store) PlanMigration(ctx context.Context, ns, name string, changes []sc
 		if err != nil {
 			return err
 		}
-		if err := checkExpected(state, scopeExpected, true); err != nil {
+		if err := checkScopeExpected(state, scopeExpected); err != nil {
 			return err
 		}
 		if scope != nil && !scope.Empty && !state.schema.HasOwner {
 			return invalidf("table carries no owner column")
 		}
 		plan, _, err = s.planSchema(ctx, state, changes, emb, expected)
-		if err == nil {
-			plan.DryRun = true
+		if err != nil {
+			return err
 		}
-		return err
+		if _, err := s.planData(ctx, n, state, changes, plan.Table, emb, scope, plan); err != nil {
+			return err
+		}
+		plan.DryRun = true
+		return nil
 	})
 	return plan, err
 }
 
+func sameTable(ns string, current, first store.Incarnation) error {
+	if first.Table != "" && (first.NsGen != current.NsGen || first.Table != current.Table || first.DropGen != current.DropGen) {
+		return fmt.Errorf("%w: table %s.%s was replaced; describe the current table", store.ErrNotFound, ns, current.Table)
+	}
+	return nil
+}
+
+type pendingEmbed struct {
+	planned  *schema.TableSchema
+	gen      int64
+	provider string
+	constant string
+	ids      []int64
+	texts    []string
+}
+
 func (s *Store) Migrate(ctx context.Context, ns, name string, changes []schema.Change, emb store.Embedder, expected store.Incarnation) (*schema.TableSchema, error) {
-	var result *schema.TableSchema
-	err := s.withNamespace(ctx, ns, func(n *namespace) error {
-		state, err := loadTable(ctx, n, ns, name)
+	defer s.beginMigrate(ns, name)()
+	var first store.Incarnation
+	for attempt := 0; attempt <= 3; attempt++ {
+		var pending pendingEmbed
+		err := s.withNamespaceExclusive(ctx, ns, func(n *namespace) error {
+			state, err := loadTable(ctx, n, ns, name)
+			if err != nil {
+				return err
+			}
+			if err := sameTable(ns, state.incarnation, first); err != nil {
+				return err
+			}
+			plan, _, err := s.planSchema(ctx, state, changes, emb, expected)
+			if err != nil {
+				return err
+			}
+			work, err := s.planData(ctx, n, state, changes, plan.Table, emb, nil, plan)
+			if err != nil {
+				return err
+			}
+			first = state.incarnation
+			if !work.needRewrite || !work.embedding {
+				return nil
+			}
+			pending = pendingEmbed{planned: plan.Table, gen: state.incarnation.DropGen, provider: work.provider, constant: work.embedConst}
+			if work.embedField == "" {
+				return nil
+			}
+			held, err := stagedVectors(ctx, n, state, work.provider)
+			if err != nil {
+				return err
+			}
+			for _, row := range work.rows {
+				text, _ := row[work.embedField].(string)
+				id := row["id"].(int64)
+				if text == "" {
+					continue
+				}
+				if v, ok := held[id]; ok && v.matches(text) {
+					continue
+				}
+				pending.ids = append(pending.ids, id)
+				pending.texts = append(pending.texts, text)
+			}
+			return nil
+		})
 		if err != nil {
-			return err
+			return nil, err
 		}
-		plan, tx, err := s.planSchema(ctx, state, changes, emb, expected)
+		var constant []byte
+		if pending.constant != "" {
+			vecs, err := store.EmbedTexts(ctx, pending.planned, name, []string{pending.constant}, emb)
+			if err != nil {
+				return nil, err
+			}
+			constant = schema.EncodeVector(vecs[0])
+		}
+		for start := 0; start < len(pending.ids); start += embedBackfillPage {
+			end := min(start+embedBackfillPage, len(pending.ids))
+			vecs, err := store.EmbedTexts(ctx, pending.planned, name, pending.texts[start:end], emb)
+			if err != nil {
+				return nil, err
+			}
+			if err := s.withNamespace(ctx, ns, func(n *namespace) error {
+				return stageVectors(ctx, n, name, pending.gen, pending.provider, pending.ids[start:end], pending.texts[start:end], vecs)
+			}); err != nil {
+				return nil, err
+			}
+		}
+		var result *schema.TableSchema
+		retry := false
+		err = s.withNamespaceExclusive(ctx, ns, func(n *namespace) error {
+			state, err := loadTable(ctx, n, ns, name)
+			if err != nil {
+				return err
+			}
+			if err := sameTable(ns, state.incarnation, first); err != nil {
+				return err
+			}
+			plan, tx, err := s.planSchema(ctx, state, changes, emb, expected)
+			if err != nil {
+				return err
+			}
+			work, err := s.planData(ctx, n, state, changes, plan.Table, emb, nil, plan)
+			if err != nil {
+				return err
+			}
+			var vectors map[int64][]byte
+			if work.needRewrite && work.embedding && work.embedField != "" {
+				held, err := stagedVectors(ctx, n, state, work.provider)
+				if err != nil {
+					return err
+				}
+				vectors = map[int64][]byte{}
+				for _, row := range work.rows {
+					text, _ := row[work.embedField].(string)
+					if text == "" {
+						continue
+					}
+					v, ok := held[row["id"].(int64)]
+					if !ok || !v.matches(text) {
+						retry = true
+						return nil
+					}
+					vectors[row["id"].(int64)] = v.vector
+				}
+			}
+			if work.needRewrite && work.embedding && work.embedConst != "" && constant == nil {
+				retry = true
+				return nil
+			}
+			result, err = s.applyMigration(ctx, n, ns, state, changes, plan, tx, work, vectors, constant)
+			return err
+		})
 		if err != nil {
+			return nil, err
+		}
+		if !retry {
+			return result, nil
+		}
+	}
+	return nil, derr.New(derr.Conflict, "migration of %s.%s kept losing a race with concurrent writes while backfilling embeddings; re-issue the same migrate to continue from the rows already embedded", ns, name)
+}
+
+func stageVectors(ctx context.Context, n *namespace, table string, gen int64, provider string, ids []int64, texts []string, vecs [][]float32) error {
+	tx, err := n.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for i, id := range ids {
+		d := sha256.Sum256([]byte(texts[i]))
+		if _, err := tx.ExecContext(ctx, `INSERT INTO _dolmen_lakehouse_embed_stage(table_name, generation, provider, row_id, digest, vector) VALUES(?,?,?,?,?,?) ON CONFLICT(table_name, generation, provider, row_id) DO UPDATE SET digest = excluded.digest, vector = excluded.vector`, table, gen, provider, id, d[:], schema.EncodeVector(vecs[i])); err != nil {
 			return err
 		}
-		var history []store.Migration
-		if err := decodeProperty(state.native.Properties()[migrationsProperty], &history); err != nil {
-			return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) applyMigration(ctx context.Context, n *namespace, ns string, state tableState, changes []schema.Change, plan *store.MigrationPlan, tx *table.Transaction, work *dataWork, vectors map[int64][]byte, constant []byte) (*schema.TableSchema, error) {
+	var history []store.Migration
+	if err := decodeProperty(state.native.Properties()[migrationsProperty], &history); err != nil {
+		return nil, err
+	}
+	record := store.Migration{ID: int64(plan.FromVersion), FromVersion: plan.FromVersion, ToVersion: plan.ToVersion, Changes: changes, At: time.Now().UTC().Format("2006-01-02T15:04:05.000Z")}
+	history = append([]store.Migration{record}, history...)
+	raw, err := json.Marshal(plan.Table)
+	if err != nil {
+		return nil, err
+	}
+	logged, err := json.Marshal(history)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.SetProperties(iceberg.Properties{schemaProperty: string(raw), migrationsProperty: string(logged)}); err != nil {
+		return nil, err
+	}
+	populated := state.native.Metadata().CurrentSnapshot() != nil
+	if populated {
+		if err := s.beginBatch(ctx, n, ns); err != nil {
+			return nil, err
 		}
-		record := store.Migration{ID: int64(plan.FromVersion), FromVersion: plan.FromVersion, ToVersion: plan.ToVersion, Changes: changes, At: time.Now().UTC().Format("2006-01-02T15:04:05.000Z")}
-		history = append([]store.Migration{record}, history...)
-		raw, err := json.Marshal(plan.Table)
-		if err != nil {
-			return err
+	}
+	fail := func(err error) (*schema.TableSchema, error) {
+		if !populated {
+			return nil, err
 		}
-		logged, err := json.Marshal(history)
-		if err != nil {
-			return err
+		if rerr := s.rollbackBatch(context.WithoutCancel(ctx), ns); rerr != nil {
+			return nil, errors.Join(err, rerr)
 		}
-		if err := tx.SetProperties(iceberg.Properties{schemaProperty: string(raw), migrationsProperty: string(logged)}); err != nil {
-			return err
+		return nil, err
+	}
+	if work.needRewrite {
+		if err := s.rewriteForMigration(ctx, tx, state, plan.Table, work, vectors, constant, plan.ToVersion); err != nil {
+			return fail(err)
 		}
-		native, err := tx.Commit(ctx)
-		if err != nil {
-			return err
+	}
+	native, err := tx.Commit(ctx)
+	if err != nil {
+		return fail(err)
+	}
+	if err := s.syncMetadata(native, n); err != nil {
+		return fail(err)
+	}
+	if populated {
+		if err := applySecretMoves(ctx, n, state, work); err != nil {
+			return fail(err)
 		}
-		if err := s.syncMetadata(native, n); err != nil {
-			return err
-		}
-		result = plan.Table
-		return nil
-	})
-	return result, err
+		os.Remove(s.journalPath(ns))
+	}
+	return plan.Table, nil
 }

@@ -332,6 +332,16 @@ jobs:
         run: go test -race -count=1 ./internal/lakehouse
       - name: Shared SQLite and lakehouse conformance
         run: go test -race -count=1 ./internal/conformance -run '^TestLakehouse'
+      - name: The full conformance suite on the lakehouse engine
+        if: runner.os == 'Linux'
+        env:
+          DOLMEN_ENGINE: lakehouse
+        run: go test -race -count=1 -timeout 30m ./internal/conformance
+      - name: The packaged binary on the lakehouse engine
+        if: runner.os == 'Linux'
+        env:
+          DOLMEN_ENGINE: lakehouse
+        run: go test -count=1 ./internal/blackbox
 
   postgres-foundation:
     runs-on: ubuntu-latest

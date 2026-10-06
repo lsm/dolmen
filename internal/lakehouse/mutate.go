@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -35,6 +36,9 @@ func (s *Store) matchIDs(ctx context.Context, n *namespace, ns string, state tab
 	if scope != nil && scope.Empty {
 		return nil, nil
 	}
+	if s.sharedFilter {
+		return s.sharedMatch(ctx, state, filter, args, scope)
+	}
 	sql := "SELECT " + quoteIdent("id") + " FROM " + viewName(state.schema.Name, true) + " WHERE (" + filter + ")"
 	bound := append([]any{}, args...)
 	if scope != nil && scope.Owner != "" && state.schema.HasOwner {
@@ -61,7 +65,14 @@ func (s *Store) matchIDs(ctx context.Context, n *namespace, ns string, state tab
 	}
 	res, err := parseQueryReply(fields)
 	if err != nil {
-		return nil, store.NewFilterError(filter, err)
+		if errors.Is(err, ErrSQLEngineUnavailable) {
+			return nil, err
+		}
+		var missing *missingTableError
+		if errors.As(err, &missing) {
+			return nil, derr.New(derr.Query, "filter %q is not a valid WHERE expression: it names table %s, and a filter may only reference the columns of %s", filter, missing.name, state.schema.Name)
+		}
+		return nil, derr.New(derr.Query, "filter %q is not a single SQL WHERE expression: %s", filter, strings.TrimPrefix(err.Error(), "lakehouse SQL (DuckDB dialect) failed: "))
 	}
 	ids := make([]int64, 0, len(res.Rows))
 	for _, row := range res.Rows {
@@ -101,11 +112,10 @@ func (s *Store) currentRows(ctx context.Context, state tableState, ids []int64) 
 	return out, nil
 }
 
-func (s *Store) prepareSet(ctx context.Context, state tableState, set map[string]any, emb store.Embedder) (map[string]any, []string, error) {
+func (s *Store) checkSet(state tableState, set map[string]any) (map[string]any, []string, error) {
 	sc := state.schema
 	values := map[string]any{}
 	var cleared []string
-	vf := sc.VectorizeField()
 	for name, v := range set {
 		f := sc.Field(name)
 		if f == nil {
@@ -124,23 +134,35 @@ func (s *Store) prepareSet(ctx context.Context, state tableState, set map[string
 		}
 		values[f.Name] = coerced
 	}
-	if vf != nil {
-		if _, touched := set[vf.Name]; touched {
-			text, _ := values[vf.Name].(string)
-			if text == "" {
-				values["_embedding"] = nil
-			} else {
-				space, dim := sc.EmbedSpace, sc.EmbedDim
-				vecs, err := store.EmbedTexts(ctx, sc, sc.Name, []string{text}, emb)
-				if err != nil {
-					return nil, nil, err
-				}
-				values["_embedding"] = schema.EncodeVector(vecs[0])
-				if sc.EmbedDim != dim || space == "" {
-					sc.EmbedSpace = emb.Identity
-				}
-			}
-		}
+	return values, cleared, nil
+}
+
+func (s *Store) prepareSet(ctx context.Context, state tableState, set map[string]any, emb store.Embedder) (map[string]any, []string, error) {
+	sc := state.schema
+	values, cleared, err := s.checkSet(state, set)
+	if err != nil {
+		return nil, nil, err
+	}
+	vf := sc.VectorizeField()
+	if vf == nil {
+		return values, cleared, nil
+	}
+	if _, touched := set[vf.Name]; !touched {
+		return values, cleared, nil
+	}
+	text, _ := values[vf.Name].(string)
+	if text == "" {
+		values["_embedding"] = nil
+		return values, cleared, nil
+	}
+	space, dim := sc.EmbedSpace, sc.EmbedDim
+	vecs, err := store.EmbedTexts(ctx, sc, sc.Name, []string{text}, emb)
+	if err != nil {
+		return nil, nil, err
+	}
+	values["_embedding"] = schema.EncodeVector(vecs[0])
+	if sc.EmbedDim != dim || space == "" {
+		sc.EmbedSpace = emb.Identity
 	}
 	return values, cleared, nil
 }
@@ -447,6 +469,11 @@ func (s *Store) mutate(ctx context.Context, ns, name, filter string, args []any,
 		}
 		if err := store.RequireSecretKey(s.secrets, state.schema.Fields); err != nil {
 			return err
+		}
+		if !allowInsert {
+			if _, _, err := s.checkSet(state, set); err != nil {
+				return err
+			}
 		}
 		ids, err := s.matchIDs(ctx, n, ns, state, filter, args, scope)
 		if err != nil {
