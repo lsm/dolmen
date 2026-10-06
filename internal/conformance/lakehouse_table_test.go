@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/lakehouse"
@@ -89,6 +90,16 @@ func TestLakehouseTableBackendConformance(t *testing.T) {
 				plan, err := eng.PlanMigration(ctx, ns, "same_name", changes, store.Embedder{}, inc, nil, store.Incarnation{})
 				if err != nil || !reflect.DeepEqual(plan.Table.Fields, fields) {
 					t.Fatalf("same-name rename plan: %v %v", plan, err)
+				}
+				stale := inc
+				stale.Version++
+				if _, err := eng.PlanMigration(ctx, ns, "same_name", changes, store.Embedder{}, store.Incarnation{}, nil, stale); err == nil || !strings.Contains(err.Error(), "changed between the moment this request's row visibility was decided") {
+					t.Fatalf("a dry run scoped against another schema version must report the scope change: %v", err)
+				}
+				negative := inc
+				negative.Version = -1
+				if _, err := eng.PlanMigration(ctx, ns, "same_name", changes, store.Embedder{}, negative, nil, store.Incarnation{}); err == nil || !strings.Contains(err.Error(), "expected_version must be a positive schema version, got -1") {
+					t.Fatalf("a negative expected_version must be refused with the shared message: %v", err)
 				}
 				next, err := eng.Migrate(ctx, ns, "same_name", changes, store.Embedder{}, inc)
 				if err != nil || int64(next.Version) != inc.Version+1 || !reflect.DeepEqual(next.Fields, fields) {

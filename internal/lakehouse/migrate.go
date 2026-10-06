@@ -28,7 +28,7 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 		return nil, nil, invalidf("no changes given")
 	}
 	if expected.Version < 0 {
-		return nil, nil, invalidf("expected_version must be positive")
+		return nil, nil, invalidf("expected_version must be a positive schema version, got %d", expected.Version)
 	}
 	if (expected.Table != "" || expected.NsGen != [16]byte{}) && (expected.NsGen != [16]byte{} && expected.NsGen != state.incarnation.NsGen || expected.Table != "" && expected.Table != state.incarnation.Table || expected.DropGen != state.incarnation.DropGen) {
 		return nil, nil, fmt.Errorf("%w: table %s.%s was replaced; describe the current table", store.ErrNotFound, state.schema.Namespace, state.incarnation.Table)
@@ -277,7 +277,7 @@ func (s *Store) PlanMigration(ctx context.Context, ns, name string, changes []sc
 		if err != nil {
 			return err
 		}
-		if err := checkExpected(state, scopeExpected, true); err != nil {
+		if err := checkScopeExpected(state, scopeExpected); err != nil {
 			return err
 		}
 		if scope != nil && !scope.Empty && !state.schema.HasOwner {
@@ -313,10 +313,11 @@ type pendingEmbed struct {
 }
 
 func (s *Store) Migrate(ctx context.Context, ns, name string, changes []schema.Change, emb store.Embedder, expected store.Incarnation) (*schema.TableSchema, error) {
+	defer s.beginMigrate(ns, name)()
 	var first store.Incarnation
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt <= 3; attempt++ {
 		var pending pendingEmbed
-		err := s.withNamespace(ctx, ns, func(n *namespace) error {
+		err := s.withNamespaceExclusive(ctx, ns, func(n *namespace) error {
 			state, err := loadTable(ctx, n, ns, name)
 			if err != nil {
 				return err
@@ -383,7 +384,7 @@ func (s *Store) Migrate(ctx context.Context, ns, name string, changes []schema.C
 		}
 		var result *schema.TableSchema
 		retry := false
-		err = s.withNamespace(ctx, ns, func(n *namespace) error {
+		err = s.withNamespaceExclusive(ctx, ns, func(n *namespace) error {
 			state, err := loadTable(ctx, n, ns, name)
 			if err != nil {
 				return err
