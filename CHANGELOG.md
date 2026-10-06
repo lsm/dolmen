@@ -7,6 +7,13 @@
   `list_keys` reports `expires_at` and `expired`, and `active_only` drops revoked and expired keys.
   The key registry gains a nullable column in place; keys minted earlier never expire.
 
+- **Auth edges a client or admin tripped over** (#586). A request with no accepted credential now
+  answers `401` whatever its content type, instead of a content-type error that hid the auth state.
+  `revoke` reports the verbs it actually `removed` and `revoke_key` whether it `changed` anything,
+  so a typo no longer looks like success. `grant` reports whether its subject is `reachable` by any
+  configured identity source, which catches a mistyped principal during hand-over. MCP
+  `tools/list` hides the server-wide admin tools from callers without `admin` on `*`.
+
 - Lakehouse slice 7 adds `read_rows` and typed reads: numbers, booleans, `json`, vectors, secrets
   (masked or revealed), timestamps and owner scopes read back exactly as on SQLite, which a
   both-engine conformance test pins; `query` results are typed by column label the same way.
@@ -33,6 +40,12 @@
   any caller SQL runs; the sidecar is not shipped in release artifacts yet. DuckDB was chosen
   over DataFusion for it; the comparison is in `docs/design/lakehouse-plan.md` §2.8 and the spike
   code stays under `spike/`, outside dolmen's `go.mod`.
+
+- **The skills now cover running authentication.** The admin skill now covers turning authentication on, sign-in and gateway settings, handing over from the
+  bootstrap key and verifying it, key rotation, and token lifetimes; the core skill covers where
+  credentials come from, what to do after a `401`, and the limits of a single-table grant.
+  Under authentication `describe_server` reports `auth` (the mode and the accepted identity sources:
+  `admin-key`, `api-keys`, `trusted-proxy`, `oidc`) and inlines the engine's capabilities.
 
 ### Changed
 

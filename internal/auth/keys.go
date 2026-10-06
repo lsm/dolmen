@@ -208,34 +208,34 @@ func (r *Registry) ListKeys(ctx context.Context) ([]Key, error) {
 	return out, rows.Err()
 }
 
-func (r *Registry) RevokeKey(ctx context.Context, id string, keepRootAdmin bool, reach Reach) (Key, error) {
+func (r *Registry) RevokeKey(ctx context.Context, id string, keepRootAdmin bool, reach Reach) (Key, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	k, found, err := r.keyByIDLocked(ctx, id)
 	if err != nil {
-		return Key{}, err
+		return Key{}, false, err
 	}
 	if !found {
-		return Key{}, nil
+		return Key{}, false, nil
 	}
 	if k.Revoked {
-		return k, nil
+		return k, false, nil
 	}
 	if keepRootAdmin {
 		reachable, err := r.rootReachableWithoutLocked(ctx, id, reach)
 		if err != nil {
-			return Key{}, err
+			return Key{}, false, err
 		}
 		if !reachable {
-			return Key{}, ErrLastRootKey
+			return Key{}, false, ErrLastRootKey
 		}
 	}
 	if _, err := r.db.ExecContext(ctx, `UPDATE api_keys SET revoked = 1 WHERE id = ?`, id); err != nil {
-		return Key{}, fmt.Errorf("revoke key: %w", err)
+		return Key{}, false, fmt.Errorf("revoke key: %w", err)
 	}
 	k.Revoked = true
-	return k, nil
+	return k, true, nil
 }
 
 func (r *Registry) keyByIDLocked(ctx context.Context, id string) (Key, bool, error) {
@@ -333,4 +333,20 @@ func (r *Registry) ActiveKeys(ctx context.Context) ([]Key, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.activeKeysLocked(ctx)
+}
+
+func (r *Registry) SubjectReachable(ctx context.Context, subj Subject, reach Reach) (bool, error) {
+	if subj.Type == SubjectPrincipal && reach.PrincipalReachable(subj.ID) {
+		return true, nil
+	}
+	if subj.Type == SubjectGroup && reach.PrincipalReachable(subj.ID) {
+		return true, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	keys, err := r.activeKeysLocked(ctx)
+	if err != nil {
+		return false, err
+	}
+	return rootReachableByKey([]Subject{subj}, keys, ""), nil
 }

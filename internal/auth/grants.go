@@ -268,45 +268,46 @@ func (r *Registry) otherRootAdminRemainsLocked(ctx context.Context, revoked Subj
 	return rootReachableByKey(remaining, keys, ""), nil
 }
 
-func (r *Registry) Revoke(ctx context.Context, subj Subject, obj Object, verbs VerbSet, keepRootAdmin bool, reach Reach) (*Grant, error) {
+func (r *Registry) Revoke(ctx context.Context, subj Subject, obj Object, verbs VerbSet, keepRootAdmin bool, reach Reach) (*Grant, VerbSet, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	existing, found, err := r.lookup(ctx, subj, obj)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if !found {
-		return nil, nil
+		return nil, 0, nil
 	}
 	remaining := existing.Verbs &^ verbs
-	if remaining == existing.Verbs {
-		return &existing, nil
+	removed := existing.Verbs & verbs
+	if removed == 0 {
+		return &existing, 0, nil
 	}
 	if keepRootAdmin && obj.Root() && existing.Verbs.Has(VerbAdmin) && !remaining.Has(VerbAdmin) {
 		ok, err := r.otherRootAdminRemainsLocked(ctx, subj, reach)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if !ok {
-			return nil, ErrLastRootAdmin
+			return nil, 0, ErrLastRootAdmin
 		}
 	}
 	if remaining == 0 {
 		if _, err := r.db.ExecContext(ctx,
 			"DELETE FROM grants WHERE subject_type = ? AND subject_id = ? AND namespace = ? AND table_name = ?",
 			subj.Type, subj.ID, obj.Namespace, obj.Table); err != nil {
-			return nil, fmt.Errorf("revoke grant: %w", err)
+			return nil, 0, fmt.Errorf("revoke grant: %w", err)
 		}
-		return nil, nil
+		return nil, removed, nil
 	}
 	if _, err := r.db.ExecContext(ctx,
 		"UPDATE grants SET verbs = ? WHERE subject_type = ? AND subject_id = ? AND namespace = ? AND table_name = ?",
 		int64(remaining), subj.Type, subj.ID, obj.Namespace, obj.Table); err != nil {
-		return nil, fmt.Errorf("revoke grant: %w", err)
+		return nil, 0, fmt.Errorf("revoke grant: %w", err)
 	}
 	existing.Verbs = remaining
-	return &existing, nil
+	return &existing, removed, nil
 }
 
 func (r *Registry) lookup(ctx context.Context, subj Subject, obj Object) (Grant, bool, error) {
