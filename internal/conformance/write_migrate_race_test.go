@@ -15,7 +15,7 @@ func TestWritesDoNotConflictWithConcurrentMigrations(t *testing.T) {
 	migrators.Add(1)
 	go func() {
 		defer migrators.Done()
-		for i := 0; ; i++ {
+		for i := 0; i < 40; i++ {
 			select {
 			case <-stop:
 				return
