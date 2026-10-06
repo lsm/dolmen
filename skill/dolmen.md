@@ -143,9 +143,10 @@ A feed without `table` (namespace-wide `changes_since`, `wait_for` or `/v1/subsc
 `read` on the namespace itself; a grant on one table covers only that table's filtered feed.
 
 `read` on a single table is narrower than it looks. Without `read` on the namespace you cannot
-`query`, so you cannot list, count or aggregate the table's rows; `read_rows` needs the row ids, and
-the searches need full-text or vectorized fields. When a task needs a whole table, ask for `read`
-on its namespace rather than working around the gap.
+`query`, so you cannot filter, count or aggregate in SQL. You can still read the whole table, or
+your own rows on a `row_access` table: call `read_rows` without `ids` and follow `next_after_id`
+page by page, then count or total the rows yourself. For large tables or real SQL, ask for `read`
+on the namespace.
 
 Absence is not proof: `list_namespaces` lists only what you can reach, and `list_tables` answers
 `not_found` for a namespace you hold nothing under. A write to a namespace that does not exist

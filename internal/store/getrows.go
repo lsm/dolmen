@@ -105,6 +105,10 @@ func (s *Store) ListRows(ctx context.Context, nsName, table string, afterID int6
 		}
 		ids = append(ids, id)
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return QueryResult{}, err
+	}
 	if err := rows.Close(); err != nil {
 		return QueryResult{}, err
 	}
