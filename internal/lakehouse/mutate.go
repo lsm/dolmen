@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"math/big"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -310,11 +312,7 @@ func sortedKeys(m map[int64]map[string]any) []int64 {
 	for k := range m {
 		keys = append(keys, k)
 	}
-	for i := 1; i < len(keys); i++ {
-		for j := i; j > 0 && keys[j] < keys[j-1]; j-- {
-			keys[j], keys[j-1] = keys[j-1], keys[j]
-		}
-	}
+	slices.Sort(keys)
 	return keys
 }
 
@@ -581,8 +579,17 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 				}
 				conds[j] = quoteIdent(k) + " = ?"
 				keyParts[j] = fmt.Sprint(coerced)
+				if f.Type == schema.Number {
+					if r, ok := new(big.Rat).SetString(keyParts[j]); ok {
+						keyParts[j] = r.RatString()
+					}
+				}
 			}
-			signature := strings.Join(keyParts, "\x1f")
+			var sig strings.Builder
+			for _, part := range keyParts {
+				fmt.Fprintf(&sig, "%d:%s", len(part), part)
+			}
+			signature := sig.String()
 			if id, ok := pending[signature]; ok {
 				row := findRow(inserts, updates, id)
 				values, cleared, err := s.prepareSet(ctx, state, rec, emb)
