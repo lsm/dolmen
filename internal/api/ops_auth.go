@@ -397,7 +397,10 @@ func init() {
 				"verbs":   verbsSchema(),
 			},
 		},
-		OutputSchema: outSchema(map[string]any{"grant": grantSchema()}, "grant"),
+		OutputSchema: outSchema(map[string]any{
+			"grant":     grantSchema(),
+			"reachable": prop("boolean", "Whether any configured identity source can authenticate as the subject right now: an unrevoked API key with that principal or group, a sign-in identity from the current provider, or any identity behind a trusted gateway. false usually means a typo, or a person who has not signed in yet under a different identity than the one granted"),
+		}, "grant", "reachable"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req grantRequest
 			if err := decode(body, &req); err != nil {
@@ -414,14 +417,18 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"grant": grantPayload(g)}, nil
+			reachable, err := s.grants.SubjectReachable(ctx, subj, s.authn.Reach())
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"grant": grantPayload(g), "reachable": reachable}, nil
 		},
 	}
 
 	authOps["revoke"] = OpDef{
 		Description: "Take verbs away from a principal or group on an object. Verbs are explicit — there is no implicit \"all\" — and " +
-			"revoking verbs the grant does not hold succeeds unchanged. When the last verb goes the grant ceases to exist and the " +
-			"response carries a null grant. Refused when it would leave the deployment with no usable root administrator.",
+			"revoking verbs the grant does not hold succeeds unchanged. removed lists the verbs this call actually took away, empty " +
+			"when it changed nothing. When the last verb goes the grant ceases to exist and the response carries a null grant. Refused when it would leave the deployment with no usable root administrator.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -432,10 +439,17 @@ func init() {
 				"verbs":   verbsSchema(),
 			},
 		},
-		OutputSchema: outSchema(map[string]any{"grant": map[string]any{
-			"description": "The grant as it now stands, or null when its last verb was revoked",
-			"anyOf":       []any{grantSchema(), map[string]any{"type": "null"}},
-		}}, "grant"),
+		OutputSchema: outSchema(map[string]any{
+			"grant": map[string]any{
+				"description": "The grant as it now stands, or null when it no longer exists",
+				"anyOf":       []any{grantSchema(), map[string]any{"type": "null"}},
+			},
+			"removed": map[string]any{
+				"type":        "array",
+				"description": "The verbs this call took away; empty when the grant did not hold any of them or did not exist",
+				"items":       map[string]any{"type": "string"},
+			},
+		}, "grant", "removed"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req grantRequest
 			if err := decode(body, &req); err != nil {
@@ -445,17 +459,18 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			g, err := s.grants.Revoke(ctx, subj, obj, verbs, !s.authn.AdminKeyConfigured(), s.authn.Reach())
+			g, removed, err := s.grants.Revoke(ctx, subj, obj, verbs, !s.authn.AdminKeyConfigured(), s.authn.Reach())
 			if err != nil {
 				if errors.Is(err, auth.ErrLastRootAdmin) {
 					return nil, lastRootAdminError()
 				}
 				return nil, err
 			}
-			if g == nil {
-				return map[string]any{"grant": nil}, nil
+			out := map[string]any{"grant": nil, "removed": removed.Strings()}
+			if g != nil {
+				out["grant"] = grantPayload(*g)
 			}
-			return map[string]any{"grant": grantPayload(*g)}, nil
+			return out, nil
 		},
 	}
 
@@ -633,7 +648,7 @@ func init() {
 	authOps["revoke_key"] = OpDef{
 		Description: "Revoke one API key by its id, so it stops authenticating. Selecting by id rather than name means two keys " +
 			"sharing a name and principal stay individually revocable. Revoking an already-revoked or unknown key succeeds " +
-			"unchanged. Refused when it would leave the deployment with no usable root administrator. Requires admin on \"*\".",
+			"unchanged, and changed says whether this call revoked it. Refused when it would leave the deployment with no usable root administrator. Requires admin on \"*\".",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -647,7 +662,8 @@ func init() {
 				"description": "The revoked key, or null when no key has that id",
 				"anyOf":       []any{keySchema(), map[string]any{"type": "null"}},
 			},
-		}, "key"),
+			"changed": prop("boolean", "Whether this call revoked the key; false when it was already revoked or no key has that id"),
+		}, "key", "changed"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req struct {
 				ID string `json:"id"`
@@ -661,7 +677,7 @@ func init() {
 			if s.grants == nil {
 				return nil, errNoGrantRegistry
 			}
-			k, err := s.grants.RevokeKey(ctx, req.ID, !s.authn.AdminKeyConfigured(), s.authn.Reach())
+			k, changed, err := s.grants.RevokeKey(ctx, req.ID, !s.authn.AdminKeyConfigured(), s.authn.Reach())
 			if err != nil {
 				if errors.Is(err, auth.ErrLastRootKey) {
 					return nil, lastRootKeyError()
@@ -669,9 +685,9 @@ func init() {
 				return nil, err
 			}
 			if k.ID == "" {
-				return map[string]any{"key": nil}, nil
+				return map[string]any{"key": nil, "changed": false}, nil
 			}
-			return map[string]any{"key": keyPayload(k)}, nil
+			return map[string]any{"key": keyPayload(k), "changed": changed}, nil
 		},
 	}
 }
