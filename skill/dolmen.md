@@ -189,7 +189,7 @@ body at all; any other body must be a JSON object, and field names are matched e
 is an unknown field, not `"namespace"`. Responses are enveloped — success is
 `{"ok":true,"data":...}` and failure is `{"ok":false,"error":{"code","message","request_id"}}`
 with a stable machine-readable `code` (`invalid_request`, `not_found`, `query_error`, `conflict`,
-`unauthorized`, `forbidden`, `embedder_unavailable`, `canceled`, `timeout`, `internal_error`); `request_id` is the request's
+`unauthorized`, `forbidden`, `embedder_unavailable`, `sql_engine_unavailable`, `canceled`, `timeout`, `internal_error`); `request_id` is the request's
 `X-Request-Id` header when one was sent, otherwise a server-generated id, echoed back as the
 `X-Request-Id` response header — when a message says the underlying cause is in the server log
 under this id, this is the id. The full list of operations and their request schemas is in the OpenAPI document (`GET /v1/openapi.json`).
@@ -415,7 +415,8 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 {{ else if eq .Dialect "duckdb" }}- **This server is lakehouse-backed.** Tables are Apache Iceberg (Parquet) files, and `query`,
   and `filter`, are DuckDB SQL (`capabilities` reports `query_dialect`/`filter_dialect` as `duckdb`)
   run read-only over one view per table, named after the table (`main.<table>` names the same
-  view). SQLite functions such as `julianday()` and `iif()` do not
+  view). `sql_engine_unavailable` (503) means the server's DuckDB sidecar is missing or failed to
+  start, and the message says which; it needs an operator, so retrying alone will not help. SQLite functions such as `julianday()` and `iif()` do not
   exist here; use `CASE`, `coalesce`, `strpos`, `date_trunc` and `strftime(ts, format)`. `number`
   fields read as `DOUBLE` inside SQL (an integral value still comes back as an integer).
   `timestamp` fields and `created_at` are ISO-8601 text, so cast before date arithmetic:

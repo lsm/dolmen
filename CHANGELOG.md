@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **New error code `sql_engine_unavailable`** (503): the lakehouse engine's DuckDB sidecar is
+  missing or failed to start. The Go library exports it as `dolmen.ErrSQLEngineUnavailable`.
+
 - Lakehouse slice 12 makes the engine selectable with `-engine lakehouse`. `-duckdb-sidecar` and
   `-duckdb-extensions` locate the SQL sidecar. The engine now implements every operation: `batch`
   (atomic, by snapshotting the namespace catalog and restoring it on failure or after a crash),

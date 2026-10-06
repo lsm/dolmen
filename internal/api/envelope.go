@@ -35,7 +35,8 @@ const (
 
 	ErrCodeForbidden ErrorCode = "forbidden"
 
-	ErrCodeEmbedderUnavailable ErrorCode = "embedder_unavailable"
+	ErrCodeEmbedderUnavailable  ErrorCode = "embedder_unavailable"
+	ErrCodeSQLEngineUnavailable ErrorCode = "sql_engine_unavailable"
 
 	ErrCodeCanceled ErrorCode = "canceled"
 
@@ -357,6 +358,8 @@ func statusFor(code derr.Code) (int, ErrorCode) {
 		return http.StatusForbidden, ErrCodeForbidden
 	case derr.EmbedderUnavailable:
 		return http.StatusServiceUnavailable, ErrCodeEmbedderUnavailable
+	case derr.SQLEngineUnavailable:
+		return http.StatusServiceUnavailable, ErrCodeSQLEngineUnavailable
 	case derr.Canceled:
 		return http.StatusOK, ErrCodeCanceled
 	case derr.Timeout:

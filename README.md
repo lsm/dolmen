@@ -84,7 +84,7 @@ All successful `/v1/{operation}` POSTs return `{"ok":true,"data":{...}}`; errors
 request's `X-Request-Id` header when one was sent, otherwise a server-generated id, echoed back as
 the `X-Request-Id` response header so any error can be correlated with the server log — with a
 matching 4xx/5xx status. Error codes are stable for branching: `invalid_request`, `not_found`,
-`query_error`, `conflict`, `unauthorized`, `forbidden`, `embedder_unavailable`, `canceled`,
+`query_error`, `conflict`, `unauthorized`, `forbidden`, `embedder_unavailable`, `sql_engine_unavailable`, `canceled`,
 `timeout`, `internal_error`.
 `canceled` means the request was cancelled before it completed (over the stdio transport, by a
 client cancellation notification or the shutdown drain); the operation may or may not have
@@ -99,6 +99,9 @@ limit (SQLSTATE 53300); nothing was started, so it is safe to retry shortly, and
 the `local` provider, typically the first-use Hugging Face download failing — and its message names
 the offline remediations (pre-seed the model cache, or point `DOLMEN_EMBED_MODEL` at a local model
 directory); retrying the same request makes no sense until the model can load.
+`sql_engine_unavailable` (503) is the lakehouse engine's counterpart: its DuckDB sidecar is missing
+or failed to start, and the message says which (check `-duckdb-sidecar` and `-duckdb-extensions`).
+A failed start is retried with a backoff of up to thirty seconds.
 The one exception is `GET /v1/openapi.json`, which serves the raw OpenAPI document.
 `/livez` (and its alias `/healthz`) returns `{"status":"ok"}`, `/readyz` returns `{"status":"ready", ...}`, and `/mcp` returns JSON-RPC responses.
 
@@ -931,7 +934,7 @@ The surface covers namespace/table lifecycle, `Insert`/`Update`/`Delete`/`Upsert
 
 `Batch` takes an ordered `[]dolmen.BatchWrite` and applies them in one transaction — one `ChangeRange` for the whole call, one `idempotency_key` over all of it, and a result per write in the order sent. It is also the only route to the filter-matched upsert, which has no single method here. `BatchOptions` carries `IdempotencyKey`, `Limit` and `Confirm`; `Limit` and `Confirm` are hashed with the writes, so the same key with a different setting conflicts rather than replaying.
 
-Errors are typed: match categories with `errors.Is(err, dolmen.ErrConflict)` (also `ErrNotFound`, `ErrQuery`, `ErrInvalidRequest`, `ErrEmbedderUnavailable`, `ErrCanceled`, `ErrForbidden`, `ErrInternal`) and read `*dolmen.Error` with `errors.As` for the code and message; underlying causes stay wrapped. `Close` is terminal and idempotent — repeated Close returns the first result; operations after close return the local `dolmen.ErrClosed` sentinel — and one process holds at most one live store per data directory (symlinks resolve; opening a server and an embedded store on the same directory is unsupported).
+Errors are typed: match categories with `errors.Is(err, dolmen.ErrConflict)` (also `ErrNotFound`, `ErrQuery`, `ErrInvalidRequest`, `ErrEmbedderUnavailable`, `ErrSQLEngineUnavailable`, `ErrCanceled`, `ErrForbidden`, `ErrInternal`) and read `*dolmen.Error` with `errors.As` for the code and message; underlying causes stay wrapped. `Close` is terminal and idempotent — repeated Close returns the first result; operations after close return the local `dolmen.ErrClosed` sentinel — and one process holds at most one live store per data directory (symlinks resolve; opening a server and an embedded store on the same directory is unsupported).
 
 While dolmen is on v0, breaking Go API changes land in minor releases only; patch releases keep source and behavioral compatibility.
 
