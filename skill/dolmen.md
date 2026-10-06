@@ -122,7 +122,9 @@ bootstrap key, which belongs to its operator).
   it exists, so a `403` does not confirm that a table is there.
 
 No operation lists your own grants: `list_namespaces` and `list_tables` show what you can reach,
-not which verbs you hold there, and `tools/list` shows every tool whether or not you may call it.
+not which verbs you hold there. `tools/list` hides the server-wide admin tools (`create_key`,
+`list_keys`, `revoke_key`, the rotations) unless you hold `admin` on `*`, and lists every other tool
+whether or not you may call it.
 When you need to know your verbs, ask the administrator.
 
 A grant gives verbs on a namespace (covering its tables and sub-namespaces), on one table, or on
