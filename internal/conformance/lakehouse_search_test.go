@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/lakehouse"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/secret"
@@ -139,6 +140,24 @@ func TestLakehouseSearchBackendConformance(t *testing.T) {
 			toks, err := eng.Tokenize(ctx, ns, "docs", "The Running foxes", none)
 			if err != nil || len(toks) == 0 {
 				t.Fatalf("tokenize = %v %v", toks, err)
+			}
+			_, inc, err := eng.TableState(ctx, ns, "docs", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := eng.SearchFulltext(ctx, ns, "docs", "brown", "", nil, false, nil, inc, store.Page{}); err != nil {
+				t.Fatalf("a current incarnation must be accepted: %v", err)
+			}
+			stale := inc
+			stale.Version++
+			if _, err := eng.SearchFulltext(ctx, ns, "docs", "brown", "", nil, false, nil, stale, store.Page{}); !errors.Is(err, derr.ErrConflict) {
+				t.Fatalf("a full-text search resolved against another schema version must be refused: %v", err)
+			}
+			if _, err := eng.SearchVector(ctx, ns, "docs", store.VectorQuery{Column: "v", Vec: []float32{1, 0}}, false, nil, stale, store.Page{}); !errors.Is(err, derr.ErrConflict) {
+				t.Fatalf("a vector search resolved against another schema version must be refused: %v", err)
+			}
+			if _, err := eng.Tokenize(ctx, ns, "docs", "foxes", stale); !errors.Is(err, derr.ErrConflict) {
+				t.Fatalf("a tokenize resolved against another schema version must be refused: %v", err)
 			}
 			if _, err := eng.CreateTable(ctx, ns, "plain", []schema.Field{{Name: "x", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
 				t.Fatal(err)

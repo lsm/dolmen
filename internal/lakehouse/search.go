@@ -96,7 +96,7 @@ func (s *Store) searchState(ctx context.Context, n *namespace, ns, name string, 
 	if err != nil {
 		return state, err
 	}
-	if err := checkExpected(state, expected, false); err != nil {
+	if err := checkScopeExpected(state, expected); err != nil {
 		return state, err
 	}
 	if scope != nil && !scope.Empty && !state.schema.HasOwner {
@@ -247,7 +247,7 @@ func (s *Store) Tokenize(ctx context.Context, ns, name, text string, expected st
 		if err != nil {
 			return err
 		}
-		if err := checkExpected(state, expected, false); err != nil {
+		if err := checkScopeExpected(state, expected); err != nil {
 			return err
 		}
 		if len(state.schema.FTSFields()) == 0 {
