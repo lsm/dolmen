@@ -39,6 +39,12 @@ var appendDDL = []string{
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_idempotency(table_name TEXT NOT NULL, generation INTEGER NOT NULL, owner TEXT NOT NULL, key TEXT NOT NULL, payload_hash TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(table_name, generation, owner, key))`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_secrets(table_name TEXT NOT NULL, generation INTEGER NOT NULL, row_id INTEGER NOT NULL, field TEXT NOT NULL, value BLOB NOT NULL, PRIMARY KEY(table_name, generation, row_id, field))`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_cursors(token TEXT PRIMARY KEY, position INTEGER NOT NULL, chain_origin INTEGER NOT NULL, chain_start INTEGER NOT NULL, issued_at INTEGER NOT NULL, table_name TEXT NOT NULL, drop_generation INTEGER NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS _dolmen_lakehouse_changes_table_feed ON _dolmen_lakehouse_changes(table_name, generation, seq)`,
+	`CREATE INDEX IF NOT EXISTS _dolmen_lakehouse_changes_owner_feed ON _dolmen_lakehouse_changes(table_name, generation, owner, seq)`,
+	`CREATE INDEX IF NOT EXISTS _dolmen_lakehouse_changes_at ON _dolmen_lakehouse_changes(at)`,
+	`CREATE INDEX IF NOT EXISTS _dolmen_lakehouse_cursors_issued_at ON _dolmen_lakehouse_cursors(issued_at)`,
+	`CREATE INDEX IF NOT EXISTS _dolmen_lakehouse_cursors_chain_start ON _dolmen_lakehouse_cursors(chain_start)`,
+	`CREATE INDEX IF NOT EXISTS _dolmen_lakehouse_cursors_chain_origin ON _dolmen_lakehouse_cursors(chain_origin)`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_counts(table_name TEXT NOT NULL, generation INTEGER NOT NULL, owner TEXT NOT NULL, n INTEGER NOT NULL CHECK(n >= 0), PRIMARY KEY(table_name, generation, owner))`,
 }
 
@@ -332,7 +338,7 @@ func (s *Store) commitAppend(ctx context.Context, tx *sql.Tx, state tableState, 
 		return result, err
 	}
 	var owner any
-	if state.schema.HasOwner {
+	if state.schema.HasOwner && opts.Owner != "" {
 		owner = opts.Owner
 	}
 	for i, id := range result.Ids {
