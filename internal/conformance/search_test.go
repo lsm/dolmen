@@ -71,6 +71,14 @@ func TestSearchFulltextSyntaxAcceptReject(t *testing.T) {
 	if got := len(data["results"].([]any)); got != wantAccentFolding {
 		t.Fatalf("accent folding on engine %q: %d results, want %d (D27 makes accent handling per-engine; PostgreSQL would need the unaccent extension): %v", testEngine(t), got, wantAccentFolding, data["results"])
 	}
+	for _, prefix := range []string{"caf*", "café*"} {
+		data := h.mustHTTP("search_fulltext", map[string]any{
+			"namespace": "fts", "table": "t", "query": prefix,
+		})
+		if got := len(data["results"].([]any)); got != 1 {
+			t.Fatalf("prefix %q on engine %q: %d results, want the accented row: %v", prefix, testEngine(t), got, data["results"])
+		}
+	}
 
 	reject := map[string]string{
 		"bare hyphenated term":  "foo-bar",

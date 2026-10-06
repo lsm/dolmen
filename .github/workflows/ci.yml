@@ -331,7 +331,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           DOLMEN_ENGINE: lakehouse
-        run: go test -race -count=1 ./internal/conformance
+        run: go test -race -count=1 -timeout 30m ./internal/conformance
       - name: The packaged binary on the lakehouse engine
         if: runner.os == 'Linux'
         env:

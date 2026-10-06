@@ -55,7 +55,9 @@ rejected), `invalid` (more than one statement), `canceled`, `resource` (out of m
 
 A query's arguments and result cells are tagged values: `n` null, `b0`/`b1` a boolean, `i<n>` an
 integer, `f<repr>` a double, `d<text>` an exact number too large for an integer, `s<text>` text and
-`x<hex>` bytes. The result reply is
+`x<hex>` bytes. dolmen sends a boolean argument as `i1`/`i0`, binding it as the integer SQLite
+would; the sidecar still accepts `b0`/`b1`, and returns booleans in result cells that way. The result
+reply is
 
 ```
 <id> ok <truncated 0|1> <ncols> <name> <type> ... <nrows> <cell> ...

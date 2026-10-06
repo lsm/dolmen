@@ -72,7 +72,7 @@ func TestSecretFieldContract(t *testing.T) {
 		"read_rows":       {"read_rows", map[string]any{"namespace": "sec", "table": "creds", "ids": []any{1, 2}}, "rows"},
 		"search_fulltext": {"search_fulltext", map[string]any{"namespace": "sec", "table": "creds", "query": "alpha OR nulled"}, "results"},
 		"search_vector":   {"search_vector", map[string]any{"namespace": "sec", "table": "creds", "column": "emb", "vector": []float64{1, 0, 0}}, "results"},
-		"query":           {"query", map[string]any{"namespace": "sec", "sql": "SELECT * FROM creds"}, "rows"},
+		"query":           {"query", map[string]any{"namespace": "sec", "sql": "SELECT * FROM creds ORDER BY id"}, "rows"},
 	}
 	for name, rd := range reads {
 		data := h.mustHTTP(rd.op, rd.body)
