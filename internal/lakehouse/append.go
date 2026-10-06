@@ -49,8 +49,13 @@ var secretPresent = []byte{0}
 
 type commitRows struct {
 	Rows       []map[string]any
+	Delete     []int64
 	EmbedSpace string
 	EmbedDim   int
+}
+
+func idFilter(ids []int64) iceberg.BooleanExpression {
+	return iceberg.IsIn(iceberg.Reference("id"), ids...)
 }
 
 func ensureAppendTables(ctx context.Context, db *sql.DB) error {
@@ -428,31 +433,47 @@ func (s *Store) materializeCommit(ctx context.Context, n *namespace, ns string, 
 	if err := gob.NewDecoder(bytes.NewReader(payload)).Decode(&decoded); err != nil {
 		return fmt.Errorf("%w: unreadable lakehouse commit payload: %v", store.ErrCatalogCorrupt, err)
 	}
-	path, err := s.writeDataFile(n, state.native, id, decoded.Rows)
-	if err != nil {
-		return err
-	}
+	var path string
 	unregistered := func(err error) error {
-		return errors.Join(err, os.Remove(path))
-	}
-	if materializeWrittenHook != nil {
-		if err := materializeWrittenHook(); err != nil {
-			return unregistered(err)
+		if path == "" {
+			return err
 		}
+		return errors.Join(err, os.Remove(path))
 	}
 	tx := state.native.NewTransaction()
 	if decoded.EmbedSpace != "" && (state.schema.EmbedSpace != decoded.EmbedSpace || state.schema.EmbedDim != decoded.EmbedDim) {
 		state.schema.EmbedSpace, state.schema.EmbedDim = decoded.EmbedSpace, decoded.EmbedDim
 		raw, err := json.Marshal(state.schema)
 		if err != nil {
-			return unregistered(err)
+			return err
 		}
 		if err := tx.SetProperties(iceberg.Properties{schemaProperty: string(raw)}); err != nil {
-			return unregistered(err)
+			return err
 		}
 	}
-	if err := tx.AddFiles(ctx, []string{fileLocation(path)}, iceberg.Properties{commitProperty: marker}, false); err != nil {
-		return unregistered(err)
+	if len(decoded.Delete) > 0 && state.native.Metadata().CurrentSnapshot() != nil {
+		if state.native.Properties()[table.WriteDeleteModeKey] != table.WriteModeMergeOnRead {
+			if err := tx.SetProperties(iceberg.Properties{table.WriteDeleteModeKey: table.WriteModeMergeOnRead}); err != nil {
+				return err
+			}
+		}
+		if err := tx.Delete(ctx, idFilter(decoded.Delete), iceberg.Properties{commitProperty: marker}); err != nil {
+			return err
+		}
+	}
+	if len(decoded.Rows) > 0 {
+		var err error
+		if path, err = s.writeDataFile(n, state.native, id, decoded.Rows); err != nil {
+			return err
+		}
+		if materializeWrittenHook != nil {
+			if err := materializeWrittenHook(); err != nil {
+				return unregistered(err)
+			}
+		}
+		if err := tx.AddFiles(ctx, []string{fileLocation(path)}, iceberg.Properties{commitProperty: marker}, false); err != nil {
+			return unregistered(err)
+		}
 	}
 	native, err := tx.Commit(ctx)
 	if err != nil {

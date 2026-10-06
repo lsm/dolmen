@@ -52,7 +52,7 @@ stacked; merge `main` into an active branch when needed, never rebase or force-p
 | 6 | **Append + row-id allocation + idempotency** | implemented in slice 6; append conformance |
 | 11 | **`query` over the DuckDB sidecar** | implemented in slice 11; the release artifacts follow in its second PR |
 | 7 | **Typed reads + number normalization** | implemented in slice 7; typed-read conformance |
-| 8 | **Point deletes by position** | after slice 11, in the approved order |
+| 8 | **Point deletes by position** | implemented in slice 8; mutation conformance |
 | 9 | **Search: full text + vectors** (native, per D27) | after slice 11, in the approved order |
 | 10 | **Change feed** | after slice 11, in the approved order |
 | 12 | **Public selector + operator docs** | after slice 11, in the approved order |
@@ -220,6 +220,29 @@ other owners' rows, and the 32 MiB budget truncates. `query` results are typed b
 label in the same way, where a label names one declared field across the namespace, so a
 `number` read through DuckDB's `DOUBLE` comes back an integer when it is one.
 `TestLakehouseTypedReadsBackendConformance` pins the same values on SQLite and the lakehouse.
+
+### Slice 8's mutations
+
+`update`, `delete`, `upsert` and `upsert_by_key` find their rows by running the caller's filter in
+the namespace's sidecar, against a second, unmasked view per table in a `_dolmen_filter` schema:
+numbers are typed as in `query`, and a set secret reads as a string holding a NUL, which no request
+can contain (#561), so comparing a secret with any value matches nothing, as on the other engines.
+Because a `number` is a `DOUBLE` there, a filter comparing integers beyond 2^53 compares them as
+doubles, where SQLite compares them exactly; that follows from the DuckDB filter dialect.
+`upsert_by_key` does not inherit it: a candidate row matches a number key only when its stored
+value equals the key exactly, and records repeating a key within one call land on the row the
+first created or matched, one change record per record, as on SQLite.
+The matched ids then go through the commit log like an append: one transaction records the new row
+versions, the ids they replace or remove, one change record per row, the owner-scoped count delta,
+secret writes and removals in the catalog, and any ids `upsert_by_key` allocates. Materialization
+applies the removed ids as an Iceberg delete in merge-on-read mode, so iceberg-go v0.6.0 writes a
+**position-delete file** and rewrites nothing, then adds the new versions as one Parquet file, both
+in one catalog commit under the commit's snapshot marker. The table property
+`write.delete.mode=merge-on-read` is set on first delete. Position deletes accumulate until slice
+14 compacts them. `TestLakehouseMutationBackendConformance` pins the same results on SQLite and the
+lakehouse, including partial updates that keep unnamed fields and secrets, null to clear, required
+fields, matching nothing, both upsert branches, duplicate keys in one `upsert_by_key`, dry runs,
+the delete limit, and a secret compared with the mask.
 
 ### Slice 3 in more detail
 
