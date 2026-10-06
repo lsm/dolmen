@@ -49,6 +49,10 @@ Windows PowerShell:
 claude mcp add --transport http dolmen '{{ .MCPURL }}'
 ```
 
+On a server that requires a credential, keep it in `DOLMEN_TOKEN` and add
+`--header "Authorization: Bearer $DOLMEN_TOKEN"` to that command (see "When the server requires a
+credential" below; other MCP hosts take the same header in their own configuration).
+
 The `dolmen` tools then appear in `tools/list` with full input schemas. The endpoint can also be
 read from the environment: `DOLMEN_URL` (default `{{ .BaseURL }}`).
 
@@ -65,9 +69,17 @@ no user is available to re-run it, use the JSON-RPC fallback below instead.
 
 A server running with authentication on answers any operation that arrives without an accepted
 credential with `401` and error code `unauthorized`. `/healthz`, `/version`, these skills and
-`/v1/openapi.json` stay open, so reaching them says nothing about access.
+`/v1/openapi.json` stay open, so reaching them says nothing about access. Once you have a
+credential, `describe_server` tells you how this server authenticates: its `auth` object is present
+only when authentication is on, and its `sources` lists what the server accepts: `api-keys`,
+`oidc` (people sign in through an identity provider), `trusted-proxy` (a gateway in front of the
+server supplies your identity instead of a bearer credential) and `admin-key` (the operator's
+bootstrap key).
 
-Send the credential with every request, `/mcp` and `/v1/subscribe` included, as a bearer token:
+Send the credential with every request, `/mcp`, the JSON-RPC fallback and `/v1/subscribe`
+included, as a bearer token. Send a body with `Content-Type: application/json`: a body with any
+other type is refused as `invalid_request` before the credential is even checked, so it never shows
+you a `401` (a request with no body at all needs no type).
 
 ```bash
 base='{{ .BaseURL }}'
@@ -80,19 +92,38 @@ curl -s -X POST "${base%/}/v1/whoami" \
 claude mcp add --transport http dolmen '{{ .MCPURL }}' --header "Authorization: Bearer $DOLMEN_TOKEN"
 ```
 
-The people who run the server issue credentials: an API key minted for you (it starts with
-`dlm_`), or a token a person receives by signing in at `{{ .BaseURL }}/v1/auth/begin` in a browser,
-on servers that offer sign-in. You cannot complete that sign-in yourself. If you hold no
-credential, ask the user for one, and never put one in a URL, a filter, or a record.
+Where a credential comes from:
+
+- **An API key** (it starts with `dlm_`), minted for you by an administrator. It does not expire;
+  it works until an administrator revokes it.
+- **A sign-in token**, on servers whose `describe_server` sources include `oidc`. You cannot
+  complete the sign-in yourself: ask the user to open `{{ .BaseURL }}/v1/auth/begin` in a browser,
+  sign in with their organization's account, and paste the token the final page shows. It is valid
+  for a fixed lifetime the operator chooses (7 days unless configured otherwise), after which they
+  sign in again. On a server without sign-in that address answers `404`.
+- **A gateway**, when the sources include `trusted-proxy`: an authenticating proxy in front of the server
+  asserts who you are, and requests through it need no credential of their own.
+
+If you hold no credential, ask the user for one, and never put one in a URL, a filter, or a record.
+`whoami` reports who a credential authenticates as: `principal`, `groups`, and `source`, which is
+`api-keys`, `oidc` (a sign-in token), `trusted-proxy` (a gateway) or `admin-key` (the server's
+bootstrap key, which belongs to its operator).
 
 `unauthorized` and `forbidden` call for different responses:
 
 - `unauthorized` (401): no credential this server accepts. A missing, malformed, expired, or
-  revoked credential all get the same message, so retrying with the same one cannot help.
+  revoked credential all get the same message, so retrying with the same one cannot help. If it
+  happens mid-session, your token has expired or your key was revoked: stop, tell the user, and ask
+  for a fresh one (a sign-in token by signing in again, a key from whoever issued it).
 - `forbidden` (403): you are authenticated, but no grant covers this operation on this object. Do
   not retry, and do not probe other tables for one that works. Call `whoami`, which needs no
   grant, and tell the user its `principal` and `groups` along with the operation and table you
-  need, so an administrator can grant it.
+  need, so an administrator can grant it. A table you hold nothing on answers `403` whether or not
+  it exists, so a `403` does not confirm that a table is there.
+
+No operation lists your own grants: `list_namespaces` and `list_tables` show what you can reach,
+not which verbs you hold there, and `tools/list` shows every tool whether or not you may call it.
+When you need to know your verbs, ask the administrator.
 
 A grant gives verbs on a namespace (covering its tables and sub-namespaces), on one table, or on
 the whole server. What each operation needs:
@@ -111,6 +142,11 @@ the whole server. What each operation needs:
 A feed without `table` (namespace-wide `changes_since`, `wait_for` or `/v1/subscribe`) needs
 `read` on the namespace itself; a grant on one table covers only that table's filtered feed.
 
+`read` on a single table is narrower than it looks. Without `read` on the namespace you cannot
+`query`, so you cannot list, count or aggregate the table's rows; `read_rows` needs the row ids, and
+the searches need full-text or vectorized fields. When a task needs a whole table, ask for `read`
+on its namespace rather than working around the gap.
+
 Absence is not proof: `list_namespaces` lists only what you can reach, and `list_tables` answers
 `not_found` for a namespace you hold nothing under. A write to a namespace that does not exist
 answers `not_found` rather than creating it.
@@ -119,7 +155,7 @@ answers `not_found` rather than creating it.
 `read`, you see and change only your own rows: reads, searches, filters, `update`, `delete`,
 `upsert_by_key` and the change feed all run over them alone, and a row you cannot see never shows
 up in a result, a count, or an error. Never send an `owner` field; the server stamps it, and
-supplying it is refused like any unknown field. Idempotency keys are yours alone, so the same
+supplying it is refused like any unknown field. Reads return it, so you can see whose row it is. Idempotency keys are yours alone, so the same
 string used by someone else is a different key.
 
 Two things `row_access` does not hide: row ids are shared by every owner, so gaps in the ids you
@@ -221,6 +257,9 @@ curl -s -X POST "$mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0",
 
 A failed call is not an HTTP error: the result carries `"isError":true` and the error object
 (`{"code","message","request_id"}`) as JSON text in `content[0].text`.
+With authentication on, add `-H "Authorization: Bearer $DOLMEN_TOKEN"` to every request above. A
+missing or rejected credential is the exception to that rule: it answers HTTP `401` with the plain
+error envelope (`{"ok":false,"error":{...}}`), not a JSON-RPC result.
 
 ## Live changes: the subscribe stream (SSE)
 
@@ -336,7 +375,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 
 ## Quick reference
 
-- Core tools: `describe_server`, `list_namespaces`, `list_tables`, `describe_table`, `insert`, `query`, `search_fulltext`, `tokenize` (takes `namespace`, `table` and `text`), `search_vector`, `changes_since`, `wait_for`, `delete`, `batch` (several writes in one transaction — see below).
+- Core tools: `describe_server`, `whoami` (only when authentication is on), `list_namespaces`, `list_tables`, `describe_table`, `insert`, `query`, `read_rows` (takes `namespace`, `table` and `ids`, up to 1,000 per call, and optional `reveal`), `search_fulltext`, `tokenize` (takes `namespace`, `table` and `text`), `search_vector`, `changes_since`, `wait_for`, `delete`, `batch` (several writes in one transaction — see below).
 - Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`, `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field), and `secret` (a string encrypted at rest; see below).
 - `secret` fields read back as the fixed mask `"••••"` (or `null` when unset) in every read: `read_rows`, both searches, and `query`. To get the plaintext, name the field in `reveal` on `read_rows`, `search_fulltext` or `search_vector` (`"reveal": ["api_token"]`); `query` never reveals. `query` reads the mask in place of the stored bytes, whatever alias or expression you wrap it in, and search `filter`s evaluate against the ciphertext, so never filter or join on a secret field. Under `-auth on` reveal needs the `reveal` verb (a `forbidden` error names it; `admin` does not imply it), and every reveal is audit-logged without the value. Writing a secret needs the server's secret key; without it the write is refused. Never write a masked value back: `"••••"` is refused as a secret value, because storing it would destroy the real one — pass the real value, `reveal` it first, or omit the field to leave it alone.
 - Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field — enables `search_vector` with `text`; the built-in `local` provider is enabled by default; set `DOLMEN_EMBED_PROVIDER=openai` for an external endpoint, or `none` to disable server-side embeddings), `required: true`, `enum: [values]` (closed vocabulary for a string field — writes with any other value are rejected naming the field, the value, and the allowed list; exact match, no case folding; a declared `default` must be a member), `shape` on a `json` field (`object`, `array`, `array<string>`, `array<number>`, `array<boolean>` or `array<object>` — writes of any other shape are rejected naming the field, the expected shape and what arrived, so send tags as `["db","sqlite"]`, never `"db,sqlite"`; omit it for free-form JSON).

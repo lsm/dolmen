@@ -602,15 +602,19 @@ func OriginGuard(next http.Handler, extraOrigins []string) http.Handler {
 				return
 			}
 		}
-		if r.Method == http.MethodPost && r.ContentLength != 0 {
-			mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-			if err != nil || strings.ToLower(mt) != "application/json" {
-				writeError(w, r, &Error{Status: http.StatusUnsupportedMediaType, Code: ErrCodeInvalid, Message: "content-type must be application/json"})
-				return
-			}
-		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func RequireJSON(r *http.Request) *Error {
+	if r.Method != http.MethodPost || r.ContentLength == 0 {
+		return nil
+	}
+	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || strings.ToLower(mt) != "application/json" {
+		return &Error{Status: http.StatusUnsupportedMediaType, Code: ErrCodeInvalid, Message: "content-type must be application/json"}
+	}
+	return nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -658,6 +662,10 @@ func (s *Server) Handler() http.Handler {
 		r = authed
 		if authErr != nil {
 			writeError(w, r, WrapError(authErr))
+			return
+		}
+		if e := RequireJSON(r); e != nil {
+			writeError(w, r, e)
 			return
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20))
