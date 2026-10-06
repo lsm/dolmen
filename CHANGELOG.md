@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A build without a release version stamped in reports where it came from — Go's module version
+  (a pseudo-version past the last tag for a checkout) or `devel+<commit>` — instead of the stale
+  `v0.3.0-devel` (#603).
+
 - **API keys can expire** (#585). `create_key` takes an optional `expires_at`; at that time the key
   stops authenticating, like a revoked one, and stops counting toward a usable root administrator.
   `list_keys` reports `expires_at` and `expired`, and `active_only` drops revoked and expired keys.
