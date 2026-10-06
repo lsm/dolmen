@@ -23,8 +23,11 @@ esac
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+tarflags=
 case "$PLATFORM" in
-windows-*) OUT=$(cygpath -u "$OUT") ;;
+windows-*)
+  work=$(cygpath -m "$work") OUT=$(cygpath -m "$OUT") HERE=$(cygpath -m "$HERE") tarflags=--force-local
+  ;;
 esac
 "$HERE/fetch-deps.sh" lib "$asset" "$work/lib"
 "$HERE/fetch-deps.sh" ext "$ext" "$work/ext"
@@ -34,8 +37,7 @@ stage="$work/$name"
 mkdir -p "$stage/duckdb-extensions"
 case "$PLATFORM" in
 windows-*)
-  w=$(cygpath -m "$work") h=$(cygpath -m "$HERE")
-  cl /nologo /std:c++17 /EHsc /O2 "/I$w/lib" "/Fe:$w/$name/$bin" "$h/dolmen-duckdb.cpp" "$w/lib/duckdb.lib" /link "/LIBPATH:$w/lib"
+  cl /nologo /std:c++17 /EHsc /O2 "/I$work/lib" "/Fe:$stage/$bin" "$HERE/dolmen-duckdb.cpp" "$work/lib/duckdb.lib" /link "/LIBPATH:$work/lib"
   rm -f "$stage"/*.obj dolmen-duckdb.obj
   ;;
 darwin-*)
@@ -50,5 +52,5 @@ cp -R "$work/ext/." "$stage/duckdb-extensions/"
 cp "$HERE/PROTOCOL.md" "$stage/"
 
 mkdir -p "$OUT"
-tar -C "$work" -czf "$OUT/$name.tar.gz" "$name"
+tar $tarflags -C "$work" -czf "$OUT/$name.tar.gz" "$name"
 echo "$OUT/$name.tar.gz"
