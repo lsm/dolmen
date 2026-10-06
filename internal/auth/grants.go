@@ -165,6 +165,18 @@ func subjectsFor(id Identity) []Subject {
 	return out
 }
 
+func (r *Registry) HeldBy(ctx context.Context, id Identity) ([]Grant, error) {
+	var out []Grant
+	for _, subj := range subjectsFor(id) {
+		grants, err := r.List(ctx, &subj, nil)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, grants...)
+	}
+	return out, nil
+}
+
 func (r *Registry) EffectiveVerbs(ctx context.Context, id Identity, obj Object) (VerbSet, error) {
 	subjects := subjectsFor(id)
 	objects := coveringObjects(obj)

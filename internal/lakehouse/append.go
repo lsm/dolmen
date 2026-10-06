@@ -45,6 +45,12 @@ var appendDDL = []string{
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_batch_tables(owner TEXT NOT NULL, key TEXT NOT NULL, table_name TEXT NOT NULL, PRIMARY KEY(owner, key, table_name))`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_batch_intent(singleton INTEGER PRIMARY KEY CHECK(singleton = 1))`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_embed_stage(table_name TEXT NOT NULL, generation INTEGER NOT NULL, provider TEXT NOT NULL, row_id INTEGER NOT NULL, digest BLOB NOT NULL, vector BLOB NOT NULL, PRIMARY KEY(table_name, generation, provider, row_id))`,
+	`CREATE INDEX IF NOT EXISTS _dolmen_lakehouse_changes_table_feed ON _dolmen_lakehouse_changes(table_name, generation, seq)`,
+	`CREATE INDEX IF NOT EXISTS _dolmen_lakehouse_changes_owner_feed ON _dolmen_lakehouse_changes(table_name, generation, owner, seq)`,
+	`CREATE INDEX IF NOT EXISTS _dolmen_lakehouse_changes_at ON _dolmen_lakehouse_changes(at)`,
+	`CREATE INDEX IF NOT EXISTS _dolmen_lakehouse_cursors_issued_at ON _dolmen_lakehouse_cursors(issued_at)`,
+	`CREATE INDEX IF NOT EXISTS _dolmen_lakehouse_cursors_chain_start ON _dolmen_lakehouse_cursors(chain_start)`,
+	`CREATE INDEX IF NOT EXISTS _dolmen_lakehouse_cursors_chain_origin ON _dolmen_lakehouse_cursors(chain_origin)`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_counts(table_name TEXT NOT NULL, generation INTEGER NOT NULL, owner TEXT NOT NULL, n INTEGER NOT NULL CHECK(n >= 0), PRIMARY KEY(table_name, generation, owner))`,
 }
 
@@ -343,7 +349,7 @@ func (s *Store) commitAppend(ctx context.Context, tx *sql.Tx, state tableState, 
 		return result, err
 	}
 	var owner any
-	if state.schema.HasOwner {
+	if state.schema.HasOwner && opts.Owner != "" {
 		owner = opts.Owner
 	}
 	for i, id := range result.Ids {
