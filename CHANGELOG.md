@@ -8,6 +8,9 @@
   `query` needed `read` on the whole namespace and `read_rows` needed ids from elsewhere. The Go
   facade gains `Store.ListRows`.
 
+- The lakehouse SQL sidecar stops when dolmen goes away mid-query, instead of running the query to
+  the end as an orphan (#590).
+
 - Lakehouse slice 10 adds `changes_since`, and with it `wait_for`. Both read the namespace commit
   log written with each commit. Cursors are random tokens stored in the catalog. Each is bound to
   its feed, refreshed on use and pruned by `-change-retention`. A both-engine conformance test
