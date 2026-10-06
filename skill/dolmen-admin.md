@@ -344,7 +344,11 @@ grants like anyone else. Any principal name is accepted, including a sign-in pri
 (`oidc:v1:...`): such a key acts as that person, own rows included, so mint one only for that
 person, as their personal key for scripts. `list_keys` reports ids, names, principals, groups and revocation state,
 never credentials, and `revoke_key` takes the id; revoking an already-revoked key also answers
-`ok`. Keys do not expire, and revoked keys stay listed.
+`ok`. A key never expires unless you mint it with `expires_at` (an RFC 3339 time in the future), for
+a contractor or a CI run; from then on it answers `401` like a revoked key. `list_keys` reports
+each key's `expires_at` and `expired`, and keeps revoked and expired keys unless you pass
+`"active_only": true`. An expired key no longer counts toward a usable root administrator, so never
+give the last root administrator's only key an expiry.
 
 To rotate a key without downtime, mint a second key for the same principal, switch the client to
 it, confirm the new key works, then revoke the old one by id. Grants belong to the principal, so
