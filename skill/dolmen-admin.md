@@ -334,8 +334,9 @@ curl -s -X POST "${base%/}/v1/create_key" \
 The response is `{"key":{...},"secret":"dlm_..."}`: `key` holds the id, name, principal and groups,
 and `secret` is the credential, shown this once. It is stored hashed, so hand it over now or mint
 another. A key grants nothing by itself: it authenticates as its principal and groups, which need
-grants like anyone else. Any principal name is accepted, including one shaped like a sign-in
-principal (`oidc:v1:...`); such a key acts as that person, own rows included, so never mint one. `list_keys` reports ids, names, principals, groups and revocation state,
+grants like anyone else. Any principal name is accepted, including a sign-in principal
+(`oidc:v1:...`): such a key acts as that person, own rows included, so mint one only for that
+person, as their personal key for scripts. `list_keys` reports ids, names, principals, groups and revocation state,
 never credentials, and `revoke_key` takes the id; revoking an already-revoked key also answers
 `ok`. Keys do not expire, and revoked keys stay listed.
 
