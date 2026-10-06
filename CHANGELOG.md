@@ -9,6 +9,12 @@
   lakehouse full-text grammar. `docs/lakehouse-operations.md` covers running it. CI runs the full
   conformance suite and the black-box tests on it.
 
+- **`read_rows` pages through a table** (#584). Without `ids` it reads up to `limit` rows (default
+  100) with ids above `after_id`, and returns `next_after_id` while more follow. A caller holding
+  `read` on one table, or only their own rows on a `row_access` table, can now read all of it; before,
+  `query` needed `read` on the whole namespace and `read_rows` needed ids from elsewhere. The Go
+  facade gains `Store.ListRows`.
+
 - **API keys can expire** (#585). `create_key` takes an optional `expires_at`; at that time the key
   stops authenticating, like a revoked one, and stops counting toward a usable root administrator.
   `list_keys` reports `expires_at` and `expired`, and `active_only` drops revoked and expired keys.

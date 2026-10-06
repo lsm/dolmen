@@ -75,6 +75,7 @@ table they never created. Both surfaces now agree, pinned in `TestEmbeddedParity
 | Records per insert | `store.MaxRecordsPerInsert` = 1000 | `insert` `records.maxItems` | `Insert` (`internal/store/insert.go:45`) | Same bound via engine |
 | Records per upsert | `store.MaxRecordsPerInsert` = 1000 | `upsert_by_key` `records.maxItems` | `UpsertByKey` (`internal/store/upsert_key.go:19`) | Same bound via engine |
 | Delete limit, lower range | wire runtime rejects < 1 with 400 (`parseOptPosInt`, `internal/api/ops.go:1923`); schema advertises `minimum: 1` | `delete` `limit` | — | negatives rejected (root `write.go:145`); explicit 0 = default threshold — an at-zero divergence with the wire (code-verified) |
+| Read-rows page limit, at zero | wire rejects < 1 and > 1000 with 400 (`store.ValidateRowPage`); schema advertises `minimum: 1`, `maximum: 1000` | `read_rows` `limit` | — | `Store.ListRows` `RowPage.Limit`: 0 = the default page of 100, otherwise the same range — an at-zero divergence with the wire, chosen so a zero `RowPage{}` reads the first page (#584) |
 | Delete limit, upper range | none on any surface | none | none | none |
 
 The advertised `maxItems` bounds and the engine's runtime bounds are the same constants, so wire

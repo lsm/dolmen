@@ -11,14 +11,34 @@ import (
 	"github.com/lsm/dolmen/internal/value"
 )
 
+type rowSelection struct {
+	ids     []int64
+	paged   bool
+	afterID int64
+	limit   int
+}
+
 func (s *Store) GetRows(ctx context.Context, ns, table string, ids []int64, scope *store.RowScope, expected store.Incarnation) (_ store.QueryResult, err error) {
 	ctx, end := s.span(ctx, "SELECT", ns, table)
 	defer func() { end(err) }()
 	if len(ids) > store.MaxReadRowsIDs {
 		return store.QueryResult{}, fmt.Errorf("%w: read_rows accepts at most %d ids per request, got %d", store.ErrInvalid, store.MaxReadRowsIDs, len(ids))
 	}
+	return s.readRows(ctx, ns, table, rowSelection{ids: ids}, scope, expected)
+}
+
+func (s *Store) ListRows(ctx context.Context, ns, table string, afterID int64, limit int, scope *store.RowScope, expected store.Incarnation) (_ store.QueryResult, err error) {
+	ctx, end := s.span(ctx, "SELECT", ns, table)
+	defer func() { end(err) }()
+	if err := store.ValidateRowPage(afterID, limit); err != nil {
+		return store.QueryResult{}, err
+	}
+	return s.readRows(ctx, ns, table, rowSelection{paged: true, afterID: afterID, limit: limit}, scope, expected)
+}
+
+func (s *Store) readRows(ctx context.Context, ns, table string, sel rowSelection, scope *store.RowScope, expected store.Incarnation) (store.QueryResult, error) {
 	result := store.QueryResult{Rows: []map[string]any{}}
-	err = s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
+	err := s.read(ctx, ns, func(tx pgx.Tx, n namespace) error {
 		state, err := s.loadTable(ctx, tx, n, table)
 		if err != nil {
 			return err
@@ -33,7 +53,7 @@ func (s *Store) GetRows(ctx context.Context, ns, table string, ids []int64, scop
 		if err != nil {
 			return err
 		}
-		if len(ids) == 0 {
+		if !sel.paged && len(sel.ids) == 0 {
 			return nil
 		}
 		fields := append([]schema.Field{{Name: "id", Type: schema.Number}, {Name: "created_at", Type: schema.Timestamp}}, state.schema.Fields...)
@@ -54,18 +74,30 @@ func (s *Store) GetRows(ctx context.Context, ns, table string, ids []int64, scop
 			labelBytes += value.EncodedSize(f.Name) + 16
 		}
 		stmt := "SELECT " + strings.Join(columns, ",") + " FROM " + ident(n.physical, state.physical) + " WHERE id = ANY($1::bigint[])"
-		args := []any{ids}
+		args := []any{sel.ids}
+		if sel.paged {
+			stmt = "SELECT " + strings.Join(columns, ",") + " FROM " + ident(n.physical, state.physical) + " WHERE id > $1"
+			args = []any{sel.afterID}
+		}
 		if clause, sargs := scopePredicate(scope, "", len(args)+1); clause != "" {
 			stmt += " AND " + clause
 			args = append(args, sargs...)
 		}
-		rows, err := tx.Query(ctx, stmt+" ORDER BY id", args...)
+		stmt += " ORDER BY id"
+		if sel.paged {
+			stmt += fmt.Sprintf(" LIMIT %d", sel.limit+1)
+		}
+		rows, err := tx.Query(ctx, stmt, args...)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		total := 0
 		for rows.Next() {
+			if sel.paged && len(result.Rows) == sel.limit {
+				result.Truncated = true
+				return nil
+			}
 			raw, err := rows.Values()
 			if err != nil {
 				return err
