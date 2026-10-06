@@ -490,7 +490,7 @@ func (s *Store) materializeCommit(ctx context.Context, n *namespace, ns string, 
 				return unregistered(err)
 			}
 		}
-		if err := tx.AddFiles(ctx, []string{fileLocation(path)}, iceberg.Properties{commitProperty: marker}, false); err != nil {
+		if err := tx.AddFiles(ctx, []string{fileLocation(path)}, iceberg.Properties{commitProperty: marker}, true); err != nil {
 			return unregistered(err)
 		}
 	}
