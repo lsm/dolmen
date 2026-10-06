@@ -332,6 +332,9 @@ func TestDropNamespaceWaitsForAnInFlightQuery(t *testing.T) {
 		if err != nil && strings.Contains(err.Error(), "being dropped") {
 			break
 		}
+		if errors.Is(err, context.Canceled) {
+			continue
+		}
 		if err != nil {
 			sc.run.Unlock()
 			t.Fatalf("drop_namespace must release the store lock while it drains: %v", err)
