@@ -207,7 +207,8 @@ dolmen -addr 0.0.0.0:8790
 
 Every request then carries `Authorization: Bearer <credential>`, and a request body needs
 `Content-Type: application/json`; without an accepted credential a request answers `401` whatever
-its type, and an authenticated body of any other type is refused as `invalid_request`. `whoami` reports `principal`, `groups` and `source`: `admin-key`,
+its type, and an authenticated body of any other type is refused as `invalid_request`. `whoami`
+reports `principal`, `groups`, the caller's own `grants` and `source`: `admin-key`,
 `api-keys`, `oidc` (a sign-in token) or `trusted-proxy` (a gateway).
 
 Present your credential on every request, `/mcp` and `/v1/subscribe` included, as
