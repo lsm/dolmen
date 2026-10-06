@@ -329,7 +329,7 @@ func emptyType(f schema.Field) string {
 	return "VARCHAR"
 }
 
-func viewSQL(state tableState) string {
+func viewSQL(state tableState, raw bool) string {
 	sc := state.schema
 	cols := []string{}
 	if snap := state.native.Metadata().CurrentSnapshot(); snap == nil {
@@ -340,7 +340,7 @@ func viewSQL(state tableState) string {
 		if sc.HasOwner {
 			cols = append(cols, "CAST(NULL AS VARCHAR) AS "+quoteIdent(schema.OwnerColumn))
 		}
-		return "CREATE VIEW " + quoteIdent(sc.Name) + " AS SELECT " + strings.Join(cols, ", ") + " WHERE false"
+		return "CREATE VIEW " + viewName(sc.Name, raw) + " AS SELECT " + strings.Join(cols, ", ") + " WHERE false"
 	}
 	cols = append(cols, `"id"`, `"created_at"`)
 	for _, f := range sc.Fields {
@@ -349,7 +349,11 @@ func viewSQL(state tableState) string {
 		case schema.Number:
 			col = "TRY_CAST(" + col + " AS DOUBLE) AS " + col
 		case schema.Secret:
-			col = "CASE WHEN " + col + " IS NULL THEN NULL ELSE " + quoteLiteral(secret.Mask) + " END AS " + col
+			stand := quoteLiteral(secret.Mask)
+			if raw {
+				stand = "chr(0)"
+			}
+			col = "CASE WHEN " + col + " IS NULL THEN NULL ELSE " + stand + " END AS " + col
 		}
 		cols = append(cols, col)
 	}
@@ -357,7 +361,16 @@ func viewSQL(state tableState) string {
 		cols = append(cols, quoteIdent(schema.OwnerColumn))
 	}
 	path := filepath.Join(localPath(state.native.Location()), "metadata", currentMetadataName)
-	return "CREATE VIEW " + quoteIdent(sc.Name) + " AS SELECT " + strings.Join(cols, ", ") + " FROM iceberg_scan(" + quoteLiteral(filepath.ToSlash(path)) + ")"
+	return "CREATE VIEW " + viewName(sc.Name, raw) + " AS SELECT " + strings.Join(cols, ", ") + " FROM iceberg_scan(" + quoteLiteral(filepath.ToSlash(path)) + ")"
+}
+
+const filterSchema = "_dolmen_filter"
+
+func viewName(table string, raw bool) string {
+	if raw {
+		return quoteIdent(filterSchema) + "." + quoteIdent(table)
+	}
+	return quoteIdent(table)
 }
 
 func (s *Store) namespaceViews(ctx context.Context, n *namespace, ns string) ([]string, string, map[string]schema.FieldType, error) {
@@ -373,7 +386,7 @@ func (s *Store) namespaceViews(ctx context.Context, n *namespace, ns string) ([]
 		states = append(states, state)
 	}
 	slices.SortFunc(states, func(a, b tableState) int { return strings.Compare(a.schema.Name, b.schema.Name) })
-	views := make([]string, 0, len(states))
+	views := []string{"CREATE SCHEMA " + quoteIdent(filterSchema)}
 	labels := map[string]schema.FieldType{"id": schema.Number, "created_at": schema.Timestamp}
 	ambiguous := map[string]bool{}
 	var fp strings.Builder
@@ -381,7 +394,7 @@ func (s *Store) namespaceViews(ctx context.Context, n *namespace, ns string) ([]
 		if err := n.freshenCurrentMetadata(state); err != nil {
 			return nil, "", nil, err
 		}
-		views = append(views, viewSQL(state))
+		views = append(views, viewSQL(state, false), viewSQL(state, true))
 		fmt.Fprintf(&fp, "%s|%d|%d|%t;", state.schema.Name, state.schema.Version, state.incarnation.DropGen, state.native.Metadata().CurrentSnapshot() != nil)
 		for _, f := range state.schema.Fields {
 			if t, seen := labels[f.Name]; seen && t != f.Type {
@@ -577,6 +590,37 @@ func (s *Store) retire(ns string, sc *sidecar) {
 	go s.drain(ns, sc, false)
 }
 
+func (s *Store) ensureSidecar(ctx context.Context, n *namespace, ns string) (*sidecar, map[string]schema.FieldType, error) {
+	if s.dropping[ns] {
+		return nil, nil, fmt.Errorf("%w: namespace %s is being dropped", store.ErrNotFound, ns)
+	}
+	views, fp, labels, err := s.namespaceViews(ctx, n, ns)
+	if err != nil {
+		return nil, nil, err
+	}
+	if n.sql != nil && (n.sql.fingerprint != fp || !n.sql.alive()) {
+		s.retire(ns, n.sql)
+		n.sql = nil
+	}
+	if n.sql == nil {
+		if n.sqlErr != nil && time.Now().Before(n.sqlRetry) {
+			return nil, nil, n.sqlErr
+		}
+		if n.sql, err = startSidecar(ctx, s.sqlEngine, n.dataDir, views, fp); err != nil {
+			if ctx.Err() != nil {
+				return nil, nil, err
+			}
+			n.sqlFails++
+			n.sqlErr = err
+			n.sqlRetry = time.Now().Add(min(time.Second<<min(n.sqlFails-1, 5), 30*time.Second))
+			return nil, nil, err
+		}
+		n.sqlFails, n.sqlErr = 0, nil
+		s.track(ns, n.sql)
+	}
+	return n.sql, labels, nil
+}
+
 func (s *Store) ensureQuerySidecar(ctx context.Context, ns string, nsGen [16]byte) (*sidecar, map[string]schema.FieldType, error) {
 	var sc *sidecar
 	var labels map[string]schema.FieldType
@@ -584,36 +628,9 @@ func (s *Store) ensureQuerySidecar(ctx context.Context, ns string, nsGen [16]byt
 		if nsGen != [16]byte{} && nsGen != n.generation {
 			return fmt.Errorf("%w: namespace %s was replaced; resolve its current state", store.ErrNotFound, ns)
 		}
-		if s.dropping[ns] {
-			return fmt.Errorf("%w: namespace %s is being dropped", store.ErrNotFound, ns)
-		}
-		views, fp, types, err := s.namespaceViews(ctx, n, ns)
-		labels = types
-		if err != nil {
-			return err
-		}
-		if n.sql != nil && (n.sql.fingerprint != fp || !n.sql.alive()) {
-			s.retire(ns, n.sql)
-			n.sql = nil
-		}
-		if n.sql == nil {
-			if n.sqlErr != nil && time.Now().Before(n.sqlRetry) {
-				return n.sqlErr
-			}
-			if n.sql, err = startSidecar(ctx, s.sqlEngine, n.dataDir, views, fp); err != nil {
-				if ctx.Err() != nil {
-					return err
-				}
-				n.sqlFails++
-				n.sqlErr = err
-				n.sqlRetry = time.Now().Add(min(time.Second<<min(n.sqlFails-1, 5), 30*time.Second))
-				return err
-			}
-			n.sqlFails, n.sqlErr = 0, nil
-			s.track(ns, n.sql)
-		}
-		sc = n.sql
-		return nil
+		var err error
+		sc, labels, err = s.ensureSidecar(ctx, n, ns)
+		return err
 	})
 	if err != nil {
 		return nil, nil, err
