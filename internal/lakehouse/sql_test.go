@@ -3,6 +3,7 @@ package lakehouse
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -435,20 +436,39 @@ func TestTheSidecarStopsWhenItsParentGoesAway(t *testing.T) {
 	}
 	mustQuery(t, s, "ns", "SELECT 1 AS x")
 	sc := s.namespaces["ns"].sql
+	written := &signalingWriter{WriteCloser: sc.stdin, wrote: make(chan struct{}, 1)}
+	sc.write.Lock()
+	sc.stdin = written
+	sc.write.Unlock()
 	go func() {
 		_, _ = s.Query(context.Background(), "ns", "WITH RECURSIVE r(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM r) SELECT count(*) AS n FROM r", nil, [16]byte{}, store.Page{})
 	}()
-	for sc.run.TryLock() {
-		sc.run.Unlock()
-		runtime.Gosched()
+	select {
+	case <-written.wrote:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the query never reached the sidecar")
 	}
-	if err := sc.stdin.Close(); err != nil {
+	if err := written.Close(); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case <-sc.done:
 	case <-time.After(30 * time.Second):
 		_ = sc.cmd.Process.Kill()
-		t.Fatal("with its stdin closed and no shutdown sent, as when dolmen dies, the sidecar kept running its query")
+		t.Fatal("with its stdin closed after a query and no shutdown sent, as when dolmen dies, the sidecar kept running")
 	}
+}
+
+type signalingWriter struct {
+	io.WriteCloser
+	wrote chan struct{}
+}
+
+func (w *signalingWriter) Write(p []byte) (int, error) {
+	n, err := w.WriteCloser.Write(p)
+	select {
+	case w.wrote <- struct{}{}:
+	default:
+	}
+	return n, err
 }
