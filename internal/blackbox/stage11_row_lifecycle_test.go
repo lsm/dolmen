@@ -7,7 +7,7 @@ import (
 
 const stage11Namespace = "acme/lifecycle"
 
-const readRowsIDsTeaching = `ids is required (pass the ids a write returned, a query projected, or a change feed carried; an empty list selects nothing)`
+const readRowsIDsTeaching = `pass either ids, to fetch those rows, or after_id and limit, to page through the table, not both`
 
 func TestStage11RowLifecycleAndPinnedErrors(t *testing.T) {
 	op(t, "create_namespace", map[string]any{"namespace": stage11Namespace})
@@ -49,11 +49,11 @@ func TestStage11RowLifecycleAndPinnedErrors(t *testing.T) {
 		t.Fatalf("an omitted number field must read back as an explicit null key, got %v (present=%v)", hours, haveHours)
 	}
 
-	code, envelope := opErrorEnvelope(t, "read_rows", map[string]any{"namespace": stage11Namespace, "table": "docs"})
+	code, envelope := opErrorEnvelope(t, "read_rows", map[string]any{"namespace": stage11Namespace, "table": "docs", "ids": []any{1}, "after_id": 0})
 	if code != 400 {
-		t.Fatalf("read_rows without ids: HTTP %d", code)
+		t.Fatalf("read_rows with both ids and after_id: HTTP %d", code)
 	}
-	assertTeachingError(t, envelope, "read_rows missing ids", readRowsIDsTeaching)
+	assertTeachingError(t, envelope, "read_rows with ids and a page", readRowsIDsTeaching)
 
 	empty := op(t, "read_rows", map[string]any{"namespace": stage11Namespace, "table": "docs", "ids": []any{}})
 	if rc := asInt(t, empty["row_count"], "empty-set row_count"); rc != 0 {
@@ -215,12 +215,12 @@ func TestStage11RowLifecycleAndPinnedErrors(t *testing.T) {
 
 	res, err := mcpRaw("tools/call", map[string]any{
 		"name":      "read_rows",
-		"arguments": map[string]any{"namespace": stage11Namespace, "table": "docs"},
+		"arguments": map[string]any{"namespace": stage11Namespace, "table": "docs", "ids": []any{1}, "limit": 5},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.IsError || len(res.Content) == 0 || !strings.Contains(res.Content[0].Text, "ids is required") {
-		t.Fatalf("mcp read_rows without ids must carry the teaching error, got %+v", res)
+	if !res.IsError || len(res.Content) == 0 || !strings.Contains(res.Content[0].Text, "not both") {
+		t.Fatalf("mcp read_rows with ids and a page must carry the teaching error, got %+v", res)
 	}
 }
