@@ -64,7 +64,7 @@ type sidecar struct {
 	stderr      *tailBuffer
 	home        string
 	closing     atomic.Bool
-	closedBy    atomic.Value
+	closedBy    atomic.Pointer[error]
 }
 
 type tailBuffer struct {
@@ -550,7 +550,7 @@ func (s *Store) tracked(ns string) []*sidecar {
 
 func (s *Store) drain(ns string, sc *sidecar, interrupt error) {
 	if interrupt != nil {
-		sc.closedBy.Store(interrupt)
+		sc.closedBy.CompareAndSwap(nil, &interrupt)
 		sc.closing.Store(true)
 		for !sc.run.TryLock() {
 			_ = sc.send("0", "cancel")
@@ -659,15 +659,15 @@ func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16
 	defer sc.run.Unlock()
 	fields, err := sc.call(ctx, "query", append([]string{strconv.Itoa(page.Offset), strconv.Itoa(limit), strconv.Itoa(store.MaxQueryBytes), sql}, encoded...)...)
 	if err != nil {
-		if reason, ok := sc.closedBy.Load().(error); ok && ctx.Err() == nil {
-			return store.QueryResult{}, reason
+		if reason := sc.closedBy.Load(); reason != nil && ctx.Err() == nil {
+			return store.QueryResult{}, *reason
 		}
 		return store.QueryResult{}, err
 	}
 	result, err := parseQueryReply(fields)
 	if err != nil {
-		if reason, ok := sc.closedBy.Load().(error); ok && errors.Is(err, context.Canceled) && ctx.Err() == nil {
-			return store.QueryResult{}, reason
+		if reason := sc.closedBy.Load(); reason != nil && errors.Is(err, context.Canceled) && ctx.Err() == nil {
+			return store.QueryResult{}, *reason
 		}
 		return result, err
 	}
