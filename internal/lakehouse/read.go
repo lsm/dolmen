@@ -161,11 +161,8 @@ func (s *Store) GetRows(ctx context.Context, ns, name string, ids []int64, scope
 		if err != nil {
 			return err
 		}
-		if err := checkExpected(state, expected, false); err != nil {
+		if err := checkScopeExpected(state, expected); err != nil {
 			return err
-		}
-		if !store.IncarnationIsZero(expected) && expected.Version != state.incarnation.Version {
-			return store.ScopeIncarnationChanged(ns, name)
 		}
 		if scope != nil && !scope.Empty && !state.schema.HasOwner {
 			return invalidf("table %s carries no owner column, so a row scope cannot be applied to it", name)
@@ -177,7 +174,7 @@ func (s *Store) GetRows(ctx context.Context, ns, name string, ids []int64, scope
 		if len(ids) == 0 {
 			return nil
 		}
-		raws, err := scanRows(ctx, state, iceberg.IsIn(iceberg.Reference("id"), ids...))
+		raws, err := scanRows(ctx, state, idFilter(ids))
 		if err != nil {
 			return err
 		}

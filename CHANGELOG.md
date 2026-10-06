@@ -8,6 +8,11 @@
   `query` needed `read` on the whole namespace and `read_rows` needed ids from elsewhere. The Go
   facade gains `Store.ListRows`.
 
+- Lakehouse slice 8 adds `update`, `delete`, `upsert` and `upsert_by_key`. Filters run in the SQL
+  sidecar; each mutation commits through the namespace log and lands in Iceberg as a position-delete
+  file plus the new row versions, with no data-file rewrite. A both-engine conformance test pins the
+  results against SQLite.
+
 - **Auth edges a client or admin tripped over** (#586). A request with no accepted credential now
   answers `401` whatever its content type, instead of a content-type error that hid the auth state.
   `revoke` reports the verbs it actually `removed` and `revoke_key` whether it `changed` anything,
