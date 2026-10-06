@@ -1,6 +1,9 @@
 package lakehouse
 
 import (
+	"bytes"
+	"context"
+	"encoding/gob"
 	"errors"
 	"testing"
 
@@ -70,5 +73,43 @@ func TestDeletesArePositionDeletesAndReplayOnce(t *testing.T) {
 	}
 	if rows, _ := scannedRows(t, s, "ns", "t"); rows != 2 {
 		t.Fatalf("replaying materialized commits must change nothing: %d rows", rows)
+	}
+}
+
+func TestAnUpsertInsertPinsItsEmbeddingSpaceInItsCommit(t *testing.T) {
+	cfg := sidecarConfig(t)
+	s, err := Open(t.TempDir(), WithSQLEngine(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "docs", []schema.Field{{Name: "body", Type: schema.Text, Vectorize: true}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	emb := store.Embedder{Identity: "fake-a", Embed: func(_ context.Context, texts []string) ([][]float32, error) {
+		out := make([][]float32, len(texts))
+		for i := range out {
+			out[i] = []float32{1, 0, 0}
+		}
+		return out, nil
+	}}
+	materializeHook = func() error { return errors.New("simulated crash before the Iceberg commit") }
+	_, err = s.Upsert(ctx, "ns", "docs", "body = ?", []any{"hello"}, map[string]any{"body": "hello"}, store.WriteOpts{}, emb, nil, store.Incarnation{})
+	materializeHook = nil
+	_ = err
+	var raw []byte
+	if err := s.namespaces["ns"].db.QueryRowContext(ctx, `SELECT rows FROM _dolmen_lakehouse_commits WHERE materialized = 0 ORDER BY rowid DESC LIMIT 1`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var decoded commitRows
+	if err := gob.NewDecoder(bytes.NewReader(raw)).Decode(&decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.EmbedSpace != "fake-a" || decoded.EmbedDim != 3 {
+		t.Fatalf("the upsert's commit must carry the embedding pin: %+v", decoded)
 	}
 }

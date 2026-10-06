@@ -172,6 +172,7 @@ type mutation struct {
 	owners  map[int64]string
 	nextID  int64
 	steps   []changeStep
+	pin     commitRows
 }
 
 type changeStep struct {
@@ -191,7 +192,7 @@ func (s *Store) commitMutation(ctx context.Context, n *namespace, state tableSta
 			return store.ChangeRange{}, err
 		}
 	}
-	payload := commitRows{Delete: append(append([]int64{}, m.deletes...), mapKeys(m.updates)...)}
+	payload := commitRows{Delete: append(append([]int64{}, m.deletes...), mapKeys(m.updates)...), EmbedSpace: m.pin.EmbedSpace, EmbedDim: m.pin.EmbedDim}
 	for _, row := range m.inserts {
 		payload.Rows = append(payload.Rows, row)
 	}
@@ -461,15 +462,13 @@ func (s *Store) mutate(ctx context.Context, ns, name, filter string, args []any,
 			if err != nil {
 				return err
 			}
-			if err := s.pinEmbedding(ctx, n, state, space, dim, emb); err != nil {
-				return err
-			}
+			pin := embeddingPin(state, space, dim, emb)
 			tx, err := n.db.BeginTx(ctx, nil)
 			if err != nil {
 				return err
 			}
 			defer tx.Rollback()
-			committed, err := s.commitAppend(ctx, tx, state, rows, store.WriteOpts{Owner: opts.Owner}, store.DomainFor(opts, scope), store.IdemHash{}, stamp, commitRows{})
+			committed, err := s.commitAppend(ctx, tx, state, rows, store.WriteOpts{Owner: opts.Owner}, store.DomainFor(opts, scope), store.IdemHash{}, stamp, pin)
 			if err != nil {
 				return err
 			}
@@ -486,9 +485,7 @@ func (s *Store) mutate(ctx context.Context, ns, name, filter string, args []any,
 		if err != nil {
 			return err
 		}
-		if err := s.pinEmbedding(ctx, n, state, space, dim, emb); err != nil {
-			return err
-		}
+		pin := embeddingPin(state, space, dim, emb)
 		current, err := s.currentRows(ctx, state, ids)
 		if err != nil {
 			return err
@@ -506,7 +503,7 @@ func (s *Store) mutate(ctx context.Context, ns, name, filter string, args []any,
 			}
 			updates[id] = next
 		}
-		result.Changes, err = s.commitMutation(ctx, n, state, mutation{kind: store.ChangeUpdate, updates: updates, owners: ownersOf(state, current)}, stamp)
+		result.Changes, err = s.commitMutation(ctx, n, state, mutation{kind: store.ChangeUpdate, updates: updates, owners: ownersOf(state, current), pin: pin}, stamp)
 		if err != nil {
 			return err
 		}
@@ -518,12 +515,11 @@ func (s *Store) mutate(ctx context.Context, ns, name, filter string, args []any,
 	return result, err
 }
 
-func (s *Store) pinEmbedding(ctx context.Context, n *namespace, state tableState, space string, dim int, emb store.Embedder) error {
+func embeddingPin(state tableState, space string, dim int, emb store.Embedder) commitRows {
 	if state.schema.EmbedDim != dim || space == "" && state.schema.EmbedDim != 0 {
-		state.schema.EmbedSpace = emb.Identity
-		return s.publishSchema(ctx, n, state)
+		return commitRows{EmbedSpace: emb.Identity, EmbedDim: state.schema.EmbedDim}
 	}
-	return nil
+	return commitRows{}
 }
 
 func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, records []map[string]any, opts store.WriteOpts, emb store.Embedder, scope *store.RowScope, scopeIncarnation store.Incarnation) (store.InsertResult, error) {
@@ -679,9 +675,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 			steps = append(steps, changeStep{id, store.ChangeUpdate})
 			result.Updated++
 		}
-		if err := s.pinEmbedding(ctx, n, state, space, dim, emb); err != nil {
-			return err
-		}
+		pin := embeddingPin(state, space, dim, emb)
 		var nextID int64
 		if len(inserts) > 0 {
 			nextID = next
@@ -692,7 +686,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 				}
 			}
 		}
-		result.Changes, err = s.commitMutation(ctx, n, state, mutation{kind: store.ChangeUpdate, inserts: inserts, updates: updates, owners: owners, nextID: nextID, steps: steps}, stamp)
+		result.Changes, err = s.commitMutation(ctx, n, state, mutation{kind: store.ChangeUpdate, inserts: inserts, updates: updates, owners: owners, nextID: nextID, steps: steps, pin: pin}, stamp)
 		if err != nil {
 			return err
 		}
