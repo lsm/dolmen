@@ -10,7 +10,42 @@ permissions:
   packages: write
 
 jobs:
+  sidecar:
+    name: dolmen-duckdb ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - platform: linux-amd64
+            runner: ubuntu-22.04
+          - platform: linux-arm64
+            runner: ubuntu-22.04-arm
+          - platform: darwin-arm64
+            runner: macos-14
+          - platform: windows-amd64
+            runner: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+
+      - name: Build and package the SQL sidecar
+        shell: bash
+        env:
+          MSYS2_ARG_CONV_EXCL: "*"
+          MSYS_NO_PATHCONV: "1"
+        run: sidecar/duckdb/package.sh "${{ matrix.platform }}" "${{ github.ref_name }}" sidecar-dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dolmen-duckdb-${{ matrix.platform }}
+          path: sidecar-dist/*.tar.gz
+          if-no-files-found: error
+
   release:
+    needs: sidecar
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -48,6 +83,17 @@ jobs:
 
       - name: Build release binaries
         run: make release VERSION=${{ github.ref_name }}
+
+      - name: Add the SQL sidecar bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dolmen-duckdb-*
+          path: dist
+          merge-multiple: true
+
+      - name: Resolve the pinned DuckDB version
+        id: duckdb
+        run: echo "version=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' sidecar/duckdb/fetch-deps.sh)" >> "$GITHUB_OUTPUT"
 
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
@@ -110,6 +156,8 @@ jobs:
             - [`dolmen-model-multilingual-e5-small.tar.gz`](https://github.com/${{ github.repository }}/releases/download/${{ steps.models.outputs.tag }}/dolmen-model-multilingual-e5-small.tar.gz) — the multilingual/CJK model (`intfloat/multilingual-e5-small`, ~270 MB compressed).
 
             See the README's "Offline install" and "Choosing an embedding model" sections.
+
+            The `dolmen-duckdb-*` bundles are the SQL sidecar for `-engine lakehouse`; unpack one beside the `dolmen` binary (see `docs/lakehouse-operations.md`). Each carries DuckDB ${{ steps.duckdb.outputs.version }}'s prebuilt library and its `avro`, `iceberg` and `httpfs` extensions (`httpfs` is placed but not loaded), fetched at pinned SHA-256 digests. The SBOM attached here describes the Go module graph only and does not list those DuckDB components, and the container image does not include the sidecar.
           generate_release_notes: true
           prerelease: ${{ steps.tags.outputs.is_final != 'true' }}
           make_latest: ${{ steps.tags.outputs.is_final }}

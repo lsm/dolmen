@@ -50,7 +50,7 @@ stacked; merge `main` into an active branch when needed, never rebase or force-p
 | 4 | **Namespace lifecycle + catalog-in-SQLite** (pins land here) | merged ([#569](https://github.com/lsm/dolmen/pull/569)); namespace/lifecycle conformance only |
 | 5 | **Table DDL + schema registry** | merged ([#574](https://github.com/lsm/dolmen/pull/574)); table/lifecycle conformance |
 | 6 | **Append + row-id allocation + idempotency** | implemented in slice 6; append conformance |
-| 11 | **`query` over the DuckDB sidecar** | implemented in slice 11; the release artifacts follow in its second PR |
+| 11 | **`query` over the DuckDB sidecar** | implemented in slice 11; release bundles in its second PR |
 | 7 | **Typed reads + number normalization** | implemented in slice 7; typed-read conformance |
 | 8 | **Point deletes by position** | implemented in slice 8; mutation conformance |
 | 9 | **Search: full text + vectors** (native, per D27) | implemented in slice 9; search conformance |

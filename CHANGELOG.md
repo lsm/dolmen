@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Releases attach a `dolmen-duckdb` bundle per platform (`linux-amd64`, `linux-arm64`,
+  `darwin-arm64`, `windows-amd64`): the lakehouse SQL sidecar, the pinned DuckDB library and its
+  extensions, built by `sidecar/duckdb/package.sh`. CI tests the lakehouse against that bundle. The
+  release notes state that the SBOM does not cover the DuckDB components.
+
 - Lakehouse slice 14 makes `vacuum` compact: each table's live rows are rewritten into one Parquet
   file in a single Iceberg commit, which drops its position-delete files, and older snapshots are
   expired with the files only they referenced.
