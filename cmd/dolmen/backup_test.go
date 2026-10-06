@@ -90,10 +90,10 @@ func TestBackupAndRestoreNameWhatTheyNeed(t *testing.T) {
 		}, "use pg_dump"},
 		{"backup on the lakehouse engine", func() error {
 			return runBackup([]string{"-out", t.TempDir()}, lakehouse, &bytes.Buffer{}, &bytes.Buffer{})
-		}, "not implemented"},
+		}, "stop the server and copy the whole data directory"},
 		{"restore on the lakehouse engine", func() error {
 			return runRestore([]string{"-from", t.TempDir(), "-data", t.TempDir()}, lakehouse, &bytes.Buffer{}, &bytes.Buffer{})
-		}, "not implemented"},
+		}, "stop the server and copy the whole data directory"},
 		{"restore of a directory that is not a backup", func() error {
 			return runRestore([]string{"-from", t.TempDir(), "-data", t.TempDir()}, env, &bytes.Buffer{}, &bytes.Buffer{})
 		}, "not a finished backup"},
