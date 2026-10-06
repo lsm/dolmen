@@ -585,7 +585,11 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 					}
 				}
 			}
-			signature := strings.Join(keyParts, "\x1f")
+			var sig strings.Builder
+			for _, part := range keyParts {
+				fmt.Fprintf(&sig, "%d:%s", len(part), part)
+			}
+			signature := sig.String()
 			if id, ok := pending[signature]; ok {
 				row := findRow(inserts, updates, id)
 				values, cleared, err := s.prepareSet(ctx, state, rec, emb)
