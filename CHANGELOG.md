@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`read_rows` pages through a table** (#584). Without `ids` it reads up to `limit` rows (default
+  100) with ids above `after_id`, and returns `next_after_id` while more follow. A caller holding
+  `read` on one table, or only their own rows on a `row_access` table, can now read all of it; before,
+  `query` needed `read` on the whole namespace and `read_rows` needed ids from elsewhere. The Go
+  facade gains `Store.ListRows`.
+
 - Lakehouse slice 7 adds `read_rows` and typed reads: numbers, booleans, `json`, vectors, secrets
   (masked or revealed), timestamps and owner scopes read back exactly as on SQLite, which a
   both-engine conformance test pins; `query` results are typed by column label the same way.
@@ -10,11 +16,6 @@
 
 ### Added
 
-- **`read_rows` pages through a table** (#584). Without `ids` it reads up to `limit` rows (default
-  100) with ids above `after_id`, and returns `next_after_id` while more follow. A caller holding
-  `read` on one table, or only their own rows on a `row_access` table, can now read all of it; before,
-  `query` needed `read` on the whole namespace and `read_rows` needed ids from elsewhere. The Go
-  facade gains `Store.ListRows`.
 - **Change-feed records carry a `commit` number.** Every change from one transaction (a multi-row
   write or a `batch`) shares one positive integer, stable within a namespace's lifetime, on
   `changes_since`, `wait_for` and SSE alike. Records written before the upgrade have no `commit`.
