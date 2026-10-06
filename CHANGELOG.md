@@ -1,60 +1,21 @@
 # Changelog
 
-## Unreleased
+## v0.6.0
 
-- A build without a release version stamped in reports where it came from — Go's module version
-  (a pseudo-version past the last tag for a checkout) or `devel+<commit>` — instead of the stale
-  `v0.3.0-devel` (#603).
+### Added
 
 - **`read_rows` pages through a table** (#584). Without `ids` it reads up to `limit` rows (default
   100) with ids above `after_id`, and returns `next_after_id` while more follow. A caller holding
   `read` on one table, or only their own rows on a `row_access` table, can now read all of it; before,
   `query` needed `read` on the whole namespace and `read_rows` needed ids from elsewhere. The Go
   facade gains `Store.ListRows`.
-
 - **API keys can expire** (#585). `create_key` takes an optional `expires_at`; at that time the key
   stops authenticating, like a revoked one, and stops counting toward a usable root administrator.
   `list_keys` reports `expires_at` and `expired`, and `active_only` drops revoked and expired keys.
   The key registry gains a nullable column in place; keys minted earlier never expire.
-
-- The lakehouse SQL sidecar stops when dolmen goes away mid-query, instead of running the query to
-  the end as an orphan (#590).
-
-- Lakehouse slice 10 adds `changes_since`, and with it `wait_for`. Both read the namespace commit
-  log written with each commit. Cursors are random tokens stored in the catalog. Each is bound to
-  its feed, refreshed on use and pruned by `-change-retention`. A both-engine conformance test
-  pins ordering, commit grouping, paging, resuming, cross-feed refusal and owner scoping.
-
-- Lakehouse slice 9 adds `search_fulltext`, `search_vector` and `tokenize`. Full text runs in Go
-  below the seam: the shared query grammar, a Porter stemmer and stop words, ranked with BM25.
-  Vector search is exact cosine. Filters resolve in the SQL sidecar. A both-engine conformance
-  test checks hits, phrases, `OR`, `NOT`, prefixes, filters, paging and the refusals; it does not
-  compare rankings across engines.
-
 - **`whoami` lists the caller's grants** (#583): every grant naming their principal or one of their
   groups, so a caller can see what they may do without probing. The bootstrap administrator sees
   its implicit `admin` on `*`.
-
-- Lakehouse slice 8 adds `update`, `delete`, `upsert` and `upsert_by_key`. Filters run in the SQL
-  sidecar; each mutation commits through the namespace log and lands in Iceberg as a position-delete
-  file plus the new row versions, with no data-file rewrite. A both-engine conformance test pins the
-  results against SQLite.
-
-- **Auth edges a client or admin tripped over** (#586). A request with no accepted credential now
-  answers `401` whatever its content type, instead of a content-type error that hid the auth state.
-  `revoke` reports the verbs it actually `removed` and `revoke_key` whether it `changed` anything,
-  so a typo no longer looks like success. `grant` reports whether its subject is `reachable` by any
-  configured identity source, which catches a mistyped principal during hand-over. MCP
-  `tools/list` hides the server-wide admin tools from callers without `admin` on `*`.
-
-- Lakehouse slice 7 adds `read_rows` and typed reads: numbers, booleans, `json`, vectors, secrets
-  (masked or revealed), timestamps and owner scopes read back exactly as on SQLite, which a
-  both-engine conformance test pins; `query` results are typed by column label the same way.
-
-## v0.6.0
-
-### Added
-
 - **Change-feed records carry a `commit` number.** Every change from one transaction (a multi-row
   write or a `batch`) shares one positive integer, stable within a namespace's lifetime, on
   `changes_since`, `wait_for` and SSE alike. Records written before the upgrade have no `commit`.
@@ -67,21 +28,29 @@
   prefix header arrives in a form it cannot use. A proxy that strips the prefix and sends no header
   still needs `DOLMEN_BASE_URL` (#577).
 - **Lakehouse groundwork, not yet selectable.** Namespace lifecycle with a SQLite-backed Iceberg
-  catalog per namespace, table lifecycle and schema evolution, and appends with row ids,
-  idempotency and a crash-safe commit log. `query` runs in `dolmen-duckdb`, a small sidecar
-  process per namespace, sealed read-only and confined to that namespace's data directory before
-  any caller SQL runs; the sidecar is not shipped in release artifacts yet. DuckDB was chosen
+  catalog per namespace, table lifecycle and schema evolution, appends with row ids, idempotency
+  and a crash-safe commit log, typed reads, updates and deletes as Iceberg position deletes,
+  full-text and vector search, and the change feed, each pinned against SQLite by a both-engine
+  conformance test. `query` runs in `dolmen-duckdb`, a small sidecar process per namespace,
+  sealed read-only and confined to that namespace's data directory before any caller SQL runs;
+  the sidecar is not shipped in release artifacts yet. DuckDB was chosen
   over DataFusion for it; the comparison is in `docs/design/lakehouse-plan.md` §2.8 and the spike
   code stays under `spike/`, outside dolmen's `go.mod`.
-
-- **The skills now cover running authentication.** The admin skill now covers turning authentication on, sign-in and gateway settings, handing over from the
-  bootstrap key and verifying it, key rotation, and token lifetimes; the core skill covers where
-  credentials come from, what to do after a `401`, and the limits of a single-table grant.
-  Under authentication `describe_server` reports `auth` (the mode and the accepted identity sources:
-  `admin-key`, `api-keys`, `trusted-proxy`, `oidc`) and inlines the engine's capabilities.
+- **The skills now cover running and using authentication.** The admin skill covers turning it on,
+  sign-in and gateway settings, handing over from the bootstrap key and verifying it, key rotation
+  and expiry, and token lifetimes; the core skill covers where credentials come from, how to read
+  your own grants, what to do after a `401` or `403`, and paging a table you can read only in part.
+  Under authentication `describe_server` reports `auth` (the mode and the accepted identity
+  sources: `admin-key`, `api-keys`, `trusted-proxy`, `oidc`) and the engine's `capabilities`.
 
 ### Changed
 
+- **Auth edges a client or admin tripped over** (#586). A request with no accepted credential now
+  answers `401` whatever its content type, instead of a content-type error that hid the auth state.
+  `revoke` reports the verbs it actually `removed` and `revoke_key` whether it `changed` anything,
+  so a typo no longer looks like success. `grant` reports whether its subject is `reachable` by any
+  configured identity source, which catches a mistyped principal during hand-over. MCP
+  `tools/list` hides the server-wide admin tools from callers without `admin` on `*`.
 - **`-shutdown-grace 0` cancels running requests immediately.** A positive value still bounds the
   drain. Cleanup afterwards (HTTP close, store close, telemetry) has its own fixed 5-second cap,
   and the process exits even if store close stalls; `dolmen mcp` over stdio has the same cap.
@@ -90,8 +59,13 @@
 
 ### Fixed
 
-- On PostgreSQL, `wait_for` with `timeout_ms: 0` returns changes already committed instead of timing out after a
-  synthetic 250 ms.
+- The lakehouse SQL sidecar stops when dolmen goes away mid-query, instead of running the query to
+  the end as an orphan (#590).
+- A build without a release version stamped in reports where it came from — Go's module version
+  (a pseudo-version past the last tag for a checkout) or `devel+<commit>` — instead of the stale
+  `v0.3.0-devel` (#603).
+- On PostgreSQL, `wait_for` with `timeout_ms: 0` returns changes already committed instead of
+  timing out after a synthetic 250 ms.
 - A canceled operation no longer waits behind PostgreSQL SQL compilation: compiler admission and
   waiting are bounded, SQL and filter compilation check for cancellation, and rollback finishes
   within the caller's deadline.
