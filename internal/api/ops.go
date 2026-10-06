@@ -1035,7 +1035,7 @@ var Ops = map[string]OpDef{
 		Description: "Fetch rows by id, or page through a table in id order. With ids: pass the row ids an insert returned, a query projected, or a change feed " +
 			"carried, and get the full rows back. Without ids: read up to limit rows (default " + strconv.Itoa(store.DefaultReadRowsLimit) + ") with ids above after_id (default 0); " +
 			"while truncated is true, pass next_after_id as after_id to read the next page. This is how a caller holding read on one table, " +
-			"or only its own rows on a row_access table, reads all of it. The plain read — no SQL to write, no namespace-wide gate to hold. " +
+			"or only its own rows on an owner-scoped table, reads all of it. The plain read — no SQL to write, no namespace-wide gate to hold. " +
 			"ids address a set: each found row appears once, in ascending id order, " +
 			"and ids that are missing are simply absent from the response — never an error; row_count reports how many came back. " +
 			"truncated is true only when the response budget dropped rows for existing ids (retry with fewer ids) — it never fires for missing ids. " +
