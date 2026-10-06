@@ -17,9 +17,9 @@ jobs:
       matrix:
         include:
           - platform: linux-amd64
-            runner: ubuntu-latest
+            runner: ubuntu-22.04
           - platform: linux-arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
           - platform: darwin-arm64
             runner: macos-14
           - platform: windows-amd64
@@ -157,7 +157,7 @@ jobs:
 
             See the README's "Offline install" and "Choosing an embedding model" sections.
 
-            The `dolmen-duckdb-*` bundles are the SQL sidecar for `-engine lakehouse`; unpack one beside the `dolmen` binary (see `docs/lakehouse-operations.md`). Each carries DuckDB ${{ steps.duckdb.outputs.version }}'s prebuilt library and its `iceberg` and `httpfs` extensions, fetched at pinned SHA-256 digests. The SBOM attached here describes the Go module graph only and does not list those DuckDB components, and the container image does not include the sidecar.
+            The `dolmen-duckdb-*` bundles are the SQL sidecar for `-engine lakehouse`; unpack one beside the `dolmen` binary (see `docs/lakehouse-operations.md`). Each carries DuckDB ${{ steps.duckdb.outputs.version }}'s prebuilt library and its `avro`, `iceberg` and `httpfs` extensions (`httpfs` is placed but not loaded), fetched at pinned SHA-256 digests. The SBOM attached here describes the Go module graph only and does not list those DuckDB components, and the container image does not include the sidecar.
           generate_release_notes: true
           prerelease: ${{ steps.tags.outputs.is_final != 'true' }}
           make_latest: ${{ steps.tags.outputs.is_final }}

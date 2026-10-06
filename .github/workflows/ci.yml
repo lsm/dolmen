@@ -313,8 +313,10 @@ jobs:
             macOS) platform=darwin-arm64 bin=dolmen-duckdb ;;
             Windows) platform=windows-amd64 bin=dolmen-duckdb.exe ;;
           esac
-          sidecar/duckdb/package.sh "$platform" ci "$RUNNER_TEMP/bundle"
-          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/bundle/dolmen-duckdb-ci-$platform.tar.gz"
+          temp="$RUNNER_TEMP"
+          if command -v cygpath >/dev/null 2>&1; then temp=$(cygpath -u "$RUNNER_TEMP"); fi
+          sidecar/duckdb/package.sh "$platform" ci "$temp/bundle"
+          tar -C "$temp" -xzf "$temp/bundle/dolmen-duckdb-ci-$platform.tar.gz"
           dest="$RUNNER_TEMP/dolmen-duckdb-ci-$platform"
           {
             echo "DOLMEN_TEST_DUCKDB_SIDECAR=$dest/$bin"
