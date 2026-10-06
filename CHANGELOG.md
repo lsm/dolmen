@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`whoami` lists the caller's grants** (#583): every grant naming their principal or one of their
+  groups, so a caller can see what they may do without probing. The bootstrap administrator sees
+  its implicit `admin` on `*`.
+
 - Lakehouse slice 7 adds `read_rows` and typed reads: numbers, booleans, `json`, vectors, secrets
   (masked or revealed), timestamps and owner scopes read back exactly as on SQLite, which a
   both-engine conformance test pins; `query` results are typed by column label the same way.
@@ -10,9 +14,6 @@
 
 ### Added
 
-- **`whoami` lists the caller's grants** (#583): every grant naming their principal or one of their
-  groups, so a caller can see what they may do without probing. The bootstrap administrator sees
-  its implicit `admin` on `*`.
 - **Change-feed records carry a `commit` number.** Every change from one transaction (a multi-row
   write or a `batch`) shares one positive integer, stable within a namespace's lifetime, on
   `changes_since`, `wait_for` and SSE alike. Records written before the upgrade have no `commit`.
