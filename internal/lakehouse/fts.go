@@ -294,7 +294,7 @@ func (q *ftsQuery) collect(n tsNode, negated bool) {
 			return
 		}
 		if x.prefix {
-			q.terms = append(q.terms, ftsTerm{text: strings.ToLower(x.text), prefix: true})
+			q.terms = append(q.terms, ftsTerm{text: foldAccents(strings.ToLower(x.text)), prefix: true})
 			return
 		}
 		for _, w := range termWords(x.text) {
@@ -319,7 +319,7 @@ func evalNode(n tsNode, d *ftsDoc) bool {
 	switch x := n.(type) {
 	case tsTerm:
 		if x.prefix {
-			return d.has(strings.ToLower(x.text), true) > 0
+			return d.has(foldAccents(strings.ToLower(x.text)), true) > 0
 		}
 		words := termWords(x.text)
 		if len(words) == 0 {
