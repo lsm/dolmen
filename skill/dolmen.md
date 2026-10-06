@@ -414,7 +414,8 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
   against `describe_table`.
 {{ else if eq .Dialect "duckdb" }}- **This server is lakehouse-backed.** Tables are Apache Iceberg (Parquet) files, and `query`,
   and `filter`, are DuckDB SQL (`capabilities` reports `query_dialect`/`filter_dialect` as `duckdb`)
-  run read-only over one view per table. SQLite functions such as `julianday()` and `iif()` do not
+  run read-only over one view per table, named after the table (`main.<table>` names the same
+  view). SQLite functions such as `julianday()` and `iif()` do not
   exist here; use `CASE`, `coalesce`, `strpos`, `date_trunc` and `strftime(ts, format)`. `number`
   fields read as `DOUBLE` inside SQL (an integral value still comes back as an integer).
   `timestamp` fields and `created_at` are ISO-8601 text, so cast before date arithmetic:
