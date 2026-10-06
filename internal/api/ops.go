@@ -1038,7 +1038,8 @@ var Ops = map[string]OpDef{
 			"or only its own rows on an owner-scoped table, reads all of it. The plain read — no SQL to write, no namespace-wide gate to hold. " +
 			"ids address a set: each found row appears once, in ascending id order, " +
 			"and ids that are missing are simply absent from the response — never an error; row_count reports how many came back. " +
-			"truncated is true only when the response budget dropped rows for existing ids (retry with fewer ids) — it never fires for missing ids. " +
+			"With ids, truncated is true only when the response budget dropped rows for existing ids (retry with fewer ids) — it never fires for missing ids; " +
+			"without ids, truncated means more rows follow, so pass next_after_id as after_id. " +
 			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array, secret -> the mask \"••••\" unless named in reveal) " +
 			"and omit the hidden _embedding column. At most " + strconv.Itoa(store.MaxReadRowsIDs) + " ids per request.",
 		InputSchema: map[string]any{
