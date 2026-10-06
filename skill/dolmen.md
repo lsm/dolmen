@@ -121,9 +121,10 @@ bootstrap key, which belongs to its operator).
   need, so an administrator can grant it. A table you hold nothing on answers `403` whether or not
   it exists, so a `403` does not confirm that a table is there.
 
-No operation lists your own grants: `list_namespaces` and `list_tables` show what you can reach,
-not which verbs you hold there, and `tools/list` shows every tool whether or not you may call it.
-When you need to know your verbs, ask the administrator.
+`whoami` also lists your `grants`: every grant naming your principal or one of your groups, each
+with its `object` and `verbs`. A grant on a namespace covers every table under it, so your verbs on a
+table are the union of the grants on it, its namespace and `*`. Read them before trying an
+operation instead of probing; `list_namespaces` and `list_tables` only show what you can reach.
 
 A grant gives verbs on a namespace (covering its tables and sub-namespaces), on one table, or on
 the whole server. What each operation needs:
