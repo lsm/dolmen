@@ -42,7 +42,7 @@ darwin-*)
   ;;
 esac
 cp "$work/lib/$lib" "$stage/"
-cp "$work/ext/iceberg.duckdb_extension" "$work/ext/httpfs.duckdb_extension" "$stage/duckdb-extensions/"
+cp -R "$work/ext/." "$stage/duckdb-extensions/"
 cp "$HERE/PROTOCOL.md" "$stage/"
 
 mkdir -p "$OUT"

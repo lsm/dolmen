@@ -37,7 +37,9 @@ that namespace's `data/` directory, and has external access disabled.
 
 Each release attaches a `dolmen-duckdb-<version>-<platform>.tar.gz` bundle for `linux-amd64`,
 `linux-arm64`, `darwin-arm64` and `windows-amd64`. It holds the sidecar, the pinned DuckDB library
-beside it, and the `iceberg` and `httpfs` extensions in `duckdb-extensions/`. Unpack its contents
+beside it, and the pinned `avro`, `iceberg` and `httpfs` extensions under
+`duckdb-extensions/<duckdb version>/<platform>/`, where DuckDB looks for them; the sidecar never
+downloads an extension. Unpack its contents
 into the directory that holds `dolmen`, and the defaults above find it:
 
 ```bash
