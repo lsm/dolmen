@@ -53,7 +53,7 @@ stacked; merge `main` into an active branch when needed, never rebase or force-p
 | 11 | **`query` over the DuckDB sidecar** | implemented in slice 11; the release artifacts follow in its second PR |
 | 7 | **Typed reads + number normalization** | implemented in slice 7; typed-read conformance |
 | 8 | **Point deletes by position** | implemented in slice 8; mutation conformance |
-| 9 | **Search: full text + vectors** (native, per D27) | after slice 11, in the approved order |
+| 9 | **Search: full text + vectors** (native, per D27) | implemented in slice 9; search conformance |
 | 10 | **Change feed** | after slice 11, in the approved order |
 | 12 | **Public selector + operator docs** | after slice 11, in the approved order |
 | 13 | **`subscribe`/SSE** | after slice 11, in the approved order |
@@ -243,6 +243,22 @@ in one catalog commit under the commit's snapshot marker. The table property
 lakehouse, including partial updates that keep unnamed fields and secrets, null to clear, required
 fields, matching nothing, both upsert branches, duplicate keys in one `upsert_by_key`, dry runs,
 the delete limit, and a secret compared with the mask.
+
+### Slice 9's search
+
+Full text runs engine-side in Go, per §10 Q7's assumption, so it does not depend on the sidecar
+being up unless the caller passes a filter. Rows are read from the table's snapshot. Each
+`fulltext` field is tokenized on letters, digits and underscores, lowercased, and stemmed with
+Porter. The query uses the core grammar of §7, parsed by the same parser the PostgreSQL adapter
+uses: terms with implicit AND, `OR`, binary `NOT`, quoted phrases and `term*` prefixes. Stop words
+are dropped from terms but kept in positions, so phrases stay contiguous. Hits are ranked by BM25
+(k1 1.2, b 0.75) over the whole table, ties broken by ascending id. Vector search is exact cosine
+over `_embedding` or a named vector column. A stored vector that is corrupt or has the wrong
+dimension is skipped and counted in `skipped_vectors`. Both searches apply the filter through the
+sidecar's `_dolmen_filter` view, then the row scope and `min_score`, and page with one row of
+lookahead for `truncated`. `tokenize` returns the stemmed, stop-word-free terms.
+`TestLakehouseSearchBackendConformance` pins matching behavior on both engines. Ranking is pinned
+only within each engine, per D27.
 
 ### Slice 3 in more detail
 
