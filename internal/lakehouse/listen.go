@@ -215,7 +215,7 @@ func (l *listenSession) fetch(ctx context.Context, boundary *int64) ([]store.Cha
 			return nil, err
 		}
 	}
-	records, next, err := l.store.changesSinceMode(ctx, l.ns, l.table, l.cursor, l.nsGen, nil, l.inc, store.Page{}, boundary)
+	records, next, err := l.store.changesSinceMode(ctx, l.ns, l.table, l.cursor, l.nsGen, nil, l.inc, store.Page{}, boundary, true)
 	if err != nil {
 		return nil, listenCause(err)
 	}
@@ -259,7 +259,7 @@ func (l *listenSession) fetchLive(ctx context.Context) ([]store.ChangeRecord, er
 			return nil, err
 		}
 	}
-	records, next, err := l.store.changesSinceMode(ctx, l.ns, l.table, l.liveCursor, l.nsGen, nil, l.inc, store.Page{Limit: store.MaxChangesPageLimit}, nil)
+	records, next, err := l.store.changesSinceMode(ctx, l.ns, l.table, l.liveCursor, l.nsGen, nil, l.inc, store.Page{Limit: store.MaxChangesPageLimit}, nil, true)
 	if err != nil {
 		return nil, listenCause(err)
 	}
