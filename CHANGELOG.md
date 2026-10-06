@@ -12,6 +12,10 @@
   lakehouse full-text grammar. `docs/lakehouse-operations.md` covers running it. CI runs the full
   conformance suite and the black-box tests on it.
 
+- A build without a release version stamped in reports where it came from — Go's module version
+  (a pseudo-version past the last tag for a checkout) or `devel+<commit>` — instead of the stale
+  `v0.3.0-devel` (#603).
+
 - **`read_rows` pages through a table** (#584). Without `ids` it reads up to `limit` rows (default
   100) with ids above `after_id`, and returns `next_after_id` while more follow. A caller holding
   `read` on one table, or only their own rows on a `row_access` table, can now read all of it; before,
