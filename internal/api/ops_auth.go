@@ -546,23 +546,30 @@ func keySchema() map[string]any {
 			},
 			"revoked":    prop("boolean", "Whether the key has been revoked"),
 			"created_at": prop("string", "When the key was minted, RFC 3339"),
+			"expires_at": prop("string", "When the key stops authenticating, RFC 3339; absent for a key that never expires"),
+			"expired":    prop("boolean", "Whether the key's expires_at has passed; an expired key is refused with 401 like a revoked one"),
 		},
 	}
 }
 
-func keyPayload(k auth.Key) map[string]any {
+func keyPayload(k auth.Key, now time.Time) map[string]any {
 	groups := k.Groups
 	if groups == nil {
 		groups = []string{}
 	}
-	return map[string]any{
+	out := map[string]any{
 		"id":         k.ID,
 		"name":       k.Name,
 		"principal":  k.Principal,
 		"groups":     groups,
 		"revoked":    k.Revoked,
 		"created_at": k.CreatedAt.Format(time.RFC3339Nano),
+		"expired":    k.Expired(now),
 	}
+	if !k.ExpiresAt.IsZero() {
+		out["expires_at"] = k.ExpiresAt.Format(time.RFC3339Nano)
+	}
+	return out
 }
 
 func init() {
@@ -582,6 +589,7 @@ func init() {
 					"description": "Optional groups the key carries, so group grants apply to it",
 					"items":       map[string]any{"type": "string"},
 				},
+				"expires_at": prop("string", "Optional RFC 3339 time after which the key stops authenticating, for example a contractor's or a CI run's key; must be in the future. Omitted, the key never expires"),
 			},
 		},
 		OutputSchema: outSchema(map[string]any{
@@ -593,9 +601,21 @@ func init() {
 				Name      string   `json:"name"`
 				Principal string   `json:"principal"`
 				Groups    []string `json:"groups"`
+				ExpiresAt *string  `json:"expires_at"`
 			}
 			if err := decode(body, &req); err != nil {
 				return nil, err
+			}
+			var expiresAt time.Time
+			if req.ExpiresAt != nil {
+				t, err := time.Parse(time.RFC3339Nano, *req.ExpiresAt)
+				if err != nil {
+					return nil, badRequest("expires_at %q is not an RFC 3339 time, for example 2026-12-31T23:59:59Z", *req.ExpiresAt)
+				}
+				if !t.After(time.Now()) {
+					return nil, badRequest("expires_at %s is not in the future, so the key could never authenticate", *req.ExpiresAt)
+				}
+				expiresAt = t
 			}
 			if err := auth.ValidateKeyName(req.Name); err != nil {
 				return nil, badRequest("%s", err.Error())
@@ -606,27 +626,32 @@ func init() {
 			if s.grants == nil {
 				return nil, errNoGrantRegistry
 			}
-			k, secret, err := s.grants.CreateKey(ctx, req.Name, req.Principal, req.Groups)
+			k, secret, err := s.grants.CreateKeyExpiring(ctx, req.Name, req.Principal, req.Groups, expiresAt)
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"key": keyPayload(k), "secret": secret}, nil
+			return map[string]any{"key": keyPayload(k, time.Now()), "secret": secret}, nil
 		},
 	}
 
 	authOps["list_keys"] = OpDef{
-		Description: "List the API keys this deployment holds: ids, names, principals, groups and whether each is revoked. " +
+		Description: "List the API keys this deployment holds: ids, names, principals, groups, expiry, and whether each is revoked " +
+			"or expired. Revoked and expired keys stay listed unless active_only is set. " +
 			"Never returns credentials — a key's secret is shown once, at creation. Requires admin on \"*\".",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
-			"properties":           map[string]any{},
+			"properties": map[string]any{
+				"active_only": prop("boolean", "List only keys that still authenticate: not revoked and not expired"),
+			},
 		},
 		OutputSchema: outSchema(map[string]any{
 			"keys": map[string]any{"type": "array", "items": keySchema()},
 		}, "keys"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
-			var req struct{}
+			var req struct {
+				ActiveOnly bool `json:"active_only"`
+			}
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
@@ -637,9 +662,13 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
+			now := time.Now()
 			out := make([]any, 0, len(keys))
 			for _, k := range keys {
-				out = append(out, keyPayload(k))
+				if req.ActiveOnly && (k.Revoked || k.Expired(now)) {
+					continue
+				}
+				out = append(out, keyPayload(k, now))
 			}
 			return map[string]any{"keys": out}, nil
 		},
@@ -687,7 +716,7 @@ func init() {
 			if k.ID == "" {
 				return map[string]any{"key": nil, "changed": false}, nil
 			}
-			return map[string]any{"key": keyPayload(k), "changed": changed}, nil
+			return map[string]any{"key": keyPayload(k, time.Now()), "changed": changed}, nil
 		},
 	}
 }
