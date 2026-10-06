@@ -3,6 +3,7 @@ package lakehouse
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -486,4 +487,50 @@ func TestAQueryNeverSeesABatchThatRollsBack(t *testing.T) {
 	if got != int64(1) {
 		t.Fatalf("a query must see the table before or after a batch, never a write the batch rolls back: %v", got)
 	}
+}
+
+func TestTheSidecarStopsWhenItsParentGoesAway(t *testing.T) {
+	cfg := sidecarConfig(t)
+	s := openSQLStore(t, t.TempDir(), cfg)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	mustQuery(t, s, "ns", "SELECT 1 AS x")
+	sc := s.namespaces["ns"].sql
+	written := &signalingWriter{WriteCloser: sc.stdin, wrote: make(chan struct{}, 1)}
+	sc.write.Lock()
+	sc.stdin = written
+	sc.write.Unlock()
+	go func() {
+		_, _ = s.Query(context.Background(), "ns", "WITH RECURSIVE r(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM r) SELECT count(*) AS n FROM r", nil, [16]byte{}, store.Page{})
+	}()
+	select {
+	case <-written.wrote:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the query never reached the sidecar")
+	}
+	if err := written.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-sc.done:
+	case <-time.After(30 * time.Second):
+		_ = sc.cmd.Process.Kill()
+		t.Fatal("with its stdin closed after a query and no shutdown sent, as when dolmen dies, the sidecar kept running")
+	}
+}
+
+type signalingWriter struct {
+	io.WriteCloser
+	wrote chan struct{}
+}
+
+func (w *signalingWriter) Write(p []byte) (int, error) {
+	n, err := w.WriteCloser.Write(p)
+	select {
+	case w.wrote <- struct{}{}:
+	default:
+	}
+	return n, err
 }
