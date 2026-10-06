@@ -446,7 +446,10 @@ credentials:
   not be unique; IDs disambiguate.
 - Shape: `dlm_…` bearer, shown in full exactly once at creation (with its key ID);
   `list_keys` returns key IDs, names,
-  principals, and key state (active/revoked) — never credentials. **Generation is pinned**:
+  principals, and key state (active/revoked, and expiry) — never credentials. A key may carry an
+  optional `expires_at` (amended 2026-10-05, #585): from that instant it is refused with the same
+  uniform `401` as a revoked key and no longer counts toward a usable root administrator; keys
+  minted before the column existed never expire. `list_keys` can be limited to `active_only`. **Generation is pinned**:
   the server mints every key from a CSPRNG as `dlm_` + 32 random bytes in base64url — 43
   characters after the prefix, 256 bits of entropy, exact alphabet `A–Z a–z 0–9 - _` — and the
   caller never supplies key material. A bearer matching the `dlm_` prefix but not this exact
