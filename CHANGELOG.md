@@ -6,12 +6,21 @@
   file in a single Iceberg commit, which drops its position-delete files, and older snapshots are
   expired with the files only they referenced.
 
+- **New error code `sql_engine_unavailable`** (503): the lakehouse engine's DuckDB sidecar is
+  missing or failed to start. The Go library exports it as `dolmen.ErrSQLEngineUnavailable`.
+
 - Lakehouse slice 12 makes the engine selectable with `-engine lakehouse`. `-duckdb-sidecar` and
   `-duckdb-extensions` locate the SQL sidecar. The engine now implements every operation: `batch`
   (atomic, by snapshotting the namespace catalog and restoring it on failure or after a crash),
   secret rotation, `vacuum` and `subscribe`. The served skills describe DuckDB SQL and the
   lakehouse full-text grammar. `docs/lakehouse-operations.md` covers running it. CI runs the full
   conformance suite and the black-box tests on it.
+
+- **`read_rows` pages through a table** (#584). Without `ids` it reads up to `limit` rows (default
+  100) with ids above `after_id`, and returns `next_after_id` while more follow. A caller holding
+  `read` on one table, or only their own rows on a `row_access` table, can now read all of it; before,
+  `query` needed `read` on the whole namespace and `read_rows` needed ids from elsewhere. The Go
+  facade gains `Store.ListRows`.
 
 - **API keys can expire** (#585). `create_key` takes an optional `expires_at`; at that time the key
   stops authenticating, like a revoked one, and stops counting toward a usable root administrator.

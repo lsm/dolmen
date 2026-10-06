@@ -37,7 +37,7 @@ const sidecarStartTimeout = 60 * time.Second
 
 const sidecarCancelGrace = 5 * time.Second
 
-var ErrSQLEngineUnavailable = errors.New("lakehouse SQL engine unavailable")
+var ErrSQLEngineUnavailable = derr.ErrSQLEngineUnavailable
 
 type SQLEngine struct {
 	Binary       string
@@ -49,7 +49,7 @@ type SQLEngine struct {
 func WithSQLEngine(cfg SQLEngine) OpenOption { return func(s *Store) { s.sqlEngine = cfg } }
 
 func sqlUnavailable(format string, args ...any) error {
-	return fmt.Errorf("%w: %s", ErrSQLEngineUnavailable, fmt.Sprintf(format, args...))
+	return derr.New(derr.SQLEngineUnavailable, "the lakehouse SQL engine is unavailable: "+format, args...)
 }
 
 type sidecar struct {

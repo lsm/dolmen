@@ -66,6 +66,37 @@ func (s *Store) RevealRows(ctx context.Context, namespace, table string, ids []i
 	return QueryResult{Rows: res.Rows, Truncated: res.Truncated}, nil
 }
 
+type RowPage struct {
+	AfterID int64
+	Limit   int
+}
+
+func (s *Store) ListRows(ctx context.Context, namespace, table string, page RowPage) (r0 QueryResult, err error) {
+	ctx, span := s.startOp(ctx, "read_rows", namespace, table)
+	defer func() { endOp(span, err) }()
+	if err := s.begin(); err != nil {
+		return QueryResult{}, err
+	}
+	defer s.done()
+	if err := ctx.Err(); err != nil {
+		return QueryResult{}, facadeErr(ctx, err)
+	}
+	if page.Limit == 0 {
+		page.Limit = store.DefaultReadRowsLimit
+	}
+	if err := store.ValidateRowPage(page.AfterID, page.Limit); err != nil {
+		return QueryResult{}, facadeErr(ctx, err)
+	}
+	if tbl := ops.NormalizeTable(table); tbl == "" || !validTableName(tbl) {
+		return QueryResult{}, derr.New(derr.InvalidRequest, "table must match ^[a-z][a-z0-9_]{0,63}$ and not contain __fts or start with sqlite_")
+	}
+	res, err := s.eng.ListRows(ctx, ops.NormalizeNamespace(namespace), ops.NormalizeTable(table), page.AfterID, page.Limit, nil, store.Incarnation{})
+	if err != nil {
+		return QueryResult{}, facadeErr(ctx, err)
+	}
+	return QueryResult{Rows: res.Rows, Truncated: res.Truncated}, nil
+}
+
 func (s *Store) Query(ctx context.Context, namespace, sql string, opts QueryOptions) (r0 QueryResult, err error) {
 	ctx, span := s.startOp(ctx, "query", namespace, "")
 	defer func() { endOp(span, err) }()

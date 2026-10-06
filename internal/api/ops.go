@@ -1058,11 +1058,14 @@ var Ops = map[string]OpDef{
 		},
 	},
 	"read_rows": {
-		Description: "Fetch rows by id: pass the row ids an insert returned, a query projected, or a change feed " +
-			"carried, and get the full rows back. The plain by-id read — no SQL to write, no namespace-wide gate to hold. " +
+		Description: "Fetch rows by id, or page through a table in id order. With ids: pass the row ids an insert returned, a query projected, or a change feed " +
+			"carried, and get the full rows back. Without ids: read up to limit rows (default " + strconv.Itoa(store.DefaultReadRowsLimit) + ") with ids above after_id (default 0); " +
+			"while truncated is true, pass next_after_id as after_id to read the next page. This is how a caller holding read on one table, " +
+			"or only its own rows on an owner-scoped table, reads all of it. The plain read — no SQL to write, no namespace-wide gate to hold. " +
 			"ids address a set: each found row appears once, in ascending id order, " +
 			"and ids that are missing are simply absent from the response — never an error; row_count reports how many came back. " +
-			"truncated is true only when the response budget dropped rows for existing ids (retry with fewer ids) — it never fires for missing ids. " +
+			"With ids, truncated is true only when the response budget dropped rows for existing ids (retry with fewer ids) — it never fires for missing ids; " +
+			"without ids, truncated means more rows follow, so pass next_after_id as after_id. " +
 			"Results honor declared field types (boolean -> true/false, json -> decoded value, vector -> number array, secret -> the mask \"••••\" unless named in reveal) " +
 			"and omit the hidden _embedding column. At most " + strconv.Itoa(store.MaxReadRowsIDs) + " ids per request.",
 		InputSchema: map[string]any{
@@ -1077,9 +1080,20 @@ var Ops = map[string]OpDef{
 					"items":       map[string]any{"type": "integer"},
 					"maxItems":    store.MaxReadRowsIDs,
 				},
+				"after_id": map[string]any{
+					"type":        "integer",
+					"minimum":     0,
+					"description": "Without ids: read rows whose id is greater than this (default 0, the start of the table); pass the previous page's next_after_id",
+				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"minimum":     1,
+					"maximum":     store.MaxReadRowsIDs,
+					"description": "Without ids: at most this many rows per page (default " + strconv.Itoa(store.DefaultReadRowsLimit) + ")",
+				},
 				"reveal": revealProp(),
 			},
-			"required": []string{"namespace", "table", "ids"},
+			"required": []string{"namespace", "table"},
 		},
 		OutputSchema: outSchema(map[string]any{
 			"rows": map[string]any{
@@ -1087,16 +1101,29 @@ var Ops = map[string]OpDef{
 				"description": "The found rows in ascending id order, keyed by field name; declared fields honor their types, and the hidden _embedding column is omitted",
 				"items":       map[string]any{"type": "object", "description": "Row keyed by field name"},
 			},
-			"row_count": prop("integer", "Number of rows returned (ids that were missing are absent, never an error)"),
-			"truncated": prop("boolean", "True when the response budget dropped rows for existing ids — retry with fewer ids; never true for missing ids"),
+			"row_count":     prop("integer", "Number of rows returned (ids that were missing are absent, never an error)"),
+			"truncated":     prop("boolean", "With ids: true when the response budget dropped rows for existing ids — retry with fewer ids; never true for missing ids. Without ids: true when more rows follow this page"),
+			"next_after_id": prop("integer", "Without ids, when truncated: the after_id that reads the next page"),
 		}, "rows", "row_count", "truncated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req readRowsReq
 			if err := decode(body, &req); err != nil {
 				return nil, err
 			}
+			if req.Ids != nil && (req.AfterID != nil || req.Limit != nil) {
+				return nil, badRequest(`pass either ids, to fetch those rows, or after_id and limit, to page through the table, not both`)
+			}
+			afterID, limit := int64(0), store.DefaultReadRowsLimit
+			if req.AfterID != nil {
+				afterID = *req.AfterID
+			}
+			if req.Limit != nil {
+				limit = *req.Limit
+			}
 			if req.Ids == nil {
-				return nil, badRequest(`ids is required (pass the ids a write returned, a query projected, or a change feed carried; an empty list selects nothing)`)
+				if err := store.ValidateRowPage(afterID, limit); err != nil {
+					return nil, wrapStoreErr(err)
+				}
 			}
 			ns := normNS(req.Namespace)
 			scope, inc, err := s.resolveScope(ctx, ns, normTable(req.Table))
@@ -1104,12 +1131,23 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ctx = store.WithReveal(ctx, req.Reveal)
-			res, err := s.eng.GetRows(ctx, ns, normTable(req.Table), *req.Ids, scope, inc)
+			var res store.QueryResult
+			if req.Ids != nil {
+				res, err = s.eng.GetRows(ctx, ns, normTable(req.Table), *req.Ids, scope, inc)
+			} else {
+				res, err = s.eng.ListRows(ctx, ns, normTable(req.Table), afterID, limit, scope, inc)
+			}
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
 			s.auditReveal(ctx, ns, normTable(req.Table), req.Reveal, res.Rows)
-			return map[string]any{"rows": res.Rows, "row_count": len(res.Rows), "truncated": res.Truncated}, nil
+			out := map[string]any{"rows": res.Rows, "row_count": len(res.Rows), "truncated": res.Truncated}
+			if req.Ids == nil && res.Truncated && len(res.Rows) > 0 {
+				if id, ok := res.Rows[len(res.Rows)-1]["id"].(int64); ok {
+					out["next_after_id"] = id
+				}
+			}
+			return out, nil
 		},
 	},
 	"query": {
@@ -2159,6 +2197,8 @@ type readRowsReq struct {
 	Namespace string   `json:"namespace"`
 	Table     string   `json:"table"`
 	Ids       *[]int64 `json:"ids"`
+	AfterID   *int64   `json:"after_id"`
+	Limit     *int     `json:"limit"`
 	Reveal    []string `json:"reveal"`
 }
 

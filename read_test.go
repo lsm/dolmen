@@ -184,3 +184,32 @@ func TestGetRowsNilIDsRejected(t *testing.T) {
 		t.Fatalf("empty id list must select nothing, got %+v", empty)
 	}
 }
+
+func TestListRowsPagesThroughATable(t *testing.T) {
+	st, ctx := openWithNotes(t)
+	records := []map[string]any{}
+	for _, title := range []string{"a", "b", "c"} {
+		records = append(records, map[string]any{"title": title})
+	}
+	if _, err := st.Insert(ctx, "app", "notes", records, InsertOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := st.ListRows(ctx, "app", "notes", RowPage{Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Rows) != 2 || !first.Truncated {
+		t.Fatalf("the first page of two must hold two rows and say more follow: %+v", first)
+	}
+	last := first.Rows[1]["id"].(int64)
+	rest, err := st.ListRows(ctx, "app", "notes", RowPage{AfterID: last, Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rest.Rows) != 1 || rest.Truncated || rest.Rows[0]["title"] != "c" {
+		t.Fatalf("the page after id %d must hold only c: %+v", last, rest)
+	}
+	if _, err := st.ListRows(ctx, "app", "notes", RowPage{Limit: 1001}); err == nil {
+		t.Fatal("a page above 1000 rows must be refused")
+	}
+}

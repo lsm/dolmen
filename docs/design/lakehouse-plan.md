@@ -327,8 +327,10 @@ Running the full suite on the engine exposed three more gaps, closed in the same
 The Go library still refuses `WithEngine("lakehouse")`, and the embedded-parity tests skip it.
 Supporting it would add a public option, the way `dolmen/postgres` does for adapter #2.
 
-**Open:** §10 Q3 is still undecided. A sidecar that is down surfaces as `ErrSQLEngineUnavailable`,
-which the public error taxonomy does not name, so it reaches callers as `internal_error`.
+**Decided:** §10 Q3 takes the recommended answer. A sidecar that is down or cannot start answers
+the new `sql_engine_unavailable` code (HTTP 503), beside `embedder_unavailable`, with
+`query_error` kept for SQL the engine rejected. The Go library exports it as
+`dolmen.ErrSQLEngineUnavailable`.
 
 ### Slice 14's compaction
 

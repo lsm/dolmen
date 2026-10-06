@@ -6,7 +6,9 @@ import (
 	"os"
 	"testing"
 
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/lakehouse"
+	"github.com/lsm/dolmen/internal/ops"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -81,5 +83,21 @@ func TestLakehouseQueryBackendConformance(t *testing.T) {
 				t.Fatalf("a write must be refused as invalid: %v", err)
 			}
 		})
+	}
+}
+
+func TestALakehouseWithoutItsSidecarAnswersSQLEngineUnavailable(t *testing.T) {
+	st, err := lakehouse.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	ctx := t.Context()
+	if err := st.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.Query(ctx, "ns", "SELECT 1 AS x", nil, [16]byte{}, store.Page{})
+	if got := ops.Classify(err); got != derr.Code("sql_engine_unavailable") {
+		t.Fatalf("a query with no SQL sidecar classifies as %q, want sql_engine_unavailable: %v", got, err)
 	}
 }

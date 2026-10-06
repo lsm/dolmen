@@ -142,9 +142,15 @@ func TestShapesAMaskedTableCannotTakeAreRefusedClearly(t *testing.T) {
 	} {
 		status, out := h.httpCall("query", map[string]any{"namespace": "sec", "sql": c.sql})
 		if testEngine(t) == store.EngineLakehouse && strings.HasPrefix(c.sql, "SELECT token FROM main.") {
-			raw, _ := json.Marshal(out)
-			if strings.Contains(string(raw), "PLAINTEXT") {
-				t.Fatalf("%s leaked plaintext: %s", c.sql, raw)
+			data, _ := out["data"].(map[string]any)
+			rows, _ := data["rows"].([]any)
+			if status != http.StatusOK || len(rows) == 0 {
+				t.Fatalf("%s: DuckDB's default schema is main, so the lakehouse must read the masked table: %d %v", c.sql, status, out)
+			}
+			for _, r := range rows {
+				if tok := r.(map[string]any)["token"]; tok != nil && tok != secret.Mask {
+					t.Fatalf("%s returned token %v, want the mask", c.sql, tok)
+				}
 			}
 			continue
 		}
