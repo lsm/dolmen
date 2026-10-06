@@ -5,6 +5,12 @@
 - The lakehouse SQL sidecar stops when dolmen goes away mid-query, instead of running the query to
   the end as an orphan (#590).
 
+- Lakehouse slice 9 adds `search_fulltext`, `search_vector` and `tokenize`. Full text runs in Go
+  below the seam: the shared query grammar, a Porter stemmer and stop words, ranked with BM25.
+  Vector search is exact cosine. Filters resolve in the SQL sidecar. A both-engine conformance
+  test checks hits, phrases, `OR`, `NOT`, prefixes, filters, paging and the refusals; it does not
+  compare rankings across engines.
+
 - **`whoami` lists the caller's grants** (#583): every grant naming their principal or one of their
   groups, so a caller can see what they may do without probing. The bootstrap administrator sees
   its implicit `admin` on `*`.
