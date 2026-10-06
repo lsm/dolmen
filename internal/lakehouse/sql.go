@@ -704,6 +704,9 @@ func (s *Store) Query(ctx context.Context, ns, sql string, args []any, nsGen [16
 	if err != nil {
 		return store.QueryResult{}, err
 	}
+	b := s.barrier(ns)
+	b.RLock()
+	defer b.RUnlock()
 	sc.run.Lock()
 	if !sc.alive() || sc.closing.Load() {
 		sc.run.Unlock()
