@@ -246,7 +246,7 @@ func (s *Store) commitMutation(ctx context.Context, n *namespace, state tableSta
 	var changes store.ChangeRange
 	mint := func(id int64, kind store.ChangeKind) error {
 		var owner any
-		if state.schema.HasOwner {
+		if state.schema.HasOwner && m.owners[id] != "" {
 			owner = m.owners[id]
 		}
 		res, err := tx.ExecContext(ctx, `INSERT INTO _dolmen_lakehouse_changes(table_name, generation, row_id, kind, owner, commit_id, at) VALUES(?,?,?,?,?,?,?)`, inc.Table, inc.DropGen, id, string(kind), owner, commit, stamp)

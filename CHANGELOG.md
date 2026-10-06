@@ -7,6 +7,11 @@
   `list_keys` reports `expires_at` and `expired`, and `active_only` drops revoked and expired keys.
   The key registry gains a nullable column in place; keys minted earlier never expire.
 
+- Lakehouse slice 10 adds `changes_since`, and with it `wait_for`. Both read the namespace commit
+  log written with each commit. Cursors are random tokens stored in the catalog. Each is bound to
+  its feed, refreshed on use and pruned by `-change-retention`. A both-engine conformance test
+  pins ordering, commit grouping, paging, resuming, cross-feed refusal and owner scoping.
+
 - Lakehouse slice 9 adds `search_fulltext`, `search_vector` and `tokenize`. Full text runs in Go
   below the seam: the shared query grammar, a Porter stemmer and stop words, ranked with BM25.
   Vector search is exact cosine. Filters resolve in the SQL sidecar. A both-engine conformance
