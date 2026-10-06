@@ -7,13 +7,14 @@ type ErrorCode = derr.Code
 type Error = derr.Error
 
 var (
-	ErrInvalidRequest      = derr.ErrInvalidRequest
-	ErrNotFound            = derr.ErrNotFound
-	ErrQuery               = derr.ErrQuery
-	ErrConflict            = derr.ErrConflict
-	ErrForbidden           = derr.ErrForbidden
-	ErrEmbedderUnavailable = derr.ErrEmbedderUnavailable
-	ErrCanceled            = derr.ErrCanceled
-	ErrTimeout             = derr.ErrTimeout
-	ErrInternal            = derr.ErrInternal
+	ErrInvalidRequest       = derr.ErrInvalidRequest
+	ErrNotFound             = derr.ErrNotFound
+	ErrQuery                = derr.ErrQuery
+	ErrConflict             = derr.ErrConflict
+	ErrForbidden            = derr.ErrForbidden
+	ErrEmbedderUnavailable  = derr.ErrEmbedderUnavailable
+	ErrSQLEngineUnavailable = derr.ErrSQLEngineUnavailable
+	ErrCanceled             = derr.ErrCanceled
+	ErrTimeout              = derr.ErrTimeout
+	ErrInternal             = derr.ErrInternal
 )

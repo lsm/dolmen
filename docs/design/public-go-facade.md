@@ -113,7 +113,7 @@ it does not block the core. Multiple existing write calls are separate commits.
 
 Expose `Error`, `ErrorCode`, and category sentinels from the root package. Preserve
 the existing taxonomy: `invalid_request`, `not_found`, `query_error`, `conflict`,
-`forbidden`, `embedder_unavailable`, `canceled`, `timeout`, and `internal_error`. The forbidden
+`forbidden`, `embedder_unavailable`, `sql_engine_unavailable`, `canceled`, `timeout`, and `internal_error`. The forbidden
 category is reserved for shared classification; trusted embedded access does not introduce auth.
 `timeout` is what an expired context deadline classifies as, on the wire (where the server's
 operation limits set the deadline) and in the façade (where the caller's context does), so

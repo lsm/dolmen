@@ -5,16 +5,17 @@ import "fmt"
 type Code string
 
 const (
-	InvalidRequest      Code = "invalid_request"
-	NotFound            Code = "not_found"
-	Query               Code = "query_error"
-	Conflict            Code = "conflict"
-	Unauthorized        Code = "unauthorized"
-	Forbidden           Code = "forbidden"
-	EmbedderUnavailable Code = "embedder_unavailable"
-	Canceled            Code = "canceled"
-	Timeout             Code = "timeout"
-	Internal            Code = "internal_error"
+	InvalidRequest       Code = "invalid_request"
+	NotFound             Code = "not_found"
+	Query                Code = "query_error"
+	Conflict             Code = "conflict"
+	Unauthorized         Code = "unauthorized"
+	Forbidden            Code = "forbidden"
+	EmbedderUnavailable  Code = "embedder_unavailable"
+	SQLEngineUnavailable Code = "sql_engine_unavailable"
+	Canceled             Code = "canceled"
+	Timeout              Code = "timeout"
+	Internal             Code = "internal_error"
 )
 
 type Error struct {
@@ -44,14 +45,15 @@ func Wrap(code Code, cause error) *Error {
 }
 
 var (
-	ErrInvalidRequest      = &Error{Code: InvalidRequest}
-	ErrNotFound            = &Error{Code: NotFound}
-	ErrQuery               = &Error{Code: Query}
-	ErrConflict            = &Error{Code: Conflict}
-	ErrUnauthorized        = &Error{Code: Unauthorized}
-	ErrForbidden           = &Error{Code: Forbidden}
-	ErrEmbedderUnavailable = &Error{Code: EmbedderUnavailable}
-	ErrCanceled            = &Error{Code: Canceled}
-	ErrTimeout             = &Error{Code: Timeout}
-	ErrInternal            = &Error{Code: Internal}
+	ErrInvalidRequest       = &Error{Code: InvalidRequest}
+	ErrNotFound             = &Error{Code: NotFound}
+	ErrQuery                = &Error{Code: Query}
+	ErrConflict             = &Error{Code: Conflict}
+	ErrUnauthorized         = &Error{Code: Unauthorized}
+	ErrForbidden            = &Error{Code: Forbidden}
+	ErrEmbedderUnavailable  = &Error{Code: EmbedderUnavailable}
+	ErrSQLEngineUnavailable = &Error{Code: SQLEngineUnavailable}
+	ErrCanceled             = &Error{Code: Canceled}
+	ErrTimeout              = &Error{Code: Timeout}
+	ErrInternal             = &Error{Code: Internal}
 )

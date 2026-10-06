@@ -155,6 +155,39 @@ func (s *Store) GetRows(ctx context.Context, ns, name string, ids []int64, scope
 	if len(ids) > store.MaxReadRowsIDs {
 		return store.QueryResult{}, invalidf("read_rows accepts at most %d ids per request, got %d", store.MaxReadRowsIDs, len(ids))
 	}
+	return s.readRows(ctx, ns, name, scope, expected, func(state tableState) ([]map[string]any, bool, error) {
+		if len(ids) == 0 {
+			return nil, false, nil
+		}
+		raws, err := scanRows(ctx, state, idFilter(ids))
+		return raws, false, err
+	})
+}
+
+func (s *Store) ListRows(ctx context.Context, ns, name string, afterID int64, limit int, scope *store.RowScope, expected store.Incarnation) (store.QueryResult, error) {
+	if err := store.ValidateRowPage(afterID, limit); err != nil {
+		return store.QueryResult{}, err
+	}
+	return s.readRows(ctx, ns, name, scope, expected, func(state tableState) ([]map[string]any, bool, error) {
+		raws, err := scanRows(ctx, state, iceberg.GreaterThan(iceberg.Reference("id"), afterID))
+		if err != nil {
+			return nil, false, err
+		}
+		page := make([]map[string]any, 0, min(len(raws), limit))
+		for _, raw := range raws {
+			if !inScope(state.schema, scope, raw) {
+				continue
+			}
+			if len(page) == limit {
+				return page, true, nil
+			}
+			page = append(page, raw)
+		}
+		return page, false, nil
+	})
+}
+
+func (s *Store) readRows(ctx context.Context, ns, name string, scope *store.RowScope, expected store.Incarnation, pick func(tableState) ([]map[string]any, bool, error)) (store.QueryResult, error) {
 	result := store.QueryResult{Rows: []map[string]any{}}
 	err := s.withNamespace(ctx, ns, func(n *namespace) error {
 		state, err := loadTable(ctx, n, ns, name)
@@ -171,13 +204,11 @@ func (s *Store) GetRows(ctx context.Context, ns, name string, ids []int64, scope
 		if err != nil {
 			return err
 		}
-		if len(ids) == 0 {
-			return nil
-		}
-		raws, err := scanRows(ctx, state, idFilter(ids))
-		if err != nil {
+		raws, more, err := pick(state)
+		if err != nil || len(raws) == 0 {
 			return err
 		}
+		result.Truncated = more
 		sealed, err := loadSecrets(ctx, n, state, reveal, raws)
 		if err != nil {
 			return err
