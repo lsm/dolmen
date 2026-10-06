@@ -1074,8 +1074,8 @@ var Ops = map[string]OpDef{
 				"description": "The found rows in ascending id order, keyed by field name; declared fields honor their types, and the hidden _embedding column is omitted",
 				"items":       map[string]any{"type": "object", "description": "Row keyed by field name"},
 			},
-			"row_count": prop("integer", "Number of rows returned (ids that were missing are absent, never an error)"),
-			"truncated": prop("boolean", "With ids: true when the response budget dropped rows for existing ids — retry with fewer ids; never true for missing ids. Without ids: true when more rows follow this page"),
+			"row_count":     prop("integer", "Number of rows returned (ids that were missing are absent, never an error)"),
+			"truncated":     prop("boolean", "With ids: true when the response budget dropped rows for existing ids — retry with fewer ids; never true for missing ids. Without ids: true when more rows follow this page"),
 			"next_after_id": prop("integer", "Without ids, when truncated: the after_id that reads the next page"),
 		}, "rows", "row_count", "truncated"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
