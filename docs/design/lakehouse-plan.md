@@ -54,7 +54,7 @@ stacked; merge `main` into an active branch when needed, never rebase or force-p
 | 7 | **Typed reads + number normalization** | implemented in slice 7; typed-read conformance |
 | 8 | **Point deletes by position** | implemented in slice 8; mutation conformance |
 | 9 | **Search: full text + vectors** (native, per D27) | implemented in slice 9; search conformance |
-| 10 | **Change feed** | after slice 11, in the approved order |
+| 10 | **Change feed** | implemented in slice 10; change-feed conformance |
 | 12 | **Public selector + operator docs** | after slice 11, in the approved order |
 | 13 | **`subscribe`/SSE** | after slice 11, in the approved order |
 | 14 | **Compaction + maintenance** | after slice 11, in the approved order |
@@ -259,6 +259,22 @@ sidecar's `_dolmen_filter` view, then the row scope and `min_score`, and page wi
 lookahead for `truncated`. `tokenize` returns the stemmed, stop-word-free terms.
 `TestLakehouseSearchBackendConformance` pins matching behavior on both engines. Ranking is pinned
 only within each engine, per D27.
+
+### Slice 10's change feed
+
+`changes_since` reads `_dolmen_lakehouse_changes`, the change records each commit writes in the
+same SQLite transaction as its log entry, so the feed has no gaps and never shows a commit that did
+not land. Positions are the table's autoincrement sequence. Cursors follow the PostgreSQL adapter.
+Each is a random 128-bit token stored in `_dolmen_lakehouse_cursors` with its position, chain
+origin and start, issue time, feed table and drop generation. A cursor from another feed is
+`ErrCursorCrossFeed`. A cursor that is unknown, or past retention since it was issued or since its
+chain began, is `ErrCursorExpired`. Records and cursors past twice the retention are pruned unless
+a live chain still needs them. A feed whose expected namespace generation does not match is
+`not_found`, which covers a cursor used on a successor namespace. A scoped feed is refused for the
+whole namespace, and for a table it shows only the owner's changes, refusing with
+`ErrScopedFeedPredatesLabels` when unlabeled changes lie in range. `wait_for` needs nothing more,
+because the API layer polls `changes_since`. `TestLakehouseChangeFeedBackendConformance` pins the
+results on both engines.
 
 ### Slice 3 in more detail
 
