@@ -29,6 +29,10 @@
   test checks hits, phrases, `OR`, `NOT`, prefixes, filters, paging and the refusals; it does not
   compare rankings across engines.
 
+- **`whoami` lists the caller's grants** (#583): every grant naming their principal or one of their
+  groups, so a caller can see what they may do without probing. The bootstrap administrator sees
+  its implicit `admin` on `*`.
+
 - Lakehouse slice 8 adds `update`, `delete`, `upsert` and `upsert_by_key`. Filters run in the SQL
   sidecar; each mutation commits through the namespace log and lands in Iceberg as a position-delete
   file plus the new row versions, with no data-file rewrite. A both-engine conformance test pins the

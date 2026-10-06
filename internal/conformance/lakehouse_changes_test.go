@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/lakehouse"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
@@ -126,6 +127,28 @@ func TestLakehouseChangeFeedBackendConformance(t *testing.T) {
 			mine, _, err := eng.ChangesSince(ctx, ns, "mine", mhead, [16]byte{}, &store.RowScope{Owner: "alice"}, none, store.Page{})
 			if err != nil || len(mine) != 2 || mine[0].Owner != "alice" || mine[1].RowID != 3 {
 				t.Fatalf("a scoped feed shows only the owner's changes: %+v %v", mine, err)
+			}
+			_, inc, err := eng.TableState(ctx, ns, "mine", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := eng.ChangesSince(ctx, ns, "mine", mhead, [16]byte{}, &store.RowScope{Owner: "alice"}, inc, store.Page{}); err != nil {
+				t.Fatalf("a current incarnation must be accepted: %v", err)
+			}
+			stale := inc
+			stale.Version++
+			if _, _, err := eng.ChangesSince(ctx, ns, "mine", mhead, [16]byte{}, &store.RowScope{Owner: "alice"}, stale, store.Page{}); !errors.Is(err, derr.ErrConflict) {
+				t.Fatalf("a scoped feed resolved against another schema version must be refused: %v", err)
+			}
+
+			if _, err := eng.CreateTable(ctx, ns, "unlabeled", []schema.Field{{Name: "x", Type: schema.String}}, store.TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := eng.Insert(ctx, ns, "unlabeled", []map[string]any{{"x": "nobody's"}}, store.WriteOpts{}, emb, nil, none); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := eng.ChangesSince(ctx, ns, "unlabeled", store.CursorBegin, [16]byte{}, &store.RowScope{Owner: "alice"}, none, store.Page{}); !errors.Is(err, store.ErrScopedFeedPredatesLabels) {
+				t.Fatalf("a scoped feed over changes with no owner must be refused, not filtered: %v", err)
 			}
 		})
 	}

@@ -88,7 +88,7 @@ func (s *Store) changesSinceMode(ctx context.Context, ns, table string, from sto
 			if err != nil {
 				return err
 			}
-			if err := checkExpected(state, inc, false); err != nil {
+			if err := checkScopeExpected(state, inc); err != nil {
 				return err
 			}
 			if scope != nil && !scope.Empty && !state.schema.HasOwner {
