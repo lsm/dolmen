@@ -164,7 +164,7 @@ func (s *Store) CreateTable(ctx context.Context, ns, name string, fields []schem
 			return err
 		}
 		directory := filepath.Join(n.dataDir, name+"-"+uuid.NewString())
-		native, err := n.catalog.CreateTable(ctx, tableIdentifier(ns, name), nativeSchema(sc), catalog.WithLocation(fileLocation(directory)), catalog.WithProperties(iceberg.Properties{"format-version": "2", schemaProperty: string(raw), generationProperty: strconv.FormatInt(gen, 10), migrationsProperty: "[]"}))
+		native, err := n.catalog.CreateTable(ctx, tableIdentifier(ns, name), nativeSchema(sc), catalog.WithLocation(fileLocation(directory)), catalog.WithProperties(iceberg.Properties{"format-version": "2", table.ManifestMergeEnabledKey: "true", table.ManifestMinMergeCountKey: "8", schemaProperty: string(raw), generationProperty: strconv.FormatInt(gen, 10), migrationsProperty: "[]"}))
 		if err != nil {
 			return err
 		}
