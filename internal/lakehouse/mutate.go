@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 	"github.com/lsm/dolmen/internal/value"
@@ -330,7 +331,7 @@ func ownersOf(state tableState, rows map[int64]map[string]any) map[int64]string 
 }
 
 func (s *Store) Delete(ctx context.Context, ns, name, filter string, args []any, opts store.DeleteOpts, scope *store.RowScope, scopeIncarnation store.Incarnation) (store.DeleteResult, error) {
-	filter, err := checkFilter(filter)
+	filter, err := store.NormalizeDeleteFilter(filter, args)
 	if err != nil {
 		return store.DeleteResult{}, err
 	}
@@ -512,16 +513,13 @@ func (s *Store) pinEmbedding(ctx context.Context, n *namespace, state tableState
 }
 
 func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, records []map[string]any, opts store.WriteOpts, emb store.Embedder, scope *store.RowScope, scopeIncarnation store.Incarnation) (store.InsertResult, error) {
-	if len(on) == 0 {
-		return store.InsertResult{}, invalidf("on is required: name the field or fields that identify a record")
-	}
-	records, err := normalizeRecords(records)
+	keys, err := store.NormalizeKeyFields(on)
 	if err != nil {
 		return store.InsertResult{}, err
 	}
-	keys := make([]string, len(on))
-	for i, k := range on {
-		keys[i] = strings.ToLower(strings.TrimSpace(k))
+	records, err = normalizeRecords(records)
+	if err != nil {
+		return store.InsertResult{}, err
 	}
 	var result store.InsertResult
 	err = s.withNamespace(ctx, ns, func(n *namespace) error {
@@ -541,10 +539,12 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 		for _, k := range keys {
 			f := state.schema.Field(k)
 			if f == nil {
-				return invalidf("on: unknown field %q on table %s (see describe_table)", k, name)
+				return invalidf("key field %q is not a field of table %s (see describe_table)", k, name)
 			}
-			if f.Type == schema.Secret {
-				return invalidf("on: secret field %q cannot be a natural key, because its stored value is encrypted and never compared", k)
+			switch f.Type {
+			case schema.String, schema.Text, schema.Number, schema.Boolean, schema.Timestamp:
+			default:
+				return invalidf("key field %q has type %s; natural keys must be string, text, number, boolean, or timestamp fields (vector and json values do not compare reliably, and secret values are encrypted under a fresh nonce so equal values never match)", k, f.Type)
 			}
 		}
 		stamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
@@ -614,6 +614,9 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 				next++
 				result.Inserted++
 				continue
+			}
+			if len(ids) > 1 {
+				return derr.New(derr.Conflict, "record %d: natural key (%s) matches multiple existing rows (ids %d and %d); the key is not unique in the table — delete the duplicate rows before upserting", i, strings.Join(keys, ", "), ids[0], ids[1])
 			}
 			id := ids[0]
 			if current == nil {
