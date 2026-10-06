@@ -351,6 +351,8 @@ func TestOpenAPIOutputSchemasMarkRequiredGuaranteedFields(t *testing.T) {
 		"migrate.dry_run": true,
 		"migrate.plan":    true,
 
+		"read_rows.next_after_id": true,
+
 		"describe_server.auth":         true,
 		"describe_server.capabilities": true,
 	}

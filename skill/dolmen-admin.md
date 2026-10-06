@@ -470,13 +470,16 @@ locked-out server.
   `changes_since`, `wait_for`, `list_migrations`, `subscribe`, and `drop_table`. A mistyped
   namespace therefore costs an error, never a stray database file.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
-- `truncated: true` means the response left results out. On `query`, `search_fulltext` and `search_vector`, more exist beyond the page, cut either by `limit` (1,000 rows by default and at most on `query`; 10 by default and 200 at most on the searches) or by the 32 MiB response budget, so fetch the next page with `offset`. On `read_rows` only the budget cuts, so retry with fewer ids.
+- `truncated: true` means the response left results out. On `query`, `search_fulltext` and `search_vector`, more exist beyond the page, cut either by `limit` (1,000 rows by default and at most on `query`; 10 by default and 200 at most on the searches) or by the 32 MiB response budget, so fetch the next page with `offset`. On `read_rows` with `ids` only the budget cuts, so retry with fewer ids; on `read_rows` without `ids` (paging), more rows follow, so pass `next_after_id` as the next `after_id`.
 - `read_rows` is the by-id fetch: pass `"ids": [...]` (the ids a write returned, a query projected,
   or a feed carried), get the full rows back — each found row once, in ascending id order, typed
   like every other read. Missing ids are simply absent (`row_count` counts what came back), never
   an error; `truncated: true` means the response budget dropped rows that DO exist — retry with
   fewer ids (it never fires for missing ids); at most 1,000 ids per request. Prefer it over
-  `query` whenever the ids are already in hand — no SQL to write, no filter to get wrong.
+  `query` whenever the ids are already in hand — no SQL to write, no filter to get wrong. Without
+  `ids` it pages through the table in id order: `after_id` (default 0) and `limit` (default 100,
+  at most 1,000), then `next_after_id` while `truncated`. That is how a caller holding `read` on
+  only the table, or own-row access on a `row_access` table, reads all of what they may see.
 - **Lakehouse is still a development-only engine name.** Its internal namespace foundation now
   stores each namespace in its own SQLite Iceberg catalog and separate Parquet data directory;
   reopen preserves the namespace lifetime and drop/recreate changes it. An unpinned leaf-only

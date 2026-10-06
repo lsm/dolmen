@@ -29,7 +29,7 @@ func TestMetricsCountOperationsByOutcomeWithoutLeakingNames(t *testing.T) {
 	post(t, srv.URL, "create_namespace", map[string]any{"namespace": "secretns"})
 	post(t, srv.URL, "create_table", map[string]any{"namespace": "secretns", "table": "secrettable", "fields": []map[string]any{{"name": "n", "type": "number"}}})
 	post(t, srv.URL, "insert", map[string]any{"namespace": "secretns", "table": "secrettable", "records": []map[string]any{{"n": 1}}})
-	post(t, srv.URL, "read_rows", map[string]any{"namespace": "secretns", "table": "missingtable"})
+	post(t, srv.URL, "read_rows", map[string]any{"namespace": "secretns", "table": "missingtable", "ids": []int{1}, "after_id": 0})
 	post(t, srv.URL, "no_such_op_secret", map[string]any{})
 	out := scrape(t, srv.URL)
 	for _, want := range []string{

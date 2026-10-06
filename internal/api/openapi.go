@@ -68,7 +68,7 @@ var outputSchemas = map[string]map[string]any{
 	"insert":          objectSchema(false, map[string]any{"ids": arrayOf(integer(1)), "inserted": integer(0), "replayed": propBool()}, []string{"ids", "inserted"}),
 	"upsert_by_key":   writeDataSchema,
 	"query":           objectSchema(false, map[string]any{"rows": arrayOf(ref("Row")), "row_count": integer(0), "truncated": propBool()}, []string{"rows", "row_count", "truncated"}),
-	"read_rows":       objectSchema(false, map[string]any{"rows": arrayOf(ref("Row")), "row_count": integer(0), "truncated": propBool()}, []string{"rows", "row_count", "truncated"}),
+	"read_rows":       objectSchema(false, map[string]any{"rows": arrayOf(ref("Row")), "row_count": integer(0), "truncated": propBool(), "next_after_id": integer(1)}, []string{"rows", "row_count", "truncated"}),
 	"capabilities":    capabilitiesOutSchema,
 	"search_fulltext": objectSchema(false, map[string]any{"results": arrayOf(ref("Row")), "truncated": propBool(), "limit": integer(1)}, []string{"results", "truncated", "limit"}),
 	"search_vector":   objectSchema(false, map[string]any{"results": arrayOf(ref("Row")), "truncated": propBool(), "skipped_vectors": integer(0), "limit": integer(1)}, []string{"results", "truncated", "skipped_vectors", "limit"}),
