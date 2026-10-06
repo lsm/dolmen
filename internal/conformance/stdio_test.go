@@ -23,6 +23,7 @@ import (
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/mcp"
 	"github.com/lsm/dolmen/internal/store"
+	"github.com/lsm/dolmen/internal/version"
 )
 
 var (
@@ -45,7 +46,7 @@ func dolmenBinary(t *testing.T) string {
 			return
 		}
 		stdioBinPath = filepath.Join(dir, "dolmen")
-		build := exec.Command("go", "build", "-o", stdioBinPath, "./cmd/dolmen")
+		build := exec.Command("go", "build", "-ldflags", "-X github.com/lsm/dolmen/internal/version.Version="+version.Version, "-o", stdioBinPath, "./cmd/dolmen")
 		build.Dir = root
 		if out, err := build.CombinedOutput(); err != nil {
 			stdioBinErr = fmt.Errorf("go build: %v: %s", err, out)
