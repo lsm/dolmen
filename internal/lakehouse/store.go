@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/lsm/dolmen/internal/telemetry/dbstat"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"os"
 	"path/filepath"
@@ -43,6 +45,9 @@ type Store struct {
 	sidecarMu    sync.Mutex
 	sidecars     map[string]map[*sidecar]bool
 	barrierMu    sync.Mutex
+	openPaths    map[string]string
+	mp           metric.MeterProvider
+	stopGauges   func(context.Context) error
 	migrating    map[string]int
 	barriers     map[string]*sync.RWMutex
 }
@@ -73,6 +78,10 @@ func WithTracerProvider(tp trace.TracerProvider) OpenOption {
 			s.tracer = tp.Tracer("github.com/lsm/dolmen/internal/lakehouse")
 		}
 	}
+}
+
+func WithMeterProvider(mp metric.MeterProvider) OpenOption {
+	return func(s *Store) { s.mp = mp }
 }
 
 func WithChangeRetention(d time.Duration) OpenOption {
@@ -110,6 +119,12 @@ func Open(dir string, opts ...OpenOption) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	if s.mp != nil {
+		if s.stopGauges, err = dbstat.Observe(s.mp, s); err != nil {
+			s.root.Close()
+			return nil, err
+		}
+	}
 	owners.dirs[abs] = true
 	s.gate <- struct{}{}
 	return s, nil
@@ -145,6 +160,9 @@ func (s *Store) Close() error {
 	}
 	s.closed = true
 	close(s.stopping)
+	if s.stopGauges != nil {
+		_ = s.stopGauges(context.Background())
+	}
 	s.sidecarMu.Lock()
 	running := map[string][]*sidecar{}
 	for ns, set := range s.sidecars {
@@ -159,7 +177,7 @@ func (s *Store) Close() error {
 	for name, n := range s.namespaces {
 		n.sql = nil
 		s.closeErr = errors.Join(s.closeErr, n.db.Close())
-		delete(s.namespaces, name)
+		s.unsetNamespace(name)
 	}
 	s.closeErr = errors.Join(s.closeErr, s.root.Close())
 	owners.Lock()
@@ -208,7 +226,7 @@ func (s *Store) evict(name string) error {
 	if err := n.db.Close(); err != nil {
 		return err
 	}
-	delete(s.namespaces, name)
+	s.unsetNamespace(name)
 	return nil
 }
 
@@ -268,4 +286,51 @@ func (s *Store) migrateRunning(ns, table string) bool {
 	s.barrierMu.Lock()
 	defer s.barrierMu.Unlock()
 	return s.migrating[ns+"\x00"+table] > 0
+}
+
+func (s *Store) setNamespace(name string, n *namespace) {
+	s.namespaces[name] = n
+	s.barrierMu.Lock()
+	defer s.barrierMu.Unlock()
+	if s.openPaths == nil {
+		s.openPaths = map[string]string{}
+	}
+	s.openPaths[name] = filepath.Join(s.dir, namespacePath(name), "catalog.db")
+}
+
+func (s *Store) unsetNamespace(name string) {
+	delete(s.namespaces, name)
+	s.barrierMu.Lock()
+	defer s.barrierMu.Unlock()
+	delete(s.openPaths, name)
+}
+
+func (s *Store) TelemetryGauges() dbstat.Snapshot {
+	var snap dbstat.Snapshot
+	s.barrierMu.Lock()
+	paths := make([]string, 0, len(s.openPaths))
+	for _, path := range s.openPaths {
+		paths = append(paths, path)
+	}
+	s.barrierMu.Unlock()
+	snap.Values[dbstat.OpenNamespaces] = int64(len(paths))
+	var wal, largest int64
+	for _, path := range paths {
+		snap.Values[dbstat.DBBytes] += fileBytes(path)
+		if size := fileBytes(path + "-wal"); size > 0 {
+			wal += size
+			largest = max(largest, size)
+		}
+	}
+	snap.Values[dbstat.WALBytes] = wal
+	snap.Values[dbstat.WALLargestBytes] = largest
+	return snap
+}
+
+func fileBytes(path string) int64 {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return fi.Size()
 }

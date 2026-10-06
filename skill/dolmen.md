@@ -476,9 +476,9 @@ This server tokenizes `fulltext` fields on letters, digits and underscores, lowe
 common English stop words, and reduces English words to stems (Porter), so `payments` matches
 `payment`. Hits are ranked with BM25, highest first, ties by id; the scale is this engine's own.
 
-Two tokenizer limits to know: **accents are not folded** (`cafe` does not match `café`), and
-**CJK is not word-segmented** — a run of CJK with no spaces is one token. `tokenize` shows exactly
-how a given string is indexed; use it when a match is missing.
+Accents are folded: matching is diacritic-insensitive for most Latin characters, so
+`cafe` matches `café`. One tokenizer limit to know: **CJK is not word-segmented** — a run of CJK with no spaces is
+one token. `tokenize` shows exactly how a given string is indexed; use it when a match is missing.
 
 Supported in `query`:
 

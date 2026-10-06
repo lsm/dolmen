@@ -678,7 +678,10 @@ func TestALakehouseServerServesDuckDBGuidance(t *testing.T) {
 				t.Fatalf("%s on a lakehouse server must say %q", name, want)
 			}
 		}
-		for _, refuse := range []string{"PostgreSQL-backed", "SQLite date/time functions", "### Full-text (FTS5) search syntax", "| Database connections |"} {
+		if !strings.Contains(string(out), "`cafe` matches `café`") {
+			t.Fatalf("%s on a lakehouse server must say full-text folds accents, as the engine does", name)
+		}
+		for _, refuse := range []string{"PostgreSQL-backed", "SQLite date/time functions", "### Full-text (FTS5) search syntax", "| Database connections |", "accents are not folded"} {
 			if strings.Contains(string(out), refuse) {
 				t.Fatalf("%s on a lakehouse server must not say %q", name, refuse)
 			}
