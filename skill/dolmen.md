@@ -94,8 +94,9 @@ claude mcp add --transport http dolmen '{{ .MCPURL }}' --header "Authorization: 
 
 Where a credential comes from:
 
-- **An API key** (it starts with `dlm_`), minted for you by an administrator. It does not expire;
-  it works until an administrator revokes it.
+- **An API key** (it starts with `dlm_`), minted for you by an administrator. It works until an
+  administrator revokes it, or until its expiry if it was minted with one; either way the next
+  request answers `401`.
 - **A sign-in token**, on servers whose `describe_server` sources include `oidc`. You cannot
   complete the sign-in yourself: ask the user to open `{{ .BaseURL }}/v1/auth/begin` in a browser,
   sign in with their organization's account, and paste the token the final page shows. It is valid
