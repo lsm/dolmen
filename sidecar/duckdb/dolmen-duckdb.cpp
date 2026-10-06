@@ -326,7 +326,10 @@ void Worker() {
     {
       std::unique_lock<std::mutex> lock(g_work_mu);
       g_work_cv.wait(lock, [] { return g_work_ready || g_stop; });
-      if (g_stop) return;
+      if (g_stop) {
+        g_busy = false;
+        return;
+      }
       w = g_work;
       g_work_ready = false;
     }
@@ -433,6 +436,10 @@ int Main() {
     g_stop = true;
   }
   g_work_cv.notify_all();
+  while (g_busy && g_con) {
+    g_con->Interrupt();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
   worker.join();
   g_con.reset();
   g_db.reset();

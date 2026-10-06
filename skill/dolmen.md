@@ -77,9 +77,9 @@ server supplies your identity instead of a bearer credential) and `admin-key` (t
 bootstrap key).
 
 Send the credential with every request, `/mcp`, the JSON-RPC fallback and `/v1/subscribe`
-included, as a bearer token. Send a body with `Content-Type: application/json`: a body with any
-other type is refused as `invalid_request` before the credential is even checked, so it never shows
-you a `401` (a request with no body at all needs no type).
+included, as a bearer token, and send a body with `Content-Type: application/json` (a request with
+no body at all needs no type). A request without an accepted credential answers `401` whatever its
+content type; an authenticated body of any other type is refused as `invalid_request`.
 
 ```bash
 base='{{ .BaseURL }}'
@@ -126,6 +126,8 @@ bootstrap key, which belongs to its operator).
 with its `object` and `verbs`. A grant on a namespace covers every table under it, so your verbs on a
 table are the union of the grants on it, its namespace and `*`. Read them before trying an
 operation instead of probing; `list_namespaces` and `list_tables` only show what you can reach.
+`tools/list` hides the server-wide admin tools (`create_key`, `list_keys`, `revoke_key`, the
+rotations) unless you hold `admin` on `*`, and lists every other tool whether or not you may call it.
 
 A grant gives verbs on a namespace (covering its tables and sub-namespaces), on one table, or on
 the whole server. What each operation needs:
