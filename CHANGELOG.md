@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Auth edges a client or admin tripped over** (#586). A request with no accepted credential now
+  answers `401` whatever its content type, instead of a content-type error that hid the auth state.
+  `revoke` reports the verbs it actually `removed` and `revoke_key` whether it `changed` anything,
+  so a typo no longer looks like success. `grant` reports whether its subject is `reachable` by any
+  configured identity source, which catches a mistyped principal during hand-over. MCP
+  `tools/list` hides the server-wide admin tools from callers without `admin` on `*`.
+
 - Lakehouse slice 7 adds `read_rows` and typed reads: numbers, booleans, `json`, vectors, secrets
   (masked or revealed), timestamps and owner scopes read back exactly as on SQLite, which a
   both-engine conformance test pins; `query` results are typed by column label the same way.
