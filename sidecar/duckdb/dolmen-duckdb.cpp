@@ -326,7 +326,10 @@ void Worker() {
     {
       std::unique_lock<std::mutex> lock(g_work_mu);
       g_work_cv.wait(lock, [] { return g_work_ready || g_stop; });
-      if (g_stop) return;
+      if (g_stop) {
+        g_busy = false;
+        return;
+      }
       w = g_work;
       g_work_ready = false;
     }

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The lakehouse SQL sidecar stops when dolmen goes away mid-query, instead of running the query to
+  the end as an orphan (#590).
+
 - Lakehouse slice 7 adds `read_rows` and typed reads: numbers, booleans, `json`, vectors, secrets
   (masked or revealed), timestamps and owner scopes read back exactly as on SQLite, which a
   both-engine conformance test pins; `query` results are typed by column label the same way.
@@ -39,8 +42,6 @@
 
 ### Fixed
 
-- The lakehouse SQL sidecar stops when dolmen goes away mid-query, instead of running the query to
-  the end as an orphan (#590).
 - On PostgreSQL, `wait_for` with `timeout_ms: 0` returns changes already committed instead of timing out after a
   synthetic 250 ms.
 - A canceled operation no longer waits behind PostgreSQL SQL compilation: compiler admission and
