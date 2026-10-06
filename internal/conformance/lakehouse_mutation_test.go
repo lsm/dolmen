@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"github.com/lsm/dolmen/internal/derr"
 	"reflect"
@@ -152,6 +153,20 @@ func TestLakehouseMutationBackendConformance(t *testing.T) {
 			masked, err := eng.Delete(ctx, ns, "people", "token = ?", []any{secret.Mask}, store.DeleteOpts{DryRun: true}, nil, none)
 			if err != nil || masked.Matched != 0 {
 				t.Fatalf("a filter comparing a secret with the mask must match nothing: %+v %v", masked, err)
+			}
+			numeric, err := eng.UpsertByKey(ctx, ns, "people", []string{"score"}, []map[string]any{
+				{"email": "n@x", "score": json.Number("50")},
+				{"email": "n@x", "name": "Fifty", "score": json.Number("50.0")},
+			}, store.WriteOpts{}, emb, nil, none)
+			if err != nil || len(numeric.Ids) != 2 || numeric.Ids[0] != numeric.Ids[1] || numeric.Inserted != 1 {
+				t.Fatalf("records whose number keys are equal values must land on one row: %+v %v", numeric, err)
+			}
+			if _, err := eng.CreateTable(ctx, ns, "pair", []schema.Field{{Name: "a", Type: schema.String}, {Name: "b", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			pair, err := eng.UpsertByKey(ctx, ns, "pair", []string{"a", "b"}, []map[string]any{{"a": "a\x1fb", "b": "c"}, {"a": "a", "b": "b\x1fc"}}, store.WriteOpts{}, emb, nil, none)
+			if err != nil || pair.Inserted != 2 || pair.Ids[0] == pair.Ids[1] {
+				t.Fatalf("distinct composite keys must stay distinct whatever their bytes: %+v %v", pair, err)
 			}
 			if semi, err := eng.Delete(ctx, ns, "people", "name = 'a;b'", nil, store.DeleteOpts{DryRun: true}, nil, none); err != nil || semi.Matched != 0 {
 				t.Fatalf("a semicolon inside a string literal is not a statement separator: %+v %v", semi, err)
