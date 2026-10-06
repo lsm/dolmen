@@ -527,7 +527,7 @@ func keySchema() map[string]any {
 	}
 }
 
-func keyPayload(k auth.Key) map[string]any {
+func keyPayload(k auth.Key, now time.Time) map[string]any {
 	groups := k.Groups
 	if groups == nil {
 		groups = []string{}
@@ -539,7 +539,7 @@ func keyPayload(k auth.Key) map[string]any {
 		"groups":     groups,
 		"revoked":    k.Revoked,
 		"created_at": k.CreatedAt.Format(time.RFC3339Nano),
-		"expired":    k.Expired(time.Now()),
+		"expired":    k.Expired(now),
 	}
 	if !k.ExpiresAt.IsZero() {
 		out["expires_at"] = k.ExpiresAt.Format(time.RFC3339Nano)
@@ -605,7 +605,7 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"key": keyPayload(k), "secret": secret}, nil
+			return map[string]any{"key": keyPayload(k, time.Now()), "secret": secret}, nil
 		},
 	}
 
@@ -643,7 +643,7 @@ func init() {
 				if req.ActiveOnly && (k.Revoked || k.Expired(now)) {
 					continue
 				}
-				out = append(out, keyPayload(k))
+				out = append(out, keyPayload(k, now))
 			}
 			return map[string]any{"keys": out}, nil
 		},
@@ -691,7 +691,7 @@ func init() {
 			if k.ID == "" {
 				return map[string]any{"key": nil, "changed": false}, nil
 			}
-			return map[string]any{"key": keyPayload(k), "changed": changed}, nil
+			return map[string]any{"key": keyPayload(k, time.Now()), "changed": changed}, nil
 		},
 	}
 }
