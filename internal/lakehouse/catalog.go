@@ -232,6 +232,6 @@ func (s *Store) openNamespace(ctx context.Context, name string) (*namespace, err
 	}
 	s.tick++
 	n.lastUse = s.tick
-	s.namespaces[name] = n
+	s.setNamespace(name, n)
 	return n, nil
 }

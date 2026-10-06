@@ -203,7 +203,7 @@ func (s *Store) commitBatch(ctx context.Context, n *namespace, opts store.BatchO
 
 func (s *Store) rollbackBatch(ctx context.Context, ns string) error {
 	if err := s.evict(ns); err != nil {
-		delete(s.namespaces, ns)
+		s.unsetNamespace(ns)
 		return err
 	}
 	if err := s.restoreJournal(ns); err != nil {
@@ -219,7 +219,7 @@ func (s *Store) rollbackBatch(ctx context.Context, ns string) error {
 	}
 	s.tick++
 	n.lastUse = s.tick
-	s.namespaces[ns] = n
+	s.setNamespace(ns, n)
 	return nil
 }
 
