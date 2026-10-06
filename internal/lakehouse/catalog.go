@@ -21,7 +21,20 @@ const catalogFormat = 3
 
 func namespacePath(name string) string { return filepath.FromSlash(name) + ".lakehouse" }
 
-func fileLocation(path string) string { return "file://" + filepath.ToSlash(path) }
+func fileLocation(path string) string {
+	if filepath.VolumeName(path) != "" {
+		return filepath.ToSlash(path)
+	}
+	return "file://" + filepath.ToSlash(path)
+}
+
+func localPath(uri string) string {
+	p := strings.TrimPrefix(uri, "file://")
+	if len(p) >= 3 && (p[0] == '/' || p[0] == '\\') && p[2] == ':' {
+		p = p[1:]
+	}
+	return filepath.FromSlash(p)
+}
 
 func (s *Store) checkHierarchy(name string, create bool) error {
 	parts := strings.Split(name, "/")
