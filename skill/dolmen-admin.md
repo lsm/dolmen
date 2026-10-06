@@ -52,8 +52,8 @@ claude mcp add --transport http dolmen '{{ .MCPURL }}'
 ```
 
 On a server that requires a credential, keep it in `DOLMEN_TOKEN` and add
-`--header "Authorization: Bearer $DOLMEN_TOKEN"` to that command (see "When the server requires a
-credential" below; other MCP hosts take the same header in their own configuration).
+`--header "Authorization: Bearer $DOLMEN_TOKEN"` to that command (see "Authentication and access
+control" below; other MCP hosts take the same header in their own configuration).
 
 The `dolmen` tools then appear in `tools/list` with full input schemas. The endpoint can also be
 read from the environment: `DOLMEN_URL` (default `{{ .BaseURL }}`).
@@ -169,8 +169,9 @@ error envelope (`{"ok":false,"error":{...}}`), not a JSON-RPC result.
 
 Everything in this section applies only to a server running with authentication on. With it off
 there are no identities, and every call is allowed. A credential-free call that answers `401`
-means it is on; `describe_server` then reports an `auth` object saying which identity sources the
-server accepts besides API keys (`sign_in`, `identity_headers`).
+means it is on; `describe_server` then reports an `auth` object whose `sources` lists the identity
+sources the server accepts (`admin-key`, `api-keys`, `trusted-proxy`, `oidc`), and inlines the
+engine's capabilities.
 
 ### Turning authentication on
 
@@ -265,7 +266,7 @@ What the schema and administration operations need:
 | `rotate_secret_key` | `admin` on `*` |
 | `grant`, `revoke`, `list_grants` | `admin` on the object or something covering it |
 | `create_key`, `list_keys`, `revoke_key` | `admin` on `*` |
-| `rotate_signing_key` (exists only when `describe_server` reports `sign_in: true`) | `admin` on `*` |
+| `rotate_signing_key` (exists only when `describe_server`'s sources include `oidc`) | `admin` on `*` |
 
 The data operations need what the core skill lists ({{ .BaseURL }}/skills/dolmen): `read` for
 reads, searches and the change feed, `create`, `update` and `delete` for the matching writes, and
@@ -344,7 +345,7 @@ nothing needs re-granting.
 
 ### People who sign in
 
-On a server whose `describe_server` reports `sign_in: true`, people sign in at
+On a server whose `describe_server` sources include `oidc`, people sign in at
 `{{ .BaseURL }}/v1/auth/begin` in a browser and receive a token, valid for the configured lifetime
 (7 days by default); then they sign in again. On a server without sign-in that address answers
 `404` and `rotate_signing_key` is an unknown operation.

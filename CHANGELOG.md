@@ -26,8 +26,8 @@
 - **The skills now cover running authentication.** The admin skill now covers turning authentication on, sign-in and gateway settings, handing over from the
   bootstrap key and verifying it, key rotation, and token lifetimes; the core skill covers where
   credentials come from, what to do after a `401`, and the limits of a single-table grant.
-  `describe_server` reports an `auth` object (`sign_in`, `identity_headers`) when authentication
-  is on.
+  Under authentication `describe_server` reports `auth` (the mode and the accepted identity sources:
+  `admin-key`, `api-keys`, `trusted-proxy`, `oidc`) and inlines the engine's capabilities.
 
 ### Changed
 

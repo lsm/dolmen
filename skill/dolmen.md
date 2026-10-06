@@ -71,9 +71,10 @@ A server running with authentication on answers any operation that arrives witho
 credential with `401` and error code `unauthorized`. `/healthz`, `/version`, these skills and
 `/v1/openapi.json` stay open, so reaching them says nothing about access. Once you have a
 credential, `describe_server` tells you how this server authenticates: its `auth` object is present
-only when authentication is on, `sign_in` says whether people can sign in through an identity
-provider, and `identity_headers` says whether a gateway in front of the server supplies your
-identity instead of a bearer credential.
+only when authentication is on, and its `sources` lists what the server accepts: `api-keys`,
+`oidc` (people sign in through an identity provider), `trusted-proxy` (a gateway in front of the
+server supplies your identity instead of a bearer credential) and `admin-key` (the operator's
+bootstrap key).
 
 Send the credential with every request, `/mcp`, the JSON-RPC fallback and `/v1/subscribe`
 included, as a bearer token. Send a body with `Content-Type: application/json`: a body with any
@@ -95,12 +96,12 @@ Where a credential comes from:
 
 - **An API key** (it starts with `dlm_`), minted for you by an administrator. It does not expire;
   it works until an administrator revokes it.
-- **A sign-in token**, on servers where `describe_server` reports `sign_in: true`. You cannot
+- **A sign-in token**, on servers whose `describe_server` sources include `oidc`. You cannot
   complete the sign-in yourself: ask the user to open `{{ .BaseURL }}/v1/auth/begin` in a browser,
   sign in with their organization's account, and paste the token the final page shows. It is valid
   for a fixed lifetime the operator chooses (7 days unless configured otherwise), after which they
   sign in again. On a server without sign-in that address answers `404`.
-- **A gateway**, when `identity_headers` is true: an authenticating proxy in front of the server
+- **A gateway**, when the sources include `trusted-proxy`: an authenticating proxy in front of the server
   asserts who you are, and requests through it need no credential of their own.
 
 If you hold no credential, ask the user for one, and never put one in a URL, a filter, or a record.
