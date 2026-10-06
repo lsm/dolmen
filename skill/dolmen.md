@@ -127,7 +127,9 @@ with its `object` and `verbs`. A grant on a namespace covers every table under i
 table are the union of the grants on it, its namespace and `*`. Read them before trying an
 operation instead of probing; `list_namespaces` and `list_tables` only show what you can reach.
 `tools/list` hides the server-wide admin tools (`create_key`, `list_keys`, `revoke_key`, the
-rotations) unless you hold `admin` on `*`, and lists every other tool whether or not you may call it.
+rotations) unless you hold `admin` on `*`, and lists every other tool whether or not you may call it:
+`grant`, `revoke` and `list_grants` need `admin` on the object, so only an administrator uses them
+to give you access. To find which namespaces exist for you, call `list_namespaces`.
 
 A grant gives verbs on a namespace (covering its tables and sub-namespaces), on one table, or on
 the whole server. What each operation needs:
@@ -140,7 +142,7 @@ the whole server. What each operation needs:
 | `delete` | `delete` |
 | `upsert`, `upsert_by_key` | `create` and `update` |
 | `query` | `read` on the whole namespace, since SQL can reach any table in it |
-| `describe_table` | any verb on the table |
+| `describe_table`, `tokenize` | any verb on the table |
 | `whoami` (exists only when authentication is on), `list_namespaces`, `list_tables`, `describe_server`, `capabilities`, `infer_schema` | nothing |
 
 A feed without `table` (namespace-wide `changes_since`, `wait_for` or `/v1/subscribe`) needs
@@ -375,7 +377,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 3. **Inspect when the schema is unknown or may have changed.** Call `describe_table` to get its schema, version, and row count. Use that to build correct `query` / `search_fulltext` / `search_vector` calls and to avoid inventing field names. Its `row_count` is kept up to date by every write, so reading it costs the same on a table of any size; still cache the schema for the session instead of calling it before every read or write.
 4. **Record as you go.** After finishing a meaningful unit of work, `insert` a record summarizing it (what/where/outcome). Future sessions recall it via search.
 5. **Read with the cheapest tool that answers the question:** `describe_table` → exact lookups via `query` (SQL, read-only) → `search_fulltext` for keyword recall → `search_vector` for meaning-based recall.
-6. **Never write SQL that mutates.** `query` rejects it by design; use `insert` and `delete` for changes. If you need to update or upsert records, or change a table's schema, ask the user to switch to the `dolmen-admin` skill.
+6. **Never write SQL that mutates.** `query` rejects it by design; use `insert`, `update`, `upsert`, `upsert_by_key` and `delete` for changes, with the verbs the table above lists (`update` takes `filter`, optional `args`, and `set`, the fields to change). To change a table's schema, ask the user to switch to the `dolmen-admin` skill.
 7. **Do not fork tables.** When a table is the wrong shape, do not create a parallel v2 table. Report the mismatch and ask the user whether to use the `dolmen-admin` skill to migrate or create a new table.
 
 ## Quick reference
