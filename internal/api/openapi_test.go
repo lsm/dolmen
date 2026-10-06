@@ -350,6 +350,9 @@ func TestOpenAPIOutputSchemasMarkRequiredGuaranteedFields(t *testing.T) {
 		"insert.replayed": true,
 		"migrate.dry_run": true,
 		"migrate.plan":    true,
+
+		"describe_server.auth":         true,
+		"describe_server.capabilities": true,
 	}
 	for _, name := range OpNames() {
 		def := Ops[name]

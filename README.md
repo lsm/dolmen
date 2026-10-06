@@ -588,6 +588,9 @@ A few rules worth knowing:
 
 After a `403`, `whoami` reports the principal, groups, and identity source the
 request authenticated as — enough to ask an administrator for the right grant.
+Under auth `describe_server` also reports `auth` — the mode and the identity
+sources the server accepts (`admin-key`, `api-keys`, `trusted-proxy`, `oidc`) —
+and inlines the engine's `capabilities`. With auth off both are absent.
 
 **Bootstrapping and handing over.** The admin key exists to mint the first real
 administrators, not to reign. Grant `admin` on `*` to a principal, then remove

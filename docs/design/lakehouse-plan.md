@@ -227,6 +227,11 @@ label in the same way, where a label names one declared field across the namespa
 the namespace's sidecar, against a second, unmasked view per table in a `_dolmen_filter` schema:
 numbers are typed as in `query`, and a set secret reads as a string holding a NUL, which no request
 can contain (#561), so comparing a secret with any value matches nothing, as on the other engines.
+Because a `number` is a `DOUBLE` there, a filter comparing integers beyond 2^53 compares them as
+doubles, where SQLite compares them exactly; that follows from the DuckDB filter dialect.
+`upsert_by_key` does not inherit it: a candidate row matches a number key only when its stored
+value equals the key exactly, and records repeating a key within one call land on the row the
+first created or matched, one change record per record, as on SQLite.
 The matched ids then go through the commit log like an append: one transaction records the new row
 versions, the ids they replace or remove, one change record per row, the owner-scoped count delta,
 secret writes and removals in the catalog, and any ids `upsert_by_key` allocates. Materialization
