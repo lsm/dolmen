@@ -146,7 +146,7 @@ func (s *Store) prepareSet(ctx context.Context, state tableState, set map[string
 }
 
 func (s *Store) coerceField(f schema.Field, v any, stamp string) (any, error) {
-	if f.Type == schema.Timestamp && schema.IsNowDefault(v) {
+	if f.Type == schema.Timestamp && stamp != "" && schema.IsNowDefault(v) {
 		v = stamp
 	}
 	coerced, err := value.Coerce(f, v)
@@ -171,6 +171,13 @@ type mutation struct {
 	inserts []map[string]any
 	owners  map[int64]string
 	nextID  int64
+	steps   []changeStep
+	pin     commitRows
+}
+
+type changeStep struct {
+	id   int64
+	kind store.ChangeKind
 }
 
 func (s *Store) commitMutation(ctx context.Context, n *namespace, state tableState, m mutation, stamp string) (store.ChangeRange, error) {
@@ -185,7 +192,7 @@ func (s *Store) commitMutation(ctx context.Context, n *namespace, state tableSta
 			return store.ChangeRange{}, err
 		}
 	}
-	payload := commitRows{Delete: append(append([]int64{}, m.deletes...), mapKeys(m.updates)...)}
+	payload := commitRows{Delete: append(append([]int64{}, m.deletes...), mapKeys(m.updates)...), EmbedSpace: m.pin.EmbedSpace, EmbedDim: m.pin.EmbedDim}
 	for _, row := range m.inserts {
 		payload.Rows = append(payload.Rows, row)
 	}
@@ -258,10 +265,17 @@ func (s *Store) commitMutation(ctx context.Context, n *namespace, state tableSta
 		return nil
 	}
 	countDelta := map[string]int64{}
+	for _, step := range m.steps {
+		if err := mint(step.id, step.kind); err != nil {
+			return store.ChangeRange{}, err
+		}
+	}
 	for _, row := range m.inserts {
 		id := row["id"].(int64)
-		if err := mint(id, store.ChangeInsert); err != nil {
-			return store.ChangeRange{}, err
+		if m.steps == nil {
+			if err := mint(id, store.ChangeInsert); err != nil {
+				return store.ChangeRange{}, err
+			}
 		}
 		owner := ""
 		if state.schema.HasOwner {
@@ -270,6 +284,9 @@ func (s *Store) commitMutation(ctx context.Context, n *namespace, state tableSta
 		countDelta[owner]++
 	}
 	for _, id := range sortedKeys(m.updates) {
+		if m.steps != nil {
+			break
+		}
 		if err := mint(id, store.ChangeUpdate); err != nil {
 			return store.ChangeRange{}, err
 		}
@@ -339,7 +356,7 @@ func (s *Store) Delete(ctx context.Context, ns, name, filter string, args []any,
 		if err != nil {
 			return err
 		}
-		if err := checkExpected(state, scopeIncarnation, false); err != nil {
+		if err := checkScopeExpected(state, scopeIncarnation); err != nil {
 			return err
 		}
 		if scope != nil && !scope.Empty && !state.schema.HasOwner {
@@ -422,7 +439,7 @@ func (s *Store) mutate(ctx context.Context, ns, name, filter string, args []any,
 		if err != nil {
 			return err
 		}
-		if err := checkExpected(state, scopeIncarnation, false); err != nil {
+		if err := checkScopeExpected(state, scopeIncarnation); err != nil {
 			return err
 		}
 		if scope != nil && !scope.Empty && !state.schema.HasOwner {
@@ -445,15 +462,13 @@ func (s *Store) mutate(ctx context.Context, ns, name, filter string, args []any,
 			if err != nil {
 				return err
 			}
-			if err := s.pinEmbedding(ctx, n, state, space, dim, emb); err != nil {
-				return err
-			}
+			pin := embeddingPin(state, space, dim, emb)
 			tx, err := n.db.BeginTx(ctx, nil)
 			if err != nil {
 				return err
 			}
 			defer tx.Rollback()
-			committed, err := s.commitAppend(ctx, tx, state, rows, store.WriteOpts{Owner: opts.Owner}, store.DomainFor(opts, scope), store.IdemHash{}, stamp, commitRows{})
+			committed, err := s.commitAppend(ctx, tx, state, rows, store.WriteOpts{Owner: opts.Owner}, store.DomainFor(opts, scope), store.IdemHash{}, stamp, pin)
 			if err != nil {
 				return err
 			}
@@ -470,9 +485,7 @@ func (s *Store) mutate(ctx context.Context, ns, name, filter string, args []any,
 		if err != nil {
 			return err
 		}
-		if err := s.pinEmbedding(ctx, n, state, space, dim, emb); err != nil {
-			return err
-		}
+		pin := embeddingPin(state, space, dim, emb)
 		current, err := s.currentRows(ctx, state, ids)
 		if err != nil {
 			return err
@@ -490,7 +503,7 @@ func (s *Store) mutate(ctx context.Context, ns, name, filter string, args []any,
 			}
 			updates[id] = next
 		}
-		result.Changes, err = s.commitMutation(ctx, n, state, mutation{kind: store.ChangeUpdate, updates: updates, owners: ownersOf(state, current)}, stamp)
+		result.Changes, err = s.commitMutation(ctx, n, state, mutation{kind: store.ChangeUpdate, updates: updates, owners: ownersOf(state, current), pin: pin}, stamp)
 		if err != nil {
 			return err
 		}
@@ -502,12 +515,11 @@ func (s *Store) mutate(ctx context.Context, ns, name, filter string, args []any,
 	return result, err
 }
 
-func (s *Store) pinEmbedding(ctx context.Context, n *namespace, state tableState, space string, dim int, emb store.Embedder) error {
+func embeddingPin(state tableState, space string, dim int, emb store.Embedder) commitRows {
 	if state.schema.EmbedDim != dim || space == "" && state.schema.EmbedDim != 0 {
-		state.schema.EmbedSpace = emb.Identity
-		return s.publishSchema(ctx, n, state)
+		return commitRows{EmbedSpace: emb.Identity, EmbedDim: state.schema.EmbedDim}
 	}
-	return nil
+	return commitRows{}
 }
 
 func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, records []map[string]any, opts store.WriteOpts, emb store.Embedder, scope *store.RowScope, scopeIncarnation store.Incarnation) (store.InsertResult, error) {
@@ -525,7 +537,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 		if err != nil {
 			return err
 		}
-		if err := checkExpected(state, scopeIncarnation, false); err != nil {
+		if err := checkScopeExpected(state, scopeIncarnation); err != nil {
 			return err
 		}
 		if scope != nil && !scope.Empty && !state.schema.HasOwner {
@@ -559,6 +571,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 			return err
 		}
 		owners := map[int64]string{}
+		steps := []changeStep{}
 		for i, rec := range records {
 			args := make([]any, len(keys))
 			conds := make([]string, len(keys))
@@ -601,11 +614,15 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 					row[field] = nil
 				}
 				allIDs = append(allIDs, id)
+				steps = append(steps, changeStep{id, store.ChangeUpdate})
 				result.Updated++
 				continue
 			}
 			ids, err := s.matchIDs(ctx, n, ns, state, strings.Join(conds, " AND "), args, scope)
 			if err != nil {
+				return err
+			}
+			if ids, err = s.exactKeyMatches(ctx, state, keys, args, ids, &current); err != nil {
 				return err
 			}
 			if len(ids) == 0 {
@@ -618,6 +635,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 				inserts = append(inserts, rows[0])
 				pending[signature] = next
 				allIDs = append(allIDs, next)
+				steps = append(steps, changeStep{next, store.ChangeInsert})
 				next++
 				result.Inserted++
 				continue
@@ -654,11 +672,10 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 			owner, _ := old[schema.OwnerColumn].(string)
 			owners[id] = owner
 			allIDs = append(allIDs, id)
+			steps = append(steps, changeStep{id, store.ChangeUpdate})
 			result.Updated++
 		}
-		if err := s.pinEmbedding(ctx, n, state, space, dim, emb); err != nil {
-			return err
-		}
+		pin := embeddingPin(state, space, dim, emb)
 		var nextID int64
 		if len(inserts) > 0 {
 			nextID = next
@@ -669,7 +686,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 				}
 			}
 		}
-		result.Changes, err = s.commitMutation(ctx, n, state, mutation{kind: store.ChangeUpdate, inserts: inserts, updates: updates, owners: owners, nextID: nextID}, stamp)
+		result.Changes, err = s.commitMutation(ctx, n, state, mutation{kind: store.ChangeUpdate, inserts: inserts, updates: updates, owners: owners, nextID: nextID, steps: steps, pin: pin}, stamp)
 		if err != nil {
 			return err
 		}
@@ -690,4 +707,49 @@ func findRow(inserts []map[string]any, updates map[int64]map[string]any, id int6
 		}
 	}
 	return nil
+}
+
+func (s *Store) exactKeyMatches(ctx context.Context, state tableState, keys []string, args []any, ids []int64, current *map[int64]map[string]any) ([]int64, error) {
+	var numbers []int
+	for j, k := range keys {
+		if state.schema.Field(k).Type == schema.Number {
+			numbers = append(numbers, j)
+		}
+	}
+	if len(numbers) == 0 || len(ids) == 0 {
+		return ids, nil
+	}
+	if *current == nil {
+		*current = map[int64]map[string]any{}
+	}
+	var missing []int64
+	for _, id := range ids {
+		if _, ok := (*current)[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		rows, err := s.currentRows(ctx, state, missing)
+		if err != nil {
+			return nil, err
+		}
+		maps.Copy(*current, rows)
+	}
+	out := ids[:0:0]
+	for _, id := range ids {
+		row := (*current)[id]
+		same := row != nil
+		for _, j := range numbers {
+			want, ok1 := new(big.Rat).SetString(fmt.Sprint(args[j]))
+			got, ok2 := new(big.Rat).SetString(fmt.Sprint(row[keys[j]]))
+			if !ok1 || !ok2 || want.Cmp(got) != 0 {
+				same = false
+				break
+			}
+		}
+		if same {
+			out = append(out, id)
+		}
+	}
+	return out, nil
 }
