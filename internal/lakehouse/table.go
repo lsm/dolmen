@@ -99,6 +99,16 @@ func loadTable(ctx context.Context, n *namespace, ns, name string) (tableState, 
 	return state, nil
 }
 
+func checkScopeExpected(state tableState, want store.Incarnation) error {
+	if err := checkExpected(state, want, false); err != nil {
+		return err
+	}
+	if !store.IncarnationIsZero(want) && want.Version != state.incarnation.Version {
+		return store.ScopeIncarnationChanged(state.schema.Namespace, state.incarnation.Table)
+	}
+	return nil
+}
+
 func checkExpected(state tableState, want store.Incarnation, version bool) error {
 	if store.IncarnationIsZero(want) {
 		return nil

@@ -372,6 +372,10 @@ type DeleteResult struct {
 	Changes ChangeRange
 }
 
+func NormalizeDeleteFilter(where string, args []any) (string, error) {
+	return normalizeDeleteFilter(where, args)
+}
+
 func normalizeDeleteFilter(where string, args []any) (string, error) {
 	where = strings.TrimSpace(where)
 	if where == "" {
