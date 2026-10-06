@@ -274,7 +274,7 @@ func TestDropWaitsForAnInFlightQueryOutsideTheStoreLock(t *testing.T) {
 	if err != nil || len(tables) != 1 {
 		t.Fatalf("table directories %v %v", tables, err)
 	}
-	sc := s.namespaces["ns"].sql
+	sc := s.namespaces["ns"].query.sc
 	sc.run.Lock()
 	dropped := make(chan error, 1)
 	go func() { dropped <- s.DropTable(ctx, "ns", "t", store.Incarnation{}) }()
@@ -317,7 +317,7 @@ func TestDropNamespaceWaitsForAnInFlightQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustQuery(t, s, "ns", "SELECT count(*) AS n FROM t")
-	sc := s.namespaces["ns"].sql
+	sc := s.namespaces["ns"].query.sc
 	sc.run.Lock()
 	if _, err := s.CreateTable(ctx, "ns", "u", []schema.Field{{Name: "v", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
 		sc.run.Unlock()
@@ -391,7 +391,7 @@ func TestSidecarKeepsItsTempFilesUnderItsHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustQuery(t, s, "ns", "SELECT 1 AS x")
-	catalogs, err := filepath.Glob(filepath.Join(s.namespaces["ns"].sql.home, "dolmen-duckdb-*.duckdb"))
+	catalogs, err := filepath.Glob(filepath.Join(s.namespaces["ns"].query.sc.home, "dolmen-duckdb-*.duckdb"))
 	if err != nil || len(catalogs) != 1 {
 		t.Fatalf("the sidecar's private catalog must live under the home Go removes: %v %v", catalogs, err)
 	}
@@ -405,7 +405,7 @@ func TestCloseInterruptsAQueryWithoutADeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustQuery(t, s, "ns", "SELECT 1 AS x")
-	sc := s.namespaces["ns"].sql
+	sc := s.namespaces["ns"].query.sc
 	queried := make(chan error, 1)
 	go func() {
 		_, err := s.Query(context.Background(), "ns", "WITH RECURSIVE r(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM r) SELECT count(*) AS n FROM r", nil, [16]byte{}, store.Page{})
@@ -447,7 +447,7 @@ func TestAQueryNeverSeesABatchThatRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustQuery(t, s, "ns", "SELECT count(*) AS n FROM t")
-	sc := s.namespaces["ns"].sql
+	sc := s.namespaces["ns"].query.sc
 	sc.run.Lock()
 	counted := make(chan any, 1)
 	go func() {
@@ -497,7 +497,7 @@ func TestTheSidecarStopsWhenItsParentGoesAway(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustQuery(t, s, "ns", "SELECT 1 AS x")
-	sc := s.namespaces["ns"].sql
+	sc := s.namespaces["ns"].query.sc
 	written := &signalingWriter{WriteCloser: sc.stdin, wrote: make(chan struct{}, 1)}
 	sc.write.Lock()
 	sc.stdin = written

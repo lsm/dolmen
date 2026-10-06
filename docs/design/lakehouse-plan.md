@@ -224,7 +224,10 @@ label in the same way, where a label names one declared field across the namespa
 ### Slice 8's mutations
 
 `update`, `delete`, `upsert` and `upsert_by_key` find their rows by running the caller's filter in
-the namespace's sidecar, against a second, unmasked view per table in a `_dolmen_filter` schema:
+a second sidecar of the namespace, against an unmasked view per table in a `_dolmen_filter` schema.
+That sidecar runs only filters; the one that runs `query` defines the masked views alone, so caller
+SQL cannot name the unmasked ones, even through DuckDB's `query()` or `query_table()`. In the filter
+views
 numbers are typed as in `query`, and a set secret reads as a string holding a NUL, which no request
 can contain (#561), so comparing a secret with any value matches nothing, as on the other engines.
 Because a `number` is a `DOUBLE` there, a filter comparing integers beyond 2^53 compares them as

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Lakehouse filters run in their own SQL sidecar, so `query` can no longer read the unmasked views
+  filters use (`_dolmen_filter.<table>`), even through DuckDB's `query()` or `query_table()`.
+
 - Releases attach a `dolmen-duckdb` bundle per platform (`linux-amd64`, `linux-arm64`,
   `darwin-arm64`, `windows-amd64`): the lakehouse SQL sidecar, the pinned DuckDB library and its
   extensions, built by `sidecar/duckdb/package.sh`. CI tests the lakehouse against that bundle. The

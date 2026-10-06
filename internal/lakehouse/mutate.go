@@ -53,7 +53,7 @@ func (s *Store) matchIDs(ctx context.Context, n *namespace, ns string, state tab
 			return nil, err
 		}
 	}
-	sc, _, err := s.ensureSidecar(ctx, n, ns)
+	sc, _, err := s.ensureSidecar(ctx, n, ns, true)
 	if err != nil {
 		return nil, err
 	}

@@ -170,6 +170,21 @@ func TestShapesAMaskedTableCannotTakeAreRefusedClearly(t *testing.T) {
 		}
 	}
 
+	for _, sql := range []string{
+		"SELECT token FROM _dolmen_filter.creds",
+		"SELECT * FROM query_table('_dolmen_filter.creds')",
+		"SELECT * FROM query('SELECT token FROM _dolmen_filter.creds')",
+	} {
+		status, out := h.httpCall("query", map[string]any{"namespace": "sec", "sql": sql})
+		if status == http.StatusOK {
+			t.Fatalf("%s reached an engine-internal view: %v", sql, out)
+		}
+		raw, _ := json.Marshal(out)
+		if strings.Contains(string(raw), "PLAINTEXT") || strings.Contains(string(raw), `\u0000`) {
+			t.Fatalf("%s leaked a secret or its marker: %s", sql, raw)
+		}
+	}
+
 	h.seedTable("sec", "plain", []map[string]any{{"name": "note", "type": "string"}})
 	h.mustHTTP("insert", map[string]any{"namespace": "sec", "table": "plain", "records": []map[string]any{{"note": "a"}, {"note": "b"}}})
 	for _, sql := range []string{

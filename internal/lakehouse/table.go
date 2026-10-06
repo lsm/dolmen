@@ -278,7 +278,7 @@ func (s *Store) DropTable(ctx context.Context, ns, name string, expected store.I
 			return fmt.Errorf("%w: Iceberg table location escaped its namespace", store.ErrCatalogCorrupt)
 		}
 		delete(n.published, name)
-		n.sql = nil
+		n.query.sc, n.filter.sc = nil, nil
 		draining = s.tracked(ns)
 		return nil
 	})
