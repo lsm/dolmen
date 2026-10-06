@@ -204,6 +204,14 @@ func TestCancellingALongQueryReleasesTheReadPool(t *testing.T) {
 }
 
 func TestCancellingAQueryThatHasToBeRetriedIsStillCanceled(t *testing.T) {
+	cancelARetriedQuery(t, 200*time.Microsecond)
+}
+
+func TestCancellingARetriedQueryToleratesACoarseClock(t *testing.T) {
+	cancelARetriedQuery(t, 20*time.Millisecond)
+}
+
+func cancelARetriedQuery(t *testing.T, poll time.Duration) {
 	st, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -226,9 +234,11 @@ func TestCancellingAQueryThatHasToBeRetriedIsStillCanceled(t *testing.T) {
 			_, err := st.Query(ctx, "cancel", shortRecursiveQuery+` ORDER BY 1 LIMIT 5 OFFSET 0`, nil, [16]byte{}, Page{Limit: 10})
 			done <- err
 		}()
-		awaitBusy(t, n)
+		finished, err := awaitBusyOrDone(t, n, done, poll)
 		cancel()
-		err := awaitDone(t, "the cancelled retried query", done)
+		if !finished {
+			err = awaitDone(t, "the cancelled retried query", done)
+		}
 		if err == nil {
 			continue
 		}
@@ -241,15 +251,21 @@ func TestCancellingAQueryThatHasToBeRetriedIsStillCanceled(t *testing.T) {
 	}
 }
 
-func awaitBusy(t *testing.T, n *nsDB) {
+func awaitBusyOrDone(t *testing.T, n *nsDB, done <-chan error, poll time.Duration) (bool, error) {
 	t.Helper()
 	deadline := time.Now().Add(cancelGrace)
 	for n.ro.Stats().InUse == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the query never took a read connection")
+		select {
+		case err := <-done:
+			return true, err
+		default:
 		}
-		time.Sleep(200 * time.Microsecond)
+		if time.Now().After(deadline) {
+			t.Fatal("the query neither took a read connection nor finished")
+		}
+		time.Sleep(poll)
 	}
+	return false, nil
 }
 
 func awaitSaturation(t *testing.T, n *nsDB) {
