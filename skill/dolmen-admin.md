@@ -206,8 +206,8 @@ dolmen -addr 0.0.0.0:8790
 - `dolmen mcp` (stdio) refuses to start with authentication on; serve HTTP instead.
 
 Every request then carries `Authorization: Bearer <credential>`, and a request body needs
-`Content-Type: application/json`; a body of any other type is refused as `invalid_request` before
-the credential is checked. `whoami` reports `principal`, `groups` and `source`: `admin-key`,
+`Content-Type: application/json`; without an accepted credential a request answers `401` whatever
+its type, and an authenticated body of any other type is refused as `invalid_request`. `whoami` reports `principal`, `groups` and `source`: `admin-key`,
 `api-keys`, `oidc` (a sign-in token) or `trusted-proxy` (a gateway).
 
 Present your credential on every request, `/mcp` and `/v1/subscribe` included, as
@@ -240,10 +240,15 @@ grant on the server). All three need `admin` on the object or something covering
 `list_grants` without an `object` needs it on `*`. Dropping a table or namespace removes the grants
 on it. The reserved `dolmen-admin` principal can be neither granted to nor listed.
 
-Two things are not checked for you. `grant` accepts any principal or group string, whether or not
-anyone authenticates as it, so copy the subject from `whoami` rather than typing it. And `revoke`
-answers `ok` with `"grant":null` both when it removed a grant's last verb and when there was no
-such grant, so confirm a removal with `list_grants`.
+`grant` accepts any principal or group string, but its response says whether anyone can
+authenticate as the subject right now: `reachable` is true for a principal or group carried by an
+unrevoked key, a sign-in identity from the current provider, or anyone behind a trusted gateway.
+`reachable: false` usually means a typo, so check before relying on the grant; copy subjects from
+`whoami`. `revoke` and `revoke_key` stay idempotent and answer `ok` either way, so read what they
+changed: `revoke` lists the verbs it `removed` (empty when it changed nothing, and `"grant":null`
+once the last verb is gone), and `revoke_key` reports `changed`. MCP `tools/list` shows the
+server-wide tools (`create_key`, `list_keys`, `revoke_key`, the rotations) only to callers holding
+`admin` on `*`.
 
 `list_grants` with an `object` shows grants on that object and below it, not the grants above it
 that also cover it. To answer "who can reach this table", also list the grants on its namespace,
