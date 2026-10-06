@@ -13,6 +13,11 @@
   lakehouse full-text grammar. `docs/lakehouse-operations.md` covers running it. CI runs the full
   conformance suite and the black-box tests on it.
 
+- **API keys can expire** (#585). `create_key` takes an optional `expires_at`; at that time the key
+  stops authenticating, like a revoked one, and stops counting toward a usable root administrator.
+  `list_keys` reports `expires_at` and `expired`, and `active_only` drops revoked and expired keys.
+  The key registry gains a nullable column in place; keys minted earlier never expire.
+
 - The lakehouse SQL sidecar stops when dolmen goes away mid-query, instead of running the query to
   the end as an orphan (#590).
 
