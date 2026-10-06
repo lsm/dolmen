@@ -57,7 +57,7 @@ stacked; merge `main` into an active branch when needed, never rebase or force-p
 | 10 | **Change feed** | implemented in slice 10; change-feed conformance |
 | 12 | **Public selector + operator docs** | implemented in slice 12; the full suite and black-box tests |
 | 13 | **`subscribe`/SSE** | implemented with slice 12; listen conformance |
-| 14 | **Compaction + maintenance** | after slice 12, in the approved order |
+| 14 | **Compaction + maintenance** | implemented in slice 14 |
 
 **What each slice still proves is unchanged** and stays in the sections below: slice 4 that a
 namespace is an Iceberg catalog in its own SQLite file; slice 5 that schema evolution works; slice
@@ -297,7 +297,7 @@ engine needed the four `Engine` methods no earlier slice covered:
   pass over `catalog.db` per batch, which is the price of atomicity across Iceberg commits.
 - **Secret rotation** re-seals rows of `_dolmen_lakehouse_secrets` and never touches Parquet,
   because the data files hold only presence markers.
-- **`vacuum`** runs `VACUUM` on `catalog.db`; slice 14 adds compaction.
+- **`vacuum`** compacts (slice 14) and then runs `VACUUM` on `catalog.db`.
 - **`subscribe`** ports the PostgreSQL adapter's polling listener. A replay boundary is fixed when
   the session starts, a live cursor follows the head, and every committed write wakes waiting
   sessions in-process. Dropping the table or namespace ends the session with its lifetime.
@@ -335,6 +335,22 @@ Supporting it would add a public option, the way `dolmen/postgres` does for adap
 the new `sql_engine_unavailable` code (HTTP 503), beside `embedder_unavailable`, with
 `query_error` kept for SQL the engine rejected. The Go library exports it as
 `dolmen.ErrSQLEngineUnavailable`.
+
+### Slice 14's compaction
+
+`vacuum` plans each table's files. When a table has more than one data file or any position-delete
+file, it reads the live rows through iceberg-go's `RewriteDataFiles` into one new file and commits
+a rewrite snapshot that also removes the delete files. In the same transaction it expires every
+snapshot but the current one, and iceberg-go deletes the manifests and data files only those
+snapshots referenced. Every pending commit is materialized before maintenance runs, so no replay
+needs an expired snapshot's commit marker. Vacuum takes the namespace's query barrier, like a batch,
+so no query is reading a file it removes. iceberg-go's orphan-file cleanup is not used: on a data
+directory reached through a symlink it treated live manifests as orphans. Two kinds of file are
+therefore left behind: superseded `vN.metadata.json` files, which iceberg-go keeps because
+`write.metadata.delete-after-commit.enabled` is off and a batch rollback restores a catalog that
+names an earlier one, and Parquet files written by a compaction that crashed before its commit or
+during its post-commit deletes. Neither is read again; reclaiming them is left to a later orphan
+sweep that does not depend on iceberg-go's.
 
 ### Slice 3 in more detail
 

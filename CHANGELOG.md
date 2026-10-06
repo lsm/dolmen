@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Lakehouse slice 14 makes `vacuum` compact: each table's live rows are rewritten into one Parquet
+  file in a single Iceberg commit, which drops its position-delete files, and older snapshots are
+  expired with the files only they referenced.
+
 - **New error code `sql_engine_unavailable`** (503): the lakehouse engine's DuckDB sidecar is
   missing or failed to start. The Go library exports it as `dolmen.ErrSQLEngineUnavailable`.
 
