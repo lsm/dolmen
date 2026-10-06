@@ -29,6 +29,12 @@
   over DataFusion for it; the comparison is in `docs/design/lakehouse-plan.md` §2.8 and the spike
   code stays under `spike/`, outside dolmen's `go.mod`.
 
+- **The skills now cover running authentication.** The admin skill now covers turning authentication on, sign-in and gateway settings, handing over from the
+  bootstrap key and verifying it, key rotation, and token lifetimes; the core skill covers where
+  credentials come from, what to do after a `401`, and the limits of a single-table grant.
+  Under authentication `describe_server` reports `auth` (the mode and the accepted identity sources:
+  `admin-key`, `api-keys`, `trusted-proxy`, `oidc`) and inlines the engine's capabilities.
+
 ### Changed
 
 - **`-shutdown-grace 0` cancels running requests immediately.** A positive value still bounds the
