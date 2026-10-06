@@ -171,12 +171,15 @@ func TestCancellingALongQueryReleasesTheReadPool(t *testing.T) {
 			done <- err
 		}(results[i])
 	}
-	awaitSaturation(t, n)
+	early := awaitSaturationOrDone(t, n, results)
 	for _, cancel := range cancels {
 		cancel()
 	}
 	for i, done := range results {
-		err := awaitDone(t, fmt.Sprintf("cancelled query %d", i), done)
+		err, finished := early[i]
+		if !finished {
+			err = awaitDone(t, fmt.Sprintf("cancelled query %d", i), done)
+		}
 		if err == nil {
 			continue
 		}
@@ -268,15 +271,30 @@ func awaitBusyOrDone(t *testing.T, n *nsDB, done <-chan error, poll time.Duratio
 	return false, nil
 }
 
-func awaitSaturation(t *testing.T, n *nsDB) {
+func awaitSaturationOrDone(t *testing.T, n *nsDB, results []chan error) map[int]error {
 	t.Helper()
+	early := map[int]error{}
 	deadline := time.Now().Add(cancelGrace)
 	for n.ro.Stats().InUse < readConnsPerNS {
+		for i, done := range results {
+			if _, seen := early[i]; seen {
+				continue
+			}
+			select {
+			case err := <-done:
+				early[i] = err
+			default:
+			}
+		}
+		if len(early) > 0 {
+			return early
+		}
 		if time.Now().After(deadline) {
-			t.Fatalf("only %d of the %d read connections are in use; the fan-out never saturated the pool", n.ro.Stats().InUse, readConnsPerNS)
+			t.Fatalf("only %d of the %d read connections are in use and no query has finished", n.ro.Stats().InUse, readConnsPerNS)
 		}
 		time.Sleep(time.Millisecond)
 	}
+	return early
 }
 
 func TestACancellationOutranksAFaultAndNeverHidesOne(t *testing.T) {
