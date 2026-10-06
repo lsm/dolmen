@@ -367,7 +367,10 @@ func init() {
 					"object":  objectPayload(auth.Object{Namespace: auth.RootObject}),
 					"verbs":   auth.NewVerbSet(auth.VerbCreate, auth.VerbRead, auth.VerbUpdate, auth.VerbDelete, auth.VerbSchema, auth.VerbAdmin).Strings(),
 				})
-			} else if s.grants != nil {
+			} else if s.authn.On() {
+				if s.grants == nil {
+					return nil, errNoGrantRegistry
+				}
 				grants, err := s.grants.HeldBy(ctx, id)
 				if err != nil {
 					return nil, err
