@@ -3,7 +3,9 @@ package conformance
 import (
 	"context"
 	"errors"
+	"github.com/lsm/dolmen/internal/derr"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/lakehouse"
@@ -150,6 +152,27 @@ func TestLakehouseMutationBackendConformance(t *testing.T) {
 			masked, err := eng.Delete(ctx, ns, "people", "token = ?", []any{secret.Mask}, store.DeleteOpts{DryRun: true}, nil, none)
 			if err != nil || masked.Matched != 0 {
 				t.Fatalf("a filter comparing a secret with the mask must match nothing: %+v %v", masked, err)
+			}
+			if semi, err := eng.Delete(ctx, ns, "people", "name = 'a;b'", nil, store.DeleteOpts{DryRun: true}, nil, none); err != nil || semi.Matched != 0 {
+				t.Fatalf("a semicolon inside a string literal is not a statement separator: %+v %v", semi, err)
+			}
+			if _, err := eng.CreateTable(ctx, ns, "keyed", []schema.Field{{Name: "name", Type: schema.String}, {Name: "meta", Type: schema.JSON}}, store.TableOpts{}, [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := eng.Insert(ctx, ns, "keyed", []map[string]any{{"name": "dup", "meta": map[string]any{"a": 1}}, {"name": "dup"}}, store.WriteOpts{}, emb, nil, none); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := eng.UpsertByKey(ctx, ns, "keyed", []string{"name"}, []map[string]any{{"name": "dup", "meta": map[string]any{"b": 2}}}, store.WriteOpts{}, emb, nil, none); !errors.Is(err, derr.ErrConflict) {
+				t.Fatalf("a natural key matching several rows must be a conflict: %v", err)
+			}
+			if _, err := eng.UpsertByKey(ctx, ns, "keyed", []string{"name", " NAME"}, []map[string]any{{"name": "x"}}, store.WriteOpts{}, emb, nil, none); !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), "duplicate key field") {
+				t.Fatalf("a key field named twice must be refused: %v", err)
+			}
+			if _, err := eng.UpsertByKey(ctx, ns, "keyed", []string{"meta"}, []map[string]any{{"meta": map[string]any{"a": 1}}}, store.WriteOpts{}, emb, nil, none); !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), "natural keys must be string, text, number, boolean, or timestamp fields") {
+				t.Fatalf("a json key field must be refused: %v", err)
+			}
+			if _, err := eng.UpsertByKey(ctx, ns, "keyed", []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"}, []map[string]any{{"name": "x"}}, store.WriteOpts{}, emb, nil, none); !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), "too many key fields") {
+				t.Fatalf("more than %d key fields must be refused: %v", store.MaxKeyFields, err)
 			}
 		})
 	}
