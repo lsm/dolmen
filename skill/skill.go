@@ -246,6 +246,30 @@ func StrippedPrefix(r *http.Request) string {
 	return ""
 }
 
+func UnusablePrefixHint(r *http.Request) bool {
+	if p := r.Header.Get("X-Forwarded-Prefix"); p != "" {
+		v := forwardedFirst(p)
+		return strings.Trim(v, " /") != "" && NormalizePrefix(v) == ""
+	}
+	if StrippedPrefix(r) != "" {
+		return false
+	}
+	current := r.URL.EscapedPath()
+	if current == "" {
+		current = "/"
+	}
+	for _, name := range originalURIHeaders {
+		raw := forwardedFirst(r.Header.Get(name))
+		if raw == "" {
+			continue
+		}
+		if original := originalPath(raw); original != current {
+			return true
+		}
+	}
+	return false
+}
+
 func originalPath(raw string) string {
 	if i := strings.IndexAny(raw, "?#"); i >= 0 {
 		raw = raw[:i]
@@ -320,6 +344,8 @@ func UnreachableBaseURL(base string) bool {
 	ip := net.ParseIP(host)
 	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
 }
+
+const PrefixHintAdvice = "a proxy sent X-Forwarded-Prefix or an original-URI header (X-Original-URI, X-Forwarded-Uri, X-Envoy-Original-Path, ...) that dolmen could not turn into a path prefix, so the public links it advertises lack the prefix; set DOLMEN_BASE_URL to the full public URL including the path, or have the proxy send X-Forwarded-Prefix with the stripped path"
 
 const ProxyAdvice = "the public links dolmen advertises (the skills manifest, the skill markdown, openapi.json servers, and the MCP initialize instructions) are built from this request, and it arrived through a proxy that did not say what the public URL is; set DOLMEN_BASE_URL to the full public URL, or list the proxy in DOLMEN_TRUSTED_PROXIES and have it send Host/X-Forwarded-Host, X-Forwarded-Proto, and X-Forwarded-Prefix (forwarding headers from unlisted peers are dropped; nginx defaults Host to the upstream address and never sends X-Forwarded-Prefix on its own)"
 

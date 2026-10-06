@@ -38,48 +38,49 @@
   (masked or revealed), timestamps and owner scopes read back exactly as on SQLite, which a
   both-engine conformance test pins; `query` results are typed by column label the same way.
 
-- Lakehouse slice 11 adds `query` over `dolmen-duckdb`, a C++ sidecar on the pinned prebuilt
-  DuckDB, one per namespace, over a framed stdin/stdout protocol. It is sealed read-only and
-  confined to the namespace's data directory before caller SQL runs, sees each acknowledged append
-  on the next query, binds arguments, pages and truncates like the other engines, and cancels on
-  the deadline. The engine is still not selectable.
-
-- Lakehouse slice 6 adds internal appends. Row ids, change records, the idempotency record and
-  exact per-owner row counts commit together in the namespace's SQLite commit log; each commit then
-  lands in Iceberg as one fsynced Parquet file, replayed after a crash without duplicating rows.
-  Lakehouse catalog format 3. The engine is still not selectable.
-
-- Lakehouse slice 5 adds internal table lifecycle, versioned schema evolution, dry-run plans,
-  migration history, and durable drop/recreate guards. Schema properties and native Iceberg
-  evolution publish atomically; table lifecycle conformance runs on SQLite and lakehouse.
-  SQLite now enforces the supplied DropTable incarnation before removing a successor table.
-
-- Change-feed records now carry optional `commit` transaction grouping across polling, pagination and SSE. Legacy records remain unlabelled. SQLite catalog format 5 keeps minimum reader 3; PostgreSQL catalog 9 adds the column and namespace counter in place.
-
-- Change `-shutdown-grace 0` to immediate cancellation and cap shutdown cleanup at five seconds, including stuck store close and stdio cleanup.
-
-- Bound PostgreSQL SQL-compiler admission and caller waiting, check cancellation in SQL/filter compilation, and keep rollback cleanup within the caller deadline.
-
-- Fix immediate `wait_for` polls on PostgreSQL: `timeout_ms: 0` skips polling while reading committed changes under the operation deadline.
+## v0.6.0
 
 ### Added
 
-- Lakehouse slice 4 adds internal namespace lifecycle with one SQLite-backed Iceberg catalog and
-  separate Parquet data directory per namespace, durable namespace lifetimes, leaf-only drop,
-  bounded handles, unpinned drop of unreadable catalogs or incomplete directories, listings that
-  skip incomplete namespaces, and a SQLite/lakehouse lifecycle
-  conformance test. Public lakehouse selection
-  remains unavailable until its planned slice. Iceberg v0.6.0, Arrow v18.6.0 and Parquet v0.32.0
-  are pinned with a version-pin test. Marc's 2026-10-03 order is recorded: 4 → 5 → 6 → 11,
-  then 7–10 and 12–14.
+- **Change-feed records carry a `commit` number.** Every change from one transaction (a multi-row
+  write or a `batch`) shares one positive integer, stable within a namespace's lifetime, on
+  `changes_since`, `wait_for` and SSE alike. Records written before the upgrade have no `commit`.
+  A page or a table-filtered feed may hold only part of a commit, so the field groups changes but
+  does not mark a commit as complete.
+- **Warnings when a proxy's path prefix is lost.** Behind a proxy that serves dolmen under a path
+  such as `/project-abc`, the advertised `base_url` could silently lack the prefix. Dolmen now logs
+  once when it drops forwarding headers from a peer outside `DOLMEN_TRUSTED_PROXIES` (in
+  Kubernetes, the ingress or gateway pod), naming the peer and the headers, and once when a
+  prefix header arrives in a form it cannot use. A proxy that strips the prefix and sends no header
+  still needs `DOLMEN_BASE_URL` (#577).
+- **Lakehouse groundwork, not yet selectable.** Namespace lifecycle with a SQLite-backed Iceberg
+  catalog per namespace, table lifecycle and schema evolution, and appends with row ids,
+  idempotency and a crash-safe commit log. `query` runs in `dolmen-duckdb`, a small sidecar
+  process per namespace, sealed read-only and confined to that namespace's data directory before
+  any caller SQL runs; the sidecar is not shipped in release artifacts yet. DuckDB was chosen
+  over DataFusion for it; the comparison is in `docs/design/lakehouse-plan.md` §2.8 and the spike
+  code stays under `spike/`, outside dolmen's `go.mod`.
+
+### Changed
+
+- **`-shutdown-grace 0` cancels running requests immediately.** A positive value still bounds the
+  drain. Cleanup afterwards (HTTP close, store close, telemetry) has its own fixed 5-second cap,
+  and the process exits even if store close stalls; `dolmen mcp` over stdio has the same cap.
+- **Catalog formats.** SQLite catalog format 5 (readers from format 3 still open it) and
+  PostgreSQL catalog 9, both migrated in place on first start to store the commit number.
+
+### Fixed
+
+- On PostgreSQL, `wait_for` with `timeout_ms: 0` returns changes already committed instead of timing out after a
+  synthetic 250 ms.
+- A canceled operation no longer waits behind PostgreSQL SQL compilation: compiler admission and
+  waiting are bounded, SQL and filter compilation check for cancellation, and rollback finishes
+  within the caller's deadline.
+- SQLite enforces the table incarnation a drop names, so it cannot remove a recreated successor.
 
 ## v0.5.0
 
 ### Added
-
-- Spike 3 for the lakehouse query sidecar compared DuckDB with DataFusion, and DuckDB was chosen. The
-  DuckDB sidecar and the Go driver that attacks it stay under `spike/`, outside dolmen's `go.mod`;
-  the comparison is recorded in `docs/design/lakehouse-plan.md` §2.8.
 
 - **`batch`: several writes in one transaction.** Send an ordered `writes` list against one namespace
   and they commit together or not at all, with one result per write in the order you sent them, one
