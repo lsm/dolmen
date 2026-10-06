@@ -121,7 +121,7 @@ func tamperSecret(t *testing.T, h *harness, ns, table, field string, id int64) {
 			t.Fatal(err)
 		}
 		col := pgx.Identifier{columns[field]}.Sanitize()
-		if _, err := conn.Exec(ctx, "UPDATE "+pgx.Identifier{nsPhysical, physical}.Sanitize()+" SET "+col+" = overlay("+col+" placing '\\xff'::bytea from length("+col+")) WHERE id=$1", id); err != nil {
+		if _, err := conn.Exec(ctx, "UPDATE "+pgx.Identifier{nsPhysical, physical}.Sanitize()+" SET "+col+" = set_byte("+col+", length("+col+") - 1, get_byte("+col+", length("+col+") - 1) # 255) WHERE id=$1", id); err != nil {
 			t.Fatal(err)
 		}
 		return
