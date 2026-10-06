@@ -40,11 +40,11 @@ func TestVacuumReportsSizesOnBothTransports(t *testing.T) {
 			}
 		}
 	}
-	if activeEngine == store.EngineSQLite {
+	if activeEngine == store.EngineSQLite || activeEngine == store.EngineLakehouse {
 		before, _ := toFloat(httpOut["bytes_before"])
 		after, _ := toFloat(httpOut["bytes_after"])
 		if after >= before {
-			t.Fatalf("vacuum after deleting every row must shrink the namespace file: before %v after %v", before, after)
+			t.Fatalf("vacuum after deleting every row must shrink the namespace: before %v after %v", before, after)
 		}
 	}
 	h.mustHTTP("insert", map[string]any{"namespace": "vac", "table": "notes", "records": []map[string]any{{"body": "again"}}})

@@ -68,6 +68,10 @@ Updates and deletes leave position-delete files, and each write adds a data file
 down as a table takes many small writes. `vacuum` compacts every table in the namespace: it
 rewrites each table's live rows into one Parquet file, drops the delete files, expires every older
 snapshot and removes the files only they referenced, then compacts `catalog.db`. Run it during a
-quiet period, because it holds the namespace's writer while it runs. `dolmen backup` and `dolmen restore` work only on a SQLite
+quiet period: it holds the namespace's writer, and it waits for running queries and holds new ones
+until it finishes. It does not remove every superseded file: each write's earlier
+`vN.metadata.json` stays in the table's `metadata/` directory, and a crash in the middle of a
+compaction can leave Parquet files nothing references. Neither is ever read again; both cost disk
+space only. `dolmen backup` and `dolmen restore` work only on a SQLite
 data directory. To back up a lakehouse deployment, stop the server and copy the whole data
 directory.
