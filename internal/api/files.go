@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lsm/dolmen/internal/files"
+	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -194,6 +195,15 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 	ref, err := fileRefFrom(res, table, id, field)
 	if err != nil {
 		writeError(w, r, err)
+		return
+	}
+	sc, _, err := s.eng.TableState(r.Context(), normNS(ns), normTable(table), nil)
+	if err != nil {
+		writeError(w, r, wrapStoreErr(err))
+		return
+	}
+	if f := sc.Field(field); f == nil || f.Type != schema.File {
+		writeError(w, r, badRequest("field %q of %s is not a file field", field, table))
 		return
 	}
 	f, err := s.files.Open(normNS(ns), ref.sha)

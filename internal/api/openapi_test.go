@@ -185,8 +185,8 @@ func assertOpenAPIDoc(t *testing.T, doc map[string]any) {
 	if !ok {
 		t.Fatalf("paths missing or not an object: %v", doc["paths"])
 	}
-	if len(paths) != len(Ops)+1 {
-		t.Fatalf("expected %d paths (one POST per op plus the subscribe stream), got %d", len(Ops)+1, len(paths))
+	if len(paths) != len(Ops)+2 {
+		t.Fatalf("expected %d paths (one POST per op, the subscribe stream and the file download), got %d", len(Ops)+2, len(paths))
 	}
 	for name := range Ops {
 		entry, ok := paths["/v1/"+name].(map[string]any)
@@ -195,6 +195,15 @@ func assertOpenAPIDoc(t *testing.T, doc map[string]any) {
 		}
 		if _, ok := entry["post"]; !ok {
 			t.Fatalf("operation %s must be documented as a POST", name)
+		}
+	}
+	if dl, ok := paths["/v1/files"].(map[string]any); !ok || dl["get"] == nil {
+		t.Fatal("the file download must be documented: a client working from openapi.json alone must be able to fetch a file field's bytes")
+	}
+	for name := range fileWriteOps {
+		content := paths["/v1/"+name].(map[string]any)["post"].(map[string]any)["requestBody"].(map[string]any)["content"].(map[string]any)
+		if _, ok := content["multipart/form-data"]; !ok {
+			t.Fatalf("%s must document its multipart/form-data body, which carries files", name)
 		}
 	}
 	sub, ok := paths["/v1/subscribe"].(map[string]any)

@@ -139,14 +139,46 @@ func (s *Server) OpenAPIDoc(baseURL string) map[string]any {
 		if dataSchema == nil {
 			dataSchema = map[string]any{"type": "object"}
 		}
+		body := requestBody(def.InputSchema)
+		if fileWriteOps[name] {
+			body["content"].(map[string]any)["multipart/form-data"] = multipartBody()
+		}
 		paths["/v1/"+name] = map[string]any{
 			"post": map[string]any{
 				"operationId": name,
 				"summary":     def.Description,
-				"requestBody": requestBody(def.InputSchema),
+				"requestBody": body,
 				"responses":   opResponses(dataSchema),
 			},
 		}
+	}
+
+	paths["/v1/files"] = map[string]any{
+		"get": map[string]any{
+			"operationId": "download_file",
+			"summary": "Download the bytes of one row's file field. Authorization is exactly read_rows on that row. " +
+				"The body is the file itself, sent as an attachment with X-Content-Type-Options: nosniff and a sandbox " +
+				"Content-Security-Policy; Range and If-None-Match (the ETag is the quoted SHA-256) are honored, and HEAD answers the headers alone.",
+			"parameters": []any{
+				queryParam("namespace", "Namespace of the table", true, nsProp("")),
+				queryParam("table", "Table holding the row", true, map[string]any{"type": "string", "pattern": `^[a-z][a-z0-9_]{0,63}$`}),
+				queryParam("id", "Row id", true, map[string]any{"type": "integer", "minimum": 1}),
+				queryParam("field", "The file field to download", true, map[string]any{"type": "string", "pattern": `^[a-z][a-z0-9_]{0,63}$`}),
+			},
+			"responses": map[string]any{
+				"200": map[string]any{
+					"description": "The file's bytes, with Content-Type set to the reference's media_type",
+					"content": map[string]any{
+						"application/octet-stream": map[string]any{"schema": map[string]any{"type": "string", "format": "binary"}},
+					},
+				},
+				"206": map[string]any{"description": "The requested byte range of the file"},
+				"304": map[string]any{"description": "The file has not changed since the ETag sent in If-None-Match"},
+				"400": errorResponse("The field is not a file field, or a parameter is missing"),
+				"404": errorResponse("No such row or field, the row is not visible to the caller, or the field holds no file"),
+				"405": errorResponse("Method not allowed"),
+			},
+		},
 	}
 
 	paths["/v1/subscribe"] = map[string]any{
@@ -442,6 +474,20 @@ func errorResponse(description string) map[string]any {
 			"application/json": map[string]any{
 				"schema": ref("ErrorEnvelope"),
 			},
+		},
+	}
+}
+
+func multipartBody() map[string]any {
+	return map[string]any{
+		"schema": map[string]any{
+			"type":        "object",
+			"description": "The operation's JSON request in the first part, named request, and each file in its own part. A file field's value {\"part\": \"<part name>\"} attaches that part, as curl -F 'request=<json>' -F 'rec=@path'.",
+			"properties": map[string]any{
+				"request": map[string]any{"type": "string", "description": "The operation's JSON request; must be the first part"},
+			},
+			"required":             []string{"request"},
+			"additionalProperties": map[string]any{"type": "string", "format": "binary"},
 		},
 	}
 }

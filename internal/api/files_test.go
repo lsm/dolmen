@@ -351,3 +351,24 @@ func TestEveryWriteOperationAttachesFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestAJSONValueShapedLikeAReferenceIsNotDownloadable(t *testing.T) {
+	srv, _ := newFileServer(t, files.Config{})
+	code, body := post(t, srv.URL, "create_table", map[string]any{"namespace": "app", "table": "notes", "fields": []any{
+		map[string]any{"name": "meta", "type": "json"},
+	}})
+	if code != 200 {
+		t.Fatalf("create_table: %d %v", code, body)
+	}
+	post(t, srv.URL, "insert", map[string]any{"namespace": "app", "table": "notes", "records": []any{
+		map[string]any{"meta": map[string]any{"sha256": strings.Repeat("ab", 32)}},
+	}})
+	res, err := http.Get(srv.URL + "/v1/files?namespace=app&table=notes&id=1&field=meta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a json field is not a file field: got %d, want 400", res.StatusCode)
+	}
+}
