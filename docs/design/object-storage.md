@@ -162,7 +162,7 @@ cannot attach afterwards.
 | Media type not in `media_types` | `415` | `invalid_request`, naming the accepted types |
 | `X-Dolmen-Sha256` mismatch | `400` | `invalid_request`, naming both hashes |
 | Disk full | `507` | as `-max-namespace-size` refusals today |
-| Over `-max-namespace-files-size` | `507` | naming the flag, the namespace's current file bytes and the cap |
+| Over `-max-namespace-files-size` | `507` | `internal_error`, as `-max-namespace-size` refusals today, naming the flag, the namespace's current file bytes and the cap |
 | Blob store unreachable (S3, slice 3) | `503` | `storage_unavailable`, a new code following `sql_engine_unavailable` |
 
 A write naming an unknown, expired, foreign-namespace or other principal's upload is
@@ -265,8 +265,11 @@ The 32 MiB request body limit does not apply to the upload endpoint. Blobs do no
 its blobs separately, so a large upload can never refuse the namespace's row writes. The total is
 the sum of `_dolmen_blobs.size`, each blob counted once however many rows reference it. An upload
 stops streaming as soon as the current total plus the bytes received would pass the cap, and its
-commit checks again under the writer, so concurrent uploads cannot overshoot it together. An upload
-of a hash already stored adds nothing and is always accepted. Each namespace entry in
+commit checks again under the writer, so concurrent uploads cannot overshoot it together. The
+server cannot know an upload's hash before it has read the body, so an upload of bytes already
+stored is accepted at its commit, where it adds nothing, but could be stopped mid-stream when the
+namespace is near its cap. An upload that sends `X-Dolmen-Sha256` naming a stored hash skips the
+streaming check, is verified against that hash, and is accepted at commit. Each namespace entry in
 `list_namespaces` gains `file_bytes`.
 
 ## Change feed, backup, auth audit
