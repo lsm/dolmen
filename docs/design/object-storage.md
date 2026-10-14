@@ -135,7 +135,9 @@ on SQLite and DuckDB, `recording::jsonb->>'sha256'` on PostgreSQL).
   headers.
 
 The server streams each part to a temporary file under the store's `tmp/` while hashing it, and
-refuses a part as soon as it passes the field's `max_bytes` or `-max-file-size`. Streaming takes no
+refuses a part as soon as it passes the smallest limit that applies to it: `-max-file-size`, or the
+lowest `max_bytes` among the fields that reference it, since every reference must accept the part
+for the write to succeed. The refusal names that field and its limit. Streaming takes no
 lock. Once the whole request has arrived it takes the namespace's writer and, in the one write
 transaction the operation already uses, records each blob and runs the write. For each hash: if a
 `_dolmen_blobs` row exists and its file is present the temporary file is discarded; if the row exists
