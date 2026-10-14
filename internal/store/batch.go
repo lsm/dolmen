@@ -146,7 +146,16 @@ func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName strin
 		}
 		schemas[w.Table] = sc
 	}
-	return BatchPayloadHash(s.secrets, schemas, writes, opts)
+	canon := make([]BatchWrite, len(writes))
+	for i, w := range writes {
+		sc := schemas[w.Table]
+		w.Records = canonicalFiles(ctx, sc, w.Records)
+		if w.Set != nil {
+			w.Set = canonicalFiles(ctx, sc, []map[string]any{w.Set})[0]
+		}
+		canon[i] = w
+	}
+	return BatchPayloadHash(s.secrets, schemas, canon, opts)
 }
 
 func BatchPayloadHash(keys *secret.Keyring, schemas map[string]*schema.TableSchema, writes []BatchWrite, opts BatchOpts) (IdemHash, error) {

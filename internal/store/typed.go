@@ -203,7 +203,7 @@ func (p *projection) presentedSize(col string, raw, v any) int {
 			}
 			return len(fv)*27 + 8
 		}
-	case schema.JSON:
+	case schema.JSON, schema.File:
 
 		if _, isStr := v.(string); !isStr {
 			return rawValSize(raw)

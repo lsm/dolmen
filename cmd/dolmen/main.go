@@ -22,6 +22,7 @@ import (
 	"github.com/lsm/dolmen/internal/api"
 	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/embed"
+	"github.com/lsm/dolmen/internal/files"
 	"github.com/lsm/dolmen/internal/mcp"
 	"github.com/lsm/dolmen/internal/postgres"
 	"github.com/lsm/dolmen/internal/secret"
@@ -110,7 +111,7 @@ func run() error {
 		return err
 	}
 
-	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithMaxSubscriptionAge(cfg.MaxSubscriptionAge), api.WithAuth(cfg.Auth), api.WithGrants(grants), api.WithOIDC(oidcSrc), api.WithTimeouts(cfg.Timeouts), api.WithTracing(tel.Tracing))
+	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithMaxSubscriptionAge(cfg.MaxSubscriptionAge), api.WithAuth(cfg.Auth), api.WithGrants(grants), api.WithOIDC(oidcSrc), api.WithTimeouts(cfg.Timeouts), api.WithTracing(tel.Tracing), api.WithFiles(newFileStore(cfg)))
 	mcpSrv := newMCPServer(cfg, apiSrv)
 
 	sub := http.NewServeMux()
@@ -389,6 +390,7 @@ type config struct {
 	MaxSubscriptionAge time.Duration
 	Sync               store.SyncMode
 	MaxNamespaceSize   int64
+	Files              files.Config
 	VectorCacheSize    int64
 	LogLevel           slog.Level
 	ShutdownGrace      time.Duration
@@ -427,6 +429,10 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	maxOpenDefault, maxOpenErr := envIntOr("DOLMEN_MAX_OPEN_NAMESPACES", store.DefaultMaxOpenNamespaces, getenv)
 	maxOpenNamespaces := fs.Int("max-open-namespaces", maxOpenDefault, "namespaces held open at once; past it, the least recently used idle namespace is closed until it is next used (at least 1; sqlite engine)")
 	vectorCacheSize := fs.String("vector-cache-size", envOr("DOLMEN_VECTOR_CACHE_SIZE", "512MiB", getenv), "memory for decoded vectors kept between vector searches, e.g. 2GiB; 0 disables the cache and every search reads vectors from disk (sqlite engine)")
+	maxFileSize := fs.String("max-file-size", envOr("DOLMEN_MAX_FILE_SIZE", "1GiB", getenv), "largest single file a write may attach, e.g. 1GiB; also the ceiling for a file field's max_bytes")
+	maxNamespaceFiles := fs.String("max-namespace-files-size", envOr("DOLMEN_MAX_NAMESPACE_FILES_SIZE", "0", getenv), "largest total of one namespace's stored files, e.g. 50GiB; a write past it is refused with 507. 0 (default) is unbounded")
+	maxRequestFiles := fs.String("max-request-files-size", envOr("DOLMEN_MAX_REQUEST_FILES_SIZE", "2GiB", getenv), "most file bytes one multipart write may carry across its parts")
+	maxPendingFiles := fs.String("max-pending-files-size", envOr("DOLMEN_MAX_PENDING_FILES_SIZE", "8GiB", getenv), "most file bytes all in-flight writes may hold in temporary space at once; past it a write is refused with 503 storage_unavailable")
 	maxNamespaceSize := fs.String("max-namespace-size", envOr("DOLMEN_MAX_NAMESPACE_SIZE", "0", getenv), "largest a namespace file may grow, e.g. 10GiB; a write past it is refused with 507 and nothing is written. 0 (default) is unbounded; sqlite engine")
 	logLevel := fs.String("log-level", envOr("DOLMEN_LOG_LEVEL", "info", getenv), "log verbosity: debug (adds one line per operation: op, outcome, status, duration, request size, request id), info (default), warn, or error")
 	syncMode := fs.String("sync", envOr("DOLMEN_SYNC", string(store.DefaultSync), getenv), "commit durability: full (an acknowledged commit survives power loss) or normal (it survives a process crash; the last commits before a power loss may be lost); sqlite engine")
@@ -598,6 +604,12 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		fs.Usage()
 		return nil, &printedError{err}
 	}
+	filesCfg, err := parseFilesConfig(*maxFileSize, *maxNamespaceFiles, *maxRequestFiles, *maxPendingFiles)
+	if err != nil {
+		fmt.Fprintf(out, "config: %v\n", err)
+		fs.Usage()
+		return nil, &printedError{err}
+	}
 
 	sync, err := store.ParseSyncMode(*syncMode)
 	if err != nil {
@@ -696,6 +708,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		MaxSubscriptionAge: maxAge,
 		Sync:               sync,
 		MaxNamespaceSize:   nsSize,
+		Files:              filesCfg,
 		VectorCacheSize:    vcSize,
 		LogLevel:           level,
 		ShutdownGrace:      grace,

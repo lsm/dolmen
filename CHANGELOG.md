@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **File fields** (object storage, slice 1a): a `file` field holds a SHA-256 reference to bytes
+  stored beside the namespace. `insert`, `update`, `upsert`, `upsert_by_key` and `batch` attach
+  files in the same call as `multipart/form-data` (`curl -F 'request=<json>' -F 'rec=@file'`), and
+  `GET /v1/files` downloads one by row. New flags `-max-file-size`, `-max-namespace-files-size`,
+  `-max-request-files-size` and `-max-pending-files-size`. SQLite engine only for now.
+
+- **New error code `storage_unavailable`** (503): the server holds as many in-flight file bytes as
+  it allows; retry the write. The Go library exports it as `dolmen.ErrStorageUnavailable`.
+
 - Lakehouse filters run in their own SQL sidecar, so `query` can no longer read the unmasked views
   filters use (`_dolmen_filter.<table>`), even through DuckDB's `query()` or `query_table()`.
 

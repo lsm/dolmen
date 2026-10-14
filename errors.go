@@ -14,6 +14,7 @@ var (
 	ErrForbidden            = derr.ErrForbidden
 	ErrEmbedderUnavailable  = derr.ErrEmbedderUnavailable
 	ErrSQLEngineUnavailable = derr.ErrSQLEngineUnavailable
+	ErrStorageUnavailable   = derr.ErrStorageUnavailable
 	ErrCanceled             = derr.ErrCanceled
 	ErrTimeout              = derr.ErrTimeout
 	ErrInternal             = derr.ErrInternal

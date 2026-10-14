@@ -189,7 +189,7 @@ body at all; any other body must be a JSON object, and field names are matched e
 is an unknown field, not `"namespace"`. Responses are enveloped — success is
 `{"ok":true,"data":...}` and failure is `{"ok":false,"error":{"code","message","request_id"}}`
 with a stable machine-readable `code` (`invalid_request`, `not_found`, `query_error`, `conflict`,
-`unauthorized`, `forbidden`, `embedder_unavailable`, `sql_engine_unavailable`, `canceled`, `timeout`, `internal_error`); `request_id` is the request's
+`unauthorized`, `forbidden`, `embedder_unavailable`, `sql_engine_unavailable`, `storage_unavailable`, `canceled`, `timeout`, `internal_error`); `request_id` is the request's
 `X-Request-Id` header when one was sent, otherwise a server-generated id, echoed back as the
 `X-Request-Id` response header — when a message says the underlying cause is in the server log
 under this id, this is the id. The full list of operations and their request schemas is in the OpenAPI document (`GET /v1/openapi.json`).
@@ -226,6 +226,41 @@ Searches answer with `results`, where `query` and `read_rows` answer with `rows`
 ```json
 {"ok":true,"data":{"results":[{"id":1,"created_at":"2026-09-23T16:19:06.326Z","title":"auth flow","body":"token expiry not checked","_score":0.9046}],"truncated":false,"skipped_vectors":0,"limit":10}}
 ```
+
+## Files
+
+A `file` field holds a reference to bytes the server stores beside the namespace. Attach a file
+in the same call as the write: send the operation as `multipart/form-data` to `/v1/{operation}`,
+with the JSON request in a first part named `request` and each file in its own part, and write
+`{"part": "<part name>"}` as the field's value. `insert`, `update`, `upsert`, `upsert_by_key` and
+`batch` accept this; nothing else is needed, and you never read the file yourself:
+
+```bash
+base='{{ .BaseURL }}'
+curl -s "${base%/}/v1/insert" \
+  -F 'request={"namespace":"research","table":"meetings","records":[{"title":"standup","recording":{"part":"rec"}}]}' \
+  -F 'rec=@/tmp/standup.ogg'
+```
+
+The media type is taken from the part's `Content-Type`, or, when curl sends the default
+`application/octet-stream`, from the file name's extension; add `"media_type": "audio/ogg"` to the
+value to set it yourself, and `"name": "q3.ogg"` to store a different file name. Several records,
+or several fields, may reference the same part. `null` clears the field.
+
+A read returns the reference, never the bytes:
+`{"sha256": "9f86…", "size": 48213, "media_type": "audio/ogg", "name": "standup.ogg"}`. Fetch the
+bytes with one GET, addressed by row; it needs the same access as `read_rows` on that row:
+
+```bash
+curl -s -o standup.ogg "${base%/}/v1/files?namespace=research&table=meetings&id=1&field=recording"
+```
+
+MCP tools cannot carry files: a `{"part": …}` value sent over MCP is refused with the curl form to
+use instead. A field's `max_bytes` and `media_types` (shown by `describe_table`) are checked on every
+write. A refusal for size answers `413`, and one for type answers `415` and names the accepted
+types. `storage_unavailable` (503) means the server is holding as much in-flight file data as it
+allows: retry the write shortly. Files are supported on the SQLite engine; a `file` field cannot
+be created on the PostgreSQL or lakehouse engines yet.
 
 ## JSON-RPC fallback
 
@@ -383,7 +418,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 ## Quick reference
 
 - Core tools: `describe_server`, `whoami` (only when authentication is on), `list_namespaces`, `list_tables`, `describe_table`, `insert`, `query`, `read_rows` (takes `namespace`, `table` and `ids`, up to 1,000 per call, and optional `reveal`), `search_fulltext`, `tokenize` (takes `namespace`, `table` and `text`), `search_vector`, `changes_since`, `wait_for`, `delete`, `batch` (several writes in one transaction — see below).
-- Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`, `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field), and `secret` (a string encrypted at rest; see below).
+- Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`, `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field), `secret` (a string encrypted at rest; see below), and `file` (a reference to stored bytes; see "Files").
 - `secret` fields read back as the fixed mask `"••••"` (or `null` when unset) in every read: `read_rows`, both searches, and `query`. To get the plaintext, name the field in `reveal` on `read_rows`, `search_fulltext` or `search_vector` (`"reveal": ["api_token"]`); `query` never reveals. `query` reads the mask in place of the stored bytes, whatever alias or expression you wrap it in, and search `filter`s evaluate against the ciphertext, so never filter or join on a secret field. Under `-auth on` reveal needs the `reveal` verb (a `forbidden` error names it; `admin` does not imply it), and every reveal is audit-logged without the value. Writing a secret needs the server's secret key; without it the write is refused. Never write a masked value back: `"••••"` is refused as a secret value, because storing it would destroy the real one — pass the real value, `reveal` it first, or omit the field to leave it alone.
 - Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field — enables `search_vector` with `text`; the built-in `local` provider is enabled by default; set `DOLMEN_EMBED_PROVIDER=openai` for an external endpoint, or `none` to disable server-side embeddings), `required: true`, `enum: [values]` (closed vocabulary for a string field — writes with any other value are rejected naming the field, the value, and the allowed list; exact match, no case folding; a declared `default` must be a member), `shape` on a `json` field (`object`, `array`, `array<string>`, `array<number>`, `array<boolean>` or `array<object>` — writes of any other shape are rejected naming the field, the expected shape and what arrived, so send tags as `["db","sqlite"]`, never `"db,sqlite"`; omit it for free-form JSON).
 - `describe_server` reports the embedding provider status without attempting a write: `provider` (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, `usable`, and — for the `local` provider — `model_state`, which says what the next vectorized write or `text` search will meet: `cached` (the weights are complete on the server, so nothing is downloaded), `download_on_first_use` (an ordinary first run — that first operation downloads a Hugging Face model from the Hub, which can take ten seconds or more and can fail transiently, so retry or pre-seed the cache), or `incomplete` (`DOLMEN_EMBED_MODEL` names a model directory that is not complete, which no download repairs — an operator has to fix or replace it). Read the state before deciding whether semantic search is safe: `download_on_first_use` is a normal cold start, not a broken feature. `vectorize` fields and `search_vector` `text` queries fail while `usable` is false; a table whose `embed_space` (see `describe_table`) differs from `identity` was embedded by a different provider/model and rejects inserts and text searches until it is re-embedded.
@@ -427,7 +462,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 {{ end }}- `drop_table` / `drop_namespace` are irreversible deletions and are **not** part of this skill; do not use them. Ask the user to use `dolmen-admin` if a table or namespace must go.
 - `insert` with an `idempotency_key` (any unique string) makes retries replay the original ids; the same key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes; the server counts bytes and refuses only an empty key or one over 256 bytes, so other characters are accepted but not recommended.
 - Every table has implicit `id` and `created_at` columns; `SELECT *` includes them.
-- Results honor declared field types in every read (`query`, `search_fulltext`, `search_vector`): `boolean` → `true`/`false`, `json` → the decoded value, `vector` → a number array, `secret` → the mask `"••••"` unless revealed, SQL `NULL` → `null`. In `query`, coercion is by result-column label (aliases count as their label); labels that match no declared field fall back to raw values (blobs as base64).
+- Results honor declared field types in every read (`query`, `search_fulltext`, `search_vector`): `boolean` → `true`/`false`, `json` → the decoded value, `vector` → a number array, `secret` → the mask `"••••"` unless revealed, `file` → its reference object, SQL `NULL` → `null`. In `query`, coercion is by result-column label (aliases count as their label); labels that match no declared field fall back to raw values (blobs as base64).
 - The hidden `_embedding` column (from `vectorize`) is excluded from `SELECT *` and search results; pass `include_hidden: true` to a search when you really need it. Naming it in `query` SQL (outside string literals and comments) also works where the backend exposes it to caller SQL, but that is backend-dependent — `include_hidden: true` is the portable way to reach it.
 - Vector search results carry `_score` (cosine similarity; higher is closer). Judge a score against the other results of the same query, not against a fixed cutoff: with the default `local` model, relevant matches commonly score only about 0.2 to 0.6.
 - `search_vector` has two query forms with different reach: `text` (server embeds it) searches only the vectorize `_embedding` space — a table without a `vectorize` field rejects `text`; `vector` (raw numbers) searches any `vector` column, and only you know which embedding space produced both the stored and the query vectors, so keep them from the same model.
@@ -585,6 +620,8 @@ The optional `filter` parameter is separate from the MATCH `query`: it is regula
 | `query` / search result size | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
 | A single value built by SQL (in `query` or a search `filter`), SQLite engine | 64 MiB | `query_error` before the value is built |
 | Request body | 32 MiB, sent within the server's read limit (2 minutes by default) | over 32 MiB is rejected; a body that arrives too slowly is `timeout` (408) |
+| One file | the server's `-max-file-size`, 1 GiB by default, and the field's `max_bytes` when set | `invalid_request` (413) naming the limit |
+| Files per multipart write | 100 parts, 2 GiB across them by default; the `request` part answers to the 32 MiB body limit | `invalid_request` (413) |
 | Time per operation | set by the server, 2 minutes by default; `wait_for` gets its `timeout_ms` on top | `timeout` (504): narrow a read (a filter, a smaller limit) and retry it; a write may or may not have committed, so check with a query before retrying it |
 {{ if eq .Dialect "postgresql" }}| Database connections | the database's own connection limit, shared by every request and open subscription | `timeout` (504) saying the database is at its connection limit: nothing was started, so retry shortly |
 {{ end }}| `query` / search filter `args` | 100 | rejected |

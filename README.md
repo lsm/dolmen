@@ -84,8 +84,8 @@ All successful `/v1/{operation}` POSTs return `{"ok":true,"data":{...}}`; errors
 request's `X-Request-Id` header when one was sent, otherwise a server-generated id, echoed back as
 the `X-Request-Id` response header so any error can be correlated with the server log — with a
 matching 4xx/5xx status. Error codes are stable for branching: `invalid_request`, `not_found`,
-`query_error`, `conflict`, `unauthorized`, `forbidden`, `embedder_unavailable`, `sql_engine_unavailable`, `canceled`,
-`timeout`, `internal_error`.
+`query_error`, `conflict`, `unauthorized`, `forbidden`, `embedder_unavailable`, `sql_engine_unavailable`,
+`storage_unavailable`, `canceled`, `timeout`, `internal_error`.
 `canceled` means the request was cancelled before it completed (over the stdio transport, by a
 client cancellation notification or the shutdown drain); the operation may or may not have
 finished server-side — check with a query before retrying a write.
@@ -102,6 +102,9 @@ directory); retrying the same request makes no sense until the model can load.
 `sql_engine_unavailable` (503) is the lakehouse engine's counterpart: its DuckDB sidecar is missing
 or failed to start, and the message says which (check `-duckdb-sidecar` and `-duckdb-extensions`).
 A failed start is retried with a backoff of up to thirty seconds.
+`storage_unavailable` (503) means a write that carries files found the server holding as many
+in-flight file bytes as `-max-pending-files-size` allows; nothing was written, and the write may be
+retried shortly.
 The one exception is `GET /v1/openapi.json`, which serves the raw OpenAPI document.
 `/livez` (and its alias `/healthz`) returns `{"status":"ok"}`, `/readyz` returns `{"status":"ready", ...}`, and `/mcp` returns JSON-RPC responses.
 
@@ -461,6 +464,10 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 | `-prefix` | `DOLMEN_PREFIX` | — | Mount all endpoints (`/livez`, `/readyz`, `/healthz`, `/metrics`, `/version`, `/skills*`, `/v1/*`, `/mcp`) under this URL prefix. Use with a pass-through proxy that forwards the full path |
 | `-base-url` | `DOLMEN_BASE_URL` | — | Public base URL for the links rendered into the skills manifest, the skill markdown, and the MCP `initialize` instructions. Default: derive from the request `Host` and forwarded headers. Refused when it ends with `-prefix` |
 | `-vector-cache-size` | `DOLMEN_VECTOR_CACHE_SIZE` | `512MiB` | Memory for decoded vectors kept between vector searches, shared by all tables; about 4 bytes per dimension plus about 125 bytes per row. `0` disables it and every search reads vectors from disk. Results are identical either way. SQLite engine only |
+| `-max-file-size` | `DOLMEN_MAX_FILE_SIZE` | `1GiB` | Largest single file a write may attach, as bytes or with `KiB`/`MiB`/`GiB`/`TiB`; also the ceiling for a file field's `max_bytes`. A larger file is refused with `413` |
+| `-max-namespace-files-size` | `DOLMEN_MAX_NAMESPACE_FILES_SIZE` | `0` | Largest total of one namespace's stored files, each file counted once however many rows reference it. A write that would pass it is refused with `507` and writes nothing. Files do not count toward `-max-namespace-size`. `0` is unbounded |
+| `-max-request-files-size` | `DOLMEN_MAX_REQUEST_FILES_SIZE` | `2GiB` | Most file bytes one multipart write may carry across its parts; past it the write is refused with `413` |
+| `-max-pending-files-size` | `DOLMEN_MAX_PENDING_FILES_SIZE` | `8GiB` | Most file bytes all in-flight writes may hold in temporary space at once, so concurrent uploads cannot fill the disk; past it a write is refused with `503` `storage_unavailable` and may be retried |
 | `-max-namespace-size` | `DOLMEN_MAX_NAMESPACE_SIZE` | `0` | Largest a namespace file may grow, as bytes or with `KiB`/`MiB`/`GiB`/`TiB`. A write that would pass it is refused with `507` and writes nothing; reads keep working. `0` is unbounded. SQLite engine only (see [Disk use](docs/deployment.md#disk-use)) |
 | `-log-level` | `DOLMEN_LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, or `error`. `debug` adds one line per operation over HTTP, MCP or stdio with the operation, outcome code, status, duration, request size, and request id, and never the payload, SQL, arguments, or credentials |
 | `-sync` | `DOLMEN_SYNC` | `full` | Commit durability. `full`: an acknowledged commit survives power loss. `normal`: it survives a process crash, but the last commits before a power or OS failure may be lost, for faster writes. Each namespace's writer is checked at open, and a mismatch is refused. SQLite engine only (see [Durability](docs/deployment.md#durability)) |
@@ -1099,6 +1106,26 @@ Change-feed `commit` is a stable positive integer within a namespace incarnation
   tool) is not detected, and racing in-flight requests on the namespace may fail, so quiesce writers
   before dropping. A small registry inside each file holds table schemas, versions, and a migration
   log (surfaced by `list_migrations`).
+- **Files**: a `file` field holds a reference to bytes stored beside the namespace in
+  `<data>/<ns>.files/`, content-addressed by SHA-256, so identical bytes are stored once however
+  many rows reference them. A write attaches files in the same call: `insert`, `update`, `upsert`,
+  `upsert_by_key` and `batch` accept `multipart/form-data`, with the JSON request in a first part
+  named `request` and each file in its own part, referenced as `{"part": "<part name>"}`:
+
+  ```bash
+  curl -s http://127.0.0.1:8790/v1/insert \
+    -F 'request={"namespace":"app","table":"meetings","records":[{"title":"standup","recording":{"part":"rec"}}]}' \
+    -F 'rec=@standup.ogg'
+  ```
+
+  The media type comes from the part's `Content-Type`, or from the file name's extension when the
+  client sends `application/octet-stream`; a value may set `name` and `media_type` itself. Every
+  read returns the reference `{"sha256", "size", "media_type", "name"}`, never the bytes.
+  `GET /v1/files?namespace=&table=&id=&field=` downloads them with the same authorization as
+  `read_rows` on that row, as an attachment with `X-Content-Type-Options: nosniff` and a sandbox
+  CSP, supporting `Range` and `ETag`. A field may declare `max_bytes` and `media_types` (exact, or
+  `audio/*`). MCP calls cannot carry files. File fields exist on the SQLite engine only;
+  PostgreSQL and the lakehouse refuse them for now. `docs/design/object-storage.md` has the design.
 - **Full-text** via SQLite FTS5 shadow tables, maintained on insert/update/delete/migrate.
 - **Enum-validated writes**: a string field declared `enum: [...]` accepts only those values on every
   write path (`insert`, `update`/`upsert` `set`, `upsert_by_key`) — exact match, no case folding, values
@@ -1297,6 +1324,8 @@ Every row has two implicit columns:
 | `query` / search result bytes | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
 | A single value built by SQL (in `query` or a search `filter`), SQLite engine | 64 MiB | `query_error` before the value is built |
 | Request body size | 32 MiB | rejected with `413 Request Entity Too Large` |
+| One file | `-max-file-size` (1 GiB by default), and the field's `max_bytes` when set | `413` `invalid_request` naming the limit |
+| Files per multipart write | 100 parts, `-max-request-files-size` (2 GiB by default) across them; the `request` part answers to the 32 MiB body limit | `413` `invalid_request` |
 | `query` `args` | 100 | rejected |
 | `infer_schema` samples | 1–50 | rejected |
 | Column label in `query` | 4096 bytes | rejected |

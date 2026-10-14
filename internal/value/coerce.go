@@ -23,6 +23,8 @@ func Coerce(f schema.Field, v any) (any, error) {
 		return nil, nil
 	}
 	switch f.Type {
+	case schema.File:
+		return nil, fmt.Errorf("field %q is a file field, which this engine cannot write", f.Name)
 	case schema.Number:
 		switch n := v.(type) {
 		case float64:

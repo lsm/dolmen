@@ -76,7 +76,7 @@ body at all; any other body must be a JSON object, and field names are matched e
 is an unknown field, not `"namespace"`. Responses are enveloped — success is
 `{"ok":true,"data":...}` and failure is `{"ok":false,"error":{"code","message","request_id"}}`
 with a stable machine-readable `code` (`invalid_request`, `not_found`, `query_error`, `conflict`,
-`unauthorized`, `forbidden`, `embedder_unavailable`, `sql_engine_unavailable`, `canceled`, `timeout`, `internal_error`); `request_id` is the request's
+`unauthorized`, `forbidden`, `embedder_unavailable`, `sql_engine_unavailable`, `storage_unavailable`, `canceled`, `timeout`, `internal_error`); `request_id` is the request's
 `X-Request-Id` header when one was sent, otherwise a server-generated id, echoed back as the
 `X-Request-Id` response header — when a message says the underlying cause is in the server log
 under this id, this is the id. The full list of operations and their request schemas is in the OpenAPI document (`GET /v1/openapi.json`).
@@ -430,7 +430,8 @@ locked-out server.
 
 - Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`,
   `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field), and
-  `secret` (a string encrypted at rest; see "Secret fields" below).
+  `secret` (a string encrypted at rest; see "Secret fields" below), and `file` (a reference to
+  bytes sent with the write as a multipart part; see "File fields" below).
 - Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field —
   enables `search_vector` with `text`), `required: true`, `enum: [values]` (closed vocabulary for a
   string field — writes with any other value are rejected naming the field, the rejected value, and
@@ -807,6 +808,27 @@ match, before ranking.
   for a server-wide call. A value under a key that is not configured makes it answer `conflict`
   naming the key id to add back.
 
+### File fields
+
+- A `file` field holds a reference to bytes stored beside the namespace, and reads back as
+  `{"sha256", "size", "media_type", "name"}`. Declare one with optional `max_bytes` (the largest
+  file it accepts) and `media_types` (exact types such as `application/pdf`, or `audio/*`):
+  `{"name":"recording","type":"file","media_types":["audio/*"],"max_bytes":104857600}`.
+- `fulltext`, `vectorize`, `enum`, `shape` and `default` are refused on a file field, and a file
+  field cannot be an `upsert_by_key` key. Keep searchable text, such as a transcript, in its own
+  field.
+- Attach a file in the write itself: send the operation as `multipart/form-data` to
+  `/v1/{operation}`, with the JSON request in a first part named `request`, and write
+  `{"part": "<part name>"}` as the value (`curl -F 'request=<json>' -F 'rec=@path'`). Fetch it with
+  `GET /v1/files?namespace=&table=&id=&field=`, which needs `read_rows` access to the row. MCP
+  cannot carry files.
+- Files are stored once per namespace however many rows reference them. File fields exist only on
+  the SQLite engine for now; `create_table` and `migrate add_field` refuse them on PostgreSQL and
+  the lakehouse.
+- `storage_unavailable` (503) means the server holds as much in-flight file data as
+  `-max-pending-files-size` allows; the write may be retried. A namespace over
+  `-max-namespace-files-size` refuses new files with `507`.
+
 ### Id, `created_at`, and stability
 
 - Every row has `id` and `created_at`. You cannot supply them; they are assigned on insert and
@@ -931,6 +953,8 @@ A complete call, previewed first:
 | `query` / search result size | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
 | A single value built by SQL (in `query` or a search `filter`), SQLite engine | 64 MiB | `query_error` before the value is built |
 | Request body | 32 MiB, sent within the server's read limit (2 minutes by default) | over 32 MiB is rejected; a body that arrives too slowly is `timeout` (408) |
+| One file | the server's `-max-file-size`, 1 GiB by default, and the field's `max_bytes` when set | `invalid_request` (413) naming the limit |
+| Files per multipart write | 100 parts, 2 GiB across them by default; the `request` part answers to the 32 MiB body limit | `invalid_request` (413) |
 | Time per operation | set by the server, 2 minutes by default; `wait_for` gets its `timeout_ms` on top | `timeout` (504): narrow a read (a filter, a smaller limit) and retry it; a write may or may not have committed, so check with a query before retrying it |
 {{ if eq .Dialect "postgresql" }}| Database connections | the database's own connection limit, shared by every request and open subscription | `timeout` (504) saying the database is at its connection limit: nothing was started, so retry shortly |
 {{ end }}| Time per `migrate` | unbounded by default; the operator can set a limit | `timeout` (504): the migration is stopped; check the table's version with `describe_table` before retrying |

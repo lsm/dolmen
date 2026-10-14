@@ -345,14 +345,14 @@ func TestCreateTableFieldTypeEnumDeclared(t *testing.T) {
 	items := fields["items"].(map[string]any)
 	typ := items["properties"].(map[string]any)["type"].(map[string]any)
 	enum, ok := typ["enum"].([]schema.FieldType)
-	if !ok || len(enum) != 8 {
-		t.Fatalf(`field "type" must enumerate the eight supported types, got %v`, typ["enum"])
+	if !ok || len(enum) != 9 {
+		t.Fatalf(`field "type" must enumerate the nine supported types, got %v`, typ["enum"])
 	}
 	raw, err := json.Marshal(enum)
 	if err != nil {
 		t.Fatalf("marshal enum: %v", err)
 	}
-	for _, want := range []schema.FieldType{schema.String, schema.Text, schema.Number, schema.Boolean, schema.Timestamp, schema.JSON, schema.Vector, schema.Secret} {
+	for _, want := range []schema.FieldType{schema.String, schema.Text, schema.Number, schema.Boolean, schema.Timestamp, schema.JSON, schema.Vector, schema.Secret, schema.File} {
 		if !strings.Contains(string(raw), string(want)) {
 			t.Fatalf("enum must contain %q: %s", want, raw)
 		}
@@ -378,8 +378,8 @@ func TestCreateTableNameAndDimConstraintsDeclared(t *testing.T) {
 		t.Fatalf(`"name" must exclude the reserved field identifiers, got %v`, name["not"])
 	}
 	allOf, ok := items["allOf"].([]any)
-	if !ok || len(allOf) != 8 {
-		t.Fatalf("expected eight conditional constraints (dim, fulltext, vectorize, enum, shape, default exclusions, now() guard), got %v", items["allOf"])
+	if !ok || len(allOf) != 9 {
+		t.Fatalf("expected nine conditional constraints (dim, fulltext, vectorize, enum, shape, default exclusions, now() guard, file constraints), got %v", items["allOf"])
 	}
 	shapeRule := allOf[4].(map[string]any)
 	if req, _ := shapeRule["if"].(map[string]any)["required"].([]string); len(req) != 1 || req[0] != "shape" {
@@ -407,8 +407,8 @@ func TestCreateTableFulltextAndVectorizeConstraintsDeclared(t *testing.T) {
 	fields := def.InputSchema["properties"].(map[string]any)["fields"].(map[string]any)
 	items := fields["items"].(map[string]any)
 	allOf, ok := items["allOf"].([]any)
-	if !ok || len(allOf) != 8 {
-		t.Fatalf("expected eight conditional constraints, got %v", items["allOf"])
+	if !ok || len(allOf) != 9 {
+		t.Fatalf("expected nine conditional constraints, got %v", items["allOf"])
 	}
 	fulltextThen := allOf[1].(map[string]any)["then"].(map[string]any)["properties"].(map[string]any)
 	ftTypes, ok := fulltextThen["type"].(map[string]any)["enum"].([]schema.FieldType)

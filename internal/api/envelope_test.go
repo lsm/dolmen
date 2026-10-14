@@ -13,3 +13,10 @@ func TestASQLEngineThatIsDownIsServiceUnavailable(t *testing.T) {
 		t.Fatalf("statusFor(sql_engine_unavailable) = %d %q, want 503 sql_engine_unavailable", status, code)
 	}
 }
+
+func TestAnUnavailableFileStoreIsServiceUnavailable(t *testing.T) {
+	status, code := statusFor(derr.Code("storage_unavailable"))
+	if status != http.StatusServiceUnavailable || code != "storage_unavailable" {
+		t.Fatalf("statusFor(storage_unavailable) = %d %q, want 503 storage_unavailable", status, code)
+	}
+}

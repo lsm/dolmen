@@ -20,6 +20,7 @@ import (
 
 	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/embed"
+	"github.com/lsm/dolmen/internal/files"
 	"github.com/lsm/dolmen/internal/ops"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
@@ -46,6 +47,7 @@ type Server struct {
 	drain              drainState
 	metrics            metrics
 	tracing            *telemetry.Tracing
+	files              *files.Store
 }
 
 type Option func(*Server)
@@ -199,11 +201,23 @@ func fieldItemSchema(desc string, withDefault bool) map[string]any {
 		},
 		"type": map[string]any{
 			"type":        "string",
-			"description": "One of: string, text, number, boolean, timestamp, json, vector, secret (omit to default to string); a secret is encrypted at rest and reads back as a mask unless revealed",
+			"description": "One of: string, text, number, boolean, timestamp, json, vector, secret, file (omit to default to string); a secret is encrypted at rest and reads back as a mask unless revealed; a file holds a reference to bytes sent with the write as a multipart part, and reads back as {sha256, size, media_type, name}",
 			"enum": []schema.FieldType{
 				schema.String, schema.Text, schema.Number, schema.Boolean,
-				schema.Timestamp, schema.JSON, schema.Vector, schema.Secret,
+				schema.Timestamp, schema.JSON, schema.Vector, schema.Secret, schema.File,
 			},
+		},
+		"max_bytes": map[string]any{
+			"type":        "integer",
+			"description": "File fields only: the largest file the field accepts, in bytes (at most the server's -max-file-size); omit for no per-field limit",
+			"minimum":     1,
+		},
+		"media_types": map[string]any{
+			"type":        "array",
+			"description": "File fields only: media types the field accepts, exact (application/pdf) or a whole top-level type (audio/*); omit to accept any",
+			"items":       map[string]any{"type": "string", "minLength": 3},
+			"minItems":    1,
+			"uniqueItems": true,
 		},
 		"fulltext":  prop("boolean", "Index this field for full-text search (string/text only)"),
 		"vectorize": prop("boolean", "Server embeds this text field automatically (string/text only, one per table)"),
@@ -307,6 +321,15 @@ func fieldItemSchema(desc string, withDefault bool) map[string]any {
 			},
 		)
 	}
+	allOf = append(allOf, map[string]any{
+		"if": map[string]any{
+			"properties": map[string]any{"type": map[string]any{"not": map[string]any{"const": string(schema.File)}}},
+		},
+		"then": map[string]any{"allOf": []any{
+			map[string]any{"not": map[string]any{"required": []string{"max_bytes"}}},
+			map[string]any{"not": map[string]any{"required": []string{"media_types"}}},
+		}},
+	})
 	return map[string]any{
 		"description":          desc,
 		"type":                 "object",
@@ -640,6 +663,7 @@ func (s *Server) Handler() http.Handler {
 		}
 		s.HandleSubscribe(w, r)
 	}), telemetry.EndAtHeaders))
+	mux.Handle("/v1/files", s.tracing.Server(s.prefix+"/v1/files", http.HandlerFunc(s.handleFileDownload)))
 	mux.Handle("/v1/", s.tracing.Server(s.prefix+"/v1/{op}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 		r = r.WithContext(WithRequestID(r.Context(), RequestIDFor(r)))
@@ -662,6 +686,10 @@ func (s *Server) Handler() http.Handler {
 		r = authed
 		if authErr != nil {
 			writeError(w, r, WrapError(authErr))
+			return
+		}
+		if isMultipart(r) {
+			s.multipartOp(w, r, op)
 			return
 		}
 		if e := RequireJSON(r); e != nil {

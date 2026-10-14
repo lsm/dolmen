@@ -29,7 +29,7 @@ func Decode(t schema.FieldType, v any) any {
 			}
 		}
 		return v
-	case schema.JSON:
+	case schema.JSON, schema.File:
 		s, ok := v.(string)
 		if !ok {
 			if raw, isBytes := v.([]byte); isBytes {

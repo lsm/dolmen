@@ -40,7 +40,7 @@ func fieldOutSchema(desc string) map[string]any {
 				"description": "Field type",
 				"enum": []schema.FieldType{
 					schema.String, schema.Text, schema.Number, schema.Boolean,
-					schema.Timestamp, schema.JSON, schema.Vector, schema.Secret,
+					schema.Timestamp, schema.JSON, schema.Vector, schema.Secret, schema.File,
 				},
 			},
 			"fulltext":  prop("boolean", "Present and true when the field is full-text indexed"),
@@ -57,7 +57,13 @@ func fieldOutSchema(desc string) map[string]any {
 				"description": "Required JSON shape of this json field (present when set); writes of any other shape are rejected",
 				"enum":        schema.Shapes,
 			},
-			"default": map[string]any{"description": "Value stored when an insert omits the field; exactly as declared (present when set) — \"now()\" on a timestamp field stamps the server's current time at each write"},
+			"default":   map[string]any{"description": "Value stored when an insert omits the field; exactly as declared (present when set) — \"now()\" on a timestamp field stamps the server's current time at each write"},
+			"max_bytes": prop("integer", "Largest file this file field accepts, in bytes (present when set)"),
+			"media_types": map[string]any{
+				"type":        "array",
+				"description": "Media types this file field accepts, exact or type/* (present when set)",
+				"items":       map[string]any{"type": "string"},
+			},
 		},
 		"required":             []string{"name", "type"},
 		"additionalProperties": false,
