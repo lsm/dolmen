@@ -88,7 +88,10 @@ subtree, honoring
 server's absolute `-read-timeout` and `-write-timeout` deadlines, so, as `subscribe` already does for
 its frames, both handlers re-arm the connection deadline through `http.ResponseController` before
 each chunk: the upload's read deadline and the download's write deadline become idle timeouts of
-that length, and `-op-timeout` bounds only the upload's final commit. `files` becomes a reserved
+that length, and `-op-timeout` bounds only the upload's final commit. Because the server arms its
+write deadline when it reads the request headers, the upload re-arms its write deadline after the
+commit and before answering, as every other response path does, so a long upload can still deliver
+its `201` and upload id. `files` becomes a reserved
 operation name: an operation by that name would be shadowed over HTTP yet still callable through MCP
 `tools/call`, breaking transport parity.
 
