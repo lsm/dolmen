@@ -129,7 +129,7 @@ on SQLite and DuckDB, `recording::jsonb->>'sha256'` on PostgreSQL).
 - A `part` value may be referenced from any number of records in the request. A reference to a part
   that is absent, or a part no value references, is `invalid_request` naming the part: the second is
   almost always a typo, and accepting it would store bytes nothing points at. At most 100 file parts
-  per request.
+  per request, and at most `-max-request-files-size` of file bytes across them.
 - `media_types` filters on the declared or inferred type. It is not a content check: a caller can
   declare `application/pdf` over any bytes. What keeps a mislabeled file harmless is the download's
   headers.
@@ -223,7 +223,8 @@ invalidates every URL issued for the old one.
 | Fetch failed | `400` | `invalid_request`, naming the host and the status or error class |
 | Disk full | `507` | `internal_error`, as `-max-namespace-size` refusals today |
 | Over `-max-namespace-files-size` | `507` | `internal_error`, naming the flag, the namespace's current file bytes and the cap |
-| Blob store unreachable (S3, slice 3) | `503` | `storage_unavailable`, a new code following `sql_engine_unavailable` |
+| Request over `-max-request-files-size` | `413` | `invalid_request`, naming the flag |
+| Server over `-max-pending-files-size`, or the blob store unreachable (S3, slice 3) | `503` | `storage_unavailable`, a new code following `sql_engine_unavailable`; retryable |
 
 ## Skills
 
@@ -291,7 +292,8 @@ them exact, and one missed decrement leaks a blob forever while one extra delete
 references. A full scan is only paid at `vacuum`, which already rewrites the namespace.
 
 `drop_table` and `drop_field` leave their blobs for the next sweep. `drop_namespace` removes the
-whole blob directory. `vacuum`'s result gains `files_removed` and `file_bytes_removed`.
+whole blob directory. `vacuum`'s result gains `files_removed`, `file_bytes_removed` and `file_bytes`, the namespace's
+stored file bytes after the sweep. No other operation's output changes shape.
 
 ## Limits and accounting
 
@@ -302,6 +304,8 @@ whole blob directory. `vacuum`'s result gains `files_removed` and `file_bytes_re
 | `-files-store` | `local` | Blob store; `s3` arrives in slice 3 |
 | `-files-fetch-hosts` | empty | Hosts a `url` value may fetch from; empty disables fetching |
 | `-files-fetch-timeout` | `5m` | Longest one server-side fetch may take |
+| `-max-request-files-size` | `2GiB` | Most file bytes one request may stream, across all its parts and `url` fetches |
+| `-max-pending-files-size` | `8GiB` | Most file bytes all in-flight requests may hold in `tmp/` at once, server-wide |
 
 The 32 MiB request limit bounds the `request` part only; file parts answer to `-max-file-size`.
 Blobs do not count toward `-max-namespace-size`, which keeps bounding the namespace's rows;
@@ -309,9 +313,13 @@ Blobs do not count toward `-max-namespace-size`, which keeps bounding the namesp
 namespace's row writes. The total is the sum of `_dolmen_blobs.size`, each blob counted once however
 many rows reference it. It is checked at commit, under the writer, once each hash is known: bytes
 already stored add nothing and are always accepted, and concurrent writes cannot overshoot the cap
-together. A write can therefore stream up to `-max-file-size` per part into `tmp/` before learning it
-is over the cap; that space is freed when the write is refused. Each namespace entry in
-`list_namespaces` gains `file_bytes`.
+together. Temporary space is bounded before commit by the last two flags: a request stops as soon
+as its own streamed bytes pass `-max-request-files-size`, refused as `413` `invalid_request` naming
+the flag, and a chunk that would push the server's in-flight total past `-max-pending-files-size` is
+refused as `503` `storage_unavailable`, saying the server is busy with other uploads and the write
+may be retried. So `tmp/` never holds more than `-max-pending-files-size`, whatever the number of
+parts or concurrent requests, and a refused write frees its share at once. The refusal of a write
+over the namespace cap names the namespace's current file bytes, and `vacuum` reports them.
 
 ## Change feed, backup, auth
 
@@ -338,11 +346,11 @@ the list.
 Each one a PR from main.
 
 1. The `file` type, multipart writes, the download endpoint, the local store, the sweep in
-   `vacuum`, the files cap, the facade, skills, README and conformance, on SQLite. `dolmen backup`
+   `vacuum`, the files cap and temporary-space bounds with `storage_unavailable`, the facade, skills, README and conformance, on SQLite. `dolmen backup`
    refuses a data directory holding any blob directory, naming slice 4, and the postgres engine
    refuses `file` fields.
 2. Lakehouse parity, `copy_from`, and server-side fetch.
-3. The S3-compatible store, `storage_unavailable`, `file_url`, and `file` fields on PostgreSQL over
+3. The S3-compatible store, `file_url`, and `file` fields on PostgreSQL over
    the S3 store.
 4. `dolmen backup` and `restore` with blobs.
 
@@ -350,8 +358,8 @@ Each one a PR from main.
 
 Settled on 2026-10-14.
 
-1. **`storage_unavailable` (`503`)** for an unreachable blob store, so an agent can tell a transient
-   outage it may retry from a server fault, and operators can alert on it separately. It is wired
+1. **`storage_unavailable` (`503`)** for an unreachable blob store or a server out of temporary
+   upload space, so an agent can tell a transient condition it may retry from a server fault, and operators can alert on it separately. It is wired
    through `derr`, the API envelope, the OpenAPI error enum, a `dolmen.ErrStorageUnavailable` facade
    sentinel, the skills and the README, as `sql_engine_unavailable` was.
 2. **Attaching a file is one call.** Bytes ride on the write as multipart, or the server fetches a
