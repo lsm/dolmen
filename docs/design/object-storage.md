@@ -41,8 +41,10 @@ through the download endpoint and writes its result back as ordinary fields.
 `fulltext`, `vectorize`, `enum`, `shape` and `default` are refused on a file field, at
 `create_table` and through every `migrate` op, as they are on `secret`. A file field cannot be an
 `upsert_by_key` key. `required` is allowed. `migrate` gains `set_file_constraints` to change
-`max_bytes` and `media_types`; it checks stored references the way `set_enum` checks stored values,
-naming how many rows violate the new constraint and their ids.
+`max_bytes` and `media_types`. Like `set_enum` it refuses when stored references violate the new
+constraint, reporting how many rows do, and like `set_shape` it names their ids, withholding both
+from a row-scoped caller as those ops do. Because it reads rows, it joins `Change.ReadsRows` and needs
+the `read` verb under `-auth on`.
 
 **The value on read.** A non-null file value reads back as an object:
 
@@ -86,7 +88,9 @@ operation name.
 **Upload.** `PUT /v1/files?namespace=<ns>&table=<t>&field=<f>[&name=<filename>]`
 
 - The body is the raw bytes. `Content-Type` is the declared media type; without one the server
-  sniffs the first 512 bytes. `Content-Length` is optional; chunked bodies are accepted.
+  sniffs the first 512 bytes. `media_types` filters on that declared type. It is not a content
+  check: a caller can declare `application/pdf` over any bytes, and sniffing cannot settle it either,
+  since it recognizes few formats. What keeps a mislabeled file harmless is the download's headers. `Content-Length` is optional; chunked bodies are accepted.
 - An optional `X-Dolmen-Sha256` header carries the expected hash; a mismatch refuses the upload and
   stores nothing.
 - The server streams the body to a temporary file while hashing it, enforces the field's
@@ -99,6 +103,10 @@ operation name.
 An upload id is single-namespace and expires after `-upload-ttl` (default `24h`). It can be used by
 any number of writes until it expires, so a retried write that replays through its idempotency key
 still finds it. The namespace and table must exist; the upload does not create them.
+
+A write re-checks the blob's size and media type against the field's current `max_bytes` and
+`media_types`, from `_dolmen_blobs`, so an upload made before `set_file_constraints` tightened them
+cannot attach afterwards.
 
 **Download.** `GET /v1/files?namespace=<ns>&table=<t>&id=<row id>&field=<f>`
 
@@ -172,9 +180,15 @@ unreferenced file, which the sweep removes.
 ## Garbage collection
 
 `vacuum` gains a sweep. It marks every hash referenced by a file column in any table of the
-namespace or by an unexpired upload, then deletes each blob that is unmarked and was created before
-the sweep began, minus a grace period (`-upload-ttl`), so an upload whose write is in flight is never
-collected. Reference counts were rejected: every write path (insert, update, upsert, `upsert_by_key`,
+namespace or by an unexpired upload, then deletes each unmarked blob and its `_dolmen_blobs` row.
+The sweep runs holding the namespace's writer, as `vacuum` already does, so no write commits during
+it. A write resolves its upload id inside its own write transaction and, in that same transaction,
+requires the upload to be unexpired and its `_dolmen_blobs` row to exist. A write that commits before
+the sweep is marked by the reference it stored; a write that commits after it finds the upload expired
+or the blob gone and is refused with the ordinary upload-again error. Neither order leaves a row
+pointing at a deleted blob. Blob files that have no `_dolmen_blobs` row (an upload that crashed
+between writing the file and recording it) are deleted only when older than `-upload-ttl`, so an
+upload still streaming is never collected. Reference counts were rejected: every write path (insert, update, upsert, `upsert_by_key`,
 `batch` with its rollback, `drop_field`, `drop_table`, the lakehouse's replayed commit log) would have
 to keep them exact, and one missed decrement leaks a blob forever while one extra deletes a blob a row
 still references. A full scan is only paid at `vacuum`, which already rewrites the namespace.
