@@ -1,7 +1,6 @@
 # Object storage
 
-Tracking issue: #613. This is a proposal. The decisions marked **Open** need an answer before slice 1
-starts, because each one fixes part of the public contract.
+Tracking issue: #613. The five contract decisions are settled; the last section records them.
 
 ## Problem
 
@@ -70,7 +69,22 @@ type), and the facade.
 The upload id comes from the upload endpoint and is bound to the namespace, the table and field it
 was uploaded for, and (under `-auth on`) the principal that uploaded it. `name` is optional and
 overrides the upload's filename. `null` clears the field. Writing back the object a read returned is
-refused with an error that says to upload the bytes and pass the upload id instead.
+refused with an error that says to upload the bytes, or to use `copy_from`, instead.
+
+To reuse a file another row already holds, a write names that row instead of an upload (slice 2):
+
+```json
+{"recording": {"copy_from": {"table": "meetings", "id": 42, "field": "recording"}, "name": "q3.ogg"}}
+```
+
+The source must be a row the caller could read with `read_rows` in the same namespace: the `read`
+verb, or own-row access on a `row_access` table; any other row, a missing one, or a null file value
+is the same `invalid_request`, so it does not confirm that a row exists. The reference copies the
+source's `sha256`, `media_type` and `name` (`name` here overrides it) and is re-checked against the
+target field's `max_bytes` and `media_types`. It resolves inside the write transaction under the
+namespace writer, where the source row's reference keeps the blob marked, so no sweep can collect it
+in between. This is safe because the caller could already download those bytes; it saves the upload
+bandwidth, not any authority.
 
 Why not accept a hash: content addressing turns a hash into a capability. If a write could attach a
 hash, any caller who knows or guesses one, for example the hash of a well-known document or one seen
@@ -148,7 +162,8 @@ cannot attach afterwards.
 | Media type not in `media_types` | `415` | `invalid_request`, naming the accepted types |
 | `X-Dolmen-Sha256` mismatch | `400` | `invalid_request`, naming both hashes |
 | Disk full | `507` | as `-max-namespace-size` refusals today |
-| Blob store unreachable (S3, slice 3) | `503` | **Open**: a new `storage_unavailable`, following `sql_engine_unavailable` |
+| Over `-max-namespace-files-size` | `507` | naming the flag, the namespace's current file bytes and the cap |
+| Blob store unreachable (S3, slice 3) | `503` | `storage_unavailable`, a new code following `sql_engine_unavailable` |
 
 A write naming an unknown, expired, foreign-namespace or other principal's upload is
 `invalid_request`, saying to upload the bytes again; it never says which of those it was, so it does
@@ -159,9 +174,18 @@ not confirm that someone else's upload exists.
 MCP tools never carry bytes. An MCP client that can make HTTP requests uses the two endpoints with the
 same credentials. Slice 1 adds `PUT` to the methods the origin guard allows in its CORS preflight
 (today `GET, POST, OPTIONS`), and `X-Dolmen-Sha256` to its allowed headers, so a browser-based client
-on an allowed origin can upload as well as download. **Open:** whether to add an `upload_file` tool taking base64 `content` capped at a
-few MiB, for MCP clients that cannot make HTTP requests, and a `file_url` tool that returns a
-short-lived signed download URL (slice 3) the agent can hand to a tool that holds no credentials.
+on an allowed origin can upload as well as download.
+
+There is no `upload_file` tool: bytes never pass through an agent's context. Slice 3 adds one
+operation, `file_url` (`namespace`, `table`, `id`, `field`, optional `ttl_seconds`, default 900, at
+most 3600), which returns `{"url", "expires_at"}`: a short-lived download URL the agent can hand to a
+tool that holds no credentials. It needs the same reach as the download endpoint. On the S3 store
+the URL is the store's own presigned `GET`, with `response-content-type` and
+`response-content-disposition` set so the bytes arrive with the same type and as an attachment. On
+the local store it is the download endpoint with `exp` and `sig` query parameters: an HMAC-SHA256
+over the namespace, table, row id, field, hash and expiry, under a key generated on first use and
+kept at `<data>/files.key` (mode `0600`). The signature binds the hash, so replacing the row's file
+invalidates every URL issued for the old one.
 
 The facade gets `PutFile(ctx, namespace, table, field string, r io.Reader, opts PutFileOptions)
 (Upload, error)` and `OpenFile(ctx, namespace, table string, id int64, field string) (io.ReadSeekCloser,
@@ -189,8 +213,10 @@ upload and blob tables, and the reference scan the sweep needs.
 SQLite and the lakehouse put it beside the namespace's `.db` or `.lakehouse/` directory.
 
 **PostgreSQL.** Rows live in the database but the local store is on one server's disk, so two servers
-on one catalog would each see half the blobs. **Open:** refuse `file` fields on PostgreSQL until the
-S3 store exists (slice 3), or allow the local store with a documented single-server restriction.
+on one catalog would each see half the blobs, and nothing in the engine can tell that a second
+server exists. So until the S3 store exists (slice 3), the postgres engine refuses a `file` field at
+`create_table` and `add_field` with `invalid_request` saying file fields need `-files-store s3` on
+PostgreSQL. From slice 3 it accepts them only with the S3 store configured.
 
 **Metadata.** Each namespace gets `_dolmen_blobs` (`sha256` primary key, `size`,
 `created_at`) and `_dolmen_uploads` (`id`, `sha256`, `table_name`, `field_name`, `principal`, `name`,
@@ -232,10 +258,16 @@ whole blob directory. `vacuum`'s result gains `files_removed` and `file_bytes_re
 | `-max-file-size` | `1GiB` | Largest single upload; also the ceiling for a field's `max_bytes` |
 | `-upload-ttl` | `24h` | How long an upload id stays usable, and the sweep's grace period |
 | `-files-store` | `local` | Blob store; `s3` arrives in slice 3 |
+| `-max-namespace-files-size` | `0` | Largest total of one namespace's stored blobs, as bytes or with `KiB`/`MiB`/`GiB`/`TiB`; `0` is unbounded |
 
-The 32 MiB request body limit does not apply to the upload endpoint. **Open:** whether blobs count
-toward `-max-namespace-size`. Counting them is what an operator capping disk wants; it also means a
-large upload can push a namespace past its cap and refuse every later row write.
+The 32 MiB request body limit does not apply to the upload endpoint. Blobs do not count toward
+`-max-namespace-size`, which keeps bounding the namespace's rows; `-max-namespace-files-size` bounds
+its blobs separately, so a large upload can never refuse the namespace's row writes. The total is
+the sum of `_dolmen_blobs.size`, each blob counted once however many rows reference it. An upload
+stops streaming as soon as the current total plus the bytes received would pass the cap, and its
+commit checks again under the writer, so concurrent uploads cannot overshoot it together. An upload
+of a hash already stored adds nothing and is always accepted. Each namespace entry in
+`list_namespaces` gains `file_bytes`.
 
 ## Change feed, backup, auth audit
 
@@ -259,16 +291,23 @@ Each one a PR from main.
 1. This doc, then the `file` type, upload and download endpoints, the local store, the sweep in
    `vacuum`, the facade methods, skills, README and conformance, on SQLite. `dolmen backup` refuses
    a data directory holding any blob directory, naming slice 4, so no backup silently omits blobs.
-2. Lakehouse parity, and PostgreSQL per the open question above.
-3. The S3-compatible store, signed download URLs, and `storage_unavailable` if adopted.
+   `-max-namespace-files-size` and the postgres refusal ship here too.
+2. Lakehouse parity, and `copy_from` on both engines.
+3. The S3-compatible store, `storage_unavailable`, the `file_url` operation, and `file` fields on
+   PostgreSQL over the S3 store.
 4. `dolmen backup` and `restore` with blobs.
 
-## Open decisions
+## Decisions
 
-1. A new `storage_unavailable` code (`503`) for an unreachable blob store, or reuse `internal_error`.
-2. `upload_file` (base64, capped) and `file_url` MCP tools, or HTTP endpoints only.
-3. PostgreSQL: refuse `file` until the S3 store exists, or allow the local store on a single server.
-4. Whether blobs count toward `-max-namespace-size`.
-5. Whether a write may copy a reference from a row the caller can read (`{"copy_from": {"table",
-   "id", "field"}}`) so reusing a file does not need a re-upload. It is safe, because the caller
-   could already download those bytes, but it adds a write shape.
+Settled on 2026-10-14.
+
+1. **`storage_unavailable` (`503`)** for an unreachable blob store, so an agent can tell a transient
+   outage it may retry from a server fault, and operators can alert on it separately. It is wired
+   through `derr`, the API envelope, the OpenAPI error enum, a `dolmen.ErrStorageUnavailable` facade
+   sentinel, the skills and the README, as `sql_engine_unavailable` was.
+2. **`file_url` only.** No MCP tool carries bytes; uploads go over HTTP.
+3. **PostgreSQL refuses `file` fields until the S3 store exists.** A local store there would split the
+   blobs between servers silently.
+4. **A separate `-max-namespace-files-size`.** Blobs stay out of `-max-namespace-size`, so a large
+   file cannot block row writes.
+5. **`copy_from` is allowed**, in slice 2.
