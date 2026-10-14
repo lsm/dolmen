@@ -147,10 +147,12 @@ temporary file is deleted, so a failed write stores nothing.
 
 A `batch` may carry parts for any of its writes; they share one `request` and one transaction.
 
-**Idempotency.** The request fingerprint covers the `request` JSON with each `part` value replaced
-by the part's SHA-256, `media_type` and `name`, and each `url` value by the URL string. A retry with
-the same idempotency key and the same bytes replays; different bytes under the same key are a
-conflict, as a different body is today.
+**Idempotency.** The request fingerprint covers the `request` JSON with each file value
+canonicalized whole: a `part` value becomes the part's SHA-256 plus the effective `media_type` and
+`name` after any override in the value, and a `url` value becomes the URL string plus the value's
+own `name` and `media_type` overrides, if any. A retry with the same idempotency key, the same bytes
+and the same overrides replays; anything else under the same key is a conflict, as a different body
+is today.
 
 **Timeouts.** A multipart write outlasts the server's absolute `-read-timeout`, so, as `subscribe`
 already does for its frames, the handler re-arms the read deadline through `http.ResponseController`
@@ -242,7 +244,10 @@ attach a URL with `{"url": …}` when the server allows it, and fetch bytes with
 Record values may be a `dolmen.File{Reader io.Reader, Name, MediaType string}`, which the facade
 streams exactly as a multipart part, or a `dolmen.FileURL` or `dolmen.FileCopy`. `OpenFile(ctx,
 namespace, table string, id int64, field string) (io.ReadSeekCloser, FileInfo, error)` reads one.
-The facade has no auth; every other rule is the same.
+The facade has no auth. Server-side fetch needs `WithFileFetch(hosts []string, timeout
+time.Duration)`, mirroring `-files-fetch-hosts` and `-files-fetch-timeout`; without it a
+`dolmen.FileURL` value is refused, as on a server without the flag, since `Open` reads no flags or
+environment. Every other rule is the same.
 
 ## Blob store
 
