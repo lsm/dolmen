@@ -79,8 +79,9 @@ write to an upload the caller made closes that: you can only attach bytes you se
 
 **Storage in the row.** The column holds the canonical reference JSON (`sha256`, `media_type` and
 `name`); `size` is joined from the namespace's blob table on read. SQLite stores it as TEXT,
-PostgreSQL as `jsonb`, the lakehouse as a Parquet string, so `query` and filters can read the hash
-with each dialect's JSON accessor (`recording->>'sha256'`, `json_extract(recording, '$.sha256')`).
+PostgreSQL as `text` like every `json` field there, the lakehouse as a Parquet string, so `query` and
+filters can read the hash with each dialect's JSON accessor (`json_extract(recording, '$.sha256')`
+on SQLite and DuckDB, `recording::jsonb->>'sha256'` on PostgreSQL).
 
 ## Endpoints
 
