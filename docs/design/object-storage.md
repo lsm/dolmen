@@ -52,7 +52,9 @@ the `read` verb under `-auth on`.
 {"sha256": "9f86d0…", "size": 48213, "media_type": "audio/ogg", "name": "standup.ogg"}
 ```
 
-`name` is the filename given at upload or at write, `null` when neither gave one. `size` and
+`name` is the filename given at upload or at write, `null` when neither gave one. It is validated
+on both paths: 1 to 255 bytes of UTF-8, no control characters, no `/` or `\`; otherwise
+`invalid_request` naming the rule. `size` and
 `media_type` come from the blob and are never caller-supplied at write time. Every read path returns
 the same object: `read_rows`, both searches, `query` (by result-column label, as for every declared
 type), and the facade.
@@ -81,8 +83,11 @@ with each dialect's JSON accessor (`recording->>'sha256'`, `json_extract(recordi
 ## Endpoints
 
 Both are plain handlers beside `/v1/subscribe`, registered before the `/v1/{op}` catch-all, honoring
-`-prefix`, authentication, `-op-timeout` (as an idle timeout between reads, not a total, so a slow
-large upload is not cut off) and the request-id and tracing middleware. `files` becomes a reserved
+`-prefix`, authentication, and the request-id and tracing middleware. A large file outlasts the
+server's absolute `-read-timeout` and `-write-timeout` deadlines, so, as `subscribe` already does for
+its frames, both handlers re-arm the connection deadline through `http.ResponseController` before
+each chunk: the upload's read deadline and the download's write deadline become idle timeouts of
+that length, and `-op-timeout` bounds only the upload's final commit. `files` becomes a reserved
 operation name.
 
 **Upload.** `PUT /v1/files?namespace=<ns>&table=<t>&field=<f>[&name=<filename>]`
@@ -119,7 +124,8 @@ cannot attach afterwards.
 - Answers with the bytes through `http.ServeContent`, so `Range`, `If-None-Match` (the `ETag` is the
   quoted hash) and `HEAD` work.
 - Always sets `Content-Type` to the stored media type, `X-Content-Type-Options: nosniff`,
-  `Content-Disposition: attachment` with the stored name, and `Content-Security-Policy: sandbox`.
+  `Content-Disposition: attachment` with the stored name, encoded per RFC 6266: an ASCII
+  `filename` with quotes and non-ASCII replaced by `_`, plus `filename*` in RFC 5987 UTF-8 form, and `Content-Security-Policy: sandbox`.
   Dolmen serves its sign-in and token pages on the same origin, so an uploaded HTML or SVG file must
   never render as a page there, where it could script or redress those pages and the API.
 
