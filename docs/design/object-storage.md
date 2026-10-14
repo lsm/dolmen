@@ -94,8 +94,11 @@ operation name.
 - An optional `X-Dolmen-Sha256` header carries the expected hash; a mismatch refuses the upload and
   stores nothing.
 - The server streams the body to a temporary file while hashing it, enforces the field's
-  `max_bytes` and `media_types` and `-max-file-size` as it goes, then fsyncs and renames it into
-  place. An existing blob with the same hash is kept and the temporary file discarded.
+  `max_bytes` and `media_types` and `-max-file-size` as it goes, and fsyncs it. Only then does it
+  take the namespace's writer and, in one write transaction, record the upload: if a
+  `_dolmen_blobs` row for the hash exists the temporary file is discarded, otherwise the file is
+  renamed into place and the row inserted; then the `_dolmen_uploads` row is inserted. Streaming
+  holds no lock; only this short commit does.
 - It answers `201` with `{"upload": "up_…", "sha256", "size", "media_type", "name", "expires_at"}`.
 - Under `-auth on` it needs `create` or `update` on the table: the verbs of the writes that can use
   the upload.
@@ -181,14 +184,21 @@ unreferenced file, which the sweep removes.
 
 `vacuum` gains a sweep. It marks every hash referenced by a file column in any table of the
 namespace or by an unexpired upload, then deletes each unmarked blob and its `_dolmen_blobs` row.
-The sweep runs holding the namespace's writer, as `vacuum` already does, so no write commits during
-it. A write resolves its upload id inside its own write transaction and, in that same transaction,
+The sweep runs holding the namespace's writer, as `vacuum` already does, so no write and no upload
+commits during it. A write resolves its upload id inside its own write transaction and, in that same transaction,
 requires the upload to be unexpired and its `_dolmen_blobs` row to exist. A write that commits before
 the sweep is marked by the reference it stored; a write that commits after it finds the upload expired
-or the blob gone and is refused with the ordinary upload-again error. Neither order leaves a row
-pointing at a deleted blob. Blob files that have no `_dolmen_blobs` row (an upload that crashed
-between writing the file and recording it) are deleted only when older than `-upload-ttl`, so an
-upload still streaming is never collected. Reference counts were rejected: every write path (insert, update, upsert, `upsert_by_key`,
+or the blob gone and is refused with the ordinary upload-again error. An upload is ordered the same
+way: one that commits before the sweep is marked by its unexpired upload row, and one that commits
+after it finds no `_dolmen_blobs` row and stores its own file. Neither order leaves a row pointing
+at a deleted blob.
+
+The same pass deletes expired `_dolmen_uploads` rows, which no write can use any more, and blob files
+that have no `_dolmen_blobs` row, left by a crash between an upload's rename and its commit; since
+renames happen only under the writer, no live upload has such a file. Temporary files of uploads
+still streaming live under `tmp/` and are deleted only when older than `-upload-ttl`.
+
+Reference counts were rejected: every write path (insert, update, upsert, `upsert_by_key`,
 `batch` with its rollback, `drop_field`, `drop_table`, the lakehouse's replayed commit log) would have
 to keep them exact, and one missed decrement leaks a blob forever while one extra deletes a blob a row
 still references. A full scan is only paid at `vacuum`, which already rewrites the namespace.
@@ -228,7 +238,8 @@ past the grace period. MCP parity is that both transports read and write the sam
 Each one a PR from main.
 
 1. This doc, then the `file` type, upload and download endpoints, the local store, the sweep in
-   `vacuum`, the facade methods, skills, README and conformance, on SQLite.
+   `vacuum`, the facade methods, skills, README and conformance, on SQLite. `dolmen backup` refuses
+   a data directory holding any blob directory, naming slice 4, so no backup silently omits blobs.
 2. Lakehouse parity, and PostgreSQL per the open question above.
 3. The S3-compatible store, signed download URLs, and `storage_unavailable` if adopted.
 4. `dolmen backup` and `restore` with blobs.
