@@ -204,7 +204,7 @@ func TestPostgresSecretKeyFailures(t *testing.T) {
 			return err
 		}
 		col := ident(state.columns["token"])
-		_, err = tx.Exec(ctx, "UPDATE "+ident(n.physical, state.physical)+" SET "+col+" = overlay("+col+" placing '\\xff'::bytea from length("+col+")) WHERE id = 1")
+		_, err = tx.Exec(ctx, "UPDATE "+ident(n.physical, state.physical)+" SET "+col+" = set_byte("+col+", length("+col+") - 1, get_byte("+col+", length("+col+") - 1) # 255) WHERE id = 1")
 		return err
 	})
 	if err != nil {
