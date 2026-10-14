@@ -135,7 +135,7 @@ func coerceFile(ctx context.Context, nsName string, f schema.Field, v any) (any,
 	}
 	b = fv.apply(b)
 	if f.MaxBytes > 0 && b.Size > f.MaxBytes {
-		return nil, &FileLimitError{Status: 413, Message: fmt.Sprintf("field %q accepts files up to %d bytes (max_bytes) and part %q is %d bytes; store a smaller file, or raise the limit with migrate set_file_constraints", f.Name, f.MaxBytes, fv.part, b.Size)}
+		return nil, &FileLimitError{Status: 413, Message: fmt.Sprintf("field %q accepts files up to %d bytes (max_bytes) and part %q is %d bytes; store a smaller file, or keep larger files in a field without that limit", f.Name, f.MaxBytes, fv.part, b.Size)}
 	}
 	if !schema.MediaTypeAllowed(f.MediaTypes, b.MediaType) {
 		return nil, &FileLimitError{Status: 415, Message: fmt.Sprintf("field %q accepts %s and part %q is %s; if the type was guessed wrong, set \"media_type\" in the file value", f.Name, strings.Join(f.MediaTypes, ", "), fv.part, b.MediaType)}

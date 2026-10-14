@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -384,6 +385,8 @@ func syncDir(dir string) error {
 		return err
 	}
 	defer d.Close()
-	d.Sync()
+	if err := d.Sync(); err != nil && runtime.GOOS != "windows" {
+		return err
+	}
 	return nil
 }

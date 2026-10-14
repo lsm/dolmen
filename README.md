@@ -1497,7 +1497,9 @@ rather than inserting again.
 
 A namespace is a SQLite file in WAL mode, so copying `<ns>.db` while the server runs can miss
 commits still in the `-wal` file. Back up with the binary instead, which takes a consistent
-snapshot of every namespace, and of the grant registry when auth is on, while writes continue:
+snapshot of every namespace, and of the grant registry when auth is on, while writes continue. It cannot copy the files of `file` fields yet, so it refuses a data
+directory that stores any, naming the namespace; stop the server and copy the whole directory
+instead:
 
 ```bash
 dolmen backup -data ./data -out ./backups/2026-09-23

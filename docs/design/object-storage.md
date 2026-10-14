@@ -367,10 +367,10 @@ Each one a PR from main.
 1. On SQLite, in two PRs:
    - 1a: the `file` type, multipart writes, the download endpoint, the local store with its pins,
      the files cap and temporary-space bounds with `storage_unavailable`, skills, README and
-     conformance; PostgreSQL and the lakehouse refuse `file` fields.
+     conformance; PostgreSQL and the lakehouse refuse `file` fields, and `dolmen backup` refuses a
+     data directory that stores files, naming the namespace, since it cannot copy them yet.
    - 1b: the sweep in `vacuum` and `drop_namespace` removing the store, `set_file_constraints`,
-     `dolmen backup` refusing a data directory that holds files (naming slice 4), and the facade's
-     `dolmen.File` and `OpenFile`.
+     and the facade's `dolmen.File` and `OpenFile`.
 2. Lakehouse parity, `copy_from`, and server-side fetch.
 3. The S3-compatible store, `file_url`, and `file` fields on PostgreSQL over
    the S3 store.
