@@ -109,8 +109,8 @@ still finds it. The namespace and table must exist; the upload does not create t
   quoted hash) and `HEAD` work.
 - Always sets `Content-Type` to the stored media type, `X-Content-Type-Options: nosniff`,
   `Content-Disposition: attachment` with the stored name, and `Content-Security-Policy: sandbox`.
-  Dolmen serves sign-in pages and cookies on the same origin, so an uploaded HTML or SVG file must
-  never render as a page there.
+  Dolmen serves its sign-in and token pages on the same origin, so an uploaded HTML or SVG file must
+  never render as a page there, where it could script or redress those pages and the API.
 
 **Errors.** Both endpoints answer failures with the ordinary error envelope and codes:
 
