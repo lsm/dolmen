@@ -82,13 +82,15 @@ with each dialect's JSON accessor (`recording->>'sha256'`, `json_extract(recordi
 
 ## Endpoints
 
-Both are plain handlers beside `/v1/subscribe`, registered before the `/v1/{op}` catch-all, honoring
+Both are plain handlers beside `/v1/subscribe`, at an exact `/v1/files` pattern that `ServeMux` prefers over the `/v1/`
+subtree, honoring
 `-prefix`, authentication, and the request-id and tracing middleware. A large file outlasts the
 server's absolute `-read-timeout` and `-write-timeout` deadlines, so, as `subscribe` already does for
 its frames, both handlers re-arm the connection deadline through `http.ResponseController` before
 each chunk: the upload's read deadline and the download's write deadline become idle timeouts of
 that length, and `-op-timeout` bounds only the upload's final commit. `files` becomes a reserved
-operation name.
+operation name: an operation by that name would be shadowed over HTTP yet still callable through MCP
+`tools/call`, breaking transport parity.
 
 **Upload.** `PUT /v1/files?namespace=<ns>&table=<t>&field=<f>[&name=<filename>]`
 
@@ -182,7 +184,7 @@ on one catalog would each see half the blobs. **Open:** refuse `file` fields on 
 S3 store exists (slice 3), or allow the local store with a documented single-server restriction.
 
 **Metadata.** Each namespace gets `_dolmen_blobs` (`sha256` primary key, `size`, `media_type`,
-`created_at`) and `_dolmen_uploads` (`id`, `sha256`, `table`, `field`, `principal`, `name`,
+`created_at`) and `_dolmen_uploads` (`id`, `sha256`, `table_name`, `field_name`, `principal`, `name`,
 `expires_at`). The blob file is written before its `_dolmen_blobs` row, so a crash leaves at worst an
 unreferenced file, which the sweep removes.
 
