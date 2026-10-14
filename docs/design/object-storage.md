@@ -1,6 +1,6 @@
 # Object storage
 
-Tracking issue: #613. The five contract decisions are settled; the last section records them.
+Tracking issue: #613. The contract decisions are settled; the last section records them.
 
 ## Problem
 
@@ -11,15 +11,35 @@ loads them whole into memory on every read, and puts them in the agent's context
 the row. Agents rarely need the bytes themselves; they need to attach a file to a row, find it again,
 and hand it to the tool that processes it.
 
+## Agent UX
+
+Dolmen's callers are agents, so the design is judged by two measures: how few tool calls a task
+takes, and how little context the agent spends understanding the result. Agents run `curl`
+fluently, so a plain HTTP request counts as one tool call like any MCP call.
+
+The common case is an agent that fetched a file with one tool (a download, a generated export, a
+recording) and holds it on disk without reading it. Attaching it to a row must then be **one call**
+with no state carried between calls:
+
+```bash
+curl -F 'request={"namespace":"app","table":"meetings","records":[{"title":"Standup","recording":{"part":"rec"}}]}' \
+     -F 'rec=@standup.ogg' http://127.0.0.1:8790/v1/insert
+```
+
+When the file is still at a URL, the agent does not even download it: the write names the URL and
+the server fetches it, again in one call. Reading a row costs a small reference, never the bytes;
+fetching the bytes is one `curl -o`. Every refusal says which call to make instead.
+
 ## Shape
 
 - A **`file` field type**. The row holds a small reference; the bytes live in a blob store beside
   the namespace. Every existing read, search, `query`, filter and change-feed path keeps working on
   the reference.
-- **Bytes move over plain HTTP**, never through `/v1/{op}` or MCP: a streaming upload endpoint and a
-  streaming download endpoint. Operations only ever carry references.
+- **Bytes ride on the ordinary write operations** as `multipart/form-data` on `/v1/{op}`, or are
+  fetched by the server from a URL. There is no separate upload step and no upload id.
+- **One download endpoint**, `GET /v1/files`, addressed by row.
 - **Content addressed by SHA-256.** A blob is stored once per namespace however many rows reference
-  it, a retried upload stores nothing new, and the hash is the integrity check and the `ETag`.
+  it, a retried write stores nothing new, and the hash is the integrity check and the `ETag`.
 - **A pluggable blob store** behind one small interface: a local directory first, an S3-compatible
   store later. Both are pure Go, so the build stays `CGO_ENABLED=0`.
 - **Garbage collected by `vacuum`**, by mark and sweep over the file columns, never by reference
@@ -51,45 +71,42 @@ the `read` verb under `-auth on`.
 {"sha256": "9f86d0…", "size": 48213, "media_type": "audio/ogg", "name": "standup.ogg"}
 ```
 
-`name` is the filename given at upload or at write, `null` when neither gave one. It is validated
-on both paths: 1 to 255 bytes of UTF-8, no control characters, no `/` or `\`; otherwise
-`invalid_request` naming the rule. `size` comes from the blob and `media_type` from the upload;
-neither is caller-supplied at write time. The media type belongs to the reference, not the blob:
-identical bytes uploaded as `audio/ogg` for one field and `application/octet-stream` for another
-are one blob with two references, each keeping its own type. Every read path returns
-the same object: `read_rows`, both searches, `query` (by result-column label, as for every declared
-type), and the facade.
+Every read path returns the same object: `read_rows`, both searches, `query` (by result-column label,
+as for every declared type), and the facade. `size` comes from the blob. `media_type` and `name`
+belong to the reference, not the blob: identical bytes attached as `audio/ogg` in one row and
+`application/octet-stream` in another are one blob with two references, each keeping its own type.
+`name` is `null` when nothing supplied one. It is validated wherever it enters: 1 to 255 bytes of
+UTF-8, no control characters, no `/` or `\`; otherwise `invalid_request` naming the rule.
 
-**The value on write.** A write never names a hash. It names an upload:
+**The value on write.** A file value names where the bytes come from, never a hash:
 
-```json
-{"recording": {"upload": "up_3Jq…", "name": "standup.ogg"}}
-```
+| Value | Bytes come from | Where |
+|---|---|---|
+| `{"part": "rec"}` | the multipart part named `rec` in the same request | `/v1` only |
+| `{"url": "https://…"}` | a server-side fetch of that URL | `/v1` and MCP; off unless `-files-fetch-hosts` is set |
+| `{"copy_from": {"table": "meetings", "id": 42, "field": "recording"}}` | another row's file | `/v1` and MCP |
+| `null` | clears the field | everywhere |
 
-The upload id comes from the upload endpoint and is bound to the namespace, the table and field it
-was uploaded for, and (under `-auth on`) the principal that uploaded it. `name` is optional and
-overrides the upload's filename. `null` clears the field. Writing back the object a read returned is
-refused with an error that says to upload the bytes, or to use `copy_from`, instead.
+Each form also takes optional `name` and `media_type`, which override what the source supplied.
+Writing back the object a read returned is refused with an error that says which of the forms to use.
+Over MCP, a `part` value is refused with an error that gives the `curl -F` form of the same request.
 
-To reuse a file another row already holds, a write names that row instead of an upload (slice 2):
+After the bytes are known, every form is checked the same way against the field's current
+`max_bytes` and `media_types`, so tightening them with `set_file_constraints` applies to the next
+write immediately.
 
-```json
-{"recording": {"copy_from": {"table": "meetings", "id": 42, "field": "recording"}, "name": "q3.ogg"}}
-```
+Why never a hash: content addressing turns a hash into a capability. If a write could attach a hash,
+any caller who knows or guesses one, for example the hash of a well-known document or one seen in a
+log, could attach a blob it never had and then download it through a row it can read. Each form above
+proves access to the bytes: the caller sent them, the server fetched them, or the caller can already
+read a row holding them.
 
-The source must be a row the caller could read with `read_rows` in the same namespace: the `read`
-verb, or own-row access on a `row_access` table; any other row, a missing one, or a null file value
-is the same `invalid_request`, so it does not confirm that a row exists. The reference copies the
-source's `sha256`, `media_type` and `name` (`name` here overrides it) and is re-checked against the
-target field's `max_bytes` and `media_types`. It resolves inside the write transaction under the
-namespace writer, where the source row's reference keeps the blob marked, so no sweep can collect it
-in between. This is safe because the caller could already download those bytes; it saves the upload
-bandwidth, not any authority.
-
-Why not accept a hash: content addressing turns a hash into a capability. If a write could attach a
-hash, any caller who knows or guesses one, for example the hash of a well-known document or one seen
-in a log, could attach a blob it never had and then download it through a row it can read. Binding the
-write to an upload the caller made closes that: you can only attach bytes you sent.
+**`copy_from`** (slice 2). The source must be a row the caller could read with `read_rows` in the
+same namespace: the `read` verb, or own-row access on a `row_access` table. Any other row, a missing
+one, or a null file value is the same `invalid_request`, so it does not confirm that a row exists.
+The reference copies the source's `sha256`, `media_type` and `name`. It resolves inside the write
+transaction under the namespace writer, where the source row's reference keeps the blob marked, so no
+sweep can collect it in between.
 
 **Storage in the row.** The column holds the canonical reference JSON (`sha256`, `media_type` and
 `name`); `size` is joined from the namespace's blob table on read. SQLite stores it as TEXT,
@@ -97,100 +114,126 @@ PostgreSQL as `text` like every `json` field there, the lakehouse as a Parquet s
 filters can read the hash with each dialect's JSON accessor (`json_extract(recording, '$.sha256')`
 on SQLite and DuckDB, `recording::jsonb->>'sha256'` on PostgreSQL).
 
-## Endpoints
+## Writes with files
 
-Both are plain handlers beside `/v1/subscribe`, at an exact `/v1/files` pattern that `ServeMux` prefers over the `/v1/`
-subtree, honoring
-`-prefix`, authentication, and the request-id and tracing middleware. A large file outlasts the
-server's absolute `-read-timeout` and `-write-timeout` deadlines, so, as `subscribe` already does for
-its frames, both handlers re-arm the connection deadline through `http.ResponseController` before
-each chunk: the upload's read deadline and the download's write deadline become idle timeouts of
-that length, and `-op-timeout` bounds only the upload's final commit. Because the server arms its
-write deadline when it reads the request headers, the upload re-arms its write deadline after the
-commit and before answering, as every other response path does, so a long upload can still deliver
-its `201` and upload id. `files` becomes a reserved
-operation name: an operation by that name would be shadowed over HTTP yet still callable through MCP
-`tools/call`, breaking transport parity.
+**Multipart.** `insert`, `update`, `upsert`, `upsert_by_key` and `batch` accept
+`multipart/form-data` on `/v1/{op}` as well as JSON:
 
-**Upload.** `PUT /v1/files?namespace=<ns>&table=<t>&field=<f>[&name=<filename>]`
+- The first part must be named `request` and holds exactly the JSON body the operation takes
+  today. It is bounded by the existing 32 MiB request limit. A request whose first part is anything
+  else is refused before any file is read, naming the rule.
+- Every later part is a file, named by its form name. Its `filename` supplies the default `name`. Its
+  `Content-Type` supplies the default `media_type`; when it is absent or `application/octet-stream`
+  (what `curl -F x=@file` sends), the server infers the type from the filename's extension, then by
+  sniffing the first 512 bytes. So `-F rec=@standup.ogg` arrives as `audio/ogg` with no `type=`.
+- A `part` value may be referenced from any number of records in the request. A reference to a part
+  that is absent, or a part no value references, is `invalid_request` naming the part: the second is
+  almost always a typo, and accepting it would store bytes nothing points at. At most 100 file parts
+  per request.
+- `media_types` filters on the declared or inferred type. It is not a content check: a caller can
+  declare `application/pdf` over any bytes. What keeps a mislabeled file harmless is the download's
+  headers.
 
-- The body is the raw bytes. `Content-Type` is the declared media type; without one the server
-  sniffs the first 512 bytes. `media_types` filters on that declared type. It is not a content
-  check: a caller can declare `application/pdf` over any bytes, and sniffing cannot settle it either,
-  since it recognizes few formats. What keeps a mislabeled file harmless is the download's headers. `Content-Length` is optional; chunked bodies are accepted.
-- An optional `X-Dolmen-Sha256` header carries the expected hash; a mismatch refuses the upload and
-  stores nothing.
-- The server streams the body to a temporary file while hashing it, enforces the field's
-  `max_bytes` and `media_types` and `-max-file-size` as it goes, and fsyncs it. Only then does it
-  take the namespace's writer and, in one write transaction, record the upload: if a
-  `_dolmen_blobs` row for the hash exists and its file is present the temporary file is
-  discarded; if the row exists but the file is missing, the temporary file is renamed into place,
-  healing it; otherwise the file is renamed into place and the row inserted; then the `_dolmen_uploads` row is inserted. Streaming
-  holds no lock; only this short commit does.
-- It answers `201` with `{"upload": "up_…", "sha256", "size", "media_type", "name", "expires_at"}`.
-- Under `-auth on` it needs `create` or `update` on the table: the verbs of the writes that can use
-  the upload.
+The server streams each part to a temporary file under the store's `tmp/` while hashing it, and
+refuses a part as soon as it passes the field's `max_bytes` or `-max-file-size`. Streaming takes no
+lock. Once the whole request has arrived it takes the namespace's writer and, in the one write
+transaction the operation already uses, records each blob and runs the write. For each hash: if a
+`_dolmen_blobs` row exists and its file is present the temporary file is discarded; if the row exists
+but the file is missing, the temporary file is renamed into place, healing it; otherwise the file is
+renamed into place and the row inserted. If anything fails, the transaction rolls back and every
+temporary file is deleted, so a failed write stores nothing.
 
-An upload id is single-namespace and expires after `-upload-ttl` (default `24h`). It can be used by
-any number of writes until it expires, so a retried write that replays through its idempotency key
-still finds it. The namespace and table must exist; the upload does not create them.
+`dry_run` streams and validates the parts and stores nothing. A `batch` may carry parts for any of
+its writes; they share one `request` and one transaction.
 
-A write re-checks the blob's size and the upload's media type against the field's current
-`max_bytes` and `media_types`, so an upload made before `set_file_constraints` tightened them
-cannot attach afterwards.
+**Idempotency.** The request fingerprint covers the `request` JSON with each `part` value replaced
+by the part's SHA-256, `media_type` and `name`, and each `url` value by the URL string. A retry with
+the same idempotency key and the same bytes replays; different bytes under the same key are a
+conflict, as a different body is today.
 
-**Download.** `GET /v1/files?namespace=<ns>&table=<t>&id=<row id>&field=<f>`
+**Timeouts.** A multipart write outlasts the server's absolute `-read-timeout`, so, as `subscribe`
+already does for its frames, the handler re-arms the read deadline through `http.ResponseController`
+before each chunk, which makes it an idle timeout of that length. `-op-timeout` starts once the body
+has arrived and bounds the write itself. The server arms its write deadline when it reads the request
+headers, so the handler re-arms it before answering, as every other response path does.
+
+**Server-side fetch** (slice 2). A `url` value makes the server fetch the bytes before taking the
+writer, streaming them to a temporary file under the same limits. It is off unless the operator
+sets `-files-fetch-hosts`: a comma-separated list of host names, where `*.example.com` matches
+subdomains and `*` alone matches any public host. Without it, a `url` value is refused with an error
+that gives the `curl -o` then `curl -F` alternative. Every fetch:
+
+- allows only `http` and `https`, at most 5 redirects, each re-checked against the list;
+- resolves the host itself and refuses loopback, private, link-local, unique-local, multicast and
+  unspecified addresses at connect time, so DNS rebinding cannot reach them;
+- sends no dolmen credentials and no caller headers;
+- takes `media_type` from the response's `Content-Type`, inferred as for parts when it is
+  `application/octet-stream`, and `name` from `Content-Disposition` or the URL path's last segment;
+- gives up after `-files-fetch-timeout`.
+
+A fetch that fails is `invalid_request` naming the host and the HTTP status or network error class,
+never the response body; a `5xx` or a timeout says the fetch may be retried. Under `-auth on`, a
+`url` value needs no more than the write it is part of.
+
+## Download
+
+`GET /v1/files?namespace=<ns>&table=<t>&id=<row id>&field=<f>`, a plain handler beside
+`/v1/subscribe` at an exact `/v1/files` pattern, which `ServeMux` prefers over the `/v1/` subtree.
+It honors `-prefix`, authentication, and the request-id and tracing middleware. `files` becomes a
+reserved operation name: an operation by that name would be shadowed over HTTP yet still callable
+through MCP `tools/call`, breaking transport parity.
 
 - Addressed by row, not by hash, so authorization is exactly `read_rows` on that row: the `read`
   verb, or own-row access on a `row_access` table. A row the caller cannot see answers `404`, as
   `read_rows` would leave it out.
 - Answers with the bytes through `http.ServeContent`, so `Range`, `If-None-Match` (the `ETag` is the
-  quoted hash) and `HEAD` work.
+  quoted hash) and `HEAD` work. The handler re-arms the write deadline before each chunk, so
+  `-write-timeout` is an idle timeout here.
 - Always sets `Content-Type` to the row's media type, `X-Content-Type-Options: nosniff`,
-  `Content-Disposition: attachment` with the stored name, encoded per RFC 6266: an ASCII
-  `filename` with quotes and non-ASCII replaced by `_`, plus `filename*` in RFC 5987 UTF-8 form, and `Content-Security-Policy: sandbox`.
-  Dolmen serves its sign-in and token pages on the same origin, so an uploaded HTML or SVG file must
-  never render as a page there, where it could script or redress those pages and the API.
+  `Content-Disposition: attachment` with the stored name encoded per RFC 6266 (an ASCII `filename`
+  with quotes and non-ASCII replaced by `_`, plus `filename*` in RFC 5987 UTF-8 form), and
+  `Content-Security-Policy: sandbox`. Dolmen serves its sign-in and token pages on the same origin,
+  so an uploaded HTML or SVG file must never render as a page there, where it could script or
+  redress those pages and the API.
 
-**Errors.** Both endpoints answer failures with the ordinary error envelope and codes:
+Slice 3 adds `file_url` (`namespace`, `table`, `id`, `field`, optional `ttl_seconds`, default 900, at
+most 3600), an operation on both transports that returns `{"url", "expires_at"}`: a short-lived
+download URL the agent can hand to a tool that holds no credentials. It needs the same reach as the
+download. On the S3 store the URL is the store's own presigned `GET`, with `response-content-type`
+and `response-content-disposition` set so the bytes arrive with the same type and as an attachment.
+On the local store it is the download endpoint with `exp` and `sig` query parameters: an HMAC-SHA256
+over the namespace, table, row id, field, hash and expiry, under a key generated on first use and kept
+at `<data>/files.key` (mode `0600`). The signature binds the hash, so replacing the row's file
+invalidates every URL issued for the old one.
+
+## Errors
 
 | Case | Status | Code |
 |---|---|---|
-| Missing or unknown namespace, table, field, row, or a null file value | `404` | `not_found` |
+| Missing namespace, table, field or row on download, or a null file value | `404` | `not_found` |
 | Field is not a `file` field | `400` | `invalid_request`, naming the field's type |
-| Body over the field's `max_bytes` or `-max-file-size` | `413` | `invalid_request`, naming the limit |
-| Media type not in `media_types` | `415` | `invalid_request`, naming the accepted types |
-| `X-Dolmen-Sha256` mismatch | `400` | `invalid_request`, naming both hashes |
-| Disk full | `507` | as `-max-namespace-size` refusals today |
-| Over `-max-namespace-files-size` | `507` | `internal_error`, as `-max-namespace-size` refusals today, naming the flag, the namespace's current file bytes and the cap |
+| A file over the field's `max_bytes` or `-max-file-size` | `413` | `invalid_request`, naming the part or URL and the limit |
+| Media type not in `media_types` | `415` | `invalid_request`, naming the accepted types and saying to set `media_type` if the guess was wrong |
+| `request` part missing or not first; a missing or unreferenced part | `400` | `invalid_request`, naming the rule or the part |
+| `part` over MCP; `url` with fetching off | `400` | `invalid_request`, giving the `curl` form to use instead |
+| Fetch failed | `400` | `invalid_request`, naming the host and the status or error class |
+| Disk full | `507` | `internal_error`, as `-max-namespace-size` refusals today |
+| Over `-max-namespace-files-size` | `507` | `internal_error`, naming the flag, the namespace's current file bytes and the cap |
 | Blob store unreachable (S3, slice 3) | `503` | `storage_unavailable`, a new code following `sql_engine_unavailable` |
 
-A write naming an unknown, expired, foreign-namespace or other principal's upload is
-`invalid_request`, saying to upload the bytes again; it never says which of those it was, so it does
-not confirm that someone else's upload exists.
+## Skills
 
-## MCP and the Go facade
+The served skill teaches the three recipes in a few lines, because that text is what an agent reads
+before its first call: attach a file on disk with `curl -F 'request=…' -F 'name=@path' /v1/<op>`,
+attach a URL with `{"url": …}` when the server allows it, and fetch bytes with
+`curl -o path '/v1/files?…'`. It says a read returns a reference, not the bytes.
 
-MCP tools never carry bytes. An MCP client that can make HTTP requests uses the two endpoints with the
-same credentials. Slice 1 adds `PUT` to the methods the origin guard allows in its CORS preflight
-(today `GET, POST, OPTIONS`), and `X-Dolmen-Sha256` to its allowed headers, so a browser-based client
-on an allowed origin can upload as well as download.
+## Go facade
 
-There is no `upload_file` tool: bytes never pass through an agent's context. Slice 3 adds one
-operation, `file_url` (`namespace`, `table`, `id`, `field`, optional `ttl_seconds`, default 900, at
-most 3600), which returns `{"url", "expires_at"}`: a short-lived download URL the agent can hand to a
-tool that holds no credentials. It needs the same reach as the download endpoint. On the S3 store
-the URL is the store's own presigned `GET`, with `response-content-type` and
-`response-content-disposition` set so the bytes arrive with the same type and as an attachment. On
-the local store it is the download endpoint with `exp` and `sig` query parameters: an HMAC-SHA256
-over the namespace, table, row id, field, hash and expiry, under a key generated on first use and
-kept at `<data>/files.key` (mode `0600`). The signature binds the hash, so replacing the row's file
-invalidates every URL issued for the old one.
-
-The facade gets `PutFile(ctx, namespace, table, field string, r io.Reader, opts PutFileOptions)
-(Upload, error)` and `OpenFile(ctx, namespace, table string, id int64, field string) (io.ReadSeekCloser,
-FileInfo, error)`, over the same blob store and the same rules. The facade has no auth, so upload ids
-there only carry the namespace, table and field binding.
+Record values may be a `dolmen.File{Reader io.Reader, Name, MediaType string}`, which the facade
+streams exactly as a multipart part, or a `dolmen.FileURL` or `dolmen.FileCopy`. `OpenFile(ctx,
+namespace, table string, id int64, field string) (io.ReadSeekCloser, FileInfo, error)` reads one.
+The facade has no auth; every other rule is the same.
 
 ## Blob store
 
@@ -206,8 +249,8 @@ type BlobStore interface {
 
 `BlobWriter` hashes as it writes and commits under its hash; `Blob` is an `io.ReadSeekCloser` with
 its size. The engine never sees bytes. A new `internal/files` package owns the interface, the local
-implementation, the endpoints' streaming and the sweep; each engine owns only the file column, the
-upload and blob tables, and the reference scan the sweep needs.
+implementation, multipart and fetch streaming, the download handler and the sweep; each engine owns
+only the file column, the blob table, and the reference scan the sweep needs.
 
 **Local.** `<data>/<ns>.files/<first two hex>/<sha256>`, written to `<ns>.files/tmp/` and renamed.
 SQLite and the lakehouse put it beside the namespace's `.db` or `.lakehouse/` directory.
@@ -218,35 +261,30 @@ server exists. So until the S3 store exists (slice 3), the postgres engine refus
 `create_table` and `add_field` with `invalid_request` saying file fields need `-files-store s3` on
 PostgreSQL. From slice 3 it accepts them only with the S3 store configured.
 
-**Metadata.** Each namespace gets `_dolmen_blobs` (`sha256` primary key, `size`,
-`created_at`) and `_dolmen_uploads` (`id`, `sha256`, `table_name`, `field_name`, `principal`, `name`,
-`media_type`, `expires_at`). The blob file is written before its `_dolmen_blobs` row, so a crash leaves at worst an
-unreferenced file, which the sweep removes.
+**Metadata.** Each namespace gets `_dolmen_blobs` (`sha256` primary key, `size`, `created_at`). A
+blob's row is inserted in the same transaction as the first write that references it.
 
 ## Garbage collection
 
-`vacuum` gains a sweep. It marks every hash referenced by a file column in any table of the
-namespace or by an unexpired upload, then deletes each unmarked blob: it commits the `_dolmen_blobs` row deletions first and only
-then unlinks the files, all while still holding the writer. A crash between the two leaves files
-without rows, the residue the next sweep already removes, never a row whose file is gone.
-The sweep runs holding the namespace's writer, as `vacuum` already does, so no write and no upload
-commits during it. A write resolves its upload id inside its own write transaction and, in that same transaction,
-requires the upload to be unexpired and its `_dolmen_blobs` row to exist. A write that commits before
-the sweep is marked by the reference it stored; a write that commits after it finds the upload expired
-or the blob gone and is refused with the ordinary upload-again error. An upload is ordered the same
-way: one that commits before the sweep is marked by its unexpired upload row, and one that commits
-after it finds no `_dolmen_blobs` row and stores its own file. Neither order leaves a row pointing
-at a deleted blob.
+`vacuum` gains a sweep, run holding the namespace's writer as `vacuum` already does, so no write
+commits during it. It marks every hash referenced by a file column in any table of the namespace and
+deletes each unmarked blob: it commits the `_dolmen_blobs` row deletions first and only then unlinks
+the files, all while still holding the writer. A crash between the two leaves files without rows,
+never a row whose file is gone.
 
-The same pass deletes expired `_dolmen_uploads` rows, which no write can use any more, and blob files
-that have no `_dolmen_blobs` row, left by a crash between an upload's rename and its commit; since
-renames happen only under the writer, no live upload has such a file. Temporary files of uploads
-still streaming live under `tmp/` and are deleted only when older than `-upload-ttl`.
+A write that commits before the sweep is marked by the reference it stored. One that commits after it
+finds no `_dolmen_blobs` row for its hash and stores its own file from its temporary copy. Neither
+order leaves a row pointing at a deleted blob.
 
-Reference counts were rejected: every write path (insert, update, upsert, `upsert_by_key`,
-`batch` with its rollback, `drop_field`, `drop_table`, the lakehouse's replayed commit log) would have
-to keep them exact, and one missed decrement leaks a blob forever while one extra deletes a blob a row
-still references. A full scan is only paid at `vacuum`, which already rewrites the namespace.
+The same pass deletes blob files that have no `_dolmen_blobs` row, left by a crash between a write's
+rename and its commit; renames happen only under the writer, so no live write has such a file. It
+also deletes temporary files under `tmp/` that no request in this process holds open; each request
+registers its temporary files while it streams, and after a restart every one is an orphan.
+
+Reference counts were rejected: every write path (insert, update, upsert, `upsert_by_key`, `batch`
+with its rollback, `drop_field`, `drop_table`, the lakehouse's replayed commit log) would have to keep
+them exact, and one missed decrement leaks a blob forever while one extra deletes a blob a row still
+references. A full scan is only paid at `vacuum`, which already rewrites the namespace.
 
 `drop_table` and `drop_field` leave their blobs for the next sweep. `drop_namespace` removes the
 whole blob directory. `vacuum`'s result gains `files_removed` and `file_bytes_removed`.
@@ -255,49 +293,53 @@ whole blob directory. `vacuum`'s result gains `files_removed` and `file_bytes_re
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-max-file-size` | `1GiB` | Largest single upload; also the ceiling for a field's `max_bytes` |
-| `-upload-ttl` | `24h` | How long an upload id stays usable, and the sweep's grace period |
-| `-files-store` | `local` | Blob store; `s3` arrives in slice 3 |
+| `-max-file-size` | `1GiB` | Largest single file; also the ceiling for a field's `max_bytes` |
 | `-max-namespace-files-size` | `0` | Largest total of one namespace's stored blobs, as bytes or with `KiB`/`MiB`/`GiB`/`TiB`; `0` is unbounded |
+| `-files-store` | `local` | Blob store; `s3` arrives in slice 3 |
+| `-files-fetch-hosts` | empty | Hosts a `url` value may fetch from; empty disables fetching |
+| `-files-fetch-timeout` | `5m` | Longest one server-side fetch may take |
 
-The 32 MiB request body limit does not apply to the upload endpoint. Blobs do not count toward
-`-max-namespace-size`, which keeps bounding the namespace's rows; `-max-namespace-files-size` bounds
-its blobs separately, so a large upload can never refuse the namespace's row writes. The total is
-the sum of `_dolmen_blobs.size`, each blob counted once however many rows reference it. An upload
-stops streaming as soon as the current total plus the bytes received would pass the cap, and its
-commit checks again under the writer, so concurrent uploads cannot overshoot it together. The
-server cannot know an upload's hash before it has read the body, so an upload of bytes already
-stored is accepted at its commit, where it adds nothing, but could be stopped mid-stream when the
-namespace is near its cap. An upload that sends `X-Dolmen-Sha256` naming a stored hash skips the
-streaming check, is verified against that hash, and is accepted at commit. Each namespace entry in
+The 32 MiB request limit bounds the `request` part only; file parts answer to `-max-file-size`.
+Blobs do not count toward `-max-namespace-size`, which keeps bounding the namespace's rows;
+`-max-namespace-files-size` bounds its blobs separately, so a large file can never refuse the
+namespace's row writes. The total is the sum of `_dolmen_blobs.size`, each blob counted once however
+many rows reference it. It is checked at commit, under the writer, once each hash is known: bytes
+already stored add nothing and are always accepted, and concurrent writes cannot overshoot the cap
+together. A write can therefore stream up to `-max-file-size` per part into `tmp/` before learning it
+is over the cap; that space is freed when the write is refused. Each namespace entry in
 `list_namespaces` gains `file_bytes`.
 
-## Change feed, backup, auth audit
+## Change feed, backup, auth
 
 Change records carry ids, never values, so attaching or replacing a file is an ordinary `update`
 change. `dolmen backup` must copy the blob directory and list every blob's hash in its manifest, and
 `restore` must verify them; until it does, backup refuses a data directory that holds blobs rather
-than silently omitting them. No new verb: upload is a write and download is a read.
+than silently omitting them. No new verb: attaching a file is part of a write and downloading is a
+read. CORS needs no change: multipart writes are `POST` and downloads are `GET`.
 
 ## Conformance
 
 Pinned on every engine that accepts `file` fields: the declaration refusals, the read-back object,
-the write-by-upload rule and its refusals (raw hash, read-back object, expired, foreign namespace,
-other principal), upload and download over HTTP with `Range` and `ETag`, the download's safety
-headers, row-scoped download authorization, and that `vacuum` removes exactly the unreferenced blobs
-past the grace period. MCP parity is that both transports read and write the same reference.
+each write form and its refusals (a raw hash, a read-back object, a missing or unreferenced part, a
+part over MCP, an unreadable `copy_from` source, a `url` with fetching off), media type inference
+from the filename, multipart idempotent replay and conflict, a failed write storing nothing,
+download with `Range` and `ETag`, the download's safety headers, row-scoped download authorization,
+the files cap, and that `vacuum` removes exactly the unreferenced blobs. MCP parity is that both
+transports read the same reference and accept the same `url` and `copy_from` values. The fetch guard
+is pinned against a local stub: loopback and private targets, a redirect into them, and a host outside
+the list.
 
 ## Slices
 
 Each one a PR from main.
 
-1. This doc, then the `file` type, upload and download endpoints, the local store, the sweep in
-   `vacuum`, the facade methods, skills, README and conformance, on SQLite. `dolmen backup` refuses
-   a data directory holding any blob directory, naming slice 4, so no backup silently omits blobs.
-   `-max-namespace-files-size` and the postgres refusal ship here too.
-2. Lakehouse parity, and `copy_from` on both engines.
-3. The S3-compatible store, `storage_unavailable`, the `file_url` operation, and `file` fields on
-   PostgreSQL over the S3 store.
+1. The `file` type, multipart writes, the download endpoint, the local store, the sweep in
+   `vacuum`, the files cap, the facade, skills, README and conformance, on SQLite. `dolmen backup`
+   refuses a data directory holding any blob directory, naming slice 4, and the postgres engine
+   refuses `file` fields.
+2. Lakehouse parity, `copy_from`, and server-side fetch.
+3. The S3-compatible store, `storage_unavailable`, `file_url`, and `file` fields on PostgreSQL over
+   the S3 store.
 4. `dolmen backup` and `restore` with blobs.
 
 ## Decisions
@@ -308,7 +350,10 @@ Settled on 2026-10-14.
    outage it may retry from a server fault, and operators can alert on it separately. It is wired
    through `derr`, the API envelope, the OpenAPI error enum, a `dolmen.ErrStorageUnavailable` facade
    sentinel, the skills and the README, as `sql_engine_unavailable` was.
-2. **`file_url` only.** No MCP tool carries bytes; uploads go over HTTP.
+2. **Attaching a file is one call.** Bytes ride on the write as multipart, or the server fetches a
+   URL; there is no separate upload step, upload id or upload tool. `file_url` hands out download
+   links. Agents use `curl` as readily as MCP, so a multipart request is as available to them as a
+   tool call, and it never puts the bytes in their context.
 3. **PostgreSQL refuses `file` fields until the S3 store exists.** A local store there would split the
    blobs between servers silently.
 4. **A separate `-max-namespace-files-size`.** Blobs stay out of `-max-namespace-size`, so a large
