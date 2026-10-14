@@ -162,7 +162,11 @@ headers, so the handler re-arms it before answering, as every other response pat
 writer, streaming them to a temporary file under the same limits. The fetch runs in
 `api.Server.Dispatch`, which both transports go through, before it arms the operation's
 `-op-timeout`: it is bounded by `-files-fetch-timeout` instead, and `-op-timeout` then bounds the
-write alone, as it does for a multipart write once the body has arrived. It is off unless the operator
+write alone, as it does for a multipart write once the body has arrived. When the request carries
+an idempotency key, Dispatch first looks the key up: a key already recorded with a matching
+fingerprint replays the stored result without fetching, and one recorded with a different
+fingerprint is the usual conflict, so a retry still replays after its source URL has expired or
+changed. The engine repeats the check inside the write, so a racing retry is still caught there. It is off unless the operator
 sets `-files-fetch-hosts`: a comma-separated list of host names, where `*.example.com` matches
 subdomains and `*` alone matches any public host. Without it, a `url` value is refused with an error
 that gives the `curl -o` then `curl -F` alternative. Every fetch:
@@ -334,7 +338,8 @@ read. CORS needs no change: multipart writes are `POST` and downloads are `GET`.
 Pinned on every engine that accepts `file` fields: the declaration refusals, the read-back object,
 each write form and its refusals (a raw hash, a read-back object, a missing or unreferenced part, a
 part over MCP, an unreadable `copy_from` source, a `url` with fetching off), media type inference
-from the filename, multipart idempotent replay and conflict, a failed write storing nothing,
+from the filename, multipart and `url` idempotent replay and conflict (a `url` replay succeeding
+after the source stops answering), a failed write storing nothing,
 download with `Range` and `ETag`, the download's safety headers, row-scoped download authorization,
 the files cap, and that `vacuum` removes exactly the unreferenced blobs. MCP parity is that both
 transports read the same reference and accept the same `url` and `copy_from` values. The fetch guard
