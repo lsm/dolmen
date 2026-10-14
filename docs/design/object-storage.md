@@ -108,8 +108,9 @@ operation name: an operation by that name would be shadowed over HTTP yet still 
 - The server streams the body to a temporary file while hashing it, enforces the field's
   `max_bytes` and `media_types` and `-max-file-size` as it goes, and fsyncs it. Only then does it
   take the namespace's writer and, in one write transaction, record the upload: if a
-  `_dolmen_blobs` row for the hash exists the temporary file is discarded, otherwise the file is
-  renamed into place and the row inserted; then the `_dolmen_uploads` row is inserted. Streaming
+  `_dolmen_blobs` row for the hash exists and its file is present the temporary file is
+  discarded; if the row exists but the file is missing, the temporary file is renamed into place,
+  healing it; otherwise the file is renamed into place and the row inserted; then the `_dolmen_uploads` row is inserted. Streaming
   holds no lock; only this short commit does.
 - It answers `201` with `{"upload": "up_…", "sha256", "size", "media_type", "name", "expires_at"}`.
 - Under `-auth on` it needs `create` or `update` on the table: the verbs of the writes that can use
@@ -155,7 +156,9 @@ not confirm that someone else's upload exists.
 ## MCP and the Go facade
 
 MCP tools never carry bytes. An MCP client that can make HTTP requests uses the two endpoints with the
-same credentials. **Open:** whether to add an `upload_file` tool taking base64 `content` capped at a
+same credentials. Slice 1 adds `PUT` to the methods the origin guard allows in its CORS preflight
+(today `GET, POST, OPTIONS`), and `X-Dolmen-Sha256` to its allowed headers, so a browser-based client
+on an allowed origin can upload as well as download. **Open:** whether to add an `upload_file` tool taking base64 `content` capped at a
 few MiB, for MCP clients that cannot make HTTP requests, and a `file_url` tool that returns a
 short-lived signed download URL (slice 3) the agent can hand to a tool that holds no credentials.
 
@@ -196,7 +199,9 @@ unreferenced file, which the sweep removes.
 ## Garbage collection
 
 `vacuum` gains a sweep. It marks every hash referenced by a file column in any table of the
-namespace or by an unexpired upload, then deletes each unmarked blob and its `_dolmen_blobs` row.
+namespace or by an unexpired upload, then deletes each unmarked blob: it commits the `_dolmen_blobs` row deletions first and only
+then unlinks the files, all while still holding the writer. A crash between the two leaves files
+without rows, the residue the next sweep already removes, never a row whose file is gone.
 The sweep runs holding the namespace's writer, as `vacuum` already does, so no write and no upload
 commits during it. A write resolves its upload id inside its own write transaction and, in that same transaction,
 requires the upload to be unexpired and its `_dolmen_blobs` row to exist. A write that commits before
