@@ -143,8 +143,7 @@ but the file is missing, the temporary file is renamed into place, healing it; o
 renamed into place and the row inserted. If anything fails, the transaction rolls back and every
 temporary file is deleted, so a failed write stores nothing.
 
-`dry_run` streams and validates the parts and stores nothing. A `batch` may carry parts for any of
-its writes; they share one `request` and one transaction.
+A `batch` may carry parts for any of its writes; they share one `request` and one transaction.
 
 **Idempotency.** The request fingerprint covers the `request` JSON with each `part` value replaced
 by the part's SHA-256, `media_type` and `name`, and each `url` value by the URL string. A retry with
@@ -158,7 +157,10 @@ has arrived and bounds the write itself. The server arms its write deadline when
 headers, so the handler re-arms it before answering, as every other response path does.
 
 **Server-side fetch** (slice 2). A `url` value makes the server fetch the bytes before taking the
-writer, streaming them to a temporary file under the same limits. It is off unless the operator
+writer, streaming them to a temporary file under the same limits. The fetch runs in
+`api.Server.Dispatch`, which both transports go through, before it arms the operation's
+`-op-timeout`: it is bounded by `-files-fetch-timeout` instead, and `-op-timeout` then bounds the
+write alone, as it does for a multipart write once the body has arrived. It is off unless the operator
 sets `-files-fetch-hosts`: a comma-separated list of host names, where `*.example.com` matches
 subdomains and `*` alone matches any public host. Without it, a `url` value is refused with an error
 that gives the `curl -o` then `curl -F` alternative. Every fetch:
