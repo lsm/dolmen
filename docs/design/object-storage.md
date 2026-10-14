@@ -54,8 +54,10 @@ the `read` verb under `-auth on`.
 
 `name` is the filename given at upload or at write, `null` when neither gave one. It is validated
 on both paths: 1 to 255 bytes of UTF-8, no control characters, no `/` or `\`; otherwise
-`invalid_request` naming the rule. `size` and
-`media_type` come from the blob and are never caller-supplied at write time. Every read path returns
+`invalid_request` naming the rule. `size` comes from the blob and `media_type` from the upload;
+neither is caller-supplied at write time. The media type belongs to the reference, not the blob:
+identical bytes uploaded as `audio/ogg` for one field and `application/octet-stream` for another
+are one blob with two references, each keeping its own type. Every read path returns
 the same object: `read_rows`, both searches, `query` (by result-column label, as for every declared
 type), and the facade.
 
@@ -75,8 +77,8 @@ hash, any caller who knows or guesses one, for example the hash of a well-known 
 in a log, could attach a blob it never had and then download it through a row it can read. Binding the
 write to an upload the caller made closes that: you can only attach bytes you sent.
 
-**Storage in the row.** The column holds the canonical reference JSON (`sha256` and `name`); `size`
-and `media_type` are joined from the namespace's blob table on read. SQLite stores it as TEXT,
+**Storage in the row.** The column holds the canonical reference JSON (`sha256`, `media_type` and
+`name`); `size` is joined from the namespace's blob table on read. SQLite stores it as TEXT,
 PostgreSQL as `jsonb`, the lakehouse as a Parquet string, so `query` and filters can read the hash
 with each dialect's JSON accessor (`recording->>'sha256'`, `json_extract(recording, '$.sha256')`).
 
@@ -117,8 +119,8 @@ An upload id is single-namespace and expires after `-upload-ttl` (default `24h`)
 any number of writes until it expires, so a retried write that replays through its idempotency key
 still finds it. The namespace and table must exist; the upload does not create them.
 
-A write re-checks the blob's size and media type against the field's current `max_bytes` and
-`media_types`, from `_dolmen_blobs`, so an upload made before `set_file_constraints` tightened them
+A write re-checks the blob's size and the upload's media type against the field's current
+`max_bytes` and `media_types`, so an upload made before `set_file_constraints` tightened them
 cannot attach afterwards.
 
 **Download.** `GET /v1/files?namespace=<ns>&table=<t>&id=<row id>&field=<f>`
@@ -128,7 +130,7 @@ cannot attach afterwards.
   `read_rows` would leave it out.
 - Answers with the bytes through `http.ServeContent`, so `Range`, `If-None-Match` (the `ETag` is the
   quoted hash) and `HEAD` work.
-- Always sets `Content-Type` to the stored media type, `X-Content-Type-Options: nosniff`,
+- Always sets `Content-Type` to the row's media type, `X-Content-Type-Options: nosniff`,
   `Content-Disposition: attachment` with the stored name, encoded per RFC 6266: an ASCII
   `filename` with quotes and non-ASCII replaced by `_`, plus `filename*` in RFC 5987 UTF-8 form, and `Content-Security-Policy: sandbox`.
   Dolmen serves its sign-in and token pages on the same origin, so an uploaded HTML or SVG file must
@@ -186,9 +188,9 @@ SQLite and the lakehouse put it beside the namespace's `.db` or `.lakehouse/` di
 on one catalog would each see half the blobs. **Open:** refuse `file` fields on PostgreSQL until the
 S3 store exists (slice 3), or allow the local store with a documented single-server restriction.
 
-**Metadata.** Each namespace gets `_dolmen_blobs` (`sha256` primary key, `size`, `media_type`,
+**Metadata.** Each namespace gets `_dolmen_blobs` (`sha256` primary key, `size`,
 `created_at`) and `_dolmen_uploads` (`id`, `sha256`, `table_name`, `field_name`, `principal`, `name`,
-`expires_at`). The blob file is written before its `_dolmen_blobs` row, so a crash leaves at worst an
+`media_type`, `expires_at`). The blob file is written before its `_dolmen_blobs` row, so a crash leaves at worst an
 unreferenced file, which the sweep removes.
 
 ## Garbage collection
