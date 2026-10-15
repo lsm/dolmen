@@ -1120,7 +1120,10 @@ Change-feed `commit` is a stable positive integer within a namespace incarnation
 
   The media type comes from the part's `Content-Type`, or from the file name's extension when the
   client sends `application/octet-stream`; a value may set `name` and `media_type` itself. Every
-  read returns the reference `{"sha256", "size", "media_type", "name"}`, never the bytes. A field
+  read returns the reference `{"sha256", "size", "media_type", "name"}`, never the bytes.
+  `GET /v1/files?namespace=&table=&id=&field=` downloads them with the same authorization as
+  `read_rows` on that row, as an attachment with `X-Content-Type-Options: nosniff` and a sandbox
+  CSP, supporting `Range` and `ETag`. A field
   may declare `max_bytes` and `media_types` (exact, or `audio/*`). MCP calls cannot carry files.
   File fields exist on the SQLite engine only; PostgreSQL and the lakehouse refuse them for now.
   `docs/design/object-storage.md` has the design.

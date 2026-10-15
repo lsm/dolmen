@@ -819,8 +819,9 @@ match, before ranking.
   field.
 - Attach a file in the write itself: send the operation as `multipart/form-data` to
   `/v1/{operation}`, with the JSON request in a first part named `request`, and write
-  `{"part": "<part name>"}` as the value (`curl -F 'request=<json>' -F 'rec=@path'`). MCP cannot
-  carry files.
+  `{"part": "<part name>"}` as the value (`curl -F 'request=<json>' -F 'rec=@path'`). Fetch it with
+  `GET /v1/files?namespace=&table=&id=&field=`, which needs `read_rows` access to the row. MCP
+  cannot carry files.
 - Files are stored once per namespace however many rows reference them. File fields exist only on
   the SQLite engine for now; `create_table` and `migrate add_field` refuse them on PostgreSQL and
   the lakehouse.
