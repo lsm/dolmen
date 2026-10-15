@@ -447,3 +447,22 @@ func TestADownloadServesTheBytesWithSafeHeaders(t *testing.T) {
 		t.Fatalf("range: %d %q", res.StatusCode, got)
 	}
 }
+
+func TestDroppingANamespaceRemovesItsFiles(t *testing.T) {
+	srv, dir := newFileServer(t, files.Config{MaxNamespaceFiles: 10})
+	createMeetings(t, srv.URL, nil)
+	req := `{"namespace":"app","table":"meetings","records":[{"recording":{"part":"f"}}]}`
+	if code, body := postMultipart(t, srv.URL, "insert", req, filePart{name: "f", filename: "a.bin", data: []byte("12345678")}); code != http.StatusOK {
+		t.Fatalf("insert: %d %v", code, body)
+	}
+	if code, body := post(t, srv.URL, "drop_namespace", map[string]any{"namespace": "app", "confirm": "app"}); code != http.StatusOK {
+		t.Fatalf("drop_namespace: %d %v", code, body)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "app.files")); !os.IsNotExist(err) {
+		t.Fatalf("the namespace's files must be gone: %v", err)
+	}
+	createMeetings(t, srv.URL, nil)
+	if code, body := postMultipart(t, srv.URL, "insert", req, filePart{name: "f", filename: "b.bin", data: []byte("abcdefgh")}); code != http.StatusOK {
+		t.Fatalf("a recreated namespace must start with an empty file total: %d %v", code, body)
+	}
+}
