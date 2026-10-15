@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **File fields** (object storage, slice 1): a `file` field holds a SHA-256 reference to bytes
+  stored beside the namespace. `insert`, `update`, `upsert`, `upsert_by_key` and `batch` attach
+  files in the same call as `multipart/form-data` (`curl -F 'request=<json>' -F 'rec=@file'`). New flags
+  `-max-file-size`, `-max-namespace-files-size`, `-max-request-files-size` and
+  `-max-pending-files-size`. SQLite engine only for now.
+
 - **New error code `storage_unavailable`** (503), reserved for the file store of `file` fields: the
   store cannot take the write right now, and it may be retried. The Go library exports it as
   `dolmen.ErrStorageUnavailable`.

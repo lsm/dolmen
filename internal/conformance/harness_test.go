@@ -21,6 +21,7 @@ import (
 	"github.com/lsm/dolmen/internal/api"
 	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/embed"
+	"github.com/lsm/dolmen/internal/files"
 	"github.com/lsm/dolmen/internal/mcp"
 	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
@@ -265,7 +266,7 @@ func (h *harness) serveAPI() {
 	if h.authn != nil {
 		authn = h.authn
 	}
-	opts := append(append([]api.Option(nil), h.apiOpts...), api.WithAuth(authn))
+	opts := append(append([]api.Option(nil), h.apiOpts...), api.WithAuth(authn), api.WithFiles(files.New(files.Config{Root: h.dir})))
 	if h.tracerProvider != nil {
 		tracing, err := telemetry.NewWithMeter(h.tracerProvider, nil, propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}), false)
 		if err != nil {
@@ -847,7 +848,7 @@ func (h *harness) restart() {
 	h.t.Helper()
 	h.srv.Close()
 	apiSrv := api.New(h.st, embed.Provider(h.emb), append(append([]api.Option(nil), h.apiOpts...),
-		api.WithAuth(h.authn), api.WithGrants(h.grants))...)
+		api.WithAuth(h.authn), api.WithGrants(h.grants), api.WithFiles(files.New(files.Config{Root: h.dir})))...)
 	h.api = apiSrv
 	mcpSrv := mcp.New(apiSrv, nil)
 	mux := http.NewServeMux()

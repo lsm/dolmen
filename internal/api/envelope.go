@@ -16,6 +16,7 @@ import (
 
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/embed"
+	"github.com/lsm/dolmen/internal/files"
 	"github.com/lsm/dolmen/internal/ops"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -263,6 +264,19 @@ func redactPaths(msg string) string {
 	return filePathRe.ReplaceAllString(msg, "${1}<path>")
 }
 
+func fileErr(err error) *Error {
+	var fe *files.Error
+	if errors.As(err, &fe) {
+		_, code := statusFor(fe.Code)
+		return &Error{Status: fe.Status, Code: code, Message: batchIndexPrefix(err, fe.Message) + fe.Message, Cause: err}
+	}
+	var le *store.FileLimitError
+	if errors.As(err, &le) {
+		return &Error{Status: le.Status, Code: ErrCodeInvalid, Message: batchIndexPrefix(err, le.Message) + le.Message, Cause: err}
+	}
+	return nil
+}
+
 func wrapStoreErr(err error) *Error {
 	if err == nil {
 		return nil
@@ -270,6 +284,9 @@ func wrapStoreErr(err error) *Error {
 	var apiErr *Error
 	if errors.As(err, &apiErr) {
 		return apiErr
+	}
+	if fe := fileErr(err); fe != nil {
+		return fe
 	}
 	if store.IsFull(err) {
 		return &Error{Status: http.StatusInsufficientStorage, Code: ErrCodeInternal, Message: "the namespace reached its size limit (-max-namespace-size) or the disk is full, so nothing was written; delete rows, or have the operator raise the limit or free disk space", Cause: err}
@@ -391,6 +408,9 @@ func WrapError(err error) *Error {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return timedOut(err)
+	}
+	if fe := fileErr(err); fe != nil {
+		return fe
 	}
 	var shared *derr.Error
 	if errors.As(err, &shared) {

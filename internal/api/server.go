@@ -20,6 +20,7 @@ import (
 
 	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/embed"
+	"github.com/lsm/dolmen/internal/files"
 	"github.com/lsm/dolmen/internal/ops"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
@@ -46,6 +47,7 @@ type Server struct {
 	drain              drainState
 	metrics            metrics
 	tracing            *telemetry.Tracing
+	files              *files.Store
 }
 
 type Option func(*Server)
@@ -683,6 +685,10 @@ func (s *Server) Handler() http.Handler {
 		r = authed
 		if authErr != nil {
 			writeError(w, r, WrapError(authErr))
+			return
+		}
+		if isMultipart(r) {
+			s.multipartOp(w, r, op)
 			return
 		}
 		if e := RequireJSON(r); e != nil {

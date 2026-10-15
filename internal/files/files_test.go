@@ -160,3 +160,45 @@ func TestOpenRefusesWhatIsNotAHash(t *testing.T) {
 		}
 	}
 }
+
+func TestAFailedWriteKeepsAFileAnotherRequestAttached(t *testing.T) {
+	s := New(Config{Root: t.TempDir()})
+	a, b := s.NewRequest(), s.NewRequest()
+	for _, r := range []*Request{a, b} {
+		if err := r.Receive("f", "x", "", strings.NewReader("shared")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blob, err := a.Attach(context.Background(), "app", "f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Attach(context.Background(), "app", "f"); err != nil {
+		t.Fatal(err)
+	}
+	b.Close()
+	a.Discard()
+	a.Close()
+	f, err := s.Open("app", blob.SHA256)
+	if err != nil {
+		t.Fatalf("another request attached this file and may have committed a reference to it: %v", err)
+	}
+	f.Close()
+}
+
+func TestAFailedWriteRemovesAFileOnlyItAttached(t *testing.T) {
+	s := New(Config{Root: t.TempDir()})
+	r := s.NewRequest()
+	if err := r.Receive("f", "x", "", strings.NewReader("alone")); err != nil {
+		t.Fatal(err)
+	}
+	blob, err := r.Attach(context.Background(), "app", "f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Discard()
+	r.Close()
+	if _, err := s.Open("app", blob.SHA256); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a file only the failed write attached must go: %v", err)
+	}
+}
