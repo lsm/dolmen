@@ -2,12 +2,14 @@ package files
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFetchHostRules(t *testing.T) {
@@ -176,6 +178,33 @@ func TestEmbeddedAndReservedAddressesAreNotPublic(t *testing.T) {
 	for _, ip := range []string{"64:ff9b::a00:1", "2002:a00:1::1", "2001:0:4136:e378::1", "240.0.0.1", "198.18.0.1", "192.0.0.1", "255.255.255.255"} {
 		if !nonPublic(net.ParseIP(ip)) {
 			t.Errorf("%s must be refused", ip)
+		}
+	}
+}
+
+func TestAFetchThatBreaksMidBodyIsClassified(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		w.Write([]byte("partial"))
+		w.(http.Flusher).Flush()
+		if r.URL.Path == "/stall" {
+			time.Sleep(500 * time.Millisecond)
+			return
+		}
+		conn, _, _ := w.(http.Hijacker).Hijack()
+		conn.Close()
+	}))
+	defer srv.Close()
+	s := New(Config{Root: t.TempDir()})
+	for path, want := range map[string]string{"/stall": "took longer than -files-fetch-timeout", "/cut": "broke off"} {
+		f := testFetcher(srv)
+		f.timeout = 200 * time.Millisecond
+		r := s.NewRequest()
+		err := r.ReceiveURL(context.Background(), "u", srv.URL+path, f)
+		r.Close()
+		var fe *Error
+		if !errors.As(err, &fe) || fe.Status != http.StatusBadRequest || !strings.Contains(fe.Message, want) || !strings.Contains(fe.Message, "may be retried") {
+			t.Errorf("%s: %v, want a classified 400 containing %q", path, err, want)
 		}
 	}
 }

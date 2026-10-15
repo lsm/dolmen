@@ -176,5 +176,13 @@ func (r *Request) ReceiveURL(ctx context.Context, name, raw string, f *Fetcher) 
 	if filename == "/" || filename == "." {
 		filename = ""
 	}
-	return r.Receive(name, filename, res.Header.Get("Content-Type"), res.Body)
+	err = r.Receive(name, filename, res.Header.Get("Content-Type"), res.Body)
+	var fe *Error
+	switch {
+	case err == nil || errors.As(err, &fe):
+		return err
+	case ctx.Err() != nil:
+		return fetchErr("fetching from %s took longer than -files-fetch-timeout (%s); the fetch may be retried", u.Hostname(), f.timeout)
+	}
+	return fetchErr("fetching from %s broke off before the file arrived; the fetch may be retried", u.Hostname())
 }
