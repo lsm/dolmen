@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"path"
 	"strings"
+
+	"github.com/lsm/dolmen/internal/schema"
 )
 
 var extensionTypes = map[string]string{
@@ -80,7 +82,7 @@ func BaseMediaType(v string) string {
 }
 
 func InferMediaType(declared, filename string, head []byte) string {
-	if mt := BaseMediaType(declared); mt != "" && mt != octetStream {
+	if mt := BaseMediaType(declared); mt != "" && mt != octetStream && schema.ValidateMediaType("", mt) == nil {
 		return mt
 	}
 	if t, ok := extensionTypes[strings.ToLower(path.Ext(filename))]; ok {

@@ -17,6 +17,8 @@ func TestMediaTypeInference(t *testing.T) {
 		{"", "blob", []byte("%PDF-1.7"), "application/pdf"},
 		{"", "blob", []byte{0, 1, 2, 3}, "application/octet-stream"},
 		{"not a type", "a.png", nil, "image/png"},
+		{"*/*", "a.png", nil, "image/png"},
+		{"audio/*", "x.ogg", nil, "audio/ogg"},
 	} {
 		if got := InferMediaType(tc.declared, tc.filename, tc.head); got != tc.want {
 			t.Errorf("InferMediaType(%q, %q) = %q, want %q", tc.declared, tc.filename, got, tc.want)
