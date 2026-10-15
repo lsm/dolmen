@@ -560,6 +560,8 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			cur.RowAccess = ""
 			plan.Operations = append(plan.Operations, "set_row_access false (the owner column and its values are kept)")
 
+		case schema.OpSetFileConstraints:
+			return nil, invalidf("field %q: file fields are not supported on this engine yet, so there are no file constraints to set", ch.Name)
 		default:
 			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_shape, set_row_access)", ch.Op)
 		}
